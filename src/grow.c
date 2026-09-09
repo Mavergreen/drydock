@@ -1,82 +1,32 @@
-/*
- * macho_grow.h — make room in a Mach-O header so the load commands can expand.
+/* grow.c -- see grow.h for the design and every function's contract.
  *
- * The problem: tools like change_dylib (and patch_macho's LC_DYLD_INFO_ONLY
- * insertion) write load commands in place, bounded by the file offset of the
- * first section's data. When the linker leaves little padding there (recent
- * Bun/JSC builds leave as few as 16 bytes), a longer dylib path or an extra
- * load command no longer fits.
- *
- * The fix, studied from LIEF (src/MachO/Binary.cpp `shift`) and llvm-objcopy
- * (MachOLayoutBuilder): make room by inserting page-aligned space after the
- * load commands. LIEF/llvm push every later segment to a HIGHER vm address and
- * then fix up everything that depended on those addresses — section-symbol
- * n_values, LC_MAIN, function-start deltas, relocations, rebase/bind/chained
- * targets. That is a lot of machinery — and we can't just run those tools on
- * 10.9 anyway: LIEF needs a modern-macOS C++ runtime and llvm-objcopy a
- * cross-built toolchain, while install_name_tool / optool / insert_dylib refuse
- * to grow the header at all. This header compiles with the stock 10.9 clang and
- * has no dependencies.
- *
- * We take a simpler, equivalent route available to any PIE executable with a
- * __PAGEZERO: instead of raising data, we LOWER the image base. We donate the
- * inserted bytes from __PAGEZERO and drop __TEXT's vmaddr by the same amount,
- * growing __TEXT's vm/file size. Net effect: every section and segment keeps
- * its ORIGINAL vm address, so no pointer, rebase, bind, n_value, or entry
- * address ever changes. The only fields that move are file offsets — which we
- * shift uniformly. (Borrowed from LIEF: the exhaustive list of offset fields.)
- *
- * Precondition: a MH_PIE executable with a __PAGEZERO at least `grow` bytes
- * large. (Always true for the Claude Code executable: 0x1_0000_0000 pagezero.)
- * Dylibs without a __PAGEZERO can't lower the base; mg_grow_header reports that
- * and leaves the buffer untouched so the caller can fall back / error cleanly.
- */
-#ifndef MACHO_GROW_H
-#define MACHO_GROW_H
+ * This was macho_grow.h, a header-only library, until this move: every
+ * function below was `static` with internal linkage and a body sitting
+ * directly in the header. Splitting into grow.h (declarations) + grow.c
+ * (definitions) is why each one below lost its `static` -- external linkage
+ * is what a declaration in a header now promises callers in other
+ * translation units (change_dylib.c, cli/macho9.c, tests/grow_test.c).
+ * Nothing else changed in this move; characterize and the (also-moved)
+ * grow_test are the proof. */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <mach-o/loader.h>
+#include "grow.h"
 
-/* ULEB128 decode / minlen / fixed-width encode. */
-#include "uleb.h"
+/* mg_first_sect_off's mi_each_lc callback: track the lowest LC_SEGMENT_64
+ * section file offset seen so far in ctx->first. Always returns 0 (never
+ * stops early) -- every command must be visited, there is no refusal here. */
+static int mg_first_sect_cb(const struct load_command *lc, void *ctx_) {
+    uint32_t *first = (uint32_t *)ctx_;
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *sect =
+            (const struct section_64 *)((const uint8_t *)lc + sizeof(*seg));
+        for (uint32_t j = 0; j < seg->nsects; j++)
+            if (sect[j].offset && sect[j].offset < *first) *first = sect[j].offset;
+    }
+    return 0;
+}
 
-/* Validated open/wrap/iterate over a Mach-O buffer. */
-#include "image.h"
-
-/* Export-trie rebuild, for when an in-place re-encode (mg_trie_node, below)
- * can't absorb an address's widened ULEB. */
-#include "trie.h"
-
-/* Load-command/section-type constants newer than the 10.9 SDK headers. */
-#include "mach_compat.h"
-
-/* The __LINKEDIT offset-bump table: ml_bump and ml_bump_all, covering
- * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
- * family. See src/linkedit.h for the exact field list. */
-#include "linkedit.h"
-
-#define MG_EXPORT_KIND_MASK        0x03
-#define MG_EXPORT_REEXPORT         0x08
-#define MG_EXPORT_STUB_AND_RESOLVER 0x10
-
-#define MG_PAGE 0x1000UL
-
-/* Lowest section file offset — this bounds the header pad. `fsize` is the
- * buffer's real size, wrapped through mi_wrap so this walk cannot stride past
- * it -- the bug class this whole extraction exists to prevent.
- *
- * Returns UINT32_MAX, with a message on stderr, if the buffer fails to wrap
- * (bad magic, or load commands that don't fit): refuse rather than guess. A
- * fixed fallback here would be a real hazard, not a theoretical one --
- * change_dylib.c's memset(buf + 32, 0, first_sect_off - 32) turns a wrong
- * guess directly into an out-of-bounds write. Every caller must check for
- * UINT32_MAX. This differs from the UINT32_MAX -> 4096 default a few lines
- * down, which is a validated image that simply has no sections -- a real,
- * if unusual, answer rather than a guess about an image we couldn't read. */
-static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
+uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     mi_image im;
     /* mi_wrap's own signature is necessarily non-const: mi_image.buf is
      * uint8_t* because OTHER callers (build_lcs, mg_grow_header itself) use
@@ -92,38 +42,11 @@ static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     }
 
     uint32_t first = UINT32_MAX;
-    const uint8_t *lcp = im.buf + sizeof(*im.hdr);
-    for (uint32_t i = 0; i < im.hdr->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)lcp;
-            const struct section_64 *sect = (const struct section_64 *)(lcp + sizeof(*seg));
-            for (uint32_t j = 0; j < seg->nsects; j++)
-                if (sect[j].offset && sect[j].offset < first) first = sect[j].offset;
-        }
-        lcp += lc->cmdsize;
-    }
+    mi_each_lc(&im, mg_first_sect_cb, &first);
     return first == UINT32_MAX ? 4096 : first;
 }
 
-/* ---- ULEB128, for the LC_FUNCTION_STARTS leading-delta re-encode ----------
- *
- * LC_FUNCTION_STARTS is a stream of ULEB128 deltas: the FIRST is relative to the
- * image base, the rest are function-to-function. Lowering the image base by N
- * (the grow trick) leaves every function's VM address fixed, so the later deltas
- * are unchanged, but the first must gain N or every reconstructed function
- * address comes out N low. We adjust it in place, preserving its byte width so
- * the blob — and all of __LINKEDIT after it — never moves. (When the widened
- * delta would need more bytes than the original encoding, we refuse rather than
- * resize LINKEDIT; see mg_grow_header.) */
-
-/* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering
- * the image base by `grow`: delta[0] += grow, keeping the leading delta's byte
- * width so blob size is unchanged and the trailing deltas are untouched.
- * Returns: 1 patched in place; 0 the widened delta needs more bytes than the
- * original leading encoding (caller must refuse — LINKEDIT resize unsupported);
- * -1 malformed blob (empty / bad leading ULEB). */
-static int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow) {
+int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow) {
     if (size == 0) return -1;
     uint64_t d0; int n0 = mu_decode(blob, blob + size, &d0);
     if (n0 == 0) return -1;
@@ -132,10 +55,7 @@ static int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t gr
     return mu_encode_fixed(blob, nd, n0) ? 1 : 0;
 }
 
-/* Decode the whole function-starts blob into absolute addresses given the image
- * base. Stops at a 0 delta (terminator/padding) or end. Returns count (<= max),
- * or -1 on a malformed ULEB. (Used by tests to assert the grow moved nothing.) */
-static int mg_funcstarts_decode(const uint8_t *blob, uint32_t size,
+int mg_funcstarts_decode(const uint8_t *blob, uint32_t size,
                                 uint64_t base, uint64_t *out, int max) {
     const uint8_t *p = blob, *end = blob + size; uint64_t addr = base; int n = 0;
     while (p < end && n < max) {
@@ -148,54 +68,46 @@ static int mg_funcstarts_decode(const uint8_t *blob, uint32_t size,
     return n;
 }
 
+struct mg_init_offsets_ctx {
+    uint8_t *buf;
+    size_t fsize;
+    uint32_t grow;
+    int patch;
+};
 
-/* ---- base-relative structures ---------------------------------------------
- *
- * Lowering the image base keeps every ABSOLUTE vm address fixed, which is what
- * makes this trick cheap. Values stored as an OFFSET FROM THE IMAGE BASE are the
- * exception: the base moved out from under them, so each must gain `grow`.
- * LC_FUNCTION_STARTS' leading delta (handled above) is one. These are the rest.
- *
- * Note S_MOD_INIT_FUNC_POINTERS needs nothing: those are absolute pointers that
- * dyld rebases, and their target addresses do not change. */
-
-/* Add `grow` to every entry of every S_INIT_FUNC_OFFSETS section, or with
- * patch=0 just verify the pass would be sound. Without this, dyld4-era static
- * constructors are called at (base - grow) + offset and jump into whatever
- * precedes them. Returns 0 ok, -1 malformed/unsafe. */
-static int mg_init_offsets_pass(uint8_t *buf, size_t fsize, uint32_t grow, int patch) {
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
-                if (sect[j].size % 4) return -1;
-                if ((uint64_t)sect[j].offset + sect[j].size > (uint64_t)fsize) return -1;
-                uint32_t n = (uint32_t)(sect[j].size / 4);
-                uint32_t *e = (uint32_t *)(buf + sect[j].offset);
-                for (uint32_t k = 0; k < n; k++) {
-                    if (!patch) { if (e[k] > UINT32_MAX - grow) return -1; }
-                    else e[k] += grow;
-                }
-            }
+/* mg_init_offsets_pass's mi_each_lc callback: edits S_INIT_FUNC_OFFSETS
+ * section CONTENT in place (patch=1) or just audits it (patch=0) -- never
+ * lc->cmd/cmdsize/hdr->ncmds, so it stays inside mi_each_lc's mutation
+ * contract. Returns non-zero to stop the walk on the first malformed/unsafe
+ * section, exactly the refusal mg_init_offsets_pass itself used to return
+ * early for. */
+static int mg_init_offsets_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_init_offsets_ctx *ctx = (struct mg_init_offsets_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+    struct section_64 *sect = (struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
+        if (sect[j].size % 4) return -1;
+        if ((uint64_t)sect[j].offset + sect[j].size > (uint64_t)ctx->fsize) return -1;
+        uint32_t n = (uint32_t)(sect[j].size / 4);
+        uint32_t *e = (uint32_t *)(ctx->buf + sect[j].offset);
+        for (uint32_t k = 0; k < n; k++) {
+            if (!ctx->patch) { if (e[k] > UINT32_MAX - ctx->grow) return -1; }
+            else e[k] += ctx->grow;
         }
-        lcp += lc->cmdsize;
     }
     return 0;
 }
 
-/* Walk the export trie looking for an exported address we would have to
- * re-encode. Addresses there are ULEB offsets from the image base; bumping one
- * can widen its encoding and force __LINKEDIT to be rebuilt, which this header
- * does not do. __mh_execute_header is exported at offset 0 and stays correct --
- * it names the header, which moved down with the base -- so a trie whose
- * addresses are all zero is safe to leave alone.
- * Returns 0 safe, 1 needs re-encoding, -1 malformed. */
-static int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth) {
+int mg_init_offsets_pass(uint8_t *buf, size_t fsize, uint32_t grow, int patch) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_init_offsets_ctx ctx = { buf, fsize, grow, patch };
+    return mi_each_lc(&im, mg_init_offsets_cb, &ctx) ? 0 : -1;
+}
+
+int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth) {
     if (depth > MT_TRIE_MAX_DEPTH || off >= size) return -1;
     const uint8_t *p = trie + off, *end = trie + size;
     uint64_t term; int n = mu_decode(p, end, &term);
@@ -235,88 +147,66 @@ static int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int de
     return 0;
 }
 
-/* Forward: mg_collect (below) needs the compact-unwind walker, which is defined
- * after it so its long explanation sits next to the grow it serves. */
-static int mg_unwind_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
-                          uint64_t base, uint64_t *out, uint8_t *kinds,
-                          uint32_t *n, uint32_t max);
-static int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
-                        uint64_t base, uint64_t *out, uint8_t *kinds,
-                        uint32_t *n, uint32_t max);
-static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
-                        uint64_t base, uint64_t *out, uint8_t *kinds,
-                        uint32_t *n, uint32_t max);
+struct mg_collect_ctx {
+    const uint8_t *buf;
+    size_t fsize;
+    uint64_t base;
+    uint64_t *out;
+    uint8_t *kinds;
+    uint32_t max;
+    uint32_t n;
+};
 
-/* ---- verification: prove the grow moved nothing ---------------------------
- * Every structure below stores an offset FROM THE IMAGE BASE, so lowering the
- * base by `grow` must leave the RESOLVED address (base + offset) unchanged.
- * Snapshot those resolved addresses before the transform, recompute them after,
- * and compare. That catches a handler that did not run, one that ran twice, and
- * one that ran with the wrong delta -- without needing to know which.
- *
- * mg_collect walks the base-relative structures in load-command order, which is
- * deterministic and identical before and after, so element i means the same
- * thing in both snapshots. */
-/* Not every base-relative address names a function. Initializers and
- * compact-unwind entries do; a data export, a jump-table range, an LSDA blob and
- * a personality GOT slot do not. Only MG_K_FUNC entries can be checked against
- * LC_FUNCTION_STARTS. */
-#define MG_K_ANY  0
-#define MG_K_FUNC 1
-
-typedef struct { uint64_t *addr; uint32_t n; } mg_snapshot;
-
-#define MG_SNAP_MAX 65536
-
-static int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
-                      uint32_t max, uint32_t *n_out) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    uint64_t base = 0;
-    uint32_t n = 0;
-    /* image base first: __TEXT is the segment mapping the header (fileoff 0, has content) */
-    const uint8_t *q = sp;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)q;
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)q;
-            if (seg->fileoff == 0 && seg->filesize > 0) { base = seg->vmaddr; break; }
+/* mg_collect's mi_each_lc callback: LC_FUNCTION_STARTS' leading (base-relative)
+ * delta, and every S_INIT_FUNC_OFFSETS entry, both resolved to an absolute
+ * address and appended to ctx->out. Read-only over the command chain; returns
+ * non-zero to stop on the first malformed/overflowing structure, same as the
+ * hand-rolled loop's early `return -1`. */
+static int mg_collect_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_collect_ctx *ctx = (struct mg_collect_ctx *)ctx_;
+    if (lc->cmd == LC_FUNCTION_STARTS) {
+        const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+        if (d->datasize) {
+            if ((size_t)d->dataoff + d->datasize > ctx->fsize) return -1;
+            uint64_t d0;
+            if (mu_decode(ctx->buf + d->dataoff, ctx->buf + d->dataoff + d->datasize, &d0) == 0)
+                return -1;
+            if (ctx->n >= ctx->max) return -1;
+            if (ctx->kinds) ctx->kinds[ctx->n] = MG_K_FUNC;   /* the first function's address */
+            ctx->out[ctx->n++] = ctx->base + d0;
         }
-        q += lc->cmdsize;
     }
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
+            if ((size_t)sect[j].offset + sect[j].size > ctx->fsize) return -1;
+            const uint32_t *e = (const uint32_t *)(ctx->buf + sect[j].offset);
+            uint64_t cnt = sect[j].size / sizeof(uint32_t);
+            for (uint64_t k = 0; k < cnt; k++) {
+                if (ctx->n >= ctx->max) return -1;
+                if (ctx->kinds) ctx->kinds[ctx->n] = MG_K_FUNC;   /* initializers are functions */
+                ctx->out[ctx->n++] = ctx->base + e[k];
+            }
+        }
+    }
+    return 0;
+}
+
+int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
+                      uint32_t max, uint32_t *n_out) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
+    /* image base first: __TEXT is the segment mapping the header (fileoff 0,
+     * has content) -- exactly what mi_text_base derives. */
+    uint64_t base = mi_text_base(&im);
     if (!base) return -1;
 
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_FUNCTION_STARTS) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            if (d->datasize) {
-                if ((size_t)d->dataoff + d->datasize > fsize) return -1;
-                uint64_t d0;
-                if (mu_decode(buf + d->dataoff, buf + d->dataoff + d->datasize, &d0) == 0)
-                    return -1;
-                if (n >= max) return -1;
-                if (kinds) kinds[n] = MG_K_FUNC;   /* the first function's address */
-                out[n++] = base + d0;
-            }
-        }
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            const struct section_64 *sect = (const struct section_64 *)(sp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                if ((sect[j].flags & SECTION_TYPE) != S_INIT_FUNC_OFFSETS) continue;
-                if ((size_t)sect[j].offset + sect[j].size > fsize) return -1;
-                const uint32_t *e = (const uint32_t *)(buf + sect[j].offset);
-                uint64_t cnt = sect[j].size / sizeof(uint32_t);
-                for (uint64_t k = 0; k < cnt; k++) {
-                    if (n >= max) return -1;
-                    if (kinds) kinds[n] = MG_K_FUNC;   /* initializers are functions */
-                    out[n++] = base + e[k];
-                }
-            }
-        }
-        sp += lc->cmdsize;
-    }
+    struct mg_collect_ctx ctx = { buf, fsize, base, out, kinds, max, 0 };
+    if (!mi_each_lc(&im, mg_collect_cb, &ctx)) return -1;
+    uint32_t n = ctx.n;
+
     /* Compact unwind last, so element order is stable across before/after. The
      * cast is safe: with `out` non-NULL the walker only reads. */
     if (mg_trie_walk((uint8_t *)buf, fsize, 0, 0, base, out, kinds, &n, max) != 0) return -1;
@@ -326,7 +216,7 @@ static int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *
     return 0;
 }
 
-static int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
+int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!s->addr) return -1;
     if (mg_collect(buf, fsize, s->addr, NULL, MG_SNAP_MAX, &s->n) != 0) {
@@ -335,11 +225,9 @@ static int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     return 0;
 }
 
-static void mg_snapshot_free(mg_snapshot *s) { free(s->addr); s->addr = NULL; s->n = 0; }
+void mg_snapshot_free(mg_snapshot *s) { free(s->addr); s->addr = NULL; s->n = 0; }
 
-/* 0 if every base-relative structure resolves exactly where it did before the
- * grow; -1 (with a message naming the first mismatch) otherwise. */
-static int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
+int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     uint64_t *now = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!now) return -1;
     uint32_t n = 0;
@@ -366,53 +254,52 @@ static int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before
     return 0;
 }
 
-/* ---- __TEXT,__unwind_info -------------------------------------------------
- * Compact unwind stores several different things as 32-bit words, and only some
- * are measured from the image base. Getting that distinction wrong is silent:
- * the tables still parse, and only an actual unwind notices.
- *
- * MUST gain `grow` (offsets from the image base):
- *   - personality array entries (they address the routine's GOT slot)
- *   - first-level index functionOffset, INCLUDING the trailing sentinel
- *   - LSDA index entries: both functionOffset and lsdaOffset
- *   - regular (kind 2) second-level page entry functionOffset
- * MUST NOT be touched:
- *   - compressed (kind 3) second-level entries. Their low 24 bits are a delta
- *     from their own page's first-level functionOffset, which the bump above
- *     already moved, so they are correct untouched and corrupt if bumped.
- *   - every *SectionOffset field: those are offsets within this section.
- *   - common encodings: encodings, not addresses.
- *
- * One walker, three uses -- audit (patch=0), apply (patch=1), collect for verify
- * (out != NULL). Deliberately one function: the __init_offsets double-apply
- * happened because two functions encoded the same knowledge and both ran. */
-static int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {
+int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {
     uint32_t v; memcpy(&v, p, sizeof v);
     if (v > 0xffffffffu - grow) return -1;      /* would overflow the 32-bit field */
     if (patch) { v += grow; memcpy(p, &v, sizeof v); }
     return 0;
 }
 
-static int mg_unwind_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
+struct mg_unwind_find_ctx {
+    uint8_t *buf;
+    size_t fsize;
+    uint8_t *u;         /* result: section content, or NULL if not found */
+    uint32_t usz;
+    int zero_size;      /* matched a __unwind_info section, but its size is 0 */
+    int overflow;       /* matched, but offset+size runs past fsize */
+};
+
+/* mg_unwind_walk's mi_each_lc callback: find the FIRST LC_SEGMENT_64 section
+ * named "__unwind_info" and stop -- this is a find-first search, not an
+ * iterate-everything walk, so it always returns 1 once it has visited a
+ * segment with a matching-named section (whatever the outcome: found, zero
+ * size, or overflow), matching the original loop's `&& !u` early exit. */
+static int mg_unwind_find_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_unwind_find_ctx *ctx = (struct mg_unwind_find_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if (strncmp(sect[j].sectname, "__unwind_info", sizeof sect[j].sectname)) continue;
+        if (!sect[j].size) { ctx->zero_size = 1; return 1; }
+        if ((uint64_t)sect[j].offset + sect[j].size > ctx->fsize) { ctx->overflow = 1; return 1; }
+        ctx->u = ctx->buf + sect[j].offset; ctx->usz = (uint32_t)sect[j].size;
+        return 1;
+    }
+    return 0;
+}
+
+int mg_unwind_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
                           uint64_t base, uint64_t *out, uint8_t *kinds,
                           uint32_t *n, uint32_t max) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    uint8_t *u = NULL; uint32_t usz = 0;
-    for (uint32_t i = 0; i < h->ncmds && !u; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            const struct section_64 *sect = (const struct section_64 *)(sp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                if (strncmp(sect[j].sectname, "__unwind_info", sizeof sect[j].sectname)) continue;
-                if (!sect[j].size) return 0;
-                if ((uint64_t)sect[j].offset + sect[j].size > fsize) return -1;
-                u = buf + sect[j].offset; usz = (uint32_t)sect[j].size; break;
-            }
-        }
-        sp += lc->cmdsize;
-    }
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_unwind_find_ctx fctx = { buf, fsize, NULL, 0, 0, 0 };
+    mi_each_lc(&im, mg_unwind_find_cb, &fctx);
+    if (fctx.zero_size) return 0;
+    if (fctx.overflow) return -1;
+    uint8_t *u = fctx.u; uint32_t usz = fctx.usz;
     if (!u) return 0;                       /* no compact unwind: nothing to do */
 
 #define UW_RD(off) ({ uint32_t _v; memcpy(&_v, u + (off), sizeof _v); _v; })
@@ -476,60 +363,56 @@ static int mg_unwind_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
     return 0;
 }
 
-/* ---- LC_DATA_IN_CODE ------------------------------------------------------
- * A flat array of data_in_code_entry { uint32 offset; uint16 length; uint16 kind }.
- * ONLY `offset` is measured from the image base. `length` and `kind` are not
- * offsets at all, so a walker that bumps whole words instead of the first field
- * of each entry corrupts every range while still "changing by grow".
- * One walker, three uses, as for compact unwind. */
-static int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
-                        uint64_t base, uint64_t *out, uint8_t *kinds,
-                        uint32_t *n, uint32_t max) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_DATA_IN_CODE) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            if (!d->datasize) return 0;
-            if ((uint64_t)d->dataoff + d->datasize > fsize) return -1;
-            if (d->datasize % 8) return -1;          /* not a whole number of entries */
-            uint8_t *e = buf + d->dataoff;
-            for (uint32_t k = 0; k < d->datasize; k += 8) {
-                if (out) {
-                    if (*n >= max) return -1;
-                    uint32_t v; memcpy(&v, e + k, sizeof v);
-                    if (kinds) kinds[*n] = MG_K_ANY;   /* jump tables sit mid-function */
-                    out[(*n)++] = base + v;
-                } else if (mg_uw_bump(e + k, grow, patch) != 0) {
-                    return -1;
-                }
-            }
-            return 0;
+struct mg_dice_ctx {
+    uint8_t *buf;
+    uint32_t grow;
+    int patch;
+    uint64_t base;
+    uint64_t *out;
+    uint8_t *kinds;
+    uint32_t *n;
+    uint32_t max;
+    size_t fsize;
+    int error;
+};
+
+/* mg_dice_walk's mi_each_lc callback: LC_DATA_IN_CODE is a find-first search
+ * (there is at most one), so the callback does the ENTIRE original body --
+ * validate, then either collect (out != NULL) or bump (patch) every entry --
+ * and always returns 1 to stop once it has visited that command, success or
+ * failure alike; ctx->error carries which. */
+static int mg_dice_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_dice_ctx *ctx = (struct mg_dice_ctx *)ctx_;
+    if (lc->cmd != LC_DATA_IN_CODE) return 0;
+    const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+    if (!d->datasize) return 1;
+    if ((uint64_t)d->dataoff + d->datasize > ctx->fsize) { ctx->error = 1; return 1; }
+    if (d->datasize % 8) { ctx->error = 1; return 1; }          /* not a whole number of entries */
+    uint8_t *e = ctx->buf + d->dataoff;
+    for (uint32_t k = 0; k < d->datasize; k += 8) {
+        if (ctx->out) {
+            if (*ctx->n >= ctx->max) { ctx->error = 1; return 1; }
+            uint32_t v; memcpy(&v, e + k, sizeof v);
+            if (ctx->kinds) ctx->kinds[*ctx->n] = MG_K_ANY;   /* jump tables sit mid-function */
+            ctx->out[(*ctx->n)++] = ctx->base + v;
+        } else if (mg_uw_bump(e + k, ctx->grow, ctx->patch) != 0) {
+            ctx->error = 1; return 1;
         }
-        sp += lc->cmdsize;
     }
-    return 0;
+    return 1;
 }
 
-/* ---- export trie ----------------------------------------------------------
- * Each exported address is a ULEB offset FROM THE IMAGE BASE, so lowering the
- * base means every one must gain `grow`. The reason this is safe to do in place:
- * adding a page never widens the encoding on a real binary. Measured across all
- * 670 entries of Claude Code 2.1.263 at 4K, 8K and 16K grows, zero needed a
- * wider ULEB and zero needed redundant padding. So each address is re-encoded at
- * its ORIGINAL byte width, the trie keeps its size, and no __LINKEDIT offset
- * moves. If one ever would widen, we refuse -- that is the case the old guard
- * was written for, and it is still handled, just no longer assumed.
- *
- * Address 0 stays 0. That is __mh_execute_header, which names the header itself;
- * the header moved down with the base, so 0 remains correct. It is therefore
- * neither bumped nor collected -- its resolved address is base+0, which SHOULD
- * change, and collecting it would make verify fail on a correct grow.
- *
- * `seen` guards a shared subtree from being bumped twice -- the same hazard as
- * the __init_offsets double-apply. */
-static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
+int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
+                        uint64_t base, uint64_t *out, uint8_t *kinds,
+                        uint32_t *n, uint32_t max) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_dice_ctx ctx = { buf, grow, patch, base, out, kinds, n, max, fsize, 0 };
+    mi_each_lc(&im, mg_dice_cb, &ctx);
+    return ctx.error ? -1 : 0;
+}
+
+int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
                         uint32_t grow, int patch, uint64_t base,
                         uint64_t *out, uint8_t *kinds, uint32_t *n, uint32_t max,
                         uint8_t *seen) {
@@ -582,48 +465,42 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
     return 0;
 }
 
-/* Locate the export trie's load command -- LC_DYLD_INFO, LC_DYLD_INFO_ONLY, or
- * LC_DYLD_EXPORTS_TRIE, whichever this image carries -- and return its BYTE
- * OFFSET from buf (not a pointer: a caller that goes on to realloc buf, as
- * the widen-append path does, needs an offset it can re-derive a pointer
- * from afterward, not a pointer the realloc may have invalidated). Returns 1
- * with *lc_off and *cmd set, or 0 if this image has no such load command (not an
- * error -- just nothing to walk).
- *
- * The single source of truth for "which load command carries the export
- * trie": mg_find_trie (below) and mg_grow_header's widen-append path both
- * call this rather than each re-scanning load commands on their own, so the
- * two can never disagree about which one it is. (They once could: an
- * earlier version had the append path re-scan without breaking on the first
- * match, landing on the LAST export-trie-shaped load command while this
- * function -- and mg_find_trie -- always meant the FIRST. A file carrying
- * both LC_DYLD_INFO_ONLY and LC_DYLD_EXPORTS_TRIE would have repointed the
- * wrong one. It failed safe -- mg_verify would see pre-shift addresses
- * through the untouched first LC and refuse -- but "two places
- * independently deciding the same thing" is exactly the bug shape this
- * whole toolkit exists to eliminate, so it is not left as a coincidence
- * that happens to agree today.) */
-static int mg_find_trie_lc(const uint8_t *buf, long *lc_off, uint32_t *cmd) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY ||
-            lc->cmd == LC_DYLD_EXPORTS_TRIE) {
-            *lc_off = sp - buf; *cmd = lc->cmd; return 1;
-        }
-        sp += lc->cmdsize;
+/* Was left as a hand-rolled walk on the grounds that every call site already
+ * held a validated buffer -- a code-review round found that reasoning
+ * incomplete: this symbol is EXPORTED from grow.h, strides lc->cmdsize from
+ * h->ncmds with NO bounds check of its own, and was therefore safe only by
+ * coincidence -- exactly the "safe by coincidence" hazard src/image.h's own
+ * header comment names as this module's reason to exist. Every one of the
+ * five call sites (grow.c's own mg_find_trie below, mg_grow_header's
+ * pre-realloc audit and post-realloc widen-append path, and
+ * tests/grow_test.c's two) already had `fsize`/`final_size` in scope one
+ * line away, so the fix costs one parameter, not a redesign. */
+struct mg_trie_lc_ctx { const uint8_t *buf; long lc_off; uint32_t cmd; int found; };
+static int mg_trie_lc_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_trie_lc_ctx *ctx = (struct mg_trie_lc_ctx *)ctx_;
+    if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY ||
+        lc->cmd == LC_DYLD_EXPORTS_TRIE) {
+        ctx->lc_off = (const uint8_t *)lc - ctx->buf;
+        ctx->cmd = lc->cmd;
+        ctx->found = 1;
+        return 1;
     }
     return 0;
 }
 
-/* Locate the export trie's (off, size), whichever load command carries it --
- * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
- * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
- * no export-trie load command at all (not an error -- just nothing to walk). */
-static int mg_find_trie(const uint8_t *buf, uint32_t *off, uint32_t *size) {
+int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cmd) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return 0;
+    struct mg_trie_lc_ctx ctx = { buf, 0, 0, 0 };
+    mi_each_lc(&im, mg_trie_lc_cb, &ctx);
+    if (!ctx.found) return 0;
+    *lc_off = ctx.lc_off; *cmd = ctx.cmd;
+    return 1;
+}
+
+int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size) {
     long lc_off; uint32_t cmd;
-    if (!mg_find_trie_lc(buf, &lc_off, &cmd)) return 0;
+    if (!mg_find_trie_lc(buf, fsize, &lc_off, &cmd)) return 0;
     if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
         const struct dyld_info_command *d = (const struct dyld_info_command *)(buf + lc_off);
         *off = d->export_off; *size = d->export_size;
@@ -635,11 +512,11 @@ static int mg_find_trie(const uint8_t *buf, uint32_t *off, uint32_t *size) {
     return 1;
 }
 
-static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
+int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
                         uint64_t base, uint64_t *out, uint8_t *kinds,
                         uint32_t *n, uint32_t max) {
     uint32_t off, size;
-    if (!mg_find_trie(buf, &off, &size)) return 0;
+    if (!mg_find_trie(buf, fsize, &off, &size)) return 0;
     if (!off || !size) return 0;
     if ((uint64_t)off + size > fsize) return -1;
     uint8_t *seen = (uint8_t *)calloc(size, 1);
@@ -649,46 +526,15 @@ static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
     return r;
 }
 
-/* ---- classification: unknown means unsafe ---------------------------------
- * Lowering the image base is only safe if NOTHING in the file stores an offset
- * measured from that base which we do not re-base. The handlers above cover the
- * five structures we know about. This covers the ones we do not.
- *
- * A load command or section type nobody has classified may carry base-relative
- * data exactly as __init_offsets and compact unwind do, and there is no way to
- * tell from the number alone. Growing anyway is precisely how LC_DATA_IN_CODE
- * and __TEXT,__unwind_info came to be silently corrupted. So: everything is
- * enumerated on purpose, and anything unrecognised refuses.
- *
- * HONEST LIMIT: section classification is by TYPE, which describes how the
- * contents are encoded, plus a by-NAME list of the S_REGULAR sections known to
- * hold base-relative data (today just __unwind_info). A *new* S_REGULAR section
- * carrying base-relative offsets would pass this check. Type covers the
- * encoding families; the name list cannot cover what has not been invented.
- * That residual risk is what the verify pass exists to narrow. */
-/* (LC_LAZY_LOAD_DYLIB, LC_DYLD_ENVIRONMENT, LC_LINKER_OPTION, LC_NOTE,
- * LC_BUILD_VERSION, LC_FILESET_ENTRY, LC_ATOM_INFO, S_INIT_FUNC_OFFSETS: all
- * from mach_compat.h, included near the top of this file -- this used to be
- * a second, later copy of some of that same file's fallback #defines,
- * duplicated within this ONE header, not just across files.) */
-
-static int mg_classify(const uint8_t *buf, size_t fsize) {
-    mi_image im;
-    /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
-     * signature is non-const only because some OTHER caller needs a
-     * writable view; this function only reads im.buf/im.hdr (via `sp`)
-     * below, never writes, so casting away const here does not let this
-     * function violate its own `const uint8_t *buf` promise to callers. */
-    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
-        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
-                        "that don't fit); refusing to classify\n");
-        return -1;
-    }
-    const uint8_t *sp = im.buf + sizeof(*im.hdr);
-    for (uint32_t i = 0; i < im.hdr->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        const char *why = NULL;
-        switch (lc->cmd) {
+/* mg_classify's mi_each_lc callback: classify one load command (and, for
+ * LC_SEGMENT_64, every one of its sections), refusing to stop the walk the
+ * instant something unclassified turns up. Every `return -1` here is exactly
+ * the hand-rolled loop's early `return -1` -- "unknown means unsafe", never
+ * widened to keep going. */
+static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
+    (void)ctx_;
+    const char *why = NULL;
+    switch (lc->cmd) {
         /* Handled by a re-baser above. */
         case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
         case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY: case LC_DYLD_EXPORTS_TRIE:
@@ -696,18 +542,29 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
             break;
 
         /* Inert under a base move: absolute addresses (which do not change),
-         * file offsets (shifted by the walk), indices, strings, or build metadata. */
-        case LC_SYMTAB: case LC_DYSYMTAB: case LC_UUID:
+         * file offsets (shifted by the walk), indices, strings, or build metadata.
+         *
+         * The seven case labels below this comment (LC_SYMTAB through
+         * LC_ENCRYPTION_INFO_64) are generated from src/linkedit.h's
+         * ML_PLAIN_OFFSET_LCS, not hand-typed here -- see that macro's own
+         * comment for what this couples (this accept decision and
+         * ml_bump_lc's matching case cannot disagree for this group; a
+         * load command cannot be added here without also being added
+         * there, checked at link time) and what it deliberately does not
+         * (a load command needing content re-basing on top of its file
+         * offset, or one ml_bump_lc has never been taught at all). */
+#define GROW_PLAIN_OFFSET_CASE(cmd) case cmd:
+        ML_PLAIN_OFFSET_LCS(GROW_PLAIN_OFFSET_CASE)
+#undef GROW_PLAIN_OFFSET_CASE
+        case LC_UUID:
         case LC_LOAD_DYLIB: case LC_ID_DYLIB: case LC_LOAD_WEAK_DYLIB:
         case LC_REEXPORT_DYLIB: case LC_LAZY_LOAD_DYLIB: case LC_PREBOUND_DYLIB:
         case LC_LOAD_DYLINKER: case LC_ID_DYLINKER: case LC_DYLD_ENVIRONMENT:
         case LC_RPATH: case LC_MAIN: case LC_UNIXTHREAD: case LC_THREAD:
-        case LC_CODE_SIGNATURE: case LC_DYLIB_CODE_SIGN_DRS:
-        case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64:
         case LC_VERSION_MIN_MACOSX: case LC_VERSION_MIN_IPHONEOS:
         case LC_SOURCE_VERSION: case LC_BUILD_VERSION: case LC_LINKER_OPTION:
         case LC_SUB_FRAMEWORK: case LC_SUB_UMBRELLA:
-        case LC_SUB_CLIENT: case LC_SUB_LIBRARY: case LC_TWOLEVEL_HINTS:
+        case LC_SUB_CLIENT: case LC_SUB_LIBRARY:
         case LC_PREBIND_CKSUM: case LC_ROUTINES_64:
             break;
 
@@ -755,8 +612,8 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
         }
 
         if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            const struct section_64 *sect = (const struct section_64 *)(sp + sizeof *seg);
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            const struct section_64 *sect = (const struct section_64 *)(seg + 1);
             for (uint32_t j = 0; j < seg->nsects; j++) {
                 uint32_t type = sect[j].flags & SECTION_TYPE;
                 if (type > S_INIT_FUNC_OFFSETS) {
@@ -767,25 +624,25 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
                 }
             }
         }
-        sp += lc->cmdsize;
-    }
     return 0;
 }
 
-/* ---- plausibility: verification with no "before" to compare against --------
- * mg_verify is stronger, but it needs a snapshot taken before the transform.
- * The wrapper cannot have one: it checks the end state of a pipeline whose
- * earlier stages ran in other processes. This works from the finished file.
- *
- * The useful check is not "is this address inside __text" -- __text is 63 MB on
- * Claude Code, so a one-page error stays comfortably inside it. It is that
- * initializers and compact-unwind entries name FUNCTIONS, so their targets must
- * appear in LC_FUNCTION_STARTS. Measured on 2.1.263: 13/13 first-level, 198/198
- * LSDA and 9/9 initializers land exactly on one of 71,974 known starts.
- *
- * Without LC_FUNCTION_STARTS there is nothing to check against, so this passes
- * rather than refusing -- a weaker guarantee, honestly reported by returning 0. */
-static int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
+int mg_classify(const uint8_t *buf, size_t fsize) {
+    mi_image im;
+    /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
+     * signature is non-const only because some OTHER caller needs a
+     * writable view; mg_classify_cb only reads through `lc`, never writes,
+     * so casting away const here does not let this function itself violate
+     * its own `const uint8_t *buf` promise to callers. */
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+                        "that don't fit); refusing to classify\n");
+        return -1;
+    }
+    return mi_each_lc(&im, mg_classify_cb, NULL) ? 0 : -1;
+}
+
+int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
     int lo = 0, hi = n - 1;
     while (lo <= hi) {
         int mid = lo + (hi - lo) / 2;
@@ -795,23 +652,36 @@ static int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
     return 0;
 }
 
-static int mg_plausible(const uint8_t *buf, size_t fsize) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    uint64_t base = 0; uint32_t fsoff = 0, fssize = 0;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_FUNCTION_STARTS) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            fsoff = d->dataoff; fssize = d->datasize;
-        }
-        if (lc->cmd == LC_SEGMENT_64) {
-            const struct segment_command_64 *seg = (const struct segment_command_64 *)sp;
-            if (!base && seg->fileoff == 0 && seg->filesize > 0) base = seg->vmaddr;
-        }
-        sp += lc->cmdsize;
+struct mg_plausible_find_ctx {
+    uint32_t fsoff, fssize;
+};
+
+/* mg_plausible's mi_each_lc callback: capture the LAST LC_FUNCTION_STARTS
+ * seen (matching the original loop, which had no `break` and so kept
+ * overwriting fsoff/fssize on every match -- a well-formed image has at
+ * most one, so this only matters for a malformed one, and is preserved
+ * exactly rather than "fixed" into a first-match). Never stops early: every
+ * command must be visited, same as the original unconditional loop. */
+static int mg_plausible_find_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_plausible_find_ctx *ctx = (struct mg_plausible_find_ctx *)ctx_;
+    if (lc->cmd == LC_FUNCTION_STARTS) {
+        const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+        ctx->fsoff = d->dataoff; ctx->fssize = d->datasize;
     }
+    return 0;
+}
+
+int mg_plausible(const uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
+    /* image base: exactly mi_text_base's own search (first segment mapping
+     * the header, fileoff 0 with content). */
+    uint64_t base = mi_text_base(&im);
     if (!base) return -1;
+
+    struct mg_plausible_find_ctx fctx = { 0, 0 };
+    mi_each_lc(&im, mg_plausible_find_cb, &fctx);
+    uint32_t fsoff = fctx.fsoff, fssize = fctx.fssize;
     if (!fsoff || !fssize) return 0;                 /* nothing to check against */
     if ((uint64_t)fsoff + fssize > fsize) return -1;
 
@@ -841,13 +711,102 @@ static int mg_plausible(const uint8_t *buf, size_t fsize) {
     return rc;
 }
 
-/*
- * Grow the header pad by at least `grow_req` bytes (rounded up to a page).
- * pbuf is realloc'd, pfsize updated. Returns 0 on success, -1 if the
- * precondition (PIE-style __PAGEZERO large enough) isn't met — in which case
- * the buffer and size are left unchanged.
- */
-static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
+struct mg_fs_find_ctx { uint32_t dataoff, datasize; };
+
+/* mg_grow_header's mi_each_lc callback: find the FIRST LC_FUNCTION_STARTS and
+ * stop (`break` in the original loop -- first match wins, unlike
+ * mg_plausible's deliberately-preserved last-match-wins). */
+static int mg_fs_find_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_fs_find_ctx *ctx = (struct mg_fs_find_ctx *)ctx_;
+    if (lc->cmd != LC_FUNCTION_STARTS) return 0;
+    const struct linkedit_data_command *ld = (const struct linkedit_data_command *)lc;
+    ctx->dataoff = ld->dataoff; ctx->datasize = ld->datasize;
+    return 1;
+}
+
+struct mg_patch_ctx {
+    uint32_t insert;
+    uint32_t grow;
+    int error;
+};
+
+/* mg_grow_header's mi_each_lc callback for the header-patch pass: edits
+ * LC_SEGMENT_64's own fileoff/vmaddr/vmsize/filesize (and every section's
+ * offset/reloff via ml_bump) plus LC_MAIN's entryoff -- never lc->cmd,
+ * lc->cmdsize, or hdr->ncmds, so it stays inside mi_each_lc's mutation
+ * contract. Returns non-zero to stop on the first refusal (an entryoff or
+ * section offset/reloff that would overflow); ctx->error carries that so the
+ * caller does ONE free(mg_new_trie)+mg_snapshot_free+return, not one copy per
+ * refusal site the way the hand-rolled loop needed. */
+static int mg_patch_cb(const struct load_command *lc_in, void *ctx_) {
+    struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
+    struct load_command *lc = (struct load_command *)lc_in;
+    switch (lc->cmd) {
+    case LC_SEGMENT_64: {
+        struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+        /* Identify segments by criteria, not by a saved pointer: the earlier
+         * realloc may have moved the buffer, invalidating any pointer found
+         * during validation. The header-bearing segment is the one mapped
+         * at file offset 0 with content (i.e. __TEXT, not __PAGEZERO). */
+        if (strcmp(seg->segname, "__PAGEZERO") == 0) {
+            seg->vmsize -= ctx->grow;            /* donate space below __TEXT */
+        } else if (seg->fileoff == 0 && seg->filesize > 0) {
+            seg->vmaddr  -= ctx->grow;           /* lower the image base */
+            seg->vmsize  += ctx->grow;
+            seg->filesize += ctx->grow;          /* fileoff stays 0 */
+        } else if (seg->fileoff >= ctx->insert) {
+            seg->fileoff += ctx->grow;           /* later segment: file moves, vm fixed */
+        }
+        struct section_64 *sect = (struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            /* ml_bump refuses (returns -1, prints why) rather than wrap
+             * a section offset/reloff that sits within `grow` of
+             * UINT32_MAX -- same guard as src/linkedit.h's table, same
+             * reason: a wrapped file offset is a corrupt binary that
+             * still looks plausible. */
+            if (ml_bump(&sect[j].offset, ctx->insert, ctx->grow) != 0 ||   /* addr stays fixed */
+                (sect[j].reloff && ml_bump(&sect[j].reloff, ctx->insert, ctx->grow) != 0)) {
+                ctx->error = 1;
+                return 1;
+            }
+        }
+        break;
+    }
+    case LC_MAIN: {
+        /* entryoff is a file offset within __TEXT; bumping it keeps the
+         * entry's vm address fixed (base went down by the same amount).
+         * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
+         * bumped and overflow-checked directly at its own width, rather
+         * than through ml_bump's 32-bit-only guard, which would first
+         * silently truncate any entryoff at or past 4GB before ever
+         * checking anything. Real binaries never have an entryoff that
+         * large (it is a file offset within __TEXT), but "refuse rather
+         * than guess" means checking the real field, not an assumption
+         * about its range. */
+        struct entry_point_command *c = (struct entry_point_command *)lc;
+        if (c->entryoff >= (uint64_t)ctx->insert) {
+            if (c->entryoff > UINT64_MAX - (uint64_t)ctx->grow) {
+                fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
+                                "a 64-bit field after growing by %#x; refusing rather "
+                                "than wrap\n",
+                        (unsigned long long)c->entryoff, ctx->grow);
+                ctx->error = 1;
+                return 1;
+            }
+            c->entryoff += ctx->grow;
+        }
+        break;
+    }
+    default:
+        break;  /* everything else -- the __LINKEDIT-resident structures
+                  * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
+                  * linkedit_data_command family) plus anything carrying
+                  * no file offset at all -- is ml_bump_all's job, below. */
+    }
+    return 0;
+}
+
+int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
     struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
@@ -913,19 +872,25 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    /* Locate the donor (__PAGEZERO) and the header-bearing segment (__TEXT). */
-    struct segment_command_64 *pagezero = NULL, *text = NULL;
-    uint8_t *lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            if (strcmp(seg->segname, "__PAGEZERO") == 0) pagezero = seg;
-            else if (seg->fileoff == 0 && seg->filesize > 0) text = seg;
-        }
-        lcp += lc->cmdsize;
+    /* Locate the donor (__PAGEZERO) and confirm a header-bearing segment
+     * (__TEXT) exists, via the same finders every other converted walk in
+     * this toolkit uses instead of a third hand-rolled copy of the search.
+     * Documented gap from a review round: mi_find_segment returns the FIRST
+     * "__PAGEZERO"-named segment; the original hand-rolled loop had no
+     * `break` on a pagezero match, so it kept the LAST. mi_text_base (used
+     * just below for `text`) has the identical first-vs-last change --
+     * matches unconditionally return on the first hit, where the original
+     * loop's `else if` also had no `break`. Neither is exercised by any
+     * fixture (none carries more than one __PAGEZERO or more than one
+     * fileoff==0-with-content segment); the commit that made this
+     * conversion documented neither at the time. Recorded here now. */
+    mi_image find_im;
+    if (mi_wrap(buf, fsize, &find_im) != 0) {
+        fprintf(stderr, "macho_grow: internal error -- the header no longer validates\n");
+        return -1;
     }
-    if (!text) {
+    struct segment_command_64 *pagezero = mi_find_segment(&find_im, "__PAGEZERO");
+    if (!mi_text_base(&find_im)) {
         fprintf(stderr, "macho_grow: no __TEXT-like segment holds the header\n");
         return -1;
     }
@@ -944,17 +909,11 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * ORIGINAL file offset; after the memmove the blob lives at fs_dataoff+grow. */
     uint32_t fs_dataoff = 0, fs_datasize = 0;
     {
-        const uint8_t *sp = buf + sizeof(*hdr);
-        for (uint32_t i = 0; i < hdr->ncmds; i++) {
-            const struct load_command *lc = (const struct load_command *)sp;
-            if (lc->cmd == LC_FUNCTION_STARTS) {
-                const struct linkedit_data_command *ld =
-                    (const struct linkedit_data_command *)sp;
-                fs_dataoff = ld->dataoff; fs_datasize = ld->datasize;
-                break;
-            }
-            sp += lc->cmdsize;
-        }
+        struct mg_fs_find_ctx fctx = { 0, 0 };
+        /* find_im (above) still validly wraps this same buf/fsize -- neither
+         * has changed since -- so it is reused rather than re-wrapped. */
+        mi_each_lc(&find_im, mg_fs_find_cb, &fctx);
+        fs_dataoff = fctx.dataoff; fs_datasize = fctx.datasize;
     }
     if (fs_dataoff && fs_datasize) {
         uint64_t d0; int n0 = mu_decode(buf + fs_dataoff,
@@ -1015,7 +974,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
         if (r > 0) {
             uint32_t toff, tsize;
-            if (!mg_find_trie(buf, &toff, &tsize) || !toff || !tsize) {
+            if (!mg_find_trie(buf, fsize, &toff, &tsize) || !toff || !tsize) {
                 fprintf(stderr, "macho_grow: internal error locating the export trie that "
                                 "just reported needing a wider ULEB\n");
                 return -1;
@@ -1066,76 +1025,32 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     size_t final_size = fsize + grow;
 
     /* Patch the header. Load commands live before `insert`, so memmove didn't
-     * touch them; we walk them now and adjust only file-offset fields, plus the
-     * three VM fields that keep every address fixed. */
-    lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        switch (lc->cmd) {
-        case LC_SEGMENT_64: {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            /* Identify segments by criteria, not by a saved pointer: realloc
-             * above may have moved the buffer, invalidating the pointers found
-             * during validation. The header-bearing segment is the one mapped
-             * at file offset 0 with content (i.e. __TEXT, not __PAGEZERO). */
-            if (strcmp(seg->segname, "__PAGEZERO") == 0) {
-                seg->vmsize -= grow;            /* donate space below __TEXT */
-            } else if (seg->fileoff == 0 && seg->filesize > 0) {
-                seg->vmaddr  -= grow;           /* lower the image base */
-                seg->vmsize  += grow;
-                seg->filesize += grow;          /* fileoff stays 0 */
-            } else if (seg->fileoff >= insert) {
-                seg->fileoff += grow;           /* later segment: file moves, vm fixed */
-            }
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
-            for (uint32_t j = 0; j < seg->nsects; j++) {
-                /* ml_bump refuses (returns -1, prints why) rather than wrap
-                 * a section offset/reloff that sits within `grow` of
-                 * UINT32_MAX -- same guard as src/linkedit.h's table, same
-                 * reason: a wrapped file offset is a corrupt binary that
-                 * still looks plausible. */
-                if (ml_bump(&sect[j].offset, insert, grow) != 0 ||   /* addr stays fixed */
-                    (sect[j].reloff && ml_bump(&sect[j].reloff, insert, grow) != 0)) {
-                    free(mg_new_trie);
-                    mg_snapshot_free(&snap);
-                    return -1;
-                }
-            }
-            break;
+     * touch them; mg_patch_cb (below) adjusts only file-offset fields, plus the
+     * three VM fields that keep every address fixed -- never lc->cmd,
+     * lc->cmdsize, or hdr->ncmds, so this stays inside mi_each_lc's mutation
+     * contract despite editing several fields in place per command. */
+    {
+        mi_image patch_im;
+        if (mi_wrap(buf, final_size, &patch_im) != 0) {
+            fprintf(stderr, "macho_grow: internal error -- the header we just moved no "
+                            "longer validates\n");
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
         }
-        case LC_MAIN: {
-            /* entryoff is a file offset within __TEXT; bumping it keeps the
-             * entry's vm address fixed (base went down by the same amount).
-             * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
-             * bumped and overflow-checked directly at its own width, rather
-             * than through ml_bump's 32-bit-only guard, which would first
-             * silently truncate any entryoff at or past 4GB before ever
-             * checking anything. Real binaries never have an entryoff that
-             * large (it is a file offset within __TEXT), but "refuse rather
-             * than guess" means checking the real field, not an assumption
-             * about its range. */
-            struct entry_point_command *c = (struct entry_point_command *)lcp;
-            if (c->entryoff >= (uint64_t)insert) {
-                if (c->entryoff > UINT64_MAX - (uint64_t)grow) {
-                    fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
-                                    "a 64-bit field after growing by %#x; refusing rather "
-                                    "than wrap\n",
-                            (unsigned long long)c->entryoff, grow);
-                    free(mg_new_trie);
-                    mg_snapshot_free(&snap);
-                    return -1;
-                }
-                c->entryoff += grow;
-            }
-            break;
+        struct mg_patch_ctx pctx = { insert, grow, 0 };
+        mi_each_lc(&patch_im, mg_patch_cb, &pctx);
+        if (pctx.error) {
+            /* mg_patch_cb already printed why (LC_MAIN's entryoff would
+             * overflow, or ml_bump refused a section offset/reloff). Fields on
+             * commands visited before the one that failed are already patched
+             * in place -- not rolled back, same as every other internal
+             * failure path in this function: the caller must discard this
+             * buffer, never write it out. */
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
         }
-        default:
-            break;  /* everything else -- the __LINKEDIT-resident structures
-                      * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
-                      * linkedit_data_command family) plus anything carrying
-                      * no file offset at all -- is ml_bump_all's job, below. */
-        }
-        lcp += lc->cmdsize;
     }
 
     /* The __LINKEDIT offset-bump table (src/linkedit.h): symtab, strtab,
@@ -1196,7 +1111,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
          * unchanged by the memmove above, only position moved) replace the
          * trie outright. */
         uint32_t toff, tsize;
-        if (!mg_find_trie(buf, &toff, &tsize)) {
+        if (!mg_find_trie(buf, final_size, &toff, &tsize)) {
             fprintf(stderr, "macho_grow: internal error -- the export trie load command "
                             "vanished after growing\n");
             free(mg_new_trie);
@@ -1229,26 +1144,24 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
              * other rewriter in this toolkit does: this transform edits file
              * bytes a signature covers. That is a pre-existing, documented
              * limitation (`-strip-lc codesig`), not something new here.) */
-            uint8_t *lcp2 = buf + sizeof(struct mach_header_64);
             long linkedit_lc_off = -1;
-            struct mach_header_64 *hh2 = (struct mach_header_64 *)buf;
-            for (uint32_t i = 0; i < hh2->ncmds; i++) {
-                struct load_command *lc2 = (struct load_command *)lcp2;
-                if (lc2->cmd == LC_SEGMENT_64) {
-                    struct segment_command_64 *seg2 = (struct segment_command_64 *)lcp2;
-                    if (strcmp(seg2->segname, "__LINKEDIT") == 0) {
-                        linkedit_lc_off = lcp2 - buf;
-                        break;   /* first (and only well-formed) __LINKEDIT */
-                    }
+            {
+                /* mi_find_segment already IS "first (and only well-formed)
+                 * match" -- same finder every other converted walk in this
+                 * toolkit uses. Its offset (not a pointer: the realloc just
+                 * below can move buf) is what this path actually needs. */
+                mi_image le_im;
+                if (mi_wrap(buf, final_size, &le_im) == 0) {
+                    struct segment_command_64 *le = mi_find_segment(&le_im, "__LINKEDIT");
+                    if (le) linkedit_lc_off = (uint8_t *)le - buf;
                 }
-                lcp2 += lc2->cmdsize;
             }
             /* The export LC is looked up through mg_find_trie_lc, the same
              * function mg_find_trie used just above to locate toff/tsize --
              * not a second hand-rolled scan that could disagree with it
              * about which load command "the" export trie means. */
             long export_lc_off = -1; uint32_t export_lc_cmd = 0;
-            mg_find_trie_lc(buf, &export_lc_off, &export_lc_cmd);
+            mg_find_trie_lc(buf, final_size, &export_lc_off, &export_lc_cmd);
             if (linkedit_lc_off < 0 || export_lc_off < 0) {
                 fprintf(stderr, "macho_grow: no __LINKEDIT segment (or no export-trie load "
                                 "command) to grow the rebuilt export trie into; refusing\n");
@@ -1379,4 +1292,3 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     return 0;
 }
 
-#endif /* MACHO_GROW_H */

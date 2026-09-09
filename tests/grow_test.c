@@ -14,7 +14,7 @@
  * address lists), so the test is host-agnostic. Build:
  *   clang -O2 -Wno-unused-function -o /tmp/mgtest macho_grow_test.c && /tmp/mgtest
  */
-#include "macho_grow.h"
+#include "grow.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -405,22 +405,50 @@ static uint8_t *build_growable_image(size_t *fsize_out, uint32_t *sect_off_out) 
     return build_image(fsize_out, sect_off_out, 0);
 }
 
-/* After a grow, find __init_offsets again -- its file offset moved with the data. */
-static uint32_t *find_init_offsets(uint8_t *buf) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++)
-                if ((sect[j].flags & SECTION_TYPE) == S_INIT_FUNC_OFFSETS)
-                    return (uint32_t *)(buf + sect[j].offset);
-        }
-        lcp += lc->cmdsize;
+/* Shared by every "find X again after the grow moved it" helper below: visit
+ * every load command via mi_each_lc and stop at the first one whose cmd
+ * matches. Folds what used to be several near-identical hand-rolled ncmds
+ * walks (find_dice's own loop, and the old find_lc near the bottom of this
+ * file) into one. */
+struct find_lc_ctx { uint32_t cmd; struct load_command *found; };
+static int find_lc_cb(const struct load_command *lc, void *ctx_) {
+    struct find_lc_ctx *ctx = (struct find_lc_ctx *)ctx_;
+    if (lc->cmd != ctx->cmd) return 0;
+    ctx->found = (struct load_command *)lc;
+    return 1;
+}
+static struct load_command *find_lc(uint8_t *buf, size_t fsize, uint32_t cmd) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return NULL;
+    struct find_lc_ctx ctx = { cmd, NULL };
+    mi_each_lc(&im, find_lc_cb, &ctx);
+    return ctx.found;
+}
+
+/* Same shape as find_lc, but matching a SECTION's TYPE rather than a load
+ * command's cmd -- __init_offsets is deliberately matched this way (see the
+ * comment on test_init_offsets_rebase above): the type is what the format
+ * guarantees, the name is only a linker convention, and mi_find_section can
+ * only match by name. */
+struct find_sect_by_type_ctx { uint32_t type; struct section_64 *found; };
+static int find_sect_by_type_cb(const struct load_command *lc, void *ctx_) {
+    struct find_sect_by_type_ctx *ctx = (struct find_sect_by_type_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    struct section_64 *sect = (struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if ((sect[j].flags & SECTION_TYPE) == ctx->type) { ctx->found = &sect[j]; return 1; }
     }
-    return NULL;
+    return 0;
+}
+
+/* After a grow, find __init_offsets again -- its file offset moved with the data. */
+static uint32_t *find_init_offsets(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return NULL;
+    struct find_sect_by_type_ctx ctx = { S_INIT_FUNC_OFFSETS, NULL };
+    mi_each_lc(&im, find_sect_by_type_cb, &ctx);
+    return ctx.found ? (uint32_t *)(buf + ctx.found->offset) : NULL;
 }
 
 static void test_grow_applies_init_offsets_once(void) {
@@ -432,7 +460,7 @@ static void test_grow_applies_init_offsets_once(void) {
     CHECK(r == 0, "mg_grow_header succeeds on the synthetic image (got %d)", r);
     if (r != 0) { free(buf); return; }
 
-    uint32_t *e = find_init_offsets(buf);
+    uint32_t *e = find_init_offsets(buf, fsize);
     CHECK(e != NULL, "__init_offsets still locatable after the grow");
     if (e) {
         CHECK(e[0] == 0x1000 + grow, "entry 0 gained grow exactly once: got %#x want %#x",
@@ -470,16 +498,9 @@ static void check_refused_unchanged(const char *what, int opts) {
     free(buf);
 }
 
-static uint8_t *find_dice(uint8_t *buf) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_DATA_IN_CODE)
-            return buf + ((struct linkedit_data_command *)lcp)->dataoff;
-        lcp += lc->cmdsize;
-    }
-    return NULL;
+static uint8_t *find_dice(uint8_t *buf, size_t fsize) {
+    struct load_command *lc = find_lc(buf, fsize, LC_DATA_IN_CODE);
+    return lc ? buf + ((struct linkedit_data_command *)lc)->dataoff : NULL;
 }
 
 /* Every entry's `offset` is measured from the image base; `length` and `kind`
@@ -494,7 +515,7 @@ static void test_grow_rebases_data_in_code(void) {
     CHECK(r == 0, "grow succeeds on an image with LC_DATA_IN_CODE (got %d)", r);
     if (r != 0) { free(buf); return; }
 
-    uint8_t *d = find_dice(buf);
+    uint8_t *d = find_dice(buf, fsize);
     CHECK(d != NULL, "LC_DATA_IN_CODE still locatable after the grow");
     if (!d) { free(buf); return; }
     CHECK(*(uint32_t *)(d + 0) == 0x1500 + g, "entry 0 offset gains grow: got %#x",
@@ -509,21 +530,11 @@ static void test_grow_rebases_data_in_code(void) {
 }
 
 /* After a grow, __unwind_info's file offset moved with the data. */
-static uint8_t *find_unwind(uint8_t *buf) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++)
-                if (strncmp(sect[j].sectname, "__unwind_info", 16) == 0)
-                    return buf + sect[j].offset;
-        }
-        lcp += lc->cmdsize;
-    }
-    return NULL;
+static uint8_t *find_unwind(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return NULL;
+    struct section_64 *sect = mi_find_section(&im, "__TEXT", "__unwind_info");
+    return sect ? buf + sect->offset : NULL;
 }
 
 /* The handler must bump the four base-relative field families and leave the
@@ -539,7 +550,7 @@ static void test_grow_rebases_unwind_info(void) {
     CHECK(r == 0, "grow succeeds on an image with __unwind_info (got %d)", r);
     if (r != 0) { free(buf); return; }
 
-    uint8_t *u = find_unwind(buf);
+    uint8_t *u = find_unwind(buf, fsize);
     CHECK(u != NULL, "__unwind_info still locatable after the grow");
     if (!u) { free(buf); return; }
     uint32_t *at = (uint32_t *)u;
@@ -564,6 +575,192 @@ static void test_grow_rebases_unwind_info(void) {
     (void)at;
 #undef UW_IS
     free(buf);
+}
+
+/* ---- mg_unwind_find_cb's three untested branches (2026-09-09 review) ----
+ * A code review round confirmed by mutation, forced rebuild, that all three
+ * were unexercised by any suite in this repo -- real-binary and hermetic
+ * alike -- and identical since before the move to src/grow.c (not a regression this
+ * move introduced, but a gap it left standing). These three close it. */
+
+/* A __unwind_info section with size 0 is legal (if unusual): mg_unwind_walk
+ * treats it as "nothing to do" and returns 0, not a refusal -- confirmed by
+ * mutating that exact `if (!sect[j].size) return 0` away, which no fixture
+ * here used to catch. */
+static void test_grow_handles_zero_size_unwind_info(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_UNWIND);
+    mi_image im;
+    CHECK(mi_wrap(buf, fsize, &im) == 0, "setup: fixture wraps");
+    struct section_64 *uw = mi_find_section(&im, "__TEXT", "__unwind_info");
+    CHECK(uw != NULL, "setup: __unwind_info section present");
+    if (!uw) { free(buf); return; }
+    uw->size = 0;
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "grow succeeds on a zero-size __unwind_info section (got %d)", r);
+    free(buf);
+}
+
+/* A __unwind_info section whose offset+size runs past fsize must refuse --
+ * confirmed by mutating that overflow guard away, which no fixture here used
+ * to catch (the well-formed MG_T_UNWIND fixture never approaches fsize).
+ *
+ * Rather than moving the real section near the buffer's physical edge (a
+ * genuine OOB-read risk in a test that doesn't run under libgmalloc), this
+ * lies about the buffer's SIZE instead: claim fsize=5200, which
+ * __init_offsets (ends at 4104) still fits inside but __unwind_info (offset
+ * 5120 + size 128 = 5248, both real, well-formed values from MG_T_UNWIND)
+ * does not. The physical allocation build_image made is still the full 8192
+ * bytes, so nothing is ever actually read out of bounds -- only the overflow
+ * ARITHMETIC (offset + size > fsize) sees a boundary, which is exactly what
+ * this guard checks. */
+static void test_grow_refuses_overflowing_unwind_info(void) {
+    size_t fsize_real; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize_real, &sect_off, MG_T_UNWIND);
+    (void)fsize_real;
+    size_t fsize = 5200;
+
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "grow refuses an __unwind_info section whose offset+size "
+                   "overflows fsize (got %d)", r);
+    CHECK(fsize == fsize0, "size unchanged on refusal (got %zu want %zu)", fsize, fsize0);
+    if (fsize == fsize0)
+        CHECK(memcmp(before, buf, fsize0) == 0, "buffer byte-identical on refusal");
+    free(before);
+    free(buf);
+}
+
+/* Distinguishes "stop at the FIRST section named __unwind_info" from "keep
+ * going, LAST one wins" -- a mutation that flips mg_unwind_find_cb's
+ * `return 1` to `return 0` passes every other test in this suite, because no
+ * other fixture carries two __unwind_info-named sections. __TEXT's is the
+ * real, well-formed one from MG_T_UNWIND; a second, deliberately malformed
+ * one (13 bytes -- under the 28-byte minimum mg_unwind_walk's body enforces)
+ * sits in a later __DATA segment. If the FIRST is used, grow succeeds; if
+ * the search kept going past it, grow refuses on the malformed second one. */
+static void test_grow_uses_first_unwind_info_not_last(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_UNWIND);
+
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct segment_command_64 *tx =
+        (struct segment_command_64 *)(buf + sizeof *h + sizeof(struct segment_command_64));
+    uint8_t *lcend = (uint8_t *)tx + tx->cmdsize;
+
+    struct segment_command_64 *da = (struct segment_command_64 *)lcend;
+    da->cmd = LC_SEGMENT_64;
+    da->cmdsize = sizeof *da + sizeof(struct section_64);
+    strcpy(da->segname, "__DATA");
+    da->vmaddr = 0x100004000ull;
+    da->vmsize = 0x1000;
+    da->fileoff = 6400;
+    da->filesize = 13;
+    da->nsects = 1;
+    struct section_64 *bad_uw = (struct section_64 *)((uint8_t *)da + sizeof *da);
+    strncpy(bad_uw->sectname, "__unwind_info", sizeof bad_uw->sectname);
+    strncpy(bad_uw->segname, "__DATA", sizeof bad_uw->segname);
+    bad_uw->addr = 0x100004000ull;
+    bad_uw->size = 13;      /* < 28: mg_unwind_walk's own `usz < 28` refusal */
+    bad_uw->offset = 6400;
+    bad_uw->flags = S_REGULAR;
+    h->ncmds++;
+    h->sizeofcmds += da->cmdsize;
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "grow succeeds using the FIRST __unwind_info (__TEXT's), not "
+                  "the malformed second one in __DATA (got %d)", r);
+    free(buf);
+}
+
+/* ---- mg_grow_header's own preconditions: __PAGEZERO and __TEXT ----
+ * The image-base-lowering trick needs a __PAGEZERO to donate space from and
+ * a segment that actually maps the header (fileoff 0, real content) to
+ * lower. Every OTHER fixture in this file builds both, correctly sized --
+ * so these three refusals had never been exercised by anything, hermetic or
+ * real-binary, until a code review round found the gap by mutation. */
+static uint8_t *build_minimal_pie(size_t *fsize_out, int with_pagezero,
+                                  uint64_t pagezero_vmsize, uint64_t text_fileoff) {
+    const size_t fsize = 8192;
+    uint8_t *buf = (uint8_t *)calloc(1, fsize);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+
+    uint8_t *lcp = buf + sizeof *h;
+    uint32_t sizeofcmds = 0;
+
+    if (with_pagezero) {
+        struct segment_command_64 *pz = (struct segment_command_64 *)lcp;
+        pz->cmd = LC_SEGMENT_64;
+        pz->cmdsize = sizeof *pz;
+        strcpy(pz->segname, "__PAGEZERO");
+        pz->vmaddr = 0;
+        pz->vmsize = pagezero_vmsize;
+        pz->fileoff = 0;
+        pz->filesize = 0;   /* filesize 0 keeps it out of the __TEXT probe */
+        lcp += pz->cmdsize; sizeofcmds += pz->cmdsize; h->ncmds++;
+    }
+
+    struct segment_command_64 *tx = (struct segment_command_64 *)lcp;
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx;
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = 0x100000000ull;
+    tx->vmsize = fsize;
+    tx->fileoff = text_fileoff;
+    tx->filesize = (text_fileoff == 0) ? fsize : 0;
+    tx->nsects = 0;
+    sizeofcmds += tx->cmdsize; h->ncmds++;
+
+    h->sizeofcmds = sizeofcmds;
+    *fsize_out = fsize;
+    return buf;
+}
+
+static void check_grow_precondition_refused(const char *what, int with_pagezero,
+                                             uint64_t pagezero_vmsize, uint64_t text_fileoff) {
+    size_t fsize;
+    uint8_t *buf = build_minimal_pie(&fsize, with_pagezero, pagezero_vmsize, text_fileoff);
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
+    CHECK(fsize == fsize0, "%s: size unchanged on refusal (got %zu want %zu)",
+          what, fsize, fsize0);
+    if (fsize == fsize0)
+        CHECK(memcmp(before, buf, fsize0) == 0, "%s: buffer byte-identical on refusal", what);
+    free(before);
+    free(buf);
+}
+
+static void test_grow_refuses_missing_pagezero(void) {
+    check_grow_precondition_refused("no __PAGEZERO at all", 0, 0, 0);
+}
+
+static void test_grow_refuses_undersized_pagezero(void) {
+    check_grow_precondition_refused("__PAGEZERO smaller than grow", 1, 0x800, 0);
+}
+
+/* Unlike the two __PAGEZERO cases above, mutating away mg_grow_header's own
+ * `!mi_text_base(&find_im)` check does NOT make this test go blind: mg_collect
+ * (called from mg_snapshot_take, further down the same function) makes its
+ * OWN independent mi_text_base call and refuses on the identical condition
+ * ("could not snapshot the base-relative structures"), confirmed by mutation.
+ * So this refusal is doubly guarded -- genuinely redundant, not a gap -- and
+ * this test proves the observable BEHAVIOUR (refuses, unchanged) rather than
+ * pinning which of the two guards fired, per this suite's own rule (see
+ * tests/README.md: assert the behaviour, not which guard fired). */
+static void test_grow_refuses_no_text_segment(void) {
+    check_grow_precondition_refused("no segment maps the header (fileoff 0)",
+                                     1, 0x100000000ull, 0x1000);
 }
 
 /* ---- mg_verify: the grow must move nothing ----
@@ -603,7 +800,7 @@ static void check_verify_rejects(const char *what, int32_t delta) {
     if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
         mg_snapshot_free(&snap); free(buf); CHECK(0, "%s: grow", what); return;
     }
-    uint32_t *e = find_init_offsets(buf);
+    uint32_t *e = find_init_offsets(buf, fsize);
     if (e) { e[0] = (uint32_t)(e[0] + delta); e[1] = (uint32_t)(e[1] + delta); }
     CHECK(mg_verify(buf, fsize, &snap) == -1, "verify REJECTS %s", what);
     mg_snapshot_free(&snap);
@@ -635,7 +832,7 @@ static void test_verify_watches_unwind_info(void) {
         CHECK(0, "grow succeeded"); mg_snapshot_free(&snap); free(buf); return;
     }
     /* Perturb one unwind field the handler is responsible for. */
-    uint8_t *u = find_unwind(buf);
+    uint8_t *u = find_unwind(buf, fsize);
     if (u) *(uint32_t *)(u + UW_IDX_OFF) += 4;
     CHECK(mg_verify(buf, fsize, &snap) == -1,
           "verify REJECTS a perturbed first-level functionOffset");
@@ -650,31 +847,13 @@ static void test_verify_watches_unwind_info(void) {
  * -- and every __LINKEDIT offset after it -- keeps its size.
  *
  * __mh_execute_header is exported at 0 and must stay 0: it names the header,
- * which moved down with the base, so 0 is still correct. */
-static uint8_t *find_trie(uint8_t *buf) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_DYLD_INFO_ONLY || lc->cmd == LC_DYLD_INFO)
-            return buf + ((struct dyld_info_command *)lcp)->export_off;
-        lcp += lc->cmdsize;
-    }
-    return NULL;
-}
-
-static uint32_t trie_size(uint8_t *buf) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_DYLD_INFO_ONLY || lc->cmd == LC_DYLD_INFO)
-            return ((struct dyld_info_command *)lcp)->export_size;
-        lcp += lc->cmdsize;
-    }
-    return 0;
-}
-
+ * which moved down with the base, so 0 is still correct.
+ *
+ * No hand-rolled find-the-trie walk here: mg_find_trie (src/grow.h) already
+ * IS exactly this search (LC_DYLD_INFO[_ONLY] or LC_DYLD_EXPORTS_TRIE,
+ * whichever this image carries), exported for callers like mg_grow_header's
+ * own widen-append path -- reusing it instead of a second copy is the whole
+ * point of that export existing. */
 static void test_grow_rebases_export_trie(void) {
     size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_TRIE);
@@ -684,9 +863,10 @@ static void test_grow_rebases_export_trie(void) {
     CHECK(r == 0, "grow succeeds on an image with an export trie (got %d)", r);
     if (r != 0) { free(buf); return; }
 
-    CHECK(trie_size(buf) == 17, "trie size UNCHANGED (got %u) -- no __LINKEDIT resize",
-          trie_size(buf));
-    uint8_t *t = find_trie(buf);
+    uint32_t toff = 0, tsize = 0;
+    int found = mg_find_trie(buf, fsize, &toff, &tsize);
+    CHECK(found && tsize == 17, "trie size UNCHANGED (got %u) -- no __LINKEDIT resize", tsize);
+    uint8_t *t = found ? buf + toff : NULL;
     CHECK(t != NULL, "export trie still locatable");
     if (!t) { free(buf); return; }
     /* node A's address, still a 2-byte ULEB at the same place */
@@ -821,20 +1001,16 @@ static void test_grow_rebuilds_widening_export_trie(void) {
         0x02, 0x00, 0x00, 0x00,
     };
 
+    /* __LINKEDIT via mi_find_segment, the export trie's (off, size) via
+     * mg_find_trie -- the same two finders every other converted walk in
+     * this toolkit uses, instead of a third hand-rolled copy of this search. */
     uint32_t new_export_off = 0, new_export_size = 0;
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
+    mg_find_trie(buf, fsize, &new_export_off, &new_export_size);
     struct segment_command_64 *le2 = NULL;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            if (strcmp(seg->segname, "__LINKEDIT") == 0) le2 = seg;
-        } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
-            struct dyld_info_command *di = (struct dyld_info_command *)lcp;
-            new_export_off = di->export_off; new_export_size = di->export_size;
-        }
-        lcp += lc->cmdsize;
+    {
+        mi_image le_im;
+        if (mi_wrap(buf, fsize, &le_im) == 0)
+            le2 = mi_find_segment(&le_im, "__LINKEDIT");
     }
 
     CHECK(new_export_size == sizeof expect,
@@ -921,7 +1097,7 @@ static void test_grow_refuses_unknown_section_type(void) {
  * mg_grow_header's check and mi_wrap's still refuses (r stays -1) but with ITS
  * message ("fails validation... refusing to guess the header pad boundary"),
  * which does not contain that phrase -- so the message assertion below is what
- * flips to FAIL. Confirmed by hand: mutating macho_grow.h's check flips this
+ * flips to FAIL. Confirmed by hand: mutating src/grow.c's check flips this
  * exact CHECK, though not `r == -1`. */
 static int stderr_contains_during(int (*call)(uint8_t **, size_t *, uint32_t),
                                    uint8_t **pbuf, size_t *pfsize, uint32_t grow,
@@ -1018,7 +1194,7 @@ static void test_plausible_rejects_an_unrebased_initializer(void) {
     free(buf);
 }
 
-/* ---- overflow refusal at macho_grow.h's other two ml_bump call sites ----
+/* ---- overflow refusal at src/grow.c's other two ml_bump call sites ----
  * (a code review round found ml_bump/ml_bump_all's overflow guard, but noted
  * the SAME class of bug still lived at the two ml_bump call sites left
  * inside mg_grow_header itself: a section's offset/reloff, and LC_MAIN's
@@ -1026,32 +1202,14 @@ static void test_plausible_rejects_an_unrebased_initializer(void) {
  * move carries already-correct code, not a known bug -- the mistake this project
  * already made once with change_dylib/mi_open.) */
 
-static struct section_64 *find_section_struct(uint8_t *buf, const char *name) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *seg = (struct segment_command_64 *)lcp;
-            struct section_64 *sect = (struct section_64 *)(lcp + sizeof *seg);
-            for (uint32_t j = 0; j < seg->nsects; j++)
-                if (strncmp(sect[j].sectname, name, sizeof sect[j].sectname) == 0)
-                    return &sect[j];
-        }
-        lcp += lc->cmdsize;
-    }
-    return NULL;
-}
-
-static struct load_command *find_lc(uint8_t *buf, uint32_t cmd) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == cmd) return lc;
-        lcp += lc->cmdsize;
-    }
-    return NULL;
+/* Every caller below builds its fixture via build_image, which always puts
+ * the section it names into "__TEXT" -- so mi_find_section (segment name
+ * required) is a direct fit, not a lateral move. find_lc (used two functions
+ * down) is the shared one defined near the top of this file. */
+static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const char *name) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return NULL;
+    return mi_find_section(&im, "__TEXT", name);
 }
 
 /* __plain (MG_T_PLAINSECT) rather than __unwind_info: __unwind_info's offset
@@ -1078,7 +1236,7 @@ static struct load_command *find_lc(uint8_t *buf, uint32_t cmd) {
 static void test_grow_refuses_overflowing_section_offset(void) {
     size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
-    struct section_64 *plain = find_section_struct(buf, "__plain");
+    struct section_64 *plain = find_section_struct(buf, fsize, "__plain");
     CHECK(plain != NULL, "setup: __plain section present");
     if (!plain) { free(buf); return; }
     plain->offset = 0xfffff000u;   /* + grow (0x1000) would overflow uint32_t */
@@ -1091,7 +1249,7 @@ static void test_grow_refuses_overflowing_section_offset(void) {
 static void test_grow_refuses_overflowing_reloff(void) {
     size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
-    struct section_64 *plain = find_section_struct(buf, "__plain");
+    struct section_64 *plain = find_section_struct(buf, fsize, "__plain");
     CHECK(plain != NULL, "setup: __plain section present");
     if (!plain) { free(buf); return; }
     plain->reloff = 0xfffff000u;   /* offset itself (4096, from build_image) stays
@@ -1106,7 +1264,7 @@ static void test_grow_refuses_overflowing_reloff(void) {
 static void test_grow_refuses_overflowing_entryoff(void) {
     size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_MAIN);
-    struct load_command *lc = find_lc(buf, LC_MAIN);
+    struct load_command *lc = find_lc(buf, fsize, LC_MAIN);
     CHECK(lc != NULL, "setup: LC_MAIN present");
     if (!lc) { free(buf); return; }
     struct entry_point_command *ep = (struct entry_point_command *)lc;
@@ -1139,6 +1297,12 @@ int main(void) {
     test_plausible_rejects_an_offset_that_names_no_function();
     test_plausible_rejects_an_unrebased_initializer();
     test_grow_rebases_unwind_info();
+    test_grow_handles_zero_size_unwind_info();
+    test_grow_refuses_overflowing_unwind_info();
+    test_grow_uses_first_unwind_info_not_last();
+    test_grow_refuses_missing_pagezero();
+    test_grow_refuses_undersized_pagezero();
+    test_grow_refuses_no_text_segment();
     test_verify_watches_unwind_info();
     test_verify_accepts_a_correct_grow();
     test_verify_rejects_double_apply();

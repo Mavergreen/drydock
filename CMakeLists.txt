@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -76,7 +76,7 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
-# change_dylib includes macho_grow.h, which includes src/uleb.h, and src/fat.h
+# change_dylib includes src/grow.h, which includes src/uleb.h, and src/fat.h
 # directly; patch_macho includes src/image.h directly; fix_macho includes
 # src/fat.h directly (so both fat-aware tools now validate a fat file's
 # arch table through the same code, src/fat.c, instead of each having its own
@@ -93,15 +93,14 @@ target_link_libraries(rename_segment PRIVATE macho9core)
 target_link_libraries(retag_swift_classes PRIVATE macho9core)
 
 # The multi-call CLI (docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
-# delegate in-process to macho9core + macho_grow.h; `dylib`/`rpath`/`lc`
+# delegate in-process to macho9core (including src/grow.h); `dylib`/`rpath`/`lc`
 # delegate by running change_dylib (see cli/macho9.c's file header for why --
 # its rewrite+renumbering logic is not yet a reusable function). Kept out of
-# the ${tool}.c-named foreach above because its source lives in cli/, and it
-# needs the repo root on its include path to reach macho_grow.h the way
-# change_dylib.c does from its own directory.
+# the ${tool}.c-named foreach above because its source lives in cli/. No root
+# include path is needed: every header it includes now lives in src/, reached
+# via macho9core's PUBLIC src include (below), same as every other tool.
 add_executable(macho9 cli/macho9.c)
 target_compile_options(macho9 PRIVATE -O2 -Wall)
-target_include_directories(macho9 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(macho9 PRIVATE macho9core)
 mavericks_assert_binary_compatible(macho9)
 
@@ -110,22 +109,25 @@ install(TARGETS ${MACHO_TOOLS} macho9 RUNTIME DESTINATION bin)
 enable_testing()
 
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,
-# against synthetic images built in memory. -Wno-unused-function because the
-# header exposes helpers this translation unit does not all use.
-add_executable(macho_grow_test macho_grow_test.c)
+# against synthetic images built in memory. -Wno-unused-function because
+# src/grow.h declares helpers this translation unit does not all call.
+add_executable(grow_test tests/grow_test.c)
 # -Wall deploys lesson nine's detection net (tests/README.md): a
 # -Wfortify-source "will always overflow" diagnostic on a strcpy into a
 # char[16] segname/sectname fires here at COMPILE time, on any host, well
 # before a modern-clang runner would abort at RUNTIME building the same
 # fixture -- and this file holds the fixture builders. It was missing
 # -Wall entirely (silent since this target was first added); adding it
-# produces exactly one warning, already present without it and unrelated
-# to this file (macho_grow.h:198's mg_trie_scan, pre-existing, not
-# reachable from user input). -Wno-unused-function stays: the header
-# exposes helpers this translation unit does not all use.
-target_compile_options(macho_grow_test PRIVATE -O2 -Wall -Wno-unused-function)
-target_link_libraries(macho_grow_test PRIVATE macho9core)
-add_test(NAME macho_grow_test COMMAND macho_grow_test)
+# used to produce exactly one warning, unrelated to this file: a `static`
+# mg_trie_scan defined inside header-only macho_grow.h, included into
+# multiple translation units, tripped -Wunneeded-internal-declaration. The
+# move to src/grow.c gave every one of these functions external linkage,
+# which is exactly what that warning was asking for -- it is gone now, not
+# suppressed. -Wno-unused-function stays: src/grow.h declares helpers this
+# translation unit does not all use.
+target_compile_options(grow_test PRIVATE -O2 -Wall -Wno-unused-function)
+target_link_libraries(grow_test PRIVATE macho9core)
+add_test(NAME grow_test COMMAND grow_test)
 
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
