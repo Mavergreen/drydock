@@ -4,10 +4,11 @@
 #
 # What this does NOT re-prove: change_dylib_test.sh already runs real dylib
 # renumbering, -insert/-delete ordinal correctness, and header-growth end to
-# end. dylib/rpath/lc here delegate straight to that already-tested binary
-# (see cli/macho9.c's file header), so this asserts the TRANSLATION and
-# DISPATCH are correct -- one exemplar op per verb -- not the underlying
-# rewrite a second time.
+# end, through change_dylib. dylib/rpath/lc/minos here call the very same
+# code -- mr_apply_file/mv_add_version_min in src/, which is all change_dylib
+# and add_version_min are too (see cli/macho9.c's file header) -- so this
+# asserts the TRANSLATION and DISPATCH are correct, one exemplar op per verb,
+# not the underlying rewrite a second time.
 #
 # Host-portability, by rules learned the hard way:
 #   - every fixture is built with -mmacosx-version-min=10.9, so a modern
@@ -21,8 +22,12 @@ set -eu
 BIN="${1:?usage: cli_test.sh <bindir>}"
 MACHO9="$BIN/macho9"
 [ -x "$MACHO9" ] || { echo "cli_test: $MACHO9 not found or not executable" >&2; exit 1; }
-[ -x "$BIN/change_dylib" ] || { echo "cli_test: $BIN/change_dylib not found (macho9 dylib/rpath/lc delegate to it)" >&2; exit 1; }
-[ -x "$BIN/add_version_min" ] || { echo "cli_test: $BIN/add_version_min not found (macho9 minos delegates to it)" >&2; exit 1; }
+# macho9 needs NOTHING else in $BIN: dylib/rpath/lc/minos used to run
+# change_dylib/add_version_min as subprocesses found next to it, and this
+# script used to refuse to start without them. The "macho9 alone in an empty
+# directory" assertions below are what replaced that requirement -- they check
+# the property the requirement existed for, from the outside, instead of
+# taking it on trust.
 
 CC="${CC:-clang}"
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
@@ -337,6 +342,74 @@ grep -qi "not implemented" "$T/declassify.err" && ok "declassify: says why" \
     || bad "declassify: message" "no 'not implemented' on stderr"
 
 # ============================================================================
+# macho9 stands alone
+#
+# dylib/rpath/lc/minos used to fork and exec change_dylib/add_version_min,
+# located next to macho9 on disk, and --capabilities hid those four verbs
+# whenever the sibling was missing. Both are gone: the rewrite is linked in
+# (src/rewrite.c, src/version_min.c). That is the whole point of the
+# extraction -- it is what lets change_dylib become a wrapper AROUND macho9
+# without a cycle -- so prove it from the outside rather than by reading the
+# source: copy ONLY macho9 into an empty directory and make it do real work
+# there. A regression that restored the subprocess would fail here even
+# though every other assertion in this file, run from a full bindir, would
+# still pass.
+# ============================================================================
+mkdir -p "$T/alone"
+cp "$MACHO9" "$T/alone/macho9"
+alone_caps=$("$T/alone/macho9" --capabilities)
+alone_missing=""
+for v in verify info grow minos lc dylib rpath; do
+    echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
+done
+[ -z "$alone_missing" ] && ok "alone: --capabilities still advertises every verb with no sibling present" \
+    || bad "alone: capabilities" "verbs missing when macho9 stands alone:$alone_missing"
+
+build_main "$T/alone/fixture"
+if "$T/alone/macho9" dylib "$T/alone/fixture" -append "@loader_path/libalone.dylib" \
+        >"$T/alone_dylib.out" 2>&1; then
+    ok "alone: dylib -append works with no change_dylib anywhere near macho9"
+else
+    bad "alone: dylib -append" "$(cat "$T/alone_dylib.out")"
+fi
+"$T/alone/macho9" info "$T/alone/fixture" | grep -qF "path=@loader_path/libalone.dylib" \
+    && ok "alone: the append really landed in the file" \
+    || bad "alone: dylib -append result" "new dependency not in info output"
+
+if "$T/alone/macho9" lc "$T/alone/fixture" -delete uuid >"$T/alone_lc.out" 2>&1; then
+    ok "alone: lc -delete works with no change_dylib anywhere near macho9"
+else
+    bad "alone: lc -delete" "$(cat "$T/alone_lc.out")"
+fi
+
+# minos is the one verb that was gated on add_version_min rather than
+# change_dylib, so it needs its own standalone run -- a regression that
+# restored only THAT subprocess would sail past the two assertions above.
+#
+# Which of mv_add_version_min's two success paths runs here depends on the
+# host's linker: a 10.9 ld emits LC_VERSION_MIN_MACOSX itself (so this is the
+# "already present" path), a 2026 one emits LC_BUILD_VERSION instead (so this
+# actually appends). Both are exit 0 and both prove the point, so accept
+# either MESSAGE rather than asserting which -- what must not happen is
+# macho9 failing because a binary it no longer needs isn't there. (Note the
+# fixture is deliberately NOT stripped of its version-min first: the helper
+# that does that is built further down, and this assertion is about reaching
+# the driver at all, not about which branch of it ran.)
+if "$T/alone/macho9" minos "$T/alone/fixture" 10.9 >"$T/alone_minos.out" 2>&1; then
+    ok "alone: minos works with no add_version_min anywhere near macho9"
+else
+    bad "alone: minos" "$(cat "$T/alone_minos.out")"
+fi
+if grep -q "LC_VERSION_MIN_MACOSX" "$T/alone_minos.out"; then
+    ok "alone: minos reached the version-min driver in-process (said what it did)"
+else
+    bad "alone: minos output" "exited 0 but said nothing about LC_VERSION_MIN_MACOSX: $(cat "$T/alone_minos.out")"
+fi
+"$T/alone/macho9" info "$T/alone/fixture" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "alone: the fixture carries LC_VERSION_MIN_MACOSX afterward" \
+    || bad "alone: minos result" "no LC_VERSION_MIN_MACOSX in info output after minos"
+
+# ============================================================================
 # verify
 # ============================================================================
 build_main "$T/verify_ok"
@@ -630,7 +703,9 @@ else
         fi
     fi
 fi
-# Unknown KIND is refused with this verb's own message, before delegating.
+# Unknown KIND is refused with this verb's own message, before the rewriter
+# is ever called -- so a bad KIND never reaches (or is diagnosed by) code
+# shared with change_dylib.
 if "$MACHO9" lc "$T/lc_fixture" -delete bogus-kind >/dev/null 2>"$T/lc_bad.err"; then
     bad "lc: bad kind" "should be refused"
 else

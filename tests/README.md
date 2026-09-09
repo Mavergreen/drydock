@@ -25,7 +25,7 @@ validation) use three exit codes, also documented machine-readably in
 |---|---|
 | `0` | success |
 | `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, or a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule) |
-| `1` | everything else: a syscall/malloc/fork failure, a usage error — genuinely something going wrong, not a considered refusal |
+| `1` | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal |
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than
 widening a default case is a global rule, not a `macho9`-specific one), so a
@@ -35,11 +35,16 @@ for `2` specifically instead of scraping stderr text. `1` still means exactly
 what it always did, so any existing caller checking only `== 0` or `!= 0` is
 unaffected by this distinction's addition.
 
-`dylib`/`rpath`/`lc` (past its own KIND check) delegate to `change_dylib` as a
-subprocess and forward its exit code verbatim; `change_dylib` does not yet
-make this refused/failed distinction itself, so those verbs' exit codes are
-NOT covered by the table above — only `macho9`'s own directly-decided exits
-are.
+`dylib`/`rpath`/`lc` (past its own KIND check) and `minos` (past its own
+version check) hand back the exit code of the shared rewrite drivers,
+`mr_apply_file` and `mv_add_version_min` (`src/rewrite.h`,
+`src/version_min.h`), which return 0 or 1 and do not make this refused/failed
+distinction themselves. So those verbs' exit codes are NOT covered by the
+table above — only `macho9`'s own directly-decided exits are. (They used to
+be forwarded from a `change_dylib`/`add_version_min` SUBPROCESS; the code is
+linked in now, but the exit codes it produces are the same ones, deliberately:
+changing them would have changed every caller's observable behaviour in the
+same commit that moved the code.)
 
 ## EXPECTED, and what it is for
 
