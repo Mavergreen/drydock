@@ -60,6 +60,7 @@
 
 #include "image.h"
 #include "macho_grow.h"
+#include "ordinals.h"
 
 /* Load commands safe to drop: purely informational, or invalidated the moment
  * the binary is rewritten. Deliberately excludes LC_FUNCTION_STARTS (avxemu
@@ -86,8 +87,6 @@ static const struct { const char *name; uint32_t cmd; } strippable[] = {
 #define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
 #endif
 
-#define CD_MAX_DYLIBS 253   /* MAX_LIBRARY_ORDINAL */
-
 /* Caps on how many times one option may repeat. Each option accumulates into a
  * fixed-size array; nothing reads a length back, so an unchecked write past the
  * end corrupts whatever follows instead of failing. Check every one. */
@@ -101,19 +100,25 @@ static const struct { const char *name; uint32_t cmd; } strippable[] = {
         }                                                                \
     } while (0)
 
-/* Load commands that consume a library ordinal, in load order. LC_ID_DYLIB is
- * deliberately absent: it names the image itself and is not addressable, and so
- * is LC_RPATH, which is a search path rather than a dependency. */
-static int is_ordinal_lc(uint32_t cmd) {
-    return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||
-           cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
-}
-
 struct change {
     const char *old_path;
     const char *new_path;   /* NULL = delete; "" = in-place, no path change */
     int reexport;           /* 1 = promote LC_LOAD_DYLIB -> LC_REEXPORT_DYLIB */
 };
+
+/* mo_map_build's is_deleted callback: true if `name` matches a -delete in
+ * `changes`. This is the SAME test build_lcs uses (via `matched`/`new_path ==
+ * NULL`) to decide which LC_LOAD_DYLIB commands to drop, which is what keeps
+ * the load-command rewrite and the ordinal map from being able to disagree
+ * about which dylib went away. */
+struct ord_delete_ctx { const struct change *changes; int n; };
+static int ord_is_deleted(const char *name, void *ctx_) {
+    const struct ord_delete_ctx *ctx = ctx_;
+    for (int c = 0; c < ctx->n; c++)
+        if (ctx->changes[c].new_path == NULL && strcmp(name, ctx->changes[c].old_path) == 0)
+            return 1;
+    return 0;
+}
 
 /* Emit one LC_LOAD_DYLIB naming `path` at `dst`; returns its cmdsize. */
 static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
@@ -129,184 +134,6 @@ static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
     ndc->dylib.compatibility_version = 0;
     strcpy((char *)ndc + sizeof(struct dylib_command), path);
     return cs;
-}
-
-static const uint8_t *uleb_skip(const uint8_t *p, const uint8_t *end) {
-    while (p < end && (*p & 0x80)) p++;
-    return p < end ? p + 1 : end;
-}
-
-/*
- * Renumber the library ordinals in one bind opcode stream. Every opcode has to
- * be decoded, not just scanned for, because operands (ULEBs, symbol names) would
- * otherwise be mistaken for opcodes. Returns 0 on success, -1 on a stream we
- * can't safely rewrite (unknown opcode, or a new ordinal that no longer fits the
- * encoding the linker chose — both refuse rather than corrupt).
- */
-static int renumber_bind_stream(uint8_t *base, uint32_t size, const int *map,
-                                int nold, const char *what) {
-    uint8_t *p = base, *end = base + size;
-    while (p < end) {
-        uint8_t op = *p & BIND_OPCODE_MASK, imm = *p & BIND_IMMEDIATE_MASK;
-        switch (op) {
-        case BIND_OPCODE_DONE:
-        case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:  /* self/exe/flat — no ordinal */
-        case BIND_OPCODE_SET_TYPE_IMM:
-        case BIND_OPCODE_DO_BIND:
-        case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
-            p++;
-            break;
-        case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM: {
-            int old = imm, neu;
-            if (old < 1 || old > nold) {
-                fprintf(stderr, "ERROR: %s: ordinal %d out of range\n", what, old);
-                return -1;
-            }
-            neu = map[old];
-            if (neu == 0) {
-                fprintf(stderr, "ERROR: %s binds a symbol to the dylib being "
-                                "deleted; refusing\n", what);
-                return -1;
-            }
-            if (neu > BIND_IMMEDIATE_MASK) {
-                fprintf(stderr, "ERROR: %s: ordinal %d no longer fits the 4-bit "
-                                "immediate form (would need a stream rebuild)\n", what, neu);
-                return -1;
-            }
-            *p = (uint8_t)(BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | (neu & BIND_IMMEDIATE_MASK));
-            p++;
-            break;
-        }
-        case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB: {
-            uint64_t v = 0;
-            int len = mu_decode(p + 1, end, &v);
-            int neu;
-            if (len <= 0) { fprintf(stderr, "ERROR: %s: bad ULEB\n", what); return -1; }
-            if (v < 1 || v > (uint64_t)nold) {
-                fprintf(stderr, "ERROR: %s: ordinal %llu out of range\n",
-                        what, (unsigned long long)v);
-                return -1;
-            }
-            neu = map[v];
-            if (neu == 0) {
-                fprintf(stderr, "ERROR: %s binds a symbol to the dylib being "
-                                "deleted; refusing\n", what);
-                return -1;
-            }
-            /* Rewrite in place only if the new value encodes to the same width;
-             * growing the stream would shift all of LINKEDIT. */
-            if (mu_minlen((uint64_t)neu) != len) {
-                fprintf(stderr, "ERROR: %s: ULEB ordinal %d changes width "
-                                "(would need a stream rebuild)\n", what, neu);
-                return -1;
-            }
-            for (int i = 0; i < len; i++) {
-                uint8_t byte = (uint8_t)(((uint64_t)neu >> (7 * i)) & 0x7f);
-                if (i + 1 < len) byte |= 0x80;
-                p[1 + i] = byte;
-            }
-            p += 1 + len;
-            break;
-        }
-        case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
-            p++;
-            while (p < end && *p) p++;      /* NUL-terminated symbol name */
-            if (p < end) p++;
-            break;
-        case BIND_OPCODE_SET_ADDEND_SLEB:
-        case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
-        case BIND_OPCODE_ADD_ADDR_ULEB:
-        case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
-            p = (uint8_t *)uleb_skip(p + 1, end);
-            break;
-        case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
-            p = (uint8_t *)uleb_skip(p + 1, end);
-            p = (uint8_t *)uleb_skip(p, end);
-            break;
-        default:
-            fprintf(stderr, "ERROR: %s: unknown bind opcode 0x%02x\n", what, op);
-            return -1;
-        }
-    }
-    return 0;
-}
-
-/*
- * Apply `map` (old 1-based ordinal -> new ordinal, or 0 for "deleted") to every
- * place an image records one. Must run on the committed buffer, so the load
- * commands already carry their final LINKEDIT offsets.
- */
-static int renumber_ordinals(uint8_t *buf, const int *map, int nold, int verbose) {
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    uint8_t *lcp = buf + sizeof(struct mach_header_64);
-    struct symtab_command *st = NULL;
-    struct dyld_info_command *di = NULL;
-    int chained = 0;
-
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_SYMTAB) st = (struct symtab_command *)lcp;
-        else if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY)
-            di = (struct dyld_info_command *)lcp;
-        else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) chained = 1;
-        lcp += lc->cmdsize;
-    }
-
-    if (chained) {
-        fprintf(stderr, "ERROR: image uses LC_DYLD_CHAINED_FIXUPS, whose import "
-                        "table also carries library ordinals; renumbering it is "
-                        "not implemented. Refusing rather than corrupting.\n");
-        return -1;
-    }
-    if (!(hdr->flags & MH_TWOLEVEL)) {
-        if (verbose) printf("  Flat namespace: no library ordinals to renumber.\n");
-        return 0;
-    }
-
-    long changed = 0;
-    if (st) {
-        struct nlist_64 *syms = (struct nlist_64 *)(buf + st->symoff);
-        for (uint32_t i = 0; i < st->nsyms; i++) {
-            struct nlist_64 *n = &syms[i];
-            if (n->n_type & N_STAB) continue;
-            uint8_t type = n->n_type & N_TYPE;
-            if (type != N_UNDF && type != N_PBUD) continue;
-            int old = GET_LIBRARY_ORDINAL(n->n_desc);
-            if (old < 1 || old > MAX_LIBRARY_ORDINAL) continue;  /* SELF/DYNAMIC/EXECUTABLE */
-            if (old > nold) {
-                fprintf(stderr, "ERROR: symtab ordinal %d exceeds %d dylibs\n", old, nold);
-                return -1;
-            }
-            if (map[old] == 0) {
-                const char *nm = (const char *)(buf + st->stroff + n->n_un.n_strx);
-                fprintf(stderr, "ERROR: symbol %s still binds to the dylib being "
-                                "deleted; refusing\n", nm);
-                return -1;
-            }
-            if (map[old] != old) {
-                uint16_t d = n->n_desc;
-                SET_LIBRARY_ORDINAL(d, (uint8_t)map[old]);
-                n->n_desc = d;
-                changed++;
-            }
-        }
-    }
-
-    if (di) {
-        if (di->bind_size &&
-            renumber_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind") != 0)
-            return -1;
-        if (di->weak_bind_size &&
-            renumber_bind_stream(buf + di->weak_bind_off, di->weak_bind_size, map, nold, "weak bind") != 0)
-            return -1;
-        if (di->lazy_bind_size &&
-            renumber_bind_stream(buf + di->lazy_bind_off, di->lazy_bind_size, map, nold, "lazy bind") != 0)
-            return -1;
-    }
-
-    if (verbose)
-        printf("  Renumbered library ordinals: %ld symbol entries + bind streams\n", changed);
-    return 0;
 }
 
 /*
@@ -334,6 +161,7 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
         uint32_t cmdsize = lc->cmdsize;
         uint32_t write_size = cmdsize;
         int matched = -1;
+        int deleted = 0;
 
         /* Dropping a command reclaims its bytes for the rest of the table.
          * Any __LINKEDIT payload it referenced simply stops being reachable;
@@ -353,7 +181,7 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
          * the inserted libraries become ordinals 1..n and load (and initialize)
          * ahead of everything the image already depended on. Nothing strippable
          * bears an ordinal, so the strip pass above cannot move this boundary. */
-        if (!placed_inserts && ninserts && is_ordinal_lc(lc->cmd)) {
+        if (!placed_inserts && ninserts && mo_is_ordinal_lc(lc->cmd)) {
             for (int s = 0; s < ninserts; s++) {
                 uint32_t cs = emit_dylib_lc(new_lcs + new_off, inserts[s]);
                 new_off += cs;
@@ -365,15 +193,31 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
             placed_inserts = 1;
         }
 
-        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_LOAD_WEAK_DYLIB ||
-            lc->cmd == LC_ID_DYLIB || lc->cmd == LC_REEXPORT_DYLIB) {
+        /* mo_is_ordinal_lc() here (rather than a locally re-listed set) is
+         * what keeps this "which dylib LCs can be matched/renamed/deleted"
+         * set in sync with mo_map_build's "which dylib LCs carry an ordinal"
+         * set -- they used to disagree about LC_LOAD_UPWARD_DYLIB. LC_ID_DYLIB
+         * is added back in because it names the image itself: it has to be
+         * recognized as dylib-shaped so `dc`/`name` below are valid, but it's
+         * excluded from matching just below, same as before. */
+        if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
             const struct dylib_command *dc = (const struct dylib_command *)lcp;
             const char *name = (const char *)lcp + dc->dylib.name.offset;
             if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
                 for (int c = 0; c < nchanges; c++)
                     if (strcmp(name, changes[c].old_path) == 0) { matched = c; break; }
+                /* Deletion is decided by ord_is_deleted -- the SAME predicate
+                 * passed to mo_map_build below -- not by whichever `changes`
+                 * entry happens to match first. Without this, a path named
+                 * in both a -change and a -delete could be kept here while
+                 * mo_map_build's map (which scans every -delete, not just the
+                 * first match) marks it gone: exactly the "renumberer and
+                 * emitter disagree" bug this module exists to rule out. A
+                 * -delete anywhere in the arguments now always wins, no
+                 * matter where it falls relative to a conflicting -change. */
+                deleted = ord_is_deleted(name, &(struct ord_delete_ctx){ changes, nchanges });
             }
-            if (matched >= 0 && changes[matched].new_path != NULL) {
+            if (!deleted && matched >= 0 && changes[matched].new_path != NULL) {
                 size_t base = dc->dylib.name.offset;
                 size_t new_len = strlen(changes[matched].new_path) + 1;
                 uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
@@ -417,7 +261,7 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
                 new_off += write_size;
             }
             mods++;
-        } else if (matched >= 0 && changes[matched].new_path == NULL) {
+        } else if (deleted) {
             if (verbose) printf("  Delete [%u bytes]: %s\n", cmdsize, changes[matched].old_path);
             ncmds--;
             mods++;
@@ -618,35 +462,25 @@ int main(int argc, char **argv) {
     for (int a = 0; a < nradds; a++)
         add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(radds[a]) + 1 + 7) & ~7UL);
 
-    /* Map each existing 1-based library ordinal to its new value (0 = deleted).
-     * Inserts take 1..ninserts, so every survivor shifts up by that much; each
-     * deletion shifts the ones after it back down. */
-    int ord_map[CD_MAX_DYLIBS + 1];
-    int nold = 0, nnew = ninserts, needs_renumber = (ninserts > 0);
+    /* Map each existing 1-based library ordinal to its new value (0 = deleted),
+     * built once by mo_map_build so this rewrite and the ordinal renumbering
+     * below (mo_map_apply) can't independently disagree about which dylib
+     * landed where -- see ordinals.h. Inserts take 1..ninserts, so every
+     * survivor shifts up by that much; each deletion shifts the ones after it
+     * back down. */
+    int ord_map[MO_MAX_DYLIBS + 1];
     memset(ord_map, 0, sizeof ord_map);
-    {
-        const uint8_t *p = buf + sizeof(struct mach_header_64);
-        for (uint32_t i = 0; i < hdr->ncmds; i++) {
-            const struct load_command *lc = (const struct load_command *)p;
-            if (is_ordinal_lc(lc->cmd)) {
-                const struct dylib_command *dc = (const struct dylib_command *)p;
-                const char *name = (const char *)p + dc->dylib.name.offset;
-                int deleted = 0;
-                for (int c = 0; c < nchanges; c++)
-                    if (changes[c].new_path == NULL && strcmp(name, changes[c].old_path) == 0)
-                        { deleted = 1; break; }
-                if (++nold > CD_MAX_DYLIBS) {
-                    fprintf(stderr, "ERROR: more than %d dylibs\n", CD_MAX_DYLIBS);
-                    return 1;
-                }
-                if (deleted) { ord_map[nold] = 0; needs_renumber = 1; }
-                else         { ord_map[nold] = ++nnew; }
-            }
-            p += lc->cmdsize;
-        }
-    }
-    if (nnew + nadds > CD_MAX_DYLIBS) {
-        fprintf(stderr, "ERROR: result would exceed %d dylibs\n", CD_MAX_DYLIBS);
+    mo_map omap = { ord_map, 0 };
+    struct ord_delete_ctx dctx = { changes, nchanges };
+    int nnew;
+    if (mo_map_build(buf, hdr->ncmds, ninserts, ord_is_deleted, &dctx, &omap, &nnew) != 0)
+        return 1;
+    int nold = omap.n;
+    /* A survivor count below nold means at least one dylib was deleted; that
+     * and any -insert are the only reasons a rewrite needs to renumber. */
+    int needs_renumber = (ninserts > 0) || (nnew - ninserts < nold);
+    if (nnew + nadds > MO_MAX_DYLIBS) {
+        fprintf(stderr, "ERROR: result would exceed %d dylibs\n", MO_MAX_DYLIBS);
         return 1;
     }
 
@@ -695,6 +529,17 @@ int main(int argc, char **argv) {
                   new_lcs, &new_off, &new_ncmds, &modifications, 0);
     }
 
+    /* Check the map against what build_lcs actually emitted -- not just
+     * against its own arithmetic -- before committing anything. This is the
+     * cross-check that catches the map and the load-command rewrite having
+     * independently disagreed about which dylib survived, which the map's
+     * own internal consistency (checked inside mo_map_build) cannot: that
+     * only proves the map is self-consistent, not that it matches reality. */
+    if (mo_map_validate(&omap, ninserts, nnew, nadds, new_lcs, new_ncmds) != 0) {
+        fprintf(stderr, "ERROR: %s left unmodified\n", path);
+        return 1;
+    }
+
     /* Commit: zero the whole LC area, write the new table, fix up the header. */
     memset(buf + sizeof(struct mach_header_64), 0, first_sect_off - sizeof(struct mach_header_64));
     memcpy(buf + sizeof(struct mach_header_64), new_lcs, new_off);
@@ -703,7 +548,7 @@ int main(int argc, char **argv) {
 
     /* Ordinals last, against the committed table — and before any write, so a
      * refusal leaves the input untouched rather than half-rewritten. */
-    if (needs_renumber && renumber_ordinals(buf, ord_map, nold, 1) != 0) {
+    if (needs_renumber && mo_map_apply(buf, &omap, 1) != 0) {
         fprintf(stderr, "ERROR: %s left unmodified\n", path);
         return 1;
     }
