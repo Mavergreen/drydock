@@ -31,9 +31,10 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # Builds change_dylib from source rather than consuming a CMake target, so this
 # script keeps working standalone (`./change_dylib_test.sh`, clang + otool only).
 # That means it must track what change_dylib includes: macho_grow.h now pulls in
-# src/uleb.h, and change_dylib.c itself now includes src/ordinals.h, so the
+# src/uleb.h, change_dylib.c itself now includes src/ordinals.h and src/fat.h
+# (the shared fat_header/fat_arch validator both it and fix_macho use), so the
 # toolkit sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
@@ -100,6 +101,168 @@ int main(int argc, char **argv) {
 }
 EOF
 "$CC" -O2 -o "$T/ordinal_of" "$T/ordinal_of.c"
+
+# makefat/fatcheck: build and inspect a fat (universal) Mach-O without
+# depending on system lipo, whose accepted architecture list is not this
+# suite's to pin -- a hand-crafted fat container is something we control
+# completely, on either host. Reads/writes the on-disk convention every real
+# fat file uses (big-endian fat_header/fat_arch, i.e. FAT_CIGAM as observed
+# from a little-endian x86_64/arm64 host), by construction, not detection.
+cat > "$T/makefat.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/fat.h>
+static uint8_t *readfile(const char *path, size_t *outsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror(path); exit(2); }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
+    close(fd);
+    *outsz = (size_t)st.st_size;
+    return buf;
+}
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 10) { fprintf(stderr, "usage: %s out s0 ct0 cs0 al0 s1 ct1 cs1 al1\n", argv[0]); return 2; }
+    size_t sz0, sz1;
+    uint8_t *b0 = readfile(argv[2], &sz0);
+    uint32_t ct0 = (uint32_t)strtoul(argv[3], NULL, 0);
+    uint32_t cs0 = (uint32_t)strtoul(argv[4], NULL, 0);
+    uint32_t al0 = (uint32_t)strtoul(argv[5], NULL, 0);
+    uint8_t *b1 = readfile(argv[6], &sz1);
+    uint32_t ct1 = (uint32_t)strtoul(argv[7], NULL, 0);
+    uint32_t cs1 = (uint32_t)strtoul(argv[8], NULL, 0);
+    uint32_t al1 = (uint32_t)strtoul(argv[9], NULL, 0);
+    uint32_t hdrlen = (uint32_t)(sizeof(struct fat_header) + 2 * sizeof(struct fat_arch));
+    uint32_t a0mask = (1u << al0) - 1;
+    uint32_t off0 = (hdrlen + a0mask) & ~a0mask;
+    uint32_t a1mask = (1u << al1) - 1;
+    uint32_t off1 = (uint32_t)((off0 + sz0 + a1mask) & ~(uint64_t)a1mask);
+    uint32_t total = (uint32_t)(off1 + sz1);
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(2);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    ar[0].cputype = (cpu_type_t)sw32(ct0);
+    ar[0].cpusubtype = (cpu_subtype_t)sw32(cs0);
+    ar[0].offset = sw32(off0);
+    ar[0].size = sw32((uint32_t)sz0);
+    ar[0].align = sw32(al0);
+    ar[1].cputype = (cpu_type_t)sw32(ct1);
+    ar[1].cpusubtype = (cpu_subtype_t)sw32(cs1);
+    ar[1].offset = sw32(off1);
+    ar[1].size = sw32((uint32_t)sz1);
+    ar[1].align = sw32(al1);
+    memcpy(out + off0, b0, sz0);
+    memcpy(out + off1, b1, sz1);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/makefat" "$T/makefat.c"
+
+cat > "$T/fatcheck.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+#include <mach-o/fat.h>
+static uint8_t *readfile(const char *path, size_t *outsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("open"); exit(2); }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
+    close(fd);
+    *outsz = (size_t)st.st_size;
+    return buf;
+}
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+static void locate_arch(const uint8_t *buf, size_t sz, int idx, uint32_t *off, uint32_t *size,
+                         uint32_t *align) {
+    uint32_t magic = *(const uint32_t *)buf;
+    if (magic != FAT_MAGIC && magic != FAT_CIGAM) { fprintf(stderr, "not a fat file\n"); exit(2); }
+    int swap = (magic == FAT_CIGAM);
+    const struct fat_header *fh = (const struct fat_header *)buf;
+    uint32_t narch = swap ? sw32(fh->nfat_arch) : fh->nfat_arch;
+    if ((uint32_t)idx >= narch) { fprintf(stderr, "arch %d out of range (narch=%u)\n", idx, narch); exit(2); }
+    const struct fat_arch *ar = (const struct fat_arch *)(buf + sizeof(struct fat_header));
+    uint32_t o = swap ? sw32((uint32_t)ar[idx].offset) : (uint32_t)ar[idx].offset;
+    uint32_t s = swap ? sw32((uint32_t)ar[idx].size)   : (uint32_t)ar[idx].size;
+    uint32_t a = swap ? sw32(ar[idx].align) : ar[idx].align;
+    if ((size_t)o + s > sz) { fprintf(stderr, "arch %d out of bounds\n", idx); exit(2); }
+    *off = o; *size = s; *align = a;
+}
+static void dump_dylibs(const uint8_t *p, size_t sz) {
+    if (sz < sizeof(struct mach_header_64)) { fprintf(stderr, "slice too small\n"); exit(2); }
+    const struct mach_header_64 *hdr = (const struct mach_header_64 *)p;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "slice not 64-bit Mach-O (magic=0x%x)\n", hdr->magic); exit(2); }
+    const uint8_t *lcp = p + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)lcp;
+        if (lc->cmd == LC_LOAD_DYLIB || lc->cmd == LC_ID_DYLIB ||
+            lc->cmd == LC_LOAD_WEAK_DYLIB || lc->cmd == LC_REEXPORT_DYLIB) {
+            const struct dylib_command *dc = (const struct dylib_command *)lcp;
+            printf("%s\n", (const char *)lcp + dc->dylib.name.offset);
+        }
+        lcp += lc->cmdsize;
+    }
+}
+int main(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: fatcheck <mode> <file> [args...]\n"); return 2; }
+    const char *mode = argv[1];
+    size_t sz; uint8_t *buf = readfile(argv[2], &sz);
+    if (strcmp(mode, "archinfo") == 0) {
+        uint32_t magic = *(uint32_t *)buf;
+        if (magic != FAT_MAGIC && magic != FAT_CIGAM) { fprintf(stderr, "not a fat file\n"); return 2; }
+        int swap = (magic == FAT_CIGAM);
+        const struct fat_header *fh = (const struct fat_header *)buf;
+        uint32_t narch = swap ? sw32(fh->nfat_arch) : fh->nfat_arch;
+        printf("narch=%u\n", narch);
+        for (uint32_t i = 0; i < narch; i++) {
+            uint32_t o, s, a; locate_arch(buf, sz, (int)i, &o, &s, &a);
+            printf("%u %u %u %u\n", i, o, s, a);
+        }
+        return 0;
+    } else if (strcmp(mode, "dump") == 0) {
+        if (argc != 5) { fprintf(stderr, "usage: fatcheck dump <file> <idx> <outfile>\n"); return 2; }
+        int idx = atoi(argv[3]);
+        uint32_t o, s, a; locate_arch(buf, sz, idx, &o, &s, &a);
+        int ofd = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (ofd < 0) { perror("open out"); return 2; }
+        if (write(ofd, buf + o, s) != (ssize_t)s) { perror("write"); return 2; }
+        close(ofd);
+        return 0;
+    } else if (strcmp(mode, "dylibs") == 0) {
+        if (argc != 4) { fprintf(stderr, "usage: fatcheck dylibs <file> <idx>\n"); return 2; }
+        int idx = atoi(argv[3]);
+        uint32_t o, s, a; locate_arch(buf, sz, idx, &o, &s, &a);
+        dump_dylibs(buf + o, s);
+        return 0;
+    }
+    fprintf(stderr, "unknown mode: %s\n", mode);
+    return 2;
+}
+EOF
+"$CC" -O2 -o "$T/fatcheck" "$T/fatcheck.c"
 
 # --- fixtures: three dylibs, and a main that calls into two of them ----------
 cat > "$T/a.c" <<'EOF'
@@ -391,6 +554,367 @@ if "$T/change_dylib" "$T/main_atcap" -grow "$@" >/dev/null 2>"$T/atcap.err"; the
 else
     bad "-add at capacity" "refused at the cap: $(head -1 "$T/atcap.err")"
 fi
+
+# --- 10/11. fat binaries in the rewrite path ---------------------------------
+# fix_macho already walks fat/thin; until now change_dylib only understood
+# thin. Both cases build a genuine 2-slice fat binary: a real, linked x86_64
+# executable (the same $T/main built above) plus a slice this tool cannot
+# and must not try to rewrite -- a syntactically valid but deliberately
+# minimal 32-bit (MH_MAGIC, CPU_TYPE_I386) Mach-O, built by hand rather than
+# `clang -arch i386`, which a modern toolchain may no longer support at all.
+# The fat container itself is assembled by makefat (above), not system lipo,
+# for the same host-portability reason -- what lipo will accept is not this
+# suite's to pin. makefat's layout was cross-checked by hand during
+# development against a real lipo-built fat file and matched byte for byte.
+#
+# Both cases read the result with fatcheck (above), never otool: fat_header/
+# fat_arch's shape is ours to define and trust, not a text formatter's whose
+# fields have drifted across Xcode versions before.
+cat > "$T/mkslice32.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <mach-o/loader.h>
+int main(int argc, char **argv) {
+    uint8_t buf[4096];
+    /* fill byte defaults to 0x5A; an optional argv[2] picks a DIFFERENT one
+     * so two calls can produce distinguishable blobs -- needed by case 13
+     * to tell "arch 0 kept its own bytes" from "arch 0 got arch 2's". */
+    int fill = argc > 2 ? (int)strtol(argv[2], NULL, 0) : 0x5A;
+    memset(buf, fill, sizeof buf);   /* distinctive, so a corrupting bug shows up */
+    struct mach_header *h = (struct mach_header *)buf;
+    h->magic = MH_MAGIC;
+    h->cputype = CPU_TYPE_I386;
+    h->cpusubtype = CPU_SUBTYPE_I386_ALL;
+    h->filetype = MH_EXECUTE;
+    h->ncmds = 0;
+    h->sizeofcmds = 0;
+    h->flags = 0;
+    FILE *f = fopen(argv[1], "wb");
+    fwrite(buf, 1, sizeof buf, f);
+    fclose(f);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mkslice32" "$T/mkslice32.c"
+"$T/mkslice32" "$T/slice32.bin"
+"$T/mkslice32" "$T/slice32b.bin" 0x7B
+
+# --- 10. a plain -change on a fat input: both slices land correctly ---------
+"$T/makefat" "$T/main_fat" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
+arch1_before=$("$T/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
+"$T/change_dylib" "$T/main_fat" -change "@loader_path/liba.dylib" "@loader_path/liba_fat.dylib" >/dev/null \
+    || bad "fat tool run" "change_dylib failed on a fat input"
+
+narch=$("$T/fatcheck" archinfo "$T/main_fat" | head -1)
+[ "$narch" = "narch=2" ] && ok "fat: narch unchanged (2)" || bad "fat narch" "got '$narch'"
+
+dylibs0=$("$T/fatcheck" dylibs "$T/main_fat" 0)
+if echo "$dylibs0" | grep -q '^@loader_path/liba_fat\.dylib$'; then
+    ok "fat: the x86_64 slice's dylib path was actually changed"
+else
+    bad "fat dylib change" "x86_64 slice does not name the new path: $dylibs0"
+fi
+
+"$T/fatcheck" dump "$T/main_fat" 1 "$T/fat_slice1_after.bin"
+if cmp -s "$T/slice32.bin" "$T/fat_slice1_after.bin"; then
+    ok "fat: the slice this tool cannot understand is preserved byte-for-byte"
+else
+    bad "fat slice preserved" "the 32-bit slice's bytes changed"
+fi
+
+arch1_after=$("$T/fatcheck" archinfo "$T/main_fat" | sed -n '3p')
+[ "$arch1_before" = "$arch1_after" ] \
+    && ok "fat: unmoved slice keeps its original offset and size ($arch1_after)" \
+    || bad "fat offset preserved" "arch 1 was '$arch1_before', now '$arch1_after'"
+
+# --- 11. fat + real growth: a later slice must shift, never overlap ---------
+# Case 10 never needed mg_grow_header (the new path fit the existing pad), so
+# it cannot exercise the "pack sequentially after a growth" branch of the
+# reassembly. This forces a real grow (enough -add's that the pad genuinely
+# overflows, same idiom as the capacity cases above) so the x86_64 slice's
+# size actually changes, and checks the 32-bit slice both moves out of the
+# way and still arrives byte-for-byte intact at its new offset.
+"$T/makefat" "$T/main_fat_grow" "$T/main" 0x1000007 3 12 "$T/slice32.bin" 7 3 12
+before_arch0=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
+before_arch0_size=$(echo "$before_arch0" | awk '{print $3}')
+
+set -- ; i=0
+while [ $i -lt 32 ]; do
+    set -- "$@" -add "@loader_path/libpad_a_pretty_long_synthetic_name_used_only_to_force_real_header_growth_$i.dylib"
+    i=$((i+1))
+done
+"$T/change_dylib" "$T/main_fat_grow" -grow "$@" >/dev/null 2>"$T/fatgrow.err" \
+    || bad "fat grow tool run" "change_dylib failed: $(head -1 "$T/fatgrow.err")"
+
+after_arch0=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
+after_arch1=$("$T/fatcheck" archinfo "$T/main_fat_grow" | sed -n '3p')
+after_arch0_size=$(echo "$after_arch0" | awk '{print $3}')
+after_arch0_off=$(echo "$after_arch0" | awk '{print $2}')
+after_arch1_off=$(echo "$after_arch1" | awk '{print $2}')
+after_arch0_end=$((after_arch0_off + after_arch0_size))
+
+if [ "$after_arch0_size" -gt "$before_arch0_size" ]; then
+    ok "fat+grow: the x86_64 slice actually grew ($before_arch0_size -> $after_arch0_size)"
+else
+    bad "fat+grow" "x86_64 slice did not grow: before=$before_arch0_size after=$after_arch0_size"
+fi
+
+if [ "$after_arch1_off" -ge "$after_arch0_end" ]; then
+    ok "fat+grow: the 32-bit slice moved past the grown x86_64 slice, no overlap"
+else
+    bad "fat+grow overlap" "arch1 at $after_arch1_off overlaps arch0's end at $after_arch0_end"
+fi
+
+# "no overlap" alone is satisfied by ANY packing, aligned or not -- a
+# misaligned fat slice is the classic "looks fine, won't load" failure the
+# align field exists to prevent, so this needs its own, positional assertion.
+# Mutation-tested: with the alignment computation in process_fat replaced by
+# `want = cursor` (no rounding at all), this specific check is what fails --
+# confirmed by hand during development; the overlap check above still passes.
+after_arch1_align=$(echo "$after_arch1" | awk '{print $4}')
+if [ $((after_arch1_off % (1 << after_arch1_align))) -eq 0 ]; then
+    ok "fat+grow: the shifted 32-bit slice's new offset honors its alignment (2^$after_arch1_align)"
+else
+    bad "fat+grow alignment" "arch1 at $after_arch1_off is not aligned to 2^$after_arch1_align"
+fi
+
+"$T/fatcheck" dump "$T/main_fat_grow" 1 "$T/fat_slice1_after_grow.bin"
+if cmp -s "$T/slice32.bin" "$T/fat_slice1_after_grow.bin"; then
+    ok "fat+grow: the 32-bit slice's bytes are still exactly preserved at its new offset"
+else
+    bad "fat+grow slice preserved" "the 32-bit slice's bytes changed after the shift"
+fi
+
+# --- 12. CRITICAL regression: a descending arch-offset table must not -------
+#         corrupt the input or overflow the reassembly buffer.
+# Nothing in the fat format requires fat_arch[] to be in ascending file-offset
+# order -- lipo/makefat merely happen to emit it that way. A table with
+# arch[0] at a HIGHER file offset than arch[1] is legal fat, and both entries
+# independently pass an offset+size-in-bounds check.
+#
+# Reviewed bug this pins: process_fat sized the reassembly buffer from
+# `cursor` -- wherever the LAST slice in the loop landed -- instead of the
+# MAXIMUM end across every slice. On a descending table the last slice
+# processed is the smallest-offset one, so the buffer came out far too small
+# for the memcpy of an earlier, higher-offset slice: a heap buffer overflow
+# (confirmed with libgmalloc: SIGSEGV) that, WITHOUT a heap-corruption
+# detector watching, exited 0 after silently truncating this suite's 74088-
+# byte fixture down to 8192 bytes -- the real input gone, no error printed.
+# Reproduced against the pre-fix binary by hand during development, as
+# above, before writing this regression test.
+#
+# mkdescfat builds that exact shape: a real linked x86_64 slice at a fixed
+# HIGH offset (0x10000) and the 32-bit slice at a fixed LOW offset (0x1000),
+# both real (positive) slices, neither overlapping the header/table region.
+cat > "$T/mkdescfat.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/fat.h>
+static uint8_t *readfile(const char *path, size_t *outsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror(path); exit(2); }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
+    close(fd);
+    *outsz = (size_t)st.st_size;
+    return buf;
+}
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 4) { fprintf(stderr, "usage: %s out slice_hi slice_lo\n", argv[0]); return 2; }
+    size_t sz_hi, sz_lo;
+    uint8_t *b_hi = readfile(argv[2], &sz_hi);
+    uint8_t *b_lo = readfile(argv[3], &sz_lo);
+    uint32_t off_hi = 0x10000, off_lo = 0x1000;
+    uint32_t total = off_hi + (uint32_t)sz_hi;
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(2);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    /* arch[0] is the HIGHER-offset slice -- descending, on purpose */
+    ar[0].cputype = sw32(0x1000007); ar[0].cpusubtype = sw32(3);
+    ar[0].offset = sw32(off_hi); ar[0].size = sw32((uint32_t)sz_hi); ar[0].align = sw32(12);
+    ar[1].cputype = sw32(7); ar[1].cpusubtype = sw32(3);
+    ar[1].offset = sw32(off_lo); ar[1].size = sw32((uint32_t)sz_lo); ar[1].align = sw32(12);
+    memcpy(out + off_hi, b_hi, sz_hi);
+    memcpy(out + off_lo, b_lo, sz_lo);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mkdescfat" "$T/mkdescfat.c"
+"$T/mkdescfat" "$T/main_descfat" "$T/main" "$T/slice32.bin"
+before_size=$(wc -c < "$T/main_descfat" | tr -d ' ')
+
+if "$T/change_dylib" "$T/main_descfat" \
+    -change "@loader_path/liba.dylib" "@loader_path/liba_desc.dylib" >/dev/null 2>"$T/descfat.err"; then
+    ok "fat descending-offset: tool ran to completion without crashing"
+else
+    bad "fat descending-offset run" "change_dylib failed/crashed: $(head -1 "$T/descfat.err")"
+fi
+
+after_size=$(wc -c < "$T/main_descfat" | tr -d ' ')
+if [ "$after_size" -ge "$before_size" ]; then
+    ok "fat descending-offset: output not smaller than input ($before_size -> $after_size bytes)"
+else
+    bad "fat descending-offset size" "input was $before_size bytes, output is only $after_size -- TRUNCATED"
+fi
+
+dylibs_hi=$("$T/fatcheck" dylibs "$T/main_descfat" 0)
+if echo "$dylibs_hi" | grep -q '^@loader_path/liba_desc\.dylib$'; then
+    ok "fat descending-offset: the high-offset slice's dylib path was actually changed"
+else
+    bad "fat descending-offset dylib" "high-offset slice does not name the new path: $dylibs_hi"
+fi
+
+"$T/fatcheck" dump "$T/main_descfat" 1 "$T/descfat_lo_after.bin"
+if cmp -s "$T/slice32.bin" "$T/descfat_lo_after.bin"; then
+    ok "fat descending-offset: the low-offset slice is still preserved byte-for-byte"
+else
+    bad "fat descending-offset lo slice" "the low-offset slice's bytes changed or are missing"
+fi
+
+# --- 13. CRITICAL regression: two REWRITTEN slices landing at the SAME -----
+#         output offset must refuse, not silently collide.
+# Case 12 closed the memory-safety half of "the arch table
+# isn't ascending" (the reassembly buffer could overflow) but left the
+# correctness half open. An unshifted slice (e.g. arch[0], first in table
+# order) keeps its ORIGINAL offset unconditionally; once some OTHER, earlier-
+# in-table-order slice grows, every slice after it packs sequentially from a
+# cursor that has no idea where that still-fixed slice sits. On a
+# non-ascending table the sequential cursor can walk straight into the fixed
+# slice's territory. Reproduced by hand against the pre-fix binary with this
+# exact 3-slice fixture: arch 0 and arch 2 both landed at offset 20480,
+# arch 2's memcpy silently overwrote arch 0's bytes, and the tool exited 0
+# with the fat file "successfully" updated -- one architecture's code gone,
+# no error, right file size, right narch.
+#
+# Engineered precisely rather than hunted for: slice1 is $T/main at offset
+# 0x1000, forced (by the same 32-add idiom as cases 11/12) to grow by
+# exactly one page, from 8600 to 12696 bytes on THIS host -- confirmed
+# exactly this size in case 11 above. That makes the post-growth cursor for
+# whatever comes after it (0x1000 + 12696 = 16792, rounded up to its
+# 4096-byte alignment) land at EXACTLY 0x5000 (20480) -- so slice0 is placed
+# there, fixed, from the start, guaranteeing a collision rather than hoping
+# for one -- ON THIS HOST.
+#
+# Portability trap (this suite's sixth round of one): $T/main's exact
+# compiled size is the host compiler's to decide, not this script's. On a
+# cross runner it differs, which changes not WHETHER the fixture collides
+# but WHICH of the two overlap guards catches it first: if the differently-
+# sized slices already overlap as DECLARED, mfat_parse's read-side check
+# refuses before the repack ever runs; only if they don't is this the
+# write-side check in process_fat's own reassembly. Both are correct
+# refusals of the exact same condition -- this asserts the observable
+# BEHAVIOUR (refuses, names an overlap, leaves the input untouched), not
+# which of the two call sites produced the message, so it passes either
+# way. Confirmed the write-side path specifically only on THIS (10.9) host;
+# it is not something this test can pin cross-host without controlling the
+# compiler's output, which it does not.
+cat > "$T/mk3fat.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/fat.h>
+static uint8_t *readfile(const char *path, size_t *outsz) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror(path); exit(2); }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) { perror("read"); exit(2); }
+    close(fd);
+    *outsz = (size_t)st.st_size;
+    return buf;
+}
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 5) { fprintf(stderr, "usage: %s out slice0 slice1 slice2\n", argv[0]); return 2; }
+    size_t sz0, sz1, sz2;
+    uint8_t *b0 = readfile(argv[2], &sz0);
+    uint8_t *b1 = readfile(argv[3], &sz1);
+    uint8_t *b2 = readfile(argv[4], &sz2);
+    /* slice1 must end (0x1000+sz1) at or before slice2's start, and slice2
+     * must end at or before slice0's start -- non-overlapping ORIGINAL
+     * layout, required by mfat_parse's own (new) input-side overlap check. */
+    uint32_t off0 = 0x5000, off1 = 0x1000, off2 = 0x4000;
+    uint32_t total = off0 + (uint32_t)sz0;
+    if (off1 + sz1 > total) total = (uint32_t)(off1 + sz1);
+    if (off2 + sz2 > total) total = (uint32_t)(off2 + sz2);
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(3);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    ar[0].cputype = sw32(7); ar[0].cpusubtype = sw32(3);          /* opaque, fixed-high */
+    ar[0].offset = sw32(off0); ar[0].size = sw32((uint32_t)sz0); ar[0].align = sw32(12);
+    ar[1].cputype = sw32(0x1000007); ar[1].cpusubtype = sw32(3);  /* real x86_64, grows */
+    ar[1].offset = sw32(off1); ar[1].size = sw32((uint32_t)sz1); ar[1].align = sw32(12);
+    ar[2].cputype = sw32(7); ar[2].cpusubtype = sw32(4);          /* opaque, relocates */
+    ar[2].offset = sw32(off2); ar[2].size = sw32((uint32_t)sz2); ar[2].align = sw32(12);
+    memcpy(out + off0, b0, sz0);
+    memcpy(out + off1, b1, sz1);
+    memcpy(out + off2, b2, sz2);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mk3fat" "$T/mk3fat.c"
+"$T/mk3fat" "$T/main_fat3" "$T/slice32.bin" "$T/main" "$T/slice32b.bin"
+before_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')
+
+set -- ; i=0
+while [ $i -lt 32 ]; do
+    set -- "$@" -add "@loader_path/libpad_a_pretty_long_synthetic_name_used_only_to_force_real_header_growth_$i.dylib"
+    i=$((i+1))
+done
+rc=0
+"$T/change_dylib" "$T/main_fat3" -grow "$@" >/dev/null 2>"$T/fat3.err" || rc=$?
+
+if [ $rc -eq 0 ]; then
+    # The algorithm never repacks smarter than "sequential from a cursor" --
+    # per the fix, this exact layout can only ever be refused, never placed
+    # correctly, so a SUCCESSFUL exit here means the collision guard did not
+    # run at all, not that a cleverer layout was found.
+    bad "fat collision" "tool exited 0 on a layout engineered to collide -- the overlap guard did not fire"
+elif grep -qi 'overlap' "$T/fat3.err"; then
+    # Deliberately a loose substring, not the write-side message's exact
+    # wording ("overlapping offsets"): the read-side guard in mfat_parse
+    # ("...or two slices overlapping each other") is an equally correct
+    # refusal of the same condition, and which of the two fires is a
+    # function of this fixture's host-compiled sizes, not of anything this
+    # test controls. See the comment above for why.
+    ok "fat collision: refused with a diagnostic naming the overlap (exit $rc)"
+else
+    bad "fat collision" "refused (exit $rc) but without an overlap diagnostic: $(head -1 "$T/fat3.err")"
+fi
+
+after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')
+[ "$before_md5" = "$after_md5" ] \
+    && ok "fat collision: input left completely untouched on refusal" \
+    || bad "fat collision" "input was modified despite the refusal"
 
 # --- 15. LC_LAZY_LOAD_DYLIB (legacy -lazy_library) must be an explicit ------
 #         REFUSAL, never silent mis-renumbering.
