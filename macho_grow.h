@@ -40,6 +40,9 @@
 #include <stdint.h>
 #include <mach-o/loader.h>
 
+/* ULEB128 decode / minlen / fixed-width encode. */
+#include "uleb.h"
+
 /* Load-command constants newer than the 10.9 SDK headers. */
 #ifndef LC_DYLD_EXPORTS_TRIE
 #define LC_DYLD_EXPORTS_TRIE        0x80000033
@@ -98,36 +101,6 @@ static void mg_bump(uint32_t *off, uint32_t insert, uint32_t grow) {
  * delta would need more bytes than the original encoding, we refuse rather than
  * resize LINKEDIT; see mg_grow_header.) */
 
-/* Decode one ULEB128 at p (< end). Returns bytes consumed, 0 if malformed
- * (continuation runs past end, or > 10 bytes). *out = value. */
-static int mg_uleb_decode(const uint8_t *p, const uint8_t *end, uint64_t *out) {
-    uint64_t r = 0; int s = 0, n = 0;
-    while (p + n < end && n < 10) {
-        uint8_t b = p[n]; r |= (uint64_t)(b & 0x7f) << s; n++;
-        if (!(b & 0x80)) { *out = r; return n; }
-        s += 7;
-    }
-    return 0;
-}
-
-/* Minimal number of bytes to ULEB-encode v (>= 1). */
-static int mg_uleb_minlen(uint64_t v) {
-    int n = 1; while (v >= 0x80) { v >>= 7; n++; } return n;
-}
-
-/* Encode v into exactly `width` ULEB128 bytes at p, padding non-minimally with
- * continuation groups if width exceeds the minimal length. Returns 1 on success,
- * 0 if v does not fit in `width` bytes. */
-static int mg_uleb_encode_fixed(uint8_t *p, uint64_t v, int width) {
-    if (width < 1 || mg_uleb_minlen(v) > width) return 0;
-    for (int i = 0; i < width; i++) {
-        uint8_t b = (uint8_t)((v >> (7 * i)) & 0x7f);
-        if (i < width - 1) b |= 0x80;   /* keep the stream going through the pad */
-        p[i] = b;
-    }
-    return 1;
-}
-
 /* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering
  * the image base by `grow`: delta[0] += grow, keeping the leading delta's byte
  * width so blob size is unchanged and the trailing deltas are untouched.
@@ -136,11 +109,11 @@ static int mg_uleb_encode_fixed(uint8_t *p, uint64_t v, int width) {
  * -1 malformed blob (empty / bad leading ULEB). */
 static int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow) {
     if (size == 0) return -1;
-    uint64_t d0; int n0 = mg_uleb_decode(blob, blob + size, &d0);
+    uint64_t d0; int n0 = mu_decode(blob, blob + size, &d0);
     if (n0 == 0) return -1;
     uint64_t nd = d0 + grow;
-    if (mg_uleb_minlen(nd) > n0) return 0;          /* would widen -> caller refuses */
-    return mg_uleb_encode_fixed(blob, nd, n0) ? 1 : 0;
+    if (mu_minlen(nd) > n0) return 0;          /* would widen -> caller refuses */
+    return mu_encode_fixed(blob, nd, n0) ? 1 : 0;
 }
 
 /* Decode the whole function-starts blob into absolute addresses given the image
@@ -150,7 +123,7 @@ static int mg_funcstarts_decode(const uint8_t *blob, uint32_t size,
                                 uint64_t base, uint64_t *out, int max) {
     const uint8_t *p = blob, *end = blob + size; uint64_t addr = base; int n = 0;
     while (p < end && n < max) {
-        uint64_t d; int c = mg_uleb_decode(p, end, &d);
+        uint64_t d; int c = mu_decode(p, end, &d);
         if (c == 0) return -1;
         p += c;
         if (d == 0) break;
@@ -209,22 +182,22 @@ static int mg_init_offsets_pass(uint8_t *buf, size_t fsize, uint32_t grow, int p
 static int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth) {
     if (depth > 128 || off >= size) return -1;
     const uint8_t *p = trie + off, *end = trie + size;
-    uint64_t term; int n = mg_uleb_decode(p, end, &term);
+    uint64_t term; int n = mu_decode(p, end, &term);
     if (n == 0) return -1;
     p += n;
     if (term) {
         const uint8_t *tend = p + term;
         if (tend > end) return -1;
-        uint64_t flags; n = mg_uleb_decode(p, end, &flags);
+        uint64_t flags; n = mu_decode(p, end, &flags);
         if (n == 0) return -1;
         p += n;
         if (!(flags & MG_EXPORT_REEXPORT)) {       /* re-exports carry no address */
-            uint64_t a; n = mg_uleb_decode(p, end, &a);
+            uint64_t a; n = mu_decode(p, end, &a);
             if (n == 0) return -1;
             if (a != 0) return 1;
             if (flags & MG_EXPORT_STUB_AND_RESOLVER) {
                 p += n;
-                n = mg_uleb_decode(p, end, &a);
+                n = mu_decode(p, end, &a);
                 if (n == 0) return -1;
                 if (a != 0) return 1;
             }
@@ -237,7 +210,7 @@ static int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int de
         while (p < end && *p) p++;
         if (p >= end) return -1;
         p++;
-        uint64_t coff; n = mg_uleb_decode(p, end, &coff);
+        uint64_t coff; n = mu_decode(p, end, &coff);
         if (n == 0) return -1;
         p += n;
         int r = mg_trie_scan(trie, size, (uint32_t)coff, depth + 1);
@@ -304,7 +277,7 @@ static int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *
             if (d->datasize) {
                 if ((size_t)d->dataoff + d->datasize > fsize) return -1;
                 uint64_t d0;
-                if (mg_uleb_decode(buf + d->dataoff, buf + d->dataoff + d->datasize, &d0) == 0)
+                if (mu_decode(buf + d->dataoff, buf + d->dataoff + d->datasize, &d0) == 0)
                     return -1;
                 if (n >= max) return -1;
                 if (kinds) kinds[n] = MG_K_FUNC;   /* the first function's address */
@@ -548,19 +521,19 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
     if (seen[off]) return 0;
     seen[off] = 1;
     uint8_t *p = trie + off, *end = trie + size;
-    uint64_t term; int k = mg_uleb_decode(p, end, &term);
+    uint64_t term; int k = mu_decode(p, end, &term);
     if (k == 0) return -1;
     p += k;
     if (term) {
         uint8_t *tend = p + term;
         if (tend > end) return -1;
-        uint64_t flags; k = mg_uleb_decode(p, end, &flags);
+        uint64_t flags; k = mu_decode(p, end, &flags);
         if (k == 0) return -1;
         p += k;
         if (!(flags & MG_EXPORT_REEXPORT)) {          /* re-exports carry no address */
             int rounds = (flags & MG_EXPORT_STUB_AND_RESOLVER) ? 2 : 1;
             for (int r = 0; r < rounds; r++) {
-                uint64_t a; int w = mg_uleb_decode(p, end, &a);
+                uint64_t a; int w = mu_decode(p, end, &a);
                 if (w == 0) return -1;
                 if (a != 0) {
                     if (out) {
@@ -568,8 +541,8 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
                         if (kinds) kinds[*n] = MG_K_ANY;  /* data exports are not functions */
                         out[(*n)++] = base + a;
                     } else {
-                        if (mg_uleb_minlen(a + grow) > w) return 1;   /* would widen */
-                        if (patch && !mg_uleb_encode_fixed(p, a + grow, w)) return 1;
+                        if (mu_minlen(a + grow) > w) return 1;   /* would widen */
+                        if (patch && !mu_encode_fixed(p, a + grow, w)) return 1;
                     }
                 }
                 p += w;
@@ -583,7 +556,7 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
         while (p < end && *p) p++;
         if (p >= end) return -1;
         p++;
-        uint64_t coff; k = mg_uleb_decode(p, end, &coff);
+        uint64_t coff; k = mu_decode(p, end, &coff);
         if (k == 0) return -1;
         p += k;
         int r = mg_trie_node(trie, size, (uint32_t)coff, depth + 1, grow, patch,
@@ -900,13 +873,13 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
     if (fs_dataoff && fs_datasize) {
-        uint64_t d0; int n0 = mg_uleb_decode(buf + fs_dataoff,
+        uint64_t d0; int n0 = mu_decode(buf + fs_dataoff,
                                              buf + fs_dataoff + fs_datasize, &d0);
         if (n0 == 0) {
             fprintf(stderr, "macho_grow: malformed LC_FUNCTION_STARTS leading delta\n");
             return -1;
         }
-        if (mg_uleb_minlen(d0 + grow) > n0) {
+        if (mu_minlen(d0 + grow) > n0) {
             fprintf(stderr, "macho_grow: grow of %u would widen the LC_FUNCTION_STARTS "
                             "leading delta (%llu -> %llu crosses a ULEB byte boundary); "
                             "in-place re-encode impossible and __LINKEDIT resize is not "
