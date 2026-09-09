@@ -46,6 +46,10 @@
 /* Validated open/wrap/iterate over a Mach-O buffer. */
 #include "image.h"
 
+/* Export-trie rebuild, for when an in-place re-encode (mg_trie_node, below)
+ * can't absorb an address's widened ULEB. */
+#include "trie.h"
+
 /* Load-command constants newer than the 10.9 SDK headers. */
 #ifndef LC_DYLD_EXPORTS_TRIE
 #define LC_DYLD_EXPORTS_TRIE        0x80000033
@@ -586,24 +590,64 @@ static int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
     return 0;
 }
 
-static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
-                        uint64_t base, uint64_t *out, uint8_t *kinds,
-                        uint32_t *n, uint32_t max) {
+/* Locate the export trie's load command -- LC_DYLD_INFO, LC_DYLD_INFO_ONLY, or
+ * LC_DYLD_EXPORTS_TRIE, whichever this image carries -- and return its BYTE
+ * OFFSET from buf (not a pointer: a caller that goes on to realloc buf, as
+ * the widen-append path does, needs an offset it can re-derive a pointer
+ * from afterward, not a pointer the realloc may have invalidated). Returns 1
+ * with *lc_off and *cmd set, or 0 if this image has no such load command (not an
+ * error -- just nothing to walk).
+ *
+ * The single source of truth for "which load command carries the export
+ * trie": mg_find_trie (below) and mg_grow_header's widen-append path both
+ * call this rather than each re-scanning load commands on their own, so the
+ * two can never disagree about which one it is. (They once could: an
+ * earlier version had the append path re-scan without breaking on the first
+ * match, landing on the LAST export-trie-shaped load command while this
+ * function -- and mg_find_trie -- always meant the FIRST. A file carrying
+ * both LC_DYLD_INFO_ONLY and LC_DYLD_EXPORTS_TRIE would have repointed the
+ * wrong one. It failed safe -- mg_verify would see pre-shift addresses
+ * through the untouched first LC and refuse -- but "two places
+ * independently deciding the same thing" is exactly the bug shape this
+ * whole toolkit exists to eliminate, so it is not left as a coincidence
+ * that happens to agree today.) */
+static int mg_find_trie_lc(const uint8_t *buf, long *lc_off, uint32_t *cmd) {
     const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
     const uint8_t *sp = buf + sizeof *h;
-    uint32_t off = 0, size = 0;
     for (uint32_t i = 0; i < h->ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)sp;
-        if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
-            const struct dyld_info_command *d = (const struct dyld_info_command *)sp;
-            off = d->export_off; size = d->export_size; break;
-        }
-        if (lc->cmd == LC_DYLD_EXPORTS_TRIE) {
-            const struct linkedit_data_command *d = (const struct linkedit_data_command *)sp;
-            off = d->dataoff; size = d->datasize; break;
+        if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY ||
+            lc->cmd == LC_DYLD_EXPORTS_TRIE) {
+            *lc_off = sp - buf; *cmd = lc->cmd; return 1;
         }
         sp += lc->cmdsize;
     }
+    return 0;
+}
+
+/* Locate the export trie's (off, size), whichever load command carries it --
+ * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
+ * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
+ * no export-trie load command at all (not an error -- just nothing to walk). */
+static int mg_find_trie(const uint8_t *buf, uint32_t *off, uint32_t *size) {
+    long lc_off; uint32_t cmd;
+    if (!mg_find_trie_lc(buf, &lc_off, &cmd)) return 0;
+    if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
+        const struct dyld_info_command *d = (const struct dyld_info_command *)(buf + lc_off);
+        *off = d->export_off; *size = d->export_size;
+    } else {
+        const struct linkedit_data_command *d =
+            (const struct linkedit_data_command *)(buf + lc_off);
+        *off = d->dataoff; *size = d->datasize;
+    }
+    return 1;
+}
+
+static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
+                        uint64_t base, uint64_t *out, uint8_t *kinds,
+                        uint32_t *n, uint32_t max) {
+    uint32_t off, size;
+    if (!mg_find_trie(buf, &off, &size)) return 0;
     if (!off || !size) return 0;
     if ((uint64_t)off + size > fsize) return -1;
     uint8_t *seen = (uint8_t *)calloc(size, 1);
@@ -951,16 +995,40 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         fprintf(stderr, "macho_grow: malformed S_INIT_FUNC_OFFSETS section; refusing to grow\n");
         return -1;
     }
+    /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
+     * after the buffer is mutated) can't do it: widening one entry cascades
+     * into the byte width of every child-offset ULEB after it in the trie.
+     * REBUILD it instead: decode the whole thing, add `grow` to every
+     * nonzero address, and re-serialize from scratch with everything
+     * minimally encoded (src/trie.c, mt_trie_rebuild) -- adapted from
+     * Wowfunhappy's export-trie rebuilder in insert_dylib commit 6d3aa61
+     * (public domain/CC0/WTFPL per his own statement, see
+     * docs/prior-art.md). Done HERE, before any mutation, so a rebuild
+     * failure (malformed trie, or its own MT_TRIE_MAX_DEPTH guard) leaves
+     * the buffer untouched, same as every other audit in this function --
+     * and so the exact same bytes get patched below as were validated here,
+     * with no possibility of the two disagreeing. */
+    uint8_t *mg_new_trie = NULL;
+    uint32_t mg_new_trie_size = 0;
+    int mg_trie_needs_rebuild = 0;
     {
         int r = mg_trie_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0);
-        if (r != 0) {
-            fprintf(stderr, "macho_grow: export trie %s; refusing to grow.%s\n",
-                    r > 0 ? "has an address whose ULEB encoding would widen, which would "
-                            "resize __LINKEDIT (not implemented)"
-                          : "is malformed",
-                    r > 0 ? " Reclaim header bytes instead (change_dylib -strip-lc uuid "
-                            "-strip-lc codesig)." : "");
+        if (r < 0) {
+            fprintf(stderr, "macho_grow: export trie is malformed; refusing to grow\n");
             return -1;
+        }
+        if (r > 0) {
+            uint32_t toff, tsize;
+            if (!mg_find_trie(buf, &toff, &tsize) || !toff || !tsize) {
+                fprintf(stderr, "macho_grow: internal error locating the export trie that "
+                                "just reported needing a wider ULEB\n");
+                return -1;
+            }
+            if (mt_trie_rebuild(buf + toff, tsize, grow, &mg_new_trie, &mg_new_trie_size) != 0) {
+                fprintf(stderr, "macho_grow: refusing to grow -- see the trie error above.\n");
+                return -1;
+            }
+            mg_trie_needs_rebuild = 1;
         }
     }
 
@@ -972,12 +1040,18 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     if (mg_snapshot_take(buf, fsize, &snap) != 0) {
         fprintf(stderr, "macho_grow: could not snapshot the base-relative structures; "
                         "refusing to grow without a way to verify the result\n");
+        free(mg_new_trie);
         return -1;
     }
 
     /* Insert `grow` zero bytes after the load commands, shifting file data down. */
     uint8_t *nbuf = (uint8_t *)realloc(buf, fsize + grow);
-    if (!nbuf) { fprintf(stderr, "macho_grow: realloc failed\n"); mg_snapshot_free(&snap); return -1; }
+    if (!nbuf) {
+        fprintf(stderr, "macho_grow: realloc failed\n");
+        mg_snapshot_free(&snap);
+        free(mg_new_trie);
+        return -1;
+    }
     buf = nbuf;
     /* Hand the new pointer back IMMEDIATELY. realloc may have moved the block and
      * freed the old one, so from here on the caller's *pbuf would otherwise be
@@ -988,6 +1062,12 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     hdr = (struct mach_header_64 *)buf;
     memmove(buf + insert + grow, buf + insert, fsize - insert);
     memset(buf + insert, 0, grow);
+
+    /* Every size below this point is FINAL_SIZE, not fsize+grow: if the
+     * export trie needed rebuilding AND the rebuild is wider than the
+     * original trie, the block just below grows __LINKEDIT (and so the
+     * file) a second time, independently of the header-pad `grow` above. */
+    size_t final_size = fsize + grow;
 
     /* Patch the header. Load commands live before `insert`, so memmove didn't
      * touch them; we walk them now and adjust only file-offset fields, plus the
@@ -1075,25 +1155,157 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * constructors did not move, so each offset must gain `grow`. Section file
      * offsets were bumped in the walk above, so these read from the new home.
      * The pre-mutation audit proved this cannot overflow. */
-    if (mg_trie_walk(buf, fsize + grow, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
-        fprintf(stderr, "macho_grow: internal error re-basing the export trie after passing "
-                        "the pre-check\n");
-        mg_snapshot_free(&snap);
-        return -1;
+    if (!mg_trie_needs_rebuild) {
+        /* The common case (measured: zero widening entries across all 670
+         * exports of Claude Code 2.1.263 at 4K/8K/16K grows): every address
+         * re-encodes in its ORIGINAL byte width, so the trie -- and every
+         * __LINKEDIT offset after it -- keeps its size. */
+        if (mg_trie_walk(buf, final_size, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
+            fprintf(stderr, "macho_grow: internal error re-basing the export trie after "
+                            "passing the pre-check\n");
+            mg_snapshot_free(&snap);
+            return -1;
+        }
+    } else {
+        /* At least one address widened. mg_new_trie/mg_new_trie_size (built
+         * during the pre-mutation audit, from the SAME bytes -- content is
+         * unchanged by the memmove above, only position moved) replace the
+         * trie outright. */
+        uint32_t toff, tsize;
+        if (!mg_find_trie(buf, &toff, &tsize)) {
+            fprintf(stderr, "macho_grow: internal error -- the export trie load command "
+                            "vanished after growing\n");
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
+        }
+        if (mg_new_trie_size <= tsize) {
+            /* Rebuilding from scratch, with everything minimally encoded, can
+             * still fit the original space even though an in-place patch of
+             * ONE entry's fixed width could not: nothing else in __LINKEDIT
+             * moves. Original datasize is kept (not shrunk), with the unused
+             * tail zeroed -- a trie's traversal is driven entirely by child
+             * offsets from the root, so trailing zero bytes past the last
+             * reachable node are simply never read. */
+            memcpy(buf + toff, mg_new_trie, mg_new_trie_size);
+            memset(buf + toff + mg_new_trie_size, 0, tsize - mg_new_trie_size);
+        } else {
+            /* Does not fit: __LINKEDIT itself must grow. Append the rebuilt
+             * trie right after __LINKEDIT's current end. On every binary this
+             * has been checked against (including a real code-signed 10.9
+             * binary), that is also the end of the FILE -- __LINKEDIT is the
+             * last segment, and a code signature (if any) lives INSIDE
+             * __LINKEDIT's declared filesize, so `append_off != final_size`
+             * below cannot happen just because a signature is present.
+             * Refuse, rather than guess, if it turns out not so anyway.
+             * (Appending here strands any existing signature before the new
+             * end without extending it to cover the appended bytes, so the
+             * signature no longer verifies -- but growing the header pad
+             * ALREADY invalidates any signature, for the same reason every
+             * other rewriter in this toolkit does: this transform edits file
+             * bytes a signature covers. That is a pre-existing, documented
+             * limitation (`-strip-lc codesig`), not something new here.) */
+            uint8_t *lcp2 = buf + sizeof(struct mach_header_64);
+            long linkedit_lc_off = -1;
+            struct mach_header_64 *hh2 = (struct mach_header_64 *)buf;
+            for (uint32_t i = 0; i < hh2->ncmds; i++) {
+                struct load_command *lc2 = (struct load_command *)lcp2;
+                if (lc2->cmd == LC_SEGMENT_64) {
+                    struct segment_command_64 *seg2 = (struct segment_command_64 *)lcp2;
+                    if (strcmp(seg2->segname, "__LINKEDIT") == 0) {
+                        linkedit_lc_off = lcp2 - buf;
+                        break;   /* first (and only well-formed) __LINKEDIT */
+                    }
+                }
+                lcp2 += lc2->cmdsize;
+            }
+            /* The export LC is looked up through mg_find_trie_lc, the same
+             * function mg_find_trie used just above to locate toff/tsize --
+             * not a second hand-rolled scan that could disagree with it
+             * about which load command "the" export trie means. */
+            long export_lc_off = -1; uint32_t export_lc_cmd = 0;
+            mg_find_trie_lc(buf, &export_lc_off, &export_lc_cmd);
+            if (linkedit_lc_off < 0 || export_lc_off < 0) {
+                fprintf(stderr, "macho_grow: no __LINKEDIT segment (or no export-trie load "
+                                "command) to grow the rebuilt export trie into; refusing\n");
+                free(mg_new_trie);
+                mg_snapshot_free(&snap);
+                return -1;
+            }
+            /* dataoff/export_off/datasize/export_size and this segment's
+             * fileoff/filesize are all 32-bit fields; refuse rather than
+             * silently wrap if this file is implausibly large. */
+            struct segment_command_64 *linkedit =
+                (struct segment_command_64 *)(buf + linkedit_lc_off);
+            uint64_t append_off = linkedit->fileoff + linkedit->filesize;
+            if (append_off != final_size) {
+                fprintf(stderr, "macho_grow: export trie widened, but __LINKEDIT (ending at "
+                                "%llu) is not the last thing in the file (file is %zu bytes); "
+                                "appending would overwrite unknown data or leave a hole, so "
+                                "refusing rather than guess\n",
+                        (unsigned long long)append_off, final_size);
+                free(mg_new_trie);
+                mg_snapshot_free(&snap);
+                return -1;
+            }
+            if (append_off > UINT32_MAX || mg_new_trie_size > UINT32_MAX - append_off) {
+                fprintf(stderr, "macho_grow: rebuilt export trie would land past a 32-bit "
+                                "file-offset field; refusing\n");
+                free(mg_new_trie);
+                mg_snapshot_free(&snap);
+                return -1;
+            }
+            uint64_t new_total = final_size + mg_new_trie_size;
+            uint8_t *g = (uint8_t *)realloc(buf, (size_t)new_total);
+            if (!g) {
+                fprintf(stderr, "macho_grow: realloc failed growing __LINKEDIT for the "
+                                "rebuilt export trie\n");
+                free(mg_new_trie);
+                mg_snapshot_free(&snap);
+                return -1;
+            }
+            buf = g; *pbuf = buf; hdr = (struct mach_header_64 *)buf;
+            memset(buf + final_size, 0, mg_new_trie_size);
+            memcpy(buf + append_off, mg_new_trie, mg_new_trie_size);
+            final_size = (size_t)new_total;
+
+            /* Re-derive every pointer from its saved BYTE OFFSET, not a raw
+             * pointer taken before the realloc just above -- which may have
+             * moved the buffer, same reasoning as the segment-patch loop's
+             * own comment about this earlier in this function. */
+            linkedit = (struct segment_command_64 *)(buf + linkedit_lc_off);
+            uint64_t new_le_filesize = (append_off + mg_new_trie_size) - linkedit->fileoff;
+            linkedit->filesize = new_le_filesize;
+            uint64_t new_le_vmsize = (new_le_filesize + MG_PAGE - 1) & ~(MG_PAGE - 1);
+            if (new_le_vmsize > linkedit->vmsize) linkedit->vmsize = new_le_vmsize;
+
+            struct load_command *elc = (struct load_command *)(buf + export_lc_off);
+            if (export_lc_cmd == LC_DYLD_INFO || export_lc_cmd == LC_DYLD_INFO_ONLY) {
+                struct dyld_info_command *d = (struct dyld_info_command *)elc;
+                d->export_off = (uint32_t)append_off;
+                d->export_size = mg_new_trie_size;
+            } else {
+                struct linkedit_data_command *d = (struct linkedit_data_command *)elc;
+                d->dataoff = (uint32_t)append_off;
+                d->datasize = mg_new_trie_size;
+            }
+        }
     }
-    if (mg_dice_walk(buf, fsize + grow, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
+    free(mg_new_trie);
+    mg_new_trie = NULL;
+    if (mg_dice_walk(buf, final_size, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
         fprintf(stderr, "macho_grow: internal error re-basing LC_DATA_IN_CODE after passing "
                         "the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
     }
-    if (mg_unwind_walk(buf, fsize + grow, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
+    if (mg_unwind_walk(buf, final_size, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
         fprintf(stderr, "macho_grow: internal error re-basing __TEXT,__unwind_info after "
                         "passing the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
     }
-    if (mg_init_offsets_pass(buf, fsize + grow, grow, 1) != 0) {
+    if (mg_init_offsets_pass(buf, final_size, grow, 1) != 0) {
         fprintf(stderr, "macho_grow: internal error patching S_INIT_FUNC_OFFSETS after "
                         "passing the pre-check\n");
         mg_snapshot_free(&snap);
@@ -1119,7 +1331,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * it did before. A mismatch means a handler did not run, ran twice, or ran
      * with the wrong delta -- all of which produce a binary that loads and is
      * wrong, so this is the last chance to catch it. */
-    if (mg_verify(buf, fsize + grow, &snap) != 0) {
+    if (mg_verify(buf, final_size, &snap) != 0) {
         mg_snapshot_free(&snap);
         /* The buffer has been transformed and is NOT safe to write. *pbuf already
          * points at it (set right after the realloc) so the caller can free it;
@@ -1133,13 +1345,13 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * This asks a different question of the finished file -- do initializers and
      * unwind entries still land on function starts -- so the two fail for
      * different reasons. */
-    if (mg_plausible(buf, fsize + grow) != 0) {
+    if (mg_plausible(buf, final_size) != 0) {
         fprintf(stderr, "macho_grow: the grown image does not pass its own plausibility "
                         "check; refusing. Discard this buffer.\n");
         return -1;
     }
 
-    *pfsize = fsize + grow;   /* *pbuf was set right after the realloc */
+    *pfsize = final_size;   /* *pbuf was set right after the (last) realloc */
     return 0;
 }
 
