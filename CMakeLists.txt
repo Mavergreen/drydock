@@ -80,11 +80,17 @@ endforeach()
 # directly; patch_macho includes src/image.h directly; fix_macho includes
 # src/fat.h directly (so both fat-aware tools now validate a fat file's
 # arch table through the same code, src/fat.c, instead of each having its own
-# hand-rolled walk that could -- and did -- disagree about validation). The
-# other three reach nothing in src/ yet.
+# hand-rolled walk that could -- and did -- disagree about validation).
+# add_version_min, rename_segment and retag_swift_classes join here one at a
+# time as the toolkit's first extraction step
+# converts each off its own open/fstat/malloc/read/ncmds-walk preamble onto
+# src/image.h.
 target_link_libraries(change_dylib PRIVATE macho9core)
 target_link_libraries(patch_macho PRIVATE macho9core)
 target_link_libraries(fix_macho PRIVATE macho9core)
+target_link_libraries(add_version_min PRIVATE macho9core)
+target_link_libraries(rename_segment PRIVATE macho9core)
+target_link_libraries(retag_swift_classes PRIVATE macho9core)
 
 # The multi-call CLI (docs/PROPOSAL.md "Verbs"): `verify`/`info`/`grow`
 # delegate in-process to macho9core + macho_grow.h; `dylib`/`rpath`/`lc`
@@ -160,3 +166,12 @@ add_test(NAME characterize
 # same way chained_fixups passes patch_macho's.
 add_test(NAME cli_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:macho9>")
+
+# Regression coverage for two heap-overflow crashes a code review found in
+# add_version_min and retag_swift_classes after they were converted onto
+# src/image.h -- mi_open validates load commands, not section file ranges or
+# addresses derived from them, so a fixture can pass mi_open cleanly and
+# still contain an out-of-bounds reference. See the script's own header for
+# what each fixture is shaped to trigger.
+add_test(NAME leaf_tool_crashes
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:add_version_min>")
