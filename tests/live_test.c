@@ -58,7 +58,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -261,6 +265,413 @@ static void test_malformed_sizeofcmds_refuses_fast(void) {
           secs);
 }
 
+/* ---- the four header-internal bounds checks, individually discriminated ----
+ *
+ * Review found live.h's four checks (see its own top comment's "WHAT THIS
+ * FILE VALIDATES" section) asymmetrically covered relative to image.c's
+ * identical mi_validate: the ONLY malformed case above (cmdsize=0) exercises
+ * just one of the four -- `cmdsize < sizeof(load_command)`. Deleting either
+ * `cmdsize % 8 != 0` (live.h:191) or LC_SEGMENT_64's `cmdsize != want`
+ * (live.h:205) left every one of the 10 suites green. This matters more here
+ * than the analogous gap would in image.c: live.h ships into avxemu's SIGILL
+ * handler, so a missing nsects bound is an unbounded read inside a signal
+ * handler, not merely a bad refusal in an offline tool.
+ *
+ * Five tests below, mirroring image_test.c's own five malformed-header cases
+ * one-for-one (minus the file-size bound, which has no live.h analogue --
+ * see live.h's own top comment on why): together they discriminate each of
+ * live.h's four checks (the segment-cmdsize family is two lines, 195 and
+ * 205, each pinned by its own test here exactly as image_test.c pins its
+ * mi_validate equivalents at :64). Each was mutation-proven individually:
+ * commenting out just the ONE check named in the test's comment, forcing a
+ * clean rebuild, and confirming ONLY that test (not the others) fails. */
+
+static void test_each_lc_refuses_short_cmdsize(void) {
+    /* Pins live.h:186, `lc->cmdsize < sizeof(struct load_command)`,
+     * independent of test_malformed_sizeofcmds_refuses_fast's giant ncmds
+     * (that test's real purpose is the O(ncmds) spin-time regression, not
+     * this specific bound). */
+    uint8_t buf[sizeof(struct mach_header_64) + 16];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 16;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    /* 0, not merely "below 8": any nonzero value below 8 is also caught by
+     * the cmdsize%8 check (191), which would not isolate 186 from 191. 0 is
+     * a multiple of 8 and satisfies off+cmdsize<=sizeofcmds trivially, so
+     * this input reaches ONLY the check under test. */
+    lc->cmdsize = 0;
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1, "mlive_each_lc(cmdsize < sizeof(load_command)) refuses (got %d)", rc);
+}
+
+static void test_each_lc_refuses_unaligned_cmdsize(void) {
+    /* Pins live.h:191, `lc->cmdsize % 8 != 0` -- a cmdsize large enough to be
+     * a load command, small enough to fit sizeofcmds, but not 8-byte
+     * aligned, misaligning every command walked after it. */
+    uint8_t buf[sizeof(struct mach_header_64) + 24];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 24;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 17;   /* well-formed size, but not a multiple of 8 */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1, "mlive_each_lc(cmdsize not 8-byte aligned) refuses (got %d)", rc);
+}
+
+static void test_each_lc_refuses_cmdsize_past_sizeofcmds(void) {
+    /* Pins live.h:192, `off + lc->cmdsize > sizeofcmds` -- sizeofcmds bounds
+     * the region as a whole, but this one command claims more room than the
+     * region has left. */
+    uint8_t buf[sizeof(struct mach_header_64) + 16];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 16;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_UUID;
+    lc->cmdsize = 32;   /* overshoots the 16-byte region */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1, "mlive_each_lc(cmdsize striding past sizeofcmds) refuses (got %d)", rc);
+}
+
+/* Pins live.h:195, `lc->cmdsize < sizeof(struct segment_command_64)`.
+ *
+ * 195 is NOT redundant with 205 (`cmdsize != want`, `want` computed from
+ * `sg->nsects`) -- it is a PRECONDITION for 205: evaluating `want` requires
+ * READING `sg->nsects`, which lives at byte offset 64 of the command, and
+ * with 195 deleted THAT LOAD is the out-of-bounds read. By the time a
+ * return-value check could observe "205 still says -1", the read 195 was
+ * guarding has already happened -- for a live image mapped by dyld, an
+ * ordinary-looking cmdsize that undershoots the struct by enough puts
+ * offset 64 past the mapped region entirely, and this file exists
+ * specifically so that read happens inside avxemu's SIGILL handler.
+ * A return-value assertion (the plain-buffer test just below) cannot
+ * observe that distinction: on a small stack/heap buffer, the 56 bytes
+ * past `cmdsize` happen to be readable garbage either way, so 195 and 205
+ * produce the identical rc == -1 whether or not 195 ran. That test still
+ * documents the outcome-level invariant (matches image_test.c's own
+ * analogous test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct for
+ * mi_validate's identical pair), but it is not proof that 195 itself does
+ * anything -- for that, the read has to be made to fault, which needs a
+ * guard page, not a wider assertion. See test_each_lc_195_read_is_bounded
+ * below for that proof. */
+static void test_each_lc_refuses_segment_shorter_than_struct(void) {
+    uint8_t buf[sizeof(struct mach_header_64) + 8];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = 8;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_SEGMENT_64;
+    lc->cmdsize = 8;   /* far below sizeof(struct segment_command_64) (72) */
+
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, NULL);
+    CHECK(rc == -1,
+          "mlive_each_lc(LC_SEGMENT_64 cmdsize < sizeof(segment_command_64)) refuses (got %d)",
+          rc);
+}
+
+/* The real proof for 195: a guard page, not a return-value assertion.
+ *
+ * mmap two pages, PROT_NONE the second, and place the fixture so `lc`'s
+ * own cmd/cmdsize (the only fields 195's own check reads) sit in the last
+ * 8 readable bytes of the first page, while `sg->nsects` -- offset 64 past
+ * `lc`, so 56 bytes INTO the guard page -- lands somewhere 195 must never
+ * let anything read. With 195 intact, the walk refuses on cmdsize alone
+ * and never touches the guard page: rc == -1, no fault. With 195 deleted,
+ * `want`'s computation (the very next lines, for 205's check) has to read
+ * `sg->nsects` to produce an answer, and that read is INTO THE GUARD PAGE
+ * -- SIGBUS, not a wrong return value.
+ *
+ * `sizeofcmds`/`cmdsize` are assigned through `volatile` locals rather
+ * than the literal `8` a first version of this test wrote directly into
+ * the fields. That literal mattered: with 195 deleted, the compiler can
+ * still prove `want (>= 72, since nsects is unsigned) != cmdsize` WITHOUT
+ * reading `sg->nsects` at all, PROVIDED it also knows `cmdsize`'s exact
+ * value at compile time -- and a direct `lc->cmdsize = 8;` a few lines
+ * before an inlined call is exactly the kind of store this compiler's
+ * optimizer forwards straight into the load, at -O2 AND -O0 alike (this
+ * was verified directly: a first version of this fixture, built and
+ * mutated exactly as below but with `hdr->sizeofcmds = 8;` and
+ * `lc->cmdsize = 8;` as plain literals, refused cleanly at -O2 with 195
+ * DELETED -- rc == -1, no fault, because the compiler proved the read
+ * irrelevant and never issued it. That is a sound optimization of THIS
+ * fixture, not evidence 195 is unnecessary: it is provable only because
+ * the fixture's own cmdsize is small enough, and known enough, for the
+ * compiler to rule out every nsects value without consulting memory --
+ * a live image's cmdsize is neither. Routing both fields through a
+ * `volatile` intermediate is the fix: it forces a genuine, unpredictable-
+ * to-the-optimizer runtime value, so `want`'s computation is no longer
+ * something the compiler can resolve without actually performing the
+ * read. Mutation-proven at both -O0 and -O2 with THIS fixture: 195
+ * intact refuses cleanly (rc == -1, exit 0) at both; 195 deleted faults
+ * (SIGBUS, exit 138) at both; with literals in place of the volatiles,
+ * the -O2 build elides the read and the deleted check goes unnoticed.
+ *
+ * THE `volatile` ABOVE IS LOAD-BEARING. Without it, on a future compiler,
+ * a different -O level, or a different SDK, this test can go BACK to
+ * passing vacuously: "no fault occurred" is satisfied just as well by
+ * "195 caught it" as by "the whole read was elided and never happened",
+ * and the assertion below cannot tell those apart by itself -- exactly
+ * the failure mode this comment's own A/B trace hit once already. If a
+ * future reader is tempted to delete a stray-looking `volatile` here,
+ * don't: test_each_lc_195_positive_control immediately below is the
+ * thing that would actually catch that regression -- it fails (not this
+ * test) the moment the `sg->nsects` load stops happening in this build,
+ * because unlike this test it requires the read to succeed and match,
+ * not merely requires nothing to crash. Run both together, always. */
+static void test_each_lc_195_read_is_bounded(void) {
+    long pagesz = sysconf(_SC_PAGESIZE);
+    CHECK(pagesz > 0, "sysconf(_SC_PAGESIZE) succeeds");
+    if (pagesz <= 0) return;
+
+    uint8_t *region = (uint8_t *)mmap(NULL, (size_t)pagesz * 2, PROT_READ | PROT_WRITE,
+                                       MAP_ANON | MAP_PRIVATE, -1, 0);
+    CHECK(region != MAP_FAILED, "mmap(2 pages) succeeds");
+    if (region == MAP_FAILED) return;
+    CHECK(mprotect(region + pagesz, (size_t)pagesz, PROT_NONE) == 0,
+          "mprotect(second page, PROT_NONE) succeeds -- the guard page");
+
+    size_t need = sizeof(struct mach_header_64) + 8;
+    uint8_t *buf = region + pagesz - (long)need;
+    memset(buf, 0, need);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    volatile uint32_t v_sizeofcmds = 8;
+    hdr->sizeofcmds = v_sizeofcmds;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_SEGMENT_64;
+    volatile uint32_t v_cmdsize = 8;   /* far below sizeof(segment_command_64) (72) */
+    lc->cmdsize = v_cmdsize;
+
+    count_ctx ctx = { 0 };
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, &ctx);
+    CHECK(rc == -1,
+          "mlive_each_lc(LC_SEGMENT_64 cmdsize < sizeof(segment_command_64)) refuses "
+          "without ever reading past cmdsize (got %d)", rc);
+
+    munmap(region, (size_t)pagesz * 2);
+}
+
+/* THE POSITIVE CONTROL test_each_lc_195_read_is_bounded cannot be, by
+ * itself: that test's only assertion is "no fault occurred", which a
+ * genuine refusal and a silently-elided read both satisfy equally well --
+ * it can pass VACUOUSLY on a build where the `sg->nsects` load never
+ * happens at all, and nothing about "the process didn't crash" would say
+ * so. This fixture is the other half: no guard page (both pages stay
+ * PROT_READ|PROT_WRITE), a WELL-FORMED LC_SEGMENT_64 whose cmdsize is set
+ * to EXACTLY `72 + nsects*sizeof(section_64)` -- the value that makes
+ * live.h:205's own `cmdsize != want` check false, so the walk fully
+ * succeeds (rc == 1) ONLY IF the internal `want` computation actually read
+ * `sg->nsects` from memory and it matched what this test wrote there. Both
+ * `nsects` and `cmdsize` are routed through `volatile` locals for the same
+ * reason test_each_lc_195_read_is_bounded's own does: a plain-literal
+ * `sg->nsects = 1;` lets the compiler forward that value into
+ * mlive_each_lc's `want` computation and fold `cmdsize != want` to a
+ * compile-time-constant comparison, satisfying rc == 1 by ARITHMETIC alone
+ * with no runtime load of `sg->nsects` ever emitted -- which would make
+ * this control just as fake a proof as the guard-page test's own first,
+ * elided attempt. With both volatile, the compiler cannot resolve either
+ * side symbolically, so a real load of `sg->nsects` is the only way this
+ * assertion can be satisfied.
+ *
+ * Confirmed this actually discriminates, by hand: rebuilding
+ * this fixture with both `volatile` locals replaced by plain literals
+ * reproduces, at -O2, exactly the silent-pass failure mode this control
+ * exists to catch elsewhere -- and in that rebuild, THIS test (not
+ * test_each_lc_195_read_is_bounded) is the one that goes red, which is the
+ * point: together the two tests say "the read occurs, AND when it would go
+ * out of bounds it faults" -- neither says that alone. */
+static void test_each_lc_195_positive_control(void) {
+    long pagesz = sysconf(_SC_PAGESIZE);
+    CHECK(pagesz > 0, "sysconf(_SC_PAGESIZE) succeeds");
+    if (pagesz <= 0) return;
+
+    uint8_t *region = (uint8_t *)mmap(NULL, (size_t)pagesz * 2, PROT_READ | PROT_WRITE,
+                                       MAP_ANON | MAP_PRIVATE, -1, 0);
+    CHECK(region != MAP_FAILED, "mmap(2 pages) succeeds");
+    if (region == MAP_FAILED) return;
+    /* No mprotect here, deliberately: this fixture is meant to succeed,
+     * not fault -- both pages stay readable/writable. */
+
+    size_t need = sizeof(struct mach_header_64) + 8;
+    uint8_t *buf = region + pagesz - (long)need;
+    memset(buf, 0, need);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    struct load_command *lc = (struct load_command *)(void *)(buf + sizeof(*hdr));
+    lc->cmd = LC_SEGMENT_64;
+    struct segment_command_64 *sg = (struct segment_command_64 *)(void *)lc;
+
+    volatile uint32_t v_nsects = 1;
+    sg->nsects = v_nsects;
+    volatile uint32_t v_want = (uint32_t)(sizeof(struct segment_command_64) +
+                                           (uint64_t)v_nsects * sizeof(struct section_64));
+    hdr->sizeofcmds = v_want;   /* must cover the whole (well-formed) command */
+    lc->cmdsize = v_want;
+
+    count_ctx ctx = { 0 };
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, &ctx);
+    CHECK(rc == 1,
+          "mlive_each_lc(well-formed LC_SEGMENT_64, cmdsize == 72+nsects*sizeof(section_64)) "
+          "fully walks (got %d) -- only reachable if sg->nsects was actually read from memory",
+          rc);
+    CHECK(ctx.nseg == 1, "the callback actually ran (nseg=%u)", ctx.nseg);
+
+    munmap(region, (size_t)pagesz * 2);
+}
+
+/* THE CORRECT positive control: test_each_lc_195_positive_control
+ * above cannot prove elision doesn't happen, because it can never GET INTO the
+ * position elision is possible from -- evaluating `rc == 1` requires `want`
+ * (hence `sg->nsects`) regardless, so it always forces the load; it just proves
+ * the load produces the right ANSWER, not that a load-eliding build couldn't
+ * also produce that same right answer some other way. An earlier attempt's
+ * dead end was aiming the detector at the wrong
+ * case: elision is possible ONLY where `cmdsize < 72` lets the compiler prove
+ * `cmdsize < 72 <= want` without ever computing `want` -- exactly the
+ * test_each_lc_195_read_is_bounded case, not this one.
+ *
+ * This test targets that case directly, but makes the LOAD ITSELF the
+ * observable instead of inferring it from a return value: `cmdsize == 72`
+ * (`sizeof(segment_command_64)`, so 195 does NOT refuse -- 72 is not < 72),
+ * and the command is placed straddling a page boundary so `nsects` (offset 64)
+ * is the FIRST BYTE of a `PROT_NONE` page. 205 has no shortcut here (cmdsize
+ * is not below 72), so it MUST read `sg->nsects` to decide -- and that read
+ * faults. A fault is not inferred from an arithmetic result a sound
+ * optimization could reproduce some other way; it is a direct consequence of
+ * a load instruction actually executing at an unmapped address. No `volatile`
+ * needed anywhere -- unlike the equality case, there is no legal way for a
+ * compiler to determine this branch's outcome without performing this exact
+ * load, so nothing needs defending against being folded away.
+ *
+ * 195 is INTACT here (no mutation) -- this runs unconditionally, every time,
+ * proving THIS build's mlive_each_lc genuinely performs the nsects load on the
+ * path that needs it. If a future toolchain, SDK, or source change ever starts
+ * eliding it (impossible for a *sound* optimizer given this exact fixture, but
+ * exactly what would indicate an unsound one, or a source regression that
+ * skips the read some other way), this test goes red immediately instead of
+ * test_each_lc_195_read_is_bounded quietly staying green. Together the two
+ * say what neither says alone: this one proves the load happens on the path
+ * that needs it; that one proves 195 prevents it on the path that would
+ * fault. Runs the walk in a forked child so a genuine crash here -- the
+ * expected outcome -- can't take the rest of this test binary down with it;
+ * confirmed to reproduce SIGBUS (not SIGSEGV) at both -O0 and -O2, and under
+ * libgmalloc (whose allocator changes heap page layout but does not touch
+ * this test's own raw mmap/mprotect region). */
+static void test_each_lc_195_load_actually_happens(void) {
+    long pagesz = sysconf(_SC_PAGESIZE);
+    CHECK(pagesz > 0, "sysconf(_SC_PAGESIZE) succeeds");
+    if (pagesz <= 0) return;
+
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork() succeeds");
+    if (pid < 0) return;
+
+    if (pid == 0) {
+        /* Child: build the straddling fixture and call mlive_each_lc. The
+         * expected outcome is a fault (the parent below asserts on that);
+         * if we somehow return instead, exit with a distinct code (42) so
+         * the parent can tell "ran to completion without faulting" (the
+         * failure this test exists to catch) from any other child death. */
+        uint8_t *region = (uint8_t *)mmap(NULL, (size_t)pagesz * 2, PROT_READ | PROT_WRITE,
+                                           MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (region == MAP_FAILED) _exit(3);
+        if (mprotect(region + pagesz, (size_t)pagesz, PROT_NONE) != 0) _exit(3);
+
+        /* sizeof(mach_header_64) + 64: the header, then exactly the first
+         * 64 bytes of a segment_command_64 (cmd through initprot) -- all in
+         * the readable page. `sg` (== buf + sizeof(hdr)) ends up placed so
+         * sg+64 (nsects' offset) lands EXACTLY at the guard page boundary. */
+        uint8_t *buf = region + pagesz - sizeof(struct mach_header_64) - 64;
+        memset(buf, 0, sizeof(struct mach_header_64) + 64);
+        struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+        hdr->magic = MH_MAGIC_64;
+        hdr->ncmds = 1;
+        hdr->sizeofcmds = 72;
+        struct segment_command_64 *sg =
+            (struct segment_command_64 *)(void *)(buf + sizeof(*hdr));
+        sg->cmd = LC_SEGMENT_64;
+        sg->cmdsize = 72;   /* == sizeof(segment_command_64): 195 does NOT
+                               * refuse (72 is not < 72), so 205 must run */
+
+        count_ctx ctx = { 0 };
+        int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                                count_segments_cb, &ctx);
+        fprintf(stderr, "child: mlive_each_lc returned %d without faulting "
+                        "(want a fault reading nsects)\n", rc);
+        _exit(42);
+    }
+
+    /* Parent. */
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid, "waitpid reaps the child");
+    CHECK(WIFSIGNALED(status),
+          "child died on a signal, not exited/stopped (raw status %#x)", status);
+    if (WIFSIGNALED(status)) {
+        int sig = WTERMSIG(status);
+        CHECK(sig == SIGBUS,
+              "child died on SIGBUS reading sg->nsects past the guard page "
+              "(got signal %d instead)", sig);
+    }
+}
+
+static void test_each_lc_refuses_nsects_disagreeing_with_cmdsize(void) {
+    /* Pins live.h:205, `lc->cmdsize != want` -- the check a bare
+     * cmdsize/sizeofcmds bound misses: cmdsize covers the base struct but
+     * disagrees with nsects, which mlive_find_section trusts unchecked once
+     * this passes. This is the exact shape code review used to demonstrate
+     * an unbounded read inside a signal handler is possible without it. */
+    uint8_t buf[sizeof(struct mach_header_64) + sizeof(struct segment_command_64)];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)(void *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = (uint32_t)sizeof(struct segment_command_64);
+    struct segment_command_64 *sg =
+        (struct segment_command_64 *)(void *)(buf + sizeof(*hdr));
+    sg->cmd = LC_SEGMENT_64;
+    sg->cmdsize = (uint32_t)sizeof(struct segment_command_64);   /* covers 0 sections */
+    sg->nsects = 5;   /* claims 5 trailing section_64 entries that don't fit */
+
+    /* A real context, not NULL: with 205 deleted, mlive_each_lc's own bound
+     * check no longer refuses this segment, so the callback DOES run (an
+     * earlier version of this test passed NULL
+     * here on the assumption the callback could never actually be reached,
+     * which held only as long as 205 was intact; deleting 205 let the
+     * callback run and NULL-deref, crashing the whole test binary instead
+     * of failing this one CHECK cleanly). count_segments_cb only reads
+     * lc->cmd and increments ctx->nseg, so a real context keeps this test's
+     * own discrimination entirely in rc, matching the other three checks in
+     * this family. */
+    count_ctx ctx = { 0 };
+    int rc = mlive_each_lc((const struct mach_header_64 *)(const void *)buf,
+                            count_segments_cb, &ctx);
+    CHECK(rc == -1,
+          "mlive_each_lc(LC_SEGMENT_64 nsects disagreeing with cmdsize) refuses (got %d)",
+          rc);
+}
+
 static void test_missing_segment_or_section_returns_null(void) {
     const struct mach_header_64 *mh =
         (const struct mach_header_64 *)_dyld_get_image_header(0);
@@ -393,6 +804,14 @@ int main(void) {
     test_null_header_returns_null_or_zero();
     test_bad_magic_is_rejected();
     test_malformed_sizeofcmds_refuses_fast();
+    test_each_lc_refuses_short_cmdsize();
+    test_each_lc_refuses_unaligned_cmdsize();
+    test_each_lc_refuses_cmdsize_past_sizeofcmds();
+    test_each_lc_refuses_segment_shorter_than_struct();
+    test_each_lc_195_read_is_bounded();
+    test_each_lc_195_positive_control();
+    test_each_lc_195_load_actually_happens();
+    test_each_lc_refuses_nsects_disagreeing_with_cmdsize();
     test_missing_segment_or_section_returns_null();
     test_probe_object_is_allocation_free();
 
