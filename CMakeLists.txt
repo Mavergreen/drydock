@@ -67,7 +67,16 @@ set(MACHO_TOOLS
   retag_swift_classes)
 
 foreach(tool IN LISTS MACHO_TOOLS)
-  add_executable(${tool} ${tool}.c)
+  # compat/: these six predate macho9 and are kept, under their original
+  # names, because mavericksforever.com/claude/install.sh builds patch_macho,
+  # change_dylib and add_version_min BY THOSE NAMES. TODAY it builds them
+  # from Wowfunhappy/Mavericks-Porting-Resources, not from this repo
+  # (PROVENANCE.md), so renaming them here breaks nothing live right now --
+  # matching names is about not breaking the adoption path (this repo's own
+  # PRs upstream, or mavericksforever.com switching install.sh to build from
+  # here) once it happens. See compat/README.md. Only the source path moved
+  # when the repo root was emptied; the installed binary name did not.
+  add_executable(${tool} compat/${tool}.c)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
   # these, so the build fails if a binary declares a floor above 10.9 or links a
@@ -132,7 +141,9 @@ add_test(NAME grow_test COMMAND grow_test)
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
 # invented. WORKING_DIRECTORY is the source dir because the fixture path is
-# relative -- same reason change_dylib_test needs it.
+# relative. (change_dylib_test.sh, below, needs no WORKING_DIRECTORY of its
+# own: it `cd`s to its own directory itself, the way every sh-based test here
+# does.)
 add_executable(image_test tests/image_test.c)
 target_compile_options(image_test PRIVATE -O2 -Wall)
 target_link_libraries(image_test PRIVATE macho9core)
@@ -141,7 +152,7 @@ add_test(NAME image_test COMMAND image_test
 
 # Hermetic tests for src/trie.c's export-trie rebuild (an insert_dylib parity gap): decode,
 # shift, re-serialize, all against hand-built and hand-computed trie byte
-# buffers -- no fixture file needed, same reasoning as macho_grow_test.
+# buffers -- no fixture file needed, same reasoning as grow_test.
 add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE macho9core)
@@ -156,11 +167,15 @@ target_link_libraries(linkedit_test PRIVATE macho9core)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
-# ordinal shows up as a dyld failure rather than a silent mis-binding. Needs the
-# source dir because it compiles change_dylib.c itself.
+# ordinal shows up as a dyld failure rather than a silent mis-binding. Now
+# matches chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh:
+# passed the bindir so it runs the change_dylib and fix_macho CMake actually
+# built, instead of compiling its own copies from a hand-enumerated source
+# list that had to be kept in sync with macho9core by hand -- it
+# still compiles from source, deriving the list from a glob, when run
+# standalone with no bindir argument.
 add_test(NAME change_dylib_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/change_dylib_test.sh"
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:change_dylib>")
 
 # Build equivalence. The tool binaries can never match across a 2014 clang and a
 # 2026 one, so comparing them is the wrong invariant. These tools are
