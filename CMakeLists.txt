@@ -54,7 +54,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -113,7 +113,17 @@ enable_testing()
 # against synthetic images built in memory. -Wno-unused-function because the
 # header exposes helpers this translation unit does not all use.
 add_executable(macho_grow_test macho_grow_test.c)
-target_compile_options(macho_grow_test PRIVATE -O2 -Wno-unused-function)
+# -Wall deploys lesson nine's detection net (tests/README.md): a
+# -Wfortify-source "will always overflow" diagnostic on a strcpy into a
+# char[16] segname/sectname fires here at COMPILE time, on any host, well
+# before a modern-clang runner would abort at RUNTIME building the same
+# fixture -- and this file holds the fixture builders. It was missing
+# -Wall entirely (silent since this target was first added); adding it
+# produces exactly one warning, already present without it and unrelated
+# to this file (macho_grow.h:198's mg_trie_scan, pre-existing, not
+# reachable from user input). -Wno-unused-function stays: the header
+# exposes helpers this translation unit does not all use.
+target_compile_options(macho_grow_test PRIVATE -O2 -Wall -Wno-unused-function)
 target_link_libraries(macho_grow_test PRIVATE macho9core)
 add_test(NAME macho_grow_test COMMAND macho_grow_test)
 
@@ -134,6 +144,14 @@ add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE macho9core)
 add_test(NAME trie_test COMMAND trie_test)
+
+# Hermetic tests for src/linkedit.c's ml_bump_all: a synthetic
+# image built by hand via mi_wrap, so no fixture file is needed -- same
+# reasoning as trie_test.
+add_executable(linkedit_test tests/linkedit_test.c)
+target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(linkedit_test PRIVATE macho9core)
+add_test(NAME linkedit_test COMMAND linkedit_test)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Needs the

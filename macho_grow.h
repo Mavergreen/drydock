@@ -53,6 +53,11 @@
 /* Load-command/section-type constants newer than the 10.9 SDK headers. */
 #include "mach_compat.h"
 
+/* The __LINKEDIT offset-bump table: ml_bump and ml_bump_all, covering
+ * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
+ * family. See src/linkedit.h for the exact field list. */
+#include "linkedit.h"
+
 #define MG_EXPORT_KIND_MASK        0x03
 #define MG_EXPORT_REEXPORT         0x08
 #define MG_EXPORT_STUB_AND_RESOLVER 0x10
@@ -99,11 +104,6 @@ static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
         lcp += lc->cmdsize;
     }
     return first == UINT32_MAX ? 4096 : first;
-}
-
-/* Shift one file-offset field down by `grow` if it points at/after `insert`. */
-static void mg_bump(uint32_t *off, uint32_t insert, uint32_t grow) {
-    if (*off >= insert) *off += grow;
 }
 
 /* ---- ULEB128, for the LC_FUNCTION_STARTS leading-delta re-encode ----------
@@ -706,9 +706,9 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
         case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64:
         case LC_VERSION_MIN_MACOSX: case LC_VERSION_MIN_IPHONEOS:
         case LC_SOURCE_VERSION: case LC_BUILD_VERSION: case LC_LINKER_OPTION:
-        case LC_NOTE: case LC_SUB_FRAMEWORK: case LC_SUB_UMBRELLA:
+        case LC_SUB_FRAMEWORK: case LC_SUB_UMBRELLA:
         case LC_SUB_CLIENT: case LC_SUB_LIBRARY: case LC_TWOLEVEL_HINTS:
-        case LC_PREBIND_CKSUM: case LC_ROUTINES_64: case LC_ATOM_INFO:
+        case LC_PREBIND_CKSUM: case LC_ROUTINES_64:
             break;
 
         /* Known to carry base-relative payloads we do NOT re-base. */
@@ -722,6 +722,24 @@ static int mg_classify(const uint8_t *buf, size_t fsize) {
         case LC_DYLD_CHAINED_FIXUPS:
             why = "LC_DYLD_CHAINED_FIXUPS is not supported here; run patch_macho first to "
                   "convert it to LC_DYLD_INFO_ONLY";
+            break;
+        /* LC_NOTE (note_command: a uint64_t offset/size pair, per publicly
+         * documented ld64/dyld source) and LC_ATOM_INFO (reported elsewhere
+         * as a plain linkedit_data_command) each carry a real file offset
+         * that src/linkedit.h's table does NOT bump -- neither struct's
+         * exact layout could be verified against any header available
+         * while that module was written (both postdate the 10.9 SDK and
+         * the modern host SDK on hand). Refuse rather than guess a shape
+         * and silently leave that file offset `grow` bytes low -- the tool
+         * would otherwise report success on a binary that will not load.
+         * See src/linkedit.h's own top comment for the fuller note. */
+        case LC_NOTE:
+            why = "LC_NOTE carries a file offset (note_command.offset) this tool does not "
+                  "verify or re-base";
+            break;
+        case LC_ATOM_INFO:
+            why = "LC_ATOM_INFO carries a file offset (dataoff) this tool does not verify "
+                  "or re-base";
             break;
         default:
             fprintf(stderr, "macho_grow: load command %#x is not classified, so it cannot be "
@@ -1071,62 +1089,90 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             }
             struct section_64 *sect = (struct section_64 *)(lcp + sizeof(*seg));
             for (uint32_t j = 0; j < seg->nsects; j++) {
-                mg_bump(&sect[j].offset, insert, grow);   /* addr stays fixed */
-                if (sect[j].reloff) mg_bump(&sect[j].reloff, insert, grow);
+                /* ml_bump refuses (returns -1, prints why) rather than wrap
+                 * a section offset/reloff that sits within `grow` of
+                 * UINT32_MAX -- same guard as src/linkedit.h's table, same
+                 * reason: a wrapped file offset is a corrupt binary that
+                 * still looks plausible. */
+                if (ml_bump(&sect[j].offset, insert, grow) != 0 ||   /* addr stays fixed */
+                    (sect[j].reloff && ml_bump(&sect[j].reloff, insert, grow) != 0)) {
+                    free(mg_new_trie);
+                    mg_snapshot_free(&snap);
+                    return -1;
+                }
             }
-            break;
-        }
-        case LC_SYMTAB: {
-            struct symtab_command *c = (struct symtab_command *)lcp;
-            mg_bump(&c->symoff, insert, grow);
-            mg_bump(&c->stroff, insert, grow);
-            break;
-        }
-        case LC_DYSYMTAB: {
-            struct dysymtab_command *c = (struct dysymtab_command *)lcp;
-            mg_bump(&c->tocoff, insert, grow);
-            mg_bump(&c->modtaboff, insert, grow);
-            mg_bump(&c->extrefsymoff, insert, grow);
-            mg_bump(&c->indirectsymoff, insert, grow);
-            mg_bump(&c->extreloff, insert, grow);
-            mg_bump(&c->locreloff, insert, grow);
-            break;
-        }
-        case LC_DYLD_INFO:
-        case LC_DYLD_INFO_ONLY: {
-            struct dyld_info_command *c = (struct dyld_info_command *)lcp;
-            mg_bump(&c->rebase_off, insert, grow);
-            mg_bump(&c->bind_off, insert, grow);
-            mg_bump(&c->weak_bind_off, insert, grow);
-            mg_bump(&c->lazy_bind_off, insert, grow);
-            mg_bump(&c->export_off, insert, grow);
             break;
         }
         case LC_MAIN: {
             /* entryoff is a file offset within __TEXT; bumping it keeps the
-             * entry's vm address fixed (base went down by the same amount). */
+             * entry's vm address fixed (base went down by the same amount).
+             * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
+             * bumped and overflow-checked directly at its own width, rather
+             * than through ml_bump's 32-bit-only guard, which would first
+             * silently truncate any entryoff at or past 4GB before ever
+             * checking anything. Real binaries never have an entryoff that
+             * large (it is a file offset within __TEXT), but "refuse rather
+             * than guess" means checking the real field, not an assumption
+             * about its range. */
             struct entry_point_command *c = (struct entry_point_command *)lcp;
-            uint32_t e = (uint32_t)c->entryoff;
-            mg_bump(&e, insert, grow);
-            c->entryoff = e;
-            break;
-        }
-        case LC_FUNCTION_STARTS:
-        case LC_DATA_IN_CODE:
-        case LC_CODE_SIGNATURE:
-        case LC_SEGMENT_SPLIT_INFO:
-        case LC_DYLIB_CODE_SIGN_DRS:
-        case LC_LINKER_OPTIMIZATION_HINT:
-        case LC_DYLD_EXPORTS_TRIE:
-        case LC_DYLD_CHAINED_FIXUPS: {
-            struct linkedit_data_command *c = (struct linkedit_data_command *)lcp;
-            mg_bump(&c->dataoff, insert, grow);
+            if (c->entryoff >= (uint64_t)insert) {
+                if (c->entryoff > UINT64_MAX - (uint64_t)grow) {
+                    fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
+                                    "a 64-bit field after growing by %#x; refusing rather "
+                                    "than wrap\n",
+                            (unsigned long long)c->entryoff, grow);
+                    free(mg_new_trie);
+                    mg_snapshot_free(&snap);
+                    return -1;
+                }
+                c->entryoff += grow;
+            }
             break;
         }
         default:
-            break;  /* LC_LOAD_DYLIB/DYLINKER/UUID/VERSION_MIN carry no file offsets */
+            break;  /* everything else -- the __LINKEDIT-resident structures
+                      * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
+                      * linkedit_data_command family) plus anything carrying
+                      * no file offset at all -- is ml_bump_all's job, below. */
         }
         lcp += lc->cmdsize;
+    }
+
+    /* The __LINKEDIT offset-bump table (src/linkedit.h): symtab, strtab,
+     * indirect symbols, dyld-info streams, function starts, data-in-code,
+     * code signature and siblings. A second pass over the same load-command
+     * chain the loop above just walked -- disjoint switch cases, so running
+     * them in either order or in one merged switch produces identical bytes.
+     * Re-wrapped rather than reusing a stale mi_image: buf/hdr above may be
+     * the realloc'd pointer from the __LINKEDIT-grow path earlier in this
+     * function, and cmdsize/ncmds/nsects are exactly what the loop just
+     * walked without changing, so this wrap can only re-confirm what is
+     * already true. */
+    {
+        mi_image im;
+        if (mi_wrap(buf, final_size, &im) != 0) {
+            fprintf(stderr, "macho_grow: internal error -- the header we just patched "
+                            "no longer validates\n");
+            /* mg_new_trie is still live here when mg_trie_needs_rebuild --
+             * it is not freed until the trie-rebasing block below runs.
+             * Every other post-realloc failure path in this function frees
+             * it; this one must too. free(NULL) is a no-op when it wasn't
+             * allocated. */
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
+        }
+        if (ml_bump_all(&im, insert, grow) != 0) {
+            /* ml_bump/ml_bump_all already printed why (an offset would
+             * overflow a 32-bit field); nothing more to add. Some fields on
+             * commands walked before the one that overflowed are already
+             * bumped in place -- not rolled back, same as every other
+             * internal failure path here: the caller must discard this
+             * buffer rather than write it out. */
+            free(mg_new_trie);
+            mg_snapshot_free(&snap);
+            return -1;
+        }
     }
 
     /* Re-point the dyld4 initializer offsets: the base dropped by `grow`, the
