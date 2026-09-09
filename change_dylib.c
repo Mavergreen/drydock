@@ -54,6 +54,7 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
@@ -62,44 +63,17 @@
 #include "macho_grow.h"
 #include "ordinals.h"
 #include "fat.h"
+#include "lc_kinds.h"
+#include "atomic_write.h"
+#include "mach_compat.h"
 #include <mach-o/fat.h>
 
-/* Load commands safe to drop: purely informational, or invalidated the moment
- * the binary is rewritten. Deliberately excludes LC_FUNCTION_STARTS (avxemu
- * reads it for patch-safety bounds) and LC_DATA_IN_CODE. None of them carries
- * a library ordinal, so stripping never disturbs the renumbering below. */
-#ifndef LC_SOURCE_VERSION
-#define LC_SOURCE_VERSION 0x2A
-#endif
-#ifndef LC_BUILD_VERSION
-#define LC_BUILD_VERSION 0x32
-#endif
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-#define LC_DYLIB_CODE_SIGN_DRS 0x2B
-#endif
-static const struct { const char *name; uint32_t cmd; } strippable[] = {
-    { "uuid",           LC_UUID                },
-    { "codesig",        LC_CODE_SIGNATURE      },
-    { "source-version", LC_SOURCE_VERSION      },
-    { "build-version",  LC_BUILD_VERSION       },
-    { "code-sign-drs",  LC_DYLIB_CODE_SIGN_DRS },
-};
-
-#ifndef LC_LOAD_UPWARD_DYLIB
-#define LC_LOAD_UPWARD_DYLIB (0x23 | LC_REQ_DYLD)
-#endif
-
-/* The 10.9 SDK's <mach-o/fat.h> predates the 64-bit fat container (wide
- * offsets, for arm64e/watchOS-style slices with a component that overflows
- * 32 bits) and does not define these -- so they are not conditional on
- * anything this codebase controls, only on which SDK headers happened to be
- * on the include path. Values match every SDK that DOES define them. */
-#ifndef FAT_MAGIC_64
-#define FAT_MAGIC_64 0xcafebabfu
-#endif
-#ifndef FAT_CIGAM_64
-#define FAT_CIGAM_64 0xbfbafecau
-#endif
+/* The -strip-lc KIND vocabulary lives in src/lc_kinds.c now, shared with
+ * cli/macho9.c's `lc -delete` and its --capabilities output -- see that
+ * file's comment for why. `strippable` was this table's name here before;
+ * kept as a local alias so the rest of this file (and its usage text) don't
+ * all need renaming for a table that hasn't changed shape. */
+#define strippable LC_STRIP_KINDS
 
 /* Caps on how many times one option may repeat. Each option accumulates into a
  * fixed-size array; nothing reads a length back, so an unchecked write past the
@@ -156,8 +130,12 @@ static uint32_t emit_dylib_lc(uint8_t *dst, const char *path) {
  * count via *out_ncmds, and how many changes applied via *out_mods. Does NOT
  * mutate the header, so it is safe to call more than once (e.g. again after the
  * header pad has been grown). `verbose` prints the per-change diagnostics once.
+ * Returns 0 on success, -1 (message already on stderr) if a dylib or LC_RPATH
+ * command's name offset is out of bounds for its own cmdsize -- see
+ * mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are unspecified on
+ * failure; the caller must not use them.
  */
-static void build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
+static int build_lcs(const uint8_t *buf, const struct change *changes, int nchanges,
                       const char *const *adds, int nadds,
                       const char *const *inserts, int ninserts,
                       const uint32_t *strip, int nstrip,
@@ -216,8 +194,14 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
          * excluded from matching just below, same as before. */
         if (mo_is_ordinal_lc(lc->cmd) || lc->cmd == LC_ID_DYLIB) {
             const struct dylib_command *dc = (const struct dylib_command *)lcp;
-            const char *name = (const char *)lcp + dc->dylib.name.offset;
             if (lc->cmd != LC_ID_DYLIB) {  /* never rewrite this dylib's own identity */
+                const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+                if (!name) {
+                    fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
+                                    "exceeds cmdsize %u); refusing\n",
+                            dc->dylib.name.offset, cmdsize);
+                    return -1;
+                }
                 for (int c = 0; c < nchanges; c++)
                     if (strcmp(name, changes[c].old_path) == 0) { matched = c; break; }
                 /* Deletion is decided by ord_is_deleted -- the SAME predicate
@@ -245,7 +229,13 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
         int rmatched = -1;
         if (lc->cmd == LC_RPATH) {
             const struct rpath_command *rc = (const struct rpath_command *)lcp;
-            const char *rp = (const char *)lcp + rc->path.offset;
+            const char *rp = mo_lc_str_at(lc, rc->path.offset);
+            if (!rp) {
+                fprintf(stderr, "ERROR: malformed LC_RPATH command (path offset %u "
+                                "exceeds cmdsize %u); refusing\n",
+                        rc->path.offset, cmdsize);
+                return -1;
+            }
             for (int c = 0; c < nrchanges; c++)
                 if (strcmp(rp, rchanges[c].old_path) == 0) { rmatched = c; break; }
             if (rmatched >= 0 && rchanges[rmatched].new_path != NULL) {
@@ -345,6 +335,85 @@ static void build_lcs(const uint8_t *buf, const struct change *changes, int ncha
     *out_off = new_off;
     *out_ncmds = ncmds;
     *out_mods = mods;
+    return 0;
+}
+
+/*
+ * Exact (or, in one rare case, safely over-) budget for the extra bytes
+ * build_lcs's -change/-change-rpath growth will write beyond each matched
+ * command's ORIGINAL cmdsize -- computed by walking the real load commands
+ * in `buf` the same way build_lcs's own matching loop does, instead of
+ * assuming "one grown command per -change/-change-rpath argument".
+ *
+ * That assumption was the bug: more than one load command can carry the same
+ * install name (or rpath), and build_lcs grows EVERY command that matches, so
+ * a binary with two LC_LOAD_DYLIBs naming the same library and a single
+ * -change for it needs budget for two grown commands, not one. Reproduced
+ * with two synthetic LC_LOAD_DYLIBs sharing an install name and a -change
+ * whose replacement path is ~9000 chars: the old per-argument budget sized
+ * new_lcs for one growth, build_lcs wrote two, and the second write ran past
+ * the allocation -- a heap overflow confirmed under libgmalloc (SIGSEGV; without
+ * it, memory corruption with exit 1).
+ *
+ * This performs the identical sizing build_lcs performs -- round8(base +
+ * strlen(new_path) + 1), kept only if it exceeds the original cmdsize -- over
+ * every matching command rather than once per argument, and mirrors
+ * build_lcs's own "first match in `changes`/`rchanges` wins" rule so it
+ * agrees with what build_lcs will actually do for the ordinary case where a
+ * name is named once. It is not bit-exact in one edge case: if the SAME old
+ * path appears in both a -change and a separate -delete, build_lcs's
+ * `ord_is_deleted` check (not visible to a single first-match walk) makes
+ * that command a deletion with no growth, while this still counts it as
+ * growing. That only over-budgets -- harmless slack in new_lcs -- never
+ * under-budgets, which is the property that matters here. Writes nothing;
+ * reads bounds-checked via mo_lc_str_at, and silently does not count a
+ * malformed command as a match -- build_lcs performs the same check and
+ * refuses the whole operation before it would ever act on that command, so
+ * excluding it here cannot lead to writing past what was budgeted.
+ */
+static uint32_t change_growth_bytes(const uint8_t *buf, uint32_t ncmds,
+                                     const struct change *changes, int nchanges,
+                                     const struct change *rchanges, int nrchanges) {
+    uint32_t growth = 0;
+    const uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)lcp;
+        uint32_t cmdsize = lc->cmdsize;
+
+        if (mo_is_ordinal_lc(lc->cmd)) {
+            const struct dylib_command *dc = (const struct dylib_command *)lcp;
+            const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+            if (name) {
+                for (int c = 0; c < nchanges; c++) {
+                    if (strcmp(name, changes[c].old_path) != 0) continue;
+                    if (changes[c].new_path != NULL) {
+                        size_t base = dc->dylib.name.offset;
+                        size_t new_len = strlen(changes[c].new_path) + 1;
+                        uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+                        if (needed > cmdsize) growth += needed - cmdsize;
+                    }
+                    break;
+                }
+            }
+        } else if (lc->cmd == LC_RPATH) {
+            const struct rpath_command *rc = (const struct rpath_command *)lcp;
+            const char *rp = mo_lc_str_at(lc, rc->path.offset);
+            if (rp) {
+                for (int c = 0; c < nrchanges; c++) {
+                    if (strcmp(rp, rchanges[c].old_path) != 0) continue;
+                    if (rchanges[c].new_path != NULL) {
+                        size_t base = rc->path.offset;
+                        size_t new_len = strlen(rchanges[c].new_path) + 1;
+                        uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+                        if (needed > cmdsize) growth += needed - cmdsize;
+                    }
+                    break;
+                }
+            }
+        }
+        lcp += cmdsize;
+    }
+    return growth;
 }
 
 /* process_one's return codes. PO_SKIP is not an error: it means `label` is not
@@ -413,6 +482,25 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
         add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(inserts[s]) + 1 + 7) & ~7UL);
     for (int a = 0; a < nradds; a++)
         add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(radds[a]) + 1 + 7) & ~7UL);
+    /* -change/-change-rpath can ALSO grow a command past its original
+     * cmdsize -- build_lcs's `matched`/`rmatched` branches size the rewritten
+     * command as (base + strlen(new_path) + 1), rounded up, keeping whichever
+     * is larger of that or the original cmdsize (see the "if (needed <
+     * cmdsize) needed = cmdsize;" lines in build_lcs). The real bound is
+     * "sum, over every EXISTING LOAD COMMAND that will actually match, of
+     * that command's own growth" -- not "one grown command per -change
+     * argument". A single -change argument can match more than one load
+     * command (two LC_LOAD_DYLIBs can legitimately carry the same install
+     * name), and each one grows independently, so a per-argument budget
+     * undercounts whenever that happens: this was a real heap buffer
+     * overflow (confirmed under libgmalloc: SIGSEGV; without libgmalloc,
+     * silent corruption then exit 1), reproduced with two synthetic
+     * LC_LOAD_DYLIBs sharing an install name and a -change whose replacement
+     * path is ~9000 chars. change_growth_bytes computes the real bound by
+     * walking the actual load commands the same way build_lcs's matching
+     * loop does -- see its own comment for the one (safe, over- not
+     * under-) approximation it still makes. */
+    add_bytes += change_growth_bytes(buf, hdr->ncmds, changes, nchanges, rchanges, nrchanges);
 
     /* Map each existing 1-based library ordinal to its new value (0 = deleted),
      * built once by mo_map_build so this rewrite and the ordinal renumbering
@@ -439,9 +527,12 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Build the new table once to learn its size (and print diagnostics). */
     uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
     uint32_t new_off, new_ncmds; int modifications;
-    build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
-              rchanges, nrchanges, radds, nradds,
-              new_lcs, &new_off, &new_ncmds, &modifications, 1);
+    if (build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+                   rchanges, nrchanges, radds, nradds,
+                   new_lcs, &new_off, &new_ncmds, &modifications, 1) != 0) {
+        free(new_lcs);
+        return PO_ERROR;
+    }
 
     if (modifications == 0) { printf("%s: nothing to change.\n", label); free(new_lcs); return 0; }
 
@@ -481,9 +572,12 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
          * the copied load commands reflect the shift. */
         free(new_lcs);
         new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-        build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
-                  rchanges, nrchanges, radds, nradds,
-                  new_lcs, &new_off, &new_ncmds, &modifications, 0);
+        if (build_lcs(buf, changes, nchanges, adds, nadds, inserts, ninserts, strip, nstrip,
+                       rchanges, nrchanges, radds, nradds,
+                       new_lcs, &new_off, &new_ncmds, &modifications, 0) != 0) {
+            free(new_lcs);
+            return PO_ERROR;
+        }
     }
 
     /* Check the map against what build_lcs actually emitted -- not just
@@ -507,7 +601,7 @@ static int process_one(uint8_t **pbuf, size_t *pfsize, const char *label,
 
     /* Ordinals last, against the committed table — and before any write, so a
      * refusal leaves the input untouched rather than half-rewritten. */
-    if (needs_renumber && mo_map_apply(buf, &omap, 1) != 0) {
+    if (needs_renumber && mo_map_apply(buf, fsize, &omap, 1) != 0) {
         fprintf(stderr, "ERROR: %s left unmodified\n", label);
         return PO_ERROR;
     }
@@ -765,46 +859,10 @@ static int process_fat(uint8_t **pbuf, size_t *pfsize,
     return 0;
 }
 
-/* Write `size` bytes of `buf` to a NEW file next to `path` (same directory,
- * so the rename below is on one filesystem and therefore atomic), matching
- * `mode`'s permission bits, then rename() it over `path`. Either the OLD
- * content is still there or the NEW content is, in full -- never a
- * half-written or truncated `path`. This replaces what used to be
- * ftruncate(fd, size) followed by write(fd, buf, size) directly on `path`:
- * if that write failed partway (disk full, killed mid-write, ...), `path`
- * was left truncated to the new size with only part of the new content in
- * it -- the user's original file gone and nothing usable in its place. On
- * any failure here `path` is guaranteed untouched and the temp file has
- * been removed; the caller only needs to report failure, not clean up. */
-static int write_atomic(const char *path, mode_t mode, const uint8_t *buf, size_t size) {
-    size_t tlen = strlen(path) + 8;
-    char *tmpl = (char *)malloc(tlen);
-    if (!tmpl) { fprintf(stderr, "out of memory\n"); return 1; }
-    snprintf(tmpl, tlen, "%s.XXXXXX", path);
-
-    int tfd = mkstemp(tmpl);
-    if (tfd < 0) { perror("mkstemp"); free(tmpl); return 1; }
-    fchmod(tfd, mode);   /* best-effort: match the original file's permissions */
-
-    size_t off = 0;
-    int failed = 0;
-    while (off < size) {
-        ssize_t n = write(tfd, buf + off, size - off);
-        if (n < 0) { perror("write"); failed = 1; break; }
-        off += (size_t)n;
-    }
-    if (!failed && fsync(tfd) != 0) { perror("fsync"); failed = 1; }
-    close(tfd);
-
-    if (failed || rename(tmpl, path) != 0) {
-        if (!failed) perror("rename");
-        unlink(tmpl);
-        free(tmpl);
-        return 1;
-    }
-    free(tmpl);
-    return 0;
-}
+/* copy_xattrs, write_in_place and write_atomic moved to src/atomic_write.c
+ * (wa_copy_xattrs / wa_write_in_place / wa_write_atomic) so `macho9 grow`
+ * can share this exact logic instead of writing its result via a plain
+ * ftruncate()+write() of its own -- see atomic_write.h. */
 
 int main(int argc, char **argv) {
     if (argc < 4) {
@@ -813,7 +871,7 @@ int main(int argc, char **argv) {
                         "[-strip-lc name] [-change-rpath old new] "
                         "[-delete-rpath path] [-add-rpath path] ...\n", argv[0]);
         fprintf(stderr, "  -strip-lc kinds:");
-        for (size_t k = 0; k < sizeof(strippable)/sizeof(strippable[0]); k++)
+        for (size_t k = 0; k < LC_STRIP_KINDS_COUNT; k++)
             fprintf(stderr, " %s", strippable[k].name);
         fprintf(stderr, "\n");
         return 1;
@@ -838,7 +896,7 @@ int main(int argc, char **argv) {
             allow_grow = 1;
             i += 1;
         } else if (strcmp(argv[i], "-strip-lc") == 0 && i + 1 < argc) {
-            size_t k, nk = sizeof(strippable)/sizeof(strippable[0]);
+            size_t k, nk = LC_STRIP_KINDS_COUNT;
             for (k = 0; k < nk; k++)
                 if (strcmp(argv[i+1], strippable[k].name) == 0) break;
             if (k == nk) { fprintf(stderr, "unknown -strip-lc kind: %s\n", argv[i+1]); return 1; }
@@ -950,7 +1008,27 @@ int main(int argc, char **argv) {
                               inserts, ninserts, strip, nstrip, rchanges, nrchanges,
                               radds, nradds, allow_grow, &modified);
         if (po == PO_SKIP) {
-            fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
+            /* By this point the file has already been open()'d O_RDWR,
+             * fstat'd, and fully read() -- "not READABLE" was never an
+             * accurate description of a PO_SKIP this late, and it collapsed
+             * three genuinely different causes (too short for a header, the
+             * wrong magic, or a magic-valid header whose load commands
+             * mi_wrap's own validation refuses) into one message that named
+             * none of them. Distinguish the three explicitly instead; an
+             * actually-unreadable file already failed earlier, at the
+             * open()/read() calls above, with its own perror()-based
+             * message. */
+            if (fsize < sizeof(struct mach_header_64)) {
+                fprintf(stderr, "%s: too short to be a 64-bit Mach-O (%zu bytes, need at "
+                                "least %zu)\n", path, fsize, sizeof(struct mach_header_64));
+            } else if (((struct mach_header_64 *)buf)->magic != MH_MAGIC_64) {
+                fprintf(stderr, "%s: not a 64-bit Mach-O (magic 0x%x)\n", path,
+                        ((struct mach_header_64 *)buf)->magic);
+            } else {
+                fprintf(stderr, "%s: malformed 64-bit Mach-O (load commands fail "
+                                "validation -- truncated, misaligned, or out of bounds; "
+                                "see any earlier message)\n", path);
+            }
             rc = 1;
         } else {
             rc = (po == PO_ERROR) ? 1 : 0;
@@ -958,7 +1036,7 @@ int main(int argc, char **argv) {
     }
 
     if (rc == 0 && modified) {
-        if (write_atomic(path, orig_mode, buf, fsize) != 0) {
+        if (wa_write_atomic(path, orig_mode, buf, fsize) != 0) {
             fprintf(stderr, "ERROR: %s left unmodified (atomic replace failed)\n", path);
             rc = 1;
         } else {

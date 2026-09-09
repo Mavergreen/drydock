@@ -37,6 +37,8 @@
 #define MACHO9_ORDINALS_H
 
 #include <stdint.h>
+#include <stddef.h>
+#include <mach-o/loader.h>
 
 /* MAX_LIBRARY_ORDINAL: the encoding's own ceiling (mach-o/loader.h). No image
  * can have more ordinal-bearing dylibs than this, so it doubles as the
@@ -60,6 +62,20 @@ typedef struct mo_map {
  * mo_map_build's walk (deciding what ordinal it gets) can't drift apart by
  * using two different definitions of "ordinal-bearing". */
 int mo_is_ordinal_lc(uint32_t cmd);
+
+/* A dylib_command's dylib.name.offset (equally, an rpath_command's
+ * path.offset) is an lc_str: an offset relative to the START of the load
+ * command that carries it. Nothing about the format guarantees it lands
+ * inside that command -- a malformed or hostile input can set it past
+ * cmdsize, making a naive `(char *)lc + offset` point past the command, into
+ * whatever follows it (or past the mapped buffer entirely) instead of at a
+ * NUL-terminated string. Every reader of one of these names must go through
+ * here rather than repeating the check inline: cli/macho9.c's info dump,
+ * change_dylib.c's build_lcs, and mo_map_build below each used to compute
+ * this pointer independently, and only one of the three actually checked.
+ * Returns NULL for an out-of-bounds offset; the caller decides whether that
+ * means "skip this command" or "refuse the whole operation". */
+const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset);
 
 /* Walk the `ncmds` load commands starting right after the mach_header_64 at
  * `buf`, in order, and assign each ordinal-bearing dylib (mo_is_ordinal_lc)
@@ -112,15 +128,21 @@ int mo_count_ordinal_lcs(const uint8_t *lcs, uint32_t ncmds);
 int mo_map_validate(const mo_map *map, int base, int max_new, int nadds,
                      const uint8_t *new_lcs, uint32_t new_ncmds);
 
-/* Apply `map` to every place `buf` records a library ordinal: the symtab's
- * undefined/prebound symbols, and the LC_DYLD_INFO bind/weak-bind/lazy-bind
- * streams. Must run against the already-committed load-command table, since
- * it reads the LC_SYMTAB and LC_DYLD_INFO offsets straight out of it.
- * Refuses (returns -1, with a message on stderr) rather than emit a binary
- * with a dangling or out-of-range ordinal: an unknown bind opcode, a new
- * ordinal that no longer fits the encoding the linker chose, or a symbol
- * still bound to a deleted dylib. `verbose` prints a one-line summary on
+/* Apply `map` to every place the `size`-byte buffer at `buf` records a
+ * library ordinal: the symtab's undefined/prebound symbols, and the
+ * LC_DYLD_INFO bind/weak-bind/lazy-bind streams. Must run against the
+ * already-committed load-command table, since it reads the LC_SYMTAB and
+ * LC_DYLD_INFO offsets straight out of it -- and those offsets/sizes come
+ * from the file, not from anything this function derived itself, so `size`
+ * is what lets it refuse rather than read or WRITE outside the buffer when
+ * one of them is malformed (image.h and fat.h both bound every access they
+ * make against a size the caller gives them; this is that same discipline
+ * applied here). Refuses (returns -1, with a message on stderr) rather than
+ * emit a binary with a dangling or out-of-range ordinal: an unknown bind
+ * opcode, a new ordinal that no longer fits the encoding the linker chose, a
+ * symbol still bound to a deleted dylib, or a symtab/bind-stream region that
+ * does not fit within `size`. `verbose` prints a one-line summary on
  * success. */
-int mo_map_apply(uint8_t *buf, const mo_map *map, int verbose);
+int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose);
 
 #endif /* MACHO9_ORDINALS_H */

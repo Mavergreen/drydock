@@ -6,26 +6,16 @@
 
 #include "ordinals.h"
 #include "uleb.h"
-
-/* The 10.9 SDK headers predate chained fixups; change_dylib.c got this
- * definition for free via macho_grow.h's guarded #define. This file doesn't
- * include macho_grow.h (it's tool-specific and header-only), so it needs its
- * own copy of the same guarded fallback. */
-#ifndef LC_DYLD_CHAINED_FIXUPS
-#define LC_DYLD_CHAINED_FIXUPS 0x80000034
-#endif
-
-/* Same story as LC_DYLD_CHAINED_FIXUPS above, and the same guarded fallback
- * value macho_grow.h already carries for its own (unrelated) purposes: the
- * 10.9 SDK's <mach-o/loader.h> predates this constant. mo_map_build needs it
- * below to REFUSE the load command, not to classify it -- see that comment. */
-#ifndef LC_LAZY_LOAD_DYLIB
-#define LC_LAZY_LOAD_DYLIB 0x20
-#endif
+#include "mach_compat.h"
 
 int mo_is_ordinal_lc(uint32_t cmd) {
     return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||
            cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
+}
+
+const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset) {
+    if (offset >= lc->cmdsize) return NULL;
+    return (const char *)lc + offset;
 }
 
 int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
@@ -64,7 +54,13 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
         }
         if (mo_is_ordinal_lc(lc->cmd)) {
             const struct dylib_command *dc = (const struct dylib_command *)p;
-            const char *name = (const char *)p + dc->dylib.name.offset;
+            const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
+            if (!name) {
+                fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
+                                "exceeds cmdsize %u); refusing\n",
+                        dc->dylib.name.offset, lc->cmdsize);
+                return -1;
+            }
             if (++nold > MO_MAX_DYLIBS) {
                 fprintf(stderr, "ERROR: more than %d dylibs\n", MO_MAX_DYLIBS);
                 return -1;
@@ -238,7 +234,16 @@ static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
     return 0;
 }
 
-int mo_map_apply(uint8_t *buf, const mo_map *m, int verbose) {
+/* Does the `len`-byte region starting at `off` fit inside a `size`-byte
+ * buffer? Written so the check itself cannot be fooled by the same integer
+ * overflow it exists to catch: off/len come straight from the file (an
+ * LC_SYMTAB or LC_DYLD_INFO command), so a malformed one is exactly the
+ * input this guards against. */
+static int mo_fits(uint64_t off, uint64_t len, size_t size) {
+    return off <= (uint64_t)size && len <= (uint64_t)size - off;
+}
+
+int mo_map_apply(uint8_t *buf, size_t size, const mo_map *m, int verbose) {
     const int *map = m->old_to_new;
     int nold = m->n;
     struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
@@ -269,6 +274,23 @@ int mo_map_apply(uint8_t *buf, const mo_map *m, int verbose) {
 
     long changed = 0;
     if (st) {
+        /* image.h and fat.h both bound every access they make against a size
+         * the caller gives them; this module read straight from st->symoff/
+         * nsyms/stroff/strsize -- taken from the file, not derived -- with no
+         * such check, so a malformed LC_SYMTAB could read (and, for n_desc,
+         * WRITE) past the buffer. Refuse instead. */
+        if (!mo_fits(st->symoff, (uint64_t)st->nsyms * sizeof(struct nlist_64), size)) {
+            fprintf(stderr, "ERROR: LC_SYMTAB's symbol table (offset %u, %u entries) "
+                            "does not fit within the %zu-byte image; refusing\n",
+                    st->symoff, st->nsyms, size);
+            return -1;
+        }
+        if (!mo_fits(st->stroff, st->strsize, size)) {
+            fprintf(stderr, "ERROR: LC_SYMTAB's string table (offset %u, %u bytes) "
+                            "does not fit within the %zu-byte image; refusing\n",
+                    st->stroff, st->strsize, size);
+            return -1;
+        }
         struct nlist_64 *syms = (struct nlist_64 *)(buf + st->symoff);
         for (uint32_t i = 0; i < st->nsyms; i++) {
             struct nlist_64 *n = &syms[i];
@@ -282,7 +304,18 @@ int mo_map_apply(uint8_t *buf, const mo_map *m, int verbose) {
                 return -1;
             }
             if (map[old] == 0) {
-                const char *nm = (const char *)(buf + st->stroff + n->n_un.n_strx);
+                /* n_strx is itself untrusted input; only follow it into the
+                 * string table already proven (above) to fit within `size`,
+                 * and only if it lands inside strsize -- otherwise name the
+                 * symbol by index instead of reading past the string table. */
+                char nmbuf[64];
+                const char *nm;
+                if ((uint64_t)n->n_un.n_strx < st->strsize) {
+                    nm = (const char *)(buf + st->stroff + n->n_un.n_strx);
+                } else {
+                    snprintf(nmbuf, sizeof nmbuf, "(symtab entry %u, bad n_strx)", i);
+                    nm = nmbuf;
+                }
                 fprintf(stderr, "ERROR: symbol %s still binds to the dylib being "
                                 "deleted; refusing\n", nm);
                 return -1;
@@ -297,15 +330,38 @@ int mo_map_apply(uint8_t *buf, const mo_map *m, int verbose) {
     }
 
     if (di) {
-        if (di->bind_size &&
-            mo_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind") != 0)
-            return -1;
-        if (di->weak_bind_size &&
-            mo_bind_stream(buf + di->weak_bind_off, di->weak_bind_size, map, nold, "weak bind") != 0)
-            return -1;
-        if (di->lazy_bind_size &&
-            mo_bind_stream(buf + di->lazy_bind_off, di->lazy_bind_size, map, nold, "lazy bind") != 0)
-            return -1;
+        if (di->bind_size) {
+            if (!mo_fits(di->bind_off, di->bind_size, size)) {
+                fprintf(stderr, "ERROR: LC_DYLD_INFO's bind stream (offset %u, %u bytes) "
+                                "does not fit within the %zu-byte image; refusing\n",
+                        di->bind_off, di->bind_size, size);
+                return -1;
+            }
+            if (mo_bind_stream(buf + di->bind_off, di->bind_size, map, nold, "bind") != 0)
+                return -1;
+        }
+        if (di->weak_bind_size) {
+            if (!mo_fits(di->weak_bind_off, di->weak_bind_size, size)) {
+                fprintf(stderr, "ERROR: LC_DYLD_INFO's weak bind stream (offset %u, %u "
+                                "bytes) does not fit within the %zu-byte image; refusing\n",
+                        di->weak_bind_off, di->weak_bind_size, size);
+                return -1;
+            }
+            if (mo_bind_stream(buf + di->weak_bind_off, di->weak_bind_size, map, nold,
+                                "weak bind") != 0)
+                return -1;
+        }
+        if (di->lazy_bind_size) {
+            if (!mo_fits(di->lazy_bind_off, di->lazy_bind_size, size)) {
+                fprintf(stderr, "ERROR: LC_DYLD_INFO's lazy bind stream (offset %u, %u "
+                                "bytes) does not fit within the %zu-byte image; refusing\n",
+                        di->lazy_bind_off, di->lazy_bind_size, size);
+                return -1;
+            }
+            if (mo_bind_stream(buf + di->lazy_bind_off, di->lazy_bind_size, map, nold,
+                                "lazy bind") != 0)
+                return -1;
+        }
     }
 
     if (verbose)

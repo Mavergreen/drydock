@@ -178,12 +178,19 @@ else
     # Neither a clean run nor the specific signal we know how to explain.
     # Per the coordinator: do not guess. Anything unrecognized here means the
     # grow/lc sections below cannot trust EITHER conclusion, so they must not
-    # silently skip -- see their use of signing_probe_unknown.
+    # silently skip. That is fully achieved by leaving signing_enforced at 0:
+    # the grow/lc sections below gate their run-assertions on
+    # `signing_enforced -eq 1` (skip only when enforcement is POSITIVELY
+    # confirmed), so 0 here already means "treat as real, don't skip" for
+    # this unrecognized case exactly as it does for the confirmed-unenforced
+    # one -- a separate signing_probe_unknown flag was tracked alongside this
+    # for a time but nothing downstream ever read it (confirmed: no other
+    # reference to it in this file), so it added a state without adding
+    # behavior. Removed rather than left to imply a distinction that wasn't
+    # there.
     signing_enforced=0
-    signing_probe_unknown=1
     bad "host probe" "unrecognized outcome (exit $signing_probe_rc: $(head -1 "$T/signing_probe.out" 2>/dev/null || cat "$T/perturb.out" 2>/dev/null || echo 'no output')) -- cannot determine whether this host enforces code-signing on modified binaries; treating grow/lc run-assertions as real rather than risking a masked defect"
 fi
-signing_probe_unknown="${signing_probe_unknown:-0}"
 
 # ---------------------------------------------------------------------------
 # Is this host the product's actual target platform (Mac OS X 10.9, Darwin
@@ -208,6 +215,20 @@ case "$caps" in
     "format 1"*) ok "capabilities: starts with format line" ;;
     *) bad "capabilities: format line" "got: $(echo "$caps" | head -1)" ;;
 esac
+# exitcodes documents EX_REFUSED (see cli/macho9.c) so a caller can tell
+# "macho9 examined FILE and declined" apart from "macho9 itself failed"
+# without scraping stderr text. Assert the line exists, names refused=2,
+# and that a real refusal (verify on a non-Mach-O file) actually exits with
+# that code -- not just some nonzero value.
+echo "$caps" | grep -q "^exitcodes ok=0 refused=2 failed=1$" \
+    && ok "capabilities: exitcodes line documents refused=2" \
+    || bad "capabilities: exitcodes line" "missing or wrong: $(echo "$caps" | grep '^exitcodes')"
+echo 'not a mach-o' > "$T/not-a-macho-in-cli-test"
+rc=0
+"$MACHO9" verify "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] \
+    && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 2" \
+    || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 2"
 for v in verify info grow minos lc dylib rpath; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
@@ -227,6 +248,84 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     ok "capabilities: rpath insert correctly absent"
 fi
+
+# ----------------------------------------------------------------------------
+# capabilities vocabulary must match what the parsers actually accept.
+#
+# --capabilities' "kinds=" and "ops=" lists and the cmd_lc/cmd_dylib_or_rpath
+# parsers that decide what a real invocation accepts are now both built from
+# ONE table each (LC_STRIP_KINDS, DYLIB_OPS in cli/macho9.c) precisely so
+# they cannot say different things -- before this they were three
+# hand-copied lists (change_dylib's strippable[], macho9's own LC_KINDS[],
+# and a hardcoded "kinds=..." string) that a review found had already drifted
+# apart in spirit even where the values still matched by luck. This does not
+# re-derive the table (it can't see the C source); it drives macho9 itself
+# with every name --capabilities claims and confirms none of them is refused
+# as unrecognized -- which is exactly what would happen if a name were ever
+# added to (or dropped from) one list and not the other.
+build_main "$T/vocab_fixture"
+kinds=$(echo "$caps" | sed -n 's/^verb lc .*kinds=\([^ ]*\).*/\1/p')
+[ -n "$kinds" ] || bad "capabilities vocab" "no kinds= on the lc line"
+oldifs="$IFS"; IFS=','
+vocab_kind_fail=0
+for kind in $kinds; do
+    "$MACHO9" lc "$T/vocab_fixture" -delete "$kind" >"$T/vocab_kind.out" 2>&1 || true
+    if grep -qi "unknown KIND" "$T/vocab_kind.out"; then
+        bad "capabilities vocab: kind '$kind'" "advertised but lc -delete refused it as unknown: $(cat "$T/vocab_kind.out")"
+        vocab_kind_fail=1
+    fi
+done
+IFS="$oldifs"
+[ "$vocab_kind_fail" -eq 0 ] && ok "capabilities vocab: every advertised lc kind is accepted by lc -delete"
+# And the inverse: a KIND that is plainly not real must still be refused --
+# otherwise this check could trivially "pass" by lc accepting everything.
+"$MACHO9" lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
+    && bad "capabilities vocab: bogus kind" "lc -delete accepted a KIND that isn't in any table" \
+    || { grep -qi "unknown KIND" "$T/vocab_bogus.out" \
+         && ok "capabilities vocab: an unadvertised kind is refused as unknown" \
+         || bad "capabilities vocab: bogus kind" "refused, but not with 'unknown KIND': $(cat "$T/vocab_bogus.out")"; }
+
+# Same idea for dylib/rpath ops=: every op --capabilities advertises for a
+# verb must be recognized by that verb's own parser (never "unknown or
+# incomplete operation"), and dylib/rpath must each still refuse an op that
+# belongs to the OTHER's vocabulary but not its own (rpath has no -insert or
+# -reexport in change_dylib -- see DYLIB_OPS in cli/macho9.c).
+vocab_ops_fail=0
+check_ops_accepted() {
+    # $1=verb (dylib|rpath)  $2=ops csv from capabilities
+    verb="$1"; oldifs2="$IFS"; IFS=','
+    for op in $2; do
+        IFS="$oldifs2"   # restore default (whitespace) splitting for the command below
+        case "$op" in
+            replace) "$MACHO9" "$verb" "$T/vocab_fixture" "-$op" /no/such/old /no/such/new \
+                         >"$T/vocab_op.out" 2>&1 || true ;;
+            *)       "$MACHO9" "$verb" "$T/vocab_fixture" "-$op" /no/such/path \
+                         >"$T/vocab_op.out" 2>&1 || true ;;
+        esac
+        if grep -q "unknown or incomplete operation" "$T/vocab_op.out"; then
+            bad "capabilities vocab: $verb -$op" "advertised but the parser called it unknown/incomplete: $(cat "$T/vocab_op.out")"
+            vocab_ops_fail=1
+        fi
+        IFS=','
+    done
+    IFS="$oldifs2"
+}
+dylib_ops=$(echo "$caps" | sed -n 's/^verb dylib .*ops=\([^ ]*\).*/\1/p')
+rpath_ops=$(echo "$caps" | sed -n 's/^verb rpath .*ops=\([^ ]*\).*/\1/p')
+[ -n "$dylib_ops" ] && [ -n "$rpath_ops" ] || bad "capabilities vocab" "missing ops= on dylib or rpath line"
+check_ops_accepted dylib "$dylib_ops"
+check_ops_accepted rpath "$rpath_ops"
+[ "$vocab_ops_fail" -eq 0 ] && ok "capabilities vocab: every advertised dylib/rpath op is accepted by its own parser"
+# rpath's ops= must not include insert/reexport (change_dylib has neither
+# for rpath) -- if it ever did, the parser would refuse it (case above would
+# catch that), but this also confirms capabilities didn't just stop
+# advertising them for an unrelated reason.
+case ",$rpath_ops," in
+    *,insert,*|*,reexport,*)
+        bad "capabilities vocab: rpath ops=" "unexpectedly advertises insert/reexport: $rpath_ops" ;;
+    *)
+        ok "capabilities vocab: rpath ops= correctly omits insert/reexport" ;;
+esac
 
 # declassify itself must error, not silently do nothing or crash.
 if "$MACHO9" declassify "$T/main" "$T/out" >/dev/null 2>"$T/declassify.err"; then
@@ -283,6 +382,33 @@ else
 fi
 "$MACHO9" verify "$T/grow_fixture" >/dev/null && ok "grow: result still verifies" \
     || bad "grow: post-grow verify" "failed"
+
+# grow now replaces its target via wa_write_atomic (src/atomic_write.h,
+# mkstemp+rename) -- the same path change_dylib uses -- instead of
+# ftruncate()+write() straight into the open file. Prove the symlink-safety
+# that buys: growing THROUGH a symlink must rewrite the REAL target (fresh
+# inode, since rename() always creates one) and leave the symlink itself
+# intact, not replace the symlink with a plain file the way a naive rename
+# of the symlink PATH itself would.
+build_main "$T/grow_link_target"
+ln -sf grow_link_target "$T/grow_link"
+target_ino_before=$(stat -f %i "$T/grow_link_target")
+"$MACHO9" grow "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
+    || bad "grow: symlink" "exit failed: $(cat "$T/grow_link.out")"
+if [ -L "$T/grow_link" ]; then
+    ok "grow: growing through a symlink leaves the symlink a symlink"
+else
+    bad "grow: symlink" "the symlink itself got replaced by a plain file"
+fi
+target_ino_after=$(stat -f %i "$T/grow_link_target")
+if [ "$target_ino_after" != "$target_ino_before" ]; then
+    ok "grow: the real target was replaced via mkstemp+rename (fresh inode = atomicity kept)"
+else
+    bad "grow: symlink" "target inode unchanged -- wrote in place, not atomically"
+fi
+readlink "$T/grow_link" | grep -q "^grow_link_target$" \
+    && ok "grow: symlink still points at the same name" \
+    || bad "grow: symlink" "symlink target changed: $(readlink "$T/grow_link")"
 
 # Whether a GROWN binary can be EXECUTED, ruling (settled after evidence: an
 # earlier host-capability probe showed the cross runner runs a

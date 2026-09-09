@@ -33,9 +33,11 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # That means it must track what change_dylib includes: macho_grow.h now pulls in
 # src/uleb.h and src/trie.h (the export-trie rebuild, for a widening ULEB),
 # change_dylib.c itself now includes src/ordinals.h and src/fat.h (the shared
-# fat_header/fat_arch validator both it and fix_macho use), so the toolkit
-# sources it needs are listed here too.
-"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c
+# fat_header/fat_arch validator both it and fix_macho use), src/lc_kinds.h
+# (the -strip-lc KIND table, shared with macho9's `lc -delete`), and
+# src/atomic_write.h (write_atomic's mkstemp+rename replace, shared with
+# `macho9 grow`), so the toolkit sources it needs are listed here too.
+"$CC" -O2 -I src -o "$T/change_dylib" change_dylib.c src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c
 fails=0
 ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
@@ -917,6 +919,127 @@ after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{p
     && ok "fat collision: input left completely untouched on refusal" \
     || bad "fat collision" "input was modified despite the refusal"
 
+# --- 14. write_atomic must replace the FILE, never the PATH -------------------
+# Regression: the mkstemp+rename atomic write (landed alongside case 12/13's
+# fat fixes) rename()d over the PATH the caller gave it. When that path is a
+# SYMLINK -- exactly the shape of a macOS framework dylib,
+# Foo.framework/Foo -> Versions/A/Foo -- rename() replaced the symlink
+# itself with a plain file and left the real target (and anything else that
+# follows the same symlink) unpatched, while the tool still printed
+# "Updated" and exited 0. The same rename-over-path also breaks a file with
+# multiple hard links: the sibling name keeps the stale content because
+# rename() gives its own name a fresh inode. Both are covered here, plus the
+# ordinary (single-link, non-symlink) case that must keep its atomicity win.
+# Structural reader, not otool text: otool -l's "path X (offset N)" wording
+# and its -A2 line spacing both drift across Xcode versions -- this suite
+# went red on the modern cross runner seven times during this project, every
+# one a test assumption exactly like that. Per tests/README.md ("never parse
+# nm/otool human-readable output as an oracle"), read the LC_RPATH load
+# commands directly out of the Mach-O and compare the path bytes, so this
+# behaves identically on a 2014 and a 2026 toolchain -- same pattern as
+# has_lc.c below.
+cat > "$T/has_rpath.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+/* Exit 0 if `file` carries an LC_RPATH command whose path is exactly
+ * `path`, 1 if it doesn't, 2 on a usage/read error. */
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file path\n", argv[0]); return 2; }
+    const char *want = argv[2];
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st;
+    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+    uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == LC_RPATH) {
+            struct rpath_command *rc = (struct rpath_command *)lcp;
+            const char *p = (const char *)lcp + rc->path.offset;
+            if (strcmp(p, want) == 0) return 0;
+        }
+        lcp += lc->cmdsize;
+    }
+    return 1;
+}
+EOF
+"$CC" -O2 -o "$T/has_rpath" "$T/has_rpath.c"
+rpath_present() { "$T/has_rpath" "$1" "$2"; }
+
+# 14a. symlink: change_dylib is pointed at the LINK; the LINK must still be
+# a symlink to the same name afterward, and the REAL file it names must be
+# the one that changed. An xattr on the real file (quarantine et al. are
+# exactly this) must survive too.
+build_main "$T/wa_real"
+xattr -w com.macho9.test present "$T/wa_real" 2>/dev/null || true
+ln -s wa_real "$T/wa_link"
+before_ino=$(stat -f %i "$T/wa_real")
+"$T/change_dylib" "$T/wa_link" -add-rpath /opt/macho9_wa_pad >/dev/null \
+    || bad "write_atomic symlink" "change_dylib failed"
+if [ -L "$T/wa_link" ] && [ "$(readlink "$T/wa_link")" = "wa_real" ]; then
+    ok "write_atomic: symlink is still a symlink, to the same name"
+else
+    bad "write_atomic symlink" "wa_link is no longer a symlink to wa_real"
+fi
+after_ino=$(stat -f %i "$T/wa_real")
+if rpath_present "$T/wa_real" "/opt/macho9_wa_pad"; then
+    ok "write_atomic: the REAL target got the change (via the symlink)"
+else
+    bad "write_atomic symlink" "wa_real does not have the new rpath"
+fi
+[ "$before_ino" != "$after_ino" ] \
+    && ok "write_atomic: symlink's real target rewritten via mkstemp+rename (fresh inode = atomicity kept)" \
+    || bad "write_atomic symlink" "wa_real's inode did not change ($before_ino) -- fell back to in-place write instead of the atomic path"
+xv=$(xattr -p com.macho9.test "$T/wa_real" 2>/dev/null || echo MISSING)
+case "$xv" in
+    present) ok "write_atomic: xattr on the real target survived" ;;
+    MISSING) bad "write_atomic symlink" "xattr dropped from the real target" ;;
+    *) bad "write_atomic symlink" "xattr corrupted: got '$xv'" ;;
+esac
+
+# 14b. hard link: two names, one inode. A naive mkstemp+rename gives one
+# name a fresh inode and leaves the other showing stale content -- so this
+# must fall back to an in-place write, and BOTH names must show the change.
+build_main "$T/wa_hard1"
+ln "$T/wa_hard1" "$T/wa_hard2"
+"$T/change_dylib" "$T/wa_hard1" -add-rpath /opt/macho9_wa_hardpad >/dev/null \
+    || bad "write_atomic hardlink" "change_dylib failed"
+if rpath_present "$T/wa_hard1" "/opt/macho9_wa_hardpad" && rpath_present "$T/wa_hard2" "/opt/macho9_wa_hardpad"; then
+    ok "write_atomic: hard-linked sibling shows the change too (still one inode)"
+else
+    bad "write_atomic hardlink" "sibling link did not see the update -- hard-link group was split"
+fi
+[ "$(stat -f %i "$T/wa_hard1")" = "$(stat -f %i "$T/wa_hard2")" ] \
+    && ok "write_atomic: hard-link count preserved (both names, one inode)" \
+    || bad "write_atomic hardlink" "wa_hard1 and wa_hard2 no longer share an inode"
+
+# 14c. ordinary case: no symlink, no extra hard link -- must still take the
+# atomic mkstemp+rename path (the whole reason write_atomic exists: a write
+# failing partway must never leave a half-written binary in place).
+build_main "$T/wa_plain"
+before_ino=$(stat -f %i "$T/wa_plain")
+"$T/change_dylib" "$T/wa_plain" -add-rpath /opt/macho9_wa_plain >/dev/null \
+    || bad "write_atomic ordinary" "change_dylib failed"
+after_ino=$(stat -f %i "$T/wa_plain")
+if rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && [ "$before_ino" != "$after_ino" ]; then
+    ok "write_atomic: ordinary case still goes through mkstemp+rename (new inode)"
+else
+    bad "write_atomic ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/macho9_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
+fi
+
 # --- 15. LC_LAZY_LOAD_DYLIB (legacy -lazy_library) must be an explicit ------
 #         REFUSAL, never silent mis-renumbering.
 #
@@ -1005,6 +1128,256 @@ else
     [ "$before_md5" = "$after_md5" ] \
         && ok "LC_LAZY_LOAD_DYLIB: input left completely untouched on refusal" \
         || bad "LC_LAZY_LOAD_DYLIB" "input was modified despite the refusal"
+fi
+
+# --- 16. src/fat.c's declared-slice overlap check, exercised through -------
+#         fix_macho -- its ONLY protection against this.
+#
+# mfat_parse (src/fat.c:~55-61) walks every DECLARED fat_arch entry and
+# refuses if any two overlap each other -- a read-side check, independent of
+# what any caller does with the file afterward. Before this check existed
+# this exact malformed input silently let change_dylib's reassembly
+# corrupt one slice's bytes with another's (case 12/13 above cover THAT,
+# the write-side consequence, for change_dylib specifically). But fix_macho
+# has no write-side check of its own to fall back on -- mfat_parse's
+# read-side refusal is 100% of what stands between fix_macho and indexing
+# into overlapping/aliased slice data as if the two slices were independent.
+# A prior review deleted this check and the entire suite (32/32 at the time)
+# stayed green, because nothing exercised it -- this closes that hole
+# directly, against the tool that actually depends on it.
+#
+# fix_macho is built from source here (like change_dylib above) rather than
+# consumed as a CMake target, for the same standalone-script reason. It now
+# routes process_macho's validation through mi_wrap (src/image.c) and bounds
+# a dylib name offset via mo_lc_str_at (src/ordinals.c, which in turn needs
+# src/uleb.c for its bind-stream ULEB decoding, even though fix_macho itself
+# never calls that path) -- so it needs the same toolkit sources change_dylib
+# above does, not just fat.c.
+"$CC" -O2 -I src -o "$T/fix_macho" fix_macho.c src/fat.c src/image.c src/ordinals.c src/uleb.c
+
+cat > "$T/mk2fat_overlap.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <mach-o/fat.h>
+static uint32_t sw32(uint32_t v) {
+    return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
+}
+int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: %s out\n", argv[0]); return 2; }
+    /* Two DECLARED slices whose byte ranges genuinely intersect:
+     * slice0 = [0x1000, 0x3000), slice1 = [0x2000, 0x3000) -- overlap at
+     * [0x2000, 0x3000). Neither runs past the file or into the header/arch
+     * table, so this exercises ONLY the pairwise overlap check, nothing
+     * else mfat_parse also refuses. */
+    uint32_t total = 0x3000;
+    uint8_t *out = calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)out;
+    fh->magic = sw32(FAT_MAGIC);
+    fh->nfat_arch = sw32(2);
+    struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
+    ar[0].cputype = sw32(7); ar[0].cpusubtype = sw32(3);
+    ar[0].offset = sw32(0x1000); ar[0].size = sw32(0x2000); ar[0].align = sw32(12);
+    ar[1].cputype = sw32(0x1000007); ar[1].cpusubtype = sw32(3);
+    ar[1].offset = sw32(0x2000); ar[1].size = sw32(0x1000); ar[1].align = sw32(12);
+    int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (ofd < 0) { perror("open out"); return 2; }
+    if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
+    close(ofd);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mk2fat_overlap" "$T/mk2fat_overlap.c"
+"$T/mk2fat_overlap" "$T/fat_two_declared_slices"
+before_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_two_declared_slices" | awk '{print $1}')
+
+rc=0
+"$T/fix_macho" "$T/fat_two_declared_slices" -strip_build_version >"$T/overlap_fix.out" 2>&1 || rc=$?
+after_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_two_declared_slices" | awk '{print $1}')
+
+[ "$rc" -ne 0 ] \
+    && ok "fat declared-overlap: fix_macho refuses (exit $rc)" \
+    || bad "fat declared-overlap" "fix_macho exited 0 on two declared slices that overlap each other"
+grep -qi "overlapping" "$T/overlap_fix.out" \
+    && ok "fat declared-overlap: refusal names the overlap" \
+    || bad "fat declared-overlap" "refused without mentioning overlap: $(cat "$T/overlap_fix.out")"
+[ "$before_md5" = "$after_md5" ] \
+    && ok "fat declared-overlap: input left completely untouched on refusal" \
+    || bad "fat declared-overlap" "input was modified despite the refusal"
+
+# --- 17. heap overflow on a long -change replacement path -------------------
+#
+# process_one sizes its scratch buffer (new_lcs) as `first_sect_off +
+# add_bytes + 64`, where add_bytes used to count only the bytes -add/-insert/
+# -add-rpath contribute -- NOT -change/-change-rpath, even though build_lcs
+# happily grows a MATCHED command to `base + strlen(new_path)` (rounded up),
+# keeping whichever is larger of that or the original cmdsize. A long enough
+# -change replacement made build_lcs write past the end of a buffer sized
+# for a change that never happened: repro `change_dylib bin -change
+# /usr/lib/libSystem.B.dylib <9000 chars>` -> SIGSEGV under libgmalloc.
+# Pre-existing (long present), fixed here by
+# including -change/-change-rpath's replacement lengths in add_bytes too --
+# see the comment on that calculation in change_dylib.c.
+#
+# The overflow happens INSIDE build_lcs, before process_one's own "does it
+# fit the header pad" check ever runs -- so it reproduced with or without
+# -grow (confirmed by hand against the pre-fix binary, both ways, under
+# libgmalloc: SIGSEGV either way). This suite doesn't run under libgmalloc
+# itself (heap corruption without a detector watching can silently succeed
+# instead of crashing -- the same reasoning as case 12's comment), so this
+# asserts observable BEHAVIOR: the tool never crashes (a shell only reports
+# a plain nonzero exit for a refusal, never the 128+signal shape a SIGSEGV
+# produces) and, when the write does go through (-grow, so it fits), the
+# resulting file actually contains the long path intact and nothing else
+# looks truncated. Confirmed separately by hand, under
+# DYLD_INSERT_LIBRARIES=libgmalloc.dylib: the pre-fix binary SIGSEGVs
+# (exit 139) on this exact repro, with or without -grow; the fixed binary
+# exits cleanly both ways.
+build_main "$T/longchange_fixture"
+LONG_PATH=$(printf 'Q%.0s' $(seq 1 9000))
+
+# Checked with a tiny C byte-search (memmem), not grep: this host's `grep`
+# (ugrep) reports "out of memory" trying to fixed-string-match a 9000-byte
+# pattern against a binary file -- a grep quirk, not a change_dylib one, but
+# a good reminder that even a non-otool/nm text tool can ask a different
+# question (or none at all) depending on what's on a given host's PATH.
+cat > "$T/has_bytes.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file needle\n", argv[0]); return 2; }
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st; fstat(fd, &st);
+    char *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    size_t nlen = strlen(argv[2]);
+    return memmem(buf, (size_t)st.st_size, argv[2], nlen) != NULL ? 0 : 1;
+}
+EOF
+"$CC" -O2 -o "$T/has_bytes" "$T/has_bytes.c"
+
+# Without -grow: must refuse cleanly (header pad can't possibly hold a
+# 9000-byte path), never crash.
+rc=0
+"$T/change_dylib" "$T/longchange_fixture" -change "@loader_path/liba.dylib" "$LONG_PATH" \
+    >/dev/null 2>"$T/longchange_noG.err" || rc=$?
+if [ "$rc" -gt 127 ]; then
+    bad "long -change (no -grow)" "tool was killed by a signal (exit $rc) -- looks like the heap overflow"
+elif [ "$rc" -eq 0 ]; then
+    bad "long -change (no -grow)" "expected a clean refusal (header pad can't hold 9000 bytes) but exited 0"
+else
+    ok "long -change (no -grow): refused cleanly (exit $rc), no crash"
+fi
+
+# With -grow: must succeed, and the long path must land in the file intact.
+rc=0
+"$T/change_dylib" "$T/longchange_fixture" -grow -change "@loader_path/liba.dylib" "$LONG_PATH" \
+    >/dev/null 2>"$T/longchange_G.err" || rc=$?
+if [ "$rc" -gt 127 ]; then
+    bad "long -change (-grow)" "tool was killed by a signal (exit $rc) -- the heap overflow"
+elif [ "$rc" -ne 0 ]; then
+    bad "long -change (-grow)" "expected success with -grow but exited $rc: $(cat "$T/longchange_G.err")"
+else
+    ok "long -change (-grow): completed without crashing (exit 0)"
+fi
+if "$T/has_bytes" "$T/longchange_fixture" "$LONG_PATH"; then
+    ok "long -change (-grow): the full 9000-byte replacement path landed intact"
+else
+    bad "long -change (-grow)" "the long replacement path is not intact in the output file"
+fi
+
+# --- 18. heap overflow when TWO load commands share an install name and one
+#     -change matches both ---------------------------------------------------
+#
+# Case 17 fixed add_bytes to account for -change/-change-rpath growth at all,
+# but it still budgeted "one grown command per -change/-change-rpath
+# ARGUMENT" -- and build_lcs's matching loop grows EVERY load command that
+# matches, not just one. Two LC_LOAD_DYLIBs can legitimately carry the same
+# install name (nothing in the format forbids it), so a single -change for
+# that name needs budget for TWO grown commands, and the per-argument budget
+# gave it one. Confirmed as a real heap buffer overflow at both 3000 and
+# 9000-char replacement paths under DYLD_INSERT_LIBRARIES=libgmalloc.dylib
+# against the pre-fix binary: exit 139 (SIGSEGV) both times; without
+# libgmalloc, the corruption doesn't crash (same reasoning as case 17's own
+# comment on why this suite otherwise avoids running under libgmalloc: heap
+# corruption without a detector watching can silently succeed) -- which is
+# exactly why the assertion below runs THIS ONE case under libgmalloc itself
+# rather than relying on a by-hand confirmation. Fixed by change_growth_bytes,
+# which walks the REAL load commands instead of the -change arguments -- see
+# its own comment in change_dylib.c for the one (safe, over- not under-)
+# approximation it still makes.
+#
+# The fixture needs two commands sharing a name, which a normal link never
+# produces -- ld itself resolves a second dylib against the first one it
+# already loaded under the same install name, so only one LC_LOAD_DYLIB ever
+# gets emitted (confirmed by hand: linking two distinct .dylib files built
+# with an identical -install_name still yields exactly one LC_LOAD_DYLIB).
+# This instead uses -insert to add a SECOND "@loader_path/liba.dylib"
+# LC_LOAD_DYLIB onto a binary that already links liba.dylib normally --
+# `-insert` never checks for an existing match, so it happily produces the
+# duplicate, and does so through the tool's own tested code path rather than
+# hand-built bytes.
+build_main "$T/dupname_fixture"
+"$T/change_dylib" "$T/dupname_fixture" -grow -insert "@loader_path/liba.dylib" >/dev/null \
+    || bad "dupname fixture setup" "-insert failed unexpectedly"
+dup_count=$(otool -l "$T/dupname_fixture" | grep -c "name @loader_path/liba.dylib")
+[ "$dup_count" -eq 2 ] \
+    && ok "dupname fixture: two LC_LOAD_DYLIBs now share an install name" \
+    || bad "dupname fixture" "expected 2 load commands named @loader_path/liba.dylib, otool shows $dup_count"
+
+DUP_LONG_PATH=$(printf 'Z%.0s' $(seq 1 3000))
+
+# Plain run (no libgmalloc): proves correct BEHAVIOR -- no crash, and both
+# matching commands actually got renamed, not just one silently dropped or
+# truncated.
+rc=0
+"$T/change_dylib" "$T/dupname_fixture" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
+    >"$T/dupname_change.out" 2>"$T/dupname_change.err" || rc=$?
+if [ "$rc" -gt 127 ]; then
+    bad "dup-install-name -change" "tool was killed by a signal (exit $rc) -- the heap overflow this case exists to catch"
+elif [ "$rc" -ne 0 ]; then
+    bad "dup-install-name -change" "expected success but exited $rc: $(cat "$T/dupname_change.err")"
+else
+    ok "dup-install-name -change: completed without crashing (exit 0)"
+fi
+new_count=$(otool -l "$T/dupname_fixture" | grep -c "name $DUP_LONG_PATH")
+[ "$new_count" -eq 2 ] \
+    && ok "dup-install-name -change: BOTH matching load commands were renamed, not just one" \
+    || bad "dup-install-name -change" "expected both duplicate commands renamed (2 occurrences), found $new_count"
+
+# libgmalloc run: this is the assertion that actually DISCRIMINATES the bug --
+# guard-malloc places each allocation so an overrun faults immediately instead
+# of landing in unrelated heap memory, which is what makes the corrupted-but-
+# doesn't-crash outcome above insufficient proof on its own. Skipped (loudly,
+# not silently) if this host has no libgmalloc.
+if [ -f /usr/lib/libgmalloc.dylib ]; then
+    build_main "$T/dupname_fixture_gm"
+    "$T/change_dylib" "$T/dupname_fixture_gm" -grow -insert "@loader_path/liba.dylib" >/dev/null \
+        || bad "dupname fixture setup (libgmalloc copy)" "-insert failed unexpectedly"
+    rc=0
+    DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
+        "$T/change_dylib" "$T/dupname_fixture_gm" -grow -change "@loader_path/liba.dylib" "$DUP_LONG_PATH" \
+        >"$T/dupname_gm.out" 2>"$T/dupname_gm.err" || rc=$?
+    if [ "$rc" -gt 127 ]; then
+        bad "dup-install-name -change (libgmalloc)" "killed by a signal (exit $rc) under libgmalloc -- the heap overflow this case exists to catch"
+    elif [ "$rc" -ne 0 ]; then
+        bad "dup-install-name -change (libgmalloc)" "expected success but exited $rc: $(cat "$T/dupname_gm.err")"
+    else
+        ok "dup-install-name -change (libgmalloc): completed without crashing (exit 0)"
+    fi
+else
+    skip "dup-install-name -change (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
 echo
