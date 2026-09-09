@@ -43,6 +43,9 @@
 /* ULEB128 decode / minlen / fixed-width encode. */
 #include "uleb.h"
 
+/* Validated open/wrap/iterate over a Mach-O buffer. */
+#include "image.h"
+
 /* Load-command constants newer than the 10.9 SDK headers. */
 #ifndef LC_DYLD_EXPORTS_TRIE
 #define LC_DYLD_EXPORTS_TRIE        0x80000033
@@ -67,12 +70,29 @@
 
 #define MG_PAGE 0x1000UL
 
-/* Lowest section file offset — this bounds the header pad. */
-static uint32_t mg_first_sect_off(const uint8_t *buf) {
-    const struct mach_header_64 *hdr = (const struct mach_header_64 *)buf;
+/* Lowest section file offset — this bounds the header pad. `fsize` is the
+ * buffer's real size, wrapped through mi_wrap so this walk cannot stride past
+ * it -- the bug class this whole extraction exists to prevent.
+ *
+ * Returns UINT32_MAX, with a message on stderr, if the buffer fails to wrap
+ * (bad magic, or load commands that don't fit): refuse rather than guess. A
+ * fixed fallback here would be a real hazard, not a theoretical one --
+ * change_dylib.c's memset(buf + 32, 0, first_sect_off - 32) turns a wrong
+ * guess directly into an out-of-bounds write. Every caller must check for
+ * UINT32_MAX. This differs from the UINT32_MAX -> 4096 default a few lines
+ * down, which is a validated image that simply has no sections -- a real,
+ * if unusual, answer rather than a guess about an image we couldn't read. */
+static uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+                        "that don't fit); refusing to guess the header pad boundary\n");
+        return UINT32_MAX;
+    }
+
     uint32_t first = UINT32_MAX;
-    const uint8_t *lcp = buf + sizeof(*hdr);
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+    const uint8_t *lcp = im.buf + sizeof(*im.hdr);
+    for (uint32_t i = 0; i < im.hdr->ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)lcp;
         if (lc->cmd == LC_SEGMENT_64) {
             const struct segment_command_64 *seg = (const struct segment_command_64 *)lcp;
@@ -635,10 +655,15 @@ static int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
 #define S_INIT_FUNC_OFFSETS 0x16
 #endif
 
-static int mg_classify(const uint8_t *buf) {
-    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
-    const uint8_t *sp = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
+static int mg_classify(const uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+                        "that don't fit); refusing to classify\n");
+        return -1;
+    }
+    const uint8_t *sp = im.buf + sizeof(*im.hdr);
+    for (uint32_t i = 0; i < im.hdr->ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)sp;
         const char *why = NULL;
         switch (lc->cmd) {
@@ -815,7 +840,8 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    uint32_t insert = mg_first_sect_off(buf);
+    uint32_t insert = mg_first_sect_off(buf, fsize);
+    if (insert == UINT32_MAX) return -1;   /* already explained itself on stderr */
 
     /* We insert space at `insert` (the first section's file offset) and shift
      * everything from there onward. That point must be at/after the end of the
@@ -892,7 +918,7 @@ static int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     /* Audit the other base-relative structures before touching the buffer, so a
      * refusal leaves it pristine. Silently shipping a binary whose constructors
      * or exports are `grow` bytes low is far worse than failing here. */
-    if (mg_classify(buf) != 0) return -1;
+    if (mg_classify(buf, fsize) != 0) return -1;
     if (mg_dice_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0) != 0) {
         fprintf(stderr, "macho_grow: LC_DATA_IN_CODE is malformed or an entry offset would "
                         "overflow; refusing to grow\n");
