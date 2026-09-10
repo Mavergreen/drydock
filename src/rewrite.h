@@ -118,37 +118,82 @@ typedef struct {
      * nothing matched, so the count has to come from the code that did the
      * matching. cli/macho9.c's `segment` verb reports it. */
     int             *segment_renamed;
+    /* If non-zero, mr_apply_file refuses (returns MR_REFUSED, below) when
+     * mr_report_unmatched finds that any dylib_changes/rpath_changes/
+     * strip_cmds entry matched nothing -- the same unmatched report it already
+     * prints on stderr, promoted from an FYI to a refusal, the way `ld` and
+     * `gas`'s own --fatal-warnings promote a warning to an error. If
+     * anything else DID match, that write is NOT rolled back: this refuses
+     * after the rewrite has already happened. But when EVERY operation
+     * matched nothing, mr_process_thin's own "nothing to change" early
+     * return (src/rewrite.c, `if (modifications == 0)`) never sets
+     * *out_modified in the first place, so mr_apply_file never attempts the
+     * write at all -- there is nothing for this refusal to leave in place,
+     * and the file is untouched, same as any other all-miss run.
+     * cli/macho9.c's `dylib`, `rpath` and `lc` verbs are the only ones that
+     * ever set this; `segment` and `retag-swift` don't take a list of
+     * operations that could miss, so they have nothing to parse a
+     * --fatal-warnings flag into. Declared
+     * before allow_grow, not after, so allow_grow stays the LAST field --
+     * see the layout tripwire next to mr_is_rename_only in rewrite.c, which
+     * checks the last field's offset precisely so that inserting a new
+     * field ahead of it keeps tripping the check on the next such edit
+     * too. */
+    int              fatal_unmatched;
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 
-/* How many times one operation may repeat in a single run. TWO call sites
- * accumulate into fixed-size C arrays sized from these two macros; a third
+/* How many times one operation may repeat in a single run. THREE call sites
+ * accumulate into fixed-size C arrays sized from these two macros; a fourth
  * enforces the identical numeric cap from its own separately-declared shell
- * constant, since it cannot include this header. All three refuse at the
- * same point -- `change_dylib -delete ... x33`, `fix_macho -change ... x33`
- * and `macho9 dylib -delete ... x33` all agree about being too many -- each
- * in its own wording, since none of the three grammars spell the operations
- * the same way:
+ * constant, since it cannot include this header. All four refuse (or, for
+ * mr_apply_file's own arrays, must never be handed more than) the same count
+ * -- `change_dylib -delete ... x33`, `fix_macho -change ... x33` and
+ * `macho9 dylib -delete ... x33` all agree about being too many -- each in
+ * its own wording, since none of the grammars spell the operations the same
+ * way:
  *
  *   cli/macho9.c's own dylib/rpath parser checks the count inline and prints
  *     "macho9 <verb>: too many <flag> operations (max N)", naming ITS OWN
  *     flag spelling (`-append`, not change_dylib's `-add`) -- see the
  *     comment at that call site for why the wording is deliberately not
- *     shared with the other two.
+ *     shared with the other two. This is the ONLY call site that actually
+ *     constructs an mr_ops and passes it to mr_apply_file below -- see that
+ *     function's own comment for why that makes it load-bearing, not just
+ *     one front-end among several.
  *   compat/fix_macho.c's FM_ROOM macro (which reuses this MR_MAX_OPS rather
  *     than spelling out a second 32) prints "too many <flag> (max N)", in
  *     fix_macho's own words -- this is still C, so this is still a fixed
  *     array a C parser fills. Its own comment calls this CD_ROOM, revived
- *     in this file, in change_dylib's exact wording.
+ *     in this file, in change_dylib's exact wording. fix_macho.c never calls
+ *     mr_apply_file, though -- it is a wholly separate rewrite path that
+ *     happens to reuse this same numeric cap for its own, unrelated arrays.
  *   compat/translate.sh's mt_room -- CD_ROOM revived again, since
  *     change_dylib.c is gone -- accumulates the OLD grammar's argv into a
  *     shell variable rather than a C array, capped by its own literal
  *     MT_MAX_OPS=32 (not derived from MR_MAX_OPS: a /bin/sh script cannot
  *     include this header), and refuses at the identical count, in
  *     change_dylib's own historical words ("too many <flag> (max N)"),
- *     before ever emitting a `macho9` command line. */
+ *     before ever emitting a `macho9` command line.
+ *   mr_apply_file (src/rewrite.c) declares its own per-operation hit-count
+ *     arrays -- int[MR_MAX_OPS] for dylib/rpath, int[MR_MAX_STRIP] for
+ *     strip -- sized from these same two macros, but does NOT itself check
+ *     `ops->n_dylib_changes`/`n_rpath_changes`/`n_strip_cmds` against them.
+ *     See mr_apply_file's own comment for the precondition this leaves on
+ *     its caller. */
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
+
+/* Returned by mr_apply_file, instead of its usual 1, when ops->fatal_unmatched
+ * turned "an operation matched nothing" into a refusal (see that field's own
+ * comment above). Deliberately equal to cli/macho9.c's own EX_REFUSED: that
+ * is the ONLY caller today, `dylib`/`rpath`/`lc` all forward mr_apply_file's
+ * return value verbatim (`return mr_apply_file(path, &ops);`), and this way
+ * that forwarding keeps meaning what --capabilities documents without the
+ * caller having to translate a rewrite-library code into its own exit-code
+ * vocabulary. cli/macho9.c enforces this equality as a build failure, not
+ * just this comment -- see the typedef next to EX_REFUSED's definition. */
+#define MR_REFUSED 2
 
 /*
  * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
@@ -162,7 +207,26 @@ typedef struct {
  * case -- or 1 with a message already printed on stderr. On any failure the
  * file on disk is left exactly as it was found: every refusal happens before
  * the single atomic replace at the end.
- */
+ *
+ * The one exception to "every refusal happens before the write": when
+ * ops->fatal_unmatched is set and at least one operation matched nothing,
+ * this returns MR_REFUSED (2) instead of 0 -- but only AFTER the rewrite it
+ * examined has already been written to `path`, if anything changed. This
+ * mode reports, on stderr, after the fact; it does not rewind the write it
+ * is refusing about.
+ *
+ * PRECONDITION, unenforced here: `ops->n_dylib_changes` and
+ * `ops->n_rpath_changes` must each be <= MR_MAX_OPS, and
+ * `ops->n_strip_cmds` must be <= MR_MAX_STRIP. This function keeps its own
+ * per-operation hit-count arrays on the stack, sized exactly from those two
+ * macros, to report (on stderr) which operations matched nothing; it trusts
+ * the caller for the bound the same way the rest of this module already
+ * trusts mr_ops's arrays to be caller-owned and caller-sized. cli/macho9.c
+ * is the only caller today, and enforces the identical cap itself before
+ * ever building an mr_ops (see MR_MAX_OPS's own comment) -- but that
+ * enforcement lives in the caller, not in this library, so a future or
+ * different caller that skips it turns an over-long array into a stack
+ * overflow here, not a diagnostic. */
 int mr_apply_file(const char *path, const mr_ops *ops);
 
 #endif /* MACHO9_REWRITE_H */
