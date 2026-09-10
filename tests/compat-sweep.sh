@@ -83,8 +83,9 @@
 #   new side   compat/translate.sh, then each line it printed, in order,
 #              stopping at the first nonzero exit
 #
-# SINCE THE WRAPPERS, POINT <bindir> AT A PRE-WRAPPER BUILD. Five of the six tools
-# are /bin/sh wrappers around macho9 now, so running this against a current
+# SINCE THE WRAPPERS, POINT <bindir> AT A PRE-WRAPPER BUILD. All six tools
+# are /bin/sh wrappers around macho9 now (five converted first; fix_macho
+# followed once its divergences were ruled adopted rather than closed), so running this against a current
 # build makes the "old side" a wrapper and the comparison close to
 # tautological. The bindir is recorded in the matrix header for exactly that
 # reason -- a reader has to be able to tell which of the two the rows
@@ -628,7 +629,8 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#             sha256[0:16] = $BASESHA"
     echo "# generated:  $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(uname -srm)"
     echo "# old side:   $BIN"
-    echo "#             (since the wrappers, five of the six are shell wrappers; these"
+    echo "#             (all six are shell wrappers now -- five converted first"
+    echo "#              and fix_macho followed; these"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a build of the last commit with the C tools -- see this script's header)"
     echo "# new side:   $NEWBIN/macho9"
