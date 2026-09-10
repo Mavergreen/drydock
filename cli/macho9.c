@@ -196,6 +196,9 @@ static void print_ops_csv(int is_rpath) {
  *         kinds=a,b,c    (lc only) the KIND vocabulary -delete accepts
  *         versions=a,b   (minos only) the floors this build can target
  *         flags=a,b      verb-level flags, e.g. allow-grow
+ *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
+ *                         verb prints on success, by key -- today only
+ *                         `segment reports=renamed`
  *
  * `dylib` lists all five of its ops; `rpath` lists four -- everything but
  * `reexport`, which LC_RPATH's single kind makes meaningless. Both lists are
@@ -218,7 +221,10 @@ static int print_capabilities(void) {
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb grow\n");
-    printf("verb segment\n");
+    /* reports=renamed: this verb prints "macho9 segment: renamed=<N>" on
+     * success, the match count nothing outside the rewriter can derive. See
+     * cmd_segment for why, and compat/rename_segment.sh for who needs it. */
+    printf("verb segment reports=renamed\n");
     printf("verb retag-swift\n");
     printf("verb minos versions=10.9\n");
     printf("verb lc ops=delete kinds=");
@@ -485,10 +491,11 @@ static int cmd_lc(int argc, char **argv) {
              * -strip-lc (max 16)"; repeating that here would leak the old
              * grammar's flag spellings out of a verb whose whole point is not
              * to expose them -- cli_test.sh asserts exactly that, for
-             * --allow-grow's own no-op message. FOR WHOEVER WRITES THE
-             * change_dylib SHELL WRAPPER: the wrapper cannot get the
-             * origin message by passing this through, so it must enforce the
-             * 16 itself and print "too many -strip-lc (max 16)" on its own. */
+             * --allow-grow's own no-op message. THE change_dylib SHELL WRAPPER
+             * therefore cannot get the origin message by passing this through:
+             * it enforces the 16 itself, in compat/translate.sh's mt_room, and
+             * prints "too many -strip-lc (max 16)". tests/wrapper_test.sh pins
+             * that text. */
             if (nstrip == MR_MAX_STRIP) {
                 fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
                 return 1;
@@ -612,10 +619,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
          * 32)"; repeating that here would leak the old grammar's spellings
          * out of a verb whose whole point is not to expose them, which
          * cli_test.sh already asserts against for --allow-grow's no-op
-         * message. FOR WHOEVER WRITES THE change_dylib SHELL WRAPPER: the
-         * wrapper cannot get the origin message by passing this
-         * through, so it must enforce the 32 itself and print "too many
-         * <old flag> (max 32)" on its own. */
+         * message. THE change_dylib SHELL WRAPPER therefore cannot get the
+         * origin message by passing this through: it enforces the 32 itself,
+         * in compat/translate.sh's mt_room, and prints "too many <old flag>
+         * (max 32)". tests/wrapper_test.sh pins that text. */
         if (full) {
             fprintf(stderr, "macho9 %s: too many %s operations (max %d)\n",
                     is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
@@ -647,9 +654,10 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
 
 /* ---- segment: a segment rename, routed through mr_apply_file -------------
  *
- * The rename itself is mseg_rename_lc (src/segname.h), shared with
- * compat/rename_segment.c so the two front-ends cannot disagree about what
- * renaming a segment means. This verb reaches it through an mr_ops rather than
+ * The rename itself is mseg_rename_lc (src/segname.h), the one function
+ * every segment rename in this repo goes through -- including the old
+ * `rename_segment` grammar, which reaches this very verb through
+ * compat/rename_segment.sh. This verb reaches it through an mr_ops rather than
  * calling it directly, and that is the whole reason the operation lives in
  * mr_ops at all: mr_apply_file already handles a classic fat container by
  * rewriting each slice and reassembling, already passes through a slice it
@@ -664,38 +672,82 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  * rename_segment has always done, in the same place, via the same
  * mseg_name_fits.
  *
- * THREE DELIBERATE DIVERGENCES FROM rename_segment, all of which a wrapper
- * author has to know about, because reproducing rename_segment's
- * observable behaviour on top of this verb means accounting for each:
+ * FOUR DELIBERATE DIVERGENCES FROM rename_segment, all of which a wrapper
+ * author has to know about, because reproducing rename_segment's observable
+ * behaviour on top of this verb means accounting for each. Each is closed (or
+ * knowingly not closed) in compat/rename_segment.sh, whose header says which
+ * and why. A fifth USED TO belong on this list -- mg_plausible -- and no
+ * longer does; see the note below the bullets.
  *
  *   - EXIT CODE WHEN NOTHING MATCHED. mr_apply_file reports "nothing to
  *     change" and exits 0; rename_segment exits 2. This verb hands back the
- *     shared driver's own code, exactly as dylib/rpath/lc do, and the wrapper
- *     is where to decide what the old grammar's callers should see.
- *   - mg_plausible. mr_process_thin runs it over the finished image before
- *     writing (src/rewrite.c, "Last gate before the bytes reach disk") and
- *     refuses if it fails; rename_segment has no such gate. So this verb can
- *     REFUSE a binary rename_segment would happily rename -- not because the
- *     rename is unsafe, but because the image was already implausible before
- *     anything touched it. That is the right default for a shared rewriter
- *     and MACHO_NO_VERIFY=1 opts out, but it is a real behavioural
- *     difference, not a wording one.
+ *     shared driver's own code, exactly as dylib/rpath/lc do -- but it also
+ *     prints `macho9 segment: renamed=<N>`, so a wrapper can tell the two
+ *     apart exactly rather than by inference. See the count's own comment in
+ *     cmd_segment below.
  *   - STDOUT. mr_process_thin prints its own "header pad N bytes available"
  *     and "updated (sizeofcmds=...)" lines, and mr_apply_file its "Updated
  *     ..." line; rename_segment prints exactly one line, "%s: renamed %d
  *     segment(s) %s -> %s". A wrapper that passes this verb's stdout through
- *     will not look like rename_segment. */
+ *     will not look like rename_segment.
+ *   - FAT CONTAINERS. This verb reaches mr_apply_file, which handles a
+ *     classic fat container by rewriting each slice it understands and
+ *     reassembling; rename_segment ran mi_open, which is thin-only and fails
+ *     outright on a fat file. So this verb can rename inside a fat binary
+ *     that rename_segment refused to touch at all.
+ *   - LC_LAZY_LOAD_DYLIB. mr_apply_file builds the library-ordinal map
+ *     (mo_map_build, src/ordinals.c) before it looks at what the operations
+ *     are, and that builder refuses any image carrying an
+ *     LC_LAZY_LOAD_DYLIB. A segment rename touches no ordinal, so the
+ *     refusal cannot be protecting anything here, but it is real: this verb
+ *     can REFUSE a binary rename_segment -- which never built an ordinal
+ *     map -- happily renamed. Not closed by this verb; compat/rename_segment.sh
+ *     reports it rather than working around it.
+ *
+ * mg_plausible USED TO BE a fifth divergence and no longer is. mr_process_thin
+ * (src/rewrite.c) skips that gate for a rename-only operation set -- scoped by
+ * mr_is_rename_only, not by an environment variable -- because the gate asks
+ * an OFFSET question and a segment rename moves no offset. So this verb no
+ * longer refuses anything rename_segment would have renamed on that account;
+ * MACHO_NO_VERIFY is not part of this verb's or its wrapper's story at all
+ * (compat/rename_segment.sh sets no environment variable). Every operation
+ * that CAN move an offset still meets the gate exactly as before. */
 static int cmd_segment(const char *path, const char *oldname, const char *newname) {
     if (!mseg_name_fits(newname)) {
         fprintf(stderr, "macho9 segment: new segment name '%s' is longer than the %d bytes "
                         "a segname field holds\n", newname, MSEG_NAME_MAX);
         return EX_REFUSED;
     }
+    int renamed = 0;
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
     ops.segment_rename_old = oldname;
     ops.segment_rename_new = newname;
-    return mr_apply_file(path, &ops);
+    ops.segment_renamed = &renamed;
+    int rc = mr_apply_file(path, &ops);
+    /* THE MATCH COUNT, MACHINE-READABLE, and the reason mr_ops has an
+     * out-param for it at all.
+     *
+     * A caller cannot derive it. mseg_rename_lc matches with strncmp over the
+     * 16-byte segname field, which is neither NUL-terminated nor free of
+     * whitespace, so reading a name back out of `macho9 info`'s human-readable
+     * dump gets it wrong in at least two reachable ways -- an OLD longer than
+     * 16 bytes whose first 16 match, and a segname containing a space. That is
+     * tests/README.md's second lesson ("never parse human-readable output as
+     * an oracle") applied to this binary's own output rather than to otool's.
+     *
+     * So this verb states it, in the shape --capabilities already established:
+     * one line, key=value, greppable, no spaces in the value. It is what
+     * compat/rename_segment.sh needs for BOTH of its observables -- the count
+     * in its one output line, and its exit 2 when nothing matched -- and
+     * `verb segment reports=renamed` in --capabilities is how a wrapper checks
+     * this build provides it instead of assuming.
+     *
+     * Printed only on success, and it is 0 when nothing matched (mr_apply_file
+     * says "nothing to change." and writes nothing, which is exactly the case
+     * the old grammar reported as exit 2). */
+    if (rc == 0) printf("macho9 segment: renamed=%d\n", renamed);
+    return rc;
 }
 
 /* ---- retag-swift: a thin shell over mswift_retag_file --------------------
@@ -710,8 +762,9 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
  * docs/PROPOSAL.md's `verify` section exists to rule out.
  *
  * TWO DELIBERATE DIVERGENCES FROM retag_swift_classes, both of which a
- * wrapper author has to know about, because in each case the two
- * front-ends return DIFFERENT codes for the same input:
+ * wrapper author has to know about, because in each case the two front-ends
+ * return DIFFERENT codes for the same input. Both are handled in
+ * compat/retag_swift_classes.sh, whose header says how:
  *
  *   - MSWIFT_NOT_MACHO. retag_swift_classes skips such an argument silently
  *     and keeps going through the rest of its argv, ending at 0; this verb
@@ -759,11 +812,11 @@ static int cmd_retag_swift(const char *path) {
  *
  * The conversion -- chained fixups lowered to LC_DYLD_INFO_ONLY, the exports
  * trie and every LC_BUILD_VERSION stripped, __LINKEDIT extended over the
- * appended opcode streams -- is src/declassify.c, shared with
- * compat/patch_macho.c so the two front-ends cannot disagree about what
- * declassifying a binary means. Both write the very same buffer
- * md_declassify hands back, so their output files are byte-identical by
- * construction, not by two implementations happening to agree.
+ * appended opcode streams -- is src/declassify.c, and this verb is the only C
+ * front-end over it. The old `patch_macho IN OUT` grammar reaches THIS VERB
+ * through compat/patch_macho.sh, so there is no second implementation left to
+ * disagree with: the output file's bytes are identical by construction rather
+ * than by two implementations happening to agree.
  *
  * IN OUT, not in place: this is the one verb that reads one file and writes
  * another, because that is the grammar docs/PROPOSAL.md settled on and what
@@ -772,8 +825,9 @@ static int cmd_retag_swift(const char *path) {
  * behaves as an in-place conversion.
  *
  * FOUR DELIBERATE DIVERGENCES FROM patch_macho, all of which a wrapper author
- * has to know about, because reproducing patch_macho's observable
- * behaviour on top of this verb means accounting for each:
+ * has to know about, because reproducing patch_macho's observable behaviour on
+ * top of this verb means accounting for each. compat/patch_macho.sh closes the
+ * first and the third and enumerates the other two:
  *
  *   - EXIT CODES. patch_macho returns a flat 1 for everything that goes
  *     wrong. This verb returns EX_REFUSED where it examined the input and

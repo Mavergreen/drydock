@@ -1,7 +1,8 @@
 /*
- * mr_ -- the dylib/rpath/load-command rewriter, shared by compat/change_dylib.c
- * and cli/macho9.c. See rewrite.h for the operation set and why this is a
- * library function rather than one tool's main().
+ * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/macho9.c and by
+ * the old change_dylib grammar that reaches it through compat/change_dylib.sh.
+ * See rewrite.h for the operation set and why this is a library function
+ * rather than one tool's main().
  *
  * A rewrite here does three things, in this order, and refuses before the
  * first byte reaches disk if any of them cannot be done:
@@ -25,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>       /* offsetof, for the mr_ops layout tripwire below */
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -109,6 +111,7 @@ struct mr_build_lcs_ctx {
     uint32_t new_off;
     uint32_t ncmds;
     int mods;
+    int renames;      /* how many LC_SEGMENT_64s the rename actually matched */
     int placed_inserts;
     int placed_rpath_inserts;
     int verbose;
@@ -291,10 +294,10 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
          * never cmdsize -- so it can be applied to the command already copied
          * into the new table, after the copy, without changing this command's
          * size or the table's shape. mseg_rename_lc (src/segname.h) is the
-         * same function compat/rename_segment.c applies to its own buffer, so
-         * the two front-ends cannot disagree about what a rename is; only
-         * getting here through mr_apply_file is what additionally gives this
-         * one fat containers and an atomic write-back. */
+         * one function every segment rename in this repo goes through, so no
+         * two front-ends can disagree about what a rename is; only getting
+         * here through mr_apply_file is what additionally gives this one fat
+         * containers and an atomic write-back. */
         /* BOTH pointers, matching rewrite.h's "Both NULL means no rename was
          * requested": a half-filled pair would otherwise reach
          * mseg_rename_lc's strncpy with a NULL source. No caller sets one
@@ -308,6 +311,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                 printf("  Rename segment: %s -> %s\n",
                        ctx->ops->segment_rename_old, ctx->ops->segment_rename_new);
             ctx->mods++;
+            ctx->renames++;
         }
         if (matched >= 0) {
             struct dylib_command *ndc = (struct dylib_command *)(ctx->new_lcs + ctx->new_off);
@@ -351,7 +355,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
  * here rather than folded into the per-command callback. */
 static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
                         uint8_t *new_lcs, uint32_t *out_off, uint32_t *out_ncmds,
-                        int *out_mods, int verbose) {
+                        int *out_mods, int *out_renames, int verbose) {
     struct mr_build_lcs_ctx ctx;
     memset(&ctx, 0, sizeof ctx);
     ctx.ops = ops;
@@ -413,6 +417,7 @@ static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
     *out_off = new_off;
     *out_ncmds = ncmds;
     *out_mods = mods;
+    *out_renames = ctx.renames;
     return 0;
 }
 
@@ -517,6 +522,63 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
 #define MR_SKIP  (-2)
 #define MR_ERROR (-1)
 
+/* True if the only thing this operation set asks for is a segment rename:
+ * no dylib or rpath change, append or insert, no load command to strip, and
+ * no header growth. It exists for one decision -- see the mg_plausible gate
+ * in mr_process_thin.
+ *
+ * WRITTEN AS "EVERYTHING ELSE IS EMPTY", not as "a rename is requested",
+ * because the two differ for an operation set this function has never heard
+ * of. But C gives that no force on its own: a field added to mr_ops and not
+ * added to the conjunction below leaves this returning TRUE for
+ * {rename, that new operation}, which is exactly the silent widening the
+ * shape is meant to prevent. So the coupling is a BUILD failure, the same
+ * device that makes mg_classify/ml_bump_lc's coupling a link error: add a field to
+ * mr_ops and this file stops compiling until someone comes here, reads the
+ * paragraph above, and decides whether the new field belongs in the
+ * conjunction.
+ *
+ * 144 and 136 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
+ * declared field -- on the only architecture this project builds (CMakeLists.txt
+ * pins CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They
+ * are a tripwire, not a portability claim: on some other target the fix is to
+ * re-derive both numbers AND re-read this function, which is the whole point.
+ * Negative-array-size typedef rather than _Static_assert, which is C11 and
+ * this project sets no -std=.
+ *
+ * What the typedef below actually checks, and no more: it fails to compile
+ * exactly when an edit to mr_ops moves sizeof(mr_ops) or moves the offset of
+ * allow_grow. That is the whole of the mechanism. An edit that changes the
+ * struct while leaving both of those numbers where they are compiles clean
+ * and is invisible to it -- so a change that alters what mr_is_rename_only
+ * above should mean, while happening to preserve the struct's layout, still
+ * needs a human to come here and re-read the conjunction; nothing forces
+ * that to happen. There is no stronger C-level mechanism available: an
+ * offsetof assertion per field would have the identical blind spot, since a
+ * member that fits an existing hole moves no later field either, and a
+ * memcmp-against-zero probe is unreliable, because struct padding is
+ * indeterminate after assignment.
+ *
+ * For example -- one instance, not an inventory -- mr_ops is seven
+ * (pointer, int n_*) pairs and so has eight four-byte padding holes on this
+ * ABI; a new member of four bytes or fewer placed into one of those holes
+ * moves neither number and compiles clean. This paragraph has previously
+ * gone through several versions, each naming a specific set of edits that
+ * get past this check; each was wrong in a new way, because that set is
+ * "every edit that preserves both numbers," which is unbounded and cannot be
+ * enumerated correctly. This version names one member of it as an example of
+ * what "invisible to it" means in practice, and stops there on purpose. */
+typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
+    (sizeof(mr_ops) == 144 && offsetof(mr_ops, allow_grow) == 136) ? 1 : -1];
+
+static int mr_is_rename_only(const mr_ops *ops) {
+    return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
+           ops->n_dylib_changes == 0 && ops->n_dylib_appends == 0 &&
+           ops->n_dylib_inserts == 0 && ops->n_rpath_changes == 0 &&
+           ops->n_rpath_appends == 0 && ops->n_rpath_inserts == 0 &&
+           ops->n_strip_cmds == 0 && ops->allow_grow == 0;
+}
+
 /*
  * Apply every requested change to the single (thin) 64-bit Mach-O in
  * *pbuf, *pfsize, in place except that mg_grow_header may realloc *pbuf (its
@@ -608,8 +670,8 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
 
     /* Build the new table once to learn its size (and print diagnostics). */
     uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-    uint32_t new_off, new_ncmds; int modifications;
-    if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, 1) != 0) {
+    uint32_t new_off, new_ncmds; int modifications; int renames;
+    if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, &renames, 1) != 0) {
         free(new_lcs);
         return MR_ERROR;
     }
@@ -666,7 +728,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
          * the copied load commands reflect the shift. */
         free(new_lcs);
         new_lcs = calloc(1, first_sect_off + add_bytes + 64);
-        if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, 0) != 0) {
+        if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, &renames, 0) != 0) {
             free(new_lcs);
             return MR_ERROR;
         }
@@ -706,12 +768,49 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * is what makes it usable across process boundaries.
      *
      * This is the difference between "binary replaced, re-download that version"
-     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out. */
-    if (!getenv("MACHO_NO_VERIFY") && mg_plausible(buf, fsize) != 0) {
+     * and "patch refused, nothing lost". MACHO_NO_VERIFY=1 opts out.
+     *
+     * NOT RUN FOR A RENAME-ONLY OPERATION SET, and that is a statement about
+     * what mg_plausible checks rather than a concession. It asks whether the
+     * image's initializers and compact-unwind entries still name functions
+     * LC_FUNCTION_STARTS knows about (src/grow.h) -- an OFFSET question. A
+     * segment rename writes characters into segname/sectname fields and moves
+     * nothing: mseg_rename_lc touches neither cmd nor cmdsize (src/segname.h),
+     * mr_build_lcs applies it to a command it has already copied, and no
+     * offset in the image changes. So the gate cannot catch anything a rename
+     * did; it can only re-decide a property the INPUT already had, and refuse
+     * a file the caller never asked it to judge.
+     *
+     * That is not hypothetical. mg_plausible's heuristic has false positives
+     * on real, untouched 10.9 system dylibs -- `macho9 lc -delete uuid`
+     * refuses libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and
+     * libz.1.dylib on this host and passes /bin/ls, /bin/cat, /usr/bin/grep
+     * and /usr/bin/awk -- so with the gate on this path, `macho9 segment`
+     * refused 14 of the 16 thin binaries in a 120-file /usr/lib corpus
+     * (tests/differential.sh), all of which compat/rename_segment.c renamed
+     * without complaint for as long as it existed.
+     *
+     * Scoped by mr_is_rename_only, not by an environment variable: an env var
+     * would switch the gate off for the whole macho9 invocation, would keep
+     * covering any operation a caller later added to the same command line,
+     * and would read like someone disabling a safety check. This says the one
+     * true thing instead, at the one site where it is true. Every operation
+     * that CAN move an offset still meets the gate exactly as before. */
+    if (!mr_is_rename_only(ops) && !getenv("MACHO_NO_VERIFY") &&
+        mg_plausible(buf, fsize) != 0) {
         fprintf(stderr, "ERROR: refusing to modify %s -- it would carry base-relative "
                         "offsets that name no known function. Left unmodified.\n", label);
         return MR_ERROR;
     }
+
+    /* Report the match count only now, past every gate: a refused rewrite
+     * renamed nothing on disk, and a front-end that reports "renamed 2" for a
+     * file it did not write would be the silent-success shape this codebase
+     * refuses. ADDED, not assigned, because mr_process_fat calls this once per
+     * slice and the caller's total is across all of them; within one slice the
+     * value is whatever the LAST mr_build_lcs produced (a rebuild after a
+     * header grow replaces it rather than doubling it). */
+    if (ops->segment_renamed) *ops->segment_renamed += renames;
 
     *pbuf = buf; *pfsize = fsize;
     *out_modified = 1;

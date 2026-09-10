@@ -350,8 +350,9 @@ esac
 # declassify: chained fixups -> LC_DYLD_INFO_ONLY
 #
 # The conversion lives in src/declassify.c (a refactor lifted it out of
-# compat/patch_macho.c's main); this verb and patch_macho are two front-ends
-# over the one copy. What is asserted here is the OBSERVABLE result -- the two
+# compat/patch_macho.c's main, before that file became a shell wrapper); this
+# verb is the only C front-end over it now, and the `patch_macho` name reaches
+# this very verb through compat/patch_macho.sh. What is asserted here is the OBSERVABLE result -- the two
 # quadwords in __DATA the conversion rewrites, which load commands survived,
 # where the new LC_DYLD_INFO_ONLY points, and how far __LINKEDIT now reaches --
 # not "it exited 0".
@@ -1493,7 +1494,7 @@ fi
 # `macho9 info` prints a segment's segname but NOT the copy of that name each
 # section_64 carries, and the section copies are half of what this verb must
 # change (getsectiondata matches on the section's copy -- see
-# compat/rename_segment.c's header comment). segread below is a purpose-built
+# src/segname.h's header comment). segread below is a purpose-built
 # reader for exactly that, in the same spirit as change_dylib_test.sh's
 # ordinal_of/fatcheck: nothing here parses otool.
 #
@@ -1729,6 +1730,59 @@ grep -q "^SECT __DATA/" "$T/segs_fat" \
 cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
     && ok "segment: passed the non-Mach-O fat slice through byte for byte" \
     || bad "segment: fat slice 1" "the slice this rewriter cannot read was modified"
+
+# ---- segment does NOT meet the mg_plausible gate ---------------------------
+#
+# mr_apply_file's last gate before writing (src/rewrite.c) asks whether the
+# image's initializers and compact-unwind entries still name functions
+# LC_FUNCTION_STARTS knows about. That is an OFFSET question, and a segment
+# rename moves no offset -- it writes characters into segname/sectname fields.
+# So mr_process_thin skips the gate for a rename-only operation set, and these
+# are the assertions that it really does, and that it still runs for everything
+# else.
+#
+# The input is tests/mkimplausible.c's committed, hand-built fixture, not a
+# scan of /usr/lib for a real dylib the heuristic gets wrong. An earlier version
+# did scan, and SKIPped when it found nothing -- which passes on 10.9 and covers
+# nothing on the cross runner, where those dylibs live only in the shared cache.
+# The fixture's own header says how it trips the gate.
+"$CC" -O2 -Wall -Wextra -I "$SRC_DIR" -o "$T/mkimplausible" "$SRC_DIR/../tests/mkimplausible.c"
+"$T/mkimplausible" "$T/implausible"
+
+# `|| true`: a refusal is the expected outcome and this suite runs under set -e.
+"$MACHO9" verify "$T/implausible" >/dev/null 2>"$T/imp_verify.err" || true
+grep -q 'implausible' "$T/imp_verify.err" \
+    && ok "segment: the fixture really is one mg_plausible rejects" \
+    || bad "segment: mg_plausible fixture" "macho9 verify did not call it implausible: $(cat "$T/imp_verify.err")"
+
+# An ordinary operation on it still meets the gate and is refused, with the
+# input left alone -- so the skip below is narrow, not a hole.
+cp "$T/implausible" "$T/imp_lc"
+imp_before=$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)
+if "$MACHO9" lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
+    bad "segment: mg_plausible scope" "lc -delete uuid was NOT refused, so the gate is gone"
+else
+    grep -q 'no known function' "$T/imp_lc.err" \
+        && ok "segment: an operation that CAN move an offset still meets the gate" \
+        || bad "segment: mg_plausible scope" "lc -delete refused for another reason: $(cat "$T/imp_lc.err")"
+fi
+[ "$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)" = "$imp_before" ] \
+    && ok "segment: that refusal left the input untouched" \
+    || bad "segment: mg_plausible scope" "the refused input was modified"
+
+# ...and a rename of the very same file goes through, and really renames.
+cp "$T/implausible" "$T/imp_seg"
+if "$MACHO9" segment "$T/imp_seg" __DATA __DATA_R9 >/dev/null 2>"$T/imp_seg.err"; then
+    "$T/segread" segs "$T/imp_seg" > "$T/imp_segs"
+    grep -q "^SEG __DATA_R9$" "$T/imp_segs" && ! grep -q "^SEG __DATA$" "$T/imp_segs" \
+        && ok "segment: renames a binary mg_plausible rejects for other operations" \
+        || bad "segment: mg_plausible scope" "exited 0 but did not rename: $(cat "$T/imp_segs")"
+    grep -q "^SECT __DATA/" "$T/imp_segs" \
+        && bad "segment: mg_plausible scope" "a section still names __DATA" \
+        || ok "segment: and renames that binary's section segnames too"
+else
+    bad "segment: mg_plausible scope" "refused the fixture: $(cat "$T/imp_seg.err")"
+fi
 
 # ============================================================================
 # retag-swift: the is-Swift tag moves from the stable-ABI bit to the legacy one

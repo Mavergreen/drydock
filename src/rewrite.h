@@ -4,16 +4,18 @@
  * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs in place.
  *
  * This is change_dylib's whole operation set, lifted out of that tool's
- * main() so it is a library function rather than a program. Two front-ends
- * call it now and must keep behaving identically: compat/change_dylib.c
- * (the old grammar: -change/-delete/-reexport/-add/-insert/-strip-lc and the
- * -*-rpath twins) and cli/macho9.c's `dylib`/`rpath`/`lc`/`segment` verbs
- * (the new one: -replace/-delete/-append/-insert/-reexport, plus a segment
- * rename shared with compat/rename_segment.c via src/segname.h). macho9 used
- * to fork and exec change_dylib to get this work done; that made
- * `change_dylib` a runtime dependency of `macho9`, which is a cycle once
- * change_dylib becomes a wrapper around macho9. Sharing the code instead of
- * the binary breaks it.
+ * main() so it is a library function rather than a program. cli/macho9.c's
+ * `dylib`/`rpath`/`lc`/`segment` verbs are the only C front-end left
+ * (-replace/-delete/-append/-insert/-reexport, plus a segment rename shared
+ * with src/segname.h); the OLD grammar -- change_dylib's
+ * -change/-delete/-reexport/-add/-insert/-strip-lc and the -*-rpath twins --
+ * reaches exactly this code through compat/change_dylib.sh, the /bin/sh
+ * wrapper that replaced compat/change_dylib.c, and compat/translate.sh, which
+ * maps one grammar onto the other. macho9 used to fork and exec change_dylib
+ * to get this work done; that made `change_dylib` a runtime dependency of
+ * `macho9`, which is a cycle once change_dylib becomes a wrapper around
+ * macho9. Sharing the code instead of the binary broke it, and is what made
+ * the wrapper possible.
  *
  * The parsing stays in each front-end -- the two grammars are genuinely
  * different, and neither is this module's business. What crosses the boundary
@@ -97,17 +99,54 @@ typedef struct {
      * Both NULL means no rename was requested; the pair is scalar rather than
      * an array because the only grammar that spells it (macho9 segment FILE
      * OLD NEW) takes exactly one pair. The rename itself is mseg_rename_lc
-     * (src/segname.h), shared with compat/rename_segment.c. */
+     * (src/segname.h), shared with the rename_segment grammar. */
     const char      *segment_rename_old;
     const char      *segment_rename_new;
+    /* OUT, and the only field here that is not an instruction: if non-NULL,
+     * the rewriter ADDS to it the number of LC_SEGMENT_64s it actually
+     * renamed -- summed over every slice of a fat container, and left alone
+     * entirely when the rewrite is refused, since a refused rewrite renamed
+     * nothing on disk.
+     *
+     * It exists because "how many matched" is not derivable from outside.
+     * mseg_rename_lc matches with strncmp over the 16-byte segname field
+     * (src/segname.h), and a segname is neither NUL-terminated nor free of
+     * whitespace, so no front-end can recover the count by reading a printed
+     * name back: an OLD longer than 16 bytes whose first 16 match, or a
+     * segname containing a space, both defeat it. The old `rename_segment`
+     * grammar needs the count for its one output line AND for its exit 2 when
+     * nothing matched, so the count has to come from the code that did the
+     * matching. cli/macho9.c's `segment` verb reports it. */
+    int             *segment_renamed;
     int              allow_grow;       /* may enlarge the header pad (mg_grow_header) */
 } mr_ops;
 
-/* How many times one operation may repeat in a single run. Both front-ends
- * accumulate into fixed-size arrays and both refuse at the same point, so
- * `change_dylib -delete ... x33` and `macho9 dylib -delete ... x33` agree
- * about being too many -- each in its own vocabulary, since the two grammars
- * spell the operations differently. */
+/* How many times one operation may repeat in a single run. TWO call sites
+ * accumulate into fixed-size C arrays sized from these two macros; a third
+ * enforces the identical numeric cap from its own separately-declared shell
+ * constant, since it cannot include this header. All three refuse at the
+ * same point -- `change_dylib -delete ... x33`, `fix_macho -change ... x33`
+ * and `macho9 dylib -delete ... x33` all agree about being too many -- each
+ * in its own wording, since none of the three grammars spell the operations
+ * the same way:
+ *
+ *   cli/macho9.c's own dylib/rpath parser checks the count inline and prints
+ *     "macho9 <verb>: too many <flag> operations (max N)", naming ITS OWN
+ *     flag spelling (`-append`, not change_dylib's `-add`) -- see the
+ *     comment at that call site for why the wording is deliberately not
+ *     shared with the other two.
+ *   compat/fix_macho.c's FM_ROOM macro (which reuses this MR_MAX_OPS rather
+ *     than spelling out a second 32) prints "too many <flag> (max N)", in
+ *     fix_macho's own words -- this is still C, so this is still a fixed
+ *     array a C parser fills. Its own comment calls this CD_ROOM, revived
+ *     in this file, in change_dylib's exact wording.
+ *   compat/translate.sh's mt_room -- CD_ROOM revived again, since
+ *     change_dylib.c is gone -- accumulates the OLD grammar's argv into a
+ *     shell variable rather than a C array, capped by its own literal
+ *     MT_MAX_OPS=32 (not derived from MR_MAX_OPS: a /bin/sh script cannot
+ *     include this header), and refuses at the identical count, in
+ *     change_dylib's own historical words ("too many <flag> (max N)"),
+ *     before ever emitting a `macho9` command line. */
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 

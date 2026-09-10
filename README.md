@@ -19,9 +19,21 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
   load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
   rename, and the Swift class-record retag.
-- `compat/` — these six tools' own sources. They predate `macho9` and are kept
-  under their original names because `install.sh` builds some of them by
-  name; see `compat/README.md`.
+- `compat/` — these six tools' entry points. They predate `macho9` and keep
+  their original names because `install.sh` fetches some of them by name.
+  Five are now `/bin/sh` wrappers that print the `macho9` equivalent of what
+  they were asked to do and then do it through `macho9`; `fix_macho` is still
+  C, because it could not be wrapped without changing what it does — so this
+  repo still ships **two** Mach-O rewriting binaries, not the one the
+  wrapper conversion is aiming at. Also here: `translate.sh`, the
+  old-grammar-to-`macho9` translator the wrappers source, and
+  `macho9-compat.sh`, the machinery they share. See `compat/README.md`.
+
+  **Packaging note:** the five wrappers need `macho9`, `macho9-compat.sh` and
+  `macho9-translate.sh` installed beside them. Anything that fetches
+  `patch_macho`, `change_dylib` or `add_version_min` by name now has three
+  more files to fetch. `compat/README.md` says what that means for
+  `mavericksforever.com/claude/install.sh`, which has not been told.
 - `cli/` — `macho9`, the multi-verb CLI built on `src/`.
 - `tests/` — everything `ctest` runs, plus the fixtures it reads.
 
@@ -107,8 +119,12 @@ Two independent checks back that up:
   initializers and unwind entries still land on an address `LC_FUNCTION_STARTS`
   lists? It needs no "before" image, so the shared rewriter (`change_dylib` and
   `macho9 dylib`/`rpath`/`lc` alike) runs it immediately before writing and
-  refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1`
-  opts out.
+  refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1` opts out.
+  `macho9 segment` never reaches this gate at all — its only form always
+  builds a rename-only operation set, and the shared rewriter skips the gate
+  outright for those rather than offering an opt-out: a rename moves no
+  offset, so the gate could only re-decide a property the input already had
+  (`src/rewrite.c` has the reasoning and the measurement).
 
 That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,

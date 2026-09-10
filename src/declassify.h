@@ -6,17 +6,18 @@
  * 2021-and-later toolchain produced can be loaded on 10.9 at all.
  *
  * This is compat/patch_macho.c's whole conversion, lifted out of that tool's
- * main() so it is a library function rather than a program. Two front-ends
- * call it now and must keep behaving identically: compat/patch_macho.c (the
- * old grammar, `patch_macho IN OUT`, its own open/write of OUT at 0755, its
- * "Wrote ..." line only on the converting path, exit 1 for everything that
- * goes wrong) and cli/macho9.c's `declassify` verb. Only what genuinely
- * differs between the two -- argument parsing, the write path, the exit code
- * -- stays in each front-end. Everything the conversion itself PRINTS lives
- * down here, once, exactly as patch_macho has always printed it, for the same
- * reason rewrite.h keeps change_dylib's diagnostics down there: two copies of
- * a message drift, and tests/characterize.sh and tests/chained-fixups.sh both
- * run the conversion through patch_macho.
+ * main() so it is a library function rather than a program. cli/macho9.c's
+ * `declassify` verb is the only C front-end left; the old grammar,
+ * `patch_macho IN OUT`, reaches this same code through compat/patch_macho.sh,
+ * the /bin/sh wrapper that replaced compat/patch_macho.c. That wrapper is
+ * what still reproduces the old tool's observables -- exit 1 for everything
+ * that goes wrong, and no "Wrote ..." line on the pass-through path.
+ *
+ * Everything the conversion itself PRINTS lives down here, once, exactly as
+ * patch_macho has always printed it, for the same reason rewrite.h keeps
+ * change_dylib's diagnostics down there: two copies of a message drift, and
+ * tests/characterize.sh and tests/chained-fixups.sh both run the conversion
+ * through patch_macho.
  *
  * WHAT IT DOES, in the order the file is touched:
  *   - collects every LC_SEGMENT_64 (a chained-fixups entry names its segment
@@ -76,10 +77,22 @@
  *   32 LC_SEGMENT_64 commands, and 16 strippable ones
  *     (LC_DYLD_EXPORTS_TRIE/LC_DYLD_CHAINED_FIXUPS/LC_BUILD_VERSION together)
  *     -- more of either is MDCL_REFUSED.
- *   1MB of rebase opcodes and 1MB of bind opcodes, about 200k fixups each
- *     (roughly 5 bytes per fixup). A binary with more fixups than that is
- *     MDCL_REFUSED, not a binary whose remaining pointers silently go
- *     unrebased. This is the limit a very large modern binary reaches first.
+ *   1MB of rebase opcodes and 1MB of bind opcodes. A rebase costs about 5
+ *     bytes (SET_SEGMENT_AND_OFFSET_ULEB + DO_REBASE_IMM_TIMES), so the
+ *     rebase budget is roughly 200k fixups; a bind costs far more --
+ *     SET_DYLIB_ORDINAL(_IMM or _ULEB), SET_SYMBOL_TRAILING_FLAGS_IMM, the
+ *     symbol name plus its NUL, SET_SEGMENT_AND_OFFSET_ULEB, and DO_BIND --
+ *     roughly 27 bytes for a typical symbol name, so the bind budget is
+ *     reached around 40k fixups, not 200k. A binary with more fixups than
+ *     its budget allows is MDCL_REFUSED, not a binary whose remaining
+ *     pointers silently go unrebased. Which budget is reached first is not
+ *     fixed -- it depends on the image's rebase:bind ratio, and because a
+ *     bind costs roughly 5x what a rebase does, the bind budget is the one
+ *     reached first only when binds outnumber rebases by more than about
+ *     1:5, which is the opposite of the ratio the one real overflow seen so
+ *     far has: src/declassify.c's opcode-buffer comment measures it as
+ *     rebase-heavy, on the Node binary install.sh fetches and runs this
+ *     conversion over.
  *   2MB of slack past the end of the file, which both finished streams plus
  *     their 8-byte alignment must fit inside -- MDCL_REFUSED otherwise.
  *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT
