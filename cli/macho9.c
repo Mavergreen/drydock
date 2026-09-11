@@ -14,6 +14,7 @@
  *   macho9 minos FILE 10.9
  *   macho9 info FILE
  *   macho9 verify FILE
+ *   macho9 edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]
  *
  * Not every line above is implemented by every build -- `macho9 --capabilities`
  * is the machine-readable truth about which ones are, so the wrapper and this
@@ -26,7 +27,9 @@
  * `lc` and `segment` into mr_apply_file (src/rewrite.h); `minos` into
  * mv_add_version_min (src/version_min.h); `retag-swift` into
  * mswift_retag_file (src/swift_retag.h); `declassify` into md_declassify
- * (src/declassify.h). Each verb is a thin shell over code
+ * (src/declassify.h); `edit` into ms_parse (src/script.h) and me_run
+ * (src/edit.h), which reaches the in-memory cores of the same
+ * implementations. Each verb is a thin shell over code
  * that already exists in this repo, and each translates this grammar into the
  * ONE
  * implementation -- so the ordinal-renumbering logic that has twice shipped
@@ -285,11 +288,11 @@ static void print_ops_csv(int is_rpath) {
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`. `edit`'s own flags=
  *                         entry is unrelated to the fatal-warnings paragraph
- *                         above -- `output` and `verbose` are plain CLI
- *                         switches (--output OUT, --verbose), not a
- *                         match-reporting mode -- listed so a wrapper can
- *                         tell whether this build accepts them before
- *                         passing either.
+ *                         above -- `output`, `verbose` and `dry-run` are
+ *                         plain CLI switches (--output OUT, --verbose,
+ *                         --dry-run), not a match-reporting mode -- listed
+ *                         so a wrapper can tell whether this build accepts
+ *                         them before passing any.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the edit-script
  *       statement vocabulary the `edit` verb's parser (ms_parse) accepts.
@@ -338,10 +341,8 @@ static int print_capabilities(void) {
     printf("verb rpath ops=");
     print_ops_csv(1);
     printf(" flags=allow-grow,fatal-warnings\n");
-    /* flags=output,verbose: the two CLI flags `edit` accepts today. No
-     * --dry-run yet: the flag must not be advertised until it exists, per
-     * this function's own "never advertise one that errors out" contract. */
-    printf("verb edit flags=output,verbose\n");
+    /* flags=output,verbose,dry-run: the three CLI flags `edit` accepts. */
+    printf("verb edit flags=output,verbose,dry-run\n");
     {
         int i;
         const char *kind, *op;
@@ -374,9 +375,11 @@ static void usage(const char *prog) {
         "       %s minos FILE 10.9\n"
         "       %s info FILE\n"
         "       %s verify FILE\n"
-        "       %s edit FILE SCRIPT [--output OUT] [--verbose]\n"
+        "       %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n"
         "                                                    apply an edit script to FILE (see README);\n"
-        "                                                    SCRIPT may be '-' for stdin\n",
+        "                                                    SCRIPT may be '-' for stdin;\n"
+        "                                                    --dry-run applies and verifies but skips\n"
+        "                                                    the write, reporting what would happen\n",
         prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
@@ -415,34 +418,6 @@ struct info_ctx {
     int ordinal;
 };
 
-static const char *lc_name(uint32_t cmd) {
-    switch (cmd) {
-    case LC_SEGMENT_64:         return "LC_SEGMENT_64";
-    case LC_SYMTAB:              return "LC_SYMTAB";
-    case LC_DYSYMTAB:            return "LC_DYSYMTAB";
-    case LC_LOAD_DYLIB:          return "LC_LOAD_DYLIB";
-    case LC_ID_DYLIB:            return "LC_ID_DYLIB";
-    case LC_LOAD_WEAK_DYLIB:     return "LC_LOAD_WEAK_DYLIB";
-    case LC_REEXPORT_DYLIB:      return "LC_REEXPORT_DYLIB";
-    case LC_LOAD_UPWARD_DYLIB:   return "LC_LOAD_UPWARD_DYLIB";
-    case LC_RPATH:                return "LC_RPATH";
-    case LC_UUID:                 return "LC_UUID";
-    case LC_CODE_SIGNATURE:      return "LC_CODE_SIGNATURE";
-    case LC_VERSION_MIN_MACOSX:  return "LC_VERSION_MIN_MACOSX";
-    case LC_MAIN:                 return "LC_MAIN";
-    case LC_DYLD_INFO:            return "LC_DYLD_INFO";
-    case LC_DYLD_INFO_ONLY:      return "LC_DYLD_INFO_ONLY";
-    case LC_FUNCTION_STARTS:     return "LC_FUNCTION_STARTS";
-    case LC_DATA_IN_CODE:        return "LC_DATA_IN_CODE";
-    case LC_SOURCE_VERSION:      return "LC_SOURCE_VERSION";
-    case LC_BUILD_VERSION:       return "LC_BUILD_VERSION";
-    case LC_DYLIB_CODE_SIGN_DRS: return "LC_DYLIB_CODE_SIGN_DRS";
-    case LC_DYLD_EXPORTS_TRIE:   return "LC_DYLD_EXPORTS_TRIE";
-    case LC_DYLD_CHAINED_FIXUPS: return "LC_DYLD_CHAINED_FIXUPS";
-    default:                      return NULL;
-    }
-}
-
 /* dylib_command/rpath_command names are an lc_str offset relative to the
  * command's own start; the bounds check against cmdsize lives once, in
  * mo_lc_str_at (ordinals.h), which change_dylib.c's build_lcs and
@@ -455,7 +430,7 @@ static const char *lc_str_at(const struct load_command *lc, uint32_t offset) {
 
 static int info_cb(const struct load_command *lc, void *ctx_) {
     struct info_ctx *ctx = ctx_;
-    const char *name = lc_name(lc->cmd);
+    const char *name = lc_cmd_name(lc->cmd);
     if (name) printf("LC[%d] %s cmdsize=%u\n", ctx->idx, name, lc->cmdsize);
     else      printf("LC[%d] 0x%08x cmdsize=%u\n", ctx->idx, lc->cmd, lc->cmdsize);
 
@@ -1087,11 +1062,13 @@ static int cmd_declassify(const char *in, const char *out) {
 
 /* ---- edit: parse an edit script and run it through me_run --------------
  *
- * The one verb whose positionals aren't at fixed argv indices: --output and
- * --verbose may appear anywhere among the arguments, before or after FILE
- * and SCRIPT or between them, so this scans every token once instead of
- * assuming a position. The two tokens that are not "--output", its OUT, or
- * "--verbose" -- in the order seen -- are FILE and SCRIPT. Only the exact
+ * The one verb whose positionals aren't at fixed argv indices: --output,
+ * --verbose and --dry-run may appear anywhere among the arguments, before
+ * or after FILE and SCRIPT or between them, so this scans every token once
+ * instead of assuming a position. The two tokens that are not "--output",
+ * its OUT, "--verbose" or "--dry-run" -- in the order seen -- are FILE and
+ * SCRIPT. --output may be given once, and its OUT may not start with "--".
+ * Only the exact
  * token "-" is exempt from the unrecognized-flag check below; it is not
  * "SCRIPT may start with '-'" in general, and "-" is not always stdin: it is
  * stdin only where it lands as SCRIPT (checked below), and a literal
@@ -1141,7 +1118,7 @@ static int me_read_all(FILE *f, uint8_t **out, size_t *outlen) {
 }
 
 static int cmd_edit_usage(const char *prog) {
-    fprintf(stderr, "usage: %s edit FILE SCRIPT [--output OUT] [--verbose]\n", prog);
+    fprintf(stderr, "usage: %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n", prog);
     return EX_FAIL;
 }
 
@@ -1149,15 +1126,34 @@ static int cmd_edit(int argc, char **argv) {
     const char *prog = argv[0];
     const char *file = NULL, *script_path = NULL, *out = NULL;
     int verbose = 0;
+    int dry_run = 0;
     int npos = 0;
 
     for (int i = 2; i < argc; i++) {
         const char *tok = argv[i];
         if (strcmp(tok, "--output") == 0) {
             if (i + 1 >= argc) return cmd_edit_usage(prog);
+            /* `--output --verbose` means a forgotten OUT far more often than
+             * a file really named "--verbose", and taking it as OUT would
+             * write that file and swallow the flag. No flag this verb takes
+             * has a single dash, so an OUT such as "-x" is still taken as a
+             * file name. */
+            if (strncmp(argv[i + 1], "--", 2) == 0) {
+                fprintf(stderr, "macho9 edit: --output needs a file name, not '%s'\n",
+                        argv[i + 1]);
+                return EX_FAIL;
+            }
+            /* Two OUTs name two destinations for one write; taking the
+             * last would silently drop the first. */
+            if (out) {
+                fprintf(stderr, "macho9 edit: --output given more than once\n");
+                return EX_FAIL;
+            }
             out = argv[++i];
         } else if (strcmp(tok, "--verbose") == 0) {
             verbose = 1;
+        } else if (strcmp(tok, "--dry-run") == 0) {
+            dry_run = 1;
         } else if (tok[0] == '-' && strcmp(tok, "-") != 0) {
             fprintf(stderr, "macho9 edit: unknown flag '%s'\n", tok);
             return EX_FAIL;
@@ -1212,7 +1208,7 @@ static int cmd_edit(int argc, char **argv) {
     me_opts o;
     memset(&o, 0, sizeof o);
     o.verbose = verbose;
-    o.dry_run = 0;   /* no --dry-run yet: the flag doesn't exist */
+    o.dry_run = dry_run;
     o.log = stderr;
 
     int rc = me_run(file, out, &s, &o);

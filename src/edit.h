@@ -21,7 +21,9 @@
 #include "script.h"
 
 typedef struct {
-    int   verbose;        /* log each statement to `log` as it runs */
+    int   verbose;        /* log each statement to `log` as it runs, and
+                           * beneath it any follow-up work it did (see
+                           * REPORT, below) */
     int   dry_run;        /* apply and verify, but do not write */
     FILE *log;            /* where the report goes; stderr in the CLI, and
                            * stderr when NULL */
@@ -60,20 +62,84 @@ typedef struct {
  * the destination is as it was; see atomic_write.h. Nothing is ever written
  * before verification has passed.
  *
+ * ORDER. Statements run one at a time, each against the image the one
+ * before it left, so an `insert` goes first in the image as that statement
+ * finds it. `dylib insert A` then `dylib insert B` leaves B at ordinal 1 and
+ * A at ordinal 2, and `rpath insert A` then `rpath insert B` has dyld search
+ * B before A -- the reverse of `macho9 dylib FILE -insert A -insert B`, which
+ * places its whole list at once, in the order given.
+ *
  * REPORT, to o->log. Always printed: a statement's refusal,
- *   "macho9 edit: refused at statement K of N (line L); DEST left unmodified"
+ *   "macho9 edit: refused at statement K of N (line L); PATH left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
- * is the statement's line in the script), a refusal at the final verify, a
+ * is the statement's line in the script), a refusal at the final verify,
+ *   "macho9 edit: refused at verification, after statement N of N; ..."
+ * ("(the script has no statements)" in place of the count when N is 0), a
  * failed write,
- *   "macho9 edit: DEST left unmodified (write failed)",
+ *   "macho9 edit: PATH left unmodified (write failed)",
  * and a dry run's
  *   "DEST: NOT written (--dry-run) -- would be N bytes".
- * Under o->verbose, each statement is also logged as
- * "  <kind> <op> <operands>" before it runs, and a run that gets that far
- * logs "PATH: verified" and "DEST: written (N bytes)". DEST is `out` when
- * given, else `path`. The operations keep printing their own progress to
- * stdout and their own refusals to stderr, exactly as they do for the CLI
- * verbs.
+ * With `out`, a refusal line ends "OUT not written; PATH left unmodified"
+ * instead, and a failed write reads "writing OUT failed; PATH left
+ * unmodified": OUT may never have existed. Under o->verbose, each statement
+ * is also logged as "  <kind> <op> <operands>" before it runs, and a run
+ * that gets that far logs "PATH: verified" and "DEST: written (N bytes)".
+ * DEST is `out` when given, else `path`. me_run flushes stdout before each
+ * line it writes and before each "matched nothing" report, so those land
+ * after any stdout line printed before them; an operation's own stderr
+ * message, written while it runs, is not ordered this way.
+ *
+ * WHAT THE OPERATIONS PRINT THEMSELVES. me_run calls each operation's
+ * in-memory core, not its CLI verb, so an edit run shows the lines those
+ * cores print and none of the lines the verbs print after their own write.
+ * Those that name a file name PATH, the input, even when `out` is given. On
+ * stdout, from mr_apply_image (`load-command`, `segment`, `dylib`, `rpath`):
+ * "PATH: header pad N bytes available (...)"; the per-command lines
+ * "  Strip [...]", "  Insert [...]", "  Add [...]", "  Change [...]",
+ * "  Change rpath [...]", "  Delete [...]", "  Delete rpath [...]",
+ * "  Reexport: ..." and "  Rename segment: ..."; "  Renumbered library
+ * ordinals: ..." or "  Flat namespace: ..."; under allow-grow, "PATH: load
+ * commands need N more bytes ...; growing header..." and "PATH: grew header
+ * pad: ..."; and last "PATH: updated (sizeofcmds=...)" or "PATH: nothing to
+ * change.". From md_declassify_buf (`fixups`): "Exports trie: ...",
+ * "Chained fixups: ...", "Found N segments", "Fixups vN: ...", "  Seg ...",
+ * "Processed N rebases, M binds", "Removed cmd at ...", "Added
+ * LC_DYLD_INFO_ONLY: ..." and "Extending __LINKEDIT: ...", or on a classic
+ * image "Already patched ... passing through.". From
+ * mv_add_version_min_image (`version-min`): "LC_VERSION_MIN_MACOSX already
+ * present; nothing to do." when it has one, and nothing when it appends.
+ * mswift_retag_image (`swift-abi`) prints nothing. On stderr: each core's
+ * own refusals, and the "matched nothing" reports described under
+ * DIRECTIVES. NEVER printed by an edit run, because they belong to the verbs
+ * and not the cores: `macho9 dylib`/`rpath`/`lc`'s "Updated PATH (N
+ * bytes)", `minos`'s "Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=...,
+ * sizeofcmds=...)", `retag-swift`'s "PATH: retagged N class record(s)", and
+ * `declassify`'s "Wrote OUT (N bytes)". So a stdout line such as "PATH:
+ * updated (...)" describes the in-memory image after that statement, not
+ * the file: a run refused at a later statement, or at the final verify,
+ * writes nothing, and o->log's refusal line and the return code are what
+ * say so.
+ *
+ * FOLLOW-UPS, also under o->verbose: a statement that succeeds logs,
+ * indented beneath its statement line, the work it did beyond what it names
+ * -- the part a user cannot see for themselves. Every figure is one the
+ * operation computed while doing the work and handed back, never a second
+ * look at the image:
+ *   `dylib insert` and `dylib delete`: the command inserted or removed and
+ *     its ordinal, the renumbering map (old->new), and how many nlist
+ *     entries and SET_DYLIB_ORDINAL opcodes -- bind, weak and lazy -- the
+ *     renumbering changed (rewrite.h's mr_renumbering). A delete that
+ *     matched nothing renumbered nothing and logs none of this.
+ *   `fixups set classic`: that an already-classic image passed through, or
+ *     the rebases and binds the conversion emitted, the bytes of opcodes and
+ *     bytes appended, the commands it stripped, and how far it extended
+ *     __LINKEDIT (declassify.h's md_report).
+ *   `swift-abi set legacy`: how many class records it retagged, or
+ *     "nothing to retag".
+ *   `version-min set 10.9`: "appended LC_VERSION_MIN_MACOSX 10.9" when it
+ *     appended one (mv_add_version_min_image's `added`), and nothing when
+ *     the image already had one.
+ * Every other statement logs only its statement line.
  *
  * DIRECTIVES.
  *

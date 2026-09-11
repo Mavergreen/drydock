@@ -144,12 +144,13 @@ writes once:
 macho9 edit FILE SCRIPT                 # rewrite FILE in place
 macho9 edit FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
 macho9 edit FILE -                      # read the script from stdin
+macho9 edit FILE SCRIPT --dry-run       # do everything but the write
 ```
 
-`--output` and `--verbose` may appear anywhere among the arguments, not only
-after `SCRIPT`. There is no `--` to end flag parsing, so a `FILE` or `SCRIPT`
-whose real name starts with `-` is refused as an unknown flag; reference it
-through a path that doesn't, e.g. `./-name`.
+`--output`, `--verbose` and `--dry-run` may appear anywhere among the
+arguments, not only after `SCRIPT`. There is no `--` to end flag parsing, so a
+`FILE` or `SCRIPT` whose real name starts with `-` is refused as an unknown
+flag; reference it through a path that doesn't, e.g. `./-name`.
 
 **Edit writes nothing unless every statement succeeded.** The whole script is
 parsed before `FILE` is ever opened for writing, so a typo in the last line of
@@ -158,6 +159,40 @@ memory, in the order written; if any statement is refused, `FILE` (or
 `--output`'s target) is left exactly as it was found. The finished image is
 verified — mandatorily, after the last statement and before the write, with no
 opt-out — and only then written, once.
+
+**`--dry-run` is the same run with only the write skipped.** Every statement
+is still parsed, applied and verified; only the final write does not happen.
+It exits with the same code the real run would — 0 on success, or the refusal
+or failure code a real run would have produced at the same statement — so a
+dry run tells you whether the real run will work, not just predicts it. It
+prints a line saying so, `FILE: NOT written (--dry-run) -- would be N bytes`,
+even without `--verbose`.
+
+**`--verbose` logs, on stderr, what the run did.** Each statement as it
+starts; beneath it, indented, the follow-up work it did that its line does
+not name — for `dylib insert` and `dylib delete` the ordinal renumbering (the
+old-to-new map, and how many nlist entries and `SET_DYLIB_ORDINAL` opcodes
+changed), for `fixups set classic` the conversion's figures (rebases and
+binds emitted, commands stripped, how far `__LINKEDIT` grew) or that an
+already-classic image passed through, for `swift-abi set legacy` how many
+class records it retagged, and for `version-min set` the
+`LC_VERSION_MIN_MACOSX` it appended; then `FILE: verified` and
+`FILE: written (N bytes)` (`OUT: written` with `--output`).
+
+**The refusal line on stderr and the exit code are what tell you whether the
+file was written.** The operations still print their own progress to stdout
+as each statement runs — `FILE: updated (sizeofcmds=...)` and the like — but
+during an edit run such a line describes the image in memory, not the file. A
+run refused at a later statement, or at verification, writes nothing, even
+after printing it.
+
+**The write replaces `FILE` by rename**, as `objcopy` does: the new image goes
+to a temporary file beside `FILE`, which is then renamed over it, keeping
+`FILE`'s mode. So a read-only (`0444`) `FILE` in a writable directory is
+replaced, and the run exits 0, where `macho9 dylib`, `rpath` and `lc` fail
+with a permission error. (A `FILE` with more than one hard link is written
+through in place instead, so that every name sees the change; see
+`src/atomic_write.h`.)
 
 ### File format
 
@@ -199,6 +234,12 @@ the header pad by an exact byte count) is not expressible as a line here —
 grow the pad on its own as a side effect, which is a different thing from
 naming a byte count directly.
 
+Statements run one at a time, in the order written, so each `insert` goes to
+the front of the image as the statement before it left it: the lines
+`dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal
+2, the reverse of `macho9 dylib FILE -insert A -insert B`, which gives A then
+B. `rpath insert` works the same way, so dyld searches B before A.
+
 ### Directives
 
 Two, and each must precede every operation in the script — a directive after
@@ -209,8 +250,8 @@ allow-grow          permission to enlarge the header pad by lowering the image
                     base if new load commands do not fit; opt-in, and refused
                     by default. MH_EXECUTE + MH_PIE only -- the image-base
                     trick needs a __PAGEZERO and no absolute relocations to fix
-fatal-warnings      an operation that matched nothing is an error, not just a
-                    report
+fatal-warnings      an operation that matched nothing refuses the whole run
+                    (exit 1, nothing written) instead of only being reported
 ```
 
 ### Worked example
