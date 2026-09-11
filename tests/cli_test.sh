@@ -301,6 +301,25 @@ else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
 
+# --capabilities' statement lines are generated from MS_TABLE (src/script.c)
+# by looping ms_table_row, not hand-copied. The statement vocabulary
+# has exactly 14 <kind,op> pairs; tests/script_test.c's
+# test_capabilities_table_round_trips separately walks ms_table_row directly
+# and confirms MS_TABLE itself has those 14 rows, each of which round-trips
+# through ms_parse. This assertion checks the other half of the same claim
+# from here, reusing the $caps already captured above: that
+# print_capabilities' loop over ms_table_row actually emitted 14 "statement "
+# lines, with none dropped, none extra, and none duplicated. Together the
+# two catch the generator and the table going out of step with each other.
+n_statements=$(echo "$caps" | grep -c '^statement ' || true)
+n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
+[ "$n_statements" -eq 14 ] && [ "$n_unique" -eq 14 ] \
+    && ok "capabilities: exactly 14 unique statement lines" \
+    || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
+echo "$caps" | grep -q "statement dylib replace 2" \
+    && ok "capabilities: statement table is advertised" \
+    || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
+
 # --fatal-warnings promotes "an operation matched nothing" from a stderr
 # report to a refusal (dylib/rpath/lc only -- segment and retag-swift take no
 # list of operations that could miss). A wrapper has no other way to learn
