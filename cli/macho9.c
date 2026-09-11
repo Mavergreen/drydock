@@ -560,7 +560,8 @@ static int cmd_grow(const char *path, const char *n_str) {
          * those of the mg_plausible it runs last. This verb cannot tell any
          * of those apart from every other reason mg_grow_header declines,
          * and by deliberate choice does not try to -- see rewrite.c's
-         * comment on the identical fold in mr_apply_file for why. So a
+         * comment on the identical fold in mr_apply_image (the thin-image
+         * step mr_apply_file goes through) for why. So a
          * failed mg_grow_header always exits here, EX_REFUSED, never
          * EX_FAIL. (A failed write-back, below, is EX_FAIL.) */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
@@ -618,10 +619,9 @@ static int cmd_lc(int argc, char **argv) {
             i += 1;
         } else if (strcmp(argv[i], "-delete") == 0 && i + 1 < argc) {
             const char *kind = argv[i + 1];
-            size_t kk;
-            for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++)
-                if (strcmp(kind, LC_STRIP_KINDS[kk].name) == 0) break;
-            if (kk == LC_STRIP_KINDS_COUNT) {
+            uint32_t cmd;
+            if (lc_kind_by_name(kind, &cmd) != 0) {
+                size_t kk;
                 fprintf(stderr, "macho9 lc: unknown KIND '%s' (expected one of:", kind);
                 for (kk = 0; kk < LC_STRIP_KINDS_COUNT; kk++) fprintf(stderr, " %s", LC_STRIP_KINDS[kk].name);
                 fprintf(stderr, ")\n");
@@ -642,7 +642,7 @@ static int cmd_lc(int argc, char **argv) {
                 fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
                 return EX_FAIL;
             }
-            strip[nstrip++] = LC_STRIP_KINDS[kk].cmd;
+            strip[nstrip++] = cmd;
             i += 2;
         } else {
             fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND and --fatal-warnings are supported)\n", argv[i]);
