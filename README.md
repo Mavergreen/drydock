@@ -230,9 +230,9 @@ as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
 `minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
 `fixups`. One rewriting verb has no statement at all: `grow FILE N` (enlarge
 the header pad by an exact byte count) is not expressible as a line here —
-`allow-grow`, below, is the directive that lets a `dylib`/`rpath` statement
-grow the pad on its own as a side effect, which is a different thing from
-naming a byte count directly.
+`allow-grow`, below, is the directive that lets a `dylib`, `rpath` or
+`version-min set` statement grow the pad on its own as a side effect, which
+is a different thing from naming a byte count directly.
 
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
@@ -249,7 +249,10 @@ Two, and each must precede every operation in the script — a directive after
 allow-grow          permission to enlarge the header pad by lowering the image
                     base if new load commands do not fit; opt-in, and refused
                     by default. MH_EXECUTE + MH_PIE only -- the image-base
-                    trick needs a __PAGEZERO and no absolute relocations to fix
+                    trick needs a __PAGEZERO and no absolute relocations to fix.
+                    Covers dylib, rpath and version-min set; not fixups set
+                    classic -- nothing grows while the image still has chained
+                    fixups, so put fixups set classic first
 fatal-warnings      an operation that matched nothing refuses the whole run
                     (exit 1, nothing written) instead of only being reported
 ```
@@ -291,10 +294,17 @@ macho9 edit "$REAL" claude.edits --output "$T"
 
 - **Input must be a thin 64-bit Mach-O.** A fat (universal) file is refused;
   run one script per slice after extracting it (`lipo -thin ARCH`).
-- **`allow-grow` reaches only `dylib` and `rpath` statements** — the ones whose
-  load commands can outgrow the header pad. `version-min set` refuses with "no
-  room" even under `allow-grow`; `segment rename` and `load-command delete`
-  never need it, since neither adds bytes to the load commands.
+- **`allow-grow` reaches `dylib`, `rpath` and `version-min set`** — the
+  statements whose load commands can outgrow the header pad — and only on a
+  64-bit PIE executable. It does not reach `fixups set classic`: growth
+  refuses an image that still has chained fixups. Nor does the conversion
+  need it: it removes whichever of `LC_DYLD_EXPORTS_TRIE`,
+  `LC_DYLD_CHAINED_FIXUPS` and `LC_BUILD_VERSION` are present before adding
+  its 48-byte `LC_DYLD_INFO_ONLY`, so on a modern chained binary, which
+  carries all three, it frees at least 56 bytes before using 48. On a
+  chained image nothing can grow until `fixups set classic` has run; put it
+  first. `segment rename` and `load-command delete` never need it, since
+  neither adds bytes to the load commands.
 - **`fatal-warnings` covers the statements that can match nothing:**
   `load-command delete` (no command of that kind), `dylib replace/delete/
   reexport` and `rpath replace/delete` (no command naming that path), and

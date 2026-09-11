@@ -1,8 +1,11 @@
 /*
- * mv_ -- see version_min.h. This is compat/add_version_min.c's former main(),
- * unchanged in behaviour and in every message it prints; only the argument
- * check stayed behind in that tool. Its in-memory middle is
- * mv_add_version_min_image, so an edit script can apply it to a buffer.
+ * mv_ -- see version_min.h. This started as compat/add_version_min.c's
+ * main(); only the argument check stayed behind in that tool. It now takes
+ * an allow_grow flag: with it set, a short header pad is grown instead of
+ * refused, via mg_ensure_pad (src/grow.h), whose own "ERROR: ... growing the
+ * header needs allow-grow" line precedes this file's "no room for
+ * LC_VERSION_MIN_MACOSX" when growth isn't permitted. Its in-memory middle
+ * is mv_add_version_min_image, so an edit script can apply it to a buffer.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,13 +18,16 @@
 
 #include "version_min.h"
 #include "image.h"
+#include "grow.h"
 #include "rewrite.h"    /* MR_REFUSED/MR_FAIL: this function's own exit-code
                          * vocabulary, shared with mr_apply_file -- see its
                          * comment there for the dividing line this follows. */
 
 struct mv_scan {
-    uint32_t first_sect_off;   /* upper bound of header pad; UINT32_MAX if no
-                                 * section has a nonzero file offset */
+    uint32_t first_sect_off;   /* lowest nonzero section file offset;
+                                 * UINT32_MAX if no section has one. Only
+                                 * that sentinel is consulted: mg_ensure_pad
+                                 * finds the pad's bound for itself. */
     int      has_version_min;
 };
 
@@ -39,8 +45,8 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
     return 0;   /* nothing here ever needs to stop the walk early */
 }
 
-/* cli/macho9.c's cmd_minos forwards this function's return value verbatim
- * (`return mv_add_version_min(path);`), the same arrangement mr_apply_file
+/* cli/macho9.c's cmd_minos forwards this function's return value verbatim,
+ * passing through its own allow_grow flag, the same arrangement mr_apply_file
  * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
  * the same two codes and the same dividing line mr_apply_file's own comment
  * (rewrite.h) draws: MR_FAIL for this function's own open/fstat/write, for
@@ -51,7 +57,7 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
  * reason); MR_REFUSED for every site that examined the file and declined,
  * including mi_open's MI_NOT_MACHO and "no room for
  * LC_VERSION_MIN_MACOSX". */
-int mv_add_version_min(const char *path) {
+int mv_add_version_min(const char *path, int allow_grow) {
     /* Open O_RDWR early so an unwritable file fails immediately, before any
      * analysis; mi_open (O_RDONLY) does the actual read and validation, same
      * split as change_dylib and patch_macho use. */
@@ -105,21 +111,24 @@ int mv_add_version_min(const char *path) {
         return MR_FAIL;
     }
 
-    /* The edit itself, in memory; what is left here is the file around it. */
+    /* The edit itself, in memory; what is left here is the file around it.
+     * mi_release first: growing may reallocate the buffer, and the image
+     * wrapper must not be left owning a pointer that realloc moved. */
+    size_t fsize = im.size;
+    uint8_t *buf = mi_release(&im);
     int added = 0;
-    int rc = mv_add_version_min_image(&im, &added);
+    int rc = mv_add_version_min_image(&buf, &fsize, allow_grow, path, &added);
     if (rc != 0 || !added) {
-        mi_close(&im);
+        free(buf);
         close(fd);
         return rc;
     }
 
-    size_t fsize = im.size;
-    struct mach_header_64 *hdr = im.hdr;
-    /* mi_release, not the image, owns the buffer from here: this writes it
-     * back and eventually free()s it. */
-    uint8_t *buf = mi_release(&im);
-
+    /* A grown image is larger than the file it was read from; writing it
+     * from offset 0 extends the file. The write is in place, through the
+     * descriptor the race guard above checked -- a failed write can leave
+     * the file partly written, exactly as before growth existed. */
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
     lseek(fd, 0, SEEK_SET);
     if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return MR_FAIL; }
     close(fd);
@@ -132,40 +141,52 @@ int mv_add_version_min(const char *path) {
 /* See version_min.h. mv_add_version_min's former middle, moved rather than
  * copied: the scan, the "already present" and "no room" answers, and the
  * append, all against the caller's buffer and none of the file around it. */
-int mv_add_version_min_image(mi_image *im, int *out_added) {
+int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
+                             const char *label, int *out_added) {
     *out_added = 0;
-    size_t fsize = im->size;
-    struct mach_header_64 *hdr = im->hdr;
+    mi_image im;
+    if (mi_wrap(*pbuf, *psize, &im) != 0) {
+        fprintf(stderr, "not a readable 64-bit Mach-O\n");
+        return MR_REFUSED;
+    }
+    struct mach_header_64 *hdr = im.hdr;
 
     struct mv_scan scan = { UINT32_MAX, 0 };
-    mi_each_lc(im, mv_scan_lc, &scan);
+    mi_each_lc(&im, mv_scan_lc, &scan);
 
     if (scan.has_version_min) {
         printf("LC_VERSION_MIN_MACOSX already present; nothing to do.\n");
         return 0;
     }
 
-    uint32_t lc_end = sizeof(*hdr) + hdr->sizeofcmds;
-    /* Three ways "no room" can be true, all of which must refuse before the
-     * write below: no section anywhere had a nonzero file offset at all
-     * (scan.first_sect_off is still its UINT32_MAX sentinel -- the write
-     * would then have gone straight off whatever end the buffer actually
-     * has); the room check against first_sect_off says there isn't room;
-     * or -- since mi_open validates load commands, not section file ranges,
-     * so first_sect_off is an untrusted value read straight from the file --
-     * the write would run past fsize regardless of what first_sect_off
-     * claims. Fixed after a real heap overflow: a 104-byte file (header +
-     * one LC_SEGMENT_64, nsects=0) hit exactly the first case and wrote 16
-     * bytes past a buffer whose allocation was exactly file-sized; see
-     * tests/leaf-tool-crashes.sh. */
-    if (scan.first_sect_off == UINT32_MAX ||
-        lc_end + sizeof(struct version_min_command) > scan.first_sect_off ||
-        lc_end + sizeof(struct version_min_command) > fsize) {
+    uint32_t lc_end   = sizeof(*hdr) + hdr->sizeofcmds;
+    uint32_t need_end = lc_end + (uint32_t)sizeof(struct version_min_command);
+    /* Two ways "no room" is true that growing cannot cure, both refused
+     * before anything is written: no section anywhere has a nonzero file
+     * offset (scan.first_sect_off is still its UINT32_MAX sentinel, and a
+     * write would go off whatever end the buffer has), or the command would
+     * run past the buffer itself -- mi_wrap validates load commands, not
+     * section file ranges, so first_sect_off is an untrusted value read
+     * straight from the file. Fixed after a real heap overflow: a 104-byte
+     * file (header + one LC_SEGMENT_64, nsects=0) hit exactly the first case
+     * and wrote 16 bytes past a buffer whose allocation was exactly
+     * file-sized; see tests/leaf-tool-crashes.sh. */
+    if (scan.first_sect_off == UINT32_MAX || need_end > *psize) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         return MR_REFUSED;
     }
+    /* Whether the command fits in the pad before the first section, and if
+     * not whether to grow it, is mg_ensure_pad's to decide, the same as for
+     * every other load-command edit. It returns 0 at once, untouched, when
+     * the command fits, and it refuses an image whose first section lies
+     * past the buffer's end. */
+    if (mg_ensure_pad(pbuf, psize, need_end, allow_grow, label) != 0) {
+        fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
+        return MR_REFUSED;
+    }
+    hdr = (struct mach_header_64 *)*pbuf;   /* growth may have reallocated it */
 
-    struct version_min_command *vm = (struct version_min_command *)(im->buf + lc_end);
+    struct version_min_command *vm = (struct version_min_command *)(*pbuf + lc_end);
     memset(vm, 0, sizeof(*vm));
     vm->cmd = LC_VERSION_MIN_MACOSX;
     vm->cmdsize = sizeof(*vm);

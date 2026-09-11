@@ -107,18 +107,20 @@ typedef struct {
  * LC_DYLD_INFO_ONLY: ..." and "Extending __LINKEDIT: ...", or on a classic
  * image "Already patched ... passing through.". From
  * mv_add_version_min_image (`version-min`): "LC_VERSION_MIN_MACOSX already
- * present; nothing to do." when it has one, and nothing when it appends.
- * mswift_retag_image (`swift-abi`) prints nothing. On stderr: each core's
- * own refusals, and the "matched nothing" reports described under
- * DIRECTIVES. NEVER printed by an edit run, because they belong to the verbs
- * and not the cores: `macho9 dylib`/`rpath`/`lc`'s "Updated PATH (N
- * bytes)", `minos`'s "Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=...,
- * sizeofcmds=...)", `retag-swift`'s "PATH: retagged N class record(s)", and
- * `declassify`'s "Wrote OUT (N bytes)". So a stdout line such as "PATH:
- * updated (...)" describes the in-memory image after that statement, not
- * the file: a run refused at a later statement, or at the final verify,
- * writes nothing, and o->log's refusal line and the return code are what
- * say so.
+ * present; nothing to do." when it has one; nothing when it appends into the
+ * pad; and, when it appends under allow-grow and grows the pad, the same
+ * "PATH: load commands need N more bytes ...; growing header..." and "PATH:
+ * grew header pad: ..." as mr_apply_image. mswift_retag_image (`swift-abi`)
+ * prints nothing. On stderr: each core's own refusals, and the "matched
+ * nothing" reports described under DIRECTIVES. NEVER printed by an edit
+ * run, because they belong to the verbs and not the cores: `macho9
+ * dylib`/`rpath`/`lc`'s "Updated PATH (N bytes)", `minos`'s "Added
+ * LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)", `retag-swift`'s
+ * "PATH: retagged N class record(s)", and `declassify`'s "Wrote OUT (N
+ * bytes)". So a stdout line such as "PATH: updated (...)" describes the
+ * in-memory image after that statement, not the file: a run refused at a
+ * later statement, or at the final verify, writes nothing, and o->log's
+ * refusal line and the return code are what say so.
  *
  * FOLLOW-UPS, also under o->verbose: a statement that succeeds logs,
  * indented beneath its statement line, the work it did beyond what it names
@@ -143,12 +145,19 @@ typedef struct {
  *
  * DIRECTIVES.
  *
- * allow-grow covers only `dylib` and `rpath` statements: they are the ones
- * whose load commands can outgrow the header pad, and for them it lets the
- * rewrite enlarge the pad (mg_grow_header) instead of refusing.
- * `version-min set` is not covered -- it refuses with "no room for
- * LC_VERSION_MIN_MACOSX" even under allow-grow, because
- * mv_add_version_min_image has no grow path. `segment rename` and
+ * allow-grow covers the statements whose load commands can outgrow the
+ * header pad: `dylib`, `rpath` and `version-min set`. For them, when the pad
+ * is short, growing it is mg_ensure_pad's decision (src/grow.h) instead of a
+ * refusal. It does not cover `fixups set classic`: growth refuses an image
+ * that still has chained fixups, since chained pointers encode offsets from
+ * the image base that growing moves. Nor does the conversion need it: before
+ * adding its 48-byte LC_DYLD_INFO_ONLY it removes whichever of
+ * LC_DYLD_EXPORTS_TRIE (16 bytes), LC_DYLD_CHAINED_FIXUPS (16) and
+ * LC_BUILD_VERSION (at least 24, usually 32 with one tool entry; a zippered
+ * binary has a second, removed too) are present -- so on a modern chained
+ * binary, which carries all three, it removes at least 56. On a chained
+ * image nothing can grow until `fixups set classic` has run: put it first.
+ * Growth works only on a 64-bit PIE executable. `segment rename` and
  * `load-command delete` never add bytes to the load commands, so they never
  * need it.
  *
