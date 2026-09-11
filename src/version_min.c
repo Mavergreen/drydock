@@ -14,6 +14,9 @@
 
 #include "version_min.h"
 #include "image.h"
+#include "rewrite.h"    /* MR_REFUSED/MR_FAIL: this function's own exit-code
+                         * vocabulary, shared with mr_apply_file -- see its
+                         * comment there for the dividing line this follows. */
 
 struct mv_scan {
     uint32_t first_sect_off;   /* upper bound of header pad; UINT32_MAX if no
@@ -35,20 +38,43 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
     return 0;   /* nothing here ever needs to stop the walk early */
 }
 
+/* cli/macho9.c's cmd_minos forwards this function's return value verbatim
+ * (`return mv_add_version_min(path);`), the same arrangement mr_apply_file
+ * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
+ * the same two codes and the same dividing line mr_apply_file's own comment
+ * (rewrite.h) draws: MR_FAIL for this function's own open/fstat/write, for
+ * mi_open's own I/O (MI_IO_ERROR, below), and for the race guard below (both
+ * a failed stat() and a dev/ino mismatch -- the mismatch is the same
+ * "changed underneath us mid-run" condition src/swift_retag.c calls
+ * MSWIFT_RACED and reports as EX_FAIL, not EX_REFUSED, for the identical
+ * reason); MR_REFUSED for every site that examined the file and declined,
+ * including mi_open's MI_NOT_MACHO and "no room for
+ * LC_VERSION_MIN_MACOSX". */
 int mv_add_version_min(const char *path) {
     /* Open O_RDWR early so an unwritable file fails immediately, before any
      * analysis; mi_open (O_RDONLY) does the actual read and validation, same
      * split as change_dylib and patch_macho use. */
     int fd = open(path, O_RDWR);
-    if (fd < 0) { perror("open"); return 1; }
+    if (fd < 0) { perror("open"); return MR_FAIL; }
     struct stat st0;
-    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return 1; }
+    if (fstat(fd, &st0) != 0) { perror("fstat"); close(fd); return MR_FAIL; }
 
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        /* The open()/fstat() above only proved this path opens, not that
+         * mi_open's own independent open, read of the whole file, or the
+         * malloc it reads into will succeed too -- any of those, or an
+         * actual TOCTOU race, land here. Not a considered refusal either
+         * way. */
+        fprintf(stderr, "%s: cannot open or read\n", path);
+        close(fd);
+        return MR_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "%s: not a readable 64-bit Mach-O\n", path);
         close(fd);
-        return 1;
+        return MR_REFUSED;
     }
 
     /* mi_open reads `path` through its OWN, separate O_RDONLY descriptor --
@@ -66,10 +92,16 @@ int mv_add_version_min(const char *path) {
     struct stat st1;
     if (stat(path, &st1) != 0 ||
         st1.st_dev != st0.st_dev || st1.st_ino != st0.st_ino) {
+        /* Both halves are MR_FAIL, not MR_REFUSED: a failed stat() here is a
+         * plain syscall failure, and a dev/ino mismatch is this function's
+         * version of MSWIFT_RACED (src/swift_retag.c) -- "the file changed
+         * under us mid-run" is an environment condition, not a judgement
+         * about the file's content, and retag-swift already reports its own
+         * identical race as EX_FAIL for exactly that reason. */
         fprintf(stderr, "%s: changed underneath us between open and validation; refusing\n", path);
         mi_close(&im);
         close(fd);
-        return 1;
+        return MR_FAIL;
     }
 
     size_t fsize = im.size;
@@ -108,7 +140,7 @@ int mv_add_version_min(const char *path) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         free(buf);
         close(fd);
-        return 1;
+        return MR_REFUSED;
     }
 
     struct version_min_command *vm = (struct version_min_command *)(buf + lc_end);
@@ -121,7 +153,7 @@ int mv_add_version_min(const char *path) {
     hdr->sizeofcmds += sizeof(*vm);
 
     lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return 1; }
+    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); free(buf); close(fd); return MR_FAIL; }
     close(fd);
     printf("Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=%u, sizeofcmds=%u)\n",
            hdr->ncmds, hdr->sizeofcmds);

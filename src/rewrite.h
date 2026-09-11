@@ -198,16 +198,48 @@ typedef struct {
 #define MR_MAX_OPS   32
 #define MR_MAX_STRIP 16
 
-/* Returned by mr_apply_file, instead of its usual 1, when ops->fatal_unmatched
- * turned "an operation matched nothing" into a refusal (see that field's own
- * comment above). Deliberately equal to cli/macho9.c's own EX_REFUSED: that
- * is the ONLY caller today, `dylib`/`rpath`/`lc` all forward mr_apply_file's
- * return value verbatim (`return mr_apply_file(path, &ops);`), and this way
- * that forwarding keeps meaning what --capabilities documents without the
- * caller having to translate a rewrite-library code into its own exit-code
- * vocabulary. cli/macho9.c enforces this equality as a build failure, not
- * just this comment -- see the typedef next to EX_REFUSED's definition. */
-#define MR_REFUSED 2
+/* Returned by mr_apply_file in place of 0 when ops->fatal_unmatched turned
+ * "an operation matched nothing" into a refusal (see that field's own
+ * comment above) -- one of several considered refusals this function can
+ * return; see its own comment below for the rest. Deliberately equal to
+ * cli/macho9.c's own EX_REFUSED: that is the ONLY caller today, `dylib`/
+ * `rpath`/`lc` all forward mr_apply_file's return value verbatim (`return
+ * mr_apply_file(path, &ops);`), and this way that forwarding keeps meaning
+ * what --capabilities documents without the caller having to translate a
+ * rewrite-library code into its own exit-code vocabulary. cli/macho9.c
+ * enforces this equality as a build failure, not just this comment -- see
+ * the typedef next to EX_REFUSED's definition.
+ *
+ * Deliberately 1, not 2: `diff`/`grep`/`cmp` all reserve their HIGHEST code
+ * for "the tool could not do its job" and use a lower one for "a normal,
+ * expected, non-success answer" -- the opposite of what this codebase shipped
+ * first. binutils has no equivalent at all (it returns a flat 0 or 1 and
+ * never distinguishes a considered refusal from a genuine failure), so this
+ * is not matching an existing convention so much as choosing the one that
+ * generalizes past this repo's own history. Nothing outside this repo has
+ * ever run the compat wrappers this couples to, and `edit` (a later feature)
+ * is what starts to make that numbering a real, depended-upon contract --
+ * so this is the last point at which it can change for free. */
+#define MR_REFUSED 1
+
+/* Returned by mr_apply_file (and by mv_add_version_min, src/version_min.c,
+ * the same arrangement one level down) for a genuine operational failure:
+ * open, fstat, read or write itself failing, or a checked allocation that
+ * src/rewrite.c's own drivers make (mr_apply_file's fat-path read buffer;
+ * mr_process_fat's tracking arrays, slice copies and reassembly buffer) or
+ * that mi_open/mfat_parse, one level down, make for the file itself
+ * (mv_add_version_min also returns it for its race guard -- see that
+ * function's own comment). NEVER for a considered refusal -- a site that
+ * examined the bytes and declined, however it phrases that on stderr, is
+ * MR_REFUSED, not this. And an allocation failure INSIDE mg_grow_header or
+ * mg_plausible deliberately does not come here either: it is folded into
+ * MR_ERROR same as every other reason either one refuses, and so surfaces
+ * as MR_REFUSED. See mr_apply_file's own comment below for the dividing
+ * line, that exception, and examples of each. Named the same way as
+ * MR_REFUSED, and cli/macho9.c's EX_FAIL is required to equal it for the
+ * same reason EX_REFUSED is required to equal MR_REFUSED -- see the typedef
+ * next to EX_FAIL's own definition. */
+#define MR_FAIL 2
 
 /*
  * Apply `ops` to the Mach-O at `path`, in place, and write it back atomically
@@ -218,13 +250,41 @@ typedef struct {
  * through byte-for-byte.
  *
  * Returns 0 on success -- including the "nothing matched, file untouched"
- * case -- or 1 with a message already printed on stderr. On any failure the
- * file on disk is left exactly as it was found: every refusal happens before
- * the single atomic replace at the end.
+ * case. On any failure the file on disk is left exactly as it was found:
+ * every refusal happens before the single atomic replace at the end. Failure
+ * is one of two codes, matching cli/macho9.c's own EX_REFUSED/EX_FAIL split
+ * (this function's caller forwards whichever one it gets verbatim, so the
+ * split has to be made correctly here, not patched up one level out):
+ *
+ *   MR_REFUSED (1) -- a CONSIDERED refusal: this function (or a primitive it
+ *     calls -- mi_open, mfat_parse, mg_first_sect_off, mo_map_build,
+ *     mr_build_lcs, mg_grow_header, mo_map_validate, mo_map_apply,
+ *     mg_plausible) examined the bytes and declined on purpose. "Examined"
+ *     covers more than "read the input Mach-O": a result that fails
+ *     validation, new load commands that don't fit and can't be grown, a
+ *     rewrite whose own cross-check disagrees with what it just built,
+ *     reassembled fat slices that would overlap, an unsupported 64-bit fat
+ *     container, "not a 64-bit Mach-O" in any of its forms, and a final
+ *     mg_plausible verify that fails are all considered refusals, not
+ *     operational failures -- even though several of these are reached
+ *     through a helper's own nonzero return rather than a check written out
+ *     here. ONE EXCEPTION: mg_grow_header and mg_plausible each fold an
+ *     allocation failure of their own into the same signal they use for
+ *     every other refusal (grow.c), and this function cannot tell that case
+ *     apart from the rest -- see src/rewrite.c, the comment where
+ *     mr_process_thin's MR_ERROR becomes this function's own MR_REFUSED,
+ *     for why that stays folded in rather than being split out to MR_FAIL,
+ *     and for why it is not confined to --allow-grow runs.
+ *   MR_FAIL (2) -- a genuine operational failure: open, fstat, read or write
+ *     failing (this function's own, or mi_open's/mfat_parse's), or a
+ *     checked allocation src/rewrite.c's own drivers make (see MR_FAIL's
+ *     definition above) or mi_open/mfat_parse make for the file/table.
+ *     Nothing about the INPUT was in question; the environment (a
+ *     permission, a full disk, an exhausted heap) was.
  *
  * The one exception to "every refusal happens before the write": when
  * ops->fatal_unmatched is set and at least one operation matched nothing,
- * this returns MR_REFUSED (2) instead of 0 -- but only AFTER the rewrite it
+ * this returns MR_REFUSED (1) instead of 0 -- but only AFTER the rewrite it
  * examined has already been written to `path`, if anything changed. This
  * mode reports, on stderr, after the fact; it does not rewind the write it
  * is refusing about.

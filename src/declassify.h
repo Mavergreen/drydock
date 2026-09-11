@@ -42,7 +42,11 @@
  * run it over a binary that may already have been patched.
  *
  * THIN ONLY: the conversion reads one 64-bit thin Mach-O. A fat container
- * gets MDCL_NOT_MACHO, like anything else mi_open_slack will not open.
+ * gets MDCL_NOT_MACHO, like everything else mi_open_slack declines on
+ * CONTENT grounds (too short, wrong magic, load commands failing
+ * validation); an IN mi_open_slack cannot even open, read, or allocate
+ * for gets MDCL_ERROR instead -- that is an operational failure, not a
+ * judgement about a fat container or any other content.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -62,12 +66,14 @@
 #define MDCL_REFUSED     (-2)  /* examined and declined on purpose (see LIMITS
                                 * below for the full list); the reason is
                                 * already on stderr */
-#define MDCL_ERROR       (-3)  /* an operational failure -- an allocation this
-                                * conversion could not make -- not a judgement
-                                * about the input; already reported. A caller
-                                * that distinguishes refusal from failure (the
-                                * `declassify` verb does) must NOT report this
-                                * as a refusal */
+#define MDCL_ERROR       (-3)  /* an operational failure: IN could not even be
+                                * opened, read, or allocated for
+                                * (mi_open_slack's own MI_IO_ERROR), or an
+                                * allocation this conversion could not make
+                                * -- not a judgement about the input; already
+                                * reported. A caller that distinguishes
+                                * refusal from failure (the `declassify` verb
+                                * does) must NOT report this as a refusal */
 
 /* LIMITS, and what happens at each -- every one of them is a refusal, never a
  * truncated or corrupted output. The conversion works inside two fixed

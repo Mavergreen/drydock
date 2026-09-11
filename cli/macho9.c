@@ -92,34 +92,67 @@
  * touch" (vs. "retry, or investigate an environment problem") deserves a way
  * to tell the two apart without scraping stderr text, which --capabilities
  * already exists to make unnecessary for everything else this binary
- * reports. EX_REFUSED is used ONLY at a point where macho9 itself examined
- * the input and made that call; it is never used for a genuine operational
- * failure (a syscall that failed, a malloc that failed, a bad number of
- * command-line arguments) or for the exit code of the shared rewrite drivers
- * (mr_apply_file, mv_add_version_min) that dylib/rpath/lc/minos hand back --
- * those return 0 or 1 and do not make this distinction themselves, so
- * forwarding them verbatim keeps this from claiming a precision it does not
- * have. 1 keeps meaning exactly what it always did, so a caller that only
- * checks "== 0" or "!= 0" needs no changes; --capabilities documents both
- * codes (see print_capabilities below) and tests/README.md repeats it for
- * humans.
+ * reports.
  *
- * The one exception, since --fatal-warnings: mr_apply_file returns MR_REFUSED
- * (rewrite.h), not just 0 or 1, when ops.fatal_unmatched turned "an operation
- * matched nothing" into a refusal. dylib/rpath/lc still forward mr_apply_file's
- * return value verbatim (see their own `return mr_apply_file(...)` call
- * sites) -- no new mapping was added at those call sites -- so this only
- * keeps meaning EX_REFUSED because MR_REFUSED is DEFINED to equal it; see
- * the typedef just below. */
-#define EX_REFUSED 2
+ * THE SCHEME IS 0 OK, 1 REFUSED, 2 ERROR -- the reverse of what first
+ * shipped (0 ok, 1 failed, 2 refused), and deliberately so. `diff`, `grep`
+ * and `cmp` all reserve their HIGHEST code for "the tool could not do its
+ * job" and a lower one for "a normal, expected, non-success answer"; the
+ * original numbering had that backwards. binutils sets no precedent either
+ * way -- it returns a flat 0 or 1 and has no notion of a considered refusal
+ * at all, so there was no existing convention this binary owed compatibility
+ * to. Nothing outside this repo had ever run the compat wrappers this
+ * couples to (see MR_REFUSED's own comment, rewrite.h), so this was the last
+ * point at which the numbering could change for free -- after `edit` ships,
+ * it no longer is.
+ *
+ * EX_REFUSED is used ONLY at a point where macho9 itself examined the input
+ * and made that call; it is never used for a genuine operational failure (a
+ * syscall that failed, a bad number of command-line arguments), save the one
+ * allocation fold described below -- EX_FAIL is that catch-all, named the
+ * same way as EX_REFUSED so a future change to either touches one place.
+ * That includes the shared rewrite drivers (mr_apply_file,
+ * mv_add_version_min) that dylib/rpath/lc/minos hand back:
+ * they now draw the SAME line themselves (rewrite.h's own comment on
+ * mr_apply_file has the full classification), returning MR_REFUSED
+ * (== EX_REFUSED, enforced below) for a considered refusal -- "not a 64-bit
+ * Mach-O" in any of its forms, no room to grow, a rewrite's own cross-check
+ * failing, and more -- and MR_FAIL (== EX_FAIL, enforced below) for
+ * open/fstat/read/write/malloc itself failing (and mv_add_version_min's race
+ * guard, a failed stat() or a changed inode). Forwarding either verbatim is
+ * exact, not an approximation, with one deliberate exception those two
+ * drivers' own comments carry: an allocation failure INSIDE mg_grow_header
+ * or mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every
+ * other reason either one refuses, not split out to MR_FAIL. The same fold
+ * holds on the verbs that call those two directly -- cmd_grow
+ * (mg_grow_header) and cmd_verify (mg_plausible) both return EX_REFUSED for
+ * any failure of theirs. So a failed allocation that is checked at all is
+ * EX_FAIL when it is mi_open's or mi_open_slack's, mfat_parse's,
+ * md_declassify's, wa_write_atomic's temp-name buffer, or one src/rewrite.c's
+ * own drivers make (rewrite.h's MR_FAIL comment names them); EX_REFUSED
+ * when it is inside mg_grow_header or mg_plausible, by design (see
+ * rewrite.c's comment on the fold for why); and no exit code at all when it
+ * is wa_write_atomic's copy of an extended attribute, which only warns. A
+ * caller that only checks "== 0" or "!= 0" still needs no changes;
+ * --capabilities documents all three codes (see print_capabilities below)
+ * and tests/README.md repeats it for humans. */
+#define EX_REFUSED 1
+#define EX_FAIL    2
 
 /* mr_apply_file's MR_REFUSED (rewrite.h) is forwarded verbatim by
  * cmd_dylib_or_rpath and cmd_lc as this binary's own exit code, so it has to
- * equal EX_REFUSED or --capabilities' documented refused=2 would be a lie
+ * equal EX_REFUSED or --capabilities' documented refused=1 would be a lie
  * for exactly the case --fatal-warnings exists to handle. A mismatch here is
  * a build failure, not a hope, as mg_classify/ml_bump_lc's coupling is a
  * link failure. */
 typedef char mr_refused_is_ex_refused[(MR_REFUSED == EX_REFUSED) ? 1 : -1];
+
+/* Same coupling, same reason, for the other half of mr_apply_file's (and
+ * mv_add_version_min's) exit-code vocabulary: every operational failure they
+ * report is MR_FAIL (rewrite.h), forwarded verbatim by the same call sites,
+ * so it has to equal EX_FAIL or --capabilities' documented failed=2 would be
+ * a lie for exactly those failures. */
+typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
 
 /* The KIND vocabulary `lc -delete` accepts is LC_STRIP_KINDS (src/lc_kinds.h),
  * shared with change_dylib's -strip-lc -- so lc's translation to it is a
@@ -190,22 +223,33 @@ static void print_ops_csv(int is_rpath) {
  *
  *   line 1: "format <N>"       -- bump N only if a later build changes this
  *                                  TEXT's shape in a way old parsing breaks.
- *   line 2: "exitcodes ok=0 refused=<N> failed=1" -- what this binary's own
- *       exit codes mean: ok=0 always; refused=EX_REFUSED is used only where
- *       macho9 itself examined FILE and declined on purpose (bad magic,
- *       implausible, an unsupported KIND/version, a grow mg_grow_header
- *       itself refused); failed=1 is everything else (syscall/malloc
- *       failure, usage error) -- unchanged from before this line existed, so
- *       a caller checking only nonzero needs no changes. dylib/rpath/lc/minos
- *       return the shared rewrite drivers' own code (mr_apply_file,
- *       mv_add_version_min: 0 or 1), which does not make this distinction,
- *       so their exit codes are still not covered by this line -- except for
+ *   line 2: "exitcodes ok=0 refused=<N> failed=<M>" -- what this binary's own
+ *       exit codes mean: ok=0 always; refused=EX_REFUSED is used wherever
+ *       macho9 (or a shared rewrite driver it calls into) examined FILE and
+ *       declined on purpose -- bad magic, implausible, an unsupported KIND/
+ *       version, a grow mg_grow_header itself refused, new load commands
+ *       that don't fit and can't be grown, an unmatched --fatal-warnings
+ *       operation, and more (rewrite.h's own comment on mr_apply_file has
+ *       the full list, including the one exception -- an allocation
+ *       failure inside mg_grow_header or mg_plausible themselves stays
+ *       refused=EX_REFUSED, not failed, same as every other reason either
+ *       one refuses, on grow and verify as well as the rewrite verbs);
+ *       failed=EX_FAIL is everything else (syscall/malloc failure, usage
+ *       error -- EX_REFUSED's own comment above has the exact allocation
+ *       breakdown). The two numbers are 1 and 2, not the reverse
+ *       -- see EX_REFUSED's own comment above for why this repo deliberately
+ *       does not match what it originally shipped. A caller checking only
+ *       nonzero needs no changes regardless of which way the numbers run.
+ *       dylib/rpath/lc/minos return the shared rewrite drivers' own code
+ *       (mr_apply_file, mv_add_version_min) verbatim, and those drivers now
+ *       use this SAME EX_REFUSED/EX_FAIL split themselves (as MR_REFUSED/
+ *       MR_FAIL, rewrite.h, enforced equal to these two by the typedefs
+ *       below) -- so their exit codes ARE covered by this line, including
  *       the checks macho9 makes BEFORE calling them (an unknown lc KIND, a
- *       version other than 10.9), which are refusals and say so, AND except
- *       for a dylib/rpath/lc run given --fatal-warnings, where mr_apply_file
- *       itself returns EX_REFUSED (as MR_REFUSED, rewrite.h) when an
- *       operation matched nothing -- see that flag's own entry below. See
- *       EX_REFUSED's own comment for the full reasoning.
+ *       version other than 10.9) and a dylib/rpath/lc run given
+ *       --fatal-warnings, where mr_apply_file returns MR_REFUSED for an
+ *       operation that matched nothing -- see that flag's own entry below.
+ *       See EX_REFUSED's own comment for the full reasoning.
  *   line 3+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out.
@@ -254,7 +298,7 @@ static void print_ops_csv(int is_rpath) {
  * could make an advertised verb fail, and nothing left to probe. */
 static int print_capabilities(void) {
     printf("format 1\n");
-    printf("exitcodes ok=0 refused=%d failed=1\n", EX_REFUSED);
+    printf("exitcodes ok=0 refused=%d failed=%d\n", EX_REFUSED, EX_FAIL);
     printf("verb declassify\n");
     printf("verb verify\n");
     printf("verb info\n");
@@ -309,7 +353,12 @@ static void usage(const char *prog) {
  */
 static int cmd_verify(const char *path) {
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        fprintf(stderr, "macho9 verify: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "macho9 verify: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
@@ -403,7 +452,12 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
 
 static int cmd_info(const char *path) {
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        fprintf(stderr, "macho9 info: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "macho9 info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
@@ -444,7 +498,7 @@ static int cmd_grow(const char *path, const char *n_str) {
     unsigned long n = strtoul(n_str, &end, 10);
     if (*end != '\0' || n == 0 || n > UINT32_MAX) {
         fprintf(stderr, "macho9 grow: N must be a positive byte count (got '%s')\n", n_str);
-        return 1;
+        return EX_FAIL;
     }
 
     /* Opened O_RDWR up front only to fail fast on an unwritable/missing file
@@ -452,13 +506,23 @@ static int cmd_grow(const char *path, const char *n_str) {
      * write-back, which wa_write_atomic does via its own mkstemp()+rename(),
      * same rationale as change_dylib.c's main(). */
     int fd = open(path, O_RDWR);
-    if (fd < 0) { perror("macho9 grow: open"); return 1; }
+    if (fd < 0) { perror("macho9 grow: open"); return EX_FAIL; }
     struct stat st;
     mode_t mode = (fstat(fd, &st) == 0) ? st.st_mode : 0644;
     close(fd);
 
     mi_image im;
-    if (mi_open(path, &im) != 0) {
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        /* The open()/fstat() above only proved this path opens, not that
+         * mi_open's own independent open, read of the whole file, or the
+         * malloc it reads into will succeed too -- any of those, or an
+         * actual TOCTOU race, land here. Not a considered refusal either
+         * way. */
+        fprintf(stderr, "macho9 grow: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc != 0) {
         fprintf(stderr, "macho9 grow: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
@@ -469,8 +533,17 @@ static int cmd_grow(const char *path, const char *n_str) {
         /* mg_grow_header's whole design is "refuse rather than guess" (a
          * global rule -- see EX_REFUSED's own comment) -- growth that would
          * need a real __LINKEDIT resize, a non-PIE image, an unsupported
-         * ULEB re-encode -- so a failure here is a refusal, not an
-         * operational error. */
+         * ULEB re-encode -- so a failure here is a refusal. That includes
+         * every case where mg_grow_header's OWN failure is actually an
+         * allocation failing (grow.c): its two reallocations of the whole
+         * image, and its side tables -- the address snapshot, the export-
+         * trie walk's scratch table, the trie rebuilder's, mg_verify's, and
+         * those of the mg_plausible it runs last. This verb cannot tell any
+         * of those apart from every other reason mg_grow_header declines,
+         * and by deliberate choice does not try to -- see rewrite.c's
+         * comment on the identical fold in mr_apply_file for why. So a
+         * failed mg_grow_header always exits here, EX_REFUSED, never
+         * EX_FAIL. (A failed write-back, below, is EX_FAIL.) */
         fprintf(stderr, "macho9 grow: %s left unmodified\n", path);
         free(buf);
         return EX_REFUSED;
@@ -479,7 +552,7 @@ static int cmd_grow(const char *path, const char *n_str) {
     if (wa_write_atomic(path, mode, buf, fsize) != 0) {
         fprintf(stderr, "macho9 grow: %s left unmodified (atomic replace failed)\n", path);
         free(buf);
-        return 1;
+        return EX_FAIL;
     }
     printf("Grew %s: header pad enlarged, file now %zu bytes\n", path, fsize);
     free(buf);
@@ -548,18 +621,18 @@ static int cmd_lc(int argc, char **argv) {
              * that text. */
             if (nstrip == MR_MAX_STRIP) {
                 fprintf(stderr, "macho9 lc: too many -delete operations (max %d)\n", MR_MAX_STRIP);
-                return 1;
+                return EX_FAIL;
             }
             strip[nstrip++] = LC_STRIP_KINDS[kk].cmd;
             i += 2;
         } else {
             fprintf(stderr, "macho9 lc: unknown operation '%s' (only -delete KIND and --fatal-warnings are supported)\n", argv[i]);
-            return 1;
+            return EX_FAIL;
         }
     }
     if (nstrip == 0) {
         fprintf(stderr, "macho9 lc: need at least one -delete KIND\n");
-        return 1;
+        return EX_FAIL;
     }
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
@@ -642,7 +715,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         if (oi == N_DYLIB_OPS || i + DYLIB_OPS[oi].nargs >= argc) {
             fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
-            return 1;
+            return EX_FAIL;
         }
         const struct dylib_op *op = &DYLIB_OPS[oi];
         int kind = is_rpath ? op->rpath_kind : op->dylib_kind;
@@ -655,7 +728,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
              * accept?" lives. */
             fprintf(stderr, "macho9 %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
-            return 1;
+            return EX_FAIL;
         }
 
         mr_change *chs = is_rpath ? rchanges : changes;
@@ -695,14 +768,14 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         if (full) {
             fprintf(stderr, "macho9 %s: too many %s operations (max %d)\n",
                     is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
-            return 1;
+            return EX_FAIL;
         }
         nops++;
         i += 1 + op->nargs;
     }
     if (nops == 0) {
         fprintf(stderr, "macho9 %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");
-        return 1;
+        return EX_FAIL;
     }
 
     mr_ops ops;
@@ -843,7 +916,7 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
  *   - MSWIFT_RACED -- `path` named a different inode by the time it was
  *     validated, so NOTHING was written. retag_swift_classes returns 0 for
  *     that (a benign skip in a multi-file run, already reported on stderr);
- *     this verb returns 1. Reporting success for work it did not do is the
+ *     this verb returns EX_FAIL. Reporting success for work it did not do is the
  *     silent-success shape this codebase refuses, and a caller that scripted
  *     `macho9 retag-swift F && install F` on a 0 would install the file the
  *     race left behind.
@@ -862,7 +935,7 @@ static int cmd_retag_swift(const char *path) {
         return EX_REFUSED;
     }
     /* Both already printed their own diagnostic inside mswift_retag_file. */
-    if (n == MSWIFT_ERROR || n == MSWIFT_RACED) return 1;
+    if (n == MSWIFT_ERROR || n == MSWIFT_RACED) return EX_FAIL;
     if (n < 0) {
         /* A code swift_retag.h grew that this verb has not been taught. Refuse
          * rather than fall through to "retagged -4 class record(s)" and exit
@@ -872,7 +945,7 @@ static int cmd_retag_swift(const char *path) {
         fprintf(stderr, "macho9 retag-swift: %s: mswift_retag_file returned an "
                         "unrecognized code %d; refusing rather than reporting a "
                         "count this verb cannot vouch for\n", path, n);
-        return 1;
+        return EX_FAIL;
     }
     printf("%s: retagged %d class record(s)\n", path, n);
     return 0;
@@ -906,8 +979,9 @@ static int cmd_retag_swift(const char *path) {
  *     LIMITS section lists them all: too many segments or strippable
  *     commands, more fixups than the opcode buffers hold, an unknown pointer
  *     format, no room for the 48-byte LC_DYLD_INFO_ONLY, no __LINKEDIT --
- *     and 1 only for an operational failure, which here means an allocation
- *     md_declassify could not make, or writing OUT. That is what
+ *     and EX_FAIL only for an operational failure, which here means IN
+ *     could not even be opened or read, an allocation md_declassify could
+ *     not make, or writing OUT failed. That is what
  *     EX_REFUSED's contract above asks for, and this verb is free to use it:
  *     unlike dylib/rpath/lc/minos it has never forwarded another program's
  *     exit code, so there is nothing to preserve. A wrapper that must look
@@ -947,11 +1021,12 @@ static int cmd_declassify(const char *in, const char *out) {
         return EX_REFUSED;
     }
     if (rc == MDCL_REFUSED) return EX_REFUSED;  /* md_declassify already said why */
-    /* An allocation md_declassify could not make. Also already reported, but
-     * NOT a refusal: EX_REFUSED's contract above rules out using it for "a
-     * malloc that failed", and a caller scripting around "this file just isn't
-     * one macho9 will touch" would be told the wrong thing. */
-    if (rc == MDCL_ERROR) return 1;
+    /* IN could not even be opened or read, or an allocation md_declassify
+     * could not make -- md_declassify already reported which. NOT a
+     * refusal either way: EX_REFUSED's contract above rules out using it
+     * for any of those, and a caller scripting around "this file just
+     * isn't one macho9 will touch" would be told the wrong thing. */
+    if (rc == MDCL_ERROR) return EX_FAIL;
     if (rc != MDCL_CONVERTED && rc != MDCL_PASSTHROUGH) {
         /* A code declassify.h grew that this verb has not been taught. Refuse
          * rather than write an output file from a buffer md_declassify never
@@ -961,7 +1036,7 @@ static int cmd_declassify(const char *in, const char *out) {
         fprintf(stderr, "macho9 declassify: %s: md_declassify returned an "
                         "unrecognized code %d; refusing rather than writing an "
                         "output this verb cannot vouch for\n", in, rc);
-        return 1;
+        return EX_FAIL;
     }
 
     if (wa_write_atomic(out, 0755, buf, len) != 0) {
@@ -969,7 +1044,7 @@ static int cmd_declassify(const char *in, const char *out) {
          * operational failure, not a refusal: nothing about the input was
          * wrong. */
         free(buf);
-        return 1;
+        return EX_FAIL;
     }
     printf("Wrote %s (%zu bytes)\n", out, len);
     free(buf);
@@ -980,51 +1055,51 @@ int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--capabilities") == 0)
         return print_capabilities();
 
-    if (argc < 2) { usage(argv[0]); return 1; }
+    if (argc < 2) { usage(argv[0]); return EX_FAIL; }
     const char *verb = argv[1];
 
     if (strcmp(verb, "verify") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s verify FILE\n", argv[0]); return 1; }
+        if (argc != 3) { fprintf(stderr, "usage: %s verify FILE\n", argv[0]); return EX_FAIL; }
         return cmd_verify(argv[2]);
     }
     if (strcmp(verb, "info") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s info FILE\n", argv[0]); return 1; }
+        if (argc != 3) { fprintf(stderr, "usage: %s info FILE\n", argv[0]); return EX_FAIL; }
         return cmd_info(argv[2]);
     }
     if (strcmp(verb, "grow") == 0) {
-        if (argc != 4) { fprintf(stderr, "usage: %s grow FILE N\n", argv[0]); return 1; }
+        if (argc != 4) { fprintf(stderr, "usage: %s grow FILE N\n", argv[0]); return EX_FAIL; }
         return cmd_grow(argv[2], argv[3]);
     }
     if (strcmp(verb, "minos") == 0) {
-        if (argc != 4) { fprintf(stderr, "usage: %s minos FILE 10.9\n", argv[0]); return 1; }
+        if (argc != 4) { fprintf(stderr, "usage: %s minos FILE 10.9\n", argv[0]); return EX_FAIL; }
         return cmd_minos(argv[2], argv[3]);
     }
     if (strcmp(verb, "segment") == 0) {
-        if (argc != 5) { fprintf(stderr, "usage: %s segment FILE OLD NEW\n", argv[0]); return 1; }
+        if (argc != 5) { fprintf(stderr, "usage: %s segment FILE OLD NEW\n", argv[0]); return EX_FAIL; }
         return cmd_segment(argv[2], argv[3], argv[4]);
     }
     if (strcmp(verb, "retag-swift") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s retag-swift FILE\n", argv[0]); return 1; }
+        if (argc != 3) { fprintf(stderr, "usage: %s retag-swift FILE\n", argv[0]); return EX_FAIL; }
         return cmd_retag_swift(argv[2]);
     }
     if (strcmp(verb, "lc") == 0) {
-        if (argc < 5) { fprintf(stderr, "usage: %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n", argv[0]); return 1; }
+        if (argc < 5) { fprintf(stderr, "usage: %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n", argv[0]); return EX_FAIL; }
         return cmd_lc(argc, argv);
     }
     if (strcmp(verb, "dylib") == 0) {
-        if (argc < 4) { fprintf(stderr, "usage: %s dylib FILE [--allow-grow] [--fatal-warnings] OP...\n", argv[0]); return 1; }
+        if (argc < 4) { fprintf(stderr, "usage: %s dylib FILE [--allow-grow] [--fatal-warnings] OP...\n", argv[0]); return EX_FAIL; }
         return cmd_dylib_or_rpath(argc, argv, 0);
     }
     if (strcmp(verb, "rpath") == 0) {
-        if (argc < 4) { fprintf(stderr, "usage: %s rpath FILE [--allow-grow] [--fatal-warnings] OP...\n", argv[0]); return 1; }
+        if (argc < 4) { fprintf(stderr, "usage: %s rpath FILE [--allow-grow] [--fatal-warnings] OP...\n", argv[0]); return EX_FAIL; }
         return cmd_dylib_or_rpath(argc, argv, 1);
     }
     if (strcmp(verb, "declassify") == 0) {
-        if (argc != 4) { fprintf(stderr, "usage: %s declassify IN OUT\n", argv[0]); return 1; }
+        if (argc != 4) { fprintf(stderr, "usage: %s declassify IN OUT\n", argv[0]); return EX_FAIL; }
         return cmd_declassify(argv[2], argv[3]);
     }
 
     fprintf(stderr, "macho9: unknown verb '%s'\n", verb);
     usage(argv[0]);
-    return 1;
+    return EX_FAIL;
 }

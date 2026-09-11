@@ -252,18 +252,23 @@ case "$caps" in
 esac
 # exitcodes documents EX_REFUSED (see cli/macho9.c) so a caller can tell
 # "macho9 examined FILE and declined" apart from "macho9 itself failed"
-# without scraping stderr text. Assert the line exists, names refused=2,
+# without scraping stderr text. Assert the line exists, names refused=1,
 # and that a real refusal (verify on a non-Mach-O file) actually exits with
-# that code -- not just some nonzero value.
-echo "$caps" | grep -q "^exitcodes ok=0 refused=2 failed=1$" \
-    && ok "capabilities: exitcodes line documents refused=2" \
+# that code -- not just some nonzero value. The corrected scheme is 0 ok, 1
+# refused, 2 error -- backwards from what shipped, and deliberately so:
+# diff/grep/cmp all reserve 2 for "something went wrong" and 1 for "a
+# normal, expected, non-success answer". Nothing outside this repo had ever
+# run the compat wrappers, so this was the last chance to fix it.
+echo "$caps" | grep -q "^exitcodes ok=0 refused=1 failed=2$" \
+    && ok "capabilities: exitcodes line documents refused=1" \
     || bad "capabilities: exitcodes line" "missing or wrong: $(echo "$caps" | grep '^exitcodes')"
 echo 'not a mach-o' > "$T/not-a-macho-in-cli-test"
 rc=0
 "$MACHO9" verify "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] \
-    && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 2" \
-    || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 2"
+[ "$rc" -eq 1 ] \
+    && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
+    || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
+
 for v in verify info grow minos lc dylib rpath segment retag-swift declassify; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
@@ -802,8 +807,8 @@ fi
 "$T/mkchained" make-big "$T/big.in"
 rm -f "$T/big.out"
 "$MACHO9" declassify "$T/big.in" "$T/big.out" >/dev/null 2>"$T/big.err" && rc=0 || rc=$?
-[ "$rc" -eq 2 ] && ok "declassify: refuses a binary with more fixups than the opcode buffer holds" \
-    || bad "declassify: opcode overflow" "expected EX_REFUSED (2), got $rc: $(cat "$T/big.err")"
+[ "$rc" -eq 1 ] && ok "declassify: refuses a binary with more fixups than the opcode buffer holds" \
+    || bad "declassify: opcode overflow" "expected EX_REFUSED (1), got $rc: $(cat "$T/big.err")"
 grep -q "opcode buffer" "$T/big.err" \
     && ok "declassify: names the opcode buffer as the reason" \
     || bad "declassify: opcode overflow" "no reason on stderr: $(cat "$T/big.err")"
@@ -828,12 +833,15 @@ if [ -x "$BIN/patch_macho" ]; then
     else
         bad "declassify: byte-identity" "macho9 and patch_macho produced different bytes"
     fi
-    # And the divergence that IS deliberate: the same refusal, two exit codes.
-    # patch_macho returns a flat 1 for everything; this verb distinguishes
-    # "examined it and declined" (EX_REFUSED=2) from an operational failure.
-    # A wrapper has to map one onto the other, so it is pinned here.
+    # patch_macho returns a flat 1 for everything that goes wrong; this verb
+    # distinguishes "examined it and declined" (EX_REFUSED=1) from an
+    # operational failure (EX_FAIL=2). For THIS refusal the two numbers
+    # happen to agree (both 1) -- that is a coincidence of the corrected
+    # numbering, not a design goal -- but a wrapper still has real
+    # mapping work to do for the EX_FAIL=2 case, where the numbers diverge;
+    # compat/patch_macho.sh's own header covers both.
     "$BIN/patch_macho" "$T/not-a-macho-in-cli-test" "$T/nope_pm" >/dev/null 2>&1 && pm_rc=0 || pm_rc=$?
-    [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho still exits 1 where this verb refuses with 2" \
+    [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho's flat 1 and this verb's EX_REFUSED agree on this refusal" \
         || bad "declassify: patch_macho exit" "expected the historical flat 1, got $pm_rc"
 else
     skip "declassify: byte-identity with patch_macho" "no patch_macho in $BIN"
@@ -869,11 +877,11 @@ else
 fi
 
 # Refusals. Each is a decision macho9 made about the INPUT, so each is
-# EX_REFUSED (2), never the flat 1 that means "something went wrong running
+# EX_REFUSED (1), never EX_FAIL (2), which means "something went wrong running
 # macho9" -- that distinction is what --capabilities' exitcodes line promises.
 "$MACHO9" declassify "$T/not-a-macho-in-cli-test" "$T/nope" >/dev/null 2>"$T/nm.err" && rc=0 || rc=$?
-[ "$rc" -eq 2 ] && ok "declassify: refuses a non-Mach-O with EX_REFUSED" \
-    || bad "declassify: non-Mach-O" "expected 2, got $rc"
+[ "$rc" -eq 1 ] && ok "declassify: refuses a non-Mach-O with EX_REFUSED" \
+    || bad "declassify: non-Mach-O" "expected 1, got $rc"
 [ -e "$T/nope" ] && bad "declassify: non-Mach-O" "wrote an output file for an input it refused" \
     || ok "declassify: a refused input produces no output file"
 
@@ -882,18 +890,18 @@ fi
 # not convertible either. It must say so and refuse, not quietly copy.
 "$CC" -c -O2 $FIXTURE_FLAGS "$T/main.c" -o "$T/plain.o"
 "$MACHO9" declassify "$T/plain.o" "$T/plain.out" >/dev/null 2>"$T/plain.err" && rc=0 || rc=$?
-[ "$rc" -eq 2 ] && ok "declassify: refuses a Mach-O with no chained fixups and no LC_DYLD_INFO_ONLY" \
-    || bad "declassify: no fixups" "expected 2, got $rc"
+[ "$rc" -eq 1 ] && ok "declassify: refuses a Mach-O with no chained fixups and no LC_DYLD_INFO_ONLY" \
+    || bad "declassify: no fixups" "expected 1, got $rc"
 grep -q "No chained fixups found" "$T/plain.err" \
     && ok "declassify: says why it refused" \
     || bad "declassify: no fixups" "no reason on stderr: $(cat "$T/plain.err")"
 
 # An OUT that cannot be written is an OPERATIONAL failure, not a refusal: the
-# input was fine and macho9 declined nothing. It must exit 1, and this is the
-# assertion that keeps EX_REFUSED from decaying into "any nonzero".
+# input was fine and macho9 declined nothing. It must exit 2 (EX_FAIL), and
+# this is the assertion that keeps EX_REFUSED from decaying into "any nonzero".
 "$MACHO9" declassify "$T/chained.in" "$T/no/such/dir/out" >/dev/null 2>"$T/unwritable.err" && rc=0 || rc=$?
-[ "$rc" -eq 1 ] && ok "declassify: an unwritable OUT is a failure (1), not a refusal (2)" \
-    || bad "declassify: unwritable OUT" "expected 1, got $rc"
+[ "$rc" -eq 2 ] && ok "declassify: an unwritable OUT is a failure (2), not a refusal (1)" \
+    || bad "declassify: unwritable OUT" "expected 2, got $rc"
 
 # ============================================================================
 # macho9 stands alone
@@ -1341,7 +1349,7 @@ fi
 # lc --fatal-warnings: the same "matched nothing" report as -delete
 # build-version above (the fixture is stripped of it first, not assumed to
 # lack it), turned
-# into a refusal instead of just a stderr note. EX_REFUSED (2), the same
+# into a refusal instead of just a stderr note. EX_REFUSED (1), the same
 # code a deliberate refusal uses elsewhere (cmd_verify, cmd_grow, cmd_minos),
 # because mr_apply_file returns MR_REFUSED for this and MR_REFUSED is
 # defined (src/rewrite.h) to equal EX_REFUSED.
@@ -1349,8 +1357,8 @@ fi
 build_main_without_build_version "$T/lc_fw_fixture"
 "$MACHO9" lc "$T/lc_fw_fixture" --fatal-warnings -delete build-version \
     >/dev/null 2>"$T/lc_fw.err" && lc_fw_rc=0 || lc_fw_rc=$?
-[ "$lc_fw_rc" -eq 2 ] && ok "lc: --fatal-warnings refuses when a KIND matched nothing (EX_REFUSED)" \
-    || bad "lc: --fatal-warnings refusal" "expected exit 2, got $lc_fw_rc: $(cat "$T/lc_fw.err")"
+[ "$lc_fw_rc" -eq 1 ] && ok "lc: --fatal-warnings refuses when a KIND matched nothing (EX_REFUSED)" \
+    || bad "lc: --fatal-warnings refusal" "expected exit 1, got $lc_fw_rc: $(cat "$T/lc_fw.err")"
 grep -q "no load command of kind build-version to delete" "$T/lc_fw.err" \
     && ok "lc: --fatal-warnings still names the KIND that matched nothing" \
     || bad "lc: --fatal-warnings refusal message" "expected 'no load command of kind build-version to delete', got: $(cat "$T/lc_fw.err")"
@@ -1415,12 +1423,14 @@ build_main "$T/dylib_grow_fixture"
 # or the "without --allow-grow" half of this test is not actually exercising
 # the refusal path.
 longpath="@loader_path/$(printf 'x%.0s' $(seq 1 3500)).dylib"
-if "$MACHO9" dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
-    >/dev/null 2>"$T/dylib_grow.err"; then
-    bad "dylib: long path without --allow-grow" "should have been refused"
-else
-    ok "dylib: long path without --allow-grow is refused"
-fi
+rc=0
+"$MACHO9" dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
+    >/dev/null 2>"$T/dylib_grow.err" || rc=$?
+# A considered refusal (mr_process_thin examined the header pad, decided
+# the new load commands do not fit, and declined without --allow-grow to
+# widen it) is MR_REFUSED, forwarded verbatim as EX_REFUSED.
+[ "$rc" -eq 1 ] && ok "dylib: long path without --allow-grow is refused (EX_REFUSED)" \
+    || bad "dylib: long path without --allow-grow" "expected exit 1, got $rc: $(cat "$T/dylib_grow.err")"
 if "$MACHO9" dylib "$T/dylib_grow_fixture" --allow-grow -replace "@loader_path/liba.dylib" "$longpath" \
     >"$T/dylib_grow.out"; then
     ok "dylib: --allow-grow lets the same replace through"
@@ -1430,6 +1440,48 @@ fi
 grown_info=$("$MACHO9" info "$T/dylib_grow_fixture")
 echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result has the long path" \
     || bad "dylib: --allow-grow result" "long path not found"
+
+# ============================================================================
+# dylib: pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file
+# and mi_open, which reaching this verb from macho9's own EX_REFUSED/EX_FAIL
+# checks never exercised. Without these, reverting the reclassification in
+# src/rewrite.c leaves this whole suite green -- confirmed by temporarily
+# reverting the 64-bit-fat classification below and watching this section's
+# own assertion catch it, then reverting the mutation.
+# ============================================================================
+
+# A non-Mach-O file: mi_open reads it fine (no I/O failure at all) and
+# mi_validate declines it -- MI_NOT_MACHO, forwarded as MR_REFUSED, EX_REFUSED.
+echo 'not a mach-o, just bytes' > "$T/dylib_notmacho"
+rc=0
+"$MACHO9" dylib "$T/dylib_notmacho" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_notmacho.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "dylib: a non-Mach-O file is refused (EX_REFUSED)" \
+    || bad "dylib: non-Mach-O" "expected exit 1, got $rc: $(cat "$T/dylib_notmacho.err")"
+
+# An absent file: mr_apply_file's own open() fails before mi_open is ever
+# reached -- a genuine syscall failure, MR_FAIL, EX_FAIL.
+rc=0
+"$MACHO9" dylib "$T/no-such-file-for-dylib" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_absent.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "dylib: an absent file is a failure, not a refusal (EX_FAIL)" \
+    || bad "dylib: absent file" "expected exit 2, got $rc: $(cat "$T/dylib_absent.err")"
+
+# A 64-bit fat container (fat_arch_64 -- FAT_MAGIC_64/FAT_CIGAM_64, arm64e/
+# watchOS-style wide offsets). mr_apply_file recognizes this from the first
+# 4 bytes alone, before any further read, so the fixture needs nothing past
+# that magic to exercise the check -- cheap to build: FAT_MAGIC_64 is
+# 0xcafebabf (src/mach_compat.h), and on this host's native byte order that
+# is the 4 bytes 0277 0272 0376 0312 (octal), file-order low-to-high.
+printf '%b' '\0277\0272\0376\0312' > "$T/dylib_fat64"
+rc=0
+"$MACHO9" dylib "$T/dylib_fat64" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_fat64.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "dylib: a 64-bit fat container is refused, not merely failed (EX_REFUSED)" \
+    || bad "dylib: 64-bit fat" "expected exit 1, got $rc: $(cat "$T/dylib_fat64.err")"
+grep -q "fat_arch_64" "$T/dylib_fat64.err" \
+    && ok "dylib: names the 64-bit fat container as the reason" \
+    || bad "dylib: 64-bit fat message" "no mention of fat_arch_64: $(cat "$T/dylib_fat64.err")"
 
 # ============================================================================
 # dylib -replace naming a path the image does not have matched nothing, and
@@ -1517,8 +1569,8 @@ build_main "$T/dylib_fw_fixture"
         -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw.dylib" \
         -replace /nope/absent-fw.dylib /also/absent-fw.dylib \
         >"$T/dylib_fw.out" 2>"$T/dylib_fw.err" && dylib_fw_rc=0 || dylib_fw_rc=$?
-[ "$dylib_fw_rc" -eq 2 ] && ok "dylib: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
-    || bad "dylib: --fatal-warnings refusal" "expected exit 2, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
+[ "$dylib_fw_rc" -eq 1 ] && ok "dylib: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
+    || bad "dylib: --fatal-warnings refusal" "expected exit 1, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
 grep -qF "/nope/absent-fw.dylib" "$T/dylib_fw.err" && ok "dylib: --fatal-warnings still names the op that matched nothing" \
     || bad "dylib: --fatal-warnings refusal message" "expected /nope/absent-fw.dylib on stderr, got: $(cat "$T/dylib_fw.err")"
 dylib_fw_info=$("$MACHO9" info "$T/dylib_fw_fixture")
@@ -1555,8 +1607,8 @@ cp "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before"
 "$MACHO9" dylib "$T/dylib_fw_allmiss_fixture" --fatal-warnings \
         -replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dylib \
         >/dev/null 2>"$T/dylib_fw_allmiss.err" && dylib_fw_allmiss_rc=0 || dylib_fw_allmiss_rc=$?
-[ "$dylib_fw_allmiss_rc" -eq 2 ] && ok "dylib: --fatal-warnings refuses when EVERY op matched nothing" \
-    || bad "dylib: --fatal-warnings (all miss)" "expected exit 2, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
+[ "$dylib_fw_allmiss_rc" -eq 1 ] && ok "dylib: --fatal-warnings refuses when EVERY op matched nothing" \
+    || bad "dylib: --fatal-warnings (all miss)" "expected exit 1, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
 cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
     && ok "dylib: --fatal-warnings left the file byte-for-byte untouched when nothing at all matched" \
     || bad "dylib: --fatal-warnings (all miss)" "the file was modified despite every operation matching nothing"
@@ -1713,8 +1765,8 @@ build_main "$T/rpath_fw_fixture" "/tmp/cli_test_rpath_fw_present"
 "$MACHO9" rpath "$T/rpath_fw_fixture" --fatal-warnings \
         -replace "/tmp/cli_test_rpath_fw_absent" "/tmp/cli_test_rpath_fw_new" \
         >/dev/null 2>"$T/rpath_fw.err" && rpath_fw_rc=0 || rpath_fw_rc=$?
-[ "$rpath_fw_rc" -eq 2 ] && ok "rpath: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
-    || bad "rpath: --fatal-warnings refusal" "expected exit 2, got $rpath_fw_rc: $(cat "$T/rpath_fw.err")"
+[ "$rpath_fw_rc" -eq 1 ] && ok "rpath: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
+    || bad "rpath: --fatal-warnings refusal" "expected exit 1, got $rpath_fw_rc: $(cat "$T/rpath_fw.err")"
 grep -q "rpath /tmp/cli_test_rpath_fw_absent matched nothing" "$T/rpath_fw.err" \
     && ok "rpath: --fatal-warnings still names the op that matched nothing" \
     || bad "rpath: --fatal-warnings refusal message" "expected the miss message on stderr, got: $(cat "$T/rpath_fw.err")"
@@ -2043,8 +2095,8 @@ cp "$T/segment_17_fixture" "$T/segment_17_before"
 rc=0
 "$MACHO9" segment "$T/segment_17_fixture" __DATA ABCDEFGHIJKLMNOPQ \
     >"$T/segment17.out" 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "segment: refuses a 17-byte NEW name with the documented refusal code" \
-    || bad "segment: 17-byte name" "expected exit 2, got $rc: $(cat "$T/segment17.out")"
+[ "$rc" -eq 1 ] && ok "segment: refuses a 17-byte NEW name with the documented refusal code" \
+    || bad "segment: 17-byte name" "expected exit 1, got $rc: $(cat "$T/segment17.out")"
 cmp -s "$T/segment_17_fixture" "$T/segment_17_before" \
     && ok "segment: a refused rename left the file byte-for-byte unchanged" \
     || bad "segment: 17-byte name" "the file was modified despite the refusal"
@@ -2395,8 +2447,8 @@ else
     "$T/segread" wrap "$T/retag_fat" "$T/swift_fixture" "$T/retag_fat_blob"
     rc=0
     "$MACHO9" retag-swift "$T/retag_fat" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
-    [ "$rc" -eq 2 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
-        || bad "retag-swift: fat" "expected exit 2, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
+    [ "$rc" -eq 1 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
+        || bad "retag-swift: fat" "expected exit 1, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
     grep -q "not a readable 64-bit Mach-O" "$T/retag_fat.err" \
         && ok "retag-swift: says why it refused, instead of silently doing nothing" \
         || bad "retag-swift: fat message" "no explanation on stderr: $(cat "$T/retag_fat.err")"
@@ -2411,16 +2463,50 @@ else
         || bad "retag-swift: thin control" "expected exit 0, got $rc: $(cat "$T/retag_thin_control.out")"
 fi
 
-# MSWIFT_ERROR (a path that cannot even be opened) must be 1 -- a genuine
-# operational failure, NOT the EX_REFUSED the unreadable-input case gets, and
-# certainly not 0. This is the assertion that covers cmd_retag_swift's
+# MSWIFT_ERROR (a path that cannot even be opened) must be EX_FAIL (2) -- a
+# genuine operational failure, NOT the EX_REFUSED the unreadable-input case
+# gets, and certainly not 0. This is the assertion that covers cmd_retag_swift's
 # by-name test of the negative codes: collapse those branches and one of
 # these two exit codes moves.
 rc=0
 "$MACHO9" retag-swift "$T/no-such-file-for-retag" >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
-[ "$rc" -eq 1 ] \
-    && ok "retag-swift: an unopenable path is a failure (1), not a refusal (2) and not silent success" \
-    || bad "retag-swift: missing path" "expected exit 1, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
+[ "$rc" -eq 2 ] \
+    && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
+    || bad "retag-swift: missing path" "expected exit 2, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
+# MSWIFT_ERROR's own contract (swift_retag.h) is "already reported" --
+# cmd_retag_swift relies on that and prints nothing itself for this code.
+# What this guards is the path an absent file actually takes:
+# mswift_retag_file's own open() fails first, perror()s, and returns
+# MSWIFT_ERROR, so the run must exit 2 with something on stderr. It does NOT
+# reach, and cannot guard, the MI_IO_ERROR branch after mswift_retag_file's
+# mi_open call -- the one that once returned MSWIFT_ERROR without a print.
+# That branch's print is verified by inspection only: once open() and
+# fstat() have succeeded, reaching it takes the path being removed or
+# replaced mid-run, a malloc failure, or a short read, and this suite stages
+# none of those.
+[ -s "$T/retag_missing.err" ] \
+    && ok "retag-swift: an unopenable path prints something, per MSWIFT_ERROR's contract" \
+    || bad "retag-swift: missing path stderr" "exit 2 but stderr was empty -- MSWIFT_ERROR's 'already reported' contract broke"
+
+# The MI_IO_ERROR branch inside mi_open specifically (not mswift_retag_file's
+# own earlier open()/fstat(), which the absent-file case above already
+# exercises): verify and declassify are equally cheap to check on an absent
+# path, and neither had a numeric-exit-code assertion for one before.
+rc=0
+"$MACHO9" verify "$T/no-such-file-for-verify" >"$T/verify_missing.out" 2>"$T/verify_missing.err" || rc=$?
+[ "$rc" -eq 2 ] && [ -s "$T/verify_missing.err" ] \
+    && ok "verify: an absent file is a failure (2), not a refusal, and says something" \
+    || bad "verify: missing path" "expected exit 2 with nonempty stderr, got $rc: $(cat "$T/verify_missing.err")"
+
+rc=0
+"$MACHO9" declassify "$T/no-such-file-for-declassify" "$T/declassify_missing.out" \
+    >/dev/null 2>"$T/declassify_missing.err" || rc=$?
+[ "$rc" -eq 2 ] && [ -s "$T/declassify_missing.err" ] \
+    && ok "declassify: an absent IN is a failure (2), not a refusal, and says something" \
+    || bad "declassify: missing IN" "expected exit 2 with nonempty stderr, got $rc: $(cat "$T/declassify_missing.err")"
+[ -e "$T/declassify_missing.out" ] \
+    && bad "declassify: missing IN" "wrote an output file for an IN it could not even open" \
+    || ok "declassify: an absent IN produces no output file"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

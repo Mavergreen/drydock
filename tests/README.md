@@ -14,7 +14,7 @@ Thirteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `cli_test` | `macho9`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements. `rpath -insert`, `segment` and `retag-swift` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `-insert` is only correct if the new search path lands FIRST (an `-append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment` has to rename each section's own copy of the segment name (`macho9 info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `retag-swift` has to move the tag bit without disturbing the rest of the word |
 | `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally |
 | `translate_test` | `compat/translate.sh`, the old-grammar-to-`macho9` translator the wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every verb/op/KIND the translator can emit against `macho9 --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
-| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `macho9` returns `EX_REFUSED`; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/macho9.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
+| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `macho9` returns `EX_FAIL`, or `EX_REFUSED`, which is already 1; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/macho9.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
 | `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from the last commit carrying all six `.c` files** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. A wrapper that passes the test suite but breaks a real caller is a failure |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
@@ -60,35 +60,60 @@ in the commit why a row changed.
 
 ## `macho9`'s exit codes
 
-`macho9` uses three exit codes throughout — `verify`, `info`, `grow`, `minos`
-and `lc`'s KIND validation always have, and `dylib`/`rpath`/`lc` now do too
-when given `--fatal-warnings` — also documented machine-readably in
-`--capabilities`' `exitcodes` line:
+`macho9` uses three exit codes throughout. `verify`, `info`, `grow`, `minos`
+and `lc`'s KIND validation always have; `dylib`, `rpath`, `lc` and `minos`
+get theirs from the shared rewrite drivers they call into (`mr_apply_file`,
+`mv_add_version_min`), which now draw this exact same line themselves for
+EVERY considered refusal they can reach -- not only the one `--fatal-
+warnings` adds ("an operation matched nothing"), but every refusal those
+two functions already had (bad magic, no room to grow, and the rest of
+`src/rewrite.h`'s list on `mr_apply_file`). Also documented
+machine-readably in `--capabilities`' `exitcodes` line:
 
 | code | meaning |
 |---|---|
 | `0` | success |
-| `2` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or (`dylib`/`rpath`/`lc` only, and only with `--fatal-warnings`) an operation that matched nothing. This last case never rolls back a write it made: if some OTHER operation in the same run matched, that write already happened; if every operation matched nothing, there was no write to roll back in the first place, same as any other all-miss run |
-| `1` | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal |
+| `1` (`EX_REFUSED`) | `macho9` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or (`dylib`/`rpath`/`lc` only, and only with `--fatal-warnings`) an operation that matched nothing. This last case never rolls back a write it made: if some OTHER operation in the same run matched, that write already happened; if every operation matched nothing, there was no write to roll back in the first place, same as any other all-miss run |
+| `2` (`EX_FAIL`) | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal. ONE EXCEPTION: an allocation failure INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into `1` instead, same as every other reason either one refuses, on every verb that reaches either one (`dylib`/`rpath`/`lc`, `grow`, `verify`) — see `src/rewrite.c`'s comment on that fold |
+
+The numbering is deliberately backwards from what first shipped (`0` ok, `1`
+failed, `2` refused): `diff`, `grep` and `cmp` all reserve their highest code
+for "the tool could not do its job", not for a normal, expected non-success
+answer, and this repo now follows that precedent instead of contradicting
+it.
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than
 widening a default case is a global rule, not a `macho9`-specific one), so a
 caller that wants to script around "this file just isn't one `macho9` will
 touch" versus "something is actually broken, investigate or retry" can check
-for `2` specifically instead of scraping stderr text. `1` still means exactly
-what it always did, so any existing caller checking only `== 0` or `!= 0` is
-unaffected by this distinction's addition.
+for `1` specifically instead of scraping stderr text. Any existing caller
+checking only `== 0` or `!= 0` is unaffected by this distinction's addition
+regardless of which of `1`/`2` means which.
 
 `dylib`/`rpath`/`lc` (past its own KIND check) and `minos` (past its own
 version check) hand back the exit code of the shared rewrite drivers,
 `mr_apply_file` and `mv_add_version_min` (`src/rewrite.h`,
-`src/version_min.h`), which return 0 or 1 and do not make this refused/failed
-distinction themselves. So those verbs' exit codes are NOT covered by the
-table above — only `macho9`'s own directly-decided exits are. (They used to
-be forwarded from a `change_dylib`/`add_version_min` SUBPROCESS; the code is
-linked in now, but the exit codes it produces are the same ones, deliberately:
-changing them would have changed every caller's observable behaviour in the
-same commit that moved the code.)
+`src/version_min.h`). Those two now use the very same `MR_REFUSED` (1) /
+`MR_FAIL` (2) split this table documents -- `mr_apply_file`'s own comment in
+`src/rewrite.h` has the full classification, including several sites reached
+through a helper's own nonzero return rather than a check written out in
+that function -- so their exit codes ARE covered by the table above, exactly
+as `cli/macho9.c`'s own `--capabilities` comment says. What the table's
+prose does not spell out per verb is WHICH of `mr_apply_file`'s many
+considered-refusal cases fired -- that detail is on stderr, not in the exit
+code, same as everywhere else in this table.
+
+(They used to be forwarded from a `change_dylib`/`add_version_min`
+SUBPROCESS, which returned a flat 0/1 with no refused/failed distinction at
+all; the code is linked in now, and its exit codes DO make that distinction
+today, which is a real, deliberate behaviour change for the two `compat/`
+wrappers of the same names -- they forward this code verbatim, so a genuine
+operational failure through either one now exits 2 where the old C tool
+always exited a flat 1, apart from two cases that reach `change_dylib`
+only: the fold in the table above's `2` row, and a multi-command
+`change_dylib` run's own copy-aside-and-install steps, which exit 1 when
+they fail. See `compat/README.md`'s "drop-in" section, which names this as
+one of its four known exceptions and spells out both.)
 
 ## EXPECTED, and what it is for
 

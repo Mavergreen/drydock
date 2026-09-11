@@ -69,9 +69,13 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with three known exceptions, each measured at its own site: one
-reproduced on a real file (one out of 300 in the differential corpus, below),
-the other two argued unreachable in practice rather than observed:
+check them, with four known exceptions, truthfully not all the same KIND of
+known: one reproduced on a real file (one out of 300 in the differential
+corpus, below), two argued unreachable in practice rather than observed, and
+the fourth true by construction rather than by measurement -- it follows
+directly from reading what two of the wrappers' code does, not from a corpus
+row that exhibits it, so no file "reproduces" it and no argument is needed
+for why it would be rare:
 
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
@@ -90,8 +94,34 @@ the other two argued unreachable in practice rather than observed:
     does not see ACLs. It agrees on the two cases that actually reach a
     caller (absent, and mode-denied); `compat/rename_segment.sh`'s header has
     the detail.
+  * `change_dylib` and `add_version_min` are the two wrappers that forward
+    the shared rewrite drivers' (`mr_apply_file`, `mv_add_version_min`) own
+    exit code verbatim, with no mapping at all -- unlike `fix_macho`,
+    `patch_macho` and `rename_segment`, which translate every nonzero
+    macho9 exit to one flat historical code, and `retag_swift_classes`,
+    which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
+    header has it) and is likewise unaffected by this. A CONSIDERED refusal
+    (the input examined and declined) still exits 1, matching the C tool by
+    coincidence, not by construction; but a genuine operational failure
+    (open, fstat, read or write failing, `mv_add_version_min`'s race guard,
+    or a checked allocation that `src/rewrite.c`'s drivers or
+    `mi_open`/`mfat_parse` make -- `src/rewrite.h`'s `MR_FAIL` comment
+    names them) now exits 2, where the C tool always exited a flat 1. Two
+    exceptions, both `change_dylib`'s only. First, an allocation failure
+    INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the
+    same as every other reason either one refuses -- and it needs no
+    `-grow`. `change_dylib` reaches `mg_grow_header` only through
+    `--allow-grow`, but `src/rewrite.c` runs `mg_plausible` on every
+    rewrite that is not a pure segment rename -- every rewrite
+    `change_dylib` can ask for -- unless `MACHO_NO_VERIFY` is set.
+    `src/rewrite.c`'s own comment on that fold has the reasoning. Second, a
+    `change_dylib` run that emits more than one `macho9` line goes through
+    `mw_run_atomic`, whose own hardcoded `return 1`s (a failed copy aside,
+    for one, which is what an absent FILE produces) are not `macho9`'s
+    code at all. `compat/change_dylib.sh` and `compat/add_version_min.sh`'s
+    own headers have the rest of the detail.
 
-There is a fourth gap this list used to omit entirely: no argument
+There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 `mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
 -- `tests/fixture.macho`'s header pad is large enough, and the sweep's
