@@ -55,7 +55,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # executable without a target-name collision. It is deliberately NOT linked into
 # every tool: only what actually includes a header from src/ links it, so a tool
 # that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c)
+add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c)
 target_include_directories(macho9core PUBLIC src)
 target_compile_options(macho9core PRIVATE -O2 -Wall)
 
@@ -221,6 +221,17 @@ add_test(NAME script_test COMMAND script_test)
 # actually exercises the regression this test exists to catch.
 set_tests_properties(script_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
+# Hermetic tests for src/arch_names.c and src/fat.c's mfat_rewrite: fat
+# containers built in the test from plain-byte slices, so no fixture file is
+# needed. MallocScribble for the same reason as script_test: mfat_rewrite
+# frees every split buffer on every path, and a use-after-free there reads
+# garbage rather than crashing unless freed memory is scribbled.
+add_executable(fat_test tests/fat_test.c)
+target_compile_options(fat_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(fat_test PRIVATE macho9core)
+add_test(NAME fat_test COMMAND fat_test)
+set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
 # Hermetic tests for src/edit.c's execution model -- statements apply in
 # order, a failure part-way writes nothing, a dry run writes nothing but still
 # verifies -- against a synthetic image built by hand, same reasoning as
@@ -243,6 +254,15 @@ add_executable(linkedit_test tests/linkedit_test.c)
 target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(linkedit_test PRIVATE macho9core)
 add_test(NAME linkedit_test COMMAND linkedit_test)
+
+# Fixture helpers, not tests: build and inspect a fat container without
+# system lipo, whose accepted architectures are not the suites' to pin.
+# Built beside macho9 so every CLI suite finds them in the directory it is
+# already given.
+add_executable(makefat tests/makefat.c)
+add_executable(fatcheck tests/fatcheck.c)
+target_compile_options(makefat PRIVATE -O2)
+target_compile_options(fatcheck PRIVATE -O2)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now
