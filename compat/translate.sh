@@ -29,25 +29,29 @@
 #     Arguments are single-quoted only when they contain something
 #     outside [A-Za-z0-9_@%+=:,./-], so the common case stays readable and the
 #     hostile case stays correct.
-#   * A CONVERTED VERB NAMES AN OUTPUT of its own, because it no longer writes
-#     the file it is given. macho9's rewriting verbs are being converted one
-#     at a time; `minos` was the first and `retag-swift` is the second, so
-#     `add_version_min` and `retag_swift_classes` are so far the only
-#     translations here that name one. Which output depends on who is reading:
+#   * EVERY COMMAND HERE NAMES AN OUTPUT of its own, because no macho9 verb
+#     writes the file it is given any more. They were converted one at a time:
+#     `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
+#     `segment` together, then `grow`, and last the `edit` script both
+#     multi-command tools fall back to -- whose OUT was a `--output` flag until
+#     then. `patch_macho`'s `declassify` always took IN and OUT, and now refuses
+#     an OUT that is IN as the rest do.
+#     Which output depends on who is reading:
 #     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
 #     command writes exactly that and nothing follows it; without it -- the
 #     teaching form a human sees -- the output is FILE.new and the command is
 #     followed by `mv -f FILE.new FILE`, so what is shown is a pasteable
 #     equivalent of the old in-place edit rather than half of one.
 #     mt_out_for and mt_install_line are that fork, in one place.
-#   * A command is USUALLY one line, but `macho9 edit FILE -` carries its
+#   * A command is USUALLY one line, but the `edit` command carries its
 #     statements in a here-document, so it spans several: the `edit` line, the
 #     statements, and the `MACHO9_EDIT` terminator. Counting commands means
 #     counting lines that START with the program word, not counting lines --
 #     which is what macho9-compat.sh's mw_translate does.
 #   * Every tool here but retag_swift_classes emits AT MOST ONE MACHO9
-#     command: an invocation that would have needed more is one `macho9 edit
-#     FILE -` instead. (The teaching form's trailing `mv -f` is not one of
+#     command: an invocation that would have needed more is one
+#     `macho9 edit FILE OUT -` instead. (The teaching form's
+#     trailing `mv -f` is not one of
 #     them; a wrapper sets MT_OUT, which suppresses it, and installs the temp
 #     itself.) So there is no sequence to run and nothing to stop part way
 #     through -- macho9-compat.sh's mw_run evaluates what is printed and
@@ -110,40 +114,43 @@
 #
 # Each row gives the VERB form, which is what an invocation needing only that
 # row's family emits. An invocation needing more than one row's worth emits
-# one `macho9 edit FILE -` instead, whose statements are in the third column.
+# one `macho9 edit FILE OUT -` instead, whose statements are in the
+# third column.
 #
-#   change_dylib FILE ...            macho9 ...                  statement
-#     -change O N                      dylib FILE -replace O N     dylib replace O N
-#     -delete P                        dylib FILE -delete P        dylib delete P
-#     -reexport P                      dylib FILE -reexport P      dylib reexport P
-#     -add P                           dylib FILE -append P        dylib append P
-#     -insert P                        dylib FILE -insert P        dylib insert P
-#     -change-rpath O N                rpath FILE -replace O N     rpath replace O N
-#     -delete-rpath P                  rpath FILE -delete P        rpath delete P
-#     -add-rpath P                     rpath FILE -append P        rpath append P
-#     -strip-lc KIND                   lc    FILE -delete KIND     load-command delete KIND
-#     -grow                            --allow-grow on the         allow-grow
-#                                      dylib/rpath lines
+#   change_dylib FILE ...       macho9 ... (F O = FILE OUT)    statement
+#     -change O N                 dylib F O -replace O N        dylib replace O N
+#     -delete P                   dylib F O -delete P           dylib delete P
+#     -reexport P                 dylib F O -reexport P         dylib reexport P
+#     -add P                      dylib F O -append P           dylib append P
+#     -insert P                   dylib F O -insert P           dylib insert P
+#     -change-rpath O N           rpath F O -replace O N        rpath replace O N
+#     -delete-rpath P             rpath F O -delete P           rpath delete P
+#     -add-rpath P                rpath F O -append P           rpath append P
+#     -strip-lc KIND              lc    F O -delete KIND        load-command delete KIND
+#     -grow                       --allow-grow on the           allow-grow
+#                                 dylib/rpath lines
 #
 #   fix_macho FILE ...
-#     -change O N                      dylib   FILE -replace O N   dylib replace O N
-#     -strip_build_version             lc      FILE -delete build-version
-#                                                                  load-command delete build-version
-#     -rename_seg O N                  segment FILE O N            segment rename O N
+#     -change O N                 dylib   F O -replace O N      dylib replace O N
+#     -strip_build_version        lc      F O -delete build-version
+#                                                               load-command delete build-version
+#     -rename_seg O N             segment F O O N               segment rename O N
 #
-#   add_version_min FILE               minos      FILE OUT 10.9
-#   patch_macho IN OUT                 declassify IN OUT
-#   rename_segment FILE O N            segment    FILE O N
-#   retag_swift_classes F1 F2 F3       retag-swift F1 OUT1
-#                                      retag-swift F2 OUT2
-#                                      retag-swift F3 OUT3
+#   add_version_min FILE          minos       FILE OUT 10.9
+#   patch_macho IN OUT            declassify  IN OUT
+#     (IN and OUT the same)       declassify  IN OUT.new, then mv
+#   rename_segment FILE O N       segment     FILE OUT O N
+#   retag_swift_classes F1 F2 F3  retag-swift F1 OUT1
+#                                 retag-swift F2 OUT2
+#                                 retag-swift F3 OUT3
 #
 # ---- ordering, and the one command an old invocation becomes -------------
 #
 # change_dylib and fix_macho each apply EVERY operation in ONE pass over the
 # load-command table, and write ONCE. macho9 has a verb per family, so an
 # invocation touching more than one family has no single verb to become. It
-# becomes ONE `macho9 edit FILE -` instead, with the operations as statements
+# becomes ONE `macho9 edit FILE OUT -` instead, with the operations as
+# statements
 # on stdin -- which is again one read, one pass per statement over an image
 # held in memory, and one write. The order emitted is:
 #
@@ -191,8 +198,9 @@
 #   macho9 declassify uses exit 2 (EX_FAIL) for an operational failure where
 #     patch_macho returns its same flat 1 -- a considered refusal, unlike
 #     that case, now exits 1 on both sides, by coincidence, not construction
-#     -- writes atomically, and names the file it wrote even on the
-#     pass-through.
+#     -- writes atomically, gives OUT the INPUT's mode where the C tool used a
+#     fixed 0755, refuses an OUT that is IN where the C tool converted in
+#     place, and names the file it wrote even on the pass-through.
 #   fix_macho is the one tool whose divergences are NOT closed by its wrapper,
 #     because the repo owner ruled them improvements to ADOPT: a longer
 #     replacement path is now rewritten using header pad instead of refused, a
@@ -260,11 +268,25 @@ mt_qargs() {
 # installs onto the target, so the link survives and everything else pointing
 # through it sees the new content. Teaching the resolve step would be teaching
 # the wrapper's implementation rather than the command a human wants.
+#
+# A FILE whose own name begins with `-` and has no directory part (`sub/-d`
+# is unaffected -- its `.new` name starts with `s`) makes FILE.new begin with
+# `-` too, and macho9 refuses an OUT spelled that way, naming `./OUT` as the
+# remedy (cli/macho9.c). So mt_new_name gives the teaching form that name
+# directly, keeping the printed macho9 line and the `mv -f` line that follows
+# it both runnable pasted verbatim; a wrapper never sees this, because
+# MT_OUT is always its own dot-prefixed temp (mw_prepare, macho9-compat.sh).
+mt_new_name() {
+    case $1 in
+        -*) printf './%s.new' "$1" ;;
+        *)  printf '%s.new' "$1" ;;
+    esac
+}
 mt_out_for() {
-    if [ -n "${MT_OUT:-}" ]; then printf '%s' "$MT_OUT"; else printf '%s.new' "$1"; fi
+    if [ -n "${MT_OUT:-}" ]; then printf '%s' "$MT_OUT"; else mt_new_name "$1"; fi
 }
 mt_install_line() {
-    [ -n "${MT_OUT:-}" ] || printf 'mv -f%s\n' "$(mt_qargs "$1.new" "$1")"
+    [ -n "${MT_OUT:-}" ] || printf 'mv -f%s\n' "$(mt_qargs "$(mt_new_name "$1")" "$1")"
 }
 
 # The origin tool's own diagnostic, on stderr, and a nonzero return.
@@ -485,13 +507,20 @@ $3
     [ -n "$mt_dy" ] && mt_nfam=$((mt_nfam + 1))
     [ -n "$mt_rp" ] && mt_nfam=$((mt_nfam + 1))
     if [ "$mt_nfam" -le 1 ]; then
-        [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_lc"
-        [ -n "$mt_dy" ] && printf '%s dylib%s%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_grow" "$mt_dy"
-        [ -n "$mt_rp" ] && printf '%s rpath%s%s%s\n' "$mt_pre" "$(mt_qargs "$mt_file")" "$mt_grow" "$mt_rp"
+        mt_fo="$(mt_qargs "$mt_file" "$(mt_out_for "$mt_file")")"
+        [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fo" "$mt_lc"
+        [ -n "$mt_dy" ] && printf '%s dylib%s%s%s\n' "$mt_pre" "$mt_fo" "$mt_grow" "$mt_dy"
+        [ -n "$mt_rp" ] && printf '%s rpath%s%s%s\n' "$mt_pre" "$mt_fo" "$mt_grow" "$mt_rp"
+        # Only when a command was actually emitted. `change_dylib FILE -grow
+        # -grow` reaches here with mt_nfam 0 and prints nothing (a single
+        # `-grow` never gets this far -- the `[ $# -ge 3 ]` usage check above
+        # refuses it), and an install line with no command ahead of it would
+        # name an output nothing wrote.
+        [ "$mt_nfam" -eq 1 ] && mt_install_line "$mt_file"
         return 0
     fi
 
-    # MORE THAN ONE FAMILY: one `macho9 edit FILE -`, statements on stdin.
+    # MORE THAN ONE FAMILY: one `macho9 edit FILE OUT -`, statements on stdin.
     #
     # WHY THIS ORDER. A verb applies all of one family's operations as a batch
     # against the ORIGINAL image; an edit script applies statements in
@@ -514,11 +543,13 @@ $3
     # -change's OLD -- which mt_chain_check refuses here, and only here.
     mt_chain_check -change "$mt_pairs_dy" || return 1
     mt_chain_check -change-rpath "$mt_pairs_rp" || return 1
-    printf '%s edit%s - <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" "$(mt_qargs "$mt_file")"
+    printf '%s edit%s <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" \
+        "$(mt_qargs "$mt_file" "$(mt_out_for "$mt_file")" -)"
     [ -n "$mt_grow" ] && printf 'allow-grow\n'
     printf '%s%s%s%s%s%s%s%s' "$mt_st_lc" "$mt_st_dydel" "$mt_st_dyrepl" "$mt_st_dyapp" \
         "$mt_st_dyins" "$mt_st_rpdel" "$mt_st_rprepl" "$mt_st_rpapp"
     printf 'MACHO9_EDIT\n'
+    mt_install_line "$mt_file"
     return 0
 }
 
@@ -643,14 +674,19 @@ $3
     [ -n "$mt_lc" ] && mt_ncmds=$((mt_ncmds + 1))
     [ -n "$mt_dy" ] && mt_ncmds=$((mt_ncmds + 1))
     if [ "$mt_ncmds" -le 1 ]; then
-        [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fq" "$mt_lc"
-        [ -n "$mt_dy" ] && printf '%s dylib%s%s\n' "$mt_pre" "$mt_fq" "$mt_dy"
+        mt_fo="$(mt_qargs "$mt_file" "$(mt_out_for "$mt_file")")"
+        [ -n "$mt_lc" ] && printf '%s lc%s%s\n' "$mt_pre" "$mt_fo" "$mt_lc"
+        [ -n "$mt_dy" ] && printf '%s dylib%s%s\n' "$mt_pre" "$mt_fo" "$mt_dy"
         if [ -n "$mt_seg" ]; then
             printf '%s' "$mt_seg" | while IFS= read -r mt_line; do
                 [ -n "$mt_line" ] || continue
-                printf '%s segment%s%s\n' "$mt_pre" "$mt_fq" "$mt_line"
+                printf '%s segment%s%s\n' "$mt_pre" "$mt_fo" "$mt_line"
             done
         fi
+        # Unconditional, unlike change_dylib's: every fix_macho argv this
+        # branch accepts carries at least one operation (the usage check above
+        # rejects a bare FILE), so mt_ncmds is 1 here, never 0.
+        mt_install_line "$mt_file"
         return 0
     fi
 
@@ -661,9 +697,11 @@ $3
     # segment` pass are the same single operation, so a sequence of them is
     # already what the -rename_seg arm above says this tool now does.
     mt_chain_check -change "$mt_pairs_dy" || return 1
-    printf '%s edit%s - <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" "$mt_fq"
+    printf '%s edit%s <<'"'"'MACHO9_EDIT'"'"'\n' "$mt_pre" \
+        "$(mt_qargs "$mt_file" "$(mt_out_for "$mt_file")" -)"
     printf '%s%s%s' "$mt_st_lc" "$mt_st_dyrepl" "$mt_st_seg"
     printf 'MACHO9_EDIT\n'
+    mt_install_line "$mt_file"
     return 0
 }
 
@@ -680,14 +718,31 @@ mt_tr_add_version_min() {
 mt_tr_patch_macho() {
     # `argc != 3`.
     [ $# -eq 2 ] || { printf 'Usage: %s input output\n' "$MT_PROG" >&2; return 1; }
-    printf '%s declassify%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$2")"
+    # THE ONE TOOL WHOSE GRAMMAR ALREADY NAMED ITS OUTPUT, so the teaching form
+    # is the command the caller typed: there is no in-place edit to show an
+    # install step for. The exception is IN and OUT being the same file, which
+    # patch_macho allowed and `macho9 declassify` now refuses like every other
+    # rewriting verb -- so that form gets the same OUT-plus-install treatment
+    # the five in-place tools get, and reads as a pasteable equivalent instead
+    # of a command that would be refused. Compared AS STRINGS, because that is
+    # all this file can do: it opens nothing, so "the same file by another name"
+    # (a symlink, a hard link, `./f` for `f`) is not a question it can ask --
+    # macho9 answers that one at the write, and the wrapper never asks it at
+    # all, since it always names a temp of its own.
+    if [ -z "${MT_OUT:-}" ] && [ "$1" != "$2" ]; then
+        printf '%s declassify%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$2")"
+        return 0
+    fi
+    printf '%s declassify%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$(mt_out_for "$2")")"
+    mt_install_line "$2"
 }
 
 mt_tr_rename_segment() {
     # `argc != 4`, then the 16-byte segname check, in rename_segment's words.
     [ $# -eq 3 ] || { printf 'Usage: %s binary OLDNAME NEWNAME\n' "$MT_PROG" >&2; return 1; }
     [ "${#3}" -le 16 ] || { mt_die 'new segment name longer than 16 bytes'; return 1; }
-    printf '%s segment%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$2" "$3")"
+    printf '%s segment%s\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$(mt_out_for "$1")" "$2" "$3")"
+    mt_install_line "$1"
 }
 
 mt_tr_retag_swift_classes() {

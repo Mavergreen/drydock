@@ -104,6 +104,30 @@ file**; these tools **never move a byte of data**, editing only within existing
 header padding. That is why `-strip-lc` and `-grow` exist, and why a replacement
 path that is too long is an error here and a non-event with Apple's tool.
 
+## macho9 never writes its input
+
+Every rewriting verb — `dylib`, `rpath`, `lc`, `segment`, `minos`,
+`retag-swift`, `declassify`, `grow`, `edit` — takes `FILE OUT`: `FILE` is
+opened read-only and never touched, and the result goes to `OUT`, the
+positional right after it. An `OUT` that names `FILE` — the same path, a
+symlink to it, or a hard link to it — is refused before any work is done.
+`macho9 --capabilities`' `output positional=2 never-writes-input` line tells
+a caller to expect this shape rather than assume it.
+
+A successful write gives `OUT` `FILE`'s permission bits, `FILE`'s owner
+(best-effort — changing owner needs privilege), and every extended attribute
+`FILE` carries (quarantine and the like), then renames a temp file onto
+`OUT`: `OUT` ends up either its previous content or the whole new file, never
+a partial one, and a symlink at `OUT` is followed to its target rather than
+replaced.
+
+The six `compat/` wrappers still *look* like they edit in place, the way the
+retired C tools did: each writes to a temp file beside `FILE` and moves it
+over `FILE` once the run succeeds. A `FILE` with more than one hard link is
+refused up front instead — moving the temp over one name would leave every
+other name for that inode on the old content, and there is no atomic way to
+update every name for an inode at once.
+
 ## Prove it or refuse
 
 `-grow` makes header room by lowering the image base, which invalidates every
@@ -141,32 +165,32 @@ naming every statement instead, applies them all to one in-memory copy, and
 writes once:
 
 ```sh
-macho9 edit FILE SCRIPT                 # rewrite FILE in place
-macho9 edit FILE SCRIPT --output OUT    # write elsewhere; FILE untouched
-macho9 edit FILE -                      # read the script from stdin
-macho9 edit FILE SCRIPT --dry-run       # do everything but the write
+macho9 edit FILE OUT SCRIPT             # apply SCRIPT to FILE, writing OUT
+macho9 edit FILE OUT -                  # read the script from stdin
 ```
 
-`--output`, `--verbose` and `--dry-run` may appear anywhere among the
-arguments, not only after `SCRIPT`. There is no `--` to end flag parsing, so a
-`FILE` or `SCRIPT` whose real name starts with `-` is refused as an unknown
-flag; reference it through a path that doesn't, e.g. `./-name`.
+`FILE` is only read, and `OUT` must not be it — the same file twice, or a
+symlink or hard link to it, is refused before the script is even read, as it is
+for every other verb that names an `OUT`. A successful run always leaves `OUT`
+there, even when no statement changed anything: `OUT` is the answer. To see what
+a script would do without disturbing anything, give it a scratch `OUT` — that is
+the same run, and the result is a file you can inspect rather than a prediction.
+
+`--verbose` may appear anywhere among the arguments, not only after `SCRIPT`.
+There is no `--` to end flag parsing, so a `FILE` or `SCRIPT` whose real name
+starts with `--` is refused as an unknown flag; reference it through a path that
+doesn't, e.g. `./--name`. One leading dash is a file name there, as it is for
+every other verb. Not for `OUT`, though: an `OUT` beginning with `-` is refused
+and says so, because `OUT` is a file this command creates, so a flag-looking one
+is a mistake rather than a name.
 
 **Edit writes nothing unless every statement succeeded.** The whole script is
-parsed before `FILE` is ever opened for writing, so a typo in the last line of
-a long script costs nothing. Each statement then runs against the image in
-memory, in the order written; if any statement is refused, `FILE` (or
-`--output`'s target) is left exactly as it was found. The finished image is
-verified — mandatorily, after the last statement and before the write, with no
-opt-out — and only then written, once.
-
-**`--dry-run` is the same run with only the write skipped.** Every statement
-is still parsed, applied and verified; only the final write does not happen.
-It exits with the same code the real run would — 0 on success, or the refusal
-or failure code a real run would have produced at the same statement — so a
-dry run tells you whether the real run will work, not just predicts it. It
-prints a line saying so, `FILE: NOT written (--dry-run) -- would be N bytes`,
-even without `--verbose`.
+parsed before `FILE` is opened at all, so a typo in the last line of a long
+script costs nothing. Each statement then runs against the image in memory, in
+the order written; if any statement is refused, `OUT` is not written and `FILE`
+is exactly as it was found. The finished image is verified — mandatorily, after
+the last statement and before the write, with no opt-out — and only then
+written, once.
 
 **`--verbose` logs, on stderr, what the run did.** Each statement as it
 starts; beneath it, indented, the follow-up work it did that its line does
@@ -177,7 +201,7 @@ binds emitted, commands stripped, how far `__LINKEDIT` grew) or that an
 already-classic image passed through, for `swift-abi set legacy` how many
 class records it retagged, and for `version-min set` the
 `LC_VERSION_MIN_MACOSX` it appended; then `FILE: verified` and
-`FILE: written (N bytes)` (`OUT: written` with `--output`).
+`OUT: written (N bytes)`.
 
 **On a fat file, each slice is accounted for too.** `slice NAME:` before an
 edited slice's statements and `slice NAME: verified` after; `slice NAME: not
@@ -195,13 +219,12 @@ after printing it. On a fat file the refusal line names the slice too — or,
 for a statement's own miss (see `fatal-warnings`, below), says it matched
 nothing in any selected slice.
 
-**The write replaces `FILE` by rename**, as `objcopy` does: the new image goes
-to a temporary file beside `FILE`, which is then renamed over it, keeping
-`FILE`'s mode. So a read-only (`0444`) `FILE` in a writable directory is
-replaced, and the run exits 0, where `macho9 dylib`, `rpath` and `lc` fail
-with a permission error. (A `FILE` with more than one hard link is written
-through in place instead, so that every name sees the change; see
-`src/atomic_write.h`.)
+**The write never touches `FILE`.** `edit`, like every other rewriting verb,
+takes `FILE OUT` and writes only `OUT`, by way of a temp file and a rename —
+see "macho9 never writes its input", above, for what that guarantees. So
+whether `FILE` is writable is not a question `edit` asks either; a read-only
+(`0444`) `FILE` in a writable directory is read just fine, and the run exits
+0.
 
 ### File format
 
@@ -234,10 +257,10 @@ rpath         insert    PATH
 ```
 
 The statements mirror `macho9`'s other rewriting verbs, most spelled as that
-verb with `FILE` dropped — `macho9 dylib FILE -replace A B` is the same edit
+verb with its `FILE OUT` dropped — `macho9 dylib FILE OUT -replace A B` is the same edit
 as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
 `minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
-`fixups`. One rewriting verb has no statement at all: `grow FILE N` (enlarge
+`fixups`. One rewriting verb has no statement at all: `grow FILE OUT N` (enlarge
 the header pad by an exact byte count) is not expressible as a line here —
 `allow-grow`, below, is the directive that lets a `dylib`, `rpath` or
 `version-min set` statement grow the pad on its own as a side effect, which
@@ -246,7 +269,7 @@ is a different thing from naming a byte count directly.
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
 `dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal
-2, the reverse of `macho9 dylib FILE -insert A -insert B`, which gives A then
+2, the reverse of `macho9 dylib FILE OUT -insert A -insert B`, which gives A then
 B. `rpath insert` works the same way, so dyld searches B before A.
 
 ### Directives
@@ -300,7 +323,7 @@ dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
 and one invocation:
 
 ```sh
-macho9 edit "$REAL" claude.edits --output "$T"
+macho9 edit "$REAL" "$T" claude.edits
 ```
 
 ### Limits
@@ -339,8 +362,8 @@ macho9 edit "$REAL" claude.edits --output "$T"
 
 ## Notes
 
-- Not yet a drop-in replacement for `insert_dylib` on 32-bit or fat inputs, or on
-  a binary whose export trie needs a wider ULEB. See `docs/prior-art.md`.
+- Not yet a drop-in replacement for `insert_dylib` on 32-bit input, refused
+  deliberately. See `docs/prior-art.md`.
 - This repo is its **own upstream**: the tools are not a port of somebody else's
   project. `UPSTREAM_VERSION` is still the family's file and the version is still
   `<version>-mavericks.N`; what differs is that no Renovate customManager watches

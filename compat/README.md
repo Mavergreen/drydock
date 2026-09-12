@@ -13,12 +13,12 @@ The six original entry points, kept for compatibility. All six are now
 
 | installed name | what it is now |
 |---|---|
-| `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
-| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
+| `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT`, installed over `OUT` |
+| `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE OUT -` when more than one of those |
 | `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
-| `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
+| `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OUT OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE OUT`, once per file, installed over each `FILE` |
-| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
+| `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE OUT -` when more than one command's worth (two renames already are) |
 
 plus the two files every wrapper sources:
 
@@ -69,13 +69,13 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with three known exceptions, truthfully not all the same KIND of
+check them, with four known exceptions, truthfully not all the same KIND of
 known: one reproduced on a real file (one out of 300 in the differential
 corpus, below), one argued unreachable in practice rather than observed, and
-the third true by construction rather than by measurement -- it follows
-directly from reading what two of the wrappers' code does, not from a corpus
-row that exhibits it, so no file "reproduces" it and no argument is needed
-for why it would be rare:
+two true by construction rather than by measurement -- they follow
+directly from reading what the wrappers' code does, not from a corpus
+row that exhibits them, so no file "reproduces" them and no argument is needed
+for why they would be rare:
 
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
@@ -83,6 +83,25 @@ for why it would be rare:
     renumber. `compat/rename_segment.sh`'s header has the measurement. It is
     one file out of 300 in `tests/differential.sh`'s corpus, and closing it
     means changing `macho9`.
+  * `patch_macho`'s `OUT` gets a NEW INODE where the C tool's
+    `open(O_WRONLY|O_CREAT|O_TRUNC)` wrote through the path and kept it. The
+    install is `mv`, like every other wrapper's, which is what makes `OUT`
+    wholly old or wholly new rather than possibly half-written (neither the C
+    tool's write nor the `cat TEMP > OUT` that first replaced it was atomic).
+    Its MODE is still exactly what the C tool left -- `0755 & ~umask` for an
+    `OUT` that did not exist, `OUT`'s own mode for one that did -- and an
+    unchanged run (the pass-through, including `patch_macho IN IN`) installs
+    nothing, so that case keeps its inode too. What a rename cannot keep is
+    `OUT`'s other HARD LINKS, so an `OUT` carrying any is refused (exit 1)
+    instead of being silently split, exactly as `FILE` is for the other five;
+    a dangling symlink at `OUT` is refused as well, where the C tool created
+    the link's target, and an `OUT` that exists but is not a regular file (a
+    directory, a fifo, a device) is refused where the C tool's `open()` either
+    wrote to it or failed with `EISDIR`. Those `OUT` pre-checks also answer
+    BEFORE the input is diagnosed, so when IN **and** OUT are both bad it is now
+    OUT that is named — the same shape as `retag_swift_classes`' pre-check
+    below, and exit 1 on both sides either way.
+    `compat/patch_macho.sh`'s header has all of it.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
@@ -95,15 +114,18 @@ for why it would be rare:
     `patch_macho` and `rename_segment`, which translate every nonzero
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. (`add_version_min` and
-    `retag_swift_classes` -- the two wrappers whose verb installs its result
-    over `FILE` itself -- both have refusals of their OWN on top of that,
+    header has it) and is likewise unaffected by this. (EVERY wrapper whose
+    verb now writes an output the wrapper installs -- all six, `patch_macho`
+    included: its verb's output goes to a temp beside the `OUT` it was asked
+    for, and is installed onto it --
+    has refusals of its OWN on top of that,
     exiting 1, made before macho9 runs for the argument in question: an
     absent or unwritable `FILE`, a `FILE` carrying other hard links, and a
     failed install. Those are the wrapper's, not a forwarded code -- and for
     `retag_swift_classes` an absent or unwritable argument is a WORDING
     divergence too: `tests/compat-matrix.tsv`'s rows for that case (measured
-    before the wrappers existed) have both sides agreeing on `perror(path)`'s
+    before the wrapper's own pre-check began answering first) have both
+    sides agreeing on `perror(path)`'s
     "`<path>: No such file or directory`", which is still what
     `mswift_retag_file` itself prints when macho9 actually reaches the
     open() -- but the wrapper's own pre-check now answers first, in its own
@@ -119,11 +141,12 @@ for why it would be rare:
     `retag_swift_classes` it surfaces as `had_error` (exit 1) rather than
     `add_version_min`'s raw, forwarded 2, since this wrapper never forwards
     one argument's exit code as the whole run's.
-    `change_dylib`'s
-    own unwritable-`FILE` guard exits 2 instead, deliberately: it reproduces
-    what `mr_apply_file`'s own `open` failure gives on the path that still
-    reaches it, rather than inventing a second answer.
-    `compat/change_dylib.sh`'s header has the reasoning.) A CONSIDERED
+    `change_dylib` briefly had an unwritable-`FILE` guard of its own that
+    exited 2, chosen to match what `mr_apply_file`'s `open(O_RDWR)` then gave
+    on the single-family path; that path opens `FILE` read-only now, so there
+    is no such code to match and the guard is gone -- `mw_prepare` answers
+    for `change_dylib` as it does for every other wrapper here, with the C
+    tool's own flat 1.) A CONSIDERED
     refusal
     (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure
@@ -140,12 +163,12 @@ for why it would be rare:
     unless `MACHO_NO_VERIFY` is set. `src/rewrite.c`'s own comment on that
     fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `macho9` lines with shell steps between them:
-    it is one `macho9 edit FILE -`, whose exit code is `me_run`'s own, from
+    it is one `macho9 edit FILE OUT -`, whose exit code is `me_run`'s own, from
     the same `MR_REFUSED`/`MR_FAIL` vocabulary. `compat/change_dylib.sh`
     and `compat/add_version_min.sh`'s own headers have the rest of the
     detail.
 
-There is a fourth gap this list used to omit entirely: no argument
+There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 `mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
 -- `tests/fixture.macho`'s header pad is large enough, and the sweep's
@@ -200,8 +223,8 @@ each with its reason:
    into header pad instead of refused;
 2. a chained `-rename_seg A B -rename_seg B C` now produces `C` instead of
    stopping at `B`;
-3. the write-back is atomic (`wa_write_atomic`) instead of `lseek` + `write`
-   over the original;
+3. the write is atomic and lands on a fresh output (`wa_write_new`, then one
+   `mv`) instead of `lseek` + `write` over the original;
 4. a fat slice that **is** a 64-bit Mach-O and whose edit fails now refuses
    the whole file instead of being skipped with the rest rewritten. (A slice
    that is not a Mach-O at all is still skipped, exactly as before —

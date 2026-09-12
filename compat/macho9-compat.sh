@@ -9,8 +9,11 @@
 # back to what the C tool it replaced would have produced. A wrapper whose
 # verb has been converted to write an OUTPUT instead of rewriting its input
 # has two more steps -- run it into a temp beside the caller's file, then
-# install that temp over the file. add_version_min.sh is the first; see "the
-# install path" below.
+# install that temp over the file. ALL SIX take those two steps now, including
+# patch_macho.sh, whose grammar has always named its own output: the temp goes
+# beside that output and is installed onto it, which is also how `patch_macho
+# IN IN` keeps working now that macho9 refuses an OUT that is its input. See
+# "the install path" below.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. The first wrapper step put the whole
 # old-grammar-to-macho9 translation in ONE file (compat/translate.sh) so that
@@ -169,15 +172,21 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    # COMMANDS, not lines. `macho9 edit FILE -` carries its statements in a
+    # COMMANDS, not lines. `macho9 edit FILE OUT -` carries its statements in a
     # here-document, so one command can be six lines; a command is a line that
     # STARTS with the program word (compat/translate.sh's output contract says
     # so, and mt_pre_word is where that word comes from) -- or with `mv -f`,
     # the install step mt_install_line appends to the teaching form, which is
     # a command a reader would type too. A statement line cannot be mistaken
     # for either -- every statement begins with its kind.
-    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" | awk -v p="$(mt_pre_word) " \
-        'index($0, p) == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
+    #
+    # Through the environment, not `awk -v`, for the reason mw_run_to_tmp's own
+    # comment gives at length: `-v` escape-processes what it assigns, so a
+    # $MACHO9 containing a backslash would make awk look for a word the emitted
+    # lines do not start with, and every command would go uncounted.
+    MW_NCMDS=$(printf '%s\n' "$MW_CMDS" \
+        | MW_PRE="$(mt_pre_word) " awk \
+            'index($0, ENVIRON["MW_PRE"]) == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
     mw_teach
     return 0
 }
@@ -204,8 +213,8 @@ mw_teach() {
     # command itself is harmless, so the block still reads as a block. The
     # same two-part test mw_translate counts with, for the same reason.
     printf '%s\n' "$MW_CMDS" \
-        | awk -v p="$(mt_pre_word) " \
-            '{ if (index($0, p) == 1 || index($0, "mv -f ") == 1) print "    " $0; else print }' >&2
+        | MW_PRE="$(mt_pre_word) " awk \
+            '{ if (index($0, ENVIRON["MW_PRE"]) == 1 || index($0, "mv -f ") == 1) print "    " $0; else print }' >&2
     return 0
 }
 
@@ -215,7 +224,7 @@ mw_teach() {
 #
 # THIS NO LONGER LOOPS, and that is the whole point of the change that removed
 # the loop: an old invocation that would have been a sequence of macho9
-# commands is now ONE `macho9 edit FILE -` with the operations as statements
+# commands is now ONE `macho9 edit FILE OUT -` with the operations as statements
 # on stdin, so a translation is at most one command and there is no sequence
 # left to step through. (compat/retag_swift_classes.sh is the one
 # translation that is still several commands -- one per binary -- and it has
@@ -240,19 +249,19 @@ mw_run() {
 # perror("open"): `open: No such file or directory` or `open: Permission
 # denied` -- no program name, on stderr, exit 1.
 #
-# A `dylib`/`rpath`/`lc`/`segment` command reproduces that for free, from
-# mr_apply_file's own O_RDWR. The paths that do NOT are the ones that open the
-# file some other way first: `macho9 edit` reads the image O_RDONLY and only
-# discovers it cannot write when it writes, and rename_segment gates on
-# `macho9 info`, which is O_RDONLY too. Either way the caller's first
-# diagnostic would be a different message at a different time. It lives here
-# rather than in a wrapper because two byte-for-byte copies of it in two
-# wrappers is the thing this file exists not to have.
+# NO macho9 COMMAND REPRODUCES IT ANY MORE, and that is the point of the
+# conversion rather than a gap in it: a verb that writes an output opens FILE
+# O_RDONLY, so it has no opinion about whether FILE is writable -- it never
+# writes FILE. (`dylib`/`rpath`/`lc`/`segment` used to give this refusal for
+# free, from mr_apply_file's own O_RDWR; now, like `macho9 edit`, they read
+# FILE O_RDONLY and only discover an unwritable OUT when they write it.) And
+# rename_segment gates on `macho9 info`, which is O_RDONLY too. So preserving
+# the historical refusal is permanently this layer's job, which is why
+# mw_prepare calls this before anything runs.
 #
-# Returns 1 rather than exiting, so the caller keeps the decision; both call
-# sites read `mw_require_writable "$mw_file" || exit $?`. The two strings are
-# a contract, not a message: tests/wrapper_test.sh and tests/known-callers.sh
-# pin them.
+# Returns 1 rather than exiting, so the caller keeps the decision. The two
+# strings are a contract, not a message: tests/wrapper_test.sh and
+# tests/known-callers.sh pin them.
 mw_require_writable() {
     if [ ! -e "$1" ]; then
         printf 'open: No such file or directory\n' >&2
@@ -267,10 +276,12 @@ mw_require_writable() {
 
 # ---- the install path ----------------------------------------------------
 #
-# macho9's rewriting verbs are being converted, one at a time, so that none of
-# them writes the file it is given: each becomes `macho9 VERB FILE OUT ...`.
-# `minos` was the first one converted and `retag-swift` is the second; the
-# rest follow. The historical tools DID
+# NO macho9 VERB WRITES THE FILE IT IS GIVEN: each is `macho9 VERB FILE OUT
+# ...`, and each refuses an OUT that is FILE. They were converted one at a time
+# -- `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
+# `segment` together, then `grow`, and last `edit`, whose OUT was a `--output`
+# flag until then; `declassify` always had the shape and now refuses an OUT that
+# is its IN as well. The historical tools DID
 # edit FILE in place, and their callers still expect that, so a wrapper whose
 # verb has moved reproduces it in the only way that is safe: write a temp
 # beside the real target, then mv it over. The five functions below are that
@@ -360,16 +371,33 @@ mw_retranslate() {
 }
 
 # mw_run_to_tmp -- run the translation (which writes MW_TMPFILE) with its
-# stdout captured, then pass every line through except a final "Wrote ..."
-# naming the temp file, which no C tool ever printed. Returns macho9's status.
+# stdout captured, then pass every line through except the "Wrote <temp> (N
+# bytes)" one, which no C tool ever printed and which names a file no caller
+# has heard of. Returns macho9's status.
+#
+# Matched on the whole "Wrote <temp> (" prefix rather than on "Wrote " alone,
+# and anywhere in the output rather than only on the last line: `macho9
+# segment` follows its write with `macho9 segment: renamed=N`, so for a
+# fix_macho -rename_seg the temp-naming line is not the last one. A line naming
+# anything else still comes through -- that is somebody's contract, not this
+# function's to edit.
+#
+# THE PREFIX REACHES awk THROUGH THE ENVIRONMENT, NOT THROUGH `-v`, and that is
+# not a style choice: `awk -v x=VALUE` runs VALUE through the same escape
+# processing a string literal gets, so a path containing a backslash arrives at
+# awk as something else and the line this function exists to suppress leaks
+# through. Measured, before this was ENVIRON: `change_dylib 'back\slash/f'`
+# printed `Wrote back\slash/.f.macho9-compat.NNNNN (8528 bytes)` on stdout.
+# ENVIRON's values are taken verbatim (POSIX awk, and 10.9's), so the prefix awk
+# compares is the real temp path. The whole point of a temp beside the caller's
+# file is that its name is the caller's to choose, backslashes included -- so
+# every awk in this file passes its needle the same way, mw_translate's and
+# mw_teach's program-word tests included.
 mw_run_to_tmp() {
     mw_run >"$MW_T/out"
     mw_rc=$?
-    if [ "$(sed -n '$p' "$MW_T/out" | cut -c1-6)" = 'Wrote ' ]; then
-        sed '$d' "$MW_T/out"
-    else
-        cat "$MW_T/out"
-    fi
+    MW_WROTE_PREFIX="Wrote $MW_TMPFILE (" \
+        awk 'index($0, ENVIRON["MW_WROTE_PREFIX"]) != 1' "$MW_T/out"
     return "$mw_rc"
 }
 

@@ -87,6 +87,28 @@ mkswift_fixture() {
     return 0
 }
 
+# mkchained_fixture FILE -- write a Mach-O that really uses CHAINED FIXUPS to
+# FILE, so patch_macho's CONVERTING path can be reached. `fresh`'s
+# tests/fixture.macho is a real 10.9 binary, which predates the format by a
+# decade: every patch_macho assertion built on it exercises the PASS-THROUGH,
+# where nothing is converted, no `Wrote OUT` line is printed and (for IN == OUT)
+# nothing is installed. Three mutations of the converting path -- installing the
+# unconverted bytes, deleting the wrapper's own `Wrote OUT (N bytes)` line, and
+# skipping the install when IN == OUT -- went unnoticed by every suite in this
+# repo while that was the only input available here.
+#
+# The program is tests/mkchained.c, shared with tests/cli_test.sh exactly the
+# way strip_version_min.c and mkswift.c are, and built on first use. It needs
+# src/ on the include path (mach_compat.h) as cli_test's build of it does.
+mkchained_fixture() {
+    [ -x "$T/mkchained" ] \
+        || "$CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" 2>"$T/mkchained.out" \
+        || { bad "mkchained_fixture" "cannot build $HERE/mkchained.c: $(cat "$T/mkchained.out")"; return 1; }
+    "$T/mkchained" make "$1" >"$T/mkchained.out" 2>&1 \
+        || { bad "mkchained_fixture" "$1: $(cat "$T/mkchained.out")"; return 1; }
+    return 0
+}
+
 # firstline_is <file> <exact text> -- string equality, never a regex. The
 # usage lines below embed $BIN, a path this test does not choose, and a `grep`
 # pattern containing one would treat whatever punctuation the build directory
@@ -196,24 +218,36 @@ grep -q 'macho9 minos' "$T/out" \
 # printed for the C tool, which is the same thing `macho9 dylib` prints for
 # the same file and ops. Asserted by running both and comparing, rather than
 # by pinning a transcript that a different fixture would invalidate.
+# ONE LINE OF MACHO9'S IS RESHAPED, and this comparison accounts for it
+# exactly rather than loosening: `macho9 dylib` says "Wrote OUT (N bytes)"
+# about the output it wrote, and the wrapper -- which installed that output
+# over FILE -- says "Updated FILE (N bytes)" instead, which is the line
+# mr_apply_file itself printed while the verb still rewrote FILE. Every other
+# line, and the resulting bytes, must match.
 fresh
 run change_dylib f -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
 cdrc=$rc
 cp "$T/out" "$T/cd.out"
 cdsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" dylib f -replace /usr/lib/libSystem.B.dylib \
+( cd "$T" && "$BIN/macho9" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
     '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
-m9sha=$(sha "$T/f")
-[ "$cdrc" -eq 0 ] && cmp -s "$T/cd.out" "$T/m9.out" && [ "$cdsha" = "$m9sha" ] \
+m9sha=$(sha "$T/f.m9out")
+sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
+[ "$cdrc" -eq 0 ] && cmp -s "$T/cd.out" "$T/m9.want" && [ "$cdsha" = "$m9sha" ] \
     && ok "change_dylib: a single-family run is byte-identical to macho9's, stdout included" \
-    || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's"
+    || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's; wrapper said [$(cat "$T/cd.out")] want [$(cat "$T/m9.want")]"
 
-# MORE THAN ONE FAMILY is ONE `macho9 edit FILE -`, so everything it touches is
-# FILE itself. It used to be a sequence run against a copy beside FILE named
-# `.FILE.macho9-compat.PID`, which is what made these two worth asserting: the
-# copy is gone, so nothing may appear beside FILE, and every line macho9 prints
-# must name FILE rather than some temporary it was handed instead.
+# MORE THAN ONE FAMILY is ONE `macho9 edit FILE <temp> -`, and what
+# these two assert is that NOTHING IS LEFT beside FILE afterwards and that every
+# line macho9 printed names FILE. Not that no temp is created -- one is, and
+# always was: it used to be a copy of FILE that a SEQUENCE of commands was run
+# against (`.FILE.macho9-compat.PID`), and it is now the output the one command
+# writes and mw_finish installs, under that same name. The difference the first
+# assertion is about is that the name must not SURVIVE; the difference the
+# second is about is that macho9 is handed FILE as its input and so labels its
+# progress lines with FILE, where the copy-aside sequence labelled them with the
+# copy.
 # In a directory of its OWN, holding nothing but FILE, so "nothing new
 # appeared" is exact: run in $T and a stray left by one of the many earlier
 # change_dylib invocations here would already be in the before-listing and
@@ -236,6 +270,37 @@ cdmixrc=$?
     || bad "change_dylib multi-family stdout" "stdout: $(cat "$T/out")"
 rm -rf "$T/stray"
 
+# A BACKSLASH IN THE PATH. The temp mw_prepare names is derived from the
+# caller's own path, so its name is the caller's to choose -- and the filter
+# that suppresses macho9's "Wrote <temp> (N bytes)" line has to compare against
+# that name exactly. It once did not: passing the prefix to awk with `-v` ran it
+# through awk's string-escape processing, so for a path containing a backslash
+# awk looked for something the line does not start with and the stray line
+# reached stdout, naming a temp no caller has heard of and breaking the
+# byte-identical claim the assertion above makes. Both wrappers here go through
+# the SAME shared mw_run_to_tmp, so one of them would have been enough to catch
+# it; both are asserted because both leaked.
+rm -rf "$T/bs"; mkdir "$T/bs" "$T/bs/back\slash"
+cp "$FIXTURE" "$T/bs/back\slash/f"; cp "$FIXTURE" "$T/bs/back\slash/g"
+strip_vm "$T/bs/back\slash/g"
+( cd "$T/bs" && "$BIN/change_dylib" 'back\slash/f' -strip-lc uuid ) >"$T/bs.out" 2>"$T/bs.err"
+bsrc=$?
+[ "$bsrc" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs.out" \
+    && has_line "$T/bs.out" 'Updated back\slash/f (8528 bytes)' \
+    && ok "change_dylib: a path containing a backslash still suppresses the temp-naming line" \
+    || bad "change_dylib backslash path" "exit $bsrc, stdout: $(cat "$T/bs.out")"
+( cd "$T/bs" && "$BIN/add_version_min" 'back\slash/g' ) >"$T/bs2.out" 2>"$T/bs2.err"
+bsrc2=$?
+[ "$bsrc2" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs2.out" \
+    && ok "add_version_min: ... and so does every other wrapper on the shared path" \
+    || bad "add_version_min backslash path" "exit $bsrc2, stdout: $(cat "$T/bs2.out")"
+# The teaching message reaches awk the same way, for command COUNTING and for
+# indenting the block, so it is measured on the same path rather than assumed.
+grep -q '^    macho9 lc ' "$T/bs.err" \
+    && ok "change_dylib: ... and the teaching block is still indented and counted" \
+    || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
+rm -rf "$T/bs"
+
 # EVERY -insert GOES TO THE FRONT, so as ONE batch `-insert A -insert B` leaves
 # A at ordinal 1 and B at ordinal 2. Reaching that through a SEQUENCE of
 # statements takes emitting them backwards, which is what compat/translate.sh
@@ -254,13 +319,22 @@ cdins=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
 
 # AN UNWRITABLE FILE IS REFUSED, ON BOTH PATHS, WITH THE SAME ANSWER.
 # change_dylib open()ed FILE O_RDWR before it looked at anything, so mode 444
-# failed immediately having changed nothing. A single-family run still gets
-# that from mr_apply_file's own open(); a MULTI-family one would not, because
-# `macho9 edit` reads O_RDONLY and installs by mkstemp+rename beside FILE --
-# which needs the DIRECTORY writable and never consults FILE's mode, so
-# without the wrapper's guard a read-only binary is silently replaced (exit 0,
-# fresh inode). BYTES AND INODE, not just the exit code: a rename-based
-# rewrite preserves the mode, so mode alone would not show it happened.
+# failed immediately having changed nothing. NO macho9 COMMAND STILL DOES THAT:
+# a verb that writes an output opens FILE O_RDONLY, and `macho9 edit` installs
+# by mkstemp+rename beside FILE -- which needs the DIRECTORY writable and never
+# consults FILE's mode, so without the wrapper's check a read-only binary is
+# silently replaced (exit 0, fresh inode). mw_prepare is that check, on both
+# paths. BYTES AND INODE, not just the exit code: a rename-based rewrite
+# preserves the mode, so mode alone would not show it happened.
+#
+# EXIT 1, AND THESE TWO ASSERTIONS USED TO REQUIRE 2. The authority for a
+# compat wrapper's failure code is THE C TOOL, not macho9's numbering: every
+# change_dylib failure row in tests/compat-matrix.tsv -- the frozen measurement
+# of the six tools as C binaries -- is a flat 1. The 2 came from a narrow guard
+# added while the single-family path still inherited mr_apply_file's own
+# open(O_RDWR) failure, i.e. macho9's code for an operational failure; that
+# guard is gone and mw_prepare, which every other wrapper on this install path
+# already uses, answers with the C tool's 1.
 for cd_ro_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
     fresh
     chmod 444 "$T/f"
@@ -270,19 +344,91 @@ for cd_ro_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.
     cd_ro_rc=$rc
     chmod 644 "$T/f"
     case $cd_ro_args in *-change*) cd_ro_which="multi-family" ;; *) cd_ro_which="single-family" ;; esac
-    [ "$cd_ro_rc" -eq 2 ] && grep -qxF 'open: Permission denied' "$T/err" \
+    [ "$cd_ro_rc" -eq 1 ] && grep -qxF 'open: Permission denied' "$T/err" \
         && [ "$(sha "$T/f")" = "$cd_ro_sha" ] && [ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] \
-        && ok "change_dylib: a $cd_ro_which run on an unwritable FILE exits 2, saying so, having changed neither its bytes nor its inode" \
-        || bad "change_dylib unwritable ($cd_ro_which)" "exit $cd_ro_rc (want 2), bytes changed=$([ "$(sha "$T/f")" = "$cd_ro_sha" ] && echo no || echo YES), inode changed=$([ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] && echo no || echo YES), stderr: $(cat "$T/err")"
+        && ok "change_dylib: a $cd_ro_which run on an unwritable FILE exits 1 (the C tool's only failure code), saying so, having changed neither its bytes nor its inode" \
+        || bad "change_dylib unwritable ($cd_ro_which)" "exit $cd_ro_rc (want 1, the C tool's flat failure code), bytes changed=$([ "$(sha "$T/f")" = "$cd_ro_sha" ] && echo no || echo YES), inode changed=$([ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] && echo no || echo YES), stderr: $(cat "$T/err")"
 done
 
-# An ABSENT FILE is NOT that case and must keep reaching macho9, which reports
-# it from its own open failure. Guarding it in the wrapper too would answer for
-# a file macho9 is perfectly able to answer for.
+# An ABSENT FILE is refused by the same check, and for the same reason it is
+# now 1 rather than 2: that is what the C tool's open() failure exited with.
+# The message is the C tool's own perror("open") text, which mw_require_writable
+# reproduces -- so a caller cannot tell the two apart, which is the point.
 run change_dylib nosuchfile -strip-lc uuid -change A B
-[ "$rc" -eq 2 ] && ! grep -q 'Permission denied' "$T/err" \
-    && ok "change_dylib: an absent FILE still fails through macho9, not through the guard" \
-    || bad "change_dylib absent FILE" "exit $rc (want 2), stderr: $(cat "$T/err")"
+[ "$rc" -eq 1 ] && grep -qxF 'open: No such file or directory' "$T/err" \
+    && ok "change_dylib: an absent FILE exits 1 with the C tool's own open() message" \
+    || bad "change_dylib absent FILE" "exit $rc (want 1), stderr: $(cat "$T/err")"
+
+# THE CLOSING "Updated FILE (N bytes)" LINE, ON BOTH PATHS, AND ONLY WHEN THE
+# BYTES CHANGED. The C tool printed it from mr_apply_file, which no longer
+# writes FILE, so the wrapper prints it after installing the temp. Both paths
+# matter and for different reasons: a single-family run gets it where macho9
+# used to print it, and a multi-family `macho9 edit` never printed it at all
+# (nothing asserted the line at the time, which is how it went missing).
+for cd_up_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
+    fresh
+    case $cd_up_args in *-change*) cd_up_which="multi-family" ;; *) cd_up_which="single-family" ;; esac
+    # shellcheck disable=SC2086
+    run change_dylib f $cd_up_args
+    cd_up_rc=$rc
+    cd_up_size=$(wc -c < "$T/f" | tr -d ' ')
+    [ "$cd_up_rc" -eq 0 ] && has_line "$T/out" "Updated f ($cd_up_size bytes)" \
+        && ok "change_dylib: a $cd_up_which run that changed the file ends with the C tool's Updated line" \
+        || bad "change_dylib Updated ($cd_up_which)" "exit $cd_up_rc, stdout: $(cat "$T/out")"
+done
+# NOT PRINTED when nothing changed: the C tool wrote nothing and said nothing
+# in that case, and this is what keeps the wrapper from announcing an install
+# mw_finish decided against.
+fresh
+run change_dylib f -change /nope/absent.dylib /also/absent.dylib
+[ "$rc" -eq 0 ] && ! grep -q '^Updated ' "$T/out" \
+    && ok "change_dylib: a run that changed nothing prints no Updated line" \
+    || bad "change_dylib Updated (no-op)" "exit $rc, stdout: $(cat "$T/out")"
+
+# A HARD-LINKED FILE IS REFUSED (1) BY EVERY WRAPPER ON THE INSTALL PATH, which
+# for these three is new: their C tools wrote through their own descriptor, so
+# every name for the inode saw the change, while installing by mv would leave
+# the siblings on the old content. add_version_min's own case is asserted
+# above; these are the three whose verbs converted together. Each must refuse
+# before running anything, leave BOTH names byte-identical, and leave no temp.
+rm -rf "$T/hl"; mkdir "$T/hl"
+hl_case() {   # hl_case TOOL ARG...
+    hl_tool=$1; shift
+    cp "$FIXTURE" "$T/hl/f"; ln "$T/hl/f" "$T/hl/f2"
+    hl_sha=$(sha "$T/hl/f")
+    hl_rc=0
+    ( cd "$T/hl" && "$BIN/$hl_tool" f "$@" ) >"$T/hl.out" 2>"$T/hl.err" || hl_rc=$?
+    [ "$hl_rc" -eq 1 ] && grep -q 'hard link' "$T/hl.err" \
+        && [ "$(sha "$T/hl/f")" = "$hl_sha" ] && [ "$(sha "$T/hl/f2")" = "$hl_sha" ] \
+        && ok "$hl_tool: a hard-linked FILE is refused (1), both names untouched" \
+        || bad "$hl_tool hard link" "exit $hl_rc: $(cat "$T/hl.err")"
+    ls -a "$T/hl" | grep -q 'macho9-compat' \
+        && bad "$hl_tool hard link" "a temp file was left beside FILE" \
+        || ok "$hl_tool: ... and no temp was left beside it"
+    rm -f "$T/hl/f" "$T/hl/f2"
+}
+hl_case change_dylib -strip-lc uuid
+hl_case change_dylib -strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib
+hl_case fix_macho -change /usr/lib/libSystem.B.dylib /x/y.dylib
+hl_case rename_segment __DATA __DATA_HL
+rm -rf "$T/hl"
+
+# A RUN macho9 REFUSES LEAVES NO TEMP BESIDE FILE EITHER. The temp is made by
+# the wrapper and written by macho9; a refusal means macho9 never wrote it, and
+# the wrapper's EXIT trap is what keeps the name from surviving. Measured in a
+# directory of its own so "nothing new appeared" is exact, and with whole-
+# listing equality rather than a grep, for the reason the stray-file assertion
+# above gives.
+rm -rf "$T/refused"; mkdir "$T/refused"
+printf 'not a Mach-O at all, not even close\n' >"$T/refused/f"
+refused_before=$(ls -a "$T/refused")
+refused_rc=0
+( cd "$T/refused" && "$BIN/change_dylib" f -strip-lc uuid ) >"$T/ref.out" 2>"$T/ref.err" \
+    || refused_rc=$?
+[ "$refused_rc" -ne 0 ] && [ "$(ls -a "$T/refused")" = "$refused_before" ] \
+    && ok "change_dylib: a run macho9 refuses leaves no temp beside FILE" \
+    || bad "change_dylib refused strays" "exit $refused_rc; the directory holds [$(ls -a "$T/refused" | tr '\n' ' ')]"
+rm -rf "$T/refused"
 
 # THE CAPACITY CAPS. Both cap sites in cli/macho9.c say the wrapper has to
 # enforce them itself and print the ORIGIN wording, because macho9 names its
@@ -364,12 +510,19 @@ cmp -s "$T/f" "$T/o" \
     && ok "patch_macho: the pass-through output is the input, byte for byte" \
     || bad "patch_macho pass-through" "output differs from input"
 
-# THE FOURTH OBSERVABLE: OUT's MODE AND INODE. patch_macho created OUT with
-# open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755); `macho9 declassify` writes
-# through wa_write_atomic, which always produces 0755 and always a new inode.
-# The wrapper installs macho9's output through OUT's own path so all four cases
-# below match the C tool. Every expected value here was measured against the
-# pre-wrapper binary.
+# THE FOURTH OBSERVABLE: OUT's MODE. patch_macho created OUT with
+# open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755); `macho9 declassify` writes OUT
+# through wa_write_new, which gives it the INPUT's mode and always a new inode.
+# The wrapper installs macho9's output onto OUT with `mv` -- atomic, like every
+# other wrapper on the install path -- after chmod'ing it to the mode the C tool
+# would have left: `0755 & ~umask` for an OUT that did not exist, and OUT's own
+# current mode for one that did (open() changes neither). Every expected mode
+# here was measured against the pre-wrapper binary.
+#
+# WHAT THE ATOMIC INSTALL TRADES AWAY, and it is asserted below rather than
+# described: OUT's INODE. `cat TEMP > OUT` kept it (and with it OUT's hard links
+# and xattrs); `mv` cannot, so an OUT with other hard links is REFUSED instead of
+# silently split -- the one new behaviour, shared with all five other wrappers.
 #
 # `stat -f` with an explicit format is a machine-readable request, not
 # human-readable output being parsed -- same category as this file's
@@ -377,54 +530,96 @@ cmp -s "$T/f" "$T/o" \
 mode_of() { stat -f '%Lp' "$1"; }
 ino_of()  { stat -f '%i' "$1"; }
 
-# 1. a FRESH OUT takes 0755 masked by the umask, not a bare 0755.
+# 1. a FRESH OUT takes 0755 masked by the umask, not a bare 0755 and not IN's
+#    mode (which is what macho9 alone would give it).
 fresh
+chmod 640 "$T/f"
 rm -f "$T/o"
 ( cd "$T" && umask 077 && "$BIN/patch_macho" f o ) >/dev/null 2>&1
 [ "$(mode_of "$T/o")" = 700 ] \
     && ok "patch_macho: a fresh OUT gets 0755 masked by the umask (0700 under 077)" \
     || bad "patch_macho fresh mode" "mode $(mode_of "$T/o"), want 700"
 fresh
+chmod 640 "$T/f"
 rm -f "$T/o"
 ( cd "$T" && umask 022 && "$BIN/patch_macho" f o ) >/dev/null 2>&1
 [ "$(mode_of "$T/o")" = 755 ] \
-    && ok "patch_macho: and 0755 under umask 022" \
+    && ok "patch_macho: and 0755 under umask 022, not the input's own mode" \
     || bad "patch_macho fresh mode" "mode $(mode_of "$T/o"), want 755"
 
-# 2. an EXISTING OUT keeps its own mode and its own inode: open() changes
-#    neither, and neither may this wrapper.
+# 2. an EXISTING OUT keeps its own mode -- open() did not change one, so the
+#    wrapper chmods the temp to it before installing. Its INODE is new: that is
+#    the `mv`, and it is what makes OUT wholly old or wholly new rather than
+#    half-written.
 fresh
 : > "$T/o"; chmod 600 "$T/o"; before_ino=$(ino_of "$T/o")
 run patch_macho f o
-[ "$rc" -eq 0 ] && [ "$(mode_of "$T/o")" = 600 ] && [ "$(ino_of "$T/o")" = "$before_ino" ] \
-    && ok "patch_macho: an existing OUT keeps its mode and its inode" \
-    || bad "patch_macho existing OUT" "exit $rc, mode $(mode_of "$T/o") (want 600), inode changed=$([ "$(ino_of "$T/o")" = "$before_ino" ] && echo no || echo YES)"
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/o")" = 600 ] \
+    && ok "patch_macho: an existing OUT keeps its mode" \
+    || bad "patch_macho existing OUT" "exit $rc, mode $(mode_of "$T/o"), want 600"
+[ "$(ino_of "$T/o")" != "$before_ino" ] \
+    && ok "patch_macho: ... and is installed atomically, so its inode is new" \
+    || bad "patch_macho existing OUT" "inode unchanged -- the install was not a rename"
 
-# 3. IN == OUT is the same inode, so a hard link to it must see the new bytes.
+# 3. IN == OUT still converts IN, which the C tool allowed and `macho9
+#    declassify` now refuses outright: the wrapper is what provides it, running
+#    macho9 into a temp beside OUT so macho9 itself never sees OUT == IN. This
+#    fixture is already converted, so the pass-through's bytes are IN's own and
+#    mw_finish installs nothing at all -- mode AND inode survive, exactly as
+#    they did when the C tool wrote through the path.
 fresh
-chmod 640 "$T/f"; rm -f "$T/flink"; ln "$T/f" "$T/flink"; before_ino=$(ino_of "$T/f")
+chmod 640 "$T/f"; before_ino=$(ino_of "$T/f"); before_sha=$(sha "$T/f")
 run patch_macho f f
-[ "$rc" -eq 0 ] && [ "$(mode_of "$T/f")" = 640 ] && [ "$(ino_of "$T/f")" = "$before_ino" ] \
-    && cmp -s "$T/f" "$T/flink" \
-    && ok "patch_macho: IN == OUT keeps the inode, the mode and every hard link" \
-    || bad "patch_macho IN == OUT" "exit $rc, mode $(mode_of "$T/f"), inode changed=$([ "$(ino_of "$T/f")" = "$before_ino" ] && echo no || echo YES)"
-rm -f "$T/flink"
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/f")" = 640 ] && [ "$(sha "$T/f")" = "$before_sha" ] \
+    && ok "patch_macho: IN == OUT still converts IN, keeping its mode" \
+    || bad "patch_macho IN == OUT" "exit $rc, mode $(mode_of "$T/f"), bytes changed=$([ "$(sha "$T/f")" = "$before_sha" ] && echo no || echo YES)"
+[ "$(ino_of "$T/f")" = "$before_ino" ] \
+    && ok "patch_macho: ... and an unchanged pass-through installs nothing, so the inode stands" \
+    || bad "patch_macho IN == OUT" "the inode changed even though the bytes did not"
 
-# 4. an existing OUT that is not writable FAILS, even where the directory is.
+# 3b. A HARD-LINKED OUT IS REFUSED (1), both names untouched -- the wrapper's
+#     own refusal, before macho9 runs. The C tool wrote through OUT's path and
+#     every link saw the new content; `mv` would leave the siblings on the old
+#     content, so this is refused rather than silently split. Same refusal every
+#     other wrapper on the install path makes, from the same mw_prepare.
+rm -rf "$T/pmhl"; mkdir "$T/pmhl"
+cp "$FIXTURE" "$T/pmhl/o"; ln "$T/pmhl/o" "$T/pmhl/o2"
+cp "$FIXTURE" "$T/pmhl/in"
+pmhl_sha=$(sha "$T/pmhl/o")
+pmhl_rc=0
+( cd "$T/pmhl" && "$BIN/patch_macho" in o ) >"$T/pmhl.out" 2>"$T/pmhl.err" || pmhl_rc=$?
+[ "$pmhl_rc" -eq 1 ] && grep -q 'hard link' "$T/pmhl.err" \
+    && [ "$(sha "$T/pmhl/o")" = "$pmhl_sha" ] && [ "$(sha "$T/pmhl/o2")" = "$pmhl_sha" ] \
+    && ok "patch_macho: a hard-linked OUT is refused (1), both names untouched" \
+    || bad "patch_macho hard-linked OUT" "exit $pmhl_rc: $(cat "$T/pmhl.err")"
+ls -a "$T/pmhl" | grep -q 'macho9-compat' \
+    && bad "patch_macho hard-linked OUT" "a temp file was left beside OUT" \
+    || ok "patch_macho: ... and no temp was left beside it"
+rm -rf "$T/pmhl"
+
+# 4. an existing OUT that is not writable FAILS, even where the directory is --
+#    the C tool's open(O_WRONLY) failed on it, and mw_prepare's pre-check
+#    answers for it now, in the words every wrapper's pre-check uses (the C
+#    tool's own perror said "create output: Permission denied"; only the label
+#    differs). Exit 1 either way, which is all a caller ever saw.
 fresh
 : > "$T/o"; chmod 444 "$T/o"
 run patch_macho f o
-[ "$rc" -eq 1 ] \
+[ "$rc" -eq 1 ] && grep -q 'Permission denied' "$T/err" \
     && ok "patch_macho: an unwritable existing OUT fails, as open(O_WRONLY) did" \
-    || bad "patch_macho unwritable OUT" "exit $rc, want 1"
+    || bad "patch_macho unwritable OUT" "exit $rc (want 1), stderr: $(cat "$T/err")"
+[ "$(wc -c < "$T/o" | tr -d ' ')" = 0 ] \
+    && ok "patch_macho: ... and the unwritable OUT was not touched" \
+    || bad "patch_macho unwritable OUT" "OUT was written anyway"
 chmod 644 "$T/o"; rm -f "$T/o"
 
-# 5. a fresh OUT the wrapper CANNOT create -- the path that creates it with the
-#    C tool's mode. Checked under ksh as well as sh, because the bug this
-#    guards against was a POSIX SPECIAL BUILTIN rule: a redirection failure on
-#    `:` exits a non-interactive shell on the spot, so under ksh the wrapper's
-#    own message never printed. Asserted as "exactly this one line", which is
-#    what fails if the shell's own diagnostic leaks out beside it.
+# 5. a fresh OUT that cannot be created, because its directory is not writable.
+#    The temp macho9 writes lives beside OUT, so macho9's own mkstemp is what
+#    fails and what reports -- ONE line, and the wrapper maps its EX_FAIL to
+#    patch_macho's flat 1. Asserted as "exactly one line" (the C tool printed
+#    one perror too), which is what fails if a shell diagnostic ever leaks out
+#    beside it, and re-run under ksh because every wrapper must behave the same
+#    under both shells.
 fresh
 rm -rf "$T/ro"; mkdir "$T/ro"; chmod 555 "$T/ro"
 for pm_sh in /bin/sh /bin/ksh; do
@@ -434,11 +629,191 @@ for pm_sh in /bin/sh /bin/ksh; do
     # The teaching message is two lines; the tool's own diagnostic is the rest.
     sed '1,2d' "$T/err" > "$T/err.rest"
     [ "$rc" -eq 1 ] && [ "$(wc -l < "$T/err.rest" | tr -d ' ')" = 1 ] \
-        && grep -qxF 'create output: cannot create ro/out' "$T/err.rest" \
-        && ok "patch_macho: an uncreatable OUT reports once, and only its own words ($pm_sh)" \
+        && grep -qxF 'mkstemp: Permission denied' "$T/err.rest" \
+        && ok "patch_macho: an uncreatable OUT reports once, and exits 1 ($pm_sh)" \
         || bad "patch_macho uncreatable OUT ($pm_sh)" "exit $rc, stderr after the teaching message: $(cat "$T/err.rest")"
+    [ ! -e "$T/ro/out" ] \
+        && ok "patch_macho: ... and created nothing ($pm_sh)" \
+        || bad "patch_macho uncreatable OUT ($pm_sh)" "OUT exists after a failed run"
 done
 chmod 755 "$T/ro"; rm -rf "$T/ro"
+
+# 5b. AN OUT THAT IS A DIRECTORY is refused, in the C tool's own perror words.
+#     Neither layer below would refuse it: macho9 writes a temp BESIDE OUT and
+#     never looks at OUT, and `mv` given a directory destination moves the temp
+#     INTO it and succeeds -- exit 0, with `adir/.adir.macho9-compat.PID`
+#     created and nothing the caller asked for. Measured before these guards
+#     existed -- BOTH of them, since either one alone still refuses a directory
+#     (the `-e && ! -f` check catches it; what the `-d` check adds is the C
+#     tool's own EISDIR wording, which is what this asserts).
+fresh
+rm -rf "$T/adir"; mkdir "$T/adir"
+adir_before=$(ls -a "$T/adir")
+run patch_macho f adir
+[ "$rc" -eq 1 ] && grep -qxF 'create output: Is a directory' "$T/err" \
+    && [ "$(ls -a "$T/adir")" = "$adir_before" ] \
+    && ok "patch_macho: an OUT that is a directory is refused (1), as open() did" \
+    || bad "patch_macho directory OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -rf "$T/adir"
+
+# 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
+#     the C tool's open(). `macho9 declassify` refuses such an OUT now
+#     (m9_bad_out, since `-flag`-looking positionals are the mistake its own
+#     grammar change invites), and the wrapper is unaffected because the OUT it
+#     hands macho9 is the temp -- whose name starts with a dot. Pinned so that
+#     refusal cannot migrate down here, where it would break a caller the C tool
+#     served.
+fresh
+rm -f "$T/-dashout"
+run patch_macho f -dashout
+[ "$rc" -eq 0 ] && cmp -s "$T/f" "$T/-dashout" \
+    && ok "patch_macho: an OUT beginning with a dash is a file name, as open() had it" \
+    || bad "patch_macho dashed OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/-dashout"
+
+# 6. THE INSTALL LEAVES NOTHING BEHIND, on the path that succeeds: the temp
+#    beside OUT is mv'd or removed, never left. Measured in a directory of its
+#    own, by whole-listing equality, for the reason the change_dylib stray-file
+#    assertion above gives.
+rm -rf "$T/pmdir"; mkdir "$T/pmdir"
+cp "$FIXTURE" "$T/pmdir/in"
+pmdir_before=$(ls -a "$T/pmdir")
+pmdir_rc=0
+( cd "$T/pmdir" && "$BIN/patch_macho" in out ) >"$T/pmdir.out" 2>"$T/pmdir.err" || pmdir_rc=$?
+pmdir_want=$(printf '%s\nout\n' "$pmdir_before" | LC_ALL=C sort)
+[ "$pmdir_rc" -eq 0 ] && [ "$(ls -a "$T/pmdir" | LC_ALL=C sort)" = "$pmdir_want" ] \
+    && ok "patch_macho: a successful run creates OUT and nothing else" \
+    || bad "patch_macho strays" "exit $pmdir_rc; the directory holds [$(ls -a "$T/pmdir" | tr '\n' ' ')]"
+rm -rf "$T/pmdir"
+
+# ---- patch_macho, THE CONVERTING PATH -----------------------------------
+#
+# Everything above hands patch_macho tests/fixture.macho, a real 10.9 binary
+# that is already converted -- so all of it exercises the PASS-THROUGH, where
+# md_declassify copies its input, the wrapper prints no `Wrote OUT` line (the C
+# tool printed none either) and, for IN == OUT, mw_finish installs nothing
+# because the bytes match. Two things patch_macho exists to do were therefore
+# asserted nowhere at all, and each was measured to leave EVERY suite in this
+# repo green when deleted: the wrapper's own `Wrote OUT (N bytes)` line, and the
+# IN == OUT install. mkchained_fixture is what closes that -- an input that
+# really carries chained fixups, on any host, so the conversion runs here on
+# 10.9 rather than only where tests/chained-fixups.sh does not SKIP.
+#
+# The install's own mechanics -- OUT's mode, its new inode, the hard-link
+# refusal, no strays -- are the same wrapper code on either path and are already
+# covered above (cases 1, 2, 3b and 6, all of which really chmod and mv, since
+# case 2's OUT is empty and so differs from what macho9 wrote). What follows is
+# only what the pass-through cannot reach.
+
+# A. THE CONVERTING PATH'S STDOUT. `Wrote OUT (N bytes)` is patch_macho's own
+#    closing line, printed by the wrapper because macho9's names the temp; N is
+#    OUT's size. Asserted as the LAST line, as EXACTLY ONE `Wrote ` line (so
+#    mw_run_to_tmp's filter cannot leak `Wrote <temp> (...)` and the wrapper's
+#    own line cannot double), and alongside md_declassify's own progress lines,
+#    which must still come through untouched.
+mkchained_fixture "$T/cf"
+run patch_macho cf cfout
+cf_n=$(wc -c < "$T/cfout" 2>/dev/null | tr -d ' ')
+[ "$rc" -eq 0 ] \
+    && ok "patch_macho: the converting path exits 0" \
+    || bad "patch_macho converting" "exit $rc: $(cat "$T/err")"
+[ "$(sed -n '$p' "$T/out")" = "Wrote cfout ($cf_n bytes)" ] \
+    && ok "patch_macho: ... and its last stdout line names OUT and OUT's size" \
+    || bad "patch_macho converting stdout" "last line is [$(sed -n '$p' "$T/out")], want [Wrote cfout ($cf_n bytes)]"
+[ "$(grep -c '^Wrote ' "$T/out" | tr -d ' ')" = 1 ] \
+    && ok "patch_macho: ... and exactly one 'Wrote ' line, so macho9's cannot leak" \
+    || bad "patch_macho converting stdout" "$(grep -c '^Wrote ' "$T/out") 'Wrote ' lines: $(cat "$T/out")"
+grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T/out" \
+    && ok "patch_macho: ... and md_declassify's own lines still come through" \
+    || bad "patch_macho converting stdout" "not the converting transcript: $(cat "$T/out")"
+
+# THE INSTALLED BYTES ARE THE CONVERTED ONES. tests/cli_test.sh compares the two
+# FRONT-ENDS' output for the same input (its byte-identity assertion); these two
+# are about the INSTALL -- that what lands at OUT is what macho9 wrote, and is
+# not the input copied through. That cli_test assertion was the ONLY thing in the
+# repo that noticed a wrapper installing the unconverted bytes, which is a lot to
+# rest on one front-end-parity check.
+( cd "$T" && "$BIN/macho9" declassify cf cf.m9 ) >/dev/null 2>&1
+cmp -s "$T/cfout" "$T/cf.m9" \
+    && ok "patch_macho: the bytes installed at OUT are macho9's converted output" \
+    || bad "patch_macho converting bytes" "OUT differs from macho9 declassify's output"
+! cmp -s "$T/cfout" "$T/cf" \
+    && ok "patch_macho: ... and not the input copied through" \
+    || bad "patch_macho converting bytes" "OUT is byte-identical to the unconverted input"
+
+# B. IN == OUT ON THE CONVERTING PATH, the historical form the C tool allowed
+#    and `macho9 declassify` now refuses -- so the wrapper is the whole of it.
+#    Here the bytes DO change, so mw_finish really installs: the complement of
+#    case 3's pass-through, where it must install nothing. A run that skipped the
+#    install would leave IN unconverted and pass every other assertion here.
+rm -rf "$T/csdir"; mkdir "$T/csdir"
+mkchained_fixture "$T/csdir/cs"
+# What the conversion of THIS file is, from the other front-end, so the
+# comparison below does not lean on two mkchained runs producing equal bytes.
+( cd "$T/csdir" && "$BIN/macho9" declassify cs cs.want ) >/dev/null 2>&1
+chmod 640 "$T/csdir/cs"
+cs_ino=$(ino_of "$T/csdir/cs")
+cs_rc=0
+( cd "$T/csdir" && "$BIN/patch_macho" cs cs ) >"$T/cs.out" 2>"$T/cs.err" || cs_rc=$?
+cs_n=$(wc -c < "$T/csdir/cs" | tr -d ' ')
+[ "$cs_rc" -eq 0 ] && cmp -s "$T/csdir/cs" "$T/csdir/cs.want" \
+    && ok "patch_macho: IN == OUT converts IN in place, to macho9's own bytes" \
+    || bad "patch_macho IN == OUT converting" "exit $cs_rc, or IN was not converted: $(cat "$T/cs.err")"
+[ "$(ino_of "$T/csdir/cs")" != "$cs_ino" ] \
+    && ok "patch_macho: ... installed by rename, so the inode is new when the bytes change" \
+    || bad "patch_macho IN == OUT converting" "the inode stands -- the install did not happen"
+[ "$(mode_of "$T/csdir/cs")" = 640 ] \
+    && ok "patch_macho: ... and IN keeps its mode across the in-place conversion" \
+    || bad "patch_macho IN == OUT converting" "mode $(mode_of "$T/csdir/cs"), want 640"
+[ "$(sed -n '$p' "$T/cs.out")" = "Wrote cs ($cs_n bytes)" ] \
+    && ok "patch_macho: ... and names the file it wrote, which is IN" \
+    || bad "patch_macho IN == OUT converting" "last line is [$(sed -n '$p' "$T/cs.out")]"
+ls -a "$T/csdir" | grep -q 'macho9-compat' \
+    && bad "patch_macho IN == OUT converting" "a temp file was left beside IN" \
+    || ok "patch_macho: ... and left no temp beside it"
+rm -rf "$T/csdir"
+
+# C. REFUSALS WITH REAL WORK TO DISCARD. The hard-link and unwritable-OUT cases
+#    above use a pass-through IN, so no run that actually CONVERTED has ever had
+#    its output thrown away. Both refusals are made before macho9 runs, so what
+#    these add is that a converting run cannot sneak past them.
+rm -rf "$T/cfhl"; mkdir "$T/cfhl"
+mkchained_fixture "$T/cfhl/in"
+cp "$FIXTURE" "$T/cfhl/o"; ln "$T/cfhl/o" "$T/cfhl/o2"
+cfhl_sha=$(sha "$T/cfhl/o")
+cfhl_rc=0
+( cd "$T/cfhl" && "$BIN/patch_macho" in o ) >"$T/cfhl.out" 2>"$T/cfhl.err" || cfhl_rc=$?
+[ "$cfhl_rc" -eq 1 ] && grep -q 'hard link' "$T/cfhl.err" \
+    && [ "$(sha "$T/cfhl/o")" = "$cfhl_sha" ] && [ "$(sha "$T/cfhl/o2")" = "$cfhl_sha" ] \
+    && ok "patch_macho: a hard-linked OUT is refused (1) even when IN converts" \
+    || bad "patch_macho converting hard link" "exit $cfhl_rc: $(cat "$T/cfhl.err")"
+ls -a "$T/cfhl" | grep -q 'macho9-compat' \
+    && bad "patch_macho converting hard link" "a temp file was left beside OUT" \
+    || ok "patch_macho: ... and the discarded conversion left no temp"
+rm -rf "$T/cfhl"
+
+mkchained_fixture "$T/cfu_in"
+: > "$T/cfu_out"; chmod 444 "$T/cfu_out"
+run patch_macho cfu_in cfu_out
+[ "$rc" -eq 1 ] && [ "$(wc -c < "$T/cfu_out" | tr -d ' ')" = 0 ] \
+    && ok "patch_macho: an unwritable OUT is refused (1), untouched, even when IN converts" \
+    || bad "patch_macho converting unwritable OUT" "exit $rc, size $(wc -c < "$T/cfu_out" | tr -d ' ')"
+chmod 644 "$T/cfu_out"; rm -f "$T/cfu_out"
+
+# D. AND THE MODE CASES ONCE ON THIS PATH, because a converting run is the one
+#    where the temp's own mode (macho9 gave it IN's) is not already OUT's.
+mkchained_fixture "$T/cfm"; chmod 640 "$T/cfm"
+rm -f "$T/cfm_out"
+( cd "$T" && umask 077 && "$BIN/patch_macho" cfm cfm_out ) >/dev/null 2>&1
+[ "$(mode_of "$T/cfm_out")" = 700 ] \
+    && ok "patch_macho: a converting run's fresh OUT is 0755 & ~umask too" \
+    || bad "patch_macho converting fresh mode" "mode $(mode_of "$T/cfm_out"), want 700"
+: > "$T/cfm_out2"; chmod 741 "$T/cfm_out2"; cfm_ino=$(ino_of "$T/cfm_out2")
+run patch_macho cfm cfm_out2
+[ "$rc" -eq 0 ] && [ "$(mode_of "$T/cfm_out2")" = 741 ] \
+    && [ "$(ino_of "$T/cfm_out2")" != "$cfm_ino" ] \
+    && ok "patch_macho: a converting run's existing OUT keeps its mode, with a new inode" \
+    || bad "patch_macho converting existing mode" "exit $rc, mode $(mode_of "$T/cfm_out2")"
 
 # ---- add_version_min ----------------------------------------------------
 #
@@ -532,6 +907,27 @@ xattr -w com.apple.quarantine "0081;00000000;test;" "$T/w_meta"
 [ "$(stat -f %Lp "$T/w_meta")" = 751 ] && xattr -p com.apple.quarantine "$T/w_meta" >/dev/null 2>&1 \
     && ok "wrapper: mode and quarantine survive" || bad "wrapper metadata" "mode $(stat -f %Lp "$T/w_meta")"
 
+# THE SAME METADATA, ON THE MULTI-FAMILY PATH, which is `macho9 edit` rather
+# than a single verb -- and which is where it was being LOST. Every converted
+# verb hands wa_write_new both FILE and the temp, so the temp is given FILE's
+# mode, owner and extended attributes before mw_finish installs it. `macho9
+# edit` wrote the temp through wa_write_atomic instead, which copies xattrs from
+# the file it is REPLACING -- a temp that does not exist yet, so there was
+# nothing to copy and the install handed FILE back without the quarantine (or
+# anything else) it arrived with. MODE came through either way, because that
+# write took the mode from FILE explicitly, so the mode assertion above could
+# not have shown it; the xattr is the one that can. Measured on the value, not
+# just its presence: an empty attribute would satisfy `xattr -p` exit status.
+cp "$FIXTURE" "$T/w_meta2"; chmod 0751 "$T/w_meta2"
+xattr -w com.apple.quarantine "0081;00000000;test;" "$T/w_meta2"
+( cd "$T" && "$BIN/change_dylib" w_meta2 -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>"$T/w_meta2.err"
+w_meta2_rc=$?
+[ "$w_meta2_rc" -eq 0 ] && [ "$(stat -f %Lp "$T/w_meta2")" = 751 ] \
+    && [ "$(xattr -p com.apple.quarantine "$T/w_meta2" 2>/dev/null)" = "0081;00000000;test;" ] \
+    && ok "change_dylib: mode and quarantine survive a MULTI-FAMILY run too" \
+    || bad "change_dylib multi-family metadata" "exit $w_meta2_rc, mode $(stat -f %Lp "$T/w_meta2"), quarantine [$(xattr -p com.apple.quarantine "$T/w_meta2" 2>/dev/null)], stderr: $(cat "$T/w_meta2.err")"
+
 # ---- rename_segment -----------------------------------------------------
 #
 # Three of cmd_segment's divergences, plus the thin-only one found here.
@@ -552,6 +948,12 @@ run rename_segment f __NOPE __ALSONOPE
 [ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && [ "$(sha "$T/f")" = "$before" ] \
     && ok "rename_segment: nothing matched exits 2, silently, without writing" \
     || bad "rename_segment no match" "exit $rc (want 2), stdout: $(cat "$T/out")"
+# `macho9 segment` DID write its output here -- a 0 exit means OUT is the
+# answer even when the answer is a copy -- so this is the one path where the
+# wrapper deliberately skips mw_finish and lets the EXIT trap remove the temp.
+ls -a "$T" | grep -q 'macho9-compat' \
+    && bad "rename_segment no match" "the unused temp survived" \
+    || ok "rename_segment: ... and the output macho9 did write is not left behind"
 
 # A rename to the SAME name still MATCHED, so it is exit 0 with a count of 1 --
 # not exit 2. This is what rules out implementing "nothing matched" as
@@ -572,9 +974,13 @@ run rename_segment f __DATA __DATA
 # `macho9 segment: renamed=<N>`.
 #
 # The odd segnames are made with `macho9 segment` itself, which is how they are
-# reachable in the first place; both are legal in a char[16] field.
+# reachable in the first place; both are legal in a char[16] field. That verb
+# writes an OUT rather than the file it is given, so each of these
+# fixture-preparation runs installs its own result, the same way the wrappers
+# under test do.
 fresh
-( cd "$T" && "$BIN/macho9" segment f __DATA 1234567890123456 ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __DATA 1234567890123456 \
+    && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 12345678901234567 __X
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) 12345678901234567 -> __X' "$T/out" \
@@ -583,7 +989,7 @@ run rename_segment f 12345678901234567 __X
     || bad "rename_segment 17-byte OLD" "exit $rc, stdout: $(cat "$T/out")"
 
 fresh
-( cd "$T" && "$BIN/macho9" segment f __DATA 'A B' ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __DATA 'A B' && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 'A B' __Y
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) A B -> __Y' "$T/out" \
@@ -595,8 +1001,8 @@ run rename_segment f 'A B' __Y
 # segment name the image carries TWICE (which is what this tool produces --
 # see src/segname.h on __DATA_CONST -> __DATA leaving two __DATAs).
 fresh
-( cd "$T" && "$BIN/macho9" segment f __TEXT __DUP ) >/dev/null 2>&1
-( cd "$T" && "$BIN/macho9" segment f __DATA __DUP ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __TEXT __DUP && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && "$BIN/macho9" segment f f.seg __DATA __DUP && mv -f f.seg f ) >/dev/null 2>&1
 run rename_segment f __DUP __ONE
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 2 segment(s) __DUP -> __ONE' "$T/out" \
     && ok "rename_segment: reports the real match count, not 1" \
@@ -651,7 +1057,7 @@ fi
 "$T/mkimplausible" "$T/imp"
 
 # The fixture is refused for an ordinary operation, so the pass below is narrow.
-( cd "$T" && "$BIN/macho9" lc imp -delete uuid ) >/dev/null 2>"$T/imperr"
+( cd "$T" && "$BIN/macho9" lc imp imp.lc -delete uuid ) >/dev/null 2>"$T/imperr"
 [ $? -ne 0 ] && grep -q 'no known function' "$T/imperr" \
     && ok "rename_segment: the fixture really is one the gate rejects for other operations" \
     || bad "rename_segment mg_plausible" "lc -delete uuid was not refused: $(cat "$T/imperr")"
@@ -751,7 +1157,7 @@ run retag_swift_classes rsc1
     || bad "retag_swift_classes nonzero" "rsc1's bytes did not change"
 
 # A mixed run good/hard-linked/good: the hard-linked argument is refused (the
-# new divergence the install step introduces -- the C tool wrote
+# new divergence installing via mv introduces -- the C tool wrote
 # through the open fd regardless of hard links; this wrapper installs via mv,
 # which cannot update every name for an inode at once), the loop keeps going,
 # exit is 1, stdout is the two good binaries' lines plus the REDUCED total,
@@ -865,9 +1271,11 @@ fmrc=$rc
 cp "$T/out" "$T/fm.out"
 fmsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/macho9" dylib f -replace /usr/lib/libSystem.B.dylib \
+( cd "$T" && "$BIN/macho9" dylib f f.m9out -replace /usr/lib/libSystem.B.dylib \
     '@loader_path/../S.dylib' ) >"$T/m9.out" 2>/dev/null
-[ "$fmrc" -eq 0 ] && cmp -s "$T/fm.out" "$T/m9.out" && [ "$fmsha" = "$(sha "$T/f")" ] \
+# The same one-line reshape the change_dylib block above explains.
+sed 's|^Wrote f\.m9out (|Updated f (|' "$T/m9.out" >"$T/m9.want"
+[ "$fmrc" -eq 0 ] && cmp -s "$T/fm.out" "$T/m9.want" && [ "$fmsha" = "$(sha "$T/f.m9out")" ] \
     && ok "fix_macho: -change is byte-identical to macho9 dylib -replace, stdout included" \
     || bad "fix_macho -change" "exit $fmrc; stdout or bytes differ from macho9 dylib's"
 
@@ -901,7 +1309,7 @@ run fix_macho f -strip_build_version
 has_line "$T/err" 'macho9: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
-has_line "$T/err" '    macho9 lc f -delete build-version' \
+has_line "$T/err" '    macho9 lc f f.new -delete build-version' \
     && ok "fix_macho: -strip_build_version translates to lc -delete build-version" \
     || bad "fix_macho -strip_build_version translation" "stderr: $(cat "$T/err")"
 
@@ -1106,12 +1514,13 @@ run fix_macho f -rename_seg __DATA 12345678901234567
 # BOTH CASES DISCRIMINATE NOW, and the unwritable one more sharply than
 # before. Remove the wrapper's check and the absent file reports macho9's
 # "macho9 edit: nosuchfile: cannot open or read" instead of fix_macho's own
-# words; the unwritable one SUCCEEDS -- measured -- because
-# wa_write_atomic mkstemps beside the file and renames over it, which needs
-# the DIRECTORY to be writable and not the file, so a mode-444 binary is
-# replaced (new inode, mode 444 carried over) and the run exits 0 where
-# fix_macho's O_RDWR refused. The check below is the only thing standing
-# between a caller and that silent rewrite. Each was mutation-tested.
+# words; the unwritable one SUCCEEDS -- measured -- because macho9 edit
+# writes the wrapper's temp (not FILE) via wa_write_new, and mw_finish's mv
+# lands that temp on FILE, which needs the DIRECTORY to be writable and not
+# the file, so a mode-444 binary is replaced (new inode, mode 444 carried
+# over from FILE's own stat) and the run exits 0 where fix_macho's O_RDWR
+# refused. The check below is the only thing standing between a caller and
+# that silent rewrite. Each was mutation-tested.
 run fix_macho nosuchfile -strip_build_version -change A B
 [ "$rc" -eq 1 ] && has_line "$T/err" 'open: No such file or directory' \
     && ok "fix_macho: an absent file fails immediately, in fix_macho's own words" \
@@ -1138,9 +1547,9 @@ chmod 644 "$T/f"
 # the pre-wrapper binaries; these keep them verified.
 
 # A SPACE in the file name, on the mixed-family path -- the one that emits
-# `macho9 edit FILE -`, so the path is quoted into an edit command line rather
-# than a verb's. Asserted by comparing against the same operations on an
-# ordinarily-named copy.
+# `macho9 edit FILE <temp> -`, so the path is quoted into an edit command line
+# rather than a verb's. Asserted by comparing against the same operations on
+# an ordinarily-named copy.
 fresh
 cp "$FIXTURE" "$T/has space"
 ( cd "$T" && "$BIN/change_dylib" "has space" -strip-lc uuid \
@@ -1198,6 +1607,34 @@ run fix_macho -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib
     && ok "fix_macho: a file name starting with a dash is a file name" \
     || bad "fix_macho leading dash" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
+
+# THE TAUGHT BLOCK ITSELF MUST BE PASTEABLE, not just descriptive
+# (compat/translate.sh's "reads as a pasteable equivalent" claim). For a
+# leading-dash FILE with no directory part, FILE.new begins with '-' too, and
+# macho9 deliberately refuses an OUT spelled that way -- so before
+# mt_out_for/mt_install_line learned to write OUT as ./FILE.new here, the
+# printed macho9 line looked right but failed the moment it was copied and
+# run on its own, even though the wrapper's own real run (its temp is always
+# dot-prefixed, mw_prepare) went through fine. Pin it end to end: run the
+# wrapper for real in one directory, pull the taught block back out of its
+# stderr and eval it verbatim in a second, identically-seeded directory, and
+# compare the two results byte-for-byte.
+fresh
+mkdir "$T/wrap" "$T/taught"
+cp "$FIXTURE" "$T/wrap/-dashy"
+cp "$FIXTURE" "$T/taught/-dashy"
+( cd "$T/wrap" && "$BIN/change_dylib" -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) \
+    >/dev/null 2>"$T/err"
+rc=$?
+taught=$(awk '/^    /{sub(/^    /, ""); print}' "$T/err")
+( cd "$T/taught" && PATH="$BIN:$PATH" eval "$taught" ) >/dev/null 2>"$T/err2"
+rc2=$?
+[ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && [ -n "$taught" ] \
+    && cmp -s "$T/wrap/-dashy" "$T/taught/-dashy" \
+    && ok "change_dylib: the taught block for a leading-dash FILE runs verbatim and matches the wrapper" \
+    || bad "change_dylib leading-dash taught block" \
+        "wrapper rc $rc, taught rc $rc2, taught: [$taught], stderr2: $(cat "$T/err2")"
+rm -rf "$T/wrap" "$T/taught"
 
 # An EMPTY NEW segment name: legal (a segname may be all NULs) and matched by
 # tests/compat-matrix.tsv's `rename_segment f __DATA ''` row, whose C-side

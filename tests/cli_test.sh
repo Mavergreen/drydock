@@ -51,6 +51,42 @@ skip() { echo "SKIP $1: $2"; }
 # section (which needs it three times) doesn't repeat the pipeline.
 sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
+# m9ip VERB FILE ARG...  -- run a rewriting verb and leave its result AT FILE.
+#
+# dylib, rpath, lc and segment take `FILE OUT` and never write FILE. Most of
+# the assertions below were written when those verbs rewrote FILE, and they are
+# about the REWRITE -- which load command moved, which ordinal was renumbered,
+# what the run printed, what it refused -- not about which path the bytes land
+# in. So they keep asking their own question, of a file this helper puts the
+# result back into: run the verb with a temp beside FILE as OUT, then mv the
+# temp over FILE, which is precisely the two steps the compat wrappers take
+# (compat/macho9-compat.sh's install path). The verb's stdout and exit status
+# are passed through unchanged, less the "Wrote <temp>" line, which names a
+# path no assertion here asked about.
+#
+# WHAT THIS DOES NOT HIDE: that FILE is never written by macho9 itself is
+# asserted directly, per verb, in "the rewriting verbs never write their input"
+# below -- against FILE's bytes AND its inode, with no helper in the way. This
+# one is an ergonomic for everything else, not a stand-in for that.
+m9ip() {
+    m9ip_verb=$1; m9ip_file=$2; shift 2
+    m9ip_tmp="$m9ip_file.m9ip"
+    rm -f "$m9ip_tmp"
+    m9ip_rc=0
+    "$MACHO9" "$m9ip_verb" "$m9ip_file" "$m9ip_tmp" "$@" >"$T/m9ip.out" || m9ip_rc=$?
+    # Through the environment, not `awk -v`: that escape-processes what it
+    # assigns, so a $T containing a backslash would leave the line unsuppressed.
+    # compat/macho9-compat.sh's mw_run_to_tmp, which this mirrors, has the
+    # measurement.
+    M9IP_PREFIX="Wrote $m9ip_tmp (" awk 'index($0, ENVIRON["M9IP_PREFIX"]) != 1' "$T/m9ip.out"
+    if [ "$m9ip_rc" -eq 0 ]; then
+        mv -f "$m9ip_tmp" "$m9ip_file" || return 2
+    else
+        rm -f "$m9ip_tmp"
+    fi
+    return "$m9ip_rc"
+}
+
 # `set -e` means any bare command that exits nonzero kills the WHOLE script
 # immediately -- which has already happened for real (a helper's exit
 # convention bug took every verb's tests after it down silently, with only
@@ -157,7 +193,7 @@ build_main_three_dylibs() {
 # setup cannot mask the defect it is setting up for.
 build_main_without_build_version() {
     build_main "$1"
-    "$MACHO9" lc "$1" -delete build-version >/dev/null 2>&1 || true
+    m9ip lc "$1" -delete build-version >/dev/null 2>&1 || true
     # Assert the precondition rather than trusting the strip. otool, not
     # macho9, so a macho9 defect cannot certify its own setup. Without this
     # the test would pass on 10.9 for the OLD reason (the linker never
@@ -327,6 +363,12 @@ rc=0
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
 
+# "output positional=2 never-writes-input" is the shape every rewriting verb's
+# positionals take: a wrapper checks for this line rather than assume it.
+echo "$caps" | grep -qx "output positional=2 never-writes-input" \
+    && ok "capabilities: output line documents FILE OUT, never-writes-input" \
+    || bad "capabilities: output line" "missing or wrong: $(echo "$caps" | grep '^output')"
+
 for v in verify info grow minos lc dylib rpath segment retag-swift declassify edit; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
@@ -361,16 +403,14 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
-# edit's own flags= line: every CLI flag `edit` accepts.
-if echo "$caps" | grep "^verb edit" | grep -q "flags=.*output" \
-    && echo "$caps" | grep "^verb edit" | grep -q "flags=.*verbose"; then
-    ok "capabilities: edit advertises output and verbose flags"
-else
-    bad "capabilities: edit flags" "expected output,verbose: $(echo "$caps" | grep '^verb edit')"
-fi
-echo "$caps" | grep "^verb edit" | grep -q "dry-run" \
-    && ok "capabilities: edit advertises dry-run" \
-    || bad "capabilities: edit flags" "expected dry-run: $(echo "$caps" | grep '^verb edit')"
+# edit's own flags= line: every CLI flag `edit` accepts -- which is now just
+# --verbose. `--output` became the OUT positional and `--dry-run` went with it
+# (a scratch OUT is the same run), so advertising either would tell a wrapper it
+# may pass a flag this build refuses. Whole-line equality, because "not
+# advertised" is the claim.
+echo "$caps" | grep -qxF "verb edit flags=verbose" \
+    && ok "capabilities: edit advertises verbose, and nothing else" \
+    || bad "capabilities: edit flags" "expected 'verb edit flags=verbose': $(echo "$caps" | grep '^verb edit')"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The statement vocabulary
@@ -431,7 +471,7 @@ kinds=$(echo "$caps" | sed -n 's/^verb lc .*kinds=\([^ ]*\).*/\1/p')
 oldifs="$IFS"; IFS=','
 vocab_kind_fail=0
 for kind in $kinds; do
-    "$MACHO9" lc "$T/vocab_fixture" -delete "$kind" >"$T/vocab_kind.out" 2>&1 || true
+    m9ip lc "$T/vocab_fixture" -delete "$kind" >"$T/vocab_kind.out" 2>&1 || true
     if grep -qi "unknown KIND" "$T/vocab_kind.out"; then
         bad "capabilities vocab: kind '$kind'" "advertised but lc -delete refused it as unknown: $(cat "$T/vocab_kind.out")"
         vocab_kind_fail=1
@@ -441,7 +481,7 @@ IFS="$oldifs"
 [ "$vocab_kind_fail" -eq 0 ] && ok "capabilities vocab: every advertised lc kind is accepted by lc -delete"
 # And the inverse: a KIND that is plainly not real must still be refused --
 # otherwise this check could trivially "pass" by lc accepting everything.
-"$MACHO9" lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
+m9ip lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
     && bad "capabilities vocab: bogus kind" "lc -delete accepted a KIND that isn't in any table" \
     || { grep -qi "unknown KIND" "$T/vocab_bogus.out" \
          && ok "capabilities vocab: an unadvertised kind is refused as unknown" \
@@ -459,9 +499,9 @@ check_ops_accepted() {
     for op in $2; do
         IFS="$oldifs2"   # restore default (whitespace) splitting for the command below
         case "$op" in
-            replace) "$MACHO9" "$verb" "$T/vocab_fixture" "-$op" /no/such/old /no/such/new \
+            replace) m9ip "$verb" "$T/vocab_fixture" "-$op" /no/such/old /no/such/new \
                          >"$T/vocab_op.out" 2>&1 || true ;;
-            *)       "$MACHO9" "$verb" "$T/vocab_fixture" "-$op" /no/such/path \
+            *)       m9ip "$verb" "$T/vocab_fixture" "-$op" /no/such/path \
                          >"$T/vocab_op.out" 2>&1 || true ;;
         esac
         if grep -q "unknown or incomplete operation" "$T/vocab_op.out"; then
@@ -507,312 +547,15 @@ esac
 # (which asks the HOST linker for one) therefore SKIPs entirely on the machine
 # this toolkit is actually for. A fixture written byte by byte asks the same
 # question on every host -- the reasoning tests/README.md's host-portability
-# section gives, and the idiom leaf-tool-crashes.sh's mkfixture.c and the
-# mkswift helper below already use.
+# section gives, and the idiom leaf-tool-crashes.sh's mkfixture.c and
+# tests/mkswift.c already use.
+#
+# The program is tests/mkchained.c, a FILE rather than a here-document because
+# tests/wrapper_test.sh needs exactly the same fixture for exactly the same
+# reason -- `patch_macho`'s converting path -- and one copy of it is enough.
+# Same arrangement as tests/strip_version_min.c and tests/mkswift.c.
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../src" && pwd)
-cat > "$T/mkchained.c" <<'EOF'
-/* mkchained make|make-weak|make-big|make-nosect|make-sectpast OUT
- *                        -- write a tiny 64-bit Mach-O that uses CHAINED
- *                          FIXUPS, the format `declassify`/patch_macho exists
- *                          to lower. No linker on any host this repo supports
- *                          can be asked to emit one on demand (10.9's predates
- *                          the format by a decade), so the bytes are laid out
- *                          by hand -- the same idiom tests/leaf-tool-crashes.sh
- *                          and cli_test.sh's mkswift already use.
- *
- * mkchained check FILE   -- print, one per line, what the conversion is
- *                          supposed to have DONE to it. Structure read
- *                          directly out of the file; never otool text.
- *
- * The image: three segments (__TEXT, __DATA, __LINKEDIT), one section in each
- * of the first two, an LC_DYLD_CHAINED_FIXUPS pointing at a hand-built fixups
- * blob in __LINKEDIT, an LC_DYLD_EXPORTS_TRIE, and an LC_BUILD_VERSION -- the
- * three commands the conversion strips. __DATA holds a two-link chain: slot 0
- * is a REBASE of a base-relative target (0x1000), slot 1 (8 bytes later) is a
- * BIND of import 0, "_mkchained_sym", from library ordinal 1.
- *
- * After conversion, then, slot 0 must hold image_base + 0x1000 and slot 1 must
- * hold 0 (dyld fills a bind slot in at load time). Those two quadwords are the
- * whole point: they are the arithmetic the conversion does that nothing else
- * in this repo does, and they are observable in the output file's bytes.
- *
- * make-weak differs in ONE field: the import's library ordinal is -3
- * (BIND_SPECIAL_DYLIB_WEAK_LOOKUP), which 10.9's dyld rejects outright with
- * "bad special ordinal". The conversion has to remap it to flat lookup (-2)
- * plus the weak-import flag, and that remap is visible in the emitted opcodes.
- *
- * make-big differs in SIZE: a 2MB __DATA whose every quadword is one link of a
- * single rebase chain, ~262k fixups. At about 5 opcode bytes each that is well
- * past the 1MB the conversion buffers, so it must REFUSE. Before the bound
- * existed this fixture walked straight off the end of a 1MB malloc.
- *
- * make-nosect differs in its two sections' file offsets: both are 0, so no
- * section has file data and nothing bounds the header pad the new
- * LC_DYLD_INFO_ONLY goes into. make-sectpast puts __text's offset past the end
- * of the file (and __data's at 0), so the pad's bound lies outside the image.
- * The conversion must refuse both rather than guess where the pad ends.
- */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <mach-o/loader.h>
-#include "mach_compat.h"
-
-#define TEXT_VMADDR  0x100000000ULL
-#define SECT_OFF     0x400          /* first section's file offset: the bound
-                                     * the conversion checks for the 48 bytes
-                                     * LC_DYLD_INFO_ONLY needs */
-#define DATA_OFF     0x1000
-#define DATA_SIZE    0x1000
-#define BIG_DATA_SIZE 0x200000
-#define TRIE_SIZE    0x10
-#define FIXUPS_SIZE  0x100
-
-#define CF_PTR_64_OFFSET 6
-#define REBASE_TARGET    0x1000ULL  /* base-relative, so the converted slot
-                                     * must read TEXT_VMADDR + this */
-#define BIND_SLOT_OFF    8
-#define SYMNAME          "_mkchained_sym"
-
-enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST };
-
-/* segname/sectname are char[16] and need NOT be NUL-terminated; see
- * tests/README.md's host-portability section for why strcpy is wrong here. */
-static void set_name16(char *field, const char *name) {
-    size_t len = strlen(name);
-    if (len > 16) len = 16;
-    memset(field, 0, 16);
-    memcpy(field, name, len);
-}
-
-static struct segment_command_64 *put_seg(uint8_t *p, const char *name,
-                                          uint64_t vmaddr, uint64_t vmsize,
-                                          uint64_t fileoff, uint64_t filesize,
-                                          uint32_t nsects) {
-    struct segment_command_64 *s = (struct segment_command_64 *)p;
-    s->cmd = LC_SEGMENT_64;
-    s->cmdsize = (uint32_t)(sizeof *s + nsects * sizeof(struct section_64));
-    set_name16(s->segname, name);
-    s->vmaddr = vmaddr; s->vmsize = vmsize;
-    s->fileoff = fileoff; s->filesize = filesize;
-    s->maxprot = 7; s->initprot = 3;
-    s->nsects = nsects; s->flags = 0;
-    return s;
-}
-
-static void put_sect(struct segment_command_64 *seg, int i, const char *sect,
-                     const char *segname, uint64_t addr, uint64_t size,
-                     uint32_t offset) {
-    struct section_64 *s = (struct section_64 *)(seg + 1) + i;
-    memset(s, 0, sizeof *s);
-    set_name16(s->sectname, sect);
-    set_name16(s->segname, segname);
-    s->addr = addr; s->size = size; s->offset = offset;
-}
-
-static int make(const char *path, int mode) {
-    uint64_t data_size = (mode == MK_BIG) ? BIG_DATA_SIZE : DATA_SIZE;
-    uint64_t linkedit_off = DATA_OFF + data_size;
-    uint64_t fixups_off = linkedit_off;
-    uint64_t trie_off = linkedit_off + FIXUPS_SIZE;
-    size_t fsize = (size_t)(linkedit_off + 0x1000);
-
-    uint8_t *buf = calloc(1, fsize);
-    if (!buf) return 2;
-
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    h->magic = MH_MAGIC_64;
-    h->cputype = CPU_TYPE_X86_64;
-    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
-    h->filetype = MH_DYLIB;
-    h->flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL;
-
-    uint8_t *p = buf + sizeof *h;
-
-    struct segment_command_64 *text = put_seg(p, "__TEXT", TEXT_VMADDR, 0x1000, 0, 0x1000, 1);
-    uint32_t text_off = (mode == MK_NOSECT) ? 0
-                      : (mode == MK_SECTPAST) ? (uint32_t)fsize + 0x1000 : SECT_OFF;
-    put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + SECT_OFF, 4, text_off);
-    p += text->cmdsize;
-
-    struct segment_command_64 *data = put_seg(p, "__DATA", TEXT_VMADDR + DATA_OFF, data_size,
-                                              DATA_OFF, data_size, 1);
-    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, data_size,
-             (mode == MK_NOSECT || mode == MK_SECTPAST) ? 0 : DATA_OFF);
-    p += data->cmdsize;
-
-    struct segment_command_64 *le = put_seg(p, "__LINKEDIT", TEXT_VMADDR + linkedit_off, 0x1000,
-                                            linkedit_off, 0x1000, 0);
-    p += le->cmdsize;
-
-    struct linkedit_data_command *cf = (struct linkedit_data_command *)p;
-    cf->cmd = LC_DYLD_CHAINED_FIXUPS; cf->cmdsize = sizeof *cf;
-    cf->dataoff = (uint32_t)fixups_off; cf->datasize = FIXUPS_SIZE;
-    p += cf->cmdsize;
-
-    struct linkedit_data_command *tr = (struct linkedit_data_command *)p;
-    tr->cmd = LC_DYLD_EXPORTS_TRIE; tr->cmdsize = sizeof *tr;
-    tr->dataoff = (uint32_t)trie_off; tr->datasize = TRIE_SIZE;
-    p += tr->cmdsize;
-
-    /* LC_BUILD_VERSION by hand: 10.9's <mach-o/loader.h> has no
-     * build_version_command struct, only the command number mach_compat.h
-     * supplies. cmd, cmdsize, platform, minos, sdk, ntools. */
-    uint32_t *bv = (uint32_t *)p;
-    bv[0] = LC_BUILD_VERSION; bv[1] = 24; bv[2] = 1;
-    bv[3] = 0x000C0000; bv[4] = 0x000C0000; bv[5] = 0;
-    p += 24;
-
-    h->ncmds = 6;
-    h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
-
-    /* The chain in __DATA. Every link uses pointer format 6
-     * (DYLD_CHAINED_PTR_64_OFFSET): bit 63 selects bind over rebase, bits
-     * [62:51] are the distance to the next link in 4-byte strides, and the low
-     * bits are a base-relative target (rebase) or an import ordinal (bind). */
-    uint64_t *slot = (uint64_t *)(buf + DATA_OFF);
-    if (mode == MK_BIG) {
-        uint64_t n = data_size / 8;
-        for (uint64_t i = 0; i < n; i++)
-            slot[i] = REBASE_TARGET | ((i + 1 < n) ? ((uint64_t)2 << 51) : 0);
-    } else {
-        slot[0] = REBASE_TARGET | ((uint64_t)(BIND_SLOT_OFF / 4) << 51);
-        slot[1] = (1ULL << 63) | 0ULL;   /* bind import 0, next = 0 = end of chain */
-    }
-
-    /* The fixups blob: header, starts-image, one starts-segment for __DATA
-     * (segment index 1), one import, one symbol name. */
-    uint8_t *fx = buf + fixups_off;
-    uint32_t *fh = (uint32_t *)fx;
-    fh[0] = 0;      /* fixups_version */
-    fh[1] = 0x20;   /* starts_offset */
-    fh[2] = 0x60;   /* imports_offset */
-    fh[3] = 0x80;   /* symbols_offset */
-    fh[4] = 1;      /* imports_count */
-    fh[5] = 1;      /* imports_format: DYLD_CHAINED_IMPORT */
-    fh[6] = 0;      /* symbols_format: uncompressed */
-
-    uint32_t *starts = (uint32_t *)(fx + 0x20);
-    starts[0] = 3;      /* seg_count: __TEXT, __DATA, __LINKEDIT */
-    starts[1] = 0;      /* __TEXT: no fixups */
-    starts[2] = 0x10;   /* __DATA: its starts-segment, relative to starts */
-    starts[3] = 0;      /* __LINKEDIT: no fixups */
-
-    uint8_t *ss = fx + 0x30;
-    *(uint32_t *)(ss + 0)  = 24;                /* size */
-    *(uint16_t *)(ss + 4)  = 0x1000;            /* page_size */
-    *(uint16_t *)(ss + 6)  = CF_PTR_64_OFFSET;  /* pointer_format */
-    *(uint64_t *)(ss + 8)  = DATA_OFF;          /* segment_offset */
-    *(uint32_t *)(ss + 16) = 0;                 /* max_valid_pointer */
-    *(uint16_t *)(ss + 20) = 1;                 /* page_count: one page START,
-                                                 * whose chain may run on past
-                                                 * that page -- which is what
-                                                 * make-big's does */
-    *(uint16_t *)(ss + 22) = 0;                 /* page_start[0]: chain at +0 */
-
-    /* import 0. lib_ordinal 1 normally; 0xFD reads back as the signed -3 that
-     * means BIND_SPECIAL_DYLIB_WEAK_LOOKUP, the ordinal 10.9's dyld refuses. */
-    *(uint32_t *)(fx + 0x60) = (mode == MK_WEAK) ? 0xFDu : 1u;
-    memcpy(fx + 0x80, SYMNAME, sizeof SYMNAME);
-
-    memset(buf + trie_off, 0, TRIE_SIZE);
-
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
-    if (fd < 0) { perror("create"); free(buf); return 2; }
-    if (write(fd, buf, fsize) != (ssize_t)fsize) { perror("write"); close(fd); free(buf); return 2; }
-    close(fd);
-    free(buf);
-    return 0;
-}
-
-static int has_cmd(uint8_t *buf, uint32_t want) {
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    uint8_t *p = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)p;
-        if (lc->cmd == want) return 1;
-        p += lc->cmdsize;
-    }
-    return 0;
-}
-
-static int check(const char *path) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) { perror("open"); return 2; }
-    struct stat st;
-    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
-    uint8_t *buf = malloc((size_t)st.st_size);
-    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
-        fprintf(stderr, "read failed\n"); close(fd); return 2;
-    }
-    close(fd);
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    if (h->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); free(buf); return 2; }
-
-    uint64_t *slot = (uint64_t *)(buf + DATA_OFF);
-    printf("size=%llu\n", (unsigned long long)st.st_size);
-    printf("slot0=0x%llx\n", (unsigned long long)slot[0]);
-    printf("slot1=0x%llx\n", (unsigned long long)slot[1]);
-    printf("chained=%d\n", has_cmd(buf, LC_DYLD_CHAINED_FIXUPS));
-    printf("trie=%d\n", has_cmd(buf, LC_DYLD_EXPORTS_TRIE));
-    printf("buildver=%d\n", has_cmd(buf, LC_BUILD_VERSION));
-    printf("dyldinfo=%d\n", has_cmd(buf, LC_DYLD_INFO_ONLY));
-
-    /* The LC_DYLD_INFO_ONLY the conversion added, and the __LINKEDIT it had to
-     * extend to cover what that command points at. */
-    uint8_t *p = buf + sizeof *h;
-    for (uint32_t i = 0; i < h->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)p;
-        if (lc->cmd == LC_DYLD_INFO_ONLY) {
-            struct dyld_info_command *di = (struct dyld_info_command *)lc;
-            printf("rebase=%u+%u\n", di->rebase_off, di->rebase_size);
-            printf("bind=%u+%u\n", di->bind_off, di->bind_size);
-            printf("export=%u+%u\n", di->export_off, di->export_size);
-            /* The bind stream's first three opcodes are SET_TYPE_IMM, the
-             * dylib-ordinal opcode and SET_SYMBOL_TRAILING_FLAGS_IMM, each one
-             * byte, and the symbol name follows the third as a NUL-terminated
-             * string. Reading them back is how this proves the BIND link was
-             * translated and not merely counted, and it is what makes the -3
-             * weak remap observable: the second byte says which dylib opcode
-             * was chosen and the third carries the weak-import flag. Reading
-             * at a FIXED offset is deliberate: if the emitted opcode sequence
-             * ever changes shape, that is a behaviour change in the conversion
-             * and this must fail rather than adapt. */
-            if (di->bind_size > 4 && di->bind_off + di->bind_size <= (uint32_t)st.st_size) {
-                uint8_t *b = buf + di->bind_off;
-                printf("bindops=%02x,%02x,%02x\n", b[0], b[1], b[2]);
-                printf("bindsym=%.*s\n", (int)(di->bind_size - 3), (char *)b + 3);
-            }
-        }
-        if (lc->cmd == LC_SEGMENT_64) {
-            struct segment_command_64 *s = (struct segment_command_64 *)lc;
-            if (strncmp(s->segname, "__LINKEDIT", 16) == 0)
-                printf("linkedit=%llu+%llu\n", (unsigned long long)s->fileoff,
-                       (unsigned long long)s->filesize);
-        }
-        p += lc->cmdsize;
-    }
-    free(buf);
-    return 0;
-}
-
-int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|check FILE\n"); return 2; }
-    if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
-    if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
-    if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
-    if (strcmp(argv[1], "make-nosect") == 0) return make(argv[2], MK_NOSECT);
-    if (strcmp(argv[1], "make-sectpast") == 0) return make(argv[2], MK_SECTPAST);
-    if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|check FILE\n");
-    return 2;
-}
-EOF
-"$CC" -O2 -I "$SRC_DIR" -o "$T/mkchained" "$T/mkchained.c"
+"$CC" -O2 -I "$SRC_DIR" -o "$T/mkchained" "$HERE/mkchained.c"
 "$T/mkchained" make "$T/chained.in"
 
 # What the fixture is, before anything touches it. If this ever stops holding,
@@ -988,17 +731,41 @@ else
     bad "declassify: idempotency" "exited $rc on an already-converted binary: $(cat "$T/again.err")"
 fi
 
-# IN and OUT may be the same path: the whole image is in memory before a byte
-# is written, so this is an in-place conversion and must land the same bytes.
+# IN AND OUT MAY NO LONGER BE THE SAME PATH. This verb used to allow it (the
+# whole image is in memory before a byte is written, so it worked), and now
+# refuses it UP FRONT -- before any read -- because macho9 never writes its
+# input. The same four facts every other converted verb is held to: refused
+# with 2, IN untouched in bytes AND inode, the refusal is the up-front one, and
+# a symlink to IN is caught too. `patch_macho IN IN` still converts IN: its
+# wrapper runs this verb into a temp beside OUT and installs that.
 cp "$T/chained.in" "$T/inplace"
-"$MACHO9" declassify "$T/inplace" "$T/inplace" >/dev/null 2>"$T/inplace.err" && rc=0 || rc=$?
-if [ "$rc" -eq 0 ]; then
-    cmp -s "$T/inplace" "$T/chained.out" \
-        && ok "declassify: IN and OUT may be the same file" \
-        || bad "declassify: IN == OUT" "in-place output differs from the two-file output"
-else
-    bad "declassify: IN == OUT" "exited $rc : $(cat "$T/inplace.err")"
-fi
+dcl_sha=$(sha "$T/inplace"); dcl_ino=$(stat -f %i "$T/inplace")
+rc=0
+"$MACHO9" declassify "$T/inplace" "$T/inplace" >/dev/null 2>"$T/inplace.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/inplace")" = "$dcl_sha" ] \
+    && [ "$(stat -f %i "$T/inplace")" = "$dcl_ino" ] \
+    && ok "declassify: an OUT that is IN is refused (2), IN untouched" \
+    || bad "declassify: OUT=IN" "rc $rc, or IN changed"
+grep -q "never writes its input" "$T/inplace.err" \
+    && ok "declassify: ... refused up front, before any work" \
+    || bad "declassify: OUT=IN" "not the up-front refusal: $(cat "$T/inplace.err")"
+rm -f "$T/inplace_link"; ln -s "$T/inplace" "$T/inplace_link"
+rc=0
+"$MACHO9" declassify "$T/inplace" "$T/inplace_link" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "declassify: an OUT that is a symlink to IN is refused (2)" \
+    || bad "declassify: OUT=link" "rc $rc"
+
+# OUT TAKES IN'S MODE, not the fixed 0755 this verb's own open() used to ask
+# for: wa_write_new copies the input's, like every other converted verb. The C
+# tool's 0755-masked-by-umask is now compat/patch_macho.sh's to restore, and
+# tests/wrapper_test.sh is where that is asserted.
+chmod 640 "$T/inplace"
+rm -f "$T/dcl_mode_out"
+rc=0
+"$MACHO9" declassify "$T/inplace" "$T/dcl_mode_out" >/dev/null 2>"$T/dcl_mode.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$(stat -f %Lp "$T/dcl_mode_out")" = 640 ] \
+    && ok "declassify: OUT is created with IN's mode" \
+    || bad "declassify: OUT mode" "rc $rc, mode $(stat -f %Lp "$T/dcl_mode_out" 2>/dev/null): $(cat "$T/dcl_mode.err")"
 
 # Refusals. Each is a decision macho9 made about the INPUT, so each is
 # EX_REFUSED (1), never EX_FAIL (2), which means "something went wrong running
@@ -1052,17 +819,18 @@ done
     || bad "alone: capabilities" "verbs missing when macho9 stands alone:$alone_missing"
 
 build_main "$T/alone/fixture"
-if "$T/alone/macho9" dylib "$T/alone/fixture" -append "@loader_path/libalone.dylib" \
-        >"$T/alone_dylib.out" 2>&1; then
+if "$T/alone/macho9" dylib "$T/alone/fixture" "$T/alone/fixture.out" \
+        -append "@loader_path/libalone.dylib" >"$T/alone_dylib.out" 2>&1; then
     ok "alone: dylib -append works with no change_dylib anywhere near macho9"
 else
     bad "alone: dylib -append" "$(cat "$T/alone_dylib.out")"
 fi
-"$T/alone/macho9" info "$T/alone/fixture" | grep -qF "path=@loader_path/libalone.dylib" \
-    && ok "alone: the append really landed in the file" \
+"$T/alone/macho9" info "$T/alone/fixture.out" | grep -qF "path=@loader_path/libalone.dylib" \
+    && ok "alone: the append really landed in the output" \
     || bad "alone: dylib -append result" "new dependency not in info output"
 
-if "$T/alone/macho9" lc "$T/alone/fixture" -delete uuid >"$T/alone_lc.out" 2>&1; then
+if "$T/alone/macho9" lc "$T/alone/fixture.out" "$T/alone/fixture.out2" -delete uuid \
+        >"$T/alone_lc.out" 2>&1; then
     ok "alone: lc -delete works with no change_dylib anywhere near macho9"
 else
     bad "alone: lc -delete" "$(cat "$T/alone_lc.out")"
@@ -1147,7 +915,7 @@ fi
 # mr_process_thin gates on mg_plausible, so macho9 dylib/rpath/lc -- and
 # change_dylib, which is the same code -- refused every dylib outright.
 cp "$T/fixture.dylib" "$T/dylibrw"
-if "$MACHO9" lc "$T/dylibrw" -delete uuid >"$T/dylibrw.out" 2>&1; then
+if m9ip lc "$T/dylibrw" -delete uuid >"$T/dylibrw.out" 2>&1; then
     ok "lc -delete: a dylib is rewritable"
 else
     bad "lc -delete: a dylib is rewritable" "refused: $(cat "$T/dylibrw.out")"
@@ -1172,7 +940,12 @@ echo "$info_out" | grep -q "header pad:" && ok "info: shows header pad line" \
 # ============================================================================
 build_main "$T/grow_fixture"
 before=$(wc -c < "$T/grow_fixture")
-"$MACHO9" grow "$T/grow_fixture" 4096 >"$T/grow.out" || bad "grow: exit" "$(cat "$T/grow.out")"
+# m9ip because this verb reads FILE and writes OUT now, and the assertions
+# below (and the "does it still run?" one further down) are about the grown
+# image being AT $T/grow_fixture: the helper runs the verb into a temp beside
+# the file and mv's it over, which is what every caller that wants the old
+# in-place behaviour has to do.
+m9ip grow "$T/grow_fixture" 4096 >"$T/grow.out" || bad "grow: exit" "$(cat "$T/grow.out")"
 after=$(wc -c < "$T/grow_fixture")
 if [ "$after" -eq "$((before + 4096))" ]; then
     ok "grow: file grew by exactly the page-aligned request"
@@ -1182,32 +955,75 @@ fi
 "$MACHO9" verify "$T/grow_fixture" >/dev/null && ok "grow: result still verifies" \
     || bad "grow: post-grow verify" "failed"
 
-# grow now replaces its target via wa_write_atomic (src/atomic_write.h,
-# mkstemp+rename) -- the same path change_dylib uses -- instead of
-# ftruncate()+write() straight into the open file. Prove the symlink-safety
-# that buys: growing THROUGH a symlink must rewrite the REAL target (fresh
-# inode, since rename() always creates one) and leave the symlink itself
-# intact, not replace the symlink with a plain file the way a naive rename
-# of the symlink PATH itself would.
+# grow NEVER WRITES ITS INPUT: `grow FILE OUT N`. The same five facts every
+# other converted verb is held to (see the nwi block further down, whose
+# wording this follows), with grow's own success line -- `Grew OUT: ...`, not
+# `Wrote OUT (...)` -- and its own proof that OUT carries the change: OUT is
+# exactly N bytes bigger.
+build_main "$T/gnwi"
+gnwi_sha=$(sha "$T/gnwi"); gnwi_ino=$(stat -f %i "$T/gnwi")
+gnwi_before=$(wc -c < "$T/gnwi")
+rm -f "$T/gnwi_out"
+"$MACHO9" grow "$T/gnwi" "$T/gnwi_out" 4096 >"$T/gnwi.out" 2>"$T/gnwi.err" \
+    && ok "grow FILE OUT N: succeeds" \
+    || bad "grow FILE OUT N" "$(cat "$T/gnwi.err")"
+[ "$(sha "$T/gnwi")" = "$gnwi_sha" ] && [ "$(stat -f %i "$T/gnwi")" = "$gnwi_ino" ] \
+    && ok "grow FILE OUT N: FILE is untouched, bytes and inode" \
+    || bad "grow FILE OUT N" "FILE changed"
+[ "$(wc -c < "$T/gnwi_out")" -eq "$((gnwi_before + 4096))" ] \
+    && ok "grow FILE OUT N: OUT is the grown image" \
+    || bad "grow FILE OUT N" "OUT is $(wc -c < "$T/gnwi_out") bytes, want $((gnwi_before + 4096))"
+grep -q "^Grew $T/gnwi_out: " "$T/gnwi.out" \
+    && ok "grow FILE OUT N: says what it wrote, naming OUT" \
+    || bad "grow FILE OUT N" "no Grew line naming OUT: $(cat "$T/gnwi.out")"
+rc=0
+"$MACHO9" grow "$T/gnwi" "$T/gnwi" 4096 >/dev/null 2>"$T/gnwi_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/gnwi")" = "$gnwi_sha" ] \
+    && ok "grow: an OUT that is FILE is refused (2), FILE untouched" \
+    || bad "grow OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/gnwi_same.err" \
+    && ok "grow: ... refused up front, before any work" \
+    || bad "grow OUT=FILE" "not the up-front refusal: $(cat "$T/gnwi_same.err")"
+rm -f "$T/gnwi_link"; ln -s "$T/gnwi" "$T/gnwi_link"
+rc=0
+"$MACHO9" grow "$T/gnwi" "$T/gnwi_link" 4096 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "grow: an OUT that is a symlink to FILE is refused (2)" \
+    || bad "grow OUT=link" "rc $rc"
+rc=0
+"$MACHO9" grow "$T/gnwi" 4096 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "grow: a missing OUT is an error (2)" \
+    || bad "grow no OUT" "rc $rc"
+
+# grow writes OUT through wa_write_new (src/atomic_write.h, mkstemp+rename).
+# Prove the symlink-safety that buys, which now belongs to OUT rather than to
+# FILE: an OUT that is a symlink is FOLLOWED -- the real target gets the new
+# bytes (a fresh inode, since rename() always creates one) and the symlink
+# stays a symlink, where a naive rename onto the symlink's own path would
+# replace the link with a plain file.
+build_main "$T/grow_link_in"
 build_main "$T/grow_link_target"
 ln -sf grow_link_target "$T/grow_link"
 target_ino_before=$(stat -f %i "$T/grow_link_target")
-"$MACHO9" grow "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
-    || bad "grow: symlink" "exit failed: $(cat "$T/grow_link.out")"
+target_size_before=$(wc -c < "$T/grow_link_target")
+"$MACHO9" grow "$T/grow_link_in" "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
+    || bad "grow: symlinked OUT" "exit failed: $(cat "$T/grow_link.out")"
 if [ -L "$T/grow_link" ]; then
-    ok "grow: growing through a symlink leaves the symlink a symlink"
+    ok "grow: an OUT that is a symlink stays a symlink"
 else
-    bad "grow: symlink" "the symlink itself got replaced by a plain file"
+    bad "grow: symlinked OUT" "the symlink itself got replaced by a plain file"
 fi
 target_ino_after=$(stat -f %i "$T/grow_link_target")
 if [ "$target_ino_after" != "$target_ino_before" ]; then
     ok "grow: the real target was replaced via mkstemp+rename (fresh inode = atomicity kept)"
 else
-    bad "grow: symlink" "target inode unchanged -- wrote in place, not atomically"
+    bad "grow: symlinked OUT" "target inode unchanged -- wrote in place, not atomically"
 fi
+[ "$(wc -c < "$T/grow_link_target")" -ne "$target_size_before" ] \
+    && ok "grow: ... and it is the target that got the grown image" \
+    || bad "grow: symlinked OUT" "the target's size did not change"
 readlink "$T/grow_link" | grep -q "^grow_link_target$" \
     && ok "grow: symlink still points at the same name" \
-    || bad "grow: symlink" "symlink target changed: $(readlink "$T/grow_link")"
+    || bad "grow: symlinked OUT" "symlink target changed: $(readlink "$T/grow_link")"
 
 # Whether a GROWN binary can be EXECUTED, ruling (settled after evidence: an
 # earlier host-capability probe showed the cross runner runs a
@@ -1242,12 +1058,16 @@ else
             "not the product's target platform (Darwin $darwin_major; the target is Darwin 13 / Mac OS X 10.9) -- mg_grow_header's image-base-lowering trick is only promised to load there. This host's loader says: exit $grow_run_rc: $grow_run_diag"
     fi
 fi
-# N=0 is refused, not silently a no-op.
-if "$MACHO9" grow "$T/grow_fixture" 0 >/dev/null 2>&1; then
+# N=0 is refused, not silently a no-op -- and with a real OUT, so this asks
+# about N rather than about the argument count.
+rm -f "$T/grow_zero_out"
+if "$MACHO9" grow "$T/grow_fixture" "$T/grow_zero_out" 0 >/dev/null 2>&1; then
     bad "grow: N=0" "should be refused"
 else
     ok "grow: N=0 refused"
 fi
+[ -e "$T/grow_zero_out" ] && bad "grow: N=0" "wrote an output for a request it refused" \
+    || ok "grow: N=0 produces no output file"
 
 # ============================================================================
 # minos
@@ -1360,7 +1180,7 @@ build_main "$T/lc_fixture"
 before_info=$("$MACHO9" info "$T/lc_fixture")
 echo "$before_info" | grep -q "LC_UUID" && ok "lc: fixture has LC_UUID before" \
     || bad "lc: precondition" "fixture has no LC_UUID to delete"
-"$MACHO9" lc "$T/lc_fixture" -delete uuid >"$T/lc.out" || bad "lc: exit" "$(cat "$T/lc.out")"
+m9ip lc "$T/lc_fixture" -delete uuid >"$T/lc.out" || bad "lc: exit" "$(cat "$T/lc.out")"
 after_info=$("$MACHO9" info "$T/lc_fixture")
 if echo "$after_info" | grep -q "LC_UUID"; then
     bad "lc: delete uuid" "LC_UUID still present"
@@ -1402,7 +1222,7 @@ fi
 # Unknown KIND is refused with this verb's own message, before the rewriter
 # is ever called -- so a bad KIND never reaches (or is diagnosed by) code
 # shared with change_dylib.
-if "$MACHO9" lc "$T/lc_fixture" -delete bogus-kind >/dev/null 2>"$T/lc_bad.err"; then
+if m9ip lc "$T/lc_fixture" -delete bogus-kind >/dev/null 2>"$T/lc_bad.err"; then
     bad "lc: bad kind" "should be refused"
 else
     ok "lc: unknown KIND refused"
@@ -1415,7 +1235,7 @@ grep -q "unknown KIND" "$T/lc_bad.err" && ok "lc: bad kind message" \
 # linker happens to emit -- see that helper for why the old assumption was
 # false on the cross runner. So this is a guaranteed miss, not a maybe.
 build_main_without_build_version "$T/lc_miss_fixture"
-"$MACHO9" lc "$T/lc_miss_fixture" -delete build-version \
+m9ip lc "$T/lc_miss_fixture" -delete build-version \
     >"$T/lc_miss.out" 2>"$T/lc_miss.err" && lc_miss_rc=0 || lc_miss_rc=$?
 [ "$lc_miss_rc" -eq 0 ] && ok "lc: -delete of an absent kind still exits 0" \
     || bad "lc: -delete of an absent kind" "expected 0, got $lc_miss_rc: $(cat "$T/lc_miss.err")"
@@ -1431,7 +1251,7 @@ grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
 # the strip-kind loop in src/rewrite.c for why a duplicate used to be able
 # to make this false.
 build_main "$T/lc_dup_fixture"
-"$MACHO9" lc "$T/lc_dup_fixture" -delete uuid -delete uuid \
+m9ip lc "$T/lc_dup_fixture" -delete uuid -delete uuid \
     >/dev/null 2>"$T/lc_dup.err" || bad "lc: duplicate -delete uuid" "$(cat "$T/lc_dup.err")"
 if grep -q "no load command of kind uuid to delete" "$T/lc_dup.err"; then
     bad "lc: duplicate -delete uuid" "a uuid load command WAS present and WAS stripped, but the duplicate -delete was reported as a miss: $(cat "$T/lc_dup.err")"
@@ -1449,7 +1269,7 @@ fi
 # defined (src/rewrite.h) to equal EX_REFUSED.
 # ============================================================================
 build_main_without_build_version "$T/lc_fw_fixture"
-"$MACHO9" lc "$T/lc_fw_fixture" --fatal-warnings -delete build-version \
+m9ip lc "$T/lc_fw_fixture" --fatal-warnings -delete build-version \
     >/dev/null 2>"$T/lc_fw.err" && lc_fw_rc=0 || lc_fw_rc=$?
 [ "$lc_fw_rc" -eq 1 ] && ok "lc: --fatal-warnings refuses when a KIND matched nothing (EX_REFUSED)" \
     || bad "lc: --fatal-warnings refusal" "expected exit 1, got $lc_fw_rc: $(cat "$T/lc_fw.err")"
@@ -1459,14 +1279,14 @@ grep -q "no load command of kind build-version to delete" "$T/lc_fw.err" \
 # Without --fatal-warnings, the identical invocation still succeeds -- so the
 # flag is what changed the answer, not something else about this fixture.
 build_main_without_build_version "$T/lc_fw_lax_fixture"
-"$MACHO9" lc "$T/lc_fw_lax_fixture" -delete build-version \
+m9ip lc "$T/lc_fw_lax_fixture" -delete build-version \
     >/dev/null 2>/dev/null && lc_fw_lax_rc=0 || lc_fw_lax_rc=$?
 [ "$lc_fw_lax_rc" -eq 0 ] && ok "lc: without --fatal-warnings the same unmatched KIND still succeeds" \
     || bad "lc: no --fatal-warnings" "expected 0, got $lc_fw_lax_rc"
 # And when every -delete DOES match, --fatal-warnings must not refuse a run
 # that had nothing to complain about.
 build_main "$T/lc_fw_ok_fixture"
-"$MACHO9" lc "$T/lc_fw_ok_fixture" --fatal-warnings -delete uuid \
+m9ip lc "$T/lc_fw_ok_fixture" --fatal-warnings -delete uuid \
     >/dev/null 2>"$T/lc_fw_ok.err" && lc_fw_ok_rc=0 || lc_fw_ok_rc=$?
 [ "$lc_fw_ok_rc" -eq 0 ] && ok "lc: --fatal-warnings succeeds when the KIND matched" \
     || bad "lc: --fatal-warnings (matched)" "expected 0, got $lc_fw_ok_rc: $(cat "$T/lc_fw_ok.err")"
@@ -1483,7 +1303,7 @@ build_main "$T/lc_fw_ok_fixture"
 # that fix: no cli_test.sh assertion existed for it before.
 # ============================================================================
 build_main "$T/dylib_noop_fixture"
-if "$MACHO9" dylib "$T/dylib_noop_fixture" --allow-grow >/dev/null 2>"$T/dylib_noop.err"; then
+if m9ip dylib "$T/dylib_noop_fixture" --allow-grow >/dev/null 2>"$T/dylib_noop.err"; then
     bad "dylib: --allow-grow alone" "should be refused (no operation given)"
 else
     ok "dylib: --allow-grow alone is refused"
@@ -1501,7 +1321,7 @@ fi
 # ============================================================================
 build_main "$T/dylib_fixture"
 newpath="@loader_path/renamed-liba.dylib"
-"$MACHO9" dylib "$T/dylib_fixture" -replace "@loader_path/liba.dylib" "$newpath" \
+m9ip dylib "$T/dylib_fixture" -replace "@loader_path/liba.dylib" "$newpath" \
     >"$T/dylib.out" || bad "dylib: -replace exit" "$(cat "$T/dylib.out")"
 dylib_info=$("$MACHO9" info "$T/dylib_fixture")
 echo "$dylib_info" | grep -q "path=$newpath" && ok "dylib: -replace changed the path" \
@@ -1518,14 +1338,14 @@ build_main "$T/dylib_grow_fixture"
 # the refusal path.
 longpath="@loader_path/$(printf 'x%.0s' $(seq 1 3500)).dylib"
 rc=0
-"$MACHO9" dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
+m9ip dylib "$T/dylib_grow_fixture" -replace "@loader_path/liba.dylib" "$longpath" \
     >/dev/null 2>"$T/dylib_grow.err" || rc=$?
 # A considered refusal (mr_process_thin examined the header pad, decided
 # the new load commands do not fit, and declined without --allow-grow to
 # widen it) is MR_REFUSED, forwarded verbatim as EX_REFUSED.
 [ "$rc" -eq 1 ] && ok "dylib: long path without --allow-grow is refused (EX_REFUSED)" \
     || bad "dylib: long path without --allow-grow" "expected exit 1, got $rc: $(cat "$T/dylib_grow.err")"
-if "$MACHO9" dylib "$T/dylib_grow_fixture" --allow-grow -replace "@loader_path/liba.dylib" "$longpath" \
+if m9ip dylib "$T/dylib_grow_fixture" --allow-grow -replace "@loader_path/liba.dylib" "$longpath" \
     >"$T/dylib_grow.out"; then
     ok "dylib: --allow-grow lets the same replace through"
 else
@@ -1548,7 +1368,7 @@ echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: --allow-grow result
 # mi_validate declines it -- MI_NOT_MACHO, forwarded as MR_REFUSED, EX_REFUSED.
 echo 'not a mach-o, just bytes' > "$T/dylib_notmacho"
 rc=0
-"$MACHO9" dylib "$T/dylib_notmacho" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+m9ip dylib "$T/dylib_notmacho" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
     >/dev/null 2>"$T/dylib_notmacho.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "dylib: a non-Mach-O file is refused (EX_REFUSED)" \
     || bad "dylib: non-Mach-O" "expected exit 1, got $rc: $(cat "$T/dylib_notmacho.err")"
@@ -1556,7 +1376,7 @@ rc=0
 # An absent file: mr_apply_file's own open() fails before mi_open is ever
 # reached -- a genuine syscall failure, MR_FAIL, EX_FAIL.
 rc=0
-"$MACHO9" dylib "$T/no-such-file-for-dylib" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+m9ip dylib "$T/no-such-file-for-dylib" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
     >/dev/null 2>"$T/dylib_absent.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "dylib: an absent file is a failure, not a refusal (EX_FAIL)" \
     || bad "dylib: absent file" "expected exit 2, got $rc: $(cat "$T/dylib_absent.err")"
@@ -1569,7 +1389,7 @@ rc=0
 # is the 4 bytes 0277 0272 0376 0312 (octal), file-order low-to-high.
 printf '%b' '\0277\0272\0376\0312' > "$T/dylib_fat64"
 rc=0
-"$MACHO9" dylib "$T/dylib_fat64" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+m9ip dylib "$T/dylib_fat64" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
     >/dev/null 2>"$T/dylib_fat64.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "dylib: a 64-bit fat container is refused, not merely failed (EX_REFUSED)" \
     || bad "dylib: 64-bit fat" "expected exit 1, got $rc: $(cat "$T/dylib_fat64.err")"
@@ -1590,7 +1410,7 @@ grep -q "fat_arch_64" "$T/dylib_fat64.err" \
 # look.
 # ============================================================================
 build_main "$T/unmatched_fixture"
-unmatched_out=$("$MACHO9" dylib "$T/unmatched_fixture" \
+unmatched_out=$(m9ip dylib "$T/unmatched_fixture" \
         -replace /usr/lib/libSystem.B.dylib /tmp/new.dylib \
         -replace /nope/absent.dylib /also/absent.dylib \
         2>"$T/unmatched.err") && unmatched_rc=0 || unmatched_rc=$?
@@ -1631,9 +1451,9 @@ fi
 # code path.
 build_main "$T/dylib_conflict_fixture"
 conflict_path="@loader_path/libconflict.dylib"
-"$MACHO9" dylib "$T/dylib_conflict_fixture" -append "$conflict_path" \
+m9ip dylib "$T/dylib_conflict_fixture" -append "$conflict_path" \
     >/dev/null || bad "dylib: conflict fixture setup" "-append of $conflict_path failed"
-"$MACHO9" dylib "$T/dylib_conflict_fixture" \
+m9ip dylib "$T/dylib_conflict_fixture" \
         -replace "$conflict_path" /also/absent.dylib \
         -delete "$conflict_path" \
         >"$T/conflict.out" 2>"$T/conflict.err" && conflict_rc=0 || conflict_rc=$?
@@ -1654,12 +1474,23 @@ fi
 # ============================================================================
 # dylib --fatal-warnings: turns the "matched nothing" report just above from
 # a stderr note into a refusal. Two -replace ops, one of which matches and
-# one of which cannot -- so this also proves the file is STILL WRITTEN when
-# --fatal-warnings refuses: this mode reports AFTER the rewrite, it does not
-# roll it back (see mr_ops.fatal_unmatched's own comment in src/rewrite.h).
+# one of which cannot -- so this also proves that a refused run WRITES
+# NOTHING, even though the rewrite itself succeeded: the verdict is decided
+# before mr_apply_file's wa_write_new, so OUT is never created and the op that
+# DID match lands nowhere.
+#
+# THIS ASSERTION USED TO SAY THE OPPOSITE. While the verb rewrote FILE, the
+# write came last and was conditional on something having changed, so a mixed
+# run wrote FILE and then refused; only an all-miss run (below) wrote nothing.
+# A verb that writes OUT unconditionally cannot keep that order without
+# leaving an output behind on a refusal, which is precisely what "refused"
+# must not mean -- so the verdict moved ahead of the write, and both cases now
+# give the same answer. Run WITHOUT m9ip: whether OUT exists is the point.
 # ============================================================================
 build_main "$T/dylib_fw_fixture"
-"$MACHO9" dylib "$T/dylib_fw_fixture" --fatal-warnings \
+cp "$T/dylib_fw_fixture" "$T/dylib_fw_before"
+rm -f "$T/dylib_fw_out"
+"$MACHO9" dylib "$T/dylib_fw_fixture" "$T/dylib_fw_out" --fatal-warnings \
         -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw.dylib" \
         -replace /nope/absent-fw.dylib /also/absent-fw.dylib \
         >"$T/dylib_fw.out" 2>"$T/dylib_fw.err" && dylib_fw_rc=0 || dylib_fw_rc=$?
@@ -1667,14 +1498,16 @@ build_main "$T/dylib_fw_fixture"
     || bad "dylib: --fatal-warnings refusal" "expected exit 1, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
 grep -qF "/nope/absent-fw.dylib" "$T/dylib_fw.err" && ok "dylib: --fatal-warnings still names the op that matched nothing" \
     || bad "dylib: --fatal-warnings refusal message" "expected /nope/absent-fw.dylib on stderr, got: $(cat "$T/dylib_fw.err")"
-dylib_fw_info=$("$MACHO9" info "$T/dylib_fw_fixture")
-echo "$dylib_fw_info" | grep -qF "path=@loader_path/renamed-fw.dylib" \
-    && ok "dylib: --fatal-warnings still wrote the file -- the op that DID match was applied despite the refusal" \
-    || bad "dylib: --fatal-warnings file-still-written" "expected the matched -replace to have landed anyway, got: $dylib_fw_info"
+[ ! -e "$T/dylib_fw_out" ] \
+    && ok "dylib: --fatal-warnings wrote no OUT, though one operation did match" \
+    || bad "dylib: --fatal-warnings wrote OUT" "a refused run left $T/dylib_fw_out behind: $("$MACHO9" info "$T/dylib_fw_out")"
+cmp -s "$T/dylib_fw_fixture" "$T/dylib_fw_before" \
+    && ok "dylib: --fatal-warnings left FILE byte-for-byte untouched" \
+    || bad "dylib: --fatal-warnings touched FILE" "FILE changed under a verb that only reads it"
 # Without --fatal-warnings, the identical invocation still succeeds -- so the
 # flag is what changed the answer, not something else about this fixture.
 build_main "$T/dylib_fw_lax_fixture"
-"$MACHO9" dylib "$T/dylib_fw_lax_fixture" \
+m9ip dylib "$T/dylib_fw_lax_fixture" \
         -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw-lax.dylib" \
         -replace /nope/absent-fw.dylib /also/absent-fw.dylib \
         >/dev/null 2>/dev/null && dylib_fw_lax_rc=0 || dylib_fw_lax_rc=$?
@@ -1683,26 +1516,30 @@ build_main "$T/dylib_fw_lax_fixture"
 # And when every op DOES match, --fatal-warnings must not refuse a run that
 # had nothing to complain about.
 build_main "$T/dylib_fw_ok_fixture"
-"$MACHO9" dylib "$T/dylib_fw_ok_fixture" --fatal-warnings \
+m9ip dylib "$T/dylib_fw_ok_fixture" --fatal-warnings \
         -replace "@loader_path/liba.dylib" "@loader_path/renamed-fw-ok.dylib" \
         >"$T/dylib_fw_ok.out" 2>"$T/dylib_fw_ok.err" && dylib_fw_ok_rc=0 || dylib_fw_ok_rc=$?
 [ "$dylib_fw_ok_rc" -eq 0 ] && ok "dylib: --fatal-warnings succeeds when nothing is unmatched" \
     || bad "dylib: --fatal-warnings (matched)" "expected 0, got $dylib_fw_ok_rc: $(cat "$T/dylib_fw_ok.err")"
 
-# The canonical example: EVERY operation matches nothing, not
-# just one of several. mr_process_thin's "nothing to change" early return
-# never sets *out_modified in that case, so mr_apply_file never attempts
-# the write at all -- there is nothing here for --fatal-warnings to have
-# left in place. This is the assertion the mixed-op test above does NOT
-# cover (there, one op DOES match, so the file legitimately changes): only
-# an all-miss run proves the file is untouched, not merely unrolled-back.
+# EVERY operation matches nothing, not just one of several -- the case that
+# used to be the only one where a --fatal-warnings refusal wrote nothing,
+# because mr_process_thin's "nothing to change" early return left *out_modified
+# at 0 and the conditional write never ran. It is no longer the special case:
+# the assertion above now says the same thing about a run where one operation
+# DID match. Kept, because the two reach the refusal by different routes and
+# both must end with no OUT.
 build_main "$T/dylib_fw_allmiss_fixture"
 cp "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before"
-"$MACHO9" dylib "$T/dylib_fw_allmiss_fixture" --fatal-warnings \
+rm -f "$T/dylib_fw_allmiss_out"
+"$MACHO9" dylib "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_out" --fatal-warnings \
         -replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dylib \
         >/dev/null 2>"$T/dylib_fw_allmiss.err" && dylib_fw_allmiss_rc=0 || dylib_fw_allmiss_rc=$?
 [ "$dylib_fw_allmiss_rc" -eq 1 ] && ok "dylib: --fatal-warnings refuses when EVERY op matched nothing" \
     || bad "dylib: --fatal-warnings (all miss)" "expected exit 1, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
+[ ! -e "$T/dylib_fw_allmiss_out" ] \
+    && ok "dylib: --fatal-warnings wrote no OUT when nothing at all matched" \
+    || bad "dylib: --fatal-warnings (all miss)" "a refused run left an OUT behind"
 cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
     && ok "dylib: --fatal-warnings left the file byte-for-byte untouched when nothing at all matched" \
     || bad "dylib: --fatal-warnings (all miss)" "the file was modified despite every operation matching nothing"
@@ -1713,9 +1550,9 @@ cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
 # is, with each verb's own usage line, not a --fatal-warnings-specific
 # message (there is nothing to be specific about: the flag was never seen).
 build_main "$T/segment_fw_fixture"
-"$MACHO9" segment "$T/segment_fw_fixture" __DATA __DATA_R9 --fatal-warnings \
+m9ip segment "$T/segment_fw_fixture" __DATA __DATA_R9 --fatal-warnings \
     >/dev/null 2>"$T/segment_fw.err" \
-    && bad "segment: --fatal-warnings" "should be refused (segment takes exactly FILE OLD NEW)" \
+    && bad "segment: --fatal-warnings" "should be refused (segment takes exactly FILE OUT OLD NEW)" \
     || { grep -q "usage:" "$T/segment_fw.err" \
          && ok "segment: does not accept --fatal-warnings (refused as a usage error)" \
          || bad "segment: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/segment_fw.err")"; }
@@ -1749,7 +1586,7 @@ spare="@loader_path/libspare.dylib"
 build_main "$T/dylib_append_fixture"
 before_append_info=$("$MACHO9" info "$T/dylib_append_fixture")
 last_ordinal_before=$(echo "$before_append_info" | grep -o "ordinal=[0-9]*" | sed 's/ordinal=//' | sort -n | tail -1)
-"$MACHO9" dylib "$T/dylib_append_fixture" -append "$spare" \
+m9ip dylib "$T/dylib_append_fixture" -append "$spare" \
     >"$T/dylib_append.out" || bad "dylib: -append exit" "$(cat "$T/dylib_append.out")"
 append_info=$("$MACHO9" info "$T/dylib_append_fixture")
 expect_ordinal=$((last_ordinal_before + 1))
@@ -1763,7 +1600,7 @@ echo "$append_info" | grep -qF "ordinal=1 path=@loader_path/liba.dylib" && ok "d
 # the mapping that specifically must not become -append, since load order is
 # dyld INITIALIZATION order (docs/PROPOSAL.md).
 build_main "$T/dylib_insert_fixture"
-"$MACHO9" dylib "$T/dylib_insert_fixture" -insert "$spare" \
+m9ip dylib "$T/dylib_insert_fixture" -insert "$spare" \
     >"$T/dylib_insert.out" || bad "dylib: -insert exit" "$(cat "$T/dylib_insert.out")"
 insert_info=$("$MACHO9" info "$T/dylib_insert_fixture")
 echo "$insert_info" | grep -qF "ordinal=1 path=$spare" && ok "dylib: -insert put the new dep at ordinal 1 (first)" \
@@ -1775,7 +1612,7 @@ echo "$insert_info" | grep -qF "ordinal=2 path=@loader_path/liba.dylib" && ok "d
 # -append fixture above (liba=1, spare=2) so deleting the UNUSED spare
 # (never called, so nothing binds to it -- change_dylib refuses a -delete
 # that would orphan a bound symbol) proves removal without disturbing liba.
-"$MACHO9" dylib "$T/dylib_append_fixture" -delete "$spare" \
+m9ip dylib "$T/dylib_append_fixture" -delete "$spare" \
     >"$T/dylib_delete.out" || bad "dylib: -delete exit" "$(cat "$T/dylib_delete.out")"
 delete_info=$("$MACHO9" info "$T/dylib_append_fixture")
 if echo "$delete_info" | grep -qF "path=$spare"; then
@@ -1790,7 +1627,7 @@ echo "$delete_info" | grep -qF "ordinal=1 path=@loader_path/liba.dylib" && ok "d
 # dependency; check the load-command KIND changed, not just that the path
 # is still there (it would be, for -replace too).
 build_main "$T/dylib_reexport_fixture"
-"$MACHO9" dylib "$T/dylib_reexport_fixture" -reexport "@loader_path/liba.dylib" \
+m9ip dylib "$T/dylib_reexport_fixture" -reexport "@loader_path/liba.dylib" \
     >"$T/dylib_reexport.out" || bad "dylib: -reexport exit" "$(cat "$T/dylib_reexport.out")"
 reexport_info=$("$MACHO9" info "$T/dylib_reexport_fixture")
 echo "$reexport_info" | grep -A1 "LC_REEXPORT_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
@@ -1804,7 +1641,7 @@ build_main "$T/rpath_fixture" "/tmp/cli_test_original_rpath"
 before_rp=$("$MACHO9" info "$T/rpath_fixture")
 echo "$before_rp" | grep -q "rpath=/tmp/cli_test_original_rpath" && ok "rpath: fixture has original rpath" \
     || bad "rpath: precondition" "original rpath missing from info output"
-"$MACHO9" rpath "$T/rpath_fixture" -append "/tmp/cli_test_appended_rpath" \
+m9ip rpath "$T/rpath_fixture" -append "/tmp/cli_test_appended_rpath" \
     >"$T/rpath.out" || bad "rpath: -append exit" "$(cat "$T/rpath.out")"
 after_rp=$("$MACHO9" info "$T/rpath_fixture")
 echo "$after_rp" | grep -q "rpath=/tmp/cli_test_original_rpath" && \
@@ -1817,7 +1654,7 @@ echo "$after_rp" | grep -q "rpath=/tmp/cli_test_appended_rpath" && \
 # distinct change_dylib flag (-change-rpath / -delete-rpath) that a swapped
 # mapping could silently confuse with the dylib family's -change/-delete.
 build_main "$T/rpath_replace_fixture" "/tmp/cli_test_replace_before"
-"$MACHO9" rpath "$T/rpath_replace_fixture" -replace "/tmp/cli_test_replace_before" "/tmp/cli_test_replace_after" \
+m9ip rpath "$T/rpath_replace_fixture" -replace "/tmp/cli_test_replace_before" "/tmp/cli_test_replace_after" \
     >"$T/rpath_replace.out" || bad "rpath: -replace exit" "$(cat "$T/rpath_replace.out")"
 replace_info=$("$MACHO9" info "$T/rpath_replace_fixture")
 if echo "$replace_info" | grep -q "rpath=/tmp/cli_test_replace_before"; then
@@ -1829,7 +1666,7 @@ echo "$replace_info" | grep -q "rpath=/tmp/cli_test_replace_after" && ok "rpath:
     || bad "rpath: -replace (new)" "new rpath not found in: $replace_info"
 
 build_main "$T/rpath_delete_fixture" "/tmp/cli_test_delete_me"
-"$MACHO9" rpath "$T/rpath_delete_fixture" -delete "/tmp/cli_test_delete_me" \
+m9ip rpath "$T/rpath_delete_fixture" -delete "/tmp/cli_test_delete_me" \
     >"$T/rpath_delete.out" || bad "rpath: -delete exit" "$(cat "$T/rpath_delete.out")"
 delete_rp_info=$("$MACHO9" info "$T/rpath_delete_fixture")
 if echo "$delete_rp_info" | grep -q "^  rpath="; then
@@ -1841,7 +1678,7 @@ fi
 # rpath -replace naming a search path the file does not have: the rpath twin
 # of the dylib -replace miss report above.
 build_main "$T/rpath_miss_fixture" "/tmp/cli_test_rpath_present"
-"$MACHO9" rpath "$T/rpath_miss_fixture" -replace "/tmp/cli_test_rpath_absent" "/tmp/cli_test_rpath_new" \
+m9ip rpath "$T/rpath_miss_fixture" -replace "/tmp/cli_test_rpath_absent" "/tmp/cli_test_rpath_new" \
     >"$T/rpath_miss.out" 2>"$T/rpath_miss.err" && rpath_miss_rc=0 || rpath_miss_rc=$?
 [ "$rpath_miss_rc" -eq 0 ] && ok "rpath: unmatched -replace still exits 0" \
     || bad "rpath: unmatched -replace" "expected 0, got $rpath_miss_rc: $(cat "$T/rpath_miss.err")"
@@ -1856,7 +1693,7 @@ echo "$rpath_miss_info" | grep -q "rpath=/tmp/cli_test_rpath_present" \
 # rpath --fatal-warnings: the same miss report just above, turned into a
 # refusal, the rpath twin of the dylib --fatal-warnings block above.
 build_main "$T/rpath_fw_fixture" "/tmp/cli_test_rpath_fw_present"
-"$MACHO9" rpath "$T/rpath_fw_fixture" --fatal-warnings \
+m9ip rpath "$T/rpath_fw_fixture" --fatal-warnings \
         -replace "/tmp/cli_test_rpath_fw_absent" "/tmp/cli_test_rpath_fw_new" \
         >/dev/null 2>"$T/rpath_fw.err" && rpath_fw_rc=0 || rpath_fw_rc=$?
 [ "$rpath_fw_rc" -eq 1 ] && ok "rpath: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
@@ -1866,14 +1703,14 @@ grep -q "rpath /tmp/cli_test_rpath_fw_absent matched nothing" "$T/rpath_fw.err" 
     || bad "rpath: --fatal-warnings refusal message" "expected the miss message on stderr, got: $(cat "$T/rpath_fw.err")"
 # Without --fatal-warnings, the identical invocation still succeeds.
 build_main "$T/rpath_fw_lax_fixture" "/tmp/cli_test_rpath_fw_lax_present"
-"$MACHO9" rpath "$T/rpath_fw_lax_fixture" \
+m9ip rpath "$T/rpath_fw_lax_fixture" \
         -replace "/tmp/cli_test_rpath_fw_absent" "/tmp/cli_test_rpath_fw_new" \
         >/dev/null 2>/dev/null && rpath_fw_lax_rc=0 || rpath_fw_lax_rc=$?
 [ "$rpath_fw_lax_rc" -eq 0 ] && ok "rpath: without --fatal-warnings the same unmatched op still succeeds" \
     || bad "rpath: no --fatal-warnings" "expected 0, got $rpath_fw_lax_rc"
 # And when the op DOES match, --fatal-warnings must not refuse.
 build_main "$T/rpath_fw_ok_fixture" "/tmp/cli_test_rpath_fw_ok_present"
-"$MACHO9" rpath "$T/rpath_fw_ok_fixture" --fatal-warnings \
+m9ip rpath "$T/rpath_fw_ok_fixture" --fatal-warnings \
         -replace "/tmp/cli_test_rpath_fw_ok_present" "/tmp/cli_test_rpath_fw_ok_new" \
         >"$T/rpath_fw_ok.out" 2>"$T/rpath_fw_ok.err" && rpath_fw_ok_rc=0 || rpath_fw_ok_rc=$?
 [ "$rpath_fw_ok_rc" -eq 0 ] && ok "rpath: --fatal-warnings succeeds when nothing is unmatched" \
@@ -1906,7 +1743,7 @@ rpath_last()  { rpath_positions "$1" | tail -1 | sed 's/^[0-9]* //'; }
     && ok "rpath -insert: fixture starts with the linker's first rpath" \
     || bad "rpath -insert: precondition" "expected /tmp/cli_test_ins_existing_one first, got: $(rpath_positions "$T/rpath_insert_fixture")"
 
-"$MACHO9" rpath "$T/rpath_insert_fixture" -insert "/tmp/cli_test_inserted_rpath" \
+m9ip rpath "$T/rpath_insert_fixture" -insert "/tmp/cli_test_inserted_rpath" \
     >"$T/rpath_insert.out" 2>&1 || bad "rpath: -insert exit" "$(cat "$T/rpath_insert.out")"
 [ "$(rpath_first "$T/rpath_insert_fixture")" = "/tmp/cli_test_inserted_rpath" ] \
     && ok "rpath: -insert put the new search path FIRST" \
@@ -1925,7 +1762,7 @@ ins_all=$(rpath_positions "$T/rpath_insert_fixture" | sed 's/^[0-9]* //' | tr '\
     -Xlinker -rpath -Xlinker "/tmp/cli_test_ins_existing_one" \
     -Xlinker -rpath -Xlinker "/tmp/cli_test_ins_existing_two" \
     "$T/main.c" "$T/liba.dylib" -o "$T/rpath_append_cmp_fixture"
-"$MACHO9" rpath "$T/rpath_append_cmp_fixture" -append "/tmp/cli_test_inserted_rpath" \
+m9ip rpath "$T/rpath_append_cmp_fixture" -append "/tmp/cli_test_inserted_rpath" \
     >"$T/rpath_append_cmp.out" 2>&1 || bad "rpath: -append (comparison) exit" "$(cat "$T/rpath_append_cmp.out")"
 [ "$(rpath_last "$T/rpath_append_cmp_fixture")" = "/tmp/cli_test_inserted_rpath" ] \
     && [ "$(rpath_first "$T/rpath_append_cmp_fixture")" = "/tmp/cli_test_ins_existing_one" ] \
@@ -1956,7 +1793,7 @@ ins_all=$(rpath_positions "$T/rpath_insert_fixture" | sed 's/^[0-9]* //' | tr '\
 "$MACHO9" info "$T/rpath_insert_empty" | grep -q "^  rpath=" \
     && bad "rpath -insert: empty precondition" "fixture unexpectedly already has an rpath" \
     || ok "rpath -insert: empty-case fixture has no rpath to start with"
-"$MACHO9" rpath "$T/rpath_insert_empty" -insert "/tmp/cli_test_empty_ins" -append "/tmp/cli_test_empty_app" \
+m9ip rpath "$T/rpath_insert_empty" -insert "/tmp/cli_test_empty_ins" -append "/tmp/cli_test_empty_app" \
     >"$T/rpath_insert_empty.out" 2>&1 || bad "rpath: -insert (no existing) exit" "$(cat "$T/rpath_insert_empty.out")"
 empty_all=$(rpath_positions "$T/rpath_insert_empty" | sed 's/^[0-9]* //' | tr '\n' ' ')
 [ "$empty_all" = "/tmp/cli_test_empty_ins /tmp/cli_test_empty_app " ] \
@@ -2137,7 +1974,7 @@ grep -q "^SEG __DATA$" "$T/segs_before" && grep -q "^SECT __DATA/" "$T/segs_befo
     && ok "segment: fixture has a __DATA segment whose sections name it" \
     || bad "segment: precondition" "no __DATA segment/section in: $(cat "$T/segs_before")"
 
-"$MACHO9" segment "$T/segment_fixture" __DATA __DATA_R9 \
+m9ip segment "$T/segment_fixture" __DATA __DATA_R9 \
     >"$T/segment.out" 2>&1 || bad "segment: exit" "$(cat "$T/segment.out")"
 "$T/segread" segs "$T/segment_fixture" > "$T/segs_after"
 grep -q "^SEG __DATA$" "$T/segs_after" \
@@ -2178,7 +2015,7 @@ fi
 # terminator -- the boundary rename_segment has always accepted, and the one a
 # strcpy-based implementation gets wrong by writing a 17th byte.
 "$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_16_fixture"
-"$MACHO9" segment "$T/segment_16_fixture" __DATA ABCDEFGHIJKLMNOP \
+m9ip segment "$T/segment_16_fixture" __DATA ABCDEFGHIJKLMNOP \
     >"$T/segment16.out" 2>&1 || bad "segment: 16-byte name exit" "$(cat "$T/segment16.out")"
 "$T/segread" segs "$T/segment_16_fixture" | grep -q "^SEG ABCDEFGHIJKLMNOP$" \
     && ok "segment: accepts a NEW name of exactly 16 bytes and writes it whole" \
@@ -2187,7 +2024,7 @@ fi
 "$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_17_fixture"
 cp "$T/segment_17_fixture" "$T/segment_17_before"
 rc=0
-"$MACHO9" segment "$T/segment_17_fixture" __DATA ABCDEFGHIJKLMNOPQ \
+m9ip segment "$T/segment_17_fixture" __DATA ABCDEFGHIJKLMNOPQ \
     >"$T/segment17.out" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && ok "segment: refuses a 17-byte NEW name with the documented refusal code" \
     || bad "segment: 17-byte name" "expected exit 1, got $rc: $(cat "$T/segment17.out")"
@@ -2198,7 +2035,7 @@ cmp -s "$T/segment_17_fixture" "$T/segment_17_before" \
 # A segment name nothing matches must leave the file alone -- and say so.
 "$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_nomatch_fixture"
 cp "$T/segment_nomatch_fixture" "$T/segment_nomatch_before"
-"$MACHO9" segment "$T/segment_nomatch_fixture" __NOSUCHSEG __OTHER \
+m9ip segment "$T/segment_nomatch_fixture" __NOSUCHSEG __OTHER \
     >"$T/segment_nomatch.out" 2>&1 || bad "segment: no-match exit" "$(cat "$T/segment_nomatch.out")"
 cmp -s "$T/segment_nomatch_fixture" "$T/segment_nomatch_before" \
     && ok "segment: a rename that matched nothing did not touch the file" \
@@ -2211,7 +2048,7 @@ cmp -s "$T/segment_nomatch_fixture" "$T/segment_nomatch_before" \
 "$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_fat_slice"
 printf 'not a mach-o at all, just bytes to be preserved verbatim.\n' > "$T/segment_fat_blob"
 "$T/segread" wrap "$T/segment_fat" "$T/segment_fat_slice" "$T/segment_fat_blob"
-"$MACHO9" segment "$T/segment_fat" __DATA __DATA_R9 \
+m9ip segment "$T/segment_fat" __DATA __DATA_R9 \
     >"$T/segment_fat.out" 2>&1 || bad "segment: fat exit" "$(cat "$T/segment_fat.out")"
 "$T/segread" dump "$T/segment_fat" 0 "$T/segment_fat_slice0"
 "$T/segread" segs "$T/segment_fat_slice0" > "$T/segs_fat"
@@ -2256,7 +2093,7 @@ grep -q 'implausible' "$T/imp_verify.err" \
 # input left alone -- so the skip below is narrow, not a hole.
 cp "$T/implausible" "$T/imp_lc"
 imp_before=$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)
-if "$MACHO9" lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
+if m9ip lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
     bad "segment: mg_plausible scope" "lc -delete uuid was NOT refused, so the gate is gone"
 else
     grep -q 'no known function' "$T/imp_lc.err" \
@@ -2294,7 +2131,7 @@ grep -q ': OK' "$T/es_verify.out" && ok "verify: and says OK about it" \
 # ...and it is rewritable, which is the half the rewrite path got wrong: the
 # gate sits in mr_process_thin, so a refusal here refused the operation too.
 cp "$T/emptystarts" "$T/es_lc"
-if "$MACHO9" lc "$T/es_lc" -delete uuid >/dev/null 2>"$T/es_lc.err"; then
+if m9ip lc "$T/es_lc" -delete uuid >/dev/null 2>"$T/es_lc.err"; then
     ok "lc -delete: an image declaring no function starts is rewritable"
 else
     bad "lc -delete: empty LC_FUNCTION_STARTS" "refused: $(cat "$T/es_lc.err")"
@@ -2309,7 +2146,7 @@ cmp -s "$T/implausible" "$T/emptystarts" \
 
 # ...and a rename of the very same file goes through, and really renames.
 cp "$T/implausible" "$T/imp_seg"
-if "$MACHO9" segment "$T/imp_seg" __DATA __DATA_R9 >/dev/null 2>"$T/imp_seg.err"; then
+if m9ip segment "$T/imp_seg" __DATA __DATA_R9 >/dev/null 2>"$T/imp_seg.err"; then
     "$T/segread" segs "$T/imp_seg" > "$T/imp_segs"
     grep -q "^SEG __DATA_R9$" "$T/imp_segs" && ! grep -q "^SEG __DATA$" "$T/imp_segs" \
         && ok "segment: renames a binary mg_plausible rejects for other operations" \
@@ -2340,7 +2177,7 @@ fi
 # mr_process_thin reaches it instead of skipping it.
 "$T/segread" wrap "$T/mrerr_fat" "$T/segment_fat_slice" "$T/implausible" 16777223
 mrerr_before=$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)
-if "$MACHO9" lc "$T/mrerr_fat" -delete uuid >"$T/mrerr.out" 2>"$T/mrerr.err"; then
+if m9ip lc "$T/mrerr_fat" -delete uuid >"$T/mrerr.out" 2>"$T/mrerr.err"; then
     bad "lc: MR_ERROR fat slice" "exited 0; a partial rewrite was reported as success"
 else
     ok "lc: a fat slice whose edit is refused refuses the whole file (nonzero exit)"
@@ -2368,13 +2205,136 @@ grep -q 'no known function' "$T/mrerr.err" \
 # above, and fix_macho's in wrapper_test.sh) cover a slice that really is not
 # a Mach-O, which is the only thing that reaches that path.
 "$T/segread" wrap "$T/mrskip_fat" "$T/segment_fat_slice" "$T/implausible" 7
-if "$MACHO9" lc "$T/mrskip_fat" -delete uuid >"$T/mrskip.out" 2>"$T/mrskip.err"; then
+if m9ip lc "$T/mrskip_fat" -delete uuid >"$T/mrskip.out" 2>"$T/mrskip.err"; then
     bad "lc: MR_SKIP/MR_ERROR split" "a Mach-O slice at cputype 0x7 was skipped, not refused"
 else
     grep -q 'arch 1 (cputype 0x7): refusing the whole fat file' "$T/mrskip.err" \
         && ok "lc: the slice's own bytes decide MR_ERROR, not the fat table's cputype" \
         || bad "lc: MR_SKIP/MR_ERROR split" "refused for another reason: $(cat "$T/mrskip.err")"
 fi
+
+# ============================================================================
+# the rewriting verbs never write their input
+# ============================================================================
+#
+# dylib, rpath, lc and segment all reach mr_apply_file, which reads FILE and
+# writes OUT. The same five facts minos and retag-swift are held to above, per
+# verb, with no m9ip helper in the way: the run succeeds, FILE is untouched in
+# BYTES and INODE, OUT carries the change, stdout names what was written, and
+# an OUT that is FILE -- or a symlink to FILE, or missing altogether -- is
+# refused with 2 before any work.
+#
+# nwi runs the four that every verb shares; the change OUT is supposed to carry
+# is verb-specific, so each verb's own check for that follows.
+nwi() {   # VERB then the operands that come after FILE OUT
+    nwi_verb=$1; shift
+    nwi_in="$T/nwi_$nwi_verb"
+    nwi_out="$T/nwi_${nwi_verb}_out"
+    build_main "$nwi_in"
+    nwi_sha=$(sha "$nwi_in"); nwi_ino=$(stat -f %i "$nwi_in")
+    rm -f "$nwi_out"
+    "$MACHO9" "$nwi_verb" "$nwi_in" "$nwi_out" "$@" >"$T/nwi.out" 2>"$T/nwi.err" \
+        && ok "$nwi_verb FILE OUT: succeeds" \
+        || bad "$nwi_verb FILE OUT" "$(cat "$T/nwi.err")"
+    [ "$(sha "$nwi_in")" = "$nwi_sha" ] && [ "$(stat -f %i "$nwi_in")" = "$nwi_ino" ] \
+        && ok "$nwi_verb FILE OUT: FILE is untouched, bytes and inode" \
+        || bad "$nwi_verb FILE OUT" "FILE changed"
+    grep -q "^Wrote $nwi_out (" "$T/nwi.out" \
+        && ok "$nwi_verb FILE OUT: says what it wrote" \
+        || bad "$nwi_verb FILE OUT" "no Wrote line: $(cat "$T/nwi.out")"
+    rc=0
+    "$MACHO9" "$nwi_verb" "$nwi_in" "$nwi_in" "$@" >/dev/null 2>"$T/nwi_same.err" || rc=$?
+    [ "$rc" -eq 2 ] && [ "$(sha "$nwi_in")" = "$nwi_sha" ] \
+        && ok "$nwi_verb: OUT that is FILE is refused (2), FILE untouched" \
+        || bad "$nwi_verb OUT=FILE" "rc $rc"
+    grep -q "never writes its input" "$T/nwi_same.err" \
+        && ok "$nwi_verb: ... refused up front, before any work" \
+        || bad "$nwi_verb OUT=FILE" "not the up-front refusal: $(cat "$T/nwi_same.err")"
+    rm -f "$T/nwi_link"; ln -s "$nwi_in" "$T/nwi_link"
+    rc=0
+    "$MACHO9" "$nwi_verb" "$nwi_in" "$T/nwi_link" "$@" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] && ok "$nwi_verb: OUT that is a symlink to FILE is refused (2)" \
+        || bad "$nwi_verb OUT=link" "rc $rc"
+    rc=0
+    "$MACHO9" "$nwi_verb" "$nwi_in" "$@" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] && ok "$nwi_verb: a missing OUT is an error (2)" \
+        || bad "$nwi_verb no OUT" "rc $rc"
+}
+nwi dylib -append /nwi/appended.dylib
+"$MACHO9" info "$T/nwi_dylib_out" | grep -qF "path=/nwi/appended.dylib" \
+    && ok "dylib FILE OUT: OUT carries the appended dependency" \
+    || bad "dylib FILE OUT" "OUT lacks the appended dependency"
+nwi rpath -append /nwi/appended/rpath
+"$MACHO9" info "$T/nwi_rpath_out" | grep -qF "/nwi/appended/rpath" \
+    && ok "rpath FILE OUT: OUT carries the appended rpath" \
+    || bad "rpath FILE OUT" "OUT lacks the appended rpath"
+nwi lc -delete uuid
+"$MACHO9" info "$T/nwi_lc_out" | grep -q "LC_UUID" \
+    && bad "lc FILE OUT" "OUT still has LC_UUID" \
+    || ok "lc FILE OUT: OUT has lost its LC_UUID"
+nwi segment __DATA __DATA_NWI
+"$MACHO9" info "$T/nwi_segment_out" | grep -q "segname=__DATA_NWI" \
+    && ok "segment FILE OUT: OUT carries the renamed segment" \
+    || bad "segment FILE OUT" "OUT lacks the renamed segment"
+
+# AN OUT THAT BEGINS WITH '-' IS REFUSED, not created. `dylib FILE
+# --allow-grow -append /x` is the flag-first habit from before these verbs took
+# an output, and nothing here treats a positional as a flag -- so without the
+# check it creates a regular file called "--allow-grow" and exits 0, doing
+# something the caller did not ask for. Every verb that takes an OUT gets the
+# same answer from the same place (m9_bad_out); these eight are the ones whose
+# positionals are at fixed argv indices, and `edit`, whose parser scans for
+# them, is asserted in its own section below.
+# The operands after OUT are each verb's own, because the argc-exact verbs reach
+# their usage line before m9_bad_out if the count is wrong -- which would make
+# this pass for the wrong reason.
+for nwid_verb in dylib rpath lc segment minos retag-swift declassify grow; do
+    case $nwid_verb in
+        dylib|rpath)  set -- -append /x ;;
+        lc)           set -- -delete uuid ;;
+        segment)      set -- __DATA __DATX ;;
+        minos)        set -- 10.9 ;;
+        retag-swift)  set -- ;;
+        declassify)   set -- ;;
+        grow)         set -- 4096 ;;
+    esac
+    build_main "$T/nwid"
+    rm -f -- "$T/--nwid-flag"
+    rc=0
+    # Run IN $T with a bare OUT word, because that is the shape of the mistake:
+    # a flag-looking OUT is relative to the caller's directory, and a test that
+    # spelled it "$T/--nwid-flag" would be asserting about a path that does not
+    # begin with '-' at all. The `cd` is also what keeps the file the check
+    # exists to prevent out of the source tree when the check is not there.
+    ( cd "$T" && "$MACHO9" "$nwid_verb" nwid --nwid-flag "$@" ) \
+        >/dev/null 2>"$T/nwid.err" || rc=$?
+    [ "$rc" -eq 2 ] && [ ! -e "$T/--nwid-flag" ] && [ ! -e "$T/-append" ] \
+        && grep -q "which begins with '-'" "$T/nwid.err" \
+        && ok "$nwid_verb: an OUT beginning with '-' is refused (2), not created" \
+        || bad "$nwid_verb OUT=-flag" "rc $rc, exists=$([ -e "$T/--nwid-flag" ] && echo YES || echo no), stderr: $(cat "$T/nwid.err")"
+done
+# ... and the remedy the message names really does work, so the refusal is not
+# a wall in front of a legal path.
+build_main "$T/nwid2"
+( cd "$T" && "$MACHO9" lc nwid2 ./-nwid-out -delete uuid ) >/dev/null 2>"$T/nwid2.err" \
+    && [ -e "$T/-nwid-out" ] \
+    && ok "lc: ... and './-name', the remedy the message names, writes that file" \
+    || bad "lc OUT=./-name" "$(cat "$T/nwid2.err")"
+
+# A 0 EXIT MUST LEAVE OUT THERE, even when there was nothing to change: OUT is
+# the answer, so a caller that got exit 0 and no OUT would have been told the
+# work succeeded and handed nothing. Nothing matched here, so OUT has to be a
+# byte-for-byte copy of FILE.
+build_main "$T/nwi_noop"
+rm -f "$T/nwi_noop_out"
+"$MACHO9" dylib "$T/nwi_noop" "$T/nwi_noop_out" -delete /not/linked/at/all.dylib \
+    >"$T/nwi_noop.out" 2>"$T/nwi_noop.err" && nwi_noop_rc=0 || nwi_noop_rc=$?
+[ "$nwi_noop_rc" -eq 0 ] \
+    && ok "dylib: an operation that matched nothing still exits 0" \
+    || bad "dylib nothing-to-change" "exit $nwi_noop_rc: $(cat "$T/nwi_noop.err")"
+cmp -s "$T/nwi_noop" "$T/nwi_noop_out" \
+    && ok "dylib: ... and OUT is there, byte-identical to FILE" \
+    || bad "dylib nothing-to-change" "OUT is missing or differs from FILE"
 
 # ============================================================================
 # retag-swift: the is-Swift tag moves from the stable-ABI bit to the legacy one
@@ -2546,79 +2506,130 @@ cat >"$T/prod.edits" <<'EOF'
 load-command  delete   uuid
 dylib         replace  @loader_path/liba.dylib  @loader_path/../S.dylib
 EOF
-"$MACHO9" edit "$T/edit_fixture" "$T/prod.edits" >"$T/edit.out" 2>"$T/edit.err" \
-    && edit_rc=0 || edit_rc=$?
+edit_fixture_before=$(sha "$T/edit_fixture"); edit_fixture_ino=$(stat -f %i "$T/edit_fixture")
+rm -f "$T/edit_fixture_out"
+"$MACHO9" edit "$T/edit_fixture" "$T/edit_fixture_out" "$T/prod.edits" \
+    >"$T/edit.out" 2>"$T/edit.err" && edit_rc=0 || edit_rc=$?
 [ "$edit_rc" -eq 0 ] && ok "edit: the production script succeeds" \
     || bad "edit" "expected 0, got $edit_rc: $(cat "$T/edit.err")"
-otool -l "$T/edit_fixture" 2>/dev/null | grep -q LC_UUID \
+[ "$(sha "$T/edit_fixture")" = "$edit_fixture_before" ] \
+    && [ "$(stat -f %i "$T/edit_fixture")" = "$edit_fixture_ino" ] \
+    && ok "edit FILE OUT SCRIPT: FILE is untouched, bytes and inode" \
+    || bad "edit FILE OUT SCRIPT" "FILE changed"
+otool -l "$T/edit_fixture_out" 2>/dev/null | grep -q LC_UUID \
     && bad "edit" "LC_UUID survived the edit script" \
     || ok "edit: applied the load-command delete"
-otool -L "$T/edit_fixture" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
+otool -L "$T/edit_fixture_out" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
     && ok "edit: applied the dylib replace" \
-    || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture")"
+    || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture_out")"
 
-# --dry-run applies and verifies everything and writes nothing. It is the
-# same code path as a real run, so what it reports is what would happen --
-# not a static prediction, which could never show the data-dependent
-# follow-up work (ordinal renumbering and the like).
-build_main "$T/edit_dry"
-dry_before=$(sha "$T/edit_dry")
-"$MACHO9" edit --dry-run "$T/edit_dry" "$T/prod.edits" \
-    >"$T/dry.out" 2>"$T/dry.err" && dry_rc=0 || dry_rc=$?
-[ "$dry_rc" -eq 0 ] && ok "edit --dry-run: succeeds" \
-    || bad "edit --dry-run" "expected 0, got $dry_rc: $(cat "$T/dry.err")"
-[ "$(sha "$T/edit_dry")" = "$dry_before" ] \
-    && ok "edit --dry-run: wrote nothing" \
-    || bad "edit --dry-run" "the file was modified by a dry run"
-grep -q "NOT written" "$T/dry.err" && ok "edit --dry-run: says it did not write" \
-    || bad "edit --dry-run" "no 'NOT written' in the report: $(cat "$T/dry.err")"
+# AN OUT THAT IS FILE IS REFUSED BEFORE THE SCRIPT IS EVEN READ. `edit` reaches
+# the same m9_bad_out every other OUT-taking verb does, and it reaches it before
+# it opens SCRIPT -- which is why SCRIPT here is a path that does not exist: the
+# answer must be the refusal about OUT, not a complaint about the script.
+rc=0
+"$MACHO9" edit "$T/edit_fixture" "$T/edit_fixture" "$T/no-such-script-at-all" \
+    >/dev/null 2>"$T/edit_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/edit_fixture")" = "$edit_fixture_before" ] \
+    && ok "edit: OUT that is FILE is refused (2), FILE untouched" \
+    || bad "edit OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/edit_same.err" \
+    && ok "edit: ... refused up front, before the script is read" \
+    || bad "edit OUT=FILE" "not the up-front refusal: $(cat "$T/edit_same.err")"
+rm -f "$T/edit_link"; ln -s "$T/edit_fixture" "$T/edit_link"
+rc=0
+"$MACHO9" edit "$T/edit_fixture" "$T/edit_link" "$T/prod.edits" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: OUT that is a symlink to FILE is refused (2)" \
+    || bad "edit OUT=link" "rc $rc"
 
-# And a dry run of a script that WOULD be refused still reports the refusal,
-# with the same exit code as the real run -- otherwise a dry run could not
-# be used to find out whether the real run will work, which is its purpose.
-build_main "$T/edit_dryref"
-dryref_before=$(sha "$T/edit_dryref")
-printf 'fatal-warnings\ndylib delete /definitely/not/linked.dylib\n' >"$T/dryref.edits"
-"$MACHO9" edit --dry-run "$T/edit_dryref" "$T/dryref.edits" \
-    >/dev/null 2>"$T/dryref_dry.err" && dryref_dry_rc=0 || dryref_dry_rc=$?
-[ "$(sha "$T/edit_dryref")" = "$dryref_before" ] \
-    && ok "edit --dry-run: a refused script's dry run wrote nothing" \
-    || bad "edit --dry-run refusal" "the file was modified by the dry run"
-"$MACHO9" edit "$T/edit_dryref" "$T/dryref.edits" \
-    >/dev/null 2>"$T/dryref_real.err" && dryref_real_rc=0 || dryref_real_rc=$?
-[ "$(sha "$T/edit_dryref")" = "$dryref_before" ] \
-    && ok "edit: the real run of the same refused script also wrote nothing" \
-    || bad "edit refusal" "the file was modified by the real run"
-[ "$dryref_dry_rc" -eq 1 ] \
-    && ok "edit --dry-run: an unmatched operation under fatal-warnings is refused (1)" \
-    || bad "edit --dry-run refusal" "expected 1, got $dryref_dry_rc: $(cat "$T/dryref_dry.err")"
-[ "$dryref_real_rc" -eq "$dryref_dry_rc" ] \
-    && ok "edit --dry-run: reports the same exit code the real run would" \
-    || bad "edit --dry-run refusal" "dry-run rc=$dryref_dry_rc real rc=$dryref_real_rc"
+# TWO POSITIONALS ARE NO LONGER A COMMAND: `edit FILE SCRIPT` used to rewrite
+# FILE, so accepting it now -- with SCRIPT landing where OUT belongs -- would
+# write a Mach-O over the script. It is a usage error, and the script survives.
+prod_edits_sha=$(sha "$T/prod.edits")
+rc=0
+"$MACHO9" edit "$T/edit_fixture" "$T/prod.edits" >/dev/null 2>"$T/edit_two.err" || rc=$?
+[ "$rc" -eq 2 ] && ok "edit: two positionals (no OUT) is a usage error (2)" \
+    || bad "edit no OUT" "expected 2, got $rc: $(cat "$T/edit_two.err")"
+[ "$(sha "$T/prod.edits")" = "$prod_edits_sha" ] \
+    && ok "edit: ... and the script was not taken for an OUT and written over" \
+    || bad "edit no OUT" "the script file was overwritten"
 
-# edit --output leaves the input alone.
-build_main "$T/edit_src"
-before=$(sha "$T/edit_src")
-"$MACHO9" edit "$T/edit_src" "$T/prod.edits" --output "$T/edit_dst" \
-    >/dev/null 2>"$T/edit_out.err" || bad "edit --output" "$(cat "$T/edit_out.err")"
-[ "$(sha "$T/edit_src")" = "$before" ] && ok "edit --output: input untouched" \
-    || bad "edit --output" "the input file was modified"
-[ -f "$T/edit_dst" ] && ok "edit --output: wrote the output" \
-    || bad "edit --output" "no output file"
+# --dry-run AND --output ARE GONE, both unknown flags now (2). A scratch OUT is
+# the same run, so there is nothing --dry-run said that this does not.
+rc=0
+"$MACHO9" edit --dry-run "$T/edit_fixture" "$T/edit_dry_out" "$T/prod.edits" \
+    >/dev/null 2>"$T/edit_dry.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/edit_dry_out" ] \
+    && ok "edit: --dry-run is an unknown flag now (2), and writes no OUT" \
+    || bad "edit --dry-run gone" "expected 2 and no OUT, got $rc: $(cat "$T/edit_dry.err")"
+rc=0
+"$MACHO9" edit "$T/edit_fixture" "$T/edit_flag_out" "$T/prod.edits" --output "$T/edit_flag_out2" \
+    >/dev/null 2>"$T/edit_output.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/edit_flag_out" ] && [ ! -e "$T/edit_flag_out2" ] \
+    && ok "edit: --output is an unknown flag now (2), and neither name is written" \
+    || bad "edit --output gone" "expected 2 and no output, got $rc: $(cat "$T/edit_output.err")"
 
-# edit FILE - reads the script from stdin, so a generated script needs no
-# temp file.
+# AN OUT BEGINNING WITH '-' IS REFUSED, not created -- the same answer, from the
+# same place (m9_bad_out), as the eight fixed-arity verbs get above. A single
+# dash, because every flag this verb takes has two and a double-dashed OUT is
+# caught as an unknown flag first.
+build_main "$T/edit_dashout"
+rm -f -- "$T/-edit-dashout"
+rc=0
+( cd "$T" && "$MACHO9" edit edit_dashout -edit-dashout "$T/prod.edits" ) \
+    >/dev/null 2>"$T/edit_dashout.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/-edit-dashout" ] \
+    && grep -q "which begins with '-'" "$T/edit_dashout.err" \
+    && ok "edit: an OUT beginning with '-' is refused (2), not created" \
+    || bad "edit OUT=-flag" "rc $rc, stderr: $(cat "$T/edit_dashout.err")"
+
+# A 0 EXIT LEAVES OUT THERE, even when no statement changed anything: OUT is
+# the answer, so exit 0 with no OUT would hand a caller nothing.
+build_main "$T/edit_noop"
+printf 'dylib delete /not/linked/at/all.dylib\n' >"$T/noop.edits"
+rm -f "$T/edit_noop_out"
+"$MACHO9" edit "$T/edit_noop" "$T/edit_noop_out" "$T/noop.edits" \
+    >/dev/null 2>"$T/edit_noop.err" && edit_noop_rc=0 || edit_noop_rc=$?
+[ "$edit_noop_rc" -eq 0 ] && ok "edit: a script that changed nothing still exits 0" \
+    || bad "edit nothing-to-change" "exit $edit_noop_rc: $(cat "$T/edit_noop.err")"
+cmp -s "$T/edit_noop" "$T/edit_noop_out" \
+    && ok "edit: ... and OUT is there, byte-identical to FILE" \
+    || bad "edit nothing-to-change" "OUT is missing or differs from FILE"
+
+# A REFUSED RUN WRITES NOTHING AT ALL: not FILE, which `edit` never writes,
+# and not OUT, which may never have existed. fatal-warnings over an operation
+# that matches nothing is the cheapest way to reach a refusal after the image
+# has already been read.
+build_main "$T/edit_ref"
+ref_before=$(sha "$T/edit_ref")
+printf 'fatal-warnings\ndylib delete /definitely/not/linked.dylib\n' >"$T/ref.edits"
+rm -f "$T/edit_ref_out"
+"$MACHO9" edit "$T/edit_ref" "$T/edit_ref_out" "$T/ref.edits" \
+    >/dev/null 2>"$T/edit_ref.err" && ref_rc=0 || ref_rc=$?
+[ "$ref_rc" -eq 1 ] \
+    && ok "edit: an unmatched operation under fatal-warnings is refused (1)" \
+    || bad "edit refusal" "expected 1, got $ref_rc: $(cat "$T/edit_ref.err")"
+[ "$(sha "$T/edit_ref")" = "$ref_before" ] && [ ! -e "$T/edit_ref_out" ] \
+    && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
+    || bad "edit refusal" "the refused run modified FILE, or created OUT"
+grep -qF "$T/edit_ref_out not written; $T/edit_ref left unmodified" "$T/edit_ref.err" \
+    && ok "edit: ... and the refusal says OUT was not written and FILE is unmodified" \
+    || bad "edit refusal" "not that wording: $(cat "$T/edit_ref.err")"
+
+# edit FILE OUT - reads the script from stdin, so a generated script needs no
+# temp file. Only SCRIPT means stdin: an OUT of "-" begins with a dash and is
+# refused above.
 build_main "$T/edit_stdin"
-printf 'load-command delete uuid\n' | "$MACHO9" edit "$T/edit_stdin" - \
+rm -f "$T/edit_stdin_out"
+printf 'load-command delete uuid\n' | "$MACHO9" edit "$T/edit_stdin" "$T/edit_stdin_out" - \
     >/dev/null 2>"$T/edit_stdin.err" || bad "edit -" "$(cat "$T/edit_stdin.err")"
-otool -l "$T/edit_stdin" 2>/dev/null | grep -q LC_UUID \
+otool -l "$T/edit_stdin_out" 2>/dev/null | grep -q LC_UUID \
     && bad "edit -" "LC_UUID survived the stdin script" \
     || ok "edit: reads a script from stdin"
 
-# --verbose and --output may appear anywhere among the arguments, not just
-# after SCRIPT.
+# --verbose may appear anywhere among the arguments, not just after SCRIPT.
 build_main "$T/edit_anywhere"
-"$MACHO9" edit --verbose "$T/edit_anywhere" "$T/prod.edits" \
+"$MACHO9" edit --verbose "$T/edit_anywhere" "$T/edit_anywhere_out" "$T/prod.edits" \
     >"$T/edit_anywhere.out" 2>"$T/edit_anywhere.err" \
     || bad "edit: flags before FILE" "$(cat "$T/edit_anywhere.err")"
 # me_run's verbose log goes to o.log (stderr), not stdout -- the rewrite's
@@ -2629,88 +2640,54 @@ grep -q "  load-command delete uuid" "$T/edit_anywhere.err" \
     && ok "edit: --verbose before FILE logs the statement to stderr" \
     || bad "edit: flags before FILE" "no statement echo on stderr: $(cat "$T/edit_anywhere.err")"
 
-# --output may also appear BEFORE FILE -- the "anywhere" rule is otherwise
-# untested in that position (every other case here puts it after SCRIPT).
-build_main "$T/edit_output_before"
-"$MACHO9" edit --output "$T/edit_output_before.dst" "$T/edit_output_before" "$T/prod.edits" \
-    >/dev/null 2>"$T/edit_output_before.err" \
-    || bad "edit: --output before FILE" "$(cat "$T/edit_output_before.err")"
-[ -f "$T/edit_output_before.dst" ] \
-    && ok "edit: --output before FILE is accepted and writes the output" \
-    || bad "edit: --output before FILE" "no output file"
-
-# A parse error is reported BEFORE the file is opened for writing, and names
-# the line. This is what makes a typo in statement 9 of 9 cost nothing.
+# A parse error is reported BEFORE anything is written, and names the line.
+# This is what makes a typo in statement 9 of 9 cost nothing.
 build_main "$T/edit_bad"
 bad_before=$(sha "$T/edit_bad")
 printf 'load-command delete uuid\nfrobnicate everything\n' \
     >"$T/bad.edits"
-"$MACHO9" edit "$T/edit_bad" "$T/bad.edits" >/dev/null 2>"$T/editbad.err" \
-    && editbad_rc=0 || editbad_rc=$?
+rm -f "$T/edit_bad_out"
+"$MACHO9" edit "$T/edit_bad" "$T/edit_bad_out" "$T/bad.edits" \
+    >/dev/null 2>"$T/editbad.err" && editbad_rc=0 || editbad_rc=$?
 [ "$editbad_rc" -eq 2 ] && ok "edit: a parse error is an error (2), not a refusal" \
     || bad "edit parse error" "expected 2, got $editbad_rc"
 grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
     || bad "edit parse error" "no line number: $(cat "$T/editbad.err")"
-[ "$(sha "$T/edit_bad")" = "$bad_before" ] \
-    && ok "edit: a parse error left the file untouched" \
-    || bad "edit parse error" "the file was modified despite a parse error"
+[ "$(sha "$T/edit_bad")" = "$bad_before" ] && [ ! -e "$T/edit_bad_out" ] \
+    && ok "edit: a parse error left FILE untouched and wrote no OUT" \
+    || bad "edit parse error" "the file was modified, or an OUT appeared, despite a parse error"
 grep -q "^macho9 edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
     || bad "edit parse error" "no 'macho9 edit: ' prefix: $(cat "$T/editbad.err")"
 
-# Usage errors: an unknown flag, a missing positional, an extra positional,
-# a missing OUT after --output, an OUT that is a flag, and a second --output
-# are all EX_FAIL (2) -- never a crash, never silently accepted.
+# Usage errors: an unknown flag, too few positionals and too many are all
+# EX_FAIL (2) -- never a crash, never silently accepted.
 build_main "$T/edit_usage"
 rc=0
-"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --bogus-flag \
+"$MACHO9" edit "$T/edit_usage" "$T/edit_usage_out" "$T/prod.edits" --bogus-flag \
     >/dev/null 2>"$T/edit_usage1.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: an unknown flag is a usage error (2)" \
     || bad "edit usage" "unknown flag: expected 2, got $rc"
 rc=0
 "$MACHO9" edit "$T/edit_usage" >/dev/null 2>"$T/edit_usage2.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: a missing SCRIPT positional is a usage error (2)" \
-    || bad "edit usage" "missing positional: expected 2, got $rc"
+[ "$rc" -eq 2 ] && ok "edit: one positional is a usage error (2)" \
+    || bad "edit usage" "one positional: expected 2, got $rc"
 rc=0
-"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" extra \
+"$MACHO9" edit "$T/edit_usage" "$T/edit_usage_out" "$T/prod.edits" extra \
     >/dev/null 2>"$T/edit_usage3.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: an extra positional is a usage error (2)" \
+[ "$rc" -eq 2 ] && ok "edit: a fourth positional is a usage error (2)" \
     || bad "edit usage" "extra positional: expected 2, got $rc"
-rc=0
-"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --output \
-    >/dev/null 2>"$T/edit_usage4.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: --output with no OUT is a usage error (2)" \
-    || bad "edit usage" "missing OUT: expected 2, got $rc"
-# An OUT starting with "--" is a forgotten OUT: taking `--output --verbose`
-# as a file name would write a file called "--verbose" and drop the flag.
-# Run from $T, so a stray file from a regression lands where this looks.
-rc=0
-(cd "$T" && "$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --output --verbose) \
-    >/dev/null 2>"$T/edit_usage5.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: --output followed by a flag is a usage error (2)" \
-    || bad "edit usage" "--output --verbose: expected 2, got $rc"
-[ -e "$T/--verbose" ] \
-    && bad "edit usage" "--output --verbose wrote a file named --verbose" \
-    || ok "edit: --output --verbose writes no file named --verbose"
-# One write has one destination, so --output may be given only once.
-rc=0
-"$MACHO9" edit "$T/edit_usage" "$T/prod.edits" --output "$T/edit_out_a" \
-    --output "$T/edit_out_b" >/dev/null 2>"$T/edit_usage6.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: a repeated --output is a usage error (2)" \
-    || bad "edit usage" "repeated --output: expected 2, got $rc"
-[ -e "$T/edit_out_a" ] || [ -e "$T/edit_out_b" ] \
-    && bad "edit usage" "a repeated --output still wrote a file" \
-    || ok "edit: a repeated --output writes neither OUT"
 
 # A FILE WHOSE NAME STARTS WITH A DASH IS A FILE NAME. Every flag this verb
-# takes has two dashes -- which the --output check above already relies on --
-# and every other verb takes its FILE positionally without examining it, so a
-# single-dash token here is a path, not a typo'd flag. The compat wrappers
-# reach this: the historical tools open()ed whatever argv[1] was, and
-# tests/wrapper_test.sh pins `change_dylib -dashy ...` for that reason.
+# takes has two dashes, and every other verb takes its FILE positionally
+# without examining it, so a single-dash token in FILE's place is a path, not a
+# typo'd flag. The compat wrappers reach this: the historical tools open()ed
+# whatever argv[1] was, and tests/wrapper_test.sh pins `change_dylib -dashy
+# ...` for that reason. OUT is the one positional that refuses a leading dash
+# (above), because a mistaken OUT is a file this tool CREATES.
 build_main "$T/-edit_dashy"
 rc=0
-(cd "$T" && "$MACHO9" edit -edit_dashy "$T/prod.edits") \
+(cd "$T" && "$MACHO9" edit -edit_dashy "$T/edit_dashy_out" "$T/prod.edits") \
     >/dev/null 2>"$T/edit_dash.err" || rc=$?
 [ "$rc" -eq 0 ] \
     && ok "edit: a FILE whose name starts with a dash is a file name, not a flag" \
@@ -2719,7 +2696,7 @@ rc=0
 # A script file that cannot be read at all -- as opposed to one that parses
 # badly -- is also EX_FAIL, reported with the path.
 rc=0
-"$MACHO9" edit "$T/edit_usage" "$T/no-such-script-for-edit" \
+"$MACHO9" edit "$T/edit_usage" "$T/edit_usage_out" "$T/no-such-script-for-edit" \
     >/dev/null 2>"$T/edit_noscript.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: an unreadable SCRIPT path is a failure (2)" \
     || bad "edit: unreadable script" "expected 2, got $rc"
@@ -2735,7 +2712,7 @@ grep -q "no-such-script-for-edit" "$T/edit_noscript.err" \
 # place a user can see it.
 build_main_two_dylibs "$T/edit_verb"
 printf 'dylib delete %s\n' "$T/libb.dylib" >"$T/verb.edits"
-"$MACHO9" edit --verbose "$T/edit_verb" "$T/verb.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb" "$T/edit_verb_out" "$T/verb.edits" \
     >/dev/null 2>"$T/verb.err" || bad "edit --verbose" "$(cat "$T/verb.err")"
 grep -q "dylib delete" "$T/verb.err" \
     && ok "edit --verbose: names the statement" \
@@ -2778,7 +2755,7 @@ nl2=$(vb_nlist "$T/verb.err"); op2=$(vb_ops "$T/verb.err")
 # c_sym main also calls) renumbers one more ordinal, one more undefined
 # symbol, and one more ordinal opcode.
 build_main_three_dylibs "$T/edit_verb3"
-"$MACHO9" edit --verbose "$T/edit_verb3" "$T/verb.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb3" "$T/edit_verb3_out" "$T/verb.edits" \
     >/dev/null 2>"$T/verb3.err" || bad "edit --verbose (3 dylibs)" "$(cat "$T/verb3.err")"
 grep -qF "      renumbered 3 surviving ordinals: 2->1, 3->2, 4->3" "$T/verb3.err" \
     && ok "edit --verbose: a third dylib adds its ordinal to the map" \
@@ -2797,7 +2774,7 @@ nl3=$(vb_nlist "$T/verb3.err"); op3=$(vb_ops "$T/verb3.err")
 # modern cross runner's linker leaves (see the rpath -insert fixture above).
 build_main "$T/edit_verb_ins"
 printf 'dylib insert @loader_path/libn.dylib\n' >"$T/verb_ins.edits"
-"$MACHO9" edit --verbose "$T/edit_verb_ins" "$T/verb_ins.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb_ins" "$T/edit_verb_ins_out" "$T/verb_ins.edits" \
     >/dev/null 2>"$T/verb_ins.err" || bad "edit --verbose (insert)" "$(cat "$T/verb_ins.err")"
 grep -qF "      inserted LC_LOAD_DYLIB as ordinal 1" "$T/verb_ins.err" \
     && ok "edit --verbose: names the inserted command and its ordinal" \
@@ -2814,7 +2791,7 @@ nli=$(vb_nlist "$T/verb_ins.err"); opi=$(vb_ops "$T/verb_ins.err")
 # follow-up and must not claim one.
 build_main "$T/edit_verb_rep"
 printf 'dylib replace @loader_path/liba.dylib @loader_path/libz.dylib\n' >"$T/verb_rep.edits"
-"$MACHO9" edit --verbose "$T/edit_verb_rep" "$T/verb_rep.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb_rep" "$T/edit_verb_rep_out" "$T/verb_rep.edits" \
     >/dev/null 2>"$T/verb_rep.err" || bad "edit --verbose (replace)" "$(cat "$T/verb_rep.err")"
 grep -q "renumbered" "$T/verb_rep.err" \
     && bad "edit --verbose (replace)" "a replace reported a renumbering: $(cat "$T/verb_rep.err")" \
@@ -2825,7 +2802,7 @@ grep -q "renumbered" "$T/verb_rep.err" \
 # through, and says so rather than staying silent.
 build_main "$T/edit_verb_fx"
 printf 'fixups set classic\n' >"$T/verb_fx.edits"
-"$MACHO9" edit --verbose "$T/edit_verb_fx" "$T/verb_fx.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb_fx" "$T/edit_verb_fx_out" "$T/verb_fx.edits" \
     >/dev/null 2>"$T/verb_fx.err" || bad "edit --verbose (fixups)" "$(cat "$T/verb_fx.err")"
 grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed through unchanged" \
     "$T/verb_fx.err" \
@@ -2836,7 +2813,7 @@ grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed t
 # LC_DYLD_EXPORTS_TRIE and LC_BUILD_VERSION to strip) it converts, and the
 # report carries the conversion's own figures.
 "$T/mkchained" make "$T/edit_verb_chained"
-"$MACHO9" edit --verbose "$T/edit_verb_chained" "$T/verb_fx.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb_chained" "$T/edit_verb_chained_out" "$T/verb_fx.edits" \
     >/dev/null 2>"$T/verb_cf.err" || bad "edit --verbose (chained)" "$(cat "$T/verb_cf.err")"
 grep -qF "      chained fixups -> LC_DYLD_INFO_ONLY" "$T/verb_cf.err" \
     && ok "edit --verbose: fixups on a chained image reports the conversion" \
@@ -2856,13 +2833,13 @@ grep -q "^      __LINKEDIT extended by [1-9][0-9,]* bytes" "$T/verb_cf.err" \
 # class and its metaclass on the stable-ABI bit, and build_main's has none.
 "$T/mkswift" make "$T/edit_verb_swift"
 printf 'swift-abi set legacy\n' >"$T/verb_sw.edits"
-"$MACHO9" edit --verbose "$T/edit_verb_swift" "$T/verb_sw.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb_swift" "$T/edit_verb_swift_out" "$T/verb_sw.edits" \
     >/dev/null 2>"$T/verb_sw.err" || bad "edit --verbose (swift-abi)" "$(cat "$T/verb_sw.err")"
 grep -qF "      retagged 2 class records" "$T/verb_sw.err" \
     && ok "edit --verbose: swift-abi reports the class records it retagged" \
     || bad "edit --verbose (swift-abi)" "no 'retagged 2 class records': $(cat "$T/verb_sw.err")"
 build_main "$T/edit_verb_noswift"
-"$MACHO9" edit --verbose "$T/edit_verb_noswift" "$T/verb_sw.edits" \
+"$MACHO9" edit --verbose "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" "$T/verb_sw.edits" \
     >/dev/null 2>"$T/verb_nosw.err" || bad "edit --verbose (swift-abi)" "$(cat "$T/verb_nosw.err")"
 grep -qF "      nothing to retag" "$T/verb_nosw.err" \
     && ok "edit --verbose: swift-abi with no Swift classes says nothing to retag" \
@@ -2870,7 +2847,7 @@ grep -qF "      nothing to retag" "$T/verb_nosw.err" \
 
 # Follow-ups are verbose output: without --verbose, none of it is printed.
 build_main_two_dylibs "$T/edit_quiet"
-"$MACHO9" edit "$T/edit_quiet" "$T/verb.edits" >/dev/null 2>"$T/quiet.err" \
+"$MACHO9" edit "$T/edit_quiet" "$T/edit_quiet_out" "$T/verb.edits" >/dev/null 2>"$T/quiet.err" \
     || bad "edit (quiet)" "$(cat "$T/quiet.err")"
 [ -s "$T/quiet.err" ] \
     && bad "edit (quiet)" "a successful run without --verbose logged: $(cat "$T/quiet.err")" \
@@ -2885,16 +2862,16 @@ build_main_two_dylibs "$T/edit_quiet"
 # runs free LC_UUID's 24 bytes first.
 build_main "$T/edit_ins2"
 printf 'load-command delete uuid\ndylib insert /A\ndylib insert /B\n' >"$T/ins2.edits"
-"$MACHO9" edit "$T/edit_ins2" "$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
+"$MACHO9" edit "$T/edit_ins2" "$T/edit_ins2_out" "$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
     || bad "edit: two inserts" "$(cat "$T/ins2.err")"
-ins2=$("$MACHO9" info "$T/edit_ins2")
+ins2=$("$MACHO9" info "$T/edit_ins2_out")
 echo "$ins2" | grep -qxF "  ordinal=1 path=/B" && echo "$ins2" | grep -qxF "  ordinal=2 path=/A" \
     && ok "edit: two dylib insert lines leave the second at ordinal 1 and the first at 2" \
     || bad "edit: two inserts" "expected /B at 1 and /A at 2: $(echo "$ins2" | grep 'ordinal=')"
 build_main "$T/cli_ins2"
-"$MACHO9" lc "$T/cli_ins2" -delete uuid >/dev/null 2>"$T/cli_ins2.err" \
+m9ip lc "$T/cli_ins2" -delete uuid >/dev/null 2>"$T/cli_ins2.err" \
     || bad "dylib: two inserts" "$(cat "$T/cli_ins2.err")"
-"$MACHO9" dylib "$T/cli_ins2" -insert /A -insert /B >/dev/null 2>"$T/cli_ins2.err" \
+m9ip dylib "$T/cli_ins2" -insert /A -insert /B >/dev/null 2>"$T/cli_ins2.err" \
     || bad "dylib: two inserts" "$(cat "$T/cli_ins2.err")"
 cins2=$("$MACHO9" info "$T/cli_ins2")
 echo "$cins2" | grep -qxF "  ordinal=1 path=/A" && echo "$cins2" | grep -qxF "  ordinal=2 path=/B" \
@@ -2921,26 +2898,29 @@ grow_path="/$(printf "%${grow_pad}s" '' | tr ' ' x)"
 printf 'dylib append %s\nload-command delete uuid\n' "$grow_path" >"$T/grow_no.edits"
 { printf 'allow-grow\n'; cat "$T/grow_no.edits"; } >"$T/grow_yes.edits"
 grow_before=$(sha "$T/edit_grow")
+rm -f "$T/edit_grow_out"
 rc=0
-"$MACHO9" edit "$T/edit_grow" "$T/grow_no.edits" >/dev/null 2>"$T/grow_no.err" || rc=$?
+"$MACHO9" edit "$T/edit_grow" "$T/edit_grow_out" "$T/grow_no.edits" \
+    >/dev/null 2>"$T/grow_no.err" || rc=$?
 [ "$rc" -eq 1 ] \
     && ok "edit: a dylib append that overflows the ${grow_pad}-byte pad is refused (1) without allow-grow" \
     || bad "edit allow-grow" "without the directive: expected 1, got $rc: $(cut -c1-160 "$T/grow_no.err")"
-[ "$(sha "$T/edit_grow")" = "$grow_before" ] \
-    && ok "edit: ... and the refused run left the file unchanged" \
-    || bad "edit allow-grow" "the refused run modified the file"
+[ "$(sha "$T/edit_grow")" = "$grow_before" ] && [ ! -e "$T/edit_grow_out" ] \
+    && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
+    || bad "edit allow-grow" "the refused run modified FILE, or created OUT"
 rc=0
-"$MACHO9" edit "$T/edit_grow" "$T/grow_yes.edits" >/dev/null 2>"$T/grow_yes.err" || rc=$?
+"$MACHO9" edit "$T/edit_grow" "$T/edit_grow_out" "$T/grow_yes.edits" \
+    >/dev/null 2>"$T/grow_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: with allow-grow, the same script succeeds" \
     || bad "edit allow-grow" "with the directive: expected 0, got $rc: $(cut -c1-160 "$T/grow_yes.err")"
-grow_info=$("$MACHO9" info "$T/edit_grow")
+grow_info=$("$MACHO9" info "$T/edit_grow_out")
 echo "$grow_info" | grep -qF "path=$grow_path" \
     && ok "edit: allow-grow: the appended dylib is in the written image" \
     || bad "edit allow-grow" "the appended dylib is not in the image"
 echo "$grow_info" | grep -q "LC_UUID" \
     && bad "edit allow-grow" "LC_UUID survived: the statement after the grow did not apply" \
     || ok "edit: allow-grow: the statement after the grow applied to the grown image"
-"$MACHO9" verify "$T/edit_grow" >/dev/null 2>"$T/grow_verify.err" \
+"$MACHO9" verify "$T/edit_grow_out" >/dev/null 2>"$T/grow_verify.err" \
     && ok "edit: allow-grow: the result passes macho9 verify" \
     || bad "edit allow-grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
@@ -2966,7 +2946,7 @@ if [ -z "$vm_pad" ] || [ "$vm_pad" -lt 32 ]; then
 fi
 vm_cmd=$((vm_pad - vm_pad % 8))
 vm_fill="/$(printf "%$((vm_cmd - 26))s" '' | tr ' ' v)"
-"$MACHO9" dylib "$T/vm_tight" -append "$vm_fill" >/dev/null 2>"$T/vm_fill.err" \
+m9ip dylib "$T/vm_tight" -append "$vm_fill" >/dev/null 2>"$T/vm_fill.err" \
     || bad "version-min allow-grow: fixture setup" "filler append failed: $(cut -c1-160 "$T/vm_fill.err")"
 vm_left=$(vm_pad_of "$T/vm_tight")
 [ -n "$vm_left" ] && [ "$vm_left" -lt 16 ] \
@@ -2977,29 +2957,32 @@ cp "$T/vm_tight" "$T/vm_e"
 vm_before=$(sha "$T/vm_e"); vm_ino=$(stat -f %i "$T/vm_e")
 printf 'version-min set 10.9\n' >"$T/vm_no.edits"
 printf 'allow-grow\nversion-min set 10.9\n' >"$T/vm_yes.edits"
+rm -f "$T/vm_e_out"
 rc=0
-"$MACHO9" edit "$T/vm_e" "$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
+"$MACHO9" edit "$T/vm_e" "$T/vm_e_out" "$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "edit: version-min set without allow-grow is refused (1) when the pad is short" \
     || bad "edit version-min" "without the directive: expected 1, got $rc: $(cat "$T/vm_no.err")"
 [ "$(sha "$T/vm_e")" = "$vm_before" ] && [ "$(stat -f %i "$T/vm_e")" = "$vm_ino" ] \
-    && ok "edit: ... and the refused run left the file unchanged" \
-    || bad "edit version-min" "the refused run modified the file"
+    && [ ! -e "$T/vm_e_out" ] \
+    && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
+    || bad "edit version-min" "the refused run modified FILE, or created OUT"
 grep -q "growing the header needs allow-grow" "$T/vm_no.err" \
     && ok "edit: ... and the refusal names allow-grow as the remedy" \
     || bad "edit version-min" "no allow-grow remedy in: $(cat "$T/vm_no.err")"
 rc=0
-"$MACHO9" edit "$T/vm_e" "$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
+"$MACHO9" edit "$T/vm_e" "$T/vm_e_out" "$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
     || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
-# The grow lines on stdout are mg_ensure_pad's, labelled with the input's
-# path, as edit.h's inventory of what the operations print says.
+# The grow lines on stdout are mg_ensure_pad's, labelled with the INPUT's path
+# -- the operations run against an image in memory and know nothing about OUT --
+# as edit.h's inventory of what the operations print says.
 grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
     && ok "edit: ... and stdout has 'PATH: grew header pad', naming the input" \
     || bad "edit version-min" "no 'PATH: grew header pad' line on stdout: $(cat "$T/vm_yes.out")"
-"$MACHO9" info "$T/vm_e" | grep -q "LC_VERSION_MIN_MACOSX" \
+"$MACHO9" info "$T/vm_e_out" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "edit: allow-grow: LC_VERSION_MIN_MACOSX is in the written image" \
     || bad "edit version-min" "no LC_VERSION_MIN_MACOSX after the grow"
-"$MACHO9" verify "$T/vm_e" >/dev/null 2>"$T/vm_verify.err" \
+"$MACHO9" verify "$T/vm_e_out" >/dev/null 2>"$T/vm_verify.err" \
     && ok "edit: allow-grow: the grown image passes macho9 verify" \
     || bad "edit version-min" "verify refused: $(cat "$T/vm_verify.err")"
 
@@ -3071,7 +3054,8 @@ fat_pad=$("$MACHO9" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]*\) by
 fat_path="/$(printf "%${fat_pad}s" '' | tr ' ' f)"
 printf 'arch x86_64\nallow-grow\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
 rc=0
-"$MACHO9" edit --verbose "$T/fat_edit" "$T/fat.edits" >/dev/null 2>"$T/fat.err" || rc=$?
+"$MACHO9" edit --verbose "$T/fat_edit" "$T/fat_edit_out" "$T/fat.edits" \
+    >/dev/null 2>"$T/fat.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: a fat file's x86_64 slice is edited, growing it" \
     || bad "edit fat" "expected 0, got $rc: $(cut -c1-200 "$T/fat.err")"
 grep -q "slice arm64: not selected by arch; passed through unchanged" "$T/fat.err" \
@@ -3080,8 +3064,8 @@ grep -q "slice arm64: not selected by arch; passed through unchanged" "$T/fat.er
 grep -q "slice arm64: moved from offset" "$T/fat.err" \
     && ok "edit: --verbose says the arm64 slice moved when the x86_64 slice grew" \
     || bad "edit fat" "no moved line: $(cut -c1-300 "$T/fat.err")"
-"$BIN/fatcheck" dump "$T/fat_edit" 0 "$T/fat_out0"
-"$BIN/fatcheck" dump "$T/fat_edit" 1 "$T/fat_out1"
+"$BIN/fatcheck" dump "$T/fat_edit_out" 0 "$T/fat_out0"
+"$BIN/fatcheck" dump "$T/fat_edit_out" 1 "$T/fat_out1"
 "$MACHO9" info "$T/fat_out0" | grep -qF "path=$fat_path" \
     && ok "edit: the x86_64 slice carries the appended dylib" \
     || bad "edit fat" "the appended dylib is not in slice 0"
@@ -3094,7 +3078,8 @@ cmp -s "$T/fat_out1" "$T/fat_s1" \
 
 printf 'arch amd64\nload-command delete uuid\n' >"$T/fat_bad.edits"
 rc=0
-"$MACHO9" edit "$T/fat_edit" "$T/fat_bad.edits" >/dev/null 2>"$T/fat_bad.err" || rc=$?
+"$MACHO9" edit "$T/fat_edit" "$T/fat_edit_out" "$T/fat_bad.edits" \
+    >/dev/null 2>"$T/fat_bad.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: an unknown arch name is a parse error (2)" \
     || bad "edit fat" "arch amd64: expected 2, got $rc: $(cat "$T/fat_bad.err")"
 

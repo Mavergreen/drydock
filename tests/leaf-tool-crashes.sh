@@ -270,13 +270,14 @@ for grow in "" --allow-grow; do
             continue
         fi
         cp "$T/nosect.macho" "$T/dy.macho"
+        rm -f "$T/dy.out.macho"
         before=$(sha_of "$T/dy.macho")
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/dy.macho" -append /x $grow \
-                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/dy.macho" "$T/dy.out.macho" \
+                -append /x $grow >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         else
-            "$BIN/macho9" dylib "$T/dy.macho" -append /x $grow \
+            "$BIN/macho9" dylib "$T/dy.macho" "$T/dy.out.macho" -append /x $grow \
                 >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
@@ -289,6 +290,9 @@ for grow in "" --allow-grow; do
         [ "$(sha_of "$T/dy.macho")" = "$before" ] \
             && ok "$what: leaves the file unchanged" \
             || bad "$what" "the refused run modified the file"
+        [ ! -e "$T/dy.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
     done
 done
 
@@ -308,22 +312,32 @@ done
 # a dylib append would still be refused, by mg_ensure_pad, if mr_process_thin
 # stopped checking. `grow` goes straight to mg_grow_header.
 "$T/mkfixture" sectionless "$T/sectionless.macho" 8192
-# sectionless_case NEEDLE VERB ARG... -- runs `macho9 VERB <copy> ARG...`
+# sectionless_case NEEDLE VERB ARG...
+#   -- runs `macho9 VERB <copy> OUT ARG...`
+#
+# EVERY verb here reads FILE and writes an OUT (dylib, rpath, lc, segment, grow
+# and, since its own conversion, edit -- whose SCRIPT is the ARG after OUT). The
+# OUT is removed beforehand and must still be absent afterwards: a refusal
+# writes nothing, which is a second fact worth having here -- the input being
+# untouched is no longer the whole of it.
 sectionless_case() {
     needle="$1"; verb="$2"; shift 2
+    sl_desc="$*"
+    set -- "$T/sl.macho" "$T/sl.out.macho" "$@"
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="macho9 $verb $*: sectionless 8192-byte image${gm:+ (libgmalloc)}"
+        what="macho9 $verb $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
         fi
         cp "$T/sectionless.macho" "$T/sl.macho"
+        rm -f "$T/sl.out.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" "$verb" "$T/sl.macho" "$@" \
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" "$verb" "$@" \
                 >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         else
-            "$BIN/macho9" "$verb" "$T/sl.macho" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
+            "$BIN/macho9" "$verb" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         fi
         if [ "$rc" -eq 1 ] && grep -qF "$needle" "$T/sl.err"; then
             ok "$what: refuses (1), naming the missing section data"
@@ -335,6 +349,9 @@ sectionless_case() {
         else
             bad "$what" "the file changed: $(cmp -l "$T/sectionless.macho" "$T/sl.macho" | wc -l | tr -d ' ') byte(s) differ"
         fi
+        [ ! -e "$T/sl.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
     done
 }
 sectionless_case "$rewrite_refusal" dylib -append /x
@@ -368,12 +385,14 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
         continue
     fi
     cp "$T/oobgrow.macho" "$T/og.macho"
+    rm -f "$T/og.out.macho"
     rc=0
     if [ -n "$gm" ]; then
-        DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" grow "$T/og.macho" 4096 \
+        DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" grow "$T/og.macho" "$T/og.out.macho" 4096 \
             >"$T/og.out" 2>"$T/og.err" || rc=$?
     else
-        "$BIN/macho9" grow "$T/og.macho" 4096 >"$T/og.out" 2>"$T/og.err" || rc=$?
+        "$BIN/macho9" grow "$T/og.macho" "$T/og.out.macho" 4096 \
+            >"$T/og.out" 2>"$T/og.err" || rc=$?
     fi
     if [ "$rc" -gt 127 ]; then
         bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds move this fixture exists to catch"
@@ -387,6 +406,9 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
     else
         bad "$what" "the file changed"
     fi
+    [ ! -e "$T/og.out.macho" ] \
+        && ok "$what: writes no output either" \
+        || bad "$what" "a refused run left an output behind"
 done
 
 # --- macho9 dylib and info: a first section past the end of the image --------
@@ -404,12 +426,13 @@ for grow in "" --allow-grow; do
             continue
         fi
         cp "$T/oobsection.macho" "$T/od.macho"
+        rm -f "$T/od.out.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" -append /x $grow \
-                >"$T/od.out" 2>"$T/od.err" || rc=$?
+            DYLD_INSERT_LIBRARIES="$gm" "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" \
+                -append /x $grow >"$T/od.out" 2>"$T/od.err" || rc=$?
         else
-            "$BIN/macho9" dylib "$T/od.macho" -append /x $grow \
+            "$BIN/macho9" dylib "$T/od.macho" "$T/od.out.macho" -append /x $grow \
                 >"$T/od.out" 2>"$T/od.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
@@ -424,6 +447,9 @@ for grow in "" --allow-grow; do
         else
             bad "$what" "the file changed"
         fi
+        [ ! -e "$T/od.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
     done
 done
 
