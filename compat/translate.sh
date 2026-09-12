@@ -25,17 +25,31 @@
 #
 #   * Zero or more COMMANDS on stdout, as `eval`-safe shell text. A command
 #     begins with $MACHO9 (default: the bare word `macho9`) at the start of a
-#     line. Arguments are single-quoted only when they contain something
+#     line -- or with `mv -f`, the one non-macho9 command this file emits.
+#     Arguments are single-quoted only when they contain something
 #     outside [A-Za-z0-9_@%+=:,./-], so the common case stays readable and the
 #     hostile case stays correct.
+#   * A CONVERTED VERB NAMES AN OUTPUT of its own, because it no longer writes
+#     the file it is given. macho9's rewriting verbs are being converted one
+#     at a time; `minos` was the first and `retag-swift` is the second, so
+#     `add_version_min` and `retag_swift_classes` are so far the only
+#     translations here that name one. Which output depends on who is reading:
+#     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
+#     command writes exactly that and nothing follows it; without it -- the
+#     teaching form a human sees -- the output is FILE.new and the command is
+#     followed by `mv -f FILE.new FILE`, so what is shown is a pasteable
+#     equivalent of the old in-place edit rather than half of one.
+#     mt_out_for and mt_install_line are that fork, in one place.
 #   * A command is USUALLY one line, but `macho9 edit FILE -` carries its
 #     statements in a here-document, so it spans several: the `edit` line, the
 #     statements, and the `MACHO9_EDIT` terminator. Counting commands means
 #     counting lines that START with the program word, not counting lines --
 #     which is what macho9-compat.sh's mw_translate does.
-#   * Every tool here but retag_swift_classes emits AT MOST ONE command: an
-#     invocation that would have needed more is one `macho9 edit FILE -`
-#     instead. So there is no sequence to run and nothing to stop part way
+#   * Every tool here but retag_swift_classes emits AT MOST ONE MACHO9
+#     command: an invocation that would have needed more is one `macho9 edit
+#     FILE -` instead. (The teaching form's trailing `mv -f` is not one of
+#     them; a wrapper sets MT_OUT, which suppresses it, and installs the temp
+#     itself.) So there is no sequence to run and nothing to stop part way
 #     through -- macho9-compat.sh's mw_run evaluates what is printed and
 #     returns its exit code. (retag_swift_classes is variadic over FILES and
 #     emits one `retag-swift` per file; its wrapper runs those itself, because
@@ -117,12 +131,12 @@
 #                                                                  load-command delete build-version
 #     -rename_seg O N                  segment FILE O N            segment rename O N
 #
-#   add_version_min FILE               minos      FILE 10.9
+#   add_version_min FILE               minos      FILE OUT 10.9
 #   patch_macho IN OUT                 declassify IN OUT
 #   rename_segment FILE O N            segment    FILE O N
-#   retag_swift_classes F1 F2 F3       retag-swift F1
-#                                      retag-swift F2
-#                                      retag-swift F3
+#   retag_swift_classes F1 F2 F3       retag-swift F1 OUT1
+#                                      retag-swift F2 OUT2
+#                                      retag-swift F3 OUT3
 #
 # ---- ordering, and the one command an old invocation becomes -------------
 #
@@ -173,8 +187,7 @@
 #     set, so it is no longer one of this verb's divergences from
 #     rename_segment.
 #   macho9 retag-swift refuses (exit 1) a non-Mach-O argument that
-#     retag_swift_classes skipped silently, and exits 2 on the raced path
-#     where retag_swift_classes exited 0.
+#     retag_swift_classes skipped silently.
 #   macho9 declassify uses exit 2 (EX_FAIL) for an operational failure where
 #     patch_macho returns its same flat 1 -- a considered refusal, unlike
 #     that case, now exits 1 on both sides, by coincidence, not construction
@@ -231,6 +244,27 @@ mt_qargs() {
         printf ' '
         mt_quote "$mt_a"
     done
+}
+
+# The output a translated command writes. A wrapper sets MT_OUT to its temp
+# file. Without it -- the teaching form, printed on stderr and by
+# `sh translate.sh` -- the output is FILE.new, and the caller appends
+# mt_install_line, because a converted verb does not write its input and
+# replacing FILE is therefore a second step a reader has to be shown.
+#
+# THE TEACHING FORM IS THE STRAIGHTFORWARD EQUIVALENT, NOT THE WRAPPER'S OWN
+# SEQUENCE. Pasted, `mv -f FILE.new FILE` replaces FILE -- so if FILE is a
+# symlink it becomes a regular file, which is the answer `mv` gives and the
+# one a reader typing this would get. A wrapper does something narrower: it
+# resolves FILE through its symlinks first (mw_resolve, macho9-compat.sh) and
+# installs onto the target, so the link survives and everything else pointing
+# through it sees the new content. Teaching the resolve step would be teaching
+# the wrapper's implementation rather than the command a human wants.
+mt_out_for() {
+    if [ -n "${MT_OUT:-}" ]; then printf '%s' "$MT_OUT"; else printf '%s.new' "$1"; fi
+}
+mt_install_line() {
+    [ -n "${MT_OUT:-}" ] || printf 'mv -f%s\n' "$(mt_qargs "$1.new" "$1")"
 }
 
 # The origin tool's own diagnostic, on stderr, and a nonzero return.
@@ -639,7 +673,8 @@ mt_tr_add_version_min() {
     # (mv_add_version_min), which is why the version appears here and not in
     # the old argv.
     [ $# -eq 1 ] || { printf 'Usage: %s binary\n' "$MT_PROG" >&2; return 1; }
-    printf '%s minos%s 10.9\n' "$(mt_pre_word)" "$(mt_qargs "$1")"
+    printf '%s minos%s 10.9\n' "$(mt_pre_word)" "$(mt_qargs "$1" "$(mt_out_for "$1")")"
+    mt_install_line "$1"
 }
 
 mt_tr_patch_macho() {
@@ -658,11 +693,17 @@ mt_tr_rename_segment() {
 mt_tr_retag_swift_classes() {
     # `argc < 2`. This is the one tool whose grammar is variadic over FILES
     # rather than over flags, and macho9 retag-swift takes exactly one file --
-    # so the translation is a loop, one line per file, in argv order.
+    # so the translation is a loop, one line per file, in argv order. MT_OUT
+    # is a single output for the whole call, so it only makes sense set when a
+    # wrapper is retranslating ONE file at a time (compat/retag_swift_classes.sh
+    # does); the teaching form (no MT_OUT) is over every file at once and gives
+    # each its own FILE.new and install line, same as mt_out_for/mt_install_line
+    # do for any other converted verb.
     [ $# -ge 1 ] || { printf 'Usage: %s binary [binary ...]\n' "$MT_PROG" >&2; return 1; }
     mt_pre="$(mt_pre_word)"
     for mt_f in "$@"; do
-        printf '%s retag-swift%s\n' "$mt_pre" "$(mt_qargs "$mt_f")"
+        printf '%s retag-swift%s\n' "$mt_pre" "$(mt_qargs "$mt_f" "$(mt_out_for "$mt_f")")"
+        mt_install_line "$mt_f"
     done
 }
 

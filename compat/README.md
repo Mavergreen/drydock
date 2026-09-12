@@ -15,9 +15,9 @@ The six original entry points, kept for compatibility. All six are now
 |---|---|
 | `patch_macho` | `patch_macho.sh` → `macho9 declassify IN OUT` |
 | `change_dylib` | `change_dylib.sh` → `macho9 lc` / `dylib` / `rpath`, or `macho9 edit FILE -` when more than one of those |
-| `add_version_min` | `add_version_min.sh` → `macho9 minos FILE 10.9` |
+| `add_version_min` | `add_version_min.sh` → `macho9 minos FILE OUT 10.9`, installed over `FILE` |
 | `rename_segment` | `rename_segment.sh` → `macho9 segment FILE OLD NEW` |
-| `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE`, once per file |
+| `retag_swift_classes` | `retag_swift_classes.sh` → `macho9 retag-swift FILE OUT`, once per file, installed over each `FILE` |
 | `fix_macho` | `fix_macho.sh` → `macho9 lc` / `dylib` / `segment`, or `macho9 edit FILE -` when more than one command's worth (two renames already are) |
 
 plus the two files every wrapper sources:
@@ -69,10 +69,10 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with four known exceptions, truthfully not all the same KIND of
+check them, with three known exceptions, truthfully not all the same KIND of
 known: one reproduced on a real file (one out of 300 in the differential
-corpus, below), two argued unreachable in practice rather than observed, and
-the fourth true by construction rather than by measurement -- it follows
+corpus, below), one argued unreachable in practice rather than observed, and
+the third true by construction rather than by measurement -- it follows
 directly from reading what two of the wrappers' code does, not from a corpus
 row that exhibits it, so no file "reproduces" it and no argument is needed
 for why it would be rare:
@@ -83,11 +83,6 @@ for why it would be rare:
     renumber. `compat/rename_segment.sh`'s header has the measurement. It is
     one file out of 300 in `tests/differential.sh`'s corpus, and closing it
     means changing `macho9`.
-  * `retag_swift_classes` on a file that changed under it mid-run
-    (`MSWIFT_RACED`) exits 1 where the C tool exited 0, because reporting
-    success for a write that did not happen is the silent-success shape this
-    codebase refuses. `compat/retag_swift_classes.sh`'s header has the
-    measurement; a race is not something a test can stage.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
@@ -100,10 +95,39 @@ for why it would be rare:
     `patch_macho` and `rename_segment`, which translate every nonzero
     macho9 exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. A CONSIDERED refusal
+    header has it) and is likewise unaffected by this. (`add_version_min` and
+    `retag_swift_classes` -- the two wrappers whose verb installs its result
+    over `FILE` itself -- both have refusals of their OWN on top of that,
+    exiting 1, made before macho9 runs for the argument in question: an
+    absent or unwritable `FILE`, a `FILE` carrying other hard links, and a
+    failed install. Those are the wrapper's, not a forwarded code -- and for
+    `retag_swift_classes` an absent or unwritable argument is a WORDING
+    divergence too: `tests/compat-matrix.tsv`'s rows for that case (measured
+    before the wrappers existed) have both sides agreeing on `perror(path)`'s
+    "`<path>: No such file or directory`", which is still what
+    `mswift_retag_file` itself prints when macho9 actually reaches the
+    open() -- but the wrapper's own pre-check now answers first, in its own
+    words (`open: No such file or directory`), so only the exit code still
+    matches. `add_version_min.sh` has no such gap: its own C tool's
+    `perror("open")` already said literally "open: ...", so the wrapper's
+    identical wording was never a divergence to begin with. A WRITABLE
+    `FILE` inside a NON-writable directory is a fourth case neither wrapper's
+    own pre-checks catch -- the write itself fails, `mkstemp: Permission
+    denied`, because installing needs the directory writable where the old
+    tools needed only `FILE` itself to be; `compat/add_version_min.sh` and
+    `compat/retag_swift_classes.sh`'s own headers both name it, and for
+    `retag_swift_classes` it surfaces as `had_error` (exit 1) rather than
+    `add_version_min`'s raw, forwarded 2, since this wrapper never forwards
+    one argument's exit code as the whole run's.
+    `change_dylib`'s
+    own unwritable-`FILE` guard exits 2 instead, deliberately: it reproduces
+    what `mr_apply_file`'s own `open` failure gives on the path that still
+    reaches it, rather than inventing a second answer.
+    `compat/change_dylib.sh`'s header has the reasoning.) A CONSIDERED
+    refusal
     (the input examined and declined) still exits 1, matching the C tool by
     coincidence, not by construction; but a genuine operational failure
-    (open, fstat, read or write failing, `mv_add_version_min`'s race guard,
+    (open, fstat, read or write failing,
     or a checked allocation that `src/rewrite.c`'s drivers or
     `mi_open`/`mfat_parse` make -- `src/rewrite.h`'s `MR_FAIL` comment
     names them) now exits 2, where the C tool always exited a flat 1. One
@@ -121,7 +145,7 @@ for why it would be rare:
     and `compat/add_version_min.sh`'s own headers have the rest of the
     detail.
 
-There is a fifth gap this list used to omit entirely: no argument
+There is a fourth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 `mg_grow_header` (`grep -c "grew header pad" tests/compat-matrix.tsv` is 0)
 -- `tests/fixture.macho`'s header pad is large enough, and the sweep's

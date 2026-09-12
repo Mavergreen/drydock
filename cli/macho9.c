@@ -1,17 +1,17 @@
 /*
  * macho9 — the multi-call CLI the seven rewriters converge behind.
  *
- * Grammar settled in docs/PROPOSAL.md ("Verbs"); this build targets the
- * verbatim subset below:
+ * Grammar settled in docs/PROPOSAL.md ("Verbs"). The subset this build
+ * actually implements, verbatim:
  *
  *   macho9 declassify IN OUT
  *   macho9 dylib FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert -reexport
  *   macho9 rpath FILE [--allow-grow] [--fatal-warnings] OP...   -replace -delete -append -insert
  *   macho9 segment FILE OLD NEW
- *   macho9 retag-swift FILE
+ *   macho9 retag-swift FILE OUT
  *   macho9 lc FILE [--fatal-warnings] -delete KIND
  *   macho9 grow FILE N
- *   macho9 minos FILE 10.9 [--allow-grow]
+ *   macho9 minos FILE OUT 10.9 [--allow-grow]
  *   macho9 info FILE
  *   macho9 verify FILE
  *   macho9 edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]
@@ -56,9 +56,10 @@
  * `declassify` is the last of them, and the same arrangement again:
  * patch_macho's chained-fixups conversion is src/declassify.h, and that tool
  * keeps only its `IN OUT` grammar, its own open+write of OUT, its messages
- * and its flat exit code. It is the one verb here that reads one file and
- * writes another rather than rewriting in place, so it writes OUT through
- * wa_write_atomic itself instead of going through mr_apply_file.
+ * and its flat exit code. It was the FIRST verb here to read one file and
+ * write another rather than rewriting in place, so it writes OUT through
+ * wa_write_atomic itself instead of going through mr_apply_file. `minos` has
+ * the same shape now (`minos FILE OUT 10.9`), through wa_write_new.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,8 +125,7 @@
  * (== EX_REFUSED, enforced below) for a considered refusal -- "not a 64-bit
  * Mach-O" in any of its forms, no room to grow, a rewrite's own cross-check
  * failing, and more -- and MR_FAIL (== EX_FAIL, enforced below) for
- * open/fstat/read/write/malloc itself failing (and mv_add_version_min's race
- * guard, a failed stat() or a changed inode). Forwarding either verbatim is
+ * open/fstat/read/write/malloc itself failing. Forwarding either verbatim is
  * exact, not an approximation, with one deliberate exception those two
  * drivers' own comments carry: an allocation failure INSIDE mg_grow_header
  * or mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every
@@ -367,12 +367,13 @@ static void usage(const char *prog) {
         "                                                    -insert PATH (searched FIRST)\n"
         "       %s segment FILE OLD NEW                     rename every segment named OLD, and\n"
         "                                                    its sections' copy of that name\n"
-        "       %s retag-swift FILE\n"
+        "       %s retag-swift FILE OUT                     FILE is only read; OUT must not be FILE\n"
         "       %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n"
         "                                                    uuid | codesig | source-version |\n"
         "                                                    build-version | code-sign-drs\n"
         "       %s grow FILE N\n"
-        "       %s minos FILE 10.9 [--allow-grow]\n"
+        "       %s minos FILE OUT 10.9 [--allow-grow]\n"
+        "                                                    FILE is only read; OUT must not be FILE\n"
         "       %s info FILE\n"
         "       %s verify FILE\n"
         "       %s edit FILE SCRIPT [--output OUT] [--verbose] [--dry-run]\n"
@@ -586,12 +587,22 @@ static int cmd_grow(const char *path, const char *n_str) {
  * why this verb's grammar spells the floor literally rather than taking any
  * version: there is only one this build can honor, so refusing anything else
  * up front is a clearer failure than calling in and hoping. */
-static int cmd_minos(const char *path, const char *version, int allow_grow) {
+static int cmd_minos(const char *path, const char *out, const char *version, int allow_grow) {
+    /* Before the version check, and before any read: naming FILE as OUT is a
+     * mistake about what this tool does, not about this file's content, and
+     * saying so up front is the difference between "refused, nothing
+     * happened" and a refusal that arrives after the work. wa_write_new
+     * would refuse it anyway at the write; this is the same answer, earlier
+     * and in this verb's own words. */
+    if (wa_is_input(path, out)) {
+        fprintf(stderr, "macho9 minos: %s is %s; macho9 never writes its input\n", out, path);
+        return EX_FAIL;
+    }
     if (strcmp(version, "10.9") != 0) {
         fprintf(stderr, "macho9 minos: only 10.9 is supported by this build (got '%s')\n", version);
         return EX_REFUSED;
     }
-    return mv_add_version_min(path, allow_grow);
+    return mv_add_version_min(path, out, allow_grow);
 }
 
 /* ---- lc -delete: a thin shell over mr_apply_file's strip_cmds -----------
@@ -923,29 +934,30 @@ static int cmd_segment(const char *path, const char *oldname, const char *newnam
  * prints nothing and exits 0 on a fat binary is exactly the silent success
  * docs/PROPOSAL.md's `verify` section exists to rule out.
  *
- * TWO DELIBERATE DIVERGENCES FROM retag_swift_classes, both of which a
- * wrapper author has to know about, because in each case the two front-ends
- * return DIFFERENT codes for the same input. Both are handled in
- * compat/retag_swift_classes.sh, whose header says how:
+ * ONE DELIBERATE DIVERGENCE FROM retag_swift_classes, which a wrapper author
+ * has to know about, because the two front-ends return DIFFERENT codes for
+ * the same input: MSWIFT_NOT_MACHO. retag_swift_classes skips such an
+ * argument silently and keeps going through the rest of its argv, ending at
+ * 0; this verb has exactly one file to talk about, so it refuses (EX_REFUSED)
+ * and says why. compat/retag_swift_classes.sh's header says how it maps that
+ * back.
  *
- *   - MSWIFT_NOT_MACHO. retag_swift_classes skips such an argument silently
- *     and keeps going through the rest of its argv, ending at 0; this verb
- *     has exactly one file to talk about, so it refuses (EX_REFUSED) and says
- *     why.
- *   - MSWIFT_RACED -- `path` named a different inode by the time it was
- *     validated, so NOTHING was written. retag_swift_classes returns 0 for
- *     that (a benign skip in a multi-file run, already reported on stderr);
- *     this verb returns EX_FAIL. Reporting success for work it did not do is the
- *     silent-success shape this codebase refuses, and a caller that scripted
- *     `macho9 retag-swift F && install F` on a 0 would install the file the
- *     race left behind.
- *
- * Both codes are tested BY NAME below, never as `n < 0` -- swift_retag.h says
- * why: a fourth benign code added later would otherwise silently become a
- * macho9 failure, which is the same "two places deciding one thing" drift the
+ * MSWIFT_NOT_MACHO is tested BY NAME below, never as `n < 0` -- swift_retag.h
+ * says why: a future benign code would otherwise silently become a macho9
+ * failure, which is the same "two places deciding one thing" drift the
  * shared module exists to prevent. */
-static int cmd_retag_swift(const char *path) {
-    int n = mswift_retag_file(path);
+static int cmd_retag_swift(const char *path, const char *out) {
+    /* Before any read: naming FILE as OUT is a mistake about what this tool
+     * does, not about this file's content, and saying so up front is the
+     * difference between "refused, nothing happened" and a refusal that
+     * arrives after the work. wa_write_new would refuse it anyway at the
+     * write; this is the same answer, earlier and in this verb's own words. */
+    if (wa_is_input(path, out)) {
+        fprintf(stderr, "macho9 retag-swift: %s is %s; macho9 never writes its input\n", out, path);
+        return EX_FAIL;
+    }
+    size_t out_size = 0;
+    int n = mswift_retag_file(path, out, &out_size);
     if (n == MSWIFT_NOT_MACHO) {
         fprintf(stderr, "macho9 retag-swift: %s: not a readable 64-bit Mach-O. "
                         "This verb is thin-only, like retag_swift_classes, so that "
@@ -953,8 +965,7 @@ static int cmd_retag_swift(const char *path) {
                         "Mach-O at all.\n", path);
         return EX_REFUSED;
     }
-    /* Both already printed their own diagnostic inside mswift_retag_file. */
-    if (n == MSWIFT_ERROR || n == MSWIFT_RACED) return EX_FAIL;
+    if (n == MSWIFT_ERROR) return EX_FAIL;   /* already reported inside mswift_retag_file */
     if (n < 0) {
         /* A code swift_retag.h grew that this verb has not been taught. Refuse
          * rather than fall through to "retagged -4 class record(s)" and exit
@@ -967,6 +978,7 @@ static int cmd_retag_swift(const char *path) {
         return EX_FAIL;
     }
     printf("%s: retagged %d class record(s)\n", path, n);
+    printf("Wrote %s (%zu bytes)\n", out, out_size);
     return 0;
 }
 
@@ -1256,20 +1268,20 @@ int main(int argc, char **argv) {
         return cmd_grow(argv[2], argv[3]);
     }
     if (strcmp(verb, "minos") == 0) {
-        int allow_grow = (argc == 5 && strcmp(argv[4], "--allow-grow") == 0);
-        if (argc != 4 && !allow_grow) {
-            fprintf(stderr, "usage: %s minos FILE 10.9 [--allow-grow]\n", argv[0]);
+        int allow_grow = (argc == 6 && strcmp(argv[5], "--allow-grow") == 0);
+        if (argc != 5 && !allow_grow) {
+            fprintf(stderr, "usage: %s minos FILE OUT 10.9 [--allow-grow]\n", argv[0]);
             return EX_FAIL;
         }
-        return cmd_minos(argv[2], argv[3], allow_grow);
+        return cmd_minos(argv[2], argv[3], argv[4], allow_grow);
     }
     if (strcmp(verb, "segment") == 0) {
         if (argc != 5) { fprintf(stderr, "usage: %s segment FILE OLD NEW\n", argv[0]); return EX_FAIL; }
         return cmd_segment(argv[2], argv[3], argv[4]);
     }
     if (strcmp(verb, "retag-swift") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s retag-swift FILE\n", argv[0]); return EX_FAIL; }
-        return cmd_retag_swift(argv[2]);
+        if (argc != 4) { fprintf(stderr, "usage: %s retag-swift FILE OUT\n", argv[0]); return EX_FAIL; }
+        return cmd_retag_swift(argv[2], argv[3]);
     }
     if (strcmp(verb, "lc") == 0) {
         if (argc < 5) { fprintf(stderr, "usage: %s lc FILE [--fatal-warnings] -delete KIND [-delete KIND...]\n", argv[0]); return EX_FAIL; }

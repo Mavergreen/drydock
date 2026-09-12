@@ -276,17 +276,44 @@ segment rename __TEXT __B
 MACHO9_EDIT" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
 
 # ---- the four fixed-arity tools -----------------------------------------
-ok avm     'macho9 minos f 10.9'             -- add_version_min f
+# macho9 never writes its input, so the teaching form names an output of its
+# own and ends with the install step -- two lines, and both of them pinned:
+# what a reader is shown has to be the complete equivalent of the old in-place
+# edit, not the half of it that rewrites nothing.
+ok avm     'macho9 minos f f.new 10.9
+mv -f f.new f'                               -- add_version_min f
+# MT_OUT is how a wrapper names the temp it is going to install: the command
+# writes exactly that, and the `mv` disappears because the wrapper does the
+# installing itself.
+mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" add_version_min f )
+if [ "$mt_out_got" = 'macho9 minos f /tmp/t.tmp 10.9' ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL avm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
+fi
 ok pm      'macho9 declassify in out'        -- patch_macho in out
 ok pm-same 'macho9 declassify f f'           -- patch_macho f f
 ok rs      'macho9 segment f __DATA __DATA2' -- rename_segment f __DATA __DATA2
 ok rs-16   'macho9 segment f __DATA 1234567890123456' -- rename_segment f __DATA 1234567890123456
 # retag_swift_classes is variadic over FILES; macho9 retag-swift takes one, so
-# the translation is a loop, one line per file, in argv order.
-ok rsc-1 'macho9 retag-swift a'                                   -- retag_swift_classes a
-ok rsc-3 'macho9 retag-swift a
-macho9 retag-swift b
-macho9 retag-swift c' -- retag_swift_classes a b c
+# the translation is a loop, one line per file, in argv order. Each file, like
+# add_version_min's, gets its own output and install step.
+ok rsc-1 'macho9 retag-swift a a.new
+mv -f a.new a'                                                    -- retag_swift_classes a
+ok rsc-3 'macho9 retag-swift a a.new
+mv -f a.new a
+macho9 retag-swift b b.new
+mv -f b.new b
+macho9 retag-swift c c.new
+mv -f c.new c' -- retag_swift_classes a b c
+# MT_OUT names a single output for the whole call, so it only makes sense set
+# when retranslating ONE file at a time -- retag_swift_classes.sh's own loop.
+rsc_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" retag_swift_classes a )
+if [ "$rsc_out_got" = 'macho9 retag-swift a /tmp/t.tmp' ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL rsc-mt-out: got %s\n' "$rsc_out_got" >&2; fail=$((fail + 1))
+fi
 
 # ---- quoting ------------------------------------------------------------
 #
@@ -307,7 +334,8 @@ fi
 
 # ---- MACHO9 names the program word --------------------------------------
 got=$( MACHO9=/opt/bin/macho9 /bin/sh "$TR" add_version_min f )
-if [ "$got" = '/opt/bin/macho9 minos f 10.9' ]; then
+if [ "$got" = '/opt/bin/macho9 minos f f.new 10.9
+mv -f f.new f' ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL macho9-env: got %s\n' "$got" >&2; fail=$((fail + 1))

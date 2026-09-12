@@ -59,26 +59,35 @@
                                  * (MI_IO_ERROR); already reported */
 #define MSWIFT_NOT_MACHO  (-2)  /* not a readable 64-bit Mach-O; NOTHING printed,
                                  * so a front-end that cares must say so itself */
-#define MSWIFT_RACED      (-3)  /* `path` named a different inode by the time it
-                                 * was validated; already reported, nothing written */
 
 /*
  * Retag every class record reachable from `path`'s __objc_classlist and
  * __objc_nlclslist (in either __DATA or __DATA_CONST), and the metaclass each
- * one's isa points at, writing the file back in place if anything changed.
+ * one's isa points at, and write the result as `out`. `path` is READ and
+ * never written; `out` is created afresh (wa_write_new, src/atomic_write.h),
+ * carrying `path`'s mode, owner and xattrs. `out` must not be `path` --
+ * wa_write_new refuses that and this returns MSWIFT_ERROR without writing
+ * anything.
  *
- * Returns the number of class records retagged (0 if there were none to do),
- * or one of the MSWIFT_* codes above. Nothing is written when the count is 0,
- * and nothing is written on any failure.
+ * Returns the number of class records retagged (0 if there were none to do,
+ * in which case `out` is still written -- a non-negative return always means
+ * `out` is the answer), or one of the MSWIFT_* codes above. Nothing is
+ * written when the return is negative. On a non-negative return, `*out_size`
+ * is set to `out`'s size in bytes -- this function already has it in hand
+ * (im.size, unchanged by the retag: only tag bits move, see
+ * mswift_retag_image below), so a caller reporting "Wrote OUT (N bytes)"
+ * has no reason to stat() `out` back out for a number already computed here.
+ * Untouched on a negative return.
  */
-int mswift_retag_file(const char *path);
+int mswift_retag_file(const char *path, const char *out, size_t *out_size);
 
 /*
  * mswift_retag_file's retag, without the file: the same walk over the image
  * `im` views (from mi_open or mi_wrap), rewriting tag bits in place in its
- * buffer -- no open, no race guard, no write. mswift_retag_file is this plus
- * those; src/edit.c calls it for `swift-abi set legacy` against the image it
- * writes once, itself, after the last statement.
+ * buffer -- no open, no write. mswift_retag_file is this plus those (and,
+ * once, a race guard that went with the in-place write it no longer does);
+ * src/edit.c calls it for `swift-abi set legacy` against the image it writes
+ * once, itself, after the last statement.
  *
  * Returns the number of class records retagged, 0 or more; it has no failure
  * of its own and prints nothing. Only tag bits in __DATA's (or

@@ -31,6 +31,9 @@ MACHO9="$BIN/macho9"
 # taking it on trust.
 
 CC="${CC:-clang}"
+# This script's own directory, for the fixture-builder C sources that live
+# beside it (tests/strip_version_min.c).
+HERE=$(cd "$(dirname "$0")" && pwd)
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/cli_test.$$"
 mkdir -p "$T"
@@ -182,7 +185,7 @@ build_main_without_build_version() {
 # byte inside the existing header pad (unused space between the end of the
 # load commands and the first section's file data -- computed here by an
 # independent read, not by calling into macho9/image.h, for the same
-# non-circularity reason strip_version_min.c below is self-contained) via a
+# non-circularity reason tests/strip_version_min.c is self-contained) via a
 # throwaway C program, and tries to run the result. If the kernel/dyld kills
 # THAT, this host enforces code-signing on any post-link modification,
 # unconditionally of what changed or which tool changed it -- an honest,
@@ -1078,7 +1081,7 @@ fi
 # fixture is deliberately NOT stripped of its version-min first: the helper
 # that does that is built further down, and this assertion is about reaching
 # the driver at all, not about which branch of it ran.)
-if "$T/alone/macho9" minos "$T/alone/fixture" 10.9 >"$T/alone_minos.out" 2>&1; then
+if "$T/alone/macho9" minos "$T/alone/fixture" "$T/alone/fixture.minos" 10.9 >"$T/alone_minos.out" 2>&1; then
     ok "alone: minos works with no add_version_min anywhere near macho9"
 else
     bad "alone: minos" "$(cat "$T/alone_minos.out")"
@@ -1088,8 +1091,8 @@ if grep -q "LC_VERSION_MIN_MACOSX" "$T/alone_minos.out"; then
 else
     bad "alone: minos output" "exited 0 but said nothing about LC_VERSION_MIN_MACOSX: $(cat "$T/alone_minos.out")"
 fi
-"$T/alone/macho9" info "$T/alone/fixture" | grep -q "LC_VERSION_MIN_MACOSX" \
-    && ok "alone: the fixture carries LC_VERSION_MIN_MACOSX afterward" \
+"$T/alone/macho9" info "$T/alone/fixture.minos" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "alone: the output carries LC_VERSION_MIN_MACOSX afterward" \
     || bad "alone: minos result" "no LC_VERSION_MIN_MACOSX in info output after minos"
 
 # ============================================================================
@@ -1271,67 +1274,11 @@ fi
 # tool under test to build that test's own fixture would be circular
 # regardless). The fixture is therefore test-tool-constructed, not
 # linker-constructed, for this one load command only.
-cat > "$T/strip_version_min.c" <<'EOF'
-/* Remove the FIRST LC_VERSION_MIN_MACOSX load command from a Mach-O file,
- * in place: memmove the load commands after it down over it, zero the
- * freed tail bytes (they become header pad), and fix up ncmds/sizeofcmds.
- *
- * The GOAL is a fixture that LACKS LC_VERSION_MIN_MACOSX, not "removed one".
- * A 2026 linker emits LC_BUILD_VERSION instead of LC_VERSION_MIN_MACOSX in
- * the first place (a 10.9-era linker emits the latter), so on a cross host
- * there is nothing to strip -- the goal is already met. That is SUCCESS,
- * not an error: exit 0 either way. Only a genuine failure to remove one
- * that IS present is exit 2. */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <mach-o/loader.h>
-
-int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: %s FILE\n", argv[0]); return 2; }
-    int fd = open(argv[1], O_RDWR);
-    if (fd < 0) { perror("open"); return 2; }
-    struct stat st;
-    if (fstat(fd, &st) != 0) { perror("fstat"); close(fd); return 2; }
-    size_t size = (size_t)st.st_size;
-    uint8_t *buf = malloc(size);
-    if (!buf || read(fd, buf, size) != (ssize_t)size) {
-        fprintf(stderr, "read failed\n"); close(fd); return 2;
-    }
-    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
-    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
-
-    uint8_t *lcp = buf + sizeof(*hdr);
-    uint32_t found_off = 0, found_size = 0;
-    for (uint32_t i = 0; i < hdr->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)lcp;
-        if (lc->cmd == LC_VERSION_MIN_MACOSX) {
-            found_off = (uint32_t)(lcp - buf);
-            found_size = lc->cmdsize;
-            break;
-        }
-        lcp += lc->cmdsize;
-    }
-    if (!found_size) { printf("no LC_VERSION_MIN_MACOSX present; nothing to strip (goal already met)\n"); return 0; }
-
-    uint32_t lc_end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
-    uint32_t after = found_off + found_size;
-    memmove(buf + found_off, buf + after, lc_end - after);
-    memset(buf + lc_end - found_size, 0, found_size);
-    hdr->ncmds -= 1;
-    hdr->sizeofcmds -= found_size;
-
-    lseek(fd, 0, SEEK_SET);
-    if (write(fd, buf, size) != (ssize_t)size) { perror("write"); return 2; }
-    close(fd);
-    return 0;
-}
-EOF
-"$CC" -O2 -o "$T/strip_version_min" "$T/strip_version_min.c"
+#
+# The program that does it is tests/strip_version_min.c, a file rather than a
+# here-document because tests/wrapper_test.sh needs exactly the same fixture
+# for exactly the same reason, and one copy of it is enough.
+"$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
 
 build_main "$T/minos_fixture"
 # A BARE invocation here would let `set -e` kill the WHOLE script the
@@ -1363,22 +1310,48 @@ else
     ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
 fi
 
-"$MACHO9" minos "$T/minos_fixture" 10.9 >"$T/minos.out" || bad "minos: exit" "$(cat "$T/minos.out")"
-minos_info=$("$MACHO9" info "$T/minos_fixture")
+"$MACHO9" minos "$T/minos_fixture" "$T/minos_out" 10.9 >"$T/minos.out" \
+    || bad "minos: exit" "$(cat "$T/minos.out")"
+minos_info=$("$MACHO9" info "$T/minos_out")
 echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos: LC_VERSION_MIN_MACOSX present after" \
     || bad "minos: version-min" "not found in info output"
-# Running it again must not error (add_version_min's own "already present" path).
-if "$MACHO9" minos "$T/minos_fixture" 10.9 >/dev/null 2>&1; then
+# Running it again must not error (add_version_min's own "already present"
+# path) -- this time reading the output of the run above, which HAS the
+# command, so the second run really takes that branch.
+if "$MACHO9" minos "$T/minos_out" "$T/minos_out2" 10.9 >/dev/null 2>&1; then
     ok "minos: idempotent re-run does not error"
 else
     bad "minos: re-run" "errored on an already-minos'd file"
 fi
 # Any other version is refused up front -- this build can only target 10.9.
-if "$MACHO9" minos "$T/minos_fixture" 10.10 >/dev/null 2>&1; then
+if "$MACHO9" minos "$T/minos_fixture" "$T/minos_out3" 10.10 >/dev/null 2>&1; then
     bad "minos: wrong version" "10.10 should be refused"
 else
     ok "minos: non-10.9 version refused"
 fi
+
+# minos never writes its input: FILE OUT, and an OUT that is FILE is refused.
+build_main "$T/mo_in"; "$T/strip_version_min" "$T/mo_in" >/dev/null
+mo_before=$(sha "$T/mo_in"); mo_ino=$(stat -f %i "$T/mo_in")
+"$MACHO9" minos "$T/mo_in" "$T/mo_out" 10.9 >"$T/mo.out" 2>"$T/mo.err" \
+    && ok "minos FILE OUT: succeeds" || bad "minos FILE OUT" "$(cat "$T/mo.err")"
+[ "$(sha "$T/mo_in")" = "$mo_before" ] && [ "$(stat -f %i "$T/mo_in")" = "$mo_ino" ] \
+    && ok "minos FILE OUT: FILE is untouched" || bad "minos FILE OUT" "FILE changed"
+"$MACHO9" info "$T/mo_out" | grep -q LC_VERSION_MIN_MACOSX \
+    && ok "minos FILE OUT: OUT has the command" || bad "minos FILE OUT" "OUT lacks it"
+grep -q "^Wrote $T/mo_out (" "$T/mo.out" \
+    && ok "minos FILE OUT: says what it wrote" || bad "minos FILE OUT" "no Wrote line: $(cat "$T/mo.out")"
+rc=0; "$MACHO9" minos "$T/mo_in" "$T/mo_in" 10.9 >/dev/null 2>"$T/mo_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/mo_in")" = "$mo_before" ] \
+    && ok "minos: OUT that is FILE is refused (2), FILE untouched" || bad "minos OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/mo_same.err" \
+    && ok "minos: ... refused up front, before any work" \
+    || bad "minos OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
+ln -s "$T/mo_in" "$T/mo_link"
+rc=0; "$MACHO9" minos "$T/mo_in" "$T/mo_link" 10.9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos: OUT that is a symlink to FILE is refused (2)" || bad "minos OUT=link" "rc $rc"
+rc=0; "$MACHO9" minos "$T/mo_in" 10.9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos: a missing OUT is a usage error (2)" || bad "minos no OUT" "rc $rc"
 
 # ============================================================================
 # lc -delete
@@ -1746,9 +1719,9 @@ build_main "$T/segment_fw_fixture"
     || { grep -q "usage:" "$T/segment_fw.err" \
          && ok "segment: does not accept --fatal-warnings (refused as a usage error)" \
          || bad "segment: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/segment_fw.err")"; }
-"$MACHO9" retag-swift "$T/segment_fw_fixture" --fatal-warnings \
+"$MACHO9" retag-swift "$T/segment_fw_fixture" "$T/segment_fw_fixture.rsout" --fatal-warnings \
     >/dev/null 2>"$T/retag_fw.err" \
-    && bad "retag-swift: --fatal-warnings" "should be refused (retag-swift takes exactly FILE)" \
+    && bad "retag-swift: --fatal-warnings" "should be refused (retag-swift takes exactly FILE OUT)" \
     || { grep -q "usage:" "$T/retag_fw.err" \
          && ok "retag-swift: does not accept --fatal-warnings (refused as a usage error)" \
          || bad "retag-swift: --fatal-warnings" "refused, but not with a usage message: $(cat "$T/retag_fw.err")"; }
@@ -2406,116 +2379,10 @@ fi
 # ============================================================================
 # retag-swift: the is-Swift tag moves from the stable-ABI bit to the legacy one
 # ============================================================================
-# The observable is the two low bits of each class record's data word, so the
-# fixture is a hand-built Mach-O with a known layout and the reader is the
-# same program that wrote it -- the leaf-tool-crashes.sh pattern. Nothing on
-# this host can emit a real Swift binary (10.9 predates Swift entirely), and a
-# fixture whose bits nothing in the repo chose would prove less, not more.
-cat > "$T/mkswift.c" <<'EOF'
-/* mkswift make OUT   -- write a tiny 64-bit Mach-O with one __DATA segment
- *                       holding __objc_classlist -> one class record, whose
- *                       isa points at a metaclass record. Both records carry
- *                       the STABLE-ABI is-Swift tag (low bits == 2).
- * mkswift tags FILE   -- print "class <low2> <word>" then "meta <low2> <word>"
- *                       for the two records this layout puts at fixed offsets.
- *
- * Fixed layout (file offsets == vm offsets; the segment maps at vmaddr
- * VMBASE with fileoff 0, so file_off(va) == va - VMBASE):
- *   0x800  __objc_classlist: one 8-byte VA, pointing at the class record
- *   0x900  class record:     +0 isa -> metaclass VA, +32 data word
- *   0x940  metaclass record: +0 isa == 0,            +32 data word
- */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <mach-o/loader.h>
-
-#define FSIZE      0x1000
-#define VMBASE     0x100000000ULL
-#define LISTOFF    0x800
-#define CLASSOFF   0x900
-#define METAOFF    0x940
-#define DATAOFF    32
-#define PAYLOAD    0x00000001000009c0ULL   /* plausible non-tag bits, preserved */
-
-static void set_name16(char *field, const char *name) {
-    size_t len = strlen(name);
-    if (len > 16) len = 16;
-    memset(field, 0, 16);
-    memcpy(field, name, len);
-}
-
-static uint8_t *slurp(const char *path, size_t *n) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { perror(path); exit(2); }
-    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t *b = malloc((size_t)sz);
-    if (!b || fread(b, 1, (size_t)sz, f) != (size_t)sz) { fprintf(stderr, "read %s\n", path); exit(2); }
-    fclose(f);
-    *n = (size_t)sz;
-    return b;
-}
-
-int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkswift make|tags FILE\n"); return 2; }
-
-    if (strcmp(argv[1], "tags") == 0) {
-        size_t n; uint8_t *b = slurp(argv[2], &n);
-        if (n < FSIZE) { fprintf(stderr, "fixture truncated\n"); return 2; }
-        uint64_t c = *(uint64_t *)(b + CLASSOFF + DATAOFF);
-        uint64_t m = *(uint64_t *)(b + METAOFF + DATAOFF);
-        printf("class %llu 0x%llx\n", (unsigned long long)(c & 3), (unsigned long long)c);
-        printf("meta %llu 0x%llx\n", (unsigned long long)(m & 3), (unsigned long long)m);
-        return 0;
-    }
-    if (strcmp(argv[1], "make") != 0) { fprintf(stderr, "unknown mode\n"); return 2; }
-
-    uint8_t *buf = calloc(1, FSIZE);
-    struct mach_header_64 *h = (struct mach_header_64 *)buf;
-    h->magic = MH_MAGIC_64;
-    h->cputype = CPU_TYPE_X86_64;
-    h->cpusubtype = 3;
-    h->filetype = MH_EXECUTE;
-    h->ncmds = 1;
-
-    struct segment_command_64 *sg = (struct segment_command_64 *)(buf + sizeof *h);
-    sg->cmd = LC_SEGMENT_64;
-    sg->cmdsize = (uint32_t)(sizeof *sg + 2 * sizeof(struct section_64));
-    set_name16(sg->segname, "__DATA");
-    sg->vmaddr = VMBASE;
-    sg->vmsize = FSIZE;
-    sg->fileoff = 0;
-    sg->filesize = FSIZE;
-    sg->nsects = 2;
-    h->sizeofcmds = sg->cmdsize;
-
-    struct section_64 *sc = (struct section_64 *)(sg + 1);
-    set_name16(sc[0].sectname, "__objc_classlist");
-    set_name16(sc[0].segname, "__DATA");
-    sc[0].addr = VMBASE + LISTOFF;
-    sc[0].size = 8;
-    sc[0].offset = LISTOFF;
-    set_name16(sc[1].sectname, "__objc_data");
-    set_name16(sc[1].segname, "__DATA");
-    sc[1].addr = VMBASE + CLASSOFF;
-    sc[1].size = 0x100;
-    sc[1].offset = CLASSOFF;
-
-    *(uint64_t *)(buf + LISTOFF) = VMBASE + CLASSOFF;
-    *(uint64_t *)(buf + CLASSOFF) = VMBASE + METAOFF;   /* class->isa */
-    *(uint64_t *)(buf + CLASSOFF + DATAOFF) = PAYLOAD | 2;
-    *(uint64_t *)(buf + METAOFF) = 0;                   /* metaclass->isa */
-    *(uint64_t *)(buf + METAOFF + DATAOFF) = PAYLOAD | 2;
-
-    FILE *f = fopen(argv[2], "wb");
-    if (!f) { perror("fopen"); return 1; }
-    if (fwrite(buf, 1, FSIZE, f) != FSIZE) { perror("fwrite"); fclose(f); return 1; }
-    fclose(f);
-    return 0;
-}
-EOF
-"$CC" -O2 -o "$T/mkswift" "$T/mkswift.c"
+# The fixture builder is tests/mkswift.c, shared with tests/wrapper_test.sh
+# exactly the way tests/strip_version_min.c is -- both suites need a binary
+# with real Swift class records to retag, not fixture.macho's usual zero.
+"$CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c"
 "$T/mkswift" make "$T/swift_fixture"
 tags_before=$("$T/mkswift" tags "$T/swift_fixture")
 [ "$tags_before" = "class 2 0x1000009c2
@@ -2523,9 +2390,12 @@ meta 2 0x1000009c2" ] \
     && ok "retag-swift: fixture starts with both records on the stable-ABI bit" \
     || bad "retag-swift: precondition" "unexpected starting tags: $tags_before"
 
-"$MACHO9" retag-swift "$T/swift_fixture" >"$T/retag.out" 2>&1 \
+swift_fixture_before=$(sha "$T/swift_fixture")
+"$MACHO9" retag-swift "$T/swift_fixture" "$T/swift_out1" >"$T/retag.out" 2>&1 \
     || bad "retag-swift: exit" "$(cat "$T/retag.out")"
-tags_after=$("$T/mkswift" tags "$T/swift_fixture")
+[ "$(sha "$T/swift_fixture")" = "$swift_fixture_before" ] \
+    && ok "retag-swift: FILE is untouched" || bad "retag-swift" "FILE changed"
+tags_after=$("$T/mkswift" tags "$T/swift_out1")
 [ "$tags_after" = "class 1 0x1000009c1
 meta 1 0x1000009c1" ] \
     && ok "retag-swift: moved both tags to the legacy bit, leaving every other bit alone" \
@@ -2536,17 +2406,20 @@ grep -q "retagged 2 class record(s)" "$T/retag.out" \
     && ok "retag-swift: reported both the class and its metaclass" \
     || bad "retag-swift: count" "expected 2 records, got: $(cat "$T/retag.out")"
 
-# Idempotent: a second run finds nothing on the stable bit, says 0, and does
-# not flip anything back.
-cp "$T/swift_fixture" "$T/swift_twice_before"
-"$MACHO9" retag-swift "$T/swift_fixture" >"$T/retag2.out" 2>&1 \
+# Idempotent: retagging the already-retagged OUT finds nothing on the stable
+# bit, says 0, and does not flip anything back.
+swift_out1_before=$(sha "$T/swift_out1")
+"$MACHO9" retag-swift "$T/swift_out1" "$T/swift_out2" >"$T/retag2.out" 2>&1 \
     || bad "retag-swift: second run exit" "$(cat "$T/retag2.out")"
 grep -q "retagged 0 class record(s)" "$T/retag2.out" \
     && ok "retag-swift: a second run retags nothing" \
     || bad "retag-swift: idempotence" "expected 0 records, got: $(cat "$T/retag2.out")"
-cmp -s "$T/swift_fixture" "$T/swift_twice_before" \
-    && ok "retag-swift: a run with nothing to do left the file untouched" \
-    || bad "retag-swift: idempotence" "the file changed on a no-op run"
+[ "$(sha "$T/swift_out1")" = "$swift_out1_before" ] \
+    && ok "retag-swift: a run with nothing to do left FILE untouched" \
+    || bad "retag-swift: idempotence" "FILE changed on a no-op run"
+cmp -s "$T/swift_out1" "$T/swift_out2" \
+    && ok "retag-swift: a no-op run's OUT still carries the same bytes" \
+    || bad "retag-swift: idempotence" "OUT differs from FILE on a no-op run"
 
 # Handed something it cannot read, this verb SAYS SO rather than exiting 0
 # with no output -- the whole reason it does not just forward the old tool's
@@ -2567,9 +2440,12 @@ else
     printf 'not a mach-o at all, just bytes.\n' > "$T/retag_fat_blob"
     "$T/segread" wrap "$T/retag_fat" "$T/swift_fixture" "$T/retag_fat_blob"
     rc=0
-    "$MACHO9" retag-swift "$T/retag_fat" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
+    "$MACHO9" retag-swift "$T/retag_fat" "$T/retag_fat_out" >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
     [ "$rc" -eq 1 ] && ok "retag-swift: refuses a fat container with the documented refusal code" \
         || bad "retag-swift: fat" "expected exit 1, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
+    [ ! -e "$T/retag_fat_out" ] \
+        && ok "retag-swift: ... and writes no OUT for a refusal" \
+        || bad "retag-swift: fat" "OUT was written despite the refusal"
     grep -q "not a readable 64-bit Mach-O" "$T/retag_fat.err" \
         && ok "retag-swift: says why it refused, instead of silently doing nothing" \
         || bad "retag-swift: fat message" "no explanation on stderr: $(cat "$T/retag_fat.err")"
@@ -2578,7 +2454,7 @@ else
     # everything.
     cp "$T/swift_fixture" "$T/retag_thin_control"
     rc=0
-    "$MACHO9" retag-swift "$T/retag_thin_control" >"$T/retag_thin_control.out" 2>&1 || rc=$?
+    "$MACHO9" retag-swift "$T/retag_thin_control" "$T/retag_thin_control_out" >"$T/retag_thin_control.out" 2>&1 || rc=$?
     [ "$rc" -eq 0 ] \
         && ok "retag-swift: the same bytes, thin, are accepted -- the refusal is about the container" \
         || bad "retag-swift: thin control" "expected exit 0, got $rc: $(cat "$T/retag_thin_control.out")"
@@ -2590,7 +2466,7 @@ fi
 # by-name test of the negative codes: collapse those branches and one of
 # these two exit codes moves.
 rc=0
-"$MACHO9" retag-swift "$T/no-such-file-for-retag" >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
+"$MACHO9" retag-swift "$T/no-such-file-for-retag" "$T/retag_missing_out" >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
 [ "$rc" -eq 2 ] \
     && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
     || bad "retag-swift: missing path" "expected exit 2, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
@@ -2608,6 +2484,28 @@ rc=0
 [ -s "$T/retag_missing.err" ] \
     && ok "retag-swift: an unopenable path prints something, per MSWIFT_ERROR's contract" \
     || bad "retag-swift: missing path stderr" "exit 2 but stderr was empty -- MSWIFT_ERROR's 'already reported' contract broke"
+
+# retag-swift never writes its input: FILE OUT, and an OUT that is FILE is
+# refused. Any 64-bit Mach-O fixture does, whether or not it carries a Swift
+# class to retag -- OUT is written either way.
+build_main "$T/rs_in"
+rs_before=$(sha "$T/rs_in"); rs_ino=$(stat -f %i "$T/rs_in")
+"$MACHO9" retag-swift "$T/rs_in" "$T/rs_out" >"$T/rs.out" 2>"$T/rs.err" \
+    && ok "retag-swift FILE OUT: succeeds" || bad "retag-swift FILE OUT" "$(cat "$T/rs.err")"
+[ "$(sha "$T/rs_in")" = "$rs_before" ] && [ "$(stat -f %i "$T/rs_in")" = "$rs_ino" ] \
+    && ok "retag-swift FILE OUT: FILE is untouched" || bad "retag-swift FILE OUT" "FILE changed"
+[ -e "$T/rs_out" ] \
+    && ok "retag-swift FILE OUT: OUT was written" || bad "retag-swift FILE OUT" "OUT is missing"
+grep -q "^Wrote $T/rs_out (" "$T/rs.out" \
+    && ok "retag-swift FILE OUT: says what it wrote" || bad "retag-swift FILE OUT" "no Wrote line: $(cat "$T/rs.out")"
+rc=0; "$MACHO9" retag-swift "$T/rs_in" "$T/rs_in" >/dev/null 2>"$T/rs_same.err" || rc=$?
+[ "$rc" -eq 2 ] && [ "$(sha "$T/rs_in")" = "$rs_before" ] \
+    && ok "retag-swift: OUT that is FILE is refused (2), FILE untouched" || bad "retag-swift OUT=FILE" "rc $rc"
+grep -q "never writes its input" "$T/rs_same.err" \
+    && ok "retag-swift: ... refused up front, before any work" \
+    || bad "retag-swift OUT=FILE" "not the up-front refusal: $(cat "$T/rs_same.err")"
+rc=0; "$MACHO9" retag-swift "$T/rs_in" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "retag-swift: a missing OUT is a usage error (2)" || bad "retag-swift no OUT" "rc $rc"
 
 # The MI_IO_ERROR branch inside mi_open specifically (not mswift_retag_file's
 # own earlier open()/fstat(), which the absent-file case above already
@@ -3110,31 +3008,32 @@ grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
 cp "$T/vm_tight" "$T/vm_m"
 vm_m_before=$(sha "$T/vm_m")
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 >/dev/null 2>"$T/vm_m_no.err" || rc=$?
+rm -f "$T/vm_m_out"
+"$MACHO9" minos "$T/vm_m" "$T/vm_m_out" 10.9 >/dev/null 2>"$T/vm_m_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "minos: without --allow-grow a short pad is refused (1)" \
     || bad "minos --allow-grow" "without the flag: expected 1, got $rc: $(cat "$T/vm_m_no.err")"
-[ "$(sha "$T/vm_m")" = "$vm_m_before" ] \
-    && ok "minos: ... and the refused run left the file unchanged" \
-    || bad "minos --allow-grow" "the refused run modified the file"
+[ "$(sha "$T/vm_m")" = "$vm_m_before" ] && [ ! -e "$T/vm_m_out" ] \
+    && ok "minos: ... and the refused run left FILE unchanged and wrote no OUT" \
+    || bad "minos --allow-grow" "the refused run modified FILE, or created OUT"
 grep -q "allow-grow" "$T/vm_m_no.err" \
     && ok "minos: ... and the refusal names allow-grow" \
     || bad "minos --allow-grow" "no allow-grow remedy in: $(cat "$T/vm_m_no.err")"
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 --allow-grow >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
+"$MACHO9" minos "$T/vm_m" "$T/vm_m_out" 10.9 --allow-grow >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "minos: --allow-grow grows the header and adds the command" \
     || bad "minos --allow-grow" "with the flag: expected 0, got $rc: $(cat "$T/vm_m_yes.err")"
 vm_m_grows=$(grep -c "grew header pad" "$T/vm_m_yes.out" || true)
 [ "$vm_m_grows" -eq 1 ] \
     && ok "minos: --allow-grow: stdout has exactly one 'grew header pad' line" \
     || bad "minos --allow-grow" "expected 1 'grew header pad' line, saw $vm_m_grows: $(cat "$T/vm_m_yes.out")"
-"$MACHO9" info "$T/vm_m" | grep -q "LC_VERSION_MIN_MACOSX" \
+"$MACHO9" info "$T/vm_m_out" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "minos: --allow-grow: LC_VERSION_MIN_MACOSX is present" \
     || bad "minos --allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
-"$MACHO9" verify "$T/vm_m" >/dev/null 2>"$T/vm_m_verify.err" \
+"$MACHO9" verify "$T/vm_m_out" >/dev/null 2>"$T/vm_m_verify.err" \
     && ok "minos: --allow-grow: the grown file passes macho9 verify" \
     || bad "minos --allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
 rc=0
-"$MACHO9" minos "$T/vm_m" 10.9 --bogus >/dev/null 2>&1 || rc=$?
+"$MACHO9" minos "$T/vm_m" "$T/vm_m_out" 10.9 --bogus >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "minos: an unknown flag is a usage error (2)" \
     || bad "minos" "an unknown flag: expected 2, got $rc"
 
