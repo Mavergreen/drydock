@@ -1,5 +1,5 @@
-#ifndef MACHO9_SWIFT_RETAG_H
-#define MACHO9_SWIFT_RETAG_H
+#ifndef MACHOTOOL_SWIFT_RETAG_H
+#define MACHOTOOL_SWIFT_RETAG_H
 /*
  * mswift_ -- moving an Objective-C class record's is-Swift tag from the
  * stable-ABI bit to the legacy one, so a Swift runtime built for a
@@ -7,7 +7,7 @@
  *
  * This is compat/retag_swift_classes.c's whole per-file process(), lifted out
  * of that tool so it is a library function rather than one program's static.
- * cli/macho9.c's `retag-swift` verb and src/edit.c's `swift-abi set legacy`
+ * cli/machotool.c's `retag-swift` verb and src/edit.c's `swift-abi set legacy`
  * statement are its only C front-ends (the latter through
  * mswift_retag_image, below, the same retag on an image already in memory);
  * the old grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
@@ -95,4 +95,4 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size);
  */
 int mswift_retag_image(mi_image *im);
 
-#endif /* MACHO9_SWIFT_RETAG_H */
+#endif /* MACHOTOOL_SWIFT_RETAG_H */

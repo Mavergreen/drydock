@@ -1,5 +1,5 @@
-#ifndef MACHO9_VERSION_MIN_H
-#define MACHO9_VERSION_MIN_H
+#ifndef MACHOTOOL_VERSION_MIN_H
+#define MACHOTOOL_VERSION_MIN_H
 /*
  * mv_ -- declaring a 10.9 deployment floor on an image that has none.
  *
@@ -8,10 +8,10 @@
  * TLV handling). This appends the LC_VERSION_MIN_MACOSX that 10.9 expects.
  *
  * It was compat/add_version_min.c's whole main(). It lives here so that
- * cli/macho9.c's `minos` verb can do the work in-process instead of forking
+ * cli/machotool.c's `minos` verb can do the work in-process instead of forking
  * and exec'ing add_version_min -- the same cycle mr_apply_file (src/rewrite.h)
  * breaks for `dylib`/`rpath`/`lc`. That is also what let add_version_min
- * become compat/add_version_min.sh, a /bin/sh wrapper that runs `macho9 minos
+ * become compat/add_version_min.sh, a /bin/sh wrapper that runs `machotool minos
  * FILE OUT 10.9` and installs OUT over FILE itself: the old name and the verb
  * print exactly the same thing, because there is only one implementation left
  * to print it.
@@ -58,4 +58,4 @@ int mv_add_version_min(const char *path, const char *out, int allow_grow);
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
                              const char *label, int *out_added);
 
-#endif /* MACHO9_VERSION_MIN_H */
+#endif /* MACHOTOOL_VERSION_MIN_H */

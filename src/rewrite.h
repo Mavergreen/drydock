@@ -1,10 +1,10 @@
-#ifndef MACHO9_REWRITE_H
-#define MACHO9_REWRITE_H
+#ifndef MACHOTOOL_REWRITE_H
+#define MACHOTOOL_REWRITE_H
 /*
  * mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs.
  *
  * This is change_dylib's whole operation set, lifted out of that tool's
- * main() so it is a library function rather than a program. cli/macho9.c's
+ * main() so it is a library function rather than a program. cli/machotool.c's
  * `dylib`/`rpath`/`lc`/`segment` verbs are its front-end
  * (-replace/-delete/-append/-insert/-reexport, plus a segment rename shared
  * with src/segname.h), through mr_apply_file; src/edit.c's edit scripts are
@@ -118,7 +118,7 @@ typedef struct {
     /* Rename every LC_SEGMENT_64 named segment_rename_old -- and the copy of
      * the segment name each of its sections carries -- to segment_rename_new.
      * Both NULL means no rename was requested; the pair is scalar rather than
-     * an array because the only grammar that spells it (macho9 segment FILE
+     * an array because the only grammar that spells it (machotool segment FILE
      * OLD NEW) takes exactly one pair. The rename itself is mseg_rename_lc
      * (src/segname.h), shared with the rename_segment grammar. */
     const char      *segment_rename_old;
@@ -137,7 +137,7 @@ typedef struct {
      * segname containing a space, both defeat it. The old `rename_segment`
      * grammar needs the count for its one output line AND for its exit 2 when
      * nothing matched, so the count has to come from the code that did the
-     * matching. cli/macho9.c's `segment` verb reports it. */
+     * matching. cli/machotool.c's `segment` verb reports it. */
     int             *segment_renamed;
     /* OUT, filled on the same terms as segment_renamed: only past every
      * gate, never by a refused rewrite. If non-NULL and the rewrite renumbered library
@@ -173,7 +173,7 @@ typedef struct {
      * -delete of `-replace X N -delete X` as a false miss. Loosening this is
      * how that false miss comes back, so a shadowed operation stays silent.
      *
-     * cli/macho9.c's `dylib`, `rpath` and `lc` verbs set this from
+     * cli/machotool.c's `dylib`, `rpath` and `lc` verbs set this from
      * --fatal-warnings, and src/edit.c sets it on every statement it lowers
      * to an mr_ops when the edit script says `fatal-warnings`; `segment` and
      * `retag-swift` don't take a list of operations that could miss, so they
@@ -196,12 +196,12 @@ typedef struct {
  * constant, since it cannot include this header. All four refuse (or, for
  * mr_apply_file's own arrays, must never be handed more than) the same count
  * -- `change_dylib -delete ... x33`, `fix_macho -change ... x33` and
- * `macho9 dylib -delete ... x33` all agree about being too many -- each in
+ * `machotool dylib -delete ... x33` all agree about being too many -- each in
  * its own wording, since none of the grammars spell the operations the same
  * way:
  *
- *   cli/macho9.c's own dylib/rpath parser checks the count inline and prints
- *     "macho9 <verb>: too many <flag> operations (max N)", naming ITS OWN
+ *   cli/machotool.c's own dylib/rpath parser checks the count inline and prints
+ *     "machotool <verb>: too many <flag> operations (max N)", naming ITS OWN
  *     flag spelling (`-append`, not change_dylib's `-add`) -- see the
  *     comment at that call site for why the wording is deliberately not
  *     shared with the other two. This is the ONLY call site that actually
@@ -222,7 +222,7 @@ typedef struct {
  *     MT_MAX_OPS=32 (not derived from MR_MAX_OPS: a /bin/sh script cannot
  *     include this header), and refuses at the identical count, in
  *     change_dylib's own historical words ("too many <flag> (max N)"),
- *     before ever emitting a `macho9` command line.
+ *     before ever emitting a `machotool` command line.
  *   mr_apply_file (src/rewrite.c) declares its own per-operation hit-count
  *     arrays -- an mr_hits (below): int[MR_MAX_OPS] for dylib/rpath,
  *     int[MR_MAX_STRIP] for strip -- sized from these same two macros, but
@@ -242,11 +242,11 @@ typedef struct {
  * "an operation matched nothing" into a refusal (see that field's own
  * comment above) -- one of several considered refusals this function can
  * return; see its own comment below for the rest. Deliberately equal to
- * cli/macho9.c's own EX_REFUSED: that is the ONLY caller today, `dylib`/
+ * cli/machotool.c's own EX_REFUSED: that is the ONLY caller today, `dylib`/
  * `rpath`/`lc` all forward mr_apply_file's return value verbatim (`return
  * mr_apply_file(path, out, &ops);`), and this way that forwarding keeps meaning
  * what --capabilities documents without the caller having to translate a
- * rewrite-library code into its own exit-code vocabulary. cli/macho9.c
+ * rewrite-library code into its own exit-code vocabulary. cli/machotool.c
  * enforces this equality as a build failure, not just this comment -- see
  * the typedef next to EX_REFUSED's definition.
  *
@@ -278,7 +278,7 @@ typedef struct {
  * MR_ERROR same as every other reason either one refuses, and so surfaces
  * as MR_REFUSED. See mr_apply_file's own comment below for the dividing
  * line, that exception, and examples of each. Named the same way as
- * MR_REFUSED, and cli/macho9.c's EX_FAIL is required to equal it for the
+ * MR_REFUSED, and cli/machotool.c's EX_FAIL is required to equal it for the
  * same reason EX_REFUSED is required to equal MR_REFUSED -- see the typedef
  * next to EX_FAIL's own definition. */
 #define MR_FAIL 2
@@ -287,7 +287,7 @@ typedef struct {
  * Apply `ops` to the Mach-O at `path` and write the result as the NEW file
  * `out`. `path` is only ever read -- it is opened O_RDONLY and never written,
  * whatever happens -- so the "in place" this function used to do is now the
- * caller's business (compat/macho9-compat.sh's install path does it with a
+ * caller's business (compat/machotool-compat.sh's install path does it with a
  * temp and an mv). Handles both a thin 64-bit Mach-O and a classic
  * (32-bit-offset fat_arch) fat container, whose slices are each rewritten and
  * then reassembled; a 64-bit fat container (fat_arch_64) is refused
@@ -299,7 +299,7 @@ typedef struct {
  * it has to exist either way. On any nonzero return `out` is as it was (or
  * still absent) and nothing was written: every refusal, the unmatched verdict
  * included, happens before the single wa_write_new at the end. Failure is one
- * of two codes, matching cli/macho9.c's own EX_REFUSED/EX_FAIL split
+ * of two codes, matching cli/machotool.c's own EX_REFUSED/EX_FAIL split
  * (this function's caller forwards whichever one it gets verbatim, so the
  * split has to be made correctly here, not patched up one level out):
  *
@@ -340,9 +340,9 @@ typedef struct {
  * (mr_report_unmatched), so a successful run's stdout is unaffected by the
  * move.
  *
- * PRECONDITION, unenforced here: `out` must not name `path`. cli/macho9.c
+ * PRECONDITION, unenforced here: `out` must not name `path`. cli/machotool.c
  * refuses that up front, in each verb's own words, before any file is read
- * (see m9_bad_out there); this function does not check again, because
+ * (see bad_out there); this function does not check again, because
  * wa_write_new does -- so an unchecked caller gets MR_FAIL and an unwritten
  * input rather than a silently rewritten one, just later and in
  * atomic_write.c's wording.
@@ -353,7 +353,7 @@ typedef struct {
  * per-operation hit-count arrays on the stack, sized exactly from those two
  * macros, to report (on stderr) which operations matched nothing; it trusts
  * the caller for the bound the same way the rest of this module already
- * trusts mr_ops's arrays to be caller-owned and caller-sized. cli/macho9.c
+ * trusts mr_ops's arrays to be caller-owned and caller-sized. cli/machotool.c
  * is the only caller today, and enforces the identical cap itself before
  * ever building an mr_ops (see MR_MAX_OPS's own comment) -- but that
  * enforcement lives in the caller, not in this library, so a future or
@@ -413,7 +413,7 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
 
 /* After a successful rewrite, report on stderr every dylib_changes/
  * rpath_changes/strip_cmds entry that matched nothing according to `hits`
- * (the "macho9: ... matched nothing" lines), and decide what that means:
+ * (the "machotool: ... matched nothing" lines), and decide what that means:
  * MR_REFUSED if at least one matched nothing and ops->fatal_unmatched is set,
  * otherwise 0. Only after a SUCCESSFUL rewrite: a refused one may have
  * stopped before a single comparison ran, and its hit counts mean nothing.
@@ -422,4 +422,4 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
  * each statement, against an image it writes only at the end. */
 int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits);
 
-#endif /* MACHO9_REWRITE_H */
+#endif /* MACHOTOOL_REWRITE_H */

@@ -1,11 +1,11 @@
-#ifndef MACHO9_SEGNAME_H
-#define MACHO9_SEGNAME_H
+#ifndef MACHOTOOL_SEGNAME_H
+#define MACHOTOOL_SEGNAME_H
 /*
  * mseg_ -- renaming a Mach-O segment, and the segname each of its sections
  * repeats.
  *
  * This is compat/rename_segment.c's rs_rename_lc, lifted out of that tool so
- * it is a library function rather than one program's static. cli/macho9.c's
+ * it is a library function rather than one program's static. cli/machotool.c's
  * `segment` verb and src/edit.c's `segment rename` statement are its only C
  * front-ends, both through src/rewrite.h's mr_ops; the old grammar,
  * `rename_segment binary OLDNAME NEWNAME`, reaches this same code through
@@ -66,4 +66,4 @@ int mseg_name_fits(const char *name);
  * `lc` is non-const on purpose: this writes through it. */
 int mseg_rename_lc(struct load_command *lc, const char *oldname, const char *newname);
 
-#endif /* MACHO9_SEGNAME_H */
+#endif /* MACHOTOOL_SEGNAME_H */

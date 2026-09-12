@@ -182,7 +182,7 @@ static void me_log_declassify(FILE *log, const md_report *r) {
  * mi_open would give a file. */
 static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FILE *log) {
     if (mi_wrap(buf, size, im) == 0) return 0;
-    me_say(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
+    me_say(log, "machotool edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
     return MR_REFUSED;
 }
 
@@ -255,7 +255,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         /* The same pre-check cmd_segment makes: a segname field is 16 bytes,
          * and mseg_rename_lc would truncate a longer name silently. */
         if (!mseg_name_fits(st->b)) {
-            me_say(log, "macho9 edit: new segment name '%s' is longer than the %d bytes "
+            me_say(log, "machotool edit: new segment name '%s' is longer than the %d bytes "
                         "a segname field holds\n", st->b, MSEG_NAME_MAX);
             return MR_REFUSED;
         }
@@ -275,7 +275,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (rc != 0) return rc;
         *v->renamed += renamed;
         if (!v->decide || *v->renamed > 0) return 0;
-        me_say(stderr, "macho9: segment %s matched nothing\n", st->a);
+        me_say(stderr, "machotool: segment %s matched nothing\n", st->a);
         if (s->fatal_warnings) { v->missed = 1; return MR_REFUSED; }
         return 0;
     }
@@ -334,7 +334,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it. The append's own
-         * "Added ..." line belongs to `macho9 minos`, which edit does not
+         * "Added ..." line belongs to `machotool minos`, which edit does not
          * call, so an append prints nothing on stdout -- unless it grew the
          * header pad, when mg_ensure_pad's two grow lines, labelled with
          * `path`, are there. */
@@ -346,7 +346,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     case MS_SWIFT_ABI: {
         /* `legacy` is the only value ms_parse accepts. A count of zero is
          * not a refusal: an image with no Swift classes has nothing to
-         * retag, as `macho9 retag-swift` reports with exit 0. */
+         * retag, as `machotool retag-swift` reports with exit 0. */
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
         int retagged = mswift_retag_image(&im);
@@ -369,12 +369,12 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * becomes part of the output. */
         size_t len = *psize, newlen = 0;
         if (len > SIZE_MAX - MDCL_SLACK) {
-            me_say(log, "macho9 edit: %s: too large to make room for fixups set classic\n", path);
+            me_say(log, "machotool edit: %s: too large to make room for fixups set classic\n", path);
             return MR_FAIL;
         }
         uint8_t *nb = (uint8_t *)realloc(*pbuf, len + MDCL_SLACK);
         if (!nb) {
-            me_say(log, "macho9 edit: out of memory making room for fixups set classic\n");
+            me_say(log, "machotool edit: out of memory making room for fixups set classic\n");
             return MR_FAIL;
         }
         *pbuf = nb;
@@ -398,10 +398,10 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (rc == MDCL_REFUSED) return MR_REFUSED;   /* the reason is on stderr */
         if (rc == MDCL_ERROR) return MR_FAIL;        /* likewise */
         if (rc == MDCL_NOT_MACHO) {
-            me_say(log, "macho9 edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
+            me_say(log, "machotool edit: %s: the image is no longer a readable 64-bit Mach-O\n", path);
             return MR_REFUSED;
         }
-        me_say(log, "macho9 edit: md_declassify_buf returned an unrecognized code %d\n", rc);
+        me_say(log, "machotool edit: md_declassify_buf returned an unrecognized code %d\n", rc);
         return MR_FAIL;
     }
     }
@@ -410,7 +410,7 @@ unknown:
     /* Unreachable through ms_parse, which refuses a statement outside
      * MS_TABLE; a statement this switch does not lower is a build that
      * disagrees with itself, not something the image did. */
-    me_say(log, "macho9 edit: cannot apply '%s %s'\n", ms_kind_name(st->kind), ms_op_name(st->op));
+    me_say(log, "machotool edit: cannot apply '%s %s'\n", ms_kind_name(st->kind), ms_op_name(st->op));
     return MR_FAIL;
 }
 
@@ -421,7 +421,7 @@ unknown:
  * slice. Returns 0, or the first failing statement's code after printing the
  * refusal line.
  *
- * WHY NOT BATCH THE STATEMENTS into one operation set, the way `macho9
+ * WHY NOT BATCH THE STATEMENTS into one operation set, the way `machotool
  * dylib` batches its flags into one mr_ops: because `fixups set classic`
  * cannot batch with anything -- every later statement has to see the lowered
  * image, with its new LC_DYLD_INFO_ONLY and extended __LINKEDIT -- and
@@ -439,7 +439,7 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
         int rc = me_apply(pbuf, psize, path, s, stmt, log, verbose, &v);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
-            me_say(log, "macho9 edit: %s at statement %d of %d (line %d)",
+            me_say(log, "machotool edit: %s at statement %d of %d (line %d)",
                    rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line);
             if (slice && v.missed) me_say(log, ": it matched nothing in any selected slice");
             else if (slice)        me_say(log, " in slice %s", slice);
@@ -466,7 +466,7 @@ static int me_write_once(uint8_t *buf, size_t size, const char *path, const char
     if (wr != 0) {
         /* What OUT holds after a failed write is atomic_write.h's to say (it
          * is as it was); FILE was never a destination. */
-        me_say(log, "macho9 edit: writing %s failed; %s left unmodified\n", out, path);
+        me_say(log, "machotool edit: writing %s failed; %s left unmodified\n", out, path);
         return MR_FAIL;
     }
     if (verbose) me_say(log, "%s: written (%s bytes)\n", out, bytes);
@@ -513,7 +513,7 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     /* Each slice's own final verification: always, and never subject to
      * MACHO_NO_VERIFY, exactly as a thin file's. */
     if (mg_plausible(*pbuf, *psize) != 0) {
-        me_say(c->log, "macho9 edit: refused at verification of slice %s; ", name);
+        me_say(c->log, "machotool edit: refused at verification of slice %s; ", name);
         me_say_left(c->log, c->path, c->out);
         return MR_REFUSED;
     }
@@ -542,14 +542,14 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0) {
         if (fd >= 0) close(fd);
-        me_say(log, "macho9 edit: %s: cannot open or read\n", path);
+        me_say(log, "machotool edit: %s: cannot open or read\n", path);
         return MR_FAIL;
     }
     size_t size = (size_t)st.st_size;
     uint8_t *buf = (uint8_t *)malloc(size ? size : 1);
     if (!buf || read(fd, buf, size) != (ssize_t)size) {
         close(fd); free(buf);
-        me_say(log, "macho9 edit: %s: cannot open or read\n", path);
+        me_say(log, "machotool edit: %s: cannot open or read\n", path);
         return MR_FAIL;
     }
     close(fd);
@@ -559,10 +559,10 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     if (prc != 0) {
         free(buf);
         if (prc == MFAT_IO_ERROR) {
-            me_say(log, "macho9 edit: out of memory reading %s's arch table\n", path);
+            me_say(log, "machotool edit: out of memory reading %s's arch table\n", path);
             return MR_FAIL;
         }
-        me_say(log, "macho9 edit: %s: malformed fat file; ", path);
+        me_say(log, "machotool edit: %s: malformed fat file; ", path);
         me_say_left(log, path, out);
         return MR_REFUSED;
     }
@@ -574,7 +574,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     mr_hits *hits = (mr_hits *)calloc(nst, sizeof *hits);
     int *renamed = (int *)calloc(nst, sizeof *renamed);
     if (!selected || !hits || !renamed) {
-        me_say(log, "macho9 edit: out of memory; ");
+        me_say(log, "machotool edit: out of memory; ");
         me_say_left(log, path, out);
         free(selected); free(hits); free(renamed); free(buf);
         return MR_FAIL;
@@ -604,16 +604,16 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
             }
         }
         if (!found) {
-            me_say(log, "macho9 edit: %s has no %s slice (it has: %s); ", path, rname, have);
+            me_say(log, "machotool edit: %s has no %s slice (it has: %s); ", path, rname, have);
             rc = MR_REFUSED;
         } else if (!found64) {
-            me_say(log, "macho9 edit: %s's %s slice is 32-bit, and statements apply only to "
+            me_say(log, "machotool edit: %s's %s slice is 32-bit, and statements apply only to "
                         "64-bit slices; ", path, rname);
             rc = MR_REFUSED;
         }
     }
     if (rc == 0 && nselected == 0) {
-        me_say(log, "macho9 edit: %s has no 64-bit slice to edit (it has: %s); ", path, have);
+        me_say(log, "machotool edit: %s has no 64-bit slice to edit (it has: %s); ", path, have);
         rc = MR_REFUSED;
     }
     if (rc != 0) {
@@ -633,7 +633,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     free(selected); free(hits); free(renamed);
     if (rc != 0) {
         if (rc == MFAT_IO_ERROR || rc == MFAT_MALFORMED) {
-            me_say(log, "macho9 edit: could not lay out %s's slices again; ", path);
+            me_say(log, "machotool edit: could not lay out %s's slices again; ", path);
             me_say_left(log, path, out);
             rc = (rc == MFAT_IO_ERROR) ? MR_FAIL : MR_REFUSED;
         }
@@ -643,7 +643,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     }
     /* The container itself, as it will be written. */
     if (mfat_parse(buf, size, &narch, &swap) != 0) {
-        me_say(log, "macho9 edit: the reassembled %s fails validation; ", path);
+        me_say(log, "machotool edit: the reassembled %s fails validation; ", path);
         me_say_left(log, path, out);
         free(buf);
         return MR_REFUSED;
@@ -656,7 +656,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
  * container to its own path or refusal: what is left is not an image this
  * tool reads at all. */
 static int me_refuse_input(const char *path, FILE *log) {
-    me_say(log, "macho9 edit: %s: not a readable 64-bit Mach-O\n", path);
+    me_say(log, "machotool edit: %s: not a readable 64-bit Mach-O\n", path);
     return MR_REFUSED;
 }
 
@@ -665,24 +665,24 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     int verbose = o ? o->verbose : 0;
 
     /* BEFORE ANYTHING IS READ. `out` is required, and it may not be `path` --
-     * the same two mistakes cli/macho9.c's m9_bad_out refuses for every verb
+     * the same two mistakes cli/machotool.c's bad_out refuses for every verb
      * that names an OUT, refused here as well because me_run is reachable
      * without going through that CLI. wa_write_new would refuse the second at
      * the write, but only after the whole rewrite; MR_FAIL, not MR_REFUSED,
      * because naming one file twice is a mistake about the command rather than a
      * verdict about the image. */
     if (!out) {
-        me_say(log, "macho9 edit: no output file was named\n");
+        me_say(log, "machotool edit: no output file was named\n");
         return MR_FAIL;
     }
     if (wa_is_input(path, out)) {
-        me_say(log, "macho9 edit: %s is %s; macho9 never writes its input\n", out, path);
+        me_say(log, "machotool edit: %s is %s; machotool never writes its input\n", out, path);
         return MR_FAIL;
     }
 
     uint32_t magic = me_magic(path);
     if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
-        me_say(log, "macho9 edit: %s is a 64-bit fat container (fat_arch_64), which this "
+        me_say(log, "machotool edit: %s is a 64-bit fat container (fat_arch_64), which this "
                     "tool does not read; ", path);
         me_say_left(log, path, out);
         return MR_REFUSED;
@@ -694,7 +694,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     mi_image im;
     int mo = mi_open(path, &im);
     if (mo == MI_IO_ERROR) {
-        me_say(log, "macho9 edit: %s: cannot open or read\n", path);
+        me_say(log, "machotool edit: %s: cannot open or read\n", path);
         return MR_FAIL;
     }
     if (mo != 0) return me_refuse_input(path, log);
@@ -705,7 +705,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         if (row < 0 || !(s->arch_mask & (1u << row))) {
             char name[32];
             ma_describe((uint32_t)im.hdr->cputype, (uint32_t)im.hdr->cpusubtype, name);
-            me_say(log, "macho9 edit: %s is %s, which the script's arch directives do not "
+            me_say(log, "machotool edit: %s is %s, which the script's arch directives do not "
                         "name; ", path, name);
             me_say_left(log, path, out);
             mi_close(&im);
@@ -723,7 +723,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     mr_hits *hits = (mr_hits *)calloc(nst, sizeof *hits);
     int *renamed = (int *)calloc(nst, sizeof *renamed);
     if (!hits || !renamed) {
-        me_say(log, "macho9 edit: out of memory; ");
+        me_say(log, "machotool edit: out of memory; ");
         me_say_left(log, path, out);
         free(hits); free(renamed); free(buf);
         return MR_FAIL;
@@ -741,10 +741,10 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
          * no statement to count, so "after statement 0 of 0" would be
          * nonsense; the image itself is what failed. */
         if (s->n == 0)
-            me_say(log, "macho9 edit: refused at verification (the script has no "
+            me_say(log, "machotool edit: refused at verification (the script has no "
                         "statements); ");
         else
-            me_say(log, "macho9 edit: refused at verification, after statement %d of %d; ",
+            me_say(log, "machotool edit: refused at verification, after statement %d of %d; ",
                    s->n, s->n);
         me_say_left(log, path, out);
         free(buf);

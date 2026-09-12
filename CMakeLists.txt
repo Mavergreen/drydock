@@ -51,31 +51,31 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # "Shape"). It starts with the
 # smallest shared thing and grows one extraction at a time.
 #
-# Target name is macho9core, not macho9, so the toolkit can add the `macho9` CLI
-# executable without a target-name collision. It is deliberately NOT linked into
-# every tool: only what actually includes a header from src/ links it, so a tool
-# that gains a dependency does so visibly, in this file.
-add_library(macho9core STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c)
-target_include_directories(macho9core PUBLIC src)
-target_compile_options(macho9core PRIVATE -O2 -Wall)
+# Target name is machotoolcore, not machotool, so the toolkit can add the `machotool`
+# CLI executable without a target-name collision. It is deliberately NOT linked
+# into every tool: only what actually includes a header from src/ links it, so
+# a tool that gains a dependency does so visibly, in this file.
+add_library(machotoolcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c)
+target_include_directories(machotoolcore PUBLIC src)
+target_compile_options(machotoolcore PRIVATE -O2 -Wall)
 
-# ALL SIX historical tools are now /bin/sh WRAPPERS around macho9 (the
+# ALL SIX historical tools are now /bin/sh WRAPPERS around machotool (the
 # first wrapper conversion did five; a later one did fix_macho, the
 # last one). Each keeps its original installed name, because
 # mavericksforever.com/claude/install.sh fetches patch_macho, change_dylib and
 # add_version_min BY THOSE NAMES -- the wrappers are drop-in, and
 # compat/<tool>.sh's own header says how each one maps that tool's grammar,
-# its exit codes and its stdout onto macho9's.
+# its exit codes and its stdout onto machotool's.
 #
 # fix_macho was the holdout: it could not be wrapped while a wrapper had to
-# PRESERVE its behaviour, because `macho9 dylib` rewrites a longer path using
+# PRESERVE its behaviour, because `machotool dylib` rewrites a longer path using
 # header pad where fix_macho refused outright, and a chained -rename_seg
 # chains where fix_macho's single pass did not. The repo owner ruled those --
 # and three more -- improvements to ADOPT deliberately, which is what made
 # this possible; compat/fix_macho.sh's "DELIBERATE DIVERGENCES FROM fix_macho"
 # block states all five with their reasons.
 #
-# So macho9 is now the ONLY Mach-O rewriting binary this repo builds or
+# So machotool is now the ONLY Mach-O rewriting binary this repo builds or
 # installs, and compat/ contains no C at all. MACHO_TOOLS is deliberately
 # still here, empty: it is the list a future compiled compat tool would join,
 # and its emptiness is the measurable form of "the goal is met".
@@ -92,7 +92,7 @@ set(MACHO_TOOLS)
 foreach(tool IN LISTS MACHO_TOOLS)
   add_executable(${tool} compat/${tool}.c)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
-  target_link_libraries(${tool} PRIVATE macho9core)
+  target_link_libraries(${tool} PRIVATE machotoolcore)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
   # these, so the build fails if a binary declares a floor above 10.9 or links a
   # symbol 10.9 lacks. It matters more here than in most of the family, because
@@ -101,24 +101,24 @@ foreach(tool IN LISTS MACHO_TOOLS)
 endforeach()
 
 # The multi-call CLI (docs/PROPOSAL.md "Verbs"): every verb it
-# implements delegates in-process to macho9core -- `verify`/`info`/`grow` to
+# implements delegates in-process to machotoolcore -- `verify`/`info`/`grow` to
 # src/grow.h and src/image.h, `dylib`/`rpath`/`lc` to src/rewrite.h and
 # `minos` to src/version_min.h. Those last four used to be run as SUBPROCESSES
-# (change_dylib / add_version_min next to macho9), which made macho9 depend at
+# (change_dylib / add_version_min next to machotool), which made machotool depend at
 # runtime on the very binaries it is meant to replace; a later change moved the
 # rewrite into src/ so both callers share the code instead of the binary. Kept
 # out of the ${tool}.c-named foreach above because its source lives in cli/. No
 # root include path is needed: every header it includes now lives in src/,
-# reached via macho9core's PUBLIC src include (below), same as every other tool.
-add_executable(macho9 cli/macho9.c)
-target_compile_options(macho9 PRIVATE -O2 -Wall)
-target_link_libraries(macho9 PRIVATE macho9core)
-mavericks_assert_binary_compatible(macho9)
+# reached via machotoolcore's PUBLIC src include (below), same as every other tool.
+add_executable(machotool cli/machotool.c)
+target_compile_options(machotool PRIVATE -O2 -Wall)
+target_link_libraries(machotool PRIVATE machotoolcore)
+mavericks_assert_binary_compatible(machotool)
 
-# Stage the wrappers and the two files they source NEXT TO macho9 in the build
+# Stage the wrappers and the two files they source NEXT TO machotool in the build
 # tree, under their installed names, so ctest exercises exactly the layout
-# that ships -- a wrapper looks for macho9, macho9-compat.sh and
-# macho9-translate.sh in its own directory. $<TARGET_FILE_DIR:macho9> rather
+# that ships -- a wrapper looks for machotool, machotool-compat.sh and
+# machotool-translate.sh in its own directory. $<TARGET_FILE_DIR:machotool> rather
 # than CMAKE_CURRENT_BINARY_DIR so this holds for a multi-config generator
 # too, and a plain ALL target rather than OUTPUT rules because a generator
 # expression in an OUTPUT needs CMake 3.20 and this project asks for 3.16.
@@ -127,39 +127,39 @@ mavericks_assert_binary_compatible(macho9)
 #
 # translate.sh is the one file renamed on the way out: a bin directory full of
 # tools should not gain a file called `translate.sh`. Nothing else about it
-# changes, and compat/macho9-compat.sh is what knows the installed name.
+# changes, and compat/machotool-compat.sh is what knows the installed name.
 add_custom_target(compat_wrappers ALL
-  COMMENT "staging the compat wrappers next to macho9")
-add_dependencies(compat_wrappers macho9)
+  COMMENT "staging the compat wrappers next to machotool")
+add_dependencies(compat_wrappers machotool)
 foreach(tool IN LISTS MACHO_WRAPPERS)
   add_custom_command(TARGET compat_wrappers POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/compat/${tool}.sh"
-            "$<TARGET_FILE_DIR:macho9>/${tool}")
+            "$<TARGET_FILE_DIR:machotool>/${tool}")
 endforeach()
 add_custom_command(TARGET compat_wrappers POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${CMAKE_CURRENT_SOURCE_DIR}/compat/macho9-compat.sh"
-          "$<TARGET_FILE_DIR:macho9>/macho9-compat.sh")
+          "${CMAKE_CURRENT_SOURCE_DIR}/compat/machotool-compat.sh"
+          "$<TARGET_FILE_DIR:machotool>/machotool-compat.sh")
 add_custom_command(TARGET compat_wrappers POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/compat/translate.sh"
-          "$<TARGET_FILE_DIR:macho9>/macho9-translate.sh")
+          "$<TARGET_FILE_DIR:machotool>/machotool-translate.sh")
 
 # ${MACHO_TOOLS} is empty now that fix_macho is a wrapper, so this installs
-# macho9 and nothing else. It is left expanded rather than deleted for the
+# machotool and nothing else. It is left expanded rather than deleted for the
 # same reason the empty list above is: a future compiled compat tool joins
 # that list and needs no change here.
-install(TARGETS ${MACHO_TOOLS} macho9 RUNTIME DESTINATION bin)
+install(TARGETS ${MACHO_TOOLS} machotool RUNTIME DESTINATION bin)
 
 # The wrappers install under the historical binaries' exact names, into the
-# same directory as macho9 -- that co-location is how each one finds macho9
+# same directory as machotool -- that co-location is how each one finds machotool
 # and its two support files at run time.
 foreach(tool IN LISTS MACHO_WRAPPERS)
   install(PROGRAMS "compat/${tool}.sh" DESTINATION bin RENAME "${tool}")
 endforeach()
-install(PROGRAMS "compat/macho9-compat.sh" DESTINATION bin)
-install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME macho9-translate.sh)
+install(PROGRAMS "compat/machotool-compat.sh" DESTINATION bin)
+install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME machotool-translate.sh)
 
 enable_testing()
 
@@ -181,7 +181,7 @@ add_executable(grow_test tests/grow_test.c)
 # suppressed. -Wno-unused-function stays: src/grow.h declares helpers this
 # translation unit does not all use.
 target_compile_options(grow_test PRIVATE -O2 -Wall -Wno-unused-function)
-target_link_libraries(grow_test PRIVATE macho9core)
+target_link_libraries(grow_test PRIVATE machotoolcore)
 add_test(NAME grow_test COMMAND grow_test)
 
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
@@ -192,7 +192,7 @@ add_test(NAME grow_test COMMAND grow_test)
 # does.)
 add_executable(image_test tests/image_test.c)
 target_compile_options(image_test PRIVATE -O2 -Wall)
-target_link_libraries(image_test PRIVATE macho9core)
+target_link_libraries(image_test PRIVATE machotoolcore)
 add_test(NAME image_test COMMAND image_test
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -201,7 +201,7 @@ add_test(NAME image_test COMMAND image_test
 # buffers -- no fixture file needed, same reasoning as grow_test.
 add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
-target_link_libraries(trie_test PRIVATE macho9core)
+target_link_libraries(trie_test PRIVATE machotoolcore)
 add_test(NAME trie_test COMMAND trie_test)
 
 # Hermetic tests for src/script.c's tokenizer: hand-written script text and
@@ -211,7 +211,7 @@ add_test(NAME trie_test COMMAND trie_test)
 # generator and the parser must not drift.
 add_executable(script_test tests/script_test.c)
 target_compile_options(script_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(script_test PRIVATE macho9core)
+target_link_libraries(script_test PRIVATE machotoolcore)
 add_test(NAME script_test COMMAND script_test)
 # test_error_message_quoting_survives_the_free (a use-after-free regression
 # test) does not reliably fail on a plain run -- libc's allocator
@@ -228,7 +228,7 @@ set_tests_properties(script_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # garbage rather than crashing unless freed memory is scribbled.
 add_executable(fat_test tests/fat_test.c)
 target_compile_options(fat_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(fat_test PRIVATE macho9core)
+target_link_libraries(fat_test PRIVATE machotoolcore)
 add_test(NAME fat_test COMMAND fat_test)
 set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
@@ -243,7 +243,7 @@ set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # luck on a plain run.
 add_executable(edit_test tests/edit_test.c)
 target_compile_options(edit_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(edit_test PRIVATE macho9core)
+target_link_libraries(edit_test PRIVATE machotoolcore)
 add_test(NAME edit_test COMMAND edit_test)
 set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
@@ -252,7 +252,7 @@ set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # reasoning as trie_test.
 add_executable(linkedit_test tests/linkedit_test.c)
 target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(linkedit_test PRIVATE macho9core)
+target_link_libraries(linkedit_test PRIVATE machotoolcore)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
@@ -264,13 +264,13 @@ add_test(NAME linkedit_test COMMAND linkedit_test)
 # memory is scribbled.
 add_executable(atomic_write_test tests/atomic_write_test.c)
 target_compile_options(atomic_write_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(atomic_write_test PRIVATE macho9core)
+target_link_libraries(atomic_write_test PRIVATE machotoolcore)
 add_test(NAME atomic_write_test COMMAND atomic_write_test)
 set_tests_properties(atomic_write_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
 # Fixture helpers, not tests: build and inspect a fat container without
 # system lipo, whose accepted architectures are not the suites' to pin.
-# Built beside macho9 so every CLI suite finds them in the directory it is
+# Built beside machotool so every CLI suite finds them in the directory it is
 # already given.
 add_executable(makefat tests/makefat.c)
 add_executable(fatcheck tests/fatcheck.c)
@@ -281,13 +281,13 @@ target_compile_options(fatcheck PRIVATE -O2 -Wall -Wextra)
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now
 # matches chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh:
 # passed the bindir so it runs the change_dylib and fix_macho wrappers CMake
-# actually staged (and the macho9 under them), instead of compiling its own
+# actually staged (and the machotool under them), instead of compiling its own
 # copies from a hand-enumerated source list that had to be kept in sync with
-# macho9core by hand -- it still builds macho9 from source, deriving
+# machotoolcore by hand -- it still builds machotool from source, deriving
 # the list from a glob, and copies the two wrappers beside it, when run
 # standalone with no bindir argument.
 add_test(NAME change_dylib_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:machotool>")
 
 # Build equivalence. The tool binaries can never match across a 2014 clang and a
 # 2026 one, so comparing them is the wrong invariant. These tools are
@@ -300,41 +300,41 @@ add_test(NAME change_dylib_test
 # SKIPs (77) on hosts that cannot emit them -- 10.9 included -- so it is real
 # coverage on a modern host and an honest no-op on the target.
 add_test(NAME chained_fixups
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/chained-fixups.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/chained-fixups.sh" "$<TARGET_FILE_DIR:machotool>")
 set_tests_properties(chained_fixups PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME characterize
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:macho9>" check)
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:machotool>" check)
 
-# macho9's own CLI: --capabilities plus each verb it implements. Builds its own
+# machotool's own CLI: --capabilities plus each verb it implements. Builds its own
 # fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
 # change_dylib_test.sh) rather than reading tests/fixture.macho, so no
 # WORKING_DIRECTORY is needed -- everything it needs is the bindir, passed the
 # same way chained_fixups passes patch_macho's.
 add_test(NAME cli_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:machotool>")
 
 # compat/translate.sh: one assertion per translation from an old tool's grammar
-# to macho9's, pinning the EXACT emitted command line. Text only -- it never
-# runs macho9 on a file; whether the emitted commands produce the same BYTES is
+# to machotool's, pinning the EXACT emitted command line. Text only -- it never
+# runs machotool on a file; whether the emitted commands produce the same BYTES is
 # tests/compat-sweep.sh's job, and that one is run by hand (it needs both
 # families of binaries and takes minutes), with its result committed as
 # tests/compat-matrix.tsv. The bindir is here for one thing: the last block
 # checks every verb/op/KIND the translator can emit against
-# `macho9 --capabilities`, rather than assuming they agree.
+# `machotool --capabilities`, rather than assuming they agree.
 add_test(NAME translate_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/translate_test.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/translate_test.sh" "$<TARGET_FILE_DIR:machotool>")
 
 # The six /bin/sh wrappers' own behaviour: the grammar each translates, the
 # exit codes it maps back to the C tool's, and the stdout it reshapes. Sits
-# between translate_test (which pins the emitted TEXT and never runs macho9 on
+# between translate_test (which pins the emitted TEXT and never runs machotool on
 # a file) and known_callers (which replays the real callers end to end); every
 # assertion in it names the divergence it closes, from the list at the top of
-# compat/translate.sh or from cli/macho9.c's own "DELIBERATE DIVERGENCES"
+# compat/translate.sh or from cli/machotool.c's own "DELIBERATE DIVERGENCES"
 # blocks. Also parses every wrapper under /bin/sh AND /bin/ksh, the same
 # second-shell cross-check translate_test does.
 add_test(NAME wrapper_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:machotool>")
 
 # THE GATE for the shell wrappers: every known caller of the
 # six historical tools, replayed end to end against the wrappers. The rule
@@ -345,7 +345,7 @@ add_test(NAME wrapper_test
 # compat/*.c files produced from tests/fixture.macho on real 10.9, the same
 # device tests/EXPECTED uses.
 add_test(NAME known_callers
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/known-callers.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/known-callers.sh" "$<TARGET_FILE_DIR:machotool>")
 
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after they were converted onto
@@ -354,11 +354,11 @@ add_test(NAME known_callers
 # still contain an out-of-bounds reference. See the script's own header for
 # what each fixture is shaped to trigger.
 add_test(NAME leaf_tool_crashes
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:macho9>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:machotool>")
 
 # src/live.h -- the header-only, malloc-free query surface the toolkit adds for
 # avxemu (docs/PROPOSAL.md's "Shape": "live.h is deliberately a header, not
-# part of the library"). Deliberately NOT linked against macho9core: live.h
+# part of the library"). Deliberately NOT linked against machotoolcore: live.h
 # is standalone by design (see its own top comment), and this test proves
 # that by needing nothing but -I src. Queries run against this test binary's
 # OWN loaded image via _dyld_get_image_header/_dyld_get_image_vmaddr_slide,

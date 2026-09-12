@@ -135,7 +135,7 @@ echo "chained-fixups: input uses LC_DYLD_CHAINED_FIXUPS, converting"
 # The CONVERTING path's last stdout line. patch_macho printed
 # "Wrote %s (%zu bytes)" only when it actually converted something, naming OUT
 # and OUT's size; compat/patch_macho.sh has to print that itself now, because
-# `macho9 declassify` writes into a temp whose name must not leak. 10.9 cannot
+# `machotool declassify` writes into a temp whose name must not leak. 10.9 cannot
 # emit chained fixups, so this is the ONLY place the converting path runs --
 # tests/wrapper_test.sh can only reach the pass-through, where the line is
 # correctly absent.
@@ -158,31 +158,31 @@ fi
 echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 
 # The same conversion through the other front-end. A refactor lifted it into
-# src/declassify.c, so `macho9 declassify IN OUT` and `patch_macho IN OUT` are
+# src/declassify.c, so `machotool declassify IN OUT` and `patch_macho IN OUT` are
 # two drivers over ONE implementation and must write the same bytes -- which is
 # the strongest available evidence that the move changed nothing. Done here,
 # before the rest of the pipeline edits "$T/out", and on the same real
 # host-linker fixture rather than a hand-built one.
-if [ -x "$BIN/macho9" ]; then
-    "$BIN/macho9" declassify "$T/in" "$T/out.m9" >/dev/null
+if [ -x "$BIN/machotool" ]; then
+    "$BIN/machotool" declassify "$T/in" "$T/out.m9" >/dev/null
     if cmp -s "$T/out" "$T/out.m9"; then
-        echo "chained-fixups: macho9 declassify is byte-identical to patch_macho"
+        echo "chained-fixups: machotool declassify is byte-identical to patch_macho"
     else
-        echo "chained-fixups: FAIL — macho9 declassify and patch_macho disagree" >&2
+        echo "chained-fixups: FAIL — machotool declassify and patch_macho disagree" >&2
         exit 1
     fi
     if "$T/has_lc" "$T/out.m9" "$LC_DYLD_CHAINED_FIXUPS"; then
-        echo "chained-fixups: FAIL — macho9 declassify left LC_DYLD_CHAINED_FIXUPS" >&2
+        echo "chained-fixups: FAIL — machotool declassify left LC_DYLD_CHAINED_FIXUPS" >&2
         exit 1
     fi
     if ! "$T/has_lc" "$T/out.m9" "$LC_DYLD_INFO_ONLY"; then
-        echo "chained-fixups: FAIL — macho9 declassify produced no LC_DYLD_INFO_ONLY" >&2
+        echo "chained-fixups: FAIL — machotool declassify produced no LC_DYLD_INFO_ONLY" >&2
         exit 1
     fi
     # Idempotency, which install.sh's wrapper leans on: a second pass over an
     # already-converted binary passes it through unchanged rather than failing
     # on the fixups that are no longer there.
-    "$BIN/macho9" declassify "$T/out.m9" "$T/out.m9.again" >/dev/null
+    "$BIN/machotool" declassify "$T/out.m9" "$T/out.m9.again" >/dev/null
     if cmp -s "$T/out.m9" "$T/out.m9.again"; then
         echo "chained-fixups: a converted binary passes through unchanged"
     else
@@ -190,7 +190,7 @@ if [ -x "$BIN/macho9" ]; then
         exit 1
     fi
 else
-    echo "chained-fixups: no macho9 in $BIN — skipping the declassify comparison"
+    echo "chained-fixups: no machotool in $BIN — skipping the declassify comparison"
 fi
 
 # The rest of the pipeline must accept what patch_macho produced. Before this,

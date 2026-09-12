@@ -556,7 +556,7 @@ static void test_a_failure_part_way_writes_nothing(void) {
 }
 
 /* OUT MAY NOT BE THE INPUT, and me_run answers that itself rather than leaving
- * it to the write: the CLI refuses it up front too (m9_bad_out, cli/macho9.c),
+ * it to the write: the CLI refuses it up front too (bad_out, cli/machotool.c),
  * but me_run is reachable from elsewhere and this is the property the whole
  * conversion is for. MR_FAIL, not MR_REFUSED: naming the same file twice is a
  * mistake about the command, not a considered verdict about the image. */
@@ -579,7 +579,7 @@ static void test_out_that_is_the_input_is_refused(void) {
 
     /* And no `out` at all is the same answer: there is no "write it back"
      * fallback left for a NULL to mean. Only reachable from inside this repo --
-     * cli/macho9.c's parser requires the positional -- which is why it is
+     * cli/machotool.c's parser requires the positional -- which is why it is
      * checked here. */
     before = take(path);
     rc = run(path, NULL, "load-command delete uuid\n", 0);
@@ -752,7 +752,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
     CHECK(count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 1,
           "in memory: LC_VERSION_MIN_MACOSX was appended");
     /* The append is the one trace the statement leaves: the stdout line
-     * that reports it belongs to `macho9 minos`, which edit does not call.
+     * that reports it belongs to `machotool minos`, which edit does not call.
      * So --verbose says so, beneath the statement, as a follow-up. */
     {
         const char *stmt = strstr(g_log, "  version-min set 10.9\n");

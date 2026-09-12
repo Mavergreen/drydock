@@ -1,12 +1,12 @@
-#ifndef MACHO9_DECLASSIFY_H
-#define MACHO9_DECLASSIFY_H
+#ifndef MACHOTOOL_DECLASSIFY_H
+#define MACHOTOOL_DECLASSIFY_H
 /*
  * md_ -- lowering a modern Mach-O's CHAINED FIXUPS to the LC_DYLD_INFO_ONLY
  * rebase/bind opcode streams dyld has understood since 10.6, so a binary a
  * 2021-and-later toolchain produced can be loaded on 10.9 at all.
  *
  * This is compat/patch_macho.c's whole conversion, lifted out of that tool's
- * main() so it is a library function rather than a program. cli/macho9.c's
+ * main() so it is a library function rather than a program. cli/machotool.c's
  * `declassify` verb and src/edit.c's `fixups set classic` statement are its
  * only C front-ends (the latter through md_declassify_buf, below, the same
  * conversion on an image already in memory); the old grammar,
@@ -129,7 +129,7 @@
  * On MDCL_CONVERTED or MDCL_PASSTHROUGH, *out_buf is a malloc'd buffer the
  * CALLER must free() and *out_len is exactly how many of its bytes are the
  * output file -- write them and nothing else. Both front-ends write the same
- * bytes because they are handed the same buffer; that is what makes `macho9
+ * bytes because they are handed the same buffer; that is what makes `machotool
  * declassify` and `patch_macho` byte-identical by construction rather than by
  * agreement (tests/cli_test.sh and tests/chained-fixups.sh assert it anyway).
  *
@@ -193,4 +193,4 @@ typedef struct {
 int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
                       md_report *rep);
 
-#endif /* MACHO9_DECLASSIFY_H */
+#endif /* MACHOTOOL_DECLASSIFY_H */
