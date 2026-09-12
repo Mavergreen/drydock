@@ -37,13 +37,34 @@ typedef struct {
  * below.
  *
  * NOT MR_ERROR: that is (-1), private to src/rewrite.c, and it is
- * mr_process_fat's per-slice status, not an exit code.
+ * mr_fat_slice's per-slice status, not an exit code.
  *
- * INPUT. A thin 64-bit Mach-O only. A fat one is refused (MR_REFUSED), saying
- * so: `fixups set classic` converts one thin image, and applying a whole
- * script to each slice of a fat file is not supported. Anything else that is
- * not a readable 64-bit Mach-O is refused too; an input that cannot be
- * opened or read at all is MR_FAIL.
+ * INPUT. A thin 64-bit Mach-O, or a fat (universal) file -- see FAT FILES,
+ * below. Anything else that is not a readable 64-bit Mach-O is refused too;
+ * an input that cannot be opened or read at all is MR_FAIL.
+ *
+ * FAT FILES. A fat (universal) container is edited slice by slice and kept
+ * whole: no slice is dropped or reordered. With no `arch` directive the
+ * script applies to every 64-bit slice; 32-bit slices pass through. With
+ * `arch` directives it applies to exactly the named slices, and naming one
+ * the file lacks, or a 32-bit one, is refused before any slice is touched.
+ * On a thin file an `arch` directive must name the image's own arch.
+ *
+ * Each selected slice runs every statement, in order, then its own final
+ * verification; any failure refuses the whole run and writes nothing. A
+ * statement that can match nothing (see fatal-warnings) is judged across
+ * the selected slices: it has matched if it matched in any of them, and the
+ * verdict is taken when the last selected slice has run it.
+ *
+ * Under --verbose each slice is accounted for: "slice NAME:" before an
+ * edited slice's statements and "slice NAME: verified" after; "slice NAME:
+ * not selected by arch; passed through unchanged" or "slice NAME: 32-bit;
+ * passed through unchanged" for the rest; and, after the slices are laid out
+ * again, "slice NAME: moved from offset 0x… to 0x…" for any slice an earlier
+ * slice's growth moved. A 64-bit fat container (fat_arch_64) is refused.
+ *
+ * The exact wording of a refusal on a fat run -- a statement's, or the
+ * per-slice final verify's -- is under REPORT, below.
  *
  * VERIFY. mg_plausible (src/grow.h) runs over the finished image after the
  * last statement, every time, and a failure is a refusal. There is no
@@ -72,22 +93,39 @@ typedef struct {
  * REPORT, to o->log. Always printed: a statement's refusal,
  *   "macho9 edit: refused at statement K of N (line L); PATH left unmodified"
  * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
- * is the statement's line in the script), a refusal at the final verify,
+ * is the statement's line in the script). On a fat run that line names the
+ * slice at fault instead, before the trailing "; PATH left unmodified":
+ *   "... (line L) in slice NAME; PATH left unmodified"
+ * or, when it was the statement's own miss (see fatal-warnings) that refused
+ * it rather than any one slice,
+ *   "... (line L): it matched nothing in any selected slice; PATH left
+ *   unmodified"
+ * -- no slice name there, since no single slice is at fault. Then a refusal
+ * at the final verify,
  *   "macho9 edit: refused at verification, after statement N of N; ..."
- * ("(the script has no statements)" in place of the count when N is 0), a
- * failed write,
+ * ("(the script has no statements)" in place of the count when N is 0); on a
+ * fat run this is instead per slice, right after that slice's own last
+ * statement, and names the slice in place of the statement count:
+ *   "macho9 edit: refused at verification of slice NAME; ..."
+ * Then a failed write,
  *   "macho9 edit: PATH left unmodified (write failed)",
  * and a dry run's
  *   "DEST: NOT written (--dry-run) -- would be N bytes".
  * With `out`, a refusal line ends "OUT not written; PATH left unmodified"
  * instead, and a failed write reads "writing OUT failed; PATH left
- * unmodified": OUT may never have existed. Under o->verbose, each statement
- * is also logged as "  <kind> <op> <operands>" before it runs, and a run
- * that gets that far logs "PATH: verified" and "DEST: written (N bytes)".
- * DEST is `out` when given, else `path`. me_run flushes stdout before each
- * line it writes and before each "matched nothing" report, so those land
- * after any stdout line printed before them; an operation's own stderr
- * message, written while it runs, is not ordered this way.
+ * unmodified": OUT may never have existed. The write and dry-run lines are
+ * the same whether `path` names a thin file or a fat one: the write happens
+ * once, to the whole container, after every slice's own verify has passed.
+ * Under o->verbose, each statement is also logged as "  <kind> <op>
+ * <operands>" before it runs, and a run that gets that far logs
+ * "PATH: verified" and "DEST: written (N bytes)" -- on a fat run "PATH:
+ * verified" is the reassembled container's own verdict, once, after every
+ * selected slice's "slice NAME: verified" (see FAT FILES, above, for the
+ * rest of the per-slice verbose lines). DEST is `out` when given, else
+ * `path`. me_run flushes stdout before each line it writes and before each
+ * "matched nothing" report, so those land after any stdout line printed
+ * before them; an operation's own stderr message, written while it runs, is
+ * not ordered this way.
  *
  * WHAT THE OPERATIONS PRINT THEMSELVES. me_run calls each operation's
  * in-memory core, not its CLI verb, so an edit run shows the lines those
@@ -144,6 +182,11 @@ typedef struct {
  * Every other statement logs only its statement line.
  *
  * DIRECTIVES.
+ *
+ * arch NAME restricts the script to the fat slice(s) named NAME (lipo's
+ * names: x86_64, x86_64h, arm64, arm64e, i386) -- see FAT FILES, above; on a
+ * thin file it must name that file's own arch. Repeatable, to name more than
+ * one slice.
  *
  * allow-grow covers the statements whose load commands can outgrow the
  * header pad: `dylib`, `rpath` and `version-min set`. For them, when the pad
