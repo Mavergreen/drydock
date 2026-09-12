@@ -31,8 +31,13 @@
 #     -add-rpath P                       ... -append P
 #     -grow                 --allow-grow on the dylib/rpath lines
 #
-# -- emitted in the order lc, dylib, rpath, because deleting load commands
-# hands header pad back and the other two consume it.
+# -- one verb, batching that family's flags, when the invocation touches one
+# family. An invocation touching MORE THAN ONE becomes a single
+# `macho9 edit FILE -` with the operations as statements on stdin, ordered
+# load-command, dylib, rpath, because deleting load commands hands header pad
+# back and the other two consume it. compat/translate.sh's emission comment
+# has the statement order within each family, and the one -change shape it
+# refuses on that path because no sequence reproduces the old batch.
 #
 # THE CAPACITY CAPS ARE ENFORCED IN THE TRANSLATION, not by macho9. Both cap
 # sites in cli/macho9.c carry a comment saying so and addressing whoever wrote
@@ -45,9 +50,13 @@
 # reintroduced in shell.)
 #
 # EXIT CODES. Forwarded unchanged, and no mapping is added here: this
-# wrapper runs the emitted `macho9 dylib`/`rpath`/`lc` line and exits
-# whatever it exits, PAST THEIR OWN ARGUMENT CHECKS -- see the paragraph
-# below for what those checks make unreachable here. The C tool returned
+# wrapper runs the emitted `macho9 dylib`/`rpath`/`lc`/`edit` command and
+# exits whatever it exits, PAST THEIR OWN ARGUMENT CHECKS -- see the
+# paragraph below for what those checks make unreachable here. The one code
+# this wrapper produces itself is the unwritable-FILE guard's 2, and it is
+# chosen to be the code the same file would have got from the command it
+# stands in front of; "the unwritable-FILE guard" below has the reasoning.
+# The C tool returned
 # mr_apply_file's own 0/1 (0 ok, 1 the flat "something went wrong" that
 # rewriter had no finer answer than); mr_apply_file's vocabulary is no
 # longer that flat 0/1 (rewrite.h): 0 ok, MR_REFUSED (1) for a considered
@@ -64,12 +73,14 @@
 # commands overflow the pad; mg_plausible needs no flag at all --
 # mr_process_thin runs it on every rewrite that is not a pure segment
 # rename (mr_is_rename_only), which is every rewrite this wrapper's
-# `lc`/`dylib`/`rpath` lines can make, unless MACHO_NO_VERIFY is set in the
-# environment. Apart from that fold, and the multi-verb seam described
-# below, a considered refusal still exits 1 here, matching the C tool by
-# coincidence, not construction; an operational failure now exits 2, where
-# the C tool always exited a flat 1 -- see compat/README.md's "drop-in"
-# section for this as a named exception.
+# `lc`/`dylib`/`rpath`/`edit` commands can make, unless MACHO_NO_VERIFY is
+# set in the environment. Apart from that fold, a considered refusal still
+# exits 1 here, matching the C tool by coincidence, not construction; an
+# operational failure now exits 2, where the C tool always exited a flat 1
+# -- see compat/README.md's "drop-in" section for this as a named exception.
+# `macho9 edit` speaks the same vocabulary for the same reasons: me_run
+# returns MR_REFUSED or MR_FAIL straight from the statement that produced
+# it, so the multi-family path is not a separate exit-code regime.
 #
 # --fatal-warnings is a SEPARATE fact, not what makes the paragraph above
 # true or conditional: this translation never emits that flag -- change_
@@ -83,36 +94,24 @@
 # validates every -strip-lc KIND against the same table (src/lc_kinds.c)
 # before emitting, and never emits a verb with no operation.
 #
-# ONE-VERB VS MULTI-VERB: "forwarded unchanged, no mapping" is exactly true
-# only when this translation emits a single line -- macho9-compat.sh's
-# mw_run_atomic hands straight to mw_run and returns its raw exit code
-# unmapped. A run needing more than one family (`-change` AND `-strip-lc`
-# together, say) goes through mw_run_atomic's copy-aside-and-install dance
-# instead, which has THREE hardcoded `return 1`s of its own that are NOT
-# macho9's exit code at all -- a failed `cp` aside, an unstable
-# re-translation under the temp file's name, or a failed install back over
-# the original -- and the first two fire before macho9 ever runs, the last
-# one after. An absent FILE is the case where this is visible: single-verb,
-# it reaches mr_apply_file's own open() and exits 2 (MR_FAIL); multi-verb,
-# `cp -p` fails on the same absent file BEFORE any macho9 command runs, and
-# mw_run_atomic's hardcoded path returns 1. Not a bug to fix here --
-# mw_run_atomic's own `return 1`s are exactly right for the historical-
-# mapping wrappers (fix_macho.sh) that share it -- just a real seam this
-# wrapper's own "forwarded unchanged" claim has to be read around.
-#
 # STDOUT. Measured over all 1110 generated change_dylib combinations plus the
-# hand-picked ones (tests/compat-matrix.tsv):
+# hand-picked ones (tests/compat-matrix.tsv). The row counts below are that
+# measurement, taken while a multi-family invocation was still a SEQUENCE of
+# verbs; what those rows now run is one `macho9 edit`, so the counts still say
+# how many invocations are of each shape, and the second bullet describes a
+# different difference than it used to.
 #
 #   ONE emitted command  -- 459 rows -- stdout is byte-identical. Both sides
 #       are one mr_apply_file pass over the same file with the same ops.
-#   TWO OR THREE         -- 669 rows -- stdout DIFFERS, unavoidably: a
-#       sequence prints one "header pad ..." / "updated ..." pair PER PASS
-#       where one invocation printed one pair. Reproducing the C tool's exact
-#       transcript would mean suppressing macho9's output and inventing a
-#       plausible one, which is worse than a difference. The lines themselves
-#       are the same lines, in the same order, with the per-pass pair
-#       repeated; nothing is missing.
-#       Those lines also name the TEMP COPY rather than FILE -- see below.
+#   MORE THAN ONE FAMILY -- 669 rows -- one `macho9 edit`, and stdout DIFFERS,
+#       unavoidably: each statement is its own pass over the image, so a
+#       "header pad ..." / "updated ..." pair is printed PER STATEMENT where
+#       one invocation printed one pair, and the final "Updated FILE (N
+#       bytes)" line is mr_apply_file's, which `edit` does not call, so it is
+#       not there at all. Every line that IS there names FILE, because that is
+#       the path macho9 was handed. Reproducing the C tool's exact transcript
+#       would mean suppressing macho9's output and inventing a plausible one,
+#       which is worse than a difference.
 #   NO command at all -- `change_dylib FILE -grow` (and -grow repeated) --
 #       2 rows: the C tool still ran an empty mr_apply_file pass and printed
 #       its "header pad ..." and "nothing to change." lines; the translation
@@ -123,13 +122,46 @@
 # look at it at all redirect it to /dev/null.
 #
 # ATOMICITY OF A MIXED-FAMILY INVOCATION. install.sh's production line strips
-# two load commands AND rewrites three dylib paths, which is two macho9
-# commands. tests/compat-sweep.sh measured what splitting one atomic rewrite
-# into a sequence costs: two rows where the C tool refused having written
-# nothing, while the sequence refused having already written. mw_run_atomic
-# (compat/macho9-compat.sh) closes that -- a sequence runs against a copy and
-# the copy is installed only on full success -- and its header says exactly
-# what that shell dance does NOT preserve that wa_write_atomic does.
+# two load commands AND rewrites three dylib paths. tests/compat-sweep.sh
+# measured what splitting that one atomic rewrite into a sequence of verbs
+# cost: two rows where the C tool refused having written nothing, while the
+# sequence refused having already written. One `macho9 edit` closes that at
+# the source rather than around it -- me_run reads the image once, applies
+# every statement to it in memory, verifies, and writes once through
+# wa_write_atomic, so a refusal at any statement leaves FILE exactly as it
+# was. That is the C tool's shape, not an approximation of it.
+#
+# ---- the unwritable-FILE guard -------------------------------------------
+#
+# change_dylib open()ed FILE O_RDWR before it looked at anything, so a
+# mode-denied FILE failed immediately, having changed nothing. A `dylib`,
+# `rpath` or `lc` command still reproduces that for free -- mr_apply_file
+# opens O_RDWR up front and perror()s "open" -- so the ONE emitted command is
+# the whole story for an invocation touching one family.
+#
+# `macho9 edit` is the one that does not. me_run reads the image O_RDONLY and
+# installs its result through wa_write_atomic, which mkstemps BESIDE FILE and
+# renames over it -- an operation that needs the DIRECTORY writable and never
+# consults FILE's own mode. Measured: a mode-444 binary is replaced (fresh
+# inode, mode 444 carried onto it) and the run exits 0. That is a silent
+# rewrite of a file its owner marked read-only, and the exact shape of edit
+# this whole conversion exists to make visible rather than to introduce.
+#
+# So the wrapper refuses first, and refuses in the observable the other path
+# already produces: `open: Permission denied` on stderr and exit 2, the same
+# text and the same code mr_apply_file's own open failure gives, so the two
+# paths agree rather than each having its own answer. Deliberately NOT
+# mw_require_writable, which returns 1 (fix_macho's flat code, right there and
+# wrong here) and which also captures an ABSENT FILE -- that one has no such
+# problem and must keep reaching macho9, whose open failure reports it.
+#
+# `test -e`/`test -w` are not open(O_RDWR): they consult the real uid and do
+# not see ACLs, so they can disagree with it at the edges -- the same caveat
+# mw_require_writable's own header states, for the same reason. They agree on
+# the case that reaches a caller, a file whose MODE denies writing. Both
+# follow a symlink, which is what is wanted: wa_write_atomic resolves one and
+# rewrites the target, so it is the target's mode that decides, and a symlink
+# whose target does not exist is not `-e` and falls through to macho9.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
@@ -148,5 +180,12 @@ MW_DIR=${MACHO9_COMPAT_DIR:-$(dirname "$MW_SELF")}
 
 mw_translate change_dylib "$@" || exit $?
 
-mw_run_atomic change_dylib "$@"
+# EXISTS and is not writable -- see "the unwritable-FILE guard" above. Both
+# halves matter: an absent FILE falls through to macho9 on purpose.
+if [ -e "$1" ] && [ ! -w "$1" ]; then
+    printf 'open: Permission denied\n' >&2
+    exit 2
+fi
+
+mw_run
 exit $?

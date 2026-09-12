@@ -165,6 +165,81 @@ m9sha=$(sha "$T/f")
     && ok "change_dylib: a single-family run is byte-identical to macho9's, stdout included" \
     || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from macho9 dylib's"
 
+# MORE THAN ONE FAMILY is ONE `macho9 edit FILE -`, so everything it touches is
+# FILE itself. It used to be a sequence run against a copy beside FILE named
+# `.FILE.macho9-compat.PID`, which is what made these two worth asserting: the
+# copy is gone, so nothing may appear beside FILE, and every line macho9 prints
+# must name FILE rather than some temporary it was handed instead.
+# In a directory of its OWN, holding nothing but FILE, so "nothing new
+# appeared" is exact: run in $T and a stray left by one of the many earlier
+# change_dylib invocations here would already be in the before-listing and
+# this would see nothing. Whole-listing equality rather than a search for a
+# name -- it is the stronger question, and `grep -vxF` with a multi-line
+# pattern list is unusable on this platform's BSD grep 2.5.1, which drops a
+# pattern another pattern is a prefix of (so `.` in the list stops `..` from
+# matching).
+rm -rf "$T/stray"; mkdir "$T/stray"
+cp "$FIXTURE" "$T/stray/f"
+stray_before=$(ls -a "$T/stray")
+( cd "$T/stray" && "$BIN/change_dylib" f -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >"$T/out" 2>"$T/err"
+cdmixrc=$?
+[ "$cdmixrc" -eq 0 ] && [ "$(ls -a "$T/stray")" = "$stray_before" ] \
+    && ok "change_dylib: a multi-family run leaves no stray file beside FILE" \
+    || bad "change_dylib multi-family strays" "exit $cdmixrc; the directory holds [$(ls -a "$T/stray" | tr '\n' ' ')], was [$(printf '%s\n' "$stray_before" | tr '\n' ' ')]"
+[ -s "$T/out" ] && ! grep -q 'macho9-compat' "$T/out" && grep -q '^f: ' "$T/out" \
+    && ok "change_dylib: a multi-family run's stdout names FILE, not a copy" \
+    || bad "change_dylib multi-family stdout" "stdout: $(cat "$T/out")"
+rm -rf "$T/stray"
+
+# EVERY -insert GOES TO THE FRONT, so as ONE batch `-insert A -insert B` leaves
+# A at ordinal 1 and B at ordinal 2. Reaching that through a SEQUENCE of
+# statements takes emitting them backwards, which is what compat/translate.sh
+# does and tests/translate_test.sh pins as text; this is the same claim
+# measured on a real binary, through the wrapper, on the path that emits an
+# edit script (-strip-lc makes it a second family).
+fresh
+run change_dylib f -insert /A -insert /B -strip-lc uuid
+cdins_rc=$rc
+cdins=$( ( cd "$T" && "$BIN/macho9" info f ) 2>/dev/null )
+[ "$cdins_rc" -eq 0 ] \
+    && printf '%s\n' "$cdins" | grep -qxF '  ordinal=1 path=/A' \
+    && printf '%s\n' "$cdins" | grep -qxF '  ordinal=2 path=/B' \
+    && ok "change_dylib: -insert A -insert B leaves A at ordinal 1 and B at ordinal 2" \
+    || bad "change_dylib insert order" "exit $cdins_rc; ordinals: $(printf '%s\n' "$cdins" | sed -n 's/^  \(ordinal=[0-9]* path=.*\)$/\1/p' | tr '\n' ' ')"
+
+# AN UNWRITABLE FILE IS REFUSED, ON BOTH PATHS, WITH THE SAME ANSWER.
+# change_dylib open()ed FILE O_RDWR before it looked at anything, so mode 444
+# failed immediately having changed nothing. A single-family run still gets
+# that from mr_apply_file's own open(); a MULTI-family one would not, because
+# `macho9 edit` reads O_RDONLY and installs by mkstemp+rename beside FILE --
+# which needs the DIRECTORY writable and never consults FILE's mode, so
+# without the wrapper's guard a read-only binary is silently replaced (exit 0,
+# fresh inode). BYTES AND INODE, not just the exit code: a rename-based
+# rewrite preserves the mode, so mode alone would not show it happened.
+for cd_ro_args in "-strip-lc uuid" "-strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib"; do
+    fresh
+    chmod 444 "$T/f"
+    cd_ro_sha=$(sha "$T/f"); cd_ro_ino=$(stat -f '%i' "$T/f")
+    # shellcheck disable=SC2086
+    run change_dylib f $cd_ro_args
+    cd_ro_rc=$rc
+    chmod 644 "$T/f"
+    case $cd_ro_args in *-change*) cd_ro_which="multi-family" ;; *) cd_ro_which="single-family" ;; esac
+    [ "$cd_ro_rc" -eq 2 ] && grep -qxF 'open: Permission denied' "$T/err" \
+        && [ "$(sha "$T/f")" = "$cd_ro_sha" ] && [ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] \
+        && ok "change_dylib: a $cd_ro_which run on an unwritable FILE exits 2, saying so, having changed neither its bytes nor its inode" \
+        || bad "change_dylib unwritable ($cd_ro_which)" "exit $cd_ro_rc (want 2), bytes changed=$([ "$(sha "$T/f")" = "$cd_ro_sha" ] && echo no || echo YES), inode changed=$([ "$(stat -f '%i' "$T/f")" = "$cd_ro_ino" ] && echo no || echo YES), stderr: $(cat "$T/err")"
+done
+
+# An ABSENT FILE is NOT that case and must keep reaching macho9, which reports
+# it from its own open failure. Guarding it in the wrapper too would answer for
+# a file macho9 is perfectly able to answer for.
+run change_dylib nosuchfile -strip-lc uuid -change A B
+[ "$rc" -eq 2 ] && ! grep -q 'Permission denied' "$T/err" \
+    && ok "change_dylib: an absent FILE still fails through macho9, not through the guard" \
+    || bad "change_dylib absent FILE" "exit $rc (want 2), stderr: $(cat "$T/err")"
+
 # THE CAPACITY CAPS. Both cap sites in cli/macho9.c say the wrapper has to
 # enforce them itself and print the ORIGIN wording, because macho9 names its
 # own flags (-append where change_dylib names -add). This is the assertion
@@ -793,20 +868,22 @@ run fix_macho f -rename_seg __DATA 12345678901234567
     || bad "fix_macho long segname" "exit $rc, stderr: $(head -1 "$T/err")"
 
 # An absent file, and an unwritable one: fix_macho opened O_RDWR before it
-# looked at anything, so both failed immediately with perror("open"). The
-# single-command path gets that from mr_apply_file's own O_RDWR; the
-# MULTI-command path would not, because mw_run_atomic copies the file aside
-# first and runs macho9 against the copy -- which is why the wrapper checks for
-# itself, and why both cases below are MULTI-command.
+# looked at anything, so both failed immediately with perror("open"). An
+# invocation that emits one of mr_apply_file's verbs gets that from its own
+# O_RDWR; one that emits `macho9 edit` does not, because me_run reads the
+# image O_RDONLY and only finds out it cannot write at the END of the run --
+# which is why the wrapper checks for itself, and why both cases below are
+# MULTI-command.
 #
-# THE ABSENT CASE IS THE ONE THAT DISCRIMINATES. Removing the wrapper's checks
-# makes it fail (mw_run_atomic's `cp` reports in its own words instead), and it
-# was mutation-tested that way. The unwritable case passes either way on this
-# platform, because `cp -p` propagates mode 444 to the copy and macho9's own
-# O_RDWR on it then fails with the identical "open: Permission denied" -- so it
-# pins the observable rather than the guard. It is kept because that observable
-# is the one fix_macho produced, and a future change to mw_run_atomic's copy
-# (dropping -p, say) would separate the two.
+# BOTH CASES DISCRIMINATE NOW, and the unwritable one more sharply than
+# before. Remove the wrapper's check and the absent file reports macho9's
+# "macho9 edit: nosuchfile: cannot open or read" instead of fix_macho's own
+# words; the unwritable one SUCCEEDS -- measured -- because
+# wa_write_atomic mkstemps beside the file and renames over it, which needs
+# the DIRECTORY to be writable and not the file, so a mode-444 binary is
+# replaced (new inode, mode 444 carried over) and the run exits 0 where
+# fix_macho's O_RDWR refused. The check below is the only thing standing
+# between a caller and that silent rewrite. Each was mutation-tested.
 run fix_macho nosuchfile -strip_build_version -change A B
 [ "$rc" -eq 1 ] && has_line "$T/err" 'open: No such file or directory' \
     && ok "fix_macho: an absent file fails immediately, in fix_macho's own words" \
@@ -819,22 +896,23 @@ fm_ro_rc=$rc
 chmod 644 "$T/f"
 [ "$fm_ro_rc" -eq 1 ] && has_line "$T/err" 'open: Permission denied' \
     && [ "$(sha "$T/f")" = "$before" ] \
-    && ok "fix_macho: an unwritable file fails before the multi-command copy-aside runs" \
+    && ok "fix_macho: an unwritable file fails before the multi-command rewrite runs" \
     || bad "fix_macho unwritable" "exit $fm_ro_rc, stderr: $(cat "$T/err")"
 
 # ---- hostile argv shapes -----------------------------------------------
 #
 # A path with a SPACE, a path with a LEADING DASH, and an EMPTY string. All
 # three are shapes the wrappers were fixed for -- translate.sh's mt_quote does
-# the quoting, mw_run_atomic splits the path with parameter expansion rather
-# than dirname/basename (which would read a leading dash as an option) and
-# passes `--` to cp/rm/cat -- and none of them was covered, so the fixes could
-# have regressed silently. The reviewer verified all three against the
-# pre-wrapper binaries; these keep them verified.
+# the quoting, for the verb form and for the edit script's statements alike
+# (src/script.c's ms_split reads a statement's words by a shell's rules, which
+# is why one quoting serves both) -- and none of them was covered, so the
+# fixes could have regressed silently. The reviewer verified all three against
+# the pre-wrapper binaries; these keep them verified.
 
-# A SPACE in the file name, on the mixed-family path -- the one that copies the
-# file aside, so the temp name has the space in it too. Asserted by comparing
-# against the same operations on an ordinarily-named copy.
+# A SPACE in the file name, on the mixed-family path -- the one that emits
+# `macho9 edit FILE -`, so the path is quoted into an edit command line rather
+# than a verb's. Asserted by comparing against the same operations on an
+# ordinarily-named copy.
 fresh
 cp "$FIXTURE" "$T/has space"
 ( cd "$T" && "$BIN/change_dylib" "has space" -strip-lc uuid \
@@ -845,10 +923,6 @@ rc=$?
 [ "$rc" -eq 0 ] && cmp -s "$T/has space" "$T/f" \
     && ok "change_dylib: a file name with a space rewrites identically" \
     || bad "change_dylib spaced path" "exit $rc: $(cat "$T/err")"
-leftovers=$(ls -a "$T" | grep 'macho9-compat' || true)
-[ -z "$leftovers" ] \
-    && ok "change_dylib: and left no temp behind beside it" \
-    || bad "change_dylib spaced path" "left behind: $leftovers"
 rm -f "$T/has space"
 
 # A LEADING DASH. Every one of these tools took argv[1] as a path
@@ -861,9 +935,13 @@ rc=$?
 [ "$rc" -eq 0 ] && [ "$(sha "$T/-dashy")" != "$before" ] \
     && ok "change_dylib: a file name starting with a dash is a file name" \
     || bad "change_dylib leading dash" "exit $rc: $(cat "$T/err")"
-# ...and on the mixed-family path, where cp/rm/cat see it too. Compared against
-# the SAME operations on an ordinarily-named copy, so both sides are rewritten
-# here rather than relying on whatever $T/f happens to hold.
+# ...and on the mixed-family path, where the name reaches `macho9 edit` as its
+# FILE positional. That is its own guard: `edit` is the one verb with flags to
+# scan past, and cli/macho9.c's parser takes a single-dash token as a file name
+# for exactly this reason -- rejecting it made this case fail the moment the
+# wrappers started emitting `edit`. Compared against the SAME operations on an
+# ordinarily-named copy, so both sides are rewritten here rather than relying
+# on whatever $T/f happens to hold.
 fresh
 cp "$FIXTURE" "$T/-dashy"
 ( cd "$T" && "$BIN/change_dylib" -dashy -strip-lc uuid \
@@ -872,15 +950,14 @@ rc=$?
 ( cd "$T" && "$BIN/change_dylib" f -strip-lc uuid \
     -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>&1
 [ "$rc" -eq 0 ] && cmp -s "$T/-dashy" "$T/f" \
-    && ok "change_dylib: and on the multi-command path, where cp and cat see it" \
+    && ok "change_dylib: and on the multi-command path, where it reaches macho9 edit as a positional" \
     || bad "change_dylib leading dash, mixed" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
 
-# The same leading-dash shape for fix_macho, on its single-command path
-# (mw_run_atomic's MW_NCMDS<=1 branch, which runs macho9 directly -- no
-# cp/rm/cat, so no `--` to them is at stake here). What IS at stake: FILE
-# reaches cmd_dylib_or_rpath as argv[2], read positionally, never scanned
-# for a leading dash the way an option would be -- so `$1` passing through
+# The same leading-dash shape for fix_macho, on its single-command path --
+# one -change, so one `macho9 dylib` line. What is at stake: FILE reaches
+# cmd_dylib_or_rpath as argv[2], read positionally, never scanned for a
+# leading dash the way an option would be -- so `$1` passing through
 # mt_translate unexamined is the guard this pins, same file-not-option
 # question as change_dylib's case above. -change, not -strip_build_version,
 # because tests/fixture.macho carries no LC_BUILD_VERSION to strip (see
