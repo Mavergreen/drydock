@@ -9,7 +9,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | **done**, pushed, `9e39a57..770433f` |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | **done**, pushed, `ed7f4e4..452175a`; the first release is refused until item 6 removes the README marker |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written before item 2 shipped; re-check against it before starting (see below) |
-| 6 | **Human code review + excellent documentation** | — | — | not started |
+| 6 | **Human code review + excellent documentation** | `specs/2026-09-12-narration-into-tests-design.md` (first half) | `plans/2026-09-12-narration-into-tests.md` (first half) | **first half done**, pushed, `3ce226a..fb241d3`, CI green. Second half — the human review and the README rewrite that removes the marker — is the repo owner's and is what still blocks the first release |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 | 9 | `machotool` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | **done**, pushed, `bccd008..1c0c38c` |
