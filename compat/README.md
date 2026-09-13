@@ -164,9 +164,9 @@ for why they would be rare:
     fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `machotool` lines with shell steps between them:
     it is one `machotool edit FILE OUT -`, whose exit code is `me_run`'s own, from
-    the same `MR_REFUSED`/`MR_FAIL` vocabulary. `compat/change_dylib.sh`
-    and `compat/add_version_min.sh`'s own headers have the rest of the
-    detail.
+    the same `MR_REFUSED`/`MR_FAIL` vocabulary. The "`change_dylib`: the
+    differences" tables below and `compat/add_version_min.sh`'s own header
+    have the rest of the detail.
 
 There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
@@ -190,12 +190,12 @@ the growth algorithm, not a coincidence of one fixture, but it is verified
 here only for two sequential grows on one image, not for three or more mixed
 families, a fat container, or every possible order.
 
-Stdout is identical everywhere a caller or an in-repo test can see it, and
-each wrapper's own header **enumerates** the places where it is not, with the
-measurement behind each one (`tests/compat-matrix.tsv` records what all 1227
-enumerated argument combinations did on both sides, stdout included). The one
-exception is `fix_macho`, whose stdout is deliberately not reproduced at all —
-see below.
+Stdout is identical everywhere a caller or an in-repo test can see it, and the
+places where it is not are **enumerated** with the measurement behind each one
+(`tests/compat-matrix.tsv` records what all 1227 enumerated argument
+combinations did on both sides, stdout included) — for `change_dylib` and
+`fix_macho` in the sections below, and for the other four in their own headers.
+`fix_macho` is the one whose stdout is deliberately not reproduced at all.
 
 Stderr is where the wrappers deliberately differ: each one prints the
 `machotool` equivalent of the invocation it just received, so the caller's
@@ -206,6 +206,156 @@ go on stderr.
 `tests/known-callers.sh` replays every caller Task 0 of that plan found — the
 production `install.sh` wrapper pipeline first — and `tests/wrapper_test.sh`
 covers the wrappers' own grammar, exit-code and stdout mapping.
+
+## `change_dylib`: the differences, and what holds each one
+
+`change_dylib` is the tool with the most callers, so nothing here is an
+adopted improvement the way `fix_macho`'s five are: every difference is either
+a consequence of `machotool` not writing the file it is given, or a place where
+reproducing the C tool's transcript would have been worse than differing. The
+wrapper itself no longer carries them and points here instead. "Held by" is the
+assertion that fails if someone reverses the decision.
+
+### `change_dylib`: exit codes
+
+`machotool`'s own, **forwarded unchanged**. This is one of only two wrappers
+here that maps nothing (`add_version_min` is the other); `fix_macho`,
+`patch_macho` and `rename_segment` all collapse every nonzero to one historical
+code. The C tool returned `mr_apply_file`'s flat 0/1, and 1 is still what a
+considered refusal exits — so the coincidence holds for every case a caller had
+seen — but `mr_apply_file`'s vocabulary is no longer flat (`src/rewrite.h`): 0
+ok, `MR_REFUSED` (1) for a refusal that read the image and declined,
+`MR_FAIL` (2) for a genuine open/fstat/read/write/malloc failure. So an
+operational failure now exits 2 where the C tool exited 1, which the "drop-in"
+section above lists as a named exception. `machotool edit` — the multi-family
+path — speaks the same vocabulary from `me_run`, so a mixed-family invocation is
+not a separate regime.
+
+The codes this wrapper produces **itself** are all 1: `mw_prepare`'s absent,
+unwritable and hard-linked refusals, and a failed install. There is no `exit 2`
+in the wrapper, and there should not be — the authority for a compat wrapper's
+failure code is the C tool, and every `change_dylib` failure row in
+`tests/compat-matrix.tsv` is a flat 1.
+
+One exception to the 1-vs-2 split, `change_dylib`'s only: an allocation failure
+INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into
+`MR_REFUSED`, the same as every other reason either one refuses —
+`src/rewrite.c`'s comment on that fold has the reasoning. It needs no `-grow`:
+this wrapper reaches `mg_grow_header` only through `--allow-grow`, but
+`mr_process_thin` runs `mg_plausible` on every rewrite that is not a pure
+segment rename, which is every rewrite this wrapper can ask for, unless
+`MACHO_NO_VERIFY` is set.
+
+`--fatal-warnings` is a separate fact, not what makes any of the above
+conditional: this translation never emits it — `change_dylib`'s grammar has no
+spelling for it, and never will, since `-change` matching nothing has always
+exited 0 and that is compat surface — so the one `mr_apply_file` behaviour that
+flag adds (promoting "an operation matched nothing" to `MR_REFUSED`) is never
+reached here.
+
+| the difference | held by |
+|---|---|
+| an operational failure exits **2**, where the C tool exited a flat 1 | `tests/wrapper_test.sh`: "`machotool`'s own code for this input is 2, an operational failure" (the setup, so the two below cannot rot into proving nothing), then "a single-family run forwards `machotool`'s own 2 rather than mapping it" and "… and so does a multi-family run, whose code is `machotool edit`'s own" — a DIRECTORY as `FILE`, which `mw_prepare` passes through and `machotool`'s read fails on |
+| a considered refusal still exits **1**, so the two numbers really differ | `tests/wrapper_test.sh`, "a considered refusal is still the flat 1 the C tool always gave" |
+| every refusal the wrapper makes itself exits 1 | `tests/wrapper_test.sh`'s unwritable-`FILE` pair ("exits 1 (the C tool's only failure code), saying so, having changed neither its bytes nor its inode", on both paths), its absent-`FILE` assertion, and `hl_case change_dylib` on both paths. A **failed install** is the one of the four with no assertion anywhere — `mw_finish`'s `mv` has to fail for it, which nothing here can arrange — so it stays stated rather than tested |
+| `-change` matching nothing still exits 0, because `--fatal-warnings` is never emitted | `tests/wrapper_test.sh`, "a run that changed nothing prints no `Updated` line" (exit 0 on a `-change` aimed at a path the image does not carry) |
+
+### `change_dylib`: stdout
+
+Measured over all 1110 generated `change_dylib` combinations plus the
+hand-picked ones (`tests/compat-matrix.tsv`). The row counts are that
+measurement, **taken while a multi-family invocation was still a SEQUENCE of
+verbs**; what those rows run today is one `machotool edit`, so the counts still
+say how many invocations are of each shape and the second bullet describes a
+different difference than it did then.
+
+  * **ONE emitted command — 459 rows — stdout is byte-identical.** Both sides
+    are one `mr_apply_file` pass over the same file with the same ops. Two lines
+    of `machotool`'s are reshaped to get there, both consequences of the verb
+    writing a temp instead of `FILE`: `mw_run_to_tmp` drops its `Wrote <temp>
+    (N bytes)` line, which names a file no caller has heard of, and the wrapper
+    prints `Updated FILE (N bytes)` itself after the install, only when the
+    bytes changed — the same line `mr_apply_file` used to print, under the same
+    condition, naming the same path.
+  * **MORE THAN ONE FAMILY — 669 rows — stdout DIFFERS, unavoidably.** Each
+    statement of the one `machotool edit` is its own pass over the image, so a
+    `header pad …` / `updated …` pair is printed PER STATEMENT where one
+    invocation printed one pair. The closing `Updated FILE (N bytes)` line IS
+    there, printed by the wrapper on the same terms as above. Every line that is
+    there names `FILE`, because that is the path `machotool` was handed.
+    Reproducing the C tool's exact transcript would mean suppressing
+    `machotool`'s output and inventing a plausible one, which is worse than a
+    difference.
+  * **NO command at all — 2 rows** (`change_dylib FILE -grow -grow`). The C tool
+    still ran an empty `mr_apply_file` pass and printed its `header pad …` and
+    `nothing to change.` lines; the translation is empty by design (no
+    `machotool` command means "do nothing"), so nothing is printed. No caller
+    does this.
+
+No caller parses this tool's stdout as data; the ones that look at it at all
+redirect it to `/dev/null`.
+
+| the difference | held by |
+|---|---|
+| a single-family run's stdout is byte-identical to `machotool dylib`'s, `Wrote <temp>` reshaped to `Updated FILE` | `tests/wrapper_test.sh`, "a single-family run is byte-identical to `machotool`'s, stdout included" — it runs both and compares, with exactly that one line reshaped, so any other wording fails |
+| the `Wrote <temp>` line is suppressed even when the caller's path contains a backslash | `tests/wrapper_test.sh`, "a path containing a backslash still suppresses the temp-naming line" (and the companion assertion that the teaching block is still counted and indented) |
+| a multi-family run's lines name `FILE`, never the temp | `tests/wrapper_test.sh`, "a multi-family run's stdout names FILE, not a copy", plus "a multi-family run leaves no stray file beside FILE" |
+| `Updated FILE (N bytes)` closes a run that changed the bytes, on both paths, and is absent when nothing changed | `tests/wrapper_test.sh`'s `Updated` pair (single- and multi-family) and "a run that changed nothing prints no `Updated` line" |
+| an invocation that asks for nothing prints nothing, where the C tool printed two lines | `tests/wrapper_test.sh`, "an invocation that asks for nothing exits 0, prints nothing, and leaves FILE alone"; `tests/translate_test.sh`'s `cd-grow-only` pins the empty emission as text |
+
+### `change_dylib`: the in-place edit
+
+`change_dylib` rewrote `FILE`; `machotool dylib`/`rpath`/`lc` do not write the
+file they are given. So the wrapper takes the shared install path —
+`mw_prepare` names a temp beside the file `FILE` really is, `mw_retranslate`
+re-emits the command with that temp as its output, `mw_run_to_tmp` runs it, and
+`mw_finish` `mv`s the temp over the target or discards it when the bytes did not
+change, since the C tool wrote nothing in that case.
+`machotool-compat.sh`'s "the install path" section has the reasoning for each
+step. `machotool edit` takes that temp as its `OUT` positional like every other
+verb, so both shapes install identically.
+
+| the difference | held by |
+|---|---|
+| **an absent or unwritable `FILE` is refused**, in the C tool's own `perror("open")` words, before `machotool` runs. `change_dylib` opened `FILE` `O_RDWR` first, so either failed immediately having changed nothing. No `machotool` command reproduces that: a verb that writes an output opens `FILE` `O_RDONLY` and has no opinion about `FILE`'s mode, and `machotool edit` installs by rename, which needs the DIRECTORY writable (measured before this check existed: a mode-444 binary replaced, fresh inode, exit 0 — a silent rewrite of a file its owner marked read-only). `test -e`/`test -w` are not `open(O_RDWR)` — they consult the real uid and do not see ACLs, so they can disagree at the edges; they agree on the two cases that reach a caller, and both follow a symlink, which is what is wanted, since the install lands on the symlink's target and it is that file's mode that decides | `tests/wrapper_test.sh`'s unwritable pair, on BOTH paths, asserting exit 1, `open: Permission denied`, and neither the bytes nor the inode moved; and "an absent `FILE` exits 1 with the C tool's own `open()` message" |
+| **a hard-linked `FILE` is refused (1)** — new, and the one behaviour a caller can see that no version of `change_dylib` had: the C tool wrote through its own descriptor so every link saw the change, while an install by `mv` would leave the others on the old content. Refused rather than silently split, which is the trade every wrapper on this path makes; `mw_prepare` has the message and the remedy | `hl_case change_dylib` in `tests/wrapper_test.sh`, on both the single- and the multi-family path (exit 1, "hard link" named, both names byte-identical, no temp left); `tests/change_dylib_test.sh` case 14b also asserts the group is still one inode, unsplit |
+| **the install is a rename**, so a changed run gives `FILE` a fresh inode and an interrupted one can never leave a half-written binary — and a symlinked `FILE` stays a symlink, with the real target rewritten and its xattrs intact | `tests/change_dylib_test.sh` case 14: 14a (symlink still a symlink to the same name, the real target changed, fresh inode, xattr survived), 14c (the ordinary case still goes through `mkstemp`+rename). Mode and quarantine on the multi-family path: `tests/wrapper_test.sh`, "mode and quarantine survive a MULTI-FAMILY run too" |
+| **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `machotool`'s own write of the temp, with `FILE` untouched | stated, not tested for `change_dylib`: the behaviour is `machotool`'s own write, not this wrapper's, and the equivalent case is asserted for `patch_macho` in `tests/wrapper_test.sh`. `compat/add_version_min.sh` and `compat/retag_swift_classes.sh`'s headers record the same shape |
+
+### `change_dylib`: atomicity of a mixed-family invocation
+
+`install.sh`'s production line strips two load commands AND rewrites three dylib
+paths. `tests/compat-sweep.sh` measured what splitting that one atomic rewrite
+into a SEQUENCE of verbs cost: two rows where the C tool refused having written
+nothing, while the sequence refused having already written. One `machotool edit`
+closes that at the source rather than around it — `me_run` reads the image once,
+applies every statement to it in memory, verifies, and writes once, so a refusal
+at any statement leaves `FILE` exactly as it was. That is the C tool's shape,
+not an approximation of it. (It writes the temp this wrapper installs, not
+`FILE`, so a refusal leaves no temp to install either.)
+
+| the difference | held by |
+|---|---|
+| a refusal at a later statement leaves `FILE` byte-identical, leaves no temp beside it, and is reported as a refusal rather than as a failed install | `tests/wrapper_test.sh`'s three mid-script assertions: "a refusal at a later statement leaves `FILE` byte-identical, not half-edited", "… and leaves no temp beside it", "… and says the run was refused, not that installing it failed" |
+| a run `machotool` refuses at the first read leaves nothing beside `FILE` either | `tests/wrapper_test.sh`, "a run `machotool` refuses leaves no temp beside FILE" |
+
+### `change_dylib`'s capacity caps
+
+**Enforced in the translation, not by `machotool`.** Both cap sites in
+`cli/machotool.c` carry a comment saying so and addressing whoever wrote this
+wrapper: `machotool` caps at the same numbers (`MR_MAX_OPS` 32, `MR_MAX_STRIP`
+16, shared via `src/rewrite.h`) but names ITS grammar's flags, so passing its
+message through would print "too many `-append`" where `change_dylib` printed
+"too many `-add`". `mt_room` in `compat/translate.sh` prints the origin text and
+refuses before anything runs. This is also what keeps the fixed-size arrays'
+historical stack smash — "Repeated options wrote past their fixed-size arrays;
+33 `-change` flags smashed the stack — fixed, PR #9", `docs/PROPOSAL.md` —
+fixed rather than reintroduced in shell.
+
+Held by `tests/wrapper_test.sh`'s two cap assertions (`too many -add (max 32)`
+and `too many -strip-lc (max 16)`, in `change_dylib`'s own words, plus the file
+untouched) and `tests/translate_test.sh`'s `cap-strip-17`, `cap-add-33`,
+`cap-ins-33`, `cap-chg-33`, `cap-radd-33` and `cap-shared`.
 
 ## Why `fix_macho` could not be wrapped, and what changed
 

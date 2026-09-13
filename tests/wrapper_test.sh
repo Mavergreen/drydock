@@ -453,6 +453,104 @@ refused_rc=0
     || bad "change_dylib refused strays" "exit $refused_rc; the directory holds [$(ls -a "$T/refused" | tr '\n' ' ')]"
 rm -rf "$T/refused"
 
+# EXIT CODES ARE FORWARDED, NOT MAPPED. change_dylib is one of only two
+# wrappers here that hands the caller machotool's own number (compat/README.md,
+# "change_dylib: exit codes"); fix_macho, patch_macho and rename_segment all
+# collapse every nonzero to one historical code. machotool distinguishes a
+# considered refusal (EX_REFUSED, 1 -- the image was examined and declined)
+# from an operational failure (EX_FAIL, 2 -- the run could not be carried out
+# at all), and this wrapper preserves that distinction rather than throwing it
+# away. A DIRECTORY as FILE is the input that reaches a 2: mw_prepare's
+# hard-link check is for regular files only and `test -w` says a directory is
+# writable, so it falls through to machotool, whose read of it fails. The first
+# assertion is what keeps the others honest -- if machotool ever stops
+# answering 2 here, they are proving nothing and say so rather than passing
+# quietly.
+rm -rf "$T/cddir" "$T/cddir.new"; mkdir "$T/cddir"
+cd_mt_rc=0
+( cd "$T" && "$BIN/machotool" dylib cddir cddir.new -replace /nope /also-nope ) \
+    >/dev/null 2>"$T/err" || cd_mt_rc=$?
+[ "$cd_mt_rc" -eq 2 ] \
+    && ok "change_dylib: machotool's own code for this input is 2, an operational failure" \
+    || bad "change_dylib exit forwarding" "machotool exited $cd_mt_rc, not 2, so the assertions below are proving nothing about forwarding -- find an input that still reaches EX_FAIL, or nothing here pins it at all"
+run change_dylib cddir -change /nope /also-nope
+[ "$rc" -eq 2 ] \
+    && ok "change_dylib: a single-family run forwards machotool's own 2 rather than mapping it" \
+    || bad "change_dylib exit forwarding (single-family)" "exit $rc, want 2: this wrapper maps nothing, so a caller of the most-called tool here can still tell a run that never happened from an image machotool read and declined -- collapsing both to 1 takes that away"
+run change_dylib cddir -strip-lc uuid -change /nope /also-nope
+[ "$rc" -eq 2 ] \
+    && ok "change_dylib: ... and so does a multi-family run, whose code is machotool edit's own" \
+    || bad "change_dylib exit forwarding (multi-family)" "exit $rc, want 2: me_run speaks the same MR_REFUSED/MR_FAIL vocabulary as every verb, so a mixed-family invocation must not be the one shape where the caller loses the distinction"
+rm -rf "$T/cddir" "$T/cddir.new"
+# THE OTHER HALF: a considered refusal is still the flat 1 the C tool always
+# gave. Forwarding is only worth something if the two numbers really differ, so
+# both are asserted on the same wrapper rather than one of them assumed.
+printf 'not a Mach-O at all, not even close\n' >"$T/notmacho"
+run change_dylib notmacho -strip-lc uuid
+[ "$rc" -eq 1 ] \
+    && ok "change_dylib: a considered refusal is still the flat 1 the C tool always gave" \
+    || bad "change_dylib refusal code" "exit $rc, want 1: every change_dylib failure row in tests/compat-matrix.tsv is a 1, so a caller that has branched on 0-or-1 since 2024 must not start seeing a 2 for an image machotool simply declined"
+rm -f "$T/notmacho"
+
+# A REFUSAL PART WAY THROUGH A MULTI-STATEMENT RUN LEAVES FILE EXACTLY AS IT
+# WAS. install.sh's production line is this shape -- two load-command deletes
+# AND three dylib replacements in one invocation -- and splitting that one
+# atomic rewrite into a SEQUENCE of machotool commands once cost two
+# tests/compat-sweep.sh rows where the C tool refused having written nothing
+# and the sequence refused having already written. It is one `machotool edit`
+# now: me_run reads the image once, applies every statement in memory,
+# verifies, and writes once. The -change below needs far more room than the
+# fixture's header pad and no -grow is given, so the run is refused at
+# statement 2 of 2 -- after statement 1 was applied in memory.
+rm -rf "$T/cdmid"; mkdir "$T/cdmid"
+cp "$FIXTURE" "$T/cdmid/f"
+cd_mid_before=$(sha "$T/cdmid/f")
+cd_huge="@loader_path/"
+i=0
+while [ $i -lt 500 ]; do cd_huge="${cd_huge}longlongl"; i=$((i + 1)); done
+cd_huge="${cd_huge}.dylib"
+cd_mid_rc=0
+( cd "$T/cdmid" && "$BIN/change_dylib" f -strip-lc uuid \
+    -change /usr/lib/libSystem.B.dylib "$cd_huge" ) \
+    >"$T/cdmid.out" 2>"$T/cdmid.err" || cd_mid_rc=$?
+[ "$cd_mid_rc" -eq 1 ] && [ "$(sha "$T/cdmid/f")" = "$cd_mid_before" ] \
+    && ok "change_dylib: a refusal at a later statement leaves FILE byte-identical, not half-edited" \
+    || bad "change_dylib mid-script refusal" "exit $cd_mid_rc and FILE $([ "$(sha "$T/cdmid/f")" = "$cd_mid_before" ] && echo 'is unchanged' || echo 'WAS MODIFIED'): install.sh's production line strips load commands AND rewrites dylib paths in one invocation, so a caller left holding statement 1 of a refused run has a binary nobody asked for; stderr: $(tail -1 "$T/cdmid.err")"
+ls -a "$T/cdmid" | grep -q 'machotool-compat' \
+    && bad "change_dylib mid-script refusal" "a temp was left beside FILE: [$(ls -a "$T/cdmid" | grep 'machotool-compat' | tr '\n' ' ')]" \
+    || ok "change_dylib: ... and leaves no temp beside it"
+# ...and the refusal is reported AS a refusal. The wrapper must stop on
+# machotool's nonzero rather than fall through to mw_finish, whose mv of a temp
+# machotool never wrote blames the INSTALL for a refusal that happened
+# upstream. Both exit 1, so the diagnostic is the only difference a caller can
+# see.
+! grep -q 'the rewrite succeeded but installing it failed' "$T/cdmid.err" \
+    && ok "change_dylib: ... and says the run was refused, not that installing it failed" \
+    || bad "change_dylib mid-script refusal" "a refused run told the caller the rewrite succeeded and the install failed, which sends them looking at directory permissions for a refusal machotool made about their image: $(grep 'installing it failed' "$T/cdmid.err")"
+rm -rf "$T/cdmid"
+
+# AN INVOCATION THAT ASKS FOR NOTHING. `change_dylib FILE -grow -grow` is
+# accepted (once argc is big enough) and names no operation, so
+# compat/translate.sh emits no command at all -- tests/translate_test.sh's
+# cd-grow-only pins that as text -- and there is no temp for machotool to write
+# or for mw_finish to install. This wrapper's own guard is what stops there.
+# The C tool ran an empty rewrite pass and printed its "header pad ..." and
+# "nothing to change." lines (tests/compat-matrix.tsv's two no-command rows),
+# so stdout IS a divergence here, recorded in compat/README.md; the exit code
+# and the file are not divergences and must not become ones.
+rm -rf "$T/cdnop"; mkdir "$T/cdnop"
+cp "$FIXTURE" "$T/cdnop/f"
+cd_nop_before=$(ls -a "$T/cdnop")
+cd_nop_rc=0
+( cd "$T/cdnop" && "$BIN/change_dylib" f -grow -grow ) \
+    >"$T/cdnop.out" 2>"$T/cdnop.err" || cd_nop_rc=$?
+[ "$cd_nop_rc" -eq 0 ] && [ ! -s "$T/cdnop.out" ] \
+    && [ "$(sha "$T/cdnop/f")" = "$(sha "$FIXTURE")" ] \
+    && [ "$(ls -a "$T/cdnop")" = "$cd_nop_before" ] \
+    && ok "change_dylib: an invocation that asks for nothing exits 0, prints nothing, and leaves FILE alone" \
+    || bad "change_dylib no-command run" "exit $cd_nop_rc, stdout [$(cat "$T/cdnop.out")], FILE $([ "$(sha "$T/cdnop/f")" = "$(sha "$FIXTURE")" ] && echo unchanged || echo MODIFIED), the directory holds [$(ls -a "$T/cdnop" | tr '\n' ' ')]: with no command emitted there is nothing to run, so falling through here means either a machotool invocation the caller never asked for or an install of a temp nothing wrote"
+rm -rf "$T/cdnop"
+
 # THE CAPACITY CAPS. Both cap sites in cli/machotool.c say the wrapper has to
 # enforce them itself and print the ORIGIN wording, because machotool names its
 # own flags (-append where change_dylib names -add). This is the assertion

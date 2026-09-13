@@ -54,7 +54,8 @@
 #       identical shape for its one file (there it surfaces as that wrapper's
 #       raw, forwarded exit 2; here it is folded into had_error's flat 1, since
 #       this wrapper never forwards one argument's exit code as the whole
-#       run's), and compat/change_dylib.sh's records it too.
+#       run's), and compat/README.md's "change_dylib: the in-place edit" table
+#       records it too.
 #   machotool 0               -> count it, then install: mw_finish installs the
 #       temp over the argument, or discards it when the bytes did not change,
 #       same as add_version_min.sh.
