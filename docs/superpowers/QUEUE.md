@@ -538,9 +538,21 @@ case that silently does nothing for a repo that is its own upstream.
   one. Verified against a scratch repo tagged `0.1.0`, `0.2.0`, `backup/foo`:
   every lookup returns empty. Teaching it the self-upstream shape would give
   releases 2+ their compare link.
+
+  **Bigger than first recorded** (confirmed 2026-09-12 by the shipyard
+  session): this is not only the hypothetical self-upstream repo. **Shipyard's
+  own tags are `v1.0.N`**, which never match `*-mavericks.*` either — so
+  shipyard's own release bodies have never carried a compare footer, live,
+  today, in the repo the whole family consumes.
 - **`release-notes-file.sh` hardcodes "Requires Mac OS X 10.9.5 or later"** —
   the `.pkg` floor — while these binaries target 10.9. Harmless for a repo that
   ships a `.pkg`; wrong for one that ships bare binaries.
+
+  **Currently unreachable, so do not spend a morning on it** (confirmed
+  2026-09-12 by the shipyard session): on shipyard's main its only references
+  are `check-shell-portability.sh` and its own test. Zero production callers —
+  it is a back-compat wrapper whose six callers were deleted. The bug is real
+  and nothing reaches it.
 
 Neither blocks a release. Both want a shipyard change rather than a local
 workaround, since a workaround here would be the fourth copy of a thing that
