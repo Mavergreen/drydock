@@ -320,6 +320,25 @@ grep -n 'change_dylib' tests/wrapper_test.sh tests/known-callers.sh tests/change
 
 Same idiom and same discipline as Task 3 Steps 2–3: name each test for the behaviour, break the behaviour, watch the named test fail, revert, record after the last assertion exists.
 
+**Two traps Task 3 hit, both of which apply here verbatim.**
+
+*A read-only FILE does not test this wrapper.* `mw_prepare` runs first
+(`compat/change_dylib.sh:200`), and `mw_require_writable` inside it answers a
+read-only FILE before `machotool` is ever invoked. Measured:
+`build-native/change_dylib <0444 file> -change /a /b` exits 1 with `open:
+Permission denied` straight from the guard. So an assertion built on `chmod
+0444` is green while testing `mw_prepare`, not the behaviour you meant — this
+wasted a round in Task 3. To make `machotool` itself fail so you can watch the
+wrapper fold its code, hand it a **directory** as FILE (`machotool` exits 2
+there; the wrapper folds to 1), and split the assertion so a setup that stops
+failing cannot quietly start proving nothing.
+
+*Mutate more than the obvious way.* In Task 3 the obvious mutation of the exit
+fold (`exit 1` → `exit "$mw_frc"`) was caught, but **deleting** the line was
+caught by nothing: the run still exited 1 with FILE untouched while reporting
+an install failure for what was really an upstream refusal — right code, wrong
+story. For each guard you test, try both changing it and removing it.
+
 - [ ] **Step 3: Move divergences to `compat/README.md`, reduce the wrapper**
 
 Keep one sentence on what it is, one pointing at the grammar in `translate.sh`, one pointing at `compat/README.md`, and the support-file check's hazard note. Everything else goes.
