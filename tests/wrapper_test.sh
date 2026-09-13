@@ -1274,7 +1274,8 @@ run retag_swift_classes rsc_link
 #
 # The last tool to become a wrapper, and the only one whose wrapper does NOT
 # close its divergences: the repo owner ruled five of them improvements to
-# ADOPT. compat/fix_macho.sh's header states all five with their reasons. This
+# ADOPT. compat/README.md's "fix_macho: the adopted divergences" table states
+# all five with their reasons, and names the assertion holding each. This
 # block asserts each of the three flags it accepts, a fat container (its
 # headline capability, and the one thing change_dylib could not do), and the
 # two adopted changes that used to be REFUSALS -- a longer replacement path
@@ -1358,8 +1359,8 @@ has_line "$T/err" '    machotool lc f f.new -delete build-version' \
 # comment as code now (`if (lc->cmd != LC_ID_DYLIB) { /* never rewrite this
 # dylib's own identity */`), matching what install_name_tool does: -id, never
 # -change, is the flag that ever touches LC_ID_DYLIB. The repo owner ruled
-# this the fifth divergence to ADOPT; compat/fix_macho.sh's header states it,
-# with its reasons.
+# this the fifth divergence to ADOPT; compat/README.md's divergence table
+# states it, with its reasons and the measurement behind it.
 #
 # tests/fixture.macho is an EXECUTABLE and carries no LC_ID_DYLIB at all, so
 # this needs its own fixture: a tiny dylib, built here the same way
@@ -1571,6 +1572,68 @@ chmod 644 "$T/f"
     && [ "$(sha "$T/f")" = "$before" ] \
     && ok "fix_macho: an unwritable file fails before the multi-command rewrite runs" \
     || bad "fix_macho unwritable" "exit $fm_ro_rc, stderr: $(cat "$T/err")"
+
+# THE EXIT-CODE FOLD. fix_macho had two exit codes, 0 and 1; machotool has a
+# third -- EX_FAIL, 2, for an operational failure rather than a considered
+# refusal -- and compat/fix_macho.sh folds every nonzero to 1. A DIRECTORY as
+# FILE is the input that reaches it: mw_prepare's hard-link check is for
+# regular files only, so a directory falls through to machotool, whose read of
+# it fails with 2. The first assertion is what keeps the second honest -- if
+# machotool ever stops answering 2 here, the fold below is proving nothing and
+# says so rather than passing quietly.
+rm -rf "$T/fmdir"; mkdir "$T/fmdir"
+fm_mt_rc=0
+( cd "$T" && "$BIN/machotool" dylib fmdir fmdir.new -replace /nope /also-nope ) \
+    >/dev/null 2>"$T/err" || fm_mt_rc=$?
+[ "$fm_mt_rc" -eq 2 ] \
+    && ok "fix_macho: machotool's own code for this input is 2, the code fix_macho never had" \
+    || bad "fix_macho exit fold" "machotool exited $fm_mt_rc, not 2, so nothing below tests the fold -- find an input that still reaches EX_FAIL, or this assertion is the only thing left pinning the fold at all"
+run fix_macho fmdir -change /nope /also-nope
+[ "$rc" -eq 1 ] \
+    && ok "fix_macho: every nonzero machotool exit is folded to 1, the only failure code fix_macho ever had" \
+    || bad "fix_macho exit fold" "exit $rc: a caller that learned this grammar in 2024 branches on 0-or-1, so forwarding machotool's 2 invents a third outcome for a grammar that has two"
+rm -rf "$T/fmdir" "$T/fmdir.new"
+
+# A REFUSAL PART WAY THROUGH A MULTI-STATEMENT RUN LEAVES FILE EXACTLY AS IT
+# WAS. Two families, so one `machotool edit`: me_run reads the image once,
+# applies every statement in memory, verifies, and writes once. The -change
+# below needs far more room than the fixture's header pad and no --allow-grow
+# is ever emitted, so the run is refused at statement 2 of 2 -- after
+# statement 1 was applied in memory.
+fresh
+fm_before=$(sha "$T/f")
+fm_huge="@loader_path/"
+i=0
+while [ $i -lt 500 ]; do fm_huge="${fm_huge}longlongl"; i=$((i + 1)); done
+fm_huge="${fm_huge}.dylib"
+run fix_macho f -strip_build_version -change /usr/lib/libSystem.B.dylib "$fm_huge"
+[ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$fm_before" ] \
+    && ok "fix_macho: a refusal at a later statement leaves FILE byte-identical, not half-edited" \
+    || bad "fix_macho mid-script refusal" "exit $rc and FILE $([ "$(sha "$T/f")" = "$fm_before" ] && echo 'is unchanged' || echo 'WAS MODIFIED'): a caller whose file is left carrying statement 1 of a refused run has a binary nobody asked for; stderr: $(tail -1 "$T/err")"
+ls -a "$T" | grep -q 'machotool-compat' \
+    && bad "fix_macho mid-script refusal" "a temp was left beside FILE: [$(ls -a "$T" | grep 'machotool-compat' | tr '\n' ' ')]" \
+    || ok "fix_macho: ... and leaves no temp beside it"
+# ...and the refusal is reported as a refusal. The wrapper must stop on
+# machotool's nonzero rather than fall through to mw_finish, whose mv of a
+# temp machotool never wrote would blame the INSTALL for a refusal that
+# happened upstream. Both paths exit 1, so the diagnostic is the only
+# difference a caller can see.
+! grep -q 'the rewrite succeeded but installing it failed' "$T/err" \
+    && ok "fix_macho: ... and says the run was refused, not that installing it failed" \
+    || bad "fix_macho mid-script refusal" "a refused run told the caller the rewrite succeeded and the install failed, which sends them looking at directory permissions for a refusal machotool made about their image: $(grep 'installing it failed' "$T/err")"
+
+# THE INSTALL IS A RENAME, not a write through FILE. machotool writes a temp
+# beside FILE and mw_finish mv's it over, which is what makes FILE wholly old
+# or wholly new; fix_macho lseek'd to 0 and wrote over itself, so a kill
+# mid-write left a corrupt binary. The INODE is what tells the two apart --
+# the bytes cannot.
+fresh
+fm_ino=$(stat -f %i "$T/f")
+run fix_macho f -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" != "$(sha "$FIXTURE")" ] \
+    && [ "$(stat -f %i "$T/f")" != "$fm_ino" ] \
+    && ok "fix_macho: a changed run installs by rename, so FILE gets a new inode" \
+    || bad "fix_macho install by rename" "exit $rc, inode $fm_ino -> $(stat -f %i "$T/f"): the same inode means something wrote over the caller's file in place, so an interrupted run can leave a half-written binary -- the failure these tools exist to prevent"
 
 # ---- hostile argv shapes -----------------------------------------------
 #

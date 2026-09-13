@@ -82,8 +82,8 @@ target_compile_options(machotoolcore PRIVATE -O2 -Wall)
 # header pad where fix_macho refused outright, and a chained -rename_seg
 # chains where fix_macho's single pass did not. The repo owner ruled those --
 # and three more -- improvements to ADOPT deliberately, which is what made
-# this possible; compat/fix_macho.sh's "DELIBERATE DIVERGENCES FROM fix_macho"
-# block states all five with their reasons.
+# this possible; compat/README.md's "fix_macho: the adopted divergences" table
+# states all five with their reasons and the test holding each.
 #
 # So machotool is now the ONLY Mach-O rewriting binary this repo builds or
 # installs, and compat/ contains no C at all. MACHO_TOOLS is deliberately

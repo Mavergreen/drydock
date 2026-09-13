@@ -2171,7 +2171,7 @@ fi
 # a slice that is not a 64-bit Mach-O -- left alone, other slices still
 # rewritten, exit 0 -- and MR_ERROR for a slice that IS one and whose edit was
 # refused, which aborts the whole file. Only MR_ERROR is a divergence from the
-# tool this replaced (compat/fix_macho.sh's divergence 4, where it is stated
+# tool this replaced (compat/README.md's fix_macho divergence 4, stated there
 # most emphatically: fix_macho printed "Skipping arch %u" for BOTH and exited
 # 0, having shipped a partially converted universal binary as a success).
 #

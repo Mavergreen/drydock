@@ -207,9 +207,10 @@
 #     chained -rename_seg now chains, the write-back is atomic, a fat slice
 #     machotool cannot handle refuses the whole file instead of being skipped,
 #     and a -change aimed at the dylib's own install name now matches nothing
-#     instead of rewriting LC_ID_DYLIB. compat/fix_macho.sh's header states
-#     all five as deliberate changes, with their reasons; this file simply
-#     translates, as it does for every other tool.
+#     instead of rewriting LC_ID_DYLIB. compat/README.md's "fix_macho: the
+#     adopted divergences" table states all five with their reasons and the
+#     test holding each; this file simply translates, as it does for every
+#     other tool.
 #
 # This file refuses exactly one shape of its own: a -change chain on the
 # edit-script path (mt_chain_check, whose comment has the reasoning). There
@@ -644,8 +645,8 @@ $3
             # what was asked". compat/fix_macho.c is gone; there is no longer a
             # behaviour on the other side to preserve, so refusing a shape the
             # surviving implementation handles correctly would be the wrong
-            # answer. compat/fix_macho.sh's header states the change as one of
-            # its five deliberate divergences.
+            # answer. compat/README.md's divergence table states the change as
+            # row 2 of the five adopted ones.
             mt_seg="$mt_seg$(mt_qargs "$2" "$3")
 "
             mt_st_seg="$mt_st_seg$(printf 'segment rename%s' "$(mt_qargs "$2" "$3")")
@@ -662,7 +663,7 @@ $3
     # enlarged a header, so nothing in its grammar can ask for one. `machotool
     # dylib` without --allow-grow still resizes a command into EXISTING header
     # pad, which fix_macho refused ("new path ... too long") -- the first of
-    # the five adopted changes listed in compat/fix_macho.sh's header. Growing
+    # the five adopted changes compat/README.md's table lists. Growing
     # the header outright is a further step, and this translation still does
     # not take it.
     #

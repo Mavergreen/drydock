@@ -215,41 +215,162 @@ because a wrapper had to **preserve** behaviour and `fix_macho`'s differs from
 the shared rewriter's. It stayed C for a whole plan on that basis.
 
 What changed is not the code but the standard: the repo owner ruled those
-differences **improvements to adopt deliberately**. There are five, and
-`compat/fix_macho.sh`'s "DELIBERATE DIVERGENCES FROM fix_macho" block states
-each with its reason:
+differences **improvements to adopt deliberately**. There are five, and this
+section is where they are stated — the wrapper itself no longer carries them,
+and points here instead.
 
-1. a replacement path longer than the existing load command is now rewritten
-   into header pad instead of refused;
-2. a chained `-rename_seg A B -rename_seg B C` now produces `C` instead of
-   stopping at `B`;
-3. the write is atomic and lands on a fresh output (`wa_write_new`, then one
-   `mv`) instead of `lseek` + `write` over the original;
-4. a fat slice that **is** a 64-bit Mach-O and whose edit fails now refuses
-   the whole file instead of being skipped with the rest rewritten. (A slice
-   that is not a Mach-O at all is still skipped, exactly as before —
-   `tests/wrapper_test.sh` pins that distinction.)
-5. a `-change` aimed at the dylib's own install name now matches nothing
-   instead of rewriting `LC_ID_DYLIB` — `fix_macho.c`'s own comment said
-   "nothing in `changes` is ever meant to match it", but its match block had
-   no exclusion for `LC_ID_DYLIB` and rewrote it anyway. Both sides exit 0
-   and the bytes differ; nothing on stderr named the reason. `machotool`'s
-   `-change` now matches what `install_name_tool` does (`-id`, never
-   `-change`, touches identity) — `src/rewrite.c` enforces it, and
-   `tests/wrapper_test.sh` pins it on a dylib fixture, alongside a real
-   dependency's `-change` in the same run still landing.
+### `fix_macho`: the adopted divergences
 
-`fix_macho`'s stdout is not reproduced either, and that is deliberate:
-`Processing thin Mach-O:` / `Changed: X -> Y` / `File updated: F` /
-`No changes needed: F` are replaced by `machotool`'s own reporting plus the
-per-operation `machotool: <path> matched nothing` lines on stderr, which say more
-than `No changes needed` could. This repo's own `tests/change_dylib_test.sh`
-was `fix_macho`'s only caller.
+Each row is a case where `fix_macho` and the shared rewriter give different
+answers and the shared rewriter's is better, so the wrapper does **not** close
+it. "Held by" is the assertion that fails if someone reverses the decision.
+
+| # | the difference, and why adopting it is right | held by |
+|---|---|---|
+| 1 | **A replacement path longer than the existing command now SUCCEEDS.** `fix_macho` wrote the new path into the existing `LC_LOAD_DYLIB` and refused if it did not fit (`new path '...' too long (320 > 32)`, exit 1, file untouched); `machotool dylib -replace` rebuilds the load-command table and fits the longer path into header pad the image already has, exit 0. The limit was an artifact of a rewriter that never learned to resize a command, not a safety property: nothing in `docs/PROPOSAL.md` records a reason for it, and `machotool` does not have to inherit the old tools' artificial limits. The translation still emits no `--allow-grow` — this uses existing pad and never enlarges the header. | `tests/wrapper_test.sh`, "a longer replacement path is now rewritten into header pad, not refused"; `tests/translate_test.sh`'s `fm-*` cases, none of which emits `allow-grow` |
+| 2 | **A chained `-rename_seg` now CHAINS.** `-rename_seg __DATA __X -rename_seg __X __Y` produced `__X` under `fix_macho`, which applied every pair in ONE pass and gave each segment its FIRST match, so the second pair never fired. Each pair is its own pass here — its own `segment rename` statement in the emitted edit script — and the second reads the first's result, so it produces `__Y`. Adopting it is doing what was asked. `compat/translate.sh` refused this shape outright until the ruling, correctly, while a wrapper still had to preserve `fix_macho`'s answer; its `-rename_seg` arm records the reversal. | `tests/wrapper_test.sh`, "a chained `-rename_seg` now produces the SECOND name, not the first" (asserts `__Y` present **and** `__X` absent); `tests/translate_test.sh`'s `fm-chain`, `fm-chain-3` |
+| 3 | **The write-back is ATOMIC.** `fix_macho` `lseek`'d to 0 and wrote the whole file back over itself, so a crash, a full disk or a kill mid-write left a corrupt binary. `machotool` never writes `FILE` at all: it writes a temp beside it (`wa_write_new`, `src/atomic_write.h` — `mkstemp` + `rename`, carrying `FILE`'s mode, owner and xattrs) and the wrapper installs that temp with one `mv` in the same directory, so the caller's file is either wholly old or wholly new. These tools exist to make binaries loadable; a half-written one is the failure they are supposed to prevent. There is no multi-write caveat: an invocation worth more than one command is one `machotool edit FILE OUT -`, and `me_run` (`src/edit.c`) reads the image once, applies every statement in memory, verifies, and writes once — so a refusal at any statement leaves the temp unwritten and `FILE` exactly as it was. | `tests/wrapper_test.sh`: "a changed run installs by rename, so `FILE` gets a new inode"; "a refusal part way through a multi-statement run leaves `FILE` byte-identical and no temp beside it"; `hl_case fix_macho` ("a hard-linked `FILE` is refused (1), both names untouched", "and no temp was left beside it"). Mode, owner and xattrs: `tests/atomic_write_test.c` under `ctest` |
+| 4 | **A fat slice whose edit fails now REFUSES THE WHOLE FILE.** `fix_macho`'s fat loop treated every per-slice failure alike: `process_macho` returned -1 whether the slice was not a Mach-O at all or was one whose edit it refused, and the loop printed `  Skipping arch %u` and carried on, exiting 0 having rewritten the slices it did understand — a partially converted universal binary reported as a success. `mr_process_fat` (`src/rewrite.c`) splits the two: `MR_SKIP` for a slice that is not a 64-bit Mach-O, `MR_ERROR` for one that IS and whose edit failed, and only `MR_ERROR` refuses. Refuse rather than guess. **Narrower than the retirement plan's table says:** that table reads as covering both cases; a slice that is simply not a 64-bit Mach-O is still left unchanged exactly as `fix_macho` left it, with a different message (`not a 64-bit Mach-O; leaving this slice unchanged`) and exit 0. | the `MR_SKIP` half, through `fix_macho` on a hand-built two-slice container: `tests/wrapper_test.sh`, "a non-64-bit slice is left unchanged and the other slice is still rewritten" — so the distinction cannot be quietly widened. The `MR_ERROR` half, at the verb: `tests/cli_test.sh`'s "MR_ERROR: one bad slice refuses the WHOLE fat file" block (message, slice label, per-slice reason, and the file unmodified) |
+| 5 | **A `-change` aimed at this dylib's own install name now matches NOTHING**, instead of rewriting it. `compat/fix_macho.c`'s match block opened on `mo_is_ordinal_lc(lc->cmd) \|\| lc->cmd == LC_ID_DYLIB` and then ran the `changes[]` loop with no `LC_ID_DYLIB` exclusion, so `-change <this dylib's own install name> NEW` rewrote the dylib's identity — even though the file's own comment said "nothing in `changes` is ever meant to match it". `src/rewrite.c` guards it now. Adopting it is right because (a) `install_name_tool` spells identity `-id` and its `-change` never touches `LC_ID_DYLIB`, so `machotool` matches the tool everyone already knows; (b) `fix_macho.c`'s own comment stated the contract `machotool` now enforces, so this is the C being fixed, not contradicted; (c) silently rewriting a dylib's own install name from an operation aimed at a DEPENDENCY is exactly the invisible edit this work exists to make visible. Measured: both sides exit 0 and the bytes differ, with nothing on stderr naming the reason (transcript below). | `tests/wrapper_test.sh`, "-change at a dylib's own install name leaves `LC_ID_DYLIB` unchanged, reported unmatched, while a real dependency's `-change` in the same run still lands" — one run, both halves, on a dylib fixture built for it |
+
+#### The measurement behind row 5
+
+Taken on copies of the same `-install_name /tmp/aaa/libfoo.dylib` dylib, and
+left exactly as it was read off the two runs:
+
+```
+old:  Changed: /tmp/aaa/libfoo.dylib -> /tmp/bbb/libfoo.dylib
+      File updated: a.dylib          rc=0   otool -D -> /tmp/bbb/libfoo.dylib
+new:  macho9: /tmp/aaa/libfoo.dylib matched nothing
+      b.dylib: nothing to change.    rc=0   otool -D -> /tmp/aaa/libfoo.dylib
+cmp a.dylib b.dylib -> differ
+```
+
+That transcript is the measurement AS TAKEN. Since 2026-09-12 the tool names
+itself in everything it prints, so today that line reads `machotool: ...
+matched nothing`; only the name moved. Updating the transcript in place would
+falsify a record rather than refresh a description — the same reason
+`tests/compat-matrix.tsv` still names the tools it measured.
+
+### `fix_macho`: two more differences, NOT on the adopted list
+
+Both are consequences of travelling through `mr_apply_file` at all rather than
+choices the conversion made, both are shared with every other verb that
+rewrites, and both are reported rather than worked around.
+
+| the difference | held by |
+|---|---|
+| **`mg_plausible`.** `mr_apply_file` runs that gate before writing (except for a rename-only operation set, which `src/rewrite.c` skips because the gate asks an OFFSET question and a rename moves no offset). `fix_macho` had no such gate, so an image the gate rejects is one this refuses and `fix_macho` rewrote. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for an ordinary operation and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
+| **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. `compat/rename_segment.sh`'s header has the measurement (on `/usr/lib/libxcselect.dylib`) and the note that the smallest fix is a change to `machotool`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
+
+### `fix_macho`: exit codes
+
+0 and 1, the only two `fix_macho` had — so **every nonzero from `machotool` is
+mapped to 1**. It is the same mapping `compat/rename_segment.sh` and
+`compat/patch_macho.sh` make and for the same reason: `machotool`'s own
+`EX_FAIL` is 2, a value no `fix_macho` caller has ever seen, and forwarding it
+would invent a third outcome for a grammar that has two. `EX_REFUSED`, 1, is
+not the problem — it already coincides with `fix_macho`'s own flat failure code
+for any of the ordinary considered refusals this translation's
+`dylib`/`lc`/`segment`/`edit` commands can reach (bad magic, no room to grow,
+and the rest of `src/rewrite.h`'s list). The one `mr_apply_file` refusal
+genuinely unreachable here is the `--fatal-warnings`-specific one, "an
+operation matched nothing" promoted to `MR_REFUSED`: this translation never
+emits that flag. It would not have needed mapping either way, being 1 like
+everything else the mapping collapses.
+
+Held by `tests/wrapper_test.sh`'s exit-fold pair — `machotool`'s own code for
+an unreadable `FILE` is 2, and `fix_macho` on the same input exits 1 — and by
+"`-strip_build_version` with nothing to strip exits 0, having written nothing",
+which is the assertion that fails if `--fatal-warnings` ever leaks into the
+translation.
+
+### `fix_macho`: stdout is not reproduced
+
+That is deliberate too. `fix_macho` printed `Processing thin Mach-O:` /
+`Processing arch N at offset M:` / `  Changed: X -> Y` / `  Removed
+LC_BUILD_VERSION (N bytes)` / `  Renamed segment 'A' -> 'B'` / `File updated:
+F` / `No changes needed: F`. None of it survives. What a caller sees now is
+`machotool`'s own reporting, plus — for the one line that carried information a
+caller could act on — the per-operation unmatched report on **stderr**:
+
+```
+machotool: /usr/lib/libFoo.dylib matched nothing        (a -change)
+machotool: no load command of kind build-version to delete
+```
+
+That is strictly more than `No changes needed: F` said, which could not
+distinguish which of several operations missed. Those two lines are quoted with
+the `machotool:` prefix and all, because that is what a caller really sees: the
+report names the operation in `machotool`'s grammar, which is the grammar this
+wrapper teaches (`src/rewrite.c`'s `mr_report_unmatched` says why the prefix is
+the tool's name and not `argv[0]`).
+
+`machotool --fatal-warnings` would turn that report into a refusal, and **this
+wrapper must not pass it**: `fix_macho` exited 0 when an operation matched
+nothing, and that is compat surface.
+
+Neither `tests/EXPECTED` nor `tests/known-callers.sh`'s sha256s have an opinion
+about any of these strings — both hash converted file bytes with the tools'
+output sent to `/dev/null`. What reads these two lines is
+`tests/wrapper_test.sh`, and the closing `Updated FILE (N bytes)` line (the one
+`mr_apply_file` printed while the verbs still wrote `FILE`, not `fix_macho`'s
+own `File updated: F`) is pinned there too, by a byte comparison of the
+wrapper's whole stdout against `machotool dylib`'s.
+
+### `fix_macho`: the in-place edit
+
+`fix_macho` rewrote the file it was given; `machotool dylib`/`lc`/`segment` do
+not. So the wrapper takes the shared install path — `mw_prepare` names a temp
+beside the file `FILE` really is, `mw_retranslate` re-emits the command with
+that temp as its output, `mw_run_to_tmp` runs it and drops the `Wrote <temp>`
+line no C tool ever printed, and `mw_finish` `mv`s the temp over the target or
+discards it when the bytes did not change. `machotool-compat.sh`'s "the install
+path" section has the reasoning for each step. `machotool edit` takes that temp
+as its `OUT` positional like every other verb, so both shapes install
+identically.
+
+Three consequences, all of them `fix_macho`'s alone to explain:
+
+* **The writability check** comes with it, inside `mw_prepare`. `fix_macho`
+  opened the file `O_RDWR` before it looked at it, so an absent or unwritable
+  file failed immediately, with no analysis and no write. No `machotool`
+  command reproduces that any more — a verb that writes an output opens `FILE`
+  `O_RDONLY`, and `machotool edit` finds out it cannot write only when it
+  writes, at the END of the run, with a different message — so
+  `mw_require_writable` is the only thing that does. `test -w` is not
+  `open(O_RDWR)`: it consults the real uid and does not see ACLs, so it can
+  disagree at the edges. It agrees on the two cases that actually reach a
+  caller (absent, and mode-denied), and both sides exit 1 either way. Held by
+  `tests/wrapper_test.sh`'s absent-file and unwritable-file assertions, both on
+  the MULTI-command path, which is the path where `machotool` would otherwise
+  succeed and silently replace a mode-444 binary.
+* **A hard-linked `FILE` is refused (exit 1)**, the one behaviour here no
+  version of `fix_macho` had: it wrote through its own descriptor, so every link
+  saw the change, while an install by `mv` would leave the others on the old
+  content. Every wrapper on this install path makes the same trade;
+  `mw_prepare` has the message and the remedy. Held by `hl_case fix_macho` in
+  `tests/wrapper_test.sh`.
+* **A writable binary in a read-only directory now fails**, because creating a
+  temp beside `FILE` needs the DIRECTORY writable where the C tool needed only
+  `FILE` itself to be: `mkstemp: Permission denied`, from `machotool`'s own
+  write of the temp, with `FILE` untouched.
+
+### `fix_macho`'s capacity caps
 
 Its two repeated options are still capped, in `compat/translate.sh`'s
-`mt_room`, with the same wording — the fixed-size arrays they filled had no
-bounds check at all, which is the same stack smash `docs/PROPOSAL.md` records
-being fixed in `change_dylib` alone. The `-rename_seg` cap exists nowhere
-else: `machotool` sees one rename at a time either way — its `segment` verb takes
-one pair, and an edit script's `segment rename` statement is one pair — so
-nothing downstream would ever count them.
+`mt_room`, with the same wording — `fix_macho` held `-change` in a
+`changes[32]` and `-rename_seg` in a `renames[16]`, and for most of its life
+neither had a bounds check, the same stack smash `docs/PROPOSAL.md` records
+being fixed in `change_dylib` alone ("Repeated options wrote past their
+fixed-size arrays; 33 `-change` flags smashed the stack — fixed, PR #9"). The
+C file grew an `FM_ROOM` check before it retired; `mt_room` is where that check
+lives now, printing the same `too many -change (max 32)` / `too many
+-rename_seg (max 16)` and refusing before anything runs. The `-rename_seg` cap
+exists nowhere else: `machotool` sees one rename at a time either way — its
+`segment` verb takes one pair, and an edit script's `segment rename` statement
+is one pair — so nothing downstream would ever count them. Held by
+`tests/wrapper_test.sh`'s two cap assertions (the wording, and the file
+untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
+
+`fix_macho`'s only caller in this repo was `tests/change_dylib_test.sh`.

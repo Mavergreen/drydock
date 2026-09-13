@@ -1123,11 +1123,12 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * contract that tests/known-callers.sh and tests/wrapper_test.sh pin. The
  * contract is not the same for all six -- five must reproduce their tool's
  * stdout byte for byte, while fix_macho's is deliberately NOT byte-identical
- * (compat/fix_macho.sh's DELIBERATE DIVERGENCES block says which lines moved
- * and why) -- but that difference does not weaken the reason for stderr, it
- * strengthens it: fix_macho's stdout is pinned to a shape the repo CHOSE,
- * one assertion at a time, and an unmatched report appearing on it would
- * break those assertions exactly as it would break the byte-identical five.
+ * (compat/README.md's "fix_macho: stdout is not reproduced" says which lines
+ * moved and why) -- but that difference does not weaken the reason for
+ * stderr, it strengthens it: fix_macho's stdout is pinned to a shape the repo
+ * CHOSE, one assertion at a time, and an unmatched report appearing on it
+ * would break those assertions exactly as it would break the byte-identical
+ * five.
  * What every wrapper has in common is that its stdout is somebody's
  * contract; none of them has ever had to reproduce a stderr line. So stderr
  * is where a per-operation diagnostic can be added without moving anything
