@@ -81,9 +81,10 @@ ri_neither() {  # $1 = label, $2 = stderr file -- must NOT claim anything of PAT
 build_main "$T/ri_in"
 printf 'load-command delete uuid\n' >"$T/ri.edits"
 
-# The two that fire before anything is read.
-"$MACHOTOOL" edit "$T/ri_in" "$T/ri.edits" >/dev/null 2>"$T/ri1.err" || :
-ri_neither "no output file was named" "$T/ri1.err"
+# The one pre-read refusal the CLI can actually produce. (The other --
+# me_run's NULL-`out` guard, "no output file was named" -- is unreachable from
+# here: cmd_edit rejects two positionals with a usage message first, so that
+# guard is tests/edit_test.c's to cover, and is already covered there.)
 "$MACHOTOOL" edit "$T/ri_in" "$T/ri_in" "$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
 ri_neither "OUT is PATH" "$T/ri2.err"
 
@@ -417,7 +418,7 @@ Compare against the spec's table. Report the four swept files' before/after and 
 - [ ] **Step 2: Count what the sweep bought in tests**
 
 ```bash
-git diff --stat 2026-09-12-narration-start..HEAD -- tests/
+git diff --stat 16b3f51..HEAD -- tests/     # 16b3f51 is this plan's base commit
 sh tests/cli_test.sh $B | tail -1; sh tests/wrapper_test.sh $B | tail -1
 ```
 
