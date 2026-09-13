@@ -69,9 +69,14 @@ one sentence: prose is unexecutable, so nothing checks it.
 Every passage lands in exactly one. The boundaries are the whole design.
 
 **1. Testable claim → write the test, delete the prose.** A claim about
-behaviour that a test can pin. `src/grow.h`'s account of why 32-bit is refused;
-`src/edit.h`'s inventory of which refusals name both files; the rule that a
-refused run leaves no OUT.
+behaviour that a test can pin. `src/edit.h`'s inventory of which refusals name
+both files; the rule that a refused run leaves no OUT.
+
+**Corrected 2026-09-13.** This also cited "`src/grow.h`'s account of why 32-bit
+is refused" as a headline example. That account is not in `grow.h` — it is
+`src/grow.c:958-972`, in a file that is 26% comment and so was never in scope,
+and it **already cites its own pinned test**. It was therefore the one example
+here that needed nothing done to it. Measured by the task that went looking.
 
 **2. Already tested → delete the prose outright.** A surprising share of
 narration restates something `cli_test.sh`, `wrapper_test.sh` or a C test
