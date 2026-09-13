@@ -1196,7 +1196,10 @@ static void test_followups_are_the_union_of_the_statements(void) {
     static const char target[] = "target 10.9\n";
     CHECK(ms_parse(target, sizeof target - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
     CHECK(me_followups(&s) == MREL_NONE,
-          "a bare 'target 10.9' declares nothing of its own before expansion");
+          "a bare 'target 10.9' declares nothing of its own before expansion -- "
+          "me_followups is the DECLARED half only. Whoever gates a safety check "
+          "on it must add what expansion actually disturbs, or a `target 10.9` "
+          "run that lowers a fixups conversion skips the verify it most needs");
     ms_free(&s);
 }
 
