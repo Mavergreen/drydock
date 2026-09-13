@@ -130,8 +130,9 @@
  * same way as EX_REFUSED so a future change to either touches one place.
  * That includes the shared rewrite drivers (mr_apply_file,
  * mv_add_version_min) that dylib/rpath/lc/minos hand back:
- * they now draw the SAME line themselves (rewrite.h's own comment on
- * mr_apply_file has the full classification), returning MR_REFUSED
+ * they now draw the SAME line themselves (rewrite.h's MR_REFUSED/MR_FAIL
+ * block states the rule; mr_apply_file's own comment names its
+ * sites), returning MR_REFUSED
  * (== EX_REFUSED, enforced below) for a considered refusal -- "not a 64-bit
  * Mach-O" in any of its forms, no room to grow, a rewrite's own cross-check
  * failing, and more -- and MR_FAIL (== EX_FAIL, enforced below) for
@@ -341,8 +342,8 @@ static void print_ops_csv(int is_rpath) {
  *                        can act. That line is where it is because counting
  *                        only the operation that ACTED reports the -delete
  *                        of `-replace X N -delete X` as a false miss --
- *                        src/rewrite.h's mr_ops.fatal_unmatched has the
- *                        whole argument.
+ *                        src/rewrite.h's mr_ops.fatal_unmatched states the
+ *                        rule; mr_is_rename_only in src/rewrite.c argues it.
  *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`. `edit` carries no
