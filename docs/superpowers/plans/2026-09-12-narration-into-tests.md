@@ -324,7 +324,18 @@ Same idiom and same discipline as Task 3 Steps 2–3: name each test for the beh
 
 Keep one sentence on what it is, one pointing at the grammar in `translate.sh`, one pointing at `compat/README.md`, and the support-file check's hazard note. Everything else goes.
 
-Note the unwritable-FILE guard: if any comment still explains why it exits 2 rather than 1, that is a constraint — `wrapper_test.sh` holds it, so the prose goes, but **confirm the assertion exists before deleting the explanation.**
+Note the unwritable-FILE guard, and note that this plan described it wrongly
+until 2026-09-12. There is **no `exit 2` in this wrapper** — `grep -n 'exit
+[0-9]' compat/change_dylib.sh` returns only 0 and 1, `:56` says outright that
+the refusals it produces itself "are all 1", and `tests/wrapper_test.sh:372`
+asserts 1 as *"the C tool's only failure code"*. The authority for a wrapper's
+exit code is the **C tool**, whose captured failure rows in
+`tests/compat-matrix.tsv` are a flat 1 — not `machotool`'s 0/1/2 spread.
+
+So the constraint to preserve is "every self-produced refusal exits 1", it is
+already held, and the prose explaining it goes. **Do not add an `exit 2`
+anywhere to make the wrapper match a description.** Behaviour changes are out
+of scope; a plan sentence is not evidence about the code.
 
 - [ ] **Step 4: Run everything and commit**
 
@@ -373,7 +384,36 @@ rc=0; "$MACHOTOOL" dylib "$T/dl_text" "$T/dl.out" -append /x >/dev/null 2>&1 || 
 
 - [ ] **Step 2: Mutation-check it**
 
-In `src/rewrite.c`'s `mr_apply_file`, change the `too small to be a Mach-O` return from `MR_REFUSED` to `MR_FAIL`. The second assertion must fail and the first must still pass. Revert. Record.
+**Corrected 2026-09-12 after measuring; the original instruction here named a
+site the test above never reaches.** `mr_apply_file` has *two* distinct
+size refusals, and the 21-byte text fixture trips the second, not the first:
+
+| site | trigger | message | returns |
+|---|---|---|---|
+| `src/rewrite.c:1291` | `st.st_size < 4` | `too small to be a Mach-O` | `MR_REFUSED` |
+| `src/rewrite.c:1366` | `st_size < sizeof(struct mach_header_64)` | `too short to be a 64-bit Mach-O (N bytes, need at least 32)` | `MR_REFUSED` |
+
+Measured: `dylib` on `this is not a mach-o\n` (21 bytes) exits 1 with the
+**`:1366`** message; a 2-byte file exits 1 with the `:1291` message. So
+mutating `:1291` leaves both assertions green — the test would look
+unfalsifiable when in fact the mutation simply missed it.
+
+Mutate the site the test reaches: make the `:1366` branch's refusal return
+`MR_FAIL`. The second assertion must fail, the first must still pass. Revert
+and confirm `git diff src/rewrite.c` is empty.
+
+Then, since a second distinct refusal is one `printf` away, pin it too — a
+sub-4-byte input is the shorter-than-the-magic case, a different claim from
+"shorter than a header":
+
+```sh
+printf 'ab' >"$T/dl_tiny"
+rc=0; "$MACHOTOOL" dylib "$T/dl_tiny" "$T/dl.out" -append /x >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && ok "exit codes: too small even to hold a magic number is refusal (1), not failure" \
+                || bad "exit codes" "2-byte input gave $rc, want 1 — a file too short to examine is still a file we examined and declined"
+```
+
+Mutation-check that one against `:1291`.
 
 - [ ] **Step 3: Keep the constraints, delete the essays**
 
@@ -423,9 +463,22 @@ Compare against the spec's table. Report the four swept files' before/after and 
 - [ ] **Step 2: Count what the sweep bought in tests**
 
 ```bash
-git diff --stat 16b3f51..HEAD -- tests/     # 16b3f51 is this plan's base commit
-sh tests/cli_test.sh $B | tail -1; sh tests/wrapper_test.sh $B | tail -1
+git diff --stat 3ce226a..HEAD -- tests/     # 3ce226a is Task 1's BASE, per the ledger
+sh tests/cli_test.sh $B | grep -c '^PASS '
+sh tests/wrapper_test.sh $B | grep -c '^PASS '
 ```
+
+**Both commands here were corrected 2026-09-12.** The base was cited as
+`16b3f51`; that commit is real but is one docs commit earlier, and the true
+base is `3ce226a` (`git diff --stat 16b3f51..3ce226a -- tests/` is empty, so
+the two ranges happen to agree for `tests/` — but cite the base the ledger
+records, not the one that coincidentally works). And `| tail -1` prints
+`cli_test: 0 failure(s)` — a pass/fail line, **not a count** — so the
+"assertions added" figure this step exists to produce was unobtainable as
+written. Count `^PASS ` lines.
+
+Baselines to subtract, both measured at Task 1's dispatch and recorded in the
+ledger: `cli_test.sh` **392**, `wrapper_test.sh` **182**.
 
 Report how many assertions were added, and how many of them were mutation-proven. The ratio of new tests to deleted comment lines is the number that says whether "convert to tests" was real or whether this was mostly deletion.
 
