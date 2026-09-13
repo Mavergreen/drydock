@@ -138,7 +138,8 @@ typedef struct {
  *
  * REPORT, to o->log. A refusal that has read the image names both files and
  * what became of each; one that never got that far says only what it can.
- * tests/cli_test.sh's "refusal inventory" block is the enumeration.
+ * tests/cli_test.sh's "edit refusal inventory" block exercises this claim
+ * (it says itself which sites it cannot reach, and why).
  * Always printed: a statement's refusal,
  *   "machotool edit: refused at statement K of N (line L); OUT not
  *   written; PATH left unmodified"

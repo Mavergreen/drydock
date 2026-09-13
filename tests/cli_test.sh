@@ -2630,6 +2630,13 @@ grep -qF "$T/edit_ref_out not written; $T/edit_ref left unmodified" "$T/edit_ref
 # and then as a narrower claim that still missed two sites. A refusal that has
 # read the image says what became of OUT and of PATH; one that never got that
 # far says only what it can.
+#
+# Not exercised here, and not reachable from a deterministic shell test: the
+# fat path's own two "cannot open or read" sites (me_run_fat's open() and its
+# read()) fire only on a TOCTOU race between me_magic's open of PATH and
+# me_run_fat's separate one, and "out of memory reading %s's arch table" needs
+# OOM injection. All three say only what they can, same as the sites below --
+# this block just cannot force them to fire.
 ri_both() {   # $1 = label, $2 = stderr file -- must name both files
     if grep -q 'not written;' "$2" && grep -q 'left unmodified' "$2"; then
         ok "refusal inventory: $1 names both files"
