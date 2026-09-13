@@ -266,3 +266,143 @@ check — which is already why `mg_plausible` returns 0 when an image carries no
   stay, and reversing that is a decision for that document.
 - **`tests/compat-matrix.tsv`.** A dated artifact whose other side no longer
   exists at HEAD; nothing here regenerates it.
+
+---
+
+## Amendment, 2026-09-13: the derivation governs every gate site
+
+Written after a drift scan against `HEAD`, five items having shipped since this
+design was agreed. The scan's measurements are in
+`.superpowers/item5-drift-scan.md`. One design decision did not survive; the
+repo owner ruled on it, and four smaller decisions fall out of that ruling.
+
+### What broke
+
+This design modelled the `mg_plausible` gate as **one** site — `mr_process_thin`'s
+— scoped by `mr_is_rename_only`. At `HEAD` there are **four**, and two of them
+run it *unconditionally*:
+
+| site | scoped by |
+|---|---|
+| `src/rewrite.c:944` (`mr_process_thin`) | `mr_is_rename_only`, plus `MACHO_NO_VERIFY` |
+| `src/grow.c:1432` (inside `mg_grow_header`) | nothing |
+| `src/edit.c:899` — `me_run`'s final verify, thin | **nothing** |
+| `src/edit.c:676` — `me_fat_slice`'s per-slice verify | **nothing** |
+
+So the two front-ends already disagree, and this was measured rather than
+reasoned. On `tests/mkimplausible.c`'s fixture, with the identical operation:
+
+```
+machotool segment f o __DATA __DATA_R9           -> exit 0
+machotool edit f o <<< 'segment rename __DATA __DATA_R9'  -> exit 1, refused at verification
+```
+
+Decision 4's *"each `cmd_*` parses its `argv` into an `ms_script` in memory and
+calls `me_run`"* therefore imports `edit`'s gate into the verbs, flipping
+`machotool segment` and `machotool minos` from 0 to 1 — breaking two
+`cli_test.sh` assertions and contradicting Decision 3's own "rename-only:
+skips → skips, **unchanged**" row.
+
+### Decision 5: the derived applicability governs both front-ends
+
+**The repo owner's ruling.** The derivation decides whether `mg_plausible` runs,
+at `mr_process_thin`'s site *and* at `me_run`'s two. The verbs keep the exit
+codes they have today; `edit` stops running a check that has nothing to check.
+
+The consequence to state honestly, because this design's own rule is that a
+claim nothing would fail on is a defect: **`edit`'s final verify stops being
+unconditional.** `src/edit.c:895-896` says *"Verify the finished image: always,
+and never subject to `MACHO_NO_VERIFY`"*, and
+`tests/edit_test.c:615`'s `test_the_final_verify_ignores_MACHO_NO_VERIFY` pins
+it. That test is **rewritten, not deleted** — the same rule this design already
+applied to `cli_test.sh`'s scope assertion.
+
+What it must pin after the change is the property that actually matters, which
+survives intact:
+
+- **No caller can switch the gate off.** `MACHO_NO_VERIFY` still cannot suppress
+  a verify that applies. That is the whole content of the original contract and
+  it is unchanged.
+- **The skip is image- and operation-determined.** What narrows is only
+  *"always"* → *"whenever anything it checks was disturbed"*.
+
+This is the distinction §"The objection this will draw" already draws, now load
+-bearing rather than rhetorical: an escape hatch is caller-controlled, and this
+is not. A test asserting "always" would, after this change, be asserting
+something false; a test asserting "never caller-suppressible" asserts the thing
+the contract was protecting.
+
+`mg_grow_header`'s own internal call (`src/grow.c:1432`) is **not** in scope and
+does not move. A grow disturbs the base-relative relation by definition, so the
+derivation would run it there anyway; leaving it alone keeps the change to the
+two sites whose behaviour the ruling is about.
+
+### Decision 6: relations are evaluated per slice
+
+`mrel_live(const mi_image *)` has no single answer for a fat container, and item
+11 shipped `edit` on fat files after this design was written. It takes a
+**slice**, not a container, which is how the surrounding code already works:
+`me_statements` runs per slice (`src/edit.c:671`) and `mg_plausible` runs per
+slice (`:676`). A fat run derives applicability once per slice, and a slice that
+disturbs nothing skips its own verify regardless of what its neighbours did.
+
+### Decision 7: `needs_renumber` is not routed through the derivation
+
+`src/rewrite.c:773` decides whether the ordinal renumbering pass runs:
+
+```c
+int needs_renumber = (ops->n_dylib_inserts > 0) || (nnew - ops->n_dylib_inserts < nold);
+```
+
+Task 3 tells an implementer to route kind-testing sites through `me_followups`
+and to *stop and report* any site whose condition is not expressible as a
+disturbs mask. This is that site, it is the only one, and the ruling is
+**leave it alone**.
+
+The reason is a distinction worth keeping in view for the whole item: a disturbs
+mask is a conservative **declaration** about an operation; `needs_renumber` is an
+exact **observation** about this image, since `nnew` and `nold` come from
+`mo_map_build` walking it. `dylib delete /nonexistent` declares `MREL_ORDINAL`
+and renumbers nothing. Routing the observation through the declaration would run
+the pass when nothing matched — a behaviour change bought for uniformity, which
+is precisely the trade Decision 1 already declined.
+
+### Decision 8: `target 10.9` declares `MREL_NONE`, and its consequences accumulate
+
+`target` is an `MS_TABLE` row (`src/script.c:91`), not a script field like
+`allow-grow`, `fatal-warnings` and `arch` (`src/script.h:61-65`), so the tripwire
+will demand a disturbs mask for it. Its expansion is image- and slice-dependent
+(`src/edit.c:476-514`, at run time), so no static mask can describe what it does.
+
+It declares **`MREL_NONE`**, because the row itself disturbs nothing: it expands
+into other statements, and those statements declare their own. This needs no new
+mechanism — §"Applicability is evaluated against what the run did, not only what
+it declared" already requires accumulating actual disturbance, which is what a
+grow relies on too. `MREL_NONE` here means "nothing *of its own*", and the
+comment on the row must say so, since a bare zero would otherwise read as an
+unreviewed default — exactly what the tripwire exists to prevent.
+
+### Corrections that needed no ruling
+
+- **Decision 2 row 11 was wrong.** `fixups set classic` also disturbs the header
+  pad: `src/declassify.h:32-37` strips three command kinds and adds a 48-byte
+  `LC_DYLD_INFO_ONLY`. Its mask is `__LINKEDIT` + image base + header pad.
+- **Decision 2 is a 15-row table**, `rpath`'s four operations split out, and
+  `target 10.9` added per Decision 8.
+- **Decision 3's expected-difference table is restated against the derivation**,
+  not against `mr_process_thin`'s gate. Three of its nine rows named operations
+  that never build an `mr_ops` at all — only `cmd_lc`, `cmd_dylib_or_rpath` and
+  `cmd_segment` call `mr_apply_file` — so for those the "old" column was
+  describing a gate that never ran.
+- **The blind-spot claim splits in two.** `mr_ops` does still have seven 4-byte
+  interior holes (at offsets 12/28/44/60/76/92/108, `sizeof` 152,
+  `offsetof(allow_grow)` 148 — measured), and that example *is* documented at
+  `src/rewrite.c:620-640`. But the `segment_renamed`/`renumbering` omission is
+  documented **nowhere** at `HEAD`: the narration sweep deleted the sentence,
+  on the ground that a compile-time tripwire enforces it. That strengthens the
+  case for deleting the predicate rather than weakening it — making it consult
+  those two OUT fields fails two existing assertions, because `cmd_segment`
+  always sets `segment_renamed` (`cli/machotool.c:976`).
+- **Ten citations were stale** — three dead, seven moved. `src/rewrite.h` lost
+  two-thirds of its lines to the narration sweep, so every line reference into it
+  had to be re-resolved. The scan report lists each with its new location.
