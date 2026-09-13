@@ -288,8 +288,8 @@ static void print_ops_csv(int is_rpath) {
  *       declined on purpose -- bad magic, implausible, an unsupported KIND/
  *       version, a grow mg_grow_header itself refused, new load commands
  *       that don't fit and can't be grown, an unmatched --fatal-warnings
- *       operation, and more (rewrite.h's own comment on mr_apply_file has
- *       the full list, including the one exception -- an allocation
+ *       operation, and more (rewrite.h's comment on mr_apply_file names the
+ *       sites; its MR_REFUSED/MR_FAIL block has the one exception -- an allocation
  *       failure inside mg_grow_header or mg_plausible themselves stays
  *       refused=EX_REFUSED, not failed, same as every other reason either
  *       one refuses, on grow and verify as well as the rewrite verbs);
@@ -343,7 +343,8 @@ static void print_ops_csv(int is_rpath) {
  *                        only the operation that ACTED reports the -delete
  *                        of `-replace X N -delete X` as a false miss --
  *                        src/rewrite.h's mr_ops.fatal_unmatched states the
- *                        rule; mr_is_rename_only in src/rewrite.c argues it.
+ *                        rule; mr_build_lcs_lc's "No `break`" comment in
+ *                        src/rewrite.c argues it.
  *         reports=a,b    machine-readable "<verb>: <key>=<value>" lines this
  *                         verb prints on success, by key -- today only
  *                         `segment reports=renamed`. `edit` carries no

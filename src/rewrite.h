@@ -4,7 +4,8 @@
  * front-ends share this code: cli/machotool.c's dylib/rpath/lc/segment verbs
  * through mr_apply_file, src/edit.c's edit scripts through mr_apply_image.
  * Parsing stays in each front-end; what crosses this boundary is an mr_ops.
- * Every diagnostic lives down here, once (tests/characterize.sh pins it).
+ * Every diagnostic lives here once, not re-emitted per caller: contract.
+ * spec: tests/change_dylib_test.sh -- it captures stderr and compares it.
  * spec: tests/cli_test.sh's "machotool stands alone" -- the CLI links this in
  * rather than forking change_dylib, so change_dylib can wrap machotool.
  * spec: src/ordinals.h -- a dylib insert or delete shifts every later library
