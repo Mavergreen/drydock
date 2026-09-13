@@ -77,17 +77,45 @@ refused run leaves no OUT.
 narration restates something `cli_test.sh`, `wrapper_test.sh` or a C test
 already pins. The test is the record; the prose is a second, rottable copy.
 
-**3. Load-bearing at the point of danger → keep, one sentence.** These earn
-their place by being short and adjacent to the hazard: *"pass this through
-`ENVIRON`, not `awk -v`"* (a bug that had already shipped once); *"this `open`
-is `O_RDONLY` deliberately"*. A sentence, never a screen.
+**3. Load-bearing at the point of danger → keep one sentence, and it must
+carry a tag.** Amended 2026-09-12 to match the family convention being built in
+shipyard: a surviving comment cites a reason from a **closed set of two**.
+
+- **`platform:`** — a platform fact that bit us. *"platform: 10.9's BSD
+  `mktemp` rejects a bare `-d`"*, *"platform: no `sort -V` here"*, *"platform:
+  `awk -v` escape-processes its value; use `ENVIRON`"*. Most of what this
+  bucket protects in this family is exactly this shape: same sentence, same
+  place, one word of prefix.
+- **`spec:`** — a pointer to where the decision lives.
+
+The tag is the leading word after the comment opener, whatever the comment
+syntax: `# platform: …` in shell, `/* platform: … */` in C.
+
+**Anything else load-bearing becomes a test, and its FAIL message carries the
+why** (see Testing). There is deliberately no third tag. The hardest shape —
+the sentence explaining why a refusal is *deliberate* rather than
+unimplemented, which is exactly what a later reader deletes while adding the
+feature — converts cleanly: `machotool` refuses 32-bit input, and the test's
+failure reads *"32-bit is refused on purpose; supporting it means a parallel
+`LC_SEGMENT` growth path through seven places"*, firing when someone tries,
+which is the only moment the reasoning matters.
 
 **4. History → delete. Git has it.** "This comment used to say…", repro
 narratives, accounts of what a retired C tool did on a particular day, and the
 rename-era sentences that exist only because a rename happened.
 
-**5. Interface contract in a header → keep, compressed.** What the function
-does, how to call it, what it depends on. Rationale becomes a test or goes away.
+**5. Interface contract in a header → keep, compressed, and untagged.** What
+the function does, how to call it, what it depends on. Rationale becomes a test
+or goes away.
+
+A header's interface documentation is not a *reason*, so the closed set does not
+apply to it: `platform:` and `spec:` answer "why is this line here", and an API
+contract's answer is "it is the API". **Open point with the family check:** if
+that check requires a tag on every comment rather than on every surviving
+*rationale*, then compressed headers need a category of their own — which is the
+third member shipyard's rule declines to add. Not blocking: the check is opt-in
+per repo and macho-tools has no `comment-reasons` file, so this can be settled
+when someone adds one.
 
 ## The safety rule
 
@@ -128,6 +156,14 @@ moves rather than dies. This is not inconsistent; it is the difference between
   test fail, revert. A test that cannot fail is worse than no test — this item's
   entire premise is that tests catch what prose cannot, and an unfalsifiable
   test is prose with extra steps.
+- **Every new test's FAIL message carries the knowledge the deleted comment
+  held.** A test whose failure says only "assertion failed" has thrown away the
+  thing the comment was protecting. Say what a user loses: not *"expected both
+  halves"* but *"a refusal that read the image must say what became of BOTH
+  files — a user who sees only 'OUT not written' cannot tell whether their input
+  survived"*. This is what makes a test the better home for the knowledge:
+  **the comment rots silently; the failure message is read at exactly the moment
+  it is needed.**
 - **Take the mutation record after the last assertion exists.** A record taken
   earlier goes stale silently; that happened once already.
 - The wrappers' stdout stays byte-identical, and no emitted byte changes, so a
@@ -158,3 +194,8 @@ moves rather than dies. This is not inconsistent; it is the difference between
   which makes item 7 cheaper.
 - The plan-artifact names in roughly 87 older comments are bucket 4, so they go
   as part of this rather than needing their own sweep.
+- **The family convention this now matches** is being built in shipyard as an
+  enforced conventions check, across 2,700 comment lines in 98 files. It is
+  **opt-in per repo, by a repo-local `comment-reasons` file**, so nothing here
+  goes red until someone adds one — but sweeping to the family vocabulary now
+  means macho-tools needs no second pass when it does.

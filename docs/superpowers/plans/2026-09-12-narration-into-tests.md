@@ -13,6 +13,8 @@
 ## Global Constraints
 
 - **The safety rule: any passage stating a constraint must either become a test or keep a one-line form. Never both deleted and untested.**
+- **A surviving load-bearing comment must carry a tag from a closed set of two** (family vocabulary, adopted 2026-09-12): `platform:` for a platform fact that bit us, `spec:` for a pointer to where the decision lives. The tag is the leading word after the comment opener — `# platform: …` in shell, `/* platform: … */` in C. Anything else load-bearing becomes a test instead. A header's compressed interface contract is not a *reason* and carries no tag.
+- **Every new test's FAIL message must carry the knowledge the deleted comment held.** Not "expected both halves" but what a user loses. A test whose failure says only "assertion failed" has thrown away the thing the comment was protecting: the comment rots silently, the failure message is read at exactly the moment it is needed.
 - **Every new test must be mutation-checked**: break the thing it describes, watch that test fail, revert, and record it. A test that cannot fail is worse than no test.
 - **Take the mutation record after the last assertion exists.** A record taken earlier goes stale silently; that has already happened once in this repo.
 - `tests/EXPECTED` is never edited. `sh tests/characterize.sh $B check` must keep printing `characterize: OK (ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792)`. No emitted byte changes in this plan, so a moved digest is a real defect.
@@ -200,6 +202,8 @@ What survives is the interface: what `me_run` does, what it returns, what it req
 
 Keep in one or two sentences each: the module's purpose (`:4-6`); that it lowers and sequences and performs no operation itself (`:14-18`); the return codes and that `out` is required and may not be `path` (`:35-40`); that `MR_ERROR` is not an exit code (`:45-46`); Task 1's REPORT sentence; and the FOLLOW-UPS list (`:221-253`) reduced to one sentence saying a statement logs the work it did beyond what it names, with the `target` expansion example kept — that example is the only part of it a reader cannot reconstruct.
 
+All of that is bucket 5 — a compressed interface contract — so none of it takes a `platform:`/`spec:` tag. If any passage you keep is instead a *reason* (a platform fact, or a pointer to a decision), tag it; if it is a reason that fits neither tag, it becomes a test whose FAIL message says the why.
+
 Delete the "THERE IS NO QUIET MODE" rationale at `:24-29`, keeping only what the field means: `log` is where the report goes, stderr when NULL.
 
 - [ ] **Step 4: Check the safety rule held**
@@ -272,7 +276,7 @@ For the example above: change `compat/fix_macho.sh:276` from `exit 1` to `exit "
 
 - [ ] **Step 5: Reduce the wrapper to what a reader needs at the point of danger**
 
-Keep: one sentence on what this wrapper is and that `compat/translate.sh` holds the grammar; one sentence pointing at `compat/README.md` for the divergences; and the support-file check's explanation (`:252-254`) — a symlink on `PATH` resolving to the symlink's directory is exactly the non-obvious hazard bucket 3 exists for. Delete: WHAT THIS REPLACED, the capacity-caps account (the caps live in `translate.sh` and `translate_test.sh` holds them), the exit-code essay, and the in-place-edit account (every claim in it is held by `wrapper_test.sh`'s hard-link, unwritable and symlink assertions).
+Keep: one sentence on what this wrapper is and that `compat/translate.sh` holds the grammar; one sentence pointing at `compat/README.md` for the divergences; and the support-file check's explanation (`:252-254`) — a symlink on `PATH` resolving to the symlink's directory is exactly the non-obvious hazard bucket 3 exists for, and it is a platform fact, so it becomes `# platform: a symlink on PATH resolves to the symlink's directory, not the target's`. Delete: WHAT THIS REPLACED, the capacity-caps account (the caps live in `translate.sh` and `translate_test.sh` holds them), the exit-code essay, and the in-place-edit account (every claim in it is held by `wrapper_test.sh`'s hard-link, unwritable and symlink assertions).
 
 - [ ] **Step 6: Verify the wrapper still behaves identically, then commit**
 
