@@ -35,7 +35,10 @@ typedef struct {
  *
  * INPUT. A thin 64-bit Mach-O, or a fat (universal) file, which is edited
  * slice by slice and kept whole. Anything else is refused; an input that
- * cannot be opened or read at all is MR_FAIL.
+ * cannot be opened or read at all is MR_FAIL. Beyond its statements the
+ * script may carry directives -- `arch`, `allow-grow`, `fatal-warnings` --
+ * which select slices, permit header growth, and turn an unmatched statement
+ * into a refusal of the whole run; src/script.h defines them.
  *
  * REPORT, to o->log. A refusal that has read the image names both files and
  * what became of each; one that never got that far says only what it can.
@@ -46,9 +49,8 @@ typedef struct {
  * runs, is not ordered this way.
  *
  * me_run calls each operation's in-memory core, not its CLI verb, so an edit
- * run's stdout carries the lines those cores print and none of the lines a
- * verb prints after its own write. Those that name a file name PATH, the
- * input, even when `out` is given.
+ * run's stdout carries the lines those cores print. Those that name a file
+ * name PATH, the input, even when `out` is given.
  *
  * A statement that succeeds logs, indented beneath its statement line, the
  * work it did beyond what it names -- every figure one the operation computed

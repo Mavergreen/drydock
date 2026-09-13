@@ -2960,6 +2960,58 @@ grep -q "written (" "$T/nv2.out" \
     && bad "no quiet mode" "the written line went to stdout: $(cat "$T/nv2.out")" \
     || ok "edit: the written line is on stderr, so a wrapper's stdout is untouched"
 
+# AND NO VERB'S OWN POST-WRITE LINE IS ON IT EITHER. me_run calls each
+# operation's in-memory core, not its CLI verb, so an edit run shows what the
+# cores print and none of what a verb prints after its own write. That
+# division is load-bearing rather than cosmetic: `edit`'s single write happens
+# after the last statement and the final verify, so a verb's "I wrote it" line
+# appearing mid-script would name a write that has not happened and may never
+# happen -- the run can still be refused two statements later.
+#
+# The four runs below cover every core an edit statement can reach, so the
+# absence greps are not vacuous for want of a code path: mr_apply_image
+# (load-command/dylib), mv_add_version_min_image, mswift_retag_image and
+# md_declassify_buf.
+build_main "$T/vonly_lc"
+printf 'load-command delete uuid\ndylib append /x\n' >"$T/vonly_lc.edits"
+"$MACHOTOOL" edit "$T/vonly_lc" "$T/vonly_lc.out" "$T/vonly_lc.edits" \
+    >"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "lc/dylib run: $(cat "$T/vonly.err")"
+build_main "$T/vonly_vm"; "$T/strip_version_min" "$T/vonly_vm" >/dev/null
+printf 'version-min set 10.9\n' >"$T/vonly_vm.edits"
+"$MACHOTOOL" edit "$T/vonly_vm" "$T/vonly_vm.out" "$T/vonly_vm.edits" \
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "version-min run: $(cat "$T/vonly.err")"
+"$T/mkswift" make "$T/vonly_sw"
+printf 'swift-abi set legacy\n' >"$T/vonly_sw.edits"
+"$MACHOTOOL" edit "$T/vonly_sw" "$T/vonly_sw.out" "$T/vonly_sw.edits" \
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "swift-abi run: $(cat "$T/vonly.err")"
+"$T/mkchained" make "$T/vonly_fx"
+printf 'fixups set classic\n' >"$T/vonly_fx.edits"
+"$MACHOTOOL" edit "$T/vonly_fx" "$T/vonly_fx.out" "$T/vonly_fx.edits" \
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "fixups run: $(cat "$T/vonly.err")"
+
+# The positive control, so "no verb line on stdout" cannot pass because stdout
+# was empty: the cores DO print there, and two of their lines prove it.
+grep -q ": header pad [0-9]* bytes available" "$T/vonly.out" \
+    && grep -q "^Chained fixups: off=" "$T/vonly.out" \
+    && ok "edit: the cores' own stdout lines are present, so the absence greps below mean something" \
+    || bad "edit verb-only lines" "no core stdout line -- the four runs printed nothing to stdout, so nothing below is being tested: $(cat "$T/vonly.out")"
+
+# Each string is one a VERB prints and a core does not. "Wrote OUT (N bytes)"
+# is src/rewrite.c's (dylib/rpath/lc), src/version_min.c's (minos) and
+# cli/machotool.c's (retag-swift, declassify); "Added LC_VERSION_MIN_MACOSX"
+# is minos's alone; "class record(s)" is retag-swift's, and the parentheses are
+# what separate it from the edit report's own "retagged N class records" --
+# which is on stderr, and which the swift-abi case above pins.
+#
+# Deliberately NOT in this list: "updated (sizeofcmds=...)", which IS a core
+# line (mr_apply_image's) and belongs on edit's stdout.
+for vonly_s in 'Wrote ' 'Added LC_VERSION_MIN_MACOSX' 'class record(s)'; do
+    grep -qF "$vonly_s" "$T/vonly.out" \
+        && bad "edit verb-only lines" \
+            "edit: a verb-only line leaked onto edit's stdout -- edit calls the cores directly and must never print a verb's post-write line. Found '$vonly_s' in: $(cat "$T/vonly.out")" \
+        || ok "edit: no verb's '$vonly_s' line on stdout"
+done
+
 # Statements run one at a time, so each `dylib insert` goes to the front of
 # the image the statement before it left: two insert lines land in the
 # REVERSE of the order written, where `machotool dylib -insert A -insert B`
