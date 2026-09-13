@@ -555,6 +555,37 @@ The first half of item 6 shipped `3ce226a..3dc64aa`, five tasks, one file per
 commit. Everything below was measured 2026-09-13 at `3dc64aa`, with the base
 checked out in a worktree rather than reasoned about.
 
+### Two verification gaps this item exposed, before anything else
+
+Both are about *how we check*, and both silently under-reported for a whole
+item. Read these before trusting a green run.
+
+**Local suites are not CI, and this item's tests were red on `main` for a day
+without anyone noticing.** `tests/cli_test.sh`'s refusal inventory named
+`arch arm64` as a directive its fixture could not satisfy, but `build_main`
+compiles for the *host* — `FIXTURE_FLAGS` pins only the deployment target — so
+on GitHub's `macos-26-arm64` runner the fixture **is** arm64, the directive
+becomes satisfiable, and the assertion fails. It passed on every x86_64
+machine. Six implementers and five reviewers ran nine local gates each and not
+one looked at the remote result across 21 commits, because the plan's own
+constraints listed only local gates. Fixed at `725104e` (`uname -m`, with a
+`platform:` tag). **The general point outlives the bug: a mutation proof is
+only valid in the environment the mutation ran in, and this item
+mutation-proved 27 assertions on one architecture.** Run `gh run list` after a
+push; a suite that cannot fail where it was written is not pinned.
+
+**`check-family-conventions.sh` must come from shipyard `main`, and the
+checkout this item used did not.** Every task reported
+`check-family-conventions: ok` from
+`trees/mavericks-shipyard-readme-gate/scripts/`, which sits on the
+`readme-reviewed-before-first-release` branch and **does not contain** the
+`release-notes.sh` check at all (`grep -c` returns 0). CI, which uses
+`.shipyard/scripts/`, has failed on that rule since before the sweep — see the
+release-conformance item, whose first job it is. The error direction was the
+lucky one (missing checks under-report, so false passes rather than false
+failures), but "the family gate passed" means only as much as the checkout it
+ran from.
+
 ### What it measured
 
 Four files. Each lost between three-quarters and nine-tenths of its comment
