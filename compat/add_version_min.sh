@@ -29,9 +29,9 @@
 # second name. So a writable binary inside a read-only directory, which
 # add_version_min patched, now fails: `mkstemp: Permission denied`, exit 2,
 # from machotool's own write of the temp, with FILE untouched. compat/
-# change_dylib.sh's header records the same shape for the same reason (the
-# mirror-image case, an unwritable FILE in a writable directory, is what
-# mw_prepare's writability check exists to keep refusing).
+# README.md's "change_dylib: the in-place edit" table records the same shape
+# for the same reason (the mirror-image case, an unwritable FILE in a writable
+# directory, is what mw_prepare's writability check exists to keep refusing).
 #
 # EXIT CODES. machotool's, forwarded unchanged, with the wrapper's own refusals
 # at 1. The old C tool returned mv_add_version_min's own 0/1 (0 ok, 1 the flat

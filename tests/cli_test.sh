@@ -1380,6 +1380,23 @@ mtip dylib "$T/dylib_notmacho" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib 
 [ "$rc" -eq 1 ] && ok "dylib: a non-Mach-O file is refused (EX_REFUSED)" \
     || bad "dylib: non-Mach-O" "expected exit 1, got $rc: $(cat "$T/dylib_notmacho.err")"
 
+# A file too short to hold even a magic number. mr_apply_file has TWO size
+# refusals and they are different claims: the 25-byte file above is long enough
+# to peek a magic and reaches mi_open, which declines it ("too short to be a
+# 64-bit Mach-O"); 2 bytes is refused by mr_apply_file's own `st.st_size < 4`
+# check, before the peek, and nothing else in any suite reaches that branch --
+# measured, by making it return MR_FAIL and watching every suite stay green.
+rc=0
+printf 'ab' > "$T/dylib_tiny"
+mtip dylib "$T/dylib_tiny" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_tiny.err" || rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "dylib: a file too small to hold a magic number is refused (1), not failed (2)" \
+    || bad "dylib: 2-byte input" "exit $rc, want 1 -- a file we sized and declined is a considered refusal, not an operational failure; a caller that sees 2 will retry or report a broken environment instead of telling the user their input is not a Mach-O. Got: $(cat "$T/dylib_tiny.err")"
+grep -q "too small to be a Mach-O" "$T/dylib_tiny.err" \
+    && ok "dylib: ... and says the file is too small, not that it failed" \
+    || bad "dylib: 2-byte message" "expected 'too small to be a Mach-O': $(cat "$T/dylib_tiny.err")"
+
 # An absent file: mr_apply_file's own open() fails before mi_open is ever
 # reached -- a genuine syscall failure, MR_FAIL, EX_FAIL.
 rc=0
@@ -2171,7 +2188,7 @@ fi
 # a slice that is not a 64-bit Mach-O -- left alone, other slices still
 # rewritten, exit 0 -- and MR_ERROR for a slice that IS one and whose edit was
 # refused, which aborts the whole file. Only MR_ERROR is a divergence from the
-# tool this replaced (compat/fix_macho.sh's divergence 4, where it is stated
+# tool this replaced (compat/README.md's fix_macho divergence 4, stated there
 # most emphatically: fix_macho printed "Skipping arch %u" for BOTH and exited
 # 0, having shipped a partially converted universal binary as a success).
 #
@@ -2623,6 +2640,88 @@ grep -qF "$T/edit_ref_out not written; $T/edit_ref left unmodified" "$T/edit_ref
     && ok "edit: ... and the refusal says OUT was not written and FILE is unmodified" \
     || bad "edit refusal" "not that wording: $(cat "$T/edit_ref.err")"
 
+# ---- edit refusal inventory ------------------------------------------------
+#
+# Which refusals name both files is a property worth pinning rather than
+# describing: the prose version of this was wrong twice, first as an absolute
+# and then as a narrower claim that still missed two sites. A refusal that has
+# read the image says what became of OUT and of PATH; one that never got that
+# far says only what it can.
+#
+# Not exercised here, and not reachable from a deterministic shell test: the
+# fat path's own two "cannot open or read" sites (me_run_fat's open() and its
+# read()) fire only on a TOCTOU race between me_magic's open of PATH and
+# me_run_fat's separate one, and "out of memory reading %s's arch table" needs
+# OOM injection. All three say only what they can, same as the sites below --
+# this block just cannot force them to fire.
+ri_both() {   # $1 = label, $2 = stderr file -- must name both files
+    if grep -q 'not written;' "$2" && grep -q 'left unmodified' "$2"; then
+        ok "refusal inventory: $1 names both files"
+    else
+        bad "refusal inventory: $1" \
+            "a refusal that read the image must say what became of BOTH files -- a user who sees only 'OUT not written' cannot tell whether their input survived. Got: $(cat "$2")"
+    fi
+}
+ri_neither() {  # $1 = label, $2 = stderr file -- must NOT claim anything of PATH
+    if grep -q 'left unmodified' "$2"; then
+        bad "refusal inventory: $1" \
+            "this refusal fires before PATH was ever read -- claiming PATH is 'left unmodified' is a claim the tool never checked and cannot support. Got: $(cat "$2")"
+    else
+        ok "refusal inventory: $1 says only what it can"
+    fi
+}
+
+build_main "$T/ri_in"
+printf 'load-command delete uuid\n' >"$T/ri.edits"
+
+# The one pre-read refusal the CLI can actually produce. (The other --
+# me_run's NULL-`out` guard, "no output file was named" -- is unreachable from
+# here: cmd_edit rejects two positionals with a usage message first, so that
+# guard is tests/edit_test.c's to cover, and is already covered there.)
+"$MACHOTOOL" edit "$T/ri_in" "$T/ri_in" "$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
+ri_neither "OUT is PATH" "$T/ri2.err"
+
+# The ones where PATH's bytes never resolved into an image this tool parses.
+"$MACHOTOOL" edit "$T/nosuchfile" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri3.err" || :
+ri_neither "cannot open or read" "$T/ri3.err"
+printf 'not a mach-o at all, not even close\n' >"$T/ri_text"
+"$MACHOTOOL" edit "$T/ri_text" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri4.err" || :
+ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
+
+# Everything that got as far as an image names both. A fat64 container is
+# refused by its magic before mi_open, and still names both -- four bytes of
+# FAT_MAGIC_64 is the whole fixture, as cli_test.sh:1397 already does it.
+printf '%b' '\0277\0272\0376\0312' > "$T/ri_fat64"
+rm -f "$T/ri.out"
+"$MACHOTOOL" edit "$T/ri_fat64" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
+ri_both "fat_arch_64 container" "$T/ri5.err"
+
+# A statement's own refusal.
+printf 'fatal-warnings\nload-command delete uuid\n' >"$T/ri_fw.edits"
+"$MACHOTOOL" lc "$T/ri_in" "$T/ri_nouuid" -delete uuid >/dev/null 2>&1
+rm -f "$T/ri.out"
+"$MACHOTOOL" edit "$T/ri_nouuid" "$T/ri.out" "$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
+ri_both "a statement that matched nothing under fatal-warnings" "$T/ri6.err"
+[ ! -e "$T/ri.out" ] \
+    && ok "refusal inventory: and every one of them wrote no OUT" \
+    || bad "refusal inventory" "OUT exists after a refusal"
+
+# An arch directive naming a slice a thin file does not have.
+# platform: build_main compiles for the HOST arch -- FIXTURE_FLAGS pins only the
+# deployment target -- so which arch the fixture LACKS depends on where the suite
+# runs. A literal `arch arm64` passed on Intel and inverted silently on Apple
+# Silicon, where it became satisfiable, the run stopped refusing, and this
+# assertion failed in CI (macos-*-arm64) while staying green on every x86_64
+# developer machine for a day.
+case "$(uname -m)" in
+    arm64) ri_foreign_arch=x86_64 ;;
+    *)     ri_foreign_arch=arm64  ;;
+esac
+printf 'arch %s\nload-command delete uuid\n' "$ri_foreign_arch" >"$T/ri_arch.edits"
+rm -f "$T/ri.out"
+"$MACHOTOOL" edit "$T/ri_in" "$T/ri.out" "$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
+ri_both "an arch directive the file cannot satisfy" "$T/ri7.err"
+
 # edit FILE OUT - reads the script from stdin, so a generated script needs no
 # temp file. Only SCRIPT means stdin: an OUT of "-" begins with a dash and is
 # refused above.
@@ -2888,6 +2987,58 @@ grep -q "written (" "$T/nv2.out" \
     && bad "no quiet mode" "the written line went to stdout: $(cat "$T/nv2.out")" \
     || ok "edit: the written line is on stderr, so a wrapper's stdout is untouched"
 
+# AND NO VERB'S OWN POST-WRITE LINE IS ON IT EITHER. me_run calls each
+# operation's in-memory core, not its CLI verb, so an edit run shows what the
+# cores print and none of what a verb prints after its own write. That
+# division is load-bearing rather than cosmetic: `edit`'s single write happens
+# after the last statement and the final verify, so a verb's "I wrote it" line
+# appearing mid-script would name a write that has not happened and may never
+# happen -- the run can still be refused two statements later.
+#
+# The four runs below cover every core an edit statement can reach, so the
+# absence greps are not vacuous for want of a code path: mr_apply_image
+# (load-command/dylib), mv_add_version_min_image, mswift_retag_image and
+# md_declassify_buf.
+build_main "$T/vonly_lc"
+printf 'load-command delete uuid\ndylib append /x\n' >"$T/vonly_lc.edits"
+"$MACHOTOOL" edit "$T/vonly_lc" "$T/vonly_lc.out" "$T/vonly_lc.edits" \
+    >"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "lc/dylib run: $(cat "$T/vonly.err")"
+build_main "$T/vonly_vm"; "$T/strip_version_min" "$T/vonly_vm" >/dev/null
+printf 'version-min set 10.9\n' >"$T/vonly_vm.edits"
+"$MACHOTOOL" edit "$T/vonly_vm" "$T/vonly_vm.out" "$T/vonly_vm.edits" \
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "version-min run: $(cat "$T/vonly.err")"
+"$T/mkswift" make "$T/vonly_sw"
+printf 'swift-abi set legacy\n' >"$T/vonly_sw.edits"
+"$MACHOTOOL" edit "$T/vonly_sw" "$T/vonly_sw.out" "$T/vonly_sw.edits" \
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "swift-abi run: $(cat "$T/vonly.err")"
+"$T/mkchained" make "$T/vonly_fx"
+printf 'fixups set classic\n' >"$T/vonly_fx.edits"
+"$MACHOTOOL" edit "$T/vonly_fx" "$T/vonly_fx.out" "$T/vonly_fx.edits" \
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "fixups run: $(cat "$T/vonly.err")"
+
+# The positive control, so "no verb line on stdout" cannot pass because stdout
+# was empty: the cores DO print there, and two of their lines prove it.
+grep -q ": header pad [0-9]* bytes available" "$T/vonly.out" \
+    && grep -q "^Chained fixups: off=" "$T/vonly.out" \
+    && ok "edit: the cores' own stdout lines are present, so the absence greps below mean something" \
+    || bad "edit verb-only lines" "no core stdout line -- the four runs printed nothing to stdout, so nothing below is being tested: $(cat "$T/vonly.out")"
+
+# Each string is one a VERB prints and a core does not. "Wrote OUT (N bytes)"
+# is src/rewrite.c's (dylib/rpath/lc), src/version_min.c's (minos) and
+# cli/machotool.c's (retag-swift, declassify); "Added LC_VERSION_MIN_MACOSX"
+# is minos's alone; "class record(s)" is retag-swift's, and the parentheses are
+# what separate it from the edit report's own "retagged N class records" --
+# which is on stderr, and which the swift-abi case above pins.
+#
+# Deliberately NOT in this list: "updated (sizeofcmds=...)", which IS a core
+# line (mr_apply_image's) and belongs on edit's stdout.
+for vonly_s in 'Wrote ' 'Added LC_VERSION_MIN_MACOSX' 'class record(s)'; do
+    grep -qF "$vonly_s" "$T/vonly.out" \
+        && bad "edit verb-only lines" \
+            "edit: a verb-only line leaked onto edit's stdout -- edit calls the cores directly and must never print a verb's post-write line. Found '$vonly_s' in: $(cat "$T/vonly.out")" \
+        || ok "edit: no verb's '$vonly_s' line on stdout"
+done
+
 # Statements run one at a time, so each `dylib insert` goes to the front of
 # the image the statement before it left: two insert lines land in the
 # REVERSE of the order written, where `machotool dylib -insert A -insert B`
@@ -3009,8 +3160,8 @@ rc=0
 [ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
     || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
 # The grow lines on stdout are mg_ensure_pad's, labelled with the INPUT's path
-# -- the operations run against an image in memory and know nothing about OUT --
-# as edit.h's inventory of what the operations print says.
+# -- the operations run against an image in memory and know nothing about OUT.
+# The assertion below is what holds that.
 grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
     && ok "edit: ... and stdout has 'PATH: grew header pad', naming the input" \
     || bad "edit version-min" "no 'PATH: grew header pad' line on stdout: $(cat "$T/vm_yes.out")"

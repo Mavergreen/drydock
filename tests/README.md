@@ -112,8 +112,9 @@ regardless of which of `1`/`2` means which.
 version check) hand back the exit code of the shared rewrite drivers,
 `mr_apply_file` and `mv_add_version_min` (`src/rewrite.h`,
 `src/version_min.h`). Those two now use the very same `MR_REFUSED` (1) /
-`MR_FAIL` (2) split this table documents -- `mr_apply_file`'s own comment in
-`src/rewrite.h` has the full classification, including several sites reached
+`MR_FAIL` (2) split this table documents -- `src/rewrite.h`'s
+`MR_REFUSED`/`MR_FAIL` block states the rule and `mr_apply_file`'s own comment
+names the sites that reach it, including several reached
 through a helper's own nonzero return rather than a check written out in
 that function -- so their exit codes ARE covered by the table above, exactly
 as `cli/machotool.c`'s own `--capabilities` comment says. What the table's

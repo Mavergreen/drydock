@@ -32,11 +32,11 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
  * values a `switch` on .kind/.op matches against.
  *
  * MS_TARGET is the one whose meaning depends on the binary: `target 10.9`
- * expands, where it is written, into the statements THIS image needs (see
- * src/edit.h's TARGET). Its second field is a profile name rather than a
- * verb, which is why the op enum has one entry that is not a verb --
- * occupying the same slot means the table matches it, counts its operands
- * and advertises it exactly as it does every other statement. */
+ * expands, where it is written, into the statements THIS image needs. Its
+ * second field is a profile name rather than a verb, which is why the op
+ * enum has one entry that is not a verb -- occupying the same slot means the
+ * table matches it, counts its operands and advertises it exactly as it does
+ * every other statement. */
 enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
        MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,

@@ -1,5 +1,5 @@
 /*
- * macho_grow_test.c — hermetic tests for the LC_FUNCTION_STARTS base re-encode
+ * grow_test.c — hermetic tests for the LC_FUNCTION_STARTS base re-encode
  * that macho_grow performs when it lowers the image base.
  *
  * THE bug this pins: change_dylib -grow lowers __TEXT.vmaddr by N to make header
@@ -12,7 +12,7 @@
  *
  * Ground truth here is hand-computed (small ULEB values, synthetic function
  * address lists), so the test is host-agnostic. Build:
- *   clang -O2 -Wno-unused-function -o /tmp/mgtest macho_grow_test.c && /tmp/mgtest
+ *   clang -O2 -Wno-unused-function -o /tmp/mgtest grow_test.c && /tmp/mgtest
  */
 #include "grow.h"
 #include <stdio.h>

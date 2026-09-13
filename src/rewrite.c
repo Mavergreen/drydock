@@ -1071,7 +1071,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
     /* mr_process_fat's return value flows straight into mr_apply_file's own
      * `rc` (its one caller assigns it directly), so it is bound by the same
      * MR_REFUSED/MR_FAIL split as every return there -- see the comment on
-     * mr_apply_file itself, in rewrite.h, for the dividing line. */
+     * the MR_REFUSED/MR_FAIL #defines, in rewrite.h, for the dividing line. */
     uint32_t narch; int swap;
     int fp_rc = mfat_parse(*pbuf, *pfsize, &narch, &swap);
     if (fp_rc == MFAT_IO_ERROR) {
@@ -1123,11 +1123,12 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * contract that tests/known-callers.sh and tests/wrapper_test.sh pin. The
  * contract is not the same for all six -- five must reproduce their tool's
  * stdout byte for byte, while fix_macho's is deliberately NOT byte-identical
- * (compat/fix_macho.sh's DELIBERATE DIVERGENCES block says which lines moved
- * and why) -- but that difference does not weaken the reason for stderr, it
- * strengthens it: fix_macho's stdout is pinned to a shape the repo CHOSE,
- * one assertion at a time, and an unmatched report appearing on it would
- * break those assertions exactly as it would break the byte-identical five.
+ * (compat/README.md's "fix_macho: stdout is not reproduced" says which lines
+ * moved and why) -- but that difference does not weaken the reason for
+ * stderr, it strengthens it: fix_macho's stdout is pinned to a shape the repo
+ * CHOSE, one assertion at a time, and an unmatched report appearing on it
+ * would break those assertions exactly as it would break the byte-identical
+ * five.
  * What every wrapper has in common is that its stdout is somebody's
  * contract; none of them has ever had to reproduce a stderr line. So stderr
  * is where a per-operation diagnostic can be added without moving anything
@@ -1269,10 +1270,10 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
      * only) would refuse it outright. This is the one place that has to tell
      * fat from thin apart before choosing how to read the rest. */
     /* Every return in this function is MR_REFUSED or MR_FAIL, matching the
-     * dividing line this function's own comment in rewrite.h draws: MR_FAIL
-     * for open/fstat/read/write/malloc itself failing (this function's own,
-     * directly below; mfat_rewrite's checked ones; or mi_open's/
-     * mfat_parse's, one level down), MR_REFUSED for everything that
+     * dividing line rewrite.h's comment on the MR_REFUSED/MR_FAIL #defines
+     * draws: MR_FAIL for open/fstat/read/write/malloc itself failing (this
+     * function's own, directly below; mfat_rewrite's checked ones; or
+     * mi_open's/mfat_parse's, one level down), MR_REFUSED for everything that
      * examined the bytes (even "too small to be a Mach-O", which never gets
      * as far as reading load commands) and declined. This does not cover
      * every allocation reachable from this function. mg_grow_header's and

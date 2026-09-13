@@ -29,7 +29,7 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   only Mach-O rewriting binary this repo ships** and `compat/` contains no C
   at all. `fix_macho` was the last holdout: wrapping it changes what it does
   in five ways, and those changes were adopted deliberately rather than
-  papered over — `compat/fix_macho.sh`'s header states each with its reason.
+  papered over — `compat/README.md` states each with its reason.
   Also here: `translate.sh`, the old-grammar-to-`machotool` translator the
   wrappers source, and `machotool-compat.sh`, the machinery they share. See
   `compat/README.md`.
