@@ -136,21 +136,9 @@ typedef struct {
  * A script names AT MOST ONE target, and only a target this build knows;
  * ms_parse refuses both (src/script.h), so neither reaches here.
  *
- * REPORT, to o->log. Most refusal lines end by naming both files and what
- * became of each -- "OUT not written; PATH left unmodified" -- because
- * nothing is written until after the last verify has passed, so OUT is as it
- * was (usually absent) and PATH was never a destination. Two exceptions fire
- * before anything is read at all and so have nothing to add about PATH ("no
- * output file was named", "OUT is PATH" -- see the pre-read pair below), and
- * five more fire when PATH's bytes could not be obtained, or did not resolve
- * into an image this tool parses, and likewise say only that: "cannot open
- * or read" (thin and fat, including fat's separate read step), "not a
- * readable 64-bit Mach-O" (thin), and an allocation failure building a fat
- * file's arch table. Every other refusal names both -- including one that
- * also fires before mi_open ever runs, a 64-bit fat container refused
- * outright by its magic number, a malformed fat file, an unmatched arch
- * directive, a statement's own refusal, a verification failure, and an
- * allocation failure once PATH has resolved into an image.
+ * REPORT, to o->log. A refusal that has read the image names both files and
+ * what became of each; one that never got that far says only what it can.
+ * tests/cli_test.sh's "refusal inventory" block is the enumeration.
  * Always printed: a statement's refusal,
  *   "machotool edit: refused at statement K of N (line L); OUT not
  *   written; PATH left unmodified"

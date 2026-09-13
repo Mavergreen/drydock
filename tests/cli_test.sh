@@ -2623,6 +2623,71 @@ grep -qF "$T/edit_ref_out not written; $T/edit_ref left unmodified" "$T/edit_ref
     && ok "edit: ... and the refusal says OUT was not written and FILE is unmodified" \
     || bad "edit refusal" "not that wording: $(cat "$T/edit_ref.err")"
 
+# ---- edit refusal inventory ------------------------------------------------
+#
+# Which refusals name both files is a property worth pinning rather than
+# describing: the prose version of this was wrong twice, first as an absolute
+# and then as a narrower claim that still missed two sites. A refusal that has
+# read the image says what became of OUT and of PATH; one that never got that
+# far says only what it can.
+ri_both() {   # $1 = label, $2 = stderr file -- must name both files
+    if grep -q 'not written;' "$2" && grep -q 'left unmodified' "$2"; then
+        ok "refusal inventory: $1 names both files"
+    else
+        bad "refusal inventory: $1" \
+            "a refusal that read the image must say what became of BOTH files -- a user who sees only 'OUT not written' cannot tell whether their input survived. Got: $(cat "$2")"
+    fi
+}
+ri_neither() {  # $1 = label, $2 = stderr file -- must NOT claim anything of PATH
+    if grep -q 'left unmodified' "$2"; then
+        bad "refusal inventory: $1" \
+            "this refusal fires before PATH was ever read -- claiming PATH is 'left unmodified' is a claim the tool never checked and cannot support. Got: $(cat "$2")"
+    else
+        ok "refusal inventory: $1 says only what it can"
+    fi
+}
+
+build_main "$T/ri_in"
+printf 'load-command delete uuid\n' >"$T/ri.edits"
+
+# The one pre-read refusal the CLI can actually produce. (The other --
+# me_run's NULL-`out` guard, "no output file was named" -- is unreachable from
+# here: cmd_edit rejects two positionals with a usage message first, so that
+# guard is tests/edit_test.c's to cover, and is already covered there.)
+"$MACHOTOOL" edit "$T/ri_in" "$T/ri_in" "$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
+ri_neither "OUT is PATH" "$T/ri2.err"
+
+# The ones where PATH's bytes never resolved into an image this tool parses.
+"$MACHOTOOL" edit "$T/nosuchfile" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri3.err" || :
+ri_neither "cannot open or read" "$T/ri3.err"
+printf 'not a mach-o at all, not even close\n' >"$T/ri_text"
+"$MACHOTOOL" edit "$T/ri_text" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri4.err" || :
+ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
+
+# Everything that got as far as an image names both. A fat64 container is
+# refused by its magic before mi_open, and still names both -- four bytes of
+# FAT_MAGIC_64 is the whole fixture, as cli_test.sh:1397 already does it.
+printf '%b' '\0277\0272\0376\0312' > "$T/ri_fat64"
+rm -f "$T/ri.out"
+"$MACHOTOOL" edit "$T/ri_fat64" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
+ri_both "fat_arch_64 container" "$T/ri5.err"
+
+# A statement's own refusal.
+printf 'fatal-warnings\nload-command delete uuid\n' >"$T/ri_fw.edits"
+"$MACHOTOOL" lc "$T/ri_in" "$T/ri_nouuid" -delete uuid >/dev/null 2>&1
+rm -f "$T/ri.out"
+"$MACHOTOOL" edit "$T/ri_nouuid" "$T/ri.out" "$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
+ri_both "a statement that matched nothing under fatal-warnings" "$T/ri6.err"
+[ ! -e "$T/ri.out" ] \
+    && ok "refusal inventory: and every one of them wrote no OUT" \
+    || bad "refusal inventory" "OUT exists after a refusal"
+
+# An arch directive naming a slice a thin file does not have.
+printf 'arch arm64\nload-command delete uuid\n' >"$T/ri_arch.edits"
+rm -f "$T/ri.out"
+"$MACHOTOOL" edit "$T/ri_in" "$T/ri.out" "$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
+ri_both "an arch directive the file cannot satisfy" "$T/ri7.err"
+
 # edit FILE OUT - reads the script from stdin, so a generated script needs no
 # temp file. Only SCRIPT means stdin: an OUT of "-" begins with a dash and is
 # refused above.
