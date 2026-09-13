@@ -2707,7 +2707,17 @@ ri_both "a statement that matched nothing under fatal-warnings" "$T/ri6.err"
     || bad "refusal inventory" "OUT exists after a refusal"
 
 # An arch directive naming a slice a thin file does not have.
-printf 'arch arm64\nload-command delete uuid\n' >"$T/ri_arch.edits"
+# platform: build_main compiles for the HOST arch -- FIXTURE_FLAGS pins only the
+# deployment target -- so which arch the fixture LACKS depends on where the suite
+# runs. A literal `arch arm64` passed on Intel and inverted silently on Apple
+# Silicon, where it became satisfiable, the run stopped refusing, and this
+# assertion failed in CI (macos-*-arm64) while staying green on every x86_64
+# developer machine for a day.
+case "$(uname -m)" in
+    arm64) ri_foreign_arch=x86_64 ;;
+    *)     ri_foreign_arch=arm64  ;;
+esac
+printf 'arch %s\nload-command delete uuid\n' "$ri_foreign_arch" >"$T/ri_arch.edits"
 rm -f "$T/ri.out"
 "$MACHOTOOL" edit "$T/ri_in" "$T/ri.out" "$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
 ri_both "an arch directive the file cannot satisfy" "$T/ri7.err"
