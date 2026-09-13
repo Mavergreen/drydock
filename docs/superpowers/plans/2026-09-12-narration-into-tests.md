@@ -28,6 +28,8 @@
 - **Do not touch** `tests/compat-matrix.tsv`, `tests/compat-sweep.sh`'s `refuser=` value, completed plans and specs, or the two dated research records.
 - **Do not fix code defects here.** `src/rewrite.c`'s **two** unchecked `calloc`s (`:785` and `:848`, both `mr_process_thin`'s `new_lcs` tables) stay as they are, disclosure comment included: a sweep that also changes behaviour is a sweep nobody can review. Corrected 2026-09-12 from "three" — see the spec's Out of scope for the measurement.
 - Committed text never names plan artifacts. Build dir: `B=/private/tmp/mm-build/schmonz/macho-tools/native`.
+- **A grep is evidence only once you have seen it return a hit on a case you know exists.** State a negative from a grep only after running it against a positive control. This has produced three wrong claims in this plan's own briefs, each of which read as a confident clean result: a pattern missing a backtick (`fix_macho.sh's header` vs ``` `fix_macho.sh`'s header ```) reported a dangling citation as absent; `grep -c calloc` counted the comment that states the count and so inflated two to three; and `exit [0-9]` matched only literal digits, missing `exit "$mw_rc"` and reporting a forwarding wrapper as one that cannot return 2.
+- **Prefer deleting a passage to paraphrasing it.** Twice on this plan the original comment was more precise than a summary of it: `change_dylib.sh:56`'s "the codes this wrapper produces *itself* are all 1" became the false "there is no `exit 2`" once *itself* was dropped, and `rewrite.h:404`'s correct "two `new_lcs` callocs" became "three". Deletion loses information visibly; paraphrase loses it invisibly and leaves behind something that still reads as authoritative.
 
 ## File structure
 
@@ -515,6 +517,8 @@ ledger: `cli_test.sh` **392**, `wrapper_test.sh` **182**.
 Report how many assertions were added, and how many of them were mutation-proven. The ratio of new tests to deleted comment lines is the number that says whether "convert to tests" was real or whether this was mostly deletion.
 
 - [ ] **Step 3: Write the recommendation into the queue**
+
+Also update the **stale measurements already in that file**: `QUEUE.md:94` still carries `compat/change_dylib.sh`'s pre-sweep 221/196, and the `compat/fix_macho.sh` row is stale the same way. Both belong here rather than in the tasks that made them stale — this is the task that measures, so the rows change together instead of in two half-updates. Leave the dangling citations in `docs/superpowers/plans/2026-09-11-allow-grow-everywhere.md` alone: completed plans are out of scope, deliberately.
 
 Add a "Carried out of the narration sweep" section to `docs/superpowers/QUEUE.md` stating: the measured before/after, which passages resisted conversion and why, whether `src/rewrite.c` (53%), `cli/machotool.c` (52%) and `src/grow.h` (64%) warrant a second plan, and any claim the sweep found to be **false** rather than merely verbose — that last category has appeared in every item this week and is the most valuable thing a pass like this produces.
 
