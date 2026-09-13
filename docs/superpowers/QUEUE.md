@@ -99,6 +99,12 @@ actually happen."* Measured that day:
 A 284-line wrapper where 20 lines do anything, reached after 250 lines of
 prose. That is a defect in placement, not a matter of taste.
 
+**The first two rows are history as of `3dc64aa`.** The narration sweep (the
+first half of this item) cut `fix_macho.sh` to **48 lines / 23 comment (47%)**
+and `change_dylib.sh` to **51 / 26 (50%)**, first code at line 17 and 18. The
+other three rows are unchanged and still measure as written. Full before/after
+is in "Carried out of the narration sweep", below.
+
 **The expensive class is narration**, not comments as such: measured
 transcripts, repro steps, quotations of earlier comment text, accounts of what
 a retired tool did on a particular day. It goes stale silently, and the rename
@@ -178,9 +184,23 @@ unchecked `calloc`s (`:785` and `:848`, both `mr_process_thin`'s `new_lcs`
 tables) crash rather than refuse on allocation failure. Corrected 2026-09-12:
 this said three, one of them in `mr_process_fat`. `mr_process_fat` allocates
 nothing, and `mr_apply_file`'s `malloc` at `:1325` is checked. The code's own
-comments had it right all along (`rewrite.c:1283`, `rewrite.h:404`); about 87 older comments across the
-tree still name plan artifacts ("Task N", briefs, rounds) — all predate item 2.
-In `md_declassify_buf` (`src/declassify.c`), the first-section walk and the
+comments had it right all along (`rewrite.c:1283`, and `rewrite.h:145` — `:404`
+until the narration sweep shortened that header to 156 lines).
+
+Comments still naming plan artifacts ("Task N", briefs, rounds, "item N"):
+**50** across `src/`, `cli/`, `compat/` and `tests/`, measured 2026-09-13 at
+`3dc64aa` (54 at the sweep's base `3ce226a`; it removed four). This entry said
+"about 87", which is not reproducible — and the mass is not where the entry
+implies: **37 of the 50 are in `tests/`**, led by `compat-sweep.sh` (10) and
+`change_dylib_test.sh` (6), against **13** in all of `src/` + `cli/` +
+`compat/` together (`cli/machotool.c` 5, `compat/translate.sh` 3, and one each
+in six other files). Plan-artifact *paths* (`docs/superpowers/...`) number
+**three** in shipped files, not dozens. So the spec's expectation that this
+class would be swept away as a side effect was sound only because the class was
+already almost empty; it was never the 87-comment liability recorded here.
+
+Also for item 6, and still open: in `md_declassify_buf` (`src/declassify.c`),
+the first-section walk and the
 `__LINKEDIT` extension go through `segs[]` pointers taken before the loop that
 `memmove`s the removed load commands out, and never refreshed: in a crafted
 file where a removed command precedes a segment command, both would read and
@@ -528,6 +548,221 @@ statement and the report's statement echoes are two-space indented (confirmed
 by running that awk over a real multi-family stderr: only the two taught lines
 come back). But if a wrapper ever emits `target`, its expansion listing would
 be captured as taught commands. Either indentation is the thing to change then.
+
+## Carried out of the narration sweep
+
+The first half of item 6 shipped `3ce226a..3dc64aa`, five tasks, one file per
+commit. Everything below was measured 2026-09-13 at `3dc64aa`, with the base
+checked out in a worktree rather than reasoned about.
+
+### What it measured
+
+Four files. Each lost between three-quarters and nine-tenths of its comment
+lines; together, 82% of them:
+
+| file | before | after |
+|---|---|---|
+| `src/edit.h` | 304 / 290 (95%) | 74 / 60 (81%) |
+| `compat/fix_macho.sh` | 284 / 259 (91%) | 48 / 23 (47%) |
+| `compat/change_dylib.sh` | 221 / 196 (88%) | 51 / 26 (50%) |
+| `src/rewrite.h` | 425 / 359 (84%) | 156 / 91 (58%) |
+| **the four together** | **1,234 / 1,104 (89%)** | **329 / 200 (61%)** |
+
+Tree-wide, over `src/*.c src/*.h cli/*.c compat/*.sh`: **13,445 lines / 6,744
+comment (50%) → 12,545 / 5,845 (46%)**. Over `src/` + `cli/` alone, which is
+what the design spec's headline measured: **11,004 / 5,032 (45%) → 10,508 /
+4,537 (43%)**. Files both over 200 lines and at least half comment fell from 12
+to 8 — the four that left are exactly the four swept.
+
+So the sweep removed **904 comment lines** and moved the tree four points. It
+did not move it *below* dense, and it could not have: the four worst files held
+16% of the comment mass.
+
+**A measurement trap, because the next person will hit it.** The plan's own
+`awk` one-liner puts `#` in its comment-opener alternation — necessary for
+shell, but it makes every C `#include`, `#define` and `#ifndef` count as a
+comment. That inflates `src/grow.h` from 64% to 70%, `src/rewrite.h` from 84%
+to 86%, and the tree total from 46% to 49%. Every figure in this section
+excludes preprocessor lines for C files and counts `#` for shell. The spec's
+table is reproducible to the line under that rule, and off under the
+one-liner's — which is the same units error as counting matrix rows as file
+lines.
+
+### What it bought in tests, honestly
+
+`tests/` gained 312 lines against 8 removed. `cli_test.sh` 392 → **405**,
+`wrapper_test.sh` 182 → **196**: **27 new assertions**, every one
+mutation-proven, several failing two ways. `translate_test.sh` (128),
+`change_dylib_test.sh` (71), `known-callers.sh` (18), `leaf-tool-crashes.sh`
+and `ctest` (17/17, `chained_fixups` skipped) are all unchanged, the
+`characterize.sh` digest `ad12bdd7…` never moved, no `known-callers` sha256
+moved, and a clean build has 0 compiler warnings.
+
+**27 assertions for 904 deleted comment lines is 3 per 100.** Say it plainly:
+this was mostly deletion, not conversion. That was the designed outcome for
+buckets 2 and 4 and it is where most of the volume fell — `fix_macho.sh` and
+`change_dylib.sh` between them lost 406 comment lines and produced 14
+assertions, because the bulk of both headers was a divergence table that
+belonged in `compat/README.md` and a measured transcript that belonged in a
+doc. Neither is a testable claim; both are records, and moving a record is not
+a conversion.
+
+The conversion that did happen is worth more than the ratio suggests, because
+of *which* claims it caught: 6 of the 27 assertions pin behaviour that **no
+test in the tree had ever held** — `change_dylib`'s exit-code forwarding, its
+mid-script atomicity, its no-command guard, two `fix_macho` install properties,
+and `rewrite.c:1291`'s size refusal, which nothing had ever reached. Those are
+not redundant prose made executable. They are claims the repo had been
+asserting in comments and nowhere else, for as long as the comments existed.
+
+### The claims that were false, not merely verbose
+
+This is the sweep's real yield, and the pattern in it is the finding.
+
+- **`src/edit.h`'s refusal inventory was wrong twice** before a test pinned it.
+  The third version was right, and now something checks it instead of a reader.
+- **A third passage in the same header** attributed `"Updated PATH (N bytes)"`
+  to verbs that print `Wrote OUT`. Measured: `"Updated` does not occur anywhere
+  in `src/` or `cli/`. The string is the compat wrapper's own
+  (`compat/fix_macho.sh:47`), which `tests/wrapper_test.sh:259` derives with
+  `sed 's|^Wrote f\.mtout (|Updated f (|'`. A test asserting it absent from a
+  core tool's stdout would have passed vacuously forever.
+- **`src/rewrite.h`'s file header claimed `tests/characterize.sh` pins the
+  module's diagnostics.** It cannot: `characterize.sh` sends stdout to
+  `/dev/null` and contains no `2>` at all. The pre-sweep text cited both
+  `change_dylib_test.sh` and `characterize.sh`; a compression kept the half
+  that cannot capture stderr and dropped the half that redirects it 44 times.
+- **The planning documents said `src/rewrite.c` has three unchecked `calloc`s,
+  one in `mr_process_fat`.** There are two, both `mr_process_thin`'s `new_lcs`
+  (`:785`, `:848`); `mr_process_fat` allocates nothing at all and
+  `mr_apply_file`'s `malloc` at `:1325` is checked. The miscount came from
+  reading `grep -c calloc` (3) rather than the hits — the third hit is the
+  comment at `:1283` that states the count correctly.
+- **`compat/change_dylib.sh` said "all four callers"**;
+  `tests/known-callers.sh` names three (`install.sh`,
+  `mf-wrapper-rebase.sh`, `magic-trackpad2`) plus this repo's own suites.
+- **Three claims that wrapper's prose made were held by no test at all** —
+  exit-code forwarding, mid-script atomicity, the no-command guard. The
+  forwarding one was live: `change_dylib` **forwards** `machotool`'s exit code
+  (a directory as `FILE` gives 2) while its sibling `fix_macho` **folds** every
+  nonzero to 1. Two wrappers, opposite policies, and the task brief asserted
+  the fold for the forwarder.
+- **Deleting one header orphaned citations in seven other files**
+  (`fix_macho.sh`: `CMakeLists.txt`, `compat/README.md`,
+  `compat/translate.sh` ×3, `src/rewrite.c`, `tests/change_dylib_test.sh`,
+  `tests/cli_test.sh`, `README.md`) and another in four
+  (`change_dylib.sh`: `compat/README.md`, `compat/add_version_min.sh`,
+  `compat/retag_swift_classes.sh`, `src/rewrite.h`). A dense header is not a
+  local cost; it is a hub, and deleting it is a link-integrity problem.
+- **Two fixes made things worse before better.** `cli/machotool.c:344` was
+  repointed at `mr_is_rename_only` when the argument it cites lives in
+  `mr_build_lcs_lc`'s comment at `src/rewrite.c:139` — a vague pointer
+  replaced by a wrong one, which is strictly worse, since vague costs a search
+  and wrong sends the reader somewhere confidently. And a fourth stale pointer
+  at `cli/machotool.c:291` was missed because the first three shared a
+  phrasing and it did not: when a reorganization invalidates a claim, the stale
+  references share the *claim*, not the wording.
+
+**And the pattern the spec predicted holds, measured.** The prose closest to
+the code was the most accurate, and the planning documents were the least.
+`rewrite.c:1283` and pre-sweep `rewrite.h:404` (now `:145`) both stated the
+`calloc` count correctly while the spec, the plan and this file all said three.
+`change_dylib.sh:56` said the codes it produces *itself* are all 1 — exactly
+right, and it was a *paraphrase* of that line, dropping "itself", that produced
+the false fold claim. Twice the original comment beat the summary of it. The
+mechanism is not "prose rots and code does not"; it is that **prose rots at a
+rate set by how often a reader is forced past it** — a test is read on every
+run, a comment when nearby code changes, a planning doc once. Which also means
+the danger in a sweep is not deletion but *paraphrase*: deletion loses
+information visibly, paraphrase loses it invisibly and leaves something that
+still looks authoritative.
+
+### The three deferred files: no second sweep plan
+
+`src/rewrite.c` (1,425 / 759, 53%), `cli/machotool.c` (1,384 / 730, 52%) and
+`src/grow.h` (321 / 206, 64%) were left out of the plan pending this decision.
+**Recommendation: do not plan a second sweep for any of them.** The percentage
+is what put them on the list, and the percentage turns out to be the wrong
+metric.
+
+Comment-to-code ratio, which is what a reader actually experiences:
+
+| file | comment : code |
+|---|---|
+| `src/edit.h` (before) | 29.0 : 1 |
+| `compat/fix_macho.sh` (before) | 13.0 : 1 |
+| `compat/change_dylib.sh` (before) | 9.8 : 1 |
+| `src/rewrite.h` (before) | 6.7 : 1 |
+| `src/grow.h` | **3.8 : 1** |
+| `src/rewrite.c` | **1.25 : 1** |
+| `cli/machotool.c` | **1.21 : 1** |
+
+The swept files ran 6.7× to 29× more prose than code. The two `.c` files run
+about one comment line per code line. They read as 53% and 52% only because
+they are long files that are *mostly code*; nothing in either is screens from
+where the work happens, which was the complaint that started this item.
+
+- **`src/rewrite.c` — no.** 1.25:1, and its comment mass sits beside live
+  logic at the point of danger rather than in a header block (32 of 759 lines
+  are the file header, 4%). Bucket-4 content is negligible: 14 lines carry a
+  past-tense marker, 2 mention `macho9`, none cites a plan artifact. It is also
+  where Task 5's mutation proofs were applied — two refusal sites, each mutated
+  two ways — while being the one file the sweep was required to leave
+  byte-identical afterwards. A sweep here is high risk against almost no
+  bucket-2/4 yield.
+- **`cli/machotool.c` — no**, for the same reasons and one more. 1.21:1; 136 of
+  730 comment lines are the leading header (18%), the largest header block of
+  the three, and that block is the `--capabilities` and exit-code contract that
+  `tests/README.md` and `compat/README.md` both defer to. It holds the most
+  history of any file in the tree (22 markers, 7 of them `macho9`), which is a
+  real but small bucket-4 job — a handful of lines, not a plan.
+- **`src/grow.h` — no, though it is the only close call.** 3.8:1 puts it just
+  below the swept band, and 63 of its 206 comment lines are a file header. But
+  read, that header is the *algorithm*: why this tool lowers the image base
+  from `__PAGEZERO` instead of raising every later segment the way LIEF and
+  llvm-objcopy do. That is bucket 5 and bucket 3 — an interface contract and a
+  design decision a reader must have before touching the highest-risk file in
+  the toolkit — and it is not convertible to a test. The per-declaration
+  comments are return-value contracts every caller must check. The one passage
+  the design spec named as this file's bucket-1 candidate, "`src/grow.h`'s
+  account of why 32-bit is refused", **is not in `src/grow.h`**: it is at
+  `src/grow.c:958-972`, in a file measuring 26%, and it already cites its own
+  pinned regression test. The spec's headline example for the bucket was
+  pointing at the wrong file, and the passage had already done what the bucket
+  asks.
+
+**What to do instead, and it is worth more than any of the three.** Density did
+not predict falsity. A single grep for two filenames that do not exist returns
+**28 dangling citations**: 21 naming `macho_grow.h` (now `src/grow.h`) and 7
+naming `macho_grow_test.c` (now `tests/grow_test.c`). Some are legitimate
+past-tense history (`src/grow.c:3`, `src/mach_compat.h:22`), but about a dozen
+are present-tense directives telling a reader to go read a file that is not
+there — `src/image.h:5`, `:75`, `:155`, `src/image.c:49`,
+`src/linkedit.h:3`, `:29`, `:36`, `src/linkedit.c:130`, `src/trie.h:3`,
+`:29`, `src/grow.c:971`, `CMakeLists.txt:187` — and `src/grow.h:2` still
+names *itself* `macho_grow.h`. Every one of those files measures under the
+worst-offender threshold and was therefore out of scope. This is a cheap,
+mechanical, fully verifiable pass with no behaviour risk, and it belongs to
+item 7 (the history rewrite already touches the rename) or to the human review
+that is item 6's second half.
+
+The generalization for that review: **the worst-offender threshold selected for
+volume and the defects were distributed by hub-ness.** Rank by how many other
+files cite a passage, not by what fraction of its own lines are prose.
+
+### Two rules this plan earned, worth binding future work
+
+- **A grep is evidence only once it has returned a hit on a case you know
+  exists.** Four wrong claims on this plan came from greps that answered
+  confidently about a question they had not asked: a pattern missing a backtick
+  (the real text was ``No `break` ``, the grep said `No break`), `grep -c`
+  counting a comment as an occurrence, a character class `[0-9]` excluding
+  `exit "$mw_rc"`, and BRE `\|` passed to `grep -E`. State a negative from a
+  grep only after a positive control.
+- **A comment citing a test must not imply the test is exhaustive unless it
+  is.** Where a claim has parts nothing can reach, the test's own comment names
+  them and says why. A constraint may go untested when nothing can trigger it,
+  but then somebody has to be told.
 
 ## For shipyard: two gaps a self-upstream repo falls through
 
