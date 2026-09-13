@@ -5,12 +5,6 @@
  * once, apply each statement in order to the in-memory buffer, verify the
  * result, and write it once.
  *
- * The property this exists for: if any statement is refused, or the image
- * fails verification, NOTHING is written -- `out` is never created, and the
- * input is left exactly as it was found. That is what three tool invocations,
- * each writing the whole binary, could not promise. The input is never a
- * destination in any case: this reads `path` and writes `out`.
- *
  * This module lowers and sequences; it performs no operation itself. Each
  * statement becomes a call to the one implementation of that operation --
  * src/rewrite.h's mr_apply_image for load-command/segment/dylib/rpath,
@@ -21,12 +15,6 @@
 
 #include "script.h"
 
-/* THERE IS NO QUIET MODE, so there is no field that asks for one. Every run
- * logs each statement and the follow-up work it did (see REPORT, below): a
- * tool whose job is to make edits nobody can see afterwards should not have
- * an option to say nothing about them. Where the report goes is the caller's
- * choice, through `log` -- the CLI hands it stderr, so a caller who wants
- * silence has `2>/dev/null` and needs no cooperation from us. */
 typedef struct {
     FILE *log;            /* where the report goes; stderr in the CLI, and
                            * stderr when NULL */
@@ -45,247 +33,38 @@ typedef struct {
  * NOT MR_ERROR: that is (-1), private to src/rewrite.c, and it is
  * mr_fat_slice's per-slice status, not an exit code.
  *
- * INPUT. A thin 64-bit Mach-O, or a fat (universal) file -- see FAT FILES,
- * below. Anything else that is not a readable 64-bit Mach-O is refused too;
- * an input that cannot be opened or read at all is MR_FAIL.
- *
- * FAT FILES. A fat (universal) container is edited slice by slice and kept
- * whole: no slice is dropped or reordered. With no `arch` directive the
- * script applies to every 64-bit slice; 32-bit slices pass through. With
- * `arch` directives it applies to exactly the named slices, and naming one
- * the file lacks, or a 32-bit one, is refused before any slice is touched.
- * On a thin file an `arch` directive must name the image's own arch.
- *
- * Each selected slice runs every statement, in order, then its own final
- * verification; any failure refuses the whole run and writes nothing. A
- * statement that can match nothing (see fatal-warnings) is judged across
- * the selected slices: it has matched if it matched in any of them, and the
- * verdict is taken when the last selected slice has run it.
- *
- * Every slice is accounted for in the report: "slice NAME:" before an edited
- * slice's statements and "slice NAME: verified" after; "slice NAME:
- * not selected by arch; passed through unchanged" or "slice NAME: 32-bit;
- * passed through unchanged" for the rest; and, after the slices are laid out
- * again, "slice NAME: moved from offset 0x… to 0x…" for any slice an earlier
- * slice's growth moved. A 64-bit fat container (fat_arch_64) is refused.
- *
- * The exact wording of a refusal on a fat run -- a statement's, or the
- * per-slice final verify's -- is under REPORT, below.
- *
- * VERIFY. mg_plausible (src/grow.h) runs over the finished image after the
- * last statement, every time, and a failure is a refusal. There is no
- * parameter and no environment variable that skips it -- MACHO_NO_VERIFY,
- * which mr_apply_image's own per-step check honours, is not consulted here.
- * So a script whose every statement succeeds can still be refused, including
- * one of nothing but segment renames, which that per-step check skips.
- *
- * WRITE. Through wa_write_new (src/atomic_write.h): a temp file in `out`'s
- * directory, given the INPUT's mode, owner and extended attributes, renamed
- * onto `out`. So `out` is either what it was or the whole new content, never a
- * partial file, and `path` is never written. `out` is written even when no
- * statement changed anything, so it exists after every successful run.
- * Nothing is ever written before verification has passed.
- *
- * ORDER. Statements run one at a time, each against the image the one
- * before it left, so an `insert` goes first in the image as that statement
- * finds it. `dylib insert A` then `dylib insert B` leaves B at ordinal 1 and
- * A at ordinal 2, and `rpath insert A` then `rpath insert B` has dyld search
- * B before A -- the reverse of `machotool dylib FILE -insert A -insert B`, which
- * places its whole list at once, in the order given.
- *
- * TARGET. `target 10.9` is the one statement whose meaning depends on the
- * binary: every other statement asks for the same thing of every input (it
- * may match nothing, but WHAT it asks for is fixed), while this one asks a
- * different question of every image and answers it differently. It is not an
- * operation and performs nothing itself. It EXPANDS, at its own position,
- * into statements the language already has -- the ones this image needs --
- * and those run there, in its place, before the next statement in the script.
- *
- * What it expands to, each detection exact rather than heuristic (a load
- * command is present or it is not; a section name begins with __objc_ or it
- * does not; a tag bit is set or it is not), in this order:
- *
- *   LC_DYLD_CHAINED_FIXUPS present     `fixups set classic`
- *   LC_BUILD_VERSION present           `load-command delete build-version`
- *   no LC_VERSION_MIN_MACOSX           `version-min set 10.9`
- *   __DATA_CONST with __objc_ sections `segment rename __DATA_CONST __DATA`
- *   stable-ABI Swift class records     `swift-abi set legacy`
- *
- * NEVER `dylib` or `rpath` work: no tool can guess which stub dylib you
- * meant, and that is the dominant real workload.
- *
- * POSITION IS NOT COSMETIC, which is why this is a statement and not an
- * option: `fixups set classic` rewrites __LINKEDIT and strips load commands,
- * changing the header pad available to every `dylib replace` after it, and
- * nothing here reorders statements -- the script is the plan. So the operator
- * decides where the expansion lands by deciding where to write the line.
- * `fixups set classic` comes first WITHIN the expansion for the same reason:
- * nothing can grow the header while the image still has chained fixups.
- *
- * The directives still govern what the expansion does -- allow-grow reaches a
- * derived `version-min set 10.9` exactly as it reaches an explicit one -- with
- * one exception: a derived statement NEVER counts as unmatched (see
- * fatal-warnings, below). If one is refused, the refusal names the `target`
- * line, since that is the line that was written.
- *
- * On a fat file each selected slice is detected on its own, so one `target`
- * line can expand to different statements in different slices -- which is
- * what "its meaning depends on the binary" amounts to when there is more than
- * one binary in the file.
- *
- * A script names AT MOST ONE target, and only a target this build knows;
- * ms_parse refuses both (src/script.h), so neither reaches here.
+ * INPUT. A thin 64-bit Mach-O, or a fat (universal) file, which is edited
+ * slice by slice and kept whole. Anything else is refused; an input that
+ * cannot be opened or read at all is MR_FAIL.
  *
  * REPORT, to o->log. A refusal that has read the image names both files and
  * what became of each; one that never got that far says only what it can.
  * tests/cli_test.sh's "edit refusal inventory" block exercises this claim
- * (it says itself which sites it cannot reach, and why).
- * Always printed: a statement's refusal,
- *   "machotool edit: refused at statement K of N (line L); OUT not
- *   written; PATH left unmodified"
- * ("failed" in place of "refused" for MR_FAIL; K counts statements from 1, L
- * is the statement's line in the script). On a fat run that line names the
- * slice at fault instead, before that trailing pair:
- *   "... (line L) in slice NAME; OUT not written; PATH left unmodified"
- * or, when it was the statement's own miss (see fatal-warnings) that refused
- * it rather than any one slice,
- *   "... (line L): it matched nothing in any selected slice; ..."
- * -- no slice name there, since no single slice is at fault. Then a refusal
- * at the final verify,
- *   "machotool edit: refused at verification, after statement N of N; ..."
- * ("(the script has no statements)" in place of the count when N is 0); on a
- * fat run this is instead per slice, right after that slice's own last
- * statement, and names the slice in place of the statement count:
- *   "machotool edit: refused at verification of slice NAME; ..."
- * Then a failed write,
- *   "machotool edit: writing OUT failed; PATH left unmodified",
- * and the two refusals that come before anything is read:
- *   "machotool edit: no output file was named" and
- *   "machotool edit: OUT is PATH; machotool never writes its input".
- * The write line is the same whether `path` names a thin file or a fat one: the
- * write happens once, to the whole container, after every slice's own verify has
- * passed. Each statement is also logged as "  <kind> <op> <operands>" before
- * it runs, and a run that gets that far logs "PATH: verified" and "OUT:
- * written (N bytes)" -- on a fat run "PATH: verified" is the reassembled
- * container's own verdict, once, after every selected slice's "slice NAME:
- * verified" (see FAT FILES, above, for the rest of the per-slice lines).
- * me_run flushes stdout before each line it writes and before each "matched
- * nothing" report, so those land after any stdout line printed before them;
- * an operation's own stderr message, written while it runs, is not ordered
- * this way.
+ * (it says itself which sites it cannot reach, and why). me_run flushes
+ * stdout before each line it writes, so its lines land after any stdout line
+ * printed before them; an operation's own stderr message, written while it
+ * runs, is not ordered this way.
  *
- * WHAT THE OPERATIONS PRINT THEMSELVES. me_run calls each operation's
- * in-memory core, not its CLI verb, so an edit run shows the lines those
- * cores print and none of the lines the verbs print after their own write.
- * Those that name a file name PATH, the input, even when `out` is given. On
- * stdout, from mr_apply_image (`load-command`, `segment`, `dylib`, `rpath`):
- * "PATH: header pad N bytes available (...)"; the per-command lines
- * "  Strip [...]", "  Insert [...]", "  Add [...]", "  Change [...]",
- * "  Change rpath [...]", "  Delete [...]", "  Delete rpath [...]",
- * "  Reexport: ..." and "  Rename segment: ..."; "  Renumbered library
- * ordinals: ..." or "  Flat namespace: ..."; under allow-grow, "PATH: load
- * commands need N more bytes ...; growing header..." and "PATH: grew header
- * pad: ..."; and last "PATH: updated (sizeofcmds=...)" or "PATH: nothing to
- * change.". From md_declassify_buf (`fixups`): "Exports trie: ...",
- * "Chained fixups: ...", "Found N segments", "Fixups vN: ...", "  Seg ...",
- * "Processed N rebases, M binds", "Removed cmd at ...", "Added
- * LC_DYLD_INFO_ONLY: ..." and "Extending __LINKEDIT: ...", or on a classic
- * image "Already patched ... passing through.". From
- * mv_add_version_min_image (`version-min`): "LC_VERSION_MIN_MACOSX already
- * present; nothing to do." when it has one; nothing when it appends into the
- * pad; and, when it appends under allow-grow and grows the pad, the same
- * "PATH: load commands need N more bytes ...; growing header..." and "PATH:
- * grew header pad: ..." as mr_apply_image. mswift_retag_image (`swift-abi`)
- * prints nothing. On stderr: each core's own refusals, and the "matched
- * nothing" reports described under DIRECTIVES. NEVER printed by an edit
- * run, because they belong to the verbs and not the cores: `machotool
- * dylib`/`rpath`/`lc`'s "Updated PATH (N bytes)", `minos`'s "Added
- * LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)", `retag-swift`'s
- * "PATH: retagged N class record(s)", and `declassify`'s "Wrote OUT (N
- * bytes)". So a stdout line such as "PATH: updated (...)" describes the
- * in-memory image after that statement, not the file: a run refused at a
- * later statement, or at the final verify, writes nothing, and o->log's
- * refusal line and the return code are what say so.
+ * me_run calls each operation's in-memory core, not its CLI verb, so an edit
+ * run's stdout carries the lines those cores print and none of the lines a
+ * verb prints after its own write. Those that name a file name PATH, the
+ * input, even when `out` is given.
  *
- * FOLLOW-UPS: a statement that succeeds logs, indented beneath its statement
- * line, the work it did beyond what it names -- the part a user cannot see
- * for themselves. Every figure is one the operation computed while doing the
- * work and handed back, never a second look at the image:
- *   `dylib insert` and `dylib delete`: the command inserted or removed and
- *     its ordinal, the renumbering map (old->new), and how many nlist
- *     entries and SET_DYLIB_ORDINAL opcodes -- bind, weak and lazy -- the
- *     renumbering changed (rewrite.h's mr_renumbering). A delete that
- *     matched nothing renumbered nothing and logs none of this.
- *   `fixups set classic`: that an already-classic image passed through, or
- *     the rebases and binds the conversion emitted, the bytes of opcodes and
- *     bytes appended, the commands it stripped, and how far it extended
- *     __LINKEDIT (declassify.h's md_report).
- *   `swift-abi set legacy`: how many class records it retagged, or
- *     "nothing to retag".
- *   `version-min set 10.9`: "appended LC_VERSION_MIN_MACOSX 10.9" when it
- *     appended one (mv_add_version_min_image's `added`), and nothing when
- *     the image already had one.
- *   `target 10.9`: its EXPANSION, line by line, each indented under the
- *     target line and followed by the finding that produced it --
+ * A statement that succeeds logs, indented beneath its statement line, the
+ * work it did beyond what it names -- every figure one the operation computed
+ * while doing the work, never a second look at the image. `target 10.9` logs
+ * its expansion that way, each derived line followed by the finding that
+ * produced it:
  *
- *         target 10.9
- *           fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
- *           version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
+ *       target 10.9
+ *         fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
+ *         version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
  *
- *     -- or "nothing to do: this binary already targets 10.9" when the
- *     expansion is empty. That listing is the whole reason `target` is a
- *     visible line rather than hidden behaviour: the same line does
- *     different things to different binaries, so the report has to say what
- *     it did to THIS one. Each derived statement's own follow-ups (above)
- *     are logged beneath it, exactly as they are for a statement somebody
- *     wrote out.
- * Every other statement logs only its statement line.
- *
- * DIRECTIVES.
- *
- * arch NAME restricts the script to the fat slice(s) named NAME (lipo's
- * names: x86_64, x86_64h, arm64, arm64e, i386) -- see FAT FILES, above; on a
- * thin file it must name that file's own arch. Repeatable, to name more than
- * one slice.
- *
- * allow-grow covers the statements whose load commands can outgrow the
- * header pad: `dylib`, `rpath` and `version-min set`. For them, when the pad
- * is short, growing it is mg_ensure_pad's decision (src/grow.h) instead of a
- * refusal. It does not cover `fixups set classic`: growth refuses an image
- * that still has chained fixups, since chained pointers encode offsets from
- * the image base that growing moves. Nor does the conversion need it: before
- * adding its 48-byte LC_DYLD_INFO_ONLY it removes whichever of
- * LC_DYLD_EXPORTS_TRIE (16 bytes), LC_DYLD_CHAINED_FIXUPS (16) and
- * LC_BUILD_VERSION (at least 24, usually 32 with one tool entry; a zippered
- * binary has a second, removed too) are present -- so on a modern chained
- * binary, which carries all three, it removes at least 56. On a chained
- * image nothing can grow until `fixups set classic` has run: put it first.
- * Growth works only on a 64-bit PIE executable. `segment rename` and
- * `load-command delete` never add bytes to the load commands, so they never
- * need it.
- *
- * fatal-warnings turns a statement that matched nothing from a report into a
- * refusal of the whole run. The statements that can miss are the ones that
- * name something the image must already have: `load-command delete` (no
- * command of that kind), `dylib replace/delete/reexport` and `rpath
- * replace/delete` (no command naming that path), and `segment rename` (no
- * segment of that name). Each miss is reported on stderr as a
- * "machotool: ... matched nothing" line (for load-command delete,
- * "machotool: no load command of kind KIND to delete"); without
- * fatal-warnings that is all
- * that happens and the run continues. `append` and `insert` always act, and
- * the three `set` statements (version-min, swift-abi, fixups) set a state,
- * so for them "already so" or "nothing to retag" is success, never a miss.
- *
- * `target` never counts as unmatched, and neither does anything its expansion
- * derived: "this binary already targets 10.9 correctly" is a correct answer
- * for a profile, unlike for an explicit operation. Nor is a derived miss even
- * reported -- `fixups set classic` strips LC_BUILD_VERSION itself, so the
- * `load-command delete build-version` the same expansion derived legitimately
- * finds nothing left to do. Writing `target 10.9` AND an explicit statement it
- * would have derived is the other side of this, and is deliberately not
- * special-cased: the explicit one is then redundant, and fatal-warnings flags
- * it, which is right.
+ * -- or "nothing to do: this binary already targets 10.9" when the expansion
+ * is empty. The expansion never derives `dylib` or `rpath` work, and
+ * `fixups set classic` comes first within it.
+ * spec: src/grow.h -- growth refuses an image that still has chained fixups,
+ * which is what fixes that order.
  */
 int me_run(const char *path, const char *out, const ms_script *s,
            const me_opts *o);
