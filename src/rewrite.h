@@ -104,6 +104,22 @@ typedef struct {
 #define MR_REFUSED 1
 #define MR_FAIL    2
 
+/* True if the only thing `ops` asks for is a segment rename. It scopes the
+ * mg_plausible gate in mr_process_thin, and NOTHING ELSE may call it: it is
+ * on its way out, replaced by the derivation over declared relations
+ * (src/relations.h's mrel_verify_applies).
+ *
+ * Declared here for ONE reason -- tests/rename_only_differential.c runs it
+ * beside that derivation, across every operation-set shape, and asserts
+ * exactly the differences the design predicts. That harness is what earns the
+ * right to delete this, and both go together: deleting the predicate deletes
+ * its only remaining caller and the harness both.
+ * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
+ * Decision 3 -- "a comment claiming the two are equivalent is exactly the kind
+ * of claim this repo treats as a defect when nothing would fail if it were
+ * false", which is why the claim is a test and not this comment. */
+int mr_is_rename_only(const mr_ops *ops);
+
 /* Apply `ops` to the Mach-O at `path` and write the result as the NEW file
  * `out`. `path` is opened O_RDONLY and never written. Returns 0, else
  * MR_REFUSED or MR_FAIL -- this function's own, or a primitive's: mi_open,

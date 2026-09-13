@@ -639,7 +639,7 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
 typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
     (sizeof(mr_ops) == 152 && offsetof(mr_ops, allow_grow) == 148) ? 1 : -1];
 
-static int mr_is_rename_only(const mr_ops *ops) {
+int mr_is_rename_only(const mr_ops *ops) {
     return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
            ops->n_dylib_changes == 0 && ops->n_dylib_appends == 0 &&
            ops->n_dylib_inserts == 0 && ops->n_rpath_changes == 0 &&

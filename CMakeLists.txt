@@ -273,6 +273,22 @@ target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(relations_test PRIVATE machotoolcore)
 add_test(NAME relations_test COMMAND relations_test)
 
+# THE GATE ON DELETING src/rewrite.c's mr_is_rename_only: it and the derived
+# applicability (src/relations.h's mrel_verify_applies) run side by side over
+# every operation-set shape, and the design's enumerated difference list is
+# asserted as data. Hermetic and hand-built for relations_test's reason --
+# liveness must not depend on what the host linker emitted -- and it really
+# RUNS each shape through me_run, because applicability is evaluated against
+# what a run did and not only what its script declared. MallocScribble for
+# edit_test's reason: the image buffer is reallocated mid-run (a header grow,
+# `fixups set classic`'s appended opcodes). Deleted together with the
+# predicate it gates.
+add_executable(rename_only_differential tests/rename_only_differential.c)
+target_compile_options(rename_only_differential PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(rename_only_differential PRIVATE machotoolcore)
+add_test(NAME rename_only_differential COMMAND rename_only_differential)
+set_tests_properties(rename_only_differential PROPERTIES ENVIRONMENT MallocScribble=1)
+
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
 # directory under $TMPDIR: it never writes its input, it writes its output
 # whole or not at all, and the output carries the input's metadata.
