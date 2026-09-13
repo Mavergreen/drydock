@@ -38,11 +38,11 @@ mw_retranslate fix_macho "$@" || exit 1
 mw_run_to_tmp
 mw_frc=$?
 # spec: fix_macho had 0 and 1, so every nonzero folds to 1 (compat/README.md,
-# "exit codes"). mw_frc, not mw_rc, which machotool-compat.sh owns.
+# "`fix_macho`: exit codes"). mw_frc, not mw_rc, which machotool-compat.sh owns.
 [ "$mw_frc" -eq 0 ] || exit 1
 mw_finish || exit 1
 # spec: this line, not fix_macho's "File updated: F" (compat/README.md,
-# "stdout is not reproduced").
+# "`fix_macho`: stdout is not reproduced").
 [ "$MW_CHANGED" -eq 1 ] \
     && printf 'Updated %s (%s bytes)\n' "$mw_file" "$(wc -c < "$MW_TARGET" | tr -d ' ')"
 exit 0

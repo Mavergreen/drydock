@@ -232,10 +232,11 @@ path — speaks the same vocabulary from `me_run`, so a mixed-family invocation 
 not a separate regime.
 
 The codes this wrapper produces **itself** are all 1: `mw_prepare`'s absent,
-unwritable and hard-linked refusals, and a failed install. There is no `exit 2`
-in the wrapper, and there should not be — the authority for a compat wrapper's
-failure code is the C tool, and every `change_dylib` failure row in
-`tests/compat-matrix.tsv` is a flat 1.
+unwritable and hard-linked refusals, and a failed install. The wrapper never
+*invents* a 2; the 2 above is `machotool`'s, forwarded. Every `change_dylib`
+failure row in `tests/compat-matrix.tsv` is a flat 1, and those rows are the
+authority for the codes this wrapper produces itself — not for the ones it
+passes through.
 
 One exception to the 1-vs-2 split, `change_dylib`'s only: an allocation failure
 INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into

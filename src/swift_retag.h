@@ -104,9 +104,10 @@ int mswift_retag_image(mi_image *im);
  * points at writable bytes. What actually decides is the shared walk's
  * `apply` flag (src/swift_retag.c), which this passes as 0.
  *
- * This is what `target 10.9` detects on (src/edit.h's TARGET): a tag bit is
- * set or it is not, so the detection is exact rather than a guess, and it is
- * exact about the same records the retag would move, because it IS that walk.
+ * This is what `target 10.9` detects on (src/script.h's MS_TARGET): a tag
+ * bit is set or it is not, so the detection is exact rather than a guess, and
+ * it is exact about the same records the retag would move, because it IS that
+ * walk.
  * A separate reimplementation that agreed by inspection is the shape of
  * defect this repo keeps finding.
  */

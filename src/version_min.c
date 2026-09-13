@@ -21,8 +21,9 @@
 #include "grow.h"
 #include "atomic_write.h"   /* wa_write_new: `path` is read, `out` is written */
 #include "rewrite.h"    /* MR_REFUSED/MR_FAIL: this function's own exit-code
-                         * vocabulary, shared with mr_apply_file -- see its
-                         * comment there for the dividing line this follows. */
+                         * vocabulary, shared with mr_apply_file -- see the
+                         * comment on the MR_REFUSED/MR_FAIL #defines there
+                         * for the dividing line this follows. */
 
 struct mv_scan {
     uint32_t first_sect_off;   /* lowest nonzero section file offset;
@@ -49,12 +50,12 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
 /* cli/machotool.c's cmd_minos forwards this function's return value verbatim,
  * passing through its own allow_grow flag, the same arrangement mr_apply_file
  * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
- * the same two codes and the same dividing line mr_apply_file's own comment
- * (rewrite.h) draws: MR_FAIL for this function's own open/fstat, for
- * mi_open's own I/O (MI_IO_ERROR, below) and for wa_write_new's failure to
- * produce `out`; MR_REFUSED for every site that examined the file and
- * declined, including mi_open's MI_NOT_MACHO and "no room for
- * LC_VERSION_MIN_MACOSX". */
+ * the same two codes and the same dividing line rewrite.h's comment on the
+ * MR_REFUSED/MR_FAIL #defines draws: MR_FAIL for this function's own
+ * open/fstat, for mi_open's own I/O (MI_IO_ERROR, below) and for
+ * wa_write_new's failure to produce `out`; MR_REFUSED for every site that
+ * examined the file and declined, including mi_open's MI_NOT_MACHO and
+ * "no room for LC_VERSION_MIN_MACOSX". */
 int mv_add_version_min(const char *path, const char *out, int allow_grow) {
     /* Opened only to report an unreadable `path` immediately, before any
      * analysis, in the words the historical tool's own open() produced;

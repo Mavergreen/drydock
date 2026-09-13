@@ -75,8 +75,13 @@ both files; the rule that a refused run leaves no OUT.
 **Corrected 2026-09-13.** This also cited "`src/grow.h`'s account of why 32-bit
 is refused" as a headline example. That account is not in `grow.h` — it is
 `src/grow.c:958-972`, in a file that is 26% comment and so was never in scope,
-and it **already cites its own pinned test**. It was therefore the one example
-here that needed nothing done to it. Measured by the task that went looking.
+and it **already cites its own pinned test**,
+`test_grow_refuses_32bit_mach_header` in `tests/grow_test.c`. It was therefore
+the one example here that needed nothing done to it. Measured by the task that
+went looking. (The citation at `src/grow.c:971` still spells that file by its
+retired name, `macho_grow_test.c`; that is one of the dangling filename
+citations the queue's "Carried out of the narration sweep" section counts, not
+a defect in the account itself.)
 
 **2. Already tested → delete the prose outright.** A surprising share of
 narration restates something `cli_test.sh`, `wrapper_test.sh` or a C test

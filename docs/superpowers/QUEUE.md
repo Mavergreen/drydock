@@ -731,20 +731,63 @@ where the work happens, which was the complaint that started this item.
   pointing at the wrong file, and the passage had already done what the bucket
   asks.
 
-**What to do instead, and it is worth more than any of the three.** Density did
-not predict falsity. A single grep for two filenames that do not exist returns
-**28 dangling citations**: 21 naming `macho_grow.h` (now `src/grow.h`) and 7
-naming `macho_grow_test.c` (now `tests/grow_test.c`). Some are legitimate
-past-tense history (`src/grow.c:3`, `src/mach_compat.h:22`), but about a dozen
-are present-tense directives telling a reader to go read a file that is not
-there — `src/image.h:5`, `:75`, `:155`, `src/image.c:49`,
-`src/linkedit.h:3`, `:29`, `:36`, `src/linkedit.c:130`, `src/trie.h:3`,
-`:29`, `src/grow.c:971`, `CMakeLists.txt:187` — and `src/grow.h:2` still
-names *itself* `macho_grow.h`. Every one of those files measures under the
-worst-offender threshold and was therefore out of scope. This is a cheap,
-mechanical, fully verifiable pass with no behaviour risk, and it belongs to
-item 7 (the history rewrite already touches the rename) or to the human review
-that is item 6's second half.
+**What to do instead — and it splits in two.** Density did not predict falsity:
+the defects sat in files that never met the worst-offender threshold. But the
+`macho_grow` surface is *not* one uniform, zero-risk prose sweep, and the first
+version of this recommendation said it was. **Corrected 2026-09-13**: half of
+it is user-visible behaviour that no test pins, and sweeping it as prose would
+have shipped a regression with every suite green.
+
+**Part one: the filename citations — prose, and safe.** Eight retired filenames
+are still cited: `macho_grow.h` (now `src/grow.h`), `macho_grow_test.c` (now
+`tests/grow_test.c`), and the six retired tool sources `change_dylib.c`,
+`fix_macho.c`, `patch_macho.c`, `rename_segment.c`, `add_version_min.c`,
+`retag_swift_classes.c`. Counted 2026-09-13 after this correction: **108
+occurrences in the code tree** (`src/`, `cli/`, `tests/`, `compat/`,
+`CMakeLists.txt`) and **199 across the whole tracked tree excluding this file**,
+the difference being `docs/`, `LICENSE` and `PROVENANCE.md`. The figure of **28**
+given earlier was not wrong but narrow — it greped two of the eight names, in
+the code tree, and at `3dc64aa` that scope held 21 + 7 (now 21 + 5, this round
+having corrected two self-references in `tests/grow_test.c`). Some citations are
+legitimate past-tense history (`src/grow.c:3`,
+`src/mach_compat.h:22`), but about a dozen are present-tense directives telling
+a reader to go read a file that is not there — `src/image.h:5`, `:75`, `:155`,
+`src/image.c:49`, `src/linkedit.h:3`, `:29`, `:36`, `src/linkedit.c:130`,
+`src/trie.h:3`, `:29`, `src/grow.c:971`, `CMakeLists.txt:187` — and
+`src/grow.h:2` still names *itself* `macho_grow.h`. Every one of those files
+measures under the worst-offender threshold and was therefore out of scope.
+This part is cheap, mechanical, fully verifiable and carries no behaviour risk.
+It belongs to item 7 (the history rewrite already touches the rename) or to the
+human review that is item 6's second half.
+
+**Part two: `src/grow.c`'s 48 stderr prefixes — not prose, and not zero-risk.**
+`src/grow.c` has 50 lines mentioning `macho_grow`, and **48 of them are
+`fprintf(stderr, "macho_grow: …")`** — user-visible diagnostic strings, not
+comments. **No test pins that prefix**: a grep for `macho_grow: ` across
+`tests/`, `cli/` and `compat/` returns nothing, while the same grep for
+`machotool: ` hits three suites, so the negative has its positive control.
+`tests/grow_test.c`'s own `macho_grow` mentions are prose plus its binary's
+summary line (`macho_grow_test: all cases pass`), which asserts nothing about
+`grow.c`'s stderr. Renaming those 48 as part of a prose sweep would therefore
+change what users see with every suite passing.
+
+It is also a genuine defect rather than untidiness. `src/rewrite.c:1142` states
+the convention outright: the `"machotool: "` prefix there is "DELIBERATE and is
+the one program-specific string in this file -- every other diagnostic here is
+program-neutral ("ERROR: ..."), because this library does not otherwise know
+which front end is running it." `grow.c`'s 48 prefixes name a program that no
+longer exists, from a library that has no business naming one. Fixing them is
+worth doing, but it needs **tests written first** — assertions on the new
+prefix, mutation-proven — so it is **a plan of its own, and explicitly not part
+of the zero-risk sweep**.
+
+**A scope note, because these counts will not match across documents.** Bare
+`macho_grow` occurrences: **84 in the code tree**, **122 across the whole
+tracked tree excluding this file** — the extra 38 being `docs/`
+(`docs/PROPOSAL.md` plus the plan and spec files), `LICENSE` and
+`PROVENANCE.md`. Every number in this section
+states its scope for that reason; a count given without one is not comparable
+to another count given without one.
 
 The generalization for that review: **the worst-offender threshold selected for
 volume and the defects were distributed by hub-ness.** Rank by how many other

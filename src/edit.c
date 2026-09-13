@@ -418,7 +418,7 @@ unknown:
  * The one statement whose meaning depends on the binary. It is not an
  * operation: it expands, where it is written, into statements the language
  * already has -- the ones THIS image needs -- and those run in its place.
- * See edit.h's TARGET for what it detects and why position matters.
+ * See src/script.h's MS_TARGET for its place in the statement vocabulary.
  *
  * Every detection here is exact: a load command is present or it is not, a
  * section name begins with __objc_ or it does not, a tag bit is set or it is

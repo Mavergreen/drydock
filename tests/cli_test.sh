@@ -3150,8 +3150,8 @@ rc=0
 [ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
     || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
 # The grow lines on stdout are mg_ensure_pad's, labelled with the INPUT's path
-# -- the operations run against an image in memory and know nothing about OUT --
-# as edit.h's inventory of what the operations print says.
+# -- the operations run against an image in memory and know nothing about OUT.
+# The assertion below is what holds that.
 grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
     && ok "edit: ... and stdout has 'PATH: grew header pad', naming the input" \
     || bad "edit version-min" "no 'PATH: grew header pad' line on stdout: $(cat "$T/vm_yes.out")"
