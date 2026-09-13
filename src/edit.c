@@ -26,6 +26,7 @@
 #include "edit.h"
 #include "image.h"
 #include "grow.h"
+#include "relations.h"
 #include "rewrite.h"
 #include "segname.h"
 #include "lc_kinds.h"
@@ -913,4 +914,11 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     me_say(log, "%s: verified\n", path);
 
     return me_write_once(buf, size, path, out, log);
+}
+
+unsigned me_followups(const ms_script *s) {
+    unsigned mask = MREL_NONE;
+    for (int i = 0; i < s->n; i++)
+        mask |= ms_disturbs(s->stmts[i].kind, s->stmts[i].op);
+    return mask;
 }

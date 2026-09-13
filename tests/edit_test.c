@@ -27,6 +27,7 @@
  */
 #include "edit.h"
 #include "image.h"
+#include "relations.h"
 #include "rewrite.h"
 #include "script.h"
 #include "mach_compat.h"
@@ -1166,6 +1167,39 @@ static void test_fat_writes_out_and_not_the_input(void) {
     rm_dir();
 }
 
+/* me_followups is the union, over the statements AS PARSED, of what each
+ * disturbs (src/relations.h's MREL_*, via ms_disturbs) -- the union, not the
+ * last statement and not the first. */
+static void test_followups_are_the_union_of_the_statements(void) {
+    ms_script s; char err[256] = {0};
+    static const char quiet[] = "segment rename __A __B\nswift-abi set legacy\n";
+    CHECK(ms_parse(quiet, sizeof quiet - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
+    CHECK(me_followups(&s) == MREL_NONE, "a quiet script disturbs nothing");
+    ms_free(&s);
+
+    /* The dylib delete sits in the MIDDLE on purpose: neither "only the
+     * first statement" nor "only the last statement" would find it, so this
+     * one script pins that the answer is the union, both ways at once. */
+    static const char loud[] =
+        "segment rename __A __B\ndylib delete /x.dylib\nswift-abi set legacy\n";
+    CHECK(ms_parse(loud, sizeof loud - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
+    CHECK((me_followups(&s) & MREL_ORDINAL) != 0,
+          "one dylib delete makes the whole script disturb ordinals");
+    ms_free(&s);
+
+    /* `target 10.9` (MS_TARGET) declares MREL_NONE of its own -- it expands
+     * into other statements at RUN time (src/edit.c's me_target), and
+     * me_followups sees only the statements ms_parse produced, before any
+     * expansion. A script naming only `target 10.9` therefore reports no
+     * follow-up here even though running it can disturb plenty; that is the
+     * declared half, not the whole answer (src/edit.h's me_followups). */
+    static const char target[] = "target 10.9\n";
+    CHECK(ms_parse(target, sizeof target - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
+    CHECK(me_followups(&s) == MREL_NONE,
+          "a bare 'target 10.9' declares nothing of its own before expansion");
+    ms_free(&s);
+}
+
 int main(void) {
     test_statements_apply_in_order();
     test_a_failure_part_way_writes_nothing();
@@ -1189,6 +1223,7 @@ int main(void) {
     test_fat_with_no_64bit_slice_is_refused();
     test_fat_report_accounts_for_every_slice();
     test_fat_writes_out_and_not_the_input();
+    test_followups_are_the_union_of_the_statements();
 
     printf("edit_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;

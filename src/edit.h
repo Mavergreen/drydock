@@ -71,4 +71,16 @@ typedef struct {
 int me_run(const char *path, const char *out, const ms_script *s,
            const me_opts *o);
 
+/* The union, over every statement `s` PARSED, of what it disturbs
+ * (src/relations.h's MREL_* bits, via src/script.h's ms_disturbs). This is
+ * the DECLARED half only, not the whole answer: `MS_TARGET` ("target 10.9")
+ * declares MREL_NONE, because the row itself disturbs nothing -- it expands
+ * into other statements at RUN time (me_run's own "target 10.9" section),
+ * and those statements declare their own. A caller that needs what a run
+ * actually disturbed, including a `target` line's expansion or a grow that
+ * happened along the way, needs the accumulator that runs alongside the
+ * statements, not this: this is what it starts from for a script with
+ * neither. */
+unsigned me_followups(const ms_script *s);
+
 #endif /* MACHOTOOL_EDIT_H */
