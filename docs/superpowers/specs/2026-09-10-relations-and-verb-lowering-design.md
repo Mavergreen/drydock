@@ -406,3 +406,55 @@ unreviewed default — exactly what the tripwire exists to prevent.
 - **Ten citations were stale** — three dead, seven moved. `src/rewrite.h` lost
   two-thirds of its lines to the narration sweep, so every line reference into it
   had to be re-resolved. The scan report lists each with its new location.
+
+### Amendment addendum, same day: three corrections to the amendment above
+
+Found while revising the plan against it. Recorded here because two are errors in
+this document, not in the plan.
+
+**1. The derivation formula in this spec cannot fire as written, and the bug is
+mine.** Decision 3 says the derived rule skips the gate "whenever the run did not
+disturb the initializer-and-unwind relation". But **no row of Decision 2's table
+ever names that relation as disturbed** — `LC_FUNCTION_STARTS` is its *referent*,
+and `mg_plausible` only ever *checks* it (the table says so: "checked, never
+repaired"). `fixups set classic` disturbs `__LINKEDIT` and the image base; a grow
+disturbs the image base. Neither disturbs the relation whose referent is
+`LC_FUNCTION_STARTS`.
+
+So `mrel_live(slice) & disturbed & MREL_FUNC_START` is permanently zero, and a
+derivation built on it would have switched `mg_plausible` off **everywhere** while
+every suite stayed green — the gate would have been deleted by accident rather
+than narrowed on purpose. That is the precise failure this item exists to prevent,
+sitting in the item's own design.
+
+The rule is two different masks, not one:
+
+> Run `mg_plausible` when the **`MREL_FUNC_START` relation is live in this slice**
+> AND the run **disturbed `MREL_BASE_REL`** — because base-relative movement is
+> what invalidates the function-start offsets the gate checks.
+
+`fixups set classic` and any header grow both disturb `MREL_BASE_REL`, so
+Decision 3's expected-difference table is unchanged in its outcomes. Only the
+expression that computes them is.
+
+**2. Five tests pin the unconditional verify, not one.** The amendment named only
+`tests/edit_test.c:615`. Also affected: `:590` (an empty script), `:1018-1024`
+(the fat per-slice verify), and `:484-490` and `:1138`, which assert on the
+`": verified"` report line and so depend on the verify having run. All five are
+rewritten to pin the surviving property, not deleted. A sixth, `:632-633`, asserts
+the log does *not* claim verification on a refusal — that one is unaffected and
+must stay exactly as it is.
+
+**3. How the verdict reaches `mr_process_thin` — a ruling, since the plan had no
+answer.** That site holds an `mr_ops`, not an `ms_script`, so there is no mask
+lying around for it to read.
+
+**The declared mask is passed as a parameter to `mr_apply_image`, and accumulated
+locally.** Not stored in `mr_ops`. Three reasons: a *derived* value inside a
+*declaration* struct is exactly the shape that goes stale silently, which is what
+this whole item is against; a parameter makes the compiler require every caller to
+supply one, which is the same enforcement the `linkedit.h` link error and the
+table tripwire already rely on; and it mirrors the accumulator the `edit` side
+needs anyway, since applicability is evaluated against what the run *did*. A grow
+inside `mr_process_thin` ORs `MREL_BASE_REL` into its local copy, so the one
+mechanism covers the "declared" and the "observed" halves without a second path.
