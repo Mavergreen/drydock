@@ -1380,6 +1380,23 @@ mtip dylib "$T/dylib_notmacho" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib 
 [ "$rc" -eq 1 ] && ok "dylib: a non-Mach-O file is refused (EX_REFUSED)" \
     || bad "dylib: non-Mach-O" "expected exit 1, got $rc: $(cat "$T/dylib_notmacho.err")"
 
+# A file too short to hold even a magic number. mr_apply_file has TWO size
+# refusals and they are different claims: the 25-byte file above is long enough
+# to peek a magic and reaches mi_open, which declines it ("too short to be a
+# 64-bit Mach-O"); 2 bytes is refused by mr_apply_file's own `st.st_size < 4`
+# check, before the peek, and nothing else in any suite reaches that branch --
+# measured, by making it return MR_FAIL and watching every suite stay green.
+rc=0
+printf 'ab' > "$T/dylib_tiny"
+mtip dylib "$T/dylib_tiny" -replace /usr/lib/libSystem.B.dylib /tmp/x.dylib \
+    >/dev/null 2>"$T/dylib_tiny.err" || rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "dylib: a file too small to hold a magic number is refused (1), not failed (2)" \
+    || bad "dylib: 2-byte input" "exit $rc, want 1 -- a file we sized and declined is a considered refusal, not an operational failure; a caller that sees 2 will retry or report a broken environment instead of telling the user their input is not a Mach-O. Got: $(cat "$T/dylib_tiny.err")"
+grep -q "too small to be a Mach-O" "$T/dylib_tiny.err" \
+    && ok "dylib: ... and says the file is too small, not that it failed" \
+    || bad "dylib: 2-byte message" "expected 'too small to be a Mach-O': $(cat "$T/dylib_tiny.err")"
+
 # An absent file: mr_apply_file's own open() fails before mi_open is ever
 # reached -- a genuine syscall failure, MR_FAIL, EX_FAIL.
 rc=0
