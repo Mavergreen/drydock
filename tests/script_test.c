@@ -12,6 +12,7 @@
  */
 #include "script.h"
 #include "arch_names.h"
+#include "relations.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -333,9 +334,10 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
  * side. */
 static void test_capabilities_table_round_trips(void) {
     int i, n_rows = 0;
-    const char *kind, *op;
+    const char *kind, *op, *flag;
     int nargs;
-    for (i = 0; ms_table_row(i, &kind, &op, &nargs); i++) {
+    unsigned modes, disturbs;
+    for (i = 0; ms_table_row(i, &kind, &op, &nargs, &flag, &modes, &disturbs); i++) {
         char line[256];
         const char *a = "x";
         const char *b = "y";
@@ -373,6 +375,173 @@ static void test_capabilities_table_round_trips(void) {
         n_rows++;
     }
     CHECK(n_rows == 15, "the statement table has 15 rows (got %d)", n_rows);
+}
+
+/* One assertion per MS_TABLE row -- fifteen. Each mask below was read out of
+ * the code that implements the operation, not reasoned from the operation's
+ * name, and is pinned here because a regression would be SILENT otherwise:
+ * "disturbs nothing" is a plausible-looking answer for every row, and a row
+ * that wrongly says it repairs nothing switches off the follow-up work and
+ * the checks that consult this column. What a user loses when one of these
+ * moves is a repair or a verification that used to run on their binary. */
+static void test_disturbs_matches_the_spec_table(void) {
+    /* A rename writes only the fixed-width segname/sectname fields
+     * (mseg_rename_lc, src/segname.c:16-36): no command changes size, no
+     * offset moves. */
+    CHECK(ms_disturbs(MS_SEGMENT, MS_RENAME) == MREL_NONE,
+          "segment rename disturbs nothing; a rename-only run needs no repair");
+    /* One tag bit per Objective-C class record (src/swift_retag.h): no load
+     * command, no offset, no ordinal. */
+    CHECK(ms_disturbs(MS_SWIFT_ABI, MS_SET) == MREL_NONE,
+          "swift-abi set disturbs nothing; retagging moves no reference");
+
+    /* reexport is an in-place promotion of LC_LOAD_DYLIB to LC_REEXPORT_DYLIB
+     * (src/rewrite.h:20-21; the in-place-ness is in the code, not the header --
+     * src/rewrite.c:360-364 sets ndc->cmd on the command already copied at its
+     * own position, keeping the cmdsize it arrived with). Both kinds carry
+     * ordinals (mo_is_ordinal_lc, src/ordinals.c:11-14), so membership, order
+     * and length of the subsequence are all unchanged. */
+    CHECK(ms_disturbs(MS_DYLIB, MS_REEXPORT) == MREL_NONE,
+          "dylib reexport disturbs nothing; promoting a command in place moves no ordinal");
+
+    /* append lands LAST (src/rewrite.h:48), taking the highest ordinal, so no
+     * existing ordinal moves -- only the command region grows. */
+    CHECK(ms_disturbs(MS_DYLIB, MS_APPEND) == MREL_HEADER_PAD,
+          "dylib append disturbs the header pad only; it takes the highest ordinal");
+    CHECK(ms_disturbs(MS_DYLIB, MS_REPLACE) == MREL_HEADER_PAD,
+          "dylib replace keeps its position and ordinal; only a longer path costs pad");
+
+    /* insert lands FIRST (src/rewrite.h:50) and inserted dylibs become
+     * ordinals 1..n (src/rewrite.h:44), shifting every existing one; delete
+     * removes a member and renumbers every survivor after it. */
+    CHECK(ms_disturbs(MS_DYLIB, MS_INSERT) == (MREL_ORDINAL | MREL_HEADER_PAD),
+          "dylib insert disturbs ordinals and the pad; without the ordinal bit, bound symbols go stale");
+    CHECK(ms_disturbs(MS_DYLIB, MS_DELETE) == (MREL_ORDINAL | MREL_HEADER_PAD),
+          "dylib delete disturbs ordinals and the pad; without the ordinal bit, bound symbols go stale");
+
+    /* All four rpath operations, spelled out: LC_RPATH is absent from
+     * mo_is_ordinal_lc's four kinds (src/ordinals.c:11-14), so only the
+     * command count changes. One assertion per MS_TABLE row, because the
+     * tripwire demands a mask per row and "the other three are like this one"
+     * is not an assertion. */
+    CHECK(ms_disturbs(MS_RPATH, MS_APPEND) == MREL_HEADER_PAD,
+          "rpath append: rpath commands carry no ordinal, so only the pad moves");
+    CHECK(ms_disturbs(MS_RPATH, MS_INSERT) == MREL_HEADER_PAD,
+          "rpath insert: searched FIRST, but still carries no ordinal");
+    CHECK(ms_disturbs(MS_RPATH, MS_REPLACE) == MREL_HEADER_PAD,
+          "rpath replace: only a longer path costs pad");
+    CHECK(ms_disturbs(MS_RPATH, MS_DELETE) == MREL_HEADER_PAD,
+          "rpath delete: frees pad, shifts no ordinal");
+
+    /* The five strippable kinds (LC_STRIP_KINDS, src/lc_kinds.c:11-17) are
+     * none of mo_is_ordinal_lc's four, and their payload bytes stay where
+     * they are, so the pad is the whole of it. */
+    CHECK(ms_disturbs(MS_LOAD_COMMAND, MS_DELETE) == MREL_HEADER_PAD,
+          "load-command delete frees pad and moves no section offset");
+    /* mv_add_version_min appends LC_VERSION_MIN_MACOSX into the pad
+     * (src/version_min.h). */
+    CHECK(ms_disturbs(MS_VERSION_MIN, MS_SET) == MREL_HEADER_PAD,
+          "version-min set appends a command, so the pad is what it costs");
+
+    /* THREE bits, not two. src/declassify.h:32-37: the conversion strips
+     * LC_DYLD_EXPORTS_TRIE, LC_DYLD_CHAINED_FIXUPS and every LC_BUILD_VERSION,
+     * then adds a 48-byte LC_DYLD_INFO_ONLY -- which is "frees pad" and
+     * "appends a command", the same two reasons load-command delete and
+     * version-min set earn MREL_HEADER_PAD -- while rebuilding the rebase and
+     * bind streams (base-relative content) and extending __LINKEDIT. Leaving
+     * the pad bit off made the design's own table internally inconsistent, and
+     * the bit is load-bearing: disturbing the pad is exactly the condition
+     * under which allow-grow becomes relevant. */
+    CHECK(ms_disturbs(MS_FIXUPS, MS_SET) ==
+              (MREL_FILE_OFF | MREL_BASE_REL | MREL_HEADER_PAD),
+          "fixups set classic rebuilds __LINKEDIT, re-bases, and costs pad");
+
+    /* target 10.9 declares MREL_NONE, meaning "nothing OF ITS OWN". It is an
+     * MS_TABLE row, not an ms_script field like allow-grow, so the tripwire
+     * demands a mask -- and no static mask can describe it, because it expands
+     * at run time against the image in front of it (me_expand_10_9,
+     * src/edit.c:476-514, up to five derived statements). Each derived
+     * statement is one of the rows above and declares its own mask, so the
+     * union is computed from what actually ran. A bare 0 here would read as an
+     * unreviewed default, which is what the tripwire exists to prevent. */
+    CHECK(ms_disturbs(MS_TARGET, MS_PROFILE_10_9) == MREL_NONE,
+          "target 10.9 disturbs nothing of its own; its expansion declares its own");
+}
+
+static void test_every_row_declares_its_disturbs(void) {
+    /* "Nothing" is a real and common answer -- five rows -- so it must be
+     * SPELLED. MS_TABLE_ROWS makes omitting it a compile error (a macro
+     * invoked with eight arguments instead of nine), which is the enforcement;
+     * this is the second, weaker half, and it catches the one path the macro
+     * cannot: a row appended to the array initializer by hand, AROUND the
+     * macro, whose disturbs column would then be a zero nobody chose. Such a
+     * row would silently opt its operation out of every repair and every check
+     * derived from this column. */
+    int i = 0;
+    const char *k, *o, *f;
+    int n;
+    unsigned modes, d;
+    while (ms_table_row(i, &k, &o, &n, &f, &modes, &d)) {
+        CHECK(ms_row_disturbs_declared(i),
+              "row %d (%s %s) declares its disturbs explicitly; a defaulted zero would skip its repairs",
+              i, k, o);
+        i++;
+    }
+    CHECK(i > 0, "the operation table is not empty");
+}
+
+static void test_an_unknown_operation_disturbs_everything(void) {
+    /* A kind/op pair with no row answers "everything", never "nothing": a
+     * caller asking about an operation this table has never heard of must run
+     * its checks, not skip them. Answering 0 here would make a missing row --
+     * the exact mistake the tripwire is about -- invisible at the other end
+     * too. */
+    CHECK(ms_disturbs(MS_SEGMENT, MS_REEXPORT) == ~0u,
+          "an operation with no row disturbs everything, so its checks still run");
+}
+
+/* The verbs' operations and the statements' are now ONE table, so these pin
+ * the two things merging them could have quietly changed: which flag each verb
+ * accepts, and the order --capabilities advertises them in. cli_test.sh drives
+ * the real binary for the same claims; this is the hermetic half, and it is
+ * the half that names WHICH row is wrong when they disagree. */
+static void test_the_verbs_take_their_ops_from_the_table(void) {
+    int op = -1, nargs = -1;
+    const char *name;
+    static const char *const want_dylib[] = { "replace", "delete", "append", "insert", "reexport" };
+    static const char *const want_rpath[] = { "replace", "delete", "append", "insert" };
+    int i;
+
+    CHECK(ms_verb_op("-replace", MS_MODE_DYLIB, &op, &nargs) && op == MS_REPLACE && nargs == 2,
+          "dylib -replace is one operation taking OLD and NEW (got op %d, nargs %d)", op, nargs);
+    CHECK(ms_verb_op("-insert", MS_MODE_RPATH, &op, &nargs) && op == MS_INSERT && nargs == 1,
+          "rpath -insert is one operation taking one path (got op %d, nargs %d)", op, nargs);
+    /* LC_RPATH has one kind, so there is no rpath reexport row and the verb
+     * must refuse the flag -- the same answer a flag no verb offers gets. */
+    CHECK(!ms_verb_op("-reexport", MS_MODE_RPATH, &op, &nargs),
+          "rpath -reexport has no row and is refused; promoting an rpath means nothing");
+    CHECK(ms_verb_op("-reexport", MS_MODE_DYLIB, &op, &nargs) && op == MS_REEXPORT,
+          "dylib -reexport is still offered");
+    CHECK(!ms_verb_op("-add", MS_MODE_DYLIB, &op, &nargs),
+          "change_dylib's own flag spellings are not this grammar's and stay refused");
+
+    /* The ops= order is frozen interface text: a wrapper greps this line.
+     * It is NOT the table's row order -- the "statement " lines are that --
+     * so both orders are asserted, here and in cli_test.sh. */
+    for (i = 0; i < (int)(sizeof want_dylib / sizeof want_dylib[0]); i++) {
+        name = NULL;
+        CHECK(ms_mode_op(i, MS_MODE_DYLIB, &name) && strcmp(name, want_dylib[i]) == 0,
+              "dylib ops= position %d is '%s', wanted '%s'", i, name ? name : "(past the end)",
+              want_dylib[i]);
+    }
+    CHECK(!ms_mode_op(5, MS_MODE_DYLIB, &name), "dylib offers exactly five operations");
+    for (i = 0; i < (int)(sizeof want_rpath / sizeof want_rpath[0]); i++) {
+        name = NULL;
+        CHECK(ms_mode_op(i, MS_MODE_RPATH, &name) && strcmp(name, want_rpath[i]) == 0,
+              "rpath ops= position %d is '%s', wanted '%s'", i, name ? name : "(past the end)",
+              want_rpath[i]);
+    }
+    CHECK(!ms_mode_op(4, MS_MODE_RPATH, &name), "rpath offers exactly four operations");
 }
 
 static void test_arch_directive_names_rows(void) {
@@ -489,6 +658,10 @@ int main(void) {
     test_extra_fields_report_arity_not_overflow();
     test_first_error_reported_is_earliest_in_line_order();
     test_capabilities_table_round_trips();
+    test_disturbs_matches_the_spec_table();
+    test_every_row_declares_its_disturbs();
+    test_an_unknown_operation_disturbs_everything();
+    test_the_verbs_take_their_ops_from_the_table();
     test_arch_directive_names_rows();
     test_no_arch_directive_is_an_empty_mask();
     test_arch_directive_errors();

@@ -403,6 +403,20 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
+# The verbs' ops= lists and the edit script's statements now come from ONE
+# table (src/script.c's MS_TABLE, which absorbed cli/machotool.c's DYLIB_OPS).
+# --capabilities is a documented interface -- compat/machotool-compat.sh probes
+# it -- so merging the two tables was allowed to change where this text comes
+# from and not one byte of what it says. Whole-line equality, because the ORDER
+# is part of the claim: the ops= order and the "statement " order disagree for
+# dylib, so a single table has to reproduce both.
+echo "$caps" | grep -qxF "verb dylib ops=replace,delete,append,insert,reexport flags=allow-grow,fatal-warnings" \
+    && ok "capabilities: the dylib line is unchanged by the table merge" \
+    || bad "capabilities merge" "dylib line moved: $(echo "$caps" | grep '^verb dylib')"
+echo "$caps" | grep -qxF "verb rpath ops=replace,delete,append,insert flags=allow-grow,fatal-warnings" \
+    && ok "capabilities: the rpath line is unchanged, and still omits reexport" \
+    || bad "capabilities merge" "rpath line moved: $(echo "$caps" | grep '^verb rpath')"
+
 # edit's own line carries NO flags= field, because `edit` accepts no flags.
 # `--output` became the OUT positional, `--dry-run` went with it (a scratch OUT
 # is the same run), and `--verbose` went when the report stopped being optional:
@@ -463,7 +477,8 @@ done
 #
 # --capabilities' "kinds=" and "ops=" lists and the cmd_lc/cmd_dylib_or_rpath
 # parsers that decide what a real invocation accepts are now both built from
-# ONE table each (LC_STRIP_KINDS, DYLIB_OPS in cli/machotool.c) precisely so
+# ONE table each (LC_STRIP_KINDS in src/lc_kinds.c, MS_TABLE in
+# src/script.c) precisely so
 # they cannot say different things -- before this they were three
 # hand-copied lists (change_dylib's strippable[], machotool's own LC_KINDS[],
 # and a hardcoded "kinds=..." string) that a review found had already drifted
@@ -497,8 +512,8 @@ mtip lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
 # Same idea for dylib/rpath ops=: every op --capabilities advertises for a
 # verb must be recognized by that verb's own parser (never "unknown or
 # incomplete operation"), and rpath must still refuse an op that belongs to
-# dylib's vocabulary but not its own (-reexport: LC_RPATH has only one kind
-# -- see DYLIB_OPS in cli/machotool.c).
+# dylib's vocabulary but not its own (-reexport: LC_RPATH has only one kind,
+# so MS_TABLE in src/script.c carries no rpath row for it).
 vocab_ops_fail=0
 check_ops_accepted() {
     # $1=verb (dylib|rpath)  $2=ops csv from capabilities
@@ -537,6 +552,16 @@ case ",$rpath_ops," in
     *)
         ok "capabilities vocab: rpath ops= correctly omits reexport" ;;
 esac
+# And the PARSER's half of that claim, which nothing here asserted before the
+# two op tables became one: an op dylib offers and rpath does not must be
+# refused by rpath, not quietly accepted and applied to an LC_RPATH. What a
+# user loses if it is accepted is a promoted rpath, which means nothing --
+# there is no LC_REEXPORT_RPATH for it to become.
+mtip rpath "$T/vocab_fixture" -reexport /no/such/path >"$T/vocab_rpath_reexport.out" 2>&1 \
+    && bad "capabilities vocab: rpath -reexport" "accepted an op only dylib offers" \
+    || { grep -q "unknown or incomplete operation" "$T/vocab_rpath_reexport.out" \
+         && ok "capabilities vocab: rpath refuses -reexport, the op it does not offer" \
+         || bad "capabilities vocab: rpath -reexport" "refused, but not as unknown: $(cat "$T/vocab_rpath_reexport.out")"; }
 
 # ============================================================================
 # declassify: chained fixups -> LC_DYLD_INFO_ONLY

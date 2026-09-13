@@ -1,6 +1,7 @@
 #include "script.h"
 #include "arch_names.h"
 #include "lc_kinds.h"
+#include "relations.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,12 +59,15 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
     return n;
 }
 
-/* The statement table. Data, not a strcmp chain, because --capabilities is
- * GENERATED from these rows rather than maintained beside them -- this repo
- * has already had a defect from two such lists disagreeing (the DYLIB_OPS
- * table against the --capabilities text). Adding a statement here is the
- * whole of adding a statement. 15 rows: every "<kind> <op>" the spec
- * accepts.
+/* The operation table -- ONE table, for statements and for the `dylib` and
+ * `rpath` verbs alike. Data, not a strcmp chain, because --capabilities is
+ * GENERATED from these rows rather than maintained beside them: this repo has
+ * already had a defect from two such lists disagreeing, and the second list
+ * was cli/machotool.c's own DYLIB_OPS, which is what this table absorbed.
+ * Adding an operation here is the whole of adding an operation -- to both
+ * front-ends, to what --capabilities advertises, and (the disturbs column) to
+ * what a run of it is known to invalidate. 15 rows: every "<kind> <op>" the
+ * spec accepts.
  *
  * The last row is `target 10.9`, whose second field is a PROFILE name, not a
  * verb. It sits in the op column because that is what makes the profile part
@@ -72,30 +76,119 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * --capabilities advertises which profiles this build knows without a second
  * list to keep in step with this one. Adding `target 10.10` one day is one
  * row here and one case in src/edit.c's expansion. */
-static const struct { const char *kind; int k; const char *op; int o; int nargs; }
+/* Every row is written through this macro, whose arguments are, in order:
+ *
+ *   KIND  KENUM  OP  OENUM  NARGS  FLAG  MODES  OPS_ORD  DISTURBS
+ *
+ * FLAG/MODES are the verb spelling of the same operation and which verbs
+ * offer it (cli/machotool.c's `dylib` and `rpath` parse their operations out
+ * of this table, so a verb and a statement cannot accept different things);
+ * NULL/0 for a row no verb offers. OPS_ORD is that row's position in
+ * --capabilities' "ops=" list, which is frozen interface text in an order
+ * that disagrees with this table's row order -- itself the equally frozen
+ * order of the "statement " lines -- so one of the two needs an explicit key
+ * and this is it (unused, 0, where FLAG is NULL).
+ *
+ * DISTURBS IS WHY THIS IS A MACRO AND NOT A BRACED INITIALIZER. A row added
+ * without a disturbs mask invokes MS_ROW with eight arguments instead of
+ * nine, which is a COMPILE ERROR ("macro requires 9 arguments, but only 8
+ * given") -- not a test failure found later, and not a silent zero. Five
+ * rows really do disturb nothing, so "nothing" cannot be the value a row
+ * gets by saying nothing; it has to be spelled MREL_NONE. This is the same
+ * move src/linkedit.h makes with ML_PLAIN_OFFSET_LCS, which turns one class
+ * of table mistake into a duplicate-case-value compile error rather than a
+ * behaviour change. The `declared` field below is the second, weaker half:
+ * it catches a row appended to the array by hand, around the macro.
+ *
+ * Each mask was derived from the code that implements the operation, not
+ * from the operation's name; see ms_disturbs and tests/script_test.c's
+ * test_disturbs_matches_the_spec_table, which pins all fifteen with the
+ * reason for each. */
+#define MS_TABLE_ROWS(R) \
+  R("load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,       1, NULL,        0,             0, MREL_HEADER_PAD) \
+  R("segment",      MS_SEGMENT,      "rename",   MS_RENAME,       2, NULL,        0,             0, MREL_NONE) \
+  R("version-min",  MS_VERSION_MIN,  "set",      MS_SET,          1, NULL,        0,             0, MREL_HEADER_PAD) \
+  R("swift-abi",    MS_SWIFT_ABI,    "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE) \
+  R("fixups",       MS_FIXUPS,       "set",      MS_SET,          1, NULL,        0,             0, MREL_FILE_OFF | MREL_BASE_REL | MREL_HEADER_PAD) \
+  R("dylib",        MS_DYLIB,        "replace",  MS_REPLACE,      2, "-replace",  MS_MODE_DYLIB, 0, MREL_HEADER_PAD) \
+  R("dylib",        MS_DYLIB,        "append",   MS_APPEND,       1, "-append",   MS_MODE_DYLIB, 2, MREL_HEADER_PAD) \
+  R("dylib",        MS_DYLIB,        "insert",   MS_INSERT,       1, "-insert",   MS_MODE_DYLIB, 3, MREL_ORDINAL | MREL_HEADER_PAD) \
+  R("dylib",        MS_DYLIB,        "delete",   MS_DELETE,       1, "-delete",   MS_MODE_DYLIB, 1, MREL_ORDINAL | MREL_HEADER_PAD) \
+  R("dylib",        MS_DYLIB,        "reexport", MS_REEXPORT,     1, "-reexport", MS_MODE_DYLIB, 4, MREL_NONE) \
+  R("rpath",        MS_RPATH,        "replace",  MS_REPLACE,      2, "-replace",  MS_MODE_RPATH, 0, MREL_HEADER_PAD) \
+  R("rpath",        MS_RPATH,        "delete",   MS_DELETE,       1, "-delete",   MS_MODE_RPATH, 1, MREL_HEADER_PAD) \
+  R("rpath",        MS_RPATH,        "append",   MS_APPEND,       1, "-append",   MS_MODE_RPATH, 2, MREL_HEADER_PAD) \
+  R("rpath",        MS_RPATH,        "insert",   MS_INSERT,       1, "-insert",   MS_MODE_RPATH, 3, MREL_HEADER_PAD) \
+  /* MREL_NONE here means "nothing OF ITS OWN": `target 10.9` expands, against
+   * the image in front of it, into up to five other statements (me_expand_10_9,
+   * src/edit.c), and each of those declares its own mask through this same
+   * table. No static mask can describe this row, and a bare 0 would read as a
+   * default nobody reviewed -- which is what the tripwire above exists to
+   * prevent -- so it is spelled, with this sentence. */ \
+  R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE)
+
+static const struct { const char *kind; int k; const char *op; int o; int nargs;
+                      const char *flag; unsigned modes; int ops_ord;
+                      unsigned disturbs; int declared; }
 MS_TABLE[] = {
-    { "load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,   1 },
-    { "segment",      MS_SEGMENT,      "rename",   MS_RENAME,   2 },
-    { "version-min",  MS_VERSION_MIN,  "set",      MS_SET,      1 },
-    { "swift-abi",    MS_SWIFT_ABI,    "set",      MS_SET,      1 },
-    { "fixups",       MS_FIXUPS,       "set",      MS_SET,      1 },
-    { "dylib",        MS_DYLIB,        "replace",  MS_REPLACE,  2 },
-    { "dylib",        MS_DYLIB,        "append",   MS_APPEND,   1 },
-    { "dylib",        MS_DYLIB,        "insert",   MS_INSERT,   1 },
-    { "dylib",        MS_DYLIB,        "delete",   MS_DELETE,   1 },
-    { "dylib",        MS_DYLIB,        "reexport", MS_REEXPORT, 1 },
-    { "rpath",        MS_RPATH,        "replace",  MS_REPLACE,  2 },
-    { "rpath",        MS_RPATH,        "delete",   MS_DELETE,   1 },
-    { "rpath",        MS_RPATH,        "append",   MS_APPEND,   1 },
-    { "rpath",        MS_RPATH,        "insert",   MS_INSERT,   1 },
-    { "target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0 },
+#define MS_ROW(K, KE, O, OE, N, F, M, ORD, D) { K, KE, O, OE, N, F, M, ORD, (unsigned)(D), 1 },
+    MS_TABLE_ROWS(MS_ROW)
+#undef MS_ROW
 };
 static const int MS_TABLE_N = (int)(sizeof MS_TABLE / sizeof MS_TABLE[0]);
 
-int ms_table_row(int i, const char **kind, const char **op, int *nargs) {
+int ms_table_row(int i, const char **kind, const char **op, int *nargs,
+                 const char **flag, unsigned *modes, unsigned *disturbs) {
     if (i < 0 || i >= MS_TABLE_N) return 0;
     *kind = MS_TABLE[i].kind; *op = MS_TABLE[i].op; *nargs = MS_TABLE[i].nargs;
+    *flag = MS_TABLE[i].flag; *modes = MS_TABLE[i].modes;
+    *disturbs = MS_TABLE[i].disturbs;
     return 1;
+}
+
+unsigned ms_disturbs(int kind, int op) {
+    int i;
+    for (i = 0; i < MS_TABLE_N; i++)
+        if (MS_TABLE[i].k == kind && MS_TABLE[i].o == op)
+            return MS_TABLE[i].disturbs;
+    return ~0u;
+}
+
+int ms_row_disturbs_declared(int i) {
+    if (i < 0 || i >= MS_TABLE_N) return 0;
+    return MS_TABLE[i].declared;
+}
+
+int ms_mode_op(int i, unsigned mode, const char **op) {
+    int idx[sizeof MS_TABLE / sizeof MS_TABLE[0]];
+    int n = 0, a, b;
+    for (a = 0; a < MS_TABLE_N; a++)
+        if (MS_TABLE[a].modes & mode) idx[n++] = a;
+    /* Insertion sort by ops_ord, and stable, so that EVERY row this verb
+     * offers is listed exactly once whatever the keys say: the keys decide
+     * the order, never whether a row appears. A new operation cannot be
+     * advertised-but-unparseable, or parseable-but-unadvertised, the way the
+     * two hand-maintained lists this table replaced could. */
+    for (a = 1; a < n; a++) {
+        int v = idx[a];
+        for (b = a; b > 0 && MS_TABLE[idx[b - 1]].ops_ord > MS_TABLE[v].ops_ord; b--)
+            idx[b] = idx[b - 1];
+        idx[b] = v;
+    }
+    if (i < 0 || i >= n) return 0;
+    *op = MS_TABLE[idx[i]].op;
+    return 1;
+}
+
+int ms_verb_op(const char *flag, unsigned mode, int *op, int *nargs) {
+    int i;
+    for (i = 0; i < MS_TABLE_N; i++) {
+        if (!MS_TABLE[i].flag || !(MS_TABLE[i].modes & mode)) continue;
+        if (strcmp(flag, MS_TABLE[i].flag) != 0) continue;
+        *op = MS_TABLE[i].o; *nargs = MS_TABLE[i].nargs;
+        return 1;
+    }
+    return 0;
 }
 
 const char *ms_kind_name(int kind) {

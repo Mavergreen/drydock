@@ -96,13 +96,63 @@ void ms_free(ms_script *s);
 const char *ms_kind_name(int kind);
 const char *ms_op_name(int op);
 
+/* Which verb grammar offers a row's operation. `machotool dylib` and
+ * `machotool rpath` take their operations from the SAME table an edit
+ * script's statements come from -- `dylib -insert P` and `dylib insert P`
+ * are one operation with two spellings -- so each row says which of the two
+ * verbs may spell it. A row no verb offers (every statement that is not a
+ * dylib or rpath operation) carries 0 and a NULL flag. */
+enum { MS_MODE_DYLIB = 1u << 0, MS_MODE_RPATH = 1u << 1 };
+
 /* Enumerates the statement table row by row (0-based `i`), for a caller like
  * --capabilities that must generate its advertised vocabulary from the same
  * data ms_parse matches statements against, rather than maintaining a
  * second, hand-copied list that can drift out of agreement with this one.
- * Fills `*kind`, `*op`, `*nargs` and returns 1 for a valid row index;
- * returns 0 once `i` is past the last row, so a caller can loop
- * `for (i = 0; ms_table_row(i, &k, &o, &n); i++)`. */
-int ms_table_row(int i, const char **kind, const char **op, int *nargs);
+ * Fills every out-parameter and returns 1 for a valid row index; returns 0
+ * once `i` is past the last row, so a caller can loop
+ * `for (i = 0; ms_table_row(i, &k, &o, &n, &f, &m, &d); i++)`.
+ *
+ * `*flag` is the verb spelling ("-replace") or NULL for a row no verb
+ * offers; `*modes` is an MS_MODE_* mask, 0 when `*flag` is NULL; `*disturbs`
+ * is the row's MREL_* mask (src/relations.h) -- see ms_disturbs. */
+int ms_table_row(int i, const char **kind, const char **op, int *nargs,
+                 const char **flag, unsigned *modes, unsigned *disturbs);
+
+/* Which referents this operation disturbs, as an MREL_* mask
+ * (src/relations.h): what a run of it leaves pointing at the wrong thing, so
+ * a caller can derive which repairs and which checks a run needs instead of
+ * hand-writing a condition per site.
+ *
+ * A kind/op pair this table does not carry disturbs EVERYTHING (~0u). That
+ * is the safe direction and it is deliberate: an unknown operation that
+ * answered 0 would silently switch off every check that consults this, which
+ * is the failure this column exists to prevent.
+ *
+ * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
+ * Decision 2 -- "disturbs" means the referent CHANGES such that references to
+ * it go stale, not that bytes were written near it. */
+unsigned ms_disturbs(int kind, int op);
+
+/* Did row `i` declare its disturbs mask, rather than inherit a zero nobody
+ * chose? "Nothing" is a real and common answer -- five of the rows -- so it
+ * has to be SPELLED, and a row that spells nothing at all must be
+ * distinguishable from one that spells MREL_NONE. The table makes skipping
+ * it a compile error (see MS_TABLE_ROWS in src/script.c); this is how a test
+ * can state that from outside. Returns 0 for a row index past the end. */
+int ms_row_disturbs_declared(int i);
+
+/* The i-th operation `mode`'s verb offers, in the order --capabilities has
+ * always listed them -- which is NOT this table's row order, and cannot be:
+ * the "statement " lines and the "ops=" lists are both frozen interface text
+ * and the two orders disagree for `dylib`. Returns 0 once `i` is past the
+ * last operation that verb offers. */
+int ms_mode_op(int i, unsigned mode, const char **op);
+
+/* Looks up the verb operation `mode` spells `flag` (e.g. "-reexport"),
+ * filling `*op` with its MS_* op and `*nargs` with the operands it takes
+ * after the flag. Returns 0 when this verb has no such operation -- which is
+ * how `rpath -reexport` is refused: the table simply has no rpath row for
+ * it, the same answer a flag no verb offers gets. */
+int ms_verb_op(const char *flag, unsigned mode, int *op, int *nargs);
 
 #endif
