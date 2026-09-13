@@ -14,6 +14,7 @@
 
 - **The safety rule: any passage stating a constraint must either become a test or keep a one-line form. Never both deleted and untested.**
 - **A surviving load-bearing comment must carry a tag from a closed set of two** (family vocabulary, adopted 2026-09-12): `platform:` for a platform fact that bit us, `spec:` for a pointer to where the decision lives. The tag is the leading word after the comment opener — `# platform: …` in shell, `/* platform: … */` in C. Anything else load-bearing becomes a test instead. A header's compressed interface contract is not a *reason* and carries no tag.
+- **A comment citing a test must not imply the test is exhaustive unless it is.** Say "exercises this" rather than "is the enumeration". Where a claim has parts nothing can reach — a TOCTOU window, an allocation failure with no injection point — the test's own comment names them and says why they are out of reach. A constraint may go untested when nothing can trigger it, but then somebody has to be told; an unstated judgment reads as an oversight.
 - **Every new test's FAIL message must carry the knowledge the deleted comment held.** Not "expected both halves" but what a user loses. A test whose failure says only "assertion failed" has thrown away the thing the comment was protecting: the comment rots silently, the failure message is read at exactly the moment it is needed.
 - **Every new test must be mutation-checked**: break the thing it describes, watch that test fail, revert, and record it. A test that cannot fail is worse than no test.
 - **Take the mutation record after the last assertion exists.** A record taken earlier goes stale silently; that has already happened once in this repo.
@@ -147,7 +148,7 @@ Replace `src/edit.h:139-153` — the whole inventory, from "REPORT, to o->log." 
 ```c
  * REPORT, to o->log. A refusal that has read the image names both files and
  * what became of each; one that never got that far says only what it can.
- * tests/cli_test.sh's "refusal inventory" block is the enumeration.
+ * tests/cli_test.sh's "edit refusal inventory" block exercises this.
 ```
 
 - [ ] **Step 6: Run everything and commit**
