@@ -26,7 +26,7 @@
 - **Run the family gates from a main-based shipyard**, never `../mavericks-shipyard` (a feature branch, spurious failures): `sh /Users/schmonz/Documents/code/trees/mavericks-shipyard-readme-gate/scripts/check-family-conventions.sh .` and the same path's `check-shell-portability.sh .`.
 - **Do not touch `README.md`.** Its rewrite, and removing its unreviewed-human marker, belong to the repo owner.
 - **Do not touch** `tests/compat-matrix.tsv`, `tests/compat-sweep.sh`'s `refuser=` value, completed plans and specs, or the two dated research records.
-- **Do not fix code defects here.** `src/rewrite.c`'s three unchecked `calloc`s stay as they are, disclosure comment included: a sweep that also changes behaviour is a sweep nobody can review.
+- **Do not fix code defects here.** `src/rewrite.c`'s **two** unchecked `calloc`s (`:785` and `:848`, both `mr_process_thin`'s `new_lcs` tables) stay as they are, disclosure comment included: a sweep that also changes behaviour is a sweep nobody can review. Corrected 2026-09-12 from "three" — see the spec's Out of scope for the measurement.
 - Committed text never names plan artifacts. Build dir: `B=/private/tmp/mm-build/schmonz/macho-tools/native`.
 
 ## File structure
@@ -386,19 +386,23 @@ git commit -m "docs(change_dylib): the divergences live in compat/README.md, hel
 grep -nE 'MR_FAIL|MR_REFUSED|rc.*-eq 2|rc.*-eq 1' tests/cli_test.sh | head -20
 ```
 
-The rule is: `MR_FAIL` (2) for an operational failure — a syscall, a malloc — and `MR_REFUSED` (1) for anything that examined the bytes and declined. If no test pins both sides, write one:
+The rule is: `MR_FAIL` (2) for an operational failure — a syscall, a malloc — and `MR_REFUSED` (1) for anything that examined the bytes and declined.
 
-```sh
-# The dividing line rewrite.h draws: 2 means the tool could not do its job,
-# 1 means it looked and declined. A reader can only trust that if something
-# checks both sides of it.
-rc=0; "$MACHOTOOL" dylib "$T/nosuchfile" "$T/dl.out" -append /x >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "exit codes: an unopenable input is operational failure (2)" \
-                || bad "exit codes" "unopenable input gave $rc, want 2"
-printf 'this is not a mach-o\n' >"$T/dl_text"
-rc=0; "$MACHOTOOL" dylib "$T/dl_text" "$T/dl.out" -append /x >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 1 ] && ok "exit codes: bytes examined and declined is refusal (1)" \
-                || bad "exit codes" "non-Mach-O gave $rc, want 1"
+**Answered in advance, 2026-09-12, by measuring: it is already tested, so write
+no new test for it.** `tests/cli_test.sh:1364-1388` is a section headed *"dylib:
+pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file and
+mi_open"*, and it pins both sides — a non-Mach-O file exits 1 (*"a non-Mach-O
+file is refused (EX_REFUSED)"*), an absent file exits 2 (*"an absent file is a
+failure, not a refusal (EX_FAIL)"*), plus a 64-bit fat case. Its own header
+even records its mutation proof.
+
+This plan originally printed a sample test here. That sample was a near-exact
+duplicate of those assertions, and verbatim duplication of a logic block is a
+defect under the review rubric. **Confirm the section is still there, then
+treat the dividing line as bucket 2: delete the prose, add nothing.**
+
+```bash
+sed -n '1364,1390p' tests/cli_test.sh   # confirm before deleting the prose
 ```
 
 - [ ] **Step 2: Mutation-check it**
@@ -412,18 +416,25 @@ size refusals, and the 21-byte text fixture trips the second, not the first:
 | `src/rewrite.c:1291` | `st.st_size < 4` | `too small to be a Mach-O` | `MR_REFUSED` |
 | `src/rewrite.c:1366` | `st_size < sizeof(struct mach_header_64)` | `too short to be a 64-bit Mach-O (N bytes, need at least 32)` | `MR_REFUSED` |
 
-Measured: `dylib` on `this is not a mach-o\n` (21 bytes) exits 1 with the
-**`:1366`** message; a 2-byte file exits 1 with the `:1291` message. So
-mutating `:1291` leaves both assertions green — the test would look
-unfalsifiable when in fact the mutation simply missed it.
+Measured: `dylib` on a 21-to-25-byte text file exits 1 with the **`:1366`**
+message; a 2-byte file exits 1 with the `:1291` message. The existing
+non-Mach-O assertion at `cli_test.sh:1374-1381` feeds
+`not a mach-o, just bytes` (25 bytes), so **it reaches `:1366` only**.
+Mutating `:1291` would leave the whole section green — the mutation would
+simply miss, while looking like a test that cannot fail.
 
-Mutate the site the test reaches: make the `:1366` branch's refusal return
-`MR_FAIL`. The second assertion must fail, the first must still pass. Revert
-and confirm `git diff src/rewrite.c` is empty.
+So there are two separate jobs here, and Step 1 already settled that no new
+test is needed for the split itself:
 
-Then, since a second distinct refusal is one `printf` away, pin it too — a
-sub-4-byte input is the shorter-than-the-magic case, a different claim from
-"shorter than a header":
+**(a) Prove the existing section can fail.** Make the `:1366` branch's refusal
+return `MR_FAIL`. `cli_test.sh`'s *"a non-Mach-O file is refused
+(EX_REFUSED)"* assertion must fail, and *"an absent file is a failure, not a
+refusal"* must still pass. Revert; confirm `git diff src/rewrite.c` is empty.
+
+**(b) Then add the one assertion that is genuinely missing.** `:1291` — the
+sub-4-byte case, a file too short to even hold a magic number — is reached by
+nothing in the suite. That is a distinct claim from "shorter than a header",
+and it is one `printf` away:
 
 ```sh
 printf 'ab' >"$T/dl_tiny"
@@ -436,7 +447,9 @@ Mutation-check that one against `:1291`.
 
 - [ ] **Step 3: Keep the constraints, delete the essays**
 
-Keep, compressed: the `MR_FAIL`/`MR_REFUSED` dividing line as a two-line rule citing the test; `mr_apply_file`'s signature contract (`path` is read, `out` is written, `out` may not be `path`); the **unenforced precondition** that `ops`'s arrays respect `MR_MAX_OPS`/`MR_MAX_STRIP` — that is a constraint a caller can violate with no diagnostic, so it is bucket 3 and stays; and the disclosure that three `calloc`s go unchecked, which stays until the defect is fixed elsewhere.
+Keep, compressed: the `MR_FAIL`/`MR_REFUSED` dividing line as a two-line rule citing `tests/cli_test.sh`'s "pinning the MR_REFUSED/MR_FAIL split" section; `mr_apply_file`'s signature contract (`path` is read, `out` is written, `out` may not be `path`); the **unenforced precondition** that `ops`'s arrays respect `MR_MAX_OPS`/`MR_MAX_STRIP` — that is a constraint a caller can violate with no diagnostic, so it is bucket 3 and stays; and the disclosure that **two** `calloc`s go unchecked, which stays until the defect is fixed elsewhere.
+
+`src/rewrite.h:404` already states that count correctly ("its two `new_lcs` callocs"). **Keep its number; do not "correct" it upward** — this plan said three until 2026-09-12 and the header was right.
 
 Delete: the historical account of what `change_dylib.c` did, the rationale for why the fd is opened up front (the code says `O_RDONLY` and a one-line comment suffices), and the long explanations of `mr_process_fat`'s slice loop now that `mfat_rewrite` owns the layout.
 

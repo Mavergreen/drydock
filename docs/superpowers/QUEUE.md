@@ -173,9 +173,12 @@ against `src/edit.c`, the buffer-level seams item 2 exposed (`mr_apply_image`,
   reverse of `-insert A -insert B`. A generator that emits scripts from verb
   lines (`compat/translate.sh`, per the spec's "Consumers") must reverse them.
 
-**For item 6** (pre-existing, found along the way): `src/rewrite.c`'s three
-unchecked `calloc`s (two in `mr_process_thin`, one in `mr_process_fat`) crash
-rather than refuse on allocation failure; about 87 older comments across the
+**For item 6** (pre-existing, found along the way): `src/rewrite.c`'s **two**
+unchecked `calloc`s (`:785` and `:848`, both `mr_process_thin`'s `new_lcs`
+tables) crash rather than refuse on allocation failure. Corrected 2026-09-12:
+this said three, one of them in `mr_process_fat`. `mr_process_fat` allocates
+nothing, and `mr_apply_file`'s `malloc` at `:1325` is checked. The code's own
+comments had it right all along (`rewrite.c:1283`, `rewrite.h:404`); about 87 older comments across the
 tree still name plan artifacts ("Task N", briefs, rounds) — all predate item 2.
 In `md_declassify_buf` (`src/declassify.c`), the first-section walk and the
 `__LINKEDIT` extension go through `segs[]` pointers taken before the loop that

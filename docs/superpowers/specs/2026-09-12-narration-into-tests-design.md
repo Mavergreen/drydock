@@ -178,9 +178,24 @@ moves rather than dies. This is not inconsistent; it is the difference between
   `README.md`.
 - **Module prefixes** (`mi_`, `mr_`, `mg_`, …). A readability decision no single
   design should make unilaterally; it belongs to the human review.
-- **Code defects carried into item 6**, notably `src/rewrite.c`'s three
-  unchecked `calloc`s. Those are code, not comments. They should be fixed, but
-  not here — a sweep that also changes behaviour is a sweep nobody can review.
+- **Code defects carried into item 6**, notably `src/rewrite.c`'s **two**
+  unchecked `calloc`s — `:785` and `:848`, both `mr_process_thin`'s `new_lcs`
+  tables, each passed straight to `mr_build_lcs` with no NULL check. Those are
+  code, not comments. They should be fixed, but not here — a sweep that also
+  changes behaviour is a sweep nobody can review.
+
+  **Corrected 2026-09-12.** This said "three", and `QUEUE.md` placed the third
+  in `mr_process_fat`. Measured: `mr_process_fat` allocates nothing at all, and
+  the `malloc` at `:1325` *is* checked (`if (!buf) … return MR_FAIL`). The
+  miscount came from reading `grep -c calloc` (3) instead of the hits — the
+  third is the comment at `:1283` that says the count correctly.
+
+  Worth noting which prose was right: `rewrite.c:1283` ("both of
+  `mr_process_thin`'s `new_lcs` tables") and `rewrite.h:404` ("its two
+  `new_lcs` callocs") were both accurate. The planning documents were the ones
+  that rotted. That is not a counterexample to this design — it is the
+  mechanism: a comment beside the code gets re-read whenever the code is
+  touched, and a number in a doc two directories away never does.
 - The remaining files below the worst-offender threshold, pending the first
   pass's result.
 
