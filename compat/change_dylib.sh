@@ -34,8 +34,7 @@ mw_translate change_dylib "$@" || exit $?
 mw_prepare "$1" || exit 1
 
 # spec: an invocation naming no operation emits no command, so there is nothing
-# to run and no temp to install (compat/README.md, "change_dylib: an invocation
-# that asks for nothing").
+# to run and no temp to install (compat/README.md, "change_dylib: stdout").
 [ "$MW_NCMDS" -eq 0 ] && exit 0
 
 mw_retranslate change_dylib "$@" || exit 1
