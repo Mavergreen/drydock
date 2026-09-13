@@ -65,7 +65,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # CLI executable without a target-name collision. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(machotoolcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c)
+add_library(machotoolcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c)
 target_include_directories(machotoolcore PUBLIC src)
 target_compile_options(machotoolcore PRIVATE -O2 -Wall)
 
@@ -264,6 +264,14 @@ add_executable(linkedit_test tests/linkedit_test.c)
 target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(linkedit_test PRIVATE machotoolcore)
 add_test(NAME linkedit_test COMMAND linkedit_test)
+
+# Hermetic tests for src/relations.c: hand-built images, no fixture file, so
+# liveness never depends on what the host linker emits -- the dependence that
+# made cli_test's build-version fixtures pass here and fail on the cross runner.
+add_executable(relations_test tests/relations_test.c)
+target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(relations_test PRIVATE machotoolcore)
+add_test(NAME relations_test COMMAND relations_test)
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
 # directory under $TMPDIR: it never writes its input, it writes its output
