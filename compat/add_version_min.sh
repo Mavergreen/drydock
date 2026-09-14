@@ -1,20 +1,22 @@
 #!/bin/sh
-# add_version_min -- a /bin/sh wrapper around `machotool minos FILE OUT 10.9`.
+# add_version_min -- a /bin/sh wrapper around `machotool FILE OUT` with one
+# `version-min set 10.9` statement on its stdin.
 #
 #   add_version_min binary
 #
 # WHAT THIS REPLACED. compat/add_version_min.c was eighteen lines: an argc
-# check and a call to mv_add_version_min (src/version_min.h). `machotool minos`
-# calls that same function, so the only thing this wrapper has to reshape is
-# WHERE THE RESULT LANDS.
+# check and a call to mv_add_version_min (src/version_min.h). The
+# `version-min set` statement calls that same function, so the only thing this
+# wrapper has to reshape is WHERE THE RESULT LANDS.
 #
-# GRAMMAR. `add_version_min FILE` -> `machotool minos FILE OUT 10.9`. The version
-# is spelled out because the C tool hardcoded 10.9 (mv_add_version_min only
-# knows that floor); `machotool minos` refuses any other, which is why the
-# translation can name it literally rather than passing something through.
+# GRAMMAR. `add_version_min FILE` -> `printf 'version-min set 10.9\n' |
+# machotool FILE OUT`. The version is spelled out because the C tool hardcoded
+# 10.9 (mv_add_version_min only knows that floor); ms_parse accepts no other,
+# which is why the translation can name it literally rather than passing
+# something through.
 #
-# THE IN-PLACE EDIT. add_version_min rewrote FILE; `machotool minos` does not
-# write the file it is given. So this wrapper does what the old tool looked
+# THE IN-PLACE EDIT. add_version_min rewrote FILE; machotool does not write
+# the file it is given. So this wrapper does what the old tool looked
 # like it did, safely: mw_prepare names a temp beside the file FILE really is
 # (following symlinks, refusing an unwritable FILE or one with other hard
 # links), mw_retranslate re-emits the command with that temp as OUT,
@@ -46,24 +48,31 @@
 # still exits 1 here, matching the C tool by coincidence, not construction; an
 # operational failure now exits 2, where the C tool always exited a flat 1
 # -- see compat/README.md's "drop-in" section for this as a named
-# exception. `machotool minos`' two exit codes of its own are unreachable from
-# here: EX_REFUSED=1 for a version other than 10.9, since this wrapper only
-# ever emits 10.9, and EX_FAIL=2 for an OUT that is FILE, since mw_prepare
-# names a temp that is neither. The wrapper's OWN refusals -- an absent or
+# exception. The two exit codes the COMMAND has of its own are unreachable
+# from here: EX_FAIL=2 for a script that does not parse, since the one
+# statement is emitted by compat/translate.sh rather than typed, and EX_FAIL=2
+# for an OUT that is FILE, since mw_prepare names a temp that is neither. The wrapper's OWN refusals -- an absent or
 # unwritable FILE (`open: ...`, mw_require_writable's words, which are the C
 # tool's own open() failing), a hard-linked FILE, and a failed install -- all
 # exit 1, the only failure code this tool ever had.
 #
-# STDOUT. What mv_add_version_min prints ("Added LC_VERSION_MIN_MACOSX 10.9
-# (ncmds=..., sizeofcmds=...)", or "LC_VERSION_MIN_MACOSX already present;
-# nothing to do.") -- byte-identical to the C tool's, and not by construction
-# alone: every one of the five add_version_min rows in tests/compat-matrix.tsv
-# compared equal on stdout. The one line this wrapper does suppress is
-# `machotool minos`'s closing "Wrote OUT (N bytes)", which names a temp file no
-# caller has ever heard of and no C tool ever printed; mw_run_to_tmp drops it.
+# STDOUT -- ONE OF THE C TOOL'S TWO LINES, and this is the one place the
+# wrapper's text is not what it was. mv_add_version_min printed either
+# "LC_VERSION_MIN_MACOSX already present; nothing to do." or "Added
+# LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)". The first still
+# comes through on stdout, from the same printf inside the same function. The
+# second does NOT: that line belongs to the `minos` VERB, which a script does
+# not call, and a `version-min set 10.9` statement announces its append on
+# STDERR instead -- "      appended LC_VERSION_MIN_MACOSX 10.9" (src/edit.c).
+# Nothing reads it: tests/known-callers.sh's evidence is that every caller
+# sends stdout to /dev/null and branches on the exit code, and the repo owner
+# ruled on 2026-09-13 that wrapper text may change where bytes and exit codes
+# may not. tests/wrapper_test.sh's add_version_min block asserts both halves --
+# stdout empty on an append, the announcement present on stderr -- so the move
+# is pinned rather than merely tolerated.
 #
-# STDERR. mv_add_version_min's own diagnostics, unchanged, plus the teaching
-# message this wrapper prints ahead of them.
+# STDERR. mv_add_version_min's own diagnostics, the statement report above,
+# and the teaching message this wrapper prints ahead of both.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHOTOOL_COMPAT_DIR:-$(dirname "$MW_SELF")}

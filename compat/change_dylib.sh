@@ -1,17 +1,17 @@
 #!/bin/sh
-# change_dylib -- a /bin/sh wrapper around machotool's `lc`, `dylib` and
-# `rpath`, or one `machotool edit FILE OUT -` when the invocation touches more
-# than one of those families. The tool with the most callers; every one of them
-# is replayed end to end by tests/known-callers.sh.
+# change_dylib -- a /bin/sh wrapper around one `machotool FILE OUT`, with
+# every operation the invocation asks for as a statement on its stdin. The
+# tool with the most callers; every one of them is replayed end to end by
+# tests/known-callers.sh.
 #
 #   change_dylib input [-grow] [-change old new] [-delete path]
 #                 [-reexport path] [-add path] [-insert path]
 #                 [-strip-lc name] [-change-rpath old new]
 #                 [-delete-rpath path] [-add-rpath path] ...
 #
-# spec: compat/translate.sh holds the grammar -- which verb each flag becomes,
-# the statement order inside one `machotool edit`, the two capacity caps, and
-# every refusal made before any I/O. compat/README.md's "change_dylib" tables
+# spec: compat/translate.sh holds the grammar -- which statement each flag
+# becomes, the order they are emitted in, the two capacity caps, and every
+# refusal made before any I/O. compat/README.md's "change_dylib" tables
 # hold every way this behaves differently from the C tool it replaced, each row
 # naming the test that holds it.
 

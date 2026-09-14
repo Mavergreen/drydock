@@ -1,19 +1,20 @@
 #!/bin/sh
-# retag_swift_classes -- a /bin/sh wrapper around `machotool retag-swift FILE OUT`.
+# retag_swift_classes -- a /bin/sh wrapper around `machotool FILE OUT` with one
+# `swift-abi set legacy` statement on its stdin, once per argument.
 #
 #   retag_swift_classes binary [binary ...]
 #
 # WHAT THIS REPLACED. compat/retag_swift_classes.c was a multi-file argv loop,
 # two messages and a `had_error ? 1 : 0` exit over mswift_retag_file
-# (src/swift_retag.h) -- the same function `machotool retag-swift` calls. Why the
+# (src/swift_retag.h) -- the same image the `swift-abi set legacy` statement
+# retags. Why the
 # retag is needed (a Swift runtime built for a pre-10.14.4 target tests the
 # LEGACY is-swift bit, while a modern linker sets the stable-ABI one) is
 # written down in src/swift_retag.h, which outlives this front-end.
 #
-# GRAMMAR -- THE ONE VARIADIC TOOL. `machotool retag-swift` takes exactly ONE
-# file (and now names its own output, since it no longer writes the file it
-# is given); this tool takes any number. So the translation is a LOOP, one
-# emitted `retag-swift`+install pair per argument in argv order, and this
+# GRAMMAR -- THE ONE VARIADIC TOOL. One machotool command names exactly ONE
+# FILE and one OUT; this tool takes any number of files. So the translation is
+# a LOOP, one emitted command+install pair per argument in argv order, and this
 # wrapper runs them one at a time rather than through mw_run: mw_run evaluates
 # a translation as ONE script and hands back one exit code, and this tool
 # needs each file's own code and each file's own stdout to rebuild its
@@ -90,20 +91,18 @@
 #
 # STDOUT -- REBUILT, because two things differ:
 #
-#   * `machotool retag-swift` prints its per-file "%s: retagged %d class
-#     record(s)" line ALWAYS, followed by its own "Wrote ..." line naming the
-#     temp; retag_swift_classes printed the count line only when it was
-#     nonzero, and never named a temp at all.
+#   * a `swift-abi set legacy` statement reports what it retagged on STDERR,
+#     as "      retagged %d class record%s" (src/edit.c), or "      nothing to
+#     retag" when there was none; retag_swift_classes printed a count line on
+#     STDOUT, only when it was nonzero, and named no temp at all.
 #   * retag_swift_classes ends with "total: %d class record(s) retagged",
-#     which a single-file verb has nothing to say about.
+#     which one file's run has nothing to say about.
 #
-# So machotool's stdout is captured, the count is read back out of it, and this
-# wrapper prints the C tool's two messages itself -- machotool's own stdout for
-# each file is never forwarded, so its closing "Wrote ..." line never needs
-# separate suppression the way mw_run_to_tmp suppresses it for a single-shot
-# wrapper. The count is extracted with an anchored substitution over machotool's
-# own stable output -- the same oracle tests/cli_test.sh asserts against, and
-# explicitly not otool/nm text (tests/README.md's second lesson).
+# So machotool's streams are captured, the count is read back out of its
+# report, and this wrapper prints the C tool's two messages itself. The count
+# is extracted with an anchored substitution over machotool's own stable output
+# -- the same oracle tests/cli_test.sh asserts against, and explicitly not
+# otool/nm text (tests/README.md's second lesson).
 # tests/leaf-tool-crashes.sh greps stdout for "^total: 0 class record(s)
 # retagged$" on a deliberately malformed fixture, so the total line is
 # load-bearing, not decoration.
@@ -142,9 +141,13 @@ for mw_f in "$@"; do
     mw_rc=$?
     case $mw_rc in
     0)
-        cat "$MW_T/err" >&2
-        mw_n=$(sed -n 's/^.*: retagged \([0-9][0-9]*\) class record(s)$/\1/p' "$MW_T/out")
+        # Read BEFORE the forward, because the report is on stderr now: the
+        # statement's own "      retagged N class record(s)" line, whose noun
+        # is singular for one record. A run with nothing to retag says
+        # "nothing to retag" and matches neither, which is the 0 this wants.
+        mw_n=$(sed -n 's/^  *retagged \([0-9][0-9]*\) class records*$/\1/p' "$MW_T/err")
         [ -n "$mw_n" ] || mw_n=0
+        cat "$MW_T/err" >&2
         if mw_finish; then
             if [ "$mw_n" -gt 0 ]; then
                 printf '%s: retagged %d class record(s)\n' "$mw_f" "$mw_n"

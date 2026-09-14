@@ -6,14 +6,14 @@
 #
 # Each wrapper is then a handful of lines of its own: translate this argv,
 # teach the equivalent on stderr, run it, and map the exit code and stdout
-# back to what the C tool it replaced would have produced. A wrapper whose
-# verb has been converted to write an OUTPUT instead of rewriting its input
-# has two more steps -- run it into a temp beside the caller's file, then
-# install that temp over the file. ALL SIX take those two steps now, including
-# patch_macho.sh, whose grammar has always named its own output: the temp goes
-# beside that output and is installed onto it, which is also how `patch_macho
-# IN IN` keeps working now that machotool refuses an OUT that is its input. See
-# "the install path" below.
+# back to what the C tool it replaced would have produced. machotool writes an
+# OUTPUT rather than rewriting its input, so every wrapper has two more steps
+# -- run it into a temp beside the caller's file, then install that temp over
+# the file. ALL SIX take those two steps, including patch_macho.sh, whose
+# grammar has always named its own output: the temp goes beside that output
+# and is installed onto it, which is also how `patch_macho IN IN` keeps
+# working now that machotool refuses an OUT that is its input. See "the
+# install path" below.
 #
 # WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
 # old-grammar-to-machotool translation in ONE file (compat/translate.sh) so that
@@ -180,21 +180,17 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    # COMMANDS, not lines. `machotool edit FILE OUT -` carries its statements in a
-    # here-document, so one command can be six lines; a command is a line that
-    # STARTS with the program word (compat/translate.sh's output contract says
-    # so, and mt_pre_word is where that word comes from) -- or with `mv -f`,
+    # COMMANDS, and every one of them is now exactly one line: a machotool
+    # command is `printf FORMAT | machotool FILE OUT` -- the bare form, with the
+    # statements in the format rather than in a here-document -- or `mv -f`,
     # the install step mt_install_line appends to the teaching form, which is
-    # a command a reader would type too. A statement line cannot be mistaken
-    # for either -- every statement begins with its kind.
-    #
-    # Through the environment, not `awk -v`, for the reason mw_run_to_tmp's own
-    # comment gives at length: `-v` escape-processes what it assigns, so a
-    # $MACHOTOOL containing a backslash would make awk look for a word the emitted
-    # lines do not start with, and every command would go uncounted.
+    # a command a reader would type too. Both markers are fixed text this file
+    # and compat/translate.sh agree on, so neither depends on $MACHOTOOL: a
+    # program word carrying a backslash or a space used to have to reach awk
+    # through the environment to be compared correctly, and now it is not
+    # compared at all.
     MW_NCMDS=$(printf '%s\n' "$MW_CMDS" \
-        | MW_PRE="$(mt_pre_word) " awk \
-            'index($0, ENVIRON["MW_PRE"]) == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
+        | awk 'index($0, "printf ") == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
     mw_teach
     return 0
 }
@@ -214,15 +210,11 @@ mw_teach() {
         printf '%s: deprecated -- machotool does this now. The equivalent commands, in this order, are:\n' \
             "$MW_TOOL" >&2
     fi
-    # Indent the COMMAND lines only. A here-document's body and its terminator
-    # have to start where they start: `MACHOTOOL_EDIT` with four spaces in front
-    # of it does not end the here-document, so an indented block would teach a
-    # command that hangs when it is pasted. Leading whitespace before the
-    # command itself is harmless, so the block still reads as a block. The
-    # same two-part test mw_translate counts with, for the same reason.
-    printf '%s\n' "$MW_CMDS" \
-        | MW_PRE="$(mt_pre_word) " awk \
-            '{ if (index($0, ENVIRON["MW_PRE"]) == 1 || index($0, "mv -f ") == 1) print "    " $0; else print }' >&2
+    # Every line is a whole command now -- the statements ride inside the
+    # `printf` format rather than in a here-document whose body and terminator
+    # had to start in column one -- so the whole block is indented, and what is
+    # shown stays pasteable verbatim.
+    printf '%s\n' "$MW_CMDS" | awk '{ print "    " $0 }' >&2
     return 0
 }
 
@@ -230,21 +222,17 @@ mw_teach() {
 #
 # mw_run -- run the translation, and return its exit code.
 #
-# THIS NO LONGER LOOPS, and that is the whole point of the change that removed
-# the loop: an old invocation that would have been a sequence of machotool
-# commands is now ONE `machotool edit FILE OUT -` with the operations as statements
-# on stdin, so a translation is at most one command and there is no sequence
-# left to step through. (compat/retag_swift_classes.sh is the one
+# THIS DOES NOT LOOP: an old invocation that would have been a sequence of
+# machotool commands is ONE `printf ... | machotool FILE OUT` with the operations
+# as statements on stdin, so a translation is at most one command and there is
+# no sequence left to step through. (compat/retag_swift_classes.sh is the one
 # translation that is still several commands -- one per binary -- and it has
 # always run its own lines itself, because it needs each file's own exit code
 # and its own stdout, and one code for the whole script is not that.)
 #
-# The whole translation is eval'd as ONE script rather than line by line,
-# because a here-document only reaches `machotool`'s stdin if the shell running
-# the command also reads the lines that follow it. `</dev/null` is the default
-# stdin for the script, so a command with no redirection of its own -- every
-# verb line -- still cannot eat anything; the `edit` line's own here-document
-# redirection overrides it, which is exactly what it is for.
+# `</dev/null` is the stdin the eval'd text starts from, so nothing here can
+# eat the caller's own stdin by accident; the pipeline's own `|` is what feeds
+# machotool, and it overrides that default for the one process that wants input.
 mw_run() {
     eval "$MW_CMDS" </dev/null
 }
@@ -261,8 +249,8 @@ mw_run() {
 # conversion rather than a gap in it: a verb that writes an output opens FILE
 # O_RDONLY, so it has no opinion about whether FILE is writable -- it never
 # writes FILE. (`dylib`/`rpath`/`lc`/`segment` used to give this refusal for
-# free, from mr_apply_file's own O_RDWR; now, like `machotool edit`, they read
-# FILE O_RDONLY and only discover an unwritable OUT when they write it.) And
+# free, from mr_apply_file's own O_RDWR; a script reads FILE O_RDONLY and only
+# discovers an unwritable OUT when it writes it.) And
 # rename_segment gates on `machotool info`, which is O_RDONLY too. So preserving
 # the historical refusal is permanently this layer's job, which is why
 # mw_prepare calls this before anything runs.
@@ -284,20 +272,16 @@ mw_require_writable() {
 
 # ---- the install path ----------------------------------------------------
 #
-# NO machotool VERB WRITES THE FILE IT IS GIVEN: each is `machotool VERB FILE OUT
-# ...`, and each refuses an OUT that is FILE. They were converted one at a time
-# -- `minos` first, then `retag-swift`, then `dylib`, `rpath`, `lc` and
-# `segment` together, then `grow`, and last `edit`, whose OUT was a `--output`
-# flag until then; `declassify` always had the shape and now refuses an OUT that
-# is its IN as well. The historical tools DID
-# edit FILE in place, and their callers still expect that, so a wrapper whose
-# verb has moved reproduces it in the only way that is safe: write a temp
-# beside the real target, then mv it over. The five functions below are that
+# machotool NEVER WRITES THE FILE IT IS GIVEN: every command is
+# `machotool FILE OUT`, and it refuses an OUT that is FILE. The historical
+# tools DID edit FILE in place, and their callers still expect that, so every
+# wrapper reproduces it in the only way that is safe: write a temp beside the
+# real target, then mv it over. The five functions below are that
 # sequence, shared rather than copied into each wrapper as they arrive:
 #
 #   mw_prepare FILE       -> MW_TARGET, MW_TMPFILE   (and the refusals)
 #   mw_retranslate TOOL ARG...                       -> MW_CMDS naming the temp
-#   mw_run_to_tmp                                    -> run it, reshape stdout
+#   mw_run_to_tmp                                    -> run it, capture stdout
 #   mw_finish                                        -> install, or discard
 
 # mw_resolve PATH -- print the file PATH finally names once every symlink in
@@ -379,33 +363,31 @@ mw_retranslate() {
 }
 
 # mw_run_to_tmp -- run the translation (which writes MW_TMPFILE) with its
-# stdout captured, then pass every line through except the "Wrote <temp> (N
-# bytes)" one, which no C tool ever printed and which names a file no caller
-# has heard of. Returns machotool's status.
+# stdout captured in $MW_T/out, forward that stdout, and return machotool's
+# status. The capture is what lets a wrapper read something back out of it --
+# patch_macho.sh's `^Already patched` check is the one that does.
 #
-# Matched on the whole "Wrote <temp> (" prefix rather than on "Wrote " alone,
-# and anywhere in the output rather than only on the last line: `machotool
-# segment` follows its write with `machotool segment: renamed=N`, so for a
-# fix_macho -rename_seg the temp-naming line is not the last one. A line naming
-# anything else still comes through -- that is somebody's contract, not this
-# function's to edit.
+# THERE IS NOTHING LEFT TO FILTER OUT, and that is a consequence of the bare
+# form rather than an oversight. This used to drop a "Wrote <temp> (N bytes)"
+# line, which `mr_apply_file` printed on STDOUT and which named a file no
+# caller has heard of; a script reports its write as "<temp>: written (N
+# bytes)" on STDERR instead, beside the rest of its narration, so stdout no
+# longer carries the temp's name at all. (The name is on stderr now, where the
+# edit path has always put it -- the same stream the deprecation notice above
+# it uses.)
 #
-# THE PREFIX REACHES awk THROUGH THE ENVIRONMENT, NOT THROUGH `-v`, and that is
-# not a style choice: `awk -v x=VALUE` runs VALUE through the same escape
-# processing a string literal gets, so a path containing a backslash arrives at
-# awk as something else and the line this function exists to suppress leaks
-# through. Measured, before this was ENVIRON: `change_dylib 'back\slash/f'`
-# printed `Wrote back\slash/.f.machotool-compat.NNNNN (8528 bytes)` on stdout.
-# ENVIRON's values are taken verbatim (POSIX awk, and 10.9's), so the prefix awk
-# compares is the real temp path. The whole point of a temp beside the caller's
-# file is that its name is the caller's to choose, backslashes included -- so
-# every awk in this file passes its needle the same way, mw_translate's and
-# mw_teach's program-word tests included.
+# The lesson that filter taught outlives it: a needle built from a caller's
+# path reaches awk through the ENVIRONMENT, never through `-v`, because
+# `awk -v x=VALUE` runs VALUE through the same escape processing a string
+# literal gets. Measured, before that was ENVIRON: `change_dylib
+# 'back\slash/f'` leaked `Wrote back\slash/.f.machotool-compat.NNNNN (8528
+# bytes)` onto stdout because the needle awk compared was not the real path.
+# No awk in this file takes a caller's text any more -- mw_translate's and
+# mw_teach's needles are fixed words -- so the hazard is gone with it.
 mw_run_to_tmp() {
     mw_run >"$MW_T/out"
     mw_rc=$?
-    MW_WROTE_PREFIX="Wrote $MW_TMPFILE (" \
-        awk 'index($0, ENVIRON["MW_WROTE_PREFIX"]) != 1' "$MW_T/out"
+    cat "$MW_T/out"
     return "$mw_rc"
 }
 

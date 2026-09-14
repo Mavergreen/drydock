@@ -221,7 +221,7 @@ rc=$?
 # anything reading it, and every known caller redirects stdout to /dev/null.
 fresh
 run add_version_min f
-grep -q 'machotool minos f f.new 10.9' "$T/err" \
+grep -q "printf 'version-min set 10.9" "$T/err" \
     && ok "teaching message: on stderr" \
     || bad "teaching message" "not on stderr: $(cat "$T/err")"
 # The teaching form is COMPLETE: machotool never writes its input, so the
@@ -231,7 +231,7 @@ grep -q 'machotool minos f f.new 10.9' "$T/err" \
 has_line "$T/err" '    mv -f f.new f' \
     && ok "teaching message: ... and it names the install step too" \
     || bad "teaching message" "no 'mv -f f.new f' line: $(cat "$T/err")"
-grep -q 'machotool minos' "$T/out" \
+grep -q 'version-min set' "$T/out" \
     && bad "teaching message" "leaked onto stdout: $(cat "$T/out")" \
     || ok "teaching message: not on stdout"
 
@@ -319,7 +319,7 @@ bsrc2=$?
     || bad "add_version_min backslash path" "exit $bsrc2, stdout: $(cat "$T/bs2.out")"
 # The teaching message reaches awk the same way, for command COUNTING and for
 # indenting the block, so it is measured on the same path rather than assumed.
-grep -q '^    machotool lc ' "$T/bs.err" \
+grep -q "^    printf 'load-command delete uuid" "$T/bs.err" \
     && ok "change_dylib: ... and the teaching block is still indented and counted" \
     || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
 rm -rf "$T/bs"
@@ -736,21 +736,25 @@ chmod 644 "$T/o"; rm -f "$T/o"
 
 # 5. a fresh OUT that cannot be created, because its directory is not writable.
 #    The temp machotool writes lives beside OUT, so machotool's own mkstemp is what
-#    fails and what reports -- ONE line, and the wrapper maps its EX_FAIL to
-#    patch_macho's flat 1. Asserted as "exactly one line" (the C tool printed
-#    one perror too), which is what fails if a shell diagnostic ever leaks out
-#    beside it, and re-run under ksh because every wrapper must behave the same
-#    under both shells.
+#    fails and what reports, and the wrapper maps its EX_FAIL to patch_macho's
+#    flat 1. The perror the C tool printed must still be there, EXACTLY ONCE --
+#    twice would mean the wrapper ran the conversion a second time -- and no
+#    line may come from the SHELL, which is what would show up if the emitted
+#    pipeline were not valid text for it. (machotool narrates the statement and
+#    names the temp it could not write around that perror now; that is its
+#    report, not a shell diagnostic.) Re-run under ksh because every wrapper
+#    must behave the same under both shells.
 fresh
 rm -rf "$T/ro"; mkdir "$T/ro"; chmod 555 "$T/ro"
 for pm_sh in /bin/sh /bin/ksh; do
     [ -x "$pm_sh" ] || { skip "patch_macho: uncreatable OUT under $pm_sh" "no such shell"; continue; }
     ( cd "$T" && "$pm_sh" "$BIN/patch_macho" f ro/out ) >"$T/out" 2>"$T/err"
     rc=$?
-    # The teaching message is two lines; the tool's own diagnostic is the rest.
+    # The teaching message is two lines; machotool's own report is the rest.
     sed '1,2d' "$T/err" > "$T/err.rest"
-    [ "$rc" -eq 1 ] && [ "$(wc -l < "$T/err.rest" | tr -d ' ')" = 1 ] \
-        && grep -qxF 'mkstemp: Permission denied' "$T/err.rest" \
+    [ "$rc" -eq 1 ] \
+        && [ "$(grep -c -xF 'mkstemp: Permission denied' "$T/err.rest")" = 1 ] \
+        && ! grep -q "$pm_sh" "$T/err.rest" \
         && ok "patch_macho: an uncreatable OUT reports once, and exits 1 ($pm_sh)" \
         || bad "patch_macho uncreatable OUT ($pm_sh)" "exit $rc, stderr after the teaching message: $(cat "$T/err.rest")"
     [ ! -e "$T/ro/out" ] \
@@ -938,12 +942,20 @@ run patch_macho cfm cfm_out2
 
 # ---- add_version_min ----------------------------------------------------
 #
-# Both front-ends call mv_add_version_min, so stdout comes out of the same
-# printf -- with ONE difference the wrapper makes on purpose: `machotool minos`
-# ends by naming the file it wrote, and the C tool, which rewrote FILE in
-# place, never did. So the wrapper's stdout must be machotool's minus that final
-# "Wrote ..." line, and the bytes it installs over FILE must be machotool's OUT.
-# Asserted by running both and comparing, not by pinning a transcript.
+# THE BYTES ARE THE CONTRACT, and they are asserted against machotool's own
+# output for the same request -- run both, compare, rather than pin a
+# transcript.
+#
+# STDOUT MOVED, and this pins where it went. add_version_min printed
+# mv_add_version_min's "Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=...,
+# sizeofcmds=...)" on stdout, and so does `machotool minos`; a `version-min set
+# 10.9` STATEMENT reports the append on STDERR instead, as "      appended
+# LC_VERSION_MIN_MACOSX 10.9" (src/edit.c says why: the "Added ..." line
+# belongs to the verb, which a script does not call). The repo owner's ruling
+# of 2026-09-13 is that wrapper TEXT may change where bytes and exit codes may
+# not, so this asserts the new shape rather than the old -- but it asserts
+# BOTH halves, because a caller looking for the announcement has to be able to
+# find it somewhere.
 fresh
 strip_vm "$T/f"
 avm_in=$(sha "$T/f")
@@ -951,19 +963,23 @@ run add_version_min f
 avmrc=$rc
 cp "$T/out" "$T/avm.out"
 avmsha=$(sha "$T/f")
+avm_err_had_append=0
+grep -q 'appended LC_VERSION_MIN_MACOSX 10.9' "$T/err" && avm_err_had_append=1
 fresh
 strip_vm "$T/f"
 ( cd "$T" && "$BIN/machotool" minos f mtout 10.9 ) >"$T/mt.out" 2>/dev/null
-sed '$d' "$T/mt.out" > "$T/mt.trimmed"
-[ "$avmrc" -eq 0 ] && cmp -s "$T/avm.out" "$T/mt.trimmed" && [ "$avmsha" = "$(sha "$T/mtout")" ] \
-    && ok "add_version_min: identical to machotool minos, stdout and bytes" \
-    || bad "add_version_min" "exit $avmrc; stdout or bytes differ from machotool minos'"
+[ "$avmrc" -eq 0 ] && [ "$avmsha" = "$(sha "$T/mtout")" ] \
+    && ok "add_version_min: the bytes it installs are machotool's own" \
+    || bad "add_version_min" "exit $avmrc; the installed bytes differ from machotool minos'"
 [ "$avmsha" != "$avm_in" ] \
     && ok "add_version_min: ... and it really changed the file it was given" \
     || bad "add_version_min" "the fixture came out unchanged, so nothing above was proved"
-[ "$(sed -n '$p' "$T/mt.out" | cut -c1-6)" = 'Wrote ' ] \
-    && ok "add_version_min: the line it suppresses is machotool's own 'Wrote ...'" \
-    || bad "add_version_min" "machotool minos did not end with a Wrote line: $(cat "$T/mt.out")"
+[ ! -s "$T/avm.out" ] \
+    && ok "add_version_min: stdout is empty -- the append is announced on stderr now" \
+    || bad "add_version_min stdout" "expected nothing on stdout; got: $(cat "$T/avm.out")"
+[ "$avm_err_had_append" -eq 1 ] \
+    && ok "add_version_min: ... and stderr is where the announcement went" \
+    || bad "add_version_min stderr" "neither stream announced the appended LC_VERSION_MIN_MACOSX, so a caller reading the run has no way to tell it happened: $(cat "$T/err")"
 
 run add_version_min
 [ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/add_version_min binary" \
@@ -1091,8 +1107,8 @@ run rename_segment f __DATA __DATA
 # wrapper that recovered the count by reading names back out of `machotool info`
 # got both wrong -- it exited 2 and left the file alone where the C tool
 # renamed and exited 0. Both were measured against the pre-wrapper binary
-# before this wrapper was changed to take the count from
-# `machotool segment: renamed=<N>`.
+# before this wrapper was changed to take the count from the rewriter's own
+# per-rename line, `  Rename segment: OLD -> NEW`.
 #
 # The odd segnames are made with `machotool segment` itself, which is how they are
 # reachable in the first place; both are legal in a char[16] field. That verb
@@ -1129,10 +1145,18 @@ run rename_segment f __DUP __ONE
     && ok "rename_segment: reports the real match count, not 1" \
     || bad "rename_segment count" "exit $rc, stdout: $(cat "$T/out")"
 
-# ...and the signal that count comes from is one this build advertises.
-"$BIN/machotool" --capabilities 2>/dev/null | grep -q '^verb segment .*reports=renamed' \
-    && ok "capabilities: this build advertises segment reports=renamed" \
-    || bad "capabilities" "segment does not advertise reports=renamed, which the wrapper needs"
+# ...and the line that count is COUNTED from is one this build really prints.
+# Asserted against machotool directly, on a rename that matches, because a
+# build whose rewriter stopped naming each rename would make the wrapper
+# report 0 and exit 2 on a file it had just rewritten.
+fresh
+( cd "$T" && "$BIN/machotool" f f.seg <<'RSCAP'
+segment rename __DATA __CAPCHK
+RSCAP
+) >"$T/cap.out" 2>/dev/null
+grep -qxF '  Rename segment: __DATA -> __CAPCHK' "$T/cap.out" \
+    && ok "capabilities: this build names each segment it renames, which is where the count comes from" \
+    || bad "capabilities" "no '  Rename segment: OLD -> NEW' line, so rename_segment cannot tell a rename from a miss and would exit 2 on a file it rewrote: $(cat "$T/cap.out")"
 
 # THIN ONLY. rename_segment ran mi_open, which refuses a fat container;
 # `machotool segment` goes through mr_apply_file, which handles one. Without the
@@ -1450,14 +1474,15 @@ run fix_macho f -strip_build_version
 # /dev/null, so renaming every emitted string moved neither. What pins these
 # strings is four greps, and they are the whole list: this assertion, the
 # `matched nothing` one below it, tests/cli_test.sh's `^machotool edit: `
-# prefix check, and -- the one that is not a test -- compat/rename_segment.sh's
-# `^machotool segment: renamed=N` parser, which is production code a caller
-# depends on. All four move with the strings they read.
+# prefix check, and -- the ones that are not tests -- compat/rename_segment.sh's
+# pair, which counts `  Rename segment: OLD -> NEW` and checks the zero case
+# against `machotool: segment OLD matched nothing`, production code a caller
+# depends on for its exit code. All four move with the strings they read.
 has_line "$T/err" 'machotool: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
-has_line "$T/err" '    machotool lc f f.new -delete build-version' \
-    && ok "fix_macho: -strip_build_version translates to lc -delete build-version" \
+has_line "$T/err" "    printf 'load-command delete build-version\\n' | machotool f f.new" \
+    && ok "fix_macho: -strip_build_version translates to load-command delete build-version" \
     || bad "fix_macho -strip_build_version translation" "stderr: $(cat "$T/err")"
 
 # THE FIFTH DIVERGENCE: -change AIMED AT THIS DYLIB'S OWN INSTALL NAME.
@@ -1590,23 +1615,24 @@ fi
 
 # A SLICE THAT IS NOT A 64-BIT MACH-O IS LEFT ALONE, and the rest of the file
 # is still rewritten. This is NOT one of the five adopted changes: fix_macho
-# printed "  Skipping arch N" and carried on, and mr_process_fat's MR_SKIP path
-# does the same thing with a different message. Measured, not assumed -- the
-# plan's table describes the fat divergence as "refuses the whole file", which
-# is true only of MR_ERROR (a slice that IS a 64-bit Mach-O whose edit failed),
-# not of a slice that simply is not one. Asserting the SKIP is what keeps that
-# distinction from being quietly widened later.
+# printed "  Skipping arch N" and carried on, and the script path does the same
+# thing with a different message -- "slice i386: 32-bit; passed through
+# unchanged", on stderr, naming the architecture rather than an index.
+# Measured, not assumed -- the plan's table describes the fat divergence as
+# "refuses the whole file", which is true only of a slice that IS a 64-bit
+# Mach-O whose edit failed, not of a slice that simply is not one. Asserting
+# the SKIP is what keeps that distinction from being quietly widened later.
 #
 # 0x00000007 is CPU_TYPE_I386; the slice's bytes are filler, not a Mach-O.
 dd if=/dev/zero bs=1 count=4096 2>/dev/null | tr '\000' 'Z' > "$T/junkslice"
 fm_mkfat "$T/fat2" "$FIXTURE" 16777223 "$T/junkslice" 7
 cp "$T/fat2" "$T/fatg"
 run fix_macho fatg -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
-if [ "$rc" -eq 0 ] && grep -q 'not a 64-bit Mach-O; leaving this slice unchanged' "$T/out" \
+if [ "$rc" -eq 0 ] && grep -q 'passed through unchanged' "$T/err" \
     && LC_ALL=C grep -q -- '@loader_path/../S.dylib' "$T/fatg"; then
     ok "fix_macho: a non-64-bit slice is left unchanged and the other slice is still rewritten"
 else
-    bad "fix_macho fat skip" "exit $rc; stdout: $(cat "$T/out")"
+    bad "fix_macho fat skip" "exit $rc; stdout: $(cat "$T/out"); stderr: $(cat "$T/err")"
 fi
 
 # THE CAPACITY CAPS, in fix_macho's own words. Both moved into
@@ -1886,14 +1912,20 @@ rm -f "$T/two words"
 # ---- the emitted grammar is one this build actually has -----------------
 #
 # Same check tests/translate_test.sh makes of the translator, made here of the
-# wrappers: every verb a wrapper can reach must be one this machotool advertises.
-# Hardcoding that agreement is how the ops=/kinds= lists in cli/machotool.c
-# drifted from their own parsers once already.
+# wrappers: every STATEMENT a wrapper can reach must be one this machotool
+# advertises, with the arity the emitted script uses. Hardcoding that agreement
+# is how the ops=/kinds= lists in cli/machotool.c drifted from their own parsers
+# once already. A statement this build does not know is worse than a missing
+# verb: the script fails to parse AFTER the wrapper has already told the caller
+# what it was about to run.
 "$BIN/machotool" --capabilities > "$T/caps" 2>/dev/null
-for v in declassify minos segment retag-swift lc dylib rpath; do
-    grep -q "^verb $v" "$T/caps" \
-        && ok "capabilities: this build advertises $v" \
-        || bad "capabilities" "$v is not advertised, but a wrapper emits it"
+for st in 'fixups set 1' 'version-min set 1' 'swift-abi set 1' 'segment rename 2' \
+          'load-command delete 1' 'dylib replace 2' 'dylib delete 1' 'dylib reexport 1' \
+          'dylib append 1' 'dylib insert 1' 'rpath replace 2' 'rpath delete 1' \
+          'rpath append 1'; do
+    grep -qxF "statement $st" "$T/caps" \
+        && ok "capabilities: this build advertises the $st statement" \
+        || bad "capabilities" "'$st' is not advertised, but a wrapper emits it -- a caller would get a parse error after being told the command was about to run"
 done
 
 echo "wrapper_test: $pass passed, $fail failed"
