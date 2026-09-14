@@ -156,12 +156,15 @@ for why they would be rare:
     names them) now exits 2, where the C tool always exited a flat 1. One
     exception, `change_dylib`'s only: an allocation failure INSIDE
     `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the same as
-    every other reason either one refuses -- and it needs no `-grow`.
-    `change_dylib` reaches `mg_grow_header` only through `--allow-grow`,
-    but `src/rewrite.c` runs `mg_plausible` on every rewrite that is not a
-    pure segment rename -- every rewrite `change_dylib` can ask for --
-    unless `MACHO_NO_VERIFY` is set. `src/rewrite.c`'s own comment on that
-    fold has the reasoning. An invocation touching more than one family is
+    every other reason either one refuses. This wrapper reaches both only
+    through `--allow-grow`: `mg_grow_header` by definition, and `mg_plausible`
+    because `mr_process_thin` runs it only when the rewrite disturbed the
+    base-relative values it checks (`src/relations.h`'s
+    `mrel_verify_applies`), which for the operations `change_dylib` can ask
+    for means only a rewrite that grew the header. (Before that derivation
+    shipped, `mg_plausible` ran on every rewrite that was not a pure segment
+    rename, unless `MACHO_NO_VERIFY` was set.) `src/rewrite.c`'s own comment
+    on that fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `machotool` lines with shell steps between them:
     it is one `machotool edit FILE OUT -`, whose exit code is `me_run`'s own, from
     the same `MR_REFUSED`/`MR_FAIL` vocabulary. The "`change_dylib`: the
@@ -241,11 +244,12 @@ passes through.
 One exception to the 1-vs-2 split, `change_dylib`'s only: an allocation failure
 INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into
 `MR_REFUSED`, the same as every other reason either one refuses —
-`src/rewrite.c`'s comment on that fold has the reasoning. It needs no `-grow`:
-this wrapper reaches `mg_grow_header` only through `--allow-grow`, but
-`mr_process_thin` runs `mg_plausible` on every rewrite that is not a pure
-segment rename, which is every rewrite this wrapper can ask for, unless
-`MACHO_NO_VERIFY` is set.
+`src/rewrite.c`'s comment on that fold has the reasoning. This wrapper reaches
+both only through `--allow-grow`: `mg_grow_header` by definition, and
+`mg_plausible` because `mr_process_thin` runs it only when the rewrite
+disturbed the base-relative values it checks (`src/relations.h`'s
+`mrel_verify_applies`) — which, for the operations this wrapper can ask for,
+means only a rewrite that grew the header.
 
 `--fatal-warnings` is a separate fact, not what makes any of the above
 conditional: this translation never emits it — `change_dylib`'s grammar has no

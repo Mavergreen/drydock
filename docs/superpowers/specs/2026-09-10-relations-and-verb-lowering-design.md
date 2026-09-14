@@ -458,3 +458,58 @@ table tripwire already rely on; and it mirrors the accumulator the `edit` side
 needs anyway, since applicability is evaluated against what the run *did*. A grow
 inside `mr_process_thin` ORs `MREL_BASE_REL` into its local copy, so the one
 mechanism covers the "declared" and the "observed" halves without a second path.
+
+### Amendment 3, 2026-09-13: the cost was understated, and here is the measured cost
+
+Written after the plan shipped, because the final whole-branch review measured
+the thing §"What this costs, stated plainly" only asserted.
+
+**The claim that was wrong.** That section reassures a reviewer:
+
+> The case the comment names as the reason it exists — `patch_macho`'s
+> chained-fixups conversion, ~94,900 rebases with no self-check of its own — is
+> preserved, because that conversion disturbs the relation.
+
+**It is not preserved, except inside a single `machotool edit` that itself does
+the conversion.** `disturbed` is per **process**. `machotool declassify` — the
+`patch_macho` equivalent — runs no plausibility check of its own (`src/declassify.c`
+contains no `mg_plausible` reference at all), and the `change_dylib` that follows
+it declares only *its* disturbances, which do not include the image base. So
+nothing carries the conversion's disturbance across the process boundary.
+
+**What is actually caught now, measured against a build of the parent commit:**
+
+| sequence | before | after |
+|---|---|---|
+| `patch_macho` (declassify) alone | nothing | nothing — unchanged, it never had a gate |
+| `add_version_min` | nothing | nothing — unchanged |
+| `change_dylib` after a conversion (`install.sh` step 3) | **refused, exit 1** | **exit 0, file written** |
+| the whole `install.sh` chain | **caught at step 3** | **caught nowhere** |
+| `machotool edit 'fixups set classic'` | refused | refused |
+| `machotool edit 'target 10.9'` | refused | refused (expansion accumulates) |
+| any run that grows a header | caught | caught, plus `mg_grow_header`'s own gate |
+| `grow`, `verify` | caught | untouched |
+
+So the honest statement of the trade is the opposite of the original one: the
+conversion's incidental re-check was **the** protection on the compat chain, and
+narrowing the gate removed it there while keeping it in `machotool edit`. What
+the design gave up is not "the chance of the gate incidentally catching a bug in
+an operation that moves no offsets" — it is the chain's only check on the
+heaviest transform the toolkit performs.
+
+**This is not a decision the plan was authorised to make**, because the sentence
+that made it look free was false. It is recorded here for the repo owner, who
+has three options and should not have them pre-empted:
+
+1. **Accept it.** The re-check was incidental — `change_dylib` never set out to
+   validate `patch_macho`'s output, and a conversion that needs checking should
+   be checked by the tool that performs it.
+2. **Give `declassify` its own gate**, which is where the check belongs on the
+   merits: the tool doing ~94,900 rebases with no self-check is the one that
+   should verify them. This is a new behaviour, not a restoration.
+3. **Make the disturbance cross the process boundary** — the wrappers already
+   chain these tools, so a chain could carry what it disturbed. The largest
+   change, and it re-couples what this design set out to decouple.
+
+Until then, **no document should state that the chain is protected**, and the
+three places that did have been corrected.

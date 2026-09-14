@@ -8,7 +8,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 2 | Edit scripts | `specs/2026-09-10-edit-scripts-design.md` | `plans/2026-09-10-edit-scripts.md` | **done**, pushed, CI green at `36703e0` |
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | **done**, pushed, `9e39a57..770433f` |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | **done**, pushed, `ed7f4e4..452175a`; the first release is refused until item 6 removes the README marker |
-| 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | plan written before item 2 shipped; re-check against it before starting (see below) |
+| 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | **done**, `e0eee27..5595a0f`, not yet pushed. One open decision for the repo owner: narrowing the gate removed the compat chain's only check on the chained-fixups conversion (`change_dylib` after `patch_macho` went from refusing to writing). Measured, with three options, in the spec's Amendment 3 |
 | 6 | **Human code review + excellent documentation** | `specs/2026-09-12-narration-into-tests-design.md` (first half) | `plans/2026-09-12-narration-into-tests.md` (first half) | **first half done**, pushed, `3ce226a..fb241d3`, CI green. Second half — the human review and the README rewrite that removes the marker — is the repo owner's and is what still blocks the first release |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
@@ -180,12 +180,13 @@ against `src/edit.c`, the buffer-level seams item 2 exposed (`mr_apply_image`,
   lines (`compat/translate.sh`, per the spec's "Consumers") must reverse them.
 
 **For item 6** (pre-existing, found along the way): `src/rewrite.c`'s **two**
-unchecked `calloc`s (`:785` and `:848`, both `mr_process_thin`'s `new_lcs`
-tables) crash rather than refuse on allocation failure. Corrected 2026-09-12:
-this said three, one of them in `mr_process_fat`. `mr_process_fat` allocates
-nothing, and `mr_apply_file`'s `malloc` at `:1325` is checked. The code's own
-comments had it right all along (`rewrite.c:1283`, and `rewrite.h:145` — `:404`
-until the narration sweep shortened that header to 156 lines).
+unchecked `calloc`s (`:718` and `:793` as of item 5, both `mr_process_thin`'s
+`new_lcs` tables) crash rather than refuse on allocation failure. Corrected
+2026-09-12: this said three, one of them in `mr_process_fat`. `mr_process_fat`
+allocates nothing, and `mr_apply_file`'s `malloc` (`:1307`) is checked. The
+code's own comments had it right all along (`rewrite.c:1265`, and
+`rewrite.h:158` — `:404` until the narration sweep shortened that header, which
+is 171 lines today).
 
 Comments still naming plan artifacts ("Task N", briefs, rounds, "item N"):
 **50** across `src/`, `cli/`, `compat/` and `tests/`, measured 2026-09-13 at
@@ -665,10 +666,10 @@ This is the sweep's real yield, and the pattern in it is the finding.
   that cannot capture stderr and dropped the half that redirects it 44 times.
 - **The planning documents said `src/rewrite.c` has three unchecked `calloc`s,
   one in `mr_process_fat`.** There are two, both `mr_process_thin`'s `new_lcs`
-  (`:785`, `:848`); `mr_process_fat` allocates nothing at all and
-  `mr_apply_file`'s `malloc` at `:1325` is checked. The miscount came from
+  (`:718`, `:793` as of item 5); `mr_process_fat` allocates nothing at all and
+  `mr_apply_file`'s `malloc` (`:1307`) is checked. The miscount came from
   reading `grep -c calloc` (3) rather than the hits — the third hit is the
-  comment at `:1283` that states the count correctly.
+  comment (`:1265`) that states the count correctly.
 - **`compat/change_dylib.sh` said "all four callers"**;
   `tests/known-callers.sh` names three (`install.sh`,
   `mf-wrapper-rebase.sh`, `magic-trackpad2`) plus this repo's own suites.
@@ -685,18 +686,21 @@ This is the sweep's real yield, and the pattern in it is the finding.
   (`change_dylib.sh`: `compat/README.md`, `compat/add_version_min.sh`,
   `compat/retag_swift_classes.sh`, `src/rewrite.h`). A dense header is not a
   local cost; it is a hub, and deleting it is a link-integrity problem.
-- **Two fixes made things worse before better.** `cli/machotool.c:344` was
-  repointed at `mr_is_rename_only` when the argument it cites lives in
-  `mr_build_lcs_lc`'s comment at `src/rewrite.c:139` — a vague pointer
-  replaced by a wrong one, which is strictly worse, since vague costs a search
-  and wrong sends the reader somewhere confidently. And a fourth stale pointer
+- **Two fixes made things worse before better.** A pointer in
+  `cli/machotool.c` was repointed at `mr_is_rename_only` when the argument it
+  cites lives in `mr_build_lcs_lc`'s comment in `src/rewrite.c` — a vague
+  pointer replaced by a wrong one, which is strictly worse, since vague costs a
+  search and wrong sends the reader somewhere confidently. (`mr_is_rename_only`
+  itself no longer exists: item 5 derived its answer and deleted it. The line
+  numbers this bullet originally carried were as of the sweep and had already
+  drifted.) And a fourth stale pointer
   at `cli/machotool.c:291` was missed because the first three shared a
   phrasing and it did not: when a reorganization invalidates a claim, the stale
   references share the *claim*, not the wording.
 
 **And the pattern the spec predicted holds, measured.** The prose closest to
 the code was the most accurate, and the planning documents were the least.
-`rewrite.c:1283` and pre-sweep `rewrite.h:404` (now `:145`) both stated the
+`rewrite.c:1265` and pre-sweep `rewrite.h:404` (now `:158`) both stated the
 `calloc` count correctly while the spec, the plan and this file all said three.
 `change_dylib.sh:56` said the codes it produces *itself* are all 1 — exactly
 right, and it was a *paraphrase* of that line, dropping "itself", that produced

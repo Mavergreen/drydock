@@ -5,8 +5,8 @@
  * See rewrite.h for the operation set and why this is a library function
  * rather than one tool's main().
  *
- * A rewrite here does three things, in this order, and refuses before the
- * first byte reaches disk if any of them cannot be done:
+ * A rewrite here does up to three things, in this order, and refuses before
+ * the first byte reaches disk if any of them cannot be done:
  *
  *   1. build a brand-new load-command table (mr_build_lcs), sized to fit in
  *      the header pad between the last load command and the first section's
@@ -15,10 +15,11 @@
  *   2. renumber every library ordinal an insert or a delete shifted
  *      (src/ordinals.h), cross-checking the map against the table actually
  *      emitted rather than against its own arithmetic;
- *   3. re-run mg_plausible over the finished image, because this rewriter is
- *      the last stage of the wrapper's chain (patch_macho -> add_version_min
- *      -> change_dylib) and so is the last chance to catch a cumulative
- *      mistake before a single byte is written.
+ *   3. re-run mg_plausible over the finished image -- ONLY when the run
+ *      disturbed the base-relative values that check examines
+ *      (src/relations.h's mrel_verify_applies), which for the operations this
+ *      rewriter offers means only a rewrite that grew the header. The gate's
+ *      own comment, at the site, has the rule and what it no longer covers.
  *
  * Nothing here moves a byte of file data; only the load commands are
  * rewritten, and only within the header pad. The one exception is -grow,
@@ -825,18 +826,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         return MR_ERROR;
     }
 
-    /* Last gate before the bytes reach disk. This rewrite is the FINAL stage
-     * of the wrapper's chain (patch_macho -> add_version_min -> change_dylib),
-     * so a check here covers the cumulative end state of all of them --
-     * including patch_macho's chained-fixups conversion, which has ~94,900
-     * rebases and no self-check of its own. It needs no "before" image, which
-     * is what makes it usable across process boundaries.
-     *
-     * This is the difference between "the wrapper installed that over your
-     * binary, re-download that version" and "patch refused, nothing lost" --
-     * this rewriter writes a NEW file now, but the compat wrappers still mv it
-     * over the caller's, so the gate protects the same thing it always did.
-     * MACHO_NO_VERIFY=1 opts out; see the asymmetry note at the end.
+    /* The last gate before the bytes reach disk, on the runs it still covers.
      *
      * WHEN IT RUNS, AND THE ONE RULE THAT DECIDES. mg_plausible asks whether
      * this image's initializers and compact-unwind entries still name
@@ -863,9 +853,8 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * `lc -delete`, a segment rename. That is the trade this narrowing makes,
      * not a side effect of it.
      *
-     * AND IT COSTS MORE THAN THAT ON THE COMPAT CHAIN, which the paragraph
-     * above this one used to promise it did not. `disturbed` is what THIS
-     * PROCESS declared and did. The chained-fixups conversion this gate was
+     * AND IT COSTS MORE THAN THAT ON THE COMPAT CHAIN. `disturbed` is what
+     * THIS PROCESS declared and did. The chained-fixups conversion this gate was
      * written for happens in a DIFFERENT process -- `patch_macho`, i.e.
      * `machotool declassify`, which runs no plausibility check of its own --
      * and the `change_dylib` run that follows it declares only what its own
@@ -877,7 +866,10 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * applicability from a run rather than from an image, and it is recorded
      * rather than repaired because the repair is a product decision: the gate
      * needing no "before" image is what made it work across process
-     * boundaries in the first place.
+     * boundaries in the first place. What each sequence catches before and
+     * after, measured against a build of the parent commit, is tabulated in
+     * docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
+     * Amendment 3, along with the three options for what to do about it.
      *
      * NOT AN ESCAPE HATCH, which is the objection this shape draws. An escape
      * hatch is caller-controlled -- a flag or an environment variable, set by
