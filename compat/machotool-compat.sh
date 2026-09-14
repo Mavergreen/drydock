@@ -270,6 +270,47 @@ mw_require_writable() {
     return 0
 }
 
+# mw_thin_only FILE
+#
+# Returns 1 when FILE is something the verb this wrapper replaced would have
+# refused outright for not being ONE thin 64-bit Mach-O -- a fat container
+# above all. The caller then produces its own tool's answer.
+#
+# WHY THIS EXISTS. `minos`, `declassify` and `retag-swift` all began with
+# mi_open, which reads a single thin image and refuses a fat container; so did
+# the three C tools they replaced. A SCRIPT does not: `machotool FILE OUT` goes
+# through mr_process_fat and rewrites every slice. machotool gained that
+# deliberately, and for someone writing a script by hand it is the better
+# answer -- but a compat wrapper may not change WHICH INVOCATIONS SUCCEED, and
+# these three did not succeed. Measured against the pre-migration binaries on a
+# two-slice x86_64 fat file:
+#
+#   add_version_min FAT      exit 1, nothing written  ->  would become exit 0,
+#                                                         every slice rewritten
+#   patch_macho FAT OUT      exit 1, no OUT           ->  would become exit 0,
+#                                                         OUT written
+#   retag_swift_classes FAT  exit 0, file untouched   ->  would become exit 0
+#                                                         with the file RETAGGED
+#                                                         and total: still 0
+#
+# The third is the one that matters most: same exit code, same stdout,
+# different bytes on the caller's file.
+#
+# `machotool info` is a bare mi_open, so its verdict IS the old verb's -- which
+# is why compat/rename_segment.sh has gated on it since that wrapper was
+# written, and why `rename_segment FAT` never drifted. ONLY its EX_REFUSED (1)
+# is intercepted: that is mi_open's "not a readable 64-bit Mach-O", covering a
+# fat container and a non-Mach-O alike. EX_FAIL (2) -- a directory, an
+# unreadable file -- falls through untouched, because machotool already gives
+# those callers the answer the C tools gave (measured: `add_version_min <dir>`
+# exits 2 saying "cannot open or read" on both sides).
+mw_thin_only() {
+    machotool info "$1" >/dev/null 2>&1
+    mw_to_rc=$?
+    [ "$mw_to_rc" -eq 1 ] && return 1
+    return 0
+}
+
 # ---- the install path ----------------------------------------------------
 #
 # machotool NEVER WRITES THE FILE IT IS GIVEN: every command is

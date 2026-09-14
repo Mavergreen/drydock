@@ -221,9 +221,9 @@ rc=$?
 # anything reading it, and every known caller redirects stdout to /dev/null.
 fresh
 run add_version_min f
-grep -q "printf 'version-min set 10.9" "$T/err" \
+has_line "$T/err" "    printf 'version-min set 10.9\n' | machotool f f.new" \
     && ok "teaching message: on stderr" \
-    || bad "teaching message" "not on stderr: $(cat "$T/err")"
+    || bad "teaching message" "not on stderr, or it no longer names FILE and OUT: $(cat "$T/err")"
 # The teaching form is COMPLETE: machotool never writes its input, so the
 # equivalent a reader is shown ends with the install step the wrapper does
 # for itself. Without it the block would teach a command that leaves FILE
@@ -967,7 +967,12 @@ avm_err_had_append=0
 grep -q 'appended LC_VERSION_MIN_MACOSX 10.9' "$T/err" && avm_err_had_append=1
 fresh
 strip_vm "$T/f"
-( cd "$T" && "$BIN/machotool" minos f mtout 10.9 ) >"$T/mt.out" 2>/dev/null
+# The oracle is the SAME STATEMENT the wrapper emits, run directly -- not
+# `machotool minos`, which this plan deletes. What this pins is that the
+# wrapper installs exactly what machotool produced for the request, which is a
+# claim about the wrapper and outlives the verbs.
+( cd "$T" && printf 'version-min set 10.9\n' | "$BIN/machotool" f mtout ) \
+    >"$T/mt.out" 2>/dev/null
 [ "$avmrc" -eq 0 ] && [ "$avmsha" = "$(sha "$T/mtout")" ] \
     && ok "add_version_min: the bytes it installs are machotool's own" \
     || bad "add_version_min" "exit $avmrc; the installed bytes differ from machotool minos'"
@@ -1472,12 +1477,14 @@ run fix_macho f -strip_build_version
 # NOTHING DIGESTS THIS. tests/EXPECTED and tests/known-callers.sh's sha256s
 # hash converted FILE BYTES, with every tool's stdout and stderr sent to
 # /dev/null, so renaming every emitted string moved neither. What pins these
-# strings is four greps, and they are the whole list: this assertion, the
-# `matched nothing` one below it, tests/cli_test.sh's `^machotool edit: `
-# prefix check, and -- the ones that are not tests -- compat/rename_segment.sh's
-# pair, which counts `  Rename segment: OLD -> NEW` and checks the zero case
-# against `machotool: segment OLD matched nothing`, production code a caller
-# depends on for its exit code. All four move with the strings they read.
+# strings is five greps in four files, and they are the whole list: this
+# assertion, the `matched nothing` one below it, tests/cli_test.sh's
+# `^machotool edit: ` prefix check, and -- the ones that are not tests --
+# compat/rename_segment.sh's pair (it counts `  Rename segment: OLD -> NEW`
+# and checks the zero case against `machotool: segment OLD matched nothing`,
+# which its exit code depends on) plus compat/patch_macho.sh's
+# `^Already patched`, which reads a line md_declassify prints rather than one
+# any verb did. All five move with the strings they read.
 has_line "$T/err" 'machotool: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
@@ -1628,7 +1635,7 @@ dd if=/dev/zero bs=1 count=4096 2>/dev/null | tr '\000' 'Z' > "$T/junkslice"
 fm_mkfat "$T/fat2" "$FIXTURE" 16777223 "$T/junkslice" 7
 cp "$T/fat2" "$T/fatg"
 run fix_macho fatg -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
-if [ "$rc" -eq 0 ] && grep -q 'passed through unchanged' "$T/err" \
+if [ "$rc" -eq 0 ] && has_line "$T/err" 'slice i386: 32-bit; passed through unchanged' \
     && LC_ALL=C grep -q -- '@loader_path/../S.dylib' "$T/fatg"; then
     ok "fix_macho: a non-64-bit slice is left unchanged and the other slice is still rewritten"
 else
@@ -1908,6 +1915,128 @@ rc=$?
     && ok "retag_swift_classes: a spaced argument stays one file" \
     || bad "retag_swift_classes spaced path" "exit $rc, stdout: $(cat "$T/out")"
 rm -f "$T/two words"
+
+# ---- the one-pass rules a SEQUENCE has to reproduce ----------------------
+#
+# The C tools handed a whole family's operations to ONE pass and src/rewrite.c
+# decided, per load command, which single entry applied. compat/translate.sh
+# emits a SEQUENCE, so it has to make that decision itself -- by choosing which
+# statements to emit and in what order (mt_group_stmts). Every case below was
+# MEASURED against the pre-migration binaries (commit 18ad6f0, built in a
+# throwaway worktree) and asserts the answer they gave, because all six of them
+# are shapes where an emitter that merely looked reasonable produced DIFFERENT
+# BYTES with the same exit code and the same stdout. Nothing else in this repo
+# exercises them, which is exactly why they need to be here.
+#
+# The oracle is `machotool info`, a read-only query, never a verb: these
+# assertions have to outlive the verbs.
+SYSLIB=/usr/lib/libSystem.B.dylib
+ABSENT=/absent/p.dylib
+
+# 1. dylib: a -delete BEATS a conflicting -change whatever the order
+#    (mr_is_deleted, src/rewrite.c:56, which scans every change regardless of
+#    argument position). Reproduced by emitting the delete first, so the
+#    replace then finds nothing. On a dylib nothing binds to, because deleting
+#    one that something binds to is refused before any of this is reached.
+for cd_order in 'chg-del' 'del-chg'; do
+    fresh
+    run change_dylib f -add "$ABSENT"
+    if [ "$cd_order" = chg-del ]; then
+        run change_dylib f -change "$ABSENT" /also/absent.dylib -delete "$ABSENT"
+    else
+        run change_dylib f -delete "$ABSENT" -change "$ABSENT" /also/absent.dylib
+    fi
+    cd_paths=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
+    if [ "$rc" -eq 0 ] \
+        && ! printf '%s\n' "$cd_paths" | grep -q "path=$ABSENT" \
+        && ! printf '%s\n' "$cd_paths" | grep -q 'path=/also/absent.dylib'; then
+        ok "change_dylib: -delete beats a -change on the same path ($cd_order)"
+    else
+        bad "change_dylib delete-wins ($cd_order)" "exit $rc; the path was renamed instead of deleted, so a caller who asked for both gets a dylib the C tools removed -- and dyld will try to load it"
+    fi
+done
+
+# 2. dylib: a -reexport is NOT a delete. It rewrites the command in place, so
+#    it wins or loses against a -change on the same path purely by which came
+#    FIRST -- the batch applied one entry per load command and shadowed the
+#    rest. Both orders, because they give different answers.
+fresh
+run change_dylib f -reexport "$SYSLIB" -change "$SYSLIB" /usr/lib/replaced.dylib
+cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
+[ "$rc" -eq 0 ] && printf '%s\n' "$cd_info" | grep -q 'LC_REEXPORT_DYLIB' \
+    && printf '%s\n' "$cd_info" | grep -q "path=$SYSLIB" \
+    && ! printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/replaced.dylib' \
+    && ok "change_dylib: -reexport before -change on one path reexports, and the -change is shadowed" \
+    || bad "change_dylib reexport/change order" "exit $rc; the shadowed -change acted, so the reexported dylib is named differently than the C tools left it -- a dyld load failure, not a cosmetic difference"
+fresh
+run change_dylib f -change "$SYSLIB" /usr/lib/replaced.dylib -reexport "$SYSLIB"
+cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
+[ "$rc" -eq 0 ] && ! printf '%s\n' "$cd_info" | grep -q 'LC_REEXPORT_DYLIB' \
+    && printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/replaced.dylib' \
+    && ok "change_dylib: -change before -reexport on one path replaces, and the -reexport is shadowed" \
+    || bad "change_dylib change/reexport order" "exit $rc; the shadowed -reexport acted, so the command changed KIND -- LC_REEXPORT_DYLIB re-exports the dependency's symbols, which LC_LOAD_DYLIB does not"
+
+# 3. rpath has NO delete precedence, and this is the one that is easy to get
+#    backwards. mr_is_deleted scans n_dylib_changes and nothing else; the
+#    LC_RPATH loop `break`s on the first entry naming the path, full stop. So
+#    `-change-rpath X Y -delete-rpath X` RENAMES, where the dylib spelling of
+#    the same shape deletes.
+fresh
+run change_dylib f -add-rpath /r/one
+run change_dylib f -change-rpath /r/one /r/two -delete-rpath /r/one
+[ "$rc" -eq 0 ] && "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/two' \
+    && ok "change_dylib: -change-rpath before -delete-rpath renames -- rpath has no delete-wins rule" \
+    || bad "change_dylib rpath precedence" "exit $rc; the rpath was DELETED, which is dylib's rule applied to a family that never had it -- a binary that used to find its libraries at /r/two now has no rpath at all"
+fresh
+run change_dylib f -add-rpath /r/one
+run change_dylib f -delete-rpath /r/one -change-rpath /r/one /r/two
+[ "$rc" -eq 0 ] && ! "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/' \
+    && ok "change_dylib: ... and -delete-rpath first really does delete" \
+    || bad "change_dylib rpath precedence" "exit $rc; the first flag naming the path did not win"
+
+# ---- the three tools whose verbs were THIN-ONLY --------------------------
+#
+# `minos`, `declassify` and `retag-swift` all began with mi_open, which refuses
+# a fat container; so did the C tools. A script goes through mr_process_fat and
+# rewrites EVERY SLICE. machotool gained that deliberately and keeps it -- but a
+# compat wrapper may not change which invocations succeed, so mw_thin_only
+# (compat/machotool-compat.sh) puts these three back where they were. Each
+# assertion below is the measured pre-migration answer.
+fm_mkfat "$T/fatthin" "$FIXTURE" 16777223 "$FIXTURE" 16777223
+
+cp "$T/fatthin" "$T/f"; fat_before=$(sha "$T/f")
+run add_version_min f
+[ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$fat_before" ] \
+    && has_line "$T/err" 'f: not a readable 64-bit Mach-O' \
+    && ok "add_version_min: a fat container is refused, untouched, as mv_add_version_min's own mi_open did" \
+    || bad "add_version_min fat" "exit $rc (want 1), changed=$([ "$(sha "$T/f")" = "$fat_before" ] && echo no || echo YES); a caller that branched on this exit code now gets a rewritten fat binary instead of a refusal: $(cat "$T/err")"
+
+cp "$T/fatthin" "$T/f"; rm -f "$T/fatout"
+run patch_macho f fatout
+[ "$rc" -eq 1 ] && [ ! -e "$T/fatout" ] \
+    && ok "patch_macho: a fat container is refused and no output is created" \
+    || bad "patch_macho fat" "exit $rc (want 1), output present=$([ -e "$T/fatout" ] && echo yes || echo no); install.sh's wrapper runs this first and aborts on nonzero, so a 0 here changes what the whole pipeline does"
+
+mkswift_fixture "$T/sw1"
+fm_mkfat "$T/fatswift" "$T/sw1" 16777223 "$T/sw1" 16777223
+cp "$T/fatswift" "$T/f"; fat_before=$(sha "$T/f")
+run retag_swift_classes f
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" = "$fat_before" ] \
+    && has_line "$T/out" 'total: 0 class record(s) retagged' \
+    && ok "retag_swift_classes: a fat container is the benign skip it always was, and the file is untouched" \
+    || bad "retag_swift_classes fat" "exit $rc, changed=$([ "$(sha "$T/f")" = "$fat_before" ] && echo no || echo YES); this is the SILENT one -- same exit code, same 'total: 0' line, and the caller's binary rewritten underneath it"
+
+# WHY THE COUNT IS SUMMED. machotool reports what it retagged once per SLICE,
+# so a fat argument yields one line per slice. Read as a single number that is
+# "2\n2", which `[ "$mw_n" -gt 0 ]` rejects outright. Asserted against machotool
+# directly, because mw_thin_only means this wrapper no longer feeds it a fat
+# file -- the arithmetic still has to be right, and this is what says why.
+rt_lines=$( printf 'swift-abi set legacy\n' \
+    | "$BIN/machotool" "$T/fatswift" "$T/fatswift.out" 2>&1 >/dev/null \
+    | grep -c 'retagged' )
+[ "$rt_lines" -eq 2 ] \
+    && ok "machotool reports a retag once per slice, which is why the wrapper SUMS the count" \
+    || bad "retag count per slice" "$rt_lines 'retagged' lines for a two-slice fat file, want 2; if this is now 1 the sum is pointless, and if it is more than one line the wrapper's count must add them up rather than read them as one number"
 
 # ---- the emitted grammar is one this build actually has -----------------
 #

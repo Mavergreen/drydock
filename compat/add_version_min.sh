@@ -91,6 +91,13 @@ MW_DIR=${MACHOTOOL_COMPAT_DIR:-$(dirname "$MW_SELF")}
 
 mw_translate add_version_min "$@" || exit $?
 mw_prepare "$1" || exit 1
+# THIN ONLY, like mv_add_version_min's own mi_open. machotool-compat.sh's
+# mw_thin_only has the measurement; the message is mv_add_version_min's, which
+# named the FILE and not the tool.
+if ! mw_thin_only "$1"; then
+    printf '%s: not a readable 64-bit Mach-O\n' "$1" >&2
+    exit 1
+fi
 mw_retranslate add_version_min "$@" || exit 1
 mw_run_to_tmp
 mw_rc=$?

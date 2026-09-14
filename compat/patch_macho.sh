@@ -107,6 +107,14 @@
 # machotool's stable stdout, the same oracle tests/cli_test.sh asserts against,
 # and explicitly not otool/nm text (tests/README.md's second lesson).
 #
+# THAT GREP IS ONE OF FIVE READERS of machotool's emitted text, and the list is
+# in compat/rename_segment.sh's divergence 1, which carries it for all of them.
+# This one did NOT have to move when the wrappers stopped emitting verbs,
+# because the line comes from md_declassify (src/declassify.c) rather than from
+# `machotool declassify`: the statement calls the same function and prints the
+# same line on the same stream. Measured, on a converted input and on a fresh
+# one; tests/known-callers.sh's two pass-through assertions are the gate.
+#
 # WHAT IS ACTUALLY COVERED, exactly, because a comment claiming more than that
 # is the kind of defect this repo treats as a defect. tests/wrapper_test.sh pins
 # the PASS-THROUGH path's stdout as a negative (no "Wrote " line at all) and the
@@ -167,6 +175,15 @@ fi
 # does not exist yet is the ordinary case rather than the error it would be for
 # the five wrappers whose argument is a binary to edit. Everything else
 # mw_prepare refuses is shared with them.
+# THIN ONLY, like md_declassify's own mi_open -- and asked of the INPUT, which
+# is $1, not of the output mw_prepare just named. machotool-compat.sh's
+# mw_thin_only has the measurement. patch_macho's flat 1 covers it, as it
+# covers everything else that goes wrong here.
+if ! mw_thin_only "$1"; then
+    printf '%s: %s: not a readable 64-bit Mach-O; this tool is thin-only, so that covers a fat container as well as anything that is not a Mach-O at all\n' \
+        "$MW_TOOL" "$1" >&2
+    exit 1
+fi
 mw_prepare "$mw_out" new-ok || exit 1
 mw_retranslate patch_macho "$@" || exit 1
 

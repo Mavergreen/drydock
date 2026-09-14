@@ -128,6 +128,16 @@ mw_total=0
 mw_had_error=0
 for mw_f in "$@"; do
     mw_prepare "$mw_f" || { mw_had_error=1; continue; }
+    # THIN ONLY, like mswift_retag_file's own mi_open -- and a refusal here is
+    # the BENIGN SKIP this tool has always made of a non-Mach-O argument: no
+    # message, no error flag, nothing written. A fat container reaches it by
+    # the same road (machotool-compat.sh's mw_thin_only has the measurement),
+    # which is what keeps `retag_swift_classes FAT` leaving the file alone
+    # rather than retagging every slice and still reporting a total of 0.
+    if ! mw_thin_only "$mw_f"; then
+        rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
+        continue
+    fi
     # mw_retranslate's signature is TOOL ARG..., so retranslating THIS ONE
     # argument -- naming the temp mw_prepare just chose -- is the same call
     # mw_translate itself made above, with $mw_f standing in for the whole
@@ -145,8 +155,18 @@ for mw_f in "$@"; do
         # statement's own "      retagged N class record(s)" line, whose noun
         # is singular for one record. A run with nothing to retag says
         # "nothing to retag" and matches neither, which is the 0 this wants.
-        mw_n=$(sed -n 's/^  *retagged \([0-9][0-9]*\) class records*$/\1/p' "$MW_T/err")
-        [ -n "$mw_n" ] || mw_n=0
+        # SUMMED, not read as one number: the report is printed once per
+        # SLICE, so a fat argument yields one line per slice and `mw_n` would
+        # be a multi-line string that `[ "$mw_n" -gt 0 ]` below rejects with
+        # "integer expression expected" -- on a file machotool had already
+        # retagged and this wrapper was about to install. awk makes it one
+        # integer by construction, and prints 0 when there is no line at all
+        # (a run with nothing to retag says "nothing to retag" instead).
+        # mw_thin_only above means a fat argument no longer gets this far
+        # through THIS wrapper, but the arithmetic has to be right on its own:
+        # it is what would break next if that gate ever moved.
+        mw_n=$(sed -n 's/^  *retagged \([0-9][0-9]*\) class records*$/\1/p' "$MW_T/err" \
+            | awk '{ n += $1 } END { print n + 0 }')
         cat "$MW_T/err" >&2
         if mw_finish; then
             if [ "$mw_n" -gt 0 ]; then

@@ -50,17 +50,20 @@
 #
 #      No digest protects either text: tests/EXPECTED and
 #      tests/known-callers.sh's sha256s hash converted file bytes with the
-#      tools' output sent to /dev/null. What pins them is four greps in three
+#      tools' output sent to /dev/null. What pins them is five greps in four
 #      files, and they are the whole list:
 #
 #        * the two greps below, the ONLY ONES THAT ARE NOT TESTS --
 #          production code a caller depends on for the count;
+#        * compat/patch_macho.sh's `^Already patched` grep, production code
+#          too, though that line comes from md_declassify rather than from any
+#          verb, so it did not move with this one;
 #        * tests/wrapper_test.sh's two unmatched-report assertions, which
 #          match whole lines beginning `machotool: `; and
 #        * tests/cli_test.sh's `^machotool edit: ` prefix check.
 #
-#      Each of the four carries this same list, so the set is findable from
-#      any one of them, and all four have to move with the strings they read.
+#      Each of the five carries this same list, so the set is findable from
+#      any one of them, and all five have to move with the strings they read.
 #
 #      machotool's own stdout is otherwise SUPPRESSED and this wrapper prints
 #      rename_segment's single line with that count, byte-identical to the C

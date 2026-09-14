@@ -171,14 +171,57 @@ mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
 ok cd-insert-reverse "printf 'load-command delete uuid\ndylib insert B\ndylib insert A\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
-# A -delete AND a -change NAMING THE SAME PATH is the shape the two application
-# models disagree about: change_dylib applied its whole family as a set, where
-# mr_is_deleted (src/rewrite.c) made the delete win whatever the order. The
-# emission reproduces that by ORDER -- the delete first, so the replace then
-# finds nothing -- which is why the delete bucket is emitted ahead of the
-# replace bucket even when the flags were typed the other way round.
-ok cd-delete-beats-change "printf 'dylib delete P\ndylib replace P Q\n' | machotool f f.new
+# ---- one pass, reproduced by CHOOSING statements ------------------------
+#
+# The C tools handed a family's operations to one pass, which applied exactly
+# one entry per load command. compat/translate.sh's mt_group_stmts makes that
+# choice; its header has the two rules and the measurements. Each assertion
+# below is a shape where emitting the obvious thing produces different bytes,
+# so the emitted TEXT is pinned here and the resulting BYTES in
+# tests/wrapper_test.sh's "one-pass rules a SEQUENCE has to reproduce" block.
+
+# A -delete beats a conflicting -change for the same path whatever the order
+# (mr_is_deleted, src/rewrite.c). Reproduced by emitting ONLY the delete: the
+# shadowed -change did nothing in the one pass either.
+ok cd-delete-beats-change "printf 'dylib delete P\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -change P Q -delete P
+ok cd-delete-beats-change-2 "printf 'dylib delete P\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -delete P -change P Q
+
+# A -reexport is NOT a delete -- it rewrites the command in place -- so against
+# a -change on the same path the FIRST one wins and the other is shadowed.
+# Both orders, because they give different answers.
+ok cd-reexport-first "printf 'dylib reexport P\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -reexport P -change P Q
+ok cd-replace-first "printf 'dylib replace P Q\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change P Q -reexport P
+# ... but a -delete still beats a -reexport, since mr_is_deleted scans for
+# deletions and finds this one wherever it sits.
+ok cd-delete-beats-reexport "printf 'dylib delete P\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -reexport P -delete P
+
+# Two -changes naming the SAME old path: the first is the one that applied.
+ok cd-dup-replace "printf 'dylib replace P Q\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change P Q -change P Z
+ok fm-dup-replace "printf 'dylib replace P Q\n' | machotool f f.new
+mv -f f.new f" -- fix_macho f -change P Q -change P Z
+
+# RPATH HAS NO DELETE PRECEDENCE, and this is the assertion that keeps dylib's
+# rule from being applied to it. mr_is_deleted scans n_dylib_changes only; the
+# LC_RPATH loop breaks on the first entry naming the path. So the first FLAG
+# wins here, whichever kind it is -- where the dylib spelling of the same shape
+# deletes either way.
+ok cd-rpath-replace-first "printf 'rpath replace X Y\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change-rpath X Y -delete-rpath X
+ok cd-rpath-delete-first "printf 'rpath delete X\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -delete-rpath X -change-rpath X Y
+ok cd-rpath-dup "printf 'rpath replace X Y\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change-rpath X Y -change-rpath X Z
+
+# A shadowed entry is dropped, not reordered, so an invocation whose every
+# dylib operation is shadowed still emits the rest of its families.
+ok cd-shadow-keeps-others "printf 'load-command delete uuid\ndylib delete P\nrpath append R\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -delete P -add-rpath R
 
 # install.sh's production line -- the single most important translation in
 # this task, quoted from the plan's Task 0 evidence.
@@ -498,7 +541,13 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 # counterpart at all -- a `segment rename` statement is one pair, so nothing
 # downstream would ever count them -- which makes this file the only thing
 # keeping that refusal alive.
-ok fm-cap-change-32-fits "printf '$(mkrep 'dylib replace A B\n' 32)' | machotool f f.new
+# 32 IDENTICAL pairs, so the emission collapses them to the one that applied
+# (mt_group_stmts' first-entry-wins rule -- the other 31 named a path the first
+# had already claimed and did nothing in the one pass either). What this pins
+# is the ACCEPTANCE at capacity: `ok` requires exit 0, and the 33rd is refused
+# just below. A check one too eager would silently halve what a caller can ask
+# for, and would fail here rather than there.
+ok fm-cap-change-32-fits "printf 'dylib replace A B\n' | machotool f f.new
 mv -f f.new f" \
     -- fix_macho f $(mkcap '-change A B' 32)
 refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)
