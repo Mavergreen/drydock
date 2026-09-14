@@ -114,17 +114,19 @@ got=$(sha "$T/t")
 # The teaching message is the whole point of phase one, and it must be on
 # STDERR -- stdout is redirected to /dev/null by this very caller, so a
 # message on stdout would vanish. One assertion per tool: the equivalent
-# machotool command line is in that tool's stderr.
-grep -q 'machotool declassify ' "$T/e1" \
+# command is in that tool's stderr, and it is the bare form -- statements
+# piped into `machotool FILE OUT`, which is the only way machotool modifies a
+# binary. Both halves are asserted, because a pipeline with the wrong
+# statement in it would still look like a pipeline.
+grep -q '| machotool ' "$T/e1" && grep -q 'fixups set classic' "$T/e1" \
     && ok "install.sh: patch_macho taught its machotool equivalent on stderr" \
     || bad "install.sh: patch_macho stderr" "no machotool equivalent: $(cat "$T/e1")"
-grep -q 'machotool minos ' "$T/e2" \
+grep -q '| machotool ' "$T/e2" && grep -q 'version-min set 10.9' "$T/e2" \
     && ok "install.sh: add_version_min taught its machotool equivalent on stderr" \
     || bad "install.sh: add_version_min stderr" "no machotool equivalent: $(cat "$T/e2")"
-# This one invocation mixes families, so its equivalent is one `machotool edit`
-# with the operations as statements -- the command, and both kinds of
-# statement it carries.
-grep -q 'machotool edit ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
+# This one invocation is worth several statements, so its equivalent carries
+# both kinds it needs in the one command.
+grep -q '| machotool ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
     && grep -q 'dylib replace' "$T/e3" \
     && ok "install.sh: change_dylib taught its machotool equivalent on stderr" \
     || bad "install.sh: change_dylib stderr" "missing an equivalent: $(cat "$T/e3")"

@@ -1,12 +1,13 @@
 #!/bin/sh
-# patch_macho -- a /bin/sh wrapper around `machotool declassify IN OUT`.
+# patch_macho -- a /bin/sh wrapper around `machotool IN OUT` with one
+# `fixups set classic` statement on its stdin.
 #
 #   patch_macho input output
 #
 # WHAT THIS REPLACED. compat/patch_macho.c was this tool's `IN OUT` grammar,
 # its own open+write of the output file, its messages and its exit code, over
-# src/declassify.c's md_declassify -- the same function `machotool declassify`
-# calls. The conversion (chained fixups lowered to LC_DYLD_INFO_ONLY) is
+# src/declassify.c's md_declassify -- the same function the `fixups set
+# classic` statement calls. The conversion (chained fixups lowered to LC_DYLD_INFO_ONLY) is
 # therefore the same code either way, and the OUTPUT FILE'S BYTES are
 # identical by construction: both front-ends write the very buffer
 # md_declassify hands back.
@@ -16,13 +17,14 @@
 # that wrapper depends on (an already-converted binary passes through
 # unchanged). Both are covered by tests/known-callers.sh.
 #
-# GRAMMAR. `patch_macho IN OUT` -> `machotool declassify IN OUT`. Nothing else;
-# `argc != 3` is a usage error on both sides, reproduced by
-# compat/translate.sh in patch_macho's own words.
+# GRAMMAR. `patch_macho IN OUT` -> `printf 'fixups set classic\n' | machotool
+# IN OUT`. Nothing else; `argc != 3` is a usage error on both sides,
+# reproduced by compat/translate.sh in patch_macho's own words.
 #
 # EXIT CODES -- MAPPED. patch_macho returns a FLAT 1 for everything that goes
-# wrong. `machotool declassify` tells two kinds of wrong apart (cli/machotool.c's
-# cmd_declassify, "FIVE DELIBERATE DIVERGENCES FROM patch_macho"): EX_REFUSED
+# wrong. machotool tells two kinds of wrong apart (cli/machotool.c's
+# cmd_declassify, "FIVE DELIBERATE DIVERGENCES FROM patch_macho", which the
+# statement shares because it shares md_declassify): EX_REFUSED
 # (1) where it examined the input and declined on purpose -- not a readable
 # 64-bit Mach-O, no chained fixups to convert, any of declassify.h's LIMITS --
 # and EX_FAIL (2) for an operational failure. So: ANY nonzero becomes 1. Zero
@@ -47,7 +49,7 @@
 #   * and an existing OUT that is not writable makes it FAIL, even when the
 #     directory is writable.
 #
-# `machotool declassify` gives OUT the INPUT's mode (wa_write_new copies it),
+# machotool gives OUT the INPUT's mode (wa_write_new copies it),
 # always a new inode, and refuses an OUT that is IN outright. So this wrapper
 # does what the other five do -- machotool writes a temp beside the real OUT
 # (mw_prepare, with `new-ok`, since OUT need not exist yet), and mw_finish

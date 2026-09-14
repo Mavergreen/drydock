@@ -1,5 +1,6 @@
 #!/bin/sh
-# rename_segment -- a /bin/sh wrapper around `machotool segment FILE OUT OLD NEW`.
+# rename_segment -- a /bin/sh wrapper around `machotool FILE OUT` with one
+# `segment rename OLD NEW` statement on its stdin.
 #
 #   rename_segment binary OLDNAME NEWNAME
 #
@@ -7,8 +8,8 @@
 # grammar, a thin-only mi_open + lseek/write driver, its exit 2 when nothing
 # matched, and its one message, over its own mi_each_lc loop calling
 # mseg_rename_lc (src/segname.h) on every matching command -- the same
-# per-command function `machotool segment` calls, once per command, from inside
-# mr_apply_file's own load-command walk. (rename_segment.c's own image-wide
+# per-command function a `segment rename` statement calls, once per command,
+# from inside mr_apply_file's own load-command walk. (rename_segment.c's own image-wide
 # loop, mseg_rename_image, was deleted along with rename_segment.c itself:
 # nothing else ever called it.) The rename itself is therefore the same code
 # either way.
@@ -17,32 +18,43 @@
 # __DATA, and Xcode 10+ linkers put them in __DATA_CONST) is written down in
 # src/segname.h's header, which outlives the C front-end this replaces.
 #
-# GRAMMAR. `rename_segment FILE OLD NEW` -> `machotool segment FILE OUT OLD NEW`.
+# GRAMMAR. `rename_segment FILE OLD NEW` -> `printf 'segment rename OLD NEW\n'
+# | machotool FILE OUT`.
 # `argc != 4` and a NEW longer than the 16 bytes a segname field holds are
 # both refused before any I/O, by compat/translate.sh, in rename_segment's own
 # words.
 #
 # cli/machotool.c's cmd_segment lists FIVE DELIBERATE DIVERGENCES a wrapper has
 # to account for, plus a note on a sixth that used to be on that list and no
-# longer is (mg_plausible, below). The first of the five -- that the verb reads
-# FILE and writes OUT rather than rewriting FILE -- is closed by "the in-place
-# edit" at the end of this header; the rest are numbered below.
+# longer is (mg_plausible, below). They are the `segment rename` statement's
+# divergences too -- both reach the rename through mr_apply_file. The first of
+# the five -- that the rewrite reads FILE and writes OUT rather than rewriting
+# FILE -- is closed by "the in-place edit" at the end of this header; the rest
+# are numbered below.
 #
 #   1. EXIT 2 WHEN NOTHING MATCHED, and 2. THE ONE-LINE MESSAGE. Both need the
 #      same number: how many LC_SEGMENT_64s the rename actually matched.
 #      rename_segment got it from mseg_rename_image's return value; this
-#      wrapper gets it from `machotool segment`, which prints
+#      wrapper COUNTS the rewriter's own per-rename line,
 #
-#          machotool segment: renamed=<N>
+#          "  Rename segment: <OLD> -> <NEW>"
 #
-#      -- the tool's own name, since the line is part of machotool's own
-#      grammar and moved with the rename. No digest protects this text:
-#      tests/EXPECTED and tests/known-callers.sh's sha256s hash converted
-#      file bytes with the tools' output sent to /dev/null. What pins it is
-#      four greps in three files, and they are the whole list:
+#      one per segment renamed, printed from inside the load-command walk
+#      (src/rewrite.c). It used to read a summary the `segment` VERB printed
+#      (`machotool segment: renamed=<N>`); a script prints no summary, and the
+#      per-rename line is what both forms have always had in common. A run
+#      that renames nothing prints none of them and says so instead --
+#      `machotool: segment <OLD> matched nothing`, src/edit.c -- which is what
+#      the zero case is checked against, so "nothing matched" is never
+#      inferred from silence.
 #
-#        * the sed below, the ONLY ONE THAT IS NOT A TEST -- production code
-#          a caller depends on for the count;
+#      No digest protects either text: tests/EXPECTED and
+#      tests/known-callers.sh's sha256s hash converted file bytes with the
+#      tools' output sent to /dev/null. What pins them is four greps in three
+#      files, and they are the whole list:
+#
+#        * the two greps below, the ONLY ONES THAT ARE NOT TESTS --
+#          production code a caller depends on for the count;
 #        * tests/wrapper_test.sh's two unmatched-report assertions, which
 #          match whole lines beginning `machotool: `; and
 #        * tests/cli_test.sh's `^machotool edit: ` prefix check.
@@ -50,11 +62,9 @@
 #      Each of the four carries this same list, so the set is findable from
 #      any one of them, and all four have to move with the strings they read.
 #
-#      on success -- one line, key=value, in the shape --capabilities already
-#      established, and advertised as `verb segment reports=renamed` so this
-#      wrapper can check the build provides it rather than assume. machotool's own
-#      stdout is otherwise SUPPRESSED and this wrapper prints rename_segment's
-#      single line with that count, byte-identical to the C tool's.
+#      machotool's own stdout is otherwise SUPPRESSED and this wrapper prints
+#      rename_segment's single line with that count, byte-identical to the C
+#      tool's.
 #
 #      IT IS NOT DERIVED FROM `machotool info`. An earlier version of this wrapper
 #      counted "  segname=NAME ..." lines out of that dump with awk, and it was
@@ -129,7 +139,7 @@
 # by anything a caller can pass.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
-# rename_segment had. Every nonzero from `machotool segment` is mapped to 1
+# rename_segment had. Every nonzero from machotool is mapped to 1
 # rather than read directly, on purpose: "nothing matched" here is decided
 # from the match COUNT (`mw_n -eq 0`, below), never from machotool's own exit
 # code, so a coincidence between the two numberings is never load-bearing.
@@ -149,7 +159,7 @@
 #
 # THE WRITABILITY CHECK comes with mw_prepare. rename_segment opened the file
 # O_RDWR before it looked at it, so an unwritable (or absent) file failed
-# immediately, with no analysis and no write. `machotool segment` opens FILE
+# immediately, with no analysis and no write. machotool opens FILE
 # O_RDONLY now and has no opinion about whether FILE is writable, and the
 # install by mv needs only the DIRECTORY writable -- so without this check the
 # wrapper would rewrite files the C tool refused. `test -w` is not
@@ -201,20 +211,23 @@ mw_retranslate rename_segment "$@" || exit 1
 
 mw_run >"$MW_T/segout" 2>&1 || { cat "$MW_T/segout" >&2; exit 1; }
 
-# The match count, from the verb that did the matching. Anchored on the whole
-# line, so nothing else machotool prints can be mistaken for it. This matches
-# the line the binary PRINTS; divergence 1 in the header says what else reads
-# machotool's emitted text and must move with it.
-mw_n=$(sed -n 's/^machotool segment: renamed=\([0-9][0-9]*\)$/\1/p' "$MW_T/segout")
-if [ -z "$mw_n" ]; then
-    # The rename succeeded but this build's `machotool segment` did not report the
-    # count, so there is no honest way to tell "renamed 0" (exit 2) from
+# THE MATCH COUNT, COUNTED FROM THE RENAMES THEMSELVES. The `segment` VERB
+# used to close with `machotool segment: renamed=N` and this read that number;
+# a script prints no such summary, so the count comes from the one line the
+# rewriter emits per segment it actually renames (src/rewrite.c's
+# "  Rename segment: OLD -> NEW", on stdout, inside the loop over load
+# commands -- so a fat container contributes one per slice, exactly as the
+# summary's own sum did). Whole-line and FIXED-string, so an OLD or NEW
+# carrying a regular-expression metacharacter counts as itself.
+mw_n=$(grep -c -x -F -- "  Rename segment: $mw_old -> $mw_new" "$MW_T/segout") || mw_n=0
+if [ "$mw_n" -eq 0 ] && ! grep -q -x -F -- "machotool: segment $mw_old matched nothing" "$MW_T/segout"; then
+    # Zero renames AND no "matched nothing" verdict: this build reported
+    # neither, so there is no honest way to tell "renamed 0" (exit 2) from
     # "renamed some" (exit 0, with the number in the message). Fail loudly
-    # rather than guess: `machotool --capabilities` advertises the signal as
-    # `verb segment reports=renamed`, and a build without it is a mismatched
-    # install, not a file this tool should report on.
-    printf '%s: %s: this machotool did not report a rename count' "$MW_TOOL" "$mw_file" >&2
-    printf ' (--capabilities should say "verb segment reports=renamed")\n' >&2
+    # rather than guess -- a build whose segment rename says nothing at all is
+    # a mismatched install, not a file this tool should report on.
+    printf '%s: %s: this machotool did not report what its segment rename matched\n' \
+        "$MW_TOOL" "$mw_file" >&2
     cat "$MW_T/segout" >&2
     exit 1
 fi

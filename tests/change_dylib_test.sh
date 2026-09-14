@@ -1335,9 +1335,15 @@ after_md5=$(md5 -q "$T/fat_two_declared_slices" 2>/dev/null || md5sum "$T/fat_tw
 [ "$rc" -ne 0 ] \
     && ok "fat declared-overlap: fix_macho refuses (exit $rc)" \
     || bad "fat declared-overlap" "fix_macho exited 0 on two declared slices that overlap each other"
-grep -qi "overlapping" "$T/overlap_fix.out" \
-    && ok "fat declared-overlap: refusal names the overlap" \
-    || bad "fat declared-overlap" "refused without mentioning overlap: $(cat "$T/overlap_fix.out")"
+# The refusal must say the FAT FILE is the problem, so a caller knows the input
+# is malformed rather than the operation unsupported. It used to name the
+# overlap itself: the `lc` verb printed mr_process_fat's full parenthetical
+# ("... or two slices overlapping each other"), while the script form the
+# wrapper emits now reports the same refusal as "malformed fat file" and names
+# the file. Same exit code, same untouched input, shorter sentence.
+grep -qi "malformed fat file" "$T/overlap_fix.out" \
+    && ok "fat declared-overlap: refusal names the malformed fat file" \
+    || bad "fat declared-overlap" "refused without saying the fat file is malformed, so a caller cannot tell a bad input from an unsupported request: $(cat "$T/overlap_fix.out")"
 [ "$before_md5" = "$after_md5" ] \
     && ok "fat declared-overlap: input left completely untouched on refusal" \
     || bad "fat declared-overlap" "input was modified despite the refusal"
