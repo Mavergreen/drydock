@@ -169,13 +169,22 @@ when its only consumer is a compatibility layer with a limited life.
 - **Emitted bytes.** `tests/characterize.sh` must keep reproducing
   `ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792`.
 
-  **Measured, because the pipeline does drive a multi-operation invocation.**
-  `tests/characterize.sh:24` runs `change_dylib "$T/out" -strip-lc uuid
-  -strip-lc codesig` — two operations in one `mr_ops`. They name different
-  kinds, so they do not conflict, and the two models agree:
-  `machotool lc IN OUT -delete uuid -delete codesig` and the two statements
-  `load-command delete uuid` / `load-command delete codesig` produce
-  **byte-identical** output. The digest does not move.
+  **Measured — and corrected 2026-09-14, because the first measurement passed
+  for a weaker reason than it claimed.** `tests/characterize.sh:24` runs
+  `change_dylib "$T/out" -strip-lc uuid -strip-lc codesig`, which *looks* like
+  two operations in one `mr_ops`. It is effectively one: **no fixture in this
+  repo carries an `LC_CODE_SIGNATURE`.** `tests/fixture.macho` has
+  `LC_DATA_IN_CODE` and `LC_DYLIB_CODE_SIGN_DRS`, and `lc -delete codesig` on it
+  is a **no-op** (byte-identical output, measured). So the agreement that
+  invocation demonstrates is a one-effective-operation agreement, which is not
+  the property that matters.
+
+  The genuine two-operation case is `uuid` + `source-version`, both of which
+  `fixture.macho` really carries and each of which really removes something
+  (measured). One pass and two statements agree there too. Task 2's suite
+  asserts **both** shapes — the literal `characterize.sh` one and the
+  genuinely-two one — because the first alone would pass vacuously forever.
+  The digest does not move.
 
   That is the general rule, also measured: the set and sequence models agree on
   every input **except two operations naming the same path**. Non-overlapping

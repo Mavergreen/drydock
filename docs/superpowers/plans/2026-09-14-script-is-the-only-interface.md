@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Emitted bytes never change.** `sh tests/characterize.sh $B` must keep printing `ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792`. Measured already: the pipeline's one multi-operation invocation (`characterize.sh:24`, `-strip-lc uuid -strip-lc codesig`) produces byte-identical output as two statements. A moved digest is a real defect.
+- **Emitted bytes never change.** `sh tests/characterize.sh $B` must keep printing `ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792`. Measured, with a correction worth carrying: `characterize.sh:24`'s `-strip-lc uuid -strip-lc codesig` is **effectively one operation**, because no fixture here has an `LC_CODE_SIGNATURE` and `lc -delete codesig` is a no-op on `tests/fixture.macho`. The genuine two-operation agreement is `uuid` + `source-version`, both really present and each really removed. A moved digest is a real defect.
 - **`tests/known-callers.sh`'s 18 sha256s are converted-file digests, never edited.** If one moves, **stop and report** — that is a behaviour change beyond the one this plan authorises.
 - **Exactly one behaviour change is authorised**, and it must be asserted rather than discovered: `change_dylib -change X Y -delete X` deletes `X` today and will rename it. Nothing else about which invocations succeed or fail may move.
 - **Wrapper *text* may change; wrapper *outcomes* may not.** The repo owner ruled 2026-09-13: *"the wrappers won't live long. our machotool code will."*
