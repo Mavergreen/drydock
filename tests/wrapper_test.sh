@@ -237,15 +237,17 @@ grep -q 'version-min set' "$T/out" \
 
 # ---- change_dylib -------------------------------------------------------
 #
-# ONE emitted command: stdout must be byte-identical to what mr_apply_file
-# printed for the C tool, which is the same thing `machotool dylib` prints for
-# the same file and ops. Asserted by running both and comparing, rather than
-# by pinning a transcript that a different fixture would invalidate.
-# ONE LINE OF MACHOTOOL'S IS RESHAPED, and this comparison accounts for it
-# exactly rather than loosening: `machotool dylib` says "Wrote OUT (N bytes)"
-# about the output it wrote, and the wrapper -- which installed that output
-# over FILE -- says "Updated FILE (N bytes)" instead, which is the line
-# mr_apply_file itself printed while the verb still rewrote FILE. Every other
+# ONE emitted command: stdout must be byte-identical to what mr_apply_image
+# printed for the C tool, which is the same thing the bare form prints for
+# the same file and statements. Asserted by running both and comparing, rather
+# than by pinning a transcript that a different fixture would invalidate.
+# ONE LINE IS THE WRAPPER'S OWN, and this comparison accounts for it exactly
+# rather than loosening: the wrapper -- which installed machotool's output over
+# FILE -- appends "Updated FILE (N bytes)", which is the line mr_apply_file
+# itself printed while the verbs still rewrote FILE. It used to RESHAPE
+# machotool's own "Wrote OUT (N bytes)"; a script run has no such stdout line
+# (it reports "OUT: written (N,NNN bytes)" on stderr), so the wrapper's line is
+# APPENDED to machotool's stdout instead of substituted into it. Every other
 # line, and the resulting bytes, must match.
 fresh
 run change_dylib f -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib'
@@ -253,10 +255,10 @@ cdrc=$rc
 cp "$T/out" "$T/cd.out"
 cdsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/machotool" dylib f f.mtout -replace /usr/lib/libSystem.B.dylib \
-    '@loader_path/../S.dylib' ) >"$T/mt.out" 2>/dev/null
+( cd "$T" && printf 'dylib replace /usr/lib/libSystem.B.dylib %s\n' \
+    '@loader_path/../S.dylib' | "$BIN/machotool" f f.mtout ) >"$T/mt.out" 2>/dev/null
 mtsha=$(sha "$T/f.mtout")
-sed 's|^Wrote f\.mtout (|Updated f (|' "$T/mt.out" >"$T/mt.want"
+{ cat "$T/mt.out"; printf 'Updated f (%s bytes)\n' "$(wc -c < "$T/f.mtout" | tr -d ' ')"; } >"$T/mt.want"
 [ "$cdrc" -eq 0 ] && cmp -s "$T/cd.out" "$T/mt.want" && [ "$cdsha" = "$mtsha" ] \
     && ok "change_dylib: a single-family run is byte-identical to machotool's, stdout included" \
     || bad "change_dylib single-family" "exit $cdrc; stdout or bytes differ from machotool dylib's; wrapper said [$(cat "$T/cd.out")] want [$(cat "$T/mt.want")]"
@@ -468,7 +470,7 @@ rm -rf "$T/refused"
 # quietly.
 rm -rf "$T/cddir" "$T/cddir.new"; mkdir "$T/cddir"
 cd_mt_rc=0
-( cd "$T" && "$BIN/machotool" dylib cddir cddir.new -replace /nope /also-nope ) \
+( cd "$T" && printf 'dylib replace /nope /also-nope\n' | "$BIN/machotool" cddir cddir.new ) \
     >/dev/null 2>"$T/err" || cd_mt_rc=$?
 [ "$cd_mt_rc" -eq 2 ] \
     && ok "change_dylib: machotool's own code for this input is 2, an operational failure" \
@@ -858,7 +860,7 @@ grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T
 # not the input copied through. That cli_test assertion was the ONLY thing in the
 # repo that noticed a wrapper installing the unconverted bytes, which is a lot to
 # rest on one front-end-parity check.
-( cd "$T" && "$BIN/machotool" declassify cf cf.mt ) >/dev/null 2>&1
+( cd "$T" && printf 'fixups set classic\n' | "$BIN/machotool" cf cf.mt ) >/dev/null 2>&1
 cmp -s "$T/cfout" "$T/cf.mt" \
     && ok "patch_macho: the bytes installed at OUT are machotool's converted output" \
     || bad "patch_macho converting bytes" "OUT differs from machotool declassify's output"
@@ -875,7 +877,7 @@ rm -rf "$T/csdir"; mkdir "$T/csdir"
 mkchained_fixture "$T/csdir/cs"
 # What the conversion of THIS file is, from the other front-end, so the
 # comparison below does not lean on two mkchained runs producing equal bytes.
-( cd "$T/csdir" && "$BIN/machotool" declassify cs cs.want ) >/dev/null 2>&1
+( cd "$T/csdir" && printf 'fixups set classic\n' | "$BIN/machotool" cs cs.want ) >/dev/null 2>&1
 chmod 640 "$T/csdir/cs"
 cs_ino=$(ino_of "$T/csdir/cs")
 cs_rc=0
@@ -1121,7 +1123,7 @@ run rename_segment f __DATA __DATA
 # fixture-preparation runs installs its own result, the same way the wrappers
 # under test do.
 fresh
-( cd "$T" && "$BIN/machotool" segment f f.seg __DATA 1234567890123456 \
+( cd "$T" && printf 'segment rename __DATA 1234567890123456\n' | "$BIN/machotool" f f.seg \
     && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 12345678901234567 __X
@@ -1131,7 +1133,12 @@ run rename_segment f 12345678901234567 __X
     || bad "rename_segment 17-byte OLD" "exit $rc, stdout: $(cat "$T/out")"
 
 fresh
-( cd "$T" && "$BIN/machotool" segment f f.seg __DATA 'A B' && mv -f f.seg f ) >/dev/null 2>&1
+# The segname is SINGLE-QUOTED inside the statement: src/script.c's ms_split
+# splits a statement's words the way a shell does, so an unquoted `A B` is two
+# words and `segment rename __DATA A B` is a three-argument statement the
+# parser refuses -- leaving the fixture unrenamed and the assertion below
+# testing nothing at all (it exited 2 on a file that still said __DATA).
+( cd "$T" && printf "segment rename __DATA 'A B'\n" | "$BIN/machotool" f f.seg && mv -f f.seg f ) >/dev/null 2>&1
 before=$(sha "$T/f")
 run rename_segment f 'A B' __Y
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 1 segment(s) A B -> __Y' "$T/out" \
@@ -1143,8 +1150,8 @@ run rename_segment f 'A B' __Y
 # segment name the image carries TWICE (which is what this tool produces --
 # see src/segname.h on __DATA_CONST -> __DATA leaving two __DATAs).
 fresh
-( cd "$T" && "$BIN/machotool" segment f f.seg __TEXT __DUP && mv -f f.seg f ) >/dev/null 2>&1
-( cd "$T" && "$BIN/machotool" segment f f.seg __DATA __DUP && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && printf 'segment rename __TEXT __DUP\n' | "$BIN/machotool" f f.seg && mv -f f.seg f ) >/dev/null 2>&1
+( cd "$T" && printf 'segment rename __DATA __DUP\n' | "$BIN/machotool" f f.seg && mv -f f.seg f ) >/dev/null 2>&1
 run rename_segment f __DUP __ONE
 [ "$rc" -eq 0 ] && grep -qxF 'f: renamed 2 segment(s) __DUP -> __ONE' "$T/out" \
     && ok "rename_segment: reports the real match count, not 1" \
@@ -1434,13 +1441,13 @@ fmrc=$rc
 cp "$T/out" "$T/fm.out"
 fmsha=$(sha "$T/f")
 fresh
-( cd "$T" && "$BIN/machotool" dylib f f.mtout -replace /usr/lib/libSystem.B.dylib \
-    '@loader_path/../S.dylib' ) >"$T/mt.out" 2>/dev/null
-# The same one-line reshape the change_dylib block above explains.
-sed 's|^Wrote f\.mtout (|Updated f (|' "$T/mt.out" >"$T/mt.want"
+( cd "$T" && printf 'dylib replace /usr/lib/libSystem.B.dylib %s\n' \
+    '@loader_path/../S.dylib' | "$BIN/machotool" f f.mtout ) >"$T/mt.out" 2>/dev/null
+# The same appended wrapper line the change_dylib block above explains.
+{ cat "$T/mt.out"; printf 'Updated f (%s bytes)\n' "$(wc -c < "$T/f.mtout" | tr -d ' ')"; } >"$T/mt.want"
 [ "$fmrc" -eq 0 ] && cmp -s "$T/fm.out" "$T/mt.want" && [ "$fmsha" = "$(sha "$T/f.mtout")" ] \
-    && ok "fix_macho: -change is byte-identical to machotool dylib -replace, stdout included" \
-    || bad "fix_macho -change" "exit $fmrc; stdout or bytes differ from machotool dylib's"
+    && ok "fix_macho: -change is byte-identical to a dylib replace statement, stdout included" \
+    || bad "fix_macho -change" "exit $fmrc; stdout or bytes differ from the statement's"
 
 # -rename_seg, which fix_macho's own usage line never mentioned even though
 # its parser always accepted it. One `machotool segment` pass per pair.
@@ -1726,7 +1733,7 @@ chmod 644 "$T/f"
 # says so rather than passing quietly.
 rm -rf "$T/fmdir"; mkdir "$T/fmdir"
 fm_mt_rc=0
-( cd "$T" && "$BIN/machotool" dylib fmdir fmdir.new -replace /nope /also-nope ) \
+( cd "$T" && printf 'dylib replace /nope /also-nope\n' | "$BIN/machotool" fmdir fmdir.new ) \
     >/dev/null 2>"$T/err" || fm_mt_rc=$?
 [ "$fm_mt_rc" -eq 2 ] \
     && ok "fix_macho: machotool's own code for this input is 2, the code fix_macho never had" \
@@ -1916,83 +1923,127 @@ rc=$?
     || bad "retag_swift_classes spaced path" "exit $rc, stdout: $(cat "$T/out")"
 rm -f "$T/two words"
 
-# ---- the one-pass rules a SEQUENCE has to reproduce ----------------------
+# ---- conflicts resolve in the order written ------------------------------
 #
-# The C tools handed a whole family's operations to ONE pass and src/rewrite.c
-# decided, per load command, which single entry applied. compat/translate.sh
-# emits a SEQUENCE, so it has to make that decision itself -- by choosing which
-# statements to emit and in what order (mt_group_stmts). Every case below was
-# MEASURED against the pre-migration binaries (commit 18ad6f0, built in a
-# throwaway worktree) and asserts the answer they gave, because all six of them
-# are shapes where an emitter that merely looked reasonable produced DIFFERENT
-# BYTES with the same exit code and the same stdout. Nothing else in this repo
-# exercises them, which is exactly why they need to be here.
+# Two operations naming the same path apply one after the other, exactly as
+# typed -- the same rule whether the invocation touches one family or three.
 #
-# The oracle is `machotool info`, a read-only query, never a verb: these
-# assertions have to outlive the verbs.
+# THIS IS A RULING, AND THE SHAPES BELOW ARE THE ONES IT MOVED. The
+# pre-migration wrappers had no single rule to preserve: one family emitted a
+# VERB (one mr_ops, applied as a batch, with mr_is_deleted's delete-wins
+# precedence) and more than one emitted a SCRIPT (a sequence), so the same
+# conflict got two different answers depending on whether an unrelated flag
+# from another family happened to be present.
+# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
+#       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
+#
+# Each assertion states the NEW answer, measured against the pre-migration
+# binaries (commit 18ad6f0, built in a throwaway worktree) so that what moved
+# is on the record. The oracle is `machotool info`, a read-only query, never a
+# verb: these have to outlive the verbs.
 SYSLIB=/usr/lib/libSystem.B.dylib
 ABSENT=/absent/p.dylib
 
-# 1. dylib: a -delete BEATS a conflicting -change whatever the order
-#    (mr_is_deleted, src/rewrite.c:56, which scans every change regardless of
-#    argument position). Reproduced by emitting the delete first, so the
-#    replace then finds nothing. On a dylib nothing binds to, because deleting
-#    one that something binds to is refused before any of this is reached.
-for cd_order in 'chg-del' 'del-chg'; do
+# 1. A -delete written AFTER a -change no longer wins. The rename happens
+#    first, so the delete matches nothing and the dylib survives under its new
+#    name. The parent deleted it -- as a batch when one family was present
+#    (mr_is_deleted) and as a hoisted statement when several were, which is the
+#    one thing both of its paths agreed on.
+#    On a dylib nothing binds to, since deleting a bound one is refused first.
+for cd_extra in '' '-strip-lc uuid'; do
+    cd_label='one family'; [ -n "$cd_extra" ] && cd_label='several families'
     fresh
     run change_dylib f -add "$ABSENT"
-    if [ "$cd_order" = chg-del ]; then
-        run change_dylib f -change "$ABSENT" /also/absent.dylib -delete "$ABSENT"
-    else
-        run change_dylib f -delete "$ABSENT" -change "$ABSENT" /also/absent.dylib
-    fi
-    cd_paths=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
-    if [ "$rc" -eq 0 ] \
-        && ! printf '%s\n' "$cd_paths" | grep -q "path=$ABSENT" \
-        && ! printf '%s\n' "$cd_paths" | grep -q 'path=/also/absent.dylib'; then
-        ok "change_dylib: -delete beats a -change on the same path ($cd_order)"
-    else
-        bad "change_dylib delete-wins ($cd_order)" "exit $rc; the path was renamed instead of deleted, so a caller who asked for both gets a dylib the C tools removed -- and dyld will try to load it"
-    fi
+    run change_dylib f $cd_extra -change "$ABSENT" /also/absent.dylib -delete "$ABSENT"
+    cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
+    [ "$rc" -eq 0 ] && printf '%s\n' "$cd_info" | grep -q 'path=/also/absent.dylib' \
+        && ! printf '%s\n' "$cd_info" | grep -q "path=$ABSENT" \
+        && ok "change_dylib: -change then -delete renames, and the delete finds nothing ($cd_label)" \
+        || bad "change_dylib order, change-then-delete ($cd_label)" "exit $rc; the dylib was DELETED, which is the old batch's delete-wins rule surviving in the emitter -- and it makes an unrelated flag from another family change the answer again"
+    # ... and written the other way round the delete still goes first, so the
+    #     dylib really is gone. Unchanged from the parent, and asserted so the
+    #     rule above cannot be mistaken for "-delete never wins".
+    fresh
+    run change_dylib f -add "$ABSENT"
+    run change_dylib f $cd_extra -delete "$ABSENT" -change "$ABSENT" /also/absent.dylib
+    cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
+    [ "$rc" -eq 0 ] && ! printf '%s\n' "$cd_info" | grep -q "path=$ABSENT" \
+        && ! printf '%s\n' "$cd_info" | grep -q 'path=/also/absent.dylib' \
+        && ok "change_dylib: ... and -delete then -change deletes ($cd_label)" \
+        || bad "change_dylib order, delete-then-change ($cd_label)" "exit $rc; the first flag written did not win"
 done
 
-# 2. dylib: a -reexport is NOT a delete. It rewrites the command in place, so
-#    it wins or loses against a -change on the same path purely by which came
-#    FIRST -- the batch applied one entry per load command and shadowed the
-#    rest. Both orders, because they give different answers.
+# 2. A -reexport and a -change on one path BOTH apply, in order. The parent
+#    applied one and shadowed the other -- which one depended on the order AND
+#    on whether another family was present.
 fresh
 run change_dylib f -reexport "$SYSLIB" -change "$SYSLIB" /usr/lib/replaced.dylib
 cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
 [ "$rc" -eq 0 ] && printf '%s\n' "$cd_info" | grep -q 'LC_REEXPORT_DYLIB' \
-    && printf '%s\n' "$cd_info" | grep -q "path=$SYSLIB" \
-    && ! printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/replaced.dylib' \
-    && ok "change_dylib: -reexport before -change on one path reexports, and the -change is shadowed" \
-    || bad "change_dylib reexport/change order" "exit $rc; the shadowed -change acted, so the reexported dylib is named differently than the C tools left it -- a dyld load failure, not a cosmetic difference"
+    && printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/replaced.dylib' \
+    && ok "change_dylib: -reexport then -change reexports AND renames" \
+    || bad "change_dylib reexport then change" "exit $rc; one of the two operations was dropped, which is the old shadowing rule: $(printf '%s\n' "$cd_info" | grep -i 'reexport\|libSystem\|replaced')"
 fresh
-run change_dylib f -change "$SYSLIB" /usr/lib/replaced.dylib -reexport "$SYSLIB"
+run change_dylib f -strip-lc uuid -change "$SYSLIB" /usr/lib/replaced.dylib -reexport "$SYSLIB"
 cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
 [ "$rc" -eq 0 ] && ! printf '%s\n' "$cd_info" | grep -q 'LC_REEXPORT_DYLIB' \
     && printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/replaced.dylib' \
-    && ok "change_dylib: -change before -reexport on one path replaces, and the -reexport is shadowed" \
-    || bad "change_dylib change/reexport order" "exit $rc; the shadowed -reexport acted, so the command changed KIND -- LC_REEXPORT_DYLIB re-exports the dependency's symbols, which LC_LOAD_DYLIB does not"
+    && ok "change_dylib: -change then -reexport renames, and the reexport then matches nothing" \
+    || bad "change_dylib change then reexport" "exit $rc; the reexport acted on a path the rename had already moved"
 
-# 3. rpath has NO delete precedence, and this is the one that is easy to get
-#    backwards. mr_is_deleted scans n_dylib_changes and nothing else; the
-#    LC_RPATH loop `break`s on the first entry naming the path, full stop. So
-#    `-change-rpath X Y -delete-rpath X` RENAMES, where the dylib spelling of
-#    the same shape deletes.
+# 3. The rpath spellings resolve the same way, and an unrelated family changes
+#    nothing. The parent's multi-family path hoisted the rpath delete, giving
+#    LC_RPATH a delete-wins rule that its own one-pass code never had.
+for rp_extra in '' '-strip-lc uuid'; do
+    rp_label='one family'; [ -n "$rp_extra" ] && rp_label='several families'
+    fresh
+    run change_dylib f -add-rpath /r/one
+    run change_dylib f $rp_extra -change-rpath /r/one /r/two -delete-rpath /r/one
+    [ "$rc" -eq 0 ] && "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/two' \
+        && ok "change_dylib: -change-rpath then -delete-rpath renames ($rp_label)" \
+        || bad "change_dylib rpath order ($rp_label)" "exit $rc; the rpath was DELETED -- a binary that should now look for its libraries at /r/two has no rpath at all"
+    fresh
+    run change_dylib f -add-rpath /r/one
+    run change_dylib f $rp_extra -delete-rpath /r/one -change-rpath /r/one /r/two
+    [ "$rc" -eq 0 ] && ! "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/' \
+        && ok "change_dylib: ... and -delete-rpath then -change-rpath deletes ($rp_label)" \
+        || bad "change_dylib rpath order ($rp_label)" "exit $rc; the first flag written did not win"
+done
+
+# 4. A CHAIN TRANSLATES AND RUNS. It used to be REFUSED -- exit 1, nothing
+#    written -- whenever more than one family was present, and after the
+#    previous round whenever it appeared at all. Now `-change a b -change b c`
+#    renames the a's to b and then those b's to c, which is what was asked for
+#    in the order it was asked.
+fresh
+run change_dylib f -strip-lc uuid -change "$SYSLIB" /usr/lib/mid.dylib -change /usr/lib/mid.dylib /usr/lib/end.dylib
+cd_info=$( "$BIN/machotool" info "$T/f" 2>/dev/null )
+[ "$rc" -eq 0 ] && printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/end.dylib' \
+    && ! printf '%s\n' "$cd_info" | grep -q 'path=/usr/lib/mid.dylib' \
+    && ok "change_dylib: a -change chain lands on the LAST name, instead of being refused" \
+    || bad "change_dylib chain" "exit $rc; a chain is a capability again -- exit 1 here means the refusal came back, and a stop at the middle name means the statements are not running in order"
+# The rpath chain, which the previous round left refused even after the dylib
+# one was fixed.
 fresh
 run change_dylib f -add-rpath /r/one
-run change_dylib f -change-rpath /r/one /r/two -delete-rpath /r/one
-[ "$rc" -eq 0 ] && "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/two' \
-    && ok "change_dylib: -change-rpath before -delete-rpath renames -- rpath has no delete-wins rule" \
-    || bad "change_dylib rpath precedence" "exit $rc; the rpath was DELETED, which is dylib's rule applied to a family that never had it -- a binary that used to find its libraries at /r/two now has no rpath at all"
+run change_dylib f -strip-lc uuid -change-rpath /r/one /r/mid -change-rpath /r/mid /r/end
+[ "$rc" -eq 0 ] && "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/end' \
+    && ok "change_dylib: an rpath chain lands on the last name too" \
+    || bad "change_dylib rpath chain" "exit $rc; the rpath chain is still refused or still stops at the middle name"
+# fix_macho's -change, same rule, and its chain was refused too.
 fresh
-run change_dylib f -add-rpath /r/one
-run change_dylib f -delete-rpath /r/one -change-rpath /r/one /r/two
-[ "$rc" -eq 0 ] && ! "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'rpath=/r/' \
-    && ok "change_dylib: ... and -delete-rpath first really does delete" \
-    || bad "change_dylib rpath precedence" "exit $rc; the first flag naming the path did not win"
+run fix_macho f -strip_build_version -change "$SYSLIB" /usr/lib/mid.dylib -change /usr/lib/mid.dylib /usr/lib/end.dylib
+[ "$rc" -eq 0 ] && "$BIN/machotool" info "$T/f" 2>/dev/null | grep -q 'path=/usr/lib/end.dylib' \
+    && ok "fix_macho: a -change chain lands on the last name" \
+    || bad "fix_macho chain" "exit $rc; fix_macho's chain did not run through"
+# A SWAP runs too, and lands where a sequence lands: b becomes a, then every a
+# -- including the ones the first statement just made -- becomes b.
+fresh
+swap_before=$(sha "$T/f")
+run change_dylib f -change "$SYSLIB" /usr/lib/swapped.dylib -change /usr/lib/swapped.dylib "$SYSLIB"
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" = "$swap_before" ] \
+    && ok "change_dylib: a swap renames and renames back, leaving the file as it was" \
+    || bad "change_dylib swap" "exit $rc; a swap should run both statements in order and land back on the original name"
 
 # ---- the three tools whose verbs were THIN-ONLY --------------------------
 #

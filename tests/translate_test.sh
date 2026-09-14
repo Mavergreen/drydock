@@ -171,57 +171,122 @@ mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
 ok cd-insert-reverse "printf 'load-command delete uuid\ndylib insert B\ndylib insert A\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
-# ---- one pass, reproduced by CHOOSING statements ------------------------
+# ---- conflicts resolve in the order written -----------------------------
 #
-# The C tools handed a family's operations to one pass, which applied exactly
-# one entry per load command. compat/translate.sh's mt_group_stmts makes that
-# choice; its header has the two rules and the measurements. Each assertion
-# below is a shape where emitting the obvious thing produces different bytes,
-# so the emitted TEXT is pinned here and the resulting BYTES in
-# tests/wrapper_test.sh's "one-pass rules a SEQUENCE has to reproduce" block.
+# Two operations naming the same path apply one after the other, exactly as
+# typed. That is the whole rule, and it is the same rule whether the invocation
+# touches one family or three.
+#
+# IT IS A RULING, NOT A REPRODUCTION, and it had to be: the pre-migration
+# wrappers did not have one rule. One family emitted a VERB -- one mr_ops,
+# applied as a batch, with mr_is_deleted's delete-wins precedence -- and more
+# than one emitted a SCRIPT, a sequence. The same conflict got two different
+# answers depending on whether an unrelated flag from another family happened
+# to be present.
+# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
+#       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
+#
+# Every assertion below is a shape whose OUTCOME moved, measured against the
+# pre-migration binaries. The emitted text is pinned here; the resulting bytes
+# are pinned in tests/wrapper_test.sh's "conflicts resolve in the order
+# written" block. Each is stated in its NEW form, so the next reader finds a
+# decision rather than a surprise.
 
-# A -delete beats a conflicting -change for the same path whatever the order
-# (mr_is_deleted, src/rewrite.c). Reproduced by emitting ONLY the delete: the
-# shadowed -change did nothing in the one pass either.
-ok cd-delete-beats-change "printf 'dylib delete P\n' | machotool f f.new
+# A -delete no longer beats a -change written before it: the rename happens,
+# then the delete finds nothing. Both orders, because only the first moved.
+ok cd-change-then-delete "printf 'dylib replace P Q\ndylib delete P\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -change P Q -delete P
-ok cd-delete-beats-change-2 "printf 'dylib delete P\n' | machotool f f.new
+ok cd-delete-then-change "printf 'dylib delete P\ndylib replace P Q\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -delete P -change P Q
 
-# A -reexport is NOT a delete -- it rewrites the command in place -- so against
-# a -change on the same path the FIRST one wins and the other is shadowed.
-# Both orders, because they give different answers.
-ok cd-reexport-first "printf 'dylib reexport P\n' | machotool f f.new
+# A -reexport and a -change on one path both apply, in order.
+ok cd-reexport-then-change "printf 'dylib reexport P\ndylib replace P Q\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -reexport P -change P Q
-ok cd-replace-first "printf 'dylib replace P Q\n' | machotool f f.new
+ok cd-change-then-reexport "printf 'dylib replace P Q\ndylib reexport P\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -change P Q -reexport P
-# ... but a -delete still beats a -reexport, since mr_is_deleted scans for
-# deletions and finds this one wherever it sits.
-ok cd-delete-beats-reexport "printf 'dylib delete P\n' | machotool f f.new
+ok cd-reexport-then-delete "printf 'dylib reexport P\ndylib delete P\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -reexport P -delete P
 
-# Two -changes naming the SAME old path: the first is the one that applied.
-ok cd-dup-replace "printf 'dylib replace P Q\n' | machotool f f.new
+# Two -changes naming the same old path: the first renames it, so the second
+# matches nothing. Emitted anyway -- dropping it would be the translator
+# deciding, which is the job it no longer has.
+ok cd-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -change P Q -change P Z
-ok fm-dup-replace "printf 'dylib replace P Q\n' | machotool f f.new
+ok fm-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | machotool f f.new
 mv -f f.new f" -- fix_macho f -change P Q -change P Z
 
-# RPATH HAS NO DELETE PRECEDENCE, and this is the assertion that keeps dylib's
-# rule from being applied to it. mr_is_deleted scans n_dylib_changes only; the
-# LC_RPATH loop breaks on the first entry naming the path. So the first FLAG
-# wins here, whichever kind it is -- where the dylib spelling of the same shape
-# deletes either way.
-ok cd-rpath-replace-first "printf 'rpath replace X Y\n' | machotool f f.new
+# The rpath spellings, which now read exactly like the dylib ones. They did
+# not before: the single-family form went through a verb with no delete-wins
+# rule while the multi-family form hoisted the delete.
+ok cd-rpath-change-then-delete "printf 'rpath replace X Y\nrpath delete X\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -change-rpath X Y -delete-rpath X
-ok cd-rpath-delete-first "printf 'rpath delete X\n' | machotool f f.new
+ok cd-rpath-delete-then-change "printf 'rpath delete X\nrpath replace X Y\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -delete-rpath X -change-rpath X Y
-ok cd-rpath-dup "printf 'rpath replace X Y\n' | machotool f f.new
+ok cd-rpath-dup "printf 'rpath replace X Y\nrpath replace X Z\n' | machotool f f.new
 mv -f f.new f" -- change_dylib f -change-rpath X Y -change-rpath X Z
 
-# A shadowed entry is dropped, not reordered, so an invocation whose every
-# dylib operation is shadowed still emits the rest of its families.
-ok cd-shadow-keeps-others "printf 'load-command delete uuid\ndylib delete P\nrpath append R\n' | machotool f f.new
-mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -delete P -add-rpath R
+# ADDING AN UNRELATED FLAG FROM ANOTHER FAMILY CHANGES NOTHING about how the
+# conflict resolves. On the parent it decided everything, because it decided
+# which code path ran. These four are the same conflicts as above with a
+# -strip-lc in front, and they emit the same statements in the same order.
+ok cd-mf-change-then-delete "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -delete P
+ok cd-mf-change-then-reexport "printf 'load-command delete uuid\ndylib replace P Q\ndylib reexport P\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -reexport P
+ok cd-mf-rpath-change-then-delete "printf 'load-command delete uuid\nrpath replace X Y\nrpath delete X\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change-rpath X Y -delete-rpath X
+# ... and a -strip-lc written BETWEEN the two conflicting flags still lands
+# first, because a load-command delete hands header pad back and everything
+# else may need the room. Flag order governs the conflict, not the emission
+# of unrelated families.
+ok cd-mf-lc-between "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change P Q -strip-lc uuid -delete P
+
+# BOTH FAMILIES CONFLICTING AT ONCE, and the two resolutions do not interact:
+# each family's statements come out in its own flag order.
+ok cd-mf-both-conflict "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | machotool f f.new
+mv -f f.new f" \
+    -- change_dylib f -change A Q -delete A -change-rpath X Y -delete-rpath X
+# ... and INTERLEAVING the flags across families changes nothing: each family
+# keeps the relative order of ITS OWN flags, which is what "the order written"
+# means when two families are being written at once.
+ok cd-mf-interleaved "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | machotool f f.new
+mv -f f.new f" \
+    -- change_dylib f -change A Q -change-rpath X Y -delete A -delete-rpath X
+# A dylib conflict with an unrelated RPATH operation present -- the other half
+# of "an unrelated flag from another family decides nothing", where the flag is
+# a real rewrite rather than a -strip-lc.
+ok cd-mf-dylib-conflict-rpath-op "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change A Q -delete A -change-rpath X Y
+
+# A CHAIN IS JUST A SEQUENCE NOW, and these assertions used to be refusals.
+# `-change a b -change b c` renames the a's to b, then those b's to c. No
+# emission order reproduces what one batch did with it, which is why it was
+# refused while reproduction was the goal; reproduction is not the goal.
+ok cd-chain "printf 'dylib replace a b\ndylib replace b c\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change a b -change b c
+ok cd-chain-lc "printf 'load-command delete uuid\ndylib replace a b\ndylib replace b c\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change a b -change b c -strip-lc uuid
+ok cd-chain-3 "printf 'dylib replace a b\ndylib replace b c\ndylib replace c d\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change a b -change b c -change c d
+# A SWAP too: b becomes a, then every a -- including the ones the first
+# statement just made -- becomes b.
+ok cd-swap "printf 'dylib replace a b\ndylib replace b a\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change a b -change b a
+# An rpath SWAP, which returns the rpath to the name it started with.
+ok cd-rpath-swap "printf 'rpath replace a b\nrpath replace b a\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change-rpath a b -change-rpath b a
+# The rpath chain, which is the one the re-review found was STILL refused
+# after the previous round.
+ok cd-rpath-chain "printf 'rpath replace a b\nrpath replace b c\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -change-rpath a b -change-rpath b c
+ok cd-rpath-chain-lc "printf 'load-command delete uuid\nrpath replace a b\nrpath replace b c\n' | machotool f f.new
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change-rpath a b -change-rpath b c
+# ... and fix_macho's -change, on the same rule.
+ok fm-chain "printf 'dylib replace a b\ndylib replace b c\n' | machotool f f.new
+mv -f f.new f" -- fix_macho f -change a b -change b c
+ok fm-chain-lc "printf 'load-command delete build-version\ndylib replace a b\ndylib replace b c\n' | machotool f f.new
+mv -f f.new f" -- fix_macho f -change a b -change b c -strip_build_version
 
 # install.sh's production line -- the single most important translation in
 # this task, quoted from the plan's Task 0 evidence.
@@ -297,10 +362,10 @@ mv -f f.new f" \
 # affected by its removal either. Each was measured against the real fix_macho
 # on tests/fixture.macho and agreed byte-for-byte with its translation.
 #
-# NOTE none of these three is refused by mt_chain_check, which watches -change
-# and not -rename_seg: a rename statement and a `machotool segment` pass are the
-# same single operation, so sequencing them is the adopted behaviour rather
-# than a shape with no equivalent.
+# NOTE nothing here is refused at all any more, in any family: the -change
+# chain check that once watched for this shape (and never watched -rename_seg)
+# is gone with the rest of the reproduction machinery. Renames sequence, and
+# always did.
 ok fm-same-old "printf 'segment rename __DATA __A\nsegment rename __DATA __B\n' | machotool f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
 ok fm-new-eq-earlier-old "printf 'segment rename __DATA __B\nsegment rename __TEXT __DATA\n' | machotool f f.new
@@ -453,39 +518,20 @@ refuses cd-short-rchange 1 'bad arg: -change-rpath' -- change_dylib f -change-rp
 refuses cd-bad-arg      1 'bad arg: -nope'         -- change_dylib f -nope x
 refuses cd-bad-kind     1 'unknown -strip-lc kind: nope' -- change_dylib f -strip-lc nope
 
-# THE ONE REFUSAL THIS FILE MAKES OF ITS OWN. A batch gave every -change the
-# ORIGINAL paths to compare against, so `-change a b -change b c` rewrote the
-# a's to b and the original b's to c and never revisited what the first pair
-# produced; a sequence of statements rewrites those too and lands on c. No
-# emission order fixes it, so the translation says so instead of emitting
-# something adjacent.
-refuses cd-chain 1 '-change a b and -change b c chain: run them as separate invocations' \
-    -- change_dylib f -change a b -change b c -strip-lc uuid
-# A SWAP is the same defect: b becomes a, and then every a (including the ones
-# the first statement just made) becomes b.
-refuses cd-chain-swap 1 '-change a b and -change b a chain: run them as separate invocations' \
-    -- change_dylib f -change a b -change b a -strip-lc uuid
-# The rpath family gets the same check, naming ITS flag -- the user typed
-# -change-rpath, and a message naming -change would name a flag they did not.
-refuses cd-chain-rpath 1 '-change-rpath a b and -change-rpath b c chain: run them as separate invocations' \
-    -- change_dylib f -change-rpath a b -change-rpath b c -strip-lc uuid
-# fix_macho's -change, on the same path, for the same reason.
-refuses fm-chain-change 1 '-change a b and -change b c chain: run them as separate invocations' \
-    -- fix_macho f -change a b -change b c -strip_build_version
-# THE SAME CHAIN WITH ONE FAMILY IS NOW REFUSED TOO, and these two assertions
-# USED TO BE `ok ... machotool dylib f f.new -replace a b -replace b c`. A
-# single-family invocation used to emit that family's VERB, whose batch WAS the
-# C tool's own semantics -- so there was nothing to reproduce and nothing to
-# refuse. There is no verb to emit any more: every invocation is a sequence of
-# statements, so the one shape a sequence cannot reproduce is refused wherever
-# it appears. This is the one outcome that moved in this change: an invocation
-# that used to be translated now exits 1 with this message, which is the honest
-# answer -- the alternative was emitting a sequence that produces different
-# bytes, silently.
-refuses cd-chain-one-family 1 '-change a b and -change b c chain: run them as separate invocations' \
-    -- change_dylib f -change a b -change b c
-refuses fm-chain-one-family 1 '-change a b and -change b c chain: run them as separate invocations' \
-    -- fix_macho f -change a b -change b c
+# THIS FILE NOW REFUSES NOTHING OF ITS OWN, and this comment is where six
+# `refuses` assertions used to be: a -change chain and a swap, in both
+# families, in both wrappers. They existed because a sequence of statements
+# gave a different answer than one batch, and while REPRODUCING the batch was
+# the goal, emitting the sequence anyway would have been the "plausible-looking
+# command that would do something else" the retirement plan forbids.
+#
+# Reproduction is no longer the goal -- conflicts resolve in the order written
+# -- so a chain is simply a sequence and there is nothing to refuse. The
+# assertions moved rather than died: they are `ok` cases in the "conflicts
+# resolve in the order written" section above, stated in their new form. Every
+# refusal left in this file is one the OLD TOOL ITSELF made.
+#
+# A -change whose NEW is its OWN old was never a chain, and is unaffected.
 # And a -change whose NEW is its OWN old is not a chain: no OTHER statement
 # rewrites what it produced, so a statement and a batch agree.
 ok cd-self-replace "printf 'load-command delete uuid\ndylib replace a a\ndylib replace c d\n' | machotool f f.new
@@ -541,13 +587,11 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 # counterpart at all -- a `segment rename` statement is one pair, so nothing
 # downstream would ever count them -- which makes this file the only thing
 # keeping that refusal alive.
-# 32 IDENTICAL pairs, so the emission collapses them to the one that applied
-# (mt_group_stmts' first-entry-wins rule -- the other 31 named a path the first
-# had already claimed and did nothing in the one pass either). What this pins
-# is the ACCEPTANCE at capacity: `ok` requires exit 0, and the 33rd is refused
-# just below. A check one too eager would silently halve what a caller can ask
-# for, and would fail here rather than there.
-ok fm-cap-change-32-fits "printf 'dylib replace A B\n' | machotool f f.new
+# 32 pairs, 32 statements: every operation is emitted, in the order written.
+# What this pins is the ACCEPTANCE at capacity -- `ok` requires exit 0, and the
+# 33rd is refused just below. A check one too eager would silently halve what a
+# caller can ask for, and would fail here rather than there.
+ok fm-cap-change-32-fits "printf '$(mkrep 'dylib replace A B\n' 32)' | machotool f f.new
 mv -f f.new f" \
     -- fix_macho f $(mkcap '-change A B' 32)
 refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)
@@ -574,44 +618,52 @@ fi
 # "Migration" section says exists so the wrapper and the binary need not move
 # in lockstep. Use it rather than assuming: every STATEMENT this translator can
 # emit must be advertised with the right arity, and every -strip-lc KIND it can
-# name must be one this build knows. The verb rows are still checked below
-# because kinds= is where the KIND vocabulary is published today; the
-# statement rows are what the emitted commands actually use.
+# name must be one this build knows.
+#
+# THE VERB ROWS ARE GONE, and with them every `ops=`, `kinds=` and `versions=`
+# field this block used to read. --capabilities now advertises `verify`,
+# `info`, `grow`, `edit` and the statement rows, and the statement rows are
+# what this translator emits -- so the ops= and versions= checks have become
+# the stmtcheck rows just below, which asserted the same agreement already.
+#
+# THE KIND VOCABULARY HAS NO ADVERTISEMENT LEFT. `kinds=` was the only place
+# LC_STRIP_KINDS was published, and it lived on the `verb lc` line. So the
+# agreement between MT_STRIP_KINDS and what this build accepts is asserted the
+# only way still open: by handing machotool the statement and reading whether
+# ms_parse knew the name. No fixture is needed -- the parse runs before FILE is
+# opened, so a kind this build knows fails at the absent file ("cannot open or
+# read") and one it does not fails at the parse ("unknown kind"), and the two
+# are distinguishable without a Mach-O anywhere.
 "$BIN/machotool" --capabilities > "$T/caps" 2>/dev/null
-capcheck() {   # capcheck <verb> <attr-prefix> <value>...
-    v=$1; attr=$2; shift 2
-    line=$(grep "^verb $v" "$T/caps")
-    if [ -z "$line" ]; then
-        printf 'FAIL caps-%s: this build does not advertise the verb\n' "$v" >&2
-        fail=$((fail + 1)); return 0
-    fi
-    for want in "$@"; do
-        vals=$(printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^$attr=//p" | tr ',' '\n')
-        if printf '%s\n' "$vals" | grep -qx "$want"; then
-            pass=$((pass + 1))
-        else
-            printf 'FAIL caps-%s: %s=%s not advertised (line: %s)\n' "$v" "$attr" "$want" "$line" >&2
-            fail=$((fail + 1))
-        fi
-    done
-}
-for v in declassify minos segment retag-swift lc dylib rpath edit; do
-    if grep -q "^verb $v" "$T/caps"; then
-        pass=$((pass + 1))
-    else
-        printf 'FAIL caps-verb-%s: not advertised by this build\n' "$v" >&2
+kindcheck() {   # kindcheck <kind> -- must be one ms_parse knows
+    if printf 'load-command delete %s\n' "$1" \
+        | "$BIN/machotool" "$T/no-such-fixture" "$T/no-such-out" 2>&1 \
+        | grep -q "unknown kind"; then
+        printf 'FAIL caps-kind-%s: this build does not accept it in a load-command delete\n' "$1" >&2
         fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
     fi
-done
-capcheck dylib ops replace delete append insert reexport
-capcheck rpath ops replace delete append
-capcheck lc    ops delete
-capcheck lc    kinds uuid codesig source-version build-version code-sign-drs
-capcheck minos versions 10.9
+}
+# Read out of translate.sh itself rather than retyped here: the whole claim is
+# that ITS frozen list and THIS build agree, and a second copy in this file
+# would let both drift together.
+mt_kinds=$(sed -n "s/^MT_STRIP_KINDS='\([^']*\)'.*/\1/p" "$TR")
+[ -n "$mt_kinds" ] || { printf 'FAIL caps-kind: no MT_STRIP_KINDS in %s\n' "$TR" >&2; fail=$((fail + 1)); }
+for mt_k in $mt_kinds; do kindcheck "$mt_k"; done
+# The control, without which the loop above would pass against a parser that
+# accepted every name: a kind that is in no table must still be refused.
+if printf 'load-command delete not-a-real-kind\n' \
+    | "$BIN/machotool" "$T/no-such-fixture" "$T/no-such-out" 2>&1 \
+    | grep -q "unknown kind"; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL caps-kind-control: a kind in no table was not refused\n' >&2
+    fail=$((fail + 1))
+fi
 
-# Every STATEMENT this translator can put in an edit script, with its arity --
-# the same agreement the verb checks above make, for the other half of what is
-# emitted. A statement machotool does not know is a script that fails to parse,
+# Every STATEMENT this translator can put in an edit script, with its arity.
+# A statement machotool does not know is a script that fails to parse,
 # which is a worse failure than a verb that does not exist: it happens after
 # the wrapper has already told the caller what it was about to run.
 stmtcheck() {   # stmtcheck <kind> <op> <nargs>

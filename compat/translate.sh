@@ -79,16 +79,15 @@
 #     half-translated command. Almost every case is one the OLD TOOL ITSELF
 #     would have refused -- a usage error, an unknown flag, an unknown
 #     -strip-lc kind, a capacity cap, an over-long segment name -- and carries
-#     the origin tool's exact message. There is ONE refusal of this file's
-#     own, which the old tools accepted: a -change chain, refused by
-#     mt_chain_check, whose comment has the reasoning. It applies to EVERY
-#     invocation now -- it used to skip the single-family case, which emitted
-#     that family's verb and got the old tool's batch semantics for free. It
-#     exits 1 rather than 2 because 1 is the only failure code change_dylib
-#     and fix_macho ever had, and 2 would invent a third outcome for a
-#     two-outcome grammar. Both wrappers forward a translation's code raw --
-#     fix_macho.sh's fold of every nonzero to 1 applies to mw_run's code, not
-#     to this one -- so whatever this returns is what the caller sees.
+#     the origin tool's exact message. THERE IS NO LONGER ANY REFUSAL OF THIS
+#     FILE'S OWN: every argv the old tools accepted now translates. A
+#     `-change a b -change b c` chain used to be refused here, because no
+#     emission order reproduced what one batch did with it; conflicts resolve
+#     in the order written now, so a chain is simply a sequence -- rename the
+#     a's to b, then those b's to c -- and there is nothing left to refuse.
+#     Both wrappers forward a translation's code raw -- fix_macho.sh's fold of
+#     every nonzero to 1 applies to mw_run's code, not to this one -- so
+#     whatever this returns is what the caller sees.
 #
 # The one exception to "the old tool's message" is $MT_PROG, which stands in
 # for argv[0] in a usage line; mt_translate defaults it to the tool's own name.
@@ -202,13 +201,16 @@
 #     test holding each; this file simply translates, as it does for every
 #     other tool.
 #
-# This file refuses exactly one shape of its own: a -change chain
-# (mt_chain_check, whose comment has the reasoning). There used to be a second
-# -- `fix_macho -rename_seg A B -rename_seg B C` -- and mt_tr_fix_macho's
-# -rename_seg arm records why it existed and what reversed it. The two are not
-# the same question: successive rename statements chain, which is the behaviour
-# that was adopted, while a -change chain is a shape the OLD tool's single
-# batch applied and no sequence reproduces.
+# This file refuses NO shape of its own any more. There were two, and both
+# were removed for the same reason by the same kind of ruling: a chained
+# `fix_macho -rename_seg A B -rename_seg B C` (mt_tr_fix_macho's -rename_seg
+# arm records that one) and a chained `-change a b -change b c`. Each existed
+# because a sequence gave a different answer than the C tool's single pass,
+# and each stopped existing once the repo owner ruled that the sequence's
+# answer -- doing what was asked, in the order it was asked -- is the one to
+# keep.
+# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
+#       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
 
 # ---- quoting -------------------------------------------------------------
 #
@@ -309,84 +311,6 @@ mt_emit() {
         "$(mt_qargs "$1" "$2")"
 }
 
-# ---- one family's change group, as the one-pass rewriter applied it -------
-#
-# A "change group" is the operations that act on load commands the walk
-# ALREADY FINDS: for dylib that is -change/-delete/-reexport, for rpath
-# -change-rpath/-delete-rpath. (-add/-insert/-add-rpath are not in it: those
-# arrays are applied after the walk, which is why their statements are emitted
-# after this group's.) The old tools handed the whole group to one pass, and
-# src/rewrite.c decided per load command which ONE entry of it applied. This
-# reproduces that decision by choosing which statements to emit.
-#
-#   mt_group_stmts <delete-wins 1|0> <records>
-#
-# <records> is three lines per operation, in flag order: `del` or `act`, then
-# the RAW old path, then the statement text. Three lines rather than one
-# delimited line because a path may contain a tab and may not contain a
-# newline (see the quoting section), so newline is the only separator that is
-# safe here -- the same reason and the same shape as mt_chain_check's pairs.
-#
-# TWO RULES, AND THEY ARE NOT THE SAME FOR THE TWO FAMILIES:
-#
-#   1. FIRST ENTRY NAMING A PATH WINS; the rest are shadowed. mr_build_lcs_lc
-#      sets `matched` to the first entry naming the path and never revisits it
-#      (src/rewrite.c, the "No break" loop -- it keeps scanning to COUNT hits,
-#      but `if (matched < 0) matched = c`). So a shadowed entry did nothing at
-#      all, and emitting it as a statement would make it do something: measured
-#      against the pre-migration binaries, `-reexport P -change P Q` left
-#      LC_REEXPORT_DYLIB still naming P, while reexport-then-replace as two
-#      statements lands on Q. Dropping the shadowed entry is what reproduces
-#      the batch; no emission ORDER does.
-#
-#   2. A -delete BEATS a conflicting entry whatever the order -- FOR DYLIB
-#      ONLY. mr_is_deleted (src/rewrite.c:56) scans `n_dylib_changes` and
-#      nothing else, so LC_RPATH never had that precedence: its match loop
-#      `break`s on the first entry, full stop. Measured: `change_dylib
-#      -change-rpath X Y -delete-rpath X` RENAMES on the C tools and on this
-#      translation, and hoisting rpath deletes the way dylib's are would delete
-#      it instead -- a precedence rpath never had. The <delete-wins> argument
-#      is that asymmetry, and it is 1 for dylib and 0 for rpath because the C
-#      code is written that way, not because the two families differ in
-#      principle.
-mt_group_stmts() {
-    mt_gs_win=$1
-    mt_gs_recs=$2
-    mt_gs_claimed=''
-    if [ "$mt_gs_win" = 1 ]; then
-        while IFS= read -r mt_gs_k && IFS= read -r mt_gs_p && IFS= read -r mt_gs_s; do
-            [ "$mt_gs_k" = del ] || continue
-            mt_claimed "$mt_gs_p" "$mt_gs_claimed" && continue
-            mt_gs_claimed="$mt_gs_claimed:$mt_gs_p
-"
-            printf '%s\n' "$mt_gs_s"
-        done <<MT_GS_DELETES
-$mt_gs_recs
-MT_GS_DELETES
-    fi
-    while IFS= read -r mt_gs_k && IFS= read -r mt_gs_p && IFS= read -r mt_gs_s; do
-        mt_claimed "$mt_gs_p" "$mt_gs_claimed" && continue
-        mt_gs_claimed="$mt_gs_claimed:$mt_gs_p
-"
-        printf '%s\n' "$mt_gs_s"
-    done <<MT_GS_REST
-$mt_gs_recs
-MT_GS_REST
-}
-
-# Has this path already had its one statement emitted? The stored entries carry
-# a leading `:` so that the EMPTY path -- which `change_dylib f -change '' X`
-# really can name -- is distinguishable from the blank line every accumulated
-# list ends with.
-mt_claimed() {
-    while IFS= read -r mt_cl_e; do
-        [ "$mt_cl_e" = ":$1" ] && return 0
-    done <<MT_CLAIMED
-$2
-MT_CLAIMED
-    return 1
-}
-
 # The origin tool's own diagnostic, on stderr, and a nonzero return.
 mt_die() {
     printf '%s\n' "$1" >&2
@@ -400,48 +324,6 @@ mt_room() {
     [ "$1" -eq "$2" ] || return 0
     printf 'too many %s (max %d)\n' "$3" "$2" >&2
     return 1
-}
-
-# THE ONE SHAPE A SEQUENCE CANNOT REPRODUCE.
-#
-#   mt_chain_check <flag spelling> <pairs>
-#
-# <pairs> is every replacement this family collected, OLD and NEW on
-# alternating lines, in flag order. Refuses when one pair's NEW is another
-# pair's OLD -- a chain (`-change a b -change b c`) or a swap (`-change a b
-# -change b a`).
-#
-# WHY. The old tools apply a whole family's operations as ONE batch against
-# the original image: every command is compared against the paths the image
-# had, so `-change a b -change b c` rewrites the a's to b and the ORIGINAL b's
-# to c, and the b's the first pair just produced are not revisited. An edit
-# script applies its statements in sequence, each seeing what the one before
-# left, so `dylib replace a b` followed by `dylib replace b c` rewrites the
-# new b's as well and lands on c. No emission order fixes it: reversing the
-# two just moves which pair is over-applied.
-#
-# So this is the one place the translation has no equivalent to emit, and it
-# says so rather than emitting something adjacent. It is checked ONLY on the
-# edit-script path: a single-family invocation still uses the verb, whose
-# batch is the old tool's own semantics.
-mt_chain_check() {
-    mt_cc_i=0
-    while IFS= read -r mt_cc_o1 && IFS= read -r mt_cc_n1; do
-        mt_cc_i=$((mt_cc_i + 1))
-        mt_cc_j=0
-        while IFS= read -r mt_cc_o2 && IFS= read -r mt_cc_n2; do
-            mt_cc_j=$((mt_cc_j + 1))
-            [ "$mt_cc_i" -ne "$mt_cc_j" ] || continue
-            [ "$mt_cc_n1" = "$mt_cc_o2" ] || continue
-            mt_die "$1 $mt_cc_o1 $mt_cc_n1 and $1 $mt_cc_n1 $mt_cc_n2 chain: run them as separate invocations"
-            return 1
-        done <<MT_CHAIN_INNER
-$2
-MT_CHAIN_INNER
-    done <<MT_CHAIN_OUTER
-$2
-MT_CHAIN_OUTER
-    return 0
 }
 
 # Caps, from src/rewrite.h. -change/-delete/-reexport SHARE one array of 32,
@@ -488,13 +370,11 @@ mt_tr_change_dylib() {
     # them (see the emission comment below).
     mt_st_lc='' mt_st_dydel='' mt_st_dyrepl='' mt_st_dyapp='' mt_st_dyins=''
     mt_st_rpapp=''
-    # The two CHANGE GROUPS -- the operations the load-command walk itself
-    # applied -- as mt_group_stmts' three-lines-per-record lists, in flag
-    # order. Everything else is a plain statement bucket, because nothing in
-    # it can shadow anything else.
-    mt_dy_recs='' mt_rp_recs=''
-    # Every replacement's OLD and NEW, on alternating lines, for mt_chain_check.
-    mt_pairs_dy='' mt_pairs_rp=''
+    # One bucket per family for the operations the load-command walk itself
+    # applies -- -change/-delete/-reexport, and their rpath spellings -- in
+    # the order the flags were written. There is nothing to choose between
+    # them: see the emission comment below.
+    mt_st_dychg='' mt_st_rpchg=''
     mt_nchanges=0 mt_nadds=0 mt_ninserts=0
     mt_nrchanges=0 mt_nradds=0 mt_nstrip=0
     mt_grow=''
@@ -536,34 +416,21 @@ $mt_st_dyins"
             [ $# -ge 3 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -change || return 1
             mt_nchanges=$((mt_nchanges + 1))
-            mt_dy_recs="${mt_dy_recs}act
-$2
-$(printf 'dylib replace%s' "$(mt_qargs "$2" "$3")")
-"
-            mt_pairs_dy="$mt_pairs_dy$2
-$3
+            mt_st_dychg="$mt_st_dychg$(printf 'dylib replace%s' "$(mt_qargs "$2" "$3")")
 "
             shift 3 ;;
         -delete)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -delete || return 1
             mt_nchanges=$((mt_nchanges + 1))
-            mt_dy_recs="${mt_dy_recs}del
-$2
-$(printf 'dylib delete%s' "$(mt_qargs "$2")")
+            mt_st_dychg="$mt_st_dychg$(printf 'dylib delete%s' "$(mt_qargs "$2")")
 "
             shift 2 ;;
         -reexport)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -reexport || return 1
             mt_nchanges=$((mt_nchanges + 1))
-            # `act`, not `del`: a reexport REWRITES the command in place
-            # (new_path "" keeps the path, cmd becomes LC_REEXPORT_DYLIB), so
-            # mr_is_deleted never sees it and it wins or loses against a
-            # -change on the same path purely by which came first.
-            mt_dy_recs="${mt_dy_recs}act
-$2
-$(printf 'dylib reexport%s' "$(mt_qargs "$2")")
+            mt_st_dychg="$mt_st_dychg$(printf 'dylib reexport%s' "$(mt_qargs "$2")")
 "
             shift 2 ;;
         -add-rpath)
@@ -577,24 +444,14 @@ $(printf 'dylib reexport%s' "$(mt_qargs "$2")")
             [ $# -ge 3 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nrchanges" "$MT_MAX_OPS" -change-rpath || return 1
             mt_nrchanges=$((mt_nrchanges + 1))
-            mt_rp_recs="${mt_rp_recs}act
-$2
-$(printf 'rpath replace%s' "$(mt_qargs "$2" "$3")")
-"
-            mt_pairs_rp="$mt_pairs_rp$2
-$3
+            mt_st_rpchg="$mt_st_rpchg$(printf 'rpath replace%s' "$(mt_qargs "$2" "$3")")
 "
             shift 3 ;;
         -delete-rpath)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_room "$mt_nrchanges" "$MT_MAX_OPS" -delete-rpath || return 1
             mt_nrchanges=$((mt_nrchanges + 1))
-            # `del`, but mt_group_stmts is called with delete-wins OFF for
-            # this family: the tag is what the operation IS, not what
-            # precedence it gets.
-            mt_rp_recs="${mt_rp_recs}del
-$2
-$(printf 'rpath delete%s' "$(mt_qargs "$2")")
+            mt_st_rpchg="$mt_st_rpchg$(printf 'rpath delete%s' "$(mt_qargs "$2")")
 "
             shift 2 ;;
         *)
@@ -604,41 +461,39 @@ $(printf 'rpath delete%s' "$(mt_qargs "$2")")
 
     # ONE COMMAND: the bare form, with every operation as a statement.
     #
-    # WHY THIS ORDER. change_dylib applied a whole family's operations as a
-    # BATCH against the original image; a script applies statements in
-    # SEQUENCE, each seeing what the one before left. They agree when the
-    # statements are emitted like this:
+    # CONFLICTS RESOLVE IN THE ORDER WRITTEN. Two operations naming the same
+    # path apply one after the other, exactly as typed, and the second sees
+    # what the first left. That is the whole rule, and it is the same rule
+    # whether the invocation touches one family or three.
+    #
+    # It is a RULING, not a reproduction. The pre-migration wrappers did not
+    # have one rule: one family emitted a VERB (one mr_ops, applied as a batch,
+    # with mr_is_deleted's delete-wins precedence) and more than one emitted a
+    # SCRIPT (a sequence), so the same conflict got two different answers
+    # depending on whether an unrelated flag from another family happened to be
+    # present. Nothing could be preserved, because there was no single
+    # behaviour there to preserve.
+    # spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
+    #       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
+    #
+    # The remaining order is about what the statements DO, not about resolving
+    # conflicts between them:
     #
     #   1. every `load-command delete` first, because deleting commands hands
     #      header pad back and everything else may need the room;
-    #   2. each family's CHANGE GROUP, chosen by mt_group_stmts -- whose
-    #      header has the two rules (first entry naming a path wins, and a
-    #      -delete beats a conflict for dylib but NOT for rpath) and the
-    #      measurements behind them;
-    #   3. that family's appends, which the batch applied after the walk;
-    #   4. then its inserts IN REVERSE FLAG ORDER. That reversal is the one
-    #      that is not obvious: each insert goes to the FRONT of the table, so
-    #      as a batch `-insert A -insert B` leaves A at ordinal 1 and B at 2,
-    #      and a sequence reproduces that only by inserting B and then A.
+    #   2. each family's walk operations, in flag order;
+    #   3. that family's appends, which add a command the walk operations
+    #      above were written about the absence of;
+    #   4. then its inserts IN REVERSE FLAG ORDER, because each insert goes to
+    #      the FRONT of the table: `-insert A -insert B` leaves A at ordinal 1
+    #      and B at 2, which a sequence reaches by inserting B and then A.
+    #      tests/wrapper_test.sh asserts those ordinals on a real binary.
     #
-    # dylib before rpath: library ordinals are the delicate part, so they are
-    # settled while the image is closest to the one the old tool saw.
-    #
-    # And one shape no order or choice reproduces -- a -change whose NEW is
-    # another -change's OLD -- which mt_chain_check refuses. IT RUNS ON EVERY
-    # INVOCATION, not only a multi-family one: the single-family form used to
-    # emit that family's VERB, whose batch was the C tool's own semantics and
-    # so had nothing to reproduce. There is no verb to emit any more, so there
-    # is no invocation left where the shape is safe.
-    mt_chain_check -change "$mt_pairs_dy" || return 1
-    mt_chain_check -change-rpath "$mt_pairs_rp" || return 1
-
+    # dylib before rpath so the emitted text is deterministic; LC_RPATH carries
+    # no ordinal, so nothing depends on which side of it the dylib work falls.
     mt_body=$({
-        printf '%s' "$mt_st_lc"
-        mt_group_stmts 1 "$mt_dy_recs"
-        printf '%s%s' "$mt_st_dyapp" "$mt_st_dyins"
-        mt_group_stmts 0 "$mt_rp_recs"
-        printf '%s' "$mt_st_rpapp"
+        printf '%s%s%s%s%s%s' "$mt_st_lc" "$mt_st_dychg" "$mt_st_dyapp" \
+            "$mt_st_dyins" "$mt_st_rpchg" "$mt_st_rpapp"
     })
     # `change_dylib FILE -grow -grow` asks for nothing, so nothing is emitted
     # -- not even `allow-grow`, which permits a growth no statement would
@@ -671,16 +526,9 @@ mt_tr_fix_macho() {
     [ $# -ge 2 ] || { mt_fm_usage; return 1; }
 
     mt_file=$1; shift
-    # The operations as statements, and every -change's OLD and NEW on
-    # alternating lines for mt_chain_check -- see mt_tr_change_dylib, which
-    # collects both for the same reason.
-    mt_st_lc='' mt_st_seg='' mt_pairs_dy=''
-    # The dylib change group, as mt_group_stmts' records. fix_macho's only
-    # member of it is -change, so nothing here can be shadowed by a -delete --
-    # but it goes through the same chooser as change_dylib's, so a duplicate
-    # `-change P Q -change P Z` resolves to the first pair on both sides, which
-    # is what the one pass did.
-    mt_dy_recs=''
+    # The operations as statements, in the order the flags were written --
+    # see mt_tr_change_dylib's emission comment for the rule.
+    mt_st_lc='' mt_st_seg='' mt_st_dychg=''
     mt_nchanges=0 mt_nrenames=0
 
     while [ $# -gt 0 ]; do
@@ -696,12 +544,7 @@ mt_tr_fix_macho() {
             # flag spelling in it.
             mt_room "$mt_nchanges" "$MT_MAX_OPS" -change || return 1
             mt_nchanges=$((mt_nchanges + 1))
-            mt_dy_recs="${mt_dy_recs}act
-$2
-$(printf 'dylib replace%s' "$(mt_qargs "$2" "$3")")
-"
-            mt_pairs_dy="$mt_pairs_dy$2
-$3
+            mt_st_dychg="$mt_st_dychg$(printf 'dylib replace%s' "$(mt_qargs "$2" "$3")")
 "
             shift 3 ;;
         -strip_build_version)
@@ -779,12 +622,11 @@ $3
     # stay in FLAG ORDER: unlike an insert, one rename statement is one
     # operation, so a sequence of them is already what the -rename_seg arm
     # above says this tool now does.
-    mt_chain_check -change "$mt_pairs_dy" || return 1
     # Unconditional, unlike change_dylib's: every fix_macho argv that reaches
     # here carries at least one operation (the usage check above rejects a
     # bare FILE), so the body is never empty.
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_FM_BODY
-$(printf '%s' "$mt_st_lc"; mt_group_stmts 1 "$mt_dy_recs"; printf '%s' "$mt_st_seg")
+$mt_st_lc$mt_st_dychg$mt_st_seg
 MT_FM_BODY
     mt_install_line "$mt_file"
     return 0
