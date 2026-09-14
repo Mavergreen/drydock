@@ -2864,6 +2864,95 @@ otool -l "$T/edit_stdin_out" 2>/dev/null | grep -q LC_UUID \
     && bad "edit -" "LC_UUID survived the stdin script" \
     || ok "edit: reads a script from stdin"
 
+# ---- the bare form: FILE OUT, statements on stdin ---------------------------
+#
+# `machotool FILE OUT` is `machotool edit FILE OUT -` with the verb word
+# dropped: the same script, the same bytes, the same exit, the same report. If
+# those two spellings of one operation ever diverge, one of them has grown a
+# second behaviour -- which is the whole defect a single mutating interface
+# exists to remove -- so the equivalence is asserted, not described.
+build_main "$T/bare_in"
+printf 'load-command delete uuid\n' >"$T/bare.edits"
+rm -f "$T/bare_via_edit" "$T/bare_via_bare"
+bare_ve=0
+"$MACHOTOOL" edit "$T/bare_in" "$T/bare_via_edit" - <"$T/bare.edits" \
+    >/dev/null 2>"$T/bare_ve.err" || bare_ve=$?
+bare_vb=0
+"$MACHOTOOL" "$T/bare_in" "$T/bare_via_bare" <"$T/bare.edits" \
+    >/dev/null 2>"$T/bare_vb.err" || bare_vb=$?
+[ "$bare_ve" -eq "$bare_vb" ] && cmp -s "$T/bare_via_edit" "$T/bare_via_bare" \
+    && ok "bare form: FILE OUT with stdin is edit FILE OUT - with the word dropped" \
+    || bad "bare form" "the two spellings of one operation disagree, so which one a caller types changes what they get: edit exited $bare_ve, bare exited $bare_vb, and OUT $(cmp -s "$T/bare_via_edit" "$T/bare_via_bare" && echo matches || echo DIFFERS)"
+# ... and what they agree on is the work, not idleness. Two spellings that
+# BOTH ignored stdin would compare equal above, because each would have left
+# a faithful copy of FILE; this is the assertion that the statements piped in
+# were actually read and applied.
+otool -l "$T/bare_via_bare" 2>/dev/null | grep -q LC_UUID \
+    && bad "bare form" "the statements piped in were not applied -- OUT still has the LC_UUID the script deletes, so a caller got an unchanged copy of FILE and an exit 0 saying it worked" \
+    || ok "bare form: the statements on stdin are read and applied"
+
+# A script that will not parse fails the same way in both spellings, to the
+# byte: the diagnostic a user reads must not depend on which one they typed.
+printf 'frobnicate everything\n' >"$T/bare_bad.edits"
+rm -f "$T/bare_bad_e" "$T/bare_bad_b"
+bare_fe=0
+"$MACHOTOOL" edit "$T/bare_in" "$T/bare_bad_e" - <"$T/bare_bad.edits" \
+    >/dev/null 2>"$T/bare_fe.err" || bare_fe=$?
+bare_fb=0
+"$MACHOTOOL" "$T/bare_in" "$T/bare_bad_b" <"$T/bare_bad.edits" \
+    >/dev/null 2>"$T/bare_fb.err" || bare_fb=$?
+[ "$bare_fe" -eq "$bare_fb" ] && [ "$bare_fe" -ne 0 ] \
+    && cmp -s "$T/bare_fe.err" "$T/bare_fb.err" \
+    && ok "bare form: a script that will not parse fails the same, in the same words" \
+    || bad "bare form parse error" "edit exited $bare_fe and said '$(cat "$T/bare_fe.err")'; bare exited $bare_fb and said '$(cat "$T/bare_fb.err")'"
+[ ! -e "$T/bare_bad_b" ] \
+    && ok "bare form: ... and the refused run wrote no OUT" \
+    || bad "bare form parse error" "an OUT appeared despite a script that never parsed"
+
+# A VERB ALWAYS WINS over a file of the same name. The bare form is reached
+# only after every verb arm has declined, so `machotool info f` stays the info
+# query and `machotool dylib out` stays dylib's usage line even with a file
+# named `info` or `dylib` sitting in the working directory. A FILE really
+# named like a verb is spelled `./info` -- the same remedy bad_out already
+# names for an OUT beginning with '-'.
+mkdir -p "$T/shadow"
+build_main "$T/shadow/fixture"
+bare_shadowed=""
+for bare_v in verify info grow minos segment retag-swift lc dylib rpath declassify edit; do
+    rm -f "$T/shadow/$bare_v" "$T/shadow/shadow_out"
+    cp "$T/shadow/fixture" "$T/shadow/$bare_v"
+    ( cd "$T/shadow" \
+        && printf 'load-command delete uuid\n' | "$MACHOTOOL" "$bare_v" shadow_out ) \
+        >/dev/null 2>&1 || :
+    [ -e "$T/shadow/shadow_out" ] && bare_shadowed="$bare_shadowed $bare_v"
+    rm -f "$T/shadow/$bare_v"
+done
+[ -z "$bare_shadowed" ] \
+    && ok "bare form: no verb is shadowed by a file of the same name" \
+    || bad "bare form shadows a verb" "a caller who typed$bare_shadowed got an edit of a like-named file in the working directory instead of the verb they asked for"
+# ... and the remedy the comment above names really does work, so a file named
+# like a verb is reachable rather than unusable.
+rm -f "$T/shadow/info" "$T/shadow/remedy_out"
+cp "$T/shadow/fixture" "$T/shadow/info"
+bare_remedy=0
+( cd "$T/shadow" \
+    && printf 'load-command delete uuid\n' | "$MACHOTOOL" ./info remedy_out ) \
+    >/dev/null 2>"$T/bare_remedy.err" || bare_remedy=$?
+[ "$bare_remedy" -eq 0 ] && [ -e "$T/shadow/remedy_out" ] \
+    && ok "bare form: ... and './info' edits the file that is named like a verb" \
+    || bad "bare form ./NAME" "a file named like a verb cannot be edited at all: exit $bare_remedy, $(cat "$T/bare_remedy.err")"
+
+# THE BARE FORM IS EXACTLY TWO WORDS. A third is still the unknown-verb
+# answer, so a caller who typed one more word hears about it instead of having
+# it silently dropped.
+rm -f "$T/bare_extra_out"
+bare_extra=0
+"$MACHOTOOL" "$T/bare_in" "$T/bare_extra_out" extra </dev/null \
+    >/dev/null 2>"$T/bare_extra.err" || bare_extra=$?
+[ "$bare_extra" -eq 2 ] && [ ! -e "$T/bare_extra_out" ] \
+    && ok "bare form: FILE OUT EXTRA is still a usage error (2), and writes no OUT" \
+    || bad "bare form extra word" "expected 2 and no OUT, got $bare_extra: $(cat "$T/bare_extra.err")"
+
 # A parse error is reported BEFORE anything is written, and names the line.
 # This is what makes a typo in statement 9 of 9 cost nothing.
 build_main "$T/edit_bad"

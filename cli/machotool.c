@@ -1375,6 +1375,29 @@ int main(int argc, char **argv) {
         return cmd_edit(argc, argv);
     }
 
+    /* The bare form: `machotool FILE OUT`, statements on stdin. It IS
+     * `machotool edit FILE OUT -` with the verb word dropped -- spelled as
+     * that exact call, so the two spellings cannot grow separate behaviours;
+     * the identical stderr report, including its "machotool edit:" prefixes,
+     * is that sameness showing through.
+     *
+     * It sits below every verb arm, so a verb always wins and this can never
+     * shadow one: `machotool info f` stays the info query, and `machotool
+     * dylib out` stays dylib's usage line, even when a file named `info` or
+     * `dylib` is sitting right there. A FILE whose name collides with a verb
+     * is spelled `./info`, the same remedy bad_out already names for an OUT
+     * beginning with '-'. Reaching here means argv[1] matched no verb, so
+     * there is nothing left for it to be but a file name. */
+    if (argc == 3) {
+        char *bare[5];
+        bare[0] = argv[0];
+        bare[1] = (char *)"edit";
+        bare[2] = argv[1];
+        bare[3] = argv[2];
+        bare[4] = (char *)"-";
+        return cmd_edit(5, bare);
+    }
+
     fprintf(stderr, "machotool: unknown verb '%s'\n", verb);
     usage(argv[0]);
     return EX_FAIL;
