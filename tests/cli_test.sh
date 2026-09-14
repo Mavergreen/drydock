@@ -2195,8 +2195,8 @@ fi
 # `target 10.9` is the one statement whose meaning depends on the binary, so
 # its row declares MREL_NONE -- nothing OF ITS OWN (src/script.c's table).
 # Against this fixture it expands into `fixups set classic`, which declares
-# plenty. A gate reading only the script's declared masks (src/edit.h's
-# me_followups) would therefore skip the verify on exactly the run that most
+# plenty. A gate reading only the script's declared masks, statement by parsed
+# statement, would therefore skip the verify on exactly the run that most
 # needs it, and this file would be converted and written with an initializer
 # naming no function start. What decides is what the run DID, accumulated as
 # the statements (and their expansions) run, so the refusal below names the
@@ -2212,6 +2212,24 @@ else
         || bad "edit: expansion is accumulated" \
                "target 10.9 refused for another reason: $(cat "$T/imp_tgt.err")"
 fi
+
+# ---- and when the gate does NOT apply, the report says what the run did ----
+#
+# With the verify conditional, "why was my file not verified?" is a question an
+# operator can now reasonably ask, so the line that reports the skip names the
+# relations the run disturbed (src/relations.h's mrel_name). It is a report
+# line, so it goes to stderr with the rest of them and stdout is untouched --
+# which is what the second assertion pins.
+cp "$T/implausible" "$T/imp_say"
+printf 'load-command delete uuid\n' >"$T/imp_say.edits"
+mtip edit "$T/imp_say" "$T/imp_say.edits" >"$T/imp_say.out" 2>"$T/imp_say.err"
+grep -q 'this run disturbed sizeofcmds; none of that is re-checked' "$T/imp_say.err" \
+    && ok "edit: the skip line names what the run disturbed" \
+    || bad "edit: the skip line names what the run disturbed" \
+           "stderr does not name the relation: $(cat "$T/imp_say.err")"
+grep -q 're-checked' "$T/imp_say.out" \
+    && bad "edit: the skip line is a report line" "it landed on stdout" \
+    || ok "edit: ...on stderr, where the rest of the report goes"
 
 # ---- an EMPTY LC_FUNCTION_STARTS is "nothing to check", not a refusal ------
 #

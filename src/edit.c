@@ -427,14 +427,41 @@ unknown:
  * not enough, since disturbing the pad and OVERFLOWING it are different
  * events.
  *
- * This is why the accumulator runs here and not over s->stmts: me_followups
- * (edit.h) is the DECLARED half only, and `target 10.9` declares MREL_NONE of
- * its own while its expansion can lower a fixups conversion. */
+ * This is why the accumulator runs here and not over s->stmts: the statements
+ * as PARSED are the declared half only, and `target 10.9` declares MREL_NONE
+ * of its own while its expansion can lower a fixups conversion. A gate reading
+ * the parsed script's declarations would therefore skip the verify on exactly
+ * that run -- the one that most needs it. */
 static void me_note_disturbed(unsigned *disturbed, const ms_stmt *st,
                               uint32_t first_before, uint32_t first_after) {
     *disturbed |= ms_disturbs(st->kind, st->op);
     if (first_before != first_after)
         *disturbed |= MREL_BASE_REL | MREL_FILE_OFF;
+}
+
+/* The gate did not apply, so the report says what the run DID disturb: with
+ * the verify now conditional, "why was my file not verified?" is a question
+ * the line itself has to answer. Names come from mrel_name, so a relation
+ * cannot be renamed in one place and reported under the old name here. */
+static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed) {
+    char names[160];   /* every name src/relations.h has, joined, with slack */
+    size_t used = 0;
+    unsigned bit;
+
+    if (disturbed == MREL_NONE) {
+        me_say(log, "%s: this run disturbed nothing, so there is nothing to re-check\n", what);
+        return;
+    }
+    names[0] = '\0';
+    for (bit = 1; bit; bit <<= 1) {
+        const char *name = (disturbed & bit) ? mrel_name(bit) : NULL;
+        int w;
+        if (!name) continue;
+        w = snprintf(names + used, sizeof names - used, "%s%s", used ? ", " : "", name);
+        if (w < 0 || (size_t)w >= sizeof names - used) break;
+        used += (size_t)w;
+    }
+    me_say(log, "%s: this run disturbed %s; none of that is re-checked\n", what, names);
 }
 
 /* ---- target 10.9 --------------------------------------------------------
@@ -739,7 +766,9 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
         }
         me_say(c->log, "slice %s: verified\n", name);
     } else {
-        me_say(c->log, "slice %s: nothing this run disturbed is re-checked\n", name);
+        char what[64];
+        snprintf(what, sizeof what, "slice %s", name);
+        me_say_not_rechecked(c->log, what, disturbed);
     }
     *changed = 1;
     return 0;
@@ -979,15 +1008,8 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         }
         me_say(log, "%s: verified\n", path);
     } else {
-        me_say(log, "%s: nothing this run disturbed is re-checked\n", path);
+        me_say_not_rechecked(log, path, disturbed);
     }
 
     return me_write_once(buf, size, path, out, log);
-}
-
-unsigned me_followups(const ms_script *s) {
-    unsigned mask = MREL_NONE;
-    for (int i = 0; i < s->n; i++)
-        mask |= ms_disturbs(s->stmts[i].kind, s->stmts[i].op);
-    return mask;
 }

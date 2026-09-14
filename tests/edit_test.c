@@ -516,7 +516,8 @@ static void test_statements_apply_in_order(void) {
     const char *second = strstr(g_log, "  segment rename __DATA __DATX\n");
     /* This script disturbs only the header pad, so the final verify has
      * nothing to re-decide and says so instead of claiming it verified. */
-    const char *checked = strstr(g_log, ": nothing this run disturbed is re-checked\n");
+    const char *checked = strstr(g_log, ": this run disturbed sizeofcmds; "
+                                        "none of that is re-checked\n");
     const char *written = strstr(g_log, ": written (");
     CHECK(first && second && first < second,
           "in order: the log names the statements in script order (log: %s)", g_log);
@@ -645,6 +646,12 @@ static void test_an_empty_script_disturbs_nothing_and_is_passed_through(void) {
           "empty script: nothing was refused at verification (log: %s)", g_log);
     CHECK(strstr(g_log, "of 0") == NULL,
           "empty script: nothing counts statement 0 of 0 (log: %s)", g_log);
+    /* The one run with an EMPTY list to report, which is why it is worded
+     * without one instead of trailing off after "disturbed". */
+    CHECK(strstr(g_log, ": this run disturbed nothing, so there is nothing to "
+                        "re-check\n") != NULL,
+          "empty script: the skip line reads as English with nothing to name "
+          "(log: %s)", g_log);
     {
         size_t a = 0, b = 0;
         uint8_t *in = read_file(path, &a), *o = read_file(out, &b);
@@ -1243,7 +1250,8 @@ static void test_fat_report_accounts_for_every_slice(void) {
     int rc = run(path, out, "arch x86_64\nload-command delete uuid\n");
     CHECK(rc == 0, "fat, report: succeeds (got %d)", rc);
     CHECK(strstr(g_log, "slice x86_64:\n") != NULL, "fat, report: the edited slice's header (log: %s)", g_log);
-    CHECK(strstr(g_log, "slice x86_64: nothing this run disturbed is re-checked") != NULL,
+    CHECK(strstr(g_log, "slice x86_64: this run disturbed sizeofcmds; "
+                        "none of that is re-checked") != NULL,
           "fat, report: the edited slice reports its verify decision (log: %s)", g_log);
     CHECK(strstr(g_log, "slice arm64: not selected by arch; passed through unchanged") != NULL,
           "fat, report: the unselected slice is accounted for (log: %s)", g_log);
@@ -1316,7 +1324,8 @@ static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
     int rc = run(path, out, "allow-grow\nversion-min set 10.9\n");
     CHECK(rc == 0, "per slice: a slice that disturbed nothing it checks is not refused "
           "for what another slice did (got %d; log: %s)", rc, g_log);
-    CHECK(strstr(g_log, "slice arm64: nothing this run disturbed is re-checked") != NULL,
+    CHECK(strstr(g_log, "slice arm64: this run disturbed sizeofcmds; "
+                        "none of that is re-checked") != NULL,
           "per slice: the untouched-relation slice skipped its own verify (log: %s)", g_log);
     CHECK(strstr(g_log, "slice x86_64: verified") != NULL,
           "observed, not declared: the slice whose header grew was verified, though "
@@ -1335,40 +1344,34 @@ static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
     rm_dir();
 }
 
-/* me_followups is the union, over the statements AS PARSED, of what each
- * disturbs (src/relations.h's MREL_*, via ms_disturbs) -- the union, not the
- * last statement and not the first. */
-static void test_followups_are_the_union_of_the_statements(void) {
-    ms_script s; char err[256] = {0};
-    static const char quiet[] = "segment rename __A __B\nswift-abi set legacy\n";
-    CHECK(ms_parse(quiet, sizeof quiet - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
-    CHECK(me_followups(&s) == MREL_NONE, "a quiet script disturbs nothing");
-    ms_free(&s);
+/* The skip line has to answer "why was my file not verified?" on its own, so
+ * it NAMES what the run disturbed, in src/relations.h's words (mrel_name).
+ * Asserting the whole line, not that some line was printed: a report that
+ * named the wrong relation, or dropped a name from the list, would read just
+ * as plausibly as the right one to whoever is holding the failure.
+ *
+ * `dylib delete` is the fixture-independent way to reach a two-name list: it
+ * declares MREL_ORDINAL | MREL_HEADER_PAD and no base-relative movement, so
+ * the gate still does not apply, and it names the bit order too -- the list
+ * runs low bit first, whatever order the statements were written in. It
+ * matches nothing in this image, which is exactly the point: what a statement
+ * DECLARES is disturbed is what the report has to say. */
+static void test_the_skip_line_names_what_the_run_disturbed(void) {
+    fresh_dir();
+    char path[512], out[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(out, sizeof out, "img.out");
+    uint8_t *img = build_image(0);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
 
-    /* The dylib delete sits in the MIDDLE on purpose: neither "only the
-     * first statement" nor "only the last statement" would find it, so this
-     * one script pins that the answer is the union, both ways at once. */
-    static const char loud[] =
-        "segment rename __A __B\ndylib delete /x.dylib\nswift-abi set legacy\n";
-    CHECK(ms_parse(loud, sizeof loud - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
-    CHECK((me_followups(&s) & MREL_ORDINAL) != 0,
-          "one dylib delete makes the whole script disturb ordinals");
-    ms_free(&s);
-
-    /* `target 10.9` (MS_TARGET) declares MREL_NONE of its own -- it expands
-     * into other statements at RUN time (src/edit.c's me_target), and
-     * me_followups sees only the statements ms_parse produced, before any
-     * expansion. A script naming only `target 10.9` therefore reports no
-     * follow-up here even though running it can disturb plenty; that is the
-     * declared half, not the whole answer (src/edit.h's me_followups). */
-    static const char target[] = "target 10.9\n";
-    CHECK(ms_parse(target, sizeof target - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
-    CHECK(me_followups(&s) == MREL_NONE,
-          "a bare 'target 10.9' declares nothing of its own before expansion -- "
-          "me_followups is the DECLARED half only. Whoever gates a safety check "
-          "on it must add what expansion actually disturbs, or a `target 10.9` "
-          "run that lowers a fixups conversion skips the verify it most needs");
-    ms_free(&s);
+    int rc = run(path, out, "dylib delete /x.dylib\nload-command delete uuid\n");
+    CHECK(rc == 0, "skip line: the run succeeds (got %d; log: %s)", rc, g_log);
+    CHECK(strstr(g_log, ": this run disturbed library ordinal, sizeofcmds; "
+                        "none of that is re-checked\n") != NULL,
+          "skip line: it names every relation the run disturbed, low bit first "
+          "(log: %s)", g_log);
+    rm_dir();
 }
 
 int main(void) {
@@ -1395,7 +1398,7 @@ int main(void) {
     test_fat_report_accounts_for_every_slice();
     test_fat_writes_out_and_not_the_input();
     test_fat_a_slice_skips_its_verify_on_its_own_terms();
-    test_followups_are_the_union_of_the_statements();
+    test_the_skip_line_names_what_the_run_disturbed();
 
     printf("edit_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
