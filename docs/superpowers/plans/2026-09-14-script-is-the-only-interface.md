@@ -211,6 +211,7 @@ Gated on Task 2 passing.
 **Files:**
 - Modify: `cli/machotool.c` — the dispatch and `cmd_minos`, `cmd_segment`, `cmd_retag_swift`, `cmd_lc`, `cmd_dylib_or_rpath`, `cmd_declassify`
 - Modify: `tests/cli_test.sh`, `tests/change_dylib_test.sh`
+- Delete: `tests/verb_script_equivalence.sh` and its CMake block — **moved here from Task 5 by the pre-flight scan.** That suite invokes the verbs; deleting them without it leaves a suite calling functions that no longer exist. It goes with its subject, in the same commit, the way the previous item's differential harness went with the predicate it licensed.
 
 - [ ] **Step 1: Delete the dispatch arms and the `cmd_*` bodies**
 
@@ -239,7 +240,6 @@ The `verb dylib ops=...` lines go; the `statement ...` lines stay. `verify`, `in
 - Modify: `src/rewrite.h` — `MR_MAX_OPS`, `MR_MAX_STRIP`, `mr_hits`, `mr_ops`
 - Modify: `src/rewrite.c` — `mr_is_deleted`, both `No break` loops, `mr_report_unmatched`
 - Modify: `tests/change_dylib_test.sh` — its historical-bug regression case
-- Delete: `tests/verb_script_equivalence.sh` and its CMake block
 
 - [ ] **Step 1: Collapse `mr_ops` to one operation**
 
