@@ -277,3 +277,68 @@ binary's name and stay grouped with the history rewrite.
 ## Open questions for the repo owner
 
 None outstanding. All four decisions above are settled; the plan may proceed.
+
+## Amendment, 2026-09-14: conflicts resolve in flag order, uniformly
+
+**The repo owner's ruling**, after a re-review measured what "preserve the
+wrappers' behaviour" actually meant for conflicting operations. It does not mean
+one thing, because **the pre-migration wrappers did not do one thing.**
+
+### What the parent actually did
+
+Measured at `18ad6f0`:
+
+- **one family** — `compat/translate.sh:509-510` emitted `machotool dylib …` /
+  `machotool rpath …`: a **verb**, so one `mr_ops`, applied as a **batch**
+  against the original image, with `mr_is_deleted`'s delete-wins precedence.
+- **more than one family** — `:524` emitted `machotool edit … -`: a **script**,
+  applied as a **sequence**, each statement seeing what the one before left.
+
+So the same conflict got two different answers depending on whether an unrelated
+flag from another family happened to be present. `-reexport P -change P Q` alone
+resolved one way; add a `-strip-lc` and it resolved the other. That is not a
+contract anyone designed; it is an artefact of which code path ran.
+
+A fix round that made single-family reproduce the batch therefore *moved*
+multi-family, because the two had never agreed. Four outcomes changed that way —
+found only by sweeping ~123 shapes, since the earlier 56-shape sweep contained
+no multi-family same-path conflict at all.
+
+### The ruling
+
+**Every conflict resolves in the order written, in every wrapper, whether one
+family is present or several.**
+
+Consequences, all intended:
+
+- **`mt_group_stmts` goes.** It takes a delete-wins flag and re-implements
+  `mr_is_deleted`'s claiming logic in shell. Keeping it would leave the compat
+  layer carrying a copy of the precedence that Task 5 deletes from C — the spec
+  calling that deletion "the point of the design" while the shell quietly kept
+  it. The two documents would contradict each other, for a rule whose only
+  purpose was reproducing a behaviour we are no longer reproducing.
+- **`mt_chain_check` should go too.** It exists to refuse shapes no emission
+  order can reproduce. Once reproduction is not the goal, a chain is simply a
+  sequence: `-change a b -change b c` renames `a` to `b`, then that `b` to `c`.
+  That restores the capability its newly-universal application had just removed,
+  and it removes the over-broadness the earlier review confirmed byte-for-byte
+  (only a true cycle is unorderable; `a→b, b→c` and `a→b, c→a` are both
+  reproducible). **Verify before removing** — if some shape still needs
+  refusing, say which and why.
+- **Nine of roughly 123 swept shapes change.** None is driven by any known
+  caller, fixture or suite. Each must be **asserted in its new form**, so the
+  next reader finds a decision rather than a surprise.
+
+### Why this is the right trade
+
+The wrappers exist to keep retired tools' callers working while the toolkit
+moves on; the repo owner's standing ruling is that they will not live long and
+`machotool` will. Spending shell complexity to reproduce an inconsistency — one
+that no caller can currently rely on, because it depends on an unrelated flag —
+buys compatibility with an accident at the cost of the simplicity this whole
+item exists to win.
+
+Stating the rule in one line also makes the wrappers explicable: *operations
+apply in the order you wrote them.* The batch rule could not be stated in one
+line, which is why it needed `mr_is_deleted`, two `No break` loops and a
+comment to explain.
