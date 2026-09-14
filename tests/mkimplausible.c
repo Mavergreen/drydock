@@ -5,12 +5,16 @@
  *        must ACCEPT; the two differ in exactly three bytes (see "THE
  *        -empty-starts TWIN" below).
  *
- * WHY IT EXISTS. src/rewrite.c's mr_process_thin skips mg_plausible when the
- * operation set is a rename only, because that gate asks an OFFSET question
- * and a segment rename moves no offset (the reasoning is at the site). Two
- * suites assert that: tests/cli_test.sh at the `machotool segment` level and
+ * WHY IT EXISTS. mg_plausible runs only where the run disturbed the
+ * base-relative values it checks (src/relations.h's mrel_verify_applies), and
+ * a segment rename disturbs none, so a rename skips it. Two suites assert
+ * that: tests/cli_test.sh at the `machotool segment` level and
  * tests/wrapper_test.sh through the `rename_segment` wrapper. Both need an
- * input the gate rejects.
+ * input the gate rejects -- and each also needs an OPERATION that reaches the
+ * gate on this fixture, so that the rename's pass is narrow rather than a
+ * hole. `fixups set classic` is that operation (it disturbs the image base
+ * and __LINKEDIT), which is why this fixture carries a minimal
+ * LC_DYLD_CHAINED_FIXUPS.
  *
  * They used to find one by scanning /usr/lib for a dylib mg_plausible
  * refused -- all 26 thin 64-bit dylibs there did on 10.9 -- and SKIP if none

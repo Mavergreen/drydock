@@ -1062,33 +1062,60 @@ static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
 }
 
 /* Anything refusing in any slice refuses the whole run, and nothing is
- * written. Two refusals reach that over one fixture whose arm64 slice is the
- * implausible twin, by different routes:
+ * written. Two refusals reach that by different routes:
  *
- *   `load-command delete uuid` is refused inside the REWRITE's own
- *   plausibility gate (src/rewrite.c), so the statement itself fails and the
- *   refusal names the statement and the slice it was running in;
+ *   a statement the REWRITE itself refuses in the second slice -- here a
+ *   `dylib append` whose load command does not fit that slice's header pad --
+ *   so the statement fails and the refusal names the statement and the slice
+ *   it was running in;
  *
  *   `fixups set classic` declares that it disturbs the base-relative values
  *   the verify checks, so that slice's own final verification applies; on an
  *   already-classic slice the statement itself passes, so every statement
  *   succeeds and what refuses is the SLICE's own final verification.
  *
- * Both must leave the container byte-identical. */
+ * Both must leave the container byte-identical.
+ *
+ * THE FIRST HALF USED TO BE `load-command delete uuid` over an IMPLAUSIBLE
+ * arm64 slice, refused inside the rewrite's own plausibility gate. It no
+ * longer is: that gate now runs only when the run disturbed the base-relative
+ * values it checks (src/relations.h), and a load-command delete disturbs the
+ * header pad and nothing else, so the statement SUCCEEDS on an implausible
+ * slice. The property being pinned was never about mg_plausible -- it is that
+ * a statement refused in a later slice aborts the whole run and says where --
+ * so the operation moves to one that still refuses there, and only there. */
 static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "fat");
     in_dir(out, sizeof out, "fat.out");
-    write_fat(path, 0, IMPLAUSIBLE, 0);   /* the arm64 slice is the implausible twin */
+
+    /* Slice 0 has 496 bytes of header pad; slice 1 (labelled arm64) has NONE,
+     * its one section starting exactly where its load commands end. So one
+     * `dylib append` fits the first and cannot fit the second, and the refusal
+     * that follows is the second slice's alone. */
+    uint8_t *s[2]; size_t l[2];
+    uint32_t ct[2] = { (uint32_t)CPU_TYPE_X86_64, (uint32_t)CPU_TYPE_ARM64 };
+    uint32_t cs[2] = { (uint32_t)CPU_SUBTYPE_X86_64_ALL, (uint32_t)CPU_SUBTYPE_ARM64_ALL };
+    size_t flen;
+    s[0] = build_image(0);                             l[0] = IMG_SIZE;
+    s[1] = build_growable_image_at(GROWIMG_NO_PAD, 1); l[1] = GROWIMG_SIZE;
+    uint8_t *fat = build_fat(2, s, l, ct, cs, &flen);
+    write_file(path, fat, flen, 0755);
+    free(s[0]); free(s[1]); free(fat);
 
     snap before = take(path);
-    int rc = run(path, out, "load-command delete uuid\n");
+    int rc = run(path, out, "dylib append /usr/lib/libx.dylib\n");
     CHECK(rc == MR_REFUSED, "fat: a statement refused in the second slice refuses the "
-          "run (got %d)", rc);
+          "run (got %d; log: %s)", rc, g_log);
     check_untouched("fat, second slice refused", path, &before);
     CHECK(strstr(g_log, "in slice arm64") != NULL,
           "fat: the refusal names the slice the statement was running in (log: %s)", g_log);
+    /* The premise, not a restatement of it: slice 0 really could take this
+     * append. Without that, a run refusing at slice 0 would satisfy the exit
+     * code above while covering nothing about a LATER slice. */
+    CHECK(strstr(g_log, "slice x86_64:") != NULL && strstr(g_log, "in slice x86_64") == NULL,
+          "fat: the first slice ran the statement and did not refuse it (log: %s)", g_log);
 
     /* Reaching the SLICE's own final verification needs a statement that
      * disturbs something that verify checks: `fixups set classic` declares

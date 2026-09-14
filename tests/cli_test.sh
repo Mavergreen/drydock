@@ -2116,11 +2116,12 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 #
 # mr_apply_file's last gate before writing (src/rewrite.c) asks whether the
 # image's initializers and compact-unwind entries still name functions
-# LC_FUNCTION_STARTS knows about. That is an OFFSET question, and a segment
-# rename moves no offset -- it writes characters into segname/sectname fields.
-# So mr_process_thin skips the gate for a rename-only operation set, and these
-# are the assertions that it really does, and that it still runs for everything
-# else.
+# LC_FUNCTION_STARTS knows about. That is an OFFSET question about
+# base-relative values, so mr_process_thin runs it only when the run disturbed
+# them (src/relations.h's mrel_verify_applies). A segment rename disturbs
+# nothing -- it writes characters into segname/sectname fields -- so it skips
+# the gate, and these are the assertions that it really does, and that an
+# operation which DOES disturb those values still meets it.
 #
 # The input is tests/mkimplausible.c's committed, hand-built fixture, not a
 # scan of /usr/lib. An earlier version did scan for a dylib the gate refused,
@@ -2162,6 +2163,32 @@ fi
 [ "$(shasum -a 256 < "$T/imp_fx" | cut -d' ' -f1)" = "$imp_before" ] \
     && ok "segment: that refusal left the input untouched" \
     || bad "segment: mg_plausible scope" "the refused input was modified"
+
+# ---- ...and the narrowing really happened, at the VERB ---------------------
+#
+# The other half of "narrow, not a hole", and the half that would otherwise go
+# unasserted: the same fixture, the same gate, an operation that disturbs
+# NOTHING the gate checks -- and it goes through. `lc -delete uuid` frees
+# header pad and repacks the command region; no base-relative value moves, so
+# mrel_verify_applies says there is nothing to re-check and the rewrite is not
+# refused for a property of its INPUT that it did not create.
+#
+# This is the assertion that fails if the derivation is thrown away and the
+# gate goes back to running on every rewrite -- which is exactly what it looked
+# like before item 5, and exactly what a reviewer restoring "safety" would do.
+# Its partner above (fixups set classic, refused) fails if the gate is deleted
+# instead. Neither alone pins the rule; the pair does.
+cp "$T/implausible" "$T/imp_lc"
+if mtip lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
+    ok "lc -delete: an operation that disturbs nothing the gate checks is not refused for its input"
+else
+    bad "segment: mg_plausible scope" \
+        "lc -delete uuid was refused, so the gate still runs on operations with nothing to check: $(cat "$T/imp_lc.err")"
+fi
+# ...and it really did the edit, rather than passing by doing nothing.
+"$MACHOTOOL" info "$T/imp_lc" 2>/dev/null | grep -q 'LC_UUID' \
+    && bad "segment: mg_plausible scope" "lc -delete uuid exited 0 but the LC_UUID is still there" \
+    || ok "lc -delete: and the command really is gone from the rewritten fixture"
 
 # ---- and the same gate sees what a statement EXPANDED into -----------------
 #
@@ -2254,12 +2281,29 @@ fi
 # the fat wrap just above and through fix_macho in wrapper_test.sh) and
 # MR_ERROR had none, because building a hermetic bad slice looked like it
 # needed a scan of the host. It does not: it needs a slice that IS a 64-bit
-# Mach-O and whose edit mg_plausible refuses, which is exactly what
-# tests/mkimplausible.c already builds, wrapped at CPU_TYPE_X86_64 so
-# mr_process_thin reaches it instead of skipping it.
+# Mach-O and whose edit is refused, while the OTHER slice's edit succeeds --
+# so that a rewriter which wrote what it had would leave exactly the
+# inconsistent file the message names.
+#
+# WHAT MAKES ONE SLICE REFUSE, and why it is no longer mg_plausible. This
+# block used to run `lc -delete uuid` and rely on the implausible fixture
+# meeting the gate. It no longer does: `load-command delete` frees header pad
+# and moves no base-relative value, so the derived applicability
+# (src/relations.h) skips the gate for it, the slice's edit succeeds, and
+# there is no MR_ERROR to propagate. Nor can any verb make THIS fixture meet
+# that gate: only a header grow disturbs the base-relative values, and
+# mkimplausible builds an MH_DYLIB, which mg_grow_header refuses to grow at
+# all (it has no __PAGEZERO to lower the base into).
+#
+# So the per-slice refusal is now the header-pad one, which this pair of
+# slices produces asymmetrically on its own: appending a 505-byte dylib path
+# costs 536 bytes of load command, which fits the compiled slice's 2816-byte
+# pad and does not fit the fixture's 480-byte pad. Slice 0 is edited, slice 1
+# is refused, and the assertions below are unchanged in what they claim.
+long_dylib="/$(printf 'a%.0s' $(seq 1 498)).dylib"
 "$T/segread" wrap "$T/mrerr_fat" "$T/segment_fat_slice" "$T/implausible" 16777223
 mrerr_before=$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)
-if mtip lc "$T/mrerr_fat" -delete uuid >"$T/mrerr.out" 2>"$T/mrerr.err"; then
+if mtip dylib "$T/mrerr_fat" -append "$long_dylib" >"$T/mrerr.out" 2>"$T/mrerr.err"; then
     bad "lc: MR_ERROR fat slice" "exited 0; a partial rewrite was reported as success"
 else
     ok "lc: a fat slice whose edit is refused refuses the whole file (nonzero exit)"
@@ -2271,9 +2315,20 @@ grep -q 'refusing the whole fat file -- a partial rewrite would leave its slices
 grep -q 'arch 1 (cputype 0x1000007)' "$T/mrerr.err" \
     && ok "lc: and names which slice it was" \
     || bad "lc: MR_ERROR slice label" "expected 'arch 1 (cputype 0x1000007)', got: $(cat "$T/mrerr.err")"
-grep -q 'no known function' "$T/mrerr.err" \
+grep -q "don't fit in header pad" "$T/mrerr.err" \
     && ok "lc: and the underlying per-slice refusal is still on stderr too" \
     || bad "lc: MR_ERROR per-slice reason" "the slice's own refusal was swallowed: $(cat "$T/mrerr.err")"
+# The premise the asymmetry rests on: slice 0 really could take this append.
+# Without it the run would refuse at slice 0 and every assertion above would
+# pass while covering nothing about the SECOND slice. Asserted against the
+# very bytes the wrap used for slice 0, not against a container that merely
+# resembles it.
+cp "$T/segment_fat_slice" "$T/mrok"
+if mtip dylib "$T/mrok" -append "$long_dylib" >"$T/mrok.out" 2>"$T/mrok.err"; then
+    ok "lc: and slice 0's own bytes really could take that append, so slice 1 is what refused"
+else
+    bad "lc: MR_ERROR premise" "slice 0 refused it too: $(cat "$T/mrok.err")"
+fi
 # The whole point of refusing: slice 0 WAS editable, so an abort that wrote
 # anything would leave exactly the inconsistent file the message names.
 [ "$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)" = "$mrerr_before" ] \
@@ -2287,7 +2342,7 @@ grep -q 'no known function' "$T/mrerr.err" \
 # above, and fix_macho's in wrapper_test.sh) cover a slice that really is not
 # a Mach-O, which is the only thing that reaches that path.
 "$T/segread" wrap "$T/mrskip_fat" "$T/segment_fat_slice" "$T/implausible" 7
-if mtip lc "$T/mrskip_fat" -delete uuid >"$T/mrskip.out" 2>"$T/mrskip.err"; then
+if mtip dylib "$T/mrskip_fat" -append "$long_dylib" >"$T/mrskip.out" 2>"$T/mrskip.err"; then
     bad "lc: MR_SKIP/MR_ERROR split" "a Mach-O slice at cputype 0x7 was skipped, not refused"
 else
     grep -q 'arch 1 (cputype 0x7): refusing the whole fat file' "$T/mrskip.err" \

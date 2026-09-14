@@ -27,7 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stddef.h>       /* offsetof, for the mr_ops layout tripwire below */
+#include <stddef.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -44,6 +44,7 @@
 #include "atomic_write.h"
 #include "mach_compat.h"
 #include "lc_kinds.h"
+#include "relations.h"
 
 /* mo_map_build's is_deleted callback: true if `name` matches a deletion in
  * `ops`. This is the SAME test mr_build_lcs uses (via `matched`/`new_path ==
@@ -578,87 +579,6 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
 #define MR_SKIP  (-2)
 #define MR_ERROR (-1)
 
-/* True if the only thing this operation set asks for is a segment rename:
- * no dylib or rpath change, append or insert, no load command to strip, and
- * no header growth. It exists for one decision -- see the mg_plausible gate
- * in mr_process_thin.
- *
- * WRITTEN AS "EVERYTHING ELSE IS EMPTY", not as "a rename is requested",
- * because the two differ for an operation set this function has never heard
- * of. But C gives that no force on its own: a field added to mr_ops and not
- * added to the conjunction below leaves this returning TRUE for
- * {rename, that new operation}, which is exactly the silent widening the
- * shape is meant to prevent. So the coupling is a BUILD failure, the same
- * device commit 247d09d used for mg_classify/ml_bump_lc: add a field to
- * mr_ops and this file stops compiling until someone comes here, reads the
- * paragraph above, and decides whether the new field belongs in the
- * conjunction.
- *
- * 152 and 148 are sizeof(mr_ops) and offsetof(mr_ops, allow_grow) -- the LAST
- * declared field -- on the only architecture this project builds (CMakeLists.txt
- * pins CMAKE_OSX_ARCHITECTURES to x86_64), so literals are stable here. They
- * are a tripwire, not a portability claim: on some other target the fix is to
- * re-derive both numbers AND re-read this function, which is the whole point.
- * Negative-array-size typedef rather than _Static_assert, which is C11 and
- * this project sets no -std=.
- *
- * What the typedef below actually checks, and no more: it fails to compile
- * exactly when an edit to mr_ops moves sizeof(mr_ops) or moves the offset of
- * allow_grow. That is the whole of the mechanism. An edit that changes the
- * struct while leaving both of those numbers where they are compiles clean
- * and is invisible to it -- so a change that alters what mr_is_rename_only
- * above should mean, while happening to preserve the struct's layout, still
- * needs a human to come here and re-read the conjunction; nothing forces
- * that to happen. There is no stronger C-level mechanism available: an
- * offsetof assertion per field would have the identical blind spot, since a
- * member that fits an existing hole moves no later field either, and a
- * memcmp-against-zero probe is unreliable, because struct padding is
- * indeterminate after assignment.
- *
- * For example -- one instance, not an inventory -- mr_ops is seven
- * (pointer, int n_*) pairs and so has seven interior four-byte padding
- * holes on this ABI; a new member of four bytes or fewer placed into one of
- * those holes moves neither number and compiles clean. (There used to be an
- * EIGHTH hole too, trailing after allow_grow to reach the 144-byte aligned
- * size. fatal_unmatched was deliberately declared BEFORE allow_grow, not
- * after -- see that field's own comment in rewrite.h -- which put
- * fatal_unmatched in allow_grow's OLD slot and pushed allow_grow itself
- * into what used to be that trailing hole, consuming it. Had
- * fatal_unmatched instead been declared after allow_grow, IT would have
- * landed in that hole, moving neither sizeof(mr_ops) nor
- * offsetof(allow_grow), and this typedef would have compiled clean over an
- * edit it exists to catch. With the trailing hole gone, a future
- * four-byte-or-smaller member appended AFTER allow_grow would now move
- * sizeof(mr_ops) and trip this check too; the seven interior holes are what
- * remains of the blind spot.) This paragraph has previously gone through
- * several versions, each naming a specific set of edits that get past this
- * check; each was wrong in a new way, because that set is "every edit that
- * preserves both numbers," which is unbounded and cannot be enumerated
- * correctly. This version names one member of it as an example of what
- * "invisible to it" means in practice, and stops there on purpose. */
-typedef char mr_ops_layout_is_still_what_mr_is_rename_only_checks[
-    (sizeof(mr_ops) == 152 && offsetof(mr_ops, allow_grow) == 148) ? 1 : -1];
-
-int mr_is_rename_only(const mr_ops *ops) {
-    return ops->segment_rename_old != NULL && ops->segment_rename_new != NULL &&
-           ops->n_dylib_changes == 0 && ops->n_dylib_appends == 0 &&
-           ops->n_dylib_inserts == 0 && ops->n_rpath_changes == 0 &&
-           ops->n_rpath_appends == 0 && ops->n_rpath_inserts == 0 &&
-           ops->n_strip_cmds == 0 && ops->allow_grow == 0 &&
-           /* fatal_unmatched governs whether mr_apply_file refuses when a
-            * dylib_changes/rpath_changes/strip_cmds entry matched nothing --
-            * and a rename-only ops has none of those (every count above is
-            * already required to be 0), so fatal_unmatched has nothing to
-            * act on here regardless of its value. A rename-only run WITH
-            * fatal_unmatched set is still rename-only for the purpose of
-            * this predicate. Named explicitly anyway (as a tautology, not a
-            * `== 0` requirement) so that decision is visible in the
-            * conjunction itself rather than being an omission a future
-            * reader has to notice on their own -- which is exactly what the
-            * layout tripwire above exists to force. */
-           (ops->fatal_unmatched == 0 || ops->fatal_unmatched != 0);
-}
-
 /*
  * Apply every requested change to the single (thin) 64-bit Mach-O in
  * *pbuf, *pfsize, in place except that mg_grow_header may realloc *pbuf (its
@@ -680,13 +600,25 @@ int mr_is_rename_only(const mr_ops *ops) {
  * once per slice, sharing one set of arrays) accumulate across all of them;
  * an operation that matched in one slice and not another has matched.
  * Passed straight through to mr_build_lcs, which does the actual counting.
+ *
+ * declared_disturbs: what the CALLER's operations declare they invalidate
+ * (src/relations.h's MREL_* bits, from src/script.h's ms_disturbs). An
+ * mr_ops is a lowering of one or more table operations, and the table row is
+ * where a disturbs mask is written, so the mask arrives as a parameter
+ * rather than being re-derived from the mr_ops' fields here. It is the
+ * STARTING value of the local accumulator below, not the final answer: this
+ * function ORs in what it is observed to do.
  */
 static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
-                           const mr_ops *ops, int *out_modified,
+                           const mr_ops *ops, uint32_t declared_disturbs,
+                           int *out_modified,
                            int *hit_dylib, int *hit_rpath, int *hit_strip) {
     *out_modified = 0;
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
+    /* Applicability is evaluated against what the run DID, not only what it
+     * declared, so this starts from the declaration and grows. */
+    unsigned disturbed = declared_disturbs;
 
     mi_image im;
     if (mi_wrap(buf, fsize, &im) != 0) return MR_SKIP;
@@ -800,11 +732,23 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         /* Whether there is room, and whether to grow, is mg_ensure_pad's
          * decision (src/grow.h) -- one place, shared with version-min. It
          * prints the grow path's stdout lines itself, unchanged. */
+        size_t fsize_before_pad = fsize;
         if (mg_ensure_pad(&buf, &fsize, need_end, ops->allow_grow, label) != 0) {
             *pbuf = buf; *pfsize = fsize;   /* growth may have realloc'd before failing */
             free(new_lcs);
             return MR_ERROR;
         }
+        /* A grow lowers the image base, moving every base-relative value --
+         * whichever operation asked for it, and none of them declares it.
+         * mg_ensure_pad reports only pass/fail (src/grow.h), so the size
+         * change across the call is the only signal that it grew.
+         *
+         * Nothing in this tree fails if this line is deleted -- measured, not
+         * assumed -- for the reason spelled out at the gate below: a grown
+         * image has already met mg_grow_header's own mg_plausible. It is here
+         * because the alternative is a gate driven by declarations alone,
+         * which is the failure this whole derivation exists to prevent. */
+        if (fsize != fsize_before_pad) disturbed |= MREL_BASE_REL;
         *pbuf = buf; *pfsize = fsize;       /* mg_ensure_pad may have realloc'd */
         hdr = (struct mach_header_64 *)buf;
         first_sect_off = mg_first_sect_off(buf, fsize);
@@ -892,55 +836,91 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * binary, re-download that version" and "patch refused, nothing lost" --
      * this rewriter writes a NEW file now, but the compat wrappers still mv it
      * over the caller's, so the gate protects the same thing it always did.
-     * MACHO_NO_VERIFY=1 opts out.
+     * MACHO_NO_VERIFY=1 opts out; see the asymmetry note at the end.
      *
-     * NOT RUN FOR A RENAME-ONLY OPERATION SET, and that is a statement about
-     * what mg_plausible checks rather than a concession. It asks whether the
-     * image's initializers and compact-unwind entries still name functions
-     * LC_FUNCTION_STARTS knows about (src/grow.h) -- an OFFSET question. A
-     * segment rename writes characters into segname/sectname fields and moves
-     * nothing: mseg_rename_lc touches neither cmd nor cmdsize (src/segname.h),
-     * mr_build_lcs applies it to a command it has already copied, and no
-     * offset in the image changes. So the gate cannot catch anything a rename
-     * did; it can only re-decide a property the INPUT already had, and refuse
-     * a file the caller never asked it to judge.
+     * WHEN IT RUNS, AND THE ONE RULE THAT DECIDES. mg_plausible asks whether
+     * this image's initializers and compact-unwind entries still name
+     * functions LC_FUNCTION_STARTS knows about (src/grow.h) -- an OFFSET
+     * question about base-relative values. So it has something to check only
+     * when both halves hold: the relation is LIVE in this image, and this run
+     * DISTURBED the base-relative values those offsets are.
+     * mrel_verify_applies (src/relations.h) is that one expression, shared
+     * with src/edit.c's two gate sites so there is no second copy to drift.
      *
-     * That is not hypothetical -- but the evidence originally recorded here
-     * for it was. This comment used to say mg_plausible's heuristic has false
-     * positives on real, untouched 10.9 system dylibs, naming
-     * libSystem.B.dylib, libc++.1.dylib, libicucore.A.dylib and libz.1.dylib
-     * as refused by `macho9 lc -delete uuid` where /bin/ls, /bin/cat,
-     * /usr/bin/grep and /usr/bin/awk passed, and 14 of the 16 thin binaries
-     * in a 120-file /usr/lib corpus (tests/differential.sh) as refused by
-     * `macho9 segment`. That split -- every dylib refused, every executable
-     * passed -- was not the heuristic at all: mg_plausible read its image
-     * base from mi_text_base, whose 0 means BOTH "no segment maps the header"
-     * and "the base is 0", and a dylib is linked at base 0. It bailed at the
-     * precondition and never ran the heuristic. mi_image_base tells those
-     * apart now (src/image.h), and all four named dylibs pass. The corpus
-     * count was not re-measured; assume it was the same bug.
+     * `disturbed` starts from what the caller's operations DECLARE -- the
+     * disturbs column of the one operation table (src/script.h's ms_disturbs)
+     * -- and this function ORs in what it is observed to do, which today is
+     * the header grow above. Declaration alone would be wrong in the one
+     * direction that matters: a `dylib append` that overflows the pad grows
+     * the header and re-bases everything, while its row declares only the
+     * header pad.
      *
-     * Do not read a claim about false positives back into this. The only
+     * WHAT THIS COSTS, PLAINLY. mg_plausible is a defence against bugs in the
+     * REWRITER, not only against an operation's declared intent, so narrowing
+     * when it runs narrows that defence. What is given up is the chance of
+     * this gate incidentally catching a rewriter bug in an operation that
+     * moves no offset: a dylib or rpath edit that fits the pad, an
+     * `lc -delete`, a segment rename. That is the trade this narrowing makes,
+     * not a side effect of it.
+     *
+     * AND IT COSTS MORE THAN THAT ON THE COMPAT CHAIN, which the paragraph
+     * above this one used to promise it did not. `disturbed` is what THIS
+     * PROCESS declared and did. The chained-fixups conversion this gate was
+     * written for happens in a DIFFERENT process -- `patch_macho`, i.e.
+     * `machotool declassify`, which runs no plausibility check of its own --
+     * and the `change_dylib` run that follows it declares only what its own
+     * dylib and rpath operations declare. So the three-tool chain no longer
+     * re-checks that conversion here unless the later run also grows a
+     * header. Where the conversion IS still gated is inside ONE process:
+     * `machotool edit`'s `fixups set classic` declares MREL_BASE_REL and
+     * meets src/edit.c's verify. This is a consequence of deriving
+     * applicability from a run rather than from an image, and it is recorded
+     * rather than repaired because the repair is a product decision: the gate
+     * needing no "before" image is what made it work across process
+     * boundaries in the first place.
+     *
+     * NOT AN ESCAPE HATCH, which is the objection this shape draws. An escape
+     * hatch is caller-controlled -- a flag or an environment variable, set by
+     * whoever wants a refusal to go away. This is computed from the image and
+     * from the operations, and there is no input a caller can supply to make
+     * a gate that applies not apply. It is the same reason mg_plausible
+     * already returns 0 for an image carrying no LC_FUNCTION_STARTS: the
+     * check that does not run is the check with nothing to check.
+     *
+     * Do not read a claim about false positives into any of this. The only
      * input in this tree the gate is demonstrated to refuse is
-     * tests/mkimplausible.c's fixture, and that is a TRUE positive: it is
-     * built with an __init_offsets entry at 0x999 when the sole function
-     * start is base + 0x400, which is exactly the un-re-based-offset
-     * signature src/grow.c's check exists to catch. As of this commit NO
-     * false positive of mg_plausible on a real image is demonstrated
-     * anywhere here.
+     * tests/mkimplausible.c's fixture, and that is a TRUE positive: an
+     * __init_offsets entry at 0x999 when the sole function start is
+     * base + 0x400, exactly the un-re-based-offset signature src/grow.c's
+     * check exists to catch. (An older version of this comment cited real
+     * 10.9 dylibs as false positives. They were not: mg_plausible read its
+     * image base from mi_text_base, whose 0 means BOTH "no segment maps the
+     * header" and "the base is 0", so it bailed at the precondition and never
+     * ran the heuristic on a dylib. mi_image_base tells those apart now --
+     * src/image.h -- and those dylibs pass.)
      *
-     * The scoping below never depended on how common false positives are,
-     * which is why it stands unchanged on the corrected facts: a rename moves
-     * no offset, so the gate cannot catch anything a rename did, only
-     * re-decide a property the input already had.
+     * WHAT REACHES THIS `if` TODAY, MEASURED, because a gate nothing can trip
+     * is worth saying so about rather than leaving to look busy. No operation
+     * this driver offers declares MREL_BASE_REL, so the only way `disturbed`
+     * carries it is the grow above -- and mg_grow_header runs its OWN
+     * mg_plausible on the grown image before it returns (src/grow.c), so an
+     * image that would fail here has already been refused there. Deleting the
+     * condition below breaks no test in this tree; that was measured, not
+     * assumed. It is kept because the two checks read different snapshots --
+     * this one sees the COMMITTED load-command table, mg_grow_header saw the
+     * table before mr_build_lcs rebuilt it -- so "unreachable" is a fact about
+     * today's operation set, not a property of the code.
      *
-     * Scoped by mr_is_rename_only, not by an environment variable: an env var
-     * would switch the gate off for the whole machotool invocation, would keep
-     * covering any operation a caller later added to the same command line,
-     * and would read like someone disabling a safety check. This says the one
-     * true thing instead, at the one site where it is true. Every operation
-     * that CAN move an offset still meets the gate exactly as before. */
-    if (!mr_is_rename_only(ops) && !getenv("MACHO_NO_VERIFY") &&
+     * MACHO_NO_VERIFY IS HONOURED HERE AND IGNORED AT src/edit.c's SITES, and
+     * that asymmetry is older than this narrowing: Decision 5 changed WHEN a
+     * gate applies and nothing about whether a caller may suppress one that
+     * does. A run that meets both sites therefore has one suppressible gate
+     * and one that is not -- and since the paragraph above makes this gate
+     * unreachable for a refusal today, what that variable actually suppresses
+     * for a verb run is nothing.
+     * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
+     * Decision 5 -- the derived applicability governs both front-ends. */
+    if (mrel_verify_applies(&im, disturbed) && !getenv("MACHO_NO_VERIFY") &&
         mg_plausible(buf, fsize) != 0) {
         fprintf(stderr, "ERROR: refusing to modify %s -- it would carry base-relative "
                         "offsets that name no known function. Left unmodified.\n", label);
@@ -980,6 +960,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
  * fat file. */
 typedef struct {
     const mr_ops *ops;
+    uint32_t declared_disturbs;   /* what this run's operations declare */
     int *hit_dylib, *hit_rpath, *hit_strip;
 } mr_fat_ctx;
 
@@ -989,7 +970,12 @@ static int mr_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     char label[64];
     snprintf(label, sizeof label, "arch %u (cputype 0x%x)", index, a->cputype);
     int mod = 0;
-    int rc = mr_process_thin(pbuf, psize, label, c->ops, &mod,
+    /* Each slice derives its own applicability from the SAME declaration and
+     * its OWN observations: one slice's grow decides nothing about its
+     * neighbour's verify.
+     * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
+     * Decision 6 -- relations are evaluated per slice. */
+    int rc = mr_process_thin(pbuf, psize, label, c->ops, c->declared_disturbs, &mod,
                              c->hit_dylib, c->hit_rpath, c->hit_strip);
     if (rc == MR_SKIP) {
         printf("%s: not a 64-bit Mach-O; leaving this slice unchanged\n", label);
@@ -1055,7 +1041,8 @@ static void mr_fat_placed(const mfat_arch *a, uint32_t index,
  * wrongly call that a miss on every slice but one.
  */
 static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
-                          const mr_ops *ops, int *out_modified,
+                          const mr_ops *ops, uint32_t declared_disturbs,
+                          int *out_modified,
                           int *hit_dylib, int *hit_rpath, int *hit_strip) {
     *out_modified = 0;
     /* mfat_parse (src/fat.c) is the ONE place both this rewriter and
@@ -1084,7 +1071,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
                         "each other)\n");
         return MR_REFUSED;
     }
-    mr_fat_ctx ctx = { ops, hit_dylib, hit_rpath, hit_strip };
+    mr_fat_ctx ctx = { ops, declared_disturbs, hit_dylib, hit_rpath, hit_strip };
     int rc = mfat_rewrite(pbuf, pfsize, narch, swap, mr_fat_slice, mr_fat_placed,
                           &ctx, out_modified);
     if (rc == MFAT_IO_ERROR) return MR_FAIL;
@@ -1195,8 +1182,9 @@ int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits) {
 /* See rewrite.h: mr_process_thin, with its private per-slice codes turned
  * into the MR_REFUSED/0 every caller outside this file speaks. */
 int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
-                   const mr_ops *ops, int *out_modified, mr_hits *hits) {
-    int po = mr_process_thin(pbuf, pfsize, label, ops, out_modified,
+                   const mr_ops *ops, uint32_t declared_disturbs,
+                   int *out_modified, mr_hits *hits) {
+    int po = mr_process_thin(pbuf, pfsize, label, ops, declared_disturbs, out_modified,
                               hits->dylib, hits->rpath, hits->strip);
     if (po == MR_SKIP) {
         /* Unreachable from mr_apply_file: its mi_open already validated this
@@ -1238,14 +1226,16 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
      * exits 1 (MR_REFUSED), not 2, same as every other reason
      * mg_grow_header or mg_plausible refuses -- and that is not confined to
      * growing. mg_grow_header is reached only with allow_grow, but
-     * mr_process_thin runs mg_plausible on every rewrite that is not a pure
-     * segment rename (see mr_is_rename_only) unless MACHO_NO_VERIFY is set,
-     * so an ordinary dylib/rpath/lc edit reaches it too. mr_process_fat
+     * mr_process_thin runs mg_plausible on a rewrite that disturbed what it
+     * checks (see mrel_verify_applies, src/relations.h) unless
+     * MACHO_NO_VERIFY is set, which today means a rewrite that grew the
+     * header. mr_process_fat
      * makes the identical translation for a fat slice. */
     return (po == MR_ERROR) ? MR_REFUSED : 0;
 }
 
-int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
+int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
+                  uint32_t declared_disturbs) {
     /* Per-operation hit counts for mr_unmatched_verdict below. Owned and
      * zeroed here, once, so a fat file's slices (each processed by its own
      * mr_process_thin call, via mr_process_fat) all accumulate into the SAME
@@ -1328,7 +1318,8 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
             perror("read"); close(fd); free(buf); return MR_FAIL;
         }
         close(fd);
-        rc = mr_process_fat(&buf, &fsize, ops, &modified, hits.dylib, hits.rpath, hits.strip);
+        rc = mr_process_fat(&buf, &fsize, ops, declared_disturbs, &modified,
+                            hits.dylib, hits.rpath, hits.strip);
     } else {
         /* Thin (or not a Mach-O at all): mi_open does the actual read and
          * full validation -- cmdsize bounds/alignment and LC_SEGMENT_64/
@@ -1382,7 +1373,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops) {
         /* The rewrite itself, and its MR_SKIP/MR_ERROR -> MR_REFUSED
          * translation (including the allocation fold that comes with it),
          * are mr_apply_image's -- see its comment above. */
-        rc = mr_apply_image(&buf, &fsize, path, ops, &modified, &hits);
+        rc = mr_apply_image(&buf, &fsize, path, ops, declared_disturbs, &modified, &hits);
     }
 
     /* THE MISS REPORT AND ITS VERDICT COME BEFORE THE WRITE, and the order is

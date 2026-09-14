@@ -117,16 +117,16 @@
 # mg_plausible USED TO BE a fifth divergence and no longer is: mr_apply_file
 # used to run it before writing, on every operation, and refuse if it failed;
 # rename_segment had no such gate. NOT reproduced HERE, because it is no
-# longer a divergence: src/rewrite.c now skips that gate for a rename-only
-# operation set, and says at the site why that is a statement about what
-# mg_plausible checks (an OFFSET question) rather than a concession. A rename
-# writes characters into segname/sectname and moves nothing, so the gate
-# could only ever re-decide a property the input already had -- which it got
-# wrong on 14 of the 16 thin binaries in a 120-file /usr/lib corpus.
+# longer a divergence: src/rewrite.c now runs that gate only when the run
+# disturbed the base-relative values it checks (src/relations.h), and says at
+# the site why that is a statement about what mg_plausible checks (an OFFSET
+# question) rather than a concession. A rename writes characters into
+# segname/sectname and moves nothing, so the gate could only ever re-decide a
+# property the input already had.
 #
 # This wrapper therefore sets NO environment variable and switches nothing
-# off. Every operation that can move an offset still meets the gate,
-# including every one compat/change_dylib.sh can reach.
+# off. What reaches the gate is decided by the image and the operation, never
+# by anything a caller can pass.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
 # rename_segment had. Every nonzero from `machotool segment` is mapped to 1

@@ -95,6 +95,7 @@
 #include "mach_compat.h"
 #include "script.h"
 #include "edit.h"
+#include "relations.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
@@ -716,7 +717,10 @@ static int cmd_lc(int argc, char **argv) {
     ops.strip_cmds = strip;
     ops.n_strip_cmds = nstrip;
     ops.fatal_unmatched = fatal_warnings;
-    return mr_apply_file(path, out, &ops);
+    /* What this verb's operation invalidates comes from the SAME table row
+     * the `edit` statement `load-command delete` reads, so the two front-ends
+     * cannot come to different conclusions about one operation. */
+    return mr_apply_file(path, out, &ops, ms_disturbs(MS_LOAD_COMMAND, MS_DELETE));
 }
 
 /* ---- dylib / rpath: a thin shell over mr_apply_file ---------------------
@@ -770,6 +774,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     int nops = 0;
     int allow_grow = 0;
     int fatal_warnings = 0;
+    unsigned disturbs = MREL_NONE;
 
     for (int i = 4; i < argc; ) {
         const char *tok = argv[i];
@@ -851,6 +856,12 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
                     is_rpath ? "rpath" : "dylib", tok, MR_MAX_OPS);
             return EX_FAIL;
         }
+        /* The row's own disturbs mask, from the table this loop already
+         * parsed the operation out of -- so `dylib -delete` and the statement
+         * `dylib delete` declare one thing, not two. The union over the
+         * operations this run asks for, because they all reach the rewriter
+         * as one mr_ops applied in one pass. */
+        disturbs |= ms_disturbs(is_rpath ? MS_RPATH : MS_DYLIB, op);
         nops++;
         i += 1 + nargs;
     }
@@ -873,7 +884,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     ops.n_rpath_inserts = is_rpath ? ninserts : 0;
     ops.allow_grow = allow_grow;
     ops.fatal_unmatched = fatal_warnings;
-    return mr_apply_file(path, out, &ops);
+    return mr_apply_file(path, out, &ops, disturbs);
 }
 
 /* ---- segment: a segment rename, routed through mr_apply_file -------------
@@ -935,13 +946,14 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  *     reports it rather than working around it.
  *
  * mg_plausible USED TO BE a fifth divergence and no longer is. mr_process_thin
- * (src/rewrite.c) skips that gate for a rename-only operation set -- scoped by
- * mr_is_rename_only, not by an environment variable -- because the gate asks
- * an OFFSET question and a segment rename moves no offset. So this verb no
- * longer refuses anything rename_segment would have renamed on that account;
- * MACHO_NO_VERIFY is not part of this verb's or its wrapper's story at all
- * (compat/rename_segment.sh sets no environment variable). Every operation
- * that CAN move an offset still meets the gate exactly as before. */
+ * (src/rewrite.c) runs that gate only when the run disturbed what it checks,
+ * derived from this operation's own disturbs mask and from what the rewrite
+ * was observed to do -- not from an environment variable. A segment rename
+ * declares MREL_NONE (src/script.c's table) and grows nothing, so the gate
+ * has nothing to re-check and this verb no longer refuses anything
+ * rename_segment would have renamed on that account. MACHO_NO_VERIFY is not
+ * part of this verb's or its wrapper's story at all (compat/rename_segment.sh
+ * sets no environment variable). */
 static int cmd_segment(const char *path, const char *out,
                        const char *oldname, const char *newname) {
     /* Before the name-length check, and before any read -- see bad_out. Both
@@ -959,7 +971,7 @@ static int cmd_segment(const char *path, const char *out,
     ops.segment_rename_old = oldname;
     ops.segment_rename_new = newname;
     ops.segment_renamed = &renamed;
-    int rc = mr_apply_file(path, out, &ops);
+    int rc = mr_apply_file(path, out, &ops, ms_disturbs(MS_SEGMENT, MS_RENAME));
     /* THE MATCH COUNT, MACHINE-READABLE, and the reason mr_ops has an
      * out-param for it at all.
      *

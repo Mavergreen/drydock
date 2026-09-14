@@ -204,11 +204,16 @@ typedef struct {
  * and a refusal under fatal-warnings (ops->fatal_unmatched). The hit counts
  * are per statement, because each statement is its own rewrite of the image
  * as it now stands, and are summed across the slices that run it, because a
- * statement that matched in any selected slice has matched. */
+ * statement that matched in any selected slice has matched.
+ *
+ * `declared` is the STATEMENT's own disturbs mask, not the script's union:
+ * the rewrite's internal gate is about this one rewrite, and this module's
+ * own accumulator (me_note_disturbed) is what carries the run's total to the
+ * final verify. */
 static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
-                      const mr_ops *ops, me_verdict *v) {
+                      const mr_ops *ops, unsigned declared, me_verdict *v) {
     int modified = 0;
-    int rc = mr_apply_image(pbuf, psize, path, ops, &modified, v->hits);
+    int rc = mr_apply_image(pbuf, psize, path, ops, declared, &modified, v->hits);
     if (rc != 0 || !v->decide) return rc;
     /* The verdict's "matched nothing" report goes to stderr; flushed first
      * for the reason me_say flushes. */
@@ -249,7 +254,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (lc_kind_by_name(st->a, &cmd) != 0) break;
         ops.strip_cmds = &cmd;
         ops.n_strip_cmds = 1;
-        return me_rewrite(pbuf, psize, path, &ops, v);
+        return me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
     }
 
     case MS_SEGMENT: {
@@ -272,7 +277,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         ops.segment_rename_old = st->a;
         ops.segment_rename_new = st->b;
         ops.segment_renamed = &renamed;
-        int rc = me_rewrite(pbuf, psize, path, &ops, v);
+        int rc = me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
         if (rc != 0) return rc;
         *v->renamed += renamed;
         if (!v->decide || *v->renamed > 0) return 0;
@@ -309,16 +314,16 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         }
         /* allow-grow reaches only the statements that can outgrow the header
          * pad. Setting it on a segment rename or a load-command delete would
-         * grow nothing and would, for the rename, switch off
-         * mr_is_rename_only's scoping of the rewrite's own plausibility
-         * check. */
+         * grow nothing -- and a grow is the one thing that makes the
+         * rewrite's own plausibility gate apply to a statement whose row
+         * declares no base-relative disturbance (src/rewrite.c). */
         ops.allow_grow = s->allow_grow;
         /* Only a dylib statement can renumber: an LC_RPATH bears no
          * ordinal. The rewrite fills renum only when it did renumber --
          * an insert, or a delete that matched -- so a replace, an append, a
          * reexport or a delete that matched nothing logs no follow-up. */
         if (!rpath) ops.renumbering = &renum;
-        int rc = me_rewrite(pbuf, psize, path, &ops, v);
+        int rc = me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
         if (rc == 0 && renum.done) me_log_renumbering(log, &renum);
         return rc;
     }
