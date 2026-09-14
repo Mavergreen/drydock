@@ -346,12 +346,14 @@ not an approximation of it. (It writes the temp this wrapper installs, not
 
 ### `change_dylib`'s capacity caps
 
-**Enforced in the translation, not by `machotool`.** Both cap sites in
-`cli/machotool.c` carry a comment saying so and addressing whoever wrote this
-wrapper: `machotool` caps at the same numbers (`MR_MAX_OPS` 32, `MR_MAX_STRIP`
-16, shared via `src/rewrite.h`) but names ITS grammar's flags, so passing its
-message through would print "too many `-append`" where `change_dylib` printed
-"too many `-add`". `mt_room` in `compat/translate.sh` prints the origin text and
+**Enforced in the translation, and now nowhere else.** `machotool` used to cap
+at the same numbers (`MR_MAX_OPS` 32, `MR_MAX_STRIP` 16, shared via
+`src/rewrite.h`) while naming ITS grammar's flags, so passing its message
+through would have printed "too many `-append`" where `change_dylib` printed
+"too many `-add`" — which is why the counting was put here to begin with. Those
+caps sized the verb parsers' arrays; the verbs are gone and an `mr_ops` now
+holds at most one operation of each kind, so there is no second count anywhere
+to fall back on. `mt_room` in `compat/translate.sh` prints the origin text and
 refuses before anything runs. This is also what keeps the fixed-size arrays'
 historical stack smash — "Repeated options wrote past their fixed-size arrays;
 33 `-change` flags smashed the stack — fixed, PR #9", `docs/PROPOSAL.md` —
@@ -522,9 +524,10 @@ fixed-size arrays; 33 `-change` flags smashed the stack — fixed, PR #9"). The
 C file grew an `FM_ROOM` check before it retired; `mt_room` is where that check
 lives now, printing the same `too many -change (max 32)` / `too many
 -rename_seg (max 16)` and refusing before anything runs. The `-rename_seg` cap
-exists nowhere else: `machotool` sees one rename at a time either way — its
-`segment rename` statement sees one pair, and always did — so nothing
-downstream would ever count them. Held by
+exists nowhere else, and never did: `machotool` sees one rename at a time
+either way — its `segment rename` statement sees one pair, and always did — so
+nothing downstream would ever count them. That is now true of every cap here,
+one statement per operation being the only shape `machotool` has. Held by
 `tests/wrapper_test.sh`'s two cap assertions (the wording, and the file
 untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
 

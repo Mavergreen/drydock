@@ -7,8 +7,8 @@
  * checked them. That is exactly the class of bug this toolkit's shared src/
  * layer exists to rule out (see image.h's file header, and src/rewrite.c's
  * mr_is_deleted -- the one predicate the load-command emitter and the
- * ordinal map now both ask, after each had decided for itself which dylibs
- * a -delete removed). This is the one place both now go through.
+ * ordinal map both ask, after each had decided for itself which dylibs
+ * a delete removed). This is the one place both now go through.
  *
  * Scope: reading and validating the arch table, and -- mfat_rewrite --
  * splitting a fat file into its slices, handing each to a caller's function,

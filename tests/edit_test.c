@@ -771,7 +771,7 @@ static void test_fatal_warnings_refuses_an_unmatched_operation(void) {
     rm_dir();
 }
 
-/* A segment rename that renames nothing is a miss too. It has no hit array
+/* A segment rename that renames nothing is a miss too. It has no hit count
  * for the dylib/rpath/lc report to read, so it needs its own, and under
  * fatal-warnings it must refuse the run -- after an earlier statement has
  * already changed the in-memory image, and without writing it. */

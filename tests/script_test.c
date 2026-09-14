@@ -500,50 +500,6 @@ static void test_an_unknown_operation_disturbs_everything(void) {
           "an operation with no row disturbs everything, so its checks still run");
 }
 
-/* The verbs' operations and the statements' are now ONE table, so these pin
- * the two things merging them could have quietly changed: which flag each verb
- * accepts, and the order --capabilities advertises them in. cli_test.sh drives
- * the real binary for the same claims; this is the hermetic half, and it is
- * the half that names WHICH row is wrong when they disagree. */
-static void test_the_verbs_take_their_ops_from_the_table(void) {
-    int op = -1, nargs = -1;
-    const char *name;
-    static const char *const want_dylib[] = { "replace", "delete", "append", "insert", "reexport" };
-    static const char *const want_rpath[] = { "replace", "delete", "append", "insert" };
-    int i;
-
-    CHECK(ms_verb_op("-replace", MS_MODE_DYLIB, &op, &nargs) && op == MS_REPLACE && nargs == 2,
-          "dylib -replace is one operation taking OLD and NEW (got op %d, nargs %d)", op, nargs);
-    CHECK(ms_verb_op("-insert", MS_MODE_RPATH, &op, &nargs) && op == MS_INSERT && nargs == 1,
-          "rpath -insert is one operation taking one path (got op %d, nargs %d)", op, nargs);
-    /* LC_RPATH has one kind, so there is no rpath reexport row and the verb
-     * must refuse the flag -- the same answer a flag no verb offers gets. */
-    CHECK(!ms_verb_op("-reexport", MS_MODE_RPATH, &op, &nargs),
-          "rpath -reexport has no row and is refused; promoting an rpath means nothing");
-    CHECK(ms_verb_op("-reexport", MS_MODE_DYLIB, &op, &nargs) && op == MS_REEXPORT,
-          "dylib -reexport is still offered");
-    CHECK(!ms_verb_op("-add", MS_MODE_DYLIB, &op, &nargs),
-          "change_dylib's own flag spellings are not this grammar's and stay refused");
-
-    /* The ops= order is frozen interface text: a wrapper greps this line.
-     * It is NOT the table's row order -- the "statement " lines are that --
-     * so both orders are asserted, here and in cli_test.sh. */
-    for (i = 0; i < (int)(sizeof want_dylib / sizeof want_dylib[0]); i++) {
-        name = NULL;
-        CHECK(ms_mode_op(i, MS_MODE_DYLIB, &name) && strcmp(name, want_dylib[i]) == 0,
-              "dylib ops= position %d is '%s', wanted '%s'", i, name ? name : "(past the end)",
-              want_dylib[i]);
-    }
-    CHECK(!ms_mode_op(5, MS_MODE_DYLIB, &name), "dylib offers exactly five operations");
-    for (i = 0; i < (int)(sizeof want_rpath / sizeof want_rpath[0]); i++) {
-        name = NULL;
-        CHECK(ms_mode_op(i, MS_MODE_RPATH, &name) && strcmp(name, want_rpath[i]) == 0,
-              "rpath ops= position %d is '%s', wanted '%s'", i, name ? name : "(past the end)",
-              want_rpath[i]);
-    }
-    CHECK(!ms_mode_op(4, MS_MODE_RPATH, &name), "rpath offers exactly four operations");
-}
-
 static void test_arch_directive_names_rows(void) {
     static const char src[] = "arch x86_64\narch arm64\narch x86_64\nload-command delete uuid\n";
     ms_script s; char err[256] = {0};
@@ -661,7 +617,6 @@ int main(void) {
     test_disturbs_matches_the_spec_table();
     test_every_row_declares_its_disturbs();
     test_an_unknown_operation_disturbs_everything();
-    test_the_verbs_take_their_ops_from_the_table();
     test_arch_directive_names_rows();
     test_no_arch_directive_is_an_empty_mask();
     test_arch_directive_errors();

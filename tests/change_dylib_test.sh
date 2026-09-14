@@ -618,12 +618,12 @@ fi
 #
 # WHAT CHANGED: there are no arrays any more. compat/fix_macho.c is retired
 # and fix_macho is a /bin/sh wrapper, so the caps live in compat/translate.sh's
-# mt_room, which counts and refuses before it emits anything. The -change cap
-# would ALSO be caught downstream (machotool caps at MR_MAX_OPS too, in different
-# words); the -rename_seg cap would NOT, because each pair becomes its own
-# `machotool segment` invocation and machotool never sees more than one -- so for
-# that half of this case the translation is the only thing enforcing anything,
-# which is exactly why both halves stay.
+# mt_room, which counts and refuses before it emits anything. NEITHER cap is
+# caught downstream any more: machotool's own MR_MAX_OPS/MR_MAX_STRIP went with
+# the verbs whose arrays they sized, and an mr_ops holds at most one operation
+# of each kind now, so every operation becomes its own statement and machotool
+# never sees more than one to count. The translation is the only thing enforcing
+# anything here, which is exactly why both halves stay.
 #
 # Asserted as "refuses, saying too many, having modified nothing", not as a
 # particular exit code, per this suite's own rule about pinning the behaviour
@@ -1645,12 +1645,13 @@ int main(int argc, char **argv) {
     if (argc != 6) return 2;
     mr_change ch;
     ch.old_path = argv[3]; ch.new_path = argv[4]; ch.reexport = 0;
-    const char *radd[1];
-    radd[0] = argv[5];
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
-    ops.dylib_changes = &ch;  ops.n_dylib_changes = 1;
-    ops.rpath_appends = radd; ops.n_rpath_appends = 1;
+    /* One operation per FAMILY is still one mr_ops -- what an mr_ops can no
+     * longer hold is two of the SAME kind. That is what makes this a fair
+     * one-pass baseline for the two-pass route below. */
+    ops.dylib_change = &ch;
+    ops.rpath_append = argv[5];
     ops.allow_grow = 1;
     /* The disturbs mask cli/machotool.c's dylib verb would hand the same two
      * operations, read off the one operation table rather than written out

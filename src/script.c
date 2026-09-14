@@ -159,38 +159,6 @@ int ms_row_disturbs_declared(int i) {
     return MS_TABLE[i].declared;
 }
 
-int ms_mode_op(int i, unsigned mode, const char **op) {
-    int idx[sizeof MS_TABLE / sizeof MS_TABLE[0]];
-    int n = 0, a, b;
-    for (a = 0; a < MS_TABLE_N; a++)
-        if (MS_TABLE[a].modes & mode) idx[n++] = a;
-    /* Insertion sort by ops_ord, and stable, so that EVERY row this verb
-     * offers is listed exactly once whatever the keys say: the keys decide
-     * the order, never whether a row appears. A new operation cannot be
-     * advertised-but-unparseable, or parseable-but-unadvertised, the way the
-     * two hand-maintained lists this table replaced could. */
-    for (a = 1; a < n; a++) {
-        int v = idx[a];
-        for (b = a; b > 0 && MS_TABLE[idx[b - 1]].ops_ord > MS_TABLE[v].ops_ord; b--)
-            idx[b] = idx[b - 1];
-        idx[b] = v;
-    }
-    if (i < 0 || i >= n) return 0;
-    *op = MS_TABLE[idx[i]].op;
-    return 1;
-}
-
-int ms_verb_op(const char *flag, unsigned mode, int *op, int *nargs) {
-    int i;
-    for (i = 0; i < MS_TABLE_N; i++) {
-        if (!MS_TABLE[i].flag || !(MS_TABLE[i].modes & mode)) continue;
-        if (strcmp(flag, MS_TABLE[i].flag) != 0) continue;
-        *op = MS_TABLE[i].o; *nargs = MS_TABLE[i].nargs;
-        return 1;
-    }
-    return 0;
-}
-
 const char *ms_kind_name(int kind) {
     int i;
     for (i = 0; i < MS_TABLE_N; i++)

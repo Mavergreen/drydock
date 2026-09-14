@@ -92,13 +92,15 @@
 # The one exception to "the old tool's message" is $MT_PROG, which stands in
 # for argv[0] in a usage line; mt_translate defaults it to the tool's own name.
 #
-# CAPACITY CAPS ARE THIS FILE'S JOB, not machotool's. cli/machotool.c caps at exactly
-# the same numbers (MR_MAX_OPS=32 shared by -change/-delete/-reexport, and
-# separately by -add, -insert, -add-rpath, and -change-rpath/-delete-rpath;
-# MR_MAX_STRIP=16 for -strip-lc) but prints DIFFERENT text on purpose, so that
-# the new grammar never leaks the old flag spellings -- both cap sites in
-# cli/machotool.c carry a comment saying so and telling whoever writes the wrapper
-# to enforce the caps here and print the origin text. That is what mt_room does.
+# CAPACITY CAPS ARE THIS FILE'S JOB, AND NOW ONLY THIS FILE'S. They reproduce
+# the retired C tools' refusals -- 32 shared by -change/-delete/-reexport, and
+# separately by -add, -insert, -add-rpath, and -change-rpath/-delete-rpath; 16
+# for -strip-lc -- in those tools' own words, which is why they are counted
+# here rather than downstream. machotool once carried the same two numbers as
+# MR_MAX_OPS and MR_MAX_STRIP, sizing the verb parsers' fixed arrays; the verbs
+# are gone and so are the caps, an mr_ops now holding at most one operation of
+# each kind (src/rewrite.h). Nothing downstream counts anything, so a cap
+# dropped here would not be caught anywhere else. That is what mt_room does.
 #
 # fix_macho's two caps come here for a second reason as well: its -rename_seg
 # array has NO machotool counterpart at all (a `segment rename` statement is

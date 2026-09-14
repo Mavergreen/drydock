@@ -38,26 +38,29 @@ typedef struct {
     mo_counts counts;                        /* what mo_map_apply changed */
 } mr_renumbering;
 
-/* Everything one run of the rewriter is being asked to do. Each array is
- * caller-owned and read-only for the call; a count of 0 means the operation
- * was not requested and its pointer is never dereferenced. Array order is
- * the order the operations were given, and observable: inserted dylibs
- * become ordinals 1..n in it, and for LC_RPATHs it is dyld's SEARCH order. */
+/* Everything one run of the rewriter is being asked to do: AT MOST ONE
+ * operation of each kind. Every pointer is caller-owned and read-only for the
+ * call; NULL means that operation was not requested and the pointer is never
+ * dereferenced.
+ *
+ * ONE OF EACH, not a set, and that is the whole shape of this module. The
+ * only caller is src/edit.c, which lowers one statement at a time
+ * (`me_apply`), so statements run in the order written and each sees what the
+ * one before it left. Two operations are never in flight at once, so nothing
+ * here resolves a conflict between them: `dylib replace P X` followed by
+ * `dylib delete P` renames P and then finds no P to delete.
+ * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
+ * -- "What gets deleted": the set model, and the precedence rule, both go.
+ * spec: tests/cli_test.sh's "dylib: replace+delete same path" -- that
+ * sequence, asserted to produce the rename. */
 typedef struct {
-    const mr_change *dylib_changes;    /* rewrite/delete/reexport a dependency */
-    int              n_dylib_changes;
-    const char *const *dylib_appends;  /* brand-new LC_LOAD_DYLIB, placed last */
-    int              n_dylib_appends;
-    const char *const *dylib_inserts;  /* brand-new LC_LOAD_DYLIB, placed first */
-    int              n_dylib_inserts;
-    const uint32_t  *strip_cmds;       /* whole load commands to drop, by LC_* */
-    int              n_strip_cmds;
-    const mr_change *rpath_changes;    /* rewrite/delete an LC_RPATH */
-    int              n_rpath_changes;
-    const char *const *rpath_appends;  /* brand-new LC_RPATH, searched LAST */
-    int              n_rpath_appends;
-    const char *const *rpath_inserts;  /* brand-new LC_RPATH, searched FIRST */
-    int              n_rpath_inserts;
+    const mr_change *dylib_change;     /* rewrite/delete/reexport a dependency */
+    const char      *dylib_append;     /* brand-new LC_LOAD_DYLIB, placed last */
+    const char      *dylib_insert;     /* brand-new LC_LOAD_DYLIB, placed first */
+    const uint32_t  *strip_cmd;        /* a whole load-command kind to drop, LC_* */
+    const mr_change *rpath_change;     /* rewrite/delete an LC_RPATH */
+    const char      *rpath_append;     /* brand-new LC_RPATH, searched LAST */
+    const char      *rpath_insert;     /* brand-new LC_RPATH, searched FIRST */
     /* Rename every LC_SEGMENT_64 named segment_rename_old -- and each of its
      * sections' own copy of that name -- to segment_rename_new, through
      * mseg_rename_lc. Both NULL means no rename was requested. */
@@ -73,23 +76,14 @@ typedef struct {
      * so zero it first and read `done`. Overwritten, not added to, since a map
      * does not sum: a fat file's later renumbering replaces the earlier. */
     mr_renumbering  *renumbering;
-    /* If non-zero, mr_apply_file refuses (MR_REFUSED) when any
-     * dylib_changes/rpath_changes/strip_cmds entry matched nothing, and
-     * NOTHING IS WRITTEN: the verdict is decided before the one
-     * wa_write_new. It asks whether anything MATCHED an operation, never
-     * whether it ACTED, so a shadowed operation stays silent.
-     * spec: src/rewrite.c's mr_build_lcs_lc "No break" -- counting only what
-     * acted reports `-replace X N -delete X`'s -delete as a miss. */
+    /* If non-zero, mr_apply_file refuses (MR_REFUSED) when the run's
+     * dylib_change/rpath_change/strip_cmd matched nothing, and NOTHING IS
+     * WRITTEN: the verdict is decided before the one wa_write_new. Matching
+     * and acting are the same question now that a run carries one operation:
+     * the command this operation names is the command it rewrites. */
     int              fatal_unmatched;
     int              allow_grow;       /* may enlarge the pad (mg_grow_header) */
 } mr_ops;
-
-/* How many times one operation may repeat in a run. compat/translate.sh's
- * mt_room repeats both numbers as literals -- a /bin/sh script cannot include
- * this header -- and refuses at the identical count. NOT a cap on an edit
- * script: src/edit.c lowers each statement to a one-operation mr_ops. */
-#define MR_MAX_OPS   32
-#define MR_MAX_STRIP 16
 
 /* The two failure codes. MR_REFUSED is a CONSIDERED refusal: something
  * examined the bytes and declined. MR_FAIL is operational -- open, fstat,
@@ -113,11 +107,6 @@ typedef struct {
  * PRECONDITION, unenforced here: `out` must not name `path`. cli/machotool.c
  * refuses it before any read, and wa_write_new checks again, so an unchecked
  * caller gets MR_FAIL and an unwritten input, not a rewritten one.
- * spec: cli/machotool.c's dylib/rpath and lc parsers -- PRECONDITION,
- * unenforced here AND undiagnosed: n_dylib_changes and n_rpath_changes each
- * <= MR_MAX_OPS, n_strip_cmds <= MR_MAX_STRIP. The hit-count arrays are on
- * this function's stack, sized from those macros; a caller that skips the
- * bound overflows that stack instead of getting a diagnostic.
  *
  * `declared_disturbs` is what the OPERATIONS in `ops` declare they
  * invalidate, as an MREL_* mask (src/relations.h), which every caller reads
@@ -135,15 +124,15 @@ typedef struct {
 int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
                   uint32_t declared_disturbs);
 
-/* How many load commands each entry of an mr_ops' dylib_changes,
- * rpath_changes and strip_cmds matched, index for index. ADDED to, never
- * assigned: a fat file's slices each add to one total, an operation that
- * matched in one slice and not another having matched. So zero an mr_hits
- * once per image, not between slices. */
+/* How many load commands an mr_ops' dylib_change, rpath_change and strip_cmd
+ * matched -- one count each, because a run carries one of each. ADDED to,
+ * never assigned: a fat file's slices each add to one total, an operation
+ * that matched in one slice and not another having matched. So zero an
+ * mr_hits once per image, not between slices. */
 typedef struct {
-    int dylib[MR_MAX_OPS];
-    int rpath[MR_MAX_OPS];
-    int strip[MR_MAX_STRIP];
+    int dylib;
+    int rpath;
+    int strip;
 } mr_hits;
 
 /* mr_apply_file's thin-image step, without the file: apply `ops` to the thin
@@ -157,16 +146,16 @@ typedef struct {
  * ops->fatal_unmatched: counts are ADDED to `hits`, and mr_unmatched_verdict
  * does both, later. Returns 0 (with *out_modified) or MR_REFUSED, never
  * MR_FAIL, there being no I/O here. Its two new_lcs callocs are not checked at
- * all. Same array bound as mr_apply_file's, and the same `declared_disturbs`
- * -- see mr_apply_file above for what it is and why it is a parameter. */
+ * all. Same `declared_disturbs` as mr_apply_file's -- see there for what it is
+ * and why it is a parameter. */
 int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
                    const mr_ops *ops, uint32_t declared_disturbs,
                    int *out_modified, mr_hits *hits);
 
 /* After a SUCCESSFUL rewrite -- only then, a refused one having possibly
- * stopped before a single comparison ran -- report on stderr every
- * dylib_changes/rpath_changes/strip_cmds entry `hits` says matched nothing,
- * and return MR_REFUSED if any did and ops->fatal_unmatched is set, else 0. */
+ * stopped before a single comparison ran -- report on stderr each of
+ * dylib_change/rpath_change/strip_cmd that `hits` says matched nothing, and
+ * return MR_REFUSED if any did and ops->fatal_unmatched is set, else 0. */
 int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits);
 
 #endif /* MACHOTOOL_REWRITE_H */

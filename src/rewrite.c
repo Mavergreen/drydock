@@ -47,19 +47,20 @@
 #include "lc_kinds.h"
 #include "relations.h"
 
-/* mo_map_build's is_deleted callback: true if `name` matches a deletion in
- * `ops`. This is the SAME test mr_build_lcs uses (via `matched`/`new_path ==
- * NULL`) to decide which LC_LOAD_DYLIB commands to drop, which is what keeps
- * the load-command rewrite and the ordinal map from being able to disagree
- * about which dylib went away. The context is the mr_ops itself, so there is
- * nothing for the two to disagree ABOUT. */
+/* mo_map_build's is_deleted callback: true if this run's one dylib operation
+ * is a deletion naming `name`. mr_build_lcs_lc asks the identical question of
+ * the identical single operation, so the load-command rewrite and the ordinal
+ * map cannot disagree about which dylib went away -- there is one operation
+ * for them to agree about, and the context is the mr_ops itself.
+ *
+ * It USED to scan every entry of a dylib_changes ARRAY, so that a -delete beat
+ * a conflicting -change for the same path whatever the argument order. That
+ * precedence is gone with the set model that needed it: a script says what it
+ * means in the order it means it. */
 static int mr_is_deleted(const char *name, void *ctx_) {
     const mr_ops *ops = ctx_;
-    for (int c = 0; c < ops->n_dylib_changes; c++)
-        if (ops->dylib_changes[c].new_path == NULL &&
-            strcmp(name, ops->dylib_changes[c].old_path) == 0)
-            return 1;
-    return 0;
+    return ops->dylib_change && ops->dylib_change->new_path == NULL &&
+           strcmp(name, ops->dylib_change->old_path) == 0;
 }
 
 /* Emit one LC_LOAD_DYLIB naming `path` at `dst`; returns its cmdsize. */
@@ -132,26 +133,14 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
     struct mr_build_lcs_ctx *ctx = ctx_;
     uint32_t cmdsize = lc->cmdsize;
     uint32_t write_size = cmdsize;
-    int matched = -1;
+    int matched = 0;
     int deleted = 0;
 
     /* Dropping a command reclaims its bytes for the rest of the table.
      * Any __LINKEDIT payload it referenced simply stops being reachable;
      * nothing moves, so no offset anywhere needs fixing up. */
-    /* No `break`: a load command of this kind can be named by more than one
-     * -strip-lc argument (a duplicate, e.g. two "-strip-lc uuid"), and every
-     * one of them DID find a match here, not just the first. Stopping at the
-     * first match would credit that argument's hit array slot and leave
-     * every later duplicate's slot at zero -- reported as "no load command
-     * of kind uuid to delete" about an image that HAD one, which this
-     * function just dropped. `stripped` only needs to become true once. */
-    int stripped = 0;
-    for (int s = 0; s < ctx->ops->n_strip_cmds; s++)
-        if (lc->cmd == ctx->ops->strip_cmds[s]) {
-            stripped = 1;
-            if (ctx->hit_strip) ctx->hit_strip[s]++;
-        }
-    if (stripped) {
+    if (ctx->ops->strip_cmd && lc->cmd == *ctx->ops->strip_cmd) {
+        if (ctx->hit_strip) (*ctx->hit_strip)++;
         if (ctx->verbose) printf("  Strip [%u bytes]: load command 0x%x\n", cmdsize, lc->cmd);
         ctx->ncmds--;
         ctx->mods++;
@@ -159,18 +148,16 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
     }
 
     /* -insert goes immediately before the first ordinal-bearing dylib LC, so
-     * the inserted libraries become ordinals 1..n and load (and initialize)
+     * the inserted library becomes ordinal 1 and loads (and initializes)
      * ahead of everything the image already depended on. Nothing strippable
      * bears an ordinal, so the strip pass above cannot move this boundary. */
-    if (!ctx->placed_inserts && ctx->ops->n_dylib_inserts && mo_is_ordinal_lc(lc->cmd)) {
-        for (int s = 0; s < ctx->ops->n_dylib_inserts; s++) {
-            uint32_t cs = mr_emit_dylib_lc(ctx->new_lcs + ctx->new_off, ctx->ops->dylib_inserts[s]);
-            ctx->new_off += cs;
-            ctx->ncmds++;
-            ctx->mods++;
-            if (ctx->verbose) printf("  Insert [%u bytes]: LC_LOAD_DYLIB %s (now ordinal %d)\n",
-                                cs, ctx->ops->dylib_inserts[s], s + 1);
-        }
+    if (!ctx->placed_inserts && ctx->ops->dylib_insert && mo_is_ordinal_lc(lc->cmd)) {
+        uint32_t cs = mr_emit_dylib_lc(ctx->new_lcs + ctx->new_off, ctx->ops->dylib_insert);
+        ctx->new_off += cs;
+        ctx->ncmds++;
+        ctx->mods++;
+        if (ctx->verbose) printf("  Insert [%u bytes]: LC_LOAD_DYLIB %s (now ordinal 1)\n",
+                            cs, ctx->ops->dylib_insert);
         ctx->placed_inserts = 1;
     }
 
@@ -188,15 +175,13 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
      * same reason it cannot move the dylib boundary above: LC_RPATH is not in
      * LC_STRIP_KINDS (src/lc_kinds.c), so the strip pass's early return can
      * never fire on the very command this placement keys off. */
-    if (!ctx->placed_rpath_inserts && ctx->ops->n_rpath_inserts && lc->cmd == LC_RPATH) {
-        for (int s = 0; s < ctx->ops->n_rpath_inserts; s++) {
-            uint32_t cs = mr_emit_rpath_lc(ctx->new_lcs + ctx->new_off, ctx->ops->rpath_inserts[s]);
-            ctx->new_off += cs;
-            ctx->ncmds++;
-            ctx->mods++;
-            if (ctx->verbose) printf("  Insert [%u bytes]: LC_RPATH %s (now searched first)\n",
-                                cs, ctx->ops->rpath_inserts[s]);
-        }
+    if (!ctx->placed_rpath_inserts && ctx->ops->rpath_insert && lc->cmd == LC_RPATH) {
+        uint32_t cs = mr_emit_rpath_lc(ctx->new_lcs + ctx->new_off, ctx->ops->rpath_insert);
+        ctx->new_off += cs;
+        ctx->ncmds++;
+        ctx->mods++;
+        if (ctx->verbose) printf("  Insert [%u bytes]: LC_RPATH %s (now searched first)\n",
+                            cs, ctx->ops->rpath_insert);
         ctx->placed_rpath_inserts = 1;
     }
 
@@ -245,39 +230,23 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                         dc->dylib.name.offset, cmdsize);
                 return 1;
             }
-            /* No `break`: `matched` still ends up as the FIRST entry naming
-             * this path (that is what decides which change gets applied,
-             * just below), but every entry naming it is counted as a hit,
-             * not only the first. A -delete and a -change can legitimately
-             * name the SAME old_path -- see mr_is_deleted just below, which
-             * makes a -delete win over a conflicting -change regardless of
-             * argument order -- so `machotool dylib f -replace X N -delete X`
-             * has two dylib_changes entries sharing old_path X. Breaking
-             * here would count only the -replace's entry as a hit and
-             * report the -delete's entry as "matched nothing", which is
-             * false: it is the operation that removed the load command.
-             * n_dylib_changes is capped at MR_MAX_OPS (rewrite.h), so
-             * scanning the whole array unconditionally costs nothing
-             * observable. */
-            for (int c = 0; c < ctx->ops->n_dylib_changes; c++)
-                if (strcmp(name, ctx->ops->dylib_changes[c].old_path) == 0) {
-                    if (ctx->hit_dylib) ctx->hit_dylib[c]++;
-                    if (matched < 0) matched = c;
-                }
+            if (ctx->ops->dylib_change &&
+                strcmp(name, ctx->ops->dylib_change->old_path) == 0) {
+                matched = 1;
+                if (ctx->hit_dylib) (*ctx->hit_dylib)++;
+            }
             /* Deletion is decided by mr_is_deleted -- the SAME predicate
-             * passed to mo_map_build below -- not by whichever `changes`
-             * entry happens to match first. Without this, a path named
-             * in both a -change and a -delete could be kept here while
-             * mo_map_build's map (which scans every -delete, not just the
-             * first match) marks it gone: exactly the "renumberer and
-             * emitter disagree" bug this module exists to rule out. A
-             * -delete anywhere in the arguments now always wins, no
-             * matter where it falls relative to a conflicting -change. */
+             * passed to mo_map_build below -- so the emitter and the
+             * renumberer cannot disagree about which dylib went away. With
+             * one operation in flight the two are asking the identical
+             * question of the identical string; the predicate stays shared
+             * rather than open-coded here because "two places deciding one
+             * thing" is the bug this module exists to rule out. */
             deleted = mr_is_deleted(name, (void *)ctx->ops);
         }
-        if (!deleted && matched >= 0 && ctx->ops->dylib_changes[matched].new_path != NULL) {
+        if (!deleted && matched && ctx->ops->dylib_change->new_path != NULL) {
             size_t base = dc->dylib.name.offset;
-            size_t new_len = strlen(ctx->ops->dylib_changes[matched].new_path) + 1;
+            size_t new_len = strlen(ctx->ops->dylib_change->new_path) + 1;
             uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
             if (needed < cmdsize) needed = cmdsize;
             write_size = needed;
@@ -286,7 +255,7 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
 
     /* LC_RPATH carries a single lc_str exactly like a dylib command, so
      * the same grow-the-command-and-rewrite-in-place logic applies. */
-    int rmatched = -1;
+    int rmatched = 0;
     if (lc->cmd == LC_RPATH) {
         const struct rpath_command *rc = (const struct rpath_command *)lc;
         const char *rp = mo_lc_str_at(lc, rc->path.offset);
@@ -296,25 +265,24 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                     rc->path.offset, cmdsize);
             return 1;
         }
-        for (int c = 0; c < ctx->ops->n_rpath_changes; c++)
-            if (strcmp(rp, ctx->ops->rpath_changes[c].old_path) == 0) {
-                rmatched = c;
-                if (ctx->hit_rpath) ctx->hit_rpath[c]++;
-                break;
-            }
-        if (rmatched >= 0 && ctx->ops->rpath_changes[rmatched].new_path != NULL) {
+        if (ctx->ops->rpath_change &&
+            strcmp(rp, ctx->ops->rpath_change->old_path) == 0) {
+            rmatched = 1;
+            if (ctx->hit_rpath) (*ctx->hit_rpath)++;
+        }
+        if (rmatched && ctx->ops->rpath_change->new_path != NULL) {
             size_t base = rc->path.offset;
-            size_t new_len = strlen(ctx->ops->rpath_changes[rmatched].new_path) + 1;
+            size_t new_len = strlen(ctx->ops->rpath_change->new_path) + 1;
             uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
             if (needed < cmdsize) needed = cmdsize;
             write_size = needed;
         }
     }
 
-    if (rmatched >= 0) {
-        if (ctx->ops->rpath_changes[rmatched].new_path == NULL) {
+    if (rmatched) {
+        if (ctx->ops->rpath_change->new_path == NULL) {
             if (ctx->verbose) printf("  Delete rpath [%u bytes]: %s\n", cmdsize,
-                                ctx->ops->rpath_changes[rmatched].old_path);
+                                ctx->ops->rpath_change->old_path);
             ctx->ncmds--;
         } else {
             memcpy(ctx->new_lcs + ctx->new_off, lc, cmdsize);
@@ -322,15 +290,15 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
             nrc->cmdsize = write_size;
             size_t base = nrc->path.offset;
             memset(ctx->new_lcs + ctx->new_off + base, 0, write_size - base);
-            strcpy((char *)(ctx->new_lcs + ctx->new_off + base), ctx->ops->rpath_changes[rmatched].new_path);
+            strcpy((char *)(ctx->new_lcs + ctx->new_off + base), ctx->ops->rpath_change->new_path);
             if (ctx->verbose)
                 printf("  Change rpath [%u->%u bytes]: %s -> %s\n", cmdsize, write_size,
-                       ctx->ops->rpath_changes[rmatched].old_path, ctx->ops->rpath_changes[rmatched].new_path);
+                       ctx->ops->rpath_change->old_path, ctx->ops->rpath_change->new_path);
             ctx->new_off += write_size;
         }
         ctx->mods++;
     } else if (deleted) {
-        if (ctx->verbose) printf("  Delete [%u bytes]: %s\n", cmdsize, ctx->ops->dylib_changes[matched].old_path);
+        if (ctx->verbose) printf("  Delete [%u bytes]: %s\n", cmdsize, ctx->ops->dylib_change->old_path);
         ctx->ncmds--;
         ctx->mods++;
     } else {
@@ -358,20 +326,20 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
             ctx->mods++;
             ctx->renames++;
         }
-        if (matched >= 0) {
+        if (matched) {
             struct dylib_command *ndc = (struct dylib_command *)(ctx->new_lcs + ctx->new_off);
             ndc->cmdsize = write_size;
-            if (ctx->ops->dylib_changes[matched].reexport) {
+            if (ctx->ops->dylib_change->reexport) {
                 ndc->cmd = LC_REEXPORT_DYLIB;
-                if (ctx->verbose) printf("  Reexport: %s\n", ctx->ops->dylib_changes[matched].old_path);
+                if (ctx->verbose) printf("  Reexport: %s\n", ctx->ops->dylib_change->old_path);
             }
-            if (ctx->ops->dylib_changes[matched].new_path[0] != '\0') {
+            if (ctx->ops->dylib_change->new_path[0] != '\0') {
                 size_t base = ndc->dylib.name.offset;
                 memset(ctx->new_lcs + ctx->new_off + base, 0, write_size - base);
-                strcpy((char *)(ctx->new_lcs + ctx->new_off + base), ctx->ops->dylib_changes[matched].new_path);
+                strcpy((char *)(ctx->new_lcs + ctx->new_off + base), ctx->ops->dylib_change->new_path);
                 if (ctx->verbose)
                     printf("  Change [%u->%u bytes]: %s -> %s\n", cmdsize, write_size,
-                           ctx->ops->dylib_changes[matched].old_path, ctx->ops->dylib_changes[matched].new_path);
+                           ctx->ops->dylib_change->old_path, ctx->ops->dylib_change->new_path);
             }
             ctx->mods++;
         }
@@ -399,13 +367,10 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
  * whatever state the walk left ncmds/new_off/mods, so it stays hand-written
  * here rather than folded into the per-command callback.
  *
- * hit_dylib/hit_rpath/hit_strip: per-operation hit counts, so mr_apply_file
- * can name the operations that matched nothing. Caller-owned and
- * caller-zeroed, sized MR_MAX_OPS / MR_MAX_STRIP -- the same bound mr_ops's
- * own arrays are already required to respect (mr_apply_file's own comment,
- * rewrite.h, states the precondition; cli/machotool.c is the one caller that
- * enforces it today). NULL is legal and means "do not count" -- the sizing
- * pass passes NULL, because counting a dry run would double every hit (see
+ * hit_dylib/hit_rpath/hit_strip: one hit count per operation kind, so
+ * mr_apply_file can name an operation that matched nothing. Caller-owned and
+ * caller-zeroed. NULL is legal and means "do not count" -- the sizing pass
+ * passes NULL, because counting a dry run would double every hit (see
  * mr_process_thin's two call sites). */
 static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
                         uint8_t *new_lcs, uint32_t *out_off, uint32_t *out_ncmds,
@@ -428,24 +393,22 @@ static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
 
     /* An image with no dylib load commands at all still honours -insert; there
      * was simply nothing to insert in front of. */
-    if (!ctx.placed_inserts) {
-        for (int s = 0; s < ops->n_dylib_inserts; s++) {
-            uint32_t cs = mr_emit_dylib_lc(new_lcs + new_off, ops->dylib_inserts[s]);
-            new_off += cs;
-            ncmds++;
-            mods++;
-            if (verbose) printf("  Insert [%u bytes]: LC_LOAD_DYLIB %s\n", cs, ops->dylib_inserts[s]);
-        }
-    }
-
-    /* Append brand-new LC_LOAD_DYLIB commands (-add). Appending is ordinal-safe:
-     * it only hands out indices past the existing ones. */
-    for (int a = 0; a < ops->n_dylib_appends; a++) {
-        uint32_t cs = mr_emit_dylib_lc(new_lcs + new_off, ops->dylib_appends[a]);
+    if (!ctx.placed_inserts && ops->dylib_insert) {
+        uint32_t cs = mr_emit_dylib_lc(new_lcs + new_off, ops->dylib_insert);
         new_off += cs;
         ncmds++;
         mods++;
-        if (verbose) printf("  Add [%u bytes]: LC_LOAD_DYLIB %s\n", cs, ops->dylib_appends[a]);
+        if (verbose) printf("  Insert [%u bytes]: LC_LOAD_DYLIB %s\n", cs, ops->dylib_insert);
+    }
+
+    /* Append a brand-new LC_LOAD_DYLIB (-add). Appending is ordinal-safe:
+     * it only hands out indices past the existing ones. */
+    if (ops->dylib_append) {
+        uint32_t cs = mr_emit_dylib_lc(new_lcs + new_off, ops->dylib_append);
+        new_off += cs;
+        ncmds++;
+        mods++;
+        if (verbose) printf("  Add [%u bytes]: LC_LOAD_DYLIB %s\n", cs, ops->dylib_append);
     }
 
     /* An image with no LC_RPATH at all still honours an rpath -insert; there
@@ -453,23 +416,21 @@ static int mr_build_lcs(const mi_image *im, const mr_ops *ops,
      * the appends below rather than after, is what keeps "-insert then -append
      * into an image with no rpaths" producing the inserted one first -- the
      * only order in which the two operations still mean what they say. */
-    if (!ctx.placed_rpath_inserts) {
-        for (int s = 0; s < ops->n_rpath_inserts; s++) {
-            uint32_t cs = mr_emit_rpath_lc(new_lcs + new_off, ops->rpath_inserts[s]);
-            new_off += cs;
-            ncmds++;
-            mods++;
-            if (verbose) printf("  Insert [%u bytes]: LC_RPATH %s\n", cs, ops->rpath_inserts[s]);
-        }
-    }
-
-    /* Append brand-new LC_RPATH commands (-add-rpath), searched last. */
-    for (int a = 0; a < ops->n_rpath_appends; a++) {
-        uint32_t cs = mr_emit_rpath_lc(new_lcs + new_off, ops->rpath_appends[a]);
+    if (!ctx.placed_rpath_inserts && ops->rpath_insert) {
+        uint32_t cs = mr_emit_rpath_lc(new_lcs + new_off, ops->rpath_insert);
         new_off += cs;
         ncmds++;
         mods++;
-        if (verbose) printf("  Add [%u bytes]: LC_RPATH %s\n", cs, ops->rpath_appends[a]);
+        if (verbose) printf("  Insert [%u bytes]: LC_RPATH %s\n", cs, ops->rpath_insert);
+    }
+
+    /* Append a brand-new LC_RPATH (-add-rpath), searched last. */
+    if (ops->rpath_append) {
+        uint32_t cs = mr_emit_rpath_lc(new_lcs + new_off, ops->rpath_append);
+        new_off += cs;
+        ncmds++;
+        mods++;
+        if (verbose) printf("  Add [%u bytes]: LC_RPATH %s\n", cs, ops->rpath_append);
     }
 
     *out_off = new_off;
@@ -491,32 +452,24 @@ static int mr_cgb_lc(const struct load_command *lc, void *ctx_) {
     if (mo_is_ordinal_lc(lc->cmd)) {
         const struct dylib_command *dc = (const struct dylib_command *)lc;
         const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
-        if (name) {
-            for (int c = 0; c < ctx->ops->n_dylib_changes; c++) {
-                if (strcmp(name, ctx->ops->dylib_changes[c].old_path) != 0) continue;
-                if (ctx->ops->dylib_changes[c].new_path != NULL) {
-                    size_t base = dc->dylib.name.offset;
-                    size_t new_len = strlen(ctx->ops->dylib_changes[c].new_path) + 1;
-                    uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
-                    if (needed > cmdsize) ctx->growth += needed - cmdsize;
-                }
-                break;
-            }
+        if (name && ctx->ops->dylib_change &&
+            strcmp(name, ctx->ops->dylib_change->old_path) == 0 &&
+            ctx->ops->dylib_change->new_path != NULL) {
+            size_t base = dc->dylib.name.offset;
+            size_t new_len = strlen(ctx->ops->dylib_change->new_path) + 1;
+            uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+            if (needed > cmdsize) ctx->growth += needed - cmdsize;
         }
     } else if (lc->cmd == LC_RPATH) {
         const struct rpath_command *rc = (const struct rpath_command *)lc;
         const char *rp = mo_lc_str_at(lc, rc->path.offset);
-        if (rp) {
-            for (int c = 0; c < ctx->ops->n_rpath_changes; c++) {
-                if (strcmp(rp, ctx->ops->rpath_changes[c].old_path) != 0) continue;
-                if (ctx->ops->rpath_changes[c].new_path != NULL) {
-                    size_t base = rc->path.offset;
-                    size_t new_len = strlen(ctx->ops->rpath_changes[c].new_path) + 1;
-                    uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
-                    if (needed > cmdsize) ctx->growth += needed - cmdsize;
-                }
-                break;
-            }
+        if (rp && ctx->ops->rpath_change &&
+            strcmp(rp, ctx->ops->rpath_change->old_path) == 0 &&
+            ctx->ops->rpath_change->new_path != NULL) {
+            size_t base = rc->path.offset;
+            size_t new_len = strlen(ctx->ops->rpath_change->new_path) + 1;
+            uint32_t needed = (uint32_t)((base + new_len + 7) & ~7UL);
+            if (needed > cmdsize) ctx->growth += needed - cmdsize;
         }
     }
     return 0;   /* pure accumulation; never needs to stop early */
@@ -541,15 +494,12 @@ static int mr_cgb_lc(const struct load_command *lc, void *ctx_) {
  *
  * This performs the identical sizing mr_build_lcs performs -- round8(base +
  * strlen(new_path) + 1), kept only if it exceeds the original cmdsize -- over
- * every matching command rather than once per argument, and mirrors
- * mr_build_lcs's own "first match in `changes`/`rchanges` wins" rule so it
- * agrees with what mr_build_lcs will actually do for the ordinary case where a
- * name is named once. It is not bit-exact in one edge case: if the SAME old
- * path appears in both a -change and a separate -delete, mr_build_lcs's
- * `mr_is_deleted` check (not visible to a single first-match walk) makes
- * that command a deletion with no growth, while this still counts it as
- * growing. That only over-budgets -- harmless slack in new_lcs -- never
- * under-budgets, which is the property that matters here. Writes nothing;
+ * every matching command rather than once per argument, and it asks the same
+ * question of the same single operation, so it is now EXACT: the budget and
+ * the write agree command for command. (It used to over-budget in one case --
+ * a path named by both a -change and a separate -delete, which mr_build_lcs
+ * turned into a deletion with no growth while this still counted the growth.
+ * A run cannot carry both operations any more.) Writes nothing;
  * reads bounds-checked via mo_lc_str_at, and silently does not count a
  * malformed command as a match -- mr_build_lcs performs the same check and
  * refuses the whole operation before it would ever act on that command, so
@@ -658,14 +608,14 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Upper bound on bytes the -add/-insert commands contribute, so the scratch
      * buffer can hold the full new table even before the header pad is grown. */
     uint32_t add_bytes = 0;
-    for (int a = 0; a < ops->n_dylib_appends; a++)
-        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(ops->dylib_appends[a]) + 1 + 7) & ~7UL);
-    for (int s = 0; s < ops->n_dylib_inserts; s++)
-        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(ops->dylib_inserts[s]) + 1 + 7) & ~7UL);
-    for (int a = 0; a < ops->n_rpath_appends; a++)
-        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(ops->rpath_appends[a]) + 1 + 7) & ~7UL);
-    for (int s = 0; s < ops->n_rpath_inserts; s++)
-        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(ops->rpath_inserts[s]) + 1 + 7) & ~7UL);
+    if (ops->dylib_append)
+        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(ops->dylib_append) + 1 + 7) & ~7UL);
+    if (ops->dylib_insert)
+        add_bytes += (uint32_t)((sizeof(struct dylib_command) + strlen(ops->dylib_insert) + 1 + 7) & ~7UL);
+    if (ops->rpath_append)
+        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(ops->rpath_append) + 1 + 7) & ~7UL);
+    if (ops->rpath_insert)
+        add_bytes += (uint32_t)((sizeof(struct rpath_command) + strlen(ops->rpath_insert) + 1 + 7) & ~7UL);
     /* -change/-change-rpath can ALSO grow a command past its original
      * cmdsize -- mr_build_lcs's `matched`/`rmatched` branches size the rewritten
      * command as (base + strlen(new_path) + 1), rounded up, keeping whichever
@@ -689,22 +639,26 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Map each existing 1-based library ordinal to its new value (0 = deleted),
      * built once by mo_map_build so this rewrite and the ordinal renumbering
      * below (mo_map_apply) can't independently disagree about which dylib
-     * landed where -- see ordinals.h. Inserts take 1..ninserts, so every
-     * survivor shifts up by that much; each deletion shifts the ones after it
-     * back down. */
+     * landed where -- see ordinals.h. An insert takes ordinal 1, so every
+     * survivor shifts up by one; a deletion shifts the ones after it back
+     * down. */
     int ord_map[MO_MAX_DYLIBS + 1];
     uint32_t ord_cmd[MO_MAX_DYLIBS + 1];
     memset(ord_map, 0, sizeof ord_map);
     memset(ord_cmd, 0, sizeof ord_cmd);
     mo_map omap = { ord_map, 0, ord_cmd };
     int nnew;
-    if (mo_map_build(buf, hdr->ncmds, ops->n_dylib_inserts, mr_is_deleted, (void *)ops, &omap, &nnew) != 0)
+    /* This run's one dylib insert and one dylib append, as the counts the
+     * ordinal machinery is written in terms of: 1 when requested, else 0. */
+    const int n_insert = ops->dylib_insert ? 1 : 0;
+    const int n_append = ops->dylib_append ? 1 : 0;
+    if (mo_map_build(buf, hdr->ncmds, n_insert, mr_is_deleted, (void *)ops, &omap, &nnew) != 0)
         return MR_ERROR;
     int nold = omap.n;
     /* A survivor count below nold means at least one dylib was deleted; that
-     * and any -insert are the only reasons a rewrite needs to renumber. */
-    int needs_renumber = (ops->n_dylib_inserts > 0) || (nnew - ops->n_dylib_inserts < nold);
-    if (nnew + ops->n_dylib_appends > MO_MAX_DYLIBS) {
+     * and an -insert are the only reasons a rewrite needs to renumber. */
+    int needs_renumber = (n_insert > 0) || (nnew - n_insert < nold);
+    if (nnew + n_append > MO_MAX_DYLIBS) {
         fprintf(stderr, "ERROR: %s: result would exceed %d dylibs\n", label, MO_MAX_DYLIBS);
         return MR_ERROR;
     }
@@ -804,7 +758,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * independently disagreed about which dylib survived, which the map's
      * own internal consistency (checked inside mo_map_build) cannot: that
      * only proves the map is self-consistent, not that it matches reality. */
-    if (mo_map_validate(&omap, ops->n_dylib_inserts, nnew, ops->n_dylib_appends, new_lcs, new_ncmds) != 0) {
+    if (mo_map_validate(&omap, n_insert, nnew, n_append, new_lcs, new_ncmds) != 0) {
         fprintf(stderr, "ERROR: %s left unmodified\n", label);
         free(new_lcs);
         return MR_ERROR;
@@ -934,7 +888,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     if (needs_renumber && ops->renumbering) {
         mr_renumbering *r = ops->renumbering;
         r->n = omap.n;
-        r->inserted = ops->n_dylib_inserts;
+        r->inserted = n_insert;
         memcpy(r->old_to_new, ord_map, sizeof r->old_to_new);
         memcpy(r->old_cmd, ord_cmd, sizeof r->old_cmd);
         r->counts = ord_counts;
@@ -1083,7 +1037,7 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * operation that matched in one fat slice and not another has matched; a
  * per-slice report would call that a miss on every slice but one. Appends
  * and inserts are never checked here: they always act (there is nothing in
- * the image for them to fail to find), so they have no hit array and cannot
+ * the image for them to fail to find), so they have no hit count and cannot
  * be reported as missed.
  *
  * A slice mr_process_thin reports MR_SKIP for (mr_process_fat: not a 64-bit
@@ -1113,11 +1067,11 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * is where a per-operation diagnostic can be added without moving anything
  * six wrappers' worth of tests are holding still.
  *
- * Returns the number of entries reported as unmatched, so
+ * Returns how many of the run's operations were reported as unmatched, so
  * mr_unmatched_verdict (below) can turn this report into a refusal
- * (ops->fatal_unmatched) without re-scanning the hit arrays itself. */
-static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
-                                const int *hit_rpath, const int *hit_strip) {
+ * (ops->fatal_unmatched) without re-reading the hit counts itself. */
+static int mr_report_unmatched(const mr_ops *ops, int hit_dylib,
+                                int hit_rpath, int hit_strip) {
     /* The "machotool: " prefix on the three lines below is DELIBERATE and is
      * the one program-specific string in this file -- every other diagnostic
      * here is program-neutral ("ERROR: ..."), because this library does not
@@ -1138,24 +1092,19 @@ static int mr_report_unmatched(const mr_ops *ops, const int *hit_dylib,
      * tests/change_dylib_test.sh. Only wrapper_test.sh's two assertions
      * anchor on the prefix itself; the other two match the part after it. */
     int n = 0;
-    for (int i = 0; i < ops->n_dylib_changes; i++)
-        if (hit_dylib[i] == 0) {
-            fprintf(stderr, "machotool: %s matched nothing\n",
-                    ops->dylib_changes[i].old_path);
-            n++;
-        }
-    for (int i = 0; i < ops->n_rpath_changes; i++)
-        if (hit_rpath[i] == 0) {
-            fprintf(stderr, "machotool: rpath %s matched nothing\n",
-                    ops->rpath_changes[i].old_path);
-            n++;
-        }
-    for (int i = 0; i < ops->n_strip_cmds; i++)
-        if (hit_strip[i] == 0) {
-            fprintf(stderr, "machotool: no load command of kind %s to delete\n",
-                    lc_kind_name(ops->strip_cmds[i]));
-            n++;
-        }
+    if (ops->dylib_change && hit_dylib == 0) {
+        fprintf(stderr, "machotool: %s matched nothing\n", ops->dylib_change->old_path);
+        n++;
+    }
+    if (ops->rpath_change && hit_rpath == 0) {
+        fprintf(stderr, "machotool: rpath %s matched nothing\n", ops->rpath_change->old_path);
+        n++;
+    }
+    if (ops->strip_cmd && hit_strip == 0) {
+        fprintf(stderr, "machotool: no load command of kind %s to delete\n",
+                lc_kind_name(*ops->strip_cmd));
+        n++;
+    }
     return n;
 }
 
@@ -1177,7 +1126,7 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
                    const mr_ops *ops, uint32_t declared_disturbs,
                    int *out_modified, mr_hits *hits) {
     int po = mr_process_thin(pbuf, pfsize, label, ops, declared_disturbs, out_modified,
-                              hits->dylib, hits->rpath, hits->strip);
+                              &hits->dylib, &hits->rpath, &hits->strip);
     if (po == MR_SKIP) {
         /* Unreachable from mr_apply_file: its mi_open already validated this
          * exact buffer with the identical algorithm mr_process_thin's own
@@ -1228,15 +1177,11 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
 
 int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
                   uint32_t declared_disturbs) {
-    /* Per-operation hit counts for mr_unmatched_verdict below. Owned and
-     * zeroed here, once, so a fat file's slices (each processed by its own
-     * mr_process_thin call, via mr_process_fat) all accumulate into the SAME
-     * arrays -- see mr_process_fat's own comment for why that matters. Sized
-     * MR_MAX_OPS / MR_MAX_STRIP, the same bound `ops`'s own arrays are
-     * required to respect -- an UNENFORCED precondition on this function's
-     * caller; see this function's own declaration in rewrite.h for the
-     * detail (only cli/machotool.c enforces it today, and only because it is
-     * the sole caller, not because anything here checks). */
+    /* One hit count per operation kind, for mr_unmatched_verdict below.
+     * Owned and zeroed here, once, so a fat file's slices (each processed by
+     * its own mr_process_thin call, via mr_process_fat) all accumulate into
+     * the SAME counters -- see mr_process_fat's own comment for why that
+     * matters. */
     mr_hits hits;
     memset(&hits, 0, sizeof hits);
 
@@ -1311,7 +1256,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
         }
         close(fd);
         rc = mr_process_fat(&buf, &fsize, ops, declared_disturbs, &modified,
-                            hits.dylib, hits.rpath, hits.strip);
+                            &hits.dylib, &hits.rpath, &hits.strip);
     } else {
         /* Thin (or not a Mach-O at all): mi_open does the actual read and
          * full validation -- cmdsize bounds/alignment and LC_SEGMENT_64/
@@ -1372,7 +1317,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
      * load-bearing. `rc` here is still exactly what mr_process_thin /
      * mr_process_fat returned, which is the gate this report needs: a refused
      * rewrite errored out for its own reason, possibly before mr_build_lcs ever
-     * ran a single comparison, so its hit arrays mean nothing and reporting
+     * ran a single comparison, so its hit counts mean nothing and reporting
      * them would risk calling an operation "matched nothing" that never got a
      * chance to match anything at all.
      *

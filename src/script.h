@@ -141,18 +141,14 @@ unsigned ms_disturbs(int kind, int op);
  * can state that from outside. Returns 0 for a row index past the end. */
 int ms_row_disturbs_declared(int i);
 
-/* The i-th operation `mode`'s verb offers, in the order --capabilities has
- * always listed them -- which is NOT this table's row order, and cannot be:
- * the "statement " lines and the "ops=" lists are both frozen interface text
- * and the two orders disagree for `dylib`. Returns 0 once `i` is past the
- * last operation that verb offers. */
-int ms_mode_op(int i, unsigned mode, const char **op);
-
-/* Looks up the verb operation `mode` spells `flag` (e.g. "-reexport"),
- * filling `*op` with its MS_* op and `*nargs` with the operands it takes
- * after the flag. Returns 0 when this verb has no such operation -- which is
- * how `rpath -reexport` is refused: the table simply has no rpath row for
- * it, the same answer a flag no verb offers gets. */
-int ms_verb_op(const char *flag, unsigned mode, int *op, int *nargs);
+/* ms_mode_op and ms_verb_op used to live here: the i-th operation a verb
+ * offered in --capabilities' "ops=" order, and the lookup from a verb flag
+ * ("-reexport") to its MS_* op. Both existed only to serve the seven mutating
+ * verbs. The verbs are gone, "ops=" is no longer advertised, and no flag is
+ * parsed anywhere, so they went too rather than stay as production code that
+ * only a test called.
+ * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
+ * The table's flag/modes/ops_ord columns outlive them and are now read only by
+ * ms_table_row. */
 
 #endif
