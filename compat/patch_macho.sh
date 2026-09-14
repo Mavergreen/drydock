@@ -22,9 +22,11 @@
 # reproduced by compat/translate.sh in patch_macho's own words.
 #
 # EXIT CODES -- MAPPED. patch_macho returns a FLAT 1 for everything that goes
-# wrong. machotool tells two kinds of wrong apart (cli/machotool.c's
-# cmd_declassify, "FIVE DELIBERATE DIVERGENCES FROM patch_macho", which the
-# statement shares because it shares md_declassify): EX_REFUSED
+# wrong. machotool tells two kinds of wrong apart (the list below, which
+# cli/machotool.c's cmd_declassify carried under the heading "FIVE DELIBERATE
+# DIVERGENCES FROM patch_macho" until that verb was deleted, and which the
+# `fixups set classic` statement shares because it shares md_declassify):
+# EX_REFUSED
 # (1) where it examined the input and declined on purpose -- not a readable
 # 64-bit Mach-O, no chained fixups to convert, any of declassify.h's LIMITS --
 # and EX_FAIL (2) for an operational failure. So: ANY nonzero becomes 1. Zero
@@ -99,9 +101,9 @@
 #     patch_macho printed. On the PASS-THROUGH path it prints nothing, because
 #     patch_macho printed nothing: an already-converted input said only
 #     "Already patched ... passing through." and never named the file it wrote.
-#     cmd_declassify names that divergence deliberately ("a verb that copies a
-#     file without saying so is the silent-success shape docs/PROPOSAL.md's
-#     `verify` section exists to rule out").
+#     That divergence was named deliberately when the verb existed: a form
+#     that copies a file without saying so is the silent-success shape
+#     docs/PROPOSAL.md's `verify` section exists to rule out.
 #
 # A pass-through is recognized by md_declassify's own "Already patched" line --
 # machotool's stable stdout, the same oracle tests/cli_test.sh asserts against,

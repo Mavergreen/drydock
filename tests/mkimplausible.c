@@ -92,14 +92,14 @@
  * validation and mg_classify's per-command and per-section-type checks, it has
  * header pad to spare, and it carries
  *
- *   an LC_UUID    so that `machotool lc -delete uuid` has something to strip and
- *                 therefore reaches the gate at all (mr_apply_file returns
+ *   an LC_UUID    so that `load-command delete uuid` has something to strip and
+ *                 therefore reaches the gate at all (mr_apply_image returns
  *                 early, before the gate, when nothing changed), and
  *   a __DATA segment with two sections
- *                 so that `machotool segment __DATA __X` has something to rename
+ *                 so that `segment rename __DATA __X` has something to rename
  *                 AND has section segname copies to rename with it, and
  *   an LC_DYLD_CHAINED_FIXUPS command with one real rebase link in __DATA
- *                 so that `machotool edit ... 'fixups set classic'` has
+ *                 so that `fixups set classic` has
  *                 something to convert and therefore reaches the gate too
  *                 (see FX_OFF's use in main() for the field-by-field layout).
  *

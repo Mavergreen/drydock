@@ -523,8 +523,8 @@ C file grew an `FM_ROOM` check before it retired; `mt_room` is where that check
 lives now, printing the same `too many -change (max 32)` / `too many
 -rename_seg (max 16)` and refusing before anything runs. The `-rename_seg` cap
 exists nowhere else: `machotool` sees one rename at a time either way — its
-`segment` verb takes one pair, and an edit script's `segment rename` statement
-is one pair — so nothing downstream would ever count them. Held by
+`segment rename` statement sees one pair, and always did — so nothing
+downstream would ever count them. Held by
 `tests/wrapper_test.sh`'s two cap assertions (the wording, and the file
 untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
 

@@ -210,8 +210,14 @@ mkdir -p "$T/A" "$T/B"
 cp "$ROOT/tests/fixture.macho" "$T/base" || exit 1
 RP_OLD='@loader_path/../lib'
 DY_OLD='@loader_path/spare0.dylib'
-( cd "$T" && "$BIN/machotool" rpath base -append "$RP_OLD" \
-           && "$BIN/machotool" dylib base -append "$DY_OLD" ) >/dev/null 2>&1 || {
+# Two statements on stdin, into a temp installed over `base` -- the only way to
+# change a binary there is. This preparation was `machotool rpath base -append
+# "$RP_OLD"`, and had been silently BROKEN since the verbs took an OUT: `base`
+# was FILE and `-append` landed as OUT, which bad_out refuses, so this exited 1
+# at "could not prepare the base image" and the whole sweep stopped before its
+# first row. It is fixed here rather than merely retranslated.
+( cd "$T" && printf 'rpath append %s\ndylib append %s\n' "$RP_OLD" "$DY_OLD" \
+    | "$BIN/machotool" base base.new && mv -f base.new base ) >/dev/null 2>&1 || {
     echo "compat-sweep: could not prepare the base image" >&2; exit 1; }
 
 # A non-Mach-O and an absent path, for the arity cases.
@@ -677,16 +683,17 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   open the file, which is MDCL_ERROR (an operational failure), not"
     echo "#   MDCL_NOT_MACHO. patch_macho on a NON-MACH-O (but readable) file no"
     echo "#   longer differs at all: both sides exit 1 (patch_macho's flat 1;"
-    echo "#   machotool declassify's EX_REFUSED, which this build numbers 1). That"
+    echo "#   the 'fixups set classic' statement's EX_REFUSED, numbered 1). That"
     echo "#   agreement is new and coincidental, not designed -- EX_REFUSED was 2"
     echo "#   when this repo's exit-code scheme first shipped, and this file's own"
     echo "#   MEASURED row (frozen in tests/compat-matrix.tsv, not this generator's"
     echo "#   live text) still records BOTH cases as divergent, from when they both"
-    echo "#   were. The absent-file difference is deliberate -- cli/machotool.c's"
-    echo "#   cmd_declassify names the EXIT CODES distinction as one of FOUR"
-    echo "#   DELIBERATE DIVERGENCES FROM patch_macho -- but, like the non-Mach-O"
-    echo "#   one before it, it is not visible to anyone grepping by class: both"
-    echo "#   sides of both rows exit nonzero, and nonzero is all the class sees."
+    echo "#   were. The absent-file difference is deliberate -- the list"
+    echo "#   cli/machotool.c's cmd_declassify carried, until the verbs were deleted,"
+    echo "#   names the EXIT CODES distinction as one of its DELIBERATE DIVERGENCES"
+    echo "#   FROM patch_macho -- but, like the non-Mach-O one before it, it is not"
+    echo "#   visible to anyone grepping by class: both sides of both rows exit"
+    echo "#   nonzero, and nonzero is all the class sees."
     echo "#"
     echo "#   improvement is a MECHANICAL label meaning only \"old refused, the new"
     echo "#   side did not\". It is not a judgement. rename_segment's exit 2 for"

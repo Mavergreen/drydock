@@ -158,31 +158,31 @@ fi
 echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 
 # The same conversion through the other front-end. Task 0.6b lifted it into
-# src/declassify.c, so `machotool declassify IN OUT` and `patch_macho IN OUT` are
+# src/declassify.c, so the `fixups set classic` statement and `patch_macho IN OUT` are
 # two drivers over ONE implementation and must write the same bytes -- which is
 # the strongest available evidence that the move changed nothing. Done here,
 # before the rest of the pipeline edits "$T/out", and on the same real
 # host-linker fixture rather than a hand-built one.
 if [ -x "$BIN/machotool" ]; then
-    "$BIN/machotool" declassify "$T/in" "$T/out.m9" >/dev/null
+    printf 'fixups set classic\n' | "$BIN/machotool" "$T/in" "$T/out.m9" >/dev/null 2>&1
     if cmp -s "$T/out" "$T/out.m9"; then
-        echo "chained-fixups: machotool declassify is byte-identical to patch_macho"
+        echo "chained-fixups: the fixups statement is byte-identical to patch_macho"
     else
-        echo "chained-fixups: FAIL — machotool declassify and patch_macho disagree" >&2
+        echo "chained-fixups: FAIL — the fixups statement and patch_macho disagree" >&2
         exit 1
     fi
     if "$T/has_lc" "$T/out.m9" "$LC_DYLD_CHAINED_FIXUPS"; then
-        echo "chained-fixups: FAIL — machotool declassify left LC_DYLD_CHAINED_FIXUPS" >&2
+        echo "chained-fixups: FAIL — the fixups statement left LC_DYLD_CHAINED_FIXUPS" >&2
         exit 1
     fi
     if ! "$T/has_lc" "$T/out.m9" "$LC_DYLD_INFO_ONLY"; then
-        echo "chained-fixups: FAIL — machotool declassify produced no LC_DYLD_INFO_ONLY" >&2
+        echo "chained-fixups: FAIL — the fixups statement produced no LC_DYLD_INFO_ONLY" >&2
         exit 1
     fi
     # Idempotency, which install.sh's wrapper leans on: a second pass over an
     # already-converted binary passes it through unchanged rather than failing
     # on the fixups that are no longer there.
-    "$BIN/machotool" declassify "$T/out.m9" "$T/out.m9.again" >/dev/null
+    printf 'fixups set classic\n' | "$BIN/machotool" "$T/out.m9" "$T/out.m9.again" >/dev/null 2>&1
     if cmp -s "$T/out.m9" "$T/out.m9.again"; then
         echo "chained-fixups: a converted binary passes through unchanged"
     else

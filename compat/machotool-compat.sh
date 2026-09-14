@@ -35,8 +35,9 @@
 #
 # Every behavioural difference each wrapper has to close is documented at its
 # site: the divergence list at the top of compat/translate.sh, and the
-# "DELIBERATE DIVERGENCES FROM <tool>" blocks in cli/machotool.c's cmd_segment,
-# cmd_retag_swift and cmd_declassify.
+# "DELIBERATE DIVERGENCES FROM <tool>" list each wrapper's own header carries.
+# Those lists used to live in cli/machotool.c, in cmd_segment, cmd_retag_swift
+# and cmd_declassify; the verbs are gone and each wrapper now keeps its own.
 #
 # ---- how a wrapper finds machotool and its two support files ----------------
 #

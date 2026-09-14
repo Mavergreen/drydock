@@ -7,9 +7,11 @@
  *
  * This is compat/retag_swift_classes.c's whole per-file process(), lifted out
  * of that tool so it is a library function rather than one program's static.
- * cli/machotool.c's `retag-swift` verb and src/edit.c's `swift-abi set legacy`
- * statement are its only C front-ends (the latter through
- * mswift_retag_image, below, the same retag on an image already in memory);
+ * src/edit.c's `swift-abi set legacy`
+ * statement is its only C front-end (through
+ * mswift_retag_image, below, the same retag on an image already in memory) --
+ * cli/machotool.c's `retag-swift` verb was the other until the verbs were
+ * deleted;
  * the old grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
  * through compat/retag_swift_classes.sh, the /bin/sh wrapper that replaced
  * compat/retag_swift_classes.c -- and that wrapper is what still keeps the

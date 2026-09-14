@@ -564,7 +564,7 @@ mt_tr_fix_macho() {
             # encoding runs longer than 16 bytes passes this check where
             # fix_macho refused it. Both paths still end at fix_macho.sh
             # exiting 1: machotool's mseg_name_fits (src/segname.c), called from
-            # cmd_segment (cli/machotool.c), catches the over-length name
+            # the `segment rename` statement (src/edit.c), catches the over-length name
             # downstream and returns EX_REFUSED, which fix_macho.sh maps to 1
             # like every other nonzero machotool exit -- with different text
             # than either shell message above. No code change follows from

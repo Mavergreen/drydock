@@ -249,7 +249,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     switch (st->kind) {
     case MS_LOAD_COMMAND: {
         /* ms_parse has already refused a KIND outside LC_STRIP_KINDS; this
-         * is the same lookup, as cmd_lc makes it. */
+         * is the same lookup the deleted `lc` verb made. */
         uint32_t cmd = 0;
         if (lc_kind_by_name(st->a, &cmd) != 0) break;
         ops.strip_cmds = &cmd;
@@ -258,7 +258,8 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     }
 
     case MS_SEGMENT: {
-        /* The same pre-check cmd_segment makes: a segname field is 16 bytes,
+        /* The same pre-check the deleted `segment` verb made: a segname
+         * field is 16 bytes,
          * and mseg_rename_lc would truncate a longer name silently. */
         if (!mseg_name_fits(st->b)) {
             me_say(log, "machotool edit: new segment name '%s' is longer than the %d bytes "
@@ -266,8 +267,8 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
             return MR_REFUSED;
         }
         /* A rename has no hit array for mr_unmatched_verdict to read; its
-         * match count comes back through segment_renamed, as it does for
-         * cmd_segment, and is summed across the slices that run this
+         * match count comes back through segment_renamed, as it did for
+         * that verb, and is summed across the slices that run this
          * statement, the way mr_hits is. Zero in every one of them is this
          * statement's miss, judged in the last selected slice: reported on
          * stderr in the shape of the other "matched nothing" lines, and a
@@ -288,8 +289,9 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
 
     case MS_DYLIB:
     case MS_RPATH: {
-        /* mr_change's own encoding (rewrite.h), the one cmd_dylib_or_rpath
-         * also produces: new_path NULL deletes, "" with reexport promotes. */
+        /* mr_change's own encoding (rewrite.h), the one the deleted
+         * dylib/rpath verbs also produced: new_path NULL deletes, "" with
+         * reexport promotes. */
         int rpath = (st->kind == MS_RPATH);
         const char *const *one = &st->a;
         switch (st->op) {

@@ -253,7 +253,7 @@ else
     skip "add_version_min: nosect fixture (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
-# --- machotool dylib ------------------------------------------------------------
+# --- a dylib append statement ------------------------------------------------------------
 # The same fixture reached the load-command rewriter's commit, whose memset
 # cleared the pad up to the first section's offset -- taken to be 4096 when
 # there is no section data at all, in a 104-byte buffer. With no section data
@@ -262,9 +262,30 @@ fi
 rewrite_refusal="no section data bounds the header pad; refusing to rewrite its load commands"
 grow_refusal="no section data bounds the header pad; refusing to grow it"
 sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
+
+# mt_append GMALLOC FILE OUT  -- `dylib append /x` through the only mutating
+# interface there is, with `allow-grow` ahead of it when $grow is set. It was
+# `machotool dylib FILE OUT -append /x [--allow-grow]`; the fixtures, the
+# refusals and every assertion below are unchanged, because the crash these
+# cases exist to catch is in the rewriter, not in how it was asked for.
+#
+# GMALLOC is passed as an argument rather than set as a `VAR=val cmd` prefix on
+# a shell FUNCTION, which is not required to be a one-command assignment in
+# POSIX sh and leaks into the rest of the loop on some shells. The subshell
+# keeps it to the one process it is meant for.
+mt_append() {
+    mt_gm=$1; mt_file=$2; mt_out=$3
+    {
+        [ -n "$grow" ] && printf 'allow-grow\n'
+        printf 'dylib append /x\n'
+    } | (
+        [ -n "$mt_gm" ] && { DYLD_INSERT_LIBRARIES=$mt_gm; export DYLD_INSERT_LIBRARIES; }
+        exec "$BIN/machotool" "$mt_file" "$mt_out"
+    )
+}
 for grow in "" --allow-grow; do
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="machotool dylib -append${grow:+ $grow}: nosect fixture${gm:+ (libgmalloc)}"
+        what="dylib append${grow:+ +$grow}: nosect fixture${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
@@ -274,10 +295,10 @@ for grow in "" --allow-grow; do
         before=$(sha_of "$T/dy.macho")
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" dylib "$T/dy.macho" "$T/dy.out.macho" \
-                -append /x $grow >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+            mt_append "$gm" "$T/dy.macho" "$T/dy.out.macho" \
+                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         else
-            "$BIN/machotool" dylib "$T/dy.macho" "$T/dy.out.macho" -append /x $grow \
+            mt_append "" "$T/dy.macho" "$T/dy.out.macho" \
                 >"$T/dy.out" 2>"$T/dy.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
@@ -354,11 +375,49 @@ sectionless_case() {
             || bad "$what" "a refused run left an output behind"
     done
 }
-sectionless_case "$rewrite_refusal" dylib -append /x
-sectionless_case "$rewrite_refusal" dylib --allow-grow -append /x
-sectionless_case "$rewrite_refusal" rpath -append /x
-sectionless_case "$rewrite_refusal" lc -delete uuid
-sectionless_case "$rewrite_refusal" segment __TEXT __TEXX
+# sectionless_script NEEDLE STATEMENT...
+#   -- the same five facts through the bare `machotool FILE OUT` form, each
+#      argument one line of the script on stdin. The five load-command
+#      rewrites below were `machotool dylib|rpath|lc|segment <copy> OUT ...`
+#      until the verbs went; the fixture, the refusal and every assertion are
+#      unchanged, because what must not crash is mr_process_thin, not the
+#      spelling that reaches it.
+sectionless_script() {
+    needle="$1"; shift
+    sl_desc="$*"
+    for gm in "" /usr/lib/libgmalloc.dylib; do
+        what="machotool $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
+        if [ -n "$gm" ] && [ ! -f "$gm" ]; then
+            skip "$what" "no $gm on this host"
+            continue
+        fi
+        cp "$T/sectionless.macho" "$T/sl.macho"
+        rm -f "$T/sl.out.macho"
+        rc=0
+        printf '%s\n' "$@" | (
+            [ -n "$gm" ] && { DYLD_INSERT_LIBRARIES=$gm; export DYLD_INSERT_LIBRARIES; }
+            exec "$BIN/machotool" "$T/sl.macho" "$T/sl.out.macho"
+        ) >"$T/sl.out" 2>"$T/sl.err" || rc=$?
+        if [ "$rc" -eq 1 ] && grep -qF "$needle" "$T/sl.err"; then
+            ok "$what: refuses (1), naming the missing section data"
+        else
+            bad "$what" "expected exit 1 + '$needle', got exit $rc: $(cat "$T/sl.err")"
+        fi
+        if cmp -s "$T/sectionless.macho" "$T/sl.macho"; then
+            ok "$what: leaves the file byte-identical"
+        else
+            bad "$what" "the file changed: $(cmp -l "$T/sectionless.macho" "$T/sl.macho" | wc -l | tr -d ' ') byte(s) differ"
+        fi
+        [ ! -e "$T/sl.out.macho" ] \
+            && ok "$what: writes no output either" \
+            || bad "$what" "a refused run left an output behind"
+    done
+}
+sectionless_script "$rewrite_refusal" 'dylib append /x'
+sectionless_script "$rewrite_refusal" allow-grow 'dylib append /x'
+sectionless_script "$rewrite_refusal" 'rpath append /x'
+sectionless_script "$rewrite_refusal" 'load-command delete uuid'
+sectionless_script "$rewrite_refusal" 'segment rename __TEXT __TEXX'
 sectionless_case "$grow_refusal" grow 4096
 printf 'dylib append /x\n' >"$T/sl.edits"
 sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
@@ -411,7 +470,7 @@ for gm in "" /usr/lib/libgmalloc.dylib; do
         || bad "$what" "a refused run left an output behind"
 done
 
-# --- machotool dylib and info: a first section past the end of the image --------
+# --- a dylib append statement, and info: a first section past the end of the image --------
 # mr_process_thin's commit memset clears the load-command area up to the first
 # section's file offset. On oobsection.macho that offset is 0x7000 and the file
 # is 184 bytes, so trusting it clears roughly 28 KB past the buffer (SIGSEGV
@@ -420,7 +479,7 @@ done
 # not report a pad measured against that offset either.
 for grow in "" --allow-grow; do
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="machotool dylib -append${grow:+ $grow}: oobsection fixture${gm:+ (libgmalloc)}"
+        what="dylib append${grow:+ +$grow}: oobsection fixture${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
@@ -429,10 +488,10 @@ for grow in "" --allow-grow; do
         rm -f "$T/od.out.macho"
         rc=0
         if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" dylib "$T/od.macho" "$T/od.out.macho" \
-                -append /x $grow >"$T/od.out" 2>"$T/od.err" || rc=$?
+            mt_append "$gm" "$T/od.macho" "$T/od.out.macho" \
+                >"$T/od.out" 2>"$T/od.err" || rc=$?
         else
-            "$BIN/machotool" dylib "$T/od.macho" "$T/od.out.macho" -append /x $grow \
+            mt_append "" "$T/od.macho" "$T/od.out.macho" \
                 >"$T/od.out" 2>"$T/od.err" || rc=$?
         fi
         if [ "$rc" -gt 127 ]; then
