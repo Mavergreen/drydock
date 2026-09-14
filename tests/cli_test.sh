@@ -2138,18 +2138,28 @@ grep -q 'implausible' "$T/imp_verify.err" \
     && ok "segment: the fixture really is one mg_plausible rejects" \
     || bad "segment: mg_plausible fixture" "machotool verify did not call it implausible: $(cat "$T/imp_verify.err")"
 
-# An ordinary operation on it still meets the gate and is refused, with the
-# input left alone -- so the skip below is narrow, not a hole.
-cp "$T/implausible" "$T/imp_lc"
-imp_before=$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)
-if mtip lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
-    bad "segment: mg_plausible scope" "lc -delete uuid was NOT refused, so the gate is gone"
+# `fixups set classic` genuinely disturbs the relation the gate checks --
+# unlike `lc -delete`, which only frees header pad and repacks the command
+# region without moving any base-relative content (mr_build_lcs's own
+# behavior; see tests/mkimplausible.c's header for why that made the OLD
+# version of this assertion's label an overstatement it happened to pass
+# anyway). This fixture carries a real, if minimal, LC_DYLD_CHAINED_FIXUPS:
+# one rebase link in __DATA. Converting it strips that command, rebuilds
+# __LINKEDIT's rebase/bind opcode streams from scratch, and writes the
+# resolved image base into the __DATA slot the chain pointed at -- content a
+# rename or a header-pad free never touches. So it is refused, with the
+# input left alone, and the skip below is narrow, not a hole.
+cp "$T/implausible" "$T/imp_fx"
+printf 'fixups set classic\n' >"$T/imp_fx.edits"
+imp_before=$(shasum -a 256 < "$T/imp_fx" | cut -d' ' -f1)
+if mtip edit "$T/imp_fx" "$T/imp_fx.edits" >/dev/null 2>"$T/imp_fx.err"; then
+    bad "segment: mg_plausible scope" "fixups set classic was NOT refused, so the gate is gone"
 else
-    grep -q 'no known function' "$T/imp_lc.err" \
-        && ok "segment: an operation that CAN move an offset still meets the gate" \
-        || bad "segment: mg_plausible scope" "lc -delete refused for another reason: $(cat "$T/imp_lc.err")"
+    grep -q 'implausible' "$T/imp_fx.err" \
+        && ok "segment: an operation that genuinely disturbs the relation still meets the gate" \
+        || bad "segment: mg_plausible scope" "fixups set classic refused for another reason: $(cat "$T/imp_fx.err")"
 fi
-[ "$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)" = "$imp_before" ] \
+[ "$(shasum -a 256 < "$T/imp_fx" | cut -d' ' -f1)" = "$imp_before" ] \
     && ok "segment: that refusal left the input untouched" \
     || bad "segment: mg_plausible scope" "the refused input was modified"
 
