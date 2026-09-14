@@ -14,7 +14,11 @@
 
 - **Emitted bytes never change.** `sh tests/characterize.sh $B` must keep printing `ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792`. Measured, with a correction worth carrying: `characterize.sh:24`'s `-strip-lc uuid -strip-lc codesig` is **effectively one operation**, because no fixture here has an `LC_CODE_SIGNATURE` and `lc -delete codesig` is a no-op on `tests/fixture.macho`. The genuine two-operation agreement is `uuid` + `source-version`, both really present and each really removed. A moved digest is a real defect.
 - **`tests/known-callers.sh`'s 18 sha256s are converted-file digests, never edited.** If one moves, **stop and report** — that is a behaviour change beyond the one this plan authorises.
-- **Exactly one behaviour change is authorised**, and it must be asserted rather than discovered: `change_dylib -change X Y -delete X` deletes `X` today and will rename it. Nothing else about which invocations succeed or fail may move.
+- **Zero behaviour changes, corrected 2026-09-14 — the one this plan authorised turns out to be avoidable, and `translate.sh` already knew how.** Its multi-family path (`:524-545`) documents that a verb applies a family's operations as a batch against the ORIGINAL image while a script applies them in SEQUENCE, and that **they agree when the statements are emitted in a specific order**: every `load-command delete` first, then per family every delete and reexport, then replaces, then appends, then inserts **in reverse flag order**. Measured: `dylib delete P` followed by `dylib replace P Q` produces output **byte-identical** to the verb's `-replace P Q -delete P`, because the delete runs first and the replace then finds nothing — reproducing `mr_is_deleted`'s precedence by ordering rather than by a precedence rule.
+
+  So Task 3 applies that existing bucketing to the single-family case too, and **nothing about which invocations succeed or fail may move, including the same-path case.** If any invocation's outcome does move, that is a finding — stop and report.
+
+  One shape genuinely has no reproducing order: a `-change` whose NEW is another `-change`'s OLD. `mt_chain_check` already refuses it, and must keep refusing it.
 - **Wrapper *text* may change; wrapper *outcomes* may not.** The repo owner ruled 2026-09-13: *"the wrappers won't live long. our machotool code will."*
 - **A verb is deleted only after its script form is proven byte-identical** on a real fixture. No verb goes on the strength of the table in the spec.
 - **`verify` and `info` keep their current output exactly.**
