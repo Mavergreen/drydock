@@ -191,9 +191,11 @@ command creates, so a flag-looking one is a mistake rather than a name.
 parsed before `FILE` is opened at all, so a typo in the last line of a long
 script costs nothing. Each statement then runs against the image in memory, in
 the order written; if any statement is refused, `OUT` is not written and `FILE`
-is exactly as it was found. The finished image is verified — mandatorily, after
-the last statement and before the write, with no opt-out — and only then
-written, once.
+is exactly as it was found. The finished image is verified after the last
+statement and before the write — whenever the run disturbed anything that check
+covers, and with no opt-out when it applies — and only then written, once. A run
+that disturbed nothing it checks says so instead: `nothing this run disturbed is
+re-checked`.
 
 **Every run logs, on stderr, what it did — there is no quiet mode, so there
 is no flag.** A tool whose job is to make edits nobody can see afterwards
@@ -210,8 +212,9 @@ already-classic image passed through, for `swift-abi set legacy` how many
 class records it retagged or that there was nothing to retag, for
 `version-min set` the `LC_VERSION_MIN_MACOSX` it appended, and for `target
 10.9` its whole expansion, line by line, each with the finding that produced
-it — or that this binary already targets 10.9; then `FILE: verified` and
-`OUT: written (N bytes)`.
+it — or that this binary already targets 10.9; then `FILE: verified` (or
+`FILE: nothing this run disturbed is re-checked`, when the run moved nothing the
+check looks at) and `OUT: written (N bytes)`.
 
 Stderr, not stdout, and that division is load-bearing: the operations' own
 progress lines go to stdout, where the compat wrappers' callers have always
@@ -449,9 +452,11 @@ machotool edit "$REAL" "$T" claude.edits
   `dylib`/`rpath`/`load-command` statement still runs the same per-step
   plausibility check `machotool dylib`/`rpath`/`lc` run (see "Prove it or
   refuse" above), and that per-step check still honours the variable. But
-  the mandatory check `edit` runs after the *last* statement, before the
-  single write, has no such escape hatch, by design — no opt-out was
-  reintroduced at this higher level.
+  the check `edit` runs after the *last* statement, before the single write,
+  has no such escape hatch, by design — no opt-out was reintroduced at this
+  higher level. What decides whether that check runs is the image and the
+  operations, never the caller: a run that disturbed nothing it examines skips
+  it, and nothing a caller can set will suppress one that applies.
 
 ## Notes
 
