@@ -2163,6 +2163,29 @@ fi
     && ok "segment: that refusal left the input untouched" \
     || bad "segment: mg_plausible scope" "the refused input was modified"
 
+# ---- and the same gate sees what a statement EXPANDED into -----------------
+#
+# `target 10.9` is the one statement whose meaning depends on the binary, so
+# its row declares MREL_NONE -- nothing OF ITS OWN (src/script.c's table).
+# Against this fixture it expands into `fixups set classic`, which declares
+# plenty. A gate reading only the script's declared masks (src/edit.h's
+# me_followups) would therefore skip the verify on exactly the run that most
+# needs it, and this file would be converted and written with an initializer
+# naming no function start. What decides is what the run DID, accumulated as
+# the statements (and their expansions) run, so the refusal below names the
+# final verify and not the conversion.
+cp "$T/implausible" "$T/imp_tgt"
+printf 'target 10.9\n' >"$T/imp_tgt.edits"
+if mtip edit "$T/imp_tgt" "$T/imp_tgt.edits" >/dev/null 2>"$T/imp_tgt.err"; then
+    bad "edit: expansion is accumulated" \
+        "target 10.9 lowered a fixups conversion and skipped the verify it most needs"
+else
+    grep -q 'refused at verification' "$T/imp_tgt.err" \
+        && ok "edit: a statement's expansion decides the verify, not its declared mask" \
+        || bad "edit: expansion is accumulated" \
+               "target 10.9 refused for another reason: $(cat "$T/imp_tgt.err")"
+fi
+
 # ---- an EMPTY LC_FUNCTION_STARTS is "nothing to check", not a refusal ------
 #
 # The same fixture with three bytes changed: its 8-byte LC_FUNCTION_STARTS

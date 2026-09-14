@@ -1,6 +1,6 @@
 /*
- * me_ -- see edit.h. Read once, apply each statement in order, verify,
- * write once.
+ * me_ -- see edit.h. Read once, apply each statement in order, verify what
+ * the run disturbed, write once.
  *
  * Every operation is performed by the code that performs it for the CLI
  * verbs; what lives here is the lowering from a statement to that call (the
@@ -414,6 +414,24 @@ unknown:
     return MR_FAIL;
 }
 
+/* What one statement actually disturbed: what its row DECLARES, plus what the
+ * run is observed to have done. The observation is the first section's file
+ * offset -- the header pad's own definition -- because that moving is exactly
+ * a grow, and a grow re-bases every base-relative value and moves every
+ * __LINKEDIT blob. A declaration alone would miss it; the pad's own bit is
+ * not enough, since disturbing the pad and OVERFLOWING it are different
+ * events.
+ *
+ * This is why the accumulator runs here and not over s->stmts: me_followups
+ * (edit.h) is the DECLARED half only, and `target 10.9` declares MREL_NONE of
+ * its own while its expansion can lower a fixups conversion. */
+static void me_note_disturbed(unsigned *disturbed, const ms_stmt *st,
+                              uint32_t first_before, uint32_t first_after) {
+    *disturbed |= ms_disturbs(st->kind, st->op);
+    if (first_before != first_after)
+        *disturbed |= MREL_BASE_REL | MREL_FILE_OFF;
+}
+
 /* ---- target 10.9 --------------------------------------------------------
  *
  * The one statement whose meaning depends on the binary. It is not an
@@ -542,7 +560,8 @@ static void me_log_derived(FILE *log, const me_derived *d) {
  * the other side of this, and is not special-cased: the explicit one is
  * redundant, and fatal-warnings flags it. */
 static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
-                     const ms_script *s, const ms_stmt *st, FILE *log) {
+                     const ms_script *s, const ms_stmt *st, FILE *log,
+                     unsigned *disturbed) {
     me_derived d[ME_TARGET_MAX];
     mi_image im;
     int n, i;
@@ -565,8 +584,13 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
             memset(&hits, 0, sizeof hits);
             v.hits = &hits; v.renamed = &renamed; v.decide = 0; v.missed = 0;
             me_log_derived(log, &d[i]);
+            /* Each DERIVED statement declares for itself, which is what makes
+             * the `target` row's own MREL_NONE correct rather than a hole. */
+            uint32_t first_before = mg_first_sect_off(*pbuf, *psize);
             rc = me_apply(pbuf, psize, path, &sub, &d[i].stmt, log, &v);
             if (rc != 0) return rc;
+            me_note_disturbed(disturbed, &d[i].stmt, first_before,
+                              mg_first_sect_off(*pbuf, *psize));
         }
     }
     return 0;
@@ -589,17 +613,19 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
  * statement: a few KB, against I/O that happens once either way. */
 static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const char *out,
                          const ms_script *s, FILE *log,
-                         mr_hits *hits, int *renamed, int decide, const char *slice) {
+                         mr_hits *hits, int *renamed, int decide, const char *slice,
+                         unsigned *disturbed) {
     for (int i = 0; i < s->n; i++) {
         const ms_stmt *stmt = &s->stmts[i];
         me_log_stmt(log, stmt);
         me_verdict v = { &hits[i], &renamed[i], decide, 0 };
+        uint32_t first_before = mg_first_sect_off(*pbuf, *psize);
         /* `target` is not an operation, so it is not lowered to one: it
          * expands here, in place, into the statements this image needs, and
          * they run before the next statement in the script does. Its own
          * hits/renamed entries stay zero -- nothing it derived can miss. */
         int rc = stmt->kind == MS_TARGET
-            ? me_target(pbuf, psize, path, s, stmt, log)
+            ? me_target(pbuf, psize, path, s, stmt, log, disturbed)
             : me_apply(pbuf, psize, path, s, stmt, log, &v);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
@@ -611,11 +637,30 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
             me_say_left(log, path, out);
             return rc;
         }
+        me_note_disturbed(disturbed, stmt, first_before,
+                          mg_first_sect_off(*pbuf, *psize));
     }
     return 0;
 }
 
-/* The last step of a run that verified: report, and write OUT once. Takes
+/* Does the finished image still have anything for mg_plausible to check,
+ * after a run that disturbed `disturbed`? The one question both of this
+ * module's gate sites ask, so they cannot drift apart.
+ *
+ * An image this can no longer wrap is answered YES rather than skipped: the
+ * derivation needs an image to read, and with none the only safe answer is to
+ * run the gate -- which is also the one that says what is wrong, since
+ * mg_plausible refuses an unwrappable buffer with its own line.
+ *
+ * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md
+ * -- Decision 5, the derived applicability governs both front-ends. */
+static int me_verify_applies(uint8_t *buf, size_t size, unsigned disturbed) {
+    mi_image im;
+    if (mi_wrap(buf, size, &im) != 0) return 1;
+    return mrel_verify_applies(&im, disturbed);
+}
+
+/* The last step of a run nothing refused: report, and write OUT once. Takes
  * ownership of buf. The write goes through wa_write_new, which gives OUT the
  * INPUT's mode, owner and extended attributes and renames a temp onto it -- so
  * OUT is whole or as it was, and `path` is never a destination. There is no
@@ -669,17 +714,28 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
         return 0;
     }
     me_say(c->log, "slice %s:\n", name);
+    /* One accumulator per SLICE, never one shared across the container: a
+     * slice that disturbed nothing skips its own verify whatever its
+     * neighbours did.
+     * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md
+     * -- Decision 6, relations are evaluated per slice. */
+    unsigned disturbed = MREL_NONE;
     int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
-                           c->hits, c->renamed, index == c->last, name);
+                           c->hits, c->renamed, index == c->last, name, &disturbed);
     if (rc != 0) return rc;
-    /* Each slice's own final verification: always, and never subject to
-     * MACHO_NO_VERIFY, exactly as a thin file's. */
-    if (mg_plausible(*pbuf, *psize) != 0) {
-        me_say(c->log, "machotool edit: refused at verification of slice %s; ", name);
-        me_say_left(c->log, c->path, c->out);
-        return MR_REFUSED;
+    /* Each slice's own final verification, on the same derived terms as a thin
+     * file's: whenever anything it checks was disturbed, and then never
+     * subject to MACHO_NO_VERIFY. */
+    if (me_verify_applies(*pbuf, *psize, disturbed)) {
+        if (mg_plausible(*pbuf, *psize) != 0) {
+            me_say(c->log, "machotool edit: refused at verification of slice %s; ", name);
+            me_say_left(c->log, c->path, c->out);
+            return MR_REFUSED;
+        }
+        me_say(c->log, "slice %s: verified\n", name);
+    } else {
+        me_say(c->log, "slice %s: nothing this run disturbed is re-checked\n", name);
     }
-    me_say(c->log, "slice %s: verified\n", name);
     *changed = 1;
     return 0;
 }
@@ -889,29 +945,37 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         free(hits); free(renamed); free(buf);
         return MR_FAIL;
     }
-    int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL);
+    unsigned disturbed = MREL_NONE;
+    int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL,
+                           &disturbed);
     free(hits); free(renamed);
     if (rc != 0) { free(buf); return rc; }
 
-    /* Verify the finished image: always, and never subject to
-     * MACHO_NO_VERIFY. A failure is a refusal -- including an allocation
-     * failure inside mg_plausible, which it reports the same way as every
-     * other reason it declines (see rewrite.c's comment on that fold). */
-    if (mg_plausible(buf, size) != 0) {
-        /* A script of nothing but directives, comments or blank lines has
-         * no statement to count, so "after statement 0 of 0" would be
-         * nonsense; the image itself is what failed. */
-        if (s->n == 0)
-            me_say(log, "machotool edit: refused at verification (the script has no "
-                        "statements); ");
-        else
+    /* Verify the finished image whenever anything it checks was disturbed, and
+     * then never subject to MACHO_NO_VERIFY. The applicability is derived from
+     * the relations this image has and what this run was observed to do, so
+     * there is no input a CALLER can supply to switch it off -- which is the
+     * difference between this and the escape hatch removed during the compat
+     * retirement, and the reason the env var is not consulted here.
+     * A failure is a refusal -- including an allocation failure inside
+     * mg_plausible, which it reports the same way as every other reason it
+     * declines (see rewrite.c's comment on that fold).
+     *
+     * A script with no statements needs no branch of its own here: it runs
+     * nothing, so it disturbs nothing, so the gate cannot apply and nothing
+     * can say "after statement 0 of 0". */
+    if (me_verify_applies(buf, size, disturbed)) {
+        if (mg_plausible(buf, size) != 0) {
             me_say(log, "machotool edit: refused at verification, after statement %d of %d; ",
                    s->n, s->n);
-        me_say_left(log, path, out);
-        free(buf);
-        return MR_REFUSED;
+            me_say_left(log, path, out);
+            free(buf);
+            return MR_REFUSED;
+        }
+        me_say(log, "%s: verified\n", path);
+    } else {
+        me_say(log, "%s: nothing this run disturbed is re-checked\n", path);
     }
-    me_say(log, "%s: verified\n", path);
 
     return me_write_once(buf, size, path, out, log);
 }

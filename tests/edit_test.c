@@ -162,8 +162,11 @@ static uint8_t *build_image(int flags) {
  * slice that `edit` can genuinely grow. */
 #define GROWIMG_SIZE    0x2000
 #define GROWIMG_SECTOFF 0x200
+/* The same image with NO pad at all: its one section starts exactly where the
+ * load commands end, so appending anything at all has to grow the header. */
+#define GROWIMG_NO_PAD 0
 
-static uint8_t *build_growable_image(void) {
+static uint8_t *build_growable_image_at(uint32_t sectoff, int func_starts) {
     uint8_t *buf = (uint8_t *)calloc(1, GROWIMG_SIZE);
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
     h->magic = MH_MAGIC_64;
@@ -190,13 +193,42 @@ static uint8_t *build_growable_image(void) {
     struct section_64 *sc = (struct section_64 *)(tx + 1);
     set16(sc->sectname, "__text");
     set16(sc->segname, "__TEXT");
-    sc->addr = tx->vmaddr + GROWIMG_SECTOFF;
+    sc->addr = tx->vmaddr + sectoff;
     sc->size = 4;
-    sc->offset = GROWIMG_SECTOFF;
+    sc->offset = sectoff;
 
     h->ncmds = 2;
     h->sizeofcmds = (uint32_t)(pz->cmdsize + tx->cmdsize);
+
+    /* Optional, and the whole reason it is optional: with an
+     * LC_FUNCTION_STARTS the relation mg_plausible checks is LIVE in this
+     * image, so a run that re-bases it has something to re-check. The blob
+     * names one function start at base + 0x400, which the grow re-bases along
+     * with everything else; there is no __init_offsets section, so nothing
+     * base-relative has to name it and the image stays plausible either way. */
+    if (func_starts) {
+        struct linkedit_data_command *fs =
+            (struct linkedit_data_command *)((uint8_t *)tx + tx->cmdsize);
+        fs->cmd = LC_FUNCTION_STARTS; fs->cmdsize = sizeof *fs;
+        fs->dataoff = GROWIMG_SIZE - 0x100; fs->datasize = 8;
+        buf[fs->dataoff] = 0x80; buf[fs->dataoff + 1] = 0x08;
+        h->ncmds = 3;
+        h->sizeofcmds += fs->cmdsize;
+    }
+
+    /* GROWIMG_NO_PAD: the section starts exactly where the load commands end,
+     * whatever they turned out to be, so appending anything at all has to
+     * grow. Written here rather than as a constant because the constant would
+     * have to be recomputed by hand every time a command is added above. */
+    if (sectoff == GROWIMG_NO_PAD) {
+        sc->offset = (uint32_t)(sizeof *h + h->sizeofcmds);
+        sc->addr = tx->vmaddr + sc->offset;
+    }
     return buf;
+}
+
+static uint8_t *build_growable_image(void) {
+    return build_growable_image_at(GROWIMG_SECTOFF, 0);
 }
 
 /* ---- file and directory helpers ---------------------------------------- */
@@ -482,14 +514,18 @@ static void test_statements_apply_in_order(void) {
 
     const char *first = strstr(g_log, "  load-command delete uuid\n");
     const char *second = strstr(g_log, "  segment rename __DATA __DATX\n");
-    const char *verified = strstr(g_log, ": verified\n");
+    /* This script disturbs only the header pad, so the final verify has
+     * nothing to re-decide and says so instead of claiming it verified. */
+    const char *checked = strstr(g_log, ": nothing this run disturbed is re-checked\n");
     const char *written = strstr(g_log, ": written (");
     CHECK(first && second && first < second,
           "in order: the log names the statements in script order (log: %s)", g_log);
-    CHECK(second && verified && second < verified,
-          "in order: verification is reported after the last statement (log: %s)", g_log);
-    CHECK(verified && written && verified < written,
-          "in order: the write is reported after verification (log: %s)", g_log);
+    CHECK(second && checked && second < checked,
+          "in order: the verify decision is reported after the last statement (log: %s)", g_log);
+    CHECK(checked && written && checked < written,
+          "in order: the write is reported after that decision (log: %s)", g_log);
+    CHECK(strstr(g_log, ": verified\n") == NULL,
+          "in order: the log does not claim a verify that did not run (log: %s)", g_log);
     rm_dir();
 }
 
@@ -584,11 +620,13 @@ static void test_out_that_is_the_input_is_refused(void) {
     rm_dir();
 }
 
-/* A script with no statements -- only directives, comments or blank lines
- * -- still gets the final verify, and an image that fails it is refused.
- * With nothing to count, the refusal must not say "after statement 0 of
- * 0". */
-static void test_an_empty_script_is_refused_sensibly(void) {
+/* A script with no statements -- only directives, comments or blank lines --
+ * disturbs nothing, so there is nothing for the final verify to re-decide and
+ * it does not run. `edit` is not a linter: `machotool verify` is the command
+ * that judges an image the caller did not ask to change. The fixture is the
+ * IMPLAUSIBLE one precisely so that a gate which DID run would refuse, making
+ * this test fail rather than pass vacuously. */
+static void test_an_empty_script_disturbs_nothing_and_is_passed_through(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "img");
@@ -598,42 +636,78 @@ static void test_an_empty_script_is_refused_sensibly(void) {
     free(img);
 
     snap before = take(path);
+    before.entries++;   /* OUT is the one expected newcomer */
     int rc = run(path, out, "# nothing but a comment\nfatal-warnings\n");
-    CHECK(rc == MR_REFUSED, "empty script: an implausible image is still refused (got %d)", rc);
-    check_untouched("empty script", path, &before);
-    CHECK(strstr(g_log, "refused at verification (the script has no statements); ") != NULL,
-          "empty script: the refusal says there were no statements (log: %s)", g_log);
+    CHECK(rc == 0, "empty script: a script that disturbs nothing is not verified and "
+          "not refused (got %d; log: %s)", rc, g_log);
+    check_untouched("empty script: the input", path, &before);
+    CHECK(strstr(g_log, "refused at verification") == NULL,
+          "empty script: nothing was refused at verification (log: %s)", g_log);
     CHECK(strstr(g_log, "of 0") == NULL,
-          "empty script: the refusal does not count statement 0 of 0 (log: %s)", g_log);
+          "empty script: nothing counts statement 0 of 0 (log: %s)", g_log);
+    {
+        size_t a = 0, b = 0;
+        uint8_t *in = read_file(path, &a), *o = read_file(out, &b);
+        CHECK(in && o && a == b && memcmp(in, o, a) == 0,
+              "empty script: OUT is byte-identical to the input");
+        free(in); free(o);
+    }
     rm_dir();
 }
 
-/* The final verify has no escape hatch. MACHO_NO_VERIFY is a documented
- * opt-out of the check inside the dylib/rpath/lc rewrite step; it must not
- * reach the gate that runs after the last statement. A segment rename is used
- * because the rename step itself skips mg_plausible, so the only thing that can
- * refuse this run is me_run's own verify. */
+/* The final verify has no escape hatch, and that is unchanged. What narrowed
+ * is only WHICH runs it applies to: a run that disturbed nothing it checks
+ * has nothing to re-decide. MACHO_NO_VERIFY still cannot suppress a verify
+ * that applies, and there is no other input a caller can supply that can --
+ * the applicability is computed from the image and the operations
+ * (mrel_verify_applies). Both halves are pinned here, because the first
+ * without the second would be satisfied by a gate that never runs.
+ *
+ * `fixups set classic` is the operation: on an already-classic image it is a
+ * pass-through that changes no byte (see the size assertion in
+ * test_the_file_level_operations_run_in_memory), yet it DECLARES
+ * MREL_FILE_OFF|MREL_BASE_REL|MREL_HEADER_PAD, because a disturbs mask is a
+ * conservative declaration about an operation and not an observation about
+ * this image. So the gate applies, and refuses. */
 static void test_the_final_verify_ignores_MACHO_NO_VERIFY(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "img");
     in_dir(out, sizeof out, "img.out");
-    uint8_t *img = build_image(IMPLAUSIBLE);
+    /* DYLD_INFO so the conversion has something already lowered and passes;
+     * IMPLAUSIBLE so the only thing that can refuse is me_run's own verify. */
+    uint8_t *img = build_image(IMPLAUSIBLE | DYLD_INFO);
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
 
     setenv("MACHO_NO_VERIFY", "1", 1);
     snap before = take(path);
-    int rc = run(path, out, "segment rename __DATA __DATX\n");
+    int rc = run(path, out, "fixups set classic\n");
     unsetenv("MACHO_NO_VERIFY");
-    CHECK(rc == MR_REFUSED, "no escape hatch: MACHO_NO_VERIFY=1 does not skip the final "
-          "verify (got %d)", rc);
+    CHECK(rc == MR_REFUSED, "no escape hatch: MACHO_NO_VERIFY=1 does not skip a verify "
+          "that applies (got %d; log: %s)", rc, g_log);
     check_untouched("no escape hatch", path, &before);
     CHECK(access(out, F_OK) != 0, "no escape hatch: %s was not created", out);
     CHECK(strstr(g_log, "verified\n") == NULL,
           "no escape hatch: the log does not claim the image verified (log: %s)", g_log);
     CHECK(strstr(g_log, "refused at verification") != NULL,
           "no escape hatch: the refusal names verification (log: %s)", g_log);
+
+    /* And the other half: the skip is determined by the image and the
+     * operations, so MACHO_NO_VERIFY changes NOTHING in either direction. The
+     * same fixture, a statement that disturbs nothing, run both ways: same
+     * exit code, same OUT, both times. A caller-controlled escape hatch would
+     * show up here as a difference. */
+    rc = run(path, out, "segment rename __DATA __DATX\n");
+    CHECK(rc == 0, "derived skip: a run that disturbs nothing it checks is not "
+          "verified and not refused (got %d; log: %s)", rc, g_log);
+    CHECK(access(out, F_OK) == 0, "derived skip: OUT was written");
+    unlink(out);
+    setenv("MACHO_NO_VERIFY", "1", 1);
+    int rc2 = run(path, out, "segment rename __DATA __DATX\n");
+    unsetenv("MACHO_NO_VERIFY");
+    CHECK(rc2 == rc, "not caller-determined: MACHO_NO_VERIFY changes nothing about the "
+          "skip (got %d, then %d)", rc, rc2);
     rm_dir();
 }
 
@@ -995,10 +1069,10 @@ static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
  *   plausibility gate (src/rewrite.c), so the statement itself fails and the
  *   refusal names the statement and the slice it was running in;
  *
- *   `segment rename __DATA __DATX` skips that gate -- which is exactly what
- *   the thin tests above rely on to reach me_run's own verify -- so every
- *   statement succeeds and what refuses is the SLICE's own final
- *   verification.
+ *   `fixups set classic` declares that it disturbs the base-relative values
+ *   the verify checks, so that slice's own final verification applies; on an
+ *   already-classic slice the statement itself passes, so every statement
+ *   succeeds and what refuses is the SLICE's own final verification.
  *
  * Both must leave the container byte-identical. */
 static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
@@ -1016,10 +1090,16 @@ static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
     CHECK(strstr(g_log, "in slice arm64") != NULL,
           "fat: the refusal names the slice the statement was running in (log: %s)", g_log);
 
+    /* Reaching the SLICE's own final verification needs a statement that
+     * disturbs something that verify checks: `fixups set classic` declares
+     * MREL_BASE_REL, a rename declares nothing. Slice 0 is already classic and
+     * plausible, so it passes; slice 1 is already classic and IMPLAUSIBLE, so
+     * every statement succeeds and what refuses is that slice's own verify. */
+    write_fat(path, DYLD_INFO, IMPLAUSIBLE | DYLD_INFO, 0);
     before = take(path);
-    rc = run(path, out, "segment rename __DATA __DATX\n");
+    rc = run(path, out, "fixups set classic\n");
     CHECK(rc == MR_REFUSED, "fat: the second slice's own verification refuses the run "
-          "(got %d)", rc);
+          "(got %d; log: %s)", rc, g_log);
     check_untouched("fat, second slice failed verification", path, &before);
     CHECK(strstr(g_log, "refused at verification of slice arm64") != NULL,
           "fat: the refusal names verification and the slice (log: %s)", g_log);
@@ -1136,7 +1216,8 @@ static void test_fat_report_accounts_for_every_slice(void) {
     int rc = run(path, out, "arch x86_64\nload-command delete uuid\n");
     CHECK(rc == 0, "fat, report: succeeds (got %d)", rc);
     CHECK(strstr(g_log, "slice x86_64:\n") != NULL, "fat, report: the edited slice's header (log: %s)", g_log);
-    CHECK(strstr(g_log, "slice x86_64: verified") != NULL, "fat, report: the edited slice verified");
+    CHECK(strstr(g_log, "slice x86_64: nothing this run disturbed is re-checked") != NULL,
+          "fat, report: the edited slice reports its verify decision (log: %s)", g_log);
     CHECK(strstr(g_log, "slice arm64: not selected by arch; passed through unchanged") != NULL,
           "fat, report: the unselected slice is accounted for (log: %s)", g_log);
     CHECK(strstr(g_log, "slice i386: 32-bit; passed through unchanged") != NULL,
@@ -1163,6 +1244,66 @@ static void test_fat_writes_out_and_not_the_input(void) {
         in_dir(s0, sizeof s0, "s0");
         slice_to_file(out, 0, s0);
         CHECK(count_lc(s0, LC_UUID, NULL) == 0, "fat, OUT: the edit landed in OUT's slices");
+    }
+    rm_dir();
+}
+
+/* DECISION 6: RELATIONS ARE PER SLICE, so the accumulator is too. A slice that
+ * disturbed nothing the verify checks skips its own verify whatever its
+ * NEIGHBOURS did -- which one accumulator shared across the container would
+ * get wrong, and would get wrong silently, since the shared answer is the
+ * conservative one and every existing assertion would stay green.
+ *
+ * The two slices run the same statement and disturb different things, which
+ * only the OBSERVED half can produce: slice 0 has no header pad at all, so
+ * `version-min set 10.9` under allow-grow must grow it -- a grow re-bases
+ * every base-relative value (MREL_BASE_REL) -- while slice 1 has 496 bytes
+ * spare and the same statement only repacks its header (MREL_HEADER_PAD).
+ * Slice 1 is the IMPLAUSIBLE image, so a gate that applied there would refuse
+ * the whole run: with the accumulator shared, slice 0's grow decides slice 1's
+ * verify and this run exits 1 having written nothing.
+ *
+ * The same fixture pins the OBSERVED half of the accumulator, which nothing
+ * else can: slice 0 carries an LC_FUNCTION_STARTS, so its own gate applies and
+ * it reports "verified" -- and the only thing that made it apply is the grow,
+ * since `version-min set 10.9` DECLARES only MREL_HEADER_PAD. An accumulator
+ * that read declared masks alone would report the skip line for slice 0 too,
+ * and would skip the verify after every header grow there is. */
+static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
+    fresh_dir();
+    char path[512], out[512], s0[512];
+    in_dir(path, sizeof path, "fat");
+    in_dir(out, sizeof out, "fat.out");
+    in_dir(s0, sizeof s0, "s0");
+
+    uint8_t *s[2]; size_t l[2];
+    uint32_t ct[2] = { (uint32_t)CPU_TYPE_X86_64, (uint32_t)CPU_TYPE_ARM64 };
+    uint32_t cs[2] = { (uint32_t)CPU_SUBTYPE_X86_64_ALL, (uint32_t)CPU_SUBTYPE_ARM64_ALL };
+    size_t flen;
+    s[0] = build_growable_image_at(GROWIMG_NO_PAD, 1); l[0] = GROWIMG_SIZE;
+    s[1] = build_image(IMPLAUSIBLE);                   l[1] = IMG_SIZE;
+    uint8_t *fat = build_fat(2, s, l, ct, cs, &flen);
+    write_file(path, fat, flen, 0755);
+    free(s[0]); free(s[1]); free(fat);
+
+    int rc = run(path, out, "allow-grow\nversion-min set 10.9\n");
+    CHECK(rc == 0, "per slice: a slice that disturbed nothing it checks is not refused "
+          "for what another slice did (got %d; log: %s)", rc, g_log);
+    CHECK(strstr(g_log, "slice arm64: nothing this run disturbed is re-checked") != NULL,
+          "per slice: the untouched-relation slice skipped its own verify (log: %s)", g_log);
+    CHECK(strstr(g_log, "slice x86_64: verified") != NULL,
+          "observed, not declared: the slice whose header grew was verified, though "
+          "its statement declares only the header pad (log: %s)", g_log);
+    /* The premise, not a restatement of it: slice 0 really did grow, so there
+     * really was a disturbance for a shared accumulator to leak. */
+    if (rc == 0) {
+        size_t grown = 0;
+        slice_to_file(out, 0, s0);
+        uint8_t *g = read_file(s0, &grown);
+        CHECK(g && grown > GROWIMG_SIZE,
+              "per slice: slice 0 grew its header pad, so there was something to leak "
+              "(%zu bytes, was %u)", grown, (unsigned)GROWIMG_SIZE);
+        free(g);
     }
     rm_dir();
 }
@@ -1207,7 +1348,7 @@ int main(void) {
     test_statements_apply_in_order();
     test_a_failure_part_way_writes_nothing();
     test_out_that_is_the_input_is_refused();
-    test_an_empty_script_is_refused_sensibly();
+    test_an_empty_script_disturbs_nothing_and_is_passed_through();
     test_the_final_verify_ignores_MACHO_NO_VERIFY();
     test_later_statements_see_earlier_ones();
     test_fatal_warnings_refuses_an_unmatched_operation();
@@ -1226,6 +1367,7 @@ int main(void) {
     test_fat_with_no_64bit_slice_is_refused();
     test_fat_report_accounts_for_every_slice();
     test_fat_writes_out_and_not_the_input();
+    test_fat_a_slice_skips_its_verify_on_its_own_terms();
     test_followups_are_the_union_of_the_statements();
 
     printf("edit_test: %d failure(s)\n", fails);
