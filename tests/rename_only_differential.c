@@ -16,13 +16,29 @@
  *
  * HOW THE TWO COLUMNS ARE COMPUTED, since neither is a one-liner:
  *
- *   old:  mr_is_rename_only(ops) -- nonzero means "skip the gate". `ops` is
- *         the mr_ops the shape's statements lower to, built here the way
- *         cli/machotool.c's three mr_ops-building verbs build theirs (cmd_lc
- *         at :666, cmd_dylib_or_rpath at :751, cmd_segment at :945 -- the only
- *         three call sites of mr_apply_file, :719, :876 and :962).
+ *   old:  mr_is_rename_only, over the mr_ops of EVERY STATEMENT THE RUN
+ *         EXECUTED. src/edit.c's me_apply lowers one statement to one mr_ops
+ *         and hands it to mr_apply_image -> mr_process_thin, which is the site
+ *         that consults the predicate (src/rewrite.c:943). So a run consults
+ *         it once per lowering statement, and the run's answer is: SKIPS if
+ *         every lowering statement was rename-only, RUNS if any was not, and
+ *         OLD_NA if no statement lowered to an mr_ops at all.
  *
  *   new:  !mrel_verify_applies(slice, disturbed) -- nonzero means "skip".
+ *
+ * GRANULARITY, stated because the two columns are not taken at the same place
+ * and a reader comparing them deserves to know. `old` is per statement, on the
+ * image as that statement found it -- exactly where mr_process_thin asks. `new`
+ * is taken ONCE, on the finished image, with the mask the whole run
+ * accumulated -- which is exactly where Decision 5 puts the derived verdict on
+ * the `edit` side (src/edit.c:900's final verify, and :677's per slice). So
+ * each column is taken at its own real site; neither is an approximation of
+ * its own rule. What is approximate is only the COMPARISON, and only for the
+ * four multi-statement rows (11, 12, 20 and 21): there `old` folds several
+ * per-statement answers into one and `new` has a single whole-run answer, so
+ * the row says "did the gate run at all during this run" on both sides rather
+ * than statement by statement. For the other eighteen rows, one statement
+ * lowers and the two sites coincide.
  *
  * `disturbed` is WHAT THE RUN DID, not only what the script declared, which
  * the design insists on ("computing applicability from the statement list
@@ -37,29 +53,41 @@
  * -- the second and third terms read out of the run's own report, mapping each
  * derived statement back through the ONE operation table (ms_table_row), so
  * this file cannot name a disturbs mask the table does not. me_followups alone
- * is NOT enough and the two `target` rows are what prove it: `target 10.9`
+ * is NOT enough and the three `target` rows are what prove it: `target 10.9`
  * declares MREL_NONE, and a harness fed the declaration alone would assert a
  * skip that the real run must not take.
  *
  * THE "old" COLUMN HAS THREE STATES. mr_is_rename_only takes an mr_ops, and
- * only load-command/segment/dylib/rpath work lowers to one. `swift-abi set`,
- * `version-min set`, `fixups set classic` and `target 10.9` never build an
- * mr_ops at all, so for those shapes there is no predicate to differ from and
- * OLD_NA says so. Calling mr_is_rename_only on a zeroed mr_ops and reporting
- * the answer as "old" is the one way this table could lie -- it would return
- * "runs" for a gate that never ran -- so which shapes are OLD_NA is DERIVED
- * from the parsed script (lower_to_ops below), not taken on trust from the row.
+ * only load-command/segment/dylib/rpath statements lower to one. `swift-abi
+ * set`, `version-min set` and `fixups set classic` never do, so for a run made
+ * only of those there is no predicate to differ from and OLD_NA says so.
+ * Calling mr_is_rename_only on a zeroed mr_ops and reporting the answer as
+ * "old" is the one way this table could lie -- it would return "runs" for a
+ * gate that never ran -- so which shapes are OLD_NA is DERIVED, from the
+ * statements the run actually executed, `target`'s expansion included. A
+ * `target` line is NOT automatically OLD_NA: its expansion can derive a
+ * `load-command delete` or a `segment rename`, and both lower.
  *
- * RELATIONS ARE EVALUATED PER SLICE (Decision 6), so the fat block at the end
- * asserts per slice rather than once for the container -- on a container whose
- * two slices must get DIFFERENT answers from the same run, which is the only
- * shape of fixture a container-level implementation cannot fake.
+ * THE LOWERING THIS FILE TRANSCRIBES IS PINNED TO THE ONE THAT SHIPS.
+ * lower_one below is a transcription of me_apply's switch, and a transcription
+ * drifts. pin_the_lowering reads src/edit.c and asserts which mr_ops field is
+ * assigned under which `case`, so a field moved, added or dropped there fails
+ * HERE, naming it, instead of leaving this file quietly answering about an
+ * mr_ops the shipping code no longer builds.
  *
- * Build: ctest runs it as rename_only_differential. By hand, compile with
- * -Isrc together with every .c file under src/.
+ * RELATIONS ARE EVALUATED PER SLICE (Decision 6). Two blocks hold that: row 22
+ * is a full differential row on a fat container, evaluated and asserted once
+ * per slice, and run_fat below is a container whose two slices MUST answer
+ * differently, which is the only shape of fixture a container-level
+ * implementation cannot fake.
+ *
+ * Build: ctest runs it as rename_only_differential, from the SOURCE directory
+ * (pin_the_lowering reads src/edit.c). By hand, compile with -Isrc together
+ * with every .c file under src/, and run it from the repository root.
  */
 #include "edit.h"
 #include "image.h"
+#include "lc_kinds.h"
 #include "relations.h"
 #include "rewrite.h"
 #include "script.h"
@@ -90,7 +118,7 @@ static int fails = 0;
  * else FAILS -- that is the whole point of the harness. */
 #define OLD_RUNS  0
 #define OLD_SKIPS 1
-#define OLD_NA    2   /* no mr_ops exists for this shape */
+#define OLD_NA    2   /* no statement of this run lowered to an mr_ops */
 
 static const struct { const char *shape; int old; int new_skips; } EXPECTED[] = {
     /* --- shapes a verb lowers to an mr_ops: both columns are defined ------ */
@@ -105,17 +133,40 @@ static const struct { const char *shape; int old; int new_skips; } EXPECTED[] = 
     { "rpath insert alone",            OLD_RUNS,  1 },
     { "rpath replace alone",           OLD_RUNS,  1 },
     { "rpath delete alone",            OLD_RUNS,  1 },
+    /* Rows 11 and 12 are two statements, and NO front-end builds either as one
+     * mr_ops: cmd_lc, cmd_segment and cmd_dylib_or_rpath each fill only their
+     * own fields, and src/edit.c lowers one statement to one mr_ops. They are
+     * here as RUNS of two statements, which is what a script really does, and
+     * `old` folds the two per-statement answers -- not as a single operation
+     * set anyone can construct. */
     { "lc delete + dylib delete",      OLD_RUNS,  1 },  /* the union still moves no offset */
-    { "segment rename + dylib append", OLD_RUNS,  1 },  /* not rename-only, so old ran */
+    { "segment rename + dylib append", OLD_RUNS,  1 },  /* the append is why old ran */
     { "dylib append that GREW the pad", OLD_RUNS, 0 },  /* a grow disturbs the base */
 
-    /* --- shapes no verb lowers to an mr_ops: "old" is not a thing --------- */
-    { "swift-abi set alone",           OLD_NA,    1 },  /* cmd_retag_swift: no mr_ops */
-    { "version-min set alone",         OLD_NA,    1 },  /* cmd_minos: no mr_ops */
+    /* --- shapes no statement lowers to an mr_ops: "old" is not a thing ---- */
+    { "swift-abi set alone",           OLD_NA,    1 },  /* mswift_retag_image: no mr_ops */
+    { "version-min set alone",         OLD_NA,    1 },  /* mv_add_version_min: no mr_ops */
     { "version-min set that GREW",     OLD_NA,    0 },  /* allow-grow reaches minos */
-    { "fixups set classic",            OLD_NA,    0 },  /* cmd_declassify: no mr_ops */
+    { "fixups set classic",            OLD_NA,    0 },  /* md_declassify_buf: no mr_ops */
+    /* The liveness half of mrel_verify_applies, pinned OUTSIDE the fat block:
+     * the same statement, the same MREL_BASE_REL disturbance, on an image with
+     * no LC_FUNCTION_STARTS. The gate has nothing to check, so it must be
+     * skipped -- a derivation that consulted only `disturbed` would run it. */
+    { "fixups set classic, no function starts", OLD_NA, 1 },
     { "target 10.9 (nothing to do)",   OLD_NA,    1 },  /* empty expansion */
-    { "target 10.9 (derives fixups)",  OLD_NA,    0 },  /* the expansion disturbs the base */
+    /* The expansion derives `load-command delete build-version`, which lowers
+     * to an mr_ops and DOES reach mr_is_rename_only. A `target` line is not
+     * OLD_NA by being a `target` line; it is whatever its expansion lowers. */
+    { "target 10.9 (derives fixups)",  OLD_RUNS,  0 },  /* the expansion disturbs the base */
+    /* The expansion derives a SEGMENT RENAME and nothing else -- the one shape
+     * the old predicate skips, reached through a profile rather than written
+     * out. Decision 3's "rename-only: skips -> skips, unchanged" row has to
+     * hold here too, or the licence to delete does not cover `target`. */
+    { "target 10.9 (derives a rename)", OLD_SKIPS, 1 },
+    /* Decision 6 as a DIFFERENTIAL row, not only as a liveness demonstration:
+     * the narrowing (old runs, new skips) must hold on a fat container, and
+     * per slice. */
+    { "load-command delete, fat container", OLD_RUNS, 1 },
 };
 #define N_EXPECTED ((int)(sizeof EXPECTED / sizeof EXPECTED[0]))
 
@@ -126,85 +177,109 @@ static const struct { const char *shape; int old; int new_skips; } EXPECTED[] = 
  * derived, the ops included, so a row cannot describe one operation set to
  * mr_is_rename_only and another to the derivation.
  *
- * `ops_fingerprint` is the mr_ops that script must lower to, written out by
- * hand: without it, an ops builder that did nothing at all would still get
- * "runs" out of mr_is_rename_only (a zeroed mr_ops has no rename in it) and
- * thirteen of the fourteen defined rows would pass over an ops that described
- * nothing. NULL means "this shape builds no mr_ops", which is what makes the
- * row OLD_NA -- and that is cross-checked against the parsed script too.
+ * `lowering` is what each executed statement must lower to, in execution
+ * order, joined by " | ", with "-" for a statement that lowers to no mr_ops
+ * and "" for a run that executed no statement at all (an empty `target`
+ * expansion). It is written out by hand for two reasons. Without it, an ops builder that
+ * did nothing at all would still get "runs" out of mr_is_rename_only (a zeroed
+ * mr_ops has no rename in it) and most defined rows would pass over an ops
+ * that described nothing. And it is what makes OLD_NA falsifiable: a row
+ * claiming "no mr_ops" whose run really lowered one fails here, naming the
+ * statement -- which is how row 20's OLD_NA was found to be false.
+ *
+ * `funcs_live` is whether the RESULT image must still have a live
+ * LC_FUNCTION_STARTS. It is asserted in both directions: 1 is the anti-vacuity
+ * guard (with no function starts the derivation answers "skip" whatever the
+ * run disturbed, and every `new: skips` row would read as expected while
+ * proving nothing), and 0 is the liveness pin (the gate must be skipped for
+ * lack of anything to check, even though the base WAS disturbed).
  *
  * `grows` and `derives` are the run's own observations, asserted rather than
- * assumed: a positive control on the report reader for the three rows where it
- * must fire, and a negative control on the seventeen where it must not. */
-enum { F_PLAIN, F_DYLD_INFO, F_ALREADY_109, F_GROWABLE, F_CHAINED };
+ * assumed: a positive control on the report reader for the rows where it must
+ * fire, and a negative control on every row where it must not. */
+enum { F_PLAIN, F_DYLD_INFO, F_NOFUNCS, F_ALREADY_109, F_DATACONST,
+       F_GROWABLE, F_CHAINED };
 
 static const struct {
     const char *shape;
     int         fixture;
+    int         fat;       /* wrap the fixture in a two-slice container */
     const char *script;
-    const char *ops_fingerprint;
-    int         grows;    /* the report must say the header grew */
-    int         derives;  /* the report must show >= 1 derived statement */
+    const char *lowering;
+    int         funcs_live;
+    int         grows;     /* the report must say the header grew */
+    int         derives;   /* the report must show >= 1 derived statement */
 } SHAPES[] = {
-  { "segment rename alone", F_PLAIN,
-    "segment rename __DATA __DATA_R9\n", "rename", 0, 0 },
-  { "load-command delete alone", F_PLAIN,
-    "load-command delete uuid\n", "strip_cmds=1", 0, 0 },
-  { "dylib reexport alone", F_PLAIN,
-    "dylib reexport /usr/lib/libSystem.B.dylib\n", "dylib_changes=1", 0, 0 },
-  { "dylib append alone", F_PLAIN,
-    "dylib append /usr/lib/libappended.dylib\n", "dylib_appends=1", 0, 0 },
-  { "dylib replace alone", F_PLAIN,
+  { "segment rename alone", F_PLAIN, 0,
+    "segment rename __DATA __DATA_R9\n", "rename", 1, 0, 0 },
+  { "load-command delete alone", F_PLAIN, 0,
+    "load-command delete uuid\n", "strip_cmds=1", 1, 0, 0 },
+  { "dylib reexport alone", F_PLAIN, 0,
+    "dylib reexport /usr/lib/libSystem.B.dylib\n", "dylib_changes=1", 1, 0, 0 },
+  { "dylib append alone", F_PLAIN, 0,
+    "dylib append /usr/lib/libappended.dylib\n", "dylib_appends=1", 1, 0, 0 },
+  { "dylib replace alone", F_PLAIN, 0,
     "dylib replace /usr/lib/libSystem.B.dylib /usr/lib/libOther.dylib\n",
-    "dylib_changes=1", 0, 0 },
-  { "dylib insert alone", F_PLAIN,
-    "dylib insert /usr/lib/libinserted.dylib\n", "dylib_inserts=1", 0, 0 },
-  { "dylib delete alone", F_PLAIN,
-    "dylib delete /usr/lib/libSystem.B.dylib\n", "dylib_changes=1", 0, 0 },
-  { "rpath append alone", F_PLAIN,
-    "rpath append @loader_path/../appended\n", "rpath_appends=1", 0, 0 },
-  { "rpath insert alone", F_PLAIN,
-    "rpath insert @loader_path/../inserted\n", "rpath_inserts=1", 0, 0 },
-  { "rpath replace alone", F_PLAIN,
+    "dylib_changes=1", 1, 0, 0 },
+  { "dylib insert alone", F_PLAIN, 0,
+    "dylib insert /usr/lib/libinserted.dylib\n", "dylib_inserts=1", 1, 0, 0 },
+  { "dylib delete alone", F_PLAIN, 0,
+    "dylib delete /usr/lib/libSystem.B.dylib\n", "dylib_changes=1", 1, 0, 0 },
+  { "rpath append alone", F_PLAIN, 0,
+    "rpath append @loader_path/../appended\n", "rpath_appends=1", 1, 0, 0 },
+  { "rpath insert alone", F_PLAIN, 0,
+    "rpath insert @loader_path/../inserted\n", "rpath_inserts=1", 1, 0, 0 },
+  { "rpath replace alone", F_PLAIN, 0,
     "rpath replace @loader_path/../lib @loader_path/../other\n",
-    "rpath_changes=1", 0, 0 },
-  { "rpath delete alone", F_PLAIN,
-    "rpath delete @loader_path/../lib\n", "rpath_changes=1", 0, 0 },
-  { "lc delete + dylib delete", F_PLAIN,
+    "rpath_changes=1", 1, 0, 0 },
+  { "rpath delete alone", F_PLAIN, 0,
+    "rpath delete @loader_path/../lib\n", "rpath_changes=1", 1, 0, 0 },
+  { "lc delete + dylib delete", F_PLAIN, 0,
     "load-command delete uuid\ndylib delete /usr/lib/libSystem.B.dylib\n",
-    "dylib_changes=1,strip_cmds=1", 0, 0 },
-  { "segment rename + dylib append", F_PLAIN,
+    "strip_cmds=1 | dylib_changes=1", 1, 0, 0 },
+  { "segment rename + dylib append", F_PLAIN, 0,
     "segment rename __DATA __DATA_R9\ndylib append /usr/lib/libappended.dylib\n",
-    "rename,dylib_appends=1", 0, 0 },
+    "rename | dylib_appends=1", 1, 0, 0 },
   /* A path long enough that the new LC_LOAD_DYLIB cannot fit the growable
    * fixture's deliberately tiny header pad, so the run really grows. */
-  { "dylib append that GREW the pad", F_GROWABLE,
+  { "dylib append that GREW the pad", F_GROWABLE, 0,
     "allow-grow\ndylib append /usr/lib/"
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.dylib\n",
-    "dylib_appends=1,allow-grow", 1, 0 },
+    "dylib_appends=1,allow-grow", 1, 1, 0 },
 
-  { "swift-abi set alone", F_PLAIN, "swift-abi set legacy\n", NULL, 0, 0 },
-  { "version-min set alone", F_PLAIN, "version-min set 10.9\n", NULL, 0, 0 },
-  { "version-min set that GREW", F_GROWABLE,
-    "allow-grow\nversion-min set 10.9\n", NULL, 1, 0 },
-  { "fixups set classic", F_DYLD_INFO, "fixups set classic\n", NULL, 0, 0 },
-  { "target 10.9 (nothing to do)", F_ALREADY_109, "target 10.9\n", NULL, 0, 0 },
-  { "target 10.9 (derives fixups)", F_CHAINED, "target 10.9\n", NULL, 0, 1 },
+  { "swift-abi set alone", F_PLAIN, 0, "swift-abi set legacy\n", "-", 1, 0, 0 },
+  { "version-min set alone", F_PLAIN, 0, "version-min set 10.9\n", "-", 1, 0, 0 },
+  { "version-min set that GREW", F_GROWABLE, 0,
+    "allow-grow\nversion-min set 10.9\n", "-", 1, 1, 0 },
+  { "fixups set classic", F_DYLD_INFO, 0, "fixups set classic\n", "-", 1, 0, 0 },
+  { "fixups set classic, no function starts", F_NOFUNCS, 0,
+    "fixups set classic\n", "-", 0, 0, 0 },
+  /* "" and not "-": this run executed NO statement at all, the expansion being
+   * empty, which is a different fact from one statement that lowered to
+   * nothing. Both reach OLD_NA, and the two are worth telling apart -- an
+   * expansion that quietly stopped expanding would otherwise read as an
+   * expansion that correctly found nothing to do. */
+  { "target 10.9 (nothing to do)", F_ALREADY_109, 0, "target 10.9\n", "", 1, 0, 0 },
+  /* fixups set classic, load-command delete build-version, version-min set
+   * 10.9 -- in that order, which is me_expand_10_9's. */
+  { "target 10.9 (derives fixups)", F_CHAINED, 0, "target 10.9\n",
+    "- | strip_cmds=1 | -", 1, 0, 1 },
+  { "target 10.9 (derives a rename)", F_DATACONST, 0, "target 10.9\n",
+    "rename", 1, 0, 1 },
+  { "load-command delete, fat container", F_PLAIN, 1,
+    "load-command delete uuid\n", "strip_cmds=1", 1, 0, 0 },
 };
 
 /* ---- fixtures -----------------------------------------------------------
  *
  * Hand-built, for the reason tests/relations_test.c gives: liveness must not
- * depend on what the host linker chose to emit. Every fixture here has a LIVE
- * MREL_FUNC_START -- an LC_FUNCTION_STARTS with a blob that decodes -- and a
- * segment mapping the header. That is not decoration: with no function starts
- * mrel_verify_applies answers "skip" for every run, every `new_skips` in the
- * table reads 1 whatever the derivation does, and the six rows that carry the
- * design's real content become unfalsifiable. run_shape asserts the liveness
- * per shape so a fixture that quietly lost it cannot pass as a skip. */
+ * depend on what the host linker chose to emit. Every fixture but F_NOFUNCS
+ * has a LIVE MREL_FUNC_START -- an LC_FUNCTION_STARTS with a blob that decodes
+ * -- and a segment mapping the header; F_NOFUNCS is the one that deliberately
+ * does not, and its row asserts the skip that follows. */
 
 #define TEXT_VMADDR 0x100000000ULL
 #define SECT_OFF    0x400        /* the one address LC_FUNCTION_STARTS names */
@@ -218,7 +293,10 @@ static const struct {
 /* build_plain's options. */
 #define P_DYLD_INFO   1   /* an (empty) LC_DYLD_INFO_ONLY: already classic */
 #define P_VERSION_MIN 2   /* an LC_VERSION_MIN_MACOSX: already targets 10.9 */
-#define P_NO_FUNCS    4   /* NO LC_FUNCTION_STARTS: the fat block's other slice */
+#define P_NO_FUNCS    4   /* NO LC_FUNCTION_STARTS */
+#define P_DATACONST   8   /* the data segment is __DATA_CONST and carries an
+                           * __objc_ section: what makes `target 10.9` derive
+                           * a segment rename (src/edit.c's me_target_lc) */
 
 static void set16(char *field, const char *name) {
     size_t len = strlen(name);
@@ -285,10 +363,10 @@ static uint32_t put_rpath(uint8_t *p, const char *path) {
 
 /* tests/edit_test.c's image, plus the one LC_LOAD_DYLIB and the one LC_RPATH
  * the dylib and rpath shapes need to have something to match: __TEXT with one
- * section at 0x400, __DATA with two (the second an __init_offsets whose entry
- * names 0x400), __LINKEDIT, LC_UUID, and an LC_FUNCTION_STARTS declaring the
- * single function start base + 0x400 -- so the image is plausible and
- * MREL_FUNC_START is live. */
+ * section at 0x400, a data segment with two sections (the second an
+ * __init_offsets whose entry names 0x400), __LINKEDIT, LC_UUID, and an
+ * LC_FUNCTION_STARTS declaring the single function start base + 0x400 -- so
+ * the image is plausible and MREL_FUNC_START is live. */
 static uint8_t *build_plain(int opt, size_t *outlen) {
     uint8_t *buf = (uint8_t *)calloc(1, IMG_SIZE);
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
@@ -305,11 +383,21 @@ static uint8_t *build_plain(int opt, size_t *outlen) {
     put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + SECT_OFF, 4, SECT_OFF, 0);
     p += text->cmdsize; ncmds++;
 
-    struct segment_command_64 *data = put_seg(p, "__DATA", TEXT_VMADDR + DATA_OFF, DATA_SIZE,
-                                              DATA_OFF, DATA_SIZE, 2);
-    put_sect(data, 0, "__data", "__DATA", TEXT_VMADDR + DATA_OFF, 8, DATA_OFF, 0);
-    put_sect(data, 1, "__init_offsets", "__DATA", TEXT_VMADDR + DATA_OFF + 0x800, 4,
+    /* The data segment. Named __DATA_CONST and given a third, __objc_ section
+     * under P_DATACONST -- the exact pair me_target_lc looks for. The section
+     * is __objc_const, not __objc_classlist or __objc_nlclslist, so
+     * mswift_stable_tagged_image finds no class-record list and the expansion
+     * derives the rename and NOTHING ELSE: that isolation is the row's point. */
+    int dc = (opt & P_DATACONST) != 0;
+    const char *dname = dc ? "__DATA_CONST" : "__DATA";
+    struct segment_command_64 *data = put_seg(p, dname, TEXT_VMADDR + DATA_OFF, DATA_SIZE,
+                                              DATA_OFF, DATA_SIZE, dc ? 3 : 2);
+    put_sect(data, 0, "__data", dname, TEXT_VMADDR + DATA_OFF, 8, DATA_OFF, 0);
+    put_sect(data, 1, "__init_offsets", dname, TEXT_VMADDR + DATA_OFF + 0x800, 4,
              DATA_OFF + 0x800, S_INIT_FUNC_OFFSETS);
+    if (dc)
+        put_sect(data, 2, "__objc_const", dname, TEXT_VMADDR + DATA_OFF + 0x900, 8,
+                 DATA_OFF + 0x900, 0);
     p += data->cmdsize; ncmds++;
 
     struct segment_command_64 *le = put_seg(p, "__LINKEDIT", TEXT_VMADDR + LE_OFF, LE_SIZE,
@@ -358,9 +446,9 @@ static uint8_t *build_plain(int opt, size_t *outlen) {
 /* An MH_EXECUTE/MH_PIE image mg_grow_header can grow, whose header pad is
  * EIGHT BYTES: smaller than any load command, so appending anything at all
  * needs allow-grow. A __PAGEZERO donates the vm space the grow lowers the base
- * into. It carries an LC_FUNCTION_STARTS for this file's own reason (see the
- * fixtures comment): without one the two GREW rows could not tell a derivation
- * that reads the grow from one that ignores it. */
+ * into. It carries an LC_FUNCTION_STARTS for this file's own reason: without
+ * one the two GREW rows could not tell a derivation that reads the grow from
+ * one that ignores it. */
 #define GROW_SIZE    0x2000
 #define GROW_FS_OFF  0x1000
 
@@ -396,9 +484,9 @@ static uint8_t *build_growable(size_t *outlen) {
     uint32_t sectoff = (uint32_t)(sizeof *h + h->sizeofcmds + 8);
     put_sect(tx, 0, "__text", "__TEXT", TEXT_VMADDR + sectoff, 4, sectoff, 0);
 
-    /* One function start, at the section. ULEB128 of 0x428 is 0xa8 0x08; the
-     * grow lowers the base, widening this leading delta, which mg_grow_header
-     * refuses if it would need another byte -- two bytes cover up to 0x3fff. */
+    /* One function start, at the section. The grow lowers the base, widening
+     * this leading delta, which mg_grow_header refuses if it would need
+     * another byte -- two bytes cover up to 0x3fff. */
     uint32_t delta = sectoff;
     buf[GROW_FS_OFF] = (uint8_t)(0x80 | (delta & 0x7f));
     buf[GROW_FS_OFF + 1] = (uint8_t)(delta >> 7);
@@ -414,7 +502,9 @@ static uint8_t *build_growable(size_t *outlen) {
  * the one command that makes MREL_FUNC_START live. What it is FOR is
  * `target 10.9`'s expansion: LC_DYLD_CHAINED_FIXUPS is what makes the
  * expansion derive `fixups set classic` (src/edit.c's me_expand_10_9), and
- * that derived statement is the only way a `target` line reaches MREL_BASE_REL.
+ * that derived statement is the only way a `target` line reaches
+ * MREL_BASE_REL; LC_BUILD_VERSION is what makes it derive a `load-command
+ * delete`, which is the only way it reaches an mr_ops.
  *
  * spec: tests/cli_test.sh's "target: chained fixups expand to fixups set
  * classic" -- the same fixture shape, run through the CLI, which is the
@@ -523,11 +613,56 @@ static uint8_t *build_fixture(int which, size_t *len) {
     switch (which) {
     case F_PLAIN:       return build_plain(0, len);
     case F_DYLD_INFO:   return build_plain(P_DYLD_INFO, len);
+    case F_NOFUNCS:     return build_plain(P_DYLD_INFO | P_NO_FUNCS, len);
     case F_ALREADY_109: return build_plain(P_VERSION_MIN, len);
+    case F_DATACONST:   return build_plain(P_VERSION_MIN | P_DATACONST, len);
     case F_GROWABLE:    return build_growable(len);
     case F_CHAINED:     return build_chained(len);
     default:            return NULL;
     }
+}
+
+/* A fat container of `n` slices at 0x1000-aligned offsets, big-endian as every
+ * real one is; ct/cs label the fat_arch entry, which is what `edit` reads, so
+ * an x86_64 image can stand in for arm64 without its own header saying so.
+ * Same construction as tests/edit_test.c's build_fat. */
+static uint8_t *build_fat(int n, uint8_t *const *slice, const size_t *len,
+                          const uint32_t *ct, const uint32_t *cs, size_t *outlen) {
+    size_t off[4], total = 0x1000;
+    for (int i = 0; i < n; i++) { off[i] = total; total += (len[i] + 0xfff) & ~(size_t)0xfff; }
+    uint8_t *buf = (uint8_t *)calloc(1, total);
+    struct fat_header *fh = (struct fat_header *)buf;
+    fh->magic = OSSwapHostToBigInt32(FAT_MAGIC);
+    fh->nfat_arch = OSSwapHostToBigInt32((uint32_t)n);
+    struct fat_arch *fa = (struct fat_arch *)(fh + 1);
+    for (int i = 0; i < n; i++) {
+        fa[i].cputype    = (cpu_type_t)OSSwapHostToBigInt32(ct[i]);
+        fa[i].cpusubtype = (cpu_subtype_t)OSSwapHostToBigInt32(cs[i]);
+        fa[i].offset     = OSSwapHostToBigInt32((uint32_t)off[i]);
+        fa[i].size       = OSSwapHostToBigInt32((uint32_t)len[i]);
+        fa[i].align      = OSSwapHostToBigInt32(12);
+        memcpy(buf + off[i], slice[i], len[i]);
+    }
+    *outlen = total;
+    return buf;
+}
+
+/* Two slices of the same fixture, so a shape's `fat` column asks the same
+ * question of a container that its thin twin asks of one image. */
+static uint8_t *build_fat_fixture(int which, size_t *len) {
+    size_t alen = 0, blen = 0;
+    uint8_t *a = build_fixture(which, &alen);
+    uint8_t *b = build_fixture(which, &blen);
+    uint8_t *slices[2]; size_t lens[2];
+    uint32_t ct[2], cs[2];
+    if (!a || !b) { free(a); free(b); return NULL; }
+    slices[0] = a; lens[0] = alen;
+    slices[1] = b; lens[1] = blen;
+    ct[0] = (uint32_t)CPU_TYPE_X86_64; cs[0] = (uint32_t)CPU_SUBTYPE_X86_64_ALL;
+    ct[1] = (uint32_t)CPU_TYPE_ARM64;  cs[1] = 0;
+    uint8_t *fat = build_fat(2, slices, lens, ct, cs, len);
+    free(a); free(b);
+    return fat;
 }
 
 /* ---- scratch files and the captured report ----------------------------- */
@@ -600,17 +735,47 @@ static void cap_end(void) {
 
 /* ---- reading the run's own report back --------------------------------- */
 
+/* One statement the run executed: a statement the script wrote, or one a
+ * `target` line derived. Operands are copied because a derived statement's
+ * come out of the report text, which is freed. */
+#define MAX_EXEC  16
+#define EXEC_ARG  128
+typedef struct { int kind, op; int has_a, has_b; char a[EXEC_ARG], b[EXEC_ARG]; } exec_stmt;
+
 /* What a run REPORTED it did, beyond what the script declared.
  *
- * A derived statement's report line is `me_log_derived`'s: four spaces, the
+ * A derived statement's report line is me_log_derived's: four spaces, the
  * kind, the op, its operands, then the finding in parentheses. Mapping those
  * two words back through ms_table_row is what keeps this file from naming a
- * disturbs mask of its own -- there is one table, and this reads it. */
-typedef struct { unsigned mask; int derived; int grew; } observed;
+ * disturbs mask of its own -- there is one table, and this reads it. The
+ * operands are split on single spaces, which is exact for every operand these
+ * fixtures produce (no path here contains one) and is the only place this
+ * reader could be fooled. */
+typedef struct { unsigned mask; int grew; int n; exec_stmt d[MAX_EXEC]; } observed;
+
+/* Copies the `i`-th space-separated word of `text` (length `len`) into `out`.
+ * Returns 1 if there was one. */
+static int word(const char *text, size_t len, int i, char *out, size_t outsz) {
+    size_t p = 0;
+    for (;;) {
+        while (p < len && text[p] == ' ') p++;
+        if (p >= len) return 0;
+        size_t s = p;
+        while (p < len && text[p] != ' ') p++;
+        if (i-- == 0) {
+            size_t n = p - s;
+            if (n >= outsz) n = outsz - 1;
+            memcpy(out, text + s, n);
+            out[n] = 0;
+            return 1;
+        }
+    }
+}
 
 static observed observe(const char *report) {
-    observed o = { MREL_NONE, 0, 0 };
+    observed o;
     const char *line = report;
+    memset(&o, 0, sizeof o);
 
     if (strstr(report, "growing header...") || strstr(report, "grew header pad:")) {
         /* A grow re-bases the image and bumps every __LINKEDIT file offset --
@@ -624,7 +789,7 @@ static observed observe(const char *report) {
         size_t len = end ? (size_t)(end - line) : strlen(line);
         if (len > 5 && strncmp(line, "    ", 4) == 0 && line[4] != ' ') {
             const char *kind, *op, *flag;
-            int i, nargs;
+            int i, nargs, kenum = 0, oenum = 0;
             unsigned modes, disturbs;
             for (i = 0; ms_table_row(i, &kind, &op, &nargs, &flag, &modes, &disturbs); i++) {
                 size_t kl = strlen(kind), ol = strlen(op);
@@ -632,7 +797,26 @@ static observed observe(const char *report) {
                 if (strncmp(line + 4, kind, kl) != 0 || line[4 + kl] != ' ') continue;
                 if (strncmp(line + 4 + kl + 1, op, ol) != 0) continue;
                 o.mask |= disturbs;
-                o.derived++;
+                /* The enums, from the same table, by name: ms_kind_name and
+                 * ms_op_name are what printed the line, so this reverses
+                 * exactly the mapping that produced it rather than a second
+                 * copy of it. */
+                for (kenum = 0; kenum < 16; kenum++)
+                    if (strcmp(ms_kind_name(kenum), kind) == 0) break;
+                for (oenum = 0; oenum < 16; oenum++)
+                    if (strcmp(ms_op_name(oenum), op) == 0) break;
+                if (o.n < MAX_EXEC) {
+                    exec_stmt *d = &o.d[o.n++];
+                    memset(d, 0, sizeof *d);
+                    d->kind = kenum; d->op = oenum;
+                    /* The operands lie between the op and the "  (finding)". */
+                    size_t s = 4 + kl + 1 + ol;
+                    const char *par = strstr(line + s, "  (");
+                    size_t alen = par && (size_t)(par - line) <= len
+                                ? (size_t)(par - line) - s : len - s;
+                    d->has_a = word(line + s, alen, 0, d->a, sizeof d->a);
+                    d->has_b = word(line + s, alen, 1, d->b, sizeof d->b);
+                }
                 break;
             }
         }
@@ -642,95 +826,86 @@ static observed observe(const char *report) {
     return o;
 }
 
-/* ---- the mr_ops a shape's statements lower to -------------------------- */
+/* ---- the mr_ops one statement lowers to -------------------------------- */
 
-/* Storage for one shape's mr_ops and everything it points at. */
+/* Storage for one statement's mr_ops and everything it points at. */
 typedef struct {
-    mr_ops   ops;
-    mr_change dylib[MR_MAX_OPS], rpath[MR_MAX_OPS];
-    const char *appends[MR_MAX_OPS], *inserts[MR_MAX_OPS];
-    const char *rappends[MR_MAX_OPS], *rinserts[MR_MAX_OPS];
-    uint32_t strip[MR_MAX_STRIP];
-    int      renamed;
+    mr_ops         ops;
+    mr_change      change;
+    const char    *one;
+    uint32_t       strip;
+    int            renamed;
     mr_renumbering renum;
-} shape_ops;
+} stmt_ops;
 
-/* Lowers `s` the way the three mr_ops-building verbs do: cmd_lc fills
- * strip_cmds, cmd_dylib_or_rpath fills the four dylib and three rpath arrays
- * (a delete is a change with new_path NULL, a reexport one with ""), and
- * cmd_segment fills segment_rename_old/new and hands over the renamed count.
- * Returns 1 if any statement lowered to an mr_ops field -- which is exactly
- * what "this shape has an `old` answer at all" means -- and 0 if none did.
+/* A TRANSCRIPTION of src/edit.c's me_apply switch -- the lowering that ships,
+ * one statement to one mr_ops -- kept honest by pin_the_lowering below.
+ * Returns 1 when this statement lowers to an mr_ops (and so reaches
+ * mr_is_rename_only, through mr_apply_image -> mr_process_thin), 0 when it
+ * does not: `version-min set`, `swift-abi set` and `fixups set classic` call
+ * their own cores directly, and `target` is expanded rather than lowered.
  *
- * Statement kinds no verb lowers to an mr_ops (version-min, swift-abi,
- * fixups, target) are counted, deliberately, as lowering to NOTHING: that is
- * the fact the OLD_NA rows rest on, and it is read off the script here rather
- * than trusted from the table. */
-static int lower_to_ops(const ms_script *s, shape_ops *o) {
+ * The two subtleties are the ones a careless transcription gets wrong, and
+ * both are pinned: fatal_unmatched is set for EVERY statement, before the
+ * switch, while allow_grow is set ONLY in the dylib/rpath case -- setting it
+ * on a segment rename would switch off mr_is_rename_only's own scoping, which
+ * me_apply's comment says in so many words. */
+static int lower_one(const ms_script *s, const exec_stmt *st, stmt_ops *o) {
     memset(o, 0, sizeof *o);
-    o->ops.dylib_changes = o->dylib;
-    o->ops.dylib_appends = o->appends;
-    o->ops.dylib_inserts = o->inserts;
-    o->ops.rpath_changes = o->rpath;
-    o->ops.rpath_appends = o->rappends;
-    o->ops.rpath_inserts = o->rinserts;
-    o->ops.strip_cmds = o->strip;
-    o->ops.renumbering = &o->renum;
-    o->ops.allow_grow = s->allow_grow;
     o->ops.fatal_unmatched = s->fatal_warnings;
 
-    int any = 0;
-    for (int i = 0; i < s->n; i++) {
-        const ms_stmt *st = &s->stmts[i];
-        if (st->kind == MS_LOAD_COMMAND && st->op == MS_DELETE) {
-            /* The LC_* value is ml_kind_lookup's job in the real cmd_lc; which
-             * command it is does not reach mr_is_rename_only, only the count
-             * does, so the harness names it by the one it strips: LC_UUID. */
-            o->strip[o->ops.n_strip_cmds++] = LC_UUID;
-        } else if (st->kind == MS_SEGMENT && st->op == MS_RENAME) {
-            o->ops.segment_rename_old = st->a;
-            o->ops.segment_rename_new = st->b;
-            o->ops.segment_renamed = &o->renamed;
-        } else if (st->kind == MS_DYLIB || st->kind == MS_RPATH) {
-            int rp = (st->kind == MS_RPATH);
-            mr_change *ch = rp ? o->rpath : o->dylib;
-            int *nch = rp ? &o->ops.n_rpath_changes : &o->ops.n_dylib_changes;
-            switch (st->op) {
-            case MS_APPEND:
-                if (rp) o->rappends[o->ops.n_rpath_appends++] = st->a;
-                else    o->appends[o->ops.n_dylib_appends++] = st->a;
-                break;
-            case MS_INSERT:
-                if (rp) o->rinserts[o->ops.n_rpath_inserts++] = st->a;
-                else    o->inserts[o->ops.n_dylib_inserts++] = st->a;
-                break;
-            case MS_REPLACE:
-                ch[*nch].old_path = st->a; ch[*nch].new_path = st->b;
-                ch[(*nch)++].reexport = 0;
-                break;
-            case MS_DELETE:
-                ch[*nch].old_path = st->a; ch[*nch].new_path = NULL;
-                ch[(*nch)++].reexport = 0;
-                break;
-            case MS_REEXPORT:
-                ch[*nch].old_path = st->a; ch[*nch].new_path = "";
-                ch[(*nch)++].reexport = 1;
-                break;
-            default: continue;
-            }
-        } else {
-            continue;   /* version-min, swift-abi, fixups, target: no mr_ops */
+    switch (st->kind) {
+    case MS_LOAD_COMMAND:
+        if (st->op != MS_DELETE || !st->has_a) return 0;
+        if (lc_kind_by_name(st->a, &o->strip) != 0) return 0;
+        o->ops.strip_cmds = &o->strip;
+        o->ops.n_strip_cmds = 1;
+        return 1;
+
+    case MS_SEGMENT:
+        o->ops.segment_rename_old = st->has_a ? st->a : NULL;
+        o->ops.segment_rename_new = st->has_b ? st->b : NULL;
+        o->ops.segment_renamed = &o->renamed;
+        return 1;
+
+    case MS_DYLIB:
+    case MS_RPATH: {
+        int rpath = (st->kind == MS_RPATH);
+        o->one = st->a;
+        switch (st->op) {
+        case MS_REPLACE:  o->change.old_path = st->a; o->change.new_path = st->b; break;
+        case MS_DELETE:   o->change.old_path = st->a; o->change.new_path = NULL;  break;
+        case MS_REEXPORT: if (rpath) return 0;
+                          o->change.old_path = st->a; o->change.new_path = "";
+                          o->change.reexport = 1; break;
+        case MS_APPEND:
+            if (rpath) { o->ops.rpath_appends = &o->one; o->ops.n_rpath_appends = 1; }
+            else       { o->ops.dylib_appends = &o->one; o->ops.n_dylib_appends = 1; }
+            break;
+        case MS_INSERT:
+            if (rpath) { o->ops.rpath_inserts = &o->one; o->ops.n_rpath_inserts = 1; }
+            else       { o->ops.dylib_inserts = &o->one; o->ops.n_dylib_inserts = 1; }
+            break;
+        default: return 0;
         }
-        any = 1;
+        if (o->change.old_path) {
+            if (rpath) { o->ops.rpath_changes = &o->change; o->ops.n_rpath_changes = 1; }
+            else       { o->ops.dylib_changes = &o->change; o->ops.n_dylib_changes = 1; }
+        }
+        o->ops.allow_grow = s->allow_grow;
+        if (!rpath) o->ops.renumbering = &o->renum;
+        return 1;
     }
-    return any;
+
+    default:
+        return 0;   /* version-min, swift-abi, fixups, target */
+    }
 }
 
-/* The mr_ops as a string: only what is set, in a fixed order, so a row can
- * state the operation set it means and a builder that built something else is
- * caught by name rather than by an exit code. */
-static void render_ops(const shape_ops *o, char *out, size_t outsz) {
-    const mr_ops *p = &o->ops;
+/* One statement's mr_ops as a string: only what is set, in a fixed order, so a
+ * row can state the operation set it means and a lowering that built something
+ * else is caught by name rather than by an exit code. */
+static void render_ops(const mr_ops *p, char *out, size_t outsz) {
     size_t n = 0;
     out[0] = 0;
     struct { const char *name; int count; } f[] = {
@@ -755,15 +930,171 @@ static void render_ops(const shape_ops *o, char *out, size_t outsz) {
     }
 }
 
+/* ---- the transcription, pinned to the lowering that ships --------------- */
+
+/* Which mr_ops field src/edit.c's me_apply assigns under which `case`. This is
+ * lower_one's contract, written where a reader of either can check it, and
+ * pin_the_lowering reads the shipping file and asserts it.
+ *
+ * What it rules out is drift, which a differential harness is uniquely bad at
+ * noticing on its own: me_apply gains an `ops.allow_grow` under MS_SEGMENT, or
+ * lowers a new mr_ops field, or stops lowering one, and this file keeps
+ * answering "old" about an mr_ops the shipping code no longer builds -- green
+ * either way, which is the exact failure mode this whole item exists to
+ * remove. */
+static const struct { const char *region; const char *field; } LOWERING[] = {
+    { "before the switch, for every statement", "fatal_unmatched" },
+    { "case MS_LOAD_COMMAND",  "strip_cmds" },
+    { "case MS_LOAD_COMMAND",  "n_strip_cmds" },
+    { "case MS_SEGMENT",       "segment_rename_old" },
+    { "case MS_SEGMENT",       "segment_rename_new" },
+    { "case MS_SEGMENT",       "segment_renamed" },
+    { "case MS_DYLIB/MS_RPATH", "rpath_appends" },
+    { "case MS_DYLIB/MS_RPATH", "n_rpath_appends" },
+    { "case MS_DYLIB/MS_RPATH", "dylib_appends" },
+    { "case MS_DYLIB/MS_RPATH", "n_dylib_appends" },
+    { "case MS_DYLIB/MS_RPATH", "rpath_inserts" },
+    { "case MS_DYLIB/MS_RPATH", "n_rpath_inserts" },
+    { "case MS_DYLIB/MS_RPATH", "dylib_inserts" },
+    { "case MS_DYLIB/MS_RPATH", "n_dylib_inserts" },
+    { "case MS_DYLIB/MS_RPATH", "rpath_changes" },
+    { "case MS_DYLIB/MS_RPATH", "n_rpath_changes" },
+    { "case MS_DYLIB/MS_RPATH", "dylib_changes" },
+    { "case MS_DYLIB/MS_RPATH", "n_dylib_changes" },
+    { "case MS_DYLIB/MS_RPATH", "allow_grow" },
+    { "case MS_DYLIB/MS_RPATH", "renumbering" },
+};
+#define N_LOWERING ((int)(sizeof LOWERING / sizeof LOWERING[0]))
+
+/* The `case` labels, in the order me_apply writes them. MS_RPATH falls THROUGH
+ * into MS_DYLIB's block and so opens no region of its own; the three after it
+ * open regions that must stay empty, which is what the OLD_NA rows rest on. */
+static const char *const LOWER_CASES[] = {
+    "case MS_LOAD_COMMAND:", "case MS_SEGMENT:", "case MS_DYLIB:",
+    "case MS_VERSION_MIN:", "case MS_SWIFT_ABI:", "case MS_FIXUPS:"
+};
+static const char *const LOWER_REGION[] = {
+    "before the switch, for every statement",
+    "case MS_LOAD_COMMAND", "case MS_SEGMENT", "case MS_DYLIB/MS_RPATH",
+    "case MS_VERSION_MIN", "case MS_SWIFT_ABI", "case MS_FIXUPS"
+};
+#define N_LOWER_CASES ((int)(sizeof LOWER_CASES / sizeof LOWER_CASES[0]))
+
+static void pin_the_lowering(void) {
+    size_t len = 0;
+    uint8_t *src = read_file("src/edit.c", &len);
+    int seen[N_LOWERING];
+    size_t bound[N_LOWER_CASES];
+    memset(seen, 0, sizeof seen);
+
+    if (!src) {
+        CHECK(0, "src/edit.c could not be read, so the lowering this file transcribes is "
+                 "unpinned: me_apply could lower a different mr_ops than lower_one builds "
+                 "and every row here would keep passing. Run this test from the repository "
+                 "root (ctest does)");
+        return;
+    }
+    const char *text = (const char *)src;
+    const char *body = strstr(text, "static int me_apply(");
+    const char *end  = body ? strstr(body, "\nunknown:") : NULL;
+    if (!body || !end) {
+        CHECK(0, "src/edit.c no longer contains a me_apply whose body ends at `unknown:`, "
+                 "so this pin cannot find the lowering it exists to check. Re-read me_apply "
+                 "and this file's LOWERING table together before changing either");
+        free(src);
+        return;
+    }
+
+    for (int c = 0; c < N_LOWER_CASES; c++) {
+        const char *at = strstr(body, LOWER_CASES[c]);
+        if (!at || at > end) {
+            CHECK(0, "src/edit.c's me_apply has no `%s`, so this pin cannot say which "
+                     "region an mr_ops assignment falls in -- and the OLD_NA rows rest on "
+                     "the last three regions being empty", LOWER_CASES[c]);
+            free(src);
+            return;
+        }
+        bound[c] = (size_t)(at - body);
+    }
+
+    for (const char *p = body; (p = strstr(p, "ops.")) != NULL && p < end; ) {
+        /* Only an assignment: `ops.field =`, never `==` and never a read. */
+        const char *id = p + 4;
+        const char *q = id;
+        while ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+               (*q >= '0' && *q <= '9') || *q == '_') q++;
+        const char *eq = q;
+        while (*eq == ' ') eq++;
+        if (q == id || *eq != '=' || eq[1] == '=') { p = q; continue; }
+        /* `->ops.` and `v->ops.` are not this local; only a bare `ops.` is. */
+        if (p > body && (p[-1] == '>' || p[-1] == '_' ||
+                         (p[-1] >= 'a' && p[-1] <= 'z'))) { p = q; continue; }
+
+        char field[64];
+        size_t fl = (size_t)(q - id);
+        if (fl >= sizeof field) fl = sizeof field - 1;
+        memcpy(field, id, fl); field[fl] = 0;
+
+        size_t off = (size_t)(p - body);
+        int region = 0;
+        for (int c = 0; c < N_LOWER_CASES; c++) if (off > bound[c]) region = c + 1;
+
+        int found = -1;
+        for (int i = 0; i < N_LOWERING; i++)
+            if (strcmp(LOWERING[i].field, field) == 0 &&
+                strcmp(LOWERING[i].region, LOWER_REGION[region]) == 0) { found = i; break; }
+        CHECK(found >= 0,
+              "src/edit.c's me_apply assigns ops.%s under %s, which this file's transcription "
+              "(lower_one) does not. The `old` column here is then an answer about an mr_ops "
+              "the shipping lowering no longer builds -- it would keep agreeing with the "
+              "design's table while describing nothing. Update lower_one and the LOWERING "
+              "table together, then re-run", field, LOWER_REGION[region]);
+        if (found >= 0) seen[found] = 1;
+        p = q;
+    }
+
+    for (int i = 0; i < N_LOWERING; i++)
+        CHECK(seen[i],
+              "src/edit.c's me_apply no longer assigns ops.%s under %s, but this file's "
+              "transcription (lower_one) still does. Every `old` answer that depends on that "
+              "field is then about an operation set no run builds", LOWERING[i].field,
+              LOWERING[i].region);
+    free(src);
+}
+
 /* ---- one shape ---------------------------------------------------------- */
 
 static const char *old_name(int v) {
     return v == OLD_RUNS ? "runs" : v == OLD_SKIPS ? "skips" : "not applicable (no mr_ops)";
 }
 
+/* Evaluates the derivation on one slice of the written result, asserting the
+ * liveness the shape declares on the way. `what` names the slice for a FAIL. */
+static int new_answer(const char *shape, const char *what, uint8_t *buf, size_t len,
+                      unsigned disturbed, int funcs_live, unsigned *out_live) {
+    mi_image im;
+    if (mi_wrap(buf, len, &im) != 0) {
+        CHECK(0, "%s: %s of the written image will not re-open, so the derivation could not "
+                 "be evaluated against what the gate would actually see", shape, what);
+        return -1;
+    }
+    unsigned live = mrel_live(&im);
+    if (out_live) *out_live = live;
+    CHECK(((live & MREL_FUNC_START) != 0) == (funcs_live != 0),
+          "%s: %s %s a live LC_FUNCTION_STARTS and the shape says it %s. That bit decides "
+          "half of mrel_verify_applies: with it clear the gate is skipped whatever the run "
+          "disturbed, so a row that lost it by accident would read as an expected skip while "
+          "proving nothing, and a row that gained one would stop testing the liveness half "
+          "at all", shape, what, (live & MREL_FUNC_START) ? "has" : "has no",
+          funcs_live ? "must" : "must not");
+    int skips = !mrel_verify_applies(&im, disturbed);
+    mi_close(&im);
+    return skips;
+}
+
 static void run_shape(int row) {
     const char *shape = EXPECTED[row].shape;
-    char in[512], out[512], rep[512], fp[256];
+    char in[512], out[512], rep[512], fp[512], seg[128];
     size_t len = 0;
 
     CHECK(strcmp(SHAPES[row].shape, shape) == 0,
@@ -776,7 +1107,8 @@ static void run_shape(int row) {
     snprintf(out, sizeof out, "%s/out.%d", g_dir, row);
     snprintf(rep, sizeof rep, "%s/report.%d", g_dir, row);
 
-    uint8_t *img = build_fixture(SHAPES[row].fixture, &len);
+    uint8_t *img = SHAPES[row].fat ? build_fat_fixture(SHAPES[row].fixture, &len)
+                                   : build_fixture(SHAPES[row].fixture, &len);
     if (!img) { CHECK(0, "%s: no fixture builder", shape); return; }
     write_file(in, img, len);
     free(img);
@@ -789,7 +1121,7 @@ static void run_shape(int row) {
         return;
     }
 
-    /* ---- new: what the run DID, not only what it declared --------------- */
+    /* ---- the run, and what it reported doing ---------------------------- */
     me_opts o;
     o.log = stdout;
     cap_begin(rep);
@@ -814,61 +1146,109 @@ static void run_shape(int row) {
           "wrong is how this harness would skip the gate on the runs that most need it. "
           "Report:\n%s",
           shape, ob.grew ? "shows" : "shows no", SHAPES[row].grows ? "does" : "does not", text);
-    CHECK((ob.derived > 0) == (SHAPES[row].derives != 0),
+    CHECK((ob.n > 0) == (SHAPES[row].derives != 0),
           "%s: the report shows %d derived statement(s) and the shape says it %s derive. "
           "A `target` line declares MREL_NONE and disturbs only through its expansion, so "
-          "an unread expansion is an unnoticed disturbance. Report:\n%s",
-          shape, ob.derived, SHAPES[row].derives ? "does" : "does not", text);
+          "an unread expansion is an unnoticed disturbance -- and an unread one that lowers "
+          "to an mr_ops is an `old` answer reported as OLD_NA. Report:\n%s",
+          shape, ob.n, SHAPES[row].derives ? "does" : "does not", text);
 
+    /* ---- new: the derivation, per slice on a fat input ------------------ */
     size_t olen = 0;
     uint8_t *obuf = read_file(out, &olen);
-    mi_image im;
-    int new_skips = -1;
     unsigned live = MREL_NONE;
-    if (!obuf || mi_wrap(obuf, olen, &im) != 0) {
-        CHECK(0, "%s: the written image will not re-open, so the derivation could not be "
-                 "evaluated against what the gate would actually see", shape);
+    int new_skips = -1;
+    if (!obuf) {
+        CHECK(0, "%s: nothing was written, so the derivation has no result image to be "
+                 "evaluated against", shape);
+    } else if (!SHAPES[row].fat) {
+        new_skips = new_answer(shape, "the image", obuf, olen, disturbed,
+                               SHAPES[row].funcs_live, &live);
     } else {
-        live = mrel_live(&im);
-        CHECK((live & MREL_FUNC_START) != 0,
-              "%s: the result image has no live LC_FUNCTION_STARTS, so mrel_verify_applies "
-              "answers \"skip\" whatever the run disturbed. Every `new: skips` row in this "
-              "table would then read as expected while proving nothing -- the fixture, not "
-              "the derivation, would be what passed the test", shape);
-        new_skips = !mrel_verify_applies(&im, disturbed);
-        mi_close(&im);
+        /* Decision 6: once per slice, never once for the container. Every
+         * slice must give the row's answer, and each is asserted by itself. */
+        struct fat_header *fh = (struct fat_header *)obuf;
+        uint32_t n = olen >= sizeof *fh ? OSSwapBigToHostInt32(fh->nfat_arch) : 0;
+        struct fat_arch *fa = (struct fat_arch *)(fh + 1);
+        uint32_t evaluated = 0;
+        CHECK(n == 2, "%s: the output container has %u slices, not the 2 that went in",
+              shape, n);
+        for (uint32_t i = 0; i < n && i < 2; i++) {
+            char what[32];
+            uint32_t soff = OSSwapBigToHostInt32(fa[i].offset);
+            uint32_t ssz  = OSSwapBigToHostInt32(fa[i].size);
+            snprintf(what, sizeof what, "slice %u", i);
+            if ((size_t)soff + ssz > olen) {
+                CHECK(0, "%s: %s lies outside the container", shape, what);
+                continue;
+            }
+            int s = new_answer(shape, what, obuf + soff, ssz, disturbed,
+                               SHAPES[row].funcs_live, i == 0 ? &live : NULL);
+            CHECK(s == EXPECTED[row].new_skips,
+                  "%s: %s says %s the gate and the difference list says %s. Applicability is "
+                  "derived per slice (Decision 6), so a container's slices are not allowed to "
+                  "inherit an answer -- each one either has something to check or does not",
+                  shape, what, s ? "skip" : "run",
+                  EXPECTED[row].new_skips ? "skip" : "run");
+            if (i == 0) new_skips = s;
+            evaluated++;
+        }
+        CHECK(evaluated == n,
+              "%s: %u of the container's %u slices were evaluated. A row that stops at the "
+              "first slice tests a container the way a thin file is tested, which is the one "
+              "thing Decision 6 says cannot be done -- and it would look green",
+              shape, evaluated, n);
     }
     free(obuf);
-    free(report);
 
-    /* ---- old: the hand-written predicate, on the ops this lowers to ----- */
-    shape_ops so;
-    int has_ops = lower_to_ops(&script, &so);
-    int old = has_ops ? (mr_is_rename_only(&so.ops) ? OLD_SKIPS : OLD_RUNS) : OLD_NA;
-
-    CHECK(has_ops == (SHAPES[row].ops_fingerprint != NULL),
-          "%s: the script lowers to %s mr_ops and the shape says %s. Which shapes have an "
-          "`old` answer is the whole content of the OLD_NA state: a shape that builds no "
-          "mr_ops has no gate to differ from, and reporting one anyway would describe a "
-          "check that never ran",
-          shape, has_ops ? "an" : "no",
-          SHAPES[row].ops_fingerprint ? "it does" : "it does not");
-
-    if (has_ops && SHAPES[row].ops_fingerprint) {
-        render_ops(&so, fp, sizeof fp);
-        CHECK(strcmp(fp, SHAPES[row].ops_fingerprint) == 0,
-              "%s: lowers to mr_ops {%s}, but the shape says {%s}. mr_is_rename_only reads "
-              "nothing but these fields, so an ops that does not describe the shape makes "
-              "the whole `old` column an answer about some other operation set -- and a "
-              "zeroed one would still read as \"runs\" for thirteen of these fourteen rows",
-              shape, fp, SHAPES[row].ops_fingerprint);
+    /* ---- old: the hand-written predicate, per executed statement -------- */
+    exec_stmt exec[MAX_EXEC];
+    int nexec = 0;
+    for (int i = 0; i < script.n && nexec < MAX_EXEC; i++) {
+        const ms_stmt *st = &script.stmts[i];
+        if (st->kind == MS_TARGET) {
+            /* `target` lowers to nothing itself: what ran is its expansion,
+             * which the report named. */
+            for (int j = 0; j < ob.n && nexec < MAX_EXEC; j++) exec[nexec++] = ob.d[j];
+            continue;
+        }
+        exec_stmt *e = &exec[nexec++];
+        memset(e, 0, sizeof *e);
+        e->kind = st->kind; e->op = st->op;
+        if (st->a) { e->has_a = 1; snprintf(e->a, sizeof e->a, "%s", st->a); }
+        if (st->b) { e->has_b = 1; snprintf(e->b, sizeof e->b, "%s", st->b); }
     }
 
+    int any = 0, all_rename_only = 1;
+    fp[0] = 0;
+    for (int i = 0; i < nexec; i++) {
+        stmt_ops so;
+        int has = lower_one(&script, &exec[i], &so);
+        if (has) {
+            any = 1;
+            if (!mr_is_rename_only(&so.ops)) all_rename_only = 0;
+            render_ops(&so.ops, seg, sizeof seg);
+        } else {
+            snprintf(seg, sizeof seg, "-");
+        }
+        size_t at = strlen(fp);
+        snprintf(fp + at, sizeof fp - at, "%s%s", at ? " | " : "", seg);
+    }
+    int old = !any ? OLD_NA : (all_rename_only ? OLD_SKIPS : OLD_RUNS);
+
+    CHECK(strcmp(fp, SHAPES[row].lowering) == 0,
+          "%s: its statements lower to {%s}, but the shape says {%s}. mr_is_rename_only reads "
+          "nothing but these fields, so a lowering that does not describe the run makes the "
+          "whole `old` column an answer about some other operation set: a lowering that built "
+          "nothing would still read as \"runs\" for most of these rows, and a `target` whose "
+          "expansion lowers one is not OLD_NA however much the row wants to be",
+          shape, fp, SHAPES[row].lowering);
+
     CHECK(old == EXPECTED[row].old,
-          "%s: mr_is_rename_only %s, and the design's difference list says %s. The old "
-          "predicate is still in control of the gate, so a disagreement here means the "
-          "list does not describe the code that ships",
-          shape, old_name(old), old_name(EXPECTED[row].old));
+          "%s: over the %d statement(s) this run executed, mr_is_rename_only %s, and the "
+          "design's difference list says %s. The old predicate is still in control of the "
+          "gate, so a disagreement here means the list does not describe the code that ships",
+          shape, nexec, old_name(old), old_name(EXPECTED[row].old));
 
     CHECK(new_skips == EXPECTED[row].new_skips,
           "%s: the derivation says %s the gate (live=%#x disturbed=%#x, declared %#x plus "
@@ -879,39 +1259,16 @@ static void run_shape(int row) {
           live, disturbed, declared, ob.mask,
           EXPECTED[row].new_skips ? "skip" : "run");
 
+    free(report);
     ms_free(&script);
 }
 
 /* ---- the fat container: per slice, never per container ------------------ */
 
-/* A fat container of `n` slices at 0x1000-aligned offsets, big-endian as every
- * real one is; ct/cs label the fat_arch entry, which is what `edit` reads, so
- * an x86_64 image can stand in for arm64 without its own header saying so.
- * Same construction as tests/edit_test.c's build_fat. */
-static uint8_t *build_fat(int n, uint8_t *const *slice, const size_t *len,
-                          const uint32_t *ct, const uint32_t *cs, size_t *outlen) {
-    size_t off[4], total = 0x1000;
-    for (int i = 0; i < n; i++) { off[i] = total; total += (len[i] + 0xfff) & ~(size_t)0xfff; }
-    uint8_t *buf = (uint8_t *)calloc(1, total);
-    struct fat_header *fh = (struct fat_header *)buf;
-    fh->magic = OSSwapHostToBigInt32(FAT_MAGIC);
-    fh->nfat_arch = OSSwapHostToBigInt32((uint32_t)n);
-    struct fat_arch *fa = (struct fat_arch *)(fh + 1);
-    for (int i = 0; i < n; i++) {
-        fa[i].cputype    = (cpu_type_t)OSSwapHostToBigInt32(ct[i]);
-        fa[i].cpusubtype = (cpu_subtype_t)OSSwapHostToBigInt32(cs[i]);
-        fa[i].offset     = OSSwapHostToBigInt32((uint32_t)off[i]);
-        fa[i].size       = OSSwapHostToBigInt32((uint32_t)len[i]);
-        fa[i].align      = OSSwapHostToBigInt32(12);
-        memcpy(buf + off[i], slice[i], len[i]);
-    }
-    *outlen = total;
-    return buf;
-}
-
-/* Decision 6: mrel_verify_applies takes a SLICE. The proof that this is not a
- * container-level question is a container whose two slices MUST answer
- * differently -- same file, same run, same disturbance. One slice has a live
+/* Decision 6: mrel_verify_applies takes a SLICE. Row 22 already runs a whole
+ * differential row on a container; this is the other half, the one a row
+ * cannot express -- a container whose two slices MUST answer DIFFERENTLY.
+ * Same file, same run, same disturbance: one slice has a live
  * LC_FUNCTION_STARTS and the other has none, so the gate applies to the first
  * and has nothing to check on the second. Any implementation that derived one
  * answer for the container would have to get one of the two wrong. */
@@ -922,8 +1279,9 @@ static void run_fat(void) {
     uint8_t *b = build_plain(P_DYLD_INFO | P_NO_FUNCS, &blen);   /* none */
     uint8_t *slices[2]; size_t lens[2];
     uint32_t ct[2], cs[2];
-    slices[0] = a; lens[0] = alen; ct[0] = CPU_TYPE_X86_64; cs[0] = CPU_SUBTYPE_X86_64_ALL;
-    slices[1] = b; lens[1] = blen; ct[1] = 0x0100000c;      cs[1] = 0;   /* arm64 */
+    slices[0] = a; lens[0] = alen; ct[0] = (uint32_t)CPU_TYPE_X86_64;
+    cs[0] = (uint32_t)CPU_SUBTYPE_X86_64_ALL;
+    slices[1] = b; lens[1] = blen; ct[1] = (uint32_t)CPU_TYPE_ARM64; cs[1] = 0;
     uint8_t *fat = build_fat(2, slices, lens, ct, cs, &flen);
     free(a); free(b);
 
@@ -1011,10 +1369,11 @@ static void run_fat(void) {
  * in which no row differed would be asserting the opposite of the design
  * while looking green. */
 static void check_the_lists_differ(void) {
-    int narrowed = 0, agreed = 0;
+    int narrowed = 0, agreed = 0, na = 0;
     for (int i = 0; i < N_EXPECTED; i++) {
         if (EXPECTED[i].old == OLD_RUNS && EXPECTED[i].new_skips) narrowed++;
         if (EXPECTED[i].old == OLD_SKIPS && EXPECTED[i].new_skips) agreed++;
+        if (EXPECTED[i].old == OLD_NA) na++;
     }
     CHECK(narrowed > 0,
           "the difference list has no row where the old predicate ran and the derivation "
@@ -1024,6 +1383,9 @@ static void check_the_lists_differ(void) {
           "the difference list has no rename-only row, so nothing holds the design's one "
           "\"unchanged\" promise: that the shape the old predicate already skipped keeps "
           "being skipped");
+    CHECK(na > 0,
+          "the difference list has no OLD_NA row, so nothing holds the third state -- and "
+          "a harness that silently answered \"runs\" for a gate that never ran would pass");
 }
 
 int main(void) {
@@ -1033,6 +1395,7 @@ int main(void) {
         return 1;
     }
     fresh_dir();
+    pin_the_lowering();
     check_the_lists_differ();
     for (int i = 0; i < N_EXPECTED; i++) run_shape(i);
     run_fat();
@@ -1041,7 +1404,7 @@ int main(void) {
         printf("rename_only_differential: %d failure(s)\n", fails);
         return 1;
     }
-    printf("rename_only_differential: %d shapes compared, plus a fat container per slice\n",
-           N_EXPECTED);
+    printf("rename_only_differential: %d shapes compared (one of them fat), plus a fat "
+           "container whose slices must disagree\n", N_EXPECTED);
     return 0;
 }

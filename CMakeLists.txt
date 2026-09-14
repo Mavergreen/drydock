@@ -286,7 +286,12 @@ add_test(NAME relations_test COMMAND relations_test)
 add_executable(rename_only_differential tests/rename_only_differential.c)
 target_compile_options(rename_only_differential PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(rename_only_differential PRIVATE machotoolcore)
-add_test(NAME rename_only_differential COMMAND rename_only_differential)
+# WORKING_DIRECTORY is the source dir, image_test's reason applied to a
+# different file: pin_the_lowering reads src/edit.c and asserts which mr_ops
+# field me_apply assigns under which `case`, so the harness's transcription of
+# the lowering cannot drift away from the one that ships.
+add_test(NAME rename_only_differential COMMAND rename_only_differential
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(rename_only_differential PROPERTIES ENVIRONMENT MallocScribble=1)
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
