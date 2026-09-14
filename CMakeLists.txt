@@ -374,6 +374,14 @@ add_test(NAME known_callers
 add_test(NAME leaf_tool_crashes
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:machotool>")
 
+# THE GATE for the script-is-the-only-interface plan: each verb run beside its
+# statement form, on a fixture the verb really rewrites, compared byte for byte.
+# A verb may be deleted only once this suite has proved its statement form
+# equivalent -- and it is deleted in the same commit as the verbs it licenses,
+# the way the differential harness went with its subject.
+add_test(NAME verb_script_equivalence
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/verb_script_equivalence.sh" "$<TARGET_FILE_DIR:machotool>")
+
 # src/live.h -- the header-only, malloc-free query surface Task 4 adds for
 # avxemu (docs/PROPOSAL.md's "Shape": "live.h is deliberately a header, not
 # part of the library"). Deliberately NOT linked against machotoolcore: live.h
