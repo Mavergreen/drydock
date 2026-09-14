@@ -6,14 +6,16 @@ a mechanism that turned out not to be implementable — see "What item 5 learned
 
 ## The proposal in one line
 
-`machotool` stops having a CLI of verbs. Its only way to modify a binary is a
-script on stdin.
+`machotool` stops having a CLI of verbs, and is renamed `machorewrite` to say
+what it now is. Its only way to modify a binary is a script on stdin.
 
 ```
-machotool FILE OUT      # statements on stdin; the only way to change anything
-machotool verify FILE   # read-only
-machotool info FILE     # read-only
+machorewrite FILE OUT      # statements on stdin; the only way to change anything
+machorewrite verify FILE   # read-only
+machorewrite info FILE     # read-only
 ```
+
+Eleven verbs become one mutating form and two read-only queries.
 
 ## Why: there are two application models, and one of them is the expensive one
 
@@ -93,7 +95,7 @@ Under this design that notice becomes a pipeline, which is if anything a
 clearer statement of what the tool now is:
 
 ```
-    printf 'dylib replace /a /b\n' | machotool f f.new
+    printf 'dylib replace /a /b\n' | machorewrite f f.new
     mv -f f.new f
 ```
 
@@ -212,24 +214,57 @@ when its only consumer is a compatibility layer with a limited life.
 - **A migration period with both interfaces.** There is no external caller to
   migrate, so a deprecation window would carry the two-model cost for no reader.
 
+## Decisions, settled 2026-09-14
+
+**1. The bare form.** `machorewrite FILE OUT` with statements on stdin. No verb
+word, no `-`. The smallest surface.
+
+**2. `grow` is deleted, not made a statement** — and the earlier sketch that
+made it a statement was wrong. Measured: `compat/` emits it **zero** times
+(control: `segment` appears 31 times in `translate.sh`) and the old `-grow` flag
+maps to the `allow-grow` **directive**, not the verb (`translate.sh:130`).
+
+**Deleting it costs a SIGSEGV regression test, and that cost must be paid, not
+skipped.** The two paths differ: `mg_ensure_pad` runs only when
+`need_end > first_sect_off` (`rewrite.c:732`) — growth *on demand* — while
+`grow FILE OUT N` **forces** a grow. On `tests/leaf-tool-crashes.sh`'s `oobgrow`
+fixture the first section's offset lies past the end of the image, so nothing
+ever needs room and **no script can reach the wrap**. That wrap is a real
+historical crash: `fsize - insert` underflows a `size_t` and `macho9 grow` died
+of SIGSEGV (exit 139).
+
+So the regression moves rather than dies, and it moves somewhere better:
+`mg_grow_header` is exported (`src/grow.h:319`) and `tests/grow_test.c:509`
+already calls it directly. **Both crash cases become hermetic C tests in
+`grow_test.c`** — which is where they belong, since the bug is in the library,
+not in a CLI verb. The `sectionless` case moves the same way.
+
+**3. `--capabilities`** collapses its verb list into the statement list.
+
+**4. The tool is renamed `machotool` → `machorewrite`, and it happens here.**
+
+The name should say what the thing is, and after this change the thing is a
+Mach-O rewriter driven by a script. `verify` and `info` survive as read-only
+verbs and do not contradict the name: both exist to serve a rewrite — one checks
+whether a rewrite left the image plausible, the other shows what there is to
+rewrite.
+
+**Why with this item rather than with item 7's rename day.** The usual objection
+to a second rename is cost — item 3's `macho9` → `machotool` sweep was
+expensive, and the repo owner said so at the time. That objection does not apply
+here, for two measured reasons. The product has **never been released**, so no
+external caller depends on the name: `install.sh` fetches `patch_macho`,
+`change_dylib` and `add_version_min`, which are wrapper names and do not change.
+And **this item already rewrites every invocation site**: `translate.sh`'s
+emissions, every test that runs the binary, and the wrappers' printed
+deprecation notices all change shape for the bare form regardless. Renaming
+while those lines are already being edited is nearly free; renaming later means
+touching them twice.
+
+Item 7 keeps the moves that are about *where things live* — the project
+directory, the clone, the GitHub repository — which are independent of the
+binary's name and stay grouped with the history rewrite.
+
 ## Open questions for the repo owner
 
-1. **`machotool FILE OUT` with no subcommand at all, or keep a word?** A bare
-   `machotool f f.new < script` is the smallest surface. A retained word (`edit`,
-   `apply`) costs one token and makes the read/write split visible in the
-   invocation itself. This spec assumes the bare form; say if you want the word.
-2. **Should `grow N` be a statement, or should `grow` simply go?** The spec
-   chooses statement, because a mutation outside the mutating interface defeats
-   the single claim — but the measurements lean the other way and you should
-   know that. `compat/` emits the `grow` verb **zero** times (positive control:
-   `segment` appears 31 times in `translate.sh`), and the old grammar's `-grow`
-   flag maps to the **`allow-grow` directive**, not to the verb
-   (`translate.sh:130`). So `grow` the verb has exactly one user in the world:
-   `tests/leaf-tool-crashes.sh`. If those two crash-safety cases can reach the
-   same code through a script with `allow-grow` — not yet measured — then
-   deleting `grow` outright is the smaller and better answer, and the spec
-   should be amended to say so.
-3. **`--capabilities`** currently advertises verbs and statements separately.
-   With one interface the verb list collapses into the statement list. Anything
-   parsing that output sees a changed shape — and nothing outside this repo is
-   known to parse it, which is worth confirming before relying on it.
+None outstanding. All four decisions above are settled; the plan may proceed.
