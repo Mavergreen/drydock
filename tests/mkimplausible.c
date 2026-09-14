@@ -296,7 +296,13 @@ int main(int argc, char **argv) {
     *(uint32_t *)(ss + 16) = 0;                /* max_valid_pointer: unused by the walk */
     *(uint16_t *)(ss + 20) = 1;                /* page_count */
     *(uint16_t *)(ss + 22) = DATA_REBASE_OFF;  /* page_start[0] */
-    /* ss + 24 == FX_OFF + 68: the blob's declared end, matching fx->datasize.
+    /* ss + 24 == FX_OFF + 68, where the bytes this builds actually end.
+     * fx->datasize says 72 -- four more -- and the difference is inert here:
+     * src/declassify.c never reads datasize (it walks the blob's own header),
+     * and LC_DYLD_CHAINED_FIXUPS is one of src/linkedit.h's plain-offset
+     * commands, so a grow bumps dataoff and leaves datasize alone. Stated
+     * because a reader comparing the two numbers will otherwise take the
+     * mismatch for a bug in the fixture.
      * The rebase slot itself, __DATA file offset DATA_REBASE_OFF, is left at
      * calloc's zero: chained-fixups bit 63 clear is REBASE, and a zero chain
      * distance ends the chain after this one link -- no separate write needed. */
