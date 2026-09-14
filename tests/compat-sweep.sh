@@ -160,10 +160,27 @@
 # own hard-won lesson, and the same reason it exits nonzero when that is zero.
 set -u
 
-BIN="${1:?usage: compat-sweep.sh <bindir> [outfile]}"
+BIN="${1:?usage: compat-sweep.sh <bindir> <outfile>}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
-OUT="${2:-$ROOT/tests/compat-matrix.tsv}"
+
+# The outfile is REQUIRED, and this script refuses to write tests/compat-matrix.tsv.
+#
+# It used to default to exactly that file, which is a dated measurement whose own
+# header says it CANNOT BE REDONE: the retired C tools it compares against no
+# longer exist at HEAD, so a rerun does not reproduce it, it replaces it with a
+# lesser thing. That default was survivable only because this script had been
+# silently broken since the verbs took an OUT -- it exited before its first row,
+# so nobody ever reached the write. Repairing the script re-armed the default,
+# which is how a bug fix can destroy an artifact: the breakage WAS the guard.
+OUT="${2:?usage: compat-sweep.sh <bindir> <outfile>  (outfile is required; see the comment above)}"
+case "$(cd "$(dirname "$OUT")" 2>/dev/null && pwd)/$(basename "$OUT")" in
+    "$ROOT/tests/compat-matrix.tsv")
+        echo "compat-sweep: refusing to overwrite tests/compat-matrix.tsv" >&2
+        echo "    That file is a dated measurement against tools this repo no longer" >&2
+        echo "    builds; rerunning cannot reproduce it. Write somewhere else and diff." >&2
+        exit 1 ;;
+esac
 # The machotool the TRANSLATED side runs; see the header. Defaults to $BIN so a
 # single-build invocation still works exactly as it did.
 NEWBIN="${MACHO_SWEEP_NEW_BIN:-$BIN}"
