@@ -1157,13 +1157,12 @@ else
     skip "rename_segment: fat container" "no fat Mach-O found on this host"
 fi
 
-# mg_plausible, from the caller's side. mr_apply_file's last gate can reject an
-# image for something the rewrite did not do -- it re-decides a property of the
-# INPUT -- and rename_segment never had such a gate at all. src/rewrite.c
-# skips it for a rename-only operation set (tests/cli_test.sh asserts that
-# directly at the verb, and asserts the gate still runs for everything else);
-# this is the same property seen through the wrapper, which is where a caller
-# sees it.
+# mg_plausible, from the caller's side. That gate can reject an image for
+# something the rewrite did not do -- it re-decides a property of the INPUT --
+# and rename_segment never had such a gate at all. machotool now runs it only
+# where the run disturbed what it checks (src/relations.h's
+# mrel_verify_applies), and a segment rename disturbs nothing; this is the same
+# property seen through the wrapper, which is where a caller sees it.
 #
 # The input is tests/mkimplausible.c's committed fixture, built here. It used
 # to be a scan of /usr/lib for a dylib the gate refused, with a SKIP when none
@@ -1177,11 +1176,24 @@ fi
 "$CC" -O2 -Wall -Wextra -I "$ROOT/src" -o "$T/mkimplausible" "$HERE/mkimplausible.c"
 "$T/mkimplausible" "$T/imp"
 
-# The fixture is refused for an ordinary operation, so the pass below is narrow.
-( cd "$T" && "$BIN/machotool" lc imp imp.lc -delete uuid ) >/dev/null 2>"$T/imperr"
-[ $? -ne 0 ] && grep -q 'no known function' "$T/imperr" \
-    && ok "rename_segment: the fixture really is one the gate rejects for other operations" \
-    || bad "rename_segment mg_plausible" "lc -delete uuid was not refused: $(cat "$T/imperr")"
+# The pass below is narrow, not a hole: the gate still refuses THIS FIXTURE
+# for an operation that genuinely disturbs the base-relative values it checks.
+# `fixups set classic` is that operation -- it rebuilds __LINKEDIT's opcode
+# streams and writes the resolved image base into the __DATA slot the chain
+# pointed at -- and it reaches the fixture through `machotool edit`, the one
+# front-end that offers it. A build whose gate had simply been deleted would
+# let this through, and then the rename below would prove nothing.
+#
+# `lc -delete uuid` USED to stand here and no longer can: it frees header pad
+# and repacks the command region, moving no base-relative value, so the derived
+# applicability skips the gate for it. That was always true of the operation;
+# the assertion passed because the gate ran unconditionally, not because the
+# premise held.
+printf 'fixups set classic\n' >"$T/imp.edits"
+( cd "$T" && "$BIN/machotool" edit imp imp.fx imp.edits ) >/dev/null 2>"$T/imperr"
+[ $? -ne 0 ] && grep -q 'implausible' "$T/imperr" \
+    && ok "rename_segment: the fixture really is one the gate rejects for an operation that disturbs it" \
+    || bad "rename_segment mg_plausible" "fixups set classic was not refused: $(cat "$T/imperr")"
 
 cp "$T/imp" "$T/v"
 before=$(sha "$T/v")

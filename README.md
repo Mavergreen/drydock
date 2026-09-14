@@ -146,14 +146,34 @@ Two independent checks back that up:
   with the wrong delta all look the same to it: a moved address.
 - **`mg_plausible`** asks a different question of the finished file — do
   initializers and unwind entries still land on an address `LC_FUNCTION_STARTS`
-  lists? It needs no "before" image, so the shared rewriter (`change_dylib` and
-  `machotool dylib`/`rpath`/`lc` alike) runs it immediately before writing and
-  refuses rather than committing a bad rewrite. `MACHO_NO_VERIFY=1` opts out.
-  `machotool segment` never reaches this gate at all — its only form always
-  builds a rename-only operation set, and the shared rewriter skips the gate
-  outright for those rather than offering an opt-out: a rename moves no
-  offset, so the gate could only re-decide a property the input already had
-  (`src/rewrite.c` has the reasoning and the measurement).
+  lists? It needs no "before" image, so it can be run on a file nothing kept a
+  snapshot of. It runs when there is something for it to re-check: the image
+  carries an `LC_FUNCTION_STARTS` **and** the run disturbed the base-relative
+  values those offsets are (`src/relations.h`'s `mrel_verify_applies` — one
+  expression, shared by every gate site). A grow is such a run, and
+  `mg_grow_header` runs this check on every image it grows before handing it
+  back.
+
+  What that leaves out is worth stating plainly, because it is easy to read a
+  guarantee into the paragraph above. An edit that fits the existing header
+  pad — `machotool
+  dylib`, `rpath`, `lc` or `segment`, and the same statements inside `machotool
+  edit` — disturbs nothing this gate examines, so it is not refused for a
+  property its input already had. Inside one `machotool edit`, `fixups set
+  classic` (and a `target 10.9` that expands to it) does disturb the image base,
+  and such a run is refused rather than written. Across the `patch_macho` →
+  `add_version_min` → `change_dylib` chain it is **not**: each tool is its own
+  process and carries no record of what the previous one disturbed, so the
+  `change_dylib` step no longer re-checks the conversion `patch_macho`
+  performed. `src/rewrite.c`'s comment at the gate has the reasoning and the
+  measurement.
+
+  What no caller can do is switch off a gate that applies: what decides is the
+  image and the operations, never an environment variable. `MACHO_NO_VERIFY=1`
+  is what remains of an older, caller-controlled opt-out, and on a `machotool`
+  verb run it no longer changes anything — the one gate that consults it is
+  reached only by a rewrite that grew the header, and `mg_grow_header` has
+  already run the same check on that image unconditionally.
 
 That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,
@@ -191,9 +211,11 @@ command creates, so a flag-looking one is a mistake rather than a name.
 parsed before `FILE` is opened at all, so a typo in the last line of a long
 script costs nothing. Each statement then runs against the image in memory, in
 the order written; if any statement is refused, `OUT` is not written and `FILE`
-is exactly as it was found. The finished image is verified — mandatorily, after
-the last statement and before the write, with no opt-out — and only then
-written, once.
+is exactly as it was found. The finished image is verified after the last
+statement and before the write — whenever the run disturbed anything that check
+covers, and with no opt-out when it applies — and only then written, once. A run
+that disturbed nothing it checks says so instead: `nothing this run disturbed is
+re-checked`.
 
 **Every run logs, on stderr, what it did — there is no quiet mode, so there
 is no flag.** A tool whose job is to make edits nobody can see afterwards
@@ -210,8 +232,9 @@ already-classic image passed through, for `swift-abi set legacy` how many
 class records it retagged or that there was nothing to retag, for
 `version-min set` the `LC_VERSION_MIN_MACOSX` it appended, and for `target
 10.9` its whole expansion, line by line, each with the finding that produced
-it — or that this binary already targets 10.9; then `FILE: verified` and
-`OUT: written (N bytes)`.
+it — or that this binary already targets 10.9; then `FILE: verified` (or
+`FILE: nothing this run disturbed is re-checked`, when the run moved nothing the
+check looks at) and `OUT: written (N bytes)`.
 
 Stderr, not stdout, and that division is load-bearing: the operations' own
 progress lines go to stdout, where the compat wrappers' callers have always
@@ -445,13 +468,16 @@ machotool edit "$REAL" "$T" claude.edits
   of those can miss. Neither can `target`, nor anything its expansion derived
   (see "The `target` statement", above). On a fat file, a statement has
   matched if it matched in any selected slice.
-- **`MACHO_NO_VERIFY` does not affect `edit`'s own final verification.** A
-  `dylib`/`rpath`/`load-command` statement still runs the same per-step
-  plausibility check `machotool dylib`/`rpath`/`lc` run (see "Prove it or
-  refuse" above), and that per-step check still honours the variable. But
-  the mandatory check `edit` runs after the *last* statement, before the
-  single write, has no such escape hatch, by design — no opt-out was
-  reintroduced at this higher level.
+- **`MACHO_NO_VERIFY` changes nothing about an `edit` run.** The check `edit`
+  runs after the *last* statement, before the single write, has never consulted
+  it and still does not. A `dylib`/`rpath`/`load-command` statement also runs
+  the same per-step plausibility check `machotool dylib`/`rpath`/`lc` run (see
+  "Prove it or refuse" above); that per-step check is the one place in the
+  tools that reads the variable, and it now applies only to a step that grew
+  the header — which `mg_grow_header` has already checked, unconditionally, on
+  the grown image. What decides whether a check runs is the image and the
+  operations, never the caller: a run that disturbed nothing it examines skips
+  it, and nothing a caller can set will suppress one that applies.
 
 ## Notes
 

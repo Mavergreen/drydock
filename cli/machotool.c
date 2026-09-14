@@ -95,6 +95,7 @@
 #include "mach_compat.h"
 #include "script.h"
 #include "edit.h"
+#include "relations.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
@@ -221,41 +222,23 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  * silently drift from what this function (and change_dylib) actually
  * accept -- that drift is exactly what a whole-branch review found here. */
 
-/* Operations `dylib`/`rpath` accept, and which mr_ops array each one fills --
- * ONE table drives both cmd_dylib_or_rpath's parser (below) and
- * print_capabilities' "ops=" list, for the same reason LC_STRIP_KINDS is
- * shared: two hand-maintained lists (the parser's if/else chain and a
- * hardcoded ops= string) had already diverged from each other by the time of
- * review. DOP_NONE for a mode means "not supported in that mode" -- LC_RPATH
- * has only one kind, so `reexport` is meaningless for it and is simply absent
- * from rpath's derived ops= list and refused by the parser. `-insert` IS
- * supported for both now: docs/PROPOSAL.md calls rpath -insert "a new
- * capability" change_dylib never had (its grammar has no spelling for it), and
- * this build implements it -- an LC_RPATH placed ahead of every existing one,
- * so dyld, which takes the first search path that resolves, tries it first. */
-enum dylib_op_kind {
-    DOP_NONE = 0,   /* must stay 0: the ops= filter tests for falsiness */
-    DOP_REPLACE,
-    DOP_DELETE,
-    DOP_APPEND,
-    DOP_INSERT,
-    DOP_REEXPORT
-};
-struct dylib_op {
-    const char *flag;      /* this grammar's -OP spelling, e.g. "-replace" */
-    const char *cap_name;  /* same op's spelling in ops=, e.g. "replace" */
-    int nargs;             /* args consumed after the flag: 1 or 2 */
-    int dylib_kind;        /* what it does when is_rpath==0, or DOP_NONE */
-    int rpath_kind;        /* what it does when is_rpath==1, or DOP_NONE */
-};
-static const struct dylib_op DYLIB_OPS[] = {
-    { "-replace",  "replace",  2, DOP_REPLACE,  DOP_REPLACE },
-    { "-delete",   "delete",   1, DOP_DELETE,   DOP_DELETE  },
-    { "-append",   "append",   1, DOP_APPEND,   DOP_APPEND  },
-    { "-insert",   "insert",   1, DOP_INSERT,   DOP_INSERT  },
-    { "-reexport", "reexport", 1, DOP_REEXPORT, DOP_NONE    },
-};
-#define N_DYLIB_OPS (sizeof(DYLIB_OPS) / sizeof(DYLIB_OPS[0]))
+/* The operations `dylib`/`rpath` accept are rows of src/script.c's MS_TABLE,
+ * the same table an edit script's statements come from -- `dylib -insert P`
+ * and `dylib insert P` are ONE operation with two spellings, so there is one
+ * place that says what the operation is, what it takes, and what it disturbs.
+ * That table used to be two: this file's own DYLIB_OPS listed the verbs' ops
+ * beside script.c's statements, and two hand-maintained lists had already
+ * diverged once (the parser's if/else chain against a hardcoded ops= string)
+ * by the time of review.
+ *
+ * An op one verb offers and the other does not is simply a row the other verb
+ * has no entry for -- LC_RPATH has one kind, so `reexport` is meaningless for
+ * it, is absent from rpath's derived ops= list, and is refused by the parser
+ * exactly like a flag no verb knows. `-insert` IS supported for both:
+ * docs/PROPOSAL.md calls rpath -insert "a new capability" change_dylib never
+ * had (its grammar has no spelling for it), and this build implements it --
+ * an LC_RPATH placed ahead of every existing one, so dyld, which takes the
+ * first search path that resolves, tries it first. */
 
 /* Print LC_STRIP_KINDS as a comma-separated list, no trailing comma -- the
  * "kinds=" value in --capabilities and cmd_lc's own error message. */
@@ -264,15 +247,15 @@ static void print_kinds_csv(void) {
         printf("%s%s", k ? "," : "", LC_STRIP_KINDS[k].name);
 }
 
-/* Print DYLIB_OPS' cap_name for every op this mode (rpath or dylib) actually
- * supports, comma-separated -- the "ops=" value in --capabilities. */
+/* Print every op this mode (rpath or dylib) supports, comma-separated -- the
+ * "ops=" value in --capabilities -- in the order ms_mode_op hands them back,
+ * which is the order this line has always been printed in. */
 static void print_ops_csv(int is_rpath) {
-    int first = 1;
-    for (size_t i = 0; i < N_DYLIB_OPS; i++) {
-        if (is_rpath ? !DYLIB_OPS[i].rpath_kind : !DYLIB_OPS[i].dylib_kind) continue;
-        printf("%s%s", first ? "" : ",", DYLIB_OPS[i].cap_name);
-        first = 0;
-    }
+    unsigned mode = is_rpath ? MS_MODE_RPATH : MS_MODE_DYLIB;
+    const char *op;
+    int i;
+    for (i = 0; ms_mode_op(i, mode, &op); i++)
+        printf("%s%s", i ? "," : "", op);
 }
 
 /* ---- capabilities -------------------------------------------------------
@@ -357,8 +340,8 @@ static void print_ops_csv(int is_rpath) {
  *       matches statements against, so this can never advertise a statement
  *       the parser would refuse, or omit one it accepts -- the same reason
  *       `kinds=` and `ops=` above are generated from LC_STRIP_KINDS and
- *       DYLIB_OPS rather than hand-copied. `nargs` is the operand count
- *       after `<kind> <op>`, e.g. "statement dylib replace 2" means `dylib
+ *       from this same table rather than hand-copied. `nargs` is the operand
+ *       count after `<kind> <op>`, e.g. "statement dylib replace 2" means `dylib
  *       replace OLD NEW`. One row's second field is a PROFILE rather than an
  *       op -- "statement target 10.9 0" is the `target 10.9` line, and a
  *       wrapper reads which profiles this build knows the same way it reads
@@ -367,7 +350,7 @@ static void print_ops_csv(int is_rpath) {
  *
  * `dylib` lists all five of its ops; `rpath` lists four -- everything but
  * `reexport`, which LC_RPATH's single kind makes meaningless. Both lists are
- * derived from DYLIB_OPS, the same table the parser matches against, so
+ * derived from MS_TABLE's rows, the same table the parser matches against, so
  * neither can advertise an op the parser would refuse.
  *
  * Every verb listed below is unconditional now. dylib/rpath/lc/minos used to
@@ -413,9 +396,10 @@ static int print_capabilities(void) {
     printf("verb edit\n");
     {
         int i;
-        const char *kind, *op;
+        const char *kind, *op, *flag;
         int nargs;
-        for (i = 0; ms_table_row(i, &kind, &op, &nargs); i++)
+        unsigned modes, disturbs;
+        for (i = 0; ms_table_row(i, &kind, &op, &nargs, &flag, &modes, &disturbs); i++)
             printf("statement %s %s %d\n", kind, op, nargs);
     }
     return 0;
@@ -733,7 +717,10 @@ static int cmd_lc(int argc, char **argv) {
     ops.strip_cmds = strip;
     ops.n_strip_cmds = nstrip;
     ops.fatal_unmatched = fatal_warnings;
-    return mr_apply_file(path, out, &ops);
+    /* What this verb's operation invalidates comes from the SAME table row
+     * the `edit` statement `load-command delete` reads, so the two front-ends
+     * cannot come to different conclusions about one operation. */
+    return mr_apply_file(path, out, &ops, ms_disturbs(MS_LOAD_COMMAND, MS_DELETE));
 }
 
 /* ---- dylib / rpath: a thin shell over mr_apply_file ---------------------
@@ -756,8 +743,8 @@ static int cmd_lc(int argc, char **argv) {
  *
  * `--fatal-warnings` becomes ops.fatal_unmatched, the same way `--allow-grow`
  * becomes ops.allow_grow just below -- a verb-level flag, parsed in this same
- * loop, not one of DYLIB_OPS' per-operation entries. Named after `ld` and
- * `gas`'s own --fatal-warnings (and GCC's -Werror, the same idea under a
+ * loop, not one of the operation table's per-operation rows. Named after `ld`
+ * and `gas`'s own --fatal-warnings (and GCC's -Werror, the same idea under a
  * different name): "an operation matched nothing" already IS a warning
  * (mr_report_unmatched, src/rewrite.c), and this promotes it to a refusal.
  * Nothing is written when it fires, whether one operation matched or none
@@ -787,6 +774,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     int nops = 0;
     int allow_grow = 0;
     int fatal_warnings = 0;
+    unsigned disturbs = MREL_NONE;
 
     for (int i = 4; i < argc; ) {
         const char *tok = argv[i];
@@ -801,27 +789,20 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
             continue;
         }
 
-        /* Match against the shared op table (declared near the top of this
-         * file) instead of a bespoke if/else chain, so this loop and
-         * print_capabilities' "ops=" list are structurally unable to name
-         * different operations. */
-        size_t oi;
-        for (oi = 0; oi < N_DYLIB_OPS; oi++)
-            if (strcmp(tok, DYLIB_OPS[oi].flag) == 0) break;
-        if (oi == N_DYLIB_OPS || i + DYLIB_OPS[oi].nargs >= argc) {
-            fprintf(stderr, "machotool %s: unknown or incomplete operation '%s'\n",
-                    is_rpath ? "rpath" : "dylib", tok);
-            return EX_FAIL;
-        }
-        const struct dylib_op *op = &DYLIB_OPS[oi];
-        int kind = is_rpath ? op->rpath_kind : op->dylib_kind;
-        if (kind == DOP_NONE) {
-            /* An op this table knows but this MODE does not support (today
-             * only `rpath -reexport`) is reported exactly like an op the table
-             * never heard of: from the caller's side both mean "this verb does
-             * not accept that", and --capabilities' ops= list -- built from
-             * this same table -- is where the answer to "then what does it
-             * accept?" lives. */
+        /* Match against the one operation table (src/script.h) instead of a
+         * bespoke if/else chain, so this loop, print_capabilities' "ops="
+         * list and the `edit` verb's statements are structurally unable to
+         * name different operations.
+         *
+         * An op the table knows but this MODE does not offer (today only
+         * `rpath -reexport`, which has no rpath row) is reported exactly like
+         * an op the table never heard of: from the caller's side both mean
+         * "this verb does not accept that", and --capabilities' ops= list --
+         * built from this same table -- is where the answer to "then what
+         * does it accept?" lives. */
+        int op = 0, nargs = 0;
+        if (!ms_verb_op(tok, is_rpath ? MS_MODE_RPATH : MS_MODE_DYLIB, &op, &nargs)
+            || i + nargs >= argc) {
             fprintf(stderr, "machotool %s: unknown or incomplete operation '%s'\n",
                     is_rpath ? "rpath" : "dylib", tok);
             return EX_FAIL;
@@ -830,25 +811,34 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
         mr_change *chs = is_rpath ? rchanges : changes;
         int *nchs = is_rpath ? &nrchanges : &nchanges;
         int full = 0;
-        switch (kind) {
-        case DOP_REPLACE:
-        case DOP_DELETE:
-        case DOP_REEXPORT:
+        switch (op) {
+        case MS_REPLACE:
+        case MS_DELETE:
+        case MS_REEXPORT:
             if (*nchs == MR_MAX_OPS) { full = 1; break; }
             chs[*nchs].old_path = argv[i + 1];
-            chs[*nchs].new_path = (kind == DOP_REPLACE) ? argv[i + 2]
-                                : (kind == DOP_REEXPORT) ? "" : NULL;
-            chs[*nchs].reexport = (kind == DOP_REEXPORT);
+            chs[*nchs].new_path = (op == MS_REPLACE) ? argv[i + 2]
+                                : (op == MS_REEXPORT) ? "" : NULL;
+            chs[*nchs].reexport = (op == MS_REEXPORT);
             (*nchs)++;
             break;
-        case DOP_APPEND:
+        case MS_APPEND:
             if (nappends == MR_MAX_OPS) { full = 1; break; }
             appends[nappends++] = argv[i + 1];
             break;
-        case DOP_INSERT:
+        case MS_INSERT:
             if (ninserts == MR_MAX_OPS) { full = 1; break; }
             inserts[ninserts++] = argv[i + 1];
             break;
+        default:
+            /* A row this verb offers that this switch has no arm for: a new
+             * operation added to the table and not to this parser. Refused,
+             * not ignored -- silently accepting an operation and doing
+             * nothing is the silent-success class this toolkit exists to
+             * eliminate. */
+            fprintf(stderr, "machotool %s: unknown or incomplete operation '%s'\n",
+                    is_rpath ? "rpath" : "dylib", tok);
+            return EX_FAIL;
         }
         /* Same CAP as change_dylib's own parser (MR_MAX_OPS, shared via
          * src/rewrite.h), deliberately DIFFERENT wording -- and note this
@@ -863,11 +853,17 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
          * (max 32)". tests/wrapper_test.sh pins that text. */
         if (full) {
             fprintf(stderr, "machotool %s: too many %s operations (max %d)\n",
-                    is_rpath ? "rpath" : "dylib", op->flag, MR_MAX_OPS);
+                    is_rpath ? "rpath" : "dylib", tok, MR_MAX_OPS);
             return EX_FAIL;
         }
+        /* The row's own disturbs mask, from the table this loop already
+         * parsed the operation out of -- so `dylib -delete` and the statement
+         * `dylib delete` declare one thing, not two. The union over the
+         * operations this run asks for, because they all reach the rewriter
+         * as one mr_ops applied in one pass. */
+        disturbs |= ms_disturbs(is_rpath ? MS_RPATH : MS_DYLIB, op);
         nops++;
-        i += 1 + op->nargs;
+        i += 1 + nargs;
     }
     if (nops == 0) {
         fprintf(stderr, "machotool %s: need at least one operation\n", is_rpath ? "rpath" : "dylib");
@@ -888,7 +884,7 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
     ops.n_rpath_inserts = is_rpath ? ninserts : 0;
     ops.allow_grow = allow_grow;
     ops.fatal_unmatched = fatal_warnings;
-    return mr_apply_file(path, out, &ops);
+    return mr_apply_file(path, out, &ops, disturbs);
 }
 
 /* ---- segment: a segment rename, routed through mr_apply_file -------------
@@ -950,13 +946,14 @@ static int cmd_dylib_or_rpath(int argc, char **argv, int is_rpath) {
  *     reports it rather than working around it.
  *
  * mg_plausible USED TO BE a fifth divergence and no longer is. mr_process_thin
- * (src/rewrite.c) skips that gate for a rename-only operation set -- scoped by
- * mr_is_rename_only, not by an environment variable -- because the gate asks
- * an OFFSET question and a segment rename moves no offset. So this verb no
- * longer refuses anything rename_segment would have renamed on that account;
- * MACHO_NO_VERIFY is not part of this verb's or its wrapper's story at all
- * (compat/rename_segment.sh sets no environment variable). Every operation
- * that CAN move an offset still meets the gate exactly as before. */
+ * (src/rewrite.c) runs that gate only when the run disturbed what it checks,
+ * derived from this operation's own disturbs mask and from what the rewrite
+ * was observed to do -- not from an environment variable. A segment rename
+ * declares MREL_NONE (src/script.c's table) and grows nothing, so the gate
+ * has nothing to re-check and this verb no longer refuses anything
+ * rename_segment would have renamed on that account. MACHO_NO_VERIFY is not
+ * part of this verb's or its wrapper's story at all (compat/rename_segment.sh
+ * sets no environment variable). */
 static int cmd_segment(const char *path, const char *out,
                        const char *oldname, const char *newname) {
     /* Before the name-length check, and before any read -- see bad_out. Both
@@ -974,7 +971,7 @@ static int cmd_segment(const char *path, const char *out,
     ops.segment_rename_old = oldname;
     ops.segment_rename_new = newname;
     ops.segment_renamed = &renamed;
-    int rc = mr_apply_file(path, out, &ops);
+    int rc = mr_apply_file(path, out, &ops, ms_disturbs(MS_SEGMENT, MS_RENAME));
     /* THE MATCH COUNT, MACHINE-READABLE, and the reason mr_ops has an
      * out-param for it at all.
      *

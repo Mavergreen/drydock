@@ -5,12 +5,16 @@
  *        must ACCEPT; the two differ in exactly three bytes (see "THE
  *        -empty-starts TWIN" below).
  *
- * WHY IT EXISTS. src/rewrite.c's mr_process_thin skips mg_plausible when the
- * operation set is a rename only, because that gate asks an OFFSET question
- * and a segment rename moves no offset (the reasoning is at the site). Two
- * suites assert that: tests/cli_test.sh at the `machotool segment` level and
+ * WHY IT EXISTS. mg_plausible runs only where the run disturbed the
+ * base-relative values it checks (src/relations.h's mrel_verify_applies), and
+ * a segment rename disturbs none, so a rename skips it. Two suites assert
+ * that: tests/cli_test.sh at the `machotool segment` level and
  * tests/wrapper_test.sh through the `rename_segment` wrapper. Both need an
- * input the gate rejects.
+ * input the gate rejects -- and each also needs an OPERATION that reaches the
+ * gate on this fixture, so that the rename's pass is narrow rather than a
+ * hole. `fixups set classic` is that operation (it disturbs the image base
+ * and __LINKEDIT), which is why this fixture carries a minimal
+ * LC_DYLD_CHAINED_FIXUPS.
  *
  * They used to find one by scanning /usr/lib for a dylib mg_plausible
  * refused -- all 26 thin 64-bit dylibs there did on 10.9 -- and SKIP if none
@@ -93,7 +97,11 @@
  *                 early, before the gate, when nothing changed), and
  *   a __DATA segment with two sections
  *                 so that `machotool segment __DATA __X` has something to rename
- *                 AND has section segname copies to rename with it.
+ *                 AND has section segname copies to rename with it, and
+ *   an LC_DYLD_CHAINED_FIXUPS command with one real rebase link in __DATA
+ *                 so that `machotool edit ... 'fixups set classic'` has
+ *                 something to convert and therefore reaches the gate too
+ *                 (see FX_OFF's use in main() for the field-by-field layout).
  *
  * It carries NO dylib load command, so it cannot be refused earlier by
  * mo_map_build (see compat/rename_segment.sh's divergence 5 for what that
@@ -147,6 +155,20 @@
 #define INIT_OFF    (DATA_OFF + 0x800)
 #define FS_SIZE     8
 #define BAD_INIT    0x999u       /* deliberately NOT SECT_OFF */
+
+/* A minimal, real LC_DYLD_CHAINED_FIXUPS blob, so `fixups set classic` has
+ * something to convert (see FX_OFF's use in main() for the field-by-field
+ * layout, copied from src/declassify.c's private cf_header/cf_starts_image/
+ * cf_starts_seg -- there is no public header for this 2021-era format).
+ * ONE chain, ONE link, a REBASE (not a bind, so no import/symbol pool is
+ * needed): __DATA's byte at DATA_REBASE_OFF is calloc's zero, which chained
+ * fixups' encoding reads as "rebase, target offset 0, chain ends here" --
+ * md_declassify resolves that to the image's own base address and writes it
+ * into the slot, so the conversion actually moves a base-relative value, not
+ * merely a command shuffle. */
+#define FX_OFF          (LE_OFF + 0x100)
+#define DATA_REBASE_OFF 0x400    /* clear of __data (8B @0) and __init_offsets (4B @0x800) */
+#define CF_PTR_64_OFFSET 6       /* src/declassify.c's constant, same value */
 
 static void set16(char *field, const char *name) {
     size_t len = strlen(name);
@@ -222,7 +244,12 @@ int main(int argc, char **argv) {
     fs->dataoff = LE_OFF; fs->datasize = FS_SIZE;
     p += fs->cmdsize;
 
-    h->ncmds = 5;
+    struct linkedit_data_command *fx = (struct linkedit_data_command *)p;
+    fx->cmd = LC_DYLD_CHAINED_FIXUPS; fx->cmdsize = sizeof *fx;
+    fx->dataoff = FX_OFF; fx->datasize = 72;
+    p += fx->cmdsize;
+
+    h->ncmds = 6;
     h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
 
     /* One function start at base + 0x400, then the 0 terminator.
@@ -238,6 +265,51 @@ int main(int argc, char **argv) {
     /* The initializer that names no function start. */
     uint32_t bad = BAD_INIT;
     memcpy(buf + INIT_OFF, &bad, sizeof bad);
+
+    /* The LC_DYLD_CHAINED_FIXUPS blob FX_OFF points at: a cf_header, a
+     * cf_starts_image naming three segments (TEXT/DATA/LINKEDIT, the
+     * load-command order md_collect_lc walks them in), and one cf_starts_seg
+     * for __DATA (index 1) with a single page whose one chain start is
+     * DATA_REBASE_OFF. TEXT and LINKEDIT get seg_info_offset 0 -- "this
+     * segment has no chain" -- so only __DATA's one link is ever walked.
+     * Layout, all uint32/uint16/uint64 stores at FX_OFF-relative offsets: */
+    uint32_t *fxh = (uint32_t *)(buf + FX_OFF);   /* cf_header, 7 x uint32 */
+    fxh[0] = 0;    /* fixups_version */
+    fxh[1] = 28;   /* starts_offset: cf_starts_image starts right after this header */
+    fxh[2] = 68;   /* imports_offset: unused, imports_count is 0 */
+    fxh[3] = 68;   /* symbols_offset: unused, same reason */
+    fxh[4] = 0;    /* imports_count */
+    fxh[5] = 0;    /* imports_format */
+    fxh[6] = 0;    /* symbols_format */
+
+    uint32_t *csi = (uint32_t *)(buf + FX_OFF + 28); /* cf_starts_image */
+    csi[0] = 3;    /* seg_count: TEXT, DATA, LINKEDIT */
+    csi[1] = 0;    /* seg_info_offset[0] (__TEXT): none */
+    csi[2] = 16;   /* seg_info_offset[1] (__DATA): cf_starts_seg, 16 past csi */
+    csi[3] = 0;    /* seg_info_offset[2] (__LINKEDIT): none */
+
+    /* cf_starts_seg at FX_OFF + 28 + 16 = FX_OFF + 44:
+     *   uint32 size; uint16 page_size; uint16 pointer_format;
+     *   uint64 segment_offset; uint32 max_valid_pointer;
+     *   uint16 page_count; uint16 page_start[1]; */
+    uint8_t *ss = buf + FX_OFF + 44;
+    *(uint32_t *)(ss + 0)  = 24;               /* size */
+    *(uint16_t *)(ss + 4)  = 0x1000;           /* page_size */
+    *(uint16_t *)(ss + 6)  = CF_PTR_64_OFFSET; /* pointer_format */
+    *(uint64_t *)(ss + 8)  = 0;                /* segment_offset: unused by the walk */
+    *(uint32_t *)(ss + 16) = 0;                /* max_valid_pointer: unused by the walk */
+    *(uint16_t *)(ss + 20) = 1;                /* page_count */
+    *(uint16_t *)(ss + 22) = DATA_REBASE_OFF;  /* page_start[0] */
+    /* ss + 24 == FX_OFF + 68, where the bytes this builds actually end.
+     * fx->datasize says 72 -- four more -- and the difference is inert here:
+     * src/declassify.c never reads datasize (it walks the blob's own header),
+     * and LC_DYLD_CHAINED_FIXUPS is one of src/linkedit.h's plain-offset
+     * commands, so a grow bumps dataoff and leaves datasize alone. Stated
+     * because a reader comparing the two numbers will otherwise take the
+     * mismatch for a bug in the fixture.
+     * The rebase slot itself, __DATA file offset DATA_REBASE_OFF, is left at
+     * calloc's zero: chained-fixups bit 63 clear is REBASE, and a zero chain
+     * distance ends the chain after this one link -- no separate write needed. */
 
     int fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { perror("open"); free(buf); return 2; }

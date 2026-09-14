@@ -1,6 +1,6 @@
 /*
- * me_ -- see edit.h. Read once, apply each statement in order, verify,
- * write once.
+ * me_ -- see edit.h. Read once, apply each statement in order, verify what
+ * the run disturbed, write once.
  *
  * Every operation is performed by the code that performs it for the CLI
  * verbs; what lives here is the lowering from a statement to that call (the
@@ -26,6 +26,7 @@
 #include "edit.h"
 #include "image.h"
 #include "grow.h"
+#include "relations.h"
 #include "rewrite.h"
 #include "segname.h"
 #include "lc_kinds.h"
@@ -203,11 +204,16 @@ typedef struct {
  * and a refusal under fatal-warnings (ops->fatal_unmatched). The hit counts
  * are per statement, because each statement is its own rewrite of the image
  * as it now stands, and are summed across the slices that run it, because a
- * statement that matched in any selected slice has matched. */
+ * statement that matched in any selected slice has matched.
+ *
+ * `declared` is the STATEMENT's own disturbs mask, not the script's union:
+ * the rewrite's internal gate is about this one rewrite, and this module's
+ * own accumulator (me_note_disturbed) is what carries the run's total to the
+ * final verify. */
 static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
-                      const mr_ops *ops, me_verdict *v) {
+                      const mr_ops *ops, unsigned declared, me_verdict *v) {
     int modified = 0;
-    int rc = mr_apply_image(pbuf, psize, path, ops, &modified, v->hits);
+    int rc = mr_apply_image(pbuf, psize, path, ops, declared, &modified, v->hits);
     if (rc != 0 || !v->decide) return rc;
     /* The verdict's "matched nothing" report goes to stderr; flushed first
      * for the reason me_say flushes. */
@@ -248,7 +254,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (lc_kind_by_name(st->a, &cmd) != 0) break;
         ops.strip_cmds = &cmd;
         ops.n_strip_cmds = 1;
-        return me_rewrite(pbuf, psize, path, &ops, v);
+        return me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
     }
 
     case MS_SEGMENT: {
@@ -271,7 +277,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         ops.segment_rename_old = st->a;
         ops.segment_rename_new = st->b;
         ops.segment_renamed = &renamed;
-        int rc = me_rewrite(pbuf, psize, path, &ops, v);
+        int rc = me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
         if (rc != 0) return rc;
         *v->renamed += renamed;
         if (!v->decide || *v->renamed > 0) return 0;
@@ -308,16 +314,16 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         }
         /* allow-grow reaches only the statements that can outgrow the header
          * pad. Setting it on a segment rename or a load-command delete would
-         * grow nothing and would, for the rename, switch off
-         * mr_is_rename_only's scoping of the rewrite's own plausibility
-         * check. */
+         * grow nothing -- and a grow is the one thing that makes the
+         * rewrite's own plausibility gate apply to a statement whose row
+         * declares no base-relative disturbance (src/rewrite.c). */
         ops.allow_grow = s->allow_grow;
         /* Only a dylib statement can renumber: an LC_RPATH bears no
          * ordinal. The rewrite fills renum only when it did renumber --
          * an insert, or a delete that matched -- so a replace, an append, a
          * reexport or a delete that matched nothing logs no follow-up. */
         if (!rpath) ops.renumbering = &renum;
-        int rc = me_rewrite(pbuf, psize, path, &ops, v);
+        int rc = me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
         if (rc == 0 && renum.done) me_log_renumbering(log, &renum);
         return rc;
     }
@@ -411,6 +417,51 @@ unknown:
      * instead of lowering it, because it is not one operation. */
     me_say(log, "machotool edit: cannot apply '%s %s'\n", ms_kind_name(st->kind), ms_op_name(st->op));
     return MR_FAIL;
+}
+
+/* What one statement actually disturbed: what its row DECLARES, plus what the
+ * run is observed to have done. The observation is the first section's file
+ * offset -- the header pad's own definition -- because that moving is exactly
+ * a grow, and a grow re-bases every base-relative value and moves every
+ * __LINKEDIT blob. A declaration alone would miss it; the pad's own bit is
+ * not enough, since disturbing the pad and OVERFLOWING it are different
+ * events.
+ *
+ * This is why the accumulator runs here and not over s->stmts: the statements
+ * as PARSED are the declared half only, and `target 10.9` declares MREL_NONE
+ * of its own while its expansion can lower a fixups conversion. A gate reading
+ * the parsed script's declarations would therefore skip the verify on exactly
+ * that run -- the one that most needs it. */
+static void me_note_disturbed(unsigned *disturbed, const ms_stmt *st,
+                              uint32_t first_before, uint32_t first_after) {
+    *disturbed |= ms_disturbs(st->kind, st->op);
+    if (first_before != first_after)
+        *disturbed |= MREL_BASE_REL | MREL_FILE_OFF;
+}
+
+/* The gate did not apply, so the report says what the run DID disturb: with
+ * the verify now conditional, "why was my file not verified?" is a question
+ * the line itself has to answer. Names come from mrel_name, so a relation
+ * cannot be renamed in one place and reported under the old name here. */
+static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed) {
+    char names[160];   /* every name src/relations.h has, joined, with slack */
+    size_t used = 0;
+    unsigned bit;
+
+    if (disturbed == MREL_NONE) {
+        me_say(log, "%s: this run disturbed nothing, so there is nothing to re-check\n", what);
+        return;
+    }
+    names[0] = '\0';
+    for (bit = 1; bit; bit <<= 1) {
+        const char *name = (disturbed & bit) ? mrel_name(bit) : NULL;
+        int w;
+        if (!name) continue;
+        w = snprintf(names + used, sizeof names - used, "%s%s", used ? ", " : "", name);
+        if (w < 0 || (size_t)w >= sizeof names - used) break;
+        used += (size_t)w;
+    }
+    me_say(log, "%s: this run disturbed %s; none of that is re-checked\n", what, names);
 }
 
 /* ---- target 10.9 --------------------------------------------------------
@@ -541,7 +592,8 @@ static void me_log_derived(FILE *log, const me_derived *d) {
  * the other side of this, and is not special-cased: the explicit one is
  * redundant, and fatal-warnings flags it. */
 static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
-                     const ms_script *s, const ms_stmt *st, FILE *log) {
+                     const ms_script *s, const ms_stmt *st, FILE *log,
+                     unsigned *disturbed) {
     me_derived d[ME_TARGET_MAX];
     mi_image im;
     int n, i;
@@ -564,8 +616,13 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
             memset(&hits, 0, sizeof hits);
             v.hits = &hits; v.renamed = &renamed; v.decide = 0; v.missed = 0;
             me_log_derived(log, &d[i]);
+            /* Each DERIVED statement declares for itself, which is what makes
+             * the `target` row's own MREL_NONE correct rather than a hole. */
+            uint32_t first_before = mg_first_sect_off(*pbuf, *psize);
             rc = me_apply(pbuf, psize, path, &sub, &d[i].stmt, log, &v);
             if (rc != 0) return rc;
+            me_note_disturbed(disturbed, &d[i].stmt, first_before,
+                              mg_first_sect_off(*pbuf, *psize));
         }
     }
     return 0;
@@ -588,17 +645,19 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
  * statement: a few KB, against I/O that happens once either way. */
 static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const char *out,
                          const ms_script *s, FILE *log,
-                         mr_hits *hits, int *renamed, int decide, const char *slice) {
+                         mr_hits *hits, int *renamed, int decide, const char *slice,
+                         unsigned *disturbed) {
     for (int i = 0; i < s->n; i++) {
         const ms_stmt *stmt = &s->stmts[i];
         me_log_stmt(log, stmt);
         me_verdict v = { &hits[i], &renamed[i], decide, 0 };
+        uint32_t first_before = mg_first_sect_off(*pbuf, *psize);
         /* `target` is not an operation, so it is not lowered to one: it
          * expands here, in place, into the statements this image needs, and
          * they run before the next statement in the script does. Its own
          * hits/renamed entries stay zero -- nothing it derived can miss. */
         int rc = stmt->kind == MS_TARGET
-            ? me_target(pbuf, psize, path, s, stmt, log)
+            ? me_target(pbuf, psize, path, s, stmt, log, disturbed)
             : me_apply(pbuf, psize, path, s, stmt, log, &v);
         if (rc != 0) {
             if (rc != MR_REFUSED) rc = MR_FAIL;
@@ -610,11 +669,29 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
             me_say_left(log, path, out);
             return rc;
         }
+        me_note_disturbed(disturbed, stmt, first_before,
+                          mg_first_sect_off(*pbuf, *psize));
     }
     return 0;
 }
 
-/* The last step of a run that verified: report, and write OUT once. Takes
+/* Does the finished image still have anything for mg_plausible to check,
+ * after a run that disturbed `disturbed`? The one question both of this
+ * module's gate sites ask, so they cannot drift apart.
+ *
+ * An image this can no longer wrap is answered YES rather than skipped: the
+ * derivation needs an image to read, and with none the only safe answer is to
+ * run the gate -- which is also the one that says what is wrong, since
+ * mg_plausible refuses an unwrappable buffer with its own line.
+ *
+ * The derived applicability governs both front-ends. */
+static int me_verify_applies(uint8_t *buf, size_t size, unsigned disturbed) {
+    mi_image im;
+    if (mi_wrap(buf, size, &im) != 0) return 1;
+    return mrel_verify_applies(&im, disturbed);
+}
+
+/* The last step of a run nothing refused: report, and write OUT once. Takes
  * ownership of buf. The write goes through wa_write_new, which gives OUT the
  * INPUT's mode, owner and extended attributes and renames a temp onto it -- so
  * OUT is whole or as it was, and `path` is never a destination. There is no
@@ -668,17 +745,29 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
         return 0;
     }
     me_say(c->log, "slice %s:\n", name);
+    /* One accumulator per SLICE, never one shared across the container: a
+     * slice that disturbed nothing skips its own verify whatever its
+     * neighbours did.
+     * Relations are evaluated per slice. */
+    unsigned disturbed = MREL_NONE;
     int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
-                           c->hits, c->renamed, index == c->last, name);
+                           c->hits, c->renamed, index == c->last, name, &disturbed);
     if (rc != 0) return rc;
-    /* Each slice's own final verification: always, and never subject to
-     * MACHO_NO_VERIFY, exactly as a thin file's. */
-    if (mg_plausible(*pbuf, *psize) != 0) {
-        me_say(c->log, "machotool edit: refused at verification of slice %s; ", name);
-        me_say_left(c->log, c->path, c->out);
-        return MR_REFUSED;
+    /* Each slice's own final verification, on the same derived terms as a thin
+     * file's: whenever anything it checks was disturbed, and then never
+     * subject to MACHO_NO_VERIFY. */
+    if (me_verify_applies(*pbuf, *psize, disturbed)) {
+        if (mg_plausible(*pbuf, *psize) != 0) {
+            me_say(c->log, "machotool edit: refused at verification of slice %s; ", name);
+            me_say_left(c->log, c->path, c->out);
+            return MR_REFUSED;
+        }
+        me_say(c->log, "slice %s: verified\n", name);
+    } else {
+        char what[64];
+        snprintf(what, sizeof what, "slice %s", name);
+        me_say_not_rechecked(c->log, what, disturbed);
     }
-    me_say(c->log, "slice %s: verified\n", name);
     *changed = 1;
     return 0;
 }
@@ -888,29 +977,37 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         free(hits); free(renamed); free(buf);
         return MR_FAIL;
     }
-    int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL);
+    unsigned disturbed = MREL_NONE;
+    int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL,
+                           &disturbed);
     free(hits); free(renamed);
     if (rc != 0) { free(buf); return rc; }
 
-    /* Verify the finished image: always, and never subject to
-     * MACHO_NO_VERIFY. A failure is a refusal -- including an allocation
-     * failure inside mg_plausible, which it reports the same way as every
-     * other reason it declines (see rewrite.c's comment on that fold). */
-    if (mg_plausible(buf, size) != 0) {
-        /* A script of nothing but directives, comments or blank lines has
-         * no statement to count, so "after statement 0 of 0" would be
-         * nonsense; the image itself is what failed. */
-        if (s->n == 0)
-            me_say(log, "machotool edit: refused at verification (the script has no "
-                        "statements); ");
-        else
+    /* Verify the finished image whenever anything it checks was disturbed, and
+     * then never subject to MACHO_NO_VERIFY. The applicability is derived from
+     * the relations this image has and what this run was observed to do, so
+     * there is no input a CALLER can supply to switch it off -- which is the
+     * difference between this and the escape hatch removed during the compat
+     * retirement, and the reason the env var is not consulted here.
+     * A failure is a refusal -- including an allocation failure inside
+     * mg_plausible, which it reports the same way as every other reason it
+     * declines (see rewrite.c's comment on that fold).
+     *
+     * A script with no statements needs no branch of its own here: it runs
+     * nothing, so it disturbs nothing, so the gate cannot apply and nothing
+     * can say "after statement 0 of 0". */
+    if (me_verify_applies(buf, size, disturbed)) {
+        if (mg_plausible(buf, size) != 0) {
             me_say(log, "machotool edit: refused at verification, after statement %d of %d; ",
                    s->n, s->n);
-        me_say_left(log, path, out);
-        free(buf);
-        return MR_REFUSED;
+            me_say_left(log, path, out);
+            free(buf);
+            return MR_REFUSED;
+        }
+        me_say(log, "%s: verified\n", path);
+    } else {
+        me_say_not_rechecked(log, path, disturbed);
     }
-    me_say(log, "%s: verified\n", path);
 
     return me_write_once(buf, size, path, out, log);
 }

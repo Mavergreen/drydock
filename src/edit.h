@@ -3,7 +3,8 @@
 /*
  * me_ -- applying an edit script (src/script.h) to one Mach-O: read the image
  * once, apply each statement in order to the in-memory buffer, verify the
- * result, and write it once.
+ * result if the run disturbed anything that verification checks, and write it
+ * once.
  *
  * This module lowers and sequences; it performs no operation itself. Each
  * statement becomes a call to the one implementation of that operation --
@@ -20,7 +21,11 @@ typedef struct {
                            * stderr when NULL */
 } me_opts;
 
-/* Applies `s` to `path`, verifies, and writes the result once, as `out`.
+/* Applies `s` to `path`, verifies what the run disturbed, and writes the
+ * result once, as `out`. The verify runs whenever anything it checks was
+ * disturbed -- derived from this image and this run (src/relations.h's
+ * mrel_verify_applies), never from an input a caller supplies, so there is no
+ * way to switch it off.
  * `path` is only read. Returns 0 on success, MR_REFUSED (1) when a statement
  * or the verify declined on purpose, or MR_FAIL (2) for an operational
  * failure (a syscall, a malloc). On any non-zero return NOTHING has been

@@ -190,9 +190,9 @@
 #     -- like every mr_apply_file caller -- refuses a binary carrying
 #     LC_LAZY_LOAD_DYLIB that rename_segment, which never built an ordinal
 #     map, renamed without complaint. It does NOT additionally run
-#     mg_plausible: src/rewrite.c skips that gate for a rename-only operation
-#     set, so it is no longer one of this verb's divergences from
-#     rename_segment.
+#     mg_plausible: src/rewrite.c runs that gate only when the run disturbed
+#     the base-relative values it checks, and a rename disturbs none, so it is
+#     no longer one of this verb's divergences from rename_segment.
 #   machotool retag-swift refuses (exit 1) a non-Mach-O argument that
 #     retag_swift_classes skipped silently.
 #   machotool declassify uses exit 2 (EX_FAIL) for an operational failure where

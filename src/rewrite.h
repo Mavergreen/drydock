@@ -78,9 +78,7 @@ typedef struct {
      * wa_write_new. It asks whether anything MATCHED an operation, never
      * whether it ACTED, so a shadowed operation stays silent.
      * src/rewrite.c's mr_build_lcs_lc "No break" says why: counting only what
-     * acted reports `-replace X N -delete X`'s -delete as a miss.
-     * For the layout tripwire by mr_is_rename_only in src/rewrite.c, it is
-     * declared BEFORE allow_grow so allow_grow stays the LAST field. */
+     * acted reports `-replace X N -delete X`'s -delete as a miss. */
     int              fatal_unmatched;
     int              allow_grow;       /* may enlarge the pad (mg_grow_header) */
 } mr_ops;
@@ -118,8 +116,23 @@ typedef struct {
  * unenforced here AND undiagnosed: n_dylib_changes and n_rpath_changes each
  * <= MR_MAX_OPS, n_strip_cmds <= MR_MAX_STRIP. The hit-count arrays are on
  * this function's stack, sized from those macros; a caller that skips the
- * bound overflows that stack instead of getting a diagnostic. */
-int mr_apply_file(const char *path, const char *out, const mr_ops *ops);
+ * bound overflows that stack instead of getting a diagnostic.
+ *
+ * `declared_disturbs` is what the OPERATIONS in `ops` declare they
+ * invalidate, as an MREL_* mask (src/relations.h), which every caller reads
+ * off the one operation table (src/script.h's ms_disturbs) rather than
+ * inventing. It decides whether the rewrite's mg_plausible gate has anything
+ * to check. A PARAMETER and not an mr_ops field on purpose: an mr_ops
+ * DECLARES what to do, and a derived value living in a declaration struct is
+ * the shape that goes stale in silence -- while a parameter makes the
+ * compiler require an answer from every caller, the same enforcement
+ * src/linkedit.h's link error and src/script.c's table macro rely on. The
+ * declaration is only the starting point: a run that grows the header ORs in
+ * MREL_BASE_REL, because a grow re-bases everything whichever operation
+ * asked for it.
+ */
+int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
+                  uint32_t declared_disturbs);
 
 /* How many load commands each entry of an mr_ops' dylib_changes,
  * rpath_changes and strip_cmds matched, index for index. ADDED to, never
@@ -143,9 +156,11 @@ typedef struct {
  * ops->fatal_unmatched: counts are ADDED to `hits`, and mr_unmatched_verdict
  * does both, later. Returns 0 (with *out_modified) or MR_REFUSED, never
  * MR_FAIL, there being no I/O here. Its two new_lcs callocs are not checked at
- * all. Same array bound as mr_apply_file's. */
+ * all. Same array bound as mr_apply_file's, and the same `declared_disturbs`
+ * -- see mr_apply_file above for what it is and why it is a parameter. */
 int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
-                   const mr_ops *ops, int *out_modified, mr_hits *hits);
+                   const mr_ops *ops, uint32_t declared_disturbs,
+                   int *out_modified, mr_hits *hits);
 
 /* After a SUCCESSFUL rewrite -- only then, a refused one having possibly
  * stopped before a single comparison ran -- report on stderr every

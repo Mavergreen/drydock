@@ -1618,6 +1618,7 @@ grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
 cat > "$T/one_pass.c" <<'EOF'
 #include <string.h>
 #include "rewrite.h"
+#include "script.h"
 /* one_pass FILE OUT OLD-DYLIB NEW-DYLIB NEW-RPATH -- one mr_apply_file call
  * carrying both a dylib change and an rpath append, exactly what
  * compat/change_dylib.c's main() used to build from
@@ -1635,7 +1636,13 @@ int main(int argc, char **argv) {
     ops.dylib_changes = &ch;  ops.n_dylib_changes = 1;
     ops.rpath_appends = radd; ops.n_rpath_appends = 1;
     ops.allow_grow = 1;
-    return mr_apply_file(argv[1], argv[2], &ops);
+    /* The disturbs mask cli/machotool.c's dylib verb would hand the same two
+     * operations, read off the one operation table rather than written out
+     * here: this helper is standing in for that verb, so it must not invent a
+     * second answer. */
+    return mr_apply_file(argv[1], argv[2], &ops,
+                         ms_disturbs(MS_DYLIB, MS_REPLACE) |
+                         ms_disturbs(MS_RPATH, MS_APPEND));
 }
 EOF
 "$CC" -O2 -Wall -I "$SRC_DIR" -o "$T/one_pass" "$T/one_pass.c" "$SRC_DIR"/*.c \

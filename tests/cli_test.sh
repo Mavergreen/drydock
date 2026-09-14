@@ -403,6 +403,20 @@ if echo "$caps" | grep "^verb rpath" | grep -q "insert"; then
 else
     bad "capabilities: rpath insert" "implemented but not advertised"
 fi
+# The verbs' ops= lists and the edit script's statements now come from ONE
+# table (src/script.c's MS_TABLE, which absorbed cli/machotool.c's DYLIB_OPS).
+# --capabilities is a documented interface -- compat/machotool-compat.sh probes
+# it -- so merging the two tables was allowed to change where this text comes
+# from and not one byte of what it says. Whole-line equality, because the ORDER
+# is part of the claim: the ops= order and the "statement " order disagree for
+# dylib, so a single table has to reproduce both.
+echo "$caps" | grep -qxF "verb dylib ops=replace,delete,append,insert,reexport flags=allow-grow,fatal-warnings" \
+    && ok "capabilities: the dylib line is unchanged by the table merge" \
+    || bad "capabilities merge" "dylib line moved: $(echo "$caps" | grep '^verb dylib')"
+echo "$caps" | grep -qxF "verb rpath ops=replace,delete,append,insert flags=allow-grow,fatal-warnings" \
+    && ok "capabilities: the rpath line is unchanged, and still omits reexport" \
+    || bad "capabilities merge" "rpath line moved: $(echo "$caps" | grep '^verb rpath')"
+
 # edit's own line carries NO flags= field, because `edit` accepts no flags.
 # `--output` became the OUT positional, `--dry-run` went with it (a scratch OUT
 # is the same run), and `--verbose` went when the report stopped being optional:
@@ -463,7 +477,8 @@ done
 #
 # --capabilities' "kinds=" and "ops=" lists and the cmd_lc/cmd_dylib_or_rpath
 # parsers that decide what a real invocation accepts are now both built from
-# ONE table each (LC_STRIP_KINDS, DYLIB_OPS in cli/machotool.c) precisely so
+# ONE table each (LC_STRIP_KINDS in src/lc_kinds.c, MS_TABLE in
+# src/script.c) precisely so
 # they cannot say different things -- before this they were three
 # hand-copied lists (change_dylib's strippable[], machotool's own LC_KINDS[],
 # and a hardcoded "kinds=..." string) that a review found had already drifted
@@ -497,8 +512,8 @@ mtip lc "$T/vocab_fixture" -delete not-a-real-kind >"$T/vocab_bogus.out" 2>&1 \
 # Same idea for dylib/rpath ops=: every op --capabilities advertises for a
 # verb must be recognized by that verb's own parser (never "unknown or
 # incomplete operation"), and rpath must still refuse an op that belongs to
-# dylib's vocabulary but not its own (-reexport: LC_RPATH has only one kind
-# -- see DYLIB_OPS in cli/machotool.c).
+# dylib's vocabulary but not its own (-reexport: LC_RPATH has only one kind,
+# so MS_TABLE in src/script.c carries no rpath row for it).
 vocab_ops_fail=0
 check_ops_accepted() {
     # $1=verb (dylib|rpath)  $2=ops csv from capabilities
@@ -537,6 +552,16 @@ case ",$rpath_ops," in
     *)
         ok "capabilities vocab: rpath ops= correctly omits reexport" ;;
 esac
+# And the PARSER's half of that claim, which nothing here asserted before the
+# two op tables became one: an op dylib offers and rpath does not must be
+# refused by rpath, not quietly accepted and applied to an LC_RPATH. What a
+# user loses if it is accepted is a promoted rpath, which means nothing --
+# there is no LC_REEXPORT_RPATH for it to become.
+mtip rpath "$T/vocab_fixture" -reexport /no/such/path >"$T/vocab_rpath_reexport.out" 2>&1 \
+    && bad "capabilities vocab: rpath -reexport" "accepted an op only dylib offers" \
+    || { grep -q "unknown or incomplete operation" "$T/vocab_rpath_reexport.out" \
+         && ok "capabilities vocab: rpath refuses -reexport, the op it does not offer" \
+         || bad "capabilities vocab: rpath -reexport" "refused, but not as unknown: $(cat "$T/vocab_rpath_reexport.out")"; }
 
 # ============================================================================
 # declassify: chained fixups -> LC_DYLD_INFO_ONLY
@@ -2091,11 +2116,12 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 #
 # mr_apply_file's last gate before writing (src/rewrite.c) asks whether the
 # image's initializers and compact-unwind entries still name functions
-# LC_FUNCTION_STARTS knows about. That is an OFFSET question, and a segment
-# rename moves no offset -- it writes characters into segname/sectname fields.
-# So mr_process_thin skips the gate for a rename-only operation set, and these
-# are the assertions that it really does, and that it still runs for everything
-# else.
+# LC_FUNCTION_STARTS knows about. That is an OFFSET question about
+# base-relative values, so mr_process_thin runs it only when the run disturbed
+# them (src/relations.h's mrel_verify_applies). A segment rename disturbs
+# nothing -- it writes characters into segname/sectname fields -- so it skips
+# the gate, and these are the assertions that it really does, and that an
+# operation which DOES disturb those values still meets it.
 #
 # The input is tests/mkimplausible.c's committed, hand-built fixture, not a
 # scan of /usr/lib. An earlier version did scan for a dylib the gate refused,
@@ -2113,20 +2139,97 @@ grep -q 'implausible' "$T/imp_verify.err" \
     && ok "segment: the fixture really is one mg_plausible rejects" \
     || bad "segment: mg_plausible fixture" "machotool verify did not call it implausible: $(cat "$T/imp_verify.err")"
 
-# An ordinary operation on it still meets the gate and is refused, with the
-# input left alone -- so the skip below is narrow, not a hole.
-cp "$T/implausible" "$T/imp_lc"
-imp_before=$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)
-if mtip lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
-    bad "segment: mg_plausible scope" "lc -delete uuid was NOT refused, so the gate is gone"
+# `fixups set classic` genuinely disturbs the relation the gate checks --
+# unlike `lc -delete`, which only frees header pad and repacks the command
+# region without moving any base-relative content (mr_build_lcs's own
+# behavior; see tests/mkimplausible.c's header for why that made the OLD
+# version of this assertion's label an overstatement it happened to pass
+# anyway). This fixture carries a real, if minimal, LC_DYLD_CHAINED_FIXUPS:
+# one rebase link in __DATA. Converting it strips that command, rebuilds
+# __LINKEDIT's rebase/bind opcode streams from scratch, and writes the
+# resolved image base into the __DATA slot the chain pointed at -- content a
+# rename or a header-pad free never touches. So it is refused, with the
+# input left alone, and the skip below is narrow, not a hole.
+cp "$T/implausible" "$T/imp_fx"
+printf 'fixups set classic\n' >"$T/imp_fx.edits"
+imp_before=$(shasum -a 256 < "$T/imp_fx" | cut -d' ' -f1)
+if mtip edit "$T/imp_fx" "$T/imp_fx.edits" >/dev/null 2>"$T/imp_fx.err"; then
+    bad "segment: mg_plausible scope" "fixups set classic was NOT refused, so the gate is gone"
 else
-    grep -q 'no known function' "$T/imp_lc.err" \
-        && ok "segment: an operation that CAN move an offset still meets the gate" \
-        || bad "segment: mg_plausible scope" "lc -delete refused for another reason: $(cat "$T/imp_lc.err")"
+    grep -q 'implausible' "$T/imp_fx.err" \
+        && ok "segment: an operation that genuinely disturbs the relation still meets the gate" \
+        || bad "segment: mg_plausible scope" "fixups set classic refused for another reason: $(cat "$T/imp_fx.err")"
 fi
-[ "$(shasum -a 256 < "$T/imp_lc" | cut -d' ' -f1)" = "$imp_before" ] \
+[ "$(shasum -a 256 < "$T/imp_fx" | cut -d' ' -f1)" = "$imp_before" ] \
     && ok "segment: that refusal left the input untouched" \
     || bad "segment: mg_plausible scope" "the refused input was modified"
+
+# ---- ...and the narrowing really happened, at the VERB ---------------------
+#
+# The other half of "narrow, not a hole", and the half that would otherwise go
+# unasserted: the same fixture, the same gate, an operation that disturbs
+# NOTHING the gate checks -- and it goes through. `lc -delete uuid` frees
+# header pad and repacks the command region; no base-relative value moves, so
+# mrel_verify_applies says there is nothing to re-check and the rewrite is not
+# refused for a property of its INPUT that it did not create.
+#
+# This is the assertion that fails if the derivation is thrown away and the
+# gate goes back to running on every rewrite -- which is exactly what it looked
+# like before the derivation, and exactly what a reviewer restoring "safety" would do.
+# Its partner above (fixups set classic, refused) fails if the gate is deleted
+# instead. Neither alone pins the rule; the pair does.
+cp "$T/implausible" "$T/imp_lc"
+if mtip lc "$T/imp_lc" -delete uuid >/dev/null 2>"$T/imp_lc.err"; then
+    ok "lc -delete: an operation that disturbs nothing the gate checks is not refused for its input"
+else
+    bad "segment: mg_plausible scope" \
+        "lc -delete uuid was refused, so the gate still runs on operations with nothing to check: $(cat "$T/imp_lc.err")"
+fi
+# ...and it really did the edit, rather than passing by doing nothing.
+"$MACHOTOOL" info "$T/imp_lc" 2>/dev/null | grep -q 'LC_UUID' \
+    && bad "segment: mg_plausible scope" "lc -delete uuid exited 0 but the LC_UUID is still there" \
+    || ok "lc -delete: and the command really is gone from the rewritten fixture"
+
+# ---- and the same gate sees what a statement EXPANDED into -----------------
+#
+# `target 10.9` is the one statement whose meaning depends on the binary, so
+# its row declares MREL_NONE -- nothing OF ITS OWN (src/script.c's table).
+# Against this fixture it expands into `fixups set classic`, which declares
+# plenty. A gate reading only the script's declared masks, statement by parsed
+# statement, would therefore skip the verify on exactly the run that most
+# needs it, and this file would be converted and written with an initializer
+# naming no function start. What decides is what the run DID, accumulated as
+# the statements (and their expansions) run, so the refusal below names the
+# final verify and not the conversion.
+cp "$T/implausible" "$T/imp_tgt"
+printf 'target 10.9\n' >"$T/imp_tgt.edits"
+if mtip edit "$T/imp_tgt" "$T/imp_tgt.edits" >/dev/null 2>"$T/imp_tgt.err"; then
+    bad "edit: expansion is accumulated" \
+        "target 10.9 lowered a fixups conversion and skipped the verify it most needs"
+else
+    grep -q 'refused at verification' "$T/imp_tgt.err" \
+        && ok "edit: a statement's expansion decides the verify, not its declared mask" \
+        || bad "edit: expansion is accumulated" \
+               "target 10.9 refused for another reason: $(cat "$T/imp_tgt.err")"
+fi
+
+# ---- and when the gate does NOT apply, the report says what the run did ----
+#
+# With the verify conditional, "why was my file not verified?" is a question an
+# operator can now reasonably ask, so the line that reports the skip names the
+# relations the run disturbed (src/relations.h's mrel_name). It is a report
+# line, so it goes to stderr with the rest of them and stdout is untouched --
+# which is what the second assertion pins.
+cp "$T/implausible" "$T/imp_say"
+printf 'load-command delete uuid\n' >"$T/imp_say.edits"
+mtip edit "$T/imp_say" "$T/imp_say.edits" >"$T/imp_say.out" 2>"$T/imp_say.err"
+grep -q 'this run disturbed sizeofcmds; none of that is re-checked' "$T/imp_say.err" \
+    && ok "edit: the skip line names what the run disturbed" \
+    || bad "edit: the skip line names what the run disturbed" \
+           "stderr does not name the relation: $(cat "$T/imp_say.err")"
+grep -q 're-checked' "$T/imp_say.out" \
+    && bad "edit: the skip line is a report line" "it landed on stdout" \
+    || ok "edit: ...on stderr, where the rest of the report goes"
 
 # ---- an EMPTY LC_FUNCTION_STARTS is "nothing to check", not a refusal ------
 #
@@ -2196,12 +2299,29 @@ fi
 # the fat wrap just above and through fix_macho in wrapper_test.sh) and
 # MR_ERROR had none, because building a hermetic bad slice looked like it
 # needed a scan of the host. It does not: it needs a slice that IS a 64-bit
-# Mach-O and whose edit mg_plausible refuses, which is exactly what
-# tests/mkimplausible.c already builds, wrapped at CPU_TYPE_X86_64 so
-# mr_process_thin reaches it instead of skipping it.
+# Mach-O and whose edit is refused, while the OTHER slice's edit succeeds --
+# so that a rewriter which wrote what it had would leave exactly the
+# inconsistent file the message names.
+#
+# WHAT MAKES ONE SLICE REFUSE, and why it is no longer mg_plausible. This
+# block used to run `lc -delete uuid` and rely on the implausible fixture
+# meeting the gate. It no longer does: `load-command delete` frees header pad
+# and moves no base-relative value, so the derived applicability
+# (src/relations.h) skips the gate for it, the slice's edit succeeds, and
+# there is no MR_ERROR to propagate. Nor can any verb make THIS fixture meet
+# that gate: only a header grow disturbs the base-relative values, and
+# mkimplausible builds an MH_DYLIB, which mg_grow_header refuses to grow at
+# all (it has no __PAGEZERO to lower the base into).
+#
+# So the per-slice refusal is now the header-pad one, which this pair of
+# slices produces asymmetrically on its own: appending a 505-byte dylib path
+# costs 536 bytes of load command, which fits the compiled slice's 2816-byte
+# pad and does not fit the fixture's 480-byte pad. Slice 0 is edited, slice 1
+# is refused, and the assertions below are unchanged in what they claim.
+long_dylib="/$(printf 'a%.0s' $(seq 1 498)).dylib"
 "$T/segread" wrap "$T/mrerr_fat" "$T/segment_fat_slice" "$T/implausible" 16777223
 mrerr_before=$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)
-if mtip lc "$T/mrerr_fat" -delete uuid >"$T/mrerr.out" 2>"$T/mrerr.err"; then
+if mtip dylib "$T/mrerr_fat" -append "$long_dylib" >"$T/mrerr.out" 2>"$T/mrerr.err"; then
     bad "lc: MR_ERROR fat slice" "exited 0; a partial rewrite was reported as success"
 else
     ok "lc: a fat slice whose edit is refused refuses the whole file (nonzero exit)"
@@ -2213,9 +2333,20 @@ grep -q 'refusing the whole fat file -- a partial rewrite would leave its slices
 grep -q 'arch 1 (cputype 0x1000007)' "$T/mrerr.err" \
     && ok "lc: and names which slice it was" \
     || bad "lc: MR_ERROR slice label" "expected 'arch 1 (cputype 0x1000007)', got: $(cat "$T/mrerr.err")"
-grep -q 'no known function' "$T/mrerr.err" \
+grep -q "don't fit in header pad" "$T/mrerr.err" \
     && ok "lc: and the underlying per-slice refusal is still on stderr too" \
     || bad "lc: MR_ERROR per-slice reason" "the slice's own refusal was swallowed: $(cat "$T/mrerr.err")"
+# The premise the asymmetry rests on: slice 0 really could take this append.
+# Without it the run would refuse at slice 0 and every assertion above would
+# pass while covering nothing about the SECOND slice. Asserted against the
+# very bytes the wrap used for slice 0, not against a container that merely
+# resembles it.
+cp "$T/segment_fat_slice" "$T/mrok"
+if mtip dylib "$T/mrok" -append "$long_dylib" >"$T/mrok.out" 2>"$T/mrok.err"; then
+    ok "lc: and slice 0's own bytes really could take that append, so slice 1 is what refused"
+else
+    bad "lc: MR_ERROR premise" "slice 0 refused it too: $(cat "$T/mrok.err")"
+fi
 # The whole point of refusing: slice 0 WAS editable, so an abort that wrote
 # anything would leave exactly the inconsistent file the message names.
 [ "$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)" = "$mrerr_before" ] \
@@ -2229,7 +2360,7 @@ grep -q 'no known function' "$T/mrerr.err" \
 # above, and fix_macho's in wrapper_test.sh) cover a slice that really is not
 # a Mach-O, which is the only thing that reaches that path.
 "$T/segread" wrap "$T/mrskip_fat" "$T/segment_fat_slice" "$T/implausible" 7
-if mtip lc "$T/mrskip_fat" -delete uuid >"$T/mrskip.out" 2>"$T/mrskip.err"; then
+if mtip dylib "$T/mrskip_fat" -append "$long_dylib" >"$T/mrskip.out" 2>"$T/mrskip.err"; then
     bad "lc: MR_SKIP/MR_ERROR split" "a Mach-O slice at cputype 0x7 was skipped, not refused"
 else
     grep -q 'arch 1 (cputype 0x7): refusing the whole fat file' "$T/mrskip.err" \

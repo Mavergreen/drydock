@@ -156,12 +156,15 @@ for why they would be rare:
     names them) now exits 2, where the C tool always exited a flat 1. One
     exception, `change_dylib`'s only: an allocation failure INSIDE
     `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the same as
-    every other reason either one refuses -- and it needs no `-grow`.
-    `change_dylib` reaches `mg_grow_header` only through `--allow-grow`,
-    but `src/rewrite.c` runs `mg_plausible` on every rewrite that is not a
-    pure segment rename -- every rewrite `change_dylib` can ask for --
-    unless `MACHO_NO_VERIFY` is set. `src/rewrite.c`'s own comment on that
-    fold has the reasoning. An invocation touching more than one family is
+    every other reason either one refuses. This wrapper reaches both only
+    through `--allow-grow`: `mg_grow_header` by definition, and `mg_plausible`
+    because `mr_process_thin` runs it only when the rewrite disturbed the
+    base-relative values it checks (`src/relations.h`'s
+    `mrel_verify_applies`), which for the operations `change_dylib` can ask
+    for means only a rewrite that grew the header. (Before that derivation
+    shipped, `mg_plausible` ran on every rewrite that was not a pure segment
+    rename, unless `MACHO_NO_VERIFY` was set.) `src/rewrite.c`'s own comment
+    on that fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `machotool` lines with shell steps between them:
     it is one `machotool edit FILE OUT -`, whose exit code is `me_run`'s own, from
     the same `MR_REFUSED`/`MR_FAIL` vocabulary. The "`change_dylib`: the
@@ -241,11 +244,12 @@ passes through.
 One exception to the 1-vs-2 split, `change_dylib`'s only: an allocation failure
 INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into
 `MR_REFUSED`, the same as every other reason either one refuses —
-`src/rewrite.c`'s comment on that fold has the reasoning. It needs no `-grow`:
-this wrapper reaches `mg_grow_header` only through `--allow-grow`, but
-`mr_process_thin` runs `mg_plausible` on every rewrite that is not a pure
-segment rename, which is every rewrite this wrapper can ask for, unless
-`MACHO_NO_VERIFY` is set.
+`src/rewrite.c`'s comment on that fold has the reasoning. This wrapper reaches
+both only through `--allow-grow`: `mg_grow_header` by definition, and
+`mg_plausible` because `mr_process_thin` runs it only when the rewrite
+disturbed the base-relative values it checks (`src/relations.h`'s
+`mrel_verify_applies`) — which, for the operations this wrapper can ask for,
+means only a rewrite that grew the header.
 
 `--fatal-warnings` is a separate fact, not what makes any of the above
 conditional: this translation never emits it — `change_dylib`'s grammar has no
@@ -411,7 +415,7 @@ rewrites, and both are reported rather than worked around.
 
 | the difference | held by |
 |---|---|
-| **`mg_plausible`.** `mr_apply_file` runs that gate before writing (except for a rename-only operation set, which `src/rewrite.c` skips because the gate asks an OFFSET question and a rename moves no offset). `fix_macho` had no such gate, so an image the gate rejects is one this refuses and `fix_macho` rewrote. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for an ordinary operation and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
+| **`mg_plausible`.** `mr_apply_file` runs that gate before writing only when the run disturbed what it checks — the gate asks an OFFSET question about base-relative values, and `src/relations.h`'s `mrel_verify_applies` decides. Of the operations this driver offers, only a header grow disturbs them, so in practice `fix_macho`'s replacement reaches this gate where `fix_macho` itself had none, and skips it where the rewrite moved no offset. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for `fixups set classic`, which disturbs the relation, and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
 | **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. `compat/rename_segment.sh`'s header has the measurement (on `/usr/lib/libxcselect.dylib`) and the note that the smallest fix is a change to `machotool`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
 
 ### `fix_macho`: exit codes
