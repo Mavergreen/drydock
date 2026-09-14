@@ -4,14 +4,23 @@
 # machotool has two ways to modify a binary with DIFFERENT semantics: a CLI of
 # verbs (a set of operations applied in one pass) and a script of statements
 # (a sequence, one operation per pass). The plan removes the verbs. A verb may
-# be removed only once its script form is proved to produce byte-identical
-# output on a fixture the verb ACTUALLY CHANGES -- a pair that agrees because
-# both sides no-opped licenses nothing, so every pair below asserts the change
-# happened before it asserts the two forms agree.
+# be removed only once its script form is proved to produce a byte-identical
+# OUTPUT FILE on a fixture the verb ACTUALLY CHANGES -- a pair that agrees
+# because both sides no-opped licenses nothing, so every pair below asserts the
+# change happened before it asserts the two forms agree.
+#
+# What is compared is the output FILE and the exit code, not stdout. `segment`
+# is the one verb with a stdout contract of its own (`--capabilities` says
+# `reports=renamed`), and compat/rename_segment.sh:205-230 reshapes that text
+# deliberately; nothing here should be read as a guarantee about it.
 #
 # EVERY operation and flag `machotool --capabilities` advertises for a deleted
-# verb gets its own pair, not one exemplar per verb: `dylib` alone exposes five
-# operations and two flags, and proving `-append` says nothing about `-insert`.
+# verb gets its own pair, not one exemplar per verb, and not one exemplar per
+# flag NAME either -- that is the same error one level up. The surface is
+# 18 operations (dylib 5, rpath 4, lc 5 kinds, and the four verbs that take
+# none) and SIX verb-flag combinations, because a flag is parsed and lowered
+# per verb: allow-grow on dylib, rpath and minos, fatal-warnings on dylib,
+# rpath and lc. All 18 and all 6 have a pair below.
 #
 # spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
 #
@@ -109,6 +118,25 @@ while [ "$fill_i" -lt 9 ]; do
     fill_i=$((fill_i + 1))
 done
 "$MACHOTOOL" "$T/main" "$T/tight" <"$T/fill.edits" >/dev/null 2>&1 || true
+# The same treatment for minos, which needs its own base: the pad has to be too
+# small for an LC_VERSION_MIN_MACOSX (16 bytes), and the image must not already
+# carry one, or both forms no-op whatever the flag says.
+#
+# The long fills alone leave a pad that still has room, so one more append is
+# sized to land the pad at 8 bytes. An appended LC_LOAD_DYLIB costs
+# sizeof(struct dylib_command) + the NUL-terminated path rounded up to 8, so a
+# path of (cost - 25) bytes costs exactly `cost`. Computed rather than spelled,
+# so editing PADLONG above does not silently leave a roomy pad here -- and the
+# assertion just below checks the result either way.
+"$MACHOTOOL" "$T/minos.in" "$T/mvbase" <"$T/fill.edits" >/dev/null 2>&1 || true
+mvbase_pad=$("$MACHOTOOL" info "$T/mvbase" 2>/dev/null | sed -n 's/^header pad: \([0-9]*\) bytes.*/\1/p')
+mv_tail_len=$(( ${mvbase_pad:-0} - 8 - 25 ))
+mv_tail=/
+mv_i=1
+while [ "$mv_i" -lt "$mv_tail_len" ]; do mv_tail="${mv_tail}x"; mv_i=$((mv_i + 1)); done
+cp "$T/fill.edits" "$T/mvfill.edits"
+printf 'dylib append %s\n' "$mv_tail" >>"$T/mvfill.edits"
+"$MACHOTOOL" "$T/minos.in" "$T/mvtight" <"$T/mvfill.edits" >/dev/null 2>&1 || true
 # The paths the allow-grow pairs append are long for the same reason: what
 # matters is not that the pad is small in absolute terms but that it is smaller
 # than the command being appended.
@@ -121,6 +149,15 @@ tight_pad=$("$MACHOTOOL" info "$T/tight" 2>/dev/null | sed -n 's/^header pad: \(
 [ -n "$tight_pad" ] && [ "$tight_pad" -lt "$grow_need" ] \
     && ok "fixture: the tight-pad image has $tight_pad bytes left and the append needs $grow_need, so it must grow" \
     || bad "fixture: tight pad" "pad is '${tight_pad:-none}' against an append needing $grow_need -- the command would fit, and every allow-grow pair below would pass with the flag permitting a growth that never happens"
+# sizeof(struct version_min_command).
+mv_need=16
+mvtight_pad=$("$MACHOTOOL" info "$T/mvtight" 2>/dev/null | sed -n 's/^header pad: \([0-9]*\) bytes.*/\1/p')
+[ -n "$mvtight_pad" ] && [ "$mvtight_pad" -lt "$mv_need" ] \
+    && ok "fixture: the minos tight-pad image has $mvtight_pad bytes left and LC_VERSION_MIN_MACOSX needs $mv_need, so it must grow" \
+    || bad "fixture: minos tight pad" "pad is '${mvtight_pad:-none}' against a command needing $mv_need -- it would fit, and the minos allow-grow pair below would pass with the flag permitting a growth that never happens"
+"$MACHOTOOL" info "$T/mvtight" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    && bad "fixture: minos tight pad" "the fixture already carries LC_VERSION_MIN_MACOSX, so both forms would no-op and the flag under test would decide nothing" \
+    || ok "fixture: the minos tight-pad image has no LC_VERSION_MIN_MACOSX yet"
 
 # --- the pair helpers ------------------------------------------------------
 #
@@ -128,8 +165,9 @@ tight_pad=$("$MACHOTOOL" info "$T/tight" 2>/dev/null | sed -n 's/^header pad: \(
 #
 # Runs the verb form and the script form of the same request against the same
 # input and asserts three things: the verb really changed the input, the two
-# forms exited the same way, and they produced the same bytes. The verb's OUT
-# must be "$T/NAME.verb".
+# forms exited the same way, and their OUTPUT FILES are byte-identical. Their
+# stdout is captured but not compared -- see the header. The verb's OUT must be
+# "$T/NAME.verb".
 pair() {
     p_name=$1; p_in=$2; p_stmt=$3
     shift 3
@@ -292,6 +330,19 @@ dylib append $GROWDY" \
 pair rpath-allow-grow "$T/tight" "allow-grow
 rpath append $GROWRP" \
     -- rpath "$T/tight" "$T/rpath-allow-grow.verb" --allow-grow -append "$GROWRP"
+# minos is the third verb --capabilities gives allow-grow to, and the one whose
+# two forms do not even share an entry point: the verb calls mv_add_version_min
+# (the file path) where the statement calls mv_add_version_min_image (the
+# buffer path), so this is the flag row most able to diverge unnoticed.
+refusal_pair minos-no-grow "$T/mvtight" 'version-min set 10.9' \
+    -- minos "$T/mvtight" "$T/minos-no-grow.verb" 10.9
+pair minos-allow-grow "$T/mvtight" 'allow-grow
+version-min set 10.9' \
+    -- minos "$T/mvtight" "$T/minos-allow-grow.verb" 10.9 --allow-grow
+"$MACHOTOOL" info "$T/minos-allow-grow.verb" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    && ok "minos-allow-grow: the command the flag made room for is really there" \
+    || bad "minos-allow-grow" "no LC_VERSION_MIN_MACOSX in the output -- the run grew the image and then did not add the command it grew for, so a 10.9 target would silently not be one"
+
 # ... and the grow really happened, rather than the pad turning out to be
 # roomy after all: the output is bigger than the input.
 grow_in=$(wc -c <"$T/tight" | tr -d " ")
