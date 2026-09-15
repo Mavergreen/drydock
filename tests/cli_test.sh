@@ -1,10 +1,10 @@
 #!/bin/sh
 # tests/cli_test.sh — exercises the machorewrite CLI itself: --capabilities, the
-# two read-only verbs, `edit`, and the bare `FILE OUT` form that is the
-# only way to change a binary.
+# two read-only verbs, and the bare `FILE OUT` form that is the only way to
+# change a binary.
 #
-# THE EIGHT MUTATING VERBS ARE GONE (declassify, segment, retag-swift, minos,
-# lc, dylib, rpath, grow). For the first seven, every assertion that used to
+# THE NINE MUTATING VERBS ARE GONE (declassify, segment, retag-swift, minos,
+# lc, dylib, rpath, grow, edit). For the first seven, every assertion that used to
 # run one runs its statement equivalent instead, keeping its own question and
 # its own FAIL message: the property under test was always the REWRITE, never
 # the spelling that reached it. The equivalence was proved byte for byte before
@@ -75,48 +75,27 @@ skip() { echo "SKIP $1: $2"; }
 # section (which needs it three times) doesn't repeat the pipeline.
 sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
-# mtip VERB FILE ARG...  -- run a verb that writes OUT and leave its result AT
-# FILE. One verb is left that does that, `edit`.
+# mts FILE STATEMENT...  -- run the bare `machorewrite FILE OUT` form and leave
+# its result AT FILE, with each argument written as one line of the script on
+# stdin. This is what every assertion that used to name a mutating verb runs
+# now, and it is the ONLY route to a rewrite there is: `mts "$f" 'dylib replace
+# A B'` is what `machotool dylib "$f" -replace A B` used to be.
 #
-# It takes `FILE OUT` and never writes FILE. Most of the assertions below were
-# written when the rewriting verbs rewrote FILE, and they are
-# about the REWRITE -- which load command moved, which ordinal was renumbered,
-# what the run printed, what it refused -- not about which path the bytes land
-# in. So they keep asking their own question, of a file this helper puts the
-# result back into: run the verb with a temp beside FILE as OUT, then mv the
-# temp over FILE, which is precisely the two steps the compat wrappers take
-# (compat/machorewrite-compat.sh's install path). The verb's stdout and exit status
-# are passed through unchanged, less the "Wrote <temp>" line, which names a
-# path no assertion here asked about.
+# WHY A HELPER AT ALL: machorewrite takes `FILE OUT` and never writes FILE, but
+# most of the assertions below were written when the rewriting verbs rewrote
+# FILE, and they are about the REWRITE -- which load command moved, which
+# ordinal was renumbered, what the run printed, what it refused -- not about
+# which path the bytes land in. So they keep asking their own question, of a
+# file this helper puts the result back into: run with a temp beside FILE as
+# OUT, then mv the temp over FILE, which is precisely the two steps the compat
+# wrappers take (compat/machorewrite-compat.sh's install path).
 #
 # WHAT THIS DOES NOT HIDE: that FILE is never written by machorewrite itself is
-# asserted directly in "the mutating forms never write their input"
-# below -- against FILE's bytes AND its inode, with no helper in the way. This
-# one is an ergonomic for everything else, not a stand-in for that.
-mtip() {
-    mtip_verb=$1; mtip_file=$2; shift 2
-    mtip_tmp="$mtip_file.mtip"
-    rm -f "$mtip_tmp"
-    mtip_rc=0
-    "$MACHOREWRITE" "$mtip_verb" "$mtip_file" "$mtip_tmp" "$@" >"$T/mtip.out" || mtip_rc=$?
-    # Through the environment, not `awk -v`: that escape-processes what it
-    # assigns, so a $T containing a backslash would leave the line unsuppressed.
-    # compat/machorewrite-compat.sh's mw_run_to_tmp, which this mirrors, has the
-    # measurement.
-    MTIP_PREFIX="Wrote $mtip_tmp (" awk 'index($0, ENVIRON["MTIP_PREFIX"]) != 1' "$T/mtip.out"
-    if [ "$mtip_rc" -eq 0 ]; then
-        mv -f "$mtip_tmp" "$mtip_file" || return 2
-    else
-        rm -f "$mtip_tmp"
-    fi
-    return "$mtip_rc"
-}
-
-# mts FILE STATEMENT...  -- the same two steps for the bare `machorewrite FILE OUT`
-# form, with each argument written as one line of the script on stdin. This is
-# what every assertion that used to name a mutating verb runs now, and it is
-# the ONLY route to a rewrite there is: `mts "$f" 'dylib replace A B'` is what
-# `mtip dylib "$f" -replace A B` used to be. A directive is just another line,
+# asserted directly in "the mutating form never writes its input" below --
+# against FILE's bytes AND its inode, with no helper in the way. This one is an
+# ergonomic for everything else, not a stand-in for that.
+#
+# A directive is just another line,
 # so `--allow-grow` becomes a leading 'allow-grow' argument and
 # `--fatal-warnings` a leading 'fatal-warnings' one -- which is why the
 # arguments stay in the order the flags were typed.
@@ -129,7 +108,11 @@ mtip() {
 # stderr ("<OUT>: written (N,NNN bytes)") where the verbs reported on stdout
 # ("Wrote <OUT> (N bytes)"); each names the temp, which no assertion here asked
 # about, so each is dropped from the stream it arrives on. Callers that redirect
-# only one of the two still see the other unchanged.
+# only one of the two still see the other unchanged. Each filter passes its
+# prefix through the ENVIRONMENT, not `awk -v`: that escape-processes what it
+# assigns, so a $T containing a backslash would leave the line unsuppressed.
+# compat/machorewrite-compat.sh's mw_run_to_tmp, which this mirrors, has the
+# measurement.
 mts() {
     mts_file=$1; shift
     mts_tmp="$mts_file.mtip"
@@ -415,34 +398,47 @@ rc=0
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
 
-# "output positional=2 never-writes-input" is the shape every mutating form's
+# "output positional=2 never-writes-input" is the shape the mutating form's
 # positionals take: a wrapper checks for this line rather than assume it.
 echo "$caps" | grep -qx "output positional=2 never-writes-input" \
     && ok "capabilities: output line documents FILE OUT, never-writes-input" \
     || bad "capabilities: output line" "missing or wrong: $(echo "$caps" | grep '^output')"
 
-for v in verify info edit; do
+# THE MUTATING FORM MUST BE ADVERTISED, and there is exactly one line that can
+# do it. While `verb edit` stood here, --capabilities listed every `statement`
+# a wrapper could send and no way to send one: the bare form appeared nowhere,
+# so the interface the design calls the only mutating one was the one a
+# machine-readable caller could not discover. Whole-line equality, because the
+# grammar (`bare`, no verb word) and where the script comes from (`stdin`) are
+# both part of the claim -- and because "no flags" is asserted by the absence
+# of a flags= field, which only whole-line equality can see.
+echo "$caps" | grep -qxF "mutate bare script=stdin" \
+    && ok "capabilities: the bare FILE OUT form is advertised, taking its script on stdin" \
+    || bad "capabilities: mutate line" "the only mutating form is not advertised: $(echo "$caps" | grep '^mutate')"
+
+for v in verify info; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
         bad "capabilities: $v" "not listed"
     fi
 done
-# AND THE EIGHT THAT ARE GONE MUST NOT BE ADVERTISED. print_capabilities' own
+# AND THE NINE THAT ARE GONE MUST NOT BE ADVERTISED. print_capabilities' own
 # contract is "never advertise one that errors out", and each of these now
 # errors out -- `machorewrite dylib f o` is the bare form over a file named
 # `dylib`, not a verb. A stale line here would send a wrapper at a verb this
 # build has no arm for. `grow` is on this list for the same reason as the
-# other seven, though unlike them it has no statement form to be sent to
-# instead: it is simply gone.
+# other seven, though unlike them it had no statement form to be sent to
+# instead: it is simply gone. `edit` is on it because the bare form IS `edit`
+# now -- the `mutate` line above is what a wrapper reads in its place.
 caps_stale=0
-for v in declassify segment retag-swift minos lc dylib rpath grow; do
+for v in declassify segment retag-swift minos lc dylib rpath grow edit; do
     if echo "$caps" | grep -q "^verb $v"; then
         bad "capabilities: $v" "still advertised, but the verb is gone"
         caps_stale=1
     fi
 done
-[ "$caps_stale" -eq 0 ] && ok "capabilities: none of the eight deleted verbs is still advertised"
+[ "$caps_stale" -eq 0 ] && ok "capabilities: none of the nine deleted verbs is still advertised"
 # usage() is the other place a caller reads about what this build can do, and
 # the bare `FILE OUT` form is the whole mutating surface now -- a usage line
 # that named only the read-only queries would leave a caller with no way in.
@@ -454,13 +450,15 @@ grep -q "stdin" "$T/usage.err" \
     && ok "usage: says the statements come from stdin" \
     || bad "usage: stdin" "the bare form is listed without saying where the statements come from: $(cat "$T/usage.err")"
 usage_stale=0
-for v in declassify segment retag-swift minos grow; do
+for v in declassify segment retag-swift minos grow edit; do
     grep -qE "^ +[^ ]+ $v " "$T/usage.err" && { bad "usage: $v" "still listed, but the verb is gone"; usage_stale=1; }
 done
 [ "$usage_stale" -eq 0 ] && ok "usage: none of the deleted verbs is still listed"
-grep -q "edit" "$T/usage.err" \
-    && ok "usage: edit listed" \
-    || bad "usage: edit" "not mentioned at all"
+# ... and the remedy for a script that lives in a file is named, since deleting
+# the `edit` verb is only free if the usage text says what replaced it.
+grep -q "FILE OUT < script" "$T/usage.err" \
+    && ok "usage: says how to run a script that lives in a file" \
+    || bad "usage: script file" "no redirection example: $(cat "$T/usage.err")"
 # `rpath insert` IS implemented; capabilities must claim it. A wrapper has
 # no other way to learn this build can place a search path FIRST, which
 # docs/PROPOSAL.md calls a new capability change_dylib never had. It was the
@@ -485,15 +483,6 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 [ "$caps_rpath_ops" = "append,delete,insert,replace," ] \
     && ok "capabilities: rpath advertises four ops, and still omits reexport" \
     || bad "capabilities ops" "rpath ops moved: $caps_rpath_ops"
-
-# edit's own line carries NO flags= field, because `edit` accepts no flags.
-# `--output` became the OUT positional, `--dry-run` went with it (a scratch OUT
-# is the same run), and `--verbose` went when the report stopped being optional:
-# advertising any of them would tell a wrapper it may pass a flag this build
-# refuses. Whole-line equality, because "not advertised" is the claim.
-echo "$caps" | grep -qxF "verb edit" \
-    && ok "capabilities: edit advertises no flags at all" \
-    || bad "capabilities: edit flags" "expected a bare 'verb edit': $(echo "$caps" | grep '^verb edit')"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The statement vocabulary
@@ -904,9 +893,11 @@ mkdir -p "$T/alone"
 cp "$MACHOREWRITE" "$T/alone/machorewrite"
 alone_caps=$("$T/alone/machorewrite" --capabilities)
 alone_missing=""
-for v in verify info edit; do
+for v in verify info; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
 done
+echo "$alone_caps" | grep -qxF "mutate bare script=stdin" \
+    || alone_missing="$alone_missing 'mutate bare script=stdin'"
 for s in 'dylib append 1' 'load-command delete 1' 'version-min set 1' 'segment rename 2' 'swift-abi set 1' 'fixups set 1'; do
     echo "$alone_caps" | grep -qxF "statement $s" || alone_missing="$alone_missing '$s'"
 done
@@ -2169,9 +2160,8 @@ grep -q 'implausible' "$T/imp_verify.err" \
 # rename or a header-pad free never touches. So it is refused, with the
 # input left alone, and the skip below is narrow, not a hole.
 cp "$T/implausible" "$T/imp_fx"
-printf 'fixups set classic\n' >"$T/imp_fx.edits"
 imp_before=$(shasum -a 256 < "$T/imp_fx" | cut -d' ' -f1)
-if mtip edit "$T/imp_fx" "$T/imp_fx.edits" >/dev/null 2>"$T/imp_fx.err"; then
+if mts "$T/imp_fx" "fixups set classic" >/dev/null 2>"$T/imp_fx.err"; then
     bad "segment: mg_plausible scope" "fixups set classic was NOT refused, so the gate is gone"
 else
     grep -q 'implausible' "$T/imp_fx.err" \
@@ -2220,8 +2210,7 @@ fi
 # the statements (and their expansions) run, so the refusal below names the
 # final verify and not the conversion.
 cp "$T/implausible" "$T/imp_tgt"
-printf 'target 10.9\n' >"$T/imp_tgt.edits"
-if mtip edit "$T/imp_tgt" "$T/imp_tgt.edits" >/dev/null 2>"$T/imp_tgt.err"; then
+if mts "$T/imp_tgt" "target 10.9" >/dev/null 2>"$T/imp_tgt.err"; then
     bad "edit: expansion is accumulated" \
         "target 10.9 lowered a fixups conversion and skipped the verify it most needs"
 else
@@ -2239,8 +2228,7 @@ fi
 # line, so it goes to stderr with the rest of them and stdout is untouched --
 # which is what the second assertion pins.
 cp "$T/implausible" "$T/imp_say"
-printf 'load-command delete uuid\n' >"$T/imp_say.edits"
-mtip edit "$T/imp_say" "$T/imp_say.edits" >"$T/imp_say.out" 2>"$T/imp_say.err"
+mts "$T/imp_say" "load-command delete uuid" >"$T/imp_say.out" 2>"$T/imp_say.err"
 grep -q 'this run disturbed sizeofcmds; none of that is re-checked' "$T/imp_say.err" \
     && ok "edit: the skip line names what the run disturbed" \
     || bad "edit: the skip line names what the run disturbed" \
@@ -2379,28 +2367,215 @@ fi
 [ "$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)" = "$mrerr_before" ] \
     && ok "lc: and left the fat file byte-for-byte unchanged, slice 0 included" \
     || bad "lc: MR_ERROR atomicity" "the refused fat file was modified"
-# MEASURED WHILE WRITING THIS, and worth pinning: the fat table's cputype is
-# NOT what decides MR_SKIP vs MR_ERROR. Wrap the very same bad slice at
-# CPU_TYPE_X86 and it is still MR_ERROR -- mr_process_thin asks the slice's
-# own bytes whether they are a 64-bit Mach-O, and the cputype only supplies
-# the "arch N (cputype 0x...)" label. So the MR_SKIP assertions (the fat wrap
-# above, and fix_macho's in wrapper_test.sh) cover a slice that really is not
-# a Mach-O, which is the only thing that reaches that path.
+# ---- A SLICE IS WHAT ITS BYTES ARE, NOT WHAT ITS fat_arch SAYS -------------
 #
-# THE SCRIPT PATH DECIDES THIS DIFFERENTLY, measured rather than assumed: it
-# selects slices by ARCH before it looks at their bytes, and CPU_TYPE_X86 (0x7)
-# is 32-bit, so the bad slice is passed through unchanged and the run SUCCEEDS.
-# mr_process_thin asked the slice's own bytes; me_fat_slice asks the fat
-# table's cputype first. That is a real difference between the two drivers, and
-# it is asserted here in its new form rather than left as a stale expectation.
-"$T/segread" wrap "$T/mrskip_fat" "$T/segment_fat_slice" "$T/implausible" 7
-if mts "$T/mrskip_fat" "dylib append $long_dylib" >"$T/mrskip.out" 2>"$T/mrskip.err"; then
-    grep -q 'slice i386: 32-bit; passed through unchanged' "$T/mrskip.err" \
-        && ok "lc: a slice the fat table calls 32-bit is passed through, whatever its own bytes say" \
-        || bad "lc: MR_SKIP/MR_ERROR split" "succeeded, but not by passing the slice through: $(cat "$T/mrskip.err")"
+# The two fat loops in this repo have to answer "is this slice a 64-bit
+# Mach-O?" the same way. src/rewrite.c's asks the slice's own bytes
+# (mr_process_thin returns MR_SKIP for exactly `mi_wrap(...) != 0`);
+# src/edit.c's me_run_fat asked the fat_arch's DECLARED cputype, and every
+# compat wrapper moved from the first loop to the second. A container whose
+# fat_arch disagrees with its slice was therefore processed by one and skipped
+# by the other -- measured through change_dylib and fix_macho as a silent
+# installed-bytes change in one direction (exit 0 -> 0) and a NEW REFUSAL in
+# the other (exit 0 -> 1). Both shapes are asserted here, in the direction the
+# unified classification gives.
+#
+# Reachable, if narrowly: lipo never emits a container whose fat_arch cputype
+# and slice magic disagree, a truncated or hand-built one can, and nothing in
+# compat/ intercepts change_dylib or fix_macho before they reach this code.
+#
+# SHAPE ONE: declared 32-bit over a slice that IS a 64-bit Mach-O. The very
+# same two slices as mrerr_fat above -- only ar[1].cputype differs, i386
+# instead of x86_64 -- so the outcome must be the same one: slice 1 is a
+# 64-bit Mach-O that cannot take the append, and the whole file is refused.
+# A build that read the declaration would pass slice 1 through and exit 0.
+"$T/segread" wrap "$T/fatdecl32" "$T/segment_fat_slice" "$T/implausible" 7
+fatdecl32_before=$(shasum -a 256 < "$T/fatdecl32" | cut -d' ' -f1)
+if mts "$T/fatdecl32" "dylib append $long_dylib" >"$T/fatdecl32.out" 2>"$T/fatdecl32.err"; then
+    bad "fat: declared 32-bit over a 64-bit slice" \
+        "exit 0 -- the slice was passed through on its fat_arch's word, so the same container is edited or skipped depending on which cputype it happens to declare: $(cat "$T/fatdecl32.err")"
 else
-    bad "lc: MR_SKIP/MR_ERROR split" "a slice the fat table calls 32-bit was not passed through: $(cat "$T/mrskip.err")"
+    ok "fat: a slice declared 32-bit is still read as the 64-bit Mach-O it is"
 fi
+[ "$(shasum -a 256 < "$T/fatdecl32" | cut -d' ' -f1)" = "$fatdecl32_before" ] \
+    && ok "fat: ... and that refusal left the container byte-for-byte unchanged" \
+    || bad "fat: declared 32-bit over a 64-bit slice" "the refused fat file was modified"
+grep -q "don't fit in header pad" "$T/fatdecl32.err" \
+    && ok "fat: ... refused for the slice's own reason, not for its declaration" \
+    || bad "fat: declared 32-bit over a 64-bit slice" \
+           "refused, but not by editing slice 1: $(cat "$T/fatdecl32.err")"
+
+# SHAPE TWO: declared 64-bit over a slice that is NOT a Mach-O at all. This is
+# the direction that acquired a new refusal: the run must pass that slice
+# through and SUCCEED, rewriting the slice it does understand -- which is what
+# `fix_macho` has always done ("Skipping arch %u") and what src/rewrite.c's
+# loop does today.
+dd if=/dev/zero bs=1 count=4096 2>/dev/null | tr '\000' 'Z' > "$T/notmacho"
+"$T/segread" wrap "$T/fatdecl64" "$T/segment_fat_slice" "$T/notmacho" 16777223
+if mts "$T/fatdecl64" 'dylib append /fatdecl64.dylib' >"$T/fatdecl64.out" 2>"$T/fatdecl64.err"; then
+    ok "fat: a slice declared 64-bit that is not a Mach-O is passed through, not refused"
+else
+    bad "fat: declared 64-bit over a non-Mach-O slice" \
+        "the whole run was refused on a container the pre-script tool rewrote and exited 0 on: $(cat "$T/fatdecl64.err")"
+fi
+grep -q 'slice x86_64: not a 64-bit Mach-O; passed through unchanged' "$T/fatdecl64.err" \
+    && ok "fat: ... and the report says why, without calling it 32-bit" \
+    || bad "fat: declared 64-bit over a non-Mach-O slice" \
+           "no pass-through line naming the real reason: $(cat "$T/fatdecl64.err")"
+"$T/segread" dump "$T/fatdecl64" 0 "$T/fatdecl64_s0"
+"$MACHOREWRITE" info "$T/fatdecl64_s0" | grep -qF "path=/fatdecl64.dylib" \
+    && ok "fat: ... and the slice it DID understand was rewritten" \
+    || bad "fat: declared 64-bit over a non-Mach-O slice" "slice 0 did not get the append"
+"$T/segread" dump "$T/fatdecl64" 1 "$T/fatdecl64_s1"
+cmp -s "$T/fatdecl64_s1" "$T/notmacho" \
+    && ok "fat: ... and the passed-through slice is byte-identical" \
+    || bad "fat: declared 64-bit over a non-Mach-O slice" "the passed-through slice changed"
+
+# The other half of the same rule: a slice that is neither -- declared i386 AND
+# not a Mach-O -- is passed through as "32-bit", because that is what it is.
+"$T/segread" wrap "$T/fatskip" "$T/segment_fat_slice" "$T/notmacho" 7
+if mts "$T/fatskip" 'dylib append /fatskip.dylib' >"$T/fatskip.out" 2>"$T/fatskip.err"; then
+    grep -q 'slice i386: 32-bit; passed through unchanged' "$T/fatskip.err" \
+        && ok "fat: a 32-bit slice that is not a Mach-O is passed through, and said to be 32-bit" \
+        || bad "fat: 32-bit non-Mach-O slice" "succeeded, but not by passing the slice through: $(cat "$T/fatskip.err")"
+else
+    bad "fat: 32-bit non-Mach-O slice" "a 32-bit slice was not passed through: $(cat "$T/fatskip.err")"
+fi
+
+# SHAPE THREE: declared 64-bit over a slice whose bytes are a REAL 32-BIT
+# MACH-O -- MH_MAGIC, a well-formed 32-bit header, just not a 64-bit one.
+#
+# WHY THIS IS NOT SHAPE TWO AGAIN. "Declared 64-bit, bytes are not a 64-bit
+# Mach-O" is a direction, not a shape, and it has more members than one: a
+# 32-bit Mach-O, a non-Mach-O blob (shape two), a truncated slice, an
+# MH_MAGIC_64 header whose load commands do not fit, a zero-length slice. They
+# agree in outcome and they do NOT agree in what a wrong implementation gets
+# right. An implementation that answers "is this a 64-bit Mach-O?" by looking
+# at the DECLARED cputype and then excusing itself for one magic value -- the
+# half-revert that is one edit away from me_slice_is_64 -- passes shape two,
+# because a blob of 'Z' has no Mach-O magic at all, and fails here. Measured:
+# with that half-revert in place this container goes back to a whole-file
+# refusal (exit 1, nothing written) while the shape-two assertions above stay
+# green. The remaining three members (truncated, bad load commands, size 0) are
+# left uncovered on purpose: each is refused by mi_wrap for the SAME reason a
+# non-Mach-O is -- it is not a 64-bit Mach-O image -- and no reachable
+# implementation of this predicate distinguishes them from shape two while
+# distinguishing this one.
+#
+# Built by hand rather than with `clang -arch i386`, which a modern toolchain
+# may no longer support at all -- change_dylib_test.sh's mkslice32.c is the
+# same fixture, built the same way, for the same reason.
+cat > "$T/mk32.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <mach-o/loader.h>
+int main(int argc, char **argv) {
+    uint8_t buf[4096];
+    (void)argc;
+    memset(buf, 0x5A, sizeof buf);   /* distinctive, so a corrupting bug shows */
+    struct mach_header *h = (struct mach_header *)buf;
+    h->magic = MH_MAGIC;             /* 0xfeedface: a 32-bit Mach-O, not a blob */
+    h->cputype = CPU_TYPE_I386;
+    h->cpusubtype = CPU_SUBTYPE_I386_ALL;
+    h->filetype = MH_EXECUTE;
+    h->ncmds = 0;
+    h->sizeofcmds = 0;
+    h->flags = 0;
+    FILE *f = fopen(argv[1], "wb");
+    if (!f) { perror(argv[1]); return 2; }
+    fwrite(buf, 1, sizeof buf, f);
+    fclose(f);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mk32" "$T/mk32.c"
+"$T/mk32" "$T/slice32"
+# makefat rather than segread wrap, because this one needs slice 1's
+# cpusubtype too: declared arm64 (0x100000c/0), so the pass-through line names
+# a DIFFERENT arch from slice 0's and cannot be satisfied by slice 0's label.
+"$BIN/makefat" "$T/fat32as64" "$T/segment_fat_slice" 0x1000007 3 12 "$T/slice32" 0x100000c 0 12
+if mts "$T/fat32as64" 'dylib append /fat32as64.dylib' >"$T/fat32as64.out" 2>"$T/fat32as64.err"; then
+    ok "fat: a slice declared 64-bit whose bytes are a 32-bit Mach-O is passed through, not refused"
+else
+    bad "fat: declared 64-bit over a 32-bit Mach-O slice" \
+        "the whole run was refused on a container whose only unreadable slice must be passed through: $(cat "$T/fat32as64.err")"
+fi
+grep -q 'slice arm64: not a 64-bit Mach-O; passed through unchanged' "$T/fat32as64.err" \
+    && ok "fat: ... and the report names that slice and says why, without calling it 32-bit" \
+    || bad "fat: declared 64-bit over a 32-bit Mach-O slice" \
+           "no pass-through line naming the arm64 slice: $(cat "$T/fat32as64.err")"
+"$BIN/fatcheck" dump "$T/fat32as64" 1 "$T/fat32as64_s1"
+cmp -s "$T/fat32as64_s1" "$T/slice32" \
+    && ok "fat: ... and the passed-through 32-bit Mach-O is byte-identical in OUT" \
+    || bad "fat: declared 64-bit over a 32-bit Mach-O slice" "the passed-through slice changed"
+# The premise: exit 0 above is a real rewrite, not a run that did nothing.
+"$BIN/fatcheck" dump "$T/fat32as64" 0 "$T/fat32as64_s0"
+"$MACHOREWRITE" info "$T/fat32as64_s0" | grep -qF "path=/fat32as64.dylib" \
+    && ok "fat: ... and the slice it DID understand was rewritten" \
+    || bad "fat: declared 64-bit over a 32-bit Mach-O slice" "slice 0 did not get the append"
+
+# ---- AND THE SAME QUESTION UNDER AN `arch` DIRECTIVE ----------------------
+#
+# Everything above drives the no-directive path, where me_run_fat decides per
+# slice. `arch NAME` runs a SECOND decision over the same predicate -- the loop
+# that refuses a named arch the container lacks, or has but cannot edit -- and
+# nothing asserted that half at all. Both directions below, because the two
+# questions "which ARCH is this slice?" and "are its bytes a 64-bit Mach-O?"
+# have different answers here and the code has to keep them apart: the DECLARED
+# cputype says which arch a slice is (cpusubtype lives nowhere else), the bytes
+# say whether statements may apply to it.
+#
+# DIRECTION A: `arch i386` naming a slice the fat table declares i386 whose
+# bytes are a 64-bit Mach-O. `arch i386` is the RIGHT name for that slice --
+# i386 is what the container calls it -- and its bytes are editable, so it is
+# edited and the report calls it what the table calls it. A build that took the
+# declaration for the answer refuses the whole run instead.
+"$BIN/makefat" "$T/fatarch32" "$T/segment_fat_slice" 0x1000007 3 12 "$T/segment_fat_slice" 7 3 12
+if mts "$T/fatarch32" 'arch i386' 'dylib append /fatarch32.dylib' \
+        >"$T/fatarch32.out" 2>"$T/fatarch32.err"; then
+    ok "fat: arch i386 over a slice declared i386 whose bytes are a 64-bit Mach-O edits it"
+else
+    bad "fat: arch over a declared-32-bit 64-bit slice" \
+        "refused a slice the container calls i386 and whose bytes are editable: $(cat "$T/fatarch32.err")"
+fi
+grep -q '^slice i386:$' "$T/fatarch32.err" \
+    && ok "fat: ... and the report labels it by the arch the container declares, i386" \
+    || bad "fat: arch over a declared-32-bit 64-bit slice" \
+           "no 'slice i386:' heading: $(cat "$T/fatarch32.err")"
+"$BIN/fatcheck" dump "$T/fatarch32" 1 "$T/fatarch32_s1"
+"$MACHOREWRITE" info "$T/fatarch32_s1" | grep -qF "path=/fatarch32.dylib" \
+    && ok "fat: ... and that slice really carries the append" \
+    || bad "fat: arch over a declared-32-bit 64-bit slice" "slice 1 did not get the append"
+grep -q 'slice x86_64: not selected by arch; passed through unchanged' "$T/fatarch32.err" \
+    && ok "fat: ... and the slice arch did not name was passed through, not edited" \
+    || bad "fat: arch over a declared-32-bit 64-bit slice" \
+           "slice 0 was not passed through as unselected: $(cat "$T/fatarch32.err")"
+
+# DIRECTION B: `arch arm64` naming a slice the table declares arm64 whose bytes
+# are not a 64-bit Mach-O. The arch EXISTS, so this is not the "no arm64 slice"
+# refusal; it is the one at src/edit.c's arch loop, and its wording is the
+# distinction this whole section rests on -- "is not a 64-bit Mach-O" for a
+# slice declared 64-bit, never "is 32-bit", which would describe the
+# declaration this code deliberately does not trust. Until now that string
+# appeared in no test.
+"$BIN/makefat" "$T/fatarchnm" "$T/segment_fat_slice" 0x1000007 3 12 "$T/notmacho" 0x100000c 0 12
+fatarchnm_before=$(sha "$T/fatarchnm")
+if mts "$T/fatarchnm" 'arch arm64' 'dylib append /fatarchnm.dylib' \
+        >"$T/fatarchnm.out" 2>"$T/fatarchnm.err"; then
+    bad "fat: arch naming a slice that is not a 64-bit Mach-O" \
+        "exited 0 -- a named arch whose bytes cannot take statements was silently skipped: $(cat "$T/fatarchnm.err")"
+else
+    ok "fat: arch arm64 naming a slice whose bytes are not a 64-bit Mach-O is refused"
+fi
+grep -q "arm64 slice is not a 64-bit Mach-O, and statements apply only to 64-bit slices" \
+        "$T/fatarchnm.err" \
+    && ok "fat: ... and the refusal names the slice and its real reason, not '32-bit'" \
+    || bad "fat: arch naming a slice that is not a 64-bit Mach-O" \
+           "not the arch-loop refusal: $(cat "$T/fatarchnm.err")"
+[ "$(sha "$T/fatarchnm")" = "$fatarchnm_before" ] \
+    && ok "fat: ... and that refusal left the container byte-for-byte unchanged" \
+    || bad "fat: arch naming a slice that is not a 64-bit Mach-O" "the refused fat file was modified"
 
 # ============================================================================
 # the mutating form never writes its input
@@ -2474,24 +2649,20 @@ nwi segment "segment rename __DATA __DATA_NWI"
 # --allow-grow -append /x` was the flag-first habit from before these forms took
 # an output, and nothing here treats a positional as a flag -- so without the
 # check it creates a regular file called "--allow-grow" and exits 0, doing
-# something the caller did not ask for. Every form that takes an OUT gets the
-# same answer from the same place (bad_out).
+# something the caller did not ask for. There is one form left that takes an
+# OUT, and it gets that answer from bad_out.
 #
-# THE BARE FORM CANNOT REACH IT FROM HERE. `machorewrite FILE --nwid-flag` is
-# argc==3 with argv[1] matching no verb, so it IS the bare form and bad_out
-# answers it -- but the statements would have to come from stdin, and a test
-# that fed them would be asserting about a run that got as far as reading a
-# script. It does not need to: bad_out fires before the script is read, which
-# is exactly what this asserts. The two forms below are what is left; `edit`'s
-# parser scans for its positionals rather than reading them at fixed indices,
-# and is asserted in its own section below too.
+# stdin is /dev/null below, so a run that got past bad_out would parse an empty
+# script and SUCCEED, writing the very file this refuses to create: bad_out
+# firing before the script is read is exactly what makes the assertion mean
+# something.
 #
-# ONE DASH, not two, for both forms: cmd_edit parses them, and its scan rejects
-# a `--`-prefixed token as an unknown flag BEFORE bad_out is reached (see
-# cmd_edit's own comment, which states that order deliberately), so a
-# double-dash OUT would be asserting about the flag check rather than about
-# bad_out. `grow`, which read its positionals at fixed indices and so accepted
-# either spelling, was the third form here until the verb was deleted.
+# ONE DASH, not two: cmd_script rejects a `--`-prefixed token as an unknown
+# flag BEFORE bad_out is reached (see its own comment, which states that order
+# deliberately), so a double-dash OUT would be asserting about the flag check
+# rather than about bad_out -- which the `--output` case in the mutating-form
+# section below does instead. `grow`, `edit` and the six other verbs that took
+# an OUT were here until those verbs were deleted.
 nwid_run() {   # LABEL, the OUT word, then the whole argv after $MACHOREWRITE
     nwid_label=$1; nwid_out=$2; shift 2
     build_main "$T/nwid"
@@ -2509,7 +2680,6 @@ nwid_run() {   # LABEL, the OUT word, then the whole argv after $MACHOREWRITE
         || bad "$nwid_label OUT=-flag" "rc $rc, exists=$([ -e "$T/$nwid_out" ] && echo YES || echo no), stderr: $(cat "$T/nwid.err")"
 }
 nwid_run "bare form" -nwid-flag nwid -nwid-flag
-nwid_run edit -nwid-flag edit nwid -nwid-flag -
 # ... and the remedy the message names really does work, so the refusal is not
 # a wall in front of a legal path.
 build_main "$T/nwid2"
@@ -2700,12 +2870,22 @@ dcl "$T/no-such-file-for-declassify" "$T/declassify_missing.out" \
     || ok "declassify: an absent IN produces no output file"
 
 # ============================================================================
-# edit: parses a script and applies it through me_run in one pass -- the
-# three main shapes, plus the property the whole design exists for
-# (a parse error costs nothing: the file is never opened for writing).
+# the mutating form: parses the script on stdin and applies it through me_run
+# in one pass -- the main shapes, plus the property the whole design
+# exists for (a parse error costs nothing: the file is never opened for
+# writing).
+#
+# THERE IS NO `edit` VERB. `machorewrite edit FILE OUT SCRIPT` was a second
+# mutating spelling of this one, and `edit` stopped being a verb
+# name and became the tool itself; a script that lives in a file is
+# `machorewrite FILE OUT < script`, which is the shell's job. Every case below
+# that used to be typed with the verb word is typed with the redirection now;
+# the ones that only asserted about the verb's own argument scanner (a SCRIPT
+# positional, a SCRIPT path that cannot be read, three positionals versus four)
+# went with it, and `edit` is asserted absent beside the other eight above.
 # ============================================================================
 
-# edit: the production case -- what install.sh does with three tools and
+# the production case -- what install.sh does with three tools and
 # three full writes of a 208MB binary, in one write. build_main's fixture
 # records the install name literally as "@loader_path/liba.dylib"
 # (see build_main above), not a path under $T, so the script names that
@@ -2720,14 +2900,14 @@ dylib         replace  @loader_path/liba.dylib  @loader_path/../S.dylib
 EOF
 edit_fixture_before=$(sha "$T/edit_fixture"); edit_fixture_ino=$(stat -f %i "$T/edit_fixture")
 rm -f "$T/edit_fixture_out"
-"$MACHOREWRITE" edit "$T/edit_fixture" "$T/edit_fixture_out" "$T/prod.edits" \
+"$MACHOREWRITE" "$T/edit_fixture" "$T/edit_fixture_out" <"$T/prod.edits" \
     >"$T/edit.out" 2>"$T/edit.err" && edit_rc=0 || edit_rc=$?
 [ "$edit_rc" -eq 0 ] && ok "edit: the production script succeeds" \
     || bad "edit" "expected 0, got $edit_rc: $(cat "$T/edit.err")"
 [ "$(sha "$T/edit_fixture")" = "$edit_fixture_before" ] \
     && [ "$(stat -f %i "$T/edit_fixture")" = "$edit_fixture_ino" ] \
-    && ok "edit FILE OUT SCRIPT: FILE is untouched, bytes and inode" \
-    || bad "edit FILE OUT SCRIPT" "FILE changed"
+    && ok "edit FILE OUT: FILE is untouched, bytes and inode" \
+    || bad "edit FILE OUT" "FILE changed"
 otool -l "$T/edit_fixture_out" 2>/dev/null | grep -q LC_UUID \
     && bad "edit" "LC_UUID survived the edit script" \
     || ok "edit: applied the load-command delete"
@@ -2735,12 +2915,12 @@ otool -L "$T/edit_fixture_out" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
     && ok "edit: applied the dylib replace" \
     || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture_out")"
 
-# AN OUT THAT IS FILE IS REFUSED BEFORE THE SCRIPT IS EVEN READ. `edit` reaches
-# the same bad_out every other OUT-taking verb does, and it reaches it before
-# it opens SCRIPT -- which is why SCRIPT here is a path that does not exist: the
-# answer must be the refusal about OUT, not a complaint about the script.
+# AN OUT THAT IS FILE IS REFUSED BEFORE THE SCRIPT IS EVEN READ -- bad_out,
+# before stdin is touched. stdin here is /dev/null, so a run that got as far as
+# reading it would parse an empty script and succeed: the answer must be the
+# refusal about OUT.
 rc=0
-"$MACHOREWRITE" edit "$T/edit_fixture" "$T/edit_fixture" "$T/no-such-script-at-all" \
+"$MACHOREWRITE" "$T/edit_fixture" "$T/edit_fixture" </dev/null \
     >/dev/null 2>"$T/edit_same.err" || rc=$?
 [ "$rc" -eq 2 ] && [ "$(sha "$T/edit_fixture")" = "$edit_fixture_before" ] \
     && ok "edit: OUT that is FILE is refused (2), FILE untouched" \
@@ -2750,57 +2930,36 @@ grep -q "never writes its input" "$T/edit_same.err" \
     || bad "edit OUT=FILE" "not the up-front refusal: $(cat "$T/edit_same.err")"
 rm -f "$T/edit_link"; ln -s "$T/edit_fixture" "$T/edit_link"
 rc=0
-"$MACHOREWRITE" edit "$T/edit_fixture" "$T/edit_link" "$T/prod.edits" >/dev/null 2>&1 || rc=$?
+"$MACHOREWRITE" "$T/edit_fixture" "$T/edit_link" <"$T/prod.edits" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: OUT that is a symlink to FILE is refused (2)" \
     || bad "edit OUT=link" "rc $rc"
 
-# TWO POSITIONALS ARE NO LONGER A COMMAND: `edit FILE SCRIPT` used to rewrite
-# FILE, so accepting it now -- with SCRIPT landing where OUT belongs -- would
-# write a Mach-O over the script. It is a usage error, and the script survives.
-prod_edits_sha=$(sha "$T/prod.edits")
+# --dry-run, --output AND --verbose ARE GONE, all unknown flags now (2) --
+# refused BY NAME rather than opened as a file, which is what the '--' check in
+# cmd_script is for. A scratch OUT is the same run, so there is nothing
+# --dry-run said that this does not. Both positions, because either one is a
+# place the old habit could put a flag.
 rc=0
-"$MACHOREWRITE" edit "$T/edit_fixture" "$T/prod.edits" >/dev/null 2>"$T/edit_two.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: two positionals (no OUT) is a usage error (2)" \
-    || bad "edit no OUT" "expected 2, got $rc: $(cat "$T/edit_two.err")"
-[ "$(sha "$T/prod.edits")" = "$prod_edits_sha" ] \
-    && ok "edit: ... and the script was not taken for an OUT and written over" \
-    || bad "edit no OUT" "the script file was overwritten"
-
-# --dry-run AND --output ARE GONE, both unknown flags now (2). A scratch OUT is
-# the same run, so there is nothing --dry-run said that this does not.
-rc=0
-"$MACHOREWRITE" edit --dry-run "$T/edit_fixture" "$T/edit_dry_out" "$T/prod.edits" \
+"$MACHOREWRITE" --dry-run "$T/edit_dry_out" </dev/null \
     >/dev/null 2>"$T/edit_dry.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/edit_dry_out" ] \
-    && ok "edit: --dry-run is an unknown flag now (2), and writes no OUT" \
+    && grep -q "unknown flag '--dry-run'" "$T/edit_dry.err" \
+    && ok "edit: --dry-run in FILE's place is an unknown flag (2), and writes no OUT" \
     || bad "edit --dry-run gone" "expected 2 and no OUT, got $rc: $(cat "$T/edit_dry.err")"
 rc=0
-"$MACHOREWRITE" edit "$T/edit_fixture" "$T/edit_flag_out" "$T/prod.edits" --output "$T/edit_flag_out2" \
+"$MACHOREWRITE" "$T/edit_fixture" --output </dev/null \
     >/dev/null 2>"$T/edit_output.err" || rc=$?
-[ "$rc" -eq 2 ] && [ ! -e "$T/edit_flag_out" ] && [ ! -e "$T/edit_flag_out2" ] \
-    && ok "edit: --output is an unknown flag now (2), and neither name is written" \
-    || bad "edit --output gone" "expected 2 and no output, got $rc: $(cat "$T/edit_output.err")"
-
-# AN OUT BEGINNING WITH '-' IS REFUSED, not created -- the same answer, from the
-# same place (bad_out), as the eight fixed-arity verbs get above. A single
-# dash, because a double-dashed OUT is caught as an unknown flag first: this
-# verb takes no flags, so every '--' token is refused by name.
-build_main "$T/edit_dashout"
-rm -f -- "$T/-edit-dashout"
-rc=0
-( cd "$T" && "$MACHOREWRITE" edit edit_dashout -edit-dashout "$T/prod.edits" ) \
-    >/dev/null 2>"$T/edit_dashout.err" || rc=$?
-[ "$rc" -eq 2 ] && [ ! -e "$T/-edit-dashout" ] \
-    && grep -q "which begins with '-'" "$T/edit_dashout.err" \
-    && ok "edit: an OUT beginning with '-' is refused (2), not created" \
-    || bad "edit OUT=-flag" "rc $rc, stderr: $(cat "$T/edit_dashout.err")"
+[ "$rc" -eq 2 ] && [ ! -e "$T/edit_fixture--output" ] \
+    && grep -q "unknown flag '--output'" "$T/edit_output.err" \
+    && ok "edit: --output in OUT's place is an unknown flag (2), and nothing is written" \
+    || bad "edit --output gone" "expected 2, got $rc: $(cat "$T/edit_output.err")"
 
 # A 0 EXIT LEAVES OUT THERE, even when no statement changed anything: OUT is
 # the answer, so exit 0 with no OUT would hand a caller nothing.
 build_main "$T/edit_noop"
 printf 'dylib delete /not/linked/at/all.dylib\n' >"$T/noop.edits"
 rm -f "$T/edit_noop_out"
-"$MACHOREWRITE" edit "$T/edit_noop" "$T/edit_noop_out" "$T/noop.edits" \
+"$MACHOREWRITE" "$T/edit_noop" "$T/edit_noop_out" <"$T/noop.edits" \
     >/dev/null 2>"$T/edit_noop.err" && edit_noop_rc=0 || edit_noop_rc=$?
 [ "$edit_noop_rc" -eq 0 ] && ok "edit: a script that changed nothing still exits 0" \
     || bad "edit nothing-to-change" "exit $edit_noop_rc: $(cat "$T/edit_noop.err")"
@@ -2816,7 +2975,7 @@ build_main "$T/edit_ref"
 ref_before=$(sha "$T/edit_ref")
 printf 'fatal-warnings\ndylib delete /definitely/not/linked.dylib\n' >"$T/ref.edits"
 rm -f "$T/edit_ref_out"
-"$MACHOREWRITE" edit "$T/edit_ref" "$T/edit_ref_out" "$T/ref.edits" \
+"$MACHOREWRITE" "$T/edit_ref" "$T/edit_ref_out" <"$T/ref.edits" \
     >/dev/null 2>"$T/edit_ref.err" && ref_rc=0 || ref_rc=$?
 [ "$ref_rc" -eq 1 ] \
     && ok "edit: an unmatched operation under fatal-warnings is refused (1)" \
@@ -2866,14 +3025,14 @@ printf 'load-command delete uuid\n' >"$T/ri.edits"
 # me_run's NULL-`out` guard, "no output file was named" -- is unreachable from
 # here: cmd_edit rejects two positionals with a usage message first, so that
 # guard is tests/edit_test.c's to cover, and is already covered there.)
-"$MACHOREWRITE" edit "$T/ri_in" "$T/ri_in" "$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
+"$MACHOREWRITE" "$T/ri_in" "$T/ri_in" <"$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
 ri_neither "OUT is PATH" "$T/ri2.err"
 
 # The ones where PATH's bytes never resolved into an image this tool parses.
-"$MACHOREWRITE" edit "$T/nosuchfile" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri3.err" || :
+"$MACHOREWRITE" "$T/nosuchfile" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri3.err" || :
 ri_neither "cannot open or read" "$T/ri3.err"
 printf 'not a mach-o at all, not even close\n' >"$T/ri_text"
-"$MACHOREWRITE" edit "$T/ri_text" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri4.err" || :
+"$MACHOREWRITE" "$T/ri_text" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri4.err" || :
 ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
 
 # Everything that got as far as an image names both. A fat64 container is
@@ -2882,14 +3041,14 @@ ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
 # further up this file already does it.
 printf '%b' '\0277\0272\0376\0312' > "$T/ri_fat64"
 rm -f "$T/ri.out"
-"$MACHOREWRITE" edit "$T/ri_fat64" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
+"$MACHOREWRITE" "$T/ri_fat64" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
 ri_both "fat_arch_64 container" "$T/ri5.err"
 
 # A statement's own refusal.
 printf 'fatal-warnings\nload-command delete uuid\n' >"$T/ri_fw.edits"
 printf 'load-command delete uuid\n' | "$MACHOREWRITE" "$T/ri_in" "$T/ri_nouuid" >/dev/null 2>&1
 rm -f "$T/ri.out"
-"$MACHOREWRITE" edit "$T/ri_nouuid" "$T/ri.out" "$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
+"$MACHOREWRITE" "$T/ri_nouuid" "$T/ri.out" <"$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
 ri_both "a statement that matched nothing under fatal-warnings" "$T/ri6.err"
 [ ! -e "$T/ri.out" ] \
     && ok "refusal inventory: and every one of them wrote no OUT" \
@@ -2908,61 +3067,41 @@ case "$(uname -m)" in
 esac
 printf 'arch %s\nload-command delete uuid\n' "$ri_foreign_arch" >"$T/ri_arch.edits"
 rm -f "$T/ri.out"
-"$MACHOREWRITE" edit "$T/ri_in" "$T/ri.out" "$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
+"$MACHOREWRITE" "$T/ri_in" "$T/ri.out" <"$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
 ri_both "an arch directive the file cannot satisfy" "$T/ri7.err"
-
-# edit FILE OUT - reads the script from stdin, so a generated script needs no
-# temp file. Only SCRIPT means stdin: an OUT of "-" begins with a dash and is
-# refused above.
-build_main "$T/edit_stdin"
-rm -f "$T/edit_stdin_out"
-printf 'load-command delete uuid\n' | "$MACHOREWRITE" edit "$T/edit_stdin" "$T/edit_stdin_out" - \
-    >/dev/null 2>"$T/edit_stdin.err" || bad "edit -" "$(cat "$T/edit_stdin.err")"
-otool -l "$T/edit_stdin_out" 2>/dev/null | grep -q LC_UUID \
-    && bad "edit -" "LC_UUID survived the stdin script" \
-    || ok "edit: reads a script from stdin"
 
 # ---- the bare form: FILE OUT, statements on stdin ---------------------------
 #
-# `machorewrite FILE OUT` is `machorewrite edit FILE OUT -` with the verb word
-# dropped: the same script, the same bytes, the same exit, the same report. If
-# those two spellings of one operation ever diverge, one of them has grown a
-# second behaviour -- which is the whole defect a single mutating interface
-# exists to remove -- so the equivalence is asserted, not described.
+# A PIPE, not a redirection, so this is not the same shape as every other case
+# in this file: a generated script needs no temp file, and a pipe is not
+# seekable. `machorewrite edit FILE OUT -` was the other way to say this until
+# the verb went; there is no second spelling left to compare against, so what is
+# asserted is the thing itself.
 build_main "$T/bare_in"
 printf 'load-command delete uuid\n' >"$T/bare.edits"
-rm -f "$T/bare_via_edit" "$T/bare_via_bare"
-bare_ve=0
-"$MACHOREWRITE" edit "$T/bare_in" "$T/bare_via_edit" - <"$T/bare.edits" \
-    >/dev/null 2>"$T/bare_ve.err" || bare_ve=$?
+rm -f "$T/bare_via_bare"
 bare_vb=0
-"$MACHOREWRITE" "$T/bare_in" "$T/bare_via_bare" <"$T/bare.edits" \
+printf 'load-command delete uuid\n' | "$MACHOREWRITE" "$T/bare_in" "$T/bare_via_bare" \
     >/dev/null 2>"$T/bare_vb.err" || bare_vb=$?
-[ "$bare_ve" -eq "$bare_vb" ] && cmp -s "$T/bare_via_edit" "$T/bare_via_bare" \
-    && ok "bare form: FILE OUT with stdin is edit FILE OUT - with the word dropped" \
-    || bad "bare form" "the two spellings of one operation disagree, so which one a caller types changes what they get: edit exited $bare_ve, bare exited $bare_vb, and OUT $(cmp -s "$T/bare_via_edit" "$T/bare_via_bare" && echo matches || echo DIFFERS)"
-# ... and what they agree on is the work, not idleness. Two spellings that
-# BOTH ignored stdin would compare equal above, because each would have left
-# a faithful copy of FILE; this is the assertion that the statements piped in
-# were actually read and applied.
+[ "$bare_vb" -eq 0 ] && ok "bare form: FILE OUT with the statements piped in succeeds" \
+    || bad "bare form" "exited $bare_vb: $(cat "$T/bare_vb.err")"
+# ... and the work happened. A run that IGNORED stdin would also exit 0 and
+# leave a faithful copy of FILE; this is the assertion that the statements
+# piped in were actually read and applied.
 otool -l "$T/bare_via_bare" 2>/dev/null | grep -q LC_UUID \
     && bad "bare form" "the statements piped in were not applied -- OUT still has the LC_UUID the script deletes, so a caller got an unchanged copy of FILE and an exit 0 saying it worked" \
     || ok "bare form: the statements on stdin are read and applied"
 
-# A script that will not parse fails the same way in both spellings, to the
-# byte: the diagnostic a user reads must not depend on which one they typed.
+# A script that will not parse costs nothing: nonzero, no OUT, and the
+# diagnostic names stdin as where it came from.
 printf 'frobnicate everything\n' >"$T/bare_bad.edits"
-rm -f "$T/bare_bad_e" "$T/bare_bad_b"
-bare_fe=0
-"$MACHOREWRITE" edit "$T/bare_in" "$T/bare_bad_e" - <"$T/bare_bad.edits" \
-    >/dev/null 2>"$T/bare_fe.err" || bare_fe=$?
+rm -f "$T/bare_bad_b"
 bare_fb=0
 "$MACHOREWRITE" "$T/bare_in" "$T/bare_bad_b" <"$T/bare_bad.edits" \
     >/dev/null 2>"$T/bare_fb.err" || bare_fb=$?
-[ "$bare_fe" -eq "$bare_fb" ] && [ "$bare_fe" -ne 0 ] \
-    && cmp -s "$T/bare_fe.err" "$T/bare_fb.err" \
-    && ok "bare form: a script that will not parse fails the same, in the same words" \
-    || bad "bare form parse error" "edit exited $bare_fe and said '$(cat "$T/bare_fe.err")'; bare exited $bare_fb and said '$(cat "$T/bare_fb.err")'"
+[ "$bare_fb" -ne 0 ] && grep -q "machorewrite edit: stdin:" "$T/bare_fb.err" \
+    && ok "bare form: a script that will not parse fails, naming stdin" \
+    || bad "bare form parse error" "exited $bare_fb and said '$(cat "$T/bare_fb.err")'"
 [ ! -e "$T/bare_bad_b" ] \
     && ok "bare form: ... and the refused run wrote no OUT" \
     || bad "bare form parse error" "an OUT appeared despite a script that never parsed"
@@ -2973,16 +3112,16 @@ bare_fb=0
 # really named like a verb is spelled `./info` -- the same remedy bad_out
 # already names for an OUT beginning with '-'.
 #
-# THREE NAMES ARE SHADOWED NOW, not eleven. `minos`, `segment`, `retag-swift`,
-# `lc`, `dylib`, `rpath`, `declassify` and `grow` were verbs and shadowed a
-# file of the same name; they are ordinary words again, so `machorewrite dylib
-# out` reads a file called `dylib`. Nothing is lost -- there is no verb behind
-# those names for a caller to be denied -- and what this loop guards is the
-# three that ARE still verbs.
+# TWO NAMES ARE SHADOWED NOW, not eleven. `minos`, `segment`, `retag-swift`,
+# `lc`, `dylib`, `rpath`, `declassify`, `grow` and `edit` were verbs and
+# shadowed a file of the same name; they are ordinary words again, so
+# `machorewrite dylib out` reads a file called `dylib`. Nothing is lost --
+# there is no verb behind those names for a caller to be denied -- and what
+# this loop guards is the two that ARE still verbs.
 mkdir -p "$T/shadow"
 build_main "$T/shadow/fixture"
 bare_shadowed=""
-for bare_v in verify info edit; do
+for bare_v in verify info; do
     rm -f "$T/shadow/$bare_v" "$T/shadow/shadow_out"
     cp "$T/shadow/fixture" "$T/shadow/$bare_v"
     ( cd "$T/shadow" \
@@ -3024,7 +3163,7 @@ bad_before=$(sha "$T/edit_bad")
 printf 'load-command delete uuid\nfrobnicate everything\n' \
     >"$T/bad.edits"
 rm -f "$T/edit_bad_out"
-"$MACHOREWRITE" edit "$T/edit_bad" "$T/edit_bad_out" "$T/bad.edits" \
+"$MACHOREWRITE" "$T/edit_bad" "$T/edit_bad_out" <"$T/bad.edits" \
     >/dev/null 2>"$T/editbad.err" && editbad_rc=0 || editbad_rc=$?
 [ "$editbad_rc" -eq 2 ] && ok "edit: a parse error is an error (2), not a refusal" \
     || bad "edit parse error" "expected 2, got $editbad_rc"
@@ -3047,49 +3186,29 @@ grep -q "^machorewrite edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
     || bad "edit parse error" "no 'machorewrite edit: ' prefix: $(cat "$T/editbad.err")"
 
-# Usage errors: an unknown flag, too few positionals and too many are all
-# EX_FAIL (2) -- never a crash, never silently accepted.
+# Too few positionals is EX_FAIL (2) -- never a crash, never silently
+# accepted. There is no verb word to get wrong any more, so anything that is
+# not exactly two positionals falls off the end of main's dispatch and is
+# reported as an unknown verb. (Too MANY is asserted above, with the rest of
+# the bare form's shape.)
 build_main "$T/edit_usage"
 rc=0
-"$MACHOREWRITE" edit "$T/edit_usage" "$T/edit_usage_out" "$T/prod.edits" --bogus-flag \
-    >/dev/null 2>"$T/edit_usage1.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: an unknown flag is a usage error (2)" \
-    || bad "edit usage" "unknown flag: expected 2, got $rc"
-rc=0
-"$MACHOREWRITE" edit "$T/edit_usage" >/dev/null 2>"$T/edit_usage2.err" || rc=$?
+"$MACHOREWRITE" "$T/edit_usage" </dev/null >/dev/null 2>"$T/edit_usage2.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: one positional is a usage error (2)" \
     || bad "edit usage" "one positional: expected 2, got $rc"
-rc=0
-"$MACHOREWRITE" edit "$T/edit_usage" "$T/edit_usage_out" "$T/prod.edits" extra \
-    >/dev/null 2>"$T/edit_usage3.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: a fourth positional is a usage error (2)" \
-    || bad "edit usage" "extra positional: expected 2, got $rc"
-
 # A FILE WHOSE NAME STARTS WITH A DASH IS A FILE NAME. Only a double dash is
-# refused here, and every other verb takes its FILE positionally without
-# examining it, so a single-dash token in FILE's place is a path, not a
-# typo'd flag. The compat wrappers reach this: the historical tools open()ed
-# whatever argv[1] was, and tests/wrapper_test.sh pins `change_dylib -dashy
-# ...` for that reason. OUT is the one positional that refuses a leading dash
+# refused here: the historical tools open()ed whatever argv[1] was, so a
+# single-dash token in FILE's place is a path, not a typo'd flag. The compat
+# wrappers reach this, and tests/wrapper_test.sh pins `change_dylib -dashy ...`
+# for that reason. OUT is the one positional that refuses a leading dash
 # (above), because a mistaken OUT is a file this tool CREATES.
 build_main "$T/-edit_dashy"
 rc=0
-(cd "$T" && "$MACHOREWRITE" edit -edit_dashy "$T/edit_dashy_out" "$T/prod.edits") \
+(cd "$T" && "$MACHOREWRITE" -edit_dashy "$T/edit_dashy_out" <"$T/prod.edits") \
     >/dev/null 2>"$T/edit_dash.err" || rc=$?
 [ "$rc" -eq 0 ] \
     && ok "edit: a FILE whose name starts with a dash is a file name, not a flag" \
     || bad "edit dash FILE" "expected 0, got $rc: $(head -1 "$T/edit_dash.err")"
-
-# A script file that cannot be read at all -- as opposed to one that parses
-# badly -- is also EX_FAIL, reported with the path.
-rc=0
-"$MACHOREWRITE" edit "$T/edit_usage" "$T/edit_usage_out" "$T/no-such-script-for-edit" \
-    >/dev/null 2>"$T/edit_noscript.err" || rc=$?
-[ "$rc" -eq 2 ] && ok "edit: an unreadable SCRIPT path is a failure (2)" \
-    || bad "edit: unreadable script" "expected 2, got $rc"
-grep -q "no-such-script-for-edit" "$T/edit_noscript.err" \
-    && ok "edit: names the unreadable script path" \
-    || bad "edit: unreadable script" "path not named: $(cat "$T/edit_noscript.err")"
 
 # The report must carry the FOLLOW-UP work, not just the statement. A dylib
 # delete renumbers every surviving ordinal in the nlist entries AND in the
@@ -3099,7 +3218,7 @@ grep -q "no-such-script-for-edit" "$T/edit_noscript.err" \
 # place a user can see it.
 build_main_two_dylibs "$T/edit_verb"
 printf 'dylib delete %s\n' "$T/libb.dylib" >"$T/verb.edits"
-"$MACHOREWRITE" edit "$T/edit_verb" "$T/edit_verb_out" "$T/verb.edits" \
+"$MACHOREWRITE" "$T/edit_verb" "$T/edit_verb_out" <"$T/verb.edits" \
     >/dev/null 2>"$T/verb.err" || bad "edit report" "$(cat "$T/verb.err")"
 grep -q "dylib delete" "$T/verb.err" \
     && ok "edit: names the statement" \
@@ -3142,7 +3261,7 @@ nl2=$(vb_nlist "$T/verb.err"); op2=$(vb_ops "$T/verb.err")
 # c_sym main also calls) renumbers one more ordinal, one more undefined
 # symbol, and one more ordinal opcode.
 build_main_three_dylibs "$T/edit_verb3"
-"$MACHOREWRITE" edit "$T/edit_verb3" "$T/edit_verb3_out" "$T/verb.edits" \
+"$MACHOREWRITE" "$T/edit_verb3" "$T/edit_verb3_out" <"$T/verb.edits" \
     >/dev/null 2>"$T/verb3.err" || bad "edit report (3 dylibs)" "$(cat "$T/verb3.err")"
 grep -qF "      renumbered 3 surviving ordinals: 2->1, 3->2, 4->3" "$T/verb3.err" \
     && ok "edit: a third dylib adds its ordinal to the map" \
@@ -3161,7 +3280,7 @@ nl3=$(vb_nlist "$T/verb3.err"); op3=$(vb_ops "$T/verb3.err")
 # modern cross runner's linker leaves (see the rpath -insert fixture above).
 build_main "$T/edit_verb_ins"
 printf 'dylib insert @loader_path/libn.dylib\n' >"$T/verb_ins.edits"
-"$MACHOREWRITE" edit "$T/edit_verb_ins" "$T/edit_verb_ins_out" "$T/verb_ins.edits" \
+"$MACHOREWRITE" "$T/edit_verb_ins" "$T/edit_verb_ins_out" <"$T/verb_ins.edits" \
     >/dev/null 2>"$T/verb_ins.err" || bad "edit report (insert)" "$(cat "$T/verb_ins.err")"
 grep -qF "      inserted LC_LOAD_DYLIB as ordinal 1" "$T/verb_ins.err" \
     && ok "edit: names the inserted command and its ordinal" \
@@ -3178,7 +3297,7 @@ nli=$(vb_nlist "$T/verb_ins.err"); opi=$(vb_ops "$T/verb_ins.err")
 # follow-up and must not claim one.
 build_main "$T/edit_verb_rep"
 printf 'dylib replace @loader_path/liba.dylib @loader_path/libz.dylib\n' >"$T/verb_rep.edits"
-"$MACHOREWRITE" edit "$T/edit_verb_rep" "$T/edit_verb_rep_out" "$T/verb_rep.edits" \
+"$MACHOREWRITE" "$T/edit_verb_rep" "$T/edit_verb_rep_out" <"$T/verb_rep.edits" \
     >/dev/null 2>"$T/verb_rep.err" || bad "edit report (replace)" "$(cat "$T/verb_rep.err")"
 grep -q "renumbered" "$T/verb_rep.err" \
     && bad "edit report (replace)" "a replace reported a renumbering: $(cat "$T/verb_rep.err")" \
@@ -3189,7 +3308,7 @@ grep -q "renumbered" "$T/verb_rep.err" \
 # through, and says so rather than staying silent.
 build_main "$T/edit_verb_fx"
 printf 'fixups set classic\n' >"$T/verb_fx.edits"
-"$MACHOREWRITE" edit "$T/edit_verb_fx" "$T/edit_verb_fx_out" "$T/verb_fx.edits" \
+"$MACHOREWRITE" "$T/edit_verb_fx" "$T/edit_verb_fx_out" <"$T/verb_fx.edits" \
     >/dev/null 2>"$T/verb_fx.err" || bad "edit report (fixups)" "$(cat "$T/verb_fx.err")"
 grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed through unchanged" \
     "$T/verb_fx.err" \
@@ -3200,7 +3319,7 @@ grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed t
 # LC_DYLD_EXPORTS_TRIE and LC_BUILD_VERSION to strip) it converts, and the
 # report carries the conversion's own figures.
 "$T/mkchained" make "$T/edit_verb_chained"
-"$MACHOREWRITE" edit "$T/edit_verb_chained" "$T/edit_verb_chained_out" "$T/verb_fx.edits" \
+"$MACHOREWRITE" "$T/edit_verb_chained" "$T/edit_verb_chained_out" <"$T/verb_fx.edits" \
     >/dev/null 2>"$T/verb_cf.err" || bad "edit report (chained)" "$(cat "$T/verb_cf.err")"
 grep -qF "      chained fixups -> LC_DYLD_INFO_ONLY" "$T/verb_cf.err" \
     && ok "edit: fixups on a chained image reports the conversion" \
@@ -3220,13 +3339,13 @@ grep -q "^      __LINKEDIT extended by [1-9][0-9,]* bytes" "$T/verb_cf.err" \
 # class and its metaclass on the stable-ABI bit, and build_main's has none.
 "$T/mkswift" make "$T/edit_verb_swift"
 printf 'swift-abi set legacy\n' >"$T/verb_sw.edits"
-"$MACHOREWRITE" edit "$T/edit_verb_swift" "$T/edit_verb_swift_out" "$T/verb_sw.edits" \
+"$MACHOREWRITE" "$T/edit_verb_swift" "$T/edit_verb_swift_out" <"$T/verb_sw.edits" \
     >/dev/null 2>"$T/verb_sw.err" || bad "edit report (swift-abi)" "$(cat "$T/verb_sw.err")"
 grep -qF "      retagged 2 class records" "$T/verb_sw.err" \
     && ok "edit: swift-abi reports the class records it retagged" \
     || bad "edit report (swift-abi)" "no 'retagged 2 class records': $(cat "$T/verb_sw.err")"
 build_main "$T/edit_verb_noswift"
-"$MACHOREWRITE" edit "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" "$T/verb_sw.edits" \
+"$MACHOREWRITE" "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" <"$T/verb_sw.edits" \
     >/dev/null 2>"$T/verb_nosw.err" || bad "edit report (swift-abi)" "$(cat "$T/verb_nosw.err")"
 grep -qF "      nothing to retag" "$T/verb_nosw.err" \
     && ok "edit: swift-abi with no Swift classes says nothing to retag" \
@@ -3240,7 +3359,7 @@ build_main "$T/noverb"
 printf 'load-command delete uuid\n' >"$T/nv.edits"
 rm -f "$T/noverb_out"
 nv_rc=0
-"$MACHOREWRITE" edit --verbose "$T/noverb" "$T/noverb_out" "$T/nv.edits" \
+"$MACHOREWRITE" --verbose "$T/noverb_out" <"$T/nv.edits" \
     >/dev/null 2>"$T/nv.err" || nv_rc=$?
 # EX_FAIL (2) and no OUT, the same pair the --dry-run and --output cases above
 # check: "it exited non-zero" would also be satisfied by a build that refused
@@ -3255,7 +3374,7 @@ grep -q "unknown flag '--verbose'" "$T/nv.err" \
 # And the report happens anyway, with no flag asked for.
 build_main "$T/noverb2"
 rm -f "$T/noverb2_out"
-"$MACHOREWRITE" edit "$T/noverb2" "$T/noverb2_out" "$T/nv.edits" \
+"$MACHOREWRITE" "$T/noverb2" "$T/noverb2_out" <"$T/nv.edits" \
     >"$T/nv2.out" 2>"$T/nv2.err" || bad "no quiet mode" "$(cat "$T/nv2.err")"
 grep -q "load-command delete" "$T/nv2.err" \
     && ok "edit: reports without being asked" \
@@ -3287,19 +3406,19 @@ grep -q "written (" "$T/nv2.out" \
 # md_declassify_buf.
 build_main "$T/vonly_lc"
 printf 'load-command delete uuid\ndylib append /x\n' >"$T/vonly_lc.edits"
-"$MACHOREWRITE" edit "$T/vonly_lc" "$T/vonly_lc.out" "$T/vonly_lc.edits" \
+"$MACHOREWRITE" "$T/vonly_lc" "$T/vonly_lc.out" <"$T/vonly_lc.edits" \
     >"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "lc/dylib run: $(cat "$T/vonly.err")"
 build_main "$T/vonly_vm"; "$T/strip_version_min" "$T/vonly_vm" >/dev/null
 printf 'version-min set 10.9\n' >"$T/vonly_vm.edits"
-"$MACHOREWRITE" edit "$T/vonly_vm" "$T/vonly_vm.out" "$T/vonly_vm.edits" \
+"$MACHOREWRITE" "$T/vonly_vm" "$T/vonly_vm.out" <"$T/vonly_vm.edits" \
     >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "version-min run: $(cat "$T/vonly.err")"
 "$T/mkswift" make "$T/vonly_sw"
 printf 'swift-abi set legacy\n' >"$T/vonly_sw.edits"
-"$MACHOREWRITE" edit "$T/vonly_sw" "$T/vonly_sw.out" "$T/vonly_sw.edits" \
+"$MACHOREWRITE" "$T/vonly_sw" "$T/vonly_sw.out" <"$T/vonly_sw.edits" \
     >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "swift-abi run: $(cat "$T/vonly.err")"
 "$T/mkchained" make "$T/vonly_fx"
 printf 'fixups set classic\n' >"$T/vonly_fx.edits"
-"$MACHOREWRITE" edit "$T/vonly_fx" "$T/vonly_fx.out" "$T/vonly_fx.edits" \
+"$MACHOREWRITE" "$T/vonly_fx" "$T/vonly_fx.out" <"$T/vonly_fx.edits" \
     >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "fixups run: $(cat "$T/vonly.err")"
 
 # The positive control, so "no verb line on stdout" cannot pass because stdout
@@ -3341,7 +3460,7 @@ done
 # two inserts do.
 build_main "$T/edit_ins2"
 printf 'load-command delete uuid\ndylib insert /A\ndylib insert /B\n' >"$T/ins2.edits"
-"$MACHOREWRITE" edit "$T/edit_ins2" "$T/edit_ins2_out" "$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
+"$MACHOREWRITE" "$T/edit_ins2" "$T/edit_ins2_out" <"$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
     || bad "edit: two inserts" "$(cat "$T/ins2.err")"
 ins2=$("$MACHOREWRITE" info "$T/edit_ins2_out")
 echo "$ins2" | grep -qxF "  ordinal=1 path=/B" && echo "$ins2" | grep -qxF "  ordinal=2 path=/A" \
@@ -3380,7 +3499,7 @@ printf 'dylib append %s\nload-command delete uuid\n' "$grow_path" >"$T/grow_no.e
 grow_before=$(sha "$T/edit_grow")
 rm -f "$T/edit_grow_out"
 rc=0
-"$MACHOREWRITE" edit "$T/edit_grow" "$T/edit_grow_out" "$T/grow_no.edits" \
+"$MACHOREWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_no.edits" \
     >/dev/null 2>"$T/grow_no.err" || rc=$?
 [ "$rc" -eq 1 ] \
     && ok "edit: a dylib append that overflows the ${grow_pad}-byte pad is refused (1) without allow-grow" \
@@ -3389,7 +3508,7 @@ rc=0
     && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
     || bad "edit allow-grow" "the refused run modified FILE, or created OUT"
 rc=0
-"$MACHOREWRITE" edit "$T/edit_grow" "$T/edit_grow_out" "$T/grow_yes.edits" \
+"$MACHOREWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_yes.edits" \
     >/dev/null 2>"$T/grow_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: with allow-grow, the same script succeeds" \
     || bad "edit allow-grow" "with the directive: expected 0, got $rc: $(cut -c1-160 "$T/grow_yes.err")"
@@ -3439,7 +3558,7 @@ printf 'version-min set 10.9\n' >"$T/vm_no.edits"
 printf 'allow-grow\nversion-min set 10.9\n' >"$T/vm_yes.edits"
 rm -f "$T/vm_e_out"
 rc=0
-"$MACHOREWRITE" edit "$T/vm_e" "$T/vm_e_out" "$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
+"$MACHOREWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "edit: version-min set without allow-grow is refused (1) when the pad is short" \
     || bad "edit version-min" "without the directive: expected 1, got $rc: $(cat "$T/vm_no.err")"
 [ "$(sha "$T/vm_e")" = "$vm_before" ] && [ "$(stat -f %i "$T/vm_e")" = "$vm_ino" ] \
@@ -3450,7 +3569,7 @@ grep -q "growing the header needs allow-grow" "$T/vm_no.err" \
     && ok "edit: ... and the refusal names allow-grow as the remedy" \
     || bad "edit version-min" "no allow-grow remedy in: $(cat "$T/vm_no.err")"
 rc=0
-"$MACHOREWRITE" edit "$T/vm_e" "$T/vm_e_out" "$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
+"$MACHOREWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
     || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
 # The grow lines on stdout are mg_ensure_pad's, labelled with the INPUT's path
@@ -3554,7 +3673,7 @@ printf 'target 10.9\n' >"$T/tgt.edits"
 # what this verb offers in place of a prediction.
 tgt_run() {
     rm -f "$2"
-    "$MACHOREWRITE" edit "$1" "$2" "${3:-$T/tgt.edits}" \
+    "$MACHOREWRITE" "$1" "$2" <"${3:-$T/tgt.edits}" \
         >"$T/tgt.out" 2>"$T/tgt.err"
 }
 
@@ -3850,7 +3969,7 @@ otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
 printf 'target 10.9\ntarget 10.9\n' >"$T/tgt_two.edits"
 rm -f "$T/tgt_two.out"
 rc=0
-"$MACHOREWRITE" edit "$T/tgt_plain" "$T/tgt_two.out" "$T/tgt_two.edits" \
+"$MACHOREWRITE" "$T/tgt_plain" "$T/tgt_two.out" <"$T/tgt_two.edits" \
     >/dev/null 2>"$T/tgt_two.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/tgt_two.out" ] && grep -q "line 2" "$T/tgt_two.err" \
     && ok "target: a second target is a parse error (2) naming its line" \
@@ -3858,7 +3977,7 @@ rc=0
 printf 'target 10.10\n' >"$T/tgt_unknown.edits"
 rm -f "$T/tgt_unknown.out"
 rc=0
-"$MACHOREWRITE" edit "$T/tgt_plain" "$T/tgt_unknown.out" "$T/tgt_unknown.edits" \
+"$MACHOREWRITE" "$T/tgt_plain" "$T/tgt_unknown.out" <"$T/tgt_unknown.edits" \
     >/dev/null 2>"$T/tgt_unknown.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/tgt_unknown.out" ] \
     && grep -q "10.10" "$T/tgt_unknown.err" && grep -q "10.9" "$T/tgt_unknown.err" \
@@ -3883,7 +4002,7 @@ fat_pad=$("$MACHOREWRITE" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]
 fat_path="/$(printf "%${fat_pad}s" '' | tr ' ' f)"
 printf 'arch x86_64\nallow-grow\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
 rc=0
-"$MACHOREWRITE" edit "$T/fat_edit" "$T/fat_edit_out" "$T/fat.edits" \
+"$MACHOREWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat.edits" \
     >/dev/null 2>"$T/fat.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: a fat file's x86_64 slice is edited, growing it" \
     || bad "edit fat" "expected 0, got $rc: $(cut -c1-200 "$T/fat.err")"
@@ -3915,7 +4034,7 @@ cmp -s "$T/fat_out1" "$T/fat_s1" \
 "$BIN/makefat" "$T/fat_tgt" "$T/tgt_plain" 0x1000007 3 12 "$T/fat_tgt1" 0x100000c 0 12
 rm -f "$T/fat_tgt.out"
 rc=0
-"$MACHOREWRITE" edit "$T/fat_tgt" "$T/fat_tgt.out" "$T/tgt.edits" \
+"$MACHOREWRITE" "$T/fat_tgt" "$T/fat_tgt.out" <"$T/tgt.edits" \
     >/dev/null 2>"$T/fat_tgt.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "target: a fat file's slices are each expanded" \
     || bad "target fat" "expected 0, got $rc: $(cat "$T/fat_tgt.err")"
@@ -3927,7 +4046,7 @@ fat_tgt_fx=$(grep -c "^    fixups set classic" "$T/fat_tgt.err" || true)
 
 printf 'arch amd64\nload-command delete uuid\n' >"$T/fat_bad.edits"
 rc=0
-"$MACHOREWRITE" edit "$T/fat_edit" "$T/fat_edit_out" "$T/fat_bad.edits" \
+"$MACHOREWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat_bad.edits" \
     >/dev/null 2>"$T/fat_bad.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: an unknown arch name is a parse error (2)" \
     || bad "edit fat" "arch amd64: expected 2, got $rc: $(cat "$T/fat_bad.err")"

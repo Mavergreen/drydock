@@ -10,7 +10,8 @@
  * statement becomes a call to the one implementation of that operation --
  * src/rewrite.h's mr_apply_image for load-command/segment/dylib/rpath,
  * src/version_min.h, src/swift_retag.h and src/declassify.h's in-memory
- * cores for the other three -- the same code each CLI verb reaches.
+ * cores for the other three. Those cores are all that is left: the CLI verbs
+ * that used to reach the same ones were deleted with the verb grammar.
  */
 #include <stdio.h>
 

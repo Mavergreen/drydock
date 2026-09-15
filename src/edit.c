@@ -2,10 +2,11 @@
  * me_ -- see edit.h. Read once, apply each statement in order, verify what
  * the run disturbed, write once.
  *
- * Every operation is performed by the code that performs it for the CLI
- * verbs; what lives here is the lowering from a statement to that call (the
- * switch in me_apply), the sequencing, the final verify and the single
- * write. The operations print what they have always printed, to stdout and
+ * Every operation is performed by the one implementation of that operation --
+ * the same in-memory cores the deleted CLI verbs used to reach; what lives
+ * here is the lowering from a statement to that call (the switch in
+ * me_apply), the sequencing, the final verify and the single write. The
+ * operations print what they have always printed, to stdout and
  * stderr; this module's own report goes to me_opts.log. That report includes
  * the follow-up work an operation does beyond what its statement names, from
  * figures the operation hands back through an out-parameter -- mr_ops'
@@ -340,7 +341,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it. The append's own
-         * "Added ..." line belongs to `machorewrite minos`, which edit does not
+         * "Added ..." line belonged to the `minos` verb, which this does not
          * call, so an append prints nothing on stdout -- unless it grew the
          * header pad, when mg_ensure_pad's two grow lines, labelled with
          * `path`, are there. */
@@ -352,7 +353,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     case MS_SWIFT_ABI: {
         /* `legacy` is the only value ms_parse accepts. A count of zero is
          * not a refusal: an image with no Swift classes has nothing to
-         * retag, as `machorewrite retag-swift` reports with exit 0. */
+         * retag, as the `retag-swift` verb reported with exit 0. */
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
         int retagged = mswift_retag_image(&im);
@@ -723,12 +724,18 @@ static uint32_t me_magic(const char *path) {
     return magic;
 }
 
+/* What the pre-pass decided about one slice.
+ *
+ * ME_SLICE_NOT_64 IS DECIDED BY THE SLICE'S OWN BYTES, never by the
+ * fat_arch's declared cputype -- see me_slice_is_64 below. */
+enum { ME_SLICE_NOT_64 = 0, ME_SLICE_EDIT = 1, ME_SLICE_OTHER_ARCH = 2 };
+
 /* Everything the fat path's slice callbacks need. */
 typedef struct {
     const ms_script *s;
     const char *path, *out;
     FILE *log;
-    const unsigned char *selected;   /* per slice: does the script apply to it? */
+    const unsigned char *selected;   /* per slice: one of the ME_SLICE_* above */
     uint32_t last;                   /* the last selected slice, in arch-table order */
     mr_hits *hits;
     int *renamed;
@@ -739,9 +746,16 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     me_fat_ctx *c = (me_fat_ctx *)ctx_;
     char name[32];
     ma_describe(a->cputype, a->cpusubtype, name);
-    if (!c->selected[index]) {
-        me_say(c->log, "slice %s: %s; passed through unchanged\n", name,
-               (a->cputype & CPU_ARCH_ABI64) ? "not selected by arch" : "32-bit");
+    if (c->selected[index] != ME_SLICE_EDIT) {
+        /* Three reasons, and the one a reader needs to tell apart is the
+         * third: a slice the arch table calls 64-bit whose bytes are not a
+         * 64-bit Mach-O is not "32-bit", and saying so would describe the
+         * declaration this code deliberately does not trust. */
+        const char *why;
+        if (c->selected[index] == ME_SLICE_OTHER_ARCH) why = "not selected by arch";
+        else if (a->cputype & CPU_ARCH_ABI64)          why = "not a 64-bit Mach-O";
+        else                                           why = "32-bit";
+        me_say(c->log, "slice %s: %s; passed through unchanged\n", name, why);
         return 0;
     }
     me_say(c->log, "slice %s:\n", name);
@@ -783,6 +797,37 @@ static void me_fat_placed(const mfat_arch *a, uint32_t index,
     ma_describe(a->cputype, a->cpusubtype, name);
     me_say(c->log, "slice %s: moved from offset 0x%llx to 0x%llx\n", name,
            (unsigned long long)a->offset, (unsigned long long)off);
+}
+
+/* Is slice `a` of the container in buf[0..size) a 64-bit Mach-O?
+ *
+ * THE ARCH TABLE'S DECLARED cputype IS NOT THE ANSWER. A fat_arch may declare
+ * one thing over a slice that is another -- lipo never emits that, a truncated
+ * or hand-built container can -- and trusting the header over the content is
+ * how a rewriter gets a wrong answer about the bytes it is about to edit.
+ *
+ * mi_wrap, and not a magic comparison of our own, because this is the SAME
+ * question src/rewrite.c's fat loop asks (mr_process_thin returns MR_SKIP for
+ * exactly `mi_wrap(...) != 0`, and mr_fat_slice passes such a slice through).
+ * The two loops have to CLASSIFY alike -- every compat wrapper moved from that
+ * one to this one, and a slice one called a 64-bit Mach-O and the other did not
+ * would be a rewriter with two answers about the bytes it is editing.
+ *
+ * CLASSIFY, not decide: the two loops are not the same rewriter. me_run_fat
+ * refuses a container in which nothing is left to edit (`nselected == 0`),
+ * which mr_process_fat does not, so a container with no 64-bit Mach-O slice at
+ * all is refused here and written there. That difference is this function's
+ * caller's, not this function's, and tests/change_dylib_test.sh's
+ * "two fat loops" block runs both loops over one corpus and pins it as the
+ * ONLY one.
+ *
+ * The declared cputype still decides which ARCH a slice is -- cpusubtype lives
+ * nowhere else -- just not whether it is a 64-bit Mach-O. */
+static int me_slice_is_64(uint8_t *buf, size_t size, const mfat_arch *a) {
+    mi_image im;
+    /* mfat_parse already proved this, and this reads raw memory. */
+    if ((uint64_t)a->offset + (uint64_t)a->size > (uint64_t)size) return 0;
+    return mi_wrap(buf + a->offset, a->size, &im) == 0;
 }
 
 static int me_run_fat(const char *path, const char *out, const ms_script *s,
@@ -837,28 +882,36 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         size_t hl = strlen(have);
         snprintf(have + hl, sizeof have - hl, "%s%s", j ? ", " : "", name);
         int row = ma_index(a.cputype, a.cpusubtype);
-        int is64 = (a.cputype & CPU_ARCH_ABI64) != 0;
-        selected[j] = s->arch_mask ? (row >= 0 && (s->arch_mask & (1u << row)) ? 1 : 0)
-                                   : (unsigned char)is64;
-        if (selected[j]) { nselected++; last = j; }
+        int is64 = me_slice_is_64(buf, size, &a);
+        if (!is64) selected[j] = ME_SLICE_NOT_64;
+        else if (!s->arch_mask) selected[j] = ME_SLICE_EDIT;
+        else selected[j] = (row >= 0 && (s->arch_mask & (1u << row)))
+                               ? ME_SLICE_EDIT : ME_SLICE_OTHER_ARCH;
+        if (selected[j] == ME_SLICE_EDIT) { nselected++; last = j; }
     }
     int rc = 0;
     const char *rname; uint32_t rct, rcs;
     for (int r = 0; ma_row(r, &rname, &rct, &rcs); r++) {
         if (!(s->arch_mask & (1u << r))) continue;
-        int found = 0, found64 = 0;
+        int found = 0, found64 = 0, decl64 = 0;
         for (uint32_t j = 0; j < narch; j++) {
             mfat_arch a; mfat_get(buf, swap, j, &a);
             if (ma_index(a.cputype, a.cpusubtype) == r) {
-                found = 1; found64 = (a.cputype & CPU_ARCH_ABI64) != 0;
+                found = 1;
+                found64 = selected[j] != ME_SLICE_NOT_64;
+                decl64 = (a.cputype & CPU_ARCH_ABI64) != 0;
             }
         }
         if (!found) {
             me_say(log, "machorewrite edit: %s has no %s slice (it has: %s); ", path, rname, have);
             rc = MR_REFUSED;
         } else if (!found64) {
-            me_say(log, "machorewrite edit: %s's %s slice is 32-bit, and statements apply only to "
-                        "64-bit slices; ", path, rname);
+            /* Same distinction me_fat_slice's pass-through line draws, and for
+             * the same reason: a slice the arch table calls 64-bit whose bytes
+             * are not is not a 32-bit slice. */
+            me_say(log, "machorewrite edit: %s's %s slice is %s, and statements apply only to "
+                        "64-bit slices; ", path, rname,
+                        decl64 ? "not a 64-bit Mach-O" : "32-bit");
             rc = MR_REFUSED;
         }
     }

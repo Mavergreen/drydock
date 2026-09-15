@@ -96,12 +96,19 @@ void ms_free(ms_script *s);
 const char *ms_kind_name(int kind);
 const char *ms_op_name(int op);
 
-/* Which verb grammar offers a row's operation. `machorewrite dylib` and
- * `machorewrite rpath` take their operations from the SAME table an edit
+/* Which verb grammar OFFERED a row's operation. `machotool dylib` and
+ * `machotool rpath` took their operations from the SAME table an edit
  * script's statements come from -- `dylib -insert P` and `dylib insert P`
- * are one operation with two spellings -- so each row says which of the two
- * verbs may spell it. A row no verb offers (every statement that is not a
- * dylib or rpath operation) carries 0 and a NULL flag. */
+ * were one operation with two spellings -- so each row says which of the two
+ * verbs could spell it, and a row neither offered (every statement that is
+ * not a dylib or rpath operation) carries 0 and a NULL flag.
+ *
+ * BOTH VERBS ARE GONE, and with them every reader of this mask that decided
+ * anything: ms_table_row still fills it, and its one production caller
+ * (--capabilities) ignores it now that `ops=` and `flags=` are no longer
+ * advertised. The column is left in place rather than torn out with the
+ * verbs, and ms_mode_op/ms_verb_op's own note at the foot of this file says
+ * what that costs. */
 enum { MS_MODE_DYLIB = 1u << 0, MS_MODE_RPATH = 1u << 1 };
 
 /* Enumerates the statement table row by row (0-based `i`), for a caller like
@@ -113,8 +120,9 @@ enum { MS_MODE_DYLIB = 1u << 0, MS_MODE_RPATH = 1u << 1 };
  * `for (i = 0; ms_table_row(i, &k, &o, &n, &f, &m, &d); i++)`.
  *
  * `*flag` is the verb spelling ("-replace") or NULL for a row no verb
- * offers; `*modes` is an MS_MODE_* mask, 0 when `*flag` is NULL; `*disturbs`
- * is the row's MREL_* mask (src/relations.h) -- see ms_disturbs. */
+ * offered; `*modes` is an MS_MODE_* mask, 0 when `*flag` is NULL; neither is
+ * read by any production caller now (see MS_MODE_* above). `*disturbs` is the
+ * row's MREL_* mask (src/relations.h) -- see ms_disturbs. */
 int ms_table_row(int i, const char **kind, const char **op, int *nargs,
                  const char **flag, unsigned *modes, unsigned *disturbs);
 
