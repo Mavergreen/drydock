@@ -15,10 +15,16 @@
 # about mg_grow_header -- that it refuses an image with no section data, and
 # one whose first section lies past the end of the file, rather than wrapping
 # `fsize - insert` and dying of SIGSEGV -- is proved hermetically now, in
-# tests/grow_test.c, which calls mg_grow_header directly. The CLI-shaped facts
-# that went with the verb (OUT is not FILE, a symlinked OUT is followed, N=0 is
-# refused) are asserted of the bare form and of `edit`, which are what is left
-# that writes an OUT.
+# tests/grow_test.c, which calls mg_grow_header directly.
+#
+# Of the CLI-shaped facts that went with the verb, only ONE is asserted here of
+# the bare form and of `edit`: that OUT is not FILE. The other two are not, and
+# saying so is the point of this paragraph -- an earlier draft claimed all three
+# were, which is the kind of claim this suite exists to stop anyone making.
+#   - a symlinked OUT is followed: survives only through the wrapper, at
+#     tests/change_dylib_test.sh:1116-1128. Nothing in this file covers it.
+#   - N=0 is refused: has no successor and can have none. `grow N` was the only
+#     form taking a byte count; no statement does.
 #
 # What this does NOT re-prove: change_dylib_test.sh already runs real dylib
 # renumbering, insert/delete ordinal correctness, and header-growth end to
@@ -1444,6 +1450,33 @@ fi
 echo "$unmatched_out" | grep -qF "libSystem.B.dylib -> /tmp/new.dylib" \
     && ok "dylib: the replace that DID match is still reported" \
     || bad "dylib: matched replace" "expected 'libSystem.B.dylib -> /tmp/new.dylib' on stdout, got: $unmatched_out"
+
+# THE SAME INVERSION, FOR delete -- which nothing asserted until now, and which
+# a review found by inventing a mutant that survived every suite. Counting a
+# dylib hit only when new_path != NULL leaves `replace` correct and makes every
+# successful DELETE report itself as a miss: ctest, all six shell suites and the
+# characterize digest stay green while `dylib delete P` prints "P matched
+# nothing" for a P it just removed. Under --fatal-warnings that miss becomes a
+# refusal, so the tool declines work it actually did and writes no OUT.
+# The block above says a hit/miss inversion "has to be checked for directly,
+# not just inferred from the positive cases passing". It said that of replace
+# and then did not do it for delete.
+# The deleted path must be one NOTHING BINDS TO: machotool refuses to delete a
+# dylib a symbol still binds to, so using libSystem here would test the bind
+# guard and never reach the hit/miss report at all -- green for the wrong
+# reason, in a test written to catch exactly that.
+build_main "$T/del_hit_fixture"
+mts "$T/del_hit_fixture" "dylib append /tmp/del_hit_unbound.dylib" >/dev/null 2>&1
+mts "$T/del_hit_fixture" "dylib delete /tmp/del_hit_unbound.dylib" \
+    >/dev/null 2>"$T/del_hit.err" && del_hit_rc=0 || del_hit_rc=$?
+[ "$del_hit_rc" -eq 0 ] \
+    && ok "dylib: a delete that matched exits 0" \
+    || bad "dylib: matched delete exit" "expected 0, got $del_hit_rc: $(cat "$T/del_hit.err")"
+if grep -q "matched nothing" "$T/del_hit.err"; then
+    bad "dylib: matched delete reported as a miss"         "a delete that REMOVED a command reported it matched nothing -- under --fatal-warnings that refuses work the tool actually did: $(cat "$T/del_hit.err")"
+else
+    ok "dylib: a delete that matched is not reported as a miss"
+fi
 # The inverse of the two checks above: an implementation that reported EVERY
 # operation as a miss (hit and miss inverted) would still pass every
 # assertion so far -- inverting hit/miss is exactly the failure this feature
