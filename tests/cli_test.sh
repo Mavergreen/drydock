@@ -2320,17 +2320,25 @@ fi
 # all (it has no __PAGEZERO to lower the base into).
 #
 # So the per-slice refusal is now the header-pad one: a dylib path whose load
-# command fits slice 0's header pad and not slice 1's. Slice 0 is edited,
-# slice 1 is refused, and the assertions below are unchanged in what they
-# claim.
+# command fits ONE slice's header pad and not the OTHER's. One slice is
+# edited, the other is refused, and the assertions below are unchanged in what
+# they claim.
 #
-# platform: slice 0 is compiled by $CC for the HOST, so its pad is the host
-# toolchain's to decide -- 2816 bytes here, something else on a cross runner.
-# A length measured on one host and hardcoded inverted the asymmetry on
-# another: slice 0 no longer fit the append, IT refused first, and every
-# assertion below passed while covering nothing about slice 1. So both pads
-# are read back from `machorewrite info` and the length is derived from them,
-# or this block says no length would work and fails.
+# WHICH SLICE PLAYS WHICH PART IS DERIVED, NOT ASSUMED, and so is the length.
+# Every property this block claims is role-symmetric -- one slice is edited,
+# the other refused, the whole file is refused, the refused slice is named,
+# nothing is written -- so the test only has to KNOW which is which. The
+# roomier of the two measured pads becomes slice 0 (edited) and the tighter
+# becomes slice 1 (refused), and the path's load command is sized to fall
+# between them.
+#
+# platform: one slice is compiled by $CC for the HOST, so its pad is the host
+# toolchain's to decide: 2816 bytes on x86_64 against the fixture's 480, and
+# 48 bytes on the Apple Silicon runner against that same 480. Not merely a
+# different size -- an INVERSION, in which "fits the compiled slice and not
+# the fixture" is impossible for any path length at all. A hardcoded 505-byte
+# path made the compiled slice refuse FIRST there, and every assertion below
+# passed while covering nothing about the second slice.
 mrerr_pad() {
     "$MACHOREWRITE" info "$1" \
         | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
@@ -2339,26 +2347,42 @@ mrerr_pad() {
 # rounded up to 8 -- src/rewrite.c's mr_emit_dylib_lc, which is what
 # mg_ensure_pad then compares against the pad.
 mrerr_lc_cost() { echo $(( ((24 + $1 + 1 + 7) / 8) * 8 )); }
-mrerr_pad0=$(mrerr_pad "$T/segment_fat_slice")
-mrerr_pad1=$(mrerr_pad "$T/implausible")
-if [ -z "$mrerr_pad0" ] || [ -z "$mrerr_pad1" ]; then
+mrerr_pad_compiled=$(mrerr_pad "$T/segment_fat_slice")
+mrerr_pad_fixture=$(mrerr_pad "$T/implausible")
+if [ -z "$mrerr_pad_compiled" ] || [ -z "$mrerr_pad_fixture" ]; then
     bad "lc: MR_ERROR pads" "machorewrite info reported no header pad for one of the two slices"
-    mrerr_pad0=0; mrerr_pad1=0
+    mrerr_pad_compiled=0; mrerr_pad_fixture=0
 fi
-# The shortest path whose cost clears slice 1's pad, whatever that pad is:
-# cost(pad1 - 16) is at least pad1 + 9 and at most pad1 + 16.
-long_len=$((mrerr_pad1 - 16))
+if [ "$mrerr_pad_compiled" -gt "$mrerr_pad_fixture" ]; then
+    mrerr_edited="$T/segment_fat_slice"; mrerr_refused="$T/implausible"
+    mrerr_pad_hi=$mrerr_pad_compiled;    mrerr_pad_lo=$mrerr_pad_fixture
+else
+    mrerr_edited="$T/implausible";       mrerr_refused="$T/segment_fat_slice"
+    mrerr_pad_hi=$mrerr_pad_fixture;     mrerr_pad_lo=$mrerr_pad_compiled
+fi
+# The shortest path whose cost clears the tighter pad, whatever it is:
+# cost(pad - 16) is at least pad + 9 and at most pad + 16, and a path is at
+# least one character long.
+long_len=$((mrerr_pad_lo - 16))
+[ "$long_len" -ge 1 ] || long_len=1
 long_cost=$(mrerr_lc_cost "$long_len")
-[ "$long_len" -ge 8 ] && [ "$long_cost" -gt "$mrerr_pad1" ] && [ "$long_cost" -le "$mrerr_pad0" ] \
-    && ok "lc: MR_ERROR asymmetry: a $long_cost-byte load command fits slice 0's $mrerr_pad0-byte pad and not slice 1's $mrerr_pad1-byte one" \
+[ "$long_cost" -gt "$mrerr_pad_lo" ] && [ "$long_cost" -le "$mrerr_pad_hi" ] \
+    && ok "lc: MR_ERROR asymmetry: a $long_cost-byte load command fits the ${mrerr_pad_hi}-byte pad of $(basename "$mrerr_edited") and not the ${mrerr_pad_lo}-byte pad of $(basename "$mrerr_refused")" \
     || bad "lc: MR_ERROR asymmetry" \
-           "no dylib path fits slice 0's $mrerr_pad0-byte pad and not slice 1's $mrerr_pad1-byte one (tried $long_len bytes, costing $long_cost)"
-long_dylib="/$(printf 'a%.0s' $(seq 1 $((long_len - 7)))).dylib"
-"$T/segread" wrap "$T/mrerr_fat" "$T/segment_fat_slice" "$T/implausible" 16777223
-# WHICH NAME slice 1 goes by is the tool's answer, not a literal: ask the
-# container itself, through the one message that lists every slice's name in
-# table order (tests/edit_test.c pins its wording). i386 is an arch neither
-# slice can be -- slice 0 is a 64-bit Mach-O, slice 1 is declared x86_64.
+           "no dylib path separates a ${mrerr_pad_hi}-byte pad from a ${mrerr_pad_lo}-byte one (tried $long_len bytes, costing $long_cost)"
+if [ "$long_len" -ge 8 ]; then
+    long_dylib="/$(printf 'a%.0s' $(seq 1 $((long_len - 7)))).dylib"
+else
+    # Every path of 1 to 7 characters costs the same 32 bytes, so the shortest
+    # one stands in for all of them and long_cost above is still exact.
+    long_dylib=/a
+fi
+"$T/segread" wrap "$T/mrerr_fat" "$mrerr_edited" "$mrerr_refused" 16777223
+# WHICH NAME the refused slice goes by is the tool's answer, not a literal:
+# ask the container itself, through the one message that lists every slice's
+# name in table order (tests/edit_test.c pins its wording). i386 is an arch
+# neither slice can be -- both are 64-bit Mach-Os, and slice 1 is declared
+# x86_64 by the wrap. The refused one is slice 1, the second name.
 mrerr_have=$(printf 'arch i386\ndylib append %s\n' "$long_dylib" \
     | "$MACHOREWRITE" "$T/mrerr_fat" "$T/mrerr_probe" 2>&1 || :)
 mrerr_slice1=$(printf '%s\n' "$mrerr_have" \
@@ -2396,7 +2420,7 @@ grep -q "don't fit in header pad" "$T/mrerr.err" \
 # pass while covering nothing about the SECOND slice. Asserted against the
 # very bytes the wrap used for slice 0, not against a container that merely
 # resembles it.
-cp "$T/segment_fat_slice" "$T/mrok"
+cp "$mrerr_edited" "$T/mrok"
 if mts "$T/mrok" "dylib append $long_dylib" >"$T/mrok.out" 2>"$T/mrok.err"; then
     ok "lc: and slice 0's own bytes really could take that append, so slice 1 is what refused"
 else
@@ -2425,11 +2449,14 @@ fi
 # compat/ intercepts change_dylib or fix_macho before they reach this code.
 #
 # SHAPE ONE: declared 32-bit over a slice that IS a 64-bit Mach-O. The very
-# same two slices as mrerr_fat above -- only ar[1].cputype differs, i386
-# instead of x86_64 -- so the outcome must be the same one: slice 1 is a
-# 64-bit Mach-O that cannot take the append, and the whole file is refused.
-# A build that read the declaration would pass slice 1 through and exit 0.
-"$T/segread" wrap "$T/fatdecl32" "$T/segment_fat_slice" "$T/implausible" 7
+# same two slices as mrerr_fat above, in the same derived roles -- only
+# ar[1].cputype differs, i386 instead of x86_64 -- so the outcome must be the
+# same one: slice 1 is a 64-bit Mach-O that cannot take the append, and the
+# whole file is refused. A build that read the declaration would pass slice 1
+# through and exit 0. The roles have to be the derived ones here too: with
+# the roomier slice in slot 1 this refuses at slice 0 instead, and both
+# assertions below pass without slice 1's declaration ever being tested.
+"$T/segread" wrap "$T/fatdecl32" "$mrerr_edited" "$mrerr_refused" 7
 fatdecl32_before=$(shasum -a 256 < "$T/fatdecl32" | cut -d' ' -f1)
 if mts "$T/fatdecl32" "dylib append $long_dylib" >"$T/fatdecl32.out" 2>"$T/fatdecl32.err"; then
     bad "fat: declared 32-bit over a 64-bit slice" \
