@@ -920,3 +920,61 @@ Renaming the clone first orphans the memories and every transcript of this work.
 **The GitHub rename is independent of both** and can happen whenever — GitHub
 redirects the old URL, so the local remote keeps working either way. Grouping it
 here only keeps the mental model to one "rename day".
+
+## Item 7 also purges `docs/superpowers/` from history
+
+**Standing rule, stated by the owner 2026-09-15:** superpowers docs are
+**ephemeral**. A spec or plan lives long enough to get implemented and is then
+deleted. The code survives; the plan for getting from previous-code to this-code
+does not. This repo has been violating that since `868e2a6`, the first plan.
+
+It belongs to item 7 for the reason item 7 already groups its other work: a
+history rewrite is what makes the deletion real. Removing these files at the tip
+leaves ~14k lines in the objects forever, and the rewrite is already
+invalidating every commit SHA cited across these docs and the SDD ledgers. One
+disruption instead of two.
+
+**What is tracked today:** 26 files, 13,920 lines, 755K.
+
+| path | count | disposition |
+|---|---|---|
+| `docs/superpowers/plans/` | 14 | purge — these are the route, not the destination |
+| `docs/superpowers/specs/` | 11 | purge |
+| `docs/superpowers/QUEUE.md` | 1 | **owner's call** — see below |
+
+### The purge is blocked on removing a comment tag first
+
+This is the part a naive `filter-repo` gets wrong. The comment standard
+established by item 6 blessed exactly **two** tags, `platform:` and `spec:`, and
+`spec:` is *a path into `docs/superpowers/specs/`*. So the violation became
+load-bearing: **15 files carry 25 citations, and production `.c`/`.h` are among
+them** — `cli/machorewrite.c` (3), `src/rewrite.c` (3), `src/script.h` (2),
+`src/relations.h` (2), `src/edit.c` (2), `src/rewrite.h`, `src/edit.h`,
+`compat/translate.sh` (4), `compat/README.md`, `CMakeLists.txt`, and five test
+files. Every citation resolves today; all 25 dangle the moment the files go.
+
+Only **5** distinct documents are cited. The other 21 are referenced by nothing.
+
+Order of operations, and none of it is optional:
+
+1. **Drop `spec:` from the comment standard**, leaving `platform:` as the only
+   tag. A blessed tag that points at a deliberately ephemeral file is the
+   mechanism that turned scratch into a dependency, and it will re-create the
+   problem on the next plan if it survives.
+2. **Rewrite the 25 citations.** Sampled, most are attribution attached to prose
+   that already carries the substance (`spec: … -- Decision 5, the derived
+   applicability governs both front-ends`) — there, strip the path and keep the
+   sentence. Where a comment leans on the spec to carry the meaning (`spec: …
+   says why keeping both spellings was expensive`), **inline the why**, because
+   after the rewrite there is nowhere for a reader to go. Losing a reason is a
+   worse outcome than keeping a file.
+3. **Then** purge, so the rewrite does not have to rewrite the citing files too.
+
+### `QUEUE.md` is the one genuine question
+
+The rule names specs and plans — the route from previous-code to this-code.
+`QUEUE.md` is neither: it is the living backlog, and items 8 and 12–15 have not
+been implemented, so it has not finished being true. Purging it discards
+unimplemented work; keeping it under `docs/superpowers/` keeps a directory the
+rule says should not exist. Most likely answer is that it survives the purge
+under a different path, but that is the owner's call, not a ruling to take.
