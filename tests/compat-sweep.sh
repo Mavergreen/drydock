@@ -189,7 +189,16 @@ for t in change_dylib add_version_min rename_segment retag_swift_classes patch_m
     [ -x "$BIN/$t" ] || { echo "compat-sweep: $BIN/$t not found or not executable" >&2; exit 1; }
 done
 [ -x "$NEWBIN/machorewrite" ] || { echo "compat-sweep: $NEWBIN/machorewrite not found or not executable" >&2; exit 1; }
-[ -x "$BIN/machorewrite" ] || { echo "compat-sweep: $BIN/machorewrite not found or not executable (needed to prepare the base image)" >&2; exit 1; }
+# $BIN is mandated by this file's header to be a build of 91b30b3 -- the last
+# commit where the five C tools existed -- and that build's binary was called
+# `macho9`. Demanding the CURRENT name of it is a requirement the documented
+# invocation cannot satisfy; the check has been wrong across two renames,
+# asking for `machotool` and then `machorewrite` of a build that has neither.
+sweep_base=''
+for n in macho9 machotool machorewrite; do
+    [ -x "$BIN/$n" ] && { sweep_base=$n; break; }
+done
+[ -n "$sweep_base" ] || { echo "compat-sweep: $BIN has none of macho9/machotool/machorewrite (needed to prepare the base image)" >&2; exit 1; }
 [ -r "$ROOT/compat/translate.sh" ] || { echo "compat-sweep: compat/translate.sh missing" >&2; exit 1; }
 
 # Source the translator instead of exec'ing it per combination: same code

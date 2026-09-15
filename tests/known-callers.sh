@@ -272,8 +272,11 @@ got=$(sha "$T/dir with space/t" 2>/dev/null || echo none)
     || bad "install.sh spaced path" "exit $rc, sha256 $got, want $INSTALLSH_SHA"
 # The whole pipeline creates exactly ONE file in that directory -- `t`, the
 # converted copy it was asked for -- and the assertion is that difference, not
-# the absence of one particular temp-file spelling: a grep for `machorewrite-compat`
-# names something no code produces any more, so it could no longer fail. The
+# the absence of one particular temp-file spelling. Naming a spelling is the
+# weaker test in both directions: a grep for a spelling nothing produces can
+# never fail, and one for a spelling that IS produced -- `mw_prepare` makes
+# `machorewrite-compat` temps today -- fails for a reason the assertion does
+# not mean. Comparing the whole listing is indifferent to what temps are called. The
 # two listings are sorted the same way and compared whole, for the reason the
 # atomicity block above gives.
 spacewant=$(printf '%s\nt\n' "$spacels_before" | LC_ALL=C sort)

@@ -27,7 +27,11 @@ plus the two files every wrapper sources:
 | `translate.sh` | `machorewrite-translate.sh` | old argv → the `machorewrite` command line(s) it means. Pure text; runs nothing. |
 | `machorewrite-compat.sh` | `machorewrite-compat.sh` | finds `machorewrite`, prints the teaching message, and runs the translation. |
 
-## Why the names are unchanged
+## Why the six wrapper names are unchanged
+
+The *support* files were renamed with the binary — `machorewrite-compat.sh` and
+`machorewrite-translate.sh` — because nothing outside this repo names them. The
+six wrapper names are the opposite case, and that is what this section is about.
 
 `mavericksforever.com/claude/install.sh` fetches `patch_macho`,
 `change_dylib` and `add_version_min` **by those names** and its generated

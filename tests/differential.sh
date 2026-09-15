@@ -66,11 +66,25 @@ fi
 MAX="${MACHO_DIFF_MAX:-300}"
 SCAN="${MACHO_DIFF_SCAN:-8000}"
 
+# The six WRAPPER names are stable across every rename, so both builds must have
+# them. The main binary is not: $REF is by definition a build at an earlier
+# commit, where it was called machotool, or macho9 before that, or did not exist
+# as a separate binary at all. Demanding the current name of a historical build
+# is a requirement nothing can satisfy -- this preflight demanded `macho9` of a
+# machotool-era $REF, then `machotool` of a machorewrite-era one, and exited 1
+# against every reference build that existed. Accept any of the names here, and
+# require the current one only of $NEW.
 for d in "$REF" "$NEW"; do
-    for t in machorewrite change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
+    for t in change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
         [ -x "$d/$t" ] || { echo "differential: $d/$t not found or not executable" >&2; exit 1; }
     done
 done
+[ -x "$NEW/machorewrite" ] || { echo "differential: $NEW/machorewrite not found or not executable" >&2; exit 1; }
+ref_bin=''
+for n in machorewrite machotool macho9; do
+    [ -x "$REF/$n" ] && { ref_bin=$n; break; }
+done
+[ -n "$ref_bin" ] || { echo "differential: $REF has none of machorewrite/machotool/macho9" >&2; exit 1; }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/macho-differential.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
