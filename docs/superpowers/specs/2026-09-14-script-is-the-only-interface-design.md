@@ -206,8 +206,14 @@ when its only consumer is a compatibility layer with a limited life.
 - **Mutation-check the deletions**: after removing `mr_is_deleted`, a script
   that renames and then deletes must produce the rename, and a test must fail if
   it produces the deletion.
-- `tests/leaf-tool-crashes.sh`'s `grow` cases move to script form and must still
-  catch what they catch today.
+- `tests/leaf-tool-crashes.sh`'s `grow` cases must still catch what they catch
+  today. **Corrected 2026-09-14:** this line said "move to script form", which
+  contradicts Decision 2 below and is impossible for the past-the-end case —
+  no script can reach that grow, which is Decision 2's own argument. Decision 2
+  is authoritative. In the event both cases turned out to be hermetic C tests in
+  `grow_test.c` **already**, added by the commits that fixed the bugs
+  (`7ea664a`, `66ca5ce`), so the work was verify-then-delete rather than
+  author-then-delete.
 - The family gates from a shipyard checkout **on `main`** — not a feature branch
   (item 6 reported "ok" for six tasks from a branch missing a check entirely).
 - **Check CI after each push.** Item 6 shipped a test that was red on `main` for
