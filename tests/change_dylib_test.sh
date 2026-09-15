@@ -1756,6 +1756,163 @@ else
     bad "mixed-family double grow" "the two-pass route ($two_size bytes) is SMALLER than the one-call route ($one_size bytes) -- growing twice should never cost less than growing once for the same total delta"
 fi
 
+# --- 21. THE TWO FAT LOOPS, COMPARED ----------------------------------------
+#
+# This repo has two fat loops. src/rewrite.c's mr_process_fat drives
+# mr_fat_slice; src/edit.c's me_run_fat drives me_fat_slice. Every compat
+# wrapper -- change_dylib, fix_macho, the rest -- was MOVED from the first to
+# the second, and moving callers between them is what that whole change was.
+# Nothing anywhere compared them. Each loop had its own tests; neither was ever
+# run over the same container as the other, so "the two loops agree" was an
+# assertion in a comment and nowhere else.
+#
+# It is now an assertion here. For every container in a fat corpus that crosses
+# slice BYTES against the fat_arch's DECLARED cputype, both loops get the same
+# one operation, and must return the same exit code and produce the same OUT,
+# byte for byte -- with ONE documented exception, which this block pins just as
+# hard as the agreements: me_run_fat refuses a container in which no slice is
+# left to edit (`nselected == 0`) and mr_process_fat does not. That difference
+# is real, it predates the classification change, and it is the ONLY one.
+#
+# The mr_apply_file side is a driver compiled here, exactly the way case 20's
+# one_pass is and for the same reason: mr_apply_file has no production caller
+# left (mr_fat_slice's own comment in src/rewrite.c says so), so the only way
+# to run its loop is to call it. No CMake target and no build plumbing -- which is also why this
+# cannot affect the 10.9 cross build.
+cat > "$T/fat_loops.c" <<'EOF'
+#include <string.h>
+#include "rewrite.h"
+#include "script.h"
+/* fat_loops FILE OUT DYLIB -- one mr_apply_file call appending one
+ * LC_LOAD_DYLIB, which is what `dylib append DYLIB` is as a script statement.
+ * The SAME operation the bare form gets, so any difference in the result is a
+ * difference between the two loops and not between two requests. */
+int main(int argc, char **argv) {
+    if (argc != 4) return 2;
+    mr_ops ops;
+    memset(&ops, 0, sizeof ops);
+    ops.dylib_append = argv[3];
+    return mr_apply_file(argv[1], argv[2], &ops, ms_disturbs(MS_DYLIB, MS_APPEND));
+}
+EOF
+"$CC" -O2 -Wall -I "$SRC_DIR" -o "$T/fat_loops" "$T/fat_loops.c" "$SRC_DIR"/*.c \
+    2>"$T/fat_loops_build.err" \
+    || bad "two fat loops" "fat_loops driver failed to build: $(cat "$T/fat_loops_build.err")"
+
+# The slice bytes the corpus crosses. Every one is built here, by hand or from
+# $T/lp64, never scanned for on the host -- a corpus that depends on what
+# happens to be installed is a corpus that tests a different thing on every
+# machine.
+build_main "$T/lp64"                                   # a real 64-bit Mach-O
+cp "$T/slice32.bin" "$T/lp32"                          # a real 32-bit Mach-O (case 10)
+printf 'not a mach-o, just bytes: %s\n' "$(date)" > "$T/lpblob"
+dd if="$T/lp64" of="$T/lptrunc" bs=512 count=1 2>/dev/null   # a 64-bit header, cut off
+: > "$T/lpempty"                                       # a zero-length slice
+cat > "$T/lp_badlc.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <mach-o/loader.h>
+/* MH_MAGIC_64 and a plausible cputype, with load commands that cannot fit --
+ * the one byte-shape in this corpus that gets PAST a magic comparison and is
+ * still not a 64-bit Mach-O image. */
+int main(int argc, char **argv) {
+    uint8_t buf[4096]; (void)argc;
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+    h->filetype = MH_EXECUTE;
+    h->ncmds = 0xffff;
+    h->sizeofcmds = 0xffff0;
+    FILE *f = fopen(argv[1], "wb");
+    if (!f) { perror(argv[1]); return 2; }
+    fwrite(buf, 1, sizeof buf, f);
+    fclose(f);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/lp_badlc" "$T/lp_badlc.c"
+"$T/lp_badlc" "$T/lpbadlc"
+
+# NAME SLICE0 CT0 SLICE1 CT1 CS1 -- one container per row. Slice 0 is a real
+# 64-bit Mach-O declared x86_64 in every row but the last, which is the point
+# of the last: it is the container with NO editable slice at all.
+LP_ROWS='agree64   lp64  0x1000007 lp64    0x100000c 0
+decl32    lp64  0x1000007 lp64    7         3
+bytes32   lp64  0x1000007 lp32    0x100000c 0
+agree32   lp64  0x1000007 lp32    7         3
+nmas64    lp64  0x1000007 lpblob  0x100000c 0
+nmas32    lp64  0x1000007 lpblob  7         3
+truncas64 lp64  0x1000007 lptrunc 0x100000c 0
+badlcas64 lp64  0x1000007 lpbadlc 0x100000c 0
+emptyas64 lp64  0x1000007 lpempty 0x100000c 0
+solo32    lp32  0x100000c lpblob  7         3'
+
+lp_sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
+
+# lp_run NAME -- drive one container through BOTH loops, leaving the exit codes
+# in lp_arc/lp_brc and the OUT digests (or the word "none") in lp_asha/lp_bsha.
+lp_run() {
+    lp_c="$T/lpc_$1"
+    rm -f "$T/lp_a.out" "$T/lp_b.out"
+    lp_arc=0
+    "$T/fat_loops" "$lp_c" "$T/lp_a.out" /lp.dylib >"$T/lp_a.log" 2>&1 || lp_arc=$?
+    lp_brc=0
+    printf 'dylib append /lp.dylib\n' | "$MACHOREWRITE" "$lp_c" "$T/lp_b.out" \
+        >"$T/lp_b.log" 2>&1 || lp_brc=$?
+    lp_asha=none; [ -e "$T/lp_a.out" ] && lp_asha=$(lp_sha "$T/lp_a.out")
+    lp_bsha=none; [ -e "$T/lp_b.out" ] && lp_bsha=$(lp_sha "$T/lp_b.out")
+    # A NO on either `[ -e ]` above is this function's last exit status, and
+    # under this script's `set -e` a caller of a function that "fails" dies on
+    # the spot -- silently, before any of the assertions below run. That is not
+    # hypothetical: the refusing container is exactly the one whose OUT is
+    # missing, so the one case this block exists for was the one it skipped.
+    return 0
+}
+
+echo "$LP_ROWS" | while read -r lp_name lp_s0 lp_ct0 lp_s1 lp_ct1 lp_cs1; do
+    "$BIN/makefat" "$T/lpc_$lp_name" "$T/$lp_s0" "$lp_ct0" 3 12 \
+                                     "$T/$lp_s1" "$lp_ct1" "$lp_cs1" 12
+done
+# `while read` in a pipeline runs in a subshell on a POSIX sh, so $fails would
+# not survive it -- the loop above only builds files. The assertions run here,
+# in this shell, one call per container.
+for lp_name in agree64 decl32 bytes32 agree32 nmas64 nmas32 truncas64 badlcas64 emptyas64; do
+    lp_run "$lp_name"
+    [ "$lp_arc" -eq "$lp_brc" ] \
+        && ok "two fat loops: $lp_name -- both loops return the same exit code ($lp_arc)" \
+        || bad "two fat loops: $lp_name" "mr_apply_file exited $lp_arc, the bare form exited $lp_brc -- one rewriter, two answers: $(cat "$T/lp_a.log"; echo ---; cat "$T/lp_b.log")"
+    [ "$lp_asha" = "$lp_bsha" ] \
+        && ok "two fat loops: $lp_name -- and the same OUT ($lp_asha)" \
+        || bad "two fat loops: $lp_name" "mr_apply_file wrote $lp_asha, the bare form wrote $lp_bsha"
+done
+
+# THE ONE EXCEPTION, pinned as exactly itself. `solo32` has a 32-bit Mach-O
+# slice and a non-Mach-O slice: nothing in it is a 64-bit Mach-O, so there is
+# nothing for either loop to edit. They CLASSIFY it identically -- that is what
+# me_run_fat's "has no 64-bit slice to edit" says, and what mr_fat_slice's two
+# "not a 64-bit Mach-O; leaving this slice unchanged" lines say -- and then
+# they do different things about it: mr_process_fat writes the container back
+# unchanged and exits 0, me_run_fat refuses. This is me_run_fat's nselected
+# gate, it is the only place the two loops part company, and it is older than
+# the classification change (BASE refused here too, in different words).
+lp_run solo32
+[ "$lp_arc" -eq 0 ] && [ "$lp_asha" != none ] \
+    && ok "two fat loops: solo32 -- mr_process_fat writes the container it cannot edit (exit 0)" \
+    || bad "two fat loops: solo32" "expected mr_apply_file to exit 0 and write OUT, got $lp_arc/$lp_asha: $(cat "$T/lp_a.log")"
+[ "$lp_brc" -eq 1 ] && [ "$lp_bsha" = none ] \
+    && ok "two fat loops: solo32 -- me_run_fat refuses it instead (exit 1, nothing written)" \
+    || bad "two fat loops: solo32" "expected the bare form to exit 1 and write nothing, got $lp_brc/$lp_bsha: $(cat "$T/lp_b.log")"
+grep -q "has no 64-bit slice to edit" "$T/lp_b.log" \
+    && ok "two fat loops: solo32 -- and the difference is the nselected gate, named in the refusal" \
+    || bad "two fat loops: solo32" "the bare form refused for some other reason: $(cat "$T/lp_b.log")"
+lp_skips=$(grep -c "not a 64-bit Mach-O; leaving this slice unchanged" "$T/lp_a.log" || true)
+[ "$lp_skips" -eq 2 ] \
+    && ok "two fat loops: solo32 -- the CLASSIFICATION still agrees: both loops found nothing editable" \
+    || bad "two fat loops: solo32" "mr_process_fat classified $lp_skips of 2 slices as not-a-64-bit-Mach-O, so the loops disagree about the bytes, not just about what to do: $(cat "$T/lp_a.log")"
+
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1

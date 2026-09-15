@@ -811,11 +811,20 @@ static void me_fat_placed(const mfat_arch *a, uint32_t index,
  * mi_wrap, and not a magic comparison of our own, because this is the SAME
  * question src/rewrite.c's fat loop asks (mr_process_thin returns MR_SKIP for
  * exactly `mi_wrap(...) != 0`, and mr_fat_slice passes such a slice through).
- * The two loops have to agree: every compat wrapper moved from that one to
- * this one, and a container whose outcome depended on which loop a caller
- * reached would be a rewriter with two answers. The declared cputype still
- * decides which ARCH a slice is -- cpusubtype lives nowhere else -- just not
- * whether it is a 64-bit Mach-O. */
+ * The two loops have to CLASSIFY alike -- every compat wrapper moved from that
+ * one to this one, and a slice one called a 64-bit Mach-O and the other did not
+ * would be a rewriter with two answers about the bytes it is editing.
+ *
+ * CLASSIFY, not decide: the two loops are not the same rewriter. me_run_fat
+ * refuses a container in which nothing is left to edit (`nselected == 0`),
+ * which mr_process_fat does not, so a container with no 64-bit Mach-O slice at
+ * all is refused here and written there. That difference is this function's
+ * caller's, not this function's, and tests/change_dylib_test.sh's
+ * "two fat loops" block runs both loops over one corpus and pins it as the
+ * ONLY one.
+ *
+ * The declared cputype still decides which ARCH a slice is -- cpusubtype lives
+ * nowhere else -- just not whether it is a 64-bit Mach-O. */
 static int me_slice_is_64(uint8_t *buf, size_t size, const mfat_arch *a) {
     mi_image im;
     /* mfat_parse already proved this, and this reads raw memory. */
