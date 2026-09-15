@@ -124,6 +124,19 @@ bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
 # a silent skip is how coverage rots. Does not touch $fails.
 skip() { echo "SKIP $1: $2"; }
 
+# Why a WRAPPER run was refused. Every wrapper run opens its stderr with
+# mw_teach's deprecation banner -- a headline plus the indented machorewrite
+# commands it teaches -- so line 1 of a wrapper's stderr is never the reason
+# anything was refused. Diagnostics that reported `head -1` of it printed the
+# banner instead, and a CI-only refusal on a cross runner cost a whole
+# round-trip because the FAIL message never said what the tool objected to.
+# Everything the banner is not, on the assumption that only mw_teach indents.
+wrapper_why() {
+    awk '/: deprecated -- machorewrite does this now\./ { banner = 1; next }
+         banner && /^    / { next }
+         { banner = 0; print }' "$1"
+}
+
 # `set -e` (this file's only top-level one, set once at the top) means any
 # bare command that exits nonzero kills the WHOLE script immediately, mid-run,
 # with no summary and a FAIL count of zero -- see tests/cli_test.sh:133-145
@@ -588,7 +601,7 @@ cap_case() {
     elif grep -qi 'too many' "$T/cap.err"; then
         ok "$desc"
     else
-        bad "$desc" "refused, but without a 'too many' diagnostic: $(head -1 "$T/cap.err")"
+        bad "$desc" "refused, but without a 'too many' diagnostic: $(wrapper_why "$T/cap.err")"
     fi
 }
 set -- ; i=0
@@ -615,7 +628,7 @@ while [ $i -lt 32 ]; do set -- "$@" -add "@loader_path/libspare.dylib"; i=$((i+1
 if "$CHANGE_DYLIB" "$T/main_atcap" -grow "$@" >/dev/null 2>"$T/atcap.err"; then
     ok "-add exactly at capacity is accepted"
 else
-    bad "-add at capacity" "refused at the cap: $(head -1 "$T/atcap.err")"
+    bad "-add at capacity" "refused at the cap: $(wrapper_why "$T/atcap.err")"
 fi
 
 # --- 9b. fix_macho's option arrays had NO bounds check at all ----------------
@@ -650,7 +663,7 @@ fm_cap_case() {
     elif grep -qi 'too many' "$T/fmcap.err"; then
         ok "$desc"
     else
-        bad "$desc" "refused, but without a 'too many' diagnostic: $(head -1 "$T/fmcap.err")"
+        bad "$desc" "refused, but without a 'too many' diagnostic: $(wrapper_why "$T/fmcap.err")"
     fi
     [ "$(shasum -a 256 < "$T/main_fmcap" | cut -d' ' -f1)" = "$before_fm" ] \
         || bad "$desc" "the input was modified despite the refusal"
@@ -669,7 +682,7 @@ while [ $i -lt 32 ]; do set -- "$@" -change "@loader_path/liba.dylib" "@loader_p
 if "$FIX_MACHO" "$T/main_fmatcap" "$@" >/dev/null 2>"$T/fmatcap.err"; then
     ok "fix_macho: -change exactly at capacity is accepted"
 else
-    bad "fix_macho -change at capacity" "refused at the cap: $(head -1 "$T/fmatcap.err")"
+    bad "fix_macho -change at capacity" "refused at the cap: $(wrapper_why "$T/fmatcap.err")"
 fi
 
 # ...and the same for -rename_seg, which is NEW here. It was never asserted
@@ -684,7 +697,7 @@ while [ $i -lt 16 ]; do set -- "$@" -rename_seg __DATA __DATA_R; i=$((i+1)); don
 if "$FIX_MACHO" "$T/main_fmatcap_seg" "$@" >/dev/null 2>"$T/fmatcapseg.err"; then
     ok "fix_macho: -rename_seg exactly at capacity is accepted"
 else
-    bad "fix_macho -rename_seg at capacity" "refused at the cap: $(head -1 "$T/fmatcapseg.err")"
+    bad "fix_macho -rename_seg at capacity" "refused at the cap: $(wrapper_why "$T/fmatcapseg.err")"
 fi
 
 # --- 10/11. fat binaries in the rewrite path ---------------------------------
@@ -779,7 +792,7 @@ while [ $i -lt 32 ]; do
     i=$((i+1))
 done
 "$CHANGE_DYLIB" "$T/main_fat_grow" -grow "$@" >/dev/null 2>"$T/fatgrow.err" \
-    || bad "fat grow tool run" "change_dylib failed: $(head -1 "$T/fatgrow.err")"
+    || bad "fat grow tool run" "change_dylib failed: $(wrapper_why "$T/fatgrow.err")"
 
 after_arch0=$("$BIN/fatcheck" archinfo "$T/main_fat_grow" | sed -n '2p')
 after_arch1=$("$BIN/fatcheck" archinfo "$T/main_fat_grow" | sed -n '3p')
@@ -897,7 +910,7 @@ if "$CHANGE_DYLIB" "$T/main_descfat" \
     -change "@loader_path/liba.dylib" "@loader_path/liba_desc.dylib" >/dev/null 2>"$T/descfat.err"; then
     ok "fat descending-offset: tool ran to completion without crashing"
 else
-    bad "fat descending-offset run" "change_dylib failed/crashed: $(head -1 "$T/descfat.err")"
+    bad "fat descending-offset run" "change_dylib failed/crashed: $(wrapper_why "$T/descfat.err")"
 fi
 
 after_size=$(wc -c < "$T/main_descfat" | tr -d ' ')
@@ -930,34 +943,31 @@ fi
 # in-table-order slice grows, every slice after it packs sequentially from a
 # cursor that has no idea where that still-fixed slice sits. On a
 # non-ascending table the sequential cursor can walk straight into the fixed
-# slice's territory. Reproduced by hand against the pre-fix binary with this
-# exact 3-slice fixture: arch 0 and arch 2 both landed at offset 20480,
+# slice's territory. Reproduced by hand against the pre-fix binary with a
+# 3-slice fixture of this shape: arch 0 and arch 2 both landed at one offset,
 # arch 2's memcpy silently overwrote arch 0's bytes, and the tool exited 0
 # with the fat file "successfully" updated -- one architecture's code gone,
 # no error, right file size, right narch.
 #
-# Engineered precisely rather than hunted for: slice1 is $T/main at offset
-# 0x1000, forced (by the same 32-add idiom as cases 11/12) to grow by
-# exactly one page, from 8600 to 12696 bytes on THIS host -- confirmed
-# exactly this size in case 11 above. That makes the post-growth cursor for
-# whatever comes after it (0x1000 + 12696 = 16792, rounded up to its
-# 4096-byte alignment) land at EXACTLY 0x5000 (20480) -- so slice0 is placed
-# there, fixed, from the start, guaranteeing a collision rather than hoping
-# for one -- ON THIS HOST.
+# Engineered out of the CONTAINER's declared layout, not out of any slice's
+# compiled size. The repacked slice (arch 2) declares a 2^N alignment, so
+# wherever the cursor lands after arch 1 grows, mfat_rewrite rounds it up to
+# exactly 2^N -- for any cursor in (0, 2^N]. arch 0, first in table order and
+# never resized, is parked at exactly 2^N and stays there. So the two collide
+# for ANY growth at all, and the only host fact left is that the grown arch 1
+# still ends before 2^N, which is measured and asserted below rather than
+# assumed.
 #
-# Portability trap (this suite's sixth round of one): $T/main's exact
-# compiled size is the host compiler's to decide, not this script's. On a
-# cross runner it differs, which changes not WHETHER the fixture collides
-# but WHICH of the two overlap guards catches it first: if the differently-
-# sized slices already overlap as DECLARED, mfat_parse's read-side check
-# refuses before the repack ever runs; only if they don't is this the
-# write-side check in process_fat's own reassembly. Both are correct
-# refusals of the exact same condition -- this asserts the observable
-# BEHAVIOUR (refuses, names an overlap, leaves the input untouched), not
-# which of the two call sites produced the message, so it passes either
-# way. Confirmed the write-side path specifically only on THIS (10.9) host;
-# it is not something this test can pin cross-host without controlling the
-# compiler's output, which it does not.
+# platform: the previous fixture aimed the post-growth cursor at a literal
+# 0x5000 using $T/main's size on THIS host (8600 -> 12696 bytes). On the
+# arm64 CI runner $T/main is bigger, its DECLARED range already ran into the
+# next slice's, mfat_parse refused the file on the read side -- and edit.c's
+# message for that ("malformed fat file") does not contain the word
+# "overlap", unlike mr_process_fat's, which is the loop this wrapper stopped
+# going through. The old comment's claim that either guard would satisfy this
+# assertion was true only of the rewriter change_dylib no longer uses.
+fat3_shift=18
+fat3_pack=$((1 << fat3_shift))
 cat > "$T/mk3fat.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
@@ -981,32 +991,44 @@ static uint32_t sw32(uint32_t v) {
     return ((v & 0xff) << 24) | ((v & 0xff00) << 8) | ((v & 0xff0000) >> 8) | ((v >> 24) & 0xff);
 }
 int main(int argc, char **argv) {
-    if (argc != 5) { fprintf(stderr, "usage: %s out slice0 slice1 slice2\n", argv[0]); return 2; }
-    size_t sz0, sz1, sz2;
-    uint8_t *b0 = readfile(argv[2], &sz0);
-    uint8_t *b1 = readfile(argv[3], &sz1);
-    uint8_t *b2 = readfile(argv[4], &sz2);
-    /* slice1 must end (0x1000+sz1) at or before slice2's start, and slice2
-     * must end at or before slice0's start -- non-overlapping ORIGINAL
-     * layout, required by mfat_parse's own (new) input-side overlap check. */
-    uint32_t off0 = 0x5000, off1 = 0x1000, off2 = 0x4000;
-    uint32_t total = off0 + (uint32_t)sz0;
-    if (off1 + sz1 > total) total = (uint32_t)(off1 + sz1);
-    if (off2 + sz2 > total) total = (uint32_t)(off2 + sz2);
+    if (argc != 6) { fprintf(stderr, "usage: %s out fixed grower packed packshift\n", argv[0]); return 2; }
+    size_t szf, szg, szp;
+    uint8_t *bf = readfile(argv[2], &szf);
+    uint8_t *bg = readfile(argv[3], &szg);
+    uint8_t *bp = readfile(argv[4], &szp);
+    uint32_t shift = (uint32_t)strtoul(argv[5], NULL, 0);
+    uint32_t pack = 1u << shift;
+    /* arch 1 grows from off_g; arch 0 is parked at exactly `pack` and never
+     * moves; arch 2 declares alignment `pack`, so it repacks onto arch 0 for
+     * any growth at all. The DECLARED layout must still be well formed --
+     * mfat_parse refuses overlapping input before any of this runs. */
+    uint32_t off_g = 0x1000, off_f = pack, off_p = 2u * pack;
+    if (off_g + szg > off_f) {
+        fprintf(stderr, "%s: the grower (%lu bytes at %u) would reach the fixed slice at %u;"
+                        " raise packshift\n", argv[0], (unsigned long)szg, off_g, off_f);
+        return 2;
+    }
+    if (off_f + szf > off_p || szp == 0) {
+        fprintf(stderr, "%s: the fixed slice (%lu bytes) does not fit between %u and %u,"
+                        " or the packed slice is empty\n",
+                argv[0], (unsigned long)szf, off_f, off_p);
+        return 2;
+    }
+    uint32_t total = off_p + (uint32_t)szp;
     uint8_t *out = calloc(1, total);
     struct fat_header *fh = (struct fat_header *)out;
     fh->magic = sw32(FAT_MAGIC);
     fh->nfat_arch = sw32(3);
     struct fat_arch *ar = (struct fat_arch *)(out + sizeof(struct fat_header));
-    ar[0].cputype = sw32(7); ar[0].cpusubtype = sw32(3);          /* opaque, fixed-high */
-    ar[0].offset = sw32(off0); ar[0].size = sw32((uint32_t)sz0); ar[0].align = sw32(12);
+    ar[0].cputype = sw32(7); ar[0].cpusubtype = sw32(3);          /* opaque, fixed at `pack` */
+    ar[0].offset = sw32(off_f); ar[0].size = sw32((uint32_t)szf); ar[0].align = sw32(12);
     ar[1].cputype = sw32(0x1000007); ar[1].cpusubtype = sw32(3);  /* real x86_64, grows */
-    ar[1].offset = sw32(off1); ar[1].size = sw32((uint32_t)sz1); ar[1].align = sw32(12);
-    ar[2].cputype = sw32(7); ar[2].cpusubtype = sw32(4);          /* opaque, relocates */
-    ar[2].offset = sw32(off2); ar[2].size = sw32((uint32_t)sz2); ar[2].align = sw32(12);
-    memcpy(out + off0, b0, sz0);
-    memcpy(out + off1, b1, sz1);
-    memcpy(out + off2, b2, sz2);
+    ar[1].offset = sw32(off_g); ar[1].size = sw32((uint32_t)szg); ar[1].align = sw32(12);
+    ar[2].cputype = sw32(7); ar[2].cpusubtype = sw32(4);          /* opaque, repacks onto arch 0 */
+    ar[2].offset = sw32(off_p); ar[2].size = sw32((uint32_t)szp); ar[2].align = sw32(shift);
+    memcpy(out + off_f, bf, szf);
+    memcpy(out + off_g, bg, szg);
+    memcpy(out + off_p, bp, szp);
     int ofd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (ofd < 0) { perror("open out"); return 2; }
     if (write(ofd, out, total) != (ssize_t)total) { perror("write"); return 2; }
@@ -1015,14 +1037,33 @@ int main(int argc, char **argv) {
 }
 EOF
 "$CC" -O2 -o "$T/mk3fat" "$T/mk3fat.c"
-"$T/mk3fat" "$T/main_fat3" "$T/slice32.bin" "$T/main" "$T/slice32b.bin"
-before_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')
 
 set -- ; i=0
 while [ $i -lt 32 ]; do
     set -- "$@" -add "@loader_path/libpad_a_pretty_long_synthetic_name_used_only_to_force_real_header_growth_$i.dylib"
     i=$((i+1))
 done
+
+# The premise, measured on whatever host this is: these 32 adds really do
+# grow that slice (nothing collides if no size changes), and the grown slice
+# still ends before the offset the repacked slice is aimed at.
+cp "$T/main" "$T/fat3_thin"
+fat3_thin_before=$(wc -c < "$T/fat3_thin" | tr -d ' ')
+if "$CHANGE_DYLIB" "$T/fat3_thin" -grow "$@" >/dev/null 2>"$T/fat3_thin.err"; then
+    fat3_thin_after=$(wc -c < "$T/fat3_thin" | tr -d ' ')
+else
+    bad "fat collision premise" "the 32 adds were refused on a thin copy of the same slice: $(wrapper_why "$T/fat3_thin.err")"
+    fat3_thin_after=$fat3_thin_before
+fi
+[ "$fat3_thin_after" -gt "$fat3_thin_before" ] \
+    && ok "fat collision premise: the 32 adds really grow that slice ($fat3_thin_before -> $fat3_thin_after bytes)" \
+    || bad "fat collision premise" "the slice did not grow ($fat3_thin_before -> $fat3_thin_after), so nothing would be repacked"
+[ $((4096 + fat3_thin_after)) -le "$fat3_pack" ] \
+    && ok "fat collision premise: the grown slice still ends before $fat3_pack, where the repacked slice is aimed" \
+    || bad "fat collision premise" "the grown slice ends at $((4096 + fat3_thin_after)), past the $fat3_pack the repacked slice rounds up to"
+
+"$T/mk3fat" "$T/main_fat3" "$T/slice32.bin" "$T/main" "$T/slice32b.bin" "$fat3_shift"
+before_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')
 rc=0
 "$CHANGE_DYLIB" "$T/main_fat3" -grow "$@" >/dev/null 2>"$T/fat3.err" || rc=$?
 
@@ -1032,16 +1073,15 @@ if [ $rc -eq 0 ]; then
     # correctly, so a SUCCESSFUL exit here means the collision guard did not
     # run at all, not that a cleverer layout was found.
     bad "fat collision" "tool exited 0 on a layout engineered to collide -- the overlap guard did not fire"
-elif grep -qi 'overlap' "$T/fat3.err"; then
-    # Deliberately a loose substring, not the write-side message's exact
-    # wording ("overlapping offsets"): the read-side guard in mfat_parse
-    # ("...or two slices overlapping each other") is an equally correct
-    # refusal of the same condition, and which of the two fires is a
-    # function of this fixture's host-compiled sizes, not of anything this
-    # test controls. See the comment above for why.
-    ok "fat collision: refused with a diagnostic naming the overlap (exit $rc)"
+elif grep -q 'at overlapping offsets' "$T/fat3.err"; then
+    # The write-side guard in mfat_rewrite's reassembly, by its own wording
+    # and no other: the input's declared layout is well formed by
+    # construction above, so mfat_parse's read-side refusal is not a
+    # second correct answer here -- it would mean the fixture stopped
+    # engineering the collision it claims to.
+    ok "fat collision: refused by the reassembly's own overlap guard (exit $rc)"
 else
-    bad "fat collision" "refused (exit $rc) but without an overlap diagnostic: $(head -1 "$T/fat3.err")"
+    bad "fat collision" "refused (exit $rc) but without an overlap diagnostic: $(wrapper_why "$T/fat3.err")"
 fi
 
 after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{print $1}')

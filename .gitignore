@@ -1,5 +1,9 @@
 build-native/
 build-cross/
+# ctest scratch. Not build/ wholesale: build/msc.sh and build/release-notes-file.sh
+# are tracked, and this repo's rule is to stage explicit paths, so an untracked
+# log sitting next to them is exactly what a careless `git add build/` would take.
+build/Testing/
 /dist/
 /VERSION
 CMakeUserPresets.json
