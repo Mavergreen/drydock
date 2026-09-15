@@ -1,16 +1,16 @@
 /*
- * machotool — one mutating form, driven by a script, beside two read-only
+ * machorewrite — one mutating form, driven by a script, beside two read-only
  * queries.
  *
  * The grammar this build implements, verbatim:
  *
- *   machotool FILE OUT            statements on stdin; the ONLY way to change
+ *   machorewrite FILE OUT            statements on stdin; the ONLY way to change
  *                                   anything
- *   machotool edit FILE OUT SCRIPT
- *   machotool info FILE
- *   machotool verify FILE
+ *   machorewrite edit FILE OUT SCRIPT
+ *   machorewrite info FILE
+ *   machorewrite verify FILE
  *
- * `machotool --capabilities` is the machine-readable truth about what this
+ * `machorewrite --capabilities` is the machine-readable truth about what this
  * build accepts, so a wrapper and this binary never have to move in lockstep
  * (docs/PROPOSAL.md "Migration"). See print_capabilities() below for the exact
  * format.
@@ -88,7 +88,7 @@
  * (couldn't open/read/write, malloc failed, a usage error). Refusal is
  * load-bearing throughout this codebase -- "-grow refuses rather than
  * guesses" is a global rule, not an incidental behavior -- so a
- * caller that wants to script around "this file just isn't one machotool will
+ * caller that wants to script around "this file just isn't one machorewrite will
  * touch" (vs. "retry, or investigate an environment problem") deserves a way
  * to tell the two apart without scraping stderr text, which --capabilities
  * already exists to make unnecessary for everything else this binary
@@ -106,7 +106,7 @@
  * point at which the numbering could change for free -- after `edit` ships,
  * it no longer is.
  *
- * EX_REFUSED is used ONLY at a point where machotool itself examined the input
+ * EX_REFUSED is used ONLY at a point where machorewrite itself examined the input
  * and made that call; it is never used for a genuine operational failure (a
  * syscall that failed, a bad number of command-line arguments), save the one
  * allocation fold described below -- EX_FAIL is that catch-all, named the
@@ -180,13 +180,13 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * Returns 1 when it printed a refusal (the caller returns EX_FAIL), else 0. */
 static int bad_out(const char *verb, const char *path, const char *out) {
     if (out[0] == '-') {
-        fprintf(stderr, "machotool %s: OUT is '%s', which begins with '-'; OUT is the "
+        fprintf(stderr, "machorewrite %s: OUT is '%s', which begins with '-'; OUT is the "
                         "positional right after FILE, not a flag. Write './%s' if a "
                         "file of that name is really meant.\n", verb, out, out);
         return 1;
     }
     if (wa_is_input(path, out)) {
-        fprintf(stderr, "machotool %s: %s is %s; machotool never writes its input\n", verb, out, path);
+        fprintf(stderr, "machorewrite %s: %s is %s; machorewrite never writes its input\n", verb, out, path);
         return 1;
     }
     return 0;
@@ -201,7 +201,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *                                  TEXT's shape in a way old parsing breaks.
  *   line 2: "exitcodes ok=0 refused=<N> failed=<M>" -- what this binary's own
  *       exit codes mean: ok=0 always; refused=EX_REFUSED is used wherever
- *       machotool (or a shared rewrite driver it calls into) examined FILE and
+ *       machorewrite (or a shared rewrite driver it calls into) examined FILE and
  *       declined on purpose -- bad magic, implausible, an unsupported KIND/
  *       version, a grow mg_grow_header itself refused, new load commands
  *       that don't fit and can't be grown, an unmatched `fatal-warnings`
@@ -225,7 +225,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       right after it, and OUT=FILE (by path, symlink or hard link) is
  *       always refused. `positional=2` is OUT's position counting from 1;
  *       this line exists so a wrapper checks for it instead of assuming the
- *       shape. It holds for the bare `machotool FILE OUT` form too: FILE is
+ *       shape. It holds for the bare `machorewrite FILE OUT` form too: FILE is
  *       argv[1] there rather than argv[2], but OUT is still the positional
  *       right after it, and still never FILE.
  *   line 4+: "verb <name> [key=value ...]"
@@ -253,7 +253,7 @@ static int print_capabilities(void) {
     printf("format 1\n");
     printf("exitcodes ok=0 refused=%d failed=%d\n", EX_REFUSED, EX_FAIL);
     /* Every mutating form reads FILE and writes OUT, the positional right
-     * after it, and refuses an OUT that is FILE: machotool never writes its
+     * after it, and refuses an OUT that is FILE: machorewrite never writes its
      * input. A wrapper checks for this line rather than assume the shape. */
     printf("output positional=2 never-writes-input\n");
     printf("verb verify\n");
@@ -299,11 +299,11 @@ static int cmd_verify(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "machotool verify: %s: cannot open or read\n", path);
+        fprintf(stderr, "machorewrite verify: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "machotool verify: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "machorewrite verify: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     int rc = mg_plausible(im.buf, im.size);
@@ -370,11 +370,11 @@ static int cmd_info(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "machotool info: %s: cannot open or read\n", path);
+        fprintf(stderr, "machorewrite info: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "machotool info: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "machorewrite info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
@@ -492,7 +492,7 @@ static int cmd_edit(int argc, char **argv) {
              * is the answer a caller passing any of them deserves: OUT is a
              * positional, the report is unconditional, and --capabilities
              * advertises no flag for this verb. */
-            fprintf(stderr, "machotool edit: unknown flag '%s'\n", tok);
+            fprintf(stderr, "machorewrite edit: unknown flag '%s'\n", tok);
             return EX_FAIL;
         } else if (npos == 0) {
             file = tok;
@@ -518,7 +518,7 @@ static int cmd_edit(int argc, char **argv) {
     } else {
         f = fopen(script_path, "rb");
         if (!f) {
-            fprintf(stderr, "machotool edit: %s: %s\n", script_path, strerror(errno));
+            fprintf(stderr, "machorewrite edit: %s: %s\n", script_path, strerror(errno));
             return EX_FAIL;
         }
     }
@@ -531,18 +531,18 @@ static int cmd_edit(int argc, char **argv) {
     int read_errno = errno;
     if (f != stdin) fclose(f);
     if (rrc == ME_READ_MEM) {
-        fprintf(stderr, "machotool edit: %s: out of memory\n", script_path);
+        fprintf(stderr, "machorewrite edit: %s: out of memory\n", script_path);
         return EX_FAIL;
     }
     if (rrc == ME_READ_IO) {
-        fprintf(stderr, "machotool edit: %s: %s\n", script_path, strerror(read_errno));
+        fprintf(stderr, "machorewrite edit: %s: %s\n", script_path, strerror(read_errno));
         return EX_FAIL;
     }
 
     ms_script s;
     char perr[256];
     if (ms_parse((const char *)buf, len, &s, perr, sizeof perr) != 0) {
-        fprintf(stderr, "machotool edit: %s: %s\n", script_path, perr);
+        fprintf(stderr, "machorewrite edit: %s: %s\n", script_path, perr);
         free(buf);
         return EX_FAIL;
     }
@@ -579,14 +579,14 @@ int main(int argc, char **argv) {
         return cmd_edit(argc, argv);
     }
 
-    /* The bare form: `machotool FILE OUT`, statements on stdin. It IS
-     * `machotool edit FILE OUT -` with the verb word dropped -- spelled as
+    /* The bare form: `machorewrite FILE OUT`, statements on stdin. It IS
+     * `machorewrite edit FILE OUT -` with the verb word dropped -- spelled as
      * that exact call, so the two spellings cannot grow separate behaviours;
-     * the identical stderr report, including its "machotool edit:" prefixes,
+     * the identical stderr report, including its "machorewrite edit:" prefixes,
      * is that sameness showing through.
      *
      * It sits below every verb arm, so a verb always wins and this can never
-     * shadow one: `machotool info f` stays the info query even when a file
+     * shadow one: `machorewrite info f` stays the info query even when a file
      * named `info` is sitting right there. A FILE whose name collides with a
      * verb is spelled `./info`, the same remedy bad_out already names for an
      * OUT beginning with '-'. Reaching here means argv[1] matched no verb, so
@@ -594,7 +594,7 @@ int main(int argc, char **argv) {
      *
      * THE FOUR SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT. `dylib`,
      * `rpath`, `lc`, `minos`, `segment`, `retag-swift` and `declassify` shadowed
-     * a file of the same name while they were verbs; now `machotool dylib out`
+     * a file of the same name while they were verbs; now `machorewrite dylib out`
      * reads a file named `dylib` and writes `out`, like any other pair. */
     if (argc == 3) {
         char *bare[5];
@@ -606,7 +606,7 @@ int main(int argc, char **argv) {
         return cmd_edit(5, bare);
     }
 
-    fprintf(stderr, "machotool: unknown verb '%s'\n", verb);
+    fprintf(stderr, "machorewrite: unknown verb '%s'\n", verb);
     usage(argv[0]);
     return EX_FAIL;
 }

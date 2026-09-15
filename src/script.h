@@ -1,5 +1,5 @@
-#ifndef MACHOTOOL_SCRIPT_H
-#define MACHOTOOL_SCRIPT_H
+#ifndef MACHOREWRITE_SCRIPT_H
+#define MACHOREWRITE_SCRIPT_H
 
 #include <stddef.h>
 
@@ -96,8 +96,8 @@ void ms_free(ms_script *s);
 const char *ms_kind_name(int kind);
 const char *ms_op_name(int op);
 
-/* Which verb grammar offers a row's operation. `machotool dylib` and
- * `machotool rpath` take their operations from the SAME table an edit
+/* Which verb grammar offers a row's operation. `machorewrite dylib` and
+ * `machorewrite rpath` take their operations from the SAME table an edit
  * script's statements come from -- `dylib -insert P` and `dylib insert P`
  * are one operation with two spellings -- so each row says which of the two
  * verbs may spell it. A row no verb offers (every statement that is not a

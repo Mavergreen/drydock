@@ -45,7 +45,7 @@
 # If that number is near zero, the corpus or the operations are wrong.
 #
 # HOW LONG IT TAKES. Every sweep is 18 invocations x 2 builds per input (plus
-# one more, `machotool declassify`, on the new build alone), each reading and
+# one more, `machorewrite declassify`, on the new build alone), each reading and
 # rewriting the whole file, plus three SHA-256s. On real 10.9 hardware that is
 # minutes for /usr/lib and /usr/bin, but the default roots
 # include /System/Library/Frameworks, whose binaries are large and mostly fat
@@ -66,11 +66,25 @@ fi
 MAX="${MACHO_DIFF_MAX:-300}"
 SCAN="${MACHO_DIFF_SCAN:-8000}"
 
+# The six WRAPPER names are stable across every rename, so both builds must have
+# them. The main binary is not: $REF is by definition a build at an earlier
+# commit, where it was called machotool, or macho9 before that, or did not exist
+# as a separate binary at all. Demanding the current name of a historical build
+# is a requirement nothing can satisfy -- this preflight demanded `macho9` of a
+# machotool-era $REF, then `machotool` of a machorewrite-era one, and exited 1
+# against every reference build that existed. Accept any of the names here, and
+# require the current one only of $NEW.
 for d in "$REF" "$NEW"; do
-    for t in machotool change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
+    for t in change_dylib add_version_min rename_segment retag_swift_classes patch_macho; do
         [ -x "$d/$t" ] || { echo "differential: $d/$t not found or not executable" >&2; exit 1; }
     done
 done
+[ -x "$NEW/machorewrite" ] || { echo "differential: $NEW/machorewrite not found or not executable" >&2; exit 1; }
+ref_bin=''
+for n in machorewrite machotool macho9; do
+    [ -x "$REF/$n" ] && { ref_bin=$n; break; }
+done
+[ -n "$ref_bin" ] || { echo "differential: $REF has none of machorewrite/machotool/macho9" >&2; exit 1; }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/macho-differential.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -135,11 +149,11 @@ record() {
     return 0
 }
 
-# machotool VERB f o ARGS... -- for a verb that READS f and writes a named
+# machorewrite VERB f o ARGS... -- for a verb that READS f and writes a named
 # output rather than rewriting f. What gets compared is `o`, plus the two
 # sides agreeing that they left `f` alone.
 #
-# EVERY machotool VERB THIS SWEEP DRIVES IS ONE OF THOSE NOW. There used to be a
+# EVERY machorewrite VERB THIS SWEEP DRIVES IS ONE OF THOSE NOW. There used to be a
 # second helper, `m9`, for the verbs that rewrote the file they were given
 # (dylib, rpath, lc, segment); all four take FILE OUT, so it had no callers
 # left and is gone. `grow` took FILE OUT too before it was deleted outright,
@@ -150,8 +164,8 @@ mtout() {
     total=$((total + 1))
     cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
     rm -f "$T/A/o" "$T/B/o"
-    ( cd "$T/A" && "$REF/machotool" "$verb" f o "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
-    ( cd "$T/B" && "$NEW/machotool" "$verb" f o "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
+    ( cd "$T/A" && "$REF/machorewrite" "$verb" f o "$@" ) >"$T/a.out" 2>"$T/a.err"; arc=$?
+    ( cd "$T/B" && "$NEW/machorewrite" "$verb" f o "$@" ) >"$T/b.out" 2>"$T/b.err"; brc=$?
     bad=""
     [ "$arc" != "$brc" ] && bad="$bad exit($arc/$brc)"
     cmp -s "$T/a.out" "$T/b.out" || bad="$bad stdout"
@@ -161,7 +175,7 @@ mtout() {
         cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
         cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
     fi
-    record "machotool $verb $SRC o $*" "$bad"
+    record "machorewrite $verb $SRC o $*" "$bad"
     return 0
 }
 
@@ -181,13 +195,13 @@ tool() {
 # This tool does not rewrite its input: it reads IN and writes OUT, which is
 # why the helpers above could not sweep it and, until a refactor moved its
 # chained-fixups conversion into src/declassify.c and gave
-# machotool a statement over the same code, so two questions get asked
+# machorewrite a statement over the same code, so two questions get asked
 # here, both about bytes rather than exit status:
 #
 #   REF vs NEW patch_macho          did the extraction change what the tool
 #                                    produces? (the same question every other
 #                                    line of this sweep asks of its tool)
-#   NEW patch_macho vs NEW machotool   do the two front-ends over that one
+#   NEW patch_macho vs NEW machorewrite   do the two front-ends over that one
 #                                    implementation really write the same
 #                                    output? Asked of the NEW build only --
 #                                    the REF build's `declassify` predates the
@@ -195,7 +209,7 @@ tool() {
 #                                    comparing it across builds would report a
 #                                    difference that is the point of the change.
 #
-# The machotool half runs on EVERY file, not only the ones patch_macho converted:
+# The machorewrite half runs on EVERY file, not only the ones patch_macho converted:
 # where patch_macho declines, declassify must decline too (with its own code --
 # EX_REFUSED for a judgement about the input, EX_FAIL for an operational
 # failure -- but never 0, which would be a silent success on an input the
@@ -223,7 +237,7 @@ conv() {
         cmp -s "$T/A/o" "$T/B/o" || bad="$bad bytes"
         cmp -s "$SRC" "$T/A/o" || modified=$((modified + 1))
     fi
-    ( cd "$T/B" && printf 'fixups set classic\n' | "$NEW/machotool" f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
+    ( cd "$T/B" && printf 'fixups set classic\n' | "$NEW/machorewrite" f o9 ) >"$T/b9.out" 2>"$T/b9.err"; b9rc=$?
     if [ "$brc" -eq 0 ]; then
         [ "$b9rc" -eq 0 ] && cmp -s "$T/B/o" "$T/B/o9" || bad="$bad declassify($b9rc)"
     else
@@ -243,8 +257,8 @@ while IFS= read -r SRC; do
     SRCHASH=$(shasum -a 256 < "$SRC" | cut -d' ' -f1)
     # The -replace/-delete/-reexport target has to be a dependency this file
     # really has, or those cases all collapse into "nothing matched". Read it
-    # out of `machotool info`'s stable output -- never otool's.
-    first=$("$REF/machotool" info "$T/probe" 2>/dev/null | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
+    # out of `machorewrite info`'s stable output -- never otool's.
+    first=$("$REF/machorewrite" info "$T/probe" 2>/dev/null | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
     [ -n "$first" ] || first="/usr/lib/libSystem.B.dylib"
 
     mtout dylib -replace "$first" "@loader_path/renamed.dylib"
@@ -253,8 +267,8 @@ while IFS= read -r SRC; do
     mtout dylib -delete "$first"
     mtout dylib -reexport "$first"
     mtout dylib --allow-grow -replace "$first" "$longpath"
-    mtout rpath -append /tmp/machotooldiff
-    mtout rpath -replace /usr/lib /tmp/machotooldiff2
+    mtout rpath -append /tmp/machorewritediff
+    mtout rpath -replace /usr/lib /tmp/machorewritediff2
     mtout lc -delete uuid
     mtout lc -delete codesig -delete uuid
     mtout minos 10.9

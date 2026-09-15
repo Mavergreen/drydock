@@ -135,10 +135,10 @@ jobs:
           echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
           sh tests/characterize.sh "$PWD/build-cross" check
 
-      # machotool and the two files the wrappers source belong in the artifact
+      # machorewrite and the two files the wrappers source belong in the artifact
       # too, and are not optional: ALL SIX historical names are now /bin/sh
-      # wrappers that look for machotool, machotool-compat.sh and
-      # machotool-translate.sh in their own directory, so an artifact without
+      # wrappers that look for machorewrite, machorewrite-compat.sh and
+      # machorewrite-translate.sh in their own directory, so an artifact without
       # them is six names that cannot run. (The binary itself was missing from
       # this list even before that, when it was still a standalone CLI.)
       #
@@ -155,7 +155,7 @@ jobs:
         run: |
           set -eu
           mkdir -p dist
-          for f in machotool machotool-compat.sh machotool-translate.sh \
+          for f in machorewrite machorewrite-compat.sh machorewrite-translate.sh \
                    patch_macho change_dylib add_version_min fix_macho \
                    rename_segment retag_swift_classes; do
             cp "build-cross/$f" dist/

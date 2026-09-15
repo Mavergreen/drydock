@@ -21,7 +21,7 @@ Measured 2026-09-08 against its `main.c` at HEAD:
 | post-transform verification | none | `mg_verify` + `mg_plausible` |
 
 One row this table omitted, noticed 2026-09-11 while surveying app-backport
-projects: **`LC_LOAD_WEAK_DYLIB`**. `insert_dylib` has `--weak`; `machotool`'s
+projects: **`LC_LOAD_WEAK_DYLIB`**. `insert_dylib` has `--weak`; `machorewrite`'s
 `dylib append` and `dylib insert` emit only `LC_LOAD_DYLIB`. `dylib retype PATH
 KIND` flips an existing one to weak and back; `mo_is_dylib_lc` counts both
 kinds, so the flip moves no ordinals.
