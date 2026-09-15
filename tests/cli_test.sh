@@ -2379,27 +2379,79 @@ fi
 [ "$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)" = "$mrerr_before" ] \
     && ok "lc: and left the fat file byte-for-byte unchanged, slice 0 included" \
     || bad "lc: MR_ERROR atomicity" "the refused fat file was modified"
-# MEASURED WHILE WRITING THIS, and worth pinning: the fat table's cputype is
-# NOT what decides MR_SKIP vs MR_ERROR. Wrap the very same bad slice at
-# CPU_TYPE_X86 and it is still MR_ERROR -- mr_process_thin asks the slice's
-# own bytes whether they are a 64-bit Mach-O, and the cputype only supplies
-# the "arch N (cputype 0x...)" label. So the MR_SKIP assertions (the fat wrap
-# above, and fix_macho's in wrapper_test.sh) cover a slice that really is not
-# a Mach-O, which is the only thing that reaches that path.
+# ---- A SLICE IS WHAT ITS BYTES ARE, NOT WHAT ITS fat_arch SAYS -------------
 #
-# THE SCRIPT PATH DECIDES THIS DIFFERENTLY, measured rather than assumed: it
-# selects slices by ARCH before it looks at their bytes, and CPU_TYPE_X86 (0x7)
-# is 32-bit, so the bad slice is passed through unchanged and the run SUCCEEDS.
-# mr_process_thin asked the slice's own bytes; me_fat_slice asks the fat
-# table's cputype first. That is a real difference between the two drivers, and
-# it is asserted here in its new form rather than left as a stale expectation.
-"$T/segread" wrap "$T/mrskip_fat" "$T/segment_fat_slice" "$T/implausible" 7
-if mts "$T/mrskip_fat" "dylib append $long_dylib" >"$T/mrskip.out" 2>"$T/mrskip.err"; then
-    grep -q 'slice i386: 32-bit; passed through unchanged' "$T/mrskip.err" \
-        && ok "lc: a slice the fat table calls 32-bit is passed through, whatever its own bytes say" \
-        || bad "lc: MR_SKIP/MR_ERROR split" "succeeded, but not by passing the slice through: $(cat "$T/mrskip.err")"
+# The two fat loops in this repo have to answer "is this slice a 64-bit
+# Mach-O?" the same way. src/rewrite.c's asks the slice's own bytes
+# (mr_process_thin returns MR_SKIP for exactly `mi_wrap(...) != 0`);
+# src/edit.c's me_run_fat asked the fat_arch's DECLARED cputype, and every
+# compat wrapper moved from the first loop to the second. A container whose
+# fat_arch disagrees with its slice was therefore processed by one and skipped
+# by the other -- measured through change_dylib and fix_macho as a silent
+# installed-bytes change in one direction (exit 0 -> 0) and a NEW REFUSAL in
+# the other (exit 0 -> 1). Both shapes are asserted here, in the direction the
+# unified classification gives.
+#
+# Reachable, if narrowly: lipo never emits a container whose fat_arch cputype
+# and slice magic disagree, a truncated or hand-built one can, and nothing in
+# compat/ intercepts change_dylib or fix_macho before they reach this code.
+#
+# SHAPE ONE: declared 32-bit over a slice that IS a 64-bit Mach-O. The very
+# same two slices as mrerr_fat above -- only ar[1].cputype differs, i386
+# instead of x86_64 -- so the outcome must be the same one: slice 1 is a
+# 64-bit Mach-O that cannot take the append, and the whole file is refused.
+# A build that read the declaration would pass slice 1 through and exit 0.
+"$T/segread" wrap "$T/fatdecl32" "$T/segment_fat_slice" "$T/implausible" 7
+fatdecl32_before=$(shasum -a 256 < "$T/fatdecl32" | cut -d' ' -f1)
+if mts "$T/fatdecl32" "dylib append $long_dylib" >"$T/fatdecl32.out" 2>"$T/fatdecl32.err"; then
+    bad "fat: declared 32-bit over a 64-bit slice" \
+        "exit 0 -- the slice was passed through on its fat_arch's word, so the same container is edited or skipped depending on which cputype it happens to declare: $(cat "$T/fatdecl32.err")"
 else
-    bad "lc: MR_SKIP/MR_ERROR split" "a slice the fat table calls 32-bit was not passed through: $(cat "$T/mrskip.err")"
+    ok "fat: a slice declared 32-bit is still read as the 64-bit Mach-O it is"
+fi
+[ "$(shasum -a 256 < "$T/fatdecl32" | cut -d' ' -f1)" = "$fatdecl32_before" ] \
+    && ok "fat: ... and that refusal left the container byte-for-byte unchanged" \
+    || bad "fat: declared 32-bit over a 64-bit slice" "the refused fat file was modified"
+grep -q "don't fit in header pad" "$T/fatdecl32.err" \
+    && ok "fat: ... refused for the slice's own reason, not for its declaration" \
+    || bad "fat: declared 32-bit over a 64-bit slice" \
+           "refused, but not by editing slice 1: $(cat "$T/fatdecl32.err")"
+
+# SHAPE TWO: declared 64-bit over a slice that is NOT a Mach-O at all. This is
+# the direction that acquired a new refusal: the run must pass that slice
+# through and SUCCEED, rewriting the slice it does understand -- which is what
+# `fix_macho` has always done ("Skipping arch %u") and what src/rewrite.c's
+# loop does today.
+dd if=/dev/zero bs=1 count=4096 2>/dev/null | tr '\000' 'Z' > "$T/notmacho"
+"$T/segread" wrap "$T/fatdecl64" "$T/segment_fat_slice" "$T/notmacho" 16777223
+if mts "$T/fatdecl64" 'dylib append /fatdecl64.dylib' >"$T/fatdecl64.out" 2>"$T/fatdecl64.err"; then
+    ok "fat: a slice declared 64-bit that is not a Mach-O is passed through, not refused"
+else
+    bad "fat: declared 64-bit over a non-Mach-O slice" \
+        "the whole run was refused on a container the pre-script tool rewrote and exited 0 on: $(cat "$T/fatdecl64.err")"
+fi
+grep -q 'slice x86_64: not a 64-bit Mach-O; passed through unchanged' "$T/fatdecl64.err" \
+    && ok "fat: ... and the report says why, without calling it 32-bit" \
+    || bad "fat: declared 64-bit over a non-Mach-O slice" \
+           "no pass-through line naming the real reason: $(cat "$T/fatdecl64.err")"
+"$T/segread" dump "$T/fatdecl64" 0 "$T/fatdecl64_s0"
+"$MACHOREWRITE" info "$T/fatdecl64_s0" | grep -qF "path=/fatdecl64.dylib" \
+    && ok "fat: ... and the slice it DID understand was rewritten" \
+    || bad "fat: declared 64-bit over a non-Mach-O slice" "slice 0 did not get the append"
+"$T/segread" dump "$T/fatdecl64" 1 "$T/fatdecl64_s1"
+cmp -s "$T/fatdecl64_s1" "$T/notmacho" \
+    && ok "fat: ... and the passed-through slice is byte-identical" \
+    || bad "fat: declared 64-bit over a non-Mach-O slice" "the passed-through slice changed"
+
+# The other half of the same rule: a slice that is neither -- declared i386 AND
+# not a Mach-O -- is passed through as "32-bit", because that is what it is.
+"$T/segread" wrap "$T/fatskip" "$T/segment_fat_slice" "$T/notmacho" 7
+if mts "$T/fatskip" 'dylib append /fatskip.dylib' >"$T/fatskip.out" 2>"$T/fatskip.err"; then
+    grep -q 'slice i386: 32-bit; passed through unchanged' "$T/fatskip.err" \
+        && ok "fat: a 32-bit slice that is not a Mach-O is passed through, and said to be 32-bit" \
+        || bad "fat: 32-bit non-Mach-O slice" "succeeded, but not by passing the slice through: $(cat "$T/fatskip.err")"
+else
+    bad "fat: 32-bit non-Mach-O slice" "a 32-bit slice was not passed through: $(cat "$T/fatskip.err")"
 fi
 
 # ============================================================================
