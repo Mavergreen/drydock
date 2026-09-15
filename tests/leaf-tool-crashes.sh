@@ -75,6 +75,17 @@ ok()   { echo "PASS $1"; }
 bad()  { echo "FAIL $1: $2"; fails=$((fails + 1)); }
 skip() { echo "SKIP $1: $2"; }
 
+# `set -e` means any bare command that exits nonzero kills the WHOLE script
+# immediately, mid-run, with no summary and a FAIL count of zero -- see
+# tests/cli_test.sh:133-145 for the pattern and the incident that motivated
+# it. reached_end is set to 1 only at the very end, right before the summary
+# line, so an EXIT trap firing while it is still 0 means the script did NOT
+# reach its own summary.
+reached_end=0
+trap 'rc=$?; rm -rf "$T"; if [ "$reached_end" -eq 0 ]; then
+    echo "leaf-tool-crashes: FATAL -- aborted early (a command exited $rc under set -e); the suite did NOT run to completion, and everything after the last PASS/FAIL/SKIP line above never ran" >&2
+fi' EXIT
+
 cat > "$T/mkfixture.c" <<'EOF'
 /* Writes one of two tiny, deliberately malformed-past-load-commands Mach-O
  * fixtures. Byte layout only -- see leaf-tool-crashes.sh for what each is
@@ -587,5 +598,6 @@ else
     skip "patch_macho: N=17/18 LC_BUILD_VERSION (libgmalloc)" "no /usr/lib/libgmalloc.dylib on this host"
 fi
 
+reached_end=1
 echo "leaf-tool-crashes: $fails failure(s)"
 [ "$fails" -eq 0 ]

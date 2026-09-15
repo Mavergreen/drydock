@@ -128,6 +128,21 @@ if ! "$T/has_lc" "$T/in" "$LC_DYLD_CHAINED_FIXUPS"; then
     echo "chained-fixups: host linker emitted no LC_DYLD_CHAINED_FIXUPS — SKIP"
     exit 77
 fi
+
+# `set -e` means any bare command below that exits nonzero kills the WHOLE
+# script immediately, with no "chained-fixups: OK" and no explanation -- see
+# tests/cli_test.sh:133-145 for the pattern and the incident that motivated
+# it. Installed HERE, after both `exit 77` SKIPs above rather than at the
+# top: those are the deliberate, routine outcome on a host (10.9 included)
+# whose linker cannot emit chained fixups, and must not be reported as a
+# fatal abort. reached_end is set to 1 only right before the final "OK"
+# line, so an EXIT trap firing while it is still 0 means the conversion
+# pipeline below did NOT run to completion.
+reached_end=0
+trap 'rc=$?; rm -rf "$T"; if [ "$reached_end" -eq 0 ]; then
+    echo "chained-fixups: FATAL -- aborted early (a command exited $rc under set -e); the suite did NOT run to completion, and everything after the last line printed above never ran" >&2
+fi' EXIT
+
 echo "chained-fixups: input uses LC_DYLD_CHAINED_FIXUPS, converting"
 
 "$BIN/patch_macho" "$T/in" "$T/out" >"$T/patch.out"
@@ -216,4 +231,5 @@ else
     echo "chained-fixups: FAIL — same input produced different output" >&2
     exit 1
 fi
+reached_end=1
 echo "chained-fixups: OK"

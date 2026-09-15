@@ -18,6 +18,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d /tmp/macho-characterize.XXXXXX)
 trap 'rm -rf "$T"' EXIT INT TERM
 
+# `set -e` means any bare command above that exits nonzero kills the whole
+# script immediately, before the digest is ever computed or compared --
+# exiting nonzero with no OK/MISMATCH line at all. This says so loudly rather
+# than leaving that silent; see tests/cli_test.sh:133-145 for the pattern and
+# the incident that motivated it.
+reached_end=0
+trap 'rc=$?; rm -rf "$T"; if [ "$reached_end" -eq 0 ]; then
+    echo "characterize: FATAL -- aborted early (a command exited $rc under set -e); the suite did NOT run to completion, and the digest was never computed or compared" >&2
+fi' EXIT
+
 cp "$HERE/fixture.macho" "$T/in"
 "$BIN/patch_macho"     "$T/in" "$T/out" >/dev/null
 "$BIN/add_version_min" "$T/out"         >/dev/null
@@ -30,6 +40,7 @@ cp "$HERE/fixture.macho" "$T/in"
 # digest, and tests/EXPECTED is a characterization reference that is never
 # edited (see this file's own header).
 
+reached_end=1
 DIGEST=$(shasum -a 256 < "$T/out" | cut -d' ' -f1)
 if [ "$MODE" = check ]; then
     WANT=$(cat "$HERE/EXPECTED")

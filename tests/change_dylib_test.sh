@@ -124,6 +124,17 @@ bad()  { echo "FAIL $1: $2"; fails=$((fails+1)); }
 # a silent skip is how coverage rots. Does not touch $fails.
 skip() { echo "SKIP $1: $2"; }
 
+# `set -e` (this file's only top-level one, set once at the top) means any
+# bare command that exits nonzero kills the WHOLE script immediately, mid-run,
+# with no summary and a FAIL count of zero -- see tests/cli_test.sh:133-145
+# for the pattern and the incident that motivated it. reached_end is set to 1
+# only at the very end, right before the summary line, so an EXIT trap firing
+# while it is still 0 means the script did NOT reach its own summary.
+reached_end=0
+trap 'rc=$?; rm -rf "$T"; if [ "$reached_end" -eq 0 ]; then
+    echo "change_dylib_test: FATAL -- aborted early (a command exited $rc under set -e); the suite did NOT run to completion, and everything after the last PASS/FAIL/SKIP line above never ran" >&2
+fi' EXIT
+
 # A handful of cases below capture a helper's OUTPUT (a rewritten binary's
 # stdout, or ordinal_of's printed ordinal) with `2>&1` merged in, then compare
 # that captured value for equality against an expected string. That is a
@@ -1913,6 +1924,7 @@ lp_skips=$(grep -c "not a 64-bit Mach-O; leaving this slice unchanged" "$T/lp_a.
     && ok "two fat loops: solo32 -- the CLASSIFICATION still agrees: both loops found nothing editable" \
     || bad "two fat loops: solo32" "mr_process_fat classified $lp_skips of 2 slices as not-a-64-bit-Mach-O, so the loops disagree about the bytes, not just about what to do: $(cat "$T/lp_a.log")"
 
+reached_end=1
 echo
 [ "$fails" -eq 0 ] && { echo "change_dylib_test: all cases pass"; exit 0; }
 echo "change_dylib_test: $fails FAILED"; exit 1
