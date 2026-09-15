@@ -2442,6 +2442,141 @@ else
     bad "fat: 32-bit non-Mach-O slice" "a 32-bit slice was not passed through: $(cat "$T/fatskip.err")"
 fi
 
+# SHAPE THREE: declared 64-bit over a slice whose bytes are a REAL 32-BIT
+# MACH-O -- MH_MAGIC, a well-formed 32-bit header, just not a 64-bit one.
+#
+# WHY THIS IS NOT SHAPE TWO AGAIN. "Declared 64-bit, bytes are not a 64-bit
+# Mach-O" is a direction, not a shape, and it has more members than one: a
+# 32-bit Mach-O, a non-Mach-O blob (shape two), a truncated slice, an
+# MH_MAGIC_64 header whose load commands do not fit, a zero-length slice. They
+# agree in outcome and they do NOT agree in what a wrong implementation gets
+# right. An implementation that answers "is this a 64-bit Mach-O?" by looking
+# at the DECLARED cputype and then excusing itself for one magic value -- the
+# half-revert that is one edit away from me_slice_is_64 -- passes shape two,
+# because a blob of 'Z' has no Mach-O magic at all, and fails here. Measured:
+# with that half-revert in place this container goes back to a whole-file
+# refusal (exit 1, nothing written) while the shape-two assertions above stay
+# green. The remaining three members (truncated, bad load commands, size 0) are
+# left uncovered on purpose: each is refused by mi_wrap for the SAME reason a
+# non-Mach-O is -- it is not a 64-bit Mach-O image -- and no reachable
+# implementation of this predicate distinguishes them from shape two while
+# distinguishing this one.
+#
+# Built by hand rather than with `clang -arch i386`, which a modern toolchain
+# may no longer support at all -- change_dylib_test.sh's mkslice32.c is the
+# same fixture, built the same way, for the same reason.
+cat > "$T/mk32.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <mach-o/loader.h>
+int main(int argc, char **argv) {
+    uint8_t buf[4096];
+    (void)argc;
+    memset(buf, 0x5A, sizeof buf);   /* distinctive, so a corrupting bug shows */
+    struct mach_header *h = (struct mach_header *)buf;
+    h->magic = MH_MAGIC;             /* 0xfeedface: a 32-bit Mach-O, not a blob */
+    h->cputype = CPU_TYPE_I386;
+    h->cpusubtype = CPU_SUBTYPE_I386_ALL;
+    h->filetype = MH_EXECUTE;
+    h->ncmds = 0;
+    h->sizeofcmds = 0;
+    h->flags = 0;
+    FILE *f = fopen(argv[1], "wb");
+    if (!f) { perror(argv[1]); return 2; }
+    fwrite(buf, 1, sizeof buf, f);
+    fclose(f);
+    return 0;
+}
+EOF
+"$CC" -O2 -o "$T/mk32" "$T/mk32.c"
+"$T/mk32" "$T/slice32"
+# makefat rather than segread wrap, because this one needs slice 1's
+# cpusubtype too: declared arm64 (0x100000c/0), so the pass-through line names
+# a DIFFERENT arch from slice 0's and cannot be satisfied by slice 0's label.
+"$BIN/makefat" "$T/fat32as64" "$T/segment_fat_slice" 0x1000007 3 12 "$T/slice32" 0x100000c 0 12
+if mts "$T/fat32as64" 'dylib append /fat32as64.dylib' >"$T/fat32as64.out" 2>"$T/fat32as64.err"; then
+    ok "fat: a slice declared 64-bit whose bytes are a 32-bit Mach-O is passed through, not refused"
+else
+    bad "fat: declared 64-bit over a 32-bit Mach-O slice" \
+        "the whole run was refused on a container whose only unreadable slice must be passed through: $(cat "$T/fat32as64.err")"
+fi
+grep -q 'slice arm64: not a 64-bit Mach-O; passed through unchanged' "$T/fat32as64.err" \
+    && ok "fat: ... and the report names that slice and says why, without calling it 32-bit" \
+    || bad "fat: declared 64-bit over a 32-bit Mach-O slice" \
+           "no pass-through line naming the arm64 slice: $(cat "$T/fat32as64.err")"
+"$BIN/fatcheck" dump "$T/fat32as64" 1 "$T/fat32as64_s1"
+cmp -s "$T/fat32as64_s1" "$T/slice32" \
+    && ok "fat: ... and the passed-through 32-bit Mach-O is byte-identical in OUT" \
+    || bad "fat: declared 64-bit over a 32-bit Mach-O slice" "the passed-through slice changed"
+# The premise: exit 0 above is a real rewrite, not a run that did nothing.
+"$BIN/fatcheck" dump "$T/fat32as64" 0 "$T/fat32as64_s0"
+"$MACHOREWRITE" info "$T/fat32as64_s0" | grep -qF "path=/fat32as64.dylib" \
+    && ok "fat: ... and the slice it DID understand was rewritten" \
+    || bad "fat: declared 64-bit over a 32-bit Mach-O slice" "slice 0 did not get the append"
+
+# ---- AND THE SAME QUESTION UNDER AN `arch` DIRECTIVE ----------------------
+#
+# Everything above drives the no-directive path, where me_run_fat decides per
+# slice. `arch NAME` runs a SECOND decision over the same predicate -- the loop
+# that refuses a named arch the container lacks, or has but cannot edit -- and
+# nothing asserted that half at all. Both directions below, because the two
+# questions "which ARCH is this slice?" and "are its bytes a 64-bit Mach-O?"
+# have different answers here and the code has to keep them apart: the DECLARED
+# cputype says which arch a slice is (cpusubtype lives nowhere else), the bytes
+# say whether statements may apply to it.
+#
+# DIRECTION A: `arch i386` naming a slice the fat table declares i386 whose
+# bytes are a 64-bit Mach-O. `arch i386` is the RIGHT name for that slice --
+# i386 is what the container calls it -- and its bytes are editable, so it is
+# edited and the report calls it what the table calls it. A build that took the
+# declaration for the answer refuses the whole run instead.
+"$BIN/makefat" "$T/fatarch32" "$T/segment_fat_slice" 0x1000007 3 12 "$T/segment_fat_slice" 7 3 12
+if mts "$T/fatarch32" 'arch i386' 'dylib append /fatarch32.dylib' \
+        >"$T/fatarch32.out" 2>"$T/fatarch32.err"; then
+    ok "fat: arch i386 over a slice declared i386 whose bytes are a 64-bit Mach-O edits it"
+else
+    bad "fat: arch over a declared-32-bit 64-bit slice" \
+        "refused a slice the container calls i386 and whose bytes are editable: $(cat "$T/fatarch32.err")"
+fi
+grep -q '^slice i386:$' "$T/fatarch32.err" \
+    && ok "fat: ... and the report labels it by the arch the container declares, i386" \
+    || bad "fat: arch over a declared-32-bit 64-bit slice" \
+           "no 'slice i386:' heading: $(cat "$T/fatarch32.err")"
+"$BIN/fatcheck" dump "$T/fatarch32" 1 "$T/fatarch32_s1"
+"$MACHOREWRITE" info "$T/fatarch32_s1" | grep -qF "path=/fatarch32.dylib" \
+    && ok "fat: ... and that slice really carries the append" \
+    || bad "fat: arch over a declared-32-bit 64-bit slice" "slice 1 did not get the append"
+grep -q 'slice x86_64: not selected by arch; passed through unchanged' "$T/fatarch32.err" \
+    && ok "fat: ... and the slice arch did not name was passed through, not edited" \
+    || bad "fat: arch over a declared-32-bit 64-bit slice" \
+           "slice 0 was not passed through as unselected: $(cat "$T/fatarch32.err")"
+
+# DIRECTION B: `arch arm64` naming a slice the table declares arm64 whose bytes
+# are not a 64-bit Mach-O. The arch EXISTS, so this is not the "no arm64 slice"
+# refusal; it is the one at src/edit.c's arch loop, and its wording is the
+# distinction this whole section rests on -- "is not a 64-bit Mach-O" for a
+# slice declared 64-bit, never "is 32-bit", which would describe the
+# declaration this code deliberately does not trust. Until now that string
+# appeared in no test.
+"$BIN/makefat" "$T/fatarchnm" "$T/segment_fat_slice" 0x1000007 3 12 "$T/notmacho" 0x100000c 0 12
+fatarchnm_before=$(sha "$T/fatarchnm")
+if mts "$T/fatarchnm" 'arch arm64' 'dylib append /fatarchnm.dylib' \
+        >"$T/fatarchnm.out" 2>"$T/fatarchnm.err"; then
+    bad "fat: arch naming a slice that is not a 64-bit Mach-O" \
+        "exited 0 -- a named arch whose bytes cannot take statements was silently skipped: $(cat "$T/fatarchnm.err")"
+else
+    ok "fat: arch arm64 naming a slice whose bytes are not a 64-bit Mach-O is refused"
+fi
+grep -q "arm64 slice is not a 64-bit Mach-O, and statements apply only to 64-bit slices" \
+        "$T/fatarchnm.err" \
+    && ok "fat: ... and the refusal names the slice and its real reason, not '32-bit'" \
+    || bad "fat: arch naming a slice that is not a 64-bit Mach-O" \
+           "not the arch-loop refusal: $(cat "$T/fatarchnm.err")"
+[ "$(sha "$T/fatarchnm")" = "$fatarchnm_before" ] \
+    && ok "fat: ... and that refusal left the container byte-for-byte unchanged" \
+    || bad "fat: arch naming a slice that is not a 64-bit Mach-O" "the refused fat file was modified"
+
 # ============================================================================
 # the mutating form never writes its input
 # ============================================================================
