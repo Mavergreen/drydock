@@ -2319,13 +2319,53 @@ fi
 # mkimplausible builds an MH_DYLIB, which mg_grow_header refuses to grow at
 # all (it has no __PAGEZERO to lower the base into).
 #
-# So the per-slice refusal is now the header-pad one, which this pair of
-# slices produces asymmetrically on its own: appending a 505-byte dylib path
-# costs 536 bytes of load command, which fits the compiled slice's 2816-byte
-# pad and does not fit the fixture's 480-byte pad. Slice 0 is edited, slice 1
-# is refused, and the assertions below are unchanged in what they claim.
-long_dylib="/$(printf 'a%.0s' $(seq 1 498)).dylib"
+# So the per-slice refusal is now the header-pad one: a dylib path whose load
+# command fits slice 0's header pad and not slice 1's. Slice 0 is edited,
+# slice 1 is refused, and the assertions below are unchanged in what they
+# claim.
+#
+# platform: slice 0 is compiled by $CC for the HOST, so its pad is the host
+# toolchain's to decide -- 2816 bytes here, something else on a cross runner.
+# A length measured on one host and hardcoded inverted the asymmetry on
+# another: slice 0 no longer fit the append, IT refused first, and every
+# assertion below passed while covering nothing about slice 1. So both pads
+# are read back from `machorewrite info` and the length is derived from them,
+# or this block says no length would work and fails.
+mrerr_pad() {
+    "$MACHOREWRITE" info "$1" \
+        | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
+}
+# What appending PATH costs: sizeof(struct dylib_command) + strlen + NUL,
+# rounded up to 8 -- src/rewrite.c's mr_emit_dylib_lc, which is what
+# mg_ensure_pad then compares against the pad.
+mrerr_lc_cost() { echo $(( ((24 + $1 + 1 + 7) / 8) * 8 )); }
+mrerr_pad0=$(mrerr_pad "$T/segment_fat_slice")
+mrerr_pad1=$(mrerr_pad "$T/implausible")
+if [ -z "$mrerr_pad0" ] || [ -z "$mrerr_pad1" ]; then
+    bad "lc: MR_ERROR pads" "machorewrite info reported no header pad for one of the two slices"
+    mrerr_pad0=0; mrerr_pad1=0
+fi
+# The shortest path whose cost clears slice 1's pad, whatever that pad is:
+# cost(pad1 - 16) is at least pad1 + 9 and at most pad1 + 16.
+long_len=$((mrerr_pad1 - 16))
+long_cost=$(mrerr_lc_cost "$long_len")
+[ "$long_len" -ge 8 ] && [ "$long_cost" -gt "$mrerr_pad1" ] && [ "$long_cost" -le "$mrerr_pad0" ] \
+    && ok "lc: MR_ERROR asymmetry: a $long_cost-byte load command fits slice 0's $mrerr_pad0-byte pad and not slice 1's $mrerr_pad1-byte one" \
+    || bad "lc: MR_ERROR asymmetry" \
+           "no dylib path fits slice 0's $mrerr_pad0-byte pad and not slice 1's $mrerr_pad1-byte one (tried $long_len bytes, costing $long_cost)"
+long_dylib="/$(printf 'a%.0s' $(seq 1 $((long_len - 7)))).dylib"
 "$T/segread" wrap "$T/mrerr_fat" "$T/segment_fat_slice" "$T/implausible" 16777223
+# WHICH NAME slice 1 goes by is the tool's answer, not a literal: ask the
+# container itself, through the one message that lists every slice's name in
+# table order (tests/edit_test.c pins its wording). i386 is an arch neither
+# slice can be -- slice 0 is a 64-bit Mach-O, slice 1 is declared x86_64.
+mrerr_have=$(printf 'arch i386\ndylib append %s\n' "$long_dylib" \
+    | "$MACHOREWRITE" "$T/mrerr_fat" "$T/mrerr_probe" 2>&1 || :)
+mrerr_slice1=$(printf '%s\n' "$mrerr_have" \
+    | sed -n 's/.*(it has: [^,]*, *\([^)]*\)).*/\1/p')
+[ -n "$mrerr_slice1" ] \
+    && ok "lc: MR_ERROR slice 1 is the container's own $mrerr_slice1 slice" \
+    || bad "lc: MR_ERROR slice label" "could not read slice 1's name back: $mrerr_have"
 mrerr_before=$(shasum -a 256 < "$T/mrerr_fat" | cut -d' ' -f1)
 if mts "$T/mrerr_fat" "dylib append $long_dylib" >"$T/mrerr.out" 2>"$T/mrerr.err"; then
     bad "lc: MR_ERROR fat slice" "exited 0; a partial rewrite was reported as success"
@@ -2345,9 +2385,9 @@ fi
 grep -q 'machorewrite edit: refused at statement' "$T/mrerr.err" \
     && ok "lc: and says so, naming the statement the whole file was refused at" \
     || bad "lc: MR_ERROR message" "expected me_run_fat's refusal, got: $(cat "$T/mrerr.err")"
-grep -q 'in slice x86_64' "$T/mrerr.err" \
+grep -q "in slice $mrerr_slice1" "$T/mrerr.err" \
     && ok "lc: and names which slice it was" \
-    || bad "lc: MR_ERROR slice label" "expected 'in slice x86_64', got: $(cat "$T/mrerr.err")"
+    || bad "lc: MR_ERROR slice label" "expected 'in slice $mrerr_slice1', got: $(cat "$T/mrerr.err")"
 grep -q "don't fit in header pad" "$T/mrerr.err" \
     && ok "lc: and the underlying per-slice refusal is still on stderr too" \
     || bad "lc: MR_ERROR per-slice reason" "the slice's own refusal was swallowed: $(cat "$T/mrerr.err")"
