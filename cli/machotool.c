@@ -7,7 +7,6 @@
  *   machotool FILE OUT            statements on stdin; the ONLY way to change
  *                                   anything
  *   machotool edit FILE OUT SCRIPT
- *   machotool grow FILE OUT N
  *   machotool info FILE
  *   machotool verify FILE
  *
@@ -16,10 +15,11 @@
  * (docs/PROPOSAL.md "Migration"). See print_capabilities() below for the exact
  * format.
  *
- * SEVEN MUTATING VERBS USED TO LIVE HERE -- declassify, segment, retag-swift,
- * minos, lc, dylib and rpath -- each a thin translation of its own flag
- * grammar into an mr_ops, an mv_add_version_min call or an md_declassify call.
- * Every one of them had an exact statement equivalent, and
+ * EIGHT MUTATING VERBS USED TO LIVE HERE -- declassify, segment, retag-swift,
+ * minos, lc, dylib, rpath and grow. The first seven were each a thin
+ * translation of their own flag grammar into an mr_ops, an mv_add_version_min
+ * call or an md_declassify call. Every one of those had an exact statement
+ * equivalent, and
  * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
  * says why keeping both spellings was expensive rather than merely untidy: the
  * verb path applied a SET of operations in one pass and the script path applies
@@ -27,9 +27,23 @@
  * the same path. They are gone; the statements they mapped onto are what this
  * binary offers instead, and src/edit.c sequences them.
  *
+ * `grow FILE OUT N` had no statement equivalent -- `allow-grow` is a directive
+ * that PERMITS growth, not a request for a specific number of bytes -- and it
+ * went anyway, because one mutation outside the only mutating interface would
+ * defeat the design's single claim. It had no production caller (compat/ emits
+ * it zero times). What it did cost was crash coverage: `mg_ensure_pad` grows
+ * only when `need_end > first_sect_off`, so no script can force a grow of an
+ * image whose first section lies PAST the end of the file, where `fsize -
+ * insert` once wrapped and killed the tool with SIGSEGV. That regression, and
+ * the no-section-data one beside it, now live where the bug always did -- in
+ * the library, as tests/grow_test.c's test_grow_refuses_a_section_past_the_image
+ * and test_grow_refuses_an_image_with_no_section_data, which call
+ * mg_grow_header directly. Both were confirmed by mutation to catch exactly
+ * what tests/leaf-tool-crashes.sh's `grow` cases caught.
+ *
  * DELEGATION, not reimplementation, is still the rule for what remains.
- * `verify`, `info` and `grow` call straight into mg_plausible,
- * mi_open/mi_each_lc and mg_grow_header; the script forms reach ms_parse
+ * `verify` and `info` call straight into mg_plausible and
+ * mi_open/mi_each_lc; the script forms reach ms_parse
  * (src/script.h) and me_run (src/edit.h), which reach the in-memory cores of
  * every rewrite this repo implements -- so the ordinal-renumbering logic that
  * has twice shipped loader-crashing bugs (docs/PROPOSAL.md "verify") is
@@ -108,9 +122,9 @@
  * own comment carries: an allocation failure INSIDE mg_grow_header
  * or mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every
  * other reason either one refuses, not split out to MR_FAIL. The same fold
- * holds on the verbs that call those two directly -- cmd_grow
- * (mg_grow_header) and cmd_verify (mg_plausible) both return EX_REFUSED for
- * any failure of theirs. So a failed allocation that is checked at all is
+ * holds on the one verb left that calls either directly -- cmd_verify
+ * (mg_plausible) returns EX_REFUSED for any failure of its own. So a failed
+ * allocation that is checked at all is
  * EX_FAIL when it is mi_open's or mi_open_slack's, mfat_parse's,
  * wa_write_new's temp-name buffer, or one src/rewrite.c's
  * own drivers make (rewrite.h's MR_FAIL comment names them); EX_REFUSED
@@ -195,7 +209,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       sites; its MR_REFUSED/MR_FAIL block has the one exception -- an allocation
  *       failure inside mg_grow_header or mg_plausible themselves stays
  *       refused=EX_REFUSED, not failed, same as every other reason either
- *       one refuses, on grow and verify as well as a script run);
+ *       one refuses, on verify as well as a script run);
  *       failed=EX_FAIL is everything else (syscall/malloc failure, usage
  *       error, an unparseable script -- EX_REFUSED's own comment above has the
  *       exact allocation breakdown). The two numbers are 1 and 2, not the
@@ -217,7 +231,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *   line 4+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out. The
- *       SEVEN MUTATING VERBS THAT USED TO BE LISTED HERE are gone, with their
+ *       EIGHT MUTATING VERBS THAT USED TO BE LISTED HERE are gone, with their
  *       `ops=`, `kinds=`, `versions=`, `flags=` and `reports=` attributes; the
  *       `statement` lines below are what a wrapper reads instead, and
  *       spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
@@ -244,7 +258,6 @@ static int print_capabilities(void) {
     printf("output positional=2 never-writes-input\n");
     printf("verb verify\n");
     printf("verb info\n");
-    printf("verb grow\n");
     /* NO flags= at all: `edit` accepts no flags. `output` and `dry-run` were
      * here while OUT was a flag and a run could skip its write, and `verbose`
      * while a run could be asked to say nothing; all three are gone, and
@@ -272,10 +285,9 @@ static void usage(const char *prog) {
         "                                                    statement this build accepts\n"
         "       %s edit FILE OUT SCRIPT                     the same, reading the statements from\n"
         "                                                    SCRIPT, which may be '-' for stdin\n"
-        "       %s grow FILE OUT N                          FILE is only read; OUT must not be FILE\n"
         "       %s info FILE\n"
         "       %s verify FILE\n",
-        prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog);
 }
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
@@ -302,7 +314,7 @@ static int cmd_verify(const char *path) {
 
 /* ---- info: dump load commands, ordinals, pads ---------------------------
  *
- * No existing tool does this dump, so unlike verify/grow this is new code --
+ * No existing tool does this dump, so unlike verify this is new code --
  * but it is a pure reader: everything it walks comes from mi_open/mi_each_lc
  * (image.h) and mo_is_ordinal_lc (ordinals.h), never from re-deriving what
  * "ordinal-bearing" or "the header pad" mean. Output is deliberately stable
@@ -388,93 +400,6 @@ static int cmd_info(const char *path) {
                pad, lc_end, first_sect_off);
     }
     mi_close(&im);
-    return 0;
-}
-
-/* ---- grow: a thin shell over mg_grow_header -----------------------------
- *
- * mg_grow_header already runs mg_verify + mg_plausible internally before it
- * reports success (src/grow.h "Phase 4: prove it"), so there is nothing
- * left for this verb to check on top -- it opens, calls the real primitive,
- * and writes OUT only on success. On failure mg_grow_header has already
- * explained why on stderr and left *pbuf as whatever is safe to discard;
- * neither file is touched.
- *
- * FILE IS ONLY READ. This verb used to grow the file it was given, in place;
- * now it reads FILE and writes the grown image to OUT, refusing an OUT that is
- * FILE (bad_out) before anything is read. The write goes through
- * wa_write_new (src/atomic_write.h): a mkstemp()+rename() in OUT's directory,
- * with FILE's mode, owner and xattrs, so OUT is either what it was or the
- * whole grown image, and a symlink at OUT is followed to its target rather
- * than replaced. A caller that wants the old in-place behaviour does what the
- * compat wrappers do -- name a temp beside FILE as OUT, then mv it over. */
-static int cmd_grow(const char *path, const char *out, const char *n_str) {
-    /* Before the N check, and before any read -- see bad_out. */
-    if (bad_out("grow", path, out)) return EX_FAIL;
-    char *end;
-    unsigned long n = strtoul(n_str, &end, 10);
-    if (*end != '\0' || n == 0 || n > UINT32_MAX) {
-        fprintf(stderr, "machotool grow: N must be a positive byte count (got '%s')\n", n_str);
-        return EX_FAIL;
-    }
-
-    /* Opened O_RDONLY -- this verb never writes FILE -- and only to fail fast
-     * with open()'s own reason for a missing or unreadable FILE, which mi_open
-     * below reports in less detail. Not held for anything: wa_write_new does
-     * its own opening, of OUT's directory. */
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) { perror("machotool grow: open"); return EX_FAIL; }
-    close(fd);
-
-    mi_image im;
-    int mo_rc = mi_open(path, &im);
-    if (mo_rc == MI_IO_ERROR) {
-        /* The open() above only proved this path opens, not that mi_open's own
-         * independent open, read of the whole file, or the malloc it reads into
-         * will succeed too -- any of those, or an actual TOCTOU race, land
-         * here. Not a considered refusal either way. */
-        fprintf(stderr, "machotool grow: %s: cannot open or read\n", path);
-        return EX_FAIL;
-    }
-    if (mo_rc != 0) {
-        fprintf(stderr, "machotool grow: %s: not a readable 64-bit Mach-O\n", path);
-        return EX_REFUSED;
-    }
-    size_t fsize = im.size;
-    uint8_t *buf = mi_release(&im);
-
-    if (mg_grow_header(&buf, &fsize, (uint32_t)n) != 0) {
-        /* mg_grow_header's whole design is "refuse rather than guess" (a
-         * global rule -- see EX_REFUSED's own comment) -- growth that would
-         * need a real __LINKEDIT resize, a non-PIE image, an unsupported
-         * ULEB re-encode -- so a failure here is a refusal. That includes
-         * every case where mg_grow_header's OWN failure is actually an
-         * allocation failing (grow.c): its two reallocations of the whole
-         * image, and its side tables -- the address snapshot, the export-
-         * trie walk's scratch table, the trie rebuilder's, mg_verify's, and
-         * those of the mg_plausible it runs last. This verb cannot tell any
-         * of those apart from every other reason mg_grow_header declines,
-         * and by deliberate choice does not try to -- see rewrite.c's
-         * comment on the identical fold in mr_apply_image (the thin-image
-         * step mr_apply_file goes through) for why. So a
-         * failed mg_grow_header always exits here, EX_REFUSED, never
-         * EX_FAIL. (A failed write, below, is EX_FAIL.) */
-        fprintf(stderr, "machotool grow: %s left unmodified\n", path);
-        free(buf);
-        return EX_REFUSED;
-    }
-
-    if (wa_write_new(path, out, buf, fsize) != 0) {
-        /* wa_write_new already reported which syscall failed (WA_IS_INPUT is
-         * unreachable: bad_out answered it above, and it would have said so
-         * too). An operational failure, not a refusal: nothing about the input
-         * was wrong. */
-        fprintf(stderr, "machotool grow: %s not written\n", out);
-        free(buf);
-        return EX_FAIL;
-    }
-    printf("Grew %s: header pad enlarged, file now %zu bytes\n", out, fsize);
-    free(buf);
     return 0;
 }
 
@@ -646,10 +571,6 @@ int main(int argc, char **argv) {
     if (strcmp(verb, "info") == 0) {
         if (argc != 3) { fprintf(stderr, "usage: %s info FILE\n", argv[0]); return EX_FAIL; }
         return cmd_info(argv[2]);
-    }
-    if (strcmp(verb, "grow") == 0) {
-        if (argc != 5) { fprintf(stderr, "usage: %s grow FILE OUT N\n", argv[0]); return EX_FAIL; }
-        return cmd_grow(argv[2], argv[3], argv[4]);
     }
     if (strcmp(verb, "edit") == 0) {
         /* Flags may appear anywhere among the arguments, so there is no

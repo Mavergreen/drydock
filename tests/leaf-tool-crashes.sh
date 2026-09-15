@@ -30,12 +30,6 @@
 #                      actual size. `macho9 dylib` cleared its load-command
 #                      area up to that same 0x7000, and `macho9 info`
 #                      measured a pad against it.
-#   oobgrow.macho      oobsection's out-of-bounds offset in an image `macho9
-#                      grow` accepts until it uses it: a PIE MH_EXECUTE with
-#                      __PAGEZERO and a __TEXT at file offset 0 whose one
-#                      section lies at 0x7000, in 256 bytes. grow moved
-#                      everything from that offset to the end of the file,
-#                      a length that wrapped around.
 #   sectionless.macho  a PIE MH_EXECUTE of 8192 bytes: one LC_SEGMENT_64/__TEXT
 #                      covering the file, nsects=0, and an LC_UUID. No
 #                      section data, like nosect, but here the assumed 4096
@@ -43,8 +37,17 @@
 #                      commit zeroed real data up to it.
 #
 # nosect and oobsection fail `machotool verify` (no segment maps the header);
-# oobgrow and sectionless pass it, so nothing upstream of the tools stops
-# them.
+# sectionless passes it, so nothing upstream of the tools stops them.
+#
+# An `oobgrow.macho` stood beside these: the same out-of-bounds section offset
+# in an image `machotool grow FILE OUT N` accepted until it used it, where
+# `fsize - insert` wrapped and the tool died of SIGSEGV. The verb is gone, and
+# no script can force that grow (mg_ensure_pad grows only when the load
+# commands actually need the room, which on that image they never do). The
+# regression moved to where the bug always was, in the library:
+# tests/grow_test.c's test_grow_refuses_a_section_past_the_image calls
+# mg_grow_header directly, and reverting mg_grow_header's `insert > fsize`
+# guard was measured to kill it with the same SIGSEGV this file used to catch.
 #
 # Host-portability: every fixture is hand-built byte-for-byte (no compiler
 # invoked to produce Mach-O structure, just a throwaway C helper -- same
@@ -145,7 +148,7 @@ int main(int argc, char **argv) {
         return write_sectionless(argv[2], (size_t)n);
     }
     if (argc != 3) {
-        fprintf(stderr, "usage: %s nosect|oobsection|oobgrow out | %s sectionless out N\n",
+        fprintf(stderr, "usage: %s nosect|oobsection out | %s sectionless out N\n",
                 argv[0], argv[0]);
         return 1;
     }
@@ -178,37 +181,6 @@ int main(int argc, char **argv) {
         s->offset = 0x7000;
         s->size   = 0x8000;
         fsize = sizeof(*h) + seg->cmdsize;
-    } else if (strcmp(argv[1], "oobgrow") == 0) {
-        /* oobsection's out-of-bounds section, in an image `macho9 grow`
-         * accepts up to the point where it uses that offset: a PIE executable
-         * with a __PAGEZERO to donate from, and a __TEXT at file offset 0
-         * whose one section lies at 0x7000, past the end of this 256-byte
-         * file. (oobsection itself is not an executable, so grow refuses it
-         * on its filetype before looking at any section.) */
-        h->cputype = CPU_TYPE_X86_64;
-        h->filetype = MH_EXECUTE;
-        h->flags = MH_PIE;
-        h->ncmds = 2;
-        set_name16(seg->segname, "__PAGEZERO");
-        seg->cmdsize = sizeof(*seg);
-        seg->vmsize = 0x100000000ULL;
-        struct segment_command_64 *tx =
-            (struct segment_command_64 *)((uint8_t *)seg + seg->cmdsize);
-        tx->cmd = LC_SEGMENT_64;
-        tx->cmdsize = sizeof(*tx) + sizeof(struct section_64);
-        set_name16(tx->segname, "__TEXT");
-        tx->vmaddr = 0x100000000ULL;
-        tx->vmsize = 0x8000;
-        tx->nsects = 1;
-        struct section_64 *s = (struct section_64 *)((uint8_t *)tx + sizeof *tx);
-        set_name16(s->sectname, "__text");
-        set_name16(s->segname, "__TEXT");
-        s->addr   = tx->vmaddr + 0x7000;
-        s->offset = 0x7000;
-        s->size   = 0x10;
-        h->sizeofcmds = seg->cmdsize + tx->cmdsize;
-        fsize = sizeof(*h) + h->sizeofcmds;
-        tx->filesize = fsize;
     } else {
         fprintf(stderr, "unknown kind: %s\n", argv[1]);
         return 1;
@@ -225,7 +197,6 @@ EOF
 
 "$T/mkfixture" nosect "$T/nosect.macho"
 "$T/mkfixture" oobsection "$T/oobsection.macho"
-"$T/mkfixture" oobgrow "$T/oobgrow.macho"
 
 # --- add_version_min -------------------------------------------------------
 cp "$T/nosect.macho" "$T/av.macho"
@@ -260,7 +231,6 @@ fi
 # there is no pad boundary to find, so it must refuse before it looks for
 # one, with or without --allow-grow, and leave the file as it was.
 rewrite_refusal="no section data bounds the header pad; refusing to rewrite its load commands"
-grow_refusal="no section data bounds the header pad; refusing to grow it"
 sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
 
 # mt_append GMALLOC FILE OUT  -- `dylib append /x` through the only mutating
@@ -331,13 +301,22 @@ done
 # for them) are held to mr_process_thin's own message, not merely to "no
 # section data": mg_ensure_pad refuses the same image in its own words, so
 # a dylib append would still be refused, by mg_ensure_pad, if mr_process_thin
-# stopped checking. `grow` goes straight to mg_grow_header.
+# stopped checking.
+#
+# `machotool grow <copy> OUT 4096` was held here to mg_grow_header's own
+# wording ("refusing to grow it"). The verb is gone and no script forces a
+# grow, so that case is now tests/grow_test.c's
+# test_grow_refuses_an_image_with_no_section_data, which calls mg_grow_header
+# on a sectionless image and asserts the same refusal, the same untouched
+# bytes, and the same words. Measured: disabling mg_grow_header's
+# MG_NO_SECTION_DATA refusal fails that test and the case here identically.
 "$T/mkfixture" sectionless "$T/sectionless.macho" 8192
 # sectionless_case NEEDLE VERB ARG...
 #   -- runs `machotool VERB <copy> OUT ARG...`
 #
-# EVERY verb here reads FILE and writes an OUT (dylib, rpath, lc, segment, grow
-# and, since its own conversion, edit -- whose SCRIPT is the ARG after OUT). The
+# EVERY verb here reads FILE and writes an OUT (`edit`, whose SCRIPT is the ARG
+# after OUT, is the only one left; dylib, rpath, lc, segment and grow were the
+# others). The
 # OUT is removed beforehand and must still be absent afterwards: a refusal
 # writes nothing, which is a second fact worth having here -- the input being
 # untouched is no longer the whole of it.
@@ -418,7 +397,6 @@ sectionless_script "$rewrite_refusal" allow-grow 'dylib append /x'
 sectionless_script "$rewrite_refusal" 'rpath append /x'
 sectionless_script "$rewrite_refusal" 'load-command delete uuid'
 sectionless_script "$rewrite_refusal" 'segment rename __TEXT __TEXX'
-sectionless_case "$grow_refusal" grow 4096
 printf 'dylib append /x\n' >"$T/sl.edits"
 sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
 
@@ -429,46 +407,6 @@ if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (no section data bounds
 else
     bad "machotool info: sectionless image" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/sl_info.out")"
 fi
-
-# --- machotool grow: a first section past the end of the image ------------------
-# mg_grow_header inserts its new page at the first section's file offset and
-# moves everything from there to the end of the file up by a page. With that
-# offset past the end, the length of that move (fsize - insert, a size_t)
-# wraps around: `macho9 grow` on oobgrow.macho died of SIGSEGV (exit 139),
-# with or without libgmalloc. It must refuse (1), saying why, and leave every
-# byte as it was.
-for gm in "" /usr/lib/libgmalloc.dylib; do
-    what="machotool grow 4096: oobgrow fixture${gm:+ (libgmalloc)}"
-    if [ -n "$gm" ] && [ ! -f "$gm" ]; then
-        skip "$what" "no $gm on this host"
-        continue
-    fi
-    cp "$T/oobgrow.macho" "$T/og.macho"
-    rm -f "$T/og.out.macho"
-    rc=0
-    if [ -n "$gm" ]; then
-        DYLD_INSERT_LIBRARIES="$gm" "$BIN/machotool" grow "$T/og.macho" "$T/og.out.macho" 4096 \
-            >"$T/og.out" 2>"$T/og.err" || rc=$?
-    else
-        "$BIN/machotool" grow "$T/og.macho" "$T/og.out.macho" 4096 \
-            >"$T/og.out" 2>"$T/og.err" || rc=$?
-    fi
-    if [ "$rc" -gt 127 ]; then
-        bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds move this fixture exists to catch"
-    elif [ "$rc" -eq 1 ] && grep -qF "lies past the end of the image" "$T/og.err"; then
-        ok "$what: refuses (1), naming the section past the end of the image"
-    else
-        bad "$what" "expected exit 1 + 'lies past the end of the image', got exit $rc: $(cat "$T/og.err")"
-    fi
-    if cmp -s "$T/oobgrow.macho" "$T/og.macho"; then
-        ok "$what: leaves the file byte-identical"
-    else
-        bad "$what" "the file changed"
-    fi
-    [ ! -e "$T/og.out.macho" ] \
-        && ok "$what: writes no output either" \
-        || bad "$what" "a refused run left an output behind"
-done
 
 # --- a dylib append statement, and info: a first section past the end of the image --------
 # mr_process_thin's commit memset clears the load-command area up to the first

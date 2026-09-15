@@ -622,7 +622,7 @@ fi
 #
 # THE VERB ROWS ARE GONE, and with them every `ops=`, `kinds=` and `versions=`
 # field this block used to read. --capabilities now advertises `verify`,
-# `info`, `grow`, `edit` and the statement rows, and the statement rows are
+# `info`, `edit` and the statement rows, and the statement rows are
 # what this translator emits -- so the ops= and versions= checks have become
 # the stmtcheck rows just below, which asserted the same agreement already.
 #

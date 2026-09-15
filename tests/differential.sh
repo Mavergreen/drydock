@@ -142,8 +142,9 @@ record() {
 # EVERY machotool VERB THIS SWEEP DRIVES IS ONE OF THOSE NOW. There used to be a
 # second helper, `m9`, for the verbs that rewrote the file they were given
 # (dylib, rpath, lc, segment); all four take FILE OUT, so it had no callers
-# left and is gone. `grow` has since taken FILE OUT too, leaving `edit` as the
-# only verb that would need it back -- and `edit` is not in this sweep.
+# left and is gone. `grow` took FILE OUT too before it was deleted outright,
+# leaving `edit` as the only verb that would need it back -- and `edit` is not
+# in this sweep.
 mtout() {
     verb="$1"; shift
     total=$((total + 1))

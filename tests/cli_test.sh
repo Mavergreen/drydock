@@ -1,13 +1,24 @@
 #!/bin/sh
 # tests/cli_test.sh — exercises the machotool CLI itself: --capabilities, the
-# two read-only verbs, `grow`, `edit`, and the bare `FILE OUT` form that is the
+# two read-only verbs, `edit`, and the bare `FILE OUT` form that is the
 # only way to change a binary.
 #
-# THE SEVEN MUTATING VERBS ARE GONE (declassify, segment, retag-swift, minos,
-# lc, dylib, rpath). Every assertion that used to run one runs its statement
-# equivalent instead, keeping its own question and its own FAIL message: the
-# property under test was always the REWRITE, never the spelling that reached
-# it. The equivalence was proved byte for byte before the verbs were deleted.
+# THE EIGHT MUTATING VERBS ARE GONE (declassify, segment, retag-swift, minos,
+# lc, dylib, rpath, grow). For the first seven, every assertion that used to
+# run one runs its statement equivalent instead, keeping its own question and
+# its own FAIL message: the property under test was always the REWRITE, never
+# the spelling that reached it. The equivalence was proved byte for byte before
+# those verbs were deleted.
+#
+# `grow FILE OUT N` had no statement equivalent and was deleted outright, so
+# its section here is gone rather than converted. What that section proved
+# about mg_grow_header -- that it refuses an image with no section data, and
+# one whose first section lies past the end of the file, rather than wrapping
+# `fsize - insert` and dying of SIGSEGV -- is proved hermetically now, in
+# tests/grow_test.c, which calls mg_grow_header directly. The CLI-shaped facts
+# that went with the verb (OUT is not FILE, a symlinked OUT is followed, N=0 is
+# refused) are asserted of the bare form and of `edit`, which are what is left
+# that writes an OUT.
 #
 # What this does NOT re-prove: change_dylib_test.sh already runs real dylib
 # renumbering, insert/delete ordinal correctness, and header-growth end to
@@ -59,9 +70,9 @@ skip() { echo "SKIP $1: $2"; }
 sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
 # mtip VERB FILE ARG...  -- run a verb that writes OUT and leave its result AT
-# FILE. Two verbs are left that do that, `grow` and `edit`.
+# FILE. One verb is left that does that, `edit`.
 #
-# Those take `FILE OUT` and never write FILE. Most of the assertions below were
+# It takes `FILE OUT` and never writes FILE. Most of the assertions below were
 # written when the rewriting verbs rewrote FILE, and they are
 # about the REWRITE -- which load command moved, which ordinal was renumbered,
 # what the run printed, what it refused -- not about which path the bytes land
@@ -251,7 +262,7 @@ build_main_without_build_version() {
 # in-place after being signed at link time, AT ALL?
 #
 # This must be established WITHOUT running machotool on the probe binary. The
-# grow/lc "still runs" assertions below rewrite a fixture with machotool and
+# `lc` "still runs" assertions below rewrite a fixture with machotool and
 # then run it; if this host's kernel kills any modified binary, that proves
 # nothing about machotool -- but if the probe used to detect that ALSO goes
 # through machotool, a real machotool regression that corrupts its output looks
@@ -268,7 +279,7 @@ build_main_without_build_version() {
 # throwaway C program, and tries to run the result. If the kernel/dyld kills
 # THAT, this host enforces code-signing on any post-link modification,
 # unconditionally of what changed or which tool changed it -- an honest,
-# independently-established fact the grow/lc sections can trust. If it
+# independently-established fact the `lc` sections can trust. If it
 # still runs, this host does NOT enforce that, and a failure to run
 # machotool's OWN rewritten fixture later is no longer explainable by host
 # policy -- it must be treated as a real defect (FAIL), not silently
@@ -349,9 +360,9 @@ elif [ "$signing_probe_rc" -eq 137 ]; then
 else
     # Neither a clean run nor the specific signal we know how to explain.
     # Per the coordinator: do not guess. Anything unrecognized here means the
-    # grow/lc sections below cannot trust EITHER conclusion, so they must not
+    # `lc` sections below cannot trust EITHER conclusion, so they must not
     # silently skip. That is fully achieved by leaving signing_enforced at 0:
-    # the grow/lc sections below gate their run-assertions on
+    # the `lc` sections below gate their run-assertions on
     # `signing_enforced -eq 1` (skip only when enforcement is POSITIVELY
     # confirmed), so 0 here already means "treat as real, don't skip" for
     # this unrecognized case exactly as it does for the confirmed-unenforced
@@ -361,23 +372,15 @@ else
     # behavior. Removed rather than left to imply a distinction that wasn't
     # there.
     signing_enforced=0
-    bad "host probe" "unrecognized outcome (exit $signing_probe_rc: $(head -1 "$T/signing_probe.out" 2>/dev/null || cat "$T/perturb.out" 2>/dev/null || echo 'no output')) -- cannot determine whether this host enforces code-signing on modified binaries; treating grow/lc run-assertions as real rather than risking a masked defect"
+    bad "host probe" "unrecognized outcome (exit $signing_probe_rc: $(head -1 "$T/signing_probe.out" 2>/dev/null || cat "$T/perturb.out" 2>/dev/null || echo 'no output')) -- cannot determine whether this host enforces code-signing on modified binaries; treating those run-assertions as real rather than risking a masked defect"
 fi
 
-# ---------------------------------------------------------------------------
-# Is this host the product's actual target platform (Mac OS X 10.9, Darwin
-# 13.x)? This is the one place in this file a version check is the right
-# tool rather than a capability probe: the question isn't "can this host DO
-# X" (that's what signing_enforced answers, above), it's "does the PRODUCT
-# even promise X here at all". mg_grow_header's whole trick -- donating
-# __PAGEZERO bytes and lowering __TEXT's vmaddr -- is something 10.9's dyld
-# accepts by design; nothing in this repo, the proposal, or the plan
-# promises a grown binary also loads on a newer dyld, so "does it run here"
-# is only a hard requirement ON the target, everywhere else it's a bonus
-# worth recording but not asserting on.
-darwin_major=$(uname -r | cut -d. -f1)
-is_target_platform=0
-[ "$darwin_major" = "13" ] && is_target_platform=1
+# A "is this host Darwin 13" probe stood here, read by exactly one assertion:
+# the `grow` section's "does the grown binary still run". mg_grow_header's
+# image-base-lowering trick is only promised to load on the product's target
+# platform, so that assertion was hard there and a SKIP elsewhere. The verb is
+# gone and nothing else asked the question, so the probe went with it rather
+# than sit here computing an answer no assertion reads.
 
 # ============================================================================
 # --capabilities
@@ -412,26 +415,28 @@ echo "$caps" | grep -qx "output positional=2 never-writes-input" \
     && ok "capabilities: output line documents FILE OUT, never-writes-input" \
     || bad "capabilities: output line" "missing or wrong: $(echo "$caps" | grep '^output')"
 
-for v in verify info grow edit; do
+for v in verify info edit; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
         bad "capabilities: $v" "not listed"
     fi
 done
-# AND THE SEVEN THAT ARE GONE MUST NOT BE ADVERTISED. print_capabilities' own
+# AND THE EIGHT THAT ARE GONE MUST NOT BE ADVERTISED. print_capabilities' own
 # contract is "never advertise one that errors out", and each of these now
 # errors out -- `machotool dylib f o` is the bare form over a file named
 # `dylib`, not a verb. A stale line here would send a wrapper at a verb this
-# build has no arm for.
+# build has no arm for. `grow` is on this list for the same reason as the
+# other seven, though unlike them it has no statement form to be sent to
+# instead: it is simply gone.
 caps_stale=0
-for v in declassify segment retag-swift minos lc dylib rpath; do
+for v in declassify segment retag-swift minos lc dylib rpath grow; do
     if echo "$caps" | grep -q "^verb $v"; then
         bad "capabilities: $v" "still advertised, but the verb is gone"
         caps_stale=1
     fi
 done
-[ "$caps_stale" -eq 0 ] && ok "capabilities: none of the seven deleted verbs is still advertised"
+[ "$caps_stale" -eq 0 ] && ok "capabilities: none of the eight deleted verbs is still advertised"
 # usage() is the other place a caller reads about what this build can do, and
 # the bare `FILE OUT` form is the whole mutating surface now -- a usage line
 # that named only the read-only queries would leave a caller with no way in.
@@ -443,7 +448,7 @@ grep -q "stdin" "$T/usage.err" \
     && ok "usage: says the statements come from stdin" \
     || bad "usage: stdin" "the bare form is listed without saying where the statements come from: $(cat "$T/usage.err")"
 usage_stale=0
-for v in declassify segment retag-swift minos; do
+for v in declassify segment retag-swift minos grow; do
     grep -qE "^ +[^ ]+ $v " "$T/usage.err" && { bad "usage: $v" "still listed, but the verb is gone"; usage_stale=1; }
 done
 [ "$usage_stale" -eq 0 ] && ok "usage: none of the deleted verbs is still listed"
@@ -893,7 +898,7 @@ mkdir -p "$T/alone"
 cp "$MACHOTOOL" "$T/alone/machotool"
 alone_caps=$("$T/alone/machotool" --capabilities)
 alone_missing=""
-for v in verify info grow edit; do
+for v in verify info edit; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
 done
 for s in 'dylib append 1' 'load-command delete 1' 'version-min set 1' 'segment rename 2' 'swift-abi set 1' 'fixups set 1'; do
@@ -1022,140 +1027,6 @@ echo "$info_out" | grep -q "ordinal=1 path=.*liba.dylib" && ok "info: shows liba
     || bad "info: ordinal" "not found in output: $info_out"
 echo "$info_out" | grep -q "header pad:" && ok "info: shows header pad line" \
     || bad "info: header pad" "not found in output"
-
-# ============================================================================
-# grow
-# ============================================================================
-build_main "$T/grow_fixture"
-before=$(wc -c < "$T/grow_fixture")
-# mtip because this verb reads FILE and writes OUT now, and the assertions
-# below (and the "does it still run?" one further down) are about the grown
-# image being AT $T/grow_fixture: the helper runs the verb into a temp beside
-# the file and mv's it over, which is what every caller that wants the old
-# in-place behaviour has to do.
-mtip grow "$T/grow_fixture" 4096 >"$T/grow.out" || bad "grow: exit" "$(cat "$T/grow.out")"
-after=$(wc -c < "$T/grow_fixture")
-if [ "$after" -eq "$((before + 4096))" ]; then
-    ok "grow: file grew by exactly the page-aligned request"
-else
-    bad "grow: size" "before=$before after=$after (expected +4096)"
-fi
-"$MACHOTOOL" verify "$T/grow_fixture" >/dev/null && ok "grow: result still verifies" \
-    || bad "grow: post-grow verify" "failed"
-
-# grow NEVER WRITES ITS INPUT: `grow FILE OUT N`. The same five facts every
-# other converted verb is held to (see the nwi block further down, whose
-# wording this follows), with grow's own success line -- `Grew OUT: ...`, not
-# `Wrote OUT (...)` -- and its own proof that OUT carries the change: OUT is
-# exactly N bytes bigger.
-build_main "$T/gnwi"
-gnwi_sha=$(sha "$T/gnwi"); gnwi_ino=$(stat -f %i "$T/gnwi")
-gnwi_before=$(wc -c < "$T/gnwi")
-rm -f "$T/gnwi_out"
-"$MACHOTOOL" grow "$T/gnwi" "$T/gnwi_out" 4096 >"$T/gnwi.out" 2>"$T/gnwi.err" \
-    && ok "grow FILE OUT N: succeeds" \
-    || bad "grow FILE OUT N" "$(cat "$T/gnwi.err")"
-[ "$(sha "$T/gnwi")" = "$gnwi_sha" ] && [ "$(stat -f %i "$T/gnwi")" = "$gnwi_ino" ] \
-    && ok "grow FILE OUT N: FILE is untouched, bytes and inode" \
-    || bad "grow FILE OUT N" "FILE changed"
-[ "$(wc -c < "$T/gnwi_out")" -eq "$((gnwi_before + 4096))" ] \
-    && ok "grow FILE OUT N: OUT is the grown image" \
-    || bad "grow FILE OUT N" "OUT is $(wc -c < "$T/gnwi_out") bytes, want $((gnwi_before + 4096))"
-grep -q "^Grew $T/gnwi_out: " "$T/gnwi.out" \
-    && ok "grow FILE OUT N: says what it wrote, naming OUT" \
-    || bad "grow FILE OUT N" "no Grew line naming OUT: $(cat "$T/gnwi.out")"
-rc=0
-"$MACHOTOOL" grow "$T/gnwi" "$T/gnwi" 4096 >/dev/null 2>"$T/gnwi_same.err" || rc=$?
-[ "$rc" -eq 2 ] && [ "$(sha "$T/gnwi")" = "$gnwi_sha" ] \
-    && ok "grow: an OUT that is FILE is refused (2), FILE untouched" \
-    || bad "grow OUT=FILE" "rc $rc"
-grep -q "never writes its input" "$T/gnwi_same.err" \
-    && ok "grow: ... refused up front, before any work" \
-    || bad "grow OUT=FILE" "not the up-front refusal: $(cat "$T/gnwi_same.err")"
-rm -f "$T/gnwi_link"; ln -s "$T/gnwi" "$T/gnwi_link"
-rc=0
-"$MACHOTOOL" grow "$T/gnwi" "$T/gnwi_link" 4096 >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "grow: an OUT that is a symlink to FILE is refused (2)" \
-    || bad "grow OUT=link" "rc $rc"
-rc=0
-"$MACHOTOOL" grow "$T/gnwi" 4096 >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "grow: a missing OUT is an error (2)" \
-    || bad "grow no OUT" "rc $rc"
-
-# grow writes OUT through wa_write_new (src/atomic_write.h, mkstemp+rename).
-# Prove the symlink-safety that buys, which now belongs to OUT rather than to
-# FILE: an OUT that is a symlink is FOLLOWED -- the real target gets the new
-# bytes (a fresh inode, since rename() always creates one) and the symlink
-# stays a symlink, where a naive rename onto the symlink's own path would
-# replace the link with a plain file.
-build_main "$T/grow_link_in"
-build_main "$T/grow_link_target"
-ln -sf grow_link_target "$T/grow_link"
-target_ino_before=$(stat -f %i "$T/grow_link_target")
-target_size_before=$(wc -c < "$T/grow_link_target")
-"$MACHOTOOL" grow "$T/grow_link_in" "$T/grow_link" 4096 >"$T/grow_link.out" 2>&1 \
-    || bad "grow: symlinked OUT" "exit failed: $(cat "$T/grow_link.out")"
-if [ -L "$T/grow_link" ]; then
-    ok "grow: an OUT that is a symlink stays a symlink"
-else
-    bad "grow: symlinked OUT" "the symlink itself got replaced by a plain file"
-fi
-target_ino_after=$(stat -f %i "$T/grow_link_target")
-if [ "$target_ino_after" != "$target_ino_before" ]; then
-    ok "grow: the real target was replaced via mkstemp+rename (fresh inode = atomicity kept)"
-else
-    bad "grow: symlinked OUT" "target inode unchanged -- wrote in place, not atomically"
-fi
-[ "$(wc -c < "$T/grow_link_target")" -ne "$target_size_before" ] \
-    && ok "grow: ... and it is the target that got the grown image" \
-    || bad "grow: symlinked OUT" "the target's size did not change"
-readlink "$T/grow_link" | grep -q "^grow_link_target$" \
-    && ok "grow: symlink still points at the same name" \
-    || bad "grow: symlinked OUT" "symlink target changed: $(readlink "$T/grow_link")"
-
-# Whether a GROWN binary can be EXECUTED, ruling (settled after evidence: a
-# prior round's host-capability probe showed the cross runner runs a
-# trivially-perturbed binary FINE but specifically refuses a GROWN one --
-# so this is not the code-signing question $signing_enforced answers; it is
-# a genuinely different dyld objection to the grow transformation itself):
-#
-# These tools exist to produce binaries loadable by Mac OS X 10.9. That is
-# the product's contract. mg_grow_header works by LOWERING the image base
-# -- donating bytes from __PAGEZERO and dropping __TEXT's vmaddr -- an
-# exotic transformation 10.9's dyld accepts by design. A grown binary is
-# NOT required to also load on a newer macOS, and asserting that it must
-# would be a stronger requirement than the product makes. So: on the
-# target platform (Darwin 13.x / Mac OS X 10.9) this stays a HARD
-# assertion, unconditionally. Everywhere else, a run failure is scoped out
-# with a SKIP -- but never a hand-waved "host policy": it carries whatever
-# diagnostic this host's own loader actually gave, captured here (exit
-# status/signal plus DYLD_PRINT_LIBRARIES=1 output and any dyld stderr
-# text), so the record says exactly what a newer dyld objects to rather
-# than guessing. A future reader deciding whether this is "the product
-# doesn't promise this" versus "mg_grow_header has a real bug" should be
-# able to read that text and judge for themselves.
-if (cd "$T" && DYLD_PRINT_LIBRARIES=1 ./grow_fixture) >"$T/grow_run.out" 2>&1; then
-    ok "grow: grown binary still runs"
-else
-    grow_run_rc=$?
-    grow_run_diag=$(cat "$T/grow_run.out" 2>/dev/null | tr '\n' ' ' | cut -c1-800)
-    if [ "$is_target_platform" -eq 1 ]; then
-        bad "grow: run" "grown binary failed to execute ON THE TARGET PLATFORM ITSELF (Darwin 13 / Mac OS X 10.9) -- this is a real machotool defect, not a portability question. exit $grow_run_rc: $grow_run_diag"
-    else
-        skip "grow: grown binary still runs" \
-            "not the product's target platform (Darwin $darwin_major; the target is Darwin 13 / Mac OS X 10.9) -- mg_grow_header's image-base-lowering trick is only promised to load there. This host's loader says: exit $grow_run_rc: $grow_run_diag"
-    fi
-fi
-# N=0 is refused, not silently a no-op -- and with a real OUT, so this asks
-# about N rather than about the argument count.
-rm -f "$T/grow_zero_out"
-if "$MACHOTOOL" grow "$T/grow_fixture" "$T/grow_zero_out" 0 >/dev/null 2>&1; then
-    bad "grow: N=0" "should be refused"
-else
-    ok "grow: N=0 refused"
-fi
-[ -e "$T/grow_zero_out" ] && bad "grow: N=0" "wrote an output for a request it refused" \
-    || ok "grow: N=0 produces no output file"
 
 # ============================================================================
 # minos
@@ -1373,7 +1244,7 @@ grep -q "no load command of kind uuid to delete" "$T/lc_dup.err" \
 # as `load-command delete build-version` above (the fixture is stripped of it
 # first, not assumed to lack it), turned
 # into a refusal instead of just a stderr note. EX_REFUSED (1), the same
-# code a deliberate refusal uses elsewhere (cmd_verify, cmd_grow),
+# code a deliberate refusal uses elsewhere (cmd_verify),
 # because mr_apply_image returns MR_REFUSED for this and MR_REFUSED is
 # defined (src/rewrite.h) to equal EX_REFUSED. It was a verb FLAG
 # (--fatal-warnings); it is a script DIRECTIVE, a line of its own before the
@@ -2578,15 +2449,16 @@ nwi segment "segment rename __DATA __DATA_NWI"
 # answers it -- but the statements would have to come from stdin, and a test
 # that fed them would be asserting about a run that got as far as reading a
 # script. It does not need to: bad_out fires before the script is read, which
-# is exactly what this asserts. The three forms below are the ones left whose
-# positionals are at fixed indices; `edit`, whose parser scans for them, is
-# asserted in its own section below.
+# is exactly what this asserts. The two forms below are what is left; `edit`'s
+# parser scans for its positionals rather than reading them at fixed indices,
+# and is asserted in its own section below too.
 #
-# ONE DASH, not two, for the two forms cmd_edit parses: its scan rejects a
-# `--`-prefixed token as an unknown flag BEFORE bad_out is reached (see
+# ONE DASH, not two, for both forms: cmd_edit parses them, and its scan rejects
+# a `--`-prefixed token as an unknown flag BEFORE bad_out is reached (see
 # cmd_edit's own comment, which states that order deliberately), so a
 # double-dash OUT would be asserting about the flag check rather than about
-# bad_out. `grow` reads its positionals at fixed indices and gets either.
+# bad_out. `grow`, which read its positionals at fixed indices and so accepted
+# either spelling, was the third form here until the verb was deleted.
 nwid_run() {   # LABEL, the OUT word, then the whole argv after $MACHOTOOL
     nwid_label=$1; nwid_out=$2; shift 2
     build_main "$T/nwid"
@@ -2604,7 +2476,6 @@ nwid_run() {   # LABEL, the OUT word, then the whole argv after $MACHOTOOL
         || bad "$nwid_label OUT=-flag" "rc $rc, exists=$([ -e "$T/$nwid_out" ] && echo YES || echo no), stderr: $(cat "$T/nwid.err")"
 }
 nwid_run "bare form" -nwid-flag nwid -nwid-flag
-nwid_run grow --nwid-flag grow nwid --nwid-flag 4096
 nwid_run edit -nwid-flag edit nwid -nwid-flag -
 # ... and the remedy the message names really does work, so the refusal is not
 # a wall in front of a legal path.
@@ -2974,7 +2845,8 @@ ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
 
 # Everything that got as far as an image names both. A fat64 container is
 # refused by its magic before mi_open, and still names both -- four bytes of
-# FAT_MAGIC_64 is the whole fixture, as cli_test.sh:1397 already does it.
+# FAT_MAGIC_64 is the whole fixture, as the "64-bit fat container" block
+# further up this file already does it.
 printf '%b' '\0277\0272\0376\0312' > "$T/ri_fat64"
 rm -f "$T/ri.out"
 "$MACHOTOOL" edit "$T/ri_fat64" "$T/ri.out" "$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
@@ -3068,16 +2940,16 @@ bare_fb=0
 # really named like a verb is spelled `./info` -- the same remedy bad_out
 # already names for an OUT beginning with '-'.
 #
-# FOUR NAMES ARE SHADOWED NOW, not eleven. `minos`, `segment`, `retag-swift`,
-# `lc`, `dylib`, `rpath` and `declassify` were verbs and shadowed a file of the
-# same name; they are ordinary words again, so `machotool dylib out` reads a
-# file called `dylib`. Nothing is lost -- there is no verb behind those names
-# for a caller to be denied -- and what this loop guards is the four that ARE
-# still verbs.
+# THREE NAMES ARE SHADOWED NOW, not eleven. `minos`, `segment`, `retag-swift`,
+# `lc`, `dylib`, `rpath`, `declassify` and `grow` were verbs and shadowed a
+# file of the same name; they are ordinary words again, so `machotool dylib
+# out` reads a file called `dylib`. Nothing is lost -- there is no verb behind
+# those names for a caller to be denied -- and what this loop guards is the
+# three that ARE still verbs.
 mkdir -p "$T/shadow"
 build_main "$T/shadow/fixture"
 bare_shadowed=""
-for bare_v in verify info grow edit; do
+for bare_v in verify info edit; do
     rm -f "$T/shadow/$bare_v" "$T/shadow/shadow_out"
     cp "$T/shadow/fixture" "$T/shadow/$bare_v"
     ( cd "$T/shadow" \

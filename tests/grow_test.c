@@ -1631,19 +1631,18 @@ static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const 
  * the header pad. Fields on commands walked before the one that overflows
  * are already bumped in place and are NOT rolled back; that is the
  * documented contract every internal failure path in mg_grow_header shares
- * (see src/linkedit.h's ml_bump_all doc comment). What must hold, and is
- * verified separately below via the real CLI (not exercised by this
- * hermetic file), is that the OUTER caller never writes a refused buffer to
- * disk -- confirmed by hand against `macho9 grow` on poked copies of
- * tests/fixture.macho for all three guards (section offset, reloff,
- * entryoff): an observation made at or before cbcacd3 (the old numbering,
- * under which EX_REFUSED was 2), which reported exit 2 and left the file
- * byte-for-byte unmodified on disk. EX_REFUSED is 1 today. That has not
- * been re-checked by hand; what makes exit 1 the expected value now is
- * that cmd_grow still returns EX_REFUSED for every mg_grow_header failure,
- * as it did then -- only the numeral moved. So these three checks pin only
- * what this translation unit can honestly promise: the refusal itself
- * (r == -1). */
+ * (see src/linkedit.h's ml_bump_all doc comment). What must hold is that the
+ * OUTER caller never writes a refused buffer to disk. That used to be
+ * verifiable through `machotool grow FILE OUT N` -- confirmed by hand on
+ * poked copies of tests/fixture.macho for all three guards (section offset,
+ * reloff, entryoff): an observation made at or before cbcacd3 (the old
+ * numbering, under which EX_REFUSED was 2), which reported exit 2 and left
+ * the file byte-for-byte unmodified on disk. That verb is gone, and no script
+ * can request a grow of a specific size, so no CLI reaches these three guards
+ * at all now: the only caller of mg_grow_header left is mg_ensure_pad, which
+ * grows on demand and hands its own refusal up. So these three checks pin
+ * what this translation unit can honestly promise, and all that anything can:
+ * the refusal itself (r == -1). */
 static void test_grow_refuses_overflowing_section_offset(void) {
     size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
