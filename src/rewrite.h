@@ -1,14 +1,14 @@
-#ifndef MACHOTOOL_REWRITE_H
-#define MACHOTOOL_REWRITE_H
+#ifndef MACHOREWRITE_REWRITE_H
+#define MACHOREWRITE_REWRITE_H
 /* mr_ -- rewriting a Mach-O's dylib load commands and LC_RPATHs. Both
- * front-ends shared this code: cli/machotool.c's dylib/rpath/lc/segment verbs
+ * front-ends shared this code: cli/machorewrite.c's dylib/rpath/lc/segment verbs
  * through mr_apply_file until they were deleted, and src/edit.c's scripts
  * through mr_apply_image, which is the only way in now.
  * Parsing stays in each front-end; what crosses this boundary is an mr_ops.
  * Every diagnostic lives here once, not re-emitted per caller: contract.
  * spec: tests/change_dylib_test.sh -- it captures stderr and compares it.
- * spec: tests/cli_test.sh's "machotool stands alone" -- the CLI links this in
- * rather than forking change_dylib, so change_dylib can wrap machotool.
+ * spec: tests/cli_test.sh's "machorewrite stands alone" -- the CLI links this in
+ * rather than forking change_dylib, so change_dylib can wrap machorewrite.
  * spec: src/ordinals.h -- a dylib insert or delete shifts every later library
  * ordinal and this module renumbers; an rpath insert shifts none. */
 #include <stdint.h>
@@ -92,7 +92,7 @@ typedef struct {
  * mfat_rewrite's for a fat split's arrays, copies and reassembly buffer. An
  * allocation failure inside mg_grow_header or mg_plausible is deliberately
  * MR_REFUSED instead, grow.c folding it in with its other refusals.
- * spec: cli/machotool.c's EX_REFUSED -- why a refusal is the LOWER code, and
+ * spec: cli/machorewrite.c's EX_REFUSED -- why a refusal is the LOWER code, and
  * where equality with these two is enforced at compile time. */
 #define MR_REFUSED 1
 #define MR_FAIL    2
@@ -104,7 +104,7 @@ typedef struct {
  * mo_map_validate, mo_map_apply, mg_plausible.
  * spec: tests/cli_test.sh's "pinning the MR_REFUSED/MR_FAIL split" -- both
  * sides of that line, and both of the two size refusals.
- * PRECONDITION, unenforced here: `out` must not name `path`. cli/machotool.c
+ * PRECONDITION, unenforced here: `out` must not name `path`. cli/machorewrite.c
  * refuses it before any read, and wa_write_new checks again, so an unchecked
  * caller gets MR_FAIL and an unwritten input, not a rewritten one.
  *
@@ -158,4 +158,4 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
  * return MR_REFUSED if any did and ops->fatal_unmatched is set, else 0. */
 int mr_unmatched_verdict(const mr_ops *ops, const mr_hits *hits);
 
-#endif /* MACHOTOOL_REWRITE_H */
+#endif /* MACHOREWRITE_REWRITE_H */

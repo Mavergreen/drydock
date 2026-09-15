@@ -16,8 +16,8 @@
  * src/rewrite.c's mr_process_fat; it moved here so the layout rule has one
  * implementation. */
 
-#ifndef MACHOTOOL_FAT_H
-#define MACHOTOOL_FAT_H
+#ifndef MACHOREWRITE_FAT_H
+#define MACHOREWRITE_FAT_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -32,7 +32,7 @@ typedef struct {
 } mfat_arch;
 
 /* mfat_parse's two failure reasons -- the same distinction image.h's
- * MI_IO_ERROR/MI_NOT_MACHO draws, for the same reason (cli/machotool.c's
+ * MI_IO_ERROR/MI_NOT_MACHO draws, for the same reason (cli/machorewrite.c's
  * EX_REFUSED/EX_FAIL, src/rewrite.c's/src/version_min.c's MR_REFUSED/
  * MR_FAIL). mfat_parse takes an already-read buffer, not a path, so it has
  * no open/fstat/read of its own to fail -- its ONE environment failure is
@@ -97,4 +97,4 @@ typedef void (*mfat_placed_fn)(const mfat_arch *a, uint32_t index,
 int mfat_rewrite(uint8_t **pbuf, size_t *psize, uint32_t narch, int swapped,
                  mfat_slice_fn fn, mfat_placed_fn placed, void *ctx, int *modified);
 
-#endif /* MACHOTOOL_FAT_H */
+#endif /* MACHOREWRITE_FAT_H */

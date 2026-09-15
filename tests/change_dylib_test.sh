@@ -12,7 +12,7 @@
 #   sh tests/change_dylib_test.sh               standalone (needs only clang + otool)
 #   sh tests/change_dylib_test.sh <bindir>       via ctest: uses the change_dylib
 #                                                 and fix_macho wrappers CMake
-#                                                 already staged next to machotool
+#                                                 already staged next to machorewrite
 set -e
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
@@ -29,7 +29,7 @@ CC="${CC:-clang}"
 # either host, so the test asks the same question everywhere.
 #
 # Note this applies only to the fixtures. change_dylib/fix_macho themselves
-# (below) are /bin/sh wrappers around machotool, which is a host tool, built for
+# (below) are /bin/sh wrappers around machorewrite, which is a host tool, built for
 # (or already built on) the host.
 FIXTURE_FLAGS="-mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/change_dylib_test.$$"
@@ -44,7 +44,7 @@ trap 'rm -rf "$T"' EXIT INT TERM
 #
 # The standalone build used to hand-enumerate macho9core's source list right
 # here -- a SECOND place deciding what the library contains, independent of
-# CMakeLists.txt's own `add_library(machotoolcore ...)` list (still a hand
+# CMakeLists.txt's own `add_library(machorewritecore ...)` list (still a hand
 # enumeration itself, CMakeLists.txt:57), which had already needed
 # hand-updating five times (uleb, image, ordinals, fat, trie, lc_kinds,
 # atomic_write, linkedit, grow) as the toolkit grew. Two places independently
@@ -58,12 +58,12 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # stops being possible), but it is NOT the same list CMakeLists.txt compiles
 # -- it is a superset by construction, since CMakeLists.txt's own list is
 # still hand-enumerated. A future src/something_else.c deliberately kept OUT
-# of machotoolcore would still be silently pulled into this standalone build.
-# A real fix (glob machotoolcore's own sources in CMakeLists.txt too, or have
+# of machorewritecore would still be silently pulled into this standalone build.
+# A real fix (glob machorewritecore's own sources in CMakeLists.txt too, or have
 # this script read that list back out of CMake) is a follow-up, not this
 # round -- the glob here only trades the demonstrated failure mode (a file
-# added to machotoolcore and forgotten here) for a theoretical one (a file
-# deliberately excluded from machotoolcore that this glob doesn't know to
+# added to machorewritecore and forgotten here) for a theoretical one (a file
+# deliberately excluded from machorewritecore that this glob doesn't know to
 # exclude), which has never happened in this repo's history.
 #
 # A bindir argument, once given, MUST be honored or the run must fail loudly
@@ -76,30 +76,30 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # requirement, exactly like the other four suites' `BIN="${1:?usage...}"`.
 #
 # STANDALONE, AFTER TASK 2: change_dylib is no longer a C program to compile.
-# It is compat/change_dylib.sh, a wrapper that needs machotool and the two
+# It is compat/change_dylib.sh, a wrapper that needs machorewrite and the two
 # files it sources sitting next to it -- so the standalone branch builds
-# machotool and then assembles that layout in $T, under the installed names,
-# exactly as CMakeLists.txt stages it next to machotool in a build tree.
+# machorewrite and then assembles that layout in $T, under the installed names,
+# exactly as CMakeLists.txt stages it next to machorewrite in a build tree.
 #
 # fix_macho joined it: compat/fix_macho.c is gone, and there is nothing left
-# in compat/ to compile at all. machotool is the only binary this branch
+# in compat/ to compile at all. machorewrite is the only binary this branch
 # builds now, which is the whole retirement plan's headline seen from inside
 # a test.
 if [ $# -eq 0 ]; then
     echo "change_dylib_test: no bindir given -- compiling standalone from source"
     mkdir -p "$T/bin"
-    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/machotool" "$ROOT_DIR/cli/machotool.c" "$SRC_DIR"/*.c
+    "$CC" -O2 -I "$SRC_DIR" -o "$T/bin/machorewrite" "$ROOT_DIR/cli/machorewrite.c" "$SRC_DIR"/*.c
     "$CC" -O2 -o "$T/bin/makefat" "$SCRIPT_DIR/makefat.c"
     "$CC" -O2 -o "$T/bin/fatcheck" "$SCRIPT_DIR/fatcheck.c"
     cp "$COMPAT_DIR/change_dylib.sh" "$T/bin/change_dylib"
     cp "$COMPAT_DIR/fix_macho.sh" "$T/bin/fix_macho"
-    cp "$COMPAT_DIR/machotool-compat.sh" "$T/bin/machotool-compat.sh"
-    cp "$COMPAT_DIR/translate.sh" "$T/bin/machotool-translate.sh"
+    cp "$COMPAT_DIR/machorewrite-compat.sh" "$T/bin/machorewrite-compat.sh"
+    cp "$COMPAT_DIR/translate.sh" "$T/bin/machorewrite-translate.sh"
     chmod +x "$T/bin/change_dylib" "$T/bin/fix_macho"
     BIN="$T/bin"
     CHANGE_DYLIB="$T/bin/change_dylib"
     FIX_MACHO="$T/bin/fix_macho"
-    MACHOTOOL="$T/bin/machotool"
+    MACHOREWRITE="$T/bin/machorewrite"
 else
     BIN="$1"
     if [ ! -x "$BIN/change_dylib" ] || [ ! -x "$BIN/fix_macho" ]; then
@@ -113,7 +113,7 @@ else
     echo "change_dylib_test: using the CMake-built binaries in $BIN"
     CHANGE_DYLIB="$BIN/change_dylib"
     FIX_MACHO="$BIN/fix_macho"
-    MACHOTOOL="$BIN/machotool"
+    MACHOREWRITE="$BIN/machorewrite"
 fi
 fails=0
 ok()   { echo "PASS $1"; }
@@ -230,7 +230,7 @@ EOF
 
 # makefat/fatcheck: build and inspect a fat (universal) Mach-O without
 # depending on system lipo. See tests/makefat.c and tests/fatcheck.c -- CMake
-# builds both beside machotool, and $BIN is that directory.
+# builds both beside machorewrite, and $BIN is that directory.
 
 # --- fixtures: three dylibs, and a main that calls into two of them ----------
 cat > "$T/a.c" <<'EOF'
@@ -527,13 +527,13 @@ fi
 #
 # The "No changes needed" oracle had to change with it: that line was
 # fix_macho's own stdout and no longer exists anywhere. Its replacement is
-# the unmatched report, `machotool: <path> matched nothing`, on
+# the unmatched report, `machorewrite: <path> matched nothing`, on
 # STDERR, which says the same thing per operation instead of per run. Note
 # `$out` merges both streams, so the check reads either way.
 if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
     # Same length as the old path (both 27 bytes). This USED to matter because
     # fix_macho refused a replacement that did not fit the existing command
-    # ("new path ... too long"); `machotool dylib -replace` resizes into header
+    # ("new path ... too long"); `machorewrite dylib -replace` resizes into header
     # pad instead, which is row 1 of compat/README.md's five adopted
     # fix_macho divergences. Keeping the lengths equal anyway keeps this case
     # testing
@@ -551,7 +551,7 @@ if [ -f "$T/libupd_a_for_fixmacho.dylib" ]; then
     # not control across OS releases; a raw byte-search over the rewritten
     # file's own bytes asks the same question regardless.
     if echo "$out" | grep -q "matched nothing"; then
-        bad "fix_macho -change upward" "machotool reported the -change matched nothing -- LC_LOAD_UPWARD_DYLIB not rewritten"
+        bad "fix_macho -change upward" "machorewrite reported the -change matched nothing -- LC_LOAD_UPWARD_DYLIB not rewritten"
     elif "$T/has_bytes" "$T/libupd_a_for_fixmacho.dylib" "$new_install_name"; then
         ok "fix_macho -change: an LC_LOAD_UPWARD_DYLIB is rewritten like any other dylib LC"
     else
@@ -619,9 +619,9 @@ fi
 # WHAT CHANGED: there are no arrays any more. compat/fix_macho.c is retired
 # and fix_macho is a /bin/sh wrapper, so the caps live in compat/translate.sh's
 # mt_room, which counts and refuses before it emits anything. NEITHER cap is
-# caught downstream any more: machotool's own MR_MAX_OPS/MR_MAX_STRIP went with
+# caught downstream any more: machorewrite's own MR_MAX_OPS/MR_MAX_STRIP went with
 # the verbs whose arrays they sized, and an mr_ops holds at most one operation
-# of each kind now, so every operation becomes its own statement and machotool
+# of each kind now, so every operation becomes its own statement and machorewrite
 # never sees more than one to count. The translation is the only thing enforcing
 # anything here, which is exactly why both halves stay.
 #
@@ -663,10 +663,10 @@ fi
 
 # ...and the same for -rename_seg, which is NEW here. It was never asserted
 # while the cap lived in compat/fix_macho.c, and it matters more now than the
-# -change one does: nothing downstream counts renames (one `machotool segment`
+# -change one does: nothing downstream counts renames (one `machorewrite segment`
 # invocation per pair), so an off-by-one in compat/translate.sh's mt_room would
 # silently halve what a caller can ask for with nothing else to catch it. 16
-# pairs must run, which is 16 machotool invocations against the same file.
+# pairs must run, which is 16 machorewrite invocations against the same file.
 build_main "$T/main_fmatcap_seg"
 set -- ; i=0
 while [ $i -lt 16 ]; do set -- "$@" -rename_seg __DATA __DATA_R; i=$((i+1)); done
@@ -1049,9 +1049,9 @@ after_md5=$(md5 -q "$T/main_fat3" 2>/dev/null || md5sum "$T/main_fat3" | awk '{p
 # multiple hard links: the sibling name keeps the stale content because
 # rename() gives its own name a fresh inode.
 #
-# THE QUESTION IS THE SAME, THE ANSWERING CODE HAS MOVED. machotool does not write
+# THE QUESTION IS THE SAME, THE ANSWERING CODE HAS MOVED. machorewrite does not write
 # FILE at all now; compat/change_dylib.sh does, by installing a temp with mv
-# (mw_resolve/mw_prepare/mw_finish, compat/machotool-compat.sh). So the symlink
+# (mw_resolve/mw_prepare/mw_finish, compat/machorewrite-compat.sh). So the symlink
 # case is that install's to get right, and it still does; the hard-link case is
 # one mv cannot get right, and 14b below is now the REFUSAL that replaced it.
 # Structural reader, not otool text: otool -l's "path X (offset N)" wording
@@ -1108,10 +1108,10 @@ rpath_present() { "$T/has_rpath" "$1" "$2"; }
 # the one that changed. An xattr on the real file (quarantine et al. are
 # exactly this) must survive too.
 build_main "$T/wa_real"
-xattr -w com.machotool.test present "$T/wa_real" 2>/dev/null || true
+xattr -w com.machorewrite.test present "$T/wa_real" 2>/dev/null || true
 ln -s wa_real "$T/wa_link"
 before_ino=$(stat -f %i "$T/wa_real")
-"$CHANGE_DYLIB" "$T/wa_link" -add-rpath /opt/machotool_wa_pad >/dev/null \
+"$CHANGE_DYLIB" "$T/wa_link" -add-rpath /opt/machorewrite_wa_pad >/dev/null \
     || bad "install symlink" "change_dylib failed"
 if [ -L "$T/wa_link" ] && [ "$(readlink "$T/wa_link")" = "wa_real" ]; then
     ok "install: symlink is still a symlink, to the same name"
@@ -1119,7 +1119,7 @@ else
     bad "install symlink" "wa_link is no longer a symlink to wa_real"
 fi
 after_ino=$(stat -f %i "$T/wa_real")
-if rpath_present "$T/wa_real" "/opt/machotool_wa_pad"; then
+if rpath_present "$T/wa_real" "/opt/machorewrite_wa_pad"; then
     ok "install: the REAL target got the change (via the symlink)"
 else
     bad "install symlink" "wa_real does not have the new rpath"
@@ -1127,7 +1127,7 @@ fi
 [ "$before_ino" != "$after_ino" ] \
     && ok "install: symlink's real target rewritten via mkstemp+rename (fresh inode = atomicity kept)" \
     || bad "install symlink" "wa_real's inode did not change ($before_ino) -- fell back to in-place write instead of the atomic path"
-xv=$(xattr -p com.machotool.test "$T/wa_real" 2>/dev/null || echo MISSING)
+xv=$(xattr -p com.machorewrite.test "$T/wa_real" 2>/dev/null || echo MISSING)
 case "$xv" in
     present) ok "install: xattr on the real target survived" ;;
     MISSING) bad "install symlink" "xattr dropped from the real target" ;;
@@ -1139,9 +1139,9 @@ esac
 # through its own descriptor, so every name for the inode saw the change, and
 # wa_write_atomic reproduced that by falling back to an in-place write when
 # st_nlink > 1 -- the one path in the old writer that could leave a file half
-# written. machotool does not write FILE at all now: the wrapper writes a temp and
+# written. machorewrite does not write FILE at all now: the wrapper writes a temp and
 # mv's it, which would give this name a fresh inode and leave the sibling on
-# the old content. So mw_prepare (compat/machotool-compat.sh) refuses a
+# the old content. So mw_prepare (compat/machorewrite-compat.sh) refuses a
 # hard-linked FILE up front, with the C tool's flat failure code, rather than
 # silently splitting the group -- the one new behaviour a caller of any of these
 # wrappers can see, and a trade every one of them makes the same way.
@@ -1149,13 +1149,13 @@ build_main "$T/wa_hard1"
 ln "$T/wa_hard1" "$T/wa_hard2"
 wa_hard_sha=$(shasum -a 256 < "$T/wa_hard1")
 wa_hard_rc=0
-"$CHANGE_DYLIB" "$T/wa_hard1" -add-rpath /opt/machotool_wa_hardpad >/dev/null 2>"$T/wa_hard.err" \
+"$CHANGE_DYLIB" "$T/wa_hard1" -add-rpath /opt/machorewrite_wa_hardpad >/dev/null 2>"$T/wa_hard.err" \
     || wa_hard_rc=$?
 [ "$wa_hard_rc" -eq 1 ] && grep -q 'hard link' "$T/wa_hard.err" \
     && ok "hard link: a hard-linked FILE is refused (1), saying why" \
     || bad "hard link" "exit $wa_hard_rc: $(cat "$T/wa_hard.err")"
 if [ "$(shasum -a 256 < "$T/wa_hard1")" = "$wa_hard_sha" ] \
-        && ! rpath_present "$T/wa_hard1" "/opt/machotool_wa_hardpad"; then
+        && ! rpath_present "$T/wa_hard1" "/opt/machorewrite_wa_hardpad"; then
     ok "hard link: ... and neither name was touched"
 else
     bad "hard link" "the refused run modified the file anyway"
@@ -1170,13 +1170,13 @@ fi
 # half-written binary in place).
 build_main "$T/wa_plain"
 before_ino=$(stat -f %i "$T/wa_plain")
-"$CHANGE_DYLIB" "$T/wa_plain" -add-rpath /opt/machotool_wa_plain >/dev/null \
+"$CHANGE_DYLIB" "$T/wa_plain" -add-rpath /opt/machorewrite_wa_plain >/dev/null \
     || bad "install ordinary" "change_dylib failed"
 after_ino=$(stat -f %i "$T/wa_plain")
-if rpath_present "$T/wa_plain" "/opt/machotool_wa_plain" && [ "$before_ino" != "$after_ino" ]; then
+if rpath_present "$T/wa_plain" "/opt/machorewrite_wa_plain" && [ "$before_ino" != "$after_ino" ]; then
     ok "install: ordinary case still goes through mkstemp+rename (new inode)"
 else
-    bad "install ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/machotool_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
+    bad "install ordinary" "expected the change applied via a fresh inode (rpath present=$(rpath_present "$T/wa_plain" "/opt/machorewrite_wa_plain" && echo y || echo n), inode $before_ino -> $after_ino)"
 fi
 
 # --- 15. LC_LAZY_LOAD_DYLIB (legacy -lazy_library) must be an explicit ------
@@ -1611,12 +1611,12 @@ grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
     && ok "bad-rpath-offset: input left completely untouched on refusal" \
     || bad "bad-rpath-offset" "input was modified despite the refusal"
 
-# --- 20. THE MIXED-FAMILY DOUBLE GROW: does two machotool calls cost what one --
+# --- 20. THE MIXED-FAMILY DOUBLE GROW: does two machorewrite calls cost what one --
 #     used to? compat/README.md claimed the rewritten bytes are identical to
 #     the C tools' with ONE known exception (LC_LAZY_LOAD_DYLIB). Review found
 #     a second, structural gap that claim did not cover: a MIXED-FAMILY old
 #     invocation with -grow -- one that touches both the dylib table and the
-#     rpath table -- becomes TWO machotool invocations (compat/translate.sh
+#     rpath table -- becomes TWO machorewrite invocations (compat/translate.sh
 #     emits a `dylib --allow-grow` line and a `rpath --allow-grow` line, in
 #     that order), where compat/change_dylib.c used to build ONE mr_ops
 #     carrying both families and call mr_apply_file ONCE. mg_grow_header
@@ -1628,7 +1628,7 @@ grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
 # compat/change_dylib.c is gone, so "what would one pass have produced" is
 # answered here by a harness that does exactly what that C tool's main() used
 # to: parse everything into one mr_ops and call the shared rewriter (the same
-# mr_apply_file this build's machotool calls) exactly once. That is the fair
+# mr_apply_file this build's machorewrite calls) exactly once. That is the fair
 # baseline, not a stand-in for it -- both routes below run the identical
 # rewrite code, just a different number of times.
 cat > "$T/one_pass.c" <<'EOF'
@@ -1653,7 +1653,7 @@ int main(int argc, char **argv) {
     ops.dylib_change = &ch;
     ops.rpath_append = argv[5];
     ops.allow_grow = 1;
-    /* The disturbs mask cli/machotool.c's dylib verb would hand the same two
+    /* The disturbs mask cli/machorewrite.c's dylib verb would hand the same two
      * operations, read off the one operation table rather than written out
      * here: this helper is standing in for that verb, so it must not invent a
      * second answer. */
@@ -1681,7 +1681,7 @@ cp "$T/g_two" "$T/g_one"
 
 # Route A: the SHIPPED route -- the real compat/change_dylib.sh wrapper,
 # exactly as a caller invokes it. This is not a simulation of what
-# compat/translate.sh emits; it is that emission, run. It is ONE machotool
+# compat/translate.sh emits; it is that emission, run. It is ONE machorewrite
 # command now (`edit`, with `allow-grow` and one statement per family), but
 # still two rewrites of the image, which is what this case is about: each
 # statement is its own pass and so its own chance to grow.
@@ -1711,14 +1711,14 @@ one_grows=$(grep -c "grew header pad" "$T/g_one.out")
     || bad "mixed-family double grow" "expected 1 \"grew header pad\" line from the one-call route, saw $one_grows: $(cat "$T/g_one.out")"
 
 # Growing twice is a SIZE question, not a correctness one -- both results
-# still have to be images machotool itself accepts, and both have to actually
+# still have to be images machorewrite itself accepts, and both have to actually
 # carry what was asked for.
-"$MACHOTOOL" verify "$T/g_two" >/dev/null 2>"$T/g_two_verify.err" \
+"$MACHOREWRITE" verify "$T/g_two" >/dev/null 2>"$T/g_two_verify.err" \
     && ok "mixed-family double grow: the two-pass route's result still verifies" \
-    || bad "mixed-family double grow" "the two-pass route's result failed machotool verify: $(cat "$T/g_two_verify.err")"
-"$MACHOTOOL" verify "$T/g_one" >/dev/null 2>"$T/g_one_verify.err" \
+    || bad "mixed-family double grow" "the two-pass route's result failed machorewrite verify: $(cat "$T/g_two_verify.err")"
+"$MACHOREWRITE" verify "$T/g_one" >/dev/null 2>"$T/g_one_verify.err" \
     && ok "mixed-family double grow: the one-call route's result still verifies" \
-    || bad "mixed-family double grow" "the one-call route's result failed machotool verify: $(cat "$T/g_one_verify.err")"
+    || bad "mixed-family double grow" "the one-call route's result failed machorewrite verify: $(cat "$T/g_one_verify.err")"
 "$T/has_bytes" "$T/g_two" "$GROW_RPATH" && "$T/has_bytes" "$T/g_two" "$GROW_DYLIB" \
     && ok "mixed-family double grow: the two-pass route's result carries both new strings" \
     || bad "mixed-family double grow" "the two-pass route's result is missing the new dylib path and/or rpath"
@@ -1728,8 +1728,8 @@ one_grows=$(grep -c "grew header pad" "$T/g_one.out")
 
 # THE QUESTION ITSELF: does growing twice cost, and produce, what growing
 # once would have? Recorded either way -- neither answer would be a bug in
-# this branch, since nothing machotool offers combines both families into one
-# mr_apply_file call today. `machotool edit` puts them in one INVOCATION, and
+# this branch, since nothing machorewrite offers combines both families into one
+# mr_apply_file call today. `machorewrite edit` puts them in one INVOCATION, and
 # one write, but still runs a pass per statement (src/edit.c says why it does
 # not batch), so both grows still happen. Full byte comparison, not just size: mg_grow_header
 # grows by the EXCESS over the pad IT SEES AT THAT MOMENT, rounded up to a

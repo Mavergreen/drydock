@@ -33,8 +33,8 @@
  * it does and does not catch.
  */
 
-#ifndef MACHOTOOL_ORDINALS_H
-#define MACHOTOOL_ORDINALS_H
+#ifndef MACHOREWRITE_ORDINALS_H
+#define MACHOREWRITE_ORDINALS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -77,7 +77,7 @@ int mo_is_ordinal_lc(uint32_t cmd);
  * cmdsize, making a naive `(char *)lc + offset` point past the command, into
  * whatever follows it (or past the mapped buffer entirely) instead of at a
  * NUL-terminated string. Every reader of one of these names must go through
- * here rather than repeating the check inline: cli/machotool.c's info dump,
+ * here rather than repeating the check inline: cli/machorewrite.c's info dump,
  * change_dylib.c's build_lcs, and mo_map_build below each used to compute
  * this pointer independently, and only one of the three actually checked.
  * Returns NULL for an out-of-bounds offset; the caller decides whether that
@@ -174,4 +174,4 @@ typedef struct {
 int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose,
                  mo_counts *counts);
 
-#endif /* MACHOTOOL_ORDINALS_H */
+#endif /* MACHOREWRITE_ORDINALS_H */

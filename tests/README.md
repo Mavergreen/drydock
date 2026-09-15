@@ -13,10 +13,10 @@ Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding. Also covers `src/fat.c`'s fat-arch validation (both read-side, via `fix_macho`, and write-side) and the install path's symlink / hard-link / ordinary-file handling as a caller of `change_dylib` sees it (a symlinked FILE updates its target and keeps the link; a hard-linked one is refused rather than split) |
 | `chained_fixups` | `patch_macho`'s chained-fixups conversion, against a fixture only a modern linker can produce. `SKIP`s (exit 77) on a host that can't emit chained fixups — 10.9 included — so it's real coverage on a modern host and an honest no-op on the target |
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
-| `cli_test` | `machotool`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements. `rpath -insert`, `segment` and `retag-swift` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `-insert` is only correct if the new search path lands FIRST (an `-append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment` has to rename each section's own copy of the segment name (`machotool info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `retag-swift` has to move the tag bit without disturbing the rest of the word |
-| `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally. Also holds `machotool`'s load-command rewriters (the `dylib`, `rpath`, `load-command` and `segment` statements, and `edit`) to refusing, byte-for-byte unchanged, an image with no section data, and `info` to calling its header pad unknown. The two `grow` cases that stood beside those — an image with no section data, and one whose first section lies past its end, where `fsize - insert` once wrapped into a SIGSEGV — moved into `grow_test` with the verb, as `test_grow_refuses_an_image_with_no_section_data` and `test_grow_refuses_a_section_past_the_image`: the bug is in `mg_grow_header`, and no CLI can force a grow any more |
-| `translate_test` | `compat/translate.sh`, the old-grammar-to-`machotool` translator Task 2's wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every verb/op/KIND the translator can emit against `machotool --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
-| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `machotool` returns `EX_FAIL`, or `EX_REFUSED`, which is already 1; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/machotool.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
+| `cli_test` | `machorewrite`'s own CLI: `--capabilities` (including that its advertised kinds=/ops= match what the parsers actually accept) plus one exemplar op per verb it implements. `rpath -insert`, `segment` and `retag-swift` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `-insert` is only correct if the new search path lands FIRST (an `-append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment` has to rename each section's own copy of the segment name (`machorewrite info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `retag-swift` has to move the tag bit without disturbing the rest of the word |
+| `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally. Also holds `machorewrite`'s load-command rewriters (the `dylib`, `rpath`, `load-command` and `segment` statements, and `edit`) to refusing, byte-for-byte unchanged, an image with no section data, and `info` to calling its header pad unknown. The two `grow` cases that stood beside those — an image with no section data, and one whose first section lies past its end, where `fsize - insert` once wrapped into a SIGSEGV — moved into `grow_test` with the verb, as `test_grow_refuses_an_image_with_no_section_data` and `test_grow_refuses_a_section_past_the_image`: the bug is in `mg_grow_header`, and no CLI can force a grow any more |
+| `translate_test` | `compat/translate.sh`, the old-grammar-to-`machorewrite` translator Task 2's wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every verb/op/KIND the translator can emit against `machorewrite --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
+| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `machorewrite` returns `EX_FAIL`, or `EX_REFUSED`, which is already 1; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/machorewrite.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
 | `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. The retirement plan says it outright: "a wrapper that passes the test suite but breaks a real caller is a failure" |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
@@ -30,12 +30,12 @@ hardware, with their results committed:
   moved, the behaviour must not" shape of change. It compares bytes, exit
   code, stdout **and stderr** — so note that comparing a pre-wrapper build
   against a current one reports a **stderr** difference on every wrapper
-  invocation, because printing the `machotool` equivalent there is the whole
+  invocation, because printing the `machorewrite` equivalent there is the whole
   point of the wrappers. Read its report by category: bytes, exit and stdout
   are the ones that must be clean.
 - **`compat-sweep.sh`** runs every enumerated argument combination of the six
   historical tools BOTH ways -- the old binary, and `compat/translate.sh`'s
-  `machotool` command line(s) -- on the same input, and records what each did in
+  `machorewrite` command line(s) -- on the same input, and records what each did in
   `compat-matrix.tsv`: singles, ordered pairs and ordered triples of every
   flag (1110 combinations for `change_dylib`, 39 for `fix_macho`), plus every
   arity the four flagless tools distinguish, plus hand-picked cases the fixed
@@ -43,7 +43,7 @@ hardware, with their results committed:
   the chained `-rename_seg`). **Point its `<bindir>` at a build of commit
   `91b30b3`** (`compat: refuse chained -rename_seg, and make the matrix
   replayable`), the last commit carrying all six `.c` files: all six are
-  shell wrappers around `machotool` now, so a current build makes the "old
+  shell wrappers around `machorewrite` now, so a current build makes the "old
   side" a wrapper and the comparison close to tautological. (`f500021`
   -- `tests: add the real elision detector, aimed at the case that can elide`
   -- is the last commit carrying the *pre-extraction* originals, from before
@@ -75,9 +75,9 @@ words it quotes. The rename plan's own "What is deliberately NOT renamed"
 section has the reconciled list; treat any `macho9` hit outside it as a real
 miss, not as license to reword a passage until the grep goes quiet.
 
-## `machotool`'s exit codes
+## `machorewrite`'s exit codes
 
-`machotool` uses three exit codes throughout. `verify`, `info` and the
+`machorewrite` uses three exit codes throughout. `verify`, `info` and the
 statement parser's KIND validation always have; a run's rewriting statements
 get theirs from the shared rewrite drivers they lower to (`mr_apply_image`,
 `mv_add_version_min`), which draw this exact same line themselves for
@@ -91,7 +91,7 @@ machine-readably in `--capabilities`' `exitcodes` line:
 | code | meaning |
 |---|---|
 | `0` | success |
-| `1` (`EX_REFUSED`) | `machotool` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or an operation that matched nothing — under `dylib`/`rpath`/`lc`'s `--fatal-warnings`, or an edit script's `fatal-warnings` directive. For `dylib`/`rpath`/`lc` there is nothing to roll back: `mr_apply_file` decides that verdict BEFORE its one write, so a refused run leaves OUT unwritten whether one operation matched or none did (it never writes FILE at all). That used to be true only of an all-miss run, while a run with one matching operation refused having already rewritten FILE. `edit` writes nothing at all when it refuses either, this case included: its single write comes after the last statement and the final verify |
+| `1` (`EX_REFUSED`) | `machorewrite` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or an operation that matched nothing — under `dylib`/`rpath`/`lc`'s `--fatal-warnings`, or an edit script's `fatal-warnings` directive. For `dylib`/`rpath`/`lc` there is nothing to roll back: `mr_apply_file` decides that verdict BEFORE its one write, so a refused run leaves OUT unwritten whether one operation matched or none did (it never writes FILE at all). That used to be true only of an all-miss run, while a run with one matching operation refused having already rewritten FILE. `edit` writes nothing at all when it refuses either, this case included: its single write comes after the last statement and the final verify |
 | `2` (`EX_FAIL`) | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal. ONE EXCEPTION: an allocation failure INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into `1` instead, same as every other reason either one refuses, on everything that reaches either one (`verify`, `edit` and the bare form) — see `src/rewrite.c`'s comment on that fold |
 
 The numbering is deliberately backwards from what first shipped (`0` ok, `1`
@@ -101,8 +101,8 @@ answer, and this repo now follows that precedent instead of contradicting
 it.
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than
-widening a default case is a global rule, not a `machotool`-specific one), so a
-caller that wants to script around "this file just isn't one `machotool` will
+widening a default case is a global rule, not a `machorewrite`-specific one), so a
+caller that wants to script around "this file just isn't one `machorewrite` will
 touch" versus "something is actually broken, investigate or retry" can check
 for `1` specifically instead of scraping stderr text. Any existing caller
 checking only `== 0` or `!= 0` is unaffected by this distinction's addition
@@ -117,7 +117,7 @@ version check) hand back the exit code of the shared rewrite drivers,
 names the sites that reach it, including several reached
 through a helper's own nonzero return rather than a check written out in
 that function -- so their exit codes ARE covered by the table above, exactly
-as `cli/machotool.c`'s own `--capabilities` comment says. What the table's
+as `cli/machorewrite.c`'s own `--capabilities` comment says. What the table's
 prose does not spell out per verb is WHICH of `mr_apply_file`'s many
 considered-refusal cases fired -- that detail is on stderr, not in the exit
 code, same as everywhere else in this table.
@@ -173,7 +173,7 @@ reproducing the failure in new shapes:
 - **Never parse `nm`/`otool` human-readable output as an oracle.** Their
   output format is Apple's to reformat at will, on any OS release, with no
   compatibility promise to a test script parsing it. When a fact about a
-  binary is needed that a stable tool output (`machotool info`, `--capabilities`)
+  binary is needed that a stable tool output (`machorewrite info`, `--capabilities`)
   doesn't already provide, write a tiny throwaway C program that reads the
   Mach-O structure directly (`ordinal_of.c`, `has_lc.c`, `has_bytes.c`,
   `mk2fat_overlap.c`, and others in `change_dylib_test.sh`;
@@ -210,10 +210,10 @@ reproducing the failure in new shapes:
   in place), so **"run the rewritten binary" assertions are 10.9-only.**
   Do not assume this — probe it. `cli_test.sh` establishes whether the
   CURRENT host enforces this by perturbing a copy of a binary that never
-  went near machotool or change_dylib and observing the result (exit 137 means
-  yes) before it ever runs a machotool-modified binary; the "still
+  went near machorewrite or change_dylib and observing the result (exit 137 means
+  yes) before it ever runs a machorewrite-modified binary; the "still
   runs" assertions are gated on that probe, not on a Darwin version check,
-  distinguishing "this host's OS policy" from "machotool broke the binary" —
+  distinguishing "this host's OS policy" from "machorewrite broke the binary" —
   the same symptom (the child doesn't run) would otherwise look identical
   and either mask a real defect or fail a totally healthy build.
 

@@ -1,5 +1,5 @@
 /*
- * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/machotool.c, by
+ * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/machorewrite.c, by
  * src/edit.c's edit scripts (through mr_apply_image), and by the old
  * change_dylib grammar that reaches it through compat/change_dylib.sh.
  * See rewrite.h for the operation set and why this is a library function
@@ -810,12 +810,12 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * AND IT COSTS MORE THAN THAT ON THE COMPAT CHAIN. `disturbed` is what
      * THIS PROCESS declared and did. The chained-fixups conversion this gate was
      * written for happens in a DIFFERENT process -- `patch_macho`, i.e.
-     * `machotool declassify`, which runs no plausibility check of its own --
+     * `machorewrite declassify`, which runs no plausibility check of its own --
      * and the `change_dylib` run that follows it declares only what its own
      * dylib and rpath operations declare. So the three-tool chain no longer
      * re-checks that conversion here unless the later run also grows a
      * header. Where the conversion IS still gated is inside ONE process:
-     * `machotool edit`'s `fixups set classic` declares MREL_BASE_REL and
+     * `machorewrite edit`'s `fixups set classic` declares MREL_BASE_REL and
      * meets src/edit.c's verify. This is a consequence of deriving
      * applicability from a run rather than from an image, and it is recorded
      * rather than repaired because the repair is a product decision: the gate
@@ -902,7 +902,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
 }
 
 /* The verb path's slice callback: the thin rewrite, under the label and with
- * the stdout lines `machotool dylib`/`change_dylib` have always printed for a
+ * the stdout lines `machorewrite dylib`/`change_dylib` have always printed for a
  * fat file. */
 typedef struct {
     const mr_ops *ops;
@@ -1072,18 +1072,18 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * (ops->fatal_unmatched) without re-reading the hit counts itself. */
 static int mr_report_unmatched(const mr_ops *ops, int hit_dylib,
                                 int hit_rpath, int hit_strip) {
-    /* The "machotool: " prefix on the three lines below is DELIBERATE and is
+    /* The "machorewrite: " prefix on the three lines below is DELIBERATE and is
      * the one program-specific string in this file -- every other diagnostic
      * here is program-neutral ("ERROR: ..."), because this library does not
-     * otherwise know which front end is running it. It names machotool
-     * because the report names operations in MACHOTOOL'S grammar ("-replace
-     * X matched nothing" is about a `machotool dylib` operation, not about
+     * otherwise know which front end is running it. It names machorewrite
+     * because the report names operations in MACHOREWRITE'S grammar ("-replace
+     * X matched nothing" is about a `machorewrite dylib` operation, not about
      * whatever argv the caller typed), and every compat/ wrapper's job is to
-     * teach that grammar: each prints the equivalent machotool command line
-     * before running it, so a caller who sees "machotool: ..." on stderr has
-     * just been shown the machotool command it is talking about. That is
+     * teach that grammar: each prints the equivalent machorewrite command line
+     * before running it, so a caller who sees "machorewrite: ..." on stderr has
+     * just been shown the machorewrite command it is talking about. That is
      * also why the prefix had to move when the binary was renamed: it is
-     * the grammar's name, and the grammar is machotool's now. Changing it to
+     * the grammar's name, and the grammar is machorewrite's now. Changing it to
      * argv[0] instead would make the wrapper case name the old C tool and so
      * name a grammar these operations are not written in.
      *
@@ -1093,15 +1093,15 @@ static int mr_report_unmatched(const mr_ops *ops, int hit_dylib,
      * anchor on the prefix itself; the other two match the part after it. */
     int n = 0;
     if (ops->dylib_change && hit_dylib == 0) {
-        fprintf(stderr, "machotool: %s matched nothing\n", ops->dylib_change->old_path);
+        fprintf(stderr, "machorewrite: %s matched nothing\n", ops->dylib_change->old_path);
         n++;
     }
     if (ops->rpath_change && hit_rpath == 0) {
-        fprintf(stderr, "machotool: rpath %s matched nothing\n", ops->rpath_change->old_path);
+        fprintf(stderr, "machorewrite: rpath %s matched nothing\n", ops->rpath_change->old_path);
         n++;
     }
     if (ops->strip_cmd && hit_strip == 0) {
-        fprintf(stderr, "machotool: no load command of kind %s to delete\n",
+        fprintf(stderr, "machorewrite: no load command of kind %s to delete\n",
                 lc_kind_name(*ops->strip_cmd));
         n++;
     }
@@ -1191,7 +1191,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
      * function's business to refuse. (It used to open O_RDWR precisely so that
      * an unwritable file failed before any analysis. Reproducing that refusal
      * for the historical tools, which really did edit their argument, is the
-     * compat wrappers' job now: mw_prepare, compat/machotool-compat.sh.) The fd
+     * compat wrappers' job now: mw_prepare, compat/machorewrite-compat.sh.) The fd
      * is not used for the THIN read either: only to learn the size and to peek
      * the magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
      * only) would refuse it outright. This is the one place that has to tell
@@ -1335,7 +1335,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
      * it has to exist either way -- an identical copy of `path` when no
      * operation matched. wa_write_new creates it afresh from `path`'s mode,
      * owner and xattrs and never touches `path`; WA_IS_INPUT can only happen if
-     * a path changed under us, since cli/machotool.c refuses `out` == `path` up
+     * a path changed under us, since cli/machorewrite.c refuses `out` == `path` up
      * front (see mr_apply_file's PRECONDITION in rewrite.h). `modified`, filled
      * in by the drivers above, no longer decides anything here. */
     if (rc == 0) {

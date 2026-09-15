@@ -8,7 +8,7 @@
  * WHY IT EXISTS. mg_plausible runs only where the run disturbed the
  * base-relative values it checks (src/relations.h's mrel_verify_applies), and
  * a segment rename disturbs none, so a rename skips it. Two suites assert
- * that: tests/cli_test.sh at the `machotool segment` level and
+ * that: tests/cli_test.sh at the `machorewrite segment` level and
  * tests/wrapper_test.sh through the `rename_segment` wrapper. Both need an
  * input the gate rejects -- and each also needs an OPERATION that reaches the
  * gate on this fixture, so that the rename's pass is narrow rather than a
@@ -71,7 +71,7 @@
  * for one -- and the original reason still stands on its own: a scan
  * passes on the target and silently covers NOTHING on the cross/CI runner,
  * where those dylibs live only in the dyld shared cache: the one behavioural
- * change this repo made to machotool would have shipped with no coverage at all
+ * change this repo made to machorewrite would have shipped with no coverage at all
  * anywhere it is actually built. A committed, hand-built fixture asks the same
  * question on every host, which is this suite's rule for exactly this reason
  * (tests/README.md, "A fixture built without -mmacosx-version-min=10.9 asks a

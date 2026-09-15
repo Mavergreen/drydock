@@ -1,5 +1,5 @@
 #!/bin/sh
-# patch_macho -- a /bin/sh wrapper around `machotool IN OUT` with one
+# patch_macho -- a /bin/sh wrapper around `machorewrite IN OUT` with one
 # `fixups set classic` statement on its stdin.
 #
 #   patch_macho input output
@@ -17,13 +17,13 @@
 # that wrapper depends on (an already-converted binary passes through
 # unchanged). Both are covered by tests/known-callers.sh.
 #
-# GRAMMAR. `patch_macho IN OUT` -> `printf 'fixups set classic\n' | machotool
+# GRAMMAR. `patch_macho IN OUT` -> `printf 'fixups set classic\n' | machorewrite
 # IN OUT`. Nothing else; `argc != 3` is a usage error on both sides,
 # reproduced by compat/translate.sh in patch_macho's own words.
 #
 # EXIT CODES -- MAPPED. patch_macho returns a FLAT 1 for everything that goes
-# wrong. machotool tells two kinds of wrong apart (the list below, which
-# cli/machotool.c's cmd_declassify carried under the heading "FIVE DELIBERATE
+# wrong. machorewrite tells two kinds of wrong apart (the list below, which
+# cli/machorewrite.c's cmd_declassify carried under the heading "FIVE DELIBERATE
 # DIVERGENCES FROM patch_macho" until that verb was deleted, and which the
 # `fixups set classic` statement shares because it shares md_declassify):
 # EX_REFUSED
@@ -32,7 +32,7 @@
 # and EX_FAIL (2) for an operational failure. So: ANY nonzero becomes 1. Zero
 # stays zero. EX_REFUSED is already 1 and passes through unchanged -- which
 # is all tests/leaf-tool-crashes.sh sees, checking for exit 1 on a fixture
-# whose refusal reaches machotool as EX_REFUSED. The mapping's real work is
+# whose refusal reaches machorewrite as EX_REFUSED. The mapping's real work is
 # EX_FAIL (2) becoming 1, which tests/wrapper_test.sh checks on an absent IN
 # and on an OUT whose directory cannot be written. The wrapper's OWN refusals
 # -- an unwritable OUT, an OUT carrying other hard links, a failed install --
@@ -51,9 +51,9 @@
 #   * and an existing OUT that is not writable makes it FAIL, even when the
 #     directory is writable.
 #
-# machotool gives OUT the INPUT's mode (wa_write_new copies it),
+# machorewrite gives OUT the INPUT's mode (wa_write_new copies it),
 # always a new inode, and refuses an OUT that is IN outright. So this wrapper
-# does what the other five do -- machotool writes a temp beside the real OUT
+# does what the other five do -- machorewrite writes a temp beside the real OUT
 # (mw_prepare, with `new-ok`, since OUT need not exist yet), and mw_finish
 # installs it with `mv`, atomically, or discards it when the bytes did not
 # change -- with ONE step of its own before the install: the temp is chmod'ed
@@ -77,7 +77,7 @@
 # THE OUT PRE-CHECKS NOW ANSWER BEFORE THE IN DIAGNOSIS, which only shows when
 # IN and OUT are BOTH bad. The C tool ran md_declassify to completion and only
 # then opened OUT, so a bad IN was always what it complained about; these checks
-# have to come before machotool runs, because they decide where machotool writes. So
+# have to come before machorewrite runs, because they decide where machorewrite writes. So
 # `patch_macho notmacho unwritable_out` says `open: Permission denied` where the
 # C tool said `notmacho: not a readable 64-bit Mach-O`, and `patch_macho
 # notmacho adir` says `create output: Is a directory`. Exit 1 either way, on both
@@ -94,7 +94,7 @@
 # STDOUT. Everything md_declassify itself prints is identical on both sides (it
 # is the same function). Two adjustments:
 #
-#   * machotool's trailing "Wrote <path> (N bytes)" line is DROPPED -- it names the
+#   * machorewrite's trailing "Wrote <path> (N bytes)" line is DROPPED -- it names the
 #     temp, and mw_run_to_tmp is what suppresses it, for every wrapper.
 #   * On the CONVERTING path this wrapper prints `Wrote OUT (N bytes)` itself,
 #     with N from OUT's size -- the same format string and the same two values
@@ -106,14 +106,14 @@
 #     docs/PROPOSAL.md's `verify` section exists to rule out.
 #
 # A pass-through is recognized by md_declassify's own "Already patched" line --
-# machotool's stable stdout, the same oracle tests/cli_test.sh asserts against,
+# machorewrite's stable stdout, the same oracle tests/cli_test.sh asserts against,
 # and explicitly not otool/nm text (tests/README.md's second lesson).
 #
-# THAT GREP IS ONE OF FIVE READERS of machotool's emitted text, and the list is
+# THAT GREP IS ONE OF FIVE READERS of machorewrite's emitted text, and the list is
 # in compat/rename_segment.sh's divergence 1, which carries it for all of them.
 # This one did NOT have to move when the wrappers stopped emitting verbs,
 # because the line comes from md_declassify (src/declassify.c) rather than from
-# `machotool declassify`: the statement calls the same function and prints the
+# `machorewrite declassify`: the statement calls the same function and prints the
 # same line on the same stream. Measured, on a converted input and on a fresh
 # one; tests/known-callers.sh's two pass-through assertions are the gate.
 #
@@ -121,7 +121,7 @@
 # is the kind of defect this repo treats as a defect. tests/wrapper_test.sh pins
 # the PASS-THROUGH path's stdout as a negative (no "Wrote " line at all) and the
 # CONVERTING path's as the exact last line `Wrote OUT (N bytes)`, as EXACTLY ONE
-# "Wrote " line -- so neither machotool's temp-naming line nor a doubled one can
+# "Wrote " line -- so neither machorewrite's temp-naming line nor a doubled one can
 # slip through -- and alongside md_declassify's own progress lines. Every mode
 # case is pinned on both paths, and the IN == OUT install on both: the
 # pass-through installing NOTHING (inode stands) and the conversion installing
@@ -137,29 +137,29 @@
 # and which therefore SKIPs on 10.9 -- can run it.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
-MW_DIR=${MACHOTOOL_COMPAT_DIR:-$(dirname "$MW_SELF")}
+MW_DIR=${MACHOREWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
 # Checked here, before sourcing, so a missing support file gets this message
 # rather than the shell's own "No such file or directory" from the `.` below.
 # The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
 # $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
-# one holding machotool -- which is why MACHOTOOL_COMPAT_DIR exists.
-[ -r "$MW_DIR/machotool-compat.sh" ] || {
-    printf '%s: cannot find machotool-compat.sh in %s -- machotool and its two support\n' "$0" "$MW_DIR" >&2
+# one holding machorewrite -- which is why MACHOREWRITE_COMPAT_DIR exists.
+[ -r "$MW_DIR/machorewrite-compat.sh" ] || {
+    printf '%s: cannot find machorewrite-compat.sh in %s -- machorewrite and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
-    printf '%s: SYMLINK directory, so set MACHOTOOL_COMPAT_DIR to where they really are\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set MACHOREWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
     exit 1
 }
-. "$MW_DIR/machotool-compat.sh"
+. "$MW_DIR/machorewrite-compat.sh"
 
 mw_translate patch_macho "$@" || exit $?
 
 mw_out=$2
 
 # AN OUT THAT EXISTS BUT IS NOT A REGULAR FILE, refused here because neither of
-# the two layers below would: machotool writes a temp BESIDE OUT and never looks at
+# the two layers below would: machorewrite writes a temp BESIDE OUT and never looks at
 # OUT itself, and `mv` handed a directory as its destination moves the temp INTO
 # it and reports success -- a run that exits 0 having created
-# `OUT/.OUT.machotool-compat.PID` and nothing the caller asked for. The C tool's
+# `OUT/.OUT.machorewrite-compat.PID` and nothing the caller asked for. The C tool's
 # open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755) refused it with EISDIR, so the
 # directory case gets that exact perror line back; anything else that is neither
 # a regular file nor a directory (a fifo, a device) is not something this
@@ -178,7 +178,7 @@ fi
 # the five wrappers whose argument is a binary to edit. Everything else
 # mw_prepare refuses is shared with them.
 # THIN ONLY, like md_declassify's own mi_open -- and asked of the INPUT, which
-# is $1, not of the output mw_prepare just named. machotool-compat.sh's
+# is $1, not of the output mw_prepare just named. machorewrite-compat.sh's
 # mw_thin_only has the measurement. patch_macho's flat 1 covers it, as it
 # covers everything else that goes wrong here.
 if ! mw_thin_only "$1"; then
@@ -196,7 +196,7 @@ mw_rc=$?
 [ "$mw_rc" -eq 0 ] || exit 1
 
 # THE MODE THE C TOOL WOULD HAVE LEFT, applied to the temp before it is
-# installed: machotool gave it IN's mode, which is neither of the two answers
+# installed: machorewrite gave it IN's mode, which is neither of the two answers
 # open(argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0755) gave.
 if [ -e "$MW_TARGET" ]; then
     # An existing OUT keeps its own mode: open() does not change one on a file
@@ -214,7 +214,7 @@ fi
 if ! chmod "$mw_mode" "$MW_TMPFILE" 2>/dev/null; then
     printf '%s: WARNING: could not chmod %s to %s; installing it with the mode\n' \
         "$0" "$mw_out" "$mw_mode" >&2
-    printf '%s: machotool gave it instead, which is the input file mode\n' "$0" >&2
+    printf '%s: machorewrite gave it instead, which is the input file mode\n' "$0" >&2
 fi
 
 mw_finish || exit 1

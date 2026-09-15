@@ -1,5 +1,5 @@
 #!/bin/sh
-# compat/translate.sh -- turn an OLD-grammar invocation into the machotool
+# compat/translate.sh -- turn an OLD-grammar invocation into the machorewrite
 # command line(s) it is equivalent to, and PRINT them. Nothing here opens,
 # reads, executes or rewrites anything: this file is a pure function from one
 # argv to a list of command lines.
@@ -12,22 +12,22 @@
 # tool's own argv[1..], verbatim.
 #
 # WHY THIS IS NOT A RENAME. docs/PROPOSAL.md rejected `-add_rpath`, bare
-# `-rpath`, `-change` and `-add` as machotool synonyms on purpose, because they
+# `-rpath`, `-change` and `-add` as machorewrite synonyms on purpose, because they
 # "would advertise an interchangeability that does not exist, on exactly the
 # binaries where it does not hold." So every line this file emits is a CLAIM
 # that two spellings mean the same thing, and tests/translate_test.sh asserts
-# each claim's exact text. It lives here, in shell, and NOT inside machotool:
-# machotool must not learn the grammar it deliberately refused (controller ruling
+# each claim's exact text. It lives here, in shell, and NOT inside machorewrite:
+# machorewrite must not learn the grammar it deliberately refused (controller ruling
 # L). Task 2's wrappers source this file, so the translation that was tested is
 # literally the translation that ships.
 #
 # ---- output contract -----------------------------------------------------
 #
 #   * Zero or more COMMANDS on stdout, as `eval`-safe shell text, ONE PER
-#     LINE. A machotool command is always the same shape -- the BARE FORM,
-#     which is the only way machotool modifies a binary:
+#     LINE. A machorewrite command is always the same shape -- the BARE FORM,
+#     which is the only way machorewrite modifies a binary:
 #
-#         printf '<statement>\n<statement>\n' | machotool FILE OUT
+#         printf '<statement>\n<statement>\n' | machorewrite FILE OUT
 #
 #     -- and the only other command this file emits is `mv -f`. Arguments are
 #     single-quoted only when they contain something outside
@@ -38,7 +38,7 @@
 #     where a script has sequence semantics, and this file speaks only the one
 #     that survives.
 #     spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-#   * EVERY COMMAND HERE NAMES AN OUTPUT of its own, because machotool never
+#   * EVERY COMMAND HERE NAMES AN OUTPUT of its own, because machorewrite never
 #     writes the file it is given. Which output depends on who is reading:
 #     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
 #     command writes exactly that and nothing follows it; without it -- the
@@ -48,26 +48,26 @@
 #     mt_out_for and mt_install_line are that fork, in one place.
 #     `patch_macho` is the one tool whose own grammar named an output, so its
 #     teaching form is the command the caller typed -- except when IN and OUT
-#     are the same file, which machotool refuses and which therefore gets the
+#     are the same file, which machorewrite refuses and which therefore gets the
 #     OUT-plus-install treatment like the other five.
-#   * Every tool here but retag_swift_classes emits AT MOST ONE MACHOTOOL
+#   * Every tool here but retag_swift_classes emits AT MOST ONE MACHOREWRITE
 #     COMMAND, however many operations the old invocation asked for: they all
 #     become statements in that one command. (The teaching form's trailing
 #     `mv -f` is not one of them; a wrapper sets MT_OUT, which suppresses it,
 #     and installs the temp itself.) So there is no sequence to run and
-#     nothing to stop part way through -- machotool-compat.sh's mw_run
+#     nothing to stop part way through -- machorewrite-compat.sh's mw_run
 #     evaluates what is printed and returns its exit code.
 #     (retag_swift_classes is variadic over FILES and emits one command per
 #     file, because one command names one FILE and one OUT; its wrapper runs
 #     those itself, because it needs each file's own exit code and stdout.)
 #     The ORDER of the statements matters -- see "ordering" below.
 #   * Exit 0 with ZERO lines means "this old invocation was a no-op on the
-#     file; there is no machotool command to run." (change_dylib accepts
+#     file; there is no machorewrite command to run." (change_dylib accepts
 #     `-grow` with no operations; it prints its header-pad line and changes
 #     nothing.) It is NOT an error, and it is deliberately not translated as
 #     some adjacent command that would do something.
 #   * Exit 2 means NO EQUIVALENT: this argv is one the old tool accepted but
-#     that no machotool command line means the same thing as. Today there is
+#     that no machorewrite command line means the same thing as. Today there is
 #     exactly one -- an unknown TOOL name. (There were two: fix_macho's
 #     chained -rename_seg was the other, until the ruling recorded at
 #     mt_tr_fix_macho's -rename_seg arm made chaining a behaviour to ADOPT
@@ -96,14 +96,14 @@
 # the retired C tools' refusals -- 32 shared by -change/-delete/-reexport, and
 # separately by -add, -insert, -add-rpath, and -change-rpath/-delete-rpath; 16
 # for -strip-lc -- in those tools' own words, which is why they are counted
-# here rather than downstream. machotool once carried the same two numbers as
+# here rather than downstream. machorewrite once carried the same two numbers as
 # MR_MAX_OPS and MR_MAX_STRIP, sizing the verb parsers' fixed arrays; the verbs
 # are gone and so are the caps, an mr_ops now holding at most one operation of
 # each kind (src/rewrite.h). Nothing downstream counts anything, so a cap
 # dropped here would not be caught anywhere else. That is what mt_room does.
 #
 # fix_macho's two caps come here for a second reason as well: its -rename_seg
-# array has NO machotool counterpart at all (a `segment rename` statement is
+# array has NO machorewrite counterpart at all (a `segment rename` statement is
 # one pair, so nothing downstream counts them), and its
 # `changes[32]` / `renames[16]` were the same unbounded fixed-size arrays
 # docs/PROPOSAL.md records smashing the stack in change_dylib -- "Repeated
@@ -117,7 +117,7 @@
 # ---- the grammar mapping -------------------------------------------------
 #
 # Each row gives the STATEMENT an old flag becomes. Whatever an invocation
-# asks for, the statements go into ONE `printf ... | machotool FILE OUT`.
+# asks for, the statements go into ONE `printf ... | machorewrite FILE OUT`.
 #
 #   change_dylib FILE ...       statement
 #     -change O N                 dylib replace O N
@@ -145,7 +145,7 @@
 # ---- ordering, and the one command an old invocation becomes -------------
 #
 # change_dylib and fix_macho each applied EVERY operation in ONE pass over the
-# load-command table, and wrote ONCE. One machotool command is one read, one
+# load-command table, and wrote ONCE. One machorewrite command is one read, one
 # pass per statement over an image held in memory, and one write -- the same
 # shape, so a whole invocation is one command. The order emitted is:
 #
@@ -169,7 +169,7 @@
 #
 # These are behavioural, not expressibility: the translation exists, but the
 # emitted commands do not by themselves reproduce the old observable. Each is
-# documented at its site in cli/machotool.c, and each is a row in
+# documented at its site in cli/machorewrite.c, and each is a row in
 # tests/compat-matrix.tsv.
 #
 #   rename_segment exits 2 when nothing matched; a `segment rename` statement
@@ -196,7 +196,7 @@
 #     because the repo owner ruled them improvements to ADOPT: a longer
 #     replacement path is now rewritten using header pad instead of refused, a
 #     chained -rename_seg now chains, the write-back is atomic, a fat slice
-#     machotool cannot handle refuses the whole file instead of being skipped,
+#     machorewrite cannot handle refuses the whole file instead of being skipped,
 #     and a -change aimed at the dylib's own install name now matches nothing
 #     instead of rewriting LC_ID_DYLIB. compat/README.md's "fix_macho: the
 #     adopted divergences" table states all five with their reasons and the
@@ -258,18 +258,18 @@ mt_qargs() {
 # SEQUENCE. Pasted, `mv -f FILE.new FILE` replaces FILE -- so if FILE is a
 # symlink it becomes a regular file, which is the answer `mv` gives and the
 # one a reader typing this would get. A wrapper does something narrower: it
-# resolves FILE through its symlinks first (mw_resolve, machotool-compat.sh) and
+# resolves FILE through its symlinks first (mw_resolve, machorewrite-compat.sh) and
 # installs onto the target, so the link survives and everything else pointing
 # through it sees the new content. Teaching the resolve step would be teaching
 # the wrapper's implementation rather than the command a human wants.
 #
 # A FILE whose own name begins with `-` and has no directory part (`sub/-d`
 # is unaffected -- its `.new` name starts with `s`) makes FILE.new begin with
-# `-` too, and machotool refuses an OUT spelled that way, naming `./OUT` as the
-# remedy (cli/machotool.c). So mt_new_name gives the teaching form that name
-# directly, keeping the printed machotool line and the `mv -f` line that follows
+# `-` too, and machorewrite refuses an OUT spelled that way, naming `./OUT` as the
+# remedy (cli/machorewrite.c). So mt_new_name gives the teaching form that name
+# directly, keeping the printed machorewrite line and the `mv -f` line that follows
 # it both runnable pasted verbatim; a wrapper never sees this, because
-# MT_OUT is always its own dot-prefixed temp (mw_prepare, machotool-compat.sh).
+# MT_OUT is always its own dot-prefixed temp (mw_prepare, machorewrite-compat.sh).
 mt_new_name() {
     case $1 in
         -*) printf './%s.new' "$1" ;;
@@ -287,8 +287,8 @@ mt_install_line() {
 #
 #   mt_emit FILE OUT        statements on this function's stdin
 #
-# Prints ONE command: `printf FORMAT | machotool FILE OUT`, the bare form, with
-# the statements on stdin. That is the only way machotool modifies a binary, so
+# Prints ONE command: `printf FORMAT | machorewrite FILE OUT`, the bare form, with
+# the statements on stdin. That is the only way machorewrite modifies a binary, so
 # it is the only thing this file emits -- one shape for all six tools, however
 # many statements the old invocation is worth.
 #
@@ -334,14 +334,14 @@ mt_room() {
 MT_MAX_OPS=32
 MT_MAX_STRIP=16
 # fix_macho's own second array, from compat/fix_macho.c's FM_MAX_RENAMES. No
-# shared header has an opinion about segment renames -- machotool never sees more
+# shared header has an opinion about segment renames -- machorewrite never sees more
 # than one at a time -- so this 16 is fix_macho's alone and lives here.
 MT_MAX_RENAMES=16
 
 # change_dylib's -strip-lc vocabulary, from src/lc_kinds.c. This is the OLD
 # tool's table, frozen: it is what change_dylib accepted, and reproducing its
-# refusal is the point. What THIS build of machotool accepts is a separate
-# question, answered by `machotool --capabilities` (kinds=...) -- and
+# refusal is the point. What THIS build of machorewrite accepts is a separate
+# question, answered by `machorewrite --capabilities` (kinds=...) -- and
 # tests/translate_test.sh asserts the two agree rather than assuming it.
 MT_STRIP_KINDS='uuid codesig source-version build-version code-sign-drs'
 
@@ -565,17 +565,17 @@ mt_tr_fix_macho() {
             # counted bytes. A 16-character multibyte NEW segname whose
             # encoding runs longer than 16 bytes passes this check where
             # fix_macho refused it. Both paths still end at fix_macho.sh
-            # exiting 1: machotool's mseg_name_fits (src/segname.c), called from
+            # exiting 1: machorewrite's mseg_name_fits (src/segname.c), called from
             # the `segment rename` statement (src/edit.c), catches the over-length name
             # downstream and returns EX_REFUSED, which fix_macho.sh maps to 1
-            # like every other nonzero machotool exit -- with different text
+            # like every other nonzero machorewrite exit -- with different text
             # than either shell message above. No code change follows from
             # this -- the observable exit code is the same either way, only
             # the wording differs earlier.
             [ "${#3}" -le 16 ] || { mt_die "new segment name longer than 16 bytes: $3"; return 1; }
             # fix_macho's renames[] held 16, and its FM_ROOM refused the 17th
             # in these same words. Nothing downstream counts these -- each
-            # pair becomes its own `segment rename` statement, so machotool
+            # pair becomes its own `segment rename` statement, so machorewrite
             # sees one rename at a time and has no cap of its own to hit.
             # Enforcing it here is the only thing keeping that refusal alive.
             mt_room "$mt_nrenames" "$MT_MAX_RENAMES" -rename_seg || return 1
@@ -652,13 +652,13 @@ mt_tr_patch_macho() {
     # THE ONE TOOL WHOSE GRAMMAR ALREADY NAMED ITS OUTPUT, so the teaching form
     # is the command the caller typed: there is no in-place edit to show an
     # install step for. The exception is IN and OUT being the same file, which
-    # patch_macho allowed and machotool now refuses, as it does for every
+    # patch_macho allowed and machorewrite now refuses, as it does for every
     # rewrite -- so that form gets the same OUT-plus-install treatment
     # the five in-place tools get, and reads as a pasteable equivalent instead
     # of a command that would be refused. Compared AS STRINGS, because that is
     # all this file can do: it opens nothing, so "the same file by another name"
     # (a symlink, a hard link, `./f` for `f`) is not a question it can ask --
-    # machotool answers that one at the write, and the wrapper never asks it at
+    # machorewrite answers that one at the write, and the wrapper never asks it at
     # all, since it always names a temp of its own.
     if [ -z "${MT_OUT:-}" ] && [ "$1" != "$2" ]; then
         mt_emit "$1" "$2" <<'MT_PM_BODY'
@@ -700,9 +700,9 @@ MT_RSC_BODY
     done
 }
 
-# The machotool program word, quoted, with mt_qargs' leading space trimmed.
+# The machorewrite program word, quoted, with mt_qargs' leading space trimmed.
 mt_pre_word() {
-    mt_p="$(mt_qargs "${MACHOTOOL:-machotool}")"
+    mt_p="$(mt_qargs "${MACHOREWRITE:-machorewrite}")"
     printf '%s' "${mt_p# }"
 }
 
@@ -730,7 +730,7 @@ mt_translate() {
         fix_macho)            mt_tr_fix_macho "$@" ;;
         *)
             # Not one of the six. There is deliberately no fallback and no
-            # guess: emitting a plausible-looking machotool line for a tool this
+            # guess: emitting a plausible-looking machorewrite line for a tool this
             # file has never heard of is the one failure mode the plan names
             # outright.
             printf 'translate.sh: no equivalent -- unknown tool %s (expected one of: change_dylib add_version_min patch_macho rename_segment retag_swift_classes fix_macho)\n' "$mt_tool" >&2

@@ -1,14 +1,14 @@
 #!/bin/sh
 # tests/translate_test.sh -- one test per translation, asserting the EXACT
-# text compat/translate.sh emits: a `printf ... | machotool FILE OUT`
+# text compat/translate.sh emits: a `printf ... | machorewrite FILE OUT`
 # pipeline, statements and quoting included, plus the `mv` install line the
 # teaching form ends with.
 #
 #   sh tests/translate_test.sh <bindir>
 #
 # Every line compat/translate.sh prints is a CLAIM that an old-grammar
-# invocation and a machotool one mean the same thing. docs/PROPOSAL.md rejected
-# the old spellings as machotool synonyms on purpose, "because they would
+# invocation and a machorewrite one mean the same thing. docs/PROPOSAL.md rejected
+# the old spellings as machorewrite synonyms on purpose, "because they would
 # advertise an interchangeability that does not exist, on exactly the binaries
 # where it does not hold" -- so each claim gets a test, and the test pins the
 # whole command line, not just that something was printed. A translation that
@@ -16,17 +16,17 @@
 # would still be wrong (an appended LC_LOAD_DYLIB gets the highest library
 # ordinal; an inserted one gets ordinal 1).
 #
-# WHAT THIS DOES NOT DO: it never runs machotool on a file. Whether the emitted
+# WHAT THIS DOES NOT DO: it never runs machorewrite on a file. Whether the emitted
 # commands PRODUCE the same bytes as the old tool is a different question, and
 # tests/compat-sweep.sh answers it over 1200 combinations against real
 # binaries. This test is about the text.
 #
-# The bindir is used for exactly one thing: `machotool --capabilities`. The spec's
+# The bindir is used for exactly one thing: `machorewrite --capabilities`. The spec's
 # "Migration" section says that probe exists so the wrapper and the binary need
 # not move in lockstep, and the last check below is what actually uses it --
 # every verb, op and KIND this translator can emit has to be one this build
 # advertises. Hardcoding that agreement instead of checking it is how the
-# ops=/kinds= lists in cli/machotool.c drifted from their own parsers once already.
+# ops=/kinds= lists in cli/machorewrite.c drifted from their own parsers once already.
 set -u
 
 BIN="${1:?usage: translate_test.sh <bindir>}"
@@ -34,7 +34,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 TR="$ROOT/compat/translate.sh"
 [ -r "$TR" ] || { echo "translate_test: $TR missing" >&2; exit 1; }
-[ -x "$BIN/machotool" ] || { echo "translate_test: $BIN/machotool missing" >&2; exit 1; }
+[ -x "$BIN/machorewrite" ] || { echo "translate_test: $BIN/machorewrite missing" >&2; exit 1; }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/macho-translate-test.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -85,57 +85,57 @@ refuses() {
 # All ten flags its parser accepts, each alone. `-grow` cannot appear alone
 # (see the usage-error section below), so it is asserted with the smallest
 # operation that lets it through.
-ok cd-change    "printf 'dylib replace OLD NEW\n' | machotool f f.new
+ok cd-change    "printf 'dylib replace OLD NEW\n' | machorewrite f f.new
 mv -f f.new f"        -- change_dylib f -change OLD NEW
-ok cd-delete    "printf 'dylib delete P\n' | machotool f f.new
+ok cd-delete    "printf 'dylib delete P\n' | machorewrite f f.new
 mv -f f.new f"               -- change_dylib f -delete P
-ok cd-reexport  "printf 'dylib reexport P\n' | machotool f f.new
+ok cd-reexport  "printf 'dylib reexport P\n' | machorewrite f f.new
 mv -f f.new f"             -- change_dylib f -reexport P
-ok cd-add       "printf 'dylib append P\n' | machotool f f.new
+ok cd-add       "printf 'dylib append P\n' | machorewrite f f.new
 mv -f f.new f"               -- change_dylib f -add P
-ok cd-insert    "printf 'dylib insert P\n' | machotool f f.new
+ok cd-insert    "printf 'dylib insert P\n' | machorewrite f f.new
 mv -f f.new f"               -- change_dylib f -insert P
-ok cd-rchange   "printf 'rpath replace OLD NEW\n' | machotool f f.new
+ok cd-rchange   "printf 'rpath replace OLD NEW\n' | machorewrite f f.new
 mv -f f.new f"        -- change_dylib f -change-rpath OLD NEW
-ok cd-rdelete   "printf 'rpath delete P\n' | machotool f f.new
+ok cd-rdelete   "printf 'rpath delete P\n' | machorewrite f f.new
 mv -f f.new f"               -- change_dylib f -delete-rpath P
-ok cd-radd      "printf 'rpath append P\n' | machotool f f.new
+ok cd-radd      "printf 'rpath append P\n' | machorewrite f f.new
 mv -f f.new f"               -- change_dylib f -add-rpath P
-ok cd-strip     "printf 'load-command delete uuid\n' | machotool f f.new
+ok cd-strip     "printf 'load-command delete uuid\n' | machorewrite f f.new
 mv -f f.new f"               -- change_dylib f -strip-lc uuid
-ok cd-grow      "printf 'allow-grow\ndylib append P\n' | machotool f f.new
+ok cd-grow      "printf 'allow-grow\ndylib append P\n' | machorewrite f f.new
 mv -f f.new f"  -- change_dylib f -grow -add P
 
 # -add is NOT -insert and -insert is NOT -add: an appended LC_LOAD_DYLIB gets
 # the highest library ordinal, an inserted one gets ordinal 1. Asserting the
 # pair together is what would catch a translation that silently downgraded one
 # to the other.
-ok cd-add-vs-insert "printf 'dylib append A\ndylib insert B\n' | machotool f f.new
+ok cd-add-vs-insert "printf 'dylib append A\ndylib insert B\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -add A -insert B
 
 # Every -strip-lc KIND, since the vocabulary is a table and a table can lose a
 # row. These are change_dylib's own five, from src/lc_kinds.c.
-ok cd-kind-uuid     "printf 'load-command delete uuid\n' | machotool f f.new
+ok cd-kind-uuid     "printf 'load-command delete uuid\n' | machorewrite f f.new
 mv -f f.new f"           -- change_dylib f -strip-lc uuid
-ok cd-kind-codesig  "printf 'load-command delete codesig\n' | machotool f f.new
+ok cd-kind-codesig  "printf 'load-command delete codesig\n' | machorewrite f f.new
 mv -f f.new f"        -- change_dylib f -strip-lc codesig
-ok cd-kind-srcver   "printf 'load-command delete source-version\n' | machotool f f.new
+ok cd-kind-srcver   "printf 'load-command delete source-version\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc source-version
-ok cd-kind-buildver "printf 'load-command delete build-version\n' | machotool f f.new
+ok cd-kind-buildver "printf 'load-command delete build-version\n' | machorewrite f f.new
 mv -f f.new f"  -- change_dylib f -strip-lc build-version
-ok cd-kind-drs      "printf 'load-command delete code-sign-drs\n' | machotool f f.new
+ok cd-kind-drs      "printf 'load-command delete code-sign-drs\n' | machorewrite f f.new
 mv -f f.new f"  -- change_dylib f -strip-lc code-sign-drs
 
 # Repeats accumulate into ONE command, in the order typed -- not one command
 # per operation. Order between statements is meaningful to the rewriter.
-ok cd-repeat "printf 'dylib replace A B\ndylib replace C D\n' | machotool f f.new
+ok cd-repeat "printf 'dylib replace A B\ndylib replace C D\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change A B -change C D
-ok cd-strip-repeat "printf 'load-command delete uuid\nload-command delete codesig\n' | machotool f f.new
+ok cd-strip-repeat "printf 'load-command delete uuid\nload-command delete codesig\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -strip-lc codesig
 
 # ---- change_dylib: several operations, still ONE command -----------------
 #
-# Whatever an old invocation asks for, it becomes one `printf ... | machotool
+# Whatever an old invocation asks for, it becomes one `printf ... | machorewrite
 # FILE OUT` with the operations as statements on stdin -- one read, one pass
 # per statement, one write, which is the shape the C tool had and a sequence
 # of commands did not. The teaching form's trailing `mv` is the install step
@@ -144,15 +144,15 @@ mv -f f.new f" -- change_dylib f -strip-lc uuid -strip-lc codesig
 # The order is load-command, then dylib, then rpath: deleting load commands
 # hands header pad back, and the other two consume it. Getting this backwards
 # is how a mixed invocation that used to fit stops fitting.
-ok cd-mixed-2 "printf 'load-command delete uuid\ndylib replace A B\n' | machotool f f.new
+ok cd-mixed-2 "printf 'load-command delete uuid\ndylib replace A B\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B
 
-ok cd-mixed-3 "printf 'load-command delete uuid\ndylib append D\nrpath append R\n' | machotool f f.new
+ok cd-mixed-3 "printf 'load-command delete uuid\ndylib append D\nrpath append R\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -add-rpath R -add D -strip-lc uuid
 
 # The ORDER OF THE FLAGS does not change the order of the statements between
 # families -- only the order within each family's own block.
-ok cd-mixed-order "printf 'load-command delete codesig\nload-command delete uuid\ndylib replace A B\n' | machotool f f.new
+ok cd-mixed-order "printf 'load-command delete codesig\nload-command delete uuid\ndylib replace A B\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
 
 # -grow becomes the `allow-grow` DIRECTIVE, which must precede every
@@ -160,7 +160,7 @@ mv -f f.new f" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
 # replaces, it reaches dylib and rpath and not the load-command deletes:
 # src/edit.c sets ops.allow_grow only for the statements that can outgrow the
 # pad, and deleting load commands can only shrink the table.
-ok cd-grow-mixed "printf 'allow-grow\nload-command delete uuid\ndylib replace A B\nrpath append R\n' | machotool f f.new
+ok cd-grow-mixed "printf 'allow-grow\nload-command delete uuid\ndylib replace A B\nrpath append R\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
 
 # EVERY INSERT IS EMITTED IN REVERSE FLAG ORDER, because each one goes to the
@@ -168,7 +168,7 @@ mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
 # and B at 2, and a sequence reproduces that only by inserting B first. This
 # is the assertion that catches the emission getting it the natural way round.
 # tests/wrapper_test.sh asserts the resulting ordinals on a real binary.
-ok cd-insert-reverse "printf 'load-command delete uuid\ndylib insert B\ndylib insert A\n' | machotool f f.new
+ok cd-insert-reverse "printf 'load-command delete uuid\ndylib insert B\ndylib insert A\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
 # ---- conflicts resolve in the order written -----------------------------
@@ -194,103 +194,103 @@ mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
 # A -delete no longer beats a -change written before it: the rename happens,
 # then the delete finds nothing. Both orders, because only the first moved.
-ok cd-change-then-delete "printf 'dylib replace P Q\ndylib delete P\n' | machotool f f.new
+ok cd-change-then-delete "printf 'dylib replace P Q\ndylib delete P\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -delete P
-ok cd-delete-then-change "printf 'dylib delete P\ndylib replace P Q\n' | machotool f f.new
+ok cd-delete-then-change "printf 'dylib delete P\ndylib replace P Q\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -delete P -change P Q
 
 # A -reexport and a -change on one path both apply, in order.
-ok cd-reexport-then-change "printf 'dylib reexport P\ndylib replace P Q\n' | machotool f f.new
+ok cd-reexport-then-change "printf 'dylib reexport P\ndylib replace P Q\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -reexport P -change P Q
-ok cd-change-then-reexport "printf 'dylib replace P Q\ndylib reexport P\n' | machotool f f.new
+ok cd-change-then-reexport "printf 'dylib replace P Q\ndylib reexport P\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -reexport P
-ok cd-reexport-then-delete "printf 'dylib reexport P\ndylib delete P\n' | machotool f f.new
+ok cd-reexport-then-delete "printf 'dylib reexport P\ndylib delete P\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -reexport P -delete P
 
 # Two -changes naming the same old path: the first renames it, so the second
 # matches nothing. Emitted anyway -- dropping it would be the translator
 # deciding, which is the job it no longer has.
-ok cd-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | machotool f f.new
+ok cd-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -change P Z
-ok fm-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | machotool f f.new
+ok fm-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -change P Q -change P Z
 
 # The rpath spellings, which now read exactly like the dylib ones. They did
 # not before: the single-family form went through a verb with no delete-wins
 # rule while the multi-family form hoisted the delete.
-ok cd-rpath-change-then-delete "printf 'rpath replace X Y\nrpath delete X\n' | machotool f f.new
+ok cd-rpath-change-then-delete "printf 'rpath replace X Y\nrpath delete X\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath X Y -delete-rpath X
-ok cd-rpath-delete-then-change "printf 'rpath delete X\nrpath replace X Y\n' | machotool f f.new
+ok cd-rpath-delete-then-change "printf 'rpath delete X\nrpath replace X Y\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -delete-rpath X -change-rpath X Y
-ok cd-rpath-dup "printf 'rpath replace X Y\nrpath replace X Z\n' | machotool f f.new
+ok cd-rpath-dup "printf 'rpath replace X Y\nrpath replace X Z\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath X Y -change-rpath X Z
 
 # ADDING AN UNRELATED FLAG FROM ANOTHER FAMILY CHANGES NOTHING about how the
 # conflict resolves. On the parent it decided everything, because it decided
 # which code path ran. These four are the same conflicts as above with a
 # -strip-lc in front, and they emit the same statements in the same order.
-ok cd-mf-change-then-delete "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | machotool f f.new
+ok cd-mf-change-then-delete "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -delete P
-ok cd-mf-change-then-reexport "printf 'load-command delete uuid\ndylib replace P Q\ndylib reexport P\n' | machotool f f.new
+ok cd-mf-change-then-reexport "printf 'load-command delete uuid\ndylib replace P Q\ndylib reexport P\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -reexport P
-ok cd-mf-rpath-change-then-delete "printf 'load-command delete uuid\nrpath replace X Y\nrpath delete X\n' | machotool f f.new
+ok cd-mf-rpath-change-then-delete "printf 'load-command delete uuid\nrpath replace X Y\nrpath delete X\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change-rpath X Y -delete-rpath X
 # ... and a -strip-lc written BETWEEN the two conflicting flags still lands
 # first, because a load-command delete hands header pad back and everything
 # else may need the room. Flag order governs the conflict, not the emission
 # of unrelated families.
-ok cd-mf-lc-between "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | machotool f f.new
+ok cd-mf-lc-between "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -strip-lc uuid -delete P
 
 # BOTH FAMILIES CONFLICTING AT ONCE, and the two resolutions do not interact:
 # each family's statements come out in its own flag order.
-ok cd-mf-both-conflict "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | machotool f f.new
+ok cd-mf-both-conflict "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | machorewrite f f.new
 mv -f f.new f" \
     -- change_dylib f -change A Q -delete A -change-rpath X Y -delete-rpath X
 # ... and INTERLEAVING the flags across families changes nothing: each family
 # keeps the relative order of ITS OWN flags, which is what "the order written"
 # means when two families are being written at once.
-ok cd-mf-interleaved "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | machotool f f.new
+ok cd-mf-interleaved "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | machorewrite f f.new
 mv -f f.new f" \
     -- change_dylib f -change A Q -change-rpath X Y -delete A -delete-rpath X
 # A dylib conflict with an unrelated RPATH operation present -- the other half
 # of "an unrelated flag from another family decides nothing", where the flag is
 # a real rewrite rather than a -strip-lc.
-ok cd-mf-dylib-conflict-rpath-op "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\n' | machotool f f.new
+ok cd-mf-dylib-conflict-rpath-op "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change A Q -delete A -change-rpath X Y
 
 # A CHAIN IS JUST A SEQUENCE NOW, and these assertions used to be refusals.
 # `-change a b -change b c` renames the a's to b, then those b's to c. No
 # emission order reproduces what one batch did with it, which is why it was
 # refused while reproduction was the goal; reproduction is not the goal.
-ok cd-chain "printf 'dylib replace a b\ndylib replace b c\n' | machotool f f.new
+ok cd-chain "printf 'dylib replace a b\ndylib replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b c
-ok cd-chain-lc "printf 'load-command delete uuid\ndylib replace a b\ndylib replace b c\n' | machotool f f.new
+ok cd-chain-lc "printf 'load-command delete uuid\ndylib replace a b\ndylib replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b c -strip-lc uuid
-ok cd-chain-3 "printf 'dylib replace a b\ndylib replace b c\ndylib replace c d\n' | machotool f f.new
+ok cd-chain-3 "printf 'dylib replace a b\ndylib replace b c\ndylib replace c d\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b c -change c d
 # A SWAP too: b becomes a, then every a -- including the ones the first
 # statement just made -- becomes b.
-ok cd-swap "printf 'dylib replace a b\ndylib replace b a\n' | machotool f f.new
+ok cd-swap "printf 'dylib replace a b\ndylib replace b a\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b a
 # An rpath SWAP, which returns the rpath to the name it started with.
-ok cd-rpath-swap "printf 'rpath replace a b\nrpath replace b a\n' | machotool f f.new
+ok cd-rpath-swap "printf 'rpath replace a b\nrpath replace b a\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath a b -change-rpath b a
 # The rpath chain, which is the one the re-review found was STILL refused
 # after the previous round.
-ok cd-rpath-chain "printf 'rpath replace a b\nrpath replace b c\n' | machotool f f.new
+ok cd-rpath-chain "printf 'rpath replace a b\nrpath replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath a b -change-rpath b c
-ok cd-rpath-chain-lc "printf 'load-command delete uuid\nrpath replace a b\nrpath replace b c\n' | machotool f f.new
+ok cd-rpath-chain-lc "printf 'load-command delete uuid\nrpath replace a b\nrpath replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change-rpath a b -change-rpath b c
 # ... and fix_macho's -change, on the same rule.
-ok fm-chain "printf 'dylib replace a b\ndylib replace b c\n' | machotool f f.new
+ok fm-chain "printf 'dylib replace a b\ndylib replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -change a b -change b c
-ok fm-chain-lc "printf 'load-command delete build-version\ndylib replace a b\ndylib replace b c\n' | machotool f f.new
+ok fm-chain-lc "printf 'load-command delete build-version\ndylib replace a b\ndylib replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -change a b -change b c -strip_build_version
 
 # install.sh's production line -- the single most important translation in
 # this task, quoted from the plan's Task 0 evidence.
-ok cd-production "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\ndylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib\ndylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib\n' | machotool /tmp/c /tmp/c.new
+ok cd-production "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\ndylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib\ndylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib\n' | machorewrite /tmp/c /tmp/c.new
 mv -f /tmp/c.new /tmp/c" \
     -- change_dylib /tmp/c -strip-lc uuid -strip-lc codesig \
         -change /usr/lib/libSystem.B.dylib @loader_path/../S.dylib \
@@ -298,7 +298,7 @@ mv -f /tmp/c.new /tmp/c" \
         -change /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib
 
 # tests/characterize.sh's line, this repo's own CI equivalence gate.
-ok cd-characterize "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\n' | machotool out out.new
+ok cd-characterize "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\n' | machorewrite out out.new
 mv -f out.new out" \
     -- change_dylib out -strip-lc uuid -strip-lc codesig \
         -change /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
@@ -310,24 +310,24 @@ mv -f out.new out" \
 ok cd-grow-only '' -- change_dylib f -grow -grow
 
 # ---- fix_macho ----------------------------------------------------------
-ok fm-change   "printf 'dylib replace OLD NEW\n' | machotool f f.new
+ok fm-change   "printf 'dylib replace OLD NEW\n' | machorewrite f f.new
 mv -f f.new f"         -- fix_macho f -change OLD NEW
-ok fm-stripbv  "printf 'load-command delete build-version\n' | machotool f f.new
+ok fm-stripbv  "printf 'load-command delete build-version\n' | machorewrite f f.new
 mv -f f.new f"       -- fix_macho f -strip_build_version
 # -rename_seg is accepted by fix_macho's parser and appears NOWHERE in its
 # usage text. Enumerating from the parser is what found it.
-ok fm-rename   "printf 'segment rename __DATA __D2\n' | machotool f f.new
+ok fm-rename   "printf 'segment rename __DATA __D2\n' | machorewrite f f.new
 mv -f f.new f"            -- fix_macho f -rename_seg __DATA __D2
 # One rename statement is one pass, so two renames are two statements in the
 # one command. Each rename is still its own pass, in argv order.
-ok fm-rename-2 "printf 'segment rename __A __B\nsegment rename __C __D\n' | machotool f f.new
+ok fm-rename-2 "printf 'segment rename __A __B\nsegment rename __C __D\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __A __B -rename_seg __C __D
 # All three families, in load-command / dylib / segment order. No allow-grow
 # anywhere: fix_macho has no -grow and never enlarges a header.
-ok fm-all "printf 'load-command delete build-version\ndylib replace A B\nsegment rename __A __B\n' | machotool f f.new
+ok fm-all "printf 'load-command delete build-version\ndylib replace A B\nsegment rename __A __B\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -change A B -strip_build_version -rename_seg __A __B
 # The flag is a boolean, so repeating it is still one load-command delete.
-ok fm-stripbv-twice "printf 'load-command delete build-version\n' | machotool f f.new
+ok fm-stripbv-twice "printf 'load-command delete build-version\n' | machorewrite f f.new
 mv -f f.new f" \
     -- fix_macho f -strip_build_version -strip_build_version
 
@@ -336,16 +336,16 @@ mv -f f.new f" \
 # compat/fix_macho.c still shipped, because a wrapper had to preserve that
 # tool's answer and the two differ: fix_macho gave each segment its FIRST
 # matching pair and never revisited it, so `-rename_seg A B -rename_seg B C`
-# ended at B, while two machotool segment passes chain and end at C. The repo
+# ended at B, while two machorewrite segment passes chain and end at C. The repo
 # owner has since ruled that difference an improvement to ADOPT -- "doing what
 # was asked" -- and the C tool is gone, so there is no longer a second answer
 # to preserve. These now pin the translation, in the same place they used to
 # pin the refusal; compat/translate.sh's -rename_seg arm records the reversal.
-ok fm-chain "printf 'segment rename __DATA __X\nsegment rename __X __Y\n' | machotool f f.new
+ok fm-chain "printf 'segment rename __DATA __X\nsegment rename __X __Y\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
 # A chain of three emits three passes, in argv order -- every link, not just
 # the first (which is where the refusal used to trip).
-ok fm-chain-3 "printf 'segment rename __DATA __P\nsegment rename __P __Q\nsegment rename __Q __R\n' | machotool f f.new
+ok fm-chain-3 "printf 'segment rename __DATA __P\nsegment rename __P __Q\nsegment rename __Q __R\n' | machorewrite f f.new
 mv -f f.new f" \
     -- fix_macho f -rename_seg __DATA __P -rename_seg __P __Q -rename_seg __Q __R
 # The empty string is a legal NEW -- a segname may be all NULs -- and it stays
@@ -355,7 +355,7 @@ mv -f f.new f" \
 # silently dropped), and it is still worth pinning now that the check is gone.
 # mt_quote's '' is also exactly what src/script.c's ms_split reads back as an
 # empty field, so the statement still has four words.
-ok fm-chain-empty "printf 'segment rename __DATA '\\'''\\''\nsegment rename '\\'''\\'' __Y\n' | machotool f f.new
+ok fm-chain-empty "printf 'segment rename __DATA '\\'''\\''\nsegment rename '\\'''\\'' __Y\n' | machorewrite f f.new
 mv -f f.new f" \
     -- fix_macho f -rename_seg __DATA '' -rename_seg '' __Y
 # The three shapes that were never affected by that refusal, and are not
@@ -366,71 +366,71 @@ mv -f f.new f" \
 # chain check that once watched for this shape (and never watched -rename_seg)
 # is gone with the rest of the reproduction machinery. Renames sequence, and
 # always did.
-ok fm-same-old "printf 'segment rename __DATA __A\nsegment rename __DATA __B\n' | machotool f f.new
+ok fm-same-old "printf 'segment rename __DATA __A\nsegment rename __DATA __B\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
-ok fm-new-eq-earlier-old "printf 'segment rename __DATA __B\nsegment rename __TEXT __DATA\n' | machotool f f.new
+ok fm-new-eq-earlier-old "printf 'segment rename __DATA __B\nsegment rename __TEXT __DATA\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __B -rename_seg __TEXT __DATA
-ok fm-independent "printf 'segment rename __DATA __A\nsegment rename __TEXT __B\n' | machotool f f.new
+ok fm-independent "printf 'segment rename __DATA __A\nsegment rename __TEXT __B\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
 
 # ---- the four fixed-arity tools -----------------------------------------
-# machotool never writes its input, so the teaching form names an output of its
+# machorewrite never writes its input, so the teaching form names an output of its
 # own and ends with the install step -- two lines, and both of them pinned:
 # what a reader is shown has to be the complete equivalent of the old in-place
 # edit, not the half of it that rewrites nothing.
-ok avm     "printf 'version-min set 10.9\n' | machotool f f.new
+ok avm     "printf 'version-min set 10.9\n' | machorewrite f f.new
 mv -f f.new f"                               -- add_version_min f
 # MT_OUT is how a wrapper names the temp it is going to install: the command
 # writes exactly that, and the `mv` disappears because the wrapper does the
 # installing itself.
 mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" add_version_min f )
-if [ "$mt_out_got" = "printf 'version-min set 10.9\n' | machotool f /tmp/t.tmp" ]; then
+if [ "$mt_out_got" = "printf 'version-min set 10.9\n' | machorewrite f /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL avm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
 fi
 # patch_macho is the one tool whose grammar always named its own output, so the
 # teaching form is the command the user typed -- there is nothing to install.
-ok pm      "printf 'fixups set classic\n' | machotool in out"        -- patch_macho in out
+ok pm      "printf 'fixups set classic\n' | machorewrite in out"        -- patch_macho in out
 # ... EXCEPT when IN and OUT are the same file, which patch_macho allowed and
-# machotool now refuses. The teaching form has to be a pasteable equivalent of
+# machorewrite now refuses. The teaching form has to be a pasteable equivalent of
 # that in-place conversion, so it names an output of its own and installs it,
 # exactly as the five in-place tools' forms do.
-ok pm-same "printf 'fixups set classic\n' | machotool f f.new
+ok pm-same "printf 'fixups set classic\n' | machorewrite f f.new
 mv -f f.new f"                               -- patch_macho f f
 # MT_OUT is how the wrapper names the temp it installs onto the user's OUT --
 # for both shapes, since the wrapper installs onto OUT either way.
 mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" patch_macho in out )
-if [ "$mt_out_got" = "printf 'fixups set classic\n' | machotool in /tmp/t.tmp" ]; then
+if [ "$mt_out_got" = "printf 'fixups set classic\n' | machorewrite in /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL pm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
 fi
 mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" patch_macho f f )
-if [ "$mt_out_got" = "printf 'fixups set classic\n' | machotool f /tmp/t.tmp" ]; then
+if [ "$mt_out_got" = "printf 'fixups set classic\n' | machorewrite f /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL pm-mt-out-same: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
 fi
-ok rs      "printf 'segment rename __DATA __DATA2\n' | machotool f f.new
+ok rs      "printf 'segment rename __DATA __DATA2\n' | machorewrite f f.new
 mv -f f.new f" -- rename_segment f __DATA __DATA2
-ok rs-16   "printf 'segment rename __DATA 1234567890123456\n' | machotool f f.new
+ok rs-16   "printf 'segment rename __DATA 1234567890123456\n' | machorewrite f f.new
 mv -f f.new f" -- rename_segment f __DATA 1234567890123456
 # retag_swift_classes is variadic over FILES; one command names one FILE and
 # one OUT, so the translation is a loop, one command per file, in argv order.
 # Each file, like add_version_min's, gets its own output and install step.
-ok rsc-1 "printf 'swift-abi set legacy\n' | machotool a a.new
+ok rsc-1 "printf 'swift-abi set legacy\n' | machorewrite a a.new
 mv -f a.new a"                                                    -- retag_swift_classes a
-ok rsc-3 "printf 'swift-abi set legacy\n' | machotool a a.new
+ok rsc-3 "printf 'swift-abi set legacy\n' | machorewrite a a.new
 mv -f a.new a
-printf 'swift-abi set legacy\n' | machotool b b.new
+printf 'swift-abi set legacy\n' | machorewrite b b.new
 mv -f b.new b
-printf 'swift-abi set legacy\n' | machotool c c.new
+printf 'swift-abi set legacy\n' | machorewrite c c.new
 mv -f c.new c" -- retag_swift_classes a b c
 # MT_OUT names a single output for the whole call, so it only makes sense set
 # when retranslating ONE file at a time -- retag_swift_classes.sh's own loop.
 rsc_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" retag_swift_classes a )
-if [ "$rsc_out_got" = "printf 'swift-abi set legacy\n' | machotool a /tmp/t.tmp" ]; then
+if [ "$rsc_out_got" = "printf 'swift-abi set legacy\n' | machorewrite a /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL rsc-mt-out: got %s\n' "$rsc_out_got" >&2; fail=$((fail + 1))
@@ -443,18 +443,18 @@ fi
 # TWO surfaces now, not one: FILE and OUT are ordinary command arguments, and
 # the statements are the `printf` FORMAT -- which printf itself rewrites, so a
 # `%` or a `\` in a path has to arrive doubled.
-ok q-space "printf 'segment rename __DATA __D2\n' | machotool 'a b' 'a b.new'
+ok q-space "printf 'segment rename __DATA __D2\n' | machorewrite 'a b' 'a b.new'
 mv -f 'a b.new' 'a b'"      -- rename_segment 'a b' __DATA __D2
-ok q-quote "printf 'fixups set classic\n' | machotool 'it'\\''s' out"  -- patch_macho "it's" out
-ok q-empty "printf 'segment rename __DATA '\\'''\\''\n' | machotool f f.new
+ok q-quote "printf 'fixups set classic\n' | machorewrite 'it'\\''s' out"  -- patch_macho "it's" out
+ok q-empty "printf 'segment rename __DATA '\\'''\\''\n' | machorewrite f f.new
 mv -f f.new f"            -- rename_segment f __DATA ''
-ok q-percent "printf 'dylib append a%%sb\n' | machotool f f.new
+ok q-percent "printf 'dylib append a%%sb\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -add 'a%sb'
-ok q-backslash "printf 'dylib append '\\''back\\\\slash/f'\\''\n' | machotool f f.new
+ok q-backslash "printf 'dylib append '\\''back\\\\slash/f'\\''\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -add 'back\slash/f'
 
-# ... and RUNNING the emitted pipeline really does hand machotool the path the
-# caller named. `machotool` is shadowed by a function that saves the statement
+# ... and RUNNING the emitted pipeline really does hand machorewrite the path the
+# caller named. `machorewrite` is shadowed by a function that saves the statement
 # it is given on stdin; the statement is then split the way src/script.c's
 # ms_split splits it (whitespace separates, '...' is literal), which is the
 # equivalence compat/translate.sh's quoting section claims. A `%`, a `\` or a
@@ -465,10 +465,10 @@ q_roundtrip() {   # q_roundtrip NAME PATH
     # Defined fresh each time, and removed after, so nothing else in this file
     # can pick it up by accident. It runs in the pipeline's subshell, so the
     # statement comes back through a file rather than through a variable.
-    machotool() { cat > "$T/stmt"; }
+    machorewrite() { cat > "$T/stmt"; }
     rm -f "$T/stmt"
     eval "$q_line"
-    unset -f machotool
+    unset -f machorewrite
     set --; eval "set -- $(cat "$T/stmt")"
     q_got=${3:-}
     if [ "$q_got" = "$q_want" ] && [ "${1:-}" = dylib ] && [ "${2:-}" = append ]; then
@@ -486,20 +486,20 @@ q_roundtrip q-rt-quote     "it's"
 q_roundtrip q-rt-space     'p q'
 q_roundtrip q-rt-empty     ''
 
-# ---- MACHOTOOL names the program word --------------------------------------
-got=$( MACHOTOOL=/opt/bin/machotool /bin/sh "$TR" add_version_min f )
-if [ "$got" = "printf 'version-min set 10.9\n' | /opt/bin/machotool f f.new
+# ---- MACHOREWRITE names the program word --------------------------------------
+got=$( MACHOREWRITE=/opt/bin/machorewrite /bin/sh "$TR" add_version_min f )
+if [ "$got" = "printf 'version-min set 10.9\n' | /opt/bin/machorewrite f f.new
 mv -f f.new f" ]; then
     pass=$((pass + 1))
 else
-    printf 'FAIL machotool-env: got %s\n' "$got" >&2; fail=$((fail + 1))
+    printf 'FAIL machorewrite-env: got %s\n' "$got" >&2; fail=$((fail + 1))
 fi
 
 # ---- refusals: the old tool's own message, verbatim ---------------------
 #
 # Every one of these is a case the OLD tool refused. The translation must
 # refuse identically, print nothing on stdout, and use the ORIGIN wording --
-# for the capacity caps that is a controller ruling, because cli/machotool.c
+# for the capacity caps that is a controller ruling, because cli/machorewrite.c
 # deliberately prints different text there so the new grammar never leaks the
 # old flag spellings.
 CD_USAGE='Usage: change_dylib input [-grow] [-change old new] [-delete path] [-reexport path] [-add path] [-insert path] [-strip-lc name] [-change-rpath old new] [-delete-rpath path] [-add-rpath path] ...'
@@ -534,7 +534,7 @@ refuses cd-bad-kind     1 'unknown -strip-lc kind: nope' -- change_dylib f -stri
 # A -change whose NEW is its OWN old was never a chain, and is unaffected.
 # And a -change whose NEW is its OWN old is not a chain: no OTHER statement
 # rewrites what it produced, so a statement and a batch agree.
-ok cd-self-replace "printf 'load-command delete uuid\ndylib replace a a\ndylib replace c d\n' | machotool f f.new
+ok cd-self-replace "printf 'load-command delete uuid\ndylib replace a a\ndylib replace c d\n' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f -change a a -change c d -strip-lc uuid
 
 refuses fm-usage        1 'Usage: fix_macho <file> [-change old new] [-strip_build_version]' -- fix_macho f
@@ -561,14 +561,14 @@ refuses unknown-tool 2 \
 # ---- capacity caps ------------------------------------------------------
 #
 # Enforced HERE, printing change_dylib's own text, because routing through
-# machotool would print machotool's (which names -append where change_dylib names
-# -add). Both cap sites in cli/machotool.c carry a comment saying exactly that.
+# machorewrite would print machorewrite's (which names -append where change_dylib names
+# -add). Both cap sites in cli/machorewrite.c carry a comment saying exactly that.
 mkcap() { i=0; out=''; while [ $i -lt $2 ]; do out="$out $1"; i=$((i + 1)); done; printf '%s' "$out"; }
 # The same, with no separator: N copies of one statement inside a printf
 # format, which is what the emitted command carries now.
 mkrep() { i=0; out=''; while [ $i -lt $2 ]; do out="$out$1"; i=$((i + 1)); done; printf '%s' "$out"; }
 
-ok cap-strip-16-fits "printf '$(mkrep 'load-command delete uuid\n' 16)' | machotool f f.new
+ok cap-strip-16-fits "printf '$(mkrep 'load-command delete uuid\n' 16)' | machorewrite f f.new
 mv -f f.new f" -- change_dylib f $(mkcap '-strip-lc uuid' 16)
 refuses cap-strip-17 1 'too many -strip-lc (max 16)' -- change_dylib f $(mkcap '-strip-lc uuid' 17)
 refuses cap-add-33   1 'too many -add (max 32)'      -- change_dylib f $(mkcap '-add P' 33)
@@ -583,7 +583,7 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 
 # fix_macho's two caps, which came here when compat/fix_macho.c retired. Its
 # FM_ROOM printed change_dylib's exact wording with fix_macho's flag names in
-# it, so these are that same text. The -rename_seg cap has no machotool
+# it, so these are that same text. The -rename_seg cap has no machorewrite
 # counterpart at all -- a `segment rename` statement is one pair, so nothing
 # downstream would ever count them -- which makes this file the only thing
 # keeping that refusal alive.
@@ -591,7 +591,7 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 # What this pins is the ACCEPTANCE at capacity -- `ok` requires exit 0, and the
 # 33rd is refused just below. A check one too eager would silently halve what a
 # caller can ask for, and would fail here rather than there.
-ok fm-cap-change-32-fits "printf '$(mkrep 'dylib replace A B\n' 32)' | machotool f f.new
+ok fm-cap-change-32-fits "printf '$(mkrep 'dylib replace A B\n' 32)' | machorewrite f f.new
 mv -f f.new f" \
     -- fix_macho f $(mkcap '-change A B' 32)
 refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)
@@ -614,7 +614,7 @@ fi
 
 # ---- the emitted grammar is one this build actually has -----------------
 #
-# `machotool --capabilities` is the machine-readable probe docs/PROPOSAL.md's
+# `machorewrite --capabilities` is the machine-readable probe docs/PROPOSAL.md's
 # "Migration" section says exists so the wrapper and the binary need not move
 # in lockstep. Use it rather than assuming: every STATEMENT this translator can
 # emit must be advertised with the right arity, and every -strip-lc KIND it can
@@ -629,15 +629,15 @@ fi
 # THE KIND VOCABULARY HAS NO ADVERTISEMENT LEFT. `kinds=` was the only place
 # LC_STRIP_KINDS was published, and it lived on the `verb lc` line. So the
 # agreement between MT_STRIP_KINDS and what this build accepts is asserted the
-# only way still open: by handing machotool the statement and reading whether
+# only way still open: by handing machorewrite the statement and reading whether
 # ms_parse knew the name. No fixture is needed -- the parse runs before FILE is
 # opened, so a kind this build knows fails at the absent file ("cannot open or
 # read") and one it does not fails at the parse ("unknown kind"), and the two
 # are distinguishable without a Mach-O anywhere.
-"$BIN/machotool" --capabilities > "$T/caps" 2>/dev/null
+"$BIN/machorewrite" --capabilities > "$T/caps" 2>/dev/null
 kindcheck() {   # kindcheck <kind> -- must be one ms_parse knows
     if printf 'load-command delete %s\n' "$1" \
-        | "$BIN/machotool" "$T/no-such-fixture" "$T/no-such-out" 2>&1 \
+        | "$BIN/machorewrite" "$T/no-such-fixture" "$T/no-such-out" 2>&1 \
         | grep -q "unknown kind"; then
         printf 'FAIL caps-kind-%s: this build does not accept it in a load-command delete\n' "$1" >&2
         fail=$((fail + 1))
@@ -654,7 +654,7 @@ for mt_k in $mt_kinds; do kindcheck "$mt_k"; done
 # The control, without which the loop above would pass against a parser that
 # accepted every name: a kind that is in no table must still be refused.
 if printf 'load-command delete not-a-real-kind\n' \
-    | "$BIN/machotool" "$T/no-such-fixture" "$T/no-such-out" 2>&1 \
+    | "$BIN/machorewrite" "$T/no-such-fixture" "$T/no-such-out" 2>&1 \
     | grep -q "unknown kind"; then
     pass=$((pass + 1))
 else
@@ -663,7 +663,7 @@ else
 fi
 
 # Every STATEMENT this translator can put in an edit script, with its arity.
-# A statement machotool does not know is a script that fails to parse,
+# A statement machorewrite does not know is a script that fails to parse,
 # which is a worse failure than a verb that does not exist: it happens after
 # the wrapper has already told the caller what it was about to run.
 stmtcheck() {   # stmtcheck <kind> <op> <nargs>
@@ -698,7 +698,7 @@ stmtcheck segment rename 2
 # somebody's machine.
 if [ -x /bin/ksh ]; then
     got=$( /bin/ksh "$TR" change_dylib f -strip-lc uuid -change A B -add-rpath R 2>&1 )
-    want="printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | machotool f f.new
+    want="printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | machorewrite f f.new
 mv -f f.new f"
     if [ "$got" = "$want" ]; then
         pass=$((pass + 1))
