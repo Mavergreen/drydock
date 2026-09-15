@@ -548,7 +548,7 @@ static uint32_t mr_change_growth_bytes(const mi_image *im, const mr_ops *ops) {
  * hit_dylib/hit_rpath/hit_strip: caller-owned per-operation hit counts
  * (mr_apply_file owns and zeroes them once), ADDED to here -- never
  * assigned -- so a fat file's multiple slices (mr_process_fat calls this
- * once per slice, sharing one set of arrays) accumulate across all of them;
+ * once per slice, sharing one set of counters) accumulate across all of them;
  * an operation that matched in one slice and not another has matched.
  * Passed straight through to mr_build_lcs, which does the actual counting.
  *
@@ -741,7 +741,7 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
          * deliberately: this walks the SAME load commands the call above
          * already counted (the grow moved offsets elsewhere in the image,
          * not which command matches which operation), so passing the real
-         * arrays a second time would double-count every hit into a false
+         * counters a second time would double-count every hit into a false
          * "matched twice" that this operation only did once. */
         free(new_lcs);
         new_lcs = calloc(1, first_sect_off + add_bytes + 64);
@@ -980,7 +980,7 @@ static void mr_fat_placed(const mfat_arch *a, uint32_t index,
  * alignment. That is what keeps an unmodified multi-arch binary's on-disk
  * shape untouched while still supporting the resize -grow needs.
  *
- * hit_dylib/hit_rpath/hit_strip: the SAME three caller-owned arrays are
+ * hit_dylib/hit_rpath/hit_strip: the SAME three caller-owned counters are
  * passed to every slice's mr_process_thin call, so hits accumulate ACROSS
  * slices rather than being reported per slice -- an operation that matched
  * in one fat slice and not another has matched, and a per-slice report would

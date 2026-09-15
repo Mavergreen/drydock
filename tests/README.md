@@ -77,10 +77,10 @@ miss, not as license to reword a passage until the grep goes quiet.
 
 ## `machotool`'s exit codes
 
-`machotool` uses three exit codes throughout. `verify`, `info`, `minos`
-and `lc`'s KIND validation always have; `dylib`, `rpath`, `lc` and `minos`
-get theirs from the shared rewrite drivers they call into (`mr_apply_file`,
-`mv_add_version_min`), which now draw this exact same line themselves for
+`machotool` uses three exit codes throughout. `verify`, `info` and the
+statement parser's KIND validation always have; a run's rewriting statements
+get theirs from the shared rewrite drivers they lower to (`mr_apply_image`,
+`mv_add_version_min`), which draw this exact same line themselves for
 EVERY considered refusal they can reach -- not only the one `--fatal-
 warnings` adds ("an operation matched nothing"), but every refusal those
 two functions already had (bad magic, no room to grow, and the rest of

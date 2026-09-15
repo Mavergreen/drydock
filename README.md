@@ -109,10 +109,9 @@ path that is too long is an error here and a non-event with Apple's tool.
 
 ## machotool never writes its input
 
-Every rewriting verb — `dylib`, `rpath`, `lc`, `segment`, `minos`,
-`retag-swift`, `declassify`, `grow`, `edit` — takes `FILE OUT`: `FILE` is
-opened read-only and never touched, and the result goes to `OUT`, the
-positional right after it. An `OUT` that names `FILE` — the same path, a
+`machotool FILE OUT` takes its statements on stdin, and it is the only way to
+modify a binary: `FILE` is opened read-only and never touched, and the result
+goes to `OUT`. (`verify FILE` and `info FILE` are read-only and take no `OUT`.) An `OUT` that names `FILE` — the same path, a
 symlink to it, or a hard link to it — is refused before any work is done.
 `machotool --capabilities`' `output positional=2 never-writes-input` line tells
 a caller to expect this shape rather than assume it.
@@ -294,24 +293,25 @@ rpath         append    PATH
 rpath         insert    PATH
 ```
 
-The statements mirror `machotool`'s other rewriting verbs, most spelled as that
-verb with its `FILE OUT` dropped — `machotool dylib FILE OUT -replace A B` is the same edit
-as the line `dylib replace A B`. Four are renamed: `lc` is `load-command`,
-`minos` is `version-min`, `retag-swift` is `swift-abi`, and `declassify` is
-`fixups`. One rewriting verb has no statement at all: `grow FILE OUT N` (enlarge
-the header pad by an exact byte count) is not expressible as a line here —
-`allow-grow`, below, is the directive that lets a `dylib`, `rpath` or
-`version-min set` statement grow the pad on its own as a side effect, which
-is a different thing from naming a byte count directly.
+These statements are the whole mutating surface. `machotool` used to carry a
+second spelling of them — a CLI verb per operation, `machotool dylib FILE OUT
+-replace A B` beside the line `dylib replace A B` — and the two had different
+semantics: a verb applied all its operations in one pass against the original
+image, while statements apply in sequence, each seeing what the one before
+left. Maintaining both is what the verbs cost, so they are gone.
+
+`grow` went with them. It enlarged the header pad by an exact byte count, which
+no statement expresses; `allow-grow`, below, is the directive that lets a
+`dylib`, `rpath` or `version-min set` statement grow the pad as a side effect,
+which is a different thing from naming a count.
 
 There is one more line, `target 10.9`, which is neither of those: see "The
 `target` statement", below.
 
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
-`dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal
-2, the reverse of `machotool dylib FILE OUT -insert A -insert B`, which gives A then
-B. `rpath insert` works the same way, so dyld searches B before A.
+`dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal 2.
+`rpath insert` works the same way, so dyld searches B before A.
 
 ### Directives
 
@@ -471,7 +471,7 @@ machotool edit "$REAL" "$T" claude.edits
 - **`MACHO_NO_VERIFY` changes nothing about an `edit` run.** The check `edit`
   runs after the *last* statement, before the single write, has never consulted
   it and still does not. A `dylib`/`rpath`/`load-command` statement also runs
-  the same per-step plausibility check `machotool dylib`/`rpath`/`lc` run (see
+  the same per-step plausibility check the shared rewriter runs (see
   "Prove it or refuse" above); that per-step check is the one place in the
   tools that reads the variable, and it now applies only to a step that grew
   the header — which `mg_grow_header` has already checked, unconditionally, on

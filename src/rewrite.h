@@ -23,7 +23,7 @@
 typedef struct {
     const char *old_path;
     const char *new_path;
-    int reexport;                /* always 0 in mr_ops' rpath arrays */
+    int reexport;                /* always 0 for an rpath change */
 } mr_change;
 
 /* What a rewrite's ordinal renumbering did, handed back so a front-end can
