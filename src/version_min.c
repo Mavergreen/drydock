@@ -47,9 +47,9 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
     return 0;   /* nothing here ever needs to stop the walk early */
 }
 
-/* cli/machotool.c's cmd_minos forwards this function's return value verbatim,
+/* This function's return value is forwarded verbatim by whatever calls it,
  * passing through its own allow_grow flag, the same arrangement mr_apply_file
- * has with dylib/rpath/lc -- so every return below is MR_REFUSED or MR_FAIL,
+ * has with its own callers -- so every return below is MR_REFUSED or MR_FAIL,
  * the same two codes and the same dividing line rewrite.h's comment on the
  * MR_REFUSED/MR_FAIL #defines draws: MR_FAIL for this function's own
  * open/fstat, for mi_open's own I/O (MI_IO_ERROR, below) and for

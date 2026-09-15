@@ -8,11 +8,12 @@
  * TLV handling). This appends the LC_VERSION_MIN_MACOSX that 10.9 expects.
  *
  * It was compat/add_version_min.c's whole main(). It lives here so that
- * cli/machotool.c's `minos` verb can do the work in-process instead of forking
+ * a machotool run can do the work in-process instead of forking
  * and exec'ing add_version_min -- the same cycle mr_apply_file (src/rewrite.h)
- * breaks for `dylib`/`rpath`/`lc`. That is also what let add_version_min
- * become compat/add_version_min.sh, a /bin/sh wrapper that runs `machotool minos
- * FILE OUT 10.9` and installs OUT over FILE itself: the old name and the verb
+ * breaks for the load-command rewrites. That is also what let add_version_min
+ * become compat/add_version_min.sh, a /bin/sh wrapper that pipes
+ * `version-min set 10.9` into `machotool FILE OUT` and installs OUT over FILE
+ * itself: the old name and the statement
  * print exactly the same thing, because there is only one implementation left
  * to print it.
  */

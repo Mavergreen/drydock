@@ -208,7 +208,7 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size) {
          * own independent open, read of the whole file, or the malloc it
          * reads into will succeed too -- any of those, or an actual TOCTOU
          * race, land here. MSWIFT_ERROR's contract (swift_retag.h) is
-         * "already reported", which cmd_retag_swift relies on to stay
+         * "already reported", which its callers rely on to stay
          * silent for this code -- so, unlike MSWIFT_NOT_MACHO just below,
          * this prints before returning. */
         fprintf(stderr, "%s: cannot open or read\n", path);
@@ -238,7 +238,7 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size) {
      * is the answer, so it has to exist either way. wa_write_new creates it
      * afresh from `path`'s mode, owner and xattrs and never touches `path`. */
     int wr = wa_write_new(path, out, buf, fsize);
-    if (wr != 0) { free(buf); return MSWIFT_ERROR; }   /* WA_IS_INPUT: checked earlier by cmd_retag_swift */
+    if (wr != 0) { free(buf); return MSWIFT_ERROR; }   /* WA_IS_INPUT: the caller checked it earlier */
     free(buf);
     *out_size = fsize;
     return changed;

@@ -112,7 +112,7 @@ static const char *me_lc(char out[16], uint32_t cmd) {
  *
  * "existing" in place of "surviving" when nothing was removed. An inserted
  * command is named LC_LOAD_DYLIB because that is the one kind the rewrite
- * emits for an insert (rewrite.h, mr_ops' dylib_inserts). */
+ * emits for an insert (rewrite.h, mr_ops' dylib_insert). */
 static void me_log_renumbering(FILE *log, const mr_renumbering *r) {
     char k[16], c1[32], c2[32], c3[32], c4[32];
     int removed = 0, moved = 0;
@@ -249,25 +249,25 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     switch (st->kind) {
     case MS_LOAD_COMMAND: {
         /* ms_parse has already refused a KIND outside LC_STRIP_KINDS; this
-         * is the same lookup, as cmd_lc makes it. */
+         * is the same lookup the deleted `lc` verb made. */
         uint32_t cmd = 0;
         if (lc_kind_by_name(st->a, &cmd) != 0) break;
-        ops.strip_cmds = &cmd;
-        ops.n_strip_cmds = 1;
+        ops.strip_cmd = &cmd;
         return me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
     }
 
     case MS_SEGMENT: {
-        /* The same pre-check cmd_segment makes: a segname field is 16 bytes,
+        /* The same pre-check the deleted `segment` verb made: a segname
+         * field is 16 bytes,
          * and mseg_rename_lc would truncate a longer name silently. */
         if (!mseg_name_fits(st->b)) {
             me_say(log, "machotool edit: new segment name '%s' is longer than the %d bytes "
                         "a segname field holds\n", st->b, MSEG_NAME_MAX);
             return MR_REFUSED;
         }
-        /* A rename has no hit array for mr_unmatched_verdict to read; its
-         * match count comes back through segment_renamed, as it does for
-         * cmd_segment, and is summed across the slices that run this
+        /* A rename has no hit count for mr_unmatched_verdict to read; its
+         * match count comes back through segment_renamed, as it did for
+         * that verb, and is summed across the slices that run this
          * statement, the way mr_hits is. Zero in every one of them is this
          * statement's miss, judged in the last selected slice: reported on
          * stderr in the shape of the other "matched nothing" lines, and a
@@ -288,10 +288,10 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
 
     case MS_DYLIB:
     case MS_RPATH: {
-        /* mr_change's own encoding (rewrite.h), the one cmd_dylib_or_rpath
-         * also produces: new_path NULL deletes, "" with reexport promotes. */
+        /* mr_change's own encoding (rewrite.h), the one the deleted
+         * dylib/rpath verbs also produced: new_path NULL deletes, "" with
+         * reexport promotes. */
         int rpath = (st->kind == MS_RPATH);
-        const char *const *one = &st->a;
         switch (st->op) {
         case MS_REPLACE:  change.old_path = st->a; change.new_path = st->b; break;
         case MS_DELETE:   change.old_path = st->a; change.new_path = NULL;  break;
@@ -299,18 +299,18 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
                           change.old_path = st->a; change.new_path = "";
                           change.reexport = 1; break;
         case MS_APPEND:
-            if (rpath) { ops.rpath_appends = one; ops.n_rpath_appends = 1; }
-            else       { ops.dylib_appends = one; ops.n_dylib_appends = 1; }
+            if (rpath) ops.rpath_append = st->a;
+            else       ops.dylib_append = st->a;
             break;
         case MS_INSERT:
-            if (rpath) { ops.rpath_inserts = one; ops.n_rpath_inserts = 1; }
-            else       { ops.dylib_inserts = one; ops.n_dylib_inserts = 1; }
+            if (rpath) ops.rpath_insert = st->a;
+            else       ops.dylib_insert = st->a;
             break;
         default: goto unknown;
         }
         if (change.old_path) {
-            if (rpath) { ops.rpath_changes = &change; ops.n_rpath_changes = 1; }
-            else       { ops.dylib_changes = &change; ops.n_dylib_changes = 1; }
+            if (rpath) ops.rpath_change = &change;
+            else       ops.dylib_change = &change;
         }
         /* allow-grow reaches only the statements that can outgrow the header
          * pad. Setting it on a segment rename or a load-command delete would

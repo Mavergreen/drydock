@@ -1000,7 +1000,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * section file ranges). Everything from it to the end of the image moves
      * up by `grow`, and past the end that length, fsize - insert, wraps: a
      * 256-byte image whose one section claimed offset 0x7000 died of SIGSEGV
-     * (tests/leaf-tool-crashes.sh). */
+     * (tests/grow_test.c's test_grow_refuses_a_section_past_the_image). */
     if (insert > fsize) {
         fprintf(stderr, "macho_grow: the first section's file offset (%u) lies past the end "
                         "of the image (%zu bytes); refusing to grow it\n", insert, fsize);

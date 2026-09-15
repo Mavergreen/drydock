@@ -5,14 +5,15 @@
  * repeats.
  *
  * This is compat/rename_segment.c's rs_rename_lc, lifted out of that tool so
- * it is a library function rather than one program's static. cli/machotool.c's
- * `segment` verb and src/edit.c's `segment rename` statement are its only C
- * front-ends, both through src/rewrite.h's mr_ops; the old grammar,
+ * it is a library function rather than one program's static. src/edit.c's
+ * `segment rename` statement is its only C
+ * front-end, through src/rewrite.h's mr_ops -- cli/machotool.c's `segment`
+ * verb was the other until the verbs were deleted; the old grammar,
  * `rename_segment binary OLDNAME NEWNAME`, reaches this same code through
  * compat/rename_segment.sh, the /bin/sh wrapper that replaced
  * compat/rename_segment.c. That wrapper is what still reproduces the old
  * tool's observables -- thin only, exit 2 when nothing matched, and one
- * "%s: renamed %d segment(s) %s -> %s" line -- where the verb routes the
+ * "%s: renamed %d segment(s) %s -> %s" line -- where the statement routes the
  * rename through mr_apply_file (src/rewrite.h) and so gets fat containers and
  * an atomic write-back for free.
  *

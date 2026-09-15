@@ -3,7 +3,7 @@
  * down over it, zero the freed tail bytes (they become header pad), and fix
  * up ncmds/sizeofcmds.
  *
- * A FIXTURE BUILDER, for the tests that need a binary machotool minos (and
+ * A FIXTURE BUILDER, for the tests that need a binary `version-min set 10.9` (and
  * add_version_min) has something to do to. A fixture linked with
  * -mmacosx-version-min=10.9 by a 10.9 linker already CARRIES the one load
  * command those tools add, so without this a "it added the command"

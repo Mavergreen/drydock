@@ -24,9 +24,10 @@
 # mw_prepare, retranslate naming the temp, run, mw_finish -- just once per
 # argument instead of once for the whole invocation.
 #
-# EXIT CODES -- MAPPED, per cli/machotool.c's cmd_retag_swift ("ONE DELIBERATE
-# DIVERGENCE FROM retag_swift_classes"). machotool's own scheme is 0 ok, 1
-# refused, 2 error (cli/machotool.c's top-of-file comment):
+# EXIT CODES -- MAPPED, per the "ONE DELIBERATE DIVERGENCE FROM
+# retag_swift_classes" that cli/machotool.c's cmd_retag_swift named until that
+# verb was deleted. machotool's own scheme is 0 ok, 1 refused, 2 error
+# (cli/machotool.c's top-of-file comment):
 #
 #   machotool 1 (EX_REFUSED)  -> SKIPPED, silently, and the loop keeps going.
 #       This is MSWIFT_NOT_MACHO and nothing else. retag_swift_classes treated

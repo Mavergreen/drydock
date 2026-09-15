@@ -24,13 +24,13 @@
 # both refused before any I/O, by compat/translate.sh, in rename_segment's own
 # words.
 #
-# cli/machotool.c's cmd_segment lists FIVE DELIBERATE DIVERGENCES a wrapper has
-# to account for, plus a note on a sixth that used to be on that list and no
-# longer is (mg_plausible, below). They are the `segment rename` statement's
-# divergences too -- both reach the rename through mr_apply_file. The first of
-# the five -- that the rewrite reads FILE and writes OUT rather than rewriting
-# FILE -- is closed by "the in-place edit" at the end of this header; the rest
-# are numbered below.
+# FIVE DELIBERATE DIVERGENCES a wrapper has to account for -- the list
+# cli/machotool.c's cmd_segment carried until that verb was deleted -- plus a
+# note on a sixth that used to be on it and no longer is (mg_plausible, below).
+# They are the `segment rename` statement's divergences: the statement reaches
+# the rename through the same code. The first of the five -- that the rewrite
+# reads FILE and writes OUT rather than rewriting FILE -- is closed by "the
+# in-place edit" at the end of this header; the rest are numbered below.
 #
 #   1. EXIT 2 WHEN NOTHING MATCHED, and 2. THE ONE-LINE MESSAGE. Both need the
 #      same number: how many LC_SEGMENT_64s the rename actually matched.
@@ -75,7 +75,8 @@
 #      matches with strncmp over the 16-byte segname field, so an OLD LONGER
 #      than 16 bytes whose first 16 match is a match the field-splitting count
 #      missed, and a segname CONTAINING WHITESPACE (legal, and producible with
-#      `machotool segment f out __TEXT 'A B'`) split across awk fields and missed too.
+#      a `segment rename __TEXT 'A B'` statement, ms_split quoting the name)
+#      split across awk fields and missed too.
 #      Both made this wrapper exit 2, leaving the file untouched, where the C
 #      tool renamed and exited 0. tests/wrapper_test.sh pins both.
 #
@@ -110,8 +111,8 @@
 #      tests/differential.sh's corpus that carries one:
 #
 #        compat/rename_segment.c (pre-wrapper)  renamed it, exit 0
-#        machotool segment                         refuses, exit 1
-#        machotool lc -delete uuid                 refuses too, with the SAME message
+#        a `segment rename` statement           refuses, exit 1
+#        a `load-command delete` statement      refuses too, with the SAME message
 #        change_dylib (pre-wrapper)             refuses too, with the SAME message
 #
 #      The last two lines are the point: this is NOT rename-specific and NOT

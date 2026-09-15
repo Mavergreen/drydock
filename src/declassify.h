@@ -6,10 +6,11 @@
  * 2021-and-later toolchain produced can be loaded on 10.9 at all.
  *
  * This is compat/patch_macho.c's whole conversion, lifted out of that tool's
- * main() so it is a library function rather than a program. cli/machotool.c's
- * `declassify` verb and src/edit.c's `fixups set classic` statement are its
- * only C front-ends (the latter through md_declassify_buf, below, the same
- * conversion on an image already in memory); the old grammar,
+ * main() so it is a library function rather than a program. src/edit.c's
+ * `fixups set classic` statement is its only C front-end (through
+ * md_declassify_buf, below, the same conversion on an image already in
+ * memory) -- cli/machotool.c's `declassify` verb was the other until the
+ * verbs were deleted; the old grammar,
  * `patch_macho IN OUT`, reaches this same code through compat/patch_macho.sh,
  * the /bin/sh wrapper that replaced compat/patch_macho.c. That wrapper is
  * what still reproduces the old tool's observables -- exit 1 for everything
@@ -74,8 +75,8 @@
                                 * allocation this conversion could not make
                                 * -- not a judgement about the input; already
                                 * reported. A caller that distinguishes
-                                * refusal from failure (the `declassify` verb
-                                * does) must NOT report this as a refusal */
+                                * refusal from failure (this repo's exit
+                                * codes do) must NOT report this as a refusal */
 
 /* The most load commands one conversion strips: the size of its removal
  * table (see LIMITS, below, and src/declassify.c's md_collect_ctx for why 16),

@@ -347,26 +347,34 @@ else
 fi
 
 # --- 7. a path both -change'd and -delete'd in one invocation ----------------
-# Regression test for a code review finding: build_lcs used to decide
-# deletion by "the FIRST `changes[]` entry matching this path has new_path ==
-# NULL", while the ordinal map (mo_map_build, via ord_is_deleted) decided by
-# "ANY entry matching this path has new_path == NULL". Naming libspare in both
-# a -change and a -delete made the two disagree -- the load command survived
-# (renamed) while the map marked it gone -- and every ordinal after it in the
-# binary silently shifted by one. The tool exited 0 and wrote a binary dyld
-# refused to load ("Symbol not found: dyld_stub_binder").
+# THE ONE DELIBERATE BEHAVIOUR CHANGE OF THE script-is-the-only-interface
+# design, asserted in its new meaning.
 #
-# Chosen behaviour: -delete wins, unconditionally, regardless of where it
-# falls relative to a conflicting -change or -reexport. Refusing outright
-# would also close the disagreement, but "delete wins" is what falls out of
-# unifying on ord_is_deleted's ANY-match semantics (the fix build_lcs and
-# mo_map_build now share), needs no new argument-parsing validation, and
-# matches this tool's existing stance that -delete is the more definitive of
-# the two operations. The point of the test is not which policy was chosen --
-# it's that build_lcs and the ordinal map now agree, so the result is a
-# binary that actually runs.
+# This was a regression test for a code review finding: build_lcs used to
+# decide deletion by "the FIRST `changes[]` entry matching this path has
+# new_path == NULL", while the ordinal map (mo_map_build, via ord_is_deleted)
+# decided by "ANY entry matching this path has new_path == NULL". Naming
+# libspare in both a -change and a -delete made the two disagree -- the load
+# command survived (renamed) while the map marked it gone -- and every ordinal
+# after it silently shifted by one. The tool exited 0 and wrote a binary dyld
+# refused to load ("Symbol not found: dyld_stub_binder"). The chosen fix was
+# -delete wins, unconditionally, wherever it fell relative to the -change.
+#
+# THAT PRECEDENCE IS GONE. This wrapper emits a SEQUENCE of statements now, one
+# operation per pass, so the -change renames libspare to libspare_renamed and
+# the -delete then looks for libspare and finds nothing. The dependency
+# SURVIVES, under its new name. The order-independence given up -- "-delete
+# anywhere beats -change anywhere" -- was a rule that had to be documented to
+# be predicted, and
+# making a script the only interface accepted it in advance, as its one
+# behaviour change, stated plainly.
+#
+# WHAT THE TEST STILL PROTECTS IS THE ORIGINAL BUG, and it protects it just as
+# well: the load command and the ordinal map must agree about what became of
+# libspare, whichever way the conflict resolves. They disagreed before; if they
+# disagree again the binary will not run, and the run below is what says so.
 # ordinals as linked: 1=libspare, 2=liba, 3=libb (same shape as case 2, so
-# the delete side of this also renumbers real survivors, not just no-ops).
+# this also renumbers real survivors, not just no-ops).
 "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libspare.dylib" "$T/liba.dylib" "$T/libb.dylib" \
     -o "$T/main_conflict"
 cp "$T/libspare.dylib" "$T/libspare_renamed.dylib"
@@ -375,16 +383,18 @@ cp "$T/libspare.dylib" "$T/libspare_renamed.dylib"
     -delete "@loader_path/libspare.dylib" >/dev/null 2>&1
 rc=$?
 deps=$(otool -L "$T/main_conflict")
-if [ $rc -eq 0 ] && ! echo "$deps" | grep -q libspare; then
+if [ $rc -eq 0 ] \
+    && echo "$deps" | grep -q libspare_renamed \
+    && ! echo "$deps" | grep -q 'libspare\.dylib'; then
     if out=$(cd "$T" && ./main_conflict 2>"$T/main_conflict.err") && [ "$out" = "33" ]; then
-        ok "-change and -delete of the same path: delete wins, still runs (33)"
+        ok "-change then -delete of the same path: the change wins, the delete matches nothing, and the binary still runs (33)"
     else
         bad "-change+-delete conflict" "tool accepted it but the binary is broken: '$out'$( [ -s "$T/main_conflict.err" ] && echo "; stderr: $(cat "$T/main_conflict.err")")"
     fi
 elif [ $rc -eq 0 ]; then
-    bad "-change+-delete conflict" "tool exited 0 but kept libspare: $deps"
+    bad "-change+-delete conflict" "expected libspare renamed to libspare_renamed and no libspare.dylib left; got: $deps"
 else
-    bad "-change+-delete conflict" "tool refused (exit $rc); chosen policy is delete-wins, not refuse"
+    bad "-change+-delete conflict" "tool refused (exit $rc); a chain is a sequence now, and refuses nothing"
 fi
 
 # --- 8. -delete of the dylib ITSELF named by an LC_LOAD_UPWARD_DYLIB --------
@@ -608,12 +618,12 @@ fi
 #
 # WHAT CHANGED: there are no arrays any more. compat/fix_macho.c is retired
 # and fix_macho is a /bin/sh wrapper, so the caps live in compat/translate.sh's
-# mt_room, which counts and refuses before it emits anything. The -change cap
-# would ALSO be caught downstream (machotool caps at MR_MAX_OPS too, in different
-# words); the -rename_seg cap would NOT, because each pair becomes its own
-# `machotool segment` invocation and machotool never sees more than one -- so for
-# that half of this case the translation is the only thing enforcing anything,
-# which is exactly why both halves stay.
+# mt_room, which counts and refuses before it emits anything. NEITHER cap is
+# caught downstream any more: machotool's own MR_MAX_OPS/MR_MAX_STRIP went with
+# the verbs whose arrays they sized, and an mr_ops holds at most one operation
+# of each kind now, so every operation becomes its own statement and machotool
+# never sees more than one to count. The translation is the only thing enforcing
+# anything here, which is exactly why both halves stay.
 #
 # Asserted as "refuses, saying too many, having modified nothing", not as a
 # particular exit code, per this suite's own rule about pinning the behaviour
@@ -1635,12 +1645,13 @@ int main(int argc, char **argv) {
     if (argc != 6) return 2;
     mr_change ch;
     ch.old_path = argv[3]; ch.new_path = argv[4]; ch.reexport = 0;
-    const char *radd[1];
-    radd[0] = argv[5];
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
-    ops.dylib_changes = &ch;  ops.n_dylib_changes = 1;
-    ops.rpath_appends = radd; ops.n_rpath_appends = 1;
+    /* One operation per FAMILY is still one mr_ops -- what an mr_ops can no
+     * longer hold is two of the SAME kind. That is what makes this a fair
+     * one-pass baseline for the two-pass route below. */
+    ops.dylib_change = &ch;
+    ops.rpath_append = argv[5];
     ops.allow_grow = 1;
     /* The disturbs mask cli/machotool.c's dylib verb would hand the same two
      * operations, read off the one operation table rather than written out
