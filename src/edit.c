@@ -2,10 +2,11 @@
  * me_ -- see edit.h. Read once, apply each statement in order, verify what
  * the run disturbed, write once.
  *
- * Every operation is performed by the code that performs it for the CLI
- * verbs; what lives here is the lowering from a statement to that call (the
- * switch in me_apply), the sequencing, the final verify and the single
- * write. The operations print what they have always printed, to stdout and
+ * Every operation is performed by the one implementation of that operation --
+ * the same in-memory cores the deleted CLI verbs used to reach; what lives
+ * here is the lowering from a statement to that call (the switch in
+ * me_apply), the sequencing, the final verify and the single write. The
+ * operations print what they have always printed, to stdout and
  * stderr; this module's own report goes to me_opts.log. That report includes
  * the follow-up work an operation does beyond what its statement names, from
  * figures the operation hands back through an out-parameter -- mr_ops'
@@ -340,7 +341,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it. The append's own
-         * "Added ..." line belongs to `machorewrite minos`, which edit does not
+         * "Added ..." line belonged to the `minos` verb, which this does not
          * call, so an append prints nothing on stdout -- unless it grew the
          * header pad, when mg_ensure_pad's two grow lines, labelled with
          * `path`, are there. */
@@ -352,7 +353,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     case MS_SWIFT_ABI: {
         /* `legacy` is the only value ms_parse accepts. A count of zero is
          * not a refusal: an image with no Swift classes has nothing to
-         * retag, as `machorewrite retag-swift` reports with exit 0. */
+         * retag, as the `retag-swift` verb reported with exit 0. */
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
         int retagged = mswift_retag_image(&im);

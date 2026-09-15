@@ -155,10 +155,9 @@ Two independent checks back that up:
 
   What that leaves out is worth stating plainly, because it is easy to read a
   guarantee into the paragraph above. An edit that fits the existing header
-  pad — `machorewrite
-  dylib`, `rpath`, `lc` or `segment`, and the same statements inside `machorewrite
-  edit` — disturbs nothing this gate examines, so it is not refused for a
-  property its input already had. Inside one `machorewrite edit`, `fixups set
+  pad — a `dylib`, `rpath`, `load-command` or `segment` statement — disturbs
+  nothing this gate examines, so it is not refused for a property its input
+  already had. Inside one run, `fixups set
   classic` (and a `target 10.9` that expands to it) does disturb the image base,
   and such a run is refused rather than written. Across the `patch_macho` →
   `add_version_min` → `change_dylib` chain it is **not**: each tool is its own
@@ -178,35 +177,42 @@ That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,
 didn't.
 
-## `machorewrite edit` — edit scripts
+## `machorewrite FILE OUT` — edit scripts
 
 `install.sh`-style porting runs several rewrites in sequence — strip a load
-command, then repoint a handful of dylibs — each of which is normally its own
-`machorewrite` invocation and its own full write of the file. `edit` takes a script
+command, then repoint a handful of dylibs — each of which used to be its own
+invocation and its own full write of the file. `machorewrite` takes a script
 naming every statement instead, applies them all to one in-memory copy, and
 writes once:
 
 ```sh
-machorewrite edit FILE OUT SCRIPT             # apply SCRIPT to FILE, writing OUT
-machorewrite edit FILE OUT -                  # read the script from stdin
+printf 'load-command delete uuid\n' | machorewrite FILE OUT   # statements on stdin
+machorewrite FILE OUT < script                                # a script that lives in a file
 ```
 
+There is no second spelling. `machorewrite edit FILE OUT SCRIPT` was one until
+the `edit` verb was deleted; the shell's `<` does what its `SCRIPT` argument
+did, and the design's claim that one form is the only way to change a binary is
+worth more than saving a caller four characters.
+
 `FILE` is only read, and `OUT` must not be it — the same file twice, or a
-symlink or hard link to it, is refused before the script is even read, as it is
-for every other verb that names an `OUT`. A successful run always leaves `OUT`
-there, even when no statement changed anything: `OUT` is the answer. To see what
-a script would do without disturbing anything, give it a scratch `OUT` — that is
-the same run, and the result is a file you can inspect rather than a prediction.
+symlink or hard link to it, is refused before the script is even read. A
+successful run always leaves `OUT` there, even when no statement changed
+anything: `OUT` is the answer. To see what a script would do without disturbing
+anything, give it a scratch `OUT` — that is the same run, and the result is a
+file you can inspect rather than a prediction.
 
-`edit` takes no flags at all — its three arguments are `FILE`, `OUT` and
-`SCRIPT`, in that order. There is no `--` to end flag parsing, so a `FILE` or
-`SCRIPT` whose real name starts with `--` is refused as an unknown flag;
-reference it through a path that doesn't, e.g. `./--name`. One leading dash is
-a file name there, as it is for every other verb. Not for `OUT`, though: an
-`OUT` beginning with `-` is refused and says so, because `OUT` is a file this
-command creates, so a flag-looking one is a mistake rather than a name.
+It takes no flags at all — its two arguments are `FILE` and `OUT`, in that
+order. There is no `--` to end flag parsing, so a `FILE` whose real name starts
+with `--` is refused as an unknown flag; reference it through a path that
+doesn't, e.g. `./--name`. One leading dash is a file name there, as it was for
+every historical tool. Not for `OUT`, though: an `OUT` beginning with `-` is
+refused and says so, because `OUT` is a file this command creates, so a
+flag-looking one is a mistake rather than a name. A `FILE` named like one of the
+two surviving verbs (`verify`, `info`) is spelled `./verify`, for the same
+reason.
 
-**Edit writes nothing unless every statement succeeded.** The whole script is
+**Nothing is written unless every statement succeeded.** The whole script is
 parsed before `FILE` is opened at all, so a typo in the last line of a long
 script costs nothing. Each statement then runs against the image in memory, in
 the order written; if any statement is refused, `OUT` is not written and `FILE`
@@ -242,8 +248,10 @@ any wrapper prints.
 
 **On a fat file, each slice is accounted for too.** `slice NAME:` before an
 edited slice's statements and `slice NAME: verified` after; `slice NAME: not
-selected by arch; passed through unchanged` or `slice NAME: 32-bit; passed
-through unchanged` for the rest; and, once the slices are laid out again,
+selected by arch; passed through unchanged`, `slice NAME: 32-bit; passed
+through unchanged` or `slice NAME: not a 64-bit Mach-O; passed through
+unchanged` for the rest — whether a slice is a 64-bit Mach-O is decided by its
+own bytes, never by the `cputype` its `fat_arch` entry declares; and, once the slices are laid out again,
 `slice NAME: moved from offset 0x… to 0x…` for any slice an earlier slice's
 growth moved.
 
@@ -256,10 +264,10 @@ after printing it. On a fat file the refusal line names the slice too — or,
 for a statement's own miss (see `fatal-warnings`, below), says it matched
 nothing in any selected slice.
 
-**The write never touches `FILE`.** `edit`, like every other rewriting verb,
-takes `FILE OUT` and writes only `OUT`, by way of a temp file and a rename —
+**The write never touches `FILE`.** `machorewrite` takes `FILE OUT` and writes
+only `OUT`, by way of a temp file and a rename —
 see "machorewrite never writes its input", above, for what that guarantees. So
-whether `FILE` is writable is not a question `edit` asks either; a read-only
+whether `FILE` is writable is not a question it asks either; a read-only
 (`0444`) `FILE` in a writable directory is read just fine, and the run exits
 0.
 
@@ -438,15 +446,19 @@ dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
 and one invocation:
 
 ```sh
-machorewrite edit "$REAL" "$T" claude.edits
+machorewrite "$REAL" "$T" < claude.edits
 ```
 
 ### Limits
 
 - **A fat (universal) file is edited slice by slice, and kept whole.** With
-  no `arch` directive every 64-bit slice is edited and 32-bit slices pass
-  through; with `arch` directives, exactly the named slices. Naming a slice
-  the file lacks, or a 32-bit one, is refused. `edit` never drops a slice —
+  no `arch` directive every 64-bit slice is edited and everything else passes
+  through; with `arch` directives, exactly the named slices. Whether a slice is
+  a 64-bit Mach-O is read from the slice's own bytes, not from the `cputype`
+  its `fat_arch` entry declares — a container where the two disagree is
+  malformed, and the bytes are the thing being edited. Naming a slice the file
+  lacks, or one that is not a 64-bit Mach-O, is refused. Nothing ever drops a
+  slice —
   thin a file with `lipo` if you want one. A 64-bit fat container
   (`fat_arch_64`) is refused.
 - **`allow-grow` reaches `dylib`, `rpath` and `version-min set`** — the
@@ -468,7 +480,7 @@ machorewrite edit "$REAL" "$T" claude.edits
   of those can miss. Neither can `target`, nor anything its expansion derived
   (see "The `target` statement", above). On a fat file, a statement has
   matched if it matched in any selected slice.
-- **`MACHO_NO_VERIFY` changes nothing about an `edit` run.** The check `edit`
+- **`MACHO_NO_VERIFY` changes nothing about a script run.** The check that
   runs after the *last* statement, before the single write, has never consulted
   it and still does not. A `dylib`/`rpath`/`load-command` statement also runs
   the same per-step plausibility check the shared rewriter runs (see

@@ -809,13 +809,13 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      *
      * AND IT COSTS MORE THAN THAT ON THE COMPAT CHAIN. `disturbed` is what
      * THIS PROCESS declared and did. The chained-fixups conversion this gate was
-     * written for happens in a DIFFERENT process -- `patch_macho`, i.e.
-     * `machorewrite declassify`, which runs no plausibility check of its own --
+     * written for happens in a DIFFERENT process -- `patch_macho`, whose own
+     * `fixups set classic` runs no plausibility check of its own --
      * and the `change_dylib` run that follows it declares only what its own
      * dylib and rpath operations declare. So the three-tool chain no longer
      * re-checks that conversion here unless the later run also grows a
-     * header. Where the conversion IS still gated is inside ONE process:
-     * `machorewrite edit`'s `fixups set classic` declares MREL_BASE_REL and
+     * header. Where the conversion IS still gated is inside ONE process: a
+     * `fixups set classic` statement declares MREL_BASE_REL and
      * meets src/edit.c's verify. This is a consequence of deriving
      * applicability from a run rather than from an image, and it is recorded
      * rather than repaired because the repair is a product decision: the gate
@@ -863,7 +863,8 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * does. A run that meets both sites therefore has one suppressible gate
      * and one that is not -- and since the paragraph above makes this gate
      * unreachable for a refusal today, what that variable actually suppresses
-     * for a verb run is nothing.
+     * here is nothing. The verbs that used to reach this site directly are
+     * gone; src/edit.c's me_statements is the only way in now.
      * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
      * Decision 5 -- the derived applicability governs both front-ends. */
     if (mrel_verify_applies(&im, disturbed) && !getenv("MACHO_NO_VERIFY") &&
@@ -902,8 +903,11 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
 }
 
 /* The verb path's slice callback: the thin rewrite, under the label and with
- * the stdout lines `machorewrite dylib`/`change_dylib` have always printed for a
- * fat file. */
+ * the stdout lines `change_dylib` has always printed for a fat file. NO
+ * FRONT-END REACHES IT: mr_apply_file is the only caller, and its only caller
+ * is tests/change_dylib_test.sh's one_pass helper. What every wrapper reaches
+ * is src/edit.c's me_run_fat, which classifies a slice the same way this does
+ * (me_slice_is_64 calls the mi_wrap that mr_process_thin's MR_SKIP is). */
 typedef struct {
     const mr_ops *ops;
     uint32_t declared_disturbs;   /* what this run's operations declare */
@@ -1077,7 +1081,7 @@ static int mr_report_unmatched(const mr_ops *ops, int hit_dylib,
      * here is program-neutral ("ERROR: ..."), because this library does not
      * otherwise know which front end is running it. It names machorewrite
      * because the report names operations in MACHOREWRITE'S grammar ("-replace
-     * X matched nothing" is about a `machorewrite dylib` operation, not about
+     * X matched nothing" is about a machorewrite operation, not about
      * whatever argv the caller typed), and every compat/ wrapper's job is to
      * teach that grammar: each prints the equivalent machorewrite command line
      * before running it, so a caller who sees "machorewrite: ..." on stderr has

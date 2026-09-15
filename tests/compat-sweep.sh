@@ -19,8 +19,10 @@
 # recorded in the matrix header, because a reader cannot otherwise tell which
 # two things a row compares.
 #
-# The deliverable is the matrix it writes (default tests/compat-matrix.tsv),
-# not a pass/fail. Every row says what the OLD tool did and what the
+# The deliverable is the matrix it writes, not a pass/fail. THE OUTFILE IS
+# REQUIRED and `tests/compat-matrix.tsv` is refused by name -- see the guard
+# further down, and its comment, for why that dated measurement cannot be
+# reproduced. Every row says what the OLD tool did and what the
 # compat/translate.sh -> machorewrite translation did, so the two can be compared
 # after the C sources are gone. Task 2 deletes them; from that commit on, these
 # rows and the SHA-256s in them are the only surviving record of what the old

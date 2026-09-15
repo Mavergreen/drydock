@@ -11,14 +11,21 @@ The six original entry points, kept for compatibility. All six are now
 > the record of what adopting its five divergences cost and why that was the
 > right call rather than a shortcut.
 
+THERE ARE NO VERBS LEFT TO EMIT. Every wrapper emits the one mutating form,
+`printf '<statements>' | machorewrite FILE OUT`, and `compat/translate.sh` is
+where the old flag grammar becomes those statements.
+`machorewrite declassify`, `lc`, `dylib`, `rpath`, `minos`, `segment`,
+`retag-swift`, `grow` and `edit` were verbs, and are read below as history:
+spec: `docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md`.
+
 | installed name | what it is now |
 |---|---|
-| `patch_macho` | `patch_macho.sh` → `machorewrite declassify IN OUT`, installed over `OUT` |
-| `change_dylib` | `change_dylib.sh` → `machorewrite lc` / `dylib` / `rpath`, or `machorewrite edit FILE OUT -` when more than one of those |
-| `add_version_min` | `add_version_min.sh` → `machorewrite minos FILE OUT 10.9`, installed over `FILE` |
-| `rename_segment` | `rename_segment.sh` → `machorewrite segment FILE OUT OLD NEW` |
-| `retag_swift_classes` | `retag_swift_classes.sh` → `machorewrite retag-swift FILE OUT`, once per file, installed over each `FILE` |
-| `fix_macho` | `fix_macho.sh` → `machorewrite lc` / `dylib` / `segment`, or `machorewrite edit FILE OUT -` when more than one command's worth (two renames already are) |
+| `patch_macho` | `patch_macho.sh` → `fixups set classic`, installed over `OUT` |
+| `change_dylib` | `change_dylib.sh` → `load-command delete` / `dylib` / `rpath` statements, however many the flags name |
+| `add_version_min` | `add_version_min.sh` → `version-min set 10.9`, installed over `FILE` |
+| `rename_segment` | `rename_segment.sh` → `segment rename OLD NEW` |
+| `retag_swift_classes` | `retag_swift_classes.sh` → `swift-abi set legacy`, once per file, installed over each `FILE` |
+| `fix_macho` | `fix_macho.sh` → `load-command delete` / `dylib` / `segment rename` statements, however many the flags name (two renames are two statements) |
 
 plus the two files every wrapper sources:
 
@@ -113,8 +120,8 @@ for why they would be rare:
     caller (absent, and mode-denied); `compat/rename_segment.sh`'s header has
     the detail.
   * `change_dylib` and `add_version_min` are the two wrappers that forward
-    the shared rewrite drivers' (`mr_apply_file`, `mv_add_version_min`) own
-    exit code verbatim, with no mapping at all -- unlike `fix_macho`,
+    script run's own exit code (`me_run`, `src/edit.h`) verbatim, with no
+    mapping at all -- unlike `fix_macho`,
     `patch_macho` and `rename_segment`, which translate every nonzero
     machorewrite exit to one flat historical code, and `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
@@ -170,7 +177,7 @@ for why they would be rare:
     rename, unless `MACHO_NO_VERIFY` was set.) `src/rewrite.c`'s own comment
     on that fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `machorewrite` lines with shell steps between them:
-    it is one `machorewrite edit FILE OUT -`, whose exit code is `me_run`'s own, from
+    it is one `printf … | machorewrite FILE OUT`, whose exit code is `me_run`'s own, from
     the same `MR_REFUSED`/`MR_FAIL` vocabulary. The "`change_dylib`: the
     differences" tables below and `compat/add_version_min.sh`'s own header
     have the rest of the detail.
@@ -182,7 +189,7 @@ combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
 argument vocabulary short enough, that nothing in it ever needs to grow. 72
 of those rows DO give one old mixed-family `-grow` two chances to grow
 (compat/change_dylib.c issued one grow call for the whole operation set; the
-emitted `machorewrite edit` script runs a dylib statement and an rpath statement as
+emitted script runs a dylib statement and an rpath statement as
 separate passes under one `allow-grow`, each capable of growing on its own),
 and no row forces either of those to actually grow. `tests/change_dylib_test.sh`'s "mixed-family
 double grow" case closes that gap directly (not through the sweep) with
@@ -230,13 +237,13 @@ here that maps nothing (`add_version_min` is the other); `fix_macho`,
 `patch_macho` and `rename_segment` all collapse every nonzero to one historical
 code. The C tool returned `mr_apply_file`'s flat 0/1, and 1 is still what a
 considered refusal exits — so the coincidence holds for every case a caller had
-seen — but `mr_apply_file`'s vocabulary is no longer flat (`src/rewrite.h`): 0
+seen — but the shared vocabulary is no longer flat (`src/rewrite.h`): 0
 ok, `MR_REFUSED` (1) for a refusal that read the image and declined,
 `MR_FAIL` (2) for a genuine open/fstat/read/write/malloc failure. So an
 operational failure now exits 2 where the C tool exited 1, which the "drop-in"
-section above lists as a named exception. `machorewrite edit` — the multi-family
-path — speaks the same vocabulary from `me_run`, so a mixed-family invocation is
-not a separate regime.
+section above lists as a named exception. A multi-statement run speaks that
+same vocabulary from `me_run`, so a mixed-family invocation is not a separate
+regime.
 
 The codes this wrapper produces **itself** are all 1: `mw_prepare`'s absent,
 unwritable and hard-linked refusals, and a failed install. The wrapper never
@@ -258,13 +265,13 @@ means only a rewrite that grew the header.
 `--fatal-warnings` is a separate fact, not what makes any of the above
 conditional: this translation never emits it — `change_dylib`'s grammar has no
 spelling for it, and never will, since `-change` matching nothing has always
-exited 0 and that is compat surface — so the one `mr_apply_file` behaviour that
+exited 0 and that is compat surface — so the one behaviour that
 flag adds (promoting "an operation matched nothing" to `MR_REFUSED`) is never
 reached here.
 
 | the difference | held by |
 |---|---|
-| an operational failure exits **2**, where the C tool exited a flat 1 | `tests/wrapper_test.sh`: "`machorewrite`'s own code for this input is 2, an operational failure" (the setup, so the two below cannot rot into proving nothing), then "a single-family run forwards `machorewrite`'s own 2 rather than mapping it" and "… and so does a multi-family run, whose code is `machorewrite edit`'s own" — a DIRECTORY as `FILE`, which `mw_prepare` passes through and `machorewrite`'s read fails on |
+| an operational failure exits **2**, where the C tool exited a flat 1 | `tests/wrapper_test.sh`: "`machorewrite`'s own code for this input is 2, an operational failure" (the setup, so the two below cannot rot into proving nothing), then "a single-family run forwards `machorewrite`'s own 2 rather than mapping it" and "… and so does a multi-family run, whose code is the bare `machorewrite` form's own" — a DIRECTORY as `FILE`, which `mw_prepare` passes through and `machorewrite`'s read fails on |
 | a considered refusal still exits **1**, so the two numbers really differ | `tests/wrapper_test.sh`, "a considered refusal is still the flat 1 the C tool always gave" |
 | every refusal the wrapper makes itself exits 1 | `tests/wrapper_test.sh`'s unwritable-`FILE` pair ("exits 1 (the C tool's only failure code), saying so, having changed neither its bytes nor its inode", on both paths), its absent-`FILE` assertion, and `hl_case change_dylib` on both paths. A **failed install** is the one of the four with no assertion anywhere — `mw_finish`'s `mv` has to fail for it, which nothing here can arrange — so it stays stated rather than tested |
 | `-change` matching nothing still exits 0, because `--fatal-warnings` is never emitted | `tests/wrapper_test.sh`, "a run that changed nothing prints no `Updated` line" (exit 0 on a `-change` aimed at a path the image does not carry) |
@@ -274,12 +281,13 @@ reached here.
 Measured over all 1110 generated `change_dylib` combinations plus the
 hand-picked ones (`tests/compat-matrix.tsv`). The row counts are that
 measurement, **taken while a multi-family invocation was still a SEQUENCE of
-verbs**; what those rows run today is one `machorewrite edit`, so the counts still
+verbs**; what those rows run today is one script, so the counts still
 say how many invocations are of each shape and the second bullet describes a
 different difference than it did then.
 
   * **ONE emitted command — 459 rows — stdout is byte-identical.** Both sides
-    are one `mr_apply_file` pass over the same file with the same ops. Two lines
+    one pass over the same file with the same ops — the C tool's
+    `mr_apply_file` then, one `mr_apply_image` call under `me_run` now. Two lines
     of `machorewrite`'s are reshaped to get there, both consequences of the verb
     writing a temp instead of `FILE`: `mw_run_to_tmp` drops its `Wrote <temp>
     (N bytes)` line, which names a file no caller has heard of, and the wrapper
@@ -287,7 +295,7 @@ different difference than it did then.
     bytes changed — the same line `mr_apply_file` used to print, under the same
     condition, naming the same path.
   * **MORE THAN ONE FAMILY — 669 rows — stdout DIFFERS, unavoidably.** Each
-    statement of the one `machorewrite edit` is its own pass over the image, so a
+    statement of the one script is its own pass over the image, so a
     `header pad …` / `updated …` pair is printed PER STATEMENT where one
     invocation printed one pair. The closing `Updated FILE (N bytes)` line IS
     there, printed by the wrapper on the same terms as above. Every line that is
@@ -306,7 +314,7 @@ redirect it to `/dev/null`.
 
 | the difference | held by |
 |---|---|
-| a single-family run's stdout is byte-identical to `machorewrite dylib`'s, `Wrote <temp>` reshaped to `Updated FILE` | `tests/wrapper_test.sh`, "a single-family run is byte-identical to `machorewrite`'s, stdout included" — it runs both and compares, with exactly that one line reshaped, so any other wording fails |
+| a single-family run's stdout is byte-identical to a one-statement `machorewrite FILE OUT`'s, `Wrote <temp>` reshaped to `Updated FILE` | `tests/wrapper_test.sh`, "a single-family run is byte-identical to `machorewrite`'s, stdout included" — it runs both and compares, with exactly that one line reshaped, so any other wording fails |
 | the `Wrote <temp>` line is suppressed even when the caller's path contains a backslash | `tests/wrapper_test.sh`, "a path containing a backslash still suppresses the temp-naming line" (and the companion assertion that the teaching block is still counted and indented) |
 | a multi-family run's lines name `FILE`, never the temp | `tests/wrapper_test.sh`, "a multi-family run's stdout names FILE, not a copy", plus "a multi-family run leaves no stray file beside FILE" |
 | `Updated FILE (N bytes)` closes a run that changed the bytes, on both paths, and is absent when nothing changed | `tests/wrapper_test.sh`'s `Updated` pair (single- and multi-family) and "a run that changed nothing prints no `Updated` line" |
@@ -314,19 +322,19 @@ redirect it to `/dev/null`.
 
 ### `change_dylib`: the in-place edit
 
-`change_dylib` rewrote `FILE`; `machorewrite dylib`/`rpath`/`lc` do not write the
-file they are given. So the wrapper takes the shared install path —
+`change_dylib` rewrote `FILE`; `machorewrite` does not write the
+file it is given. So the wrapper takes the shared install path —
 `mw_prepare` names a temp beside the file `FILE` really is, `mw_retranslate`
 re-emits the command with that temp as its output, `mw_run_to_tmp` runs it, and
 `mw_finish` `mv`s the temp over the target or discards it when the bytes did not
 change, since the C tool wrote nothing in that case.
 `machorewrite-compat.sh`'s "the install path" section has the reasoning for each
-step. `machorewrite edit` takes that temp as its `OUT` positional like every other
-verb, so both shapes install identically.
+step. `machorewrite` takes that temp as its `OUT` positional whether the
+script is one statement or several, so both shapes install identically.
 
 | the difference | held by |
 |---|---|
-| **an absent or unwritable `FILE` is refused**, in the C tool's own `perror("open")` words, before `machorewrite` runs. `change_dylib` opened `FILE` `O_RDWR` first, so either failed immediately having changed nothing. No `machorewrite` command reproduces that: a verb that writes an output opens `FILE` `O_RDONLY` and has no opinion about `FILE`'s mode, and `machorewrite edit` installs by rename, which needs the DIRECTORY writable (measured before this check existed: a mode-444 binary replaced, fresh inode, exit 0 — a silent rewrite of a file its owner marked read-only). `test -e`/`test -w` are not `open(O_RDWR)` — they consult the real uid and do not see ACLs, so they can disagree at the edges; they agree on the two cases that reach a caller, and both follow a symlink, which is what is wanted, since the install lands on the symlink's target and it is that file's mode that decides | `tests/wrapper_test.sh`'s unwritable pair, on BOTH paths, asserting exit 1, `open: Permission denied`, and neither the bytes nor the inode moved; and "an absent `FILE` exits 1 with the C tool's own `open()` message" |
+| **an absent or unwritable `FILE` is refused**, in the C tool's own `perror("open")` words, before `machorewrite` runs. `change_dylib` opened `FILE` `O_RDWR` first, so either failed immediately having changed nothing. No `machorewrite` invocation reproduces that: a form that writes an output opens `FILE` `O_RDONLY` and has no opinion about `FILE`'s mode, and the wrapper installs by rename, which needs the DIRECTORY writable (measured before this check existed: a mode-444 binary replaced, fresh inode, exit 0 — a silent rewrite of a file its owner marked read-only). `test -e`/`test -w` are not `open(O_RDWR)` — they consult the real uid and do not see ACLs, so they can disagree at the edges; they agree on the two cases that reach a caller, and both follow a symlink, which is what is wanted, since the install lands on the symlink's target and it is that file's mode that decides | `tests/wrapper_test.sh`'s unwritable pair, on BOTH paths, asserting exit 1, `open: Permission denied`, and neither the bytes nor the inode moved; and "an absent `FILE` exits 1 with the C tool's own `open()` message" |
 | **a hard-linked `FILE` is refused (1)** — new, and the one behaviour a caller can see that no version of `change_dylib` had: the C tool wrote through its own descriptor so every link saw the change, while an install by `mv` would leave the others on the old content. Refused rather than silently split, which is the trade every wrapper on this path makes; `mw_prepare` has the message and the remedy | `hl_case change_dylib` in `tests/wrapper_test.sh`, on both the single- and the multi-family path (exit 1, "hard link" named, both names byte-identical, no temp left); `tests/change_dylib_test.sh` case 14b also asserts the group is still one inode, unsplit |
 | **the install is a rename**, so a changed run gives `FILE` a fresh inode and an interrupted one can never leave a half-written binary — and a symlinked `FILE` stays a symlink, with the real target rewritten and its xattrs intact | `tests/change_dylib_test.sh` case 14: 14a (symlink still a symlink to the same name, the real target changed, fresh inode, xattr survived), 14c (the ordinary case still goes through `mkstemp`+rename). Mode and quarantine on the multi-family path: `tests/wrapper_test.sh`, "mode and quarantine survive a MULTI-FAMILY run too" |
 | **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `machorewrite`'s own write of the temp, with `FILE` untouched | stated, not tested for `change_dylib`: the behaviour is `machorewrite`'s own write, not this wrapper's, and the equivalent case is asserted for `patch_macho` in `tests/wrapper_test.sh`. `compat/add_version_min.sh` and `compat/retag_swift_classes.sh`'s headers record the same shape |
@@ -336,7 +344,7 @@ verb, so both shapes install identically.
 `install.sh`'s production line strips two load commands AND rewrites three dylib
 paths. `tests/compat-sweep.sh` measured what splitting that one atomic rewrite
 into a SEQUENCE of verbs cost: two rows where the C tool refused having written
-nothing, while the sequence refused having already written. One `machorewrite edit`
+nothing, while the sequence refused having already written. One script run
 closes that at the source rather than around it — `me_run` reads the image once,
 applies every statement to it in memory, verifies, and writes once, so a refusal
 at any statement leaves `FILE` exactly as it was. That is the C tool's shape,
@@ -390,7 +398,7 @@ it. "Held by" is the assertion that fails if someone reverses the decision.
 |---|---|---|
 | 1 | **A replacement path longer than the existing command now SUCCEEDS.** `fix_macho` wrote the new path into the existing `LC_LOAD_DYLIB` and refused if it did not fit (`new path '...' too long (320 > 32)`, exit 1, file untouched); `machorewrite dylib -replace` rebuilds the load-command table and fits the longer path into header pad the image already has, exit 0. The limit was an artifact of a rewriter that never learned to resize a command, not a safety property: nothing in `docs/PROPOSAL.md` records a reason for it, and `machorewrite` does not have to inherit the old tools' artificial limits. The translation still emits no `--allow-grow` — this uses existing pad and never enlarges the header. | `tests/wrapper_test.sh`, "a longer replacement path is now rewritten into header pad, not refused"; `tests/translate_test.sh`'s `fm-*` cases, none of which emits `allow-grow` |
 | 2 | **A chained `-rename_seg` now CHAINS.** `-rename_seg __DATA __X -rename_seg __X __Y` produced `__X` under `fix_macho`, which applied every pair in ONE pass and gave each segment its FIRST match, so the second pair never fired. Each pair is its own pass here — its own `segment rename` statement in the emitted edit script — and the second reads the first's result, so it produces `__Y`. Adopting it is doing what was asked. `compat/translate.sh` refused this shape outright until the ruling, correctly, while a wrapper still had to preserve `fix_macho`'s answer; its `-rename_seg` arm records the reversal. | `tests/wrapper_test.sh`, "a chained `-rename_seg` now produces the SECOND name, not the first" (asserts `__Y` present **and** `__X` absent); `tests/translate_test.sh`'s `fm-chain`, `fm-chain-3` |
-| 3 | **The write-back is ATOMIC.** `fix_macho` `lseek`'d to 0 and wrote the whole file back over itself, so a crash, a full disk or a kill mid-write left a corrupt binary. `machorewrite` never writes `FILE` at all: it writes a temp beside it (`wa_write_new`, `src/atomic_write.h` — `mkstemp` + `rename`, carrying `FILE`'s mode, owner and xattrs) and the wrapper installs that temp with one `mv` in the same directory, so the caller's file is either wholly old or wholly new. These tools exist to make binaries loadable; a half-written one is the failure they are supposed to prevent. There is no multi-write caveat: an invocation worth more than one command is one `machorewrite edit FILE OUT -`, and `me_run` (`src/edit.c`) reads the image once, applies every statement in memory, verifies, and writes once — so a refusal at any statement leaves the temp unwritten and `FILE` exactly as it was. | `tests/wrapper_test.sh`: "a changed run installs by rename, so `FILE` gets a new inode"; "a refusal part way through a multi-statement run leaves `FILE` byte-identical and no temp beside it"; `hl_case fix_macho` ("a hard-linked `FILE` is refused (1), both names untouched", "and no temp was left beside it"). Mode, owner and xattrs: `tests/atomic_write_test.c` under `ctest` |
+| 3 | **The write-back is ATOMIC.** `fix_macho` `lseek`'d to 0 and wrote the whole file back over itself, so a crash, a full disk or a kill mid-write left a corrupt binary. `machorewrite` never writes `FILE` at all: it writes a temp beside it (`wa_write_new`, `src/atomic_write.h` — `mkstemp` + `rename`, carrying `FILE`'s mode, owner and xattrs) and the wrapper installs that temp with one `mv` in the same directory, so the caller's file is either wholly old or wholly new. These tools exist to make binaries loadable; a half-written one is the failure they are supposed to prevent. There is no multi-write caveat: an invocation worth more than one command is one `printf … | machorewrite FILE OUT`, and `me_run` (`src/edit.c`) reads the image once, applies every statement in memory, verifies, and writes once — so a refusal at any statement leaves the temp unwritten and `FILE` exactly as it was. | `tests/wrapper_test.sh`: "a changed run installs by rename, so `FILE` gets a new inode"; "a refusal part way through a multi-statement run leaves `FILE` byte-identical and no temp beside it"; `hl_case fix_macho` ("a hard-linked `FILE` is refused (1), both names untouched", "and no temp was left beside it"). Mode, owner and xattrs: `tests/atomic_write_test.c` under `ctest` |
 | 4 | **A fat slice whose edit fails now REFUSES THE WHOLE FILE.** `fix_macho`'s fat loop treated every per-slice failure alike: `process_macho` returned -1 whether the slice was not a Mach-O at all or was one whose edit it refused, and the loop printed `  Skipping arch %u` and carried on, exiting 0 having rewritten the slices it did understand — a partially converted universal binary reported as a success. `mr_process_fat` (`src/rewrite.c`) splits the two: `MR_SKIP` for a slice that is not a 64-bit Mach-O, `MR_ERROR` for one that IS and whose edit failed, and only `MR_ERROR` refuses. Refuse rather than guess. **Narrower than the retirement plan's table says:** that table reads as covering both cases; a slice that is simply not a 64-bit Mach-O is still left unchanged exactly as `fix_macho` left it, with a different message (`not a 64-bit Mach-O; leaving this slice unchanged`) and exit 0. | the `MR_SKIP` half, through `fix_macho` on a hand-built two-slice container: `tests/wrapper_test.sh`, "a non-64-bit slice is left unchanged and the other slice is still rewritten" — so the distinction cannot be quietly widened. The `MR_ERROR` half, at the verb: `tests/cli_test.sh`'s "MR_ERROR: one bad slice refuses the WHOLE fat file" block (message, slice label, per-slice reason, and the file unmodified) |
 | 5 | **A `-change` aimed at this dylib's own install name now matches NOTHING**, instead of rewriting it. `compat/fix_macho.c`'s match block opened on `mo_is_ordinal_lc(lc->cmd) \|\| lc->cmd == LC_ID_DYLIB` and then ran the `changes[]` loop with no `LC_ID_DYLIB` exclusion, so `-change <this dylib's own install name> NEW` rewrote the dylib's identity — even though the file's own comment said "nothing in `changes` is ever meant to match it". `src/rewrite.c` guards it now. Adopting it is right because (a) `install_name_tool` spells identity `-id` and its `-change` never touches `LC_ID_DYLIB`, so `machorewrite` matches the tool everyone already knows; (b) `fix_macho.c`'s own comment stated the contract `machorewrite` now enforces, so this is the C being fixed, not contradicted; (c) silently rewriting a dylib's own install name from an operation aimed at a DEPENDENCY is exactly the invisible edit this work exists to make visible. Measured: both sides exit 0 and the bytes differ, with nothing on stderr naming the reason (transcript below). | `tests/wrapper_test.sh`, "-change at a dylib's own install name leaves `LC_ID_DYLIB` unchanged, reported unmatched, while a real dependency's `-change` in the same run still lands" — one run, both halves, on a dylib fixture built for it |
 
@@ -415,13 +423,14 @@ falsify a record rather than refresh a description — the same reason
 
 ### `fix_macho`: two more differences, NOT on the adopted list
 
-Both are consequences of travelling through `mr_apply_file` at all rather than
-choices the conversion made, both are shared with every other verb that
-rewrites, and both are reported rather than worked around.
+Both are consequences of travelling through the shared rewriter
+(`mr_apply_image`, `src/rewrite.h`) at all rather than choices the conversion
+made, both are shared with every statement that rewrites load commands, and
+both are reported rather than worked around.
 
 | the difference | held by |
 |---|---|
-| **`mg_plausible`.** `mr_apply_file` runs that gate before writing only when the run disturbed what it checks — the gate asks an OFFSET question about base-relative values, and `src/relations.h`'s `mrel_verify_applies` decides. Of the operations this driver offers, only a header grow disturbs them, so in practice `fix_macho`'s replacement reaches this gate where `fix_macho` itself had none, and skips it where the rewrite moved no offset. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for `fixups set classic`, which disturbs the relation, and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
+| **`mg_plausible`.** The rewriter runs that gate before writing only when the run disturbed what it checks — the gate asks an OFFSET question about base-relative values, and `src/relations.h`'s `mrel_verify_applies` decides. Of the operations this driver offers, only a header grow disturbs them, so in practice `fix_macho`'s replacement reaches this gate where `fix_macho` itself had none, and skips it where the rewrite moved no offset. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for `fixups set classic`, which disturbs the relation, and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
 | **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. `compat/rename_segment.sh`'s header has the measurement (on `/usr/lib/libxcselect.dylib`) and the note that the smallest fix is a change to `machorewrite`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
 
 ### `fix_macho`: exit codes
@@ -433,8 +442,8 @@ mapped to 1**. It is the same mapping `compat/rename_segment.sh` and
 would invent a third outcome for a grammar that has two. `EX_REFUSED`, 1, is
 not the problem — it already coincides with `fix_macho`'s own flat failure code
 for any of the ordinary considered refusals this translation's
-`dylib`/`lc`/`segment`/`edit` commands can reach (bad magic, no room to grow,
-and the rest of `src/rewrite.h`'s list). The one `mr_apply_file` refusal
+`dylib`/`load-command`/`segment` statements can reach (bad magic, no room to
+grow, and the rest of `src/rewrite.h`'s list). The one refusal
 genuinely unreachable here is the `--fatal-warnings`-specific one, "an
 operation matched nothing" promoted to `MR_REFUSED`: this translation never
 emits that flag. It would not have needed mapping either way, being 1 like
@@ -477,27 +486,26 @@ output sent to `/dev/null`. What reads these two lines is
 `tests/wrapper_test.sh`, and the closing `Updated FILE (N bytes)` line (the one
 `mr_apply_file` printed while the verbs still wrote `FILE`, not `fix_macho`'s
 own `File updated: F`) is pinned there too, by a byte comparison of the
-wrapper's whole stdout against `machorewrite dylib`'s.
+wrapper's whole stdout against a one-statement `machorewrite FILE OUT`'s.
 
 ### `fix_macho`: the in-place edit
 
-`fix_macho` rewrote the file it was given; `machorewrite dylib`/`lc`/`segment` do
-not. So the wrapper takes the shared install path — `mw_prepare` names a temp
+`fix_macho` rewrote the file it was given; `machorewrite` does not. So the wrapper takes the shared install path — `mw_prepare` names a temp
 beside the file `FILE` really is, `mw_retranslate` re-emits the command with
 that temp as its output, `mw_run_to_tmp` runs it and drops the `Wrote <temp>`
 line no C tool ever printed, and `mw_finish` `mv`s the temp over the target or
 discards it when the bytes did not change. `machorewrite-compat.sh`'s "the install
-path" section has the reasoning for each step. `machorewrite edit` takes that temp
-as its `OUT` positional like every other verb, so both shapes install
-identically.
+path" section has the reasoning for each step. `machorewrite` takes that temp
+as its `OUT` positional whether the script is one statement or several, so both
+shapes install identically.
 
 Three consequences, all of them `fix_macho`'s alone to explain:
 
 * **The writability check** comes with it, inside `mw_prepare`. `fix_macho`
   opened the file `O_RDWR` before it looked at it, so an absent or unwritable
   file failed immediately, with no analysis and no write. No `machorewrite`
-  command reproduces that any more — a verb that writes an output opens `FILE`
-  `O_RDONLY`, and `machorewrite edit` finds out it cannot write only when it
+  invocation reproduces that any more — a form that writes an output opens
+  `FILE` `O_RDONLY`, and the run finds out it cannot write only when it
   writes, at the END of the run, with a different message — so
   `mw_require_writable` is the only thing that does. `test -w` is not
   `open(O_RDWR)`: it consults the real uid and does not see ACLs, so it can
