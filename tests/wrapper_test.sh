@@ -481,7 +481,7 @@ run change_dylib cddir -change /nope /also-nope
     || bad "change_dylib exit forwarding (single-family)" "exit $rc, want 2: this wrapper maps nothing, so a caller of the most-called tool here can still tell a run that never happened from an image machorewrite read and declined -- collapsing both to 1 takes that away"
 run change_dylib cddir -strip-lc uuid -change /nope /also-nope
 [ "$rc" -eq 2 ] \
-    && ok "change_dylib: ... and so does a multi-family run, whose code is machorewrite edit's own" \
+    && ok "change_dylib: ... and so does a multi-family run, whose code is the bare machorewrite form's own" \
     || bad "change_dylib exit forwarding (multi-family)" "exit $rc, want 2: me_run speaks the same MR_REFUSED/MR_FAIL vocabulary as every verb, so a mixed-family invocation must not be the one shape where the caller loses the distinction"
 rm -rf "$T/cddir" "$T/cddir.new"
 # THE OTHER HALF: a considered refusal is still the flat 1 the C tool always
@@ -1226,7 +1226,7 @@ fi
 # the assertion passed because the gate ran unconditionally, not because the
 # premise held.
 printf 'fixups set classic\n' >"$T/imp.edits"
-( cd "$T" && "$BIN/machorewrite" edit imp imp.fx imp.edits ) >/dev/null 2>"$T/imperr"
+( cd "$T" && "$BIN/machorewrite" imp imp.fx <imp.edits ) >/dev/null 2>"$T/imperr"
 [ $? -ne 0 ] && grep -q 'implausible' "$T/imperr" \
     && ok "rename_segment: the fixture really is one the gate rejects for an operation that disturbs it" \
     || bad "rename_segment mg_plausible" "fixups set classic was not refused: $(cat "$T/imperr")"
@@ -1836,7 +1836,7 @@ rc=$?
 ( cd "$T" && "$BIN/change_dylib" f -strip-lc uuid \
     -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' ) >/dev/null 2>&1
 [ "$rc" -eq 0 ] && cmp -s "$T/-dashy" "$T/f" \
-    && ok "change_dylib: and on the multi-command path, where it reaches machorewrite edit as a positional" \
+    && ok "change_dylib: and on the multi-command path, where it reaches machorewrite as a positional" \
     || bad "change_dylib leading dash, mixed" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
 

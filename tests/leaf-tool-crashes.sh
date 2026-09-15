@@ -311,56 +311,18 @@ done
 # bytes, and the same words. Measured: disabling mg_grow_header's
 # MG_NO_SECTION_DATA refusal fails that test and the case here identically.
 "$T/mkfixture" sectionless "$T/sectionless.macho" 8192
-# sectionless_case NEEDLE VERB ARG...
-#   -- runs `machorewrite VERB <copy> OUT ARG...`
-#
-# EVERY verb here reads FILE and writes an OUT (`edit`, whose SCRIPT is the ARG
-# after OUT, is the only one left; dylib, rpath, lc, segment and grow were the
-# others). The
-# OUT is removed beforehand and must still be absent afterwards: a refusal
-# writes nothing, which is a second fact worth having here -- the input being
-# untouched is no longer the whole of it.
-sectionless_case() {
-    needle="$1"; verb="$2"; shift 2
-    sl_desc="$*"
-    set -- "$T/sl.macho" "$T/sl.out.macho" "$@"
-    for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="machorewrite $verb $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
-        if [ -n "$gm" ] && [ ! -f "$gm" ]; then
-            skip "$what" "no $gm on this host"
-            continue
-        fi
-        cp "$T/sectionless.macho" "$T/sl.macho"
-        rm -f "$T/sl.out.macho"
-        rc=0
-        if [ -n "$gm" ]; then
-            DYLD_INSERT_LIBRARIES="$gm" "$BIN/machorewrite" "$verb" "$@" \
-                >"$T/sl.out" 2>"$T/sl.err" || rc=$?
-        else
-            "$BIN/machorewrite" "$verb" "$@" >"$T/sl.out" 2>"$T/sl.err" || rc=$?
-        fi
-        if [ "$rc" -eq 1 ] && grep -qF "$needle" "$T/sl.err"; then
-            ok "$what: refuses (1), naming the missing section data"
-        else
-            bad "$what" "expected exit 1 + '$needle', got exit $rc: $(cat "$T/sl.err")"
-        fi
-        if cmp -s "$T/sectionless.macho" "$T/sl.macho"; then
-            ok "$what: leaves the file byte-identical"
-        else
-            bad "$what" "the file changed: $(cmp -l "$T/sectionless.macho" "$T/sl.macho" | wc -l | tr -d ' ') byte(s) differ"
-        fi
-        [ ! -e "$T/sl.out.macho" ] \
-            && ok "$what: writes no output either" \
-            || bad "$what" "a refused run left an output behind"
-    done
-}
 # sectionless_script NEEDLE STATEMENT...
-#   -- the same five facts through the bare `machorewrite FILE OUT` form, each
-#      argument one line of the script on stdin. The five load-command
+#   -- runs the bare `machorewrite <copy> OUT` form with each argument as one
+#      line of the script on stdin, and asserts five facts. The load-command
 #      rewrites below were `machorewrite dylib|rpath|lc|segment <copy> OUT ...`
-#      until the verbs went; the fixture, the refusal and every assertion are
-#      unchanged, because what must not crash is mr_process_thin, not the
-#      spelling that reaches it.
+#      until the verbs went, and the last of them was `machorewrite edit <copy>
+#      OUT SCRIPT`, which was this same script read from a file; the fixture,
+#      the refusal and every assertion are unchanged, because what must not
+#      crash is mr_process_thin, not the spelling that reaches it.
+#
+#      The OUT is removed beforehand and must still be absent afterwards: a
+#      refusal writes nothing, which is a second fact worth having here -- the
+#      input being untouched is no longer the whole of it.
 sectionless_script() {
     needle="$1"; shift
     sl_desc="$*"
@@ -397,8 +359,6 @@ sectionless_script "$rewrite_refusal" allow-grow 'dylib append /x'
 sectionless_script "$rewrite_refusal" 'rpath append /x'
 sectionless_script "$rewrite_refusal" 'load-command delete uuid'
 sectionless_script "$rewrite_refusal" 'segment rename __TEXT __TEXX'
-printf 'dylib append /x\n' >"$T/sl.edits"
-sectionless_case "$rewrite_refusal" edit "$T/sl.edits"
 
 info_rc=0
 "$BIN/machorewrite" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
