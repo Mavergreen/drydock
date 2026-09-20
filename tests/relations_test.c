@@ -318,6 +318,51 @@ static void test_dylib_kind_names(void) {
     CHECK(mo_kind_from_name("LOAD") == 0, "kind names are not case-folded");
 }
 
+struct seen { int n; int ord[8]; char sym[8][32]; int weak[8]; };
+
+static void note(const mo_bind_state *st, void *ctx) {
+    struct seen *s = ctx;
+    if (s->n >= 8) return;
+    s->ord[s->n] = st->ordinal;
+    s->weak[s->n] = st->weak;
+    snprintf(s->sym[s->n], sizeof s->sym[0], "%s", st->symbol ? st->symbol : "");
+    s->n++;
+}
+
+static void test_bind_walk_observes(void) {
+    uint8_t stream[] = {
+        BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 2,
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | BIND_SYMBOL_FLAGS_WEAK_IMPORT,
+        '_','N','S','B','e','e','p','\0',
+        BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER,
+        BIND_OPCODE_DO_BIND,
+        BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | (BIND_SPECIAL_DYLIB_FLAT_LOOKUP & BIND_IMMEDIATE_MASK),
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0,
+        '_','m','e','m','c','p','y','\0',
+        BIND_OPCODE_DO_BIND,
+        BIND_OPCODE_DONE,
+    };
+    uint8_t copy[sizeof stream];
+    memcpy(copy, stream, sizeof stream);
+
+    struct seen s = {0};
+    int rc = mo_bind_walk(copy, (uint32_t)sizeof copy, NULL, 0, "test", NULL,
+                          note, &s);
+    CHECK(rc == 0, "observe-only walk returned %d", rc);
+    CHECK(s.n == 2, "saw %d binds, wanted 2", s.n);
+    CHECK(s.ord[0] == 2, "first ordinal %d, wanted 2", s.ord[0]);
+    CHECK(strcmp(s.sym[0], "_NSBeep") == 0, "first symbol '%s'", s.sym[0]);
+    CHECK(s.weak[0] == 1, "first bind not reported weak");
+    CHECK(s.ord[1] == MO_ORD_FLAT, "second ordinal %d, wanted FLAT", s.ord[1]);
+    CHECK(strcmp(s.sym[1], "_memcpy") == 0, "second symbol '%s'", s.sym[1]);
+    CHECK(s.weak[1] == 0, "second bind reported weak");
+
+    /* An observe-only walk writes NOTHING. This is the invariant that lets the
+     * reporter share the renumberer's decoder. */
+    CHECK(memcmp(copy, stream, sizeof stream) == 0,
+          "observe-only walk modified the stream");
+}
+
 int main(void) {
     test_header_pad_is_always_live();
     test_func_start_liveness_follows_the_load_command();
@@ -327,6 +372,7 @@ int main(void) {
     test_names_round_trip();
     test_verify_applies_needs_a_live_relation_AND_a_disturbance();
     test_dylib_kind_names();
+    test_bind_walk_observes();
 
     if (fails) {
         printf("%d failure(s)\n", fails);

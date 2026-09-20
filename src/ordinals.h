@@ -180,4 +180,50 @@ typedef struct {
 int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose,
                  mo_counts *counts);
 
+/* One walk of a bind opcode stream, shared by the renumberer (mo_map_apply,
+ * via mo_bind_stream below) and a second consumer that only wants to OBSERVE
+ * which ordinal/symbol each DO_BIND-family opcode binds against, without
+ * touching the buffer -- e.g. a report of what a binary imports. Decoding
+ * bind opcodes correctly (which bytes are operands vs. the next opcode) is
+ * exactly the part that must not be duplicated: see this header's own
+ * top comment on why one disagreement between two independent walks of the
+ * same kind of data is the bug class this module exists to prevent. */
+enum { MO_ORD_SELF = -1, MO_ORD_EXE = -2, MO_ORD_FLAT = -3 };
+
+/* The state of one DO_BIND-family opcode, as seen by an observer: the
+ * ordinal currently in effect (>= 1, or one of MO_ORD_*, per
+ * BIND_OPCODE_SET_DYLIB_ORDINAL_* / BIND_OPCODE_SET_DYLIB_SPECIAL_IMM), the
+ * most recently set trailing-flags symbol name (or NULL if none has been
+ * set yet in this stream), and that symbol's WEAK_IMPORT flag. */
+typedef struct {
+    int         ordinal;
+    const char *symbol;
+    int         weak;
+} mo_bind_state;
+
+typedef void (*mo_bind_obs)(const mo_bind_state *st, void *ctx);
+
+/* Walk one bind opcode stream in order, renumbering, observing, or both:
+ *   - `map` non-NULL: renumber SET_DYLIB_ORDINAL_* opcodes via `map`/`nold`,
+ *     exactly as mo_bind_stream (see mo_map_apply's callers) has always
+ *     done; *changed, if non-NULL, is incremented once per ordinal this
+ *     walk actually changed.
+ *   - `map` NULL: OBSERVE ONLY. The walk writes not a single byte of `base`
+ *     -- `nold` and `changed` are ignored -- and the out-of-range check that
+ *     an ordinal must be reads `nold` is skipped, since an observe-only walk
+ *     has no map to be out of range of.
+ *   - `obs` non-NULL: called once per DO_BIND-family opcode (DO_BIND,
+ *     DO_BIND_ADD_ADDR_ULEB, DO_BIND_ADD_ADDR_IMM_SCALED,
+ *     DO_BIND_ULEB_TIMES_SKIPPING_ULEB) with the mo_bind_state in effect at
+ *     that point -- for SET_DYLIB_ORDINAL opcodes, the ordinal AFTER any
+ *     renumbering this same walk just applied.
+ *   - `obs` NULL: renumber only, as mo_bind_stream always has.
+ * Returns 0 on success, -1 on a stream this walk can't safely process
+ * (unknown opcode; when renumbering, a new ordinal that no longer fits the
+ * encoding) -- see mo_bind_stream's own comment for the reasoning, which
+ * this function inherits unchanged. */
+int mo_bind_walk(uint8_t *base, uint32_t size, const int *map, int nold,
+                 const char *what, long *changed,
+                 mo_bind_obs obs, void *ctx);
+
 #endif /* MACHOREWRITE_ORDINALS_H */

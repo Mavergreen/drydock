@@ -169,46 +169,72 @@ static const uint8_t *mo_uleb_skip(const uint8_t *p, const uint8_t *end) {
 }
 
 /*
- * Renumber the library ordinals in one bind opcode stream. Every opcode has to
- * be decoded, not just scanned for, because operands (ULEBs, symbol names) would
- * otherwise be mistaken for opcodes. Returns 0 on success, -1 on a stream we
- * can't safely rewrite (unknown opcode, or a new ordinal that no longer fits the
- * encoding the linker chose — both refuse rather than corrupt). *changed is
- * incremented once per SET_DYLIB_ORDINAL_* opcode whose ordinal this walk
- * changed (see mo_counts).
+ * Walk one bind opcode stream in order, renumbering, observing, or both. See
+ * ordinals.h for the full contract; in short: `map == NULL` observes only
+ * (writes nothing, and skips the nold-range check, since there is no map to
+ * be out of range of); `obs == NULL` renumbers only. Every opcode has to be
+ * decoded, not just scanned for, because operands (ULEBs, symbol names)
+ * would otherwise be mistaken for opcodes. Returns 0 on success, -1 on a
+ * stream we can't safely process (unknown opcode, or -- when renumbering --
+ * a new ordinal that no longer fits the encoding the linker chose, both
+ * refusing rather than corrupting). *changed, if non-NULL, is incremented
+ * once per SET_DYLIB_ORDINAL_* opcode whose ordinal this walk changed (see
+ * mo_counts).
  */
-static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
-                                int nold, const char *what, long *changed) {
+int mo_bind_walk(uint8_t *base, uint32_t size, const int *map,
+                  int nold, const char *what, long *changed,
+                  mo_bind_obs obs, void *ctx) {
     uint8_t *p = base, *end = base + size;
+    mo_bind_state st = { 0, NULL, 0 };
     while (p < end) {
         uint8_t op = *p & BIND_OPCODE_MASK, imm = *p & BIND_IMMEDIATE_MASK;
         switch (op) {
         case BIND_OPCODE_DONE:
-        case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:  /* self/exe/flat — no ordinal */
         case BIND_OPCODE_SET_TYPE_IMM:
+            p++;
+            break;
+        case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM: {
+            /* imm is a 4-bit SIGNED field (self/exe/flat -- no ordinal to
+             * renumber, so this never writes). Sign-extend from 4 bits, then
+             * map the three defined values onto MO_ORD_*. */
+            int v = (int)imm;
+            if (v & 0x8) v -= 16;
+            switch (v) {
+            case  0: st.ordinal = MO_ORD_SELF; break;
+            case -1: st.ordinal = MO_ORD_EXE;  break;
+            case -2: st.ordinal = MO_ORD_FLAT; break;
+            default: st.ordinal = v;           break;
+            }
+            p++;
+            break;
+        }
         case BIND_OPCODE_DO_BIND:
         case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+            if (obs) obs(&st, ctx);
             p++;
             break;
         case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM: {
-            int old = imm, neu;
-            if (old < 1 || old > nold) {
-                fprintf(stderr, "ERROR: %s: ordinal %d out of range\n", what, old);
-                return -1;
+            int old = imm, neu = old;
+            if (map) {
+                if (old < 1 || old > nold) {
+                    fprintf(stderr, "ERROR: %s: ordinal %d out of range\n", what, old);
+                    return -1;
+                }
+                neu = map[old];
+                if (neu == 0) {
+                    fprintf(stderr, "ERROR: %s binds a symbol to the dylib being "
+                                    "deleted; refusing\n", what);
+                    return -1;
+                }
+                if (neu > BIND_IMMEDIATE_MASK) {
+                    fprintf(stderr, "ERROR: %s: ordinal %d no longer fits the 4-bit "
+                                    "immediate form (would need a stream rebuild)\n", what, neu);
+                    return -1;
+                }
+                *p = (uint8_t)(BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | (neu & BIND_IMMEDIATE_MASK));
+                if (neu != old && changed) (*changed)++;
             }
-            neu = map[old];
-            if (neu == 0) {
-                fprintf(stderr, "ERROR: %s binds a symbol to the dylib being "
-                                "deleted; refusing\n", what);
-                return -1;
-            }
-            if (neu > BIND_IMMEDIATE_MASK) {
-                fprintf(stderr, "ERROR: %s: ordinal %d no longer fits the 4-bit "
-                                "immediate form (would need a stream rebuild)\n", what, neu);
-                return -1;
-            }
-            *p = (uint8_t)(BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | (neu & BIND_IMMEDIATE_MASK));
-            if (neu != old) (*changed)++;
+            st.ordinal = neu;
             p++;
             break;
         }
@@ -217,34 +243,40 @@ static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
             int len = mu_decode(p + 1, end, &v);
             int neu;
             if (len <= 0) { fprintf(stderr, "ERROR: %s: bad ULEB\n", what); return -1; }
-            if (v < 1 || v > (uint64_t)nold) {
-                fprintf(stderr, "ERROR: %s: ordinal %llu out of range\n",
-                        what, (unsigned long long)v);
-                return -1;
+            neu = (int)v;
+            if (map) {
+                if (v < 1 || v > (uint64_t)nold) {
+                    fprintf(stderr, "ERROR: %s: ordinal %llu out of range\n",
+                            what, (unsigned long long)v);
+                    return -1;
+                }
+                neu = map[v];
+                if (neu == 0) {
+                    fprintf(stderr, "ERROR: %s binds a symbol to the dylib being "
+                                    "deleted; refusing\n", what);
+                    return -1;
+                }
+                /* Rewrite in place only if the new value encodes to the same
+                 * width; growing the stream would shift all of LINKEDIT. */
+                if (mu_minlen((uint64_t)neu) != len) {
+                    fprintf(stderr, "ERROR: %s: ULEB ordinal %d changes width "
+                                    "(would need a stream rebuild)\n", what, neu);
+                    return -1;
+                }
+                for (int i = 0; i < len; i++) {
+                    uint8_t byte = (uint8_t)(((uint64_t)neu >> (7 * i)) & 0x7f);
+                    if (i + 1 < len) byte |= 0x80;
+                    p[1 + i] = byte;
+                }
+                if ((uint64_t)neu != v && changed) (*changed)++;
             }
-            neu = map[v];
-            if (neu == 0) {
-                fprintf(stderr, "ERROR: %s binds a symbol to the dylib being "
-                                "deleted; refusing\n", what);
-                return -1;
-            }
-            /* Rewrite in place only if the new value encodes to the same width;
-             * growing the stream would shift all of LINKEDIT. */
-            if (mu_minlen((uint64_t)neu) != len) {
-                fprintf(stderr, "ERROR: %s: ULEB ordinal %d changes width "
-                                "(would need a stream rebuild)\n", what, neu);
-                return -1;
-            }
-            for (int i = 0; i < len; i++) {
-                uint8_t byte = (uint8_t)(((uint64_t)neu >> (7 * i)) & 0x7f);
-                if (i + 1 < len) byte |= 0x80;
-                p[1 + i] = byte;
-            }
-            if ((uint64_t)neu != v) (*changed)++;
+            st.ordinal = neu;
             p += 1 + len;
             break;
         }
         case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+            st.symbol = (const char *)(p + 1);
+            st.weak = (imm & BIND_SYMBOL_FLAGS_WEAK_IMPORT) != 0;
             p++;
             while (p < end && *p) p++;      /* NUL-terminated symbol name */
             if (p < end) p++;
@@ -252,12 +284,16 @@ static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
         case BIND_OPCODE_SET_ADDEND_SLEB:
         case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
         case BIND_OPCODE_ADD_ADDR_ULEB:
+            p = (uint8_t *)mo_uleb_skip(p + 1, end);
+            break;
         case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
             p = (uint8_t *)mo_uleb_skip(p + 1, end);
+            if (obs) obs(&st, ctx);
             break;
         case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
             p = (uint8_t *)mo_uleb_skip(p + 1, end);
             p = (uint8_t *)mo_uleb_skip(p, end);
+            if (obs) obs(&st, ctx);
             break;
         default:
             fprintf(stderr, "ERROR: %s: unknown bind opcode 0x%02x\n", what, op);
@@ -265,6 +301,13 @@ static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
         }
     }
     return 0;
+}
+
+/* Thin renumber-only call into mo_bind_walk, for mo_map_apply's three
+ * streams -- keeps their call sites unchanged. */
+static int mo_bind_stream(uint8_t *base, uint32_t size, const int *map,
+                                int nold, const char *what, long *changed) {
+    return mo_bind_walk(base, size, map, nold, what, changed, NULL, NULL);
 }
 
 /* Does the `len`-byte region starting at `off` fit inside a `size`-byte
