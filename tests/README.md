@@ -20,10 +20,10 @@ Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. The retirement plan says it outright: "a wrapper that passes the test suite but breaks a real caller is a failure" |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
-## Not run by `ctest`: the two by-hand sweeps
+## Not run by `ctest`: the by-hand sweeps
 
-Two scripts here need more than a build tree and are run deliberately, on real
-hardware, with their results committed:
+Three scripts here need more than a build tree and are run deliberately, on
+real hardware, with their results committed or reported by hand:
 
 - **`differential.sh`** runs TWO builds of these tools over hundreds of real
   Mach-Os and proves they behave identically. It exists for the "the work
@@ -51,8 +51,36 @@ hardware, with their results committed:
   shared `src/` library; it is not what `known_callers`' pinned digests were
   measured against and is named here only so both landmarks are on record.)
   The bindir it ran against is recorded in the matrix header.
-
-`compat-matrix.tsv` is a **committed artifact, not a report**: Task 2 of the
+- **`insert-dylib-diff.sh`** is the same shape of proof as `differential.sh`,
+  aimed at `compat/insert_dylib.sh` instead of a same-repo refactor: it runs
+  the wrapper and a real build of
+  [`Wowfunhappy/insert_dylib`](https://github.com/Wowfunhappy/insert_dylib)
+  (pinned at `bd221b8`, the same commit `compat/insert_dylib.sh`'s own header
+  and `compat/README.md`'s divergence table are read from) side by side over
+  real Mach-Os, sweeping `--inplace --weak --overwrite --strip-codesig
+  --no-strip-codesig`, both positional arities, and `--all-yes` (which every
+  invocation carries, not a swept on/off). Unlike `differential.sh`, it does
+  **not** compare output bytes — `docs/prior-art.md` and this script's own
+  header say why not — only exit code, stdout shape, which output path got
+  written, and Mach-O validity. **Run 2026-09-20** against a `clang -O2
+  -Wall` build of the fork's single `main.c` (the Xcode project was not
+  tried; the direct compile worked first try) over 85 real files under
+  `/Applications`, `/usr/lib`, `/usr/bin`, `/bin`, `/sbin` and `/usr/sbin`
+  (720 comparisons): it found the interface differences already in
+  `compat/README.md`'s table, plus three genuine ones that are NOT — noted
+  here rather than folded into that table, which records deliberate
+  divergences, not surprises. (1) `--inplace` together with an explicit
+  3rd positional: the fork always writes in place, silently ignoring the
+  name; this wrapper always writes the named file, ignoring `--inplace` —
+  the two sides pick opposite winners, reproduced on every file tested. (2)
+  On a header-pad-exhausted input the fork's header-growth trick needs
+  `__PAGEZERO` to shrink and has none to shrink on any dylib (dylibs do not
+  carry one) — it reports success anyway, and the file it wrote fails
+  `machorewrite verify`'s own plausibility check; this wrapper refuses
+  instead (`EX_REFUSED`, "growing needs allow-grow"), leaving the input
+  untouched. (3) On an unwritable `--inplace` target the fork's own
+  diagnostic lands on ITS STDOUT (`main.c`'s `printf`, not `perror`); this
+  wrapper's lands on stderr only — both still exit 1 having touched nothing. Task 2 of the
 retirement plan replaced five of the six C sources with shell wrappers, and a
 later commit replaced the sixth, `fix_macho`, so all six now exist as C only in
 git history. The matrix and the SHA-256s in
