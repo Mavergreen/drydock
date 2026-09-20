@@ -41,6 +41,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/mman.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -329,16 +334,43 @@ static void note(const mo_bind_state *st, void *ctx) {
     s->n++;
 }
 
+/* Exercises every DO_BIND-family opcode (DO_BIND, DO_BIND_ADD_ADDR_ULEB,
+ * DO_BIND_ULEB_TIMES_SKIPPING_ULEB -- DO_BIND_ADD_ADDR_IMM_SCALED has no
+ * operand to hand-encode so it is not additionally exercised here) and
+ * every ordinal-setting opcode: SET_DYLIB_ORDINAL_IMM, SET_DYLIB_ORDINAL_ULEB
+ * (previously untested), and SET_DYLIB_SPECIAL_IMM for all three defined
+ * specials (previously only FLAT was tested -- SELF and EXE were not, so
+ * swapping their case labels in ordinals.c passed the whole suite). */
 static void test_bind_walk_observes(void) {
     uint8_t stream[] = {
+        /* event 0: ordinal 2, weak _NSBeep, via DO_BIND */
         BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 2,
         BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | BIND_SYMBOL_FLAGS_WEAK_IMPORT,
         '_','N','S','B','e','e','p','\0',
         BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER,
         BIND_OPCODE_DO_BIND,
+        /* event 1: FLAT, non-weak _memcpy, via DO_BIND */
         BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | (BIND_SPECIAL_DYLIB_FLAT_LOOKUP & BIND_IMMEDIATE_MASK),
         BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0,
         '_','m','e','m','c','p','y','\0',
+        BIND_OPCODE_DO_BIND,
+        /* event 2: ULEB ordinal 130, weak _extern, via DO_BIND_ADD_ADDR_ULEB */
+        BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB,
+        0x82, 0x01,                              /* ULEB128 130 */
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | BIND_SYMBOL_FLAGS_WEAK_IMPORT,
+        '_','e','x','t','e','r','n','\0',
+        BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB,
+        0x00,                                    /* ULEB128 0 */
+        /* event 3: SELF, non-weak _self, via DO_BIND_ULEB_TIMES_SKIPPING_ULEB */
+        BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | (BIND_SPECIAL_DYLIB_SELF & BIND_IMMEDIATE_MASK),
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0,
+        '_','s','e','l','f','\0',
+        BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB,
+        0x01, 0x00,                              /* ULEB128 1, ULEB128 0 */
+        /* event 4: EXE, non-weak _exe, via DO_BIND */
+        BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | (BIND_SPECIAL_DYLIB_MAIN_EXECUTABLE & BIND_IMMEDIATE_MASK),
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0,
+        '_','e','x','e','\0',
         BIND_OPCODE_DO_BIND,
         BIND_OPCODE_DONE,
     };
@@ -349,18 +381,159 @@ static void test_bind_walk_observes(void) {
     int rc = mo_bind_walk(copy, (uint32_t)sizeof copy, NULL, 0, "test", NULL,
                           note, &s);
     CHECK(rc == 0, "observe-only walk returned %d", rc);
-    CHECK(s.n == 2, "saw %d binds, wanted 2", s.n);
-    CHECK(s.ord[0] == 2, "first ordinal %d, wanted 2", s.ord[0]);
-    CHECK(strcmp(s.sym[0], "_NSBeep") == 0, "first symbol '%s'", s.sym[0]);
-    CHECK(s.weak[0] == 1, "first bind not reported weak");
-    CHECK(s.ord[1] == MO_ORD_FLAT, "second ordinal %d, wanted FLAT", s.ord[1]);
-    CHECK(strcmp(s.sym[1], "_memcpy") == 0, "second symbol '%s'", s.sym[1]);
-    CHECK(s.weak[1] == 0, "second bind reported weak");
+    CHECK(s.n == 5, "saw %d binds, wanted 5", s.n);
+    CHECK(s.ord[0] == 2, "event 0 ordinal %d, wanted 2", s.ord[0]);
+    CHECK(strcmp(s.sym[0], "_NSBeep") == 0, "event 0 symbol '%s'", s.sym[0]);
+    CHECK(s.weak[0] == 1, "event 0 not reported weak");
+    CHECK(s.ord[1] == MO_ORD_FLAT, "event 1 ordinal %d, wanted FLAT", s.ord[1]);
+    CHECK(strcmp(s.sym[1], "_memcpy") == 0, "event 1 symbol '%s'", s.sym[1]);
+    CHECK(s.weak[1] == 0, "event 1 reported weak");
+    CHECK(s.ord[2] == 130, "event 2 ordinal %d, wanted 130 (ULEB)", s.ord[2]);
+    CHECK(strcmp(s.sym[2], "_extern") == 0, "event 2 symbol '%s'", s.sym[2]);
+    CHECK(s.weak[2] == 1, "event 2 not reported weak");
+    CHECK(s.ord[3] == MO_ORD_SELF, "event 3 ordinal %d, wanted SELF", s.ord[3]);
+    CHECK(strcmp(s.sym[3], "_self") == 0, "event 3 symbol '%s'", s.sym[3]);
+    CHECK(s.weak[3] == 0, "event 3 reported weak");
+    CHECK(s.ord[4] == MO_ORD_EXE, "event 4 ordinal %d, wanted EXE", s.ord[4]);
+    CHECK(strcmp(s.sym[4], "_exe") == 0, "event 4 symbol '%s'", s.sym[4]);
+    CHECK(s.weak[4] == 0, "event 4 reported weak");
 
-    /* An observe-only walk writes NOTHING. This is the invariant that lets the
-     * reporter share the renumberer's decoder. */
+    /* Under map == NULL, every ordinal-setting opcode's write (when its
+     * guard is bypassed) reconstructs the identical bytes it read -- see
+     * ordinals.c's mo_bind_walk, SET_DYLIB_ORDINAL_IMM/_ULEB -- so this
+     * memcmp cannot, by construction, catch a write to an unchanged
+     * ordinal; it exists to catch a FUTURE change that makes that no
+     * longer true. What actually proves no STORE ever executes, including
+     * one that would reproduce identical bytes, is
+     * test_bind_walk_observe_never_writes_even_under_mprotect below: it
+     * runs the same kind of walk over a PROT_READ page, so an unguarded
+     * write faults on the instruction, not on the bytes it would produce. */
     CHECK(memcmp(copy, stream, sizeof stream) == 0,
           "observe-only walk modified the stream");
+}
+
+/* Coverage for Finding 2's fix: an undefined BIND_OPCODE_SET_DYLIB_SPECIAL_IMM
+ * value must report MO_ORD_UNKNOWN, not the raw (sign-extended) special
+ * value echoed back -- because MO_ORD_FLAT is itself the integer -3, and an
+ * undefined special of -3 (this SDK has no name for it; a newer SDK calls it
+ * BIND_SPECIAL_DYLIB_WEAK_LOOKUP) would otherwise be indistinguishable from
+ * a real FLAT lookup to any caller comparing against MO_ORD_FLAT. */
+static void test_bind_walk_observe_reports_undefined_special_as_unknown(void) {
+    uint8_t stream[] = {
+        BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | 0x0D,   /* raw -3, sign-extended */
+        BIND_OPCODE_DO_BIND,
+        BIND_OPCODE_DONE,
+    };
+    struct seen s = {0};
+    int rc = mo_bind_observe(stream, (uint32_t)sizeof stream, "test", note, &s);
+    CHECK(rc == 0, "observe-only walk returned %d", rc);
+    CHECK(s.n == 1, "saw %d binds, wanted 1", s.n);
+    CHECK(s.ord[0] == MO_ORD_UNKNOWN,
+          "undefined special -3 reported as %d, wanted MO_ORD_UNKNOWN -- it "
+          "must not collide with MO_ORD_FLAT, which is also -3", s.ord[0]);
+}
+
+/* Coverage for Finding 3's fix: a decoded ULEB ordinal must be bounded
+ * against MO_MAX_DYLIBS even in observe mode, where there is no map/nold to
+ * check it against -- otherwise an untrusted, arbitrarily large ULEB value
+ * becomes an implementation-defined `int` (C99 6.3.1.3p3) instead of a
+ * refusal. 1000 (> MO_MAX_DYLIBS == 253) ULEB128-encodes as {0xE8, 0x07}. */
+static void test_bind_walk_observe_refuses_out_of_range_uleb_ordinal(void) {
+    uint8_t stream[] = {
+        BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB,
+        0xE8, 0x07,                                 /* ULEB128 1000 */
+        BIND_OPCODE_DO_BIND,
+        BIND_OPCODE_DONE,
+    };
+    int rc = mo_bind_observe(stream, (uint32_t)sizeof stream, "test", NULL, NULL);
+    CHECK(rc == -1, "observe-only walk accepted an out-of-range ULEB ordinal "
+                    "(rc=%d)", rc);
+}
+
+/* Coverage for Finding 1's fix: a trailing symbol name that runs off the end
+ * of the stream with no NUL must refuse in observe mode, rather than hand
+ * the observer a pointer that is not a valid C string -- note()'s own
+ * snprintf("%s", ...) is exactly the kind of read that would walk off the
+ * end of this buffer if st->symbol were set here. */
+static void test_bind_walk_observe_refuses_unterminated_symbol(void) {
+    uint8_t stream[] = {
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | 0,
+        '_','o','o','p','s',                        /* no trailing NUL */
+    };
+    int rc = mo_bind_observe(stream, (uint32_t)sizeof stream, "test", NULL, NULL);
+    CHECK(rc == -1, "observe-only walk accepted an unterminated symbol name "
+                    "(rc=%d)", rc);
+}
+
+static sigjmp_buf mo_fault_jmp;
+static volatile sig_atomic_t mo_faulted;
+
+static void mo_fault_handler(int sig) {
+    (void)sig;
+    mo_faulted = 1;
+    siglongjmp(mo_fault_jmp, 1);
+}
+
+/* Finding 5(b): the mechanism that actually establishes "an observe-only
+ * walk writes nothing" -- which test_bind_walk_observes' memcmp cannot, by
+ * construction (see its own comment) -- is to make an unguarded write
+ * fault on the INSTRUCTION, not on the bytes it would produce. Runs the
+ * same kind of stream mo_bind_observe would ever see over a page mapped
+ * PROT_READ; any store into it raises SIGSEGV/SIGBUS, caught here and
+ * turned into a normal CHECK failure instead of taking down the whole test
+ * binary. */
+static void test_bind_walk_observe_never_writes_even_under_mprotect(void) {
+    long pagesize = sysconf(_SC_PAGESIZE);
+    if (pagesize <= 0) pagesize = 4096;
+    void *page = mmap(NULL, (size_t)pagesize, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (page == MAP_FAILED) {
+        CHECK(0, "mmap failed: %s", strerror(errno));
+        return;
+    }
+
+    uint8_t stream[] = {
+        BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 2,
+        BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM | BIND_SYMBOL_FLAGS_WEAK_IMPORT,
+        '_','N','S','B','e','e','p','\0',
+        BIND_OPCODE_DO_BIND,
+        BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB,
+        0x82, 0x01,                              /* ULEB128 130 */
+        BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB,
+        0x00,                                    /* ULEB128 0 */
+        BIND_OPCODE_DONE,
+    };
+    memcpy(page, stream, sizeof stream);
+
+    if (mprotect(page, (size_t)pagesize, PROT_READ) != 0) {
+        CHECK(0, "mprotect(PROT_READ) failed: %s", strerror(errno));
+        munmap(page, (size_t)pagesize);
+        return;
+    }
+
+    struct sigaction sa, old_segv, old_bus;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = mo_fault_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGSEGV, &sa, &old_segv);
+    sigaction(SIGBUS, &sa, &old_bus);
+
+    mo_faulted = 0;
+    int rc = -99;
+    if (sigsetjmp(mo_fault_jmp, 1) == 0) {
+        rc = mo_bind_observe((const uint8_t *)page, (uint32_t)sizeof stream,
+                             "mprotect-test", NULL, NULL);
+    }
+
+    sigaction(SIGSEGV, &old_segv, NULL);
+    sigaction(SIGBUS, &old_bus, NULL);
+    mprotect(page, (size_t)pagesize, PROT_READ | PROT_WRITE);
+    munmap(page, (size_t)pagesize);
+
+    CHECK(!mo_faulted, "observe-only walk faulted writing to a PROT_READ "
+                       "page -- it executed a store it must never execute");
+    CHECK(rc == 0, "observe-only walk over PROT_READ memory returned %d", rc);
 }
 
 int main(void) {
@@ -373,6 +546,10 @@ int main(void) {
     test_verify_applies_needs_a_live_relation_AND_a_disturbance();
     test_dylib_kind_names();
     test_bind_walk_observes();
+    test_bind_walk_observe_reports_undefined_special_as_unknown();
+    test_bind_walk_observe_refuses_out_of_range_uleb_ordinal();
+    test_bind_walk_observe_refuses_unterminated_symbol();
+    test_bind_walk_observe_never_writes_even_under_mprotect();
 
     if (fails) {
         printf("%d failure(s)\n", fails);

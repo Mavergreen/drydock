@@ -180,21 +180,33 @@ typedef struct {
 int mo_map_apply(uint8_t *buf, size_t size, const mo_map *map, int verbose,
                  mo_counts *counts);
 
-/* One walk of a bind opcode stream, shared by the renumberer (mo_map_apply,
- * via mo_bind_stream below) and a second consumer that only wants to OBSERVE
- * which ordinal/symbol each DO_BIND-family opcode binds against, without
- * touching the buffer -- e.g. a report of what a binary imports. Decoding
- * bind opcodes correctly (which bytes are operands vs. the next opcode) is
- * exactly the part that must not be duplicated: see this header's own
- * top comment on why one disagreement between two independent walks of the
- * same kind of data is the bug class this module exists to prevent. */
-enum { MO_ORD_SELF = -1, MO_ORD_EXE = -2, MO_ORD_FLAT = -3 };
+/* One walk of a bind opcode stream, shared by the renumberer (mo_map_apply)
+ * and a second consumer that only wants to OBSERVE which ordinal/symbol
+ * each DO_BIND-family opcode binds against, without touching the buffer --
+ * e.g. a report of what a binary imports. Decoding bind opcodes correctly
+ * (which bytes are operands vs. the next opcode) is exactly the part that
+ * must not be duplicated: see this header's own top comment on why one
+ * disagreement between two independent walks of the same kind of data is
+ * the bug class this module exists to prevent. */
+enum { MO_ORD_SELF = -1, MO_ORD_EXE = -2, MO_ORD_FLAT = -3,
+       /* Any BIND_OPCODE_SET_DYLIB_SPECIAL_IMM value this module does not
+        * itself assign a meaning to -- a newer SDK's
+        * BIND_SPECIAL_DYLIB_WEAK_LOOKUP (-3) among them, since these bytes
+        * come from a file, not from the SDK this was built with. -100 is
+        * chosen to fall outside BOTH ranges a real value could ever be: a
+        * raw special immediate is a 4-bit signed field (-8..7), and a real
+        * ordinal is 1..MO_MAX_DYLIBS. Echoing the undecoded value back
+        * instead (an earlier version of this code did) is what let an
+        * undefined special of -3 misreport as MO_ORD_FLAT, which is also
+        * -3. */
+       MO_ORD_UNKNOWN = -100 };
 
 /* The state of one DO_BIND-family opcode, as seen by an observer: the
- * ordinal currently in effect (>= 1, or one of MO_ORD_*, per
- * BIND_OPCODE_SET_DYLIB_ORDINAL_* / BIND_OPCODE_SET_DYLIB_SPECIAL_IMM), the
- * most recently set trailing-flags symbol name (or NULL if none has been
- * set yet in this stream), and that symbol's WEAK_IMPORT flag. */
+ * ordinal currently in effect (>= 1, MO_ORD_UNKNOWN, or one of the other
+ * MO_ORD_*, per BIND_OPCODE_SET_DYLIB_ORDINAL_* /
+ * BIND_OPCODE_SET_DYLIB_SPECIAL_IMM), the most recently set trailing-flags
+ * symbol name (NULL if none has been set yet in this stream), and that
+ * symbol's WEAK_IMPORT flag. */
 typedef struct {
     int         ordinal;
     const char *symbol;
@@ -203,27 +215,48 @@ typedef struct {
 
 typedef void (*mo_bind_obs)(const mo_bind_state *st, void *ctx);
 
-/* Walk one bind opcode stream in order, renumbering, observing, or both:
+/* Walk one bind opcode stream in order, renumbering, observing, or both.
+ * The decode itself -- which bytes are operands vs. the next opcode --
+ * lives here exactly once; see this comment block's own opening paragraph
+ * for why that matters:
  *   - `map` non-NULL: renumber SET_DYLIB_ORDINAL_* opcodes via `map`/`nold`,
- *     exactly as mo_bind_stream (see mo_map_apply's callers) has always
- *     done; *changed, if non-NULL, is incremented once per ordinal this
- *     walk actually changed.
- *   - `map` NULL: OBSERVE ONLY. The walk writes not a single byte of `base`
- *     -- `nold` and `changed` are ignored -- and the out-of-range check that
- *     an ordinal must be reads `nold` is skipped, since an observe-only walk
- *     has no map to be out of range of.
+ *     exactly as this module always has; *changed, if non-NULL, is
+ *     incremented once per ordinal this walk actually changed.
+ *   - `map` NULL: OBSERVE ONLY. The walk writes not a single byte of
+ *     `base` -- `nold` and `changed` are ignored, and the check that an
+ *     ordinal is within the renumbering MAP's range (which needs `nold`)
+ *     is skipped, since an observe-only walk has no map to be out of range
+ *     of. A different check still applies: a decoded ULEB ordinal is
+ *     bounded against MO_MAX_DYLIBS -- the format's own ceiling -- before
+ *     being trusted as an `int`, since it comes straight from the file. A
+ *     trailing symbol name that runs off the end of the stream with no NUL
+ *     also refuses, rather than handing the observer a pointer that is not
+ *     a valid C string. Prefer mo_bind_observe below for a caller that only
+ *     ever observes: it keeps `base` const at the call boundary instead of
+ *     relying on this flag.
  *   - `obs` non-NULL: called once per DO_BIND-family opcode (DO_BIND,
  *     DO_BIND_ADD_ADDR_ULEB, DO_BIND_ADD_ADDR_IMM_SCALED,
  *     DO_BIND_ULEB_TIMES_SKIPPING_ULEB) with the mo_bind_state in effect at
  *     that point -- for SET_DYLIB_ORDINAL opcodes, the ordinal AFTER any
  *     renumbering this same walk just applied.
- *   - `obs` NULL: renumber only, as mo_bind_stream always has.
- * Returns 0 on success, -1 on a stream this walk can't safely process
- * (unknown opcode; when renumbering, a new ordinal that no longer fits the
- * encoding) -- see mo_bind_stream's own comment for the reasoning, which
- * this function inherits unchanged. */
+ *   - `obs` NULL: renumber only, as this module always has.
+ * Returns 0 on success, -1 on a stream this walk can't safely process:
+ * an unknown opcode; an ordinal out of range; when renumbering, a new
+ * ordinal that no longer fits the encoding the linker chose; or, when
+ * observing, a ULEB ordinal out of range or an unterminated trailing
+ * symbol name -- all refusing rather than corrupting or guessing. */
 int mo_bind_walk(uint8_t *base, uint32_t size, const int *map, int nold,
                  const char *what, long *changed,
                  mo_bind_obs obs, void *ctx);
+
+/* Observe-only entry point: never writes to `base`, so `base` never has to
+ * stop being const at the call boundary the way it would passing through
+ * mo_bind_walk's `uint8_t *`. Casts away const exactly once, internally,
+ * into the shared mo_bind_walk with `map = NULL` -- read-only-ness becomes
+ * a property of which function a caller chose, not a runtime flag it has
+ * to get right. Task 6's imports reporter calls this, not mo_bind_walk
+ * with a NULL map. */
+int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
+                    mo_bind_obs obs, void *ctx);
 
 #endif /* MACHOREWRITE_ORDINALS_H */
