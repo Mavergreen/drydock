@@ -2036,8 +2036,11 @@ mts "$T/dylib_retype_rt_fixture" "dylib retype @loader_path/liba.dylib $start_ki
 
 # `dylib reexport PATH` and `dylib retype PATH reexport` must agree byte for
 # byte -- retype subsumes reexport, it does not reimplement it.
+# ONE link, then a copy. Linking twice would compare two different binaries:
+# this host's ld is byte-deterministic across invocations, so that passed here,
+# and macos-26's is not, so it failed in CI on the first push.
 build_main "$T/dylib_retype_eq_a"
-build_main "$T/dylib_retype_eq_b"
+cp "$T/dylib_retype_eq_a" "$T/dylib_retype_eq_b"
 mts "$T/dylib_retype_eq_a" "dylib reexport @loader_path/liba.dylib" \
     >"$T/dylib_retype_eq_a.out" || bad "dylib: reexport (for retype comparison)" "$(cat "$T/dylib_retype_eq_a.out")"
 mts "$T/dylib_retype_eq_b" "dylib retype @loader_path/liba.dylib reexport" \
