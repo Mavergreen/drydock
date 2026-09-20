@@ -323,6 +323,131 @@ else
     fi
 fi
 
+# ---- 8. --overwrite suppresses prompt 4 (OUT already exists) --------------
+# Reuses the notty helper built for case 5 above. --no-strip-codesig and a
+# local, empty "dylib" keep prompts 1, 2 and 5 out of the way, so prompt 4 is
+# the only one either invocation below can reach.
+cp "$FIXTURE" "$T/ov"
+: >"$T/ov_out"
+: >"$T/ov.dylib"
+if [ ! -x "$T/notty" ]; then
+    skip "--overwrite" "no notty helper (see the no-tty case above)"
+else
+    ( cd "$T" && "$T/notty" "$BIN/insert_dylib" --no-strip-codesig \
+        ov.dylib ov ov_out </dev/null ) >"$T/8a.out" 2>"$T/8a.err"
+    rc=$?
+    [ "$rc" -eq 1 ] \
+        && ok "no --overwrite: an existing OUT refuses (prompt 4, no tty to ask on)" \
+        || bad "no --overwrite" "exit $rc (want 1): $(cat "$T/8a.err")"
+
+    ( cd "$T" && "$T/notty" "$BIN/insert_dylib" --no-strip-codesig --overwrite \
+        ov.dylib ov ov_out </dev/null ) >"$T/8b.out" 2>"$T/8b.err"
+    rc=$?
+    [ "$rc" -eq 0 ] \
+        && ok "--overwrite: the same existing-OUT case succeeds without asking at all" \
+        || bad "--overwrite" "exit $rc (want 0): $(cat "$T/8b.err")"
+fi
+
+# ---- 9. prompt 2: the binary already names this dylib ----------------------
+# tests/fixture.macho already links /usr/lib/libSystem.B.dylib (confirmed by
+# hand: `machorewrite info` shows "ordinal=1 path=/usr/lib/libSystem.B.dylib"),
+# so inserting that exact path is the direct way to reach this prompt's
+# detect step, not just steer around it. --no-strip-codesig keeps prompt 1
+# out of the way; the path is real, so prompt 5 cannot fire either.
+cp "$FIXTURE" "$T/dup"
+if [ ! -x "$T/notty" ]; then
+    skip "prompt 2 (duplicate dylib)" "no notty helper (see the no-tty case above)"
+else
+    ( cd "$T" && "$T/notty" "$BIN/insert_dylib" --no-strip-codesig \
+        /usr/lib/libSystem.B.dylib dup dup_out </dev/null ) >"$T/9.out" 2>"$T/9.err"
+    rc=$?
+    [ "$rc" -eq 1 ] \
+        && ok "prompt 2: a dylib the binary already names refuses (no tty to ask on)" \
+        || bad "prompt 2" "exit $rc (want 1): $(cat "$T/9.err")"
+
+    # --all-yes answers yes rather than refusing, and the duplicate is added
+    # anyway -- insert_dylib never de-duplicates -- so the binary ends up
+    # with TWO load commands naming the same path.
+    ( cd "$T" && "$BIN/insert_dylib" --all-yes --no-strip-codesig \
+        /usr/lib/libSystem.B.dylib dup dup_out2 ) >"$T/9b.out" 2>"$T/9b.err"
+    rc=$?
+    [ "$rc" -eq 0 ] \
+        && ok "prompt 2: --all-yes proceeds past the duplicate" \
+        || bad "prompt 2 --all-yes" "exit $rc (want 0): $(cat "$T/9b.err")"
+    got=$("$BIN/machorewrite" info "$T/dup_out2" 2>/dev/null \
+        | grep -c 'path=/usr/lib/libSystem\.B\.dylib$')
+    [ "$got" -eq 2 ] \
+        && ok "prompt 2: the duplicate was really added (two load commands now name it)" \
+        || bad "prompt 2 duplicate count" "got $got load command(s) naming it, want 2"
+fi
+
+# ---- 10. prompt 5: the dylib path itself does not exist -------------------
+# A path this test invents, not steered around: --no-strip-codesig keeps
+# prompt 1 out of the way, and nothing in "$FIXTURE" already names it, so
+# prompt 2 cannot fire either.
+cp "$FIXTURE" "$T/pf"
+if [ ! -x "$T/notty" ]; then
+    skip "prompt 5 (dylib path absent)" "no notty helper (see the no-tty case above)"
+else
+    ( cd "$T" && "$T/notty" "$BIN/insert_dylib" --no-strip-codesig \
+        /nonexistent/definitely/not/here.dylib pf pf_out </dev/null ) \
+        >"$T/10.out" 2>"$T/10.err"
+    rc=$?
+    [ "$rc" -eq 1 ] \
+        && ok "prompt 5: a dylib path that does not exist refuses (no tty to ask on)" \
+        || bad "prompt 5" "exit $rc (want 1): $(cat "$T/10.err")"
+
+    ( cd "$T" && "$BIN/insert_dylib" --all-yes --no-strip-codesig \
+        /nonexistent/definitely/not/here.dylib pf pf_out2 ) >"$T/10b.out" 2>"$T/10b.err"
+    rc=$?
+    [ "$rc" -eq 0 ] \
+        && ok "prompt 5: --all-yes proceeds despite the path not existing" \
+        || bad "prompt 5 --all-yes" "exit $rc (want 0): $(cat "$T/10b.err")"
+fi
+
+# ---- 11. --strip-codesig really removes LC_CODE_SIGNATURE -----------------
+# Dropping the statement compat/translate.sh emits for --strip-codesig would
+# not be caught by any case above: this is the one assertion that reads the
+# OUTPUT's own load commands and finds LC_CODE_SIGNATURE gone, not merely
+# that the run exited 0.
+cp "$FIXTURE" "$T/cs"
+if command -v codesign >/dev/null 2>&1 && codesign -s - "$T/cs" >/dev/null 2>&1; then
+    ( cd "$T" && "$BIN/insert_dylib" --all-yes --strip-codesig \
+        /usr/lib/libfoo.dylib cs cs_out ) >"$T/11.out" 2>"$T/11.err"
+    rc=$?
+    [ "$rc" -eq 0 ] \
+        && ok "--strip-codesig: exits 0" \
+        || bad "--strip-codesig" "exit $rc: $(cat "$T/11.err")"
+    "$BIN/machorewrite" info "$T/cs_out" 2>/dev/null | grep -q LC_CODE_SIGNATURE \
+        && bad "--strip-codesig" "LC_CODE_SIGNATURE is still present in the output" \
+        || ok "--strip-codesig: LC_CODE_SIGNATURE is gone from the output"
+else
+    skip "--strip-codesig" "codesign -s - is not available on this host"
+fi
+
+# ---- 12. --weak's two statements run in the right order --------------------
+# Section 2's fixture already carried a load command for the path being
+# inserted (needed there so `imports` had a real bind to report against),
+# which means `dylib retype` would find something to weaken whichever
+# statement ran first -- order was never actually observed. Here the path is
+# NOT already present in "$FIXTURE": `dylib retype` on a path nothing names
+# yet is a silent no-op (`machorewrite: PATH matched nothing`, exit 0 --
+# confirmed by hand), so a swapped emission order would still exit 0 and
+# still install a binary, just one whose new load command stayed
+# LC_LOAD_DYLIB instead of becoming LC_LOAD_WEAK_DYLIB. `machorewrite info`
+# names the load-command KIND on its own "LC[n] <NAME> cmdsize=..." line, so
+# this reads that rather than the exit code.
+cp "$FIXTURE" "$T/ord"
+( cd "$T" && "$BIN/insert_dylib" --all-yes --weak --no-strip-codesig \
+    /usr/lib/libfoo.dylib ord ord_out ) >"$T/12.out" 2>"$T/12.err"
+rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "--weak order: exits 0" \
+    || bad "--weak order" "exit $rc: $(cat "$T/12.err")"
+"$BIN/machorewrite" info "$T/ord_out" 2>/dev/null | grep -q LC_LOAD_WEAK_DYLIB \
+    && ok "--weak order: append then retype -- the new command is LC_LOAD_WEAK_DYLIB" \
+    || bad "--weak order" "no LC_LOAD_WEAK_DYLIB in the output; retype ran before append had anything to retype"
+
 echo "insert_dylib_test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
 exit 0

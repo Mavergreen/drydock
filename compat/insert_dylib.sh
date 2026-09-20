@@ -5,12 +5,9 @@
 #
 #   insert_dylib [flags] dylib_path binary_path [new_binary_path]
 #
-# NO KNOWN CALLERS. Unlike the six historical tools compat/ wraps, this repo
-# never shipped insert_dylib, and no caller of it has ever been found; it is
-# convenience for someone who already knows this fork's grammar, not
-# compatibility debt. tests/known-callers.sh -- the decisive gate for the
-# other six -- therefore has nothing to replay here and stays silent for
-# this tool on purpose, not by oversight.
+# NO KNOWN CALLERS: unlike the six historical tools compat/ wraps, this repo
+# never shipped insert_dylib, so tests/known-callers.sh has nothing to replay
+# here and stays silent for this tool on purpose, not by oversight.
 #
 # THE SIX FLAGS. compat/translate.sh's mt_tr_insert_dylib carries the exact
 # statement mapping (its own "insert_dylib" section); --inplace, --overwrite
@@ -19,43 +16,11 @@
 #
 # FIVE PROMPTS, READ FROM /dev/tty, NEVER FROM STDIN -- stdin is the
 # statement channel to machorewrite, the same channel every other wrapper
-# here uses it for. With --all-yes, none of the five is asked; id_confirm
-# answers yes without touching a terminal at all. Without --all-yes, and
-# with no /dev/tty to ask on, id_confirm REFUSES, naming --all-yes, rather
-# than blocking a build script forever on a read nothing will ever answer.
-#   1. LC_CODE_SIGNATURE found -- only when neither --strip-codesig nor
-#      --no-strip-codesig was given, and only when the binary actually
-#      carries one. Answering yes (or --all-yes) is what turns the ambiguous
-#      "neither flag" case into an effective --strip-codesig before
-#      compat/translate.sh is ever called (see MT_ID_EFFSTRIP below and that
-#      file's own header for why the resolution happens here, not there).
-#   2. the binary already names this dylib -- warns about the duplicate
-#      `dylib append` is about to add regardless; declining refuses the run.
-#   3. NOT reproduced as its own check. `dylib append`'s own header-pad
-#      refusal (forwarded below through machorewrite's exit code) already
-#      says no to the same question a hand-rolled space estimate would ask a
-#      second time, so this wrapper never estimates space itself -- see
-#      "DECLARED DIVERGENCES" below.
-#   4. OUT already exists (suppressed by --overwrite). --inplace's OUT is
-#      always the input, which always exists, so --inplace needs one of
-#      --overwrite or a yes here on every run.
-#   5. the dylib_path argument does not name a real file on THIS
-#      filesystem -- a check on the string the caller passed, not on
-#      anything the target binary carries.
+# here uses it for. See each PROMPT N below for what it asks and why;
+# id_confirm is where --all-yes and "no /dev/tty to ask on" are decided.
 #
-# DECLARED DIVERGENCES from the fork (compat/README.md's insert_dylib table
-# has the full list, each row naming the test that pins it):
-#   * 32-bit input is refused outright, below, before machorewrite ever
-#     runs -- this toolkit is 64-bit only everywhere, deliberately
-#     (docs/prior-art.md), not a gap specific to this one tool.
-#   * an image carrying LC_LAZY_LOAD_DYLIB is refused, by `dylib append`
-#     itself (src/ordinals.c's mo_map_build), where the fork proceeds.
-#   * exit codes are machorewrite's 0/1/2 forwarded verbatim; the fork exits
-#     1 for everything. Matches the six historical wrappers' own choice for
-#     the same reason: it costs nothing to keep the distinction machorewrite
-#     already makes between a considered refusal and an operational failure.
-#   * output bytes are not claimed equal to the fork's.
-#   * prompt 3 above is not reproduced as its own interactive check.
+# DECLARED DIVERGENCES from the fork: see compat/README.md's insert_dylib
+# table, which names the test pinning each one.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${MACHOREWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
@@ -83,7 +48,8 @@ id_all_yes=$MT_ID_ALLYES
 
 # 32-BIT INPUT: refused here, by name, rather than through mi_open's generic
 # "not a readable 64-bit Mach-O" (which says "64", never "32"), so a caller
-# grepping the reason finds one. See "DECLARED DIVERGENCES" above.
+# grepping the reason finds one. A declared divergence from the fork; see
+# compat/README.md's insert_dylib table.
 case $(od -An -tx1 -N4 -- "$MT_ID_BIN" 2>/dev/null | tr -d ' \n') in
 feedface|cefaedfe)
     printf '%s: %s: 32-bit Mach-O input is refused; this toolkit is 64-bit only, deliberately, everywhere (docs/prior-art.md)\n' \
@@ -141,7 +107,14 @@ if grep -qxF -- "$MT_ID_DYLIB" "$MW_T/id_paths"; then
     }
 fi
 
-# PROMPT 4.
+# PROMPT 3 ("it doesn't seem like there is enough empty space") is not
+# reproduced as its own check -- `dylib append`'s own header-pad refusal,
+# forwarded through machorewrite's exit code below, already says no to the
+# same question a hand-rolled space estimate would ask a second time.
+
+# PROMPT 4. OUT already exists (suppressed by --overwrite). --inplace's OUT
+# is always the input, which always exists, so --inplace needs one of
+# --overwrite or a yes here on every run.
 MT_ID_OUT_PATH=$(mt_id_out)
 if [ -z "$MT_ID_OVERWRITE" ] && [ -e "$MT_ID_OUT_PATH" ]; then
     id_confirm "$MT_ID_OUT_PATH already exists. Overwrite it?" || {
@@ -150,7 +123,9 @@ if [ -z "$MT_ID_OVERWRITE" ] && [ -e "$MT_ID_OUT_PATH" ]; then
     }
 fi
 
-# PROMPT 5.
+# PROMPT 5. A check on the STRING the caller passed as dylib_path, not on
+# anything the target binary carries -- it does not have to exist for
+# `dylib append` to name it.
 if [ ! -e "$MT_ID_DYLIB" ]; then
     id_confirm "The provided dylib path doesn't exist. Continue anyway?" || {
         printf '%s: refused: %s does not exist\n' "$MW_TOOL" "$MT_ID_DYLIB" >&2

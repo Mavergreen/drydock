@@ -436,6 +436,58 @@ else
     printf 'FAIL rsc-mt-out: got %s\n' "$rsc_out_got" >&2; fail=$((fail + 1))
 fi
 
+# ---- insert_dylib ---------------------------------------------------------
+#
+# NOT one of the six -- see compat/translate.sh's own "insert_dylib" section.
+# An explicit new_binary_path keeps OUT deterministic for the plain mapping
+# cases, the same way `pm`'s explicit "in out" above does.
+ok id-append "printf 'dylib append P\n' | machorewrite bin out"          -- insert_dylib P bin out
+ok id-weak   "printf 'dylib append P\ndylib retype P weak\n' | machorewrite bin out" \
+                                                                           -- insert_dylib --weak P bin out
+ok id-strip  "printf 'dylib append P\nload-command delete codesig\n' | machorewrite bin out" \
+                                                                           -- insert_dylib --strip-codesig P bin out
+ok id-nostrip "printf 'dylib append P\n' | machorewrite bin out"         -- insert_dylib --no-strip-codesig P bin out
+ok id-weak-strip "printf 'dylib append P\ndylib retype P weak\nload-command delete codesig\n' | machorewrite bin out" \
+                                                                           -- insert_dylib --weak --strip-codesig P bin out
+
+# No new_binary_path and no --inplace: the fork's own default, OUT =
+# "<binary_path>_patched" -- a file of its own, so (unlike the six in-place
+# tools) there is no install line to append.
+ok id-default "printf 'dylib append P\n' | machorewrite bin bin_patched" -- insert_dylib P bin
+
+# --inplace: OUT is BIN itself, which machorewrite refuses to write straight
+# to -- the same OUT-plus-install treatment patch_macho's `pm-same` gets,
+# above.
+ok id-inplace "printf 'dylib append P\n' | machorewrite bin bin.new
+mv -f bin.new bin" -- insert_dylib --inplace P bin
+
+# MT_OUT is the wrapper's own temp, for both the default-output shape and the
+# --inplace one -- same shape MT_OUT always produces, since a wrapper always
+# writes its own temp directly and installs it itself, regardless of what OUT
+# a teaching form would have shown.
+id_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" insert_dylib P bin )
+if [ "$id_out_got" = "printf 'dylib append P\n' | machorewrite bin /tmp/t.tmp" ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL id-mt-out: got %s\n' "$id_out_got" >&2; fail=$((fail + 1))
+fi
+id_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" insert_dylib --inplace P bin )
+if [ "$id_out_got" = "printf 'dylib append P\n' | machorewrite bin /tmp/t.tmp" ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL id-mt-out-inplace: got %s\n' "$id_out_got" >&2; fail=$((fail + 1))
+fi
+
+# mt_id_parse's own validation, refused before any statement is built --
+# matching every other tool's usage/bad-arg cases above.
+ID_USAGE='usage: insert_dylib [--inplace] [--weak] [--overwrite] [--strip-codesig] [--no-strip-codesig] [--all-yes] dylib_path binary_path [new_binary_path]'
+refuses id-usage-0 1 "$ID_USAGE" -- insert_dylib
+refuses id-usage-1 1 "$ID_USAGE" -- insert_dylib onlyone
+refuses id-usage-4 1 "$ID_USAGE" -- insert_dylib d b n extra
+refuses id-mutex 1 'insert_dylib: --strip-codesig and --no-strip-codesig are mutually exclusive' \
+    -- insert_dylib --strip-codesig --no-strip-codesig d b
+refuses id-unknown 1 'insert_dylib: unknown option --bogus' -- insert_dylib --bogus d b
+
 # ---- quoting ------------------------------------------------------------
 #
 # Each emitted line has to be eval-safe, because that is how a wrapper runs it.
