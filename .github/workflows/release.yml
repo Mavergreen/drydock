@@ -168,8 +168,9 @@ jobs:
       - name: Collect the release-notes body into the artifact
         run: |
           set -eu
-          cp "$(sh build/release-notes-file.sh '${{ steps.ver.outputs.tag }}' '${{ steps.ver.outputs.full }}')" \
-             dist/RELEASE_NOTES.md
+          sh "$SHIPYARD_SCRIPTS/release-notes.sh" \
+            --tag '${{ steps.ver.outputs.tag }}' --version '${{ steps.ver.outputs.full }}' \
+            --product Machotool --min-os 10.9.5 --out dist/RELEASE_NOTES.md
           echo "=== RELEASE_NOTES.md ==="; cat dist/RELEASE_NOTES.md
 
       # Do the artifacts about to be published agree with each other and with the family's
