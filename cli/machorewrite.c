@@ -281,6 +281,15 @@ static int print_capabilities(void) {
     printf("verb verify\n");
     printf("verb info\n");
     {
+        static const uint32_t kinds[] = { LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB,
+                                          LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB };
+        size_t i;
+        printf("dylib-kinds");
+        for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+            printf(" %s", mo_kind_name(kinds[i]));
+        printf("\n");
+    }
+    {
         int i;
         const char *kind, *op, *flag;
         int nargs;

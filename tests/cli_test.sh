@@ -509,6 +509,14 @@ echo "$caps" | grep -qxF "statement target 10.9 0" \
 echo "$caps" | grep -q "statement dylib replace 2" \
     && ok "capabilities: statement table is advertised" \
     || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
+echo "$caps" | grep -qxF "statement dylib retype 2" \
+    && ok "capabilities: dylib retype statement is advertised" \
+    || bad "capabilities: dylib retype" "no 'statement dylib retype 2' line: $(echo "$caps" | grep '^statement dylib retype')"
+echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
+    && ok "capabilities: retype kinds are advertised" \
+    || bad "capabilities: retype kinds" "no 'dylib-kinds load weak reexport upward' line: $(echo "$caps" | grep '^dylib-kinds')"
+! grep -q 'lazy' "$T/caps" || bad "capabilities kinds" "advertises lazy as a kind"
+ok "capabilities: retype kinds do not advertise lazy"
 
 # NO `flags=` FIELD IS ADVERTISED ANY MORE, and that is the claim now. It used
 # to be per-verb: `allow-grow` and `fatal-warnings` were verb-level flags, and
