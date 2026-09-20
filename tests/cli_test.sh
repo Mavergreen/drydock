@@ -1718,23 +1718,60 @@ retype_lc_for() {
         upward)   echo LC_LOAD_UPWARD_DYLIB ;;
     esac
 }
+# dylib_cmdsize_of FILE PATH -- the NUMBER after `cmdsize=` on the same LC[N]
+# line dylib_kind_of reads the kind from. "Size-neutral" is the central claim
+# of `dylib retype` (only cmd changes; new_path is always "", so write_size
+# never differs from cmdsize) -- total file byte count, `verify` passing, and
+# a sha256 round trip are all indirect signals of that, none of them a direct
+# assertion that THIS load command's cmdsize held still. This is that direct
+# assertion.
+dylib_cmdsize_of() {
+    "$MACHOREWRITE" info "$1" | awk -v want="path=$2" '
+        /^LC\[/ { cmdsize = $0; sub(/.*cmdsize=/, "", cmdsize); cmdsize += 0 }
+        index($0, want) { print cmdsize; exit }
+    '
+}
 
 for k in weak reexport upward load; do
     build_main "$T/dylib_retype_fixture.$k"
     before_sz=$(wc -c < "$T/dylib_retype_fixture.$k")
+    before_cmdsize=$(dylib_cmdsize_of "$T/dylib_retype_fixture.$k" "@loader_path/liba.dylib")
     mts "$T/dylib_retype_fixture.$k" "dylib retype @loader_path/liba.dylib $k" \
         >"$T/dylib_retype.$k.out" || bad "dylib: retype to $k exit" "$(cat "$T/dylib_retype.$k.out")"
     after_sz=$(wc -c < "$T/dylib_retype_fixture.$k")
     [ "$before_sz" = "$after_sz" ] \
         || bad "dylib: retype to $k" "changed the file size: $before_sz -> $after_sz"
+    after_cmdsize=$(dylib_cmdsize_of "$T/dylib_retype_fixture.$k" "@loader_path/liba.dylib")
+    [ "$before_cmdsize" = "$after_cmdsize" ] \
+        || bad "dylib: retype to $k" "changed liba's own cmdsize: $before_cmdsize -> $after_cmdsize"
     "$MACHOREWRITE" verify "$T/dylib_retype_fixture.$k" >/dev/null 2>&1 \
         || bad "dylib: retype to $k" "the result fails machorewrite verify"
     want_lc=$(retype_lc_for "$k")
     retype_info=$("$MACHOREWRITE" info "$T/dylib_retype_fixture.$k")
     echo "$retype_info" | grep -A1 "$want_lc" | grep -qF "path=@loader_path/liba.dylib" \
-        && ok "dylib: retype to $k produced $want_lc naming liba" \
+        && ok "dylib: retype to $k produced $want_lc naming liba, cmdsize unchanged ($before_cmdsize)" \
         || bad "dylib: retype to $k" "no $want_lc naming liba in: $retype_info"
 done
+
+# GAP 2 (fix round 1): the per-kind loop above cannot observe a build that
+# skips the retype write specifically when the TARGET is `load`, because
+# build_main's fixture already starts as LC_LOAD_DYLIB -- declining to write
+# is unobservable when the bytes it would write are the bytes already there.
+# Retype to weak FIRST, so the load command starts as LC_LOAD_WEAK_DYLIB, then
+# retype that same command to load and confirm it really becomes
+# LC_LOAD_DYLIB: that makes the write observable regardless of what the
+# fixture started as.
+build_main "$T/dylib_retype_to_load_fixture"
+mts "$T/dylib_retype_to_load_fixture" "dylib retype @loader_path/liba.dylib weak" \
+    >"$T/dylib_retype_to_load_pre.out" \
+    || bad "dylib: retype to load from a non-load kind (setup: to weak)" "$(cat "$T/dylib_retype_to_load_pre.out")"
+mts "$T/dylib_retype_to_load_fixture" "dylib retype @loader_path/liba.dylib load" \
+    >"$T/dylib_retype_to_load.out" \
+    || bad "dylib: retype to load from a non-load kind exit" "$(cat "$T/dylib_retype_to_load.out")"
+to_load_info=$("$MACHOREWRITE" info "$T/dylib_retype_to_load_fixture")
+echo "$to_load_info" | grep -A1 "LC_LOAD_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
+    && ok "dylib: retype to load from weak actually rewrites cmd (not skipped because target is load)" \
+    || bad "dylib: retype to load from weak" "liba is not LC_LOAD_DYLIB after retyping from weak: $to_load_info"
 
 # Round trip: retype to weak, then back to the fixture's OWN starting kind
 # (derived, per above), reproduces the original bytes byte for byte.
