@@ -36,10 +36,17 @@ static int collect_lc(const struct load_command *lc, void *vctx) {
             s->names[s->n] = mo_lc_str_at(lc, dc->dylib.name.offset);
             s->cmds[s->n]  = lc->cmd;
         }
-        /* Past MO_MAX_DYLIBS (the format's own ceiling, MAX_LIBRARY_ORDINAL):
-         * silently stop growing the table, same as mo_map_build's own bound.
-         * A bind stream can never name an ordinal beyond what this image
-         * itself declared, so nothing downstream needs the overflow. */
+        /* Past MO_MAX_DYLIBS (MAX_LIBRARY_ORDINAL, the encoding's own
+         * ceiling): silently stop growing the table, unlike mo_map_build,
+         * which REFUSES an image with more than that many ordinal-bearing
+         * dylibs. That is the right call for a rewrite, which must apply a
+         * complete map or none; it is not required for a read-only report,
+         * because nothing downstream can be fooled by the truncation --
+         * emit()'s own `ordinal <= s->n` bound, and mo_bind_observe's own
+         * ULEB-ordinal ceiling at MO_MAX_DYLIBS (ordinals.h), together mean
+         * an ordinal this table doesn't cover is always reported via the
+         * `kind`/`install_name` = "-" branch below, never mis-resolved
+         * against a truncated table. */
     } else if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
         s->di = (const struct dyld_info_command *)lc;
     } else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) {
@@ -60,12 +67,68 @@ static void mimp_streams(const struct dyld_info_command *di, struct mimp_stream 
     out[2].off = di->lazy_bind_off; out[2].size = di->lazy_bind_size; out[2].what = "lazy bind";
 }
 
+/* A TAB in a TSV field raggeds the row a column-by-name consumer reads;
+ * a NEWLINE lets a crafted row forge new ones. install_name and symbol are
+ * both attacker-controlled file content (an lc_str, and a bind stream's
+ * trailing symbol name), so both are checked before either is ever printed.
+ * See cli/machorewrite.c, beside the header row's own append-only comment,
+ * for why this refuses rather than escapes. Returns a pointer to the first
+ * offending byte, or NULL if `s` is clean. */
+static const char *mimp_bad_byte(const char *s) {
+    for (const char *p = s; *p; p++)
+        if (*p == '\t' || *p == '\n') return p;
+    return NULL;
+}
+
+/* Renders `s` for a diagnostic only -- TAB/NEWLINE spelled out as `\t`/`\n`
+ * so the offending byte is visible in the refusal message rather than
+ * reproduced verbatim on the terminal. Never used for the TSV output
+ * itself, which never emits a row this check rejects. */
+static void mimp_visible(const char *s, char *out, size_t outsz) {
+    size_t o = 0;
+    for (const char *p = s; *p && o + 3 < outsz; p++) {
+        if (*p == '\t')      { out[o++] = '\\'; out[o++] = 't'; }
+        else if (*p == '\n') { out[o++] = '\\'; out[o++] = 'n'; }
+        else                  out[o++] = *p;
+    }
+    out[o] = '\0';
+}
+
+/* Refuses (MIMP_REFUSED, message on stderr naming `field`, `value` and the
+ * offending byte) if `value` fails mimp_bad_byte; returns 0 if it's clean. */
+static int mimp_check_field(const char *arch, const char *field, const char *value) {
+    const char *bad = mimp_bad_byte(value);
+    if (!bad) return 0;
+    char vis[200];
+    mimp_visible(value, vis, sizeof vis);
+    fprintf(stderr, "machorewrite imports: %s: %s \"%s\" contains byte 0x%02x, which "
+                    "would corrupt the TSV row; refusing rather than guessing an "
+                    "escaping convention\n",
+            arch, field, vis, (unsigned char)*bad);
+    return -1;
+}
+
+/* The dry run mimp_check_field's symbol-name check needs: symbols are
+ * discovered only by walking the bind stream (unlike install_name, which is
+ * already sitting in slice_ctx's table by the time this runs), so this
+ * walks each stream once with no side effect but the check itself, entirely
+ * within pass 1 -- before mimp_emit_slice's real walk (pass 2) ever calls
+ * `fn`. */
+struct mimp_check_ctx { const char *arch; int bad; };
+
+static void mimp_check_symbol(const mo_bind_state *st, void *vctx) {
+    struct mimp_check_ctx *c = vctx;
+    if (c->bad || !st->symbol) return;
+    if (mimp_check_field(c->arch, "symbol", st->symbol) != 0) c->bad = 1;
+}
+
 /* Pass 1 for one slice: build the ordinal table, and refuse (MIMP_REFUSED,
  * with a message on stderr) rather than proceed if this slice cannot be
- * reported on at all -- LC_DYLD_CHAINED_FIXUPS present, or a bind/weak-bind/
- * lazy-bind offset+size pair that does not fit inside the slice. Nothing is
- * emitted to `fn` here; see imports.h's own comment on mimp_report for why
- * every bound is checked before any row is. */
+ * reported on at all -- LC_DYLD_CHAINED_FIXUPS present, a bind/weak-bind/
+ * lazy-bind offset+size pair that does not fit inside the slice, or an
+ * install_name/symbol that would corrupt the TSV row (mimp_check_field).
+ * Nothing is emitted to `fn` here; see imports.h's own comment on
+ * mimp_report for why every check runs before any row is. */
 static int mimp_validate_slice(const mi_image *im, const char *arch, struct slice_ctx *s) {
     memset(s, 0, sizeof *s);
     s->arch = arch;
@@ -77,6 +140,10 @@ static int mimp_validate_slice(const mi_image *im, const char *arch, struct slic
                         "Convert first with `fixups set classic`, then report imports "
                         "against the converted output.\n", arch);
         return MIMP_REFUSED;
+    }
+    for (int i = 1; i <= s->n; i++) {
+        if (s->names[i] && mimp_check_field(arch, "install_name", s->names[i]) != 0)
+            return MIMP_REFUSED;
     }
     if (s->di) {
         struct mimp_stream streams[3];
@@ -90,6 +157,14 @@ static int mimp_validate_slice(const mi_image *im, const char *arch, struct slic
                         arch, streams[i].what, streams[i].off, streams[i].size, im->size);
                 return MIMP_REFUSED;
             }
+        }
+        for (int i = 0; i < 3; i++) {
+            if (streams[i].size == 0) continue;
+            struct mimp_check_ctx cc = { arch, 0 };
+            if (mo_bind_observe(im->buf + streams[i].off, streams[i].size,
+                                streams[i].what, mimp_check_symbol, &cc) != 0)
+                return MIMP_REFUSED;
+            if (cc.bad) return MIMP_REFUSED;
         }
     }
     return MIMP_OK;
@@ -127,9 +202,8 @@ static void emit(const mo_bind_state *st, void *vctx) {
 
 /* Pass 2 for one slice, already validated by mimp_validate_slice: walk each
  * non-empty stream with mo_bind_observe and hand every DO_BIND-family
- * opcode to `fn` via emit(). Bounds were already proven in pass 1, so the
- * only way this can still fail is a stream whose OPCODES are malformed --
- * see imports.h's own comment on mimp_report for that distinction. */
+ * opcode to `fn` via emit(). See imports.h's own comment on mimp_report for
+ * the one way this can still fail despite pass 1's checks. */
 static int mimp_emit_slice(const mi_image *im, const struct slice_ctx *s,
                            mimp_row_fn fn, void *ctx) {
     if (!s->di) return MIMP_OK;   /* no dyld info at all: zero rows */
@@ -171,21 +245,13 @@ int mimp_report(const uint8_t *buf, size_t size, mimp_row_fn fn, void *ctx) {
             fprintf(stderr, "machorewrite imports: out of memory\n");
             rc = MIMP_REFUSED;
         } else {
-            /* Pass 1, over every slice: wrap what mi_wrap can read, and
-             * validate it. The first validation failure stops this pass --
-             * matching mr_process_fat's MR_ERROR handling of a slice its
-             * rewrite path cannot honour -- so pass 2 below never starts,
-             * and nothing has been emitted to `fn` yet for any slice. */
+            /* Pass 1 (validate every slice, emitting nothing) then pass 2
+             * (emit): see imports.h's own comment on mimp_report for why. */
             for (uint32_t i = 0; i < narch && rc == MIMP_OK; i++) {
                 mfat_arch a;
                 mfat_get(buf, swapped, i, &a);
-                /* mi_wrap takes a non-const buffer even though nothing here
-                 * ever writes through it -- image.h has no observe-only wrap
-                 * the way mo_bind_observe is ordinals.h's one-cast entry
-                 * point for the bind walk itself. This is the same
-                 * discipline (cast once, here, documented, never used to
-                 * write) applied to the one place this module still needs
-                 * it. */
+                /* One cast, documented once more at the thin path below --
+                 * image.h has no observe-only mi_wrap. */
                 if (mi_wrap((uint8_t *)buf + a.offset, a.size, &ims[i]) != 0) {
                     readable[i] = 0;
                     continue;

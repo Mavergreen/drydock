@@ -40,9 +40,14 @@
  * ordinal names no load command this slice actually declared (a malformed
  * stream, reported rather than resolved). `symbol` is "-" if no
  * SET_SYMBOL_TRAILING_FLAGS_IMM has been seen yet in this bind (malformed,
- * but reported, not refused). Every pointer here is owned by the walk that
- * produced it and is valid only for the duration of one mimp_row_fn call --
- * a callback that needs a row past its own call must copy it. */
+ * but reported, not refused). `install_name` and `symbol` are guaranteed
+ * free of TAB and NEWLINE -- both are attacker-controlled file content, and
+ * either byte would corrupt a TSV consumer's row (a TAB ragged, a NEWLINE
+ * forged); mimp_report refuses the whole call rather than emit one, so a
+ * caller never has to check for it itself (see mimp_report's own comment
+ * below). Every pointer here is owned by the walk that produced it and is
+ * valid only for the duration of one mimp_row_fn call -- a callback that
+ * needs a row past its own call must copy it. */
 typedef struct {
     const char *arch;
     int         ordinal;
@@ -67,9 +72,12 @@ typedef void (*mimp_row_fn)(const mimp_row *row, void *ctx);
  * forces a refusal, which would otherwise leak a partial report to a
  * caller expecting all-or-nothing the way MIMP_REFUSED's own contract
  * promises. Bounds (mo_fits, ordinals.h) are checked for every bind/
- * weak-bind/lazy-bind offset+size pair, and every slice is scanned for
- * LC_DYLD_CHAINED_FIXUPS, before any `fn` call for ANY slice -- so a
- * refusal always arrives with zero rows reported. The one exception a
+ * weak-bind/lazy-bind offset+size pair, every slice is scanned for
+ * LC_DYLD_CHAINED_FIXUPS, and every install_name/symbol this call is about
+ * to report is checked for a TAB or NEWLINE (a dry run of the bind stream,
+ * in the symbol case, since a symbol name is only discovered by walking it)
+ * -- all before any `fn` call for ANY slice -- so a refusal always arrives
+ * with zero rows reported. The one exception a
  * streaming report cannot rule out is a bind OPCODE STREAM that is
  * well-formed by offset/size but corrupt in its own content (an unknown
  * opcode, an out-of-range ULEB ordinal, an unterminated symbol name) --

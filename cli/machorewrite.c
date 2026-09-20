@@ -455,7 +455,20 @@ struct imports_ctx { int header_printed; };
  * never reordered, renamed or removed -- tests/cli_test.sh asserts this by
  * awk-ing the header row for a column's index rather than assuming one,
  * which is what makes a future reorder fail loudly instead of silently
- * moving a consumer's data underneath it. */
+ * moving a consumer's data underneath it.
+ *
+ * FIELDS NEVER CONTAIN A TAB OR NEWLINE, BY REFUSAL, NOT ESCAPING.
+ * install_name and symbol are both attacker-controlled file content (an
+ * lc_str, and a bind stream's trailing symbol name); either byte would
+ * corrupt a column-by-name consumer's row -- a TAB raggeds it, a NEWLINE
+ * forges a new one, and a bind-stream editor taking this output as its
+ * selector list would then act on the WRONG symbol. mimp_report
+ * (src/imports.c's mimp_check_field) refuses the whole report (EX_REFUSED)
+ * rather than emit an escaped or truncated field: this module has no
+ * escaping convention, and inventing one now, with zero consumers to weigh
+ * against, would itself become contract the append-only column rule above
+ * does not cover. Decided here, once, rather than left for a future reorder
+ * to discover the hard way. */
 static void imports_print_header(void) {
     printf("arch\tordinal\tkind\tinstall_name\tsymbol\tweak\n");
 }
