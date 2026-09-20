@@ -1694,6 +1694,92 @@ echo "$reexport_info" | grep -A1 "LC_REEXPORT_DYLIB" | grep -qF "path=@loader_pa
     && ok "dylib: -reexport promoted liba to LC_REEXPORT_DYLIB" \
     || bad "dylib: -reexport" "no LC_REEXPORT_DYLIB naming liba in: $reexport_info"
 
+# `dylib retype PATH KIND` rewrites an EXISTING dependency's load-command KIND
+# to any of the four ordinal-bearing kinds (src/ordinals.c's table), not just
+# LC_REEXPORT_DYLIB -- -reexport above is now one case it subsumes. The byte
+# count never moves: only cmd changes, never cmdsize or the path.
+#
+# dylib_kind_of FILE PATH -- the LC[N] kind name on the line immediately
+# above the `ordinal=N path=PATH` line in `machorewrite info`'s output. Used
+# below to DERIVE the round-trip fixture's starting kind rather than assume
+# it: this repo lost a day of red CI to a test that pinned a host- or
+# fixture-fact nobody derived (see this file's own header).
+dylib_kind_of() {
+    "$MACHOREWRITE" info "$1" | awk -v want="path=$2" '
+        /^LC\[/ { kind = $2 }
+        index($0, want) { print kind; exit }
+    '
+}
+retype_lc_for() {
+    case "$1" in
+        load)     echo LC_LOAD_DYLIB ;;
+        weak)     echo LC_LOAD_WEAK_DYLIB ;;
+        reexport) echo LC_REEXPORT_DYLIB ;;
+        upward)   echo LC_LOAD_UPWARD_DYLIB ;;
+    esac
+}
+
+for k in weak reexport upward load; do
+    build_main "$T/dylib_retype_fixture.$k"
+    before_sz=$(wc -c < "$T/dylib_retype_fixture.$k")
+    mts "$T/dylib_retype_fixture.$k" "dylib retype @loader_path/liba.dylib $k" \
+        >"$T/dylib_retype.$k.out" || bad "dylib: retype to $k exit" "$(cat "$T/dylib_retype.$k.out")"
+    after_sz=$(wc -c < "$T/dylib_retype_fixture.$k")
+    [ "$before_sz" = "$after_sz" ] \
+        || bad "dylib: retype to $k" "changed the file size: $before_sz -> $after_sz"
+    "$MACHOREWRITE" verify "$T/dylib_retype_fixture.$k" >/dev/null 2>&1 \
+        || bad "dylib: retype to $k" "the result fails machorewrite verify"
+    want_lc=$(retype_lc_for "$k")
+    retype_info=$("$MACHOREWRITE" info "$T/dylib_retype_fixture.$k")
+    echo "$retype_info" | grep -A1 "$want_lc" | grep -qF "path=@loader_path/liba.dylib" \
+        && ok "dylib: retype to $k produced $want_lc naming liba" \
+        || bad "dylib: retype to $k" "no $want_lc naming liba in: $retype_info"
+done
+
+# Round trip: retype to weak, then back to the fixture's OWN starting kind
+# (derived, per above), reproduces the original bytes byte for byte.
+build_main "$T/dylib_retype_rt_fixture"
+start_kind=$(dylib_kind_of "$T/dylib_retype_rt_fixture" "@loader_path/liba.dylib")
+case "$start_kind" in
+    LC_LOAD_DYLIB|LC_LOAD_WEAK_DYLIB|LC_REEXPORT_DYLIB|LC_LOAD_UPWARD_DYLIB) : ;;
+    *) bad "dylib: retype round trip" "could not derive liba's starting kind (got '$start_kind')" ;;
+esac
+start_kind_word=weak
+[ "$start_kind" = LC_LOAD_DYLIB ] && start_kind_word=load
+[ "$start_kind" = LC_LOAD_WEAK_DYLIB ] && start_kind_word=weak
+[ "$start_kind" = LC_REEXPORT_DYLIB ] && start_kind_word=reexport
+[ "$start_kind" = LC_LOAD_UPWARD_DYLIB ] && start_kind_word=upward
+cp "$T/dylib_retype_rt_fixture" "$T/dylib_retype_rt_fixture.orig"
+mts "$T/dylib_retype_rt_fixture" "dylib retype @loader_path/liba.dylib weak" \
+    >"$T/dylib_retype_rt1.out" || bad "dylib: retype round trip (to weak)" "$(cat "$T/dylib_retype_rt1.out")"
+mts "$T/dylib_retype_rt_fixture" "dylib retype @loader_path/liba.dylib $start_kind_word" \
+    >"$T/dylib_retype_rt2.out" || bad "dylib: retype round trip (back to $start_kind_word)" "$(cat "$T/dylib_retype_rt2.out")"
+[ "$(sha "$T/dylib_retype_rt_fixture.orig")" = "$(sha "$T/dylib_retype_rt_fixture")" ] \
+    && ok "dylib: retype weak then back to $start_kind_word ($start_kind) round-trips to the original bytes" \
+    || bad "dylib: retype round trip" "retype to weak then back to $start_kind_word did not reproduce the original bytes"
+
+# `dylib reexport PATH` and `dylib retype PATH reexport` must agree byte for
+# byte -- retype subsumes reexport, it does not reimplement it.
+build_main "$T/dylib_retype_eq_a"
+build_main "$T/dylib_retype_eq_b"
+mts "$T/dylib_retype_eq_a" "dylib reexport @loader_path/liba.dylib" \
+    >"$T/dylib_retype_eq_a.out" || bad "dylib: reexport (for retype comparison)" "$(cat "$T/dylib_retype_eq_a.out")"
+mts "$T/dylib_retype_eq_b" "dylib retype @loader_path/liba.dylib reexport" \
+    >"$T/dylib_retype_eq_b.out" || bad "dylib: retype ... reexport (for comparison)" "$(cat "$T/dylib_retype_eq_b.out")"
+[ "$(sha "$T/dylib_retype_eq_a")" = "$(sha "$T/dylib_retype_eq_b")" ] \
+    && ok "dylib: reexport and retype ... reexport agree byte for byte" \
+    || bad "dylib: reexport vs retype reexport" "the two routes produced different bytes"
+
+# A PATH that is not present is a miss, reported on stderr
+# (src/rewrite.c's mr_report_unmatched), not a silent success.
+build_main "$T/dylib_retype_miss_fixture"
+printf 'dylib retype /nope.dylib weak\n' \
+    | "$MACHOREWRITE" "$T/dylib_retype_miss_fixture" "$T/dylib_retype_miss.out" \
+    >/dev/null 2>"$T/dylib_retype_miss.err" || true
+grep -q 'matched nothing' "$T/dylib_retype_miss.err" \
+    && ok "dylib: retype of an absent path reports a miss" \
+    || bad "dylib: retype miss" "no 'matched nothing' on stderr: $(cat "$T/dylib_retype_miss.err")"
+
 # ============================================================================
 # rpath -append
 # ============================================================================

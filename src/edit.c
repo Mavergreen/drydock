@@ -291,14 +291,18 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     case MS_RPATH: {
         /* mr_change's own encoding (rewrite.h), the one the deleted
          * dylib/rpath verbs also produced: new_path NULL deletes, "" with
-         * reexport promotes. */
+         * retype_to promotes/retypes. */
         int rpath = (st->kind == MS_RPATH);
         switch (st->op) {
         case MS_REPLACE:  change.old_path = st->a; change.new_path = st->b; break;
         case MS_DELETE:   change.old_path = st->a; change.new_path = NULL;  break;
         case MS_REEXPORT: if (rpath) goto unknown;
                           change.old_path = st->a; change.new_path = "";
-                          change.reexport = 1; break;
+                          change.retype_to = LC_REEXPORT_DYLIB; break;
+        case MS_RETYPE:   if (rpath) goto unknown;
+                          change.old_path = st->a; change.new_path = "";
+                          change.retype_to = mo_kind_from_name(st->b);
+                          break;
         case MS_APPEND:
             if (rpath) ops.rpath_append = st->a;
             else       ops.dylib_append = st->a;

@@ -329,9 +329,12 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
         if (matched) {
             struct dylib_command *ndc = (struct dylib_command *)(ctx->new_lcs + ctx->new_off);
             ndc->cmdsize = write_size;
-            if (ctx->ops->dylib_change->reexport) {
-                ndc->cmd = LC_REEXPORT_DYLIB;
-                if (ctx->verbose) printf("  Reexport: %s\n", ctx->ops->dylib_change->old_path);
+            if (ctx->ops->dylib_change->retype_to) {
+                ndc->cmd = ctx->ops->dylib_change->retype_to;
+                if (ctx->verbose)
+                    printf("  Retype: %s -> %s\n",
+                           ctx->ops->dylib_change->old_path,
+                           mo_kind_name(ctx->ops->dylib_change->retype_to));
             }
             if (ctx->ops->dylib_change->new_path[0] != '\0') {
                 size_t base = ndc->dylib.name.offset;
