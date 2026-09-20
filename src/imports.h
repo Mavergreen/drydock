@@ -34,13 +34,19 @@
 
 /* One (dylib, symbol) row. `arch` is "-" for a thin image, else the slice's
  * lipo-style name (src/arch_names.h) or "cputype 0x..." for one that table
- * does not know. `ordinal` is >= 1 for a real library ordinal, or one of
- * ordinals.h's MO_ORD_* values for a special bind (self/exe/flat/unknown).
+ * does not know. `ordinal` is >= 1 for a real library ordinal, one of
+ * ordinals.h's MO_ORD_* values for a special bind (self/exe/flat/unknown),
+ * or 0 if the bind stream's own malformation left no SET_DYLIB_ORDINAL_*
+ * opcode in effect yet (ordinals.h's mo_bind_state has the full account;
+ * reported rather than refused, the same stance `symbol` below takes).
  * `kind`/`install_name` are "-" for a special ordinal, or when a real
  * ordinal names no load command this slice actually declared (a malformed
  * stream, reported rather than resolved). `symbol` is "-" if no
  * SET_SYMBOL_TRAILING_FLAGS_IMM has been seen yet in this bind (malformed,
- * but reported, not refused). `install_name` and `symbol` are guaranteed
+ * but reported, not refused); once one HAS been seen, `symbol` is whatever
+ * NUL-terminated name it carried, including an EMPTY string ("", non-NULL)
+ * if that name itself was empty -- "-" therefore means "no symbol seen yet
+ * in this bind", not "no symbol name". `install_name` and `symbol` are guaranteed
  * free of TAB and NEWLINE -- both are attacker-controlled file content, and
  * either byte would corrupt a TSV consumer's row (a TAB ragged, a NEWLINE
  * forged); mimp_report refuses the whole call rather than emit one, so a

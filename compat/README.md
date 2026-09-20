@@ -2,6 +2,9 @@
 
 The six original entry points, kept for compatibility. All six are now
 `/bin/sh` wrappers around `machorewrite`. There is no C left in this directory.
+A seventh wrapper, `insert_dylib`, joined later — it is convenience for a
+grammar this repo never shipped, not compatibility debt; see "`insert_dylib`:
+not one of the six" below.
 
 > **The goal is met.** The goal of retiring the C tools was "`macho9` becomes
 > the only Mach-O rewriting binary this repo ships." It is: `compat/` holds
@@ -26,6 +29,7 @@ a script is the only interface now, with one set of semantics.
 | `rename_segment` | `rename_segment.sh` → `segment rename OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `swift-abi set legacy`, once per file, installed over each `FILE` |
 | `fix_macho` | `fix_macho.sh` → `load-command delete` / `dylib` / `segment rename` statements, however many the flags name (two renames are two statements) |
+| `insert_dylib` | `insert_dylib.sh` → `dylib append` / `dylib retype` / `load-command delete codesig` statements — not one of the six; see below |
 
 plus the two files every wrapper sources:
 
@@ -544,3 +548,45 @@ one statement per operation being the only shape `machorewrite` has. Held by
 untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
 
 `fix_macho`'s only caller in this repo was `tests/change_dylib_test.sh`.
+
+## `insert_dylib`: not one of the six, and the differences it has from the fork
+
+`insert_dylib.sh` wraps a grammar this repo never shipped:
+[`Wowfunhappy/insert_dylib`](https://github.com/Wowfunhappy/insert_dylib)
+(commit `bd221b8`), a well-known tool for adding a dylib load command to an
+existing binary. It has **no known caller** — `install.sh` never fetched it,
+and no checkout on this machine invokes it — so it is convenience for someone
+who already knows this fork's grammar, not compatibility debt, and
+`tests/known-callers.sh` is silent for it on purpose. `tests/compat-sweep.sh`
+is silent for it too: that matrix is frozen for the six historical tools
+(`tests/compat-sweep.sh:23,169`), and regenerating it to admit a seventh would
+destroy what it exists to preserve. `tests/insert_dylib_test.sh` is this
+tool's whole test surface instead.
+
+`insert_dylib [flags] dylib_path binary_path [new_binary_path]` becomes:
+
+| flag | statement(s) |
+|---|---|
+| *(none)* | `dylib append DYLIB` |
+| `--weak` | `dylib append DYLIB`, `dylib retype DYLIB weak` |
+| `--strip-codesig` | also: `load-command delete codesig` |
+| `--no-strip-codesig` | nothing extra, and the wrapper never asks about it |
+
+`--inplace`, `--overwrite` and `--all-yes` never become a statement: they
+choose `OUT` and, in the wrapper, whether each of the fork's five prompts is
+asked and how it answers. Every prompt reads `/dev/tty`, never stdin — stdin
+is the statement channel to `machorewrite`, same as every other wrapper here
+— so with `--all-yes` none of the five is asked, and with no `/dev/tty` to
+ask on and no `--all-yes`, the wrapper refuses naming `--all-yes` rather than
+blocking a build script forever on a read nothing will ever answer.
+
+| the difference from the fork | held by |
+|---|---|
+| 32-bit input is **refused**, where the fork handles it | `tests/insert_dylib_test.sh`, "32-bit refused" — this toolkit refuses 32-bit input everywhere, deliberately, not a gap specific to this tool (`docs/prior-art.md`) |
+| an image carrying `LC_LAZY_LOAD_DYLIB` is **refused**, where the fork proceeds | `tests/insert_dylib_test.sh`, "unknown load command (LC_LAZY_LOAD_DYLIB): refuses" — `dylib append` runs through `src/ordinals.c`'s `mo_map_build`, the same refusal `tests/change_dylib_test.sh` case 15 pins, inherited here with no code of this wrapper's own; SKIPs on a host whose linker cannot produce one |
+| exit codes are `machorewrite`'s own 0/1/2, **forwarded unchanged**; the fork exits 1 for everything | matches `change_dylib` and `add_version_min`'s own choice, for the same reason: it costs nothing to keep the distinction `machorewrite` already makes between a considered refusal and an operational failure. Not separately tested here beyond "exits 1"/"exits 0" on each case — there is no C binary left to compare a 2 against |
+| output **bytes** are not claimed equal to the fork's | never measured; there is no C `insert_dylib` binary in this repo's build to compare against |
+| the fork's prompt 3 ("it doesn't seem like there is enough empty space") is **not reproduced as its own interactive check** | untested as its own case; `dylib append`'s own header-pad refusal (forwarded through the exit code above) answers the same question a hand-rolled space estimate would ask a second time |
+| `--inplace` together with an explicit `new_binary_path` is **refused**, where the fork silently picks one and never reads the other (`--inplace` wins; `main.c`'s `if(!inplace_flag) { ... }` block that would consume `argv[3]` is skipped entirely when `--inplace` is set, so the named file is never even opened). Matching the fork here would mean silently ignoring an output path the caller wrote out by hand and overwriting their input instead — the data-loss shape this toolkit refuses rather than guesses through everywhere else, and there are no known callers of this tool to break by refusing. `compat/translate.sh`'s `mt_id_parse` refuses it unconditionally, before any prompt, so `--all-yes` does not make it succeed either | `tests/insert_dylib_test.sh`, "--inplace + new_binary_path" (three assertions: refuses exit 1 even with `--all-yes`, names both `--inplace` and the path, and leaves both the input and the named path untouched) |
+| on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `machorewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refuses cleanly instead — `machorewrite edit: ERROR: ... don't fit in header pad (... avail); growing the header needs allow-grow`, exit 1, input untouched. This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
+| on an unwritable `--inplace` target, the fork's own diagnostic (`main.c`'s `printf("Couldn't open file %s\n", binary_path)`) lands on **its stdout**, not stderr; this wrapper's (`mw_require_writable`'s `open: Permission denied`) lands on **stderr only**. Both sides still exit 1 having touched nothing — this is a stream difference in the fork's own C, not a behaviour difference, and not chased | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on several root-owned binaries under `/usr/bin` (`atq`, `calendar`, `cupstestppd`, `newgrp`) |
