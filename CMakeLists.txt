@@ -379,6 +379,14 @@ add_test(NAME known_callers
 # for the six historical tools).
 add_test(NAME insert_dylib_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/insert_dylib_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
+# A modest ceiling, not ctest's 1500s default: this is the one test in the
+# suite that opens /dev/tty through a detached (setsid'd) child expecting a
+# refusal, never a read. If the setsid detachment and the /dev/tty-has-no-
+# controlling-terminal assumption both broke at once, insert_dylib would
+# block on a read nobody answers, and only the default timeout would
+# eventually stop it -- 25 minutes of a hung CI run for what should be a
+# few seconds of real work building fixtures and running the wrapper.
+set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after Task 1 converted them onto

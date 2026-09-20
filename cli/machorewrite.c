@@ -288,12 +288,26 @@ static int print_capabilities(void) {
     printf("verb info\n");
     printf("verb imports\n");
     {
-        static const uint32_t kinds[] = { LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB,
-                                          LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB };
+        /* NOT a hand-maintained copy of ordinals.c's MO_KINDS -- that used
+         * to be a THIRD place, beside MO_KINDS itself and mo_is_ordinal_lc's
+         * own accept-list, that had to be edited by hand every time a kind
+         * was added, with nothing to notice if it wasn't. MO_KIND_CANDIDATES
+         * (ordinals.h) is every LC_* mach-o/loader.h defines for a
+         * library/dylib/framework load command, not just the ones MO_KINDS
+         * recognizes today; offering each to mo_kind_name and printing only
+         * the ones that come back non-NULL means MO_KINDS growing a fifth
+         * entry surfaces here with NO edit to this file. See
+         * MO_KIND_CANDIDATES' own comment for what still needs a test to
+         * catch: mo_kind_name and mo_is_ordinal_lc disagreeing about one of
+         * these values (tests/relations_test.c's
+         * test_capabilities_kinds_track_mo_is_ordinal_lc). */
+        static const uint32_t candidates[] = { MO_KIND_CANDIDATES };
         size_t i;
         printf("dylib-kinds");
-        for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
-            printf(" %s", mo_kind_name(kinds[i]));
+        for (i = 0; i < sizeof candidates / sizeof candidates[0]; i++) {
+            const char *name = mo_kind_name(candidates[i]);
+            if (name) printf(" %s", name);
+        }
         printf("\n");
     }
     {

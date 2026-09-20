@@ -323,6 +323,34 @@ static void test_dylib_kind_names(void) {
     CHECK(mo_kind_from_name("LOAD") == 0, "kind names are not case-folded");
 }
 
+/* M-3's own test: `--capabilities`' dylib-kinds line (cli/machorewrite.c) no
+ * longer hardcodes its own kinds[] array -- it offers MO_KIND_CANDIDATES
+ * (ordinals.h) to mo_kind_name and prints whichever answer non-NULL, so the
+ * advertised set can never itself drift from MO_KINDS (ordinals.c) by a
+ * stale hand-edited copy. What is STILL two independent implementations in
+ * ordinals.c -- MO_KINDS (backing mo_kind_name/mo_kind_from_name) and
+ * mo_is_ordinal_lc's own separate cmd==...||cmd==... chain -- is exactly
+ * what this walks MO_KIND_CANDIDATES to catch: for every candidate,
+ * mo_kind_name answering non-NULL and mo_is_ordinal_lc answering true must
+ * agree, or a wrapper reading `--capabilities` and this tool's own
+ * load-command rewrite would disagree about which kinds exist. This is the
+ * drift M-3 named: a fifth kind added to one of the two ordinals.c
+ * accept-lists but not the other would defeat `--capabilities`' whole
+ * purpose (telling a wrapper the truth) while the rest of the suite stayed
+ * green. */
+static void test_capabilities_kinds_track_mo_is_ordinal_lc(void) {
+    static const uint32_t candidates[] = { MO_KIND_CANDIDATES };
+    for (size_t i = 0; i < sizeof candidates / sizeof candidates[0]; i++) {
+        uint32_t cmd = candidates[i];
+        int advertised = mo_kind_name(cmd) != NULL;
+        int accepted = mo_is_ordinal_lc(cmd) != 0;
+        CHECK(advertised == accepted,
+              "LC_* 0x%x: mo_kind_name says %s, mo_is_ordinal_lc says %s -- "
+              "--capabilities and the load-command rewrite would disagree",
+              cmd, advertised ? "yes" : "no", accepted ? "yes" : "no");
+    }
+}
+
 struct seen { int n; int ord[8]; char sym[8][32]; int weak[8]; };
 
 static void note(const mo_bind_state *st, void *ctx) {
@@ -377,7 +405,13 @@ static void test_bind_walk_observes(void) {
     uint8_t copy[sizeof stream];
     memcpy(copy, stream, sizeof stream);
 
-    struct seen s = {0};
+    /* Not `= {0}`: with -Wextra, that warns -Wmissing-field-initializers
+     * for every member after the first (struct seen has four) even though
+     * C guarantees all of them zero -- a real warning about a real
+     * ambiguity elsewhere would drown in this one repeated everywhere the
+     * struct is zeroed. memset says the same thing without the warning. */
+    struct seen s;
+    memset(&s, 0, sizeof s);
     int rc = mo_bind_walk(copy, (uint32_t)sizeof copy, NULL, 0, "test", NULL,
                           note, &s);
     CHECK(rc == 0, "observe-only walk returned %d", rc);
@@ -424,7 +458,8 @@ static void test_bind_walk_observe_reports_undefined_special_as_unknown(void) {
         BIND_OPCODE_DO_BIND,
         BIND_OPCODE_DONE,
     };
-    struct seen s = {0};
+    struct seen s;   /* see the other test's own comment on why not `= {0}` */
+    memset(&s, 0, sizeof s);
     int rc = mo_bind_observe(stream, (uint32_t)sizeof stream, "test", note, &s);
     CHECK(rc == 0, "observe-only walk returned %d", rc);
     CHECK(s.n == 1, "saw %d binds, wanted 1", s.n);
@@ -545,6 +580,7 @@ int main(void) {
     test_names_round_trip();
     test_verify_applies_needs_a_live_relation_AND_a_disturbance();
     test_dylib_kind_names();
+    test_capabilities_kinds_track_mo_is_ordinal_lc();
     test_bind_walk_observes();
     test_bind_walk_observe_reports_undefined_special_as_unknown();
     test_bind_walk_observe_refuses_out_of_range_uleb_ordinal();

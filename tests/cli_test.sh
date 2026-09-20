@@ -1056,35 +1056,55 @@ head -1 "$T/imp.out" | grep -qxF "$imp_header" \
 # A VALUE assertion, not a shape assertion: this tool's whole job is mapping
 # symbol -> install_name (plus kind/weak), and a shape-only check ("some
 # symbol was present") cannot tell a correct mapping from a scrambled one --
-# it still passes if the wrong install_name, the wrong kind, or an ordinal
-# off by one is reported for the right symbol. Read entirely BY COLUMN NAME
+# it still passes if the wrong install_name, the wrong kind, or a wrong
+# ordinal is reported for the right symbol. Read entirely BY COLUMN NAME
 # (the header row parsed into `c[]`, same device tests/cli_test.sh's `info`
 # assertions use for `ordinal=1 path=.*liba.dylib` 15 lines above the
 # original of this section), so a future column reorder still finds the
-# right field instead of silently comparing the wrong one. BOTH rows are
-# checked, not just _a_sym's: _a_sym is ordinal 1, so a bug that resolves
-# every row's install_name against ordinal 1 unconditionally (rather than
-# each row's own ordinal) would still pass a check of _a_sym alone -- only
-# dyld_stub_binder, at ordinal 2, can catch that one.
-awk -F'\t' '
+# right field instead of silently comparing the wrong one.
+#
+# The ordinal each row is checked against is DERIVED from `machorewrite
+# info`'s own dylib table below, not a literal -- an exact ordinal is a HOST
+# FACT (this host's linker may place an extra load command, e.g. a
+# stack-check symbol's own dylib, ahead of libSystem, shifting every ordinal
+# after it), and CI's cross linker is not this host's. What is NOT a host
+# fact is that liba.dylib and libSystem.B.dylib get two DIFFERENT ordinals
+# from the very same info dump imports itself is checked against, so BOTH
+# rows are still checked, not just _a_sym's: a bug that resolves every row's
+# install_name against liba.dylib's ordinal unconditionally (rather than each
+# row's own ordinal) fails dyld_stub_binder's check even though a_ord and
+# sys_ord are read off this host, because the two derived ordinals can never
+# be equal to each other.
+info_out=$("$MACHOREWRITE" info "$T/imp_in" 2>/dev/null)
+a_ord=$(printf '%s\n' "$info_out" | sed -n 's/^  ordinal=\([0-9]*\) path=@loader_path\/liba\.dylib$/\1/p' | head -1)
+sys_ord=$(printf '%s\n' "$info_out" | sed -n 's/^  ordinal=\([0-9]*\) path=\/usr\/lib\/libSystem\.B\.dylib$/\1/p' | head -1)
+[ -n "$a_ord" ] && [ -n "$sys_ord" ] && [ "$a_ord" != "$sys_ord" ] \
+    && ok "imports: info's own dylib table gives liba.dylib and libSystem distinct ordinals" \
+    || bad "imports: precondition" "could not derive two distinct ordinals from info: $info_out"
+
+awk -F'\t' -v a_ord="$a_ord" -v sys_ord="$sys_ord" '
     NR==1 { for (i = 1; i <= NF; i++) c[$i] = i; next }
     $c["symbol"] == "_a_sym" && $c["install_name"] == "@loader_path/liba.dylib" &&
-    $c["kind"] == "load" && $c["ordinal"] == "1" && $c["weak"] == "0" { f1 = 1 }
+    $c["kind"] == "load" && $c["ordinal"] == a_ord && $c["weak"] == "0" { f1 = 1 }
     $c["symbol"] == "dyld_stub_binder" && $c["install_name"] == "/usr/lib/libSystem.B.dylib" &&
-    $c["kind"] == "load" && $c["ordinal"] == "2" && $c["weak"] == "0" { f2 = 1 }
+    $c["kind"] == "load" && $c["ordinal"] == sys_ord && $c["weak"] == "0" { f2 = 1 }
     END { exit !(f1 && f2) }
 ' "$T/imp.out" \
     && ok "imports: _a_sym and dyld_stub_binder each map to their OWN dylib, kind and ordinal" \
     || bad "imports: symbol-to-dylib mapping" "no matching rows: $(cat "$T/imp.out")"
 
-# Exactly two rows: a_sym (bound eagerly) and libSystem's dyld_stub_binder
-# (bound lazily, the stub-call indirection every linked binary carries).
-# This is what catches "the last row is silently dropped" or "one of the
-# three bind streams is never walked" -- a shape check alone cannot, since
-# both leave every remaining row's shape and field count intact.
+# AT LEAST two rows, not EXACTLY two: a_sym (bound eagerly) and libSystem's
+# dyld_stub_binder (bound lazily, the stub-call indirection every linked
+# binary carries) are the two THIS test relies on and checks by value above;
+# a cross linker is free to add a bind this host's does not (another stub, a
+# second libSystem symbol) without that being wrong. An exact count is a HOST
+# FACT the same way an exact ordinal is. What still catches "the last row is
+# silently dropped" or "one of the three bind streams is never walked" is the
+# value check above: either failure mode removes one of the two specific
+# rows it requires, regardless of how many OTHER rows are present.
 imp_rows=$(awk -F'\t' 'NR>1' "$T/imp.out" | wc -l | tr -d ' ')
-[ "$imp_rows" = 2 ] && ok "imports: reports exactly the two binds this fixture makes" \
-    || bad "imports: row count" "wanted 2 data rows, got $imp_rows: $(cat "$T/imp.out")"
+[ "$imp_rows" -ge 2 ] && ok "imports: reports at least the two binds this fixture makes" \
+    || bad "imports: row count" "wanted >= 2 data rows, got $imp_rows: $(cat "$T/imp.out")"
 
 awk -F'\t' 'NR==1{n=NF} NF!=n{print NR; exit 1}' "$T/imp.out" >/dev/null \
     && ok "imports: every data row has the header's field count" \
@@ -1102,19 +1122,53 @@ cmp -s "$T/imp.out" "$T/imp2.out" \
 # the reasoning. This is also the ragged-row check above's first POSITIVE
 # control: without this fixture, that check has never had a ragged row to
 # catch and passes vacuously on every clean fixture.
-"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "$(printf 'a\tb')" \
-    "$T/a.c" -o "$T/libtab.dylib"
-"$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libtab.dylib" -o "$T/imp_tab"
-rc=0
-"$MACHOREWRITE" imports "$T/imp_tab" >"$T/imp_tab.out" 2>"$T/imp_tab.err" || rc=$?
-[ "$rc" -eq 1 ] && ok "imports: refuses an install_name carrying a TAB (exit 1)" \
-    || bad "imports: TAB injection" "expected 1, got $rc: $(cat "$T/imp_tab.err")"
-[ ! -s "$T/imp_tab.out" ] \
-    && ok "imports: ... and prints nothing on stdout, not a partial row" \
-    || bad "imports: TAB injection stdout" "expected empty, got: $(cat "$T/imp_tab.out")"
-grep -q 'install_name' "$T/imp_tab.err" && grep -q '0x09' "$T/imp_tab.err" \
-    && ok "imports: ... naming the field and the offending byte" \
-    || bad "imports: TAB injection message" "missing field/byte: $(cat "$T/imp_tab.err")"
+#
+# GUARDED, not asserted outright, and under `set -eu`: a TAB in an
+# -install_name is asking THIS HOST'S ld to do something no real build ever
+# does, and whether it accepts the byte, rejects it, warns-to-error on it, or
+# silently normalises it is a fact about that linker, not about
+# `machorewrite imports`. A bare failing `"$CC"` here would kill the whole
+# suite under `set -eu`; asserting the refusal without checking the byte
+# survived would pass vacuously (or fail for the wrong reason) if this
+# host's linker declined to carry it through. So: build under `if`, not
+# top-level, and read the result back with `machorewrite info` (which -- like
+# `imports` before this fixture ever reaches it -- prints load-command paths
+# raw, with no TAB handling of its own to interfere) to CONFIRM the byte
+# really made it into imp_tab's own LC_LOAD_DYLIB before trusting anything
+# about a refusal of it. Anything short of that confirmation SKIPs, loudly,
+# naming why -- never a silent pass.
+tab_build_ok=1
+if ! "$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "$(printf 'a\tb')" \
+        "$T/a.c" -o "$T/libtab.dylib" 2>"$T/libtab_build.err"; then
+    tab_build_ok=0
+fi
+if [ "$tab_build_ok" -eq 1 ] \
+    && ! "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libtab.dylib" -o "$T/imp_tab" \
+        2>"$T/imp_tab_build.err"; then
+    tab_build_ok=0
+fi
+tab_present=0
+if [ "$tab_build_ok" -eq 1 ] \
+    && "$MACHOREWRITE" info "$T/imp_tab" 2>/dev/null | grep -qF "$(printf 'a\tb')"; then
+    tab_present=1
+fi
+if [ "$tab_present" -eq 0 ]; then
+    skip "imports: refuses an install_name carrying a TAB" \
+        "this host's linker did not carry a TAB through into imp_tab's own LC_LOAD_DYLIB (confirmed via 'machorewrite info', not assumed): $(cat "$T/libtab_build.err" "$T/imp_tab_build.err" 2>/dev/null)"
+    skip "imports: ... and prints nothing on stdout, not a partial row" "see above"
+    skip "imports: ... naming the field and the offending byte" "see above"
+else
+    rc=0
+    "$MACHOREWRITE" imports "$T/imp_tab" >"$T/imp_tab.out" 2>"$T/imp_tab.err" || rc=$?
+    [ "$rc" -eq 1 ] && ok "imports: refuses an install_name carrying a TAB (exit 1)" \
+        || bad "imports: TAB injection" "expected 1, got $rc: $(cat "$T/imp_tab.err")"
+    [ ! -s "$T/imp_tab.out" ] \
+        && ok "imports: ... and prints nothing on stdout, not a partial row" \
+        || bad "imports: TAB injection stdout" "expected empty, got: $(cat "$T/imp_tab.out")"
+    grep -q 'install_name' "$T/imp_tab.err" && grep -q '0x09' "$T/imp_tab.err" \
+        && ok "imports: ... naming the field and the offending byte" \
+        || bad "imports: TAB injection message" "missing field/byte: $(cat "$T/imp_tab.err")"
+fi
 
 rc=0
 "$MACHOREWRITE" imports "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?

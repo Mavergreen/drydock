@@ -92,6 +92,10 @@ SCAN="${INSERT_DYLIB_DIFF_SCAN:-4000}"
 
 [ -x "$FORK" ] || { echo "insert-dylib-diff: $FORK not found or not executable" >&2; exit 1; }
 [ -x "$NEWBIN" ] || { echo "insert-dylib-diff: $NEWBIN not found or not executable" >&2; exit 1; }
+# This script cannot itself confirm $FORK was really built from FORK_COMMIT --
+# it only received a path -- so the pin's one live use is naming it in every
+# run's own output, not silently trusting the caller built the right thing.
+echo "insert-dylib-diff: comparing against \$FORK, which THE PIN above says must be built from commit $FORK_COMMIT"
 # ABSOLUTE, both of them: every comparison below cd's into a per-side sandbox
 # first (so "f" and "out" are relative names identical on both sides, the
 # same reason tests/differential.sh gives for doing this), which breaks any

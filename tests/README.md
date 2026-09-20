@@ -80,7 +80,9 @@ real hardware, with their results committed or reported by hand:
   instead (`EX_REFUSED`, "growing needs allow-grow"), leaving the input
   untouched. (3) On an unwritable `--inplace` target the fork's own
   diagnostic lands on ITS STDOUT (`main.c`'s `printf`, not `perror`); this
-  wrapper's lands on stderr only — both still exit 1 having touched nothing. Task 2 of the
+  wrapper's lands on stderr only — both still exit 1 having touched nothing.
+
+`compat-matrix.tsv` is a **committed artifact, not a report**: Task 2 of the
 retirement plan replaced five of the six C sources with shell wrappers, and a
 later commit replaced the sixth, `fix_macho`, so all six now exist as C only in
 git history. The matrix and the SHA-256s in

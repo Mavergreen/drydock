@@ -173,7 +173,18 @@ cp "$FIXTURE" "$T/nt"
 if [ ! -x "$T/notty" ]; then
     skip "no tty, no --all-yes" "cannot build tests/notty helper: $(cat "$T/notty_build.err")"
 elif ! command -v codesign >/dev/null 2>&1 || ! codesign -s - "$T/nt" >/dev/null 2>&1; then
-    skip "no tty, no --all-yes" "codesign -s - is not available on this host, so the codesig prompt cannot be reached"
+    # LOUD, not a lone SKIP line ctest's default --output-on-failure hides
+    # whenever the run as a whole still passes: this is the suite's ONLY
+    # coverage of the codesig prompt actually firing under no-tty, so losing
+    # it silently -- e.g. an arm64 CI runner declining ad-hoc codesign of a
+    # thin x86_64 fixture -- must not read the same as "everything ran and
+    # passed." Not a hard failure either: declining to ad-hoc-sign is a real
+    # environment difference, not a bug this suite should be reporting.
+    reason="codesign -s - is not available or declined on this host, so the codesig prompt cannot be reached"
+    skip "no tty, no --all-yes: refuses (exit 1)" "$reason"
+    skip "no tty, no --all-yes: the refusal names why" "$reason"
+    skip "no tty, no --all-yes: nothing was written" "$reason"
+    echo "insert_dylib_test: SKIPPED the no-tty codesig-prompt case (3 assertions) -- $reason" >&2
 else
     ( cd "$T" && "$T/notty" "$BIN/insert_dylib" /usr/lib/libfoo.dylib nt nt_out </dev/null ) \
         >"$T/5.out" 2>"$T/5.err"
@@ -187,16 +198,28 @@ else
     [ ! -e "$T/nt_out" ] \
         && ok "no tty, no --all-yes: nothing was written" \
         || bad "no tty, no --all-yes" "wrote $T/nt_out despite refusing"
+fi
 
-    # AND: the refusal is really about THIS prompt, not "no tty, ever" --
-    # --no-strip-codesig takes prompt 1 off the table entirely ("do not emit
-    # it, and do not prompt"), so the very same no-tty invocation succeeds
-    # once that is the only prompt in its way. A dylib path that is a REAL
-    # file (so prompt 5 does not fire) but not already named by "$T/nt"'s own
-    # load commands (tests/fixture.macho already links
-    # /usr/lib/libSystem.B.dylib, so THAT path would trigger prompt 2
-    # instead) -- an empty file of this test's own making clears both.
-    : >"$T/fake.dylib"
+# AND: the refusal above is really about THIS prompt, not "no tty, ever" --
+# --no-strip-codesig takes prompt 1 off the table entirely ("do not emit it,
+# and do not prompt"), so the very same no-tty invocation succeeds once that
+# is the only prompt in its way. A dylib path that is a REAL file (so prompt
+# 5 does not fire) but not already named by "$T/nt"'s own load commands
+# (tests/fixture.macho already links /usr/lib/libSystem.B.dylib, so THAT
+# path would trigger prompt 2 instead) -- an empty file of this test's own
+# making clears both.
+#
+# DELIBERATELY OUTSIDE the codesign-gated block above: --no-strip-codesig's
+# whole point is that it removes the codesig prompt unconditionally, whether
+# or not "$T/nt" actually carries a code signature -- this assertion never
+# needed `codesign -s -` to succeed, and gating it on that dependency the
+# same way as the three above would lose coverage this host's codesign
+# cannot affect either way.
+: >"$T/fake.dylib"
+if [ ! -x "$T/notty" ]; then
+    skip "no tty: --no-strip-codesig removes the one prompt in the way, so this succeeds" \
+        "cannot build tests/notty helper: $(cat "$T/notty_build.err")"
+else
     ( cd "$T" && "$T/notty" "$BIN/insert_dylib" --no-strip-codesig \
         fake.dylib nt nt_out2 </dev/null ) >"$T/5b.out" 2>"$T/5b.err"
     rc=$?

@@ -76,6 +76,33 @@ int mo_is_ordinal_lc(uint32_t cmd);
 uint32_t mo_kind_from_name(const char *name);
 const char *mo_kind_name(uint32_t cmd);
 
+/* MO_KIND_CANDIDATES: every LC_* mach-o/loader.h defines for a
+ * library/dylib/framework load command -- not only the four MO_KINDS
+ * (ordinals.c) currently recognizes. This exists for callers that must not
+ * hardcode their own copy of MO_KINDS (which is not exported: mo_kind_name
+ * and mo_is_ordinal_lc are its only doors) but still need to enumerate
+ * candidates and ask mo_kind_name which ones it answers for:
+ *   - cli/machorewrite.c's `--capabilities` offers each of these to
+ *     mo_kind_name and prints only the ones that come back non-NULL, so
+ *     MO_KINDS growing a fifth entry surfaces there with NO edit to
+ *     machorewrite.c, as long as the new LC_* constant is already listed
+ *     here -- closing the THIRD-place drift a hand-maintained kinds[] array
+ *     in machorewrite.c used to risk.
+ *   - tests/relations_test.c's test_capabilities_kinds_track_mo_is_ordinal_lc
+ *     walks this same list and fails if mo_kind_name and mo_is_ordinal_lc
+ *     ever disagree about any one of them -- the two functions are still two
+ *     independent implementations in ordinals.c (MO_KINDS backs one,
+ *     mo_is_ordinal_lc's own comparison chain is the other), so nothing
+ *     healed that on its own; this is what still notices if they drift.
+ * A constant added to mo_is_ordinal_lc's accept-list without a matching
+ * entry here would NOT be caught by that test -- it is a candidate list to
+ * probe, not a ceiling on what mo_is_ordinal_lc itself may accept. */
+#define MO_KIND_CANDIDATES \
+    LC_LOAD_DYLIB, LC_ID_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB, \
+    LC_LOAD_UPWARD_DYLIB, LC_LAZY_LOAD_DYLIB, LC_PREBOUND_DYLIB, \
+    LC_LOADFVMLIB, LC_IDFVMLIB, LC_SUB_FRAMEWORK, LC_SUB_UMBRELLA, \
+    LC_SUB_CLIENT, LC_SUB_LIBRARY
+
 /* A dylib_command's dylib.name.offset (equally, an rpath_command's
  * path.offset) is an lc_str: an offset relative to the START of the load
  * command that carries it. Nothing about the format guarantees it lands
@@ -206,7 +233,18 @@ enum { MO_ORD_SELF = -1, MO_ORD_EXE = -2, MO_ORD_FLAT = -3,
  * MO_ORD_*, per BIND_OPCODE_SET_DYLIB_ORDINAL_* /
  * BIND_OPCODE_SET_DYLIB_SPECIAL_IMM), the most recently set trailing-flags
  * symbol name (NULL if none has been set yet in this stream), and that
- * symbol's WEAK_IMPORT flag. */
+ * symbol's WEAK_IMPORT flag.
+ *
+ * `ordinal` also STARTS at 0 and STAYS 0 if a DO_BIND-family opcode fires
+ * before any SET_DYLIB_ORDINAL_* opcode has run in this stream -- malformed
+ * (a well-formed stream always sets an ordinal first), but reachable, since
+ * this walk observes rather than validates stream structure. 0 is not a
+ * value any SET_DYLIB_ORDINAL_* opcode or MO_ORD_* constant ever produces,
+ * so a caller that means to index an ordinal-keyed table with this field
+ * must check for 0 the same way it already must check for MO_ORD_UNKNOWN and
+ * the other MO_ORD_* values -- `if (ord >= 1) names[ord]`, not
+ * `if (ord != MO_ORD_UNKNOWN) names[ord]`, which a 0 would still pass
+ * straight into names[0]. */
 typedef struct {
     int         ordinal;
     const char *symbol;
