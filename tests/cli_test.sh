@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/cli_test.sh — exercises the machorewrite CLI itself: --capabilities, the
-# two read-only verbs, and the bare `FILE OUT` form that is the only way to
-# change a binary.
+# three read-only verbs (verify, info, imports), and the bare `FILE OUT` form
+# that is the only way to change a binary.
 #
 # THE NINE MUTATING VERBS ARE GONE (declassify, segment, retag-swift, minos,
 # lc, dylib, rpath, grow, edit). For the first seven, every assertion that used to
@@ -416,7 +416,7 @@ echo "$caps" | grep -qxF "mutate bare script=stdin" \
     && ok "capabilities: the bare FILE OUT form is advertised, taking its script on stdin" \
     || bad "capabilities: mutate line" "the only mutating form is not advertised: $(echo "$caps" | grep '^mutate')"
 
-for v in verify info; do
+for v in verify info imports; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
@@ -903,7 +903,7 @@ mkdir -p "$T/alone"
 cp "$MACHOREWRITE" "$T/alone/machorewrite"
 alone_caps=$("$T/alone/machorewrite" --capabilities)
 alone_missing=""
-for v in verify info; do
+for v in verify info imports; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
 done
 echo "$alone_caps" | grep -qxF "mutate bare script=stdin" \
@@ -1034,6 +1034,183 @@ echo "$info_out" | grep -q "ordinal=1 path=.*liba.dylib" && ok "info: shows liba
     || bad "info: ordinal" "not found in output: $info_out"
 echo "$info_out" | grep -q "header pad:" && ok "info: shows header pad line" \
     || bad "info: header pad" "not found in output"
+
+# ============================================================================
+# imports
+# ============================================================================
+# TSV output: a header row, then one row per (dylib, symbol) pair. Columns
+# may be APPENDED, but never reordered, renamed or removed -- a consumer
+# selects a column BY NAME, which is why the symbol assertion below reads it
+# by awk-ing the header row for its position instead of a fixed field number.
+build_main "$T/imp_in"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_in" >"$T/imp.out" 2>"$T/imp.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: succeeds on a real binary" \
+    || bad "imports: real binary" "exited $rc: $(cat "$T/imp.err")"
+
+imp_header=$(printf 'arch\tordinal\tkind\tinstall_name\tsymbol\tweak')
+head -1 "$T/imp.out" | grep -qxF "$imp_header" \
+    && ok "imports: header row names the six columns, in order" \
+    || bad "imports: header row" "changed: $(head -1 "$T/imp.out")"
+
+# A VALUE assertion, not a shape assertion: this tool's whole job is mapping
+# symbol -> install_name (plus kind/weak), and a shape-only check ("some
+# symbol was present") cannot tell a correct mapping from a scrambled one --
+# it still passes if the wrong install_name, the wrong kind, or an ordinal
+# off by one is reported for the right symbol. Read entirely BY COLUMN NAME
+# (the header row parsed into `c[]`, same device tests/cli_test.sh's `info`
+# assertions use for `ordinal=1 path=.*liba.dylib` 15 lines above the
+# original of this section), so a future column reorder still finds the
+# right field instead of silently comparing the wrong one. BOTH rows are
+# checked, not just _a_sym's: _a_sym is ordinal 1, so a bug that resolves
+# every row's install_name against ordinal 1 unconditionally (rather than
+# each row's own ordinal) would still pass a check of _a_sym alone -- only
+# dyld_stub_binder, at ordinal 2, can catch that one.
+awk -F'\t' '
+    NR==1 { for (i = 1; i <= NF; i++) c[$i] = i; next }
+    $c["symbol"] == "_a_sym" && $c["install_name"] == "@loader_path/liba.dylib" &&
+    $c["kind"] == "load" && $c["ordinal"] == "1" && $c["weak"] == "0" { f1 = 1 }
+    $c["symbol"] == "dyld_stub_binder" && $c["install_name"] == "/usr/lib/libSystem.B.dylib" &&
+    $c["kind"] == "load" && $c["ordinal"] == "2" && $c["weak"] == "0" { f2 = 1 }
+    END { exit !(f1 && f2) }
+' "$T/imp.out" \
+    && ok "imports: _a_sym and dyld_stub_binder each map to their OWN dylib, kind and ordinal" \
+    || bad "imports: symbol-to-dylib mapping" "no matching rows: $(cat "$T/imp.out")"
+
+# Exactly two rows: a_sym (bound eagerly) and libSystem's dyld_stub_binder
+# (bound lazily, the stub-call indirection every linked binary carries).
+# This is what catches "the last row is silently dropped" or "one of the
+# three bind streams is never walked" -- a shape check alone cannot, since
+# both leave every remaining row's shape and field count intact.
+imp_rows=$(awk -F'\t' 'NR>1' "$T/imp.out" | wc -l | tr -d ' ')
+[ "$imp_rows" = 2 ] && ok "imports: reports exactly the two binds this fixture makes" \
+    || bad "imports: row count" "wanted 2 data rows, got $imp_rows: $(cat "$T/imp.out")"
+
+awk -F'\t' 'NR==1{n=NF} NF!=n{print NR; exit 1}' "$T/imp.out" >/dev/null \
+    && ok "imports: every data row has the header's field count" \
+    || bad "imports: ragged row" "a row's field count differs from the header's"
+
+"$MACHOREWRITE" imports "$T/imp_in" >"$T/imp2.out" 2>/dev/null
+cmp -s "$T/imp.out" "$T/imp2.out" \
+    && ok "imports: deterministic -- same input, same bytes" \
+    || bad "imports: deterministic" "two runs on the same input differ"
+
+# TAB/NEWLINE in an attacker-controlled field (install_name here; a symbol
+# name in the bind stream is the same hazard, checked the same way, in
+# src/imports.c) is refused, not escaped or emitted ragged -- see
+# cli/machorewrite.c's comment beside the header-row's append-only rule for
+# the reasoning. This is also the ragged-row check above's first POSITIVE
+# control: without this fixture, that check has never had a ragged row to
+# catch and passes vacuously on every clean fixture.
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "$(printf 'a\tb')" \
+    "$T/a.c" -o "$T/libtab.dylib"
+"$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libtab.dylib" -o "$T/imp_tab"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_tab" >"$T/imp_tab.out" 2>"$T/imp_tab.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "imports: refuses an install_name carrying a TAB (exit 1)" \
+    || bad "imports: TAB injection" "expected 1, got $rc: $(cat "$T/imp_tab.err")"
+[ ! -s "$T/imp_tab.out" ] \
+    && ok "imports: ... and prints nothing on stdout, not a partial row" \
+    || bad "imports: TAB injection stdout" "expected empty, got: $(cat "$T/imp_tab.out")"
+grep -q 'install_name' "$T/imp_tab.err" && grep -q '0x09' "$T/imp_tab.err" \
+    && ok "imports: ... naming the field and the offending byte" \
+    || bad "imports: TAB injection message" "missing field/byte: $(cat "$T/imp_tab.err")"
+
+rc=0
+"$MACHOREWRITE" imports "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && ok "imports: refuses a non-Mach-O (exit 1)" \
+    || bad "imports: non-Mach-O" "expected 1, got $rc"
+
+"$T/mkchained" make "$T/imp_chained"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_chained" >/dev/null 2>"$T/imp_chained.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "imports: refuses a chained-fixups image (exit 1)" \
+    || bad "imports: chained" "expected 1, got $rc: $(cat "$T/imp_chained.err")"
+grep -q 'fixups set' "$T/imp_chained.err" \
+    && ok "imports: ... and the refusal names the remedy" \
+    || bad "imports: chained remedy" "no 'fixups set' in: $(cat "$T/imp_chained.err")"
+
+# An image with NO bind stream at all -- not even an LC_DYLD_INFO(_ONLY)
+# command -- is a SUCCESSFUL report of ZERO rows, header line included, and
+# is one exit code away from "refused to look": that is the distinction a
+# consumer of this output most needs told apart. `load-command delete` has no
+# spelling for LC_DYLD_INFO (its KIND vocabulary is uuid/codesig/
+# source-version/build-version/code-sign-drs -- src/lc_kinds.c), so the
+# fixture is hand-built in C, beside tests/mkimplausible.c: the smallest
+# possible thin 64-bit Mach-O is a bare mach_header_64 with zero load
+# commands, which mi_wrap's own validation accepts outright.
+"$CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
+"$T/mknobind" "$T/imp_nobind"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_nobind" >"$T/imp_nobind.out" 2>"$T/imp_nobind.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: an image with no bind stream succeeds (exit 0)" \
+    || bad "imports: no bind stream" "expected 0, got $rc: $(cat "$T/imp_nobind.err")"
+imp_nb_lines=$(wc -l < "$T/imp_nobind.out" | tr -d ' ')
+[ "$imp_nb_lines" = 1 ] && ok "imports: ... reporting the header alone (zero rows)" \
+    || bad "imports: no bind stream lines" "wanted 1 line (header only), got $imp_nb_lines"
+
+# Every special ordinal this build assigns a meaning to -- self/exe/flat, and
+# MO_ORD_UNKNOWN, the one a raw SET_DYLIB_SPECIAL_IMM value outside all three
+# maps to rather than being misreported as one of them. None of the four is
+# reliably reachable from a linker on every host (tests/mknobind.c's own
+# comment on -special says why), so the fixture is hand-built, the same
+# device as the no-bind-stream fixture just above.
+"$T/mknobind" "$T/imp_special" -special
+rc=0
+"$MACHOREWRITE" imports "$T/imp_special" >"$T/imp_special.out" 2>"$T/imp_special.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: a special-ordinal fixture succeeds" \
+    || bad "imports: special ordinals" "expected 0, got $rc: $(cat "$T/imp_special.err")"
+awk -F'\t' '
+    NR==1 { for (i = 1; i <= NF; i++) c[$i] = i; next }
+    { got[$c["symbol"]] = $c["ordinal"]; kind[$c["symbol"]] = $c["kind"];
+      name[$c["symbol"]] = $c["install_name"] }
+    END {
+        ok = 1
+        if (got["_self_sym"] != "self")    ok = 0
+        if (got["_exe_sym"]  != "exe")     ok = 0
+        if (got["_flat_sym"] != "flat")    ok = 0
+        if (got["_unk_sym"]  != "unknown") ok = 0
+        for (s in kind) if (kind[s] != "-" || name[s] != "-") ok = 0
+        exit !ok
+    }
+' "$T/imp_special.out" \
+    && ok "imports: self/exe/flat/unknown each print their own ordinal name" \
+    || bad "imports: special ordinals" "wrong mapping: $(cat "$T/imp_special.out")"
+
+# A fat container reports every 64-bit slice, and the arch column tells them
+# apart -- the two fat_arch entries are labelled x86_64 and arm64 (the same
+# device the fat_edit fixture above uses: the label is the fat_arch table's
+# own cputype/cpusubtype, independent of what the wrapped slice's own
+# mach_header actually says).
+"$BIN/makefat" "$T/imp_fat" "$T/imp_in" 0x1000007 3 12 "$T/imp_in" 0x100000c 0 12
+rc=0
+"$MACHOREWRITE" imports "$T/imp_fat" >"$T/imp_fat.out" 2>"$T/imp_fat.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: a fat container reports (exit 0)" \
+    || bad "imports: fat" "expected 0, got $rc: $(cat "$T/imp_fat.err")"
+imp_narch=$(awk -F'\t' 'NR>1{print $1}' "$T/imp_fat.out" | sort -u | wc -l | tr -d ' ')
+[ "$imp_narch" -eq 2 ] && ok "imports: ... and the arch column names BOTH slices" \
+    || bad "imports: fat arch" "wanted 2 distinct arch names, got $imp_narch: $(cat "$T/imp_fat.out")"
+imp_fat_rows=$(awk -F'\t' 'NR>1' "$T/imp_fat.out" | wc -l | tr -d ' ')
+imp_thin_rows=$(awk -F'\t' 'NR>1' "$T/imp.out" | wc -l | tr -d ' ')
+[ "$imp_fat_rows" -eq $((imp_thin_rows * 2)) ] \
+    && ok "imports: ... reporting BOTH slices' rows, not just the first" \
+    || bad "imports: fat row count" "wanted $((imp_thin_rows * 2)) ($imp_thin_rows x2 slices), got $imp_fat_rows"
+
+# One clean slice, one chained-fixups slice: the whole report refuses (see
+# src/imports.h's own comment on mimp_report for why a fat container with
+# one bad slice refuses rather than silently reporting the good one), and
+# -- the one property the two-pass design exists for -- stdout carries
+# NOTHING, not even the clean slice's own rows or the header line, even
+# though that slice was fully validated before the chained slice was ever
+# reached.
+"$BIN/makefat" "$T/imp_fatchained" "$T/imp_in" 0x1000007 3 12 "$T/imp_chained" 0x100000c 0 12
+rc=0
+"$MACHOREWRITE" imports "$T/imp_fatchained" >"$T/imp_fatchained.out" 2>"$T/imp_fatchained.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "imports: a fat container with one chained slice refuses the WHOLE report" \
+    || bad "imports: fat+chained" "expected 1, got $rc: $(cat "$T/imp_fatchained.err")"
+[ ! -s "$T/imp_fatchained.out" ] \
+    && ok "imports: ... stdout is EMPTY, not the clean slice's rows" \
+    || bad "imports: fat+chained stdout" "expected empty, got: $(cat "$T/imp_fatchained.out")"
 
 # ============================================================================
 # minos
