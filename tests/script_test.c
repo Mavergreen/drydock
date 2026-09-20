@@ -323,12 +323,12 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Walks ms_table_row directly and confirms MS_TABLE has the spec's 15 rows
- * (the "Statements" table's 14 kind/op pairs, plus `target 10.9`, whose
+/* Walks ms_table_row directly and confirms MS_TABLE has the spec's 16 rows
+ * (the "Statements" table's 15 kind/op pairs, plus `target 10.9`, whose
  * profile occupies the op column), each of which round-trips through an
  * actual ms_parse -- not just that one known row's text appears somewhere.
  * tests/cli_test.sh separately counts --capabilities' own "statement " lines
- * (exactly 15, all unique); together the two catch the generator
+ * (exactly 16, all unique); together the two catch the generator
  * (cli/machorewrite.c's loop over ms_table_row) and the table itself going out
  * of step with each other -- a dropped, extra, or duplicated line on either
  * side. */
@@ -349,6 +349,7 @@ static void test_capabilities_table_round_trips(void) {
         else if (strcmp(kind, "version-min") == 0) a = "10.9";
         else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
         else if (strcmp(kind, "fixups") == 0) a = "classic";
+        else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
 
         if (nargs == 2)
             snprintf(line, sizeof line, "%s %s %s %s\n", kind, op, a, b);
@@ -374,7 +375,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 15, "the statement table has 15 rows (got %d)", n_rows);
+    CHECK(n_rows == 16, "the statement table has 16 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row -- fifteen. Each mask below was read out of
@@ -587,6 +588,57 @@ static void test_a_directive_after_target_is_an_error(void) {
     CHECK(strstr(err, "line 2") != NULL, "and names line 2 (got: %s)", err);
 }
 
+static void test_dylib_retype(void) {
+    ms_script s; char err[256] = {0};
+    const char *ok = "dylib retype /usr/lib/libfoo.dylib weak\n";
+    CHECK(ms_parse(ok, strlen(ok), &s, err, sizeof err) == 0,
+          "retype rejected: %s", err);
+    CHECK(s.n == 1, "wanted 1 statement, got %d", s.n);
+    CHECK(s.stmts[0].kind == MS_DYLIB && s.stmts[0].op == MS_RETYPE,
+          "wrong kind/op");
+    CHECK(strcmp(s.stmts[0].a, "/usr/lib/libfoo.dylib") == 0, "wrong path");
+    CHECK(strcmp(s.stmts[0].b, "weak") == 0, "wrong kind operand");
+    ms_free(&s);
+
+    /* Each of the four is accepted. */
+    const char *kinds[] = { "load", "weak", "reexport", "upward" };
+    for (size_t i = 0; i < 4; i++) {
+        char line[128];
+        snprintf(line, sizeof line, "dylib retype /x %s\n", kinds[i]);
+        err[0] = 0;
+        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == 0,
+              "%s rejected: %s", kinds[i], err);
+        ms_free(&s);
+    }
+
+    /* lazy is refused BY NAME, and the message says why. */
+    const char *lazy = "dylib retype /x lazy\n";
+    err[0] = 0;
+    CHECK(ms_parse(lazy, strlen(lazy), &s, err, sizeof err) == -1,
+          "lazy was accepted");
+    CHECK(strstr(err, "lazy") != NULL, "message does not name lazy: %s", err);
+    CHECK(strstr(err, "line 1") != NULL, "message does not name the line: %s", err);
+
+    /* An unknown kind is refused and the message lists what is accepted. */
+    const char *bogus = "dylib retype /x sideways\n";
+    err[0] = 0;
+    CHECK(ms_parse(bogus, strlen(bogus), &s, err, sizeof err) == -1,
+          "unknown kind accepted");
+    CHECK(strstr(err, "upward") != NULL, "message does not list the kinds: %s", err);
+
+    /* Arity is two. */
+    const char *short_form = "dylib retype /x\n";
+    err[0] = 0;
+    CHECK(ms_parse(short_form, strlen(short_form), &s, err, sizeof err) == -1,
+          "one-operand retype accepted");
+
+    /* rpath has no retype: it bears no cmd kind to change. */
+    const char *rp = "rpath retype /x weak\n";
+    err[0] = 0;
+    CHECK(ms_parse(rp, strlen(rp), &s, err, sizeof err) == -1,
+          "rpath retype accepted");
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -624,6 +676,7 @@ int main(void) {
     test_two_targets_is_a_parse_error();
     test_unknown_target_is_refused_not_guessed();
     test_a_directive_after_target_is_an_error();
+    test_dylib_retype();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

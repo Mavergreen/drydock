@@ -1,6 +1,7 @@
 #include "script.h"
 #include "arch_names.h"
 #include "lc_kinds.h"
+#include "ordinals.h"
 #include "relations.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -66,7 +67,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * was cli/machorewrite.c's own DYLIB_OPS, which is what this table absorbed.
  * Adding an operation here is the whole of adding an operation -- to both
  * front-ends, to what --capabilities advertises, and (the disturbs column) to
- * what a run of it is known to invalidate. 15 rows: every "<kind> <op>" the
+ * what a run of it is known to invalidate. 16 rows: every "<kind> <op>" the
  * spec accepts.
  *
  * The last row is `target 10.9`, whose second field is a PROFILE name, not a
@@ -115,6 +116,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
   R("dylib",        MS_DYLIB,        "insert",   MS_INSERT,       1, "-insert",   MS_MODE_DYLIB, 3, MREL_ORDINAL | MREL_HEADER_PAD) \
   R("dylib",        MS_DYLIB,        "delete",   MS_DELETE,       1, "-delete",   MS_MODE_DYLIB, 1, MREL_ORDINAL | MREL_HEADER_PAD) \
   R("dylib",        MS_DYLIB,        "reexport", MS_REEXPORT,     1, "-reexport", MS_MODE_DYLIB, 4, MREL_NONE) \
+  R("dylib",        MS_DYLIB,        "retype",   MS_RETYPE,       2, NULL,        0,             0, MREL_NONE) \
   R("rpath",        MS_RPATH,        "replace",  MS_REPLACE,      2, "-replace",  MS_MODE_RPATH, 0, MREL_HEADER_PAD) \
   R("rpath",        MS_RPATH,        "delete",   MS_DELETE,       1, "-delete",   MS_MODE_RPATH, 1, MREL_HEADER_PAD) \
   R("rpath",        MS_RPATH,        "append",   MS_APPEND,       1, "-append",   MS_MODE_RPATH, 2, MREL_HEADER_PAD) \
@@ -411,6 +413,17 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[2], "classic") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "fixups set accepts only 'classic' (got '%s')", fields[2]);
+            } else if (kind == MS_DYLIB && op == MS_RETYPE &&
+                       mo_kind_from_name(fields[3]) == 0) {
+                if (strcmp(fields[3], "lazy") == 0)
+                    return ms_failf(stmts, text, out, err, errsz, lineno,
+                        "dylib retype: 'lazy' is not a retype target -- an "
+                        "image carrying LC_LAZY_LOAD_DYLIB is refused, because "
+                        "whether it takes a slot in the ordinal sequence has "
+                        "never been established");
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "dylib retype: unknown kind '%s'; accepted: load, weak, "
+                    "reexport, upward", fields[3]);
             }
 
             /* One target per script. Two would each expand against the image

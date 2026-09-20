@@ -470,15 +470,15 @@ else
 fi
 # WHICH OPS EACH KIND OFFERS, which the two `verb <kind> ops=` lines used to
 # state and the statement rows state now. The claim is the same one, in the
-# spelling that survived: dylib offers all five, rpath four, and rpath does NOT
-# offer reexport (LC_RPATH has one kind, so there is nothing to promote it to).
-# Both lists come from ONE table (src/script.c's MS_TABLE, which absorbed
-# cli/machorewrite.c's DYLIB_OPS), so neither can advertise an op the parser
-# refuses.
+# spelling that survived: dylib offers all six, rpath four, and rpath does NOT
+# offer reexport or retype (LC_RPATH has one kind, so there is nothing to
+# promote it to, or retype it as). Both lists come from ONE table
+# (src/script.c's MS_TABLE, which absorbed cli/machorewrite.c's DYLIB_OPS), so
+# neither can advertise an op the parser refuses.
 caps_dylib_ops=$(echo "$caps" | sed -n 's/^statement dylib \([a-z-]*\) [0-9]*$/\1/p' | sort | tr '\n' ',')
 caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\1/p' | sort | tr '\n' ',')
-[ "$caps_dylib_ops" = "append,delete,insert,reexport,replace," ] \
-    && ok "capabilities: dylib advertises all five ops" \
+[ "$caps_dylib_ops" = "append,delete,insert,reexport,replace,retype," ] \
+    && ok "capabilities: dylib advertises all six ops" \
     || bad "capabilities ops" "dylib ops moved: $caps_dylib_ops"
 [ "$caps_rpath_ops" = "append,delete,insert,replace," ] \
     && ok "capabilities: rpath advertises four ops, and still omits reexport" \
@@ -486,19 +486,19 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The spec's statement vocabulary
-# has 14 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
-# column -- makes 15; tests/script_test.c's
+# has 15 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
+# column -- makes 16; tests/script_test.c's
 # test_capabilities_table_round_trips separately walks ms_table_row directly
-# and confirms MS_TABLE itself has those 15 rows, each of which round-trips
+# and confirms MS_TABLE itself has those 16 rows, each of which round-trips
 # through ms_parse. This assertion checks the other half of the same claim
 # from here, reusing the $caps already captured above: that
-# print_capabilities' loop over ms_table_row actually emitted 15 "statement "
+# print_capabilities' loop over ms_table_row actually emitted 16 "statement "
 # lines, with none dropped, none extra, and none duplicated. Together the
 # two catch the generator and the table going out of step with each other.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 15 ] && [ "$n_unique" -eq 15 ] \
-    && ok "capabilities: exactly 15 unique statement lines" \
+[ "$n_statements" -eq 16 ] && [ "$n_unique" -eq 16 ] \
+    && ok "capabilities: exactly 16 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 # The profile vocabulary is advertised from that same table, so a wrapper can
 # see which targets this build knows rather than guess. `target 10.9 0`: no
@@ -577,6 +577,8 @@ check_ops_accepted() {
     for op in $2; do
         case "$op" in
             replace) mts "$T/vocab_fixture" "$verb replace /no/such/old /no/such/new" \
+                         >"$T/vocab_op.out" 2>&1 || true ;;
+            retype)  mts "$T/vocab_fixture" "$verb retype /no/such/path weak" \
                          >"$T/vocab_op.out" 2>&1 || true ;;
             *)       mts "$T/vocab_fixture" "$verb $op /no/such/path" \
                          >"$T/vocab_op.out" 2>&1 || true ;;
