@@ -295,6 +295,20 @@ static void test_dylib_kind_names(void) {
         CHECK(mo_kind_name(cmd) && strcmp(mo_kind_name(cmd), names[i]) == 0,
               "%s did not round-trip", names[i]);
     }
+    /* Explicit identity checks to catch transposed mappings in MO_KINDS. */
+    CHECK(mo_kind_from_name("load")     == LC_LOAD_DYLIB,        "load mismaps");
+    CHECK(mo_kind_from_name("weak")     == LC_LOAD_WEAK_DYLIB,   "weak mismaps");
+    CHECK(mo_kind_from_name("reexport") == LC_REEXPORT_DYLIB,    "reexport mismaps");
+    CHECK(mo_kind_from_name("upward")   == LC_LOAD_UPWARD_DYLIB, "upward mismaps");
+    /* Verify mo_is_ordinal_lc accepts exactly these four, and rejects both
+     * LC_LAZY_LOAD_DYLIB (policy: mo_map_build refuses it) and LC_ID_DYLIB
+     * (policy: it's not a dependency, not addressable by ordinal). */
+    CHECK(mo_is_ordinal_lc(LC_LOAD_DYLIB), "LC_LOAD_DYLIB must be ordinal-bearing");
+    CHECK(mo_is_ordinal_lc(LC_LOAD_WEAK_DYLIB), "LC_LOAD_WEAK_DYLIB must be ordinal-bearing");
+    CHECK(mo_is_ordinal_lc(LC_REEXPORT_DYLIB), "LC_REEXPORT_DYLIB must be ordinal-bearing");
+    CHECK(mo_is_ordinal_lc(LC_LOAD_UPWARD_DYLIB), "LC_LOAD_UPWARD_DYLIB must be ordinal-bearing");
+    CHECK(!mo_is_ordinal_lc(LC_LAZY_LOAD_DYLIB), "LC_LAZY_LOAD_DYLIB must NOT be ordinal-bearing");
+    CHECK(!mo_is_ordinal_lc(LC_ID_DYLIB), "LC_ID_DYLIB must NOT be ordinal-bearing");
     /* mo_map_build refuses an image carrying LC_LAZY_LOAD_DYLIB because its
      * ordinal slotting has never been exercised. Accepting it here would let
      * `dylib retype` emit images this tool's own verbs refuse. */
