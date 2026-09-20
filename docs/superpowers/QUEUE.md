@@ -843,6 +843,46 @@ files cite a passage, not by what fraction of its own lines are prose.
   them and says why. A constraint may go untested when nothing can trigger it,
   but then somebody has to be told.
 
+## For shipyard: build OUT of tree is documented but not operative
+
+Found 2026-09-20. `modernmavericks-conventions` SKILL.md already carries the
+rule, with its own measurement on THIS repo — local disk 2.96s wall / 88% CPU
+against in-tree-on-NFS 11.16s / 25%, user time identical at 1.78s vs 1.81s, so
+the whole 3.8x is I/O wait. Nothing enforces it, and shipyard itself violates it.
+
+- **SKILL.md contradicts itself.** One bullet forbids `${sourceDir}/build-*` in a
+  committed `CMakePresets.json`; the closing bullet says CI is unaffected because
+  "the shared presets keep working unchanged", which only holds if they use it.
+- **Shipyard's own `mavericks-presets.json` uses `${sourceDir}/build-native`.**
+- **No repo inherits it.** All five products with a `CMakePresets.json` are
+  standalone; four use `${sourceDir}/build-*` (container-tools, macho-tools,
+  magic-trackpad2, tailscale; openssh uses `build/updater`).
+- **`check-family-conventions.sh` does not check this.** Its build-dir check (7)
+  is about `.gitignore` COVERAGE, and it explicitly strips `${sourceDir}/` and
+  accepts what remains.
+
+**Resolution chosen by the repo owner 2026-09-20: enforce it with a conventions
+check.** The shape that satisfies both SKILL bullets without declaring either
+wrong is a committed `binaryDir` built from a VARIABLE —
+`$env{MAVERICKS_BUILD_ROOT}/<repo>-native` — which is portable (no developer path
+committed) and out of tree. Check 7's own comment already treats "a path built
+from a variable like $RUNNER_TEMP" as having left the tree, so the checker's
+model already contemplates this. Shipyard's install action exports the variable:
+`RUNNER_TEMP` in CI, `/private/tmp/build/$USER` locally.
+
+**Sequencing.** The check cannot land alone — it reddens four repos the moment it
+ships, and macho-tools is one of them. It lands together with the five repos'
+preset changes and the workflows that hardcode a build dir (this repo's
+`release.yml` names `build-cross` three times: the `characterize.sh` and
+`chained-fixups.sh` invocations and the `cp "build-cross/$f" dist/` staging loop).
+Deliberately NOT started while the 2026-09-20 retype/imports plan is in flight,
+because reddening this repo's CI would mask that plan's own signal.
+
+Interim, already done: `CMakeUserPresets.json` (gitignored, per SKILL's prescribed
+mechanism) now exists in this checkout with `native-local` and `cross-local`
+pointing at `/private/tmp/build/$USER/macho-tools-*`. Verified: configures in
+0.29s.
+
 ## For shipyard: two gaps a self-upstream repo falls through
 
 Found 2026-09-12 while making this repo releasable. Both are shipyard's, not
