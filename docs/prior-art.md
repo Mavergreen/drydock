@@ -37,6 +37,14 @@ The three gaps on this side were tracked as issues. All three are now closed
 32-bit input specifically — that one stays refused on purpose, not as an open
 gap — see below.
 
+The `post-transform verification` row above is the sharpest instance of "the
+union is what the tool should be" found so far: `tests/insert-dylib-diff.sh`'s
+2026-09-20 differential run against a real build of the fork caught it
+reporting success on `/usr/lib/swift/libswiftDarwin.dylib` (a real dylib, so
+no `__PAGEZERO` to shrink) while its own stderr admitted it could not expand
+the header, and the file it wrote failed this toolkit's own `mg_plausible`
+check — `compat/README.md`'s insert_dylib table has the full measurement.
+
 ## Status (toolkit plan Task 5)
 
 All three are resolved:

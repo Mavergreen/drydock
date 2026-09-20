@@ -766,13 +766,28 @@ mt_id_parse() {
         mt_die "insert_dylib: --strip-codesig and --no-strip-codesig are mutually exclusive"
         return 1
     fi
+    # --inplace names BIN as the write target; an explicit new_binary_path
+    # names a DIFFERENT one -- and the fork does not split the difference,
+    # it picks one silently (--inplace wins, the 3rd positional is never
+    # even read). Matching that here would mean silently ignoring a path
+    # the caller wrote out by hand and overwriting their input instead: the
+    # data-loss shape this toolkit refuses rather than guesses through
+    # everywhere else. A DELIBERATE divergence -- see compat/README.md's
+    # insert_dylib table -- not something mt_id_out gets to arbitrate.
+    if [ -n "$MT_ID_INPLACE" ] && [ -n "$MT_ID_NEWOUT" ]; then
+        mt_die "insert_dylib: --inplace and new_binary_path $MT_ID_NEWOUT are mutually exclusive"
+        return 1
+    fi
     return 0
 }
 
 # mt_id_out -- OUT per the fork's own asprintf default: new_binary_path if
 # given, else BIN itself under --inplace, else "<BIN>_patched" -- APPENDED,
 # not prepended. (The fork's own README says "prepended"; that is wrong, and
-# this follows the source at bd221b8, not the README.)
+# this follows the source at bd221b8, not the README.) This function never
+# actually has to choose between the first two branches: mt_id_parse above
+# already refused --inplace with an explicit new_binary_path before this is
+# ever called, so the two are mutually exclusive by the time OUT is named.
 mt_id_out() {
     if [ -n "$MT_ID_NEWOUT" ]; then
         printf '%s' "$MT_ID_NEWOUT"

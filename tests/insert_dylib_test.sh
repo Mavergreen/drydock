@@ -448,6 +448,35 @@ rc=$?
     && ok "--weak order: append then retype -- the new command is LC_LOAD_WEAK_DYLIB" \
     || bad "--weak order" "no LC_LOAD_WEAK_DYLIB in the output; retype ran before append had anything to retype"
 
+# ---- 13. --inplace plus an explicit new_binary_path: REFUSED -------------
+# A DECLARED DIVERGENCE from the fork, this one the other direction from
+# case 6 above: the fork does not refuse this combination, it silently picks
+# one file to write and ignores the other (--inplace wins; the 3rd
+# positional is never even read) -- measured by hand against a real build of
+# the fork (tests/insert-dylib-diff.sh's 2026-09-20 run, task-8 report).
+# Matching that would mean silently overwriting the caller's input instead
+# of the output path they explicitly named, or vice versa: the data-loss
+# shape this toolkit refuses rather than guesses through everywhere else.
+# compat/translate.sh's mt_id_parse refuses it unconditionally, before any
+# prompt -- so --all-yes must NOT make this succeed either.
+cp "$FIXTURE" "$T/mx"
+mx_before=$(sha "$T/mx")
+( cd "$T" && "$BIN/insert_dylib" --all-yes --inplace /usr/lib/libfoo.dylib mx mx_out ) \
+    >"$T/13.out" 2>"$T/13.err"
+rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "--inplace + new_binary_path: refuses (exit 1), --all-yes does not override it" \
+    || bad "--inplace + new_binary_path" "exit $rc (want 1): $(cat "$T/13.err")"
+grep -q -- '--inplace' "$T/13.err" && grep -q 'mx_out' "$T/13.err" \
+    && ok "--inplace + new_binary_path: the refusal names both --inplace and the path" \
+    || bad "--inplace + new_binary_path" "refusal does not name both: $(cat "$T/13.err")"
+[ "$(sha "$T/mx")" = "$mx_before" ] \
+    && ok "--inplace + new_binary_path: the input is untouched" \
+    || bad "--inplace + new_binary_path" "input was modified despite refusing"
+[ ! -e "$T/mx_out" ] \
+    && ok "--inplace + new_binary_path: nothing was written to the named path either" \
+    || bad "--inplace + new_binary_path" "wrote $T/mx_out despite refusing"
+
 echo "insert_dylib_test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
 exit 0

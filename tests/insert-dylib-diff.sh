@@ -64,6 +64,19 @@ FORK_COMMIT=bd221b8   # "Fixes for some executables"
 # tests/insert_dylib_test.sh's "32-bit refused" case already pins it on a
 # hand-built fixture. Sweeping it over a whole corpus would repeat the same
 # already-known result on every 32-bit file found and crowd out anything new.
+#
+# --inplace PLUS AN EXPLICIT 3rd POSITIONAL IS A DECLARED DIVERGENCE, NOT A
+# SWEPT COMPARISON. Task 8 fix round 1 made this wrapper refuse that
+# combination outright (compat/translate.sh's mt_id_parse) rather than match
+# the fork's silent "--inplace wins" choice -- compat/README.md's table has
+# the reasoning. Comparing FORK against NEW for it, the way every other case
+# here does, would report this EXPECTED divergence as an unexplained
+# "outpath"/"exit" difference on every single corpus file, forever --
+# exactly the noise this script exists to cut through. So
+# idd_declared_inplace_newout, below, checks NEW against the one shape it is
+# now contractually required to have (refuse, name both, touch nothing) and
+# logs FORK's own behaviour without counting it as a difference; only a
+# REGRESSION in NEW's refusal counts.
 set -u
 
 FORK="${1:?usage: insert-dylib-diff.sh <fork-insert_dylib> <new-insert_dylib> [corpus-root...]}"
@@ -150,8 +163,9 @@ echo "insert-dylib-diff: $nall files under the roots, 1 in $stride examined ($(w
 echo "insert-dylib-diff: sweeping $ncorpus (max $MAX); skipped $nskip32 32-bit thin file(s) (declared divergence, not swept)"
 
 # ---- comparison -----------------------------------------------------------
-total=0; diffs=0; stderr_disagreed=0
+total=0; diffs=0; declared=0; stderr_disagreed=0
 REPORT="$T/report"; : > "$REPORT"
+DECLARED_REPORT="$T/declared"; : > "$DECLARED_REPORT"
 
 # idd_state SIDE BEFORE-HASH -- what SIDE actually wrote, read back off disk
 # rather than assumed from either program's own grammar: "f" (the bin
@@ -212,6 +226,46 @@ idd_case() {
     fi
 }
 
+# idd_declared_inplace_newout -- --inplace plus an explicit 3rd positional.
+# compat/README.md's insert_dylib table now DECLARES this one: the fork
+# silently picks BIN and never reads the 3rd positional at all, and this
+# wrapper REFUSES the combination outright (compat/translate.sh's
+# mt_id_parse) rather than match that. Running it through idd_case above
+# would flag it as an unexplained "outpath"/"exit" difference on every
+# corpus file forever, drowning out anything genuinely new under a result
+# this differential already knows the answer to. So this checks NEW against
+# the one shape it is now contractually required to have -- refuse, name
+# both `--inplace` and the path, touch nothing -- and logs FORK's own
+# behaviour for a human to skim without counting it as a difference. If NEW
+# ever stops refusing this, that IS news, and it counts as a real diff.
+idd_declared_inplace_newout() {
+    total=$((total + 1))
+    rm -rf "$T/A" "$T/B"; mkdir -p "$T/A" "$T/B"
+    cp "$SRC" "$T/A/f"; cp "$SRC" "$T/B/f"
+    before=$(sha "$SRC")
+    ( cd "$T/A" && "$FORK" --all-yes --inplace "$DYLIB" f out ) </dev/null >"$T/a.out" 2>"$T/a.err"; arc=$?
+    ( cd "$T/B" && "$NEWBIN" --all-yes --inplace "$DYLIB" f out ) </dev/null >"$T/b.out" 2>"$T/b.err"; brc=$?
+    a_state=$(idd_state A "$before")
+    b_state=$(idd_state B "$before")
+
+    bad=""
+    [ "$brc" -eq 1 ] || bad="$bad new-did-not-refuse(rc=$brc)"
+    grep -q -- '--inplace' "$T/b.err" || bad="$bad new-refusal-does-not-name---inplace"
+    grep -q 'out' "$T/b.err" || bad="$bad new-refusal-does-not-name-the-path"
+    [ "$b_state" = "f:unchanged" ] || bad="$bad new-wrote-something(state=[$b_state])"
+
+    if [ -n "$bad" ]; then
+        diffs=$((diffs + 1))
+        { echo "=== $SRC :: --inplace + new_binary_path (declared, but NEW regressed) ->$bad"
+          echo "    new: rc=$brc state=[$b_state]"; sed 's/^/      /' "$T/b.err" | head -5
+        } >> "$REPORT"
+    else
+        declared=$((declared + 1))
+        echo "=== $SRC :: --inplace + new_binary_path -- fork=[rc=$arc state=$a_state] new=[refused, as declared]" \
+            >> "$DECLARED_REPORT"
+    fi
+}
+
 while IFS= read -r SRC; do
     [ -r "$SRC" ] || continue
     idd_case "plain, 2-positional"                        0 "$DYLIB" f
@@ -222,11 +276,12 @@ while IFS= read -r SRC; do
     idd_case "--overwrite, 3-positional (out pre-exists)"  1 --overwrite "$DYLIB" f out
     idd_case "--inplace, 2-positional"                     0 --inplace "$DYLIB" f
     idd_case "--inplace --weak, 2-positional"              0 --inplace --weak "$DYLIB" f
-    idd_case "--inplace, 3-positional (out named too)"     0 --inplace "$DYLIB" f out
+    idd_declared_inplace_newout
 done < "$T/corpus"
 
-echo "insert-dylib-diff: comparisons=$total differing=$diffs" \
+echo "insert-dylib-diff: comparisons=$total differing=$diffs declared=$declared" \
      "(stderr non-empty on new but empty on fork in $stderr_disagreed case(s) -- expected, see this script's header; not counted above)"
+[ "$declared" -gt 0 ] && echo "insert-dylib-diff: $declared case(s) matched the declared --inplace+new_binary_path divergence (compat/README.md); not counted as differing"
 if [ "$diffs" -ne 0 ]; then
     echo "insert-dylib-diff: FOUND $diffs interface difference(s):" >&2
     cat "$REPORT" >&2
