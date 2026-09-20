@@ -1,6 +1,7 @@
 /* ordinals.c -- the library-ordinal map. See ordinals.h. */
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 
@@ -11,6 +12,26 @@
 int mo_is_ordinal_lc(uint32_t cmd) {
     return cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB ||
            cmd == LC_REEXPORT_DYLIB || cmd == LC_LOAD_UPWARD_DYLIB;
+}
+
+static const struct { const char *name; uint32_t cmd; } MO_KINDS[] = {
+    { "load",     LC_LOAD_DYLIB },
+    { "weak",     LC_LOAD_WEAK_DYLIB },
+    { "reexport", LC_REEXPORT_DYLIB },
+    { "upward",   LC_LOAD_UPWARD_DYLIB },
+};
+
+uint32_t mo_kind_from_name(const char *name) {
+    if (!name) return 0;
+    for (size_t i = 0; i < sizeof MO_KINDS / sizeof MO_KINDS[0]; i++)
+        if (strcmp(name, MO_KINDS[i].name) == 0) return MO_KINDS[i].cmd;
+    return 0;
+}
+
+const char *mo_kind_name(uint32_t cmd) {
+    for (size_t i = 0; i < sizeof MO_KINDS / sizeof MO_KINDS[0]; i++)
+        if (cmd == MO_KINDS[i].cmd) return MO_KINDS[i].name;
+    return NULL;
 }
 
 const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset) {

@@ -35,6 +35,7 @@
  */
 #include "relations.h"
 #include "../src/image.h"
+#include "../src/ordinals.h"
 
 #include <mach-o/loader.h>
 #include <stdio.h>
@@ -285,6 +286,24 @@ static void test_verify_applies_needs_a_live_relation_AND_a_disturbance(void) {
           "no LC_FUNCTION_STARTS -> nothing to check even after a re-base");
 }
 
+static void test_dylib_kind_names(void) {
+    static const char *names[] = { "load", "weak", "reexport", "upward" };
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        uint32_t cmd = mo_kind_from_name(names[i]);
+        CHECK(cmd != 0, "mo_kind_from_name(%s) returned 0", names[i]);
+        CHECK(mo_is_ordinal_lc(cmd), "%s is not ordinal-bearing", names[i]);
+        CHECK(mo_kind_name(cmd) && strcmp(mo_kind_name(cmd), names[i]) == 0,
+              "%s did not round-trip", names[i]);
+    }
+    /* mo_map_build refuses an image carrying LC_LAZY_LOAD_DYLIB because its
+     * ordinal slotting has never been exercised. Accepting it here would let
+     * `dylib retype` emit images this tool's own verbs refuse. */
+    CHECK(mo_kind_from_name("lazy") == 0, "lazy was accepted as a kind");
+    CHECK(mo_kind_name(LC_LAZY_LOAD_DYLIB) == NULL, "lazy was named");
+    CHECK(mo_kind_from_name("") == 0, "empty string was accepted");
+    CHECK(mo_kind_from_name("LOAD") == 0, "kind names are not case-folded");
+}
+
 int main(void) {
     test_header_pad_is_always_live();
     test_func_start_liveness_follows_the_load_command();
@@ -293,6 +312,7 @@ int main(void) {
     test_file_off_liveness_follows_linkedit_plain_offset_commands();
     test_names_round_trip();
     test_verify_applies_needs_a_live_relation_AND_a_disturbance();
+    test_dylib_kind_names();
 
     if (fails) {
         printf("%d failure(s)\n", fails);
