@@ -1695,7 +1695,7 @@ cat > "$T/one_pass.c" <<'EOF'
 int main(int argc, char **argv) {
     if (argc != 6) return 2;
     mr_change ch;
-    ch.old_path = argv[3]; ch.new_path = argv[4]; ch.reexport = 0;
+    ch.old_path = argv[3]; ch.new_path = argv[4]; ch.retype_to = 0;
     mr_ops ops;
     memset(&ops, 0, sizeof ops);
     /* One operation per FAMILY is still one mr_ops -- what an mr_ops can no

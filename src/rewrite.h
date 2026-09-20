@@ -18,12 +18,13 @@
 
 /* One dylib-path (or rpath) operation. new_path == NULL deletes the command
  * naming old_path; "" leaves the path alone; anything else rewrites it,
- * growing the command if the longer string needs it. `reexport` promotes
- * LC_LOAD_DYLIB to LC_REEXPORT_DYLIB (what "" is for), never an rpath. */
+ * growing the command if the longer string needs it. `retype_to` is an LC_*
+ * constant to rewrite the command's kind to (what "" is for), or 0 to leave
+ * the kind alone; never set for an rpath. */
 typedef struct {
     const char *old_path;
     const char *new_path;
-    int reexport;                /* always 0 for an rpath change */
+    uint32_t    retype_to;       /* always 0 for an rpath change */
 } mr_change;
 
 /* What a rewrite's ordinal renumbering did, handed back so a front-end can

@@ -742,6 +742,45 @@ static void test_later_statements_see_earlier_ones(void) {
     rm_dir();
 }
 
+/* `dylib retype PATH KIND` rewrites an existing dependency's load-command
+ * KIND to any of the four ordinal-bearing kinds (src/ordinals.h), not just
+ * LC_REEXPORT_DYLIB (`dylib reexport`, which is now one case it subsumes).
+ * One run per kind, each starting from the same freshly-appended
+ * LC_LOAD_DYLIB: a KIND that ms_parse accepts but edit.c's lowering left at
+ * retype_to==0 would show up here as libfoo still LC_LOAD_DYLIB, not the
+ * kind asked for. */
+static void test_dylib_retype_rewrites_the_load_command_kind(void) {
+    static const struct { const char *word; uint32_t cmd; } KINDS[] = {
+        { "weak",     LC_LOAD_WEAK_DYLIB },
+        { "reexport", LC_REEXPORT_DYLIB },
+        { "upward",   LC_LOAD_UPWARD_DYLIB },
+        { "load",     LC_LOAD_DYLIB },
+    };
+    for (size_t i = 0; i < sizeof KINDS / sizeof KINDS[0]; i++) {
+        fresh_dir();
+        char path[512], out[512], script[256];
+        in_dir(path, sizeof path, "img");
+        in_dir(out, sizeof out, "img.out");
+        uint8_t *img = build_image(0);
+        write_file(path, img, IMG_SIZE, 0755);
+        free(img);
+
+        snprintf(script, sizeof script,
+                 "dylib append /usr/lib/libfoo.dylib\n"
+                 "dylib retype /usr/lib/libfoo.dylib %s\n", KINDS[i].word);
+        int rc = run(path, out, script);
+        CHECK(rc == 0, "retype to %s: run succeeds (got %d; log: %s)",
+              KINDS[i].word, rc, g_log);
+        CHECK(count_lc(out, KINDS[i].cmd, "/usr/lib/libfoo.dylib") == 1,
+              "retype to %s: libfoo is now load-command kind %u", KINDS[i].word,
+              (unsigned)KINDS[i].cmd);
+        if (KINDS[i].cmd != LC_LOAD_DYLIB)
+            CHECK(count_lc(out, LC_LOAD_DYLIB, "/usr/lib/libfoo.dylib") == 0,
+                  "retype to %s: libfoo is no longer LC_LOAD_DYLIB", KINDS[i].word);
+        rm_dir();
+    }
+}
+
 /* An operation that matched nothing is a report without fatal-warnings and
  * a refusal with it. */
 static void test_fatal_warnings_refuses_an_unmatched_operation(void) {
@@ -1381,6 +1420,7 @@ int main(void) {
     test_an_empty_script_disturbs_nothing_and_is_passed_through();
     test_the_final_verify_ignores_MACHO_NO_VERIFY();
     test_later_statements_see_earlier_ones();
+    test_dylib_retype_rewrites_the_load_command_kind();
     test_fatal_warnings_refuses_an_unmatched_operation();
     test_fatal_warnings_refuses_an_unmatched_segment_rename();
     test_the_file_level_operations_run_in_memory();

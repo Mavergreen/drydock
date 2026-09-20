@@ -470,15 +470,15 @@ else
 fi
 # WHICH OPS EACH KIND OFFERS, which the two `verb <kind> ops=` lines used to
 # state and the statement rows state now. The claim is the same one, in the
-# spelling that survived: dylib offers all five, rpath four, and rpath does NOT
-# offer reexport (LC_RPATH has one kind, so there is nothing to promote it to).
-# Both lists come from ONE table (src/script.c's MS_TABLE, which absorbed
-# cli/machorewrite.c's DYLIB_OPS), so neither can advertise an op the parser
-# refuses.
+# spelling that survived: dylib offers all six, rpath four, and rpath does NOT
+# offer reexport or retype (LC_RPATH has one kind, so there is nothing to
+# promote it to, or retype it as). Both lists come from ONE table
+# (src/script.c's MS_TABLE, which absorbed cli/machorewrite.c's DYLIB_OPS), so
+# neither can advertise an op the parser refuses.
 caps_dylib_ops=$(echo "$caps" | sed -n 's/^statement dylib \([a-z-]*\) [0-9]*$/\1/p' | sort | tr '\n' ',')
 caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\1/p' | sort | tr '\n' ',')
-[ "$caps_dylib_ops" = "append,delete,insert,reexport,replace," ] \
-    && ok "capabilities: dylib advertises all five ops" \
+[ "$caps_dylib_ops" = "append,delete,insert,reexport,replace,retype," ] \
+    && ok "capabilities: dylib advertises all six ops" \
     || bad "capabilities ops" "dylib ops moved: $caps_dylib_ops"
 [ "$caps_rpath_ops" = "append,delete,insert,replace," ] \
     && ok "capabilities: rpath advertises four ops, and still omits reexport" \
@@ -486,19 +486,19 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The statement vocabulary
-# has 14 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
-# column -- makes 15; tests/script_test.c's
+# has 15 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
+# column -- makes 16; tests/script_test.c's
 # test_capabilities_table_round_trips separately walks ms_table_row directly
-# and confirms MS_TABLE itself has those 15 rows, each of which round-trips
+# and confirms MS_TABLE itself has those 16 rows, each of which round-trips
 # through ms_parse. This assertion checks the other half of the same claim
 # from here, reusing the $caps already captured above: that
-# print_capabilities' loop over ms_table_row actually emitted 15 "statement "
+# print_capabilities' loop over ms_table_row actually emitted 16 "statement "
 # lines, with none dropped, none extra, and none duplicated. Together the
 # two catch the generator and the table going out of step with each other.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 15 ] && [ "$n_unique" -eq 15 ] \
-    && ok "capabilities: exactly 15 unique statement lines" \
+[ "$n_statements" -eq 16 ] && [ "$n_unique" -eq 16 ] \
+    && ok "capabilities: exactly 16 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 # The profile vocabulary is advertised from that same table, so a wrapper can
 # see which targets this build knows rather than guess. `target 10.9 0`: no
@@ -509,6 +509,14 @@ echo "$caps" | grep -qxF "statement target 10.9 0" \
 echo "$caps" | grep -q "statement dylib replace 2" \
     && ok "capabilities: statement table is advertised" \
     || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
+echo "$caps" | grep -qxF "statement dylib retype 2" \
+    && ok "capabilities: dylib retype statement is advertised" \
+    || bad "capabilities: dylib retype" "no 'statement dylib retype 2' line: $(echo "$caps" | grep '^statement dylib retype')"
+echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
+    && ok "capabilities: retype kinds are advertised" \
+    || bad "capabilities: retype kinds" "no 'dylib-kinds load weak reexport upward' line: $(echo "$caps" | grep '^dylib-kinds')"
+! grep -q 'lazy' "$T/caps" || bad "capabilities kinds" "advertises lazy as a kind"
+ok "capabilities: retype kinds do not advertise lazy"
 
 # NO `flags=` FIELD IS ADVERTISED ANY MORE, and that is the claim now. It used
 # to be per-verb: `allow-grow` and `fatal-warnings` were verb-level flags, and
@@ -577,6 +585,8 @@ check_ops_accepted() {
     for op in $2; do
         case "$op" in
             replace) mts "$T/vocab_fixture" "$verb replace /no/such/old /no/such/new" \
+                         >"$T/vocab_op.out" 2>&1 || true ;;
+            retype)  mts "$T/vocab_fixture" "$verb retype /no/such/path weak" \
                          >"$T/vocab_op.out" 2>&1 || true ;;
             *)       mts "$T/vocab_fixture" "$verb $op /no/such/path" \
                          >"$T/vocab_op.out" 2>&1 || true ;;
@@ -1691,6 +1701,129 @@ reexport_info=$("$MACHOREWRITE" info "$T/dylib_reexport_fixture")
 echo "$reexport_info" | grep -A1 "LC_REEXPORT_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
     && ok "dylib: -reexport promoted liba to LC_REEXPORT_DYLIB" \
     || bad "dylib: -reexport" "no LC_REEXPORT_DYLIB naming liba in: $reexport_info"
+
+# `dylib retype PATH KIND` rewrites an EXISTING dependency's load-command KIND
+# to any of the four ordinal-bearing kinds (src/ordinals.c's table), not just
+# LC_REEXPORT_DYLIB -- -reexport above is now one case it subsumes. The byte
+# count never moves: only cmd changes, never cmdsize or the path.
+#
+# dylib_kind_of FILE PATH -- the LC[N] kind name on the line immediately
+# above the `ordinal=N path=PATH` line in `machorewrite info`'s output. Used
+# below to DERIVE the round-trip fixture's starting kind rather than assume
+# it: this repo lost a day of red CI to a test that pinned a host- or
+# fixture-fact nobody derived (see this file's own header).
+dylib_kind_of() {
+    "$MACHOREWRITE" info "$1" | awk -v want="path=$2" '
+        /^LC\[/ { kind = $2 }
+        index($0, want) { print kind; exit }
+    '
+}
+retype_lc_for() {
+    case "$1" in
+        load)     echo LC_LOAD_DYLIB ;;
+        weak)     echo LC_LOAD_WEAK_DYLIB ;;
+        reexport) echo LC_REEXPORT_DYLIB ;;
+        upward)   echo LC_LOAD_UPWARD_DYLIB ;;
+    esac
+}
+# dylib_cmdsize_of FILE PATH -- the NUMBER after `cmdsize=` on the same LC[N]
+# line dylib_kind_of reads the kind from. "Size-neutral" is the central claim
+# of `dylib retype` (only cmd changes; new_path is always "", so write_size
+# never differs from cmdsize) -- total file byte count, `verify` passing, and
+# a sha256 round trip are all indirect signals of that, none of them a direct
+# assertion that THIS load command's cmdsize held still. This is that direct
+# assertion.
+dylib_cmdsize_of() {
+    "$MACHOREWRITE" info "$1" | awk -v want="path=$2" '
+        /^LC\[/ { cmdsize = $0; sub(/.*cmdsize=/, "", cmdsize); cmdsize += 0 }
+        index($0, want) { print cmdsize; exit }
+    '
+}
+
+for k in weak reexport upward load; do
+    build_main "$T/dylib_retype_fixture.$k"
+    before_sz=$(wc -c < "$T/dylib_retype_fixture.$k")
+    before_cmdsize=$(dylib_cmdsize_of "$T/dylib_retype_fixture.$k" "@loader_path/liba.dylib")
+    mts "$T/dylib_retype_fixture.$k" "dylib retype @loader_path/liba.dylib $k" \
+        >"$T/dylib_retype.$k.out" || bad "dylib: retype to $k exit" "$(cat "$T/dylib_retype.$k.out")"
+    after_sz=$(wc -c < "$T/dylib_retype_fixture.$k")
+    [ "$before_sz" = "$after_sz" ] \
+        || bad "dylib: retype to $k" "changed the file size: $before_sz -> $after_sz"
+    after_cmdsize=$(dylib_cmdsize_of "$T/dylib_retype_fixture.$k" "@loader_path/liba.dylib")
+    [ "$before_cmdsize" = "$after_cmdsize" ] \
+        || bad "dylib: retype to $k" "changed liba's own cmdsize: $before_cmdsize -> $after_cmdsize"
+    "$MACHOREWRITE" verify "$T/dylib_retype_fixture.$k" >/dev/null 2>&1 \
+        || bad "dylib: retype to $k" "the result fails machorewrite verify"
+    want_lc=$(retype_lc_for "$k")
+    retype_info=$("$MACHOREWRITE" info "$T/dylib_retype_fixture.$k")
+    echo "$retype_info" | grep -A1 "$want_lc" | grep -qF "path=@loader_path/liba.dylib" \
+        && ok "dylib: retype to $k produced $want_lc naming liba, cmdsize unchanged ($before_cmdsize)" \
+        || bad "dylib: retype to $k" "no $want_lc naming liba in: $retype_info"
+done
+
+# GAP 2: the per-kind loop above cannot observe a build that
+# skips the retype write specifically when the TARGET is `load`, because
+# build_main's fixture already starts as LC_LOAD_DYLIB -- declining to write
+# is unobservable when the bytes it would write are the bytes already there.
+# Retype to weak FIRST, so the load command starts as LC_LOAD_WEAK_DYLIB, then
+# retype that same command to load and confirm it really becomes
+# LC_LOAD_DYLIB: that makes the write observable regardless of what the
+# fixture started as.
+build_main "$T/dylib_retype_to_load_fixture"
+mts "$T/dylib_retype_to_load_fixture" "dylib retype @loader_path/liba.dylib weak" \
+    >"$T/dylib_retype_to_load_pre.out" \
+    || bad "dylib: retype to load from a non-load kind (setup: to weak)" "$(cat "$T/dylib_retype_to_load_pre.out")"
+mts "$T/dylib_retype_to_load_fixture" "dylib retype @loader_path/liba.dylib load" \
+    >"$T/dylib_retype_to_load.out" \
+    || bad "dylib: retype to load from a non-load kind exit" "$(cat "$T/dylib_retype_to_load.out")"
+to_load_info=$("$MACHOREWRITE" info "$T/dylib_retype_to_load_fixture")
+echo "$to_load_info" | grep -A1 "LC_LOAD_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
+    && ok "dylib: retype to load from weak actually rewrites cmd (not skipped because target is load)" \
+    || bad "dylib: retype to load from weak" "liba is not LC_LOAD_DYLIB after retyping from weak: $to_load_info"
+
+# Round trip: retype to weak, then back to the fixture's OWN starting kind
+# (derived, per above), reproduces the original bytes byte for byte.
+build_main "$T/dylib_retype_rt_fixture"
+start_kind=$(dylib_kind_of "$T/dylib_retype_rt_fixture" "@loader_path/liba.dylib")
+case "$start_kind" in
+    LC_LOAD_DYLIB|LC_LOAD_WEAK_DYLIB|LC_REEXPORT_DYLIB|LC_LOAD_UPWARD_DYLIB) : ;;
+    *) bad "dylib: retype round trip" "could not derive liba's starting kind (got '$start_kind')" ;;
+esac
+start_kind_word=weak
+[ "$start_kind" = LC_LOAD_DYLIB ] && start_kind_word=load
+[ "$start_kind" = LC_LOAD_WEAK_DYLIB ] && start_kind_word=weak
+[ "$start_kind" = LC_REEXPORT_DYLIB ] && start_kind_word=reexport
+[ "$start_kind" = LC_LOAD_UPWARD_DYLIB ] && start_kind_word=upward
+cp "$T/dylib_retype_rt_fixture" "$T/dylib_retype_rt_fixture.orig"
+mts "$T/dylib_retype_rt_fixture" "dylib retype @loader_path/liba.dylib weak" \
+    >"$T/dylib_retype_rt1.out" || bad "dylib: retype round trip (to weak)" "$(cat "$T/dylib_retype_rt1.out")"
+mts "$T/dylib_retype_rt_fixture" "dylib retype @loader_path/liba.dylib $start_kind_word" \
+    >"$T/dylib_retype_rt2.out" || bad "dylib: retype round trip (back to $start_kind_word)" "$(cat "$T/dylib_retype_rt2.out")"
+[ "$(sha "$T/dylib_retype_rt_fixture.orig")" = "$(sha "$T/dylib_retype_rt_fixture")" ] \
+    && ok "dylib: retype weak then back to $start_kind_word ($start_kind) round-trips to the original bytes" \
+    || bad "dylib: retype round trip" "retype to weak then back to $start_kind_word did not reproduce the original bytes"
+
+# `dylib reexport PATH` and `dylib retype PATH reexport` must agree byte for
+# byte -- retype subsumes reexport, it does not reimplement it.
+build_main "$T/dylib_retype_eq_a"
+build_main "$T/dylib_retype_eq_b"
+mts "$T/dylib_retype_eq_a" "dylib reexport @loader_path/liba.dylib" \
+    >"$T/dylib_retype_eq_a.out" || bad "dylib: reexport (for retype comparison)" "$(cat "$T/dylib_retype_eq_a.out")"
+mts "$T/dylib_retype_eq_b" "dylib retype @loader_path/liba.dylib reexport" \
+    >"$T/dylib_retype_eq_b.out" || bad "dylib: retype ... reexport (for comparison)" "$(cat "$T/dylib_retype_eq_b.out")"
+[ "$(sha "$T/dylib_retype_eq_a")" = "$(sha "$T/dylib_retype_eq_b")" ] \
+    && ok "dylib: reexport and retype ... reexport agree byte for byte" \
+    || bad "dylib: reexport vs retype reexport" "the two routes produced different bytes"
+
+# A PATH that is not present is a miss, reported on stderr
+# (src/rewrite.c's mr_report_unmatched), not a silent success.
+build_main "$T/dylib_retype_miss_fixture"
+printf 'dylib retype /nope.dylib weak\n' \
+    | "$MACHOREWRITE" "$T/dylib_retype_miss_fixture" "$T/dylib_retype_miss.out" \
+    >/dev/null 2>"$T/dylib_retype_miss.err" || true
+grep -q 'matched nothing' "$T/dylib_retype_miss.err" \
+    && ok "dylib: retype of an absent path reports a miss" \
+    || bad "dylib: retype miss" "no 'matched nothing' on stderr: $(cat "$T/dylib_retype_miss.err")"
 
 # ============================================================================
 # rpath -append

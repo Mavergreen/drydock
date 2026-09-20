@@ -40,7 +40,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
 enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
        MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
-       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9 };
+       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE };
 
 /* One operation line from an edit script. `a`/`.b` (NULL when the
  * statement's arity doesn't use them) point into the owning ms_script's

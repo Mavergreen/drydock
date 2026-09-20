@@ -70,6 +70,12 @@ typedef struct mo_map {
  * using two different definitions of "ordinal-bearing". */
 int mo_is_ordinal_lc(uint32_t cmd);
 
+/* The four kinds mo_is_ordinal_lc counts, by the name a `dylib retype`
+ * statement spells them with. LC_LAZY_LOAD_DYLIB is deliberately absent: see
+ * mo_map_build, which refuses an image carrying one. */
+uint32_t mo_kind_from_name(const char *name);
+const char *mo_kind_name(uint32_t cmd);
+
 /* A dylib_command's dylib.name.offset (equally, an rpath_command's
  * path.offset) is an lc_str: an offset relative to the START of the load
  * command that carries it. Nothing about the format guarantees it lands
