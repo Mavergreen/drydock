@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/cli_test.sh — exercises the machorewrite CLI itself: --capabilities, the
-# two read-only verbs, and the bare `FILE OUT` form that is the only way to
-# change a binary.
+# three read-only verbs (verify, info, imports), and the bare `FILE OUT` form
+# that is the only way to change a binary.
 #
 # THE NINE MUTATING VERBS ARE GONE (declassify, segment, retag-swift, minos,
 # lc, dylib, rpath, grow, edit). For the first seven, every assertion that used to
@@ -416,7 +416,7 @@ echo "$caps" | grep -qxF "mutate bare script=stdin" \
     && ok "capabilities: the bare FILE OUT form is advertised, taking its script on stdin" \
     || bad "capabilities: mutate line" "the only mutating form is not advertised: $(echo "$caps" | grep '^mutate')"
 
-for v in verify info; do
+for v in verify info imports; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
@@ -903,7 +903,7 @@ mkdir -p "$T/alone"
 cp "$MACHOREWRITE" "$T/alone/machorewrite"
 alone_caps=$("$T/alone/machorewrite" --capabilities)
 alone_missing=""
-for v in verify info; do
+for v in verify info imports; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
 done
 echo "$alone_caps" | grep -qxF "mutate bare script=stdin" \
@@ -1034,6 +1034,84 @@ echo "$info_out" | grep -q "ordinal=1 path=.*liba.dylib" && ok "info: shows liba
     || bad "info: ordinal" "not found in output: $info_out"
 echo "$info_out" | grep -q "header pad:" && ok "info: shows header pad line" \
     || bad "info: header pad" "not found in output"
+
+# ============================================================================
+# imports
+# ============================================================================
+# TSV output: a header row, then one row per (dylib, symbol) pair. Columns
+# may be APPENDED, but never reordered, renamed or removed -- a consumer
+# selects a column BY NAME, which is why the symbol assertion below reads it
+# by awk-ing the header row for its position instead of a fixed field number.
+build_main "$T/imp_in"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_in" >"$T/imp.out" 2>"$T/imp.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: succeeds on a real binary" \
+    || bad "imports: real binary" "exited $rc: $(cat "$T/imp.err")"
+
+imp_header=$(printf 'arch\tordinal\tkind\tinstall_name\tsymbol\tweak')
+head -1 "$T/imp.out" | grep -qxF "$imp_header" \
+    && ok "imports: header row names the six columns, in order" \
+    || bad "imports: header row" "changed: $(head -1 "$T/imp.out")"
+
+imp_sym=$(awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i} NR==2{print $c["symbol"]}' "$T/imp.out")
+[ -n "$imp_sym" ] && ok "imports: a symbol is read back BY COLUMN NAME" \
+    || bad "imports: symbol by name" "no symbol in the first data row: $(cat "$T/imp.out")"
+
+awk -F'\t' 'NR==1{n=NF} NF!=n{print NR; exit 1}' "$T/imp.out" >/dev/null \
+    && ok "imports: every data row has the header's field count" \
+    || bad "imports: ragged row" "a row's field count differs from the header's"
+
+"$MACHOREWRITE" imports "$T/imp_in" >"$T/imp2.out" 2>/dev/null
+cmp -s "$T/imp.out" "$T/imp2.out" \
+    && ok "imports: deterministic -- same input, same bytes" \
+    || bad "imports: deterministic" "two runs on the same input differ"
+
+rc=0
+"$MACHOREWRITE" imports "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && ok "imports: refuses a non-Mach-O (exit 1)" \
+    || bad "imports: non-Mach-O" "expected 1, got $rc"
+
+"$T/mkchained" make "$T/imp_chained"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_chained" >/dev/null 2>"$T/imp_chained.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "imports: refuses a chained-fixups image (exit 1)" \
+    || bad "imports: chained" "expected 1, got $rc: $(cat "$T/imp_chained.err")"
+grep -q 'fixups set' "$T/imp_chained.err" \
+    && ok "imports: ... and the refusal names the remedy" \
+    || bad "imports: chained remedy" "no 'fixups set' in: $(cat "$T/imp_chained.err")"
+
+# An image with NO bind stream at all -- not even an LC_DYLD_INFO(_ONLY)
+# command -- is a SUCCESSFUL report of ZERO rows, header line included, and
+# is one exit code away from "refused to look": that is the distinction a
+# consumer of this output most needs told apart. `load-command delete` has no
+# spelling for LC_DYLD_INFO (its KIND vocabulary is uuid/codesig/
+# source-version/build-version/code-sign-drs -- src/lc_kinds.c), so the
+# fixture is hand-built in C, beside tests/mkimplausible.c: the smallest
+# possible thin 64-bit Mach-O is a bare mach_header_64 with zero load
+# commands, which mi_wrap's own validation accepts outright.
+"$CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
+"$T/mknobind" "$T/imp_nobind"
+rc=0
+"$MACHOREWRITE" imports "$T/imp_nobind" >"$T/imp_nobind.out" 2>"$T/imp_nobind.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: an image with no bind stream succeeds (exit 0)" \
+    || bad "imports: no bind stream" "expected 0, got $rc: $(cat "$T/imp_nobind.err")"
+imp_nb_lines=$(wc -l < "$T/imp_nobind.out" | tr -d ' ')
+[ "$imp_nb_lines" = 1 ] && ok "imports: ... reporting the header alone (zero rows)" \
+    || bad "imports: no bind stream lines" "wanted 1 line (header only), got $imp_nb_lines"
+
+# A fat container reports every 64-bit slice, and the arch column tells them
+# apart -- the two fat_arch entries are labelled x86_64 and arm64 (the same
+# device the fat_edit fixture above uses: the label is the fat_arch table's
+# own cputype/cpusubtype, independent of what the wrapped slice's own
+# mach_header actually says).
+"$BIN/makefat" "$T/imp_fat" "$T/imp_in" 0x1000007 3 12 "$T/imp_in" 0x100000c 0 12
+rc=0
+"$MACHOREWRITE" imports "$T/imp_fat" >"$T/imp_fat.out" 2>"$T/imp_fat.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "imports: a fat container reports (exit 0)" \
+    || bad "imports: fat" "expected 0, got $rc: $(cat "$T/imp_fat.err")"
+imp_narch=$(awk -F'\t' 'NR>1{print $1}' "$T/imp_fat.out" | sort -u | wc -l | tr -d ' ')
+[ "$imp_narch" -ge 1 ] && ok "imports: ... and the arch column names at least one slice" \
+    || bad "imports: fat arch" "no arch named: $(cat "$T/imp_fat.out")"
 
 # ============================================================================
 # minos

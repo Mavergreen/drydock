@@ -338,12 +338,11 @@ int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
     return mo_bind_walk((uint8_t *)base, size, NULL, 0, what, NULL, obs, ctx);
 }
 
-/* Does the `len`-byte region starting at `off` fit inside a `size`-byte
- * buffer? Written so the check itself cannot be fooled by the same integer
- * overflow it exists to catch: off/len come straight from the file (an
- * LC_SYMTAB or LC_DYLD_INFO command), so a malformed one is exactly the
- * input this guards against. */
-static int mo_fits(uint64_t off, uint64_t len, size_t size) {
+/* See ordinals.h for the full contract -- exported so a second caller (Task
+ * 6's imports reporter) bounds-checks a bind/weak/lazy stream the same way
+ * this module always has, rather than writing a second check that could
+ * disagree with this one. */
+int mo_fits(uint64_t off, uint64_t len, size_t size) {
     return off <= (uint64_t)size && len <= (uint64_t)size - off;
 }
 

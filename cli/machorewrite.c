@@ -8,6 +8,7 @@
  *                                   anything
  *   machorewrite info FILE
  *   machorewrite verify FILE
+ *   machorewrite imports FILE
  *
  * THERE WAS AN `edit FILE OUT SCRIPT` VERB, and it went with the other eight:
  * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
@@ -50,7 +51,10 @@
  *
  * DELEGATION, not reimplementation, is still the rule for what remains.
  * `verify` and `info` call straight into mg_plausible and
- * mi_open/mi_each_lc; the script forms reach ms_parse
+ * mi_open/mi_each_lc; `imports` calls straight into mimp_report
+ * (src/imports.h), which itself is a thin, read-only front onto
+ * mo_bind_observe -- the same bind-opcode decode the renumberer uses; the
+ * script forms reach ms_parse
  * (src/script.h) and me_run (src/edit.h), which reach the in-memory cores of
  * every rewrite this repo implements -- so the ordinal-renumbering logic that
  * has twice shipped loader-crashing bugs (docs/PROPOSAL.md "verify") is
@@ -78,6 +82,7 @@
  * same work now, through the statements. */
 #include "image.h"
 #include "ordinals.h"
+#include "imports.h"
 #include "grow.h"
 #include "lc_kinds.h"
 #include "atomic_write.h"
@@ -245,7 +250,8 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *   line 5+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out. Only
- *       the two read-only queries are left. The NINE MUTATING VERBS THAT USED
+ *       the three read-only queries are left (verify, info, imports). The
+ *       NINE MUTATING VERBS THAT USED
  *       TO BE LISTED HERE are gone, with their `ops=`, `kinds=`, `versions=`,
  *       `flags=` and `reports=` attributes; `edit` was the last of them, and
  *       the `mutate` line above plus the `statement` lines below are what a
@@ -280,6 +286,7 @@ static int print_capabilities(void) {
     printf("mutate bare script=stdin\n");
     printf("verb verify\n");
     printf("verb info\n");
+    printf("verb imports\n");
     {
         static const uint32_t kinds[] = { LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB,
                                           LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB };
@@ -311,8 +318,11 @@ static void usage(const char *prog) {
         "                                                    --capabilities lists every statement\n"
         "                                                    this build accepts\n"
         "       %s info FILE\n"
-        "       %s verify FILE\n",
-        prog, prog, prog, prog, prog);
+        "       %s verify FILE\n"
+        "       %s imports FILE                             TSV: arch, ordinal, kind,\n"
+        "                                                    install_name, symbol, weak --\n"
+        "                                                    one row per bind\n",
+        prog, prog, prog, prog, prog, prog);
 }
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
@@ -425,6 +435,109 @@ static int cmd_info(const char *path) {
                pad, lc_end, first_sect_off);
     }
     mi_close(&im);
+    return 0;
+}
+
+/* ---- imports: every (install_name, symbol) pair this image binds, as TSV --
+ *
+ * A thin delegation to src/imports.h's mimp_report -- this function's whole
+ * job is reading FILE into memory (mimp_report takes a buffer, not a path,
+ * since it walks a fat container's slices out of the same bytes it was
+ * given) and turning each mimp_row into one line of output. Nothing here
+ * decides what counts as an import, what a special ordinal prints as, or
+ * when to refuse -- that is all mimp_report's, so this dump can't drift out
+ * of agreement with it the way a second, hand-rolled reader could.
+ */
+struct imports_ctx { int header_printed; };
+
+/* THE HEADER ROW IS THE CONTRACT: a consumer selects a column BY NAME, never
+ * by position, so columns may be APPENDED to this line in the future but
+ * never reordered, renamed or removed -- tests/cli_test.sh asserts this by
+ * awk-ing the header row for a column's index rather than assuming one,
+ * which is what makes a future reorder fail loudly instead of silently
+ * moving a consumer's data underneath it. */
+static void imports_print_header(void) {
+    printf("arch\tordinal\tkind\tinstall_name\tsymbol\tweak\n");
+}
+
+/* Printed lazily, on the first row, so a refusal that arrives before any row
+ * would have been emitted (see mimp_report's own contract: a refusal is
+ * always all-or-nothing) never leaves a header line sitting above nothing.
+ * cmd_imports prints it itself, after a successful call that emitted zero
+ * rows, for exactly the case that lazy printing alone would miss: "no bind
+ * stream at all" is a successful report of zero rows, header line included,
+ * not the absence of one. */
+static void imports_row(const mimp_row *row, void *ctx_) {
+    struct imports_ctx *ctx = ctx_;
+    if (!ctx->header_printed) { imports_print_header(); ctx->header_printed = 1; }
+    if (row->ordinal >= 1) {
+        printf("%s\t%d\t%s\t%s\t%s\t%d\n", row->arch, row->ordinal, row->kind,
+               row->install_name, row->symbol, row->weak);
+        return;
+    }
+    const char *special;
+    switch (row->ordinal) {
+    case MO_ORD_SELF: special = "self"; break;
+    case MO_ORD_EXE:  special = "exe";  break;
+    case MO_ORD_FLAT: special = "flat"; break;
+    /* MO_ORD_UNKNOWN, or -- belt and suspenders -- anything else this build
+     * does not itself assign a meaning to: printed as "unknown" rather than
+     * as a raw number, per ordinals.h's own warning on MO_ORD_UNKNOWN. */
+    default:          special = "unknown"; break;
+    }
+    printf("%s\t%s\t%s\t%s\t%s\t%d\n", row->arch, special, row->kind,
+           row->install_name, row->symbol, row->weak);
+}
+
+static int cmd_imports(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "machorewrite imports: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < 0) {
+        fprintf(stderr, "machorewrite imports: %s: cannot open or read\n", path);
+        close(fd);
+        return EX_FAIL;
+    }
+    size_t size = (size_t)st.st_size;
+    uint8_t *buf = malloc(size ? size : 1);
+    if (!buf) {
+        fprintf(stderr, "machorewrite imports: out of memory\n");
+        close(fd);
+        return EX_FAIL;
+    }
+    size_t off = 0;
+    while (off < size) {
+        ssize_t n = read(fd, buf + off, size - off);
+        if (n <= 0) {
+            fprintf(stderr, "machorewrite imports: %s: cannot open or read\n", path);
+            close(fd);
+            free(buf);
+            return EX_FAIL;
+        }
+        off += (size_t)n;
+    }
+    close(fd);
+
+    struct imports_ctx ctx = { 0 };
+    int rc = mimp_report(buf, size, imports_row, &ctx);
+    free(buf);
+    if (rc != MIMP_OK) {
+        /* mimp_report already named the specific reason (chained fixups, a
+         * bind stream out of bounds) on stderr in its own words when it has
+         * one; this line is what names the FILE for every refusal, including
+         * "not a readable 64-bit Mach-O (thin or fat) at all", which
+         * mimp_report itself never sees a path to report on. */
+        fprintf(stderr, "machorewrite imports: %s: not a readable 64-bit Mach-O, "
+                        "or refused (see above)\n", path);
+        return EX_REFUSED;
+    }
+    /* Zero rows is success too -- an image with no bind stream at all is a
+     * clean, header-only report, never a refusal. imports_row never fired,
+     * so the header hasn't been printed yet. */
+    if (!ctx.header_printed) imports_print_header();
     return 0;
 }
 
@@ -554,6 +667,10 @@ int main(int argc, char **argv) {
         if (argc != 3) { fprintf(stderr, "usage: %s info FILE\n", argv[0]); return EX_FAIL; }
         return cmd_info(argv[2]);
     }
+    if (strcmp(verb, "imports") == 0) {
+        if (argc != 3) { fprintf(stderr, "usage: %s imports FILE\n", argv[0]); return EX_FAIL; }
+        return cmd_imports(argv[2]);
+    }
     /* The bare form: `machorewrite FILE OUT`, statements on stdin, and the
      * only way to change anything.
      *
@@ -564,11 +681,14 @@ int main(int argc, char **argv) {
      * OUT beginning with '-'. Reaching here means argv[1] matched no verb, so
      * there is nothing left for it to be but a file name.
      *
-     * THE TWO SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT. `edit`, `dylib`,
-     * `rpath`, `lc`, `minos`, `segment`, `retag-swift`, `grow` and `declassify`
-     * shadowed a file of the same name while they were verbs; now `machorewrite
-     * dylib out` reads a file named `dylib` and writes `out`, like any other
-     * pair. */
+     * THE THREE SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT: `verify`,
+     * `info` and, as of this build, `imports`. `edit`, `dylib`, `rpath`, `lc`,
+     * `minos`, `segment`, `retag-swift`, `grow` and `declassify` shadowed a
+     * file of the same name while they were verbs; now `machorewrite dylib
+     * out` reads a file named `dylib` and writes `out`, like any other pair.
+     * `machorewrite imports out` reads a file named `imports` only through
+     * `./imports`, the same remedy bad_out already names for an OUT beginning
+     * with '-'. */
     if (argc == 3) return cmd_script(argv[1], argv[2]);
 
     fprintf(stderr, "machorewrite: unknown verb '%s'\n", verb);
