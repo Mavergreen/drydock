@@ -89,13 +89,19 @@ target_compile_options(machorewritecore PRIVATE -O2 -Wall)
 # installs, and compat/ contains no C at all. MACHO_TOOLS is deliberately
 # still here, empty: it is the list a future compiled compat tool would join,
 # and its emptiness is the measurable form of "the goal is met".
+#
+# insert_dylib is the ONE NAME below that is not one of the six: it wraps a
+# grammar this repo never shipped (Wowfunhappy/insert_dylib), staged the same
+# way for the same reason -- convenience, not compatibility debt.
+# compat/insert_dylib.sh's own header says more.
 set(MACHO_WRAPPERS
   patch_macho
   change_dylib
   add_version_min
   rename_segment
   retag_swift_classes
-  fix_macho)
+  fix_macho
+  insert_dylib)
 
 set(MACHO_TOOLS)
 
@@ -364,6 +370,15 @@ add_test(NAME wrapper_test
 # device tests/EXPECTED uses.
 add_test(NAME known_callers
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/known-callers.sh" "$<TARGET_FILE_DIR:machorewrite>")
+
+# compat/insert_dylib.sh's own suite: the seventh wrapper's grammar, its five
+# prompts (--all-yes and the no-tty refusal), and the divergences declared in
+# compat/README.md's insert_dylib table. Deliberately NOT part of
+# tests/compat-sweep.sh or tests/known-callers.sh -- see this test file's own
+# header for why (no known caller to replay, and the sweep's matrix is frozen
+# for the six historical tools).
+add_test(NAME insert_dylib_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/insert_dylib_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
 
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after Task 1 converted them onto

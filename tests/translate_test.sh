@@ -555,7 +555,7 @@ refuses rsc-usage-0 1 'Usage: retag_swift_classes binary [binary ...]' -- retag_
 # A tool this file has never heard of gets a clear "no equivalent" and a
 # nonzero exit -- never a guess.
 refuses unknown-tool 2 \
-    'translate.sh: no equivalent -- unknown tool otool (expected one of: change_dylib add_version_min patch_macho rename_segment retag_swift_classes fix_macho)' \
+    'translate.sh: no equivalent -- unknown tool otool (expected one of: change_dylib add_version_min patch_macho rename_segment retag_swift_classes fix_macho insert_dylib)' \
     -- otool -L f
 
 # ---- capacity caps ------------------------------------------------------

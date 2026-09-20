@@ -700,6 +700,121 @@ MT_RSC_BODY
     done
 }
 
+# ---- insert_dylib ---------------------------------------------------------
+#
+# NOT one of the six historical tools -- this repo never shipped
+# Wowfunhappy/insert_dylib (the fork whose grammar this reproduces, commit
+# bd221b8). compat/insert_dylib.sh's own header says why it is here anyway
+# and why tests/known-callers.sh has nothing to say about it.
+#
+#   insert_dylib [flags] dylib_path binary_path [new_binary_path]
+#     (no flags)          dylib append DYLIB
+#     --weak              dylib append DYLIB, dylib retype DYLIB weak
+#     --strip-codesig     also: load-command delete codesig
+#     --no-strip-codesig  (nothing extra; the wrapper never asks about it)
+#
+# --inplace, --overwrite and --all-yes never become a statement: they choose
+# OUT (mt_id_out) and, in the wrapper, whether a prompt is asked and how it
+# answers. THE AMBIGUOUS CASE -- neither --strip-codesig nor
+# --no-strip-codesig given -- is not decided here: deciding it means reading
+# the binary and maybe asking a question on /dev/tty, both of which this file
+# is not for (see its own header, "pure function from one argv to a list of
+# command lines"). compat/insert_dylib.sh resolves that ambiguity itself,
+# before it ever calls mt_translate, by turning "neither given" into an
+# explicit --strip-codesig or --no-strip-codesig on the argv it hands this
+# file -- so mt_tr_insert_dylib below never sees the ambiguous case at all.
+mt_id_usage() {
+    printf 'usage: %s [--inplace] [--weak] [--overwrite] [--strip-codesig] [--no-strip-codesig] [--all-yes] dylib_path binary_path [new_binary_path]\n' "$MT_PROG" >&2
+    return 1
+}
+
+# mt_id_parse ARG... -- sets MT_ID_DYLIB, MT_ID_BIN, MT_ID_NEWOUT (may be
+# empty) and MT_ID_INPLACE/MT_ID_WEAK/MT_ID_OVERWRITE/MT_ID_ALLYES/
+# MT_ID_STRIP/MT_ID_NOSTRIP (each '' or 1). The positionals are every
+# argument that is not one of the six flags, in the order given; there must
+# be two or three of them. Shared, not duplicated: compat/insert_dylib.sh
+# calls this directly (it is sourced in already, by way of
+# machorewrite-compat.sh) to learn DYLIB/BIN/OUT before it does anything a
+# pure translation cannot, rather than walking argv a second time itself.
+mt_id_parse() {
+    MT_ID_DYLIB='' MT_ID_BIN='' MT_ID_NEWOUT=''
+    MT_ID_INPLACE='' MT_ID_WEAK='' MT_ID_OVERWRITE=''
+    MT_ID_ALLYES='' MT_ID_STRIP='' MT_ID_NOSTRIP=''
+    mt_id_n=0
+    for mt_id_a in "$@"; do
+        case $mt_id_a in
+        --inplace)          MT_ID_INPLACE=1 ;;
+        --weak)              MT_ID_WEAK=1 ;;
+        --overwrite)         MT_ID_OVERWRITE=1 ;;
+        --strip-codesig)     MT_ID_STRIP=1 ;;
+        --no-strip-codesig)  MT_ID_NOSTRIP=1 ;;
+        --all-yes)           MT_ID_ALLYES=1 ;;
+        --*)
+            mt_die "insert_dylib: unknown option $mt_id_a"; return 1 ;;
+        *)
+            mt_id_n=$((mt_id_n + 1))
+            case $mt_id_n in
+            1) MT_ID_DYLIB=$mt_id_a ;;
+            2) MT_ID_BIN=$mt_id_a ;;
+            3) MT_ID_NEWOUT=$mt_id_a ;;
+            *) mt_id_usage; return 1 ;;
+            esac ;;
+        esac
+    done
+    [ "$mt_id_n" -ge 2 ] || { mt_id_usage; return 1; }
+    if [ -n "$MT_ID_STRIP" ] && [ -n "$MT_ID_NOSTRIP" ]; then
+        mt_die "insert_dylib: --strip-codesig and --no-strip-codesig are mutually exclusive"
+        return 1
+    fi
+    return 0
+}
+
+# mt_id_out -- OUT per the fork's own asprintf default: new_binary_path if
+# given, else BIN itself under --inplace, else "<BIN>_patched" -- APPENDED,
+# not prepended. (The fork's own README says "prepended"; that is wrong, and
+# this follows the source at bd221b8, not the README.)
+mt_id_out() {
+    if [ -n "$MT_ID_NEWOUT" ]; then
+        printf '%s' "$MT_ID_NEWOUT"
+    elif [ -n "$MT_ID_INPLACE" ]; then
+        printf '%s' "$MT_ID_BIN"
+    else
+        printf '%s_patched' "$MT_ID_BIN"
+    fi
+}
+
+mt_tr_insert_dylib() {
+    mt_id_parse "$@" || return 1
+    mt_out=$(mt_id_out)
+
+    mt_body="dylib append$(mt_qargs "$MT_ID_DYLIB")
+"
+    [ -n "$MT_ID_WEAK" ] && mt_body="$mt_body$(printf 'dylib retype%s' "$(mt_qargs "$MT_ID_DYLIB" weak)")
+"
+    [ -n "$MT_ID_STRIP" ] && mt_body="$mt_body$(printf 'load-command delete%s' "$(mt_qargs codesig)")
+"
+
+    # THE ONE OTHER TOOL BESIDES patch_macho WHOSE GRAMMAR NAMES ITS OWN
+    # OUTPUT -- explicitly (new_binary_path), by the fork's own default
+    # (BIN + "_patched"), or by aliasing OUT to BIN (--inplace). Only the
+    # last of those, where OUT and BIN are the very same file, needs the
+    # OUT-plus-install treatment every other wrapper's teaching form uses
+    # (mt_out_for/mt_install_line); the other two already name a distinct
+    # file this function can write straight to. Same fork as
+    # mt_tr_patch_macho, same reason.
+    if [ -z "${MT_OUT:-}" ] && [ "$mt_out" != "$MT_ID_BIN" ]; then
+        mt_emit "$MT_ID_BIN" "$mt_out" <<MT_ID_BODY
+$mt_body
+MT_ID_BODY
+        return 0
+    fi
+    mt_emit "$MT_ID_BIN" "$(mt_out_for "$MT_ID_BIN")" <<MT_ID_BODY
+$mt_body
+MT_ID_BODY
+    mt_install_line "$MT_ID_BIN"
+    return 0
+}
+
 # The machorewrite program word, quoted, with mt_qargs' leading space trimmed.
 mt_pre_word() {
     mt_p="$(mt_qargs "${MACHOREWRITE:-machorewrite}")"
@@ -728,12 +843,13 @@ mt_translate() {
         rename_segment)       mt_tr_rename_segment "$@" ;;
         retag_swift_classes)  mt_tr_retag_swift_classes "$@" ;;
         fix_macho)            mt_tr_fix_macho "$@" ;;
+        insert_dylib)         mt_tr_insert_dylib "$@" ;;
         *)
-            # Not one of the six. There is deliberately no fallback and no
+            # Not one of the seven. There is deliberately no fallback and no
             # guess: emitting a plausible-looking machorewrite line for a tool this
             # file has never heard of is the one failure mode the plan names
             # outright.
-            printf 'translate.sh: no equivalent -- unknown tool %s (expected one of: change_dylib add_version_min patch_macho rename_segment retag_swift_classes fix_macho)\n' "$mt_tool" >&2
+            printf 'translate.sh: no equivalent -- unknown tool %s (expected one of: change_dylib add_version_min patch_macho rename_segment retag_swift_classes fix_macho insert_dylib)\n' "$mt_tool" >&2
             return 2 ;;
     esac
 }
