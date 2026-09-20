@@ -378,7 +378,7 @@ static void test_capabilities_table_round_trips(void) {
     CHECK(n_rows == 16, "the statement table has 16 rows (got %d)", n_rows);
 }
 
-/* One assertion per MS_TABLE row -- fifteen. Each mask below was read out of
+/* One assertion per MS_TABLE row -- sixteen. Each mask below was read out of
  * the code that implements the operation, not reasoned from the operation's
  * name, and is pinned here because a regression would be SILENT otherwise:
  * "disturbs nothing" is a plausible-looking answer for every row, and a row
@@ -404,6 +404,15 @@ static void test_disturbs_matches_the_spec_table(void) {
      * and length of the subsequence are all unchanged. */
     CHECK(ms_disturbs(MS_DYLIB, MS_REEXPORT) == MREL_NONE,
           "dylib reexport disturbs nothing; promoting a command in place moves no ordinal");
+
+    /* retype rewrites only a dylib_command's `cmd` field in place, among the
+     * four kinds mo_is_ordinal_lc counts (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB,
+     * LC_REEXPORT_DYLIB, LC_LOAD_UPWARD_DYLIB -- see src/ordinals.h). All
+     * four share the same dylib_command layout, so swapping among them
+     * changes neither cmdsize nor which commands carry an ordinal: same
+     * reasoning as reexport, one step more general. */
+    CHECK(ms_disturbs(MS_DYLIB, MS_RETYPE) == MREL_NONE,
+          "dylib retype disturbs nothing; swapping a command's kind in place moves no ordinal");
 
     /* append lands LAST (src/rewrite.h:48), taking the highest ordinal, so no
      * existing ordinal moves -- only the command region grows. */
@@ -611,20 +620,46 @@ static void test_dylib_retype(void) {
         ms_free(&s);
     }
 
-    /* lazy is refused BY NAME, and the message says why. */
+    /* lazy is refused BY NAME, and the message says why -- not just that it
+     * was refused, but the actual reason (the ordinal sequence question is
+     * unsettled for LC_LAZY_LOAD_DYLIB), so a message gutted down to just
+     * "line 1: lazy" still fails this. */
     const char *lazy = "dylib retype /x lazy\n";
     err[0] = 0;
     CHECK(ms_parse(lazy, strlen(lazy), &s, err, sizeof err) == -1,
           "lazy was accepted");
     CHECK(strstr(err, "lazy") != NULL, "message does not name lazy: %s", err);
     CHECK(strstr(err, "line 1") != NULL, "message does not name the line: %s", err);
+    CHECK(strstr(err, "ordinal") != NULL && strstr(err, "LC_LAZY_LOAD_DYLIB") != NULL,
+          "message does not give the reason (ordinal sequence, LC_LAZY_LOAD_DYLIB): %s", err);
 
-    /* An unknown kind is refused and the message lists what is accepted. */
+    /* An unknown kind is refused and the message lists ALL FOUR accepted
+     * names, not just one -- a message truncated to "...accepted: upward"
+     * still names upward, so every name is checked individually. */
     const char *bogus = "dylib retype /x sideways\n";
     err[0] = 0;
     CHECK(ms_parse(bogus, strlen(bogus), &s, err, sizeof err) == -1,
           "unknown kind accepted");
-    CHECK(strstr(err, "upward") != NULL, "message does not list the kinds: %s", err);
+    CHECK(strstr(err, "load") != NULL, "message does not list 'load': %s", err);
+    CHECK(strstr(err, "weak") != NULL, "message does not list 'weak': %s", err);
+    CHECK(strstr(err, "reexport") != NULL, "message does not list 'reexport': %s", err);
+    CHECK(strstr(err, "upward") != NULL, "message does not list 'upward': %s", err);
+
+    /* More than one invalid spelling is refused, so a validation that
+     * special-cased only "lazy" and "sideways" cannot pass: an empty operand,
+     * and a wrong-case one -- mo_kind_from_name is case-sensitive by design,
+     * so "LOAD" is not "load". */
+    const char *invalid_lines[] = {
+        "dylib retype /x ''\n",   /* empty operand, quoted so it is still one field */
+        "dylib retype /x LOAD\n", /* wrong case: mo_kind_from_name is case-sensitive */
+        "dylib retype /x Weak\n",
+        "dylib retype /x LAZY\n",
+    };
+    for (size_t i = 0; i < sizeof invalid_lines / sizeof invalid_lines[0]; i++) {
+        err[0] = 0;
+        CHECK(ms_parse(invalid_lines[i], strlen(invalid_lines[i]), &s, err, sizeof err) == -1,
+              "invalid kind line '%s' accepted", invalid_lines[i]);
+    }
 
     /* Arity is two. */
     const char *short_form = "dylib retype /x\n";

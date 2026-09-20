@@ -103,7 +103,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  *
  * Each mask was derived from the code that implements the operation, not
  * from the operation's name; see ms_disturbs and tests/script_test.c's
- * test_disturbs_matches_the_spec_table, which pins all fifteen with the
+ * test_disturbs_matches_the_spec_table, which pins all sixteen with the
  * reason for each. */
 #define MS_TABLE_ROWS(R) \
   R("load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,       1, NULL,        0,             0, MREL_HEADER_PAD) \
