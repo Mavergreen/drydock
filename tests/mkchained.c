@@ -9,7 +9,7 @@
  * bytes)` line, skipping the install when IN == OUT) went unnoticed by every
  * suite while this file could only be built from one of them.
  *
- * mkchained make|make-weak|make-big|make-nosect|make-sectpast OUT
+ * mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8 OUT
  *                        -- write a tiny 64-bit Mach-O that uses CHAINED
  *                          FIXUPS, the format `declassify`/patch_macho exists
  *                          to lower. No linker on any host this repo supports
@@ -76,7 +76,7 @@
 #define BIND_SLOT_OFF    8
 #define SYMNAME          "_mkchained_sym"
 
-enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST };
+enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST, MK_BADORD, MK_HIGH8 };
 
 /* segname/sectname are char[16] and need NOT be NUL-terminated; see
  * tests/README.md's host-portability section for why strcpy is wrong here. */
@@ -180,6 +180,9 @@ static int make(const char *path, int mode) {
     } else {
         slot[0] = REBASE_TARGET | ((uint64_t)(BIND_SLOT_OFF / 4) << 51);
         slot[1] = (1ULL << 63) | 0ULL;   /* bind import 0, next = 0 = end of chain */
+        if (mode == MK_BADORD) slot[1] |= 1;
+        /* platform: <mach-o/fixup-chains.h>, dyld_chained_ptr_64_rebase.high8 */
+        if (mode == MK_HIGH8)  slot[0] |= 0x5AULL << 36;
     }
 
     /* The fixups blob: header, starts-image, one starts-segment for __DATA
@@ -299,13 +302,15 @@ static int check(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|check FILE\n"); return 2; }
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|check FILE\n"); return 2; }
     if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
     if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
     if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
     if (strcmp(argv[1], "make-nosect") == 0) return make(argv[2], MK_NOSECT);
     if (strcmp(argv[1], "make-sectpast") == 0) return make(argv[2], MK_SECTPAST);
+    if (strcmp(argv[1], "make-badord") == 0) return make(argv[2], MK_BADORD);
+    if (strcmp(argv[1], "make-high8") == 0) return make(argv[2], MK_HIGH8);
     if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|check FILE\n");
+    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|check FILE\n");
     return 2;
 }
