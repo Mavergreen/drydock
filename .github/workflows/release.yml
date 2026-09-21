@@ -62,17 +62,15 @@ jobs:
       - name: Record the pre-build tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
 
-      # platform: shipyard's mavericks-native/mavericks-cross hidden presets pin their
-      # own environment.MAVERICKS_BUILD_ROOT to $penv{TMPDIR}/mm-build; CMake's preset
-      # environment merge applies that AFTER anything exported here, so without the
-      # matching environment override in this file's own native/cross presets, this
-      # export would be silently ignored by `--preset` and CROSS_BUILD_DIR below would
-      # name a directory nothing builds into. (Verified against v1.0.278, empty binaryDir
-      # otherwise.)
-      - name: Build out of tree
-        run: |
-          echo "MAVERICKS_BUILD_ROOT=$RUNNER_TEMP/mm-build" >> "$GITHUB_ENV"
-          echo "CROSS_BUILD_DIR=$RUNNER_TEMP/mm-build/macho-tools-cross" >> "$GITHUB_ENV"
+      - name: Locate the out-of-tree build the preset will use
+        # platform: shipyard's mavericks-* hidden presets pin their own
+        # environment.MAVERICKS_BUILD_ROOT to $penv{TMPDIR}/mm-build, and CMake applies a
+        # preset's own environment table after anything exported here -- so an export
+        # cannot redirect a --preset build. Derive the path instead of setting it. A child
+        # preset CAN re-declare the variable from $penv to win, but then an unset variable
+        # breaks a fresh clone (binaryDir expands to "/macho-tools-native", which CMake
+        # refuses as unwritable), so we do not.
+        run: echo "CROSS_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross" >> "$GITHUB_ENV"
 
       # Nothing external to derive from -- this repo is its own upstream -- so the version
       # IS UPSTREAM_VERSION, hand-bumped, and a release is the X.Y.Z tag someone pushes on
