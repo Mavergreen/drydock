@@ -30,7 +30,7 @@ FORK_COMMIT=bd221b8   # "Fixes for some executables"
 # (empty vs non-empty, never text -- these are two independently written
 # programs that will never share a vocabulary), WHICH output path each side
 # actually wrote to, and whether every file either side wrote parses as a
-# valid Mach-O (`machorewrite verify`). It does NOT compare output bytes.
+# valid Mach-O (`drydock-macho-rewrite verify`). It does NOT compare output bytes.
 # docs/prior-art.md records four checks this side makes that the fork does
 # not (LC_FUNCTION_STARTS' leading delta, LC_DATA_IN_CODE contents,
 # __TEXT,__unwind_info, and post-transform mg_verify/mg_plausible), and the
@@ -42,7 +42,7 @@ FORK_COMMIT=bd221b8   # "Fixes for some executables"
 #
 # STDERR IS RECORDED, NOT COUNTED. compat/README.md says it outright:
 # "Stderr is where the wrappers deliberately differ: each one prints the
-# machorewrite equivalent of the invocation it just received." This wrapper
+# drydock-macho-rewrite equivalent of the invocation it just received." This wrapper
 # prints that teaching block on every successful translation, so a stderr
 # comparison would differ on every single row for a reason that has nothing
 # to do with correctness. The report shows both sides' stderr byte counts for
@@ -103,11 +103,11 @@ echo "insert-dylib-diff: comparing against \$FORK, which THE PIN above says must
 case $FORK in /*) ;; *) FORK="$(pwd)/$FORK" ;; esac
 case $NEWBIN in /*) ;; *) NEWBIN="$(pwd)/$NEWBIN" ;; esac
 NEWDIR=$(dirname "$NEWBIN")
-[ -x "$NEWDIR/machorewrite" ] || {
-    echo "insert-dylib-diff: $NEWDIR/machorewrite not found -- the wrapper needs it beside it, and so does this script's verify step" >&2
+[ -x "$NEWDIR/drydock-macho-rewrite" ] || {
+    echo "insert-dylib-diff: $NEWDIR/drydock-macho-rewrite not found -- the wrapper needs it beside it, and so does this script's verify step" >&2
     exit 1
 }
-MR="$NEWDIR/machorewrite"
+MR="$NEWDIR/drydock-macho-rewrite"
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/insert-dylib-diff.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -117,7 +117,7 @@ DYLIB=/usr/lib/libinsertdylibdiff.dylib
 
 sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
-# idd_valid FILE -- true if FILE parses as a valid Mach-O. `machorewrite
+# idd_valid FILE -- true if FILE parses as a valid Mach-O. `drydock-macho-rewrite
 # verify` is a single-thin-image reader (mi_open): it refuses ANY fat
 # container outright, by design, the same way `info` does -- not a verdict
 # on that container's slices. A fat FILE is therefore treated as "not

@@ -10,8 +10,8 @@
  * are other modules -- this one answers "what is in here?" and nothing else.
  * 32-bit and fat are known gaps. */
 
-#ifndef MACHOREWRITE_IMAGE_H
-#define MACHOREWRITE_IMAGE_H
+#ifndef DRYDOCK_IMAGE_H
+#define DRYDOCK_IMAGE_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -30,7 +30,7 @@ typedef struct {
 
 /* mi_open/mi_open_slack's two failure reasons -- distinguishable so a caller
  * that wants to tell "the file couldn't even be opened or read" apart from
- * "it opened fine and just isn't a valid 64-bit Mach-O" can (cli/machorewrite.c's
+ * "it opened fine and just isn't a valid 64-bit Mach-O" can (cli/drydock-macho-rewrite.c's
  * EX_REFUSED/EX_FAIL split, and src/rewrite.c's/src/version_min.c's
  * MR_REFUSED/MR_FAIL, both need exactly this distinction and used to have no
  * way to get it from these two functions). Both are negative so 0 stays
@@ -172,4 +172,4 @@ uint64_t mi_text_base(const mi_image *im);
  * header. */
 int mi_image_base(const mi_image *im, uint64_t *out);
 
-#endif /* MACHOREWRITE_IMAGE_H */
+#endif /* DRYDOCK_IMAGE_H */

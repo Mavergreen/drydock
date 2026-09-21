@@ -1,4 +1,4 @@
-# Machotool for Mavericks
+# Drydock for Mavericks
 
 **This README has not been read or edited by a human yet.** Until it has, this
 project cannot cut its first release.
@@ -17,29 +17,29 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 
 ## Layout
 
-- `src/` — the shared toolkit library (`machorewritecore`): image parsing, ULEB,
+- `src/` — the shared toolkit library (`drydockcore`): image parsing, ULEB,
   ordinals, fat-arch validation, export-trie rebuild, `__LINKEDIT` bumping,
   header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
   load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
   rename, and the Swift class-record retag.
-- `compat/` — these six tools' entry points. They predate `machorewrite` and keep
+- `compat/` — these six tools' entry points. They predate `drydock-macho-rewrite` and keep
   their original names because `install.sh` fetches some of them by name. All
-  six are now `/bin/sh` wrappers that print the `machorewrite` equivalent of what
-  they were asked to do and then do it through `machorewrite`, so **`machorewrite` is the
+  six are now `/bin/sh` wrappers that print the `drydock-macho-rewrite` equivalent of what
+  they were asked to do and then do it through `drydock-macho-rewrite`, so **`drydock-macho-rewrite` is the
   only Mach-O rewriting binary this repo ships** and `compat/` contains no C
   at all. `fix_macho` was the last holdout: wrapping it changes what it does
   in five ways, and those changes were adopted deliberately rather than
   papered over — `compat/README.md` states each with its reason.
-  Also here: `translate.sh`, the old-grammar-to-`machorewrite` translator the
-  wrappers source, and `machorewrite-compat.sh`, the machinery they share. See
+  Also here: `translate.sh`, the old-grammar-to-`drydock-macho-rewrite` translator the
+  wrappers source, and `drydock-macho-rewrite-compat.sh`, the machinery they share. See
   `compat/README.md`.
 
-  **Packaging note:** the six wrappers need `machorewrite`, `machorewrite-compat.sh` and
-  `machorewrite-translate.sh` installed beside them. Anything that fetches
+  **Packaging note:** the six wrappers need `drydock-macho-rewrite`, `drydock-macho-rewrite-compat.sh` and
+  `drydock-macho-rewrite-translate.sh` installed beside them. Anything that fetches
   `patch_macho`, `change_dylib` or `add_version_min` by name now has three
   more files to fetch. `compat/README.md` says what that means for
   `mavericksforever.com/claude/install.sh`, which has not been told.
-- `cli/` — `machorewrite`, the multi-verb CLI built on `src/`.
+- `cli/` — `drydock-macho-rewrite`, the multi-verb CLI built on `src/`.
 - `tests/` — everything `ctest` runs, plus the fixtures it reads.
 
 ## Building
@@ -106,13 +106,13 @@ file**; these tools **never move a byte of data**, editing only within existing
 header padding. That is why `-strip-lc` and `-grow` exist, and why a replacement
 path that is too long is an error here and a non-event with Apple's tool.
 
-## machorewrite never writes its input
+## drydock-macho-rewrite never writes its input
 
-`machorewrite FILE OUT` takes its statements on stdin, and it is the only way to
+`drydock-macho-rewrite FILE OUT` takes its statements on stdin, and it is the only way to
 modify a binary: `FILE` is opened read-only and never touched, and the result
 goes to `OUT`. (`verify FILE` and `info FILE` are read-only and take no `OUT`.) An `OUT` that names `FILE` — the same path, a
 symlink to it, or a hard link to it — is refused before any work is done.
-`machorewrite --capabilities`' `output positional=2 never-writes-input` line tells
+`drydock-macho-rewrite --capabilities`' `output positional=2 never-writes-input` line tells
 a caller to expect this shape rather than assume it.
 
 A successful write gives `OUT` `FILE`'s permission bits, `FILE`'s owner
@@ -168,7 +168,7 @@ Two independent checks back that up:
 
   What no caller can do is switch off a gate that applies: what decides is the
   image and the operations, never an environment variable. `MACHO_NO_VERIFY=1`
-  is what remains of an older, caller-controlled opt-out, and on a `machorewrite`
+  is what remains of an older, caller-controlled opt-out, and on a `drydock-macho-rewrite`
   verb run it no longer changes anything — the one gate that consults it is
   reached only by a rewrite that grew the header, and `mg_grow_header` has
   already run the same check on that image unconditionally.
@@ -177,20 +177,20 @@ That gate exists because every defect ever found in this code has been a silent
 success: the tool reported OK and the binary died in the loader — or worse,
 didn't.
 
-## `machorewrite FILE OUT` — edit scripts
+## `drydock-macho-rewrite FILE OUT` — edit scripts
 
 `install.sh`-style porting runs several rewrites in sequence — strip a load
 command, then repoint a handful of dylibs — each of which used to be its own
-invocation and its own full write of the file. `machorewrite` takes a script
+invocation and its own full write of the file. `drydock-macho-rewrite` takes a script
 naming every statement instead, applies them all to one in-memory copy, and
 writes once:
 
 ```sh
-printf 'load-command delete uuid\n' | machorewrite FILE OUT   # statements on stdin
-machorewrite FILE OUT < script                                # a script that lives in a file
+printf 'load-command delete uuid\n' | drydock-macho-rewrite FILE OUT   # statements on stdin
+drydock-macho-rewrite FILE OUT < script                                # a script that lives in a file
 ```
 
-There is no second spelling. `machorewrite edit FILE OUT SCRIPT` was one until
+There is no second spelling. `drydock-macho-rewrite edit FILE OUT SCRIPT` was one until
 the `edit` verb was deleted; the shell's `<` does what its `SCRIPT` argument
 did, and the design's claim that one form is the only way to change a binary is
 worth more than saving a caller four characters.
@@ -225,7 +225,7 @@ re-checked`.
 **Every run logs, on stderr, what it did — there is no quiet mode, so there
 is no flag.** A tool whose job is to make edits nobody can see afterwards
 should not have an option to say nothing about them, and anyone who wants
-silence has `2>/dev/null`, which needs no cooperation from `machorewrite`. The
+silence has `2>/dev/null`, which needs no cooperation from `drydock-macho-rewrite`. The
 report is each statement as it starts; beneath it, indented, the follow-up
 work it did that its line does not name — for `dylib insert` and `dylib
 delete` the ordinal renumbering (the command inserted or removed and its
@@ -264,9 +264,9 @@ after printing it. On a fat file the refusal line names the slice too — or,
 for a statement's own miss (see `fatal-warnings`, below), says it matched
 nothing in any selected slice.
 
-**The write never touches `FILE`.** `machorewrite` takes `FILE OUT` and writes
+**The write never touches `FILE`.** `drydock-macho-rewrite` takes `FILE OUT` and writes
 only `OUT`, by way of a temp file and a rename —
-see "machorewrite never writes its input", above, for what that guarantees. So
+see "drydock-macho-rewrite never writes its input", above, for what that guarantees. So
 whether `FILE` is writable is not a question it asks either; a read-only
 (`0444`) `FILE` in a writable directory is read just fine, and the run exits
 0.
@@ -295,14 +295,15 @@ dylib         append    PATH
 dylib         insert    PATH
 dylib         delete    PATH
 dylib         reexport  PATH
+dylib         retype    PATH KIND   load | weak | reexport | upward
 rpath         replace   OLD NEW
 rpath         delete    PATH
 rpath         append    PATH
 rpath         insert    PATH
 ```
 
-These statements are the whole mutating surface. `machorewrite` used to carry a
-second spelling of them — a CLI verb per operation, `machorewrite dylib FILE OUT
+These statements are the whole mutating surface. `drydock-macho-rewrite` used to carry a
+second spelling of them — a CLI verb per operation, `drydock-macho-rewrite dylib FILE OUT
 -replace A B` beside the line `dylib replace A B` — and the two had different
 semantics: a verb applied all its operations in one pass against the original
 image, while statements apply in sequence, each seeing what the one before
@@ -446,7 +447,7 @@ dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
 and one invocation:
 
 ```sh
-machorewrite "$REAL" "$T" < claude.edits
+drydock-macho-rewrite "$REAL" "$T" < claude.edits
 ```
 
 ### Limits

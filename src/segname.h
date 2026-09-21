@@ -1,5 +1,5 @@
-#ifndef MACHOREWRITE_SEGNAME_H
-#define MACHOREWRITE_SEGNAME_H
+#ifndef DRYDOCK_SEGNAME_H
+#define DRYDOCK_SEGNAME_H
 /*
  * mseg_ -- renaming a Mach-O segment, and the segname each of its sections
  * repeats.
@@ -7,7 +7,7 @@
  * This is compat/rename_segment.c's rs_rename_lc, lifted out of that tool so
  * it is a library function rather than one program's static. src/edit.c's
  * `segment rename` statement is its only C
- * front-end, through src/rewrite.h's mr_ops -- cli/machorewrite.c's `segment`
+ * front-end, through src/rewrite.h's mr_ops -- cli/drydock-macho-rewrite.c's `segment`
  * verb was the other until the verbs were deleted; the old grammar,
  * `rename_segment binary OLDNAME NEWNAME`, reaches this same code through
  * compat/rename_segment.sh, the /bin/sh wrapper that replaced
@@ -67,4 +67,4 @@ int mseg_name_fits(const char *name);
  * `lc` is non-const on purpose: this writes through it. */
 int mseg_rename_lc(struct load_command *lc, const char *oldname, const char *newname);
 
-#endif /* MACHOREWRITE_SEGNAME_H */
+#endif /* DRYDOCK_SEGNAME_H */

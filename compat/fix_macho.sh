@@ -1,5 +1,5 @@
 #!/bin/sh
-# fix_macho -- a /bin/sh wrapper around one `machorewrite FILE OUT`, with every
+# fix_macho -- a /bin/sh wrapper around one `drydock-macho-rewrite FILE OUT`, with every
 # operation the invocation asks for as a statement on its stdin.
 #
 #   fix_macho <file> [-change old new] [-strip_build_version]
@@ -14,18 +14,18 @@
 # adopt.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
-MW_DIR=${MACHOREWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
+MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
 # platform: a symlink to this wrapper on PATH makes MW_DIR the SYMLINK's
-# directory, not the one holding machorewrite -- which is why
-# MACHOREWRITE_COMPAT_DIR exists. Checked before sourcing so the message is this
+# directory, not the one holding drydock-macho-rewrite -- which is why
+# DRYDOCK_MACHO_REWRITE_COMPAT_DIR exists. Checked before sourcing so the message is this
 # one rather than the shell's own from the `.` below.
-[ -r "$MW_DIR/machorewrite-compat.sh" ] || {
-    printf '%s: cannot find machorewrite-compat.sh in %s -- machorewrite and its two support\n' "$0" "$MW_DIR" >&2
+[ -r "$MW_DIR/drydock-macho-rewrite-compat.sh" ] || {
+    printf '%s: cannot find drydock-macho-rewrite-compat.sh in %s -- drydock-macho-rewrite and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
-    printf '%s: SYMLINK directory, so set MACHOREWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set DRYDOCK_MACHO_REWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
     exit 1
 }
-. "$MW_DIR/machorewrite-compat.sh"
+. "$MW_DIR/drydock-macho-rewrite-compat.sh"
 
 mw_translate fix_macho "$@" || exit $?
 
@@ -37,7 +37,7 @@ mw_retranslate fix_macho "$@" || exit 1
 mw_run_to_tmp
 mw_frc=$?
 # spec: fix_macho had 0 and 1, so every nonzero folds to 1 (compat/README.md,
-# "`fix_macho`: exit codes"). mw_frc, not mw_rc, which machorewrite-compat.sh owns.
+# "`fix_macho`: exit codes"). mw_frc, not mw_rc, which drydock-macho-rewrite-compat.sh owns.
 [ "$mw_frc" -eq 0 ] || exit 1
 mw_finish || exit 1
 # spec: this line, not fix_macho's "File updated: F" (compat/README.md,

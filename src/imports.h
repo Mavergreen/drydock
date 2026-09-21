@@ -15,8 +15,8 @@
  * guessed at, the same stance mo_map_apply takes.
  */
 
-#ifndef MACHOREWRITE_IMPORTS_H
-#define MACHOREWRITE_IMPORTS_H
+#ifndef DRYDOCK_IMPORTS_H
+#define DRYDOCK_IMPORTS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -106,4 +106,4 @@ typedef void (*mimp_row_fn)(const mimp_row *row, void *ctx);
  * printed to stderr, in this module's own words, before returning. */
 int mimp_report(const uint8_t *buf, size_t size, mimp_row_fn fn, void *ctx);
 
-#endif /* MACHOREWRITE_IMPORTS_H */
+#endif /* DRYDOCK_IMPORTS_H */

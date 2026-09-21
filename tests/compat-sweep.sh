@@ -8,14 +8,14 @@
 # conversion, five of them exist only in a build of commit 91b30b3 (the last commit
 # carrying all six compat/*.c files; tests/README.md's "Not run by ctest"
 # section has the full account), so that is what to point it at. The NEW
-# side needs a machorewrite, and by default takes it from the same
+# side needs a drydock-macho-rewrite, and by default takes it from the same
 # directory -- which was right while both families came out of one build, and
-# is wrong now: it would record what the machorewrite OF THAT COMMIT did, not what
+# is wrong now: it would record what the drydock-macho-rewrite OF THAT COMMIT did, not what
 # this tree's does. Set
 #
 #   MACHO_SWEEP_NEW_BIN=<current bindir>
 #
-# to point the translated side at the machorewrite under test. Both directories are
+# to point the translated side at the drydock-macho-rewrite under test. Both directories are
 # recorded in the matrix header, because a reader cannot otherwise tell which
 # two things a row compares.
 #
@@ -23,7 +23,7 @@
 # REQUIRED and `tests/compat-matrix.tsv` is refused by name -- see the guard
 # further down, and its comment, for why that dated measurement cannot be
 # reproduced. Every row says what the OLD tool did and what the
-# compat/translate.sh -> machorewrite translation did, so the two can be compared
+# compat/translate.sh -> drydock-macho-rewrite translation did, so the two can be compared
 # after the C sources are gone. From the commit that deleted them on, these
 # rows and the SHA-256s in them are the only surviving record of what the old
 # binaries produced.
@@ -86,7 +86,7 @@
 #              stopping at the first nonzero exit
 #
 # POINT <bindir> AT A PRE-WRAPPER BUILD. All six tools are /bin/sh wrappers
-# around machorewrite now (five converted first; fix_macho followed once its
+# around drydock-macho-rewrite now (five converted first; fix_macho followed once its
 # divergences were ruled adopted rather than closed), so running this against a current
 # build makes the "old side" a wrapper and the comparison close to
 # tautological. The bindir is recorded in the matrix header for exactly that
@@ -98,7 +98,7 @@
 #
 # Stdout used to be left out on the grounds that mr_apply_file prints a "header
 # pad"/"updated" pair per pass, so one old invocation and a sequence of two or
-# three machorewrite ones cannot possibly print the same thing, and that the evidence
+# three drydock-macho-rewrite ones cannot possibly print the same thing, and that the evidence
 # gathered on the known callers found no caller parsing these tools' stdout as data. Both
 # statements are still true, but leaving it unmeasured meant nobody knew HOW
 # FAR apart the two sides' stdout was -- and the wrappers have to close
@@ -111,7 +111,7 @@
 #   re-running anything.
 #
 # A row WITHOUT "+stdout" is a positive result: that old invocation and its
-# translation printed the same bytes, so a wrapper that simply passes machorewrite's
+# translation printed the same bytes, so a wrapper that simply passes drydock-macho-rewrite's
 # stdout through is byte-identical there.
 #
 # The first line of each side's STDERR is recorded too, so a reader can see
@@ -130,7 +130,7 @@
 #
 # `blocked` splits by WHO said no, in the refuser column: refuser=macho9 is the
 # regression-shaped one; refuser=translate is compat/translate.sh refusing on
-# purpose, because no machorewrite command line means what that argv meant. Those two
+# purpose, because no drydock-macho-rewrite command line means what that argv meant. Those two
 # must not be read as the same thing, and the generated matrix header says so
 # as well. NOTE, for anyone reading the COMMITTED tests/compat-matrix.tsv: it
 # has 31 refuser=translate rows, and only ONE of them is `blocked+stdout` --
@@ -182,24 +182,24 @@ case "$(cd "$(dirname "$OUT")" 2>/dev/null && pwd)/$(basename "$OUT")" in
         echo "    builds; rerunning cannot reproduce it. Write somewhere else and diff." >&2
         exit 1 ;;
 esac
-# The machorewrite the TRANSLATED side runs; see the header. Defaults to $BIN so a
+# The drydock-macho-rewrite the TRANSLATED side runs; see the header. Defaults to $BIN so a
 # single-build invocation still works exactly as it did.
 NEWBIN="${MACHO_SWEEP_NEW_BIN:-$BIN}"
 
 for t in change_dylib add_version_min rename_segment retag_swift_classes patch_macho fix_macho; do
     [ -x "$BIN/$t" ] || { echo "compat-sweep: $BIN/$t not found or not executable" >&2; exit 1; }
 done
-[ -x "$NEWBIN/machorewrite" ] || { echo "compat-sweep: $NEWBIN/machorewrite not found or not executable" >&2; exit 1; }
+[ -x "$NEWBIN/drydock-macho-rewrite" ] || { echo "compat-sweep: $NEWBIN/drydock-macho-rewrite not found or not executable" >&2; exit 1; }
 # $BIN is mandated by this file's header to be a build of 91b30b3 -- the last
 # commit where the five C tools existed -- and that build's binary was called
 # `macho9`. Demanding the CURRENT name of it is a requirement the documented
 # invocation cannot satisfy; the check has been wrong across two renames,
 # asking for `machotool` and then `machorewrite` of a build that has neither.
 sweep_base=''
-for n in macho9 machotool machorewrite; do
+for n in macho9 machotool machorewrite drydock-macho-rewrite; do
     [ -x "$BIN/$n" ] && { sweep_base=$n; break; }
 done
-[ -n "$sweep_base" ] || { echo "compat-sweep: $BIN has none of macho9/machotool/machorewrite (needed to prepare the base image)" >&2; exit 1; }
+[ -n "$sweep_base" ] || { echo "compat-sweep: $BIN has none of macho9/machotool/machorewrite/drydock-macho-rewrite (needed to prepare the base image)" >&2; exit 1; }
 [ -r "$ROOT/compat/translate.sh" ] || { echo "compat-sweep: compat/translate.sh missing" >&2; exit 1; }
 
 # Source the translator instead of exec'ing it per combination: same code
@@ -219,7 +219,7 @@ mkdir -p "$T/A" "$T/B"
 # is reproducible from the repo alone. It carries one LC_LOAD_DYLIB, LC_UUID,
 # LC_SOURCE_VERSION, LC_DYLIB_CODE_SIGN_DRS, a __DATA segment and 2576 bytes of
 # header pad -- but NO LC_RPATH, which would collapse every -*-rpath row into
-# "nothing matched". So the base gets one appended, ONCE, with machorewrite (the same
+# "nothing matched". So the base gets one appended, ONCE, with drydock-macho-rewrite (the same
 # mr_apply_file both families reach), and its digest is printed into the matrix
 # header so a later reader knows exactly what these rows describe.
 #
@@ -232,20 +232,20 @@ mkdir -p "$T/A" "$T/B"
 # bug lived in. The spare has nothing bound to it, so -delete really deletes
 # and really renumbers. The binding refusal is still swept, on libSystem, in
 # EXTRA CASES.
-# Prepared with $BIN's machorewrite, not $NEWBIN's, deliberately: the base image is
+# Prepared with $BIN's drydock-macho-rewrite, not $NEWBIN's, deliberately: the base image is
 # the INPUT both sides are handed, so it must not come from the build under
 # test. Its digest is printed into the matrix header either way.
 cp "$ROOT/tests/fixture.macho" "$T/base" || exit 1
 RP_OLD='@loader_path/../lib'
 DY_OLD='@loader_path/spare0.dylib'
 # Two statements on stdin, into a temp installed over `base` -- the only way to
-# change a binary there is. This preparation was `machorewrite rpath base -append
+# change a binary there is. This preparation was `drydock-macho-rewrite rpath base -append
 # "$RP_OLD"`, and had been silently BROKEN since the verbs took an OUT: `base`
 # was FILE and `-append` landed as OUT, which bad_out refuses, so this exited 1
 # at "could not prepare the base image" and the whole sweep stopped before its
 # first row. It is fixed here rather than merely retranslated.
 ( cd "$T" && printf 'rpath append %s\ndylib append %s\n' "$RP_OLD" "$DY_OLD" \
-    | "$BIN/machorewrite" base base.new && mv -f base.new base ) >/dev/null 2>&1 || {
+    | "$BIN/drydock-macho-rewrite" base base.new && mv -f base.new base ) >/dev/null 2>&1 || {
     echo "compat-sweep: could not prepare the base image" >&2; exit 1; }
 
 # A non-Mach-O and an absent path, for the arity cases.
@@ -589,7 +589,7 @@ run_case fix_macho f -change "$DY_OLD" "$DY_NEW1" -strip_build_version -rename_s
 
 # The capacity caps: exactly at, and one past, each one. change_dylib prints
 # the origin message; compat/translate.sh must print the same text (routing
-# through machorewrite would print machorewrite's own wording).
+# through drydock-macho-rewrite would print drydock-macho-rewrite's own wording).
 i=0; strip16=''; while [ $i -lt 16 ]; do strip16="$strip16 -strip-lc uuid"; i=$((i+1)); done
 run_case change_dylib f $strip16
 run_case change_dylib f $strip16 -strip-lc uuid
@@ -637,7 +637,7 @@ done
 
 # The chained rename: fix_macho breaks out of its rename loop on the first
 # match and does NOT re-examine the segment, so the second pair never fires.
-# The translation runs two separate `machorewrite segment` passes, and the second
+# The translation runs two separate `drydock-macho-rewrite segment` passes, and the second
 # one's input is the first one's output.
 run_case fix_macho f -rename_seg "$SEG_OLD" __X -rename_seg __X __Y
 # ... and the three neighbouring shapes that must NOT be refused: same OLD
@@ -654,7 +654,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "# tests/compat-matrix.tsv -- generated by tests/compat-sweep.sh; DO NOT EDIT BY HAND."
     echo "#"
     echo "# Every enumerated argument combination of the six historical tools, run BOTH"
-    echo "# ways on the same input: the old binary once, and compat/translate.sh's machorewrite"
+    echo "# ways on the same input: the old binary once, and compat/translate.sh's drydock-macho-rewrite"
     echo "# command line(s) in the order it printed them. With the C sources deleted,"
     echo "# this file is the surviving record of what those binaries did."
     echo "#"
@@ -667,15 +667,15 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#              and fix_macho followed; these"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a build of commit 91b30b3 -- see this script's header)"
-    echo "# new side:   $NEWBIN/machorewrite"
-    echo "#             (the machorewrite the TRANSLATED side ran; the two directories"
-    echo "#              differ whenever the C tools and the machorewrite under test"
+    echo "# new side:   $NEWBIN/drydock-macho-rewrite"
+    echo "#             (the drydock-macho-rewrite the TRANSLATED side ran; the two directories"
+    echo "#              differ whenever the C tools and the drydock-macho-rewrite under test"
     echo "#              come from different commits, which since the wrappers is the"
     echo "#              only way to compare the two families at all)"
     echo "#"
     echo "# columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out"
     echo "#   old_argv     the old tool's argv[1..], file named 'f'"
-    echo "#   translation  the machorewrite command lines, ';'-joined, or '-' for none"
+    echo "#   translation  the drydock-macho-rewrite command lines, ';'-joined, or '-' for none"
     echo "#   *_sha        sha256[0:16] of that side's file AFTER the run; equal to the"
     echo "#                base digest above means the run changed nothing"
     echo "#   refuser      which side said no: translate (the old grammar's own"
@@ -699,14 +699,14 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   The first line of each side's stderr is in every row too."
     echo "#"
     echo "#   The class ignores the EXACT exit code, only whether it was zero. A"
-    echo "#   FRESH run of this generator reflects whatever cli/machorewrite.c currently"
+    echo "#   FRESH run of this generator reflects whatever cli/drydock-macho-rewrite.c currently"
     echo "#   says -- unlike the checked-in tests/compat-matrix.tsv, a frozen"
     echo "#   measurement against the numbering in effect when IT was generated,"
     echo "#   annotated separately rather than kept in sync with this text; see its"
     echo "#   own header. Today, that leaves exactly ONE row differing there, and it"
     echo "#   says so in its own columns rather than its class:"
     echo "#"
-    echo "#   patch_macho on an ABSENT file exits its own flat 1; machorewrite declassify"
+    echo "#   patch_macho on an ABSENT file exits its own flat 1; drydock-macho-rewrite declassify"
     echo "#   exits 2 (EX_FAIL) -- md_declassify's own mi_open_slack call cannot even"
     echo "#   open the file, which is MDCL_ERROR (an operational failure), not"
     echo "#   MDCL_NOT_MACHO. patch_macho on a NON-MACH-O (but readable) file no"
@@ -717,7 +717,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   MEASURED row (frozen in tests/compat-matrix.tsv, not this generator's"
     echo "#   live text) still records BOTH cases as divergent, from when they both"
     echo "#   were. The absent-file difference is deliberate -- the list"
-    echo "#   cli/machorewrite.c's cmd_declassify carried, until the verbs were deleted,"
+    echo "#   cli/drydock-macho-rewrite.c's cmd_declassify carried, until the verbs were deleted,"
     echo "#   names the EXIT CODES distinction as one of its DELIBERATE DIVERGENCES"
     echo "#   FROM patch_macho -- but, like the non-Mach-O one before it, it is not"
     echo "#   visible to anyone grepping by class: both sides of both rows exit"
@@ -729,8 +729,8 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#   REPRODUCED by the wrapper, not kept."
     echo "#"
     echo "#   blocked with refuser=translate is compat/translate.sh refusing ON"
-    echo "#   PURPOSE -- an argv the old tool accepted that no machorewrite command line"
-    echo "#   means the same thing as. It is not a machorewrite gap. blocked with"
+    echo "#   PURPOSE -- an argv the old tool accepted that no drydock-macho-rewrite command line"
+    echo "#   means the same thing as. It is not a drydock-macho-rewrite gap. blocked with"
     echo "#   refuser=macho9 is the regression-shaped one."
     echo "#"
     echo "#   A sixth category, \"crashed -> refuses\", has no class of its"

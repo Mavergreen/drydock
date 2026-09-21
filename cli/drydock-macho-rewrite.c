@@ -1,23 +1,23 @@
 /*
- * machorewrite — one mutating form, driven by a script, beside two read-only
+ * drydock-macho-rewrite — one mutating form, driven by a script, beside two read-only
  * queries.
  *
  * The grammar this build implements, verbatim:
  *
- *   machorewrite FILE OUT            statements on stdin; the ONLY way to change
+ *   drydock-macho-rewrite FILE OUT            statements on stdin; the ONLY way to change
  *                                   anything
- *   machorewrite info FILE
- *   machorewrite verify FILE
- *   machorewrite imports FILE
+ *   drydock-macho-rewrite info FILE
+ *   drydock-macho-rewrite verify FILE
+ *   drydock-macho-rewrite imports FILE
  *
  * THERE WAS AN `edit FILE OUT SCRIPT` VERB, and it went with the other eight:
  * `edit` stopped being a verb name and became the tool itself. While the verb
  * survived, the line above claiming the bare form is the only way to
  * change anything was false in its own file. Nothing is lost -- a script that
- * lives in a file is `machorewrite FILE OUT < script`, which is the shell's job
+ * lives in a file is `drydock-macho-rewrite FILE OUT < script`, which is the shell's job
  * and not this binary's.
  *
- * `machorewrite --capabilities` is the machine-readable truth about what this
+ * `drydock-macho-rewrite --capabilities` is the machine-readable truth about what this
  * build accepts, so a wrapper and this binary never have to move in lockstep
  * (docs/PROPOSAL.md "Migration"). See print_capabilities() below for the exact
  * format.
@@ -97,7 +97,7 @@
  * (couldn't open/read/write, malloc failed, a usage error). Refusal is
  * load-bearing throughout this codebase -- "-grow refuses rather than
  * guesses" is a global rule, not an incidental behavior -- so a
- * caller that wants to script around "this file just isn't one machorewrite will
+ * caller that wants to script around "this file just isn't one drydock-macho-rewrite will
  * touch" (vs. "retry, or investigate an environment problem") deserves a way
  * to tell the two apart without scraping stderr text, which --capabilities
  * already exists to make unnecessary for everything else this binary
@@ -115,7 +115,7 @@
  * point at which the numbering could change for free -- after the script
  * form ships, it no longer is.
  *
- * EX_REFUSED is used ONLY at a point where machorewrite itself examined the input
+ * EX_REFUSED is used ONLY at a point where drydock-macho-rewrite itself examined the input
  * and made that call; it is never used for a genuine operational failure (a
  * syscall that failed, a bad number of command-line arguments), save the one
  * allocation fold described below -- EX_FAIL is that catch-all, named the
@@ -189,13 +189,13 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * Returns 1 when it printed a refusal (the caller returns EX_FAIL), else 0. */
 static int bad_out(const char *verb, const char *path, const char *out) {
     if (out[0] == '-') {
-        fprintf(stderr, "machorewrite %s: OUT is '%s', which begins with '-'; OUT is the "
+        fprintf(stderr, "drydock-macho-rewrite %s: OUT is '%s', which begins with '-'; OUT is the "
                         "positional right after FILE, not a flag. Write './%s' if a "
                         "file of that name is really meant.\n", verb, out, out);
         return 1;
     }
     if (wa_is_input(path, out)) {
-        fprintf(stderr, "machorewrite %s: %s is %s; machorewrite never writes its input\n", verb, out, path);
+        fprintf(stderr, "drydock-macho-rewrite %s: %s is %s; drydock-macho-rewrite never writes its input\n", verb, out, path);
         return 1;
     }
     return 0;
@@ -210,7 +210,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *                                  TEXT's shape in a way old parsing breaks.
  *   line 2: "exitcodes ok=0 refused=<N> failed=<M>" -- what this binary's own
  *       exit codes mean: ok=0 always; refused=EX_REFUSED is used wherever
- *       machorewrite (or a shared rewrite driver it calls into) examined FILE and
+ *       drydock-macho-rewrite (or a shared rewrite driver it calls into) examined FILE and
  *       declined on purpose -- bad magic, implausible, an unsupported KIND/
  *       version, a grow mg_grow_header itself refused, new load commands
  *       that don't fit and can't be grown, an unmatched `fatal-warnings`
@@ -234,7 +234,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       right after it, and OUT=FILE (by path, symlink or hard link) is
  *       always refused. `positional=2` is OUT's position counting from 1;
  *       this line exists so a wrapper checks for it instead of assuming the
- *       shape. It holds for the bare `machorewrite FILE OUT` form too: FILE is
+ *       shape. It holds for the bare `drydock-macho-rewrite FILE OUT` form too: FILE is
  *       argv[1] there rather than argv[2], but OUT is still the positional
  *       right after it, and still never FILE.
  *   line 4: "mutate bare script=stdin" -- the ONE mutating form, and the only
@@ -270,7 +270,7 @@ static int print_capabilities(void) {
     printf("format 1\n");
     printf("exitcodes ok=0 refused=%d failed=%d\n", EX_REFUSED, EX_FAIL);
     /* Every mutating form reads FILE and writes OUT, the positional right
-     * after it, and refuses an OUT that is FILE: machorewrite never writes its
+     * after it, and refuses an OUT that is FILE: drydock-macho-rewrite never writes its
      * input. A wrapper checks for this line rather than assume the shape. */
     printf("output positional=2 never-writes-input\n");
     /* The only mutating form, and NO flags= at all: it accepts none. `output`
@@ -343,11 +343,11 @@ static int cmd_verify(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "machorewrite verify: %s: cannot open or read\n", path);
+        fprintf(stderr, "drydock-macho-rewrite verify: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "machorewrite verify: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "drydock-macho-rewrite verify: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     int rc = mg_plausible(im.buf, im.size);
@@ -414,11 +414,11 @@ static int cmd_info(const char *path) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "machorewrite info: %s: cannot open or read\n", path);
+        fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     if (mo_rc != 0) {
-        fprintf(stderr, "machorewrite info: %s: not a readable 64-bit Mach-O\n", path);
+        fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
@@ -514,19 +514,19 @@ static void imports_row(const mimp_row *row, void *ctx_) {
 static int cmd_imports(const char *path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        fprintf(stderr, "machorewrite imports: %s: cannot open or read\n", path);
+        fprintf(stderr, "drydock-macho-rewrite imports: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_size < 0) {
-        fprintf(stderr, "machorewrite imports: %s: cannot open or read\n", path);
+        fprintf(stderr, "drydock-macho-rewrite imports: %s: cannot open or read\n", path);
         close(fd);
         return EX_FAIL;
     }
     size_t size = (size_t)st.st_size;
     uint8_t *buf = malloc(size ? size : 1);
     if (!buf) {
-        fprintf(stderr, "machorewrite imports: out of memory\n");
+        fprintf(stderr, "drydock-macho-rewrite imports: out of memory\n");
         close(fd);
         return EX_FAIL;
     }
@@ -534,7 +534,7 @@ static int cmd_imports(const char *path) {
     while (off < size) {
         ssize_t n = read(fd, buf + off, size - off);
         if (n <= 0) {
-            fprintf(stderr, "machorewrite imports: %s: cannot open or read\n", path);
+            fprintf(stderr, "drydock-macho-rewrite imports: %s: cannot open or read\n", path);
             close(fd);
             free(buf);
             return EX_FAIL;
@@ -552,7 +552,7 @@ static int cmd_imports(const char *path) {
          * one; this line is what names the FILE for every refusal, including
          * "not a readable 64-bit Mach-O (thin or fat) at all", which
          * mimp_report itself never sees a path to report on. */
-        fprintf(stderr, "machorewrite imports: %s: not a readable 64-bit Mach-O, "
+        fprintf(stderr, "drydock-macho-rewrite imports: %s: not a readable 64-bit Mach-O, "
                         "or refused (see above)\n", path);
         return EX_REFUSED;
     }
@@ -565,10 +565,10 @@ static int cmd_imports(const char *path) {
 
 /* ---- the bare form: parse the script on stdin and run it through me_run ---
  *
- * `machorewrite FILE OUT`, and there is no other way to change a byte. It
+ * `drydock-macho-rewrite FILE OUT`, and there is no other way to change a byte. It
  * takes NO FLAGS and no verb word: its two tokens are FILE and OUT, in that
  * order, and the statements come from stdin. A script that lives in a file is
- * `machorewrite FILE OUT < script` -- the redirection is the shell's job, and
+ * `drydock-macho-rewrite FILE OUT < script` -- the redirection is the shell's job, and
  * an `edit FILE OUT SCRIPT` verb that did it in C was a second mutating
  * interface for no capability at all (it went; see this file's header).
  *
@@ -634,7 +634,7 @@ static int cmd_script(const char *file, const char *out) {
     if (strncmp(file, "--", 2) == 0) flag = file;
     else if (strncmp(out, "--", 2) == 0) flag = out;
     if (flag) {
-        fprintf(stderr, "machorewrite edit: unknown flag '%s'\n", flag);
+        fprintf(stderr, "drydock-macho-rewrite edit: unknown flag '%s'\n", flag);
         return EX_FAIL;
     }
 
@@ -648,18 +648,18 @@ static int cmd_script(const char *file, const char *out) {
      * fread()/ferror() just set for a genuine read failure. */
     int read_errno = errno;
     if (rrc == ME_READ_MEM) {
-        fprintf(stderr, "machorewrite edit: stdin: out of memory\n");
+        fprintf(stderr, "drydock-macho-rewrite edit: stdin: out of memory\n");
         return EX_FAIL;
     }
     if (rrc == ME_READ_IO) {
-        fprintf(stderr, "machorewrite edit: stdin: %s\n", strerror(read_errno));
+        fprintf(stderr, "drydock-macho-rewrite edit: stdin: %s\n", strerror(read_errno));
         return EX_FAIL;
     }
 
     ms_script s;
     char perr[256];
     if (ms_parse((const char *)buf, len, &s, perr, sizeof perr) != 0) {
-        fprintf(stderr, "machorewrite edit: stdin: %s\n", perr);
+        fprintf(stderr, "drydock-macho-rewrite edit: stdin: %s\n", perr);
         free(buf);
         return EX_FAIL;
     }
@@ -693,11 +693,11 @@ int main(int argc, char **argv) {
         if (argc != 3) { fprintf(stderr, "usage: %s imports FILE\n", argv[0]); return EX_FAIL; }
         return cmd_imports(argv[2]);
     }
-    /* The bare form: `machorewrite FILE OUT`, statements on stdin, and the
+    /* The bare form: `drydock-macho-rewrite FILE OUT`, statements on stdin, and the
      * only way to change anything.
      *
      * It sits below every verb arm, so a verb always wins and this can never
-     * shadow one: `machorewrite info f` stays the info query even when a file
+     * shadow one: `drydock-macho-rewrite info f` stays the info query even when a file
      * named `info` is sitting right there. A FILE whose name collides with a
      * verb is spelled `./info`, the same remedy bad_out already names for an
      * OUT beginning with '-'. Reaching here means argv[1] matched no verb, so
@@ -706,14 +706,14 @@ int main(int argc, char **argv) {
      * THE THREE SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT: `verify`,
      * `info` and, as of this build, `imports`. `edit`, `dylib`, `rpath`, `lc`,
      * `minos`, `segment`, `retag-swift`, `grow` and `declassify` shadowed a
-     * file of the same name while they were verbs; now `machorewrite dylib
+     * file of the same name while they were verbs; now `drydock-macho-rewrite dylib
      * out` reads a file named `dylib` and writes `out`, like any other pair.
-     * `machorewrite imports out` reads a file named `imports` only through
+     * `drydock-macho-rewrite imports out` reads a file named `imports` only through
      * `./imports`, the same remedy bad_out already names for an OUT beginning
      * with '-'. */
     if (argc == 3) return cmd_script(argv[1], argv[2]);
 
-    fprintf(stderr, "machorewrite: unknown verb '%s'\n", verb);
+    fprintf(stderr, "drydock-macho-rewrite: unknown verb '%s'\n", verb);
     usage(argv[0]);
     return EX_FAIL;
 }

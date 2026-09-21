@@ -2,7 +2,7 @@
  * commands at all (the default), or one whose bind stream binds against
  * every special ordinal this build assigns a meaning to (-special).
  *
- * WHY THE DEFAULT MODE EXISTS. `machorewrite imports` on an image with no
+ * WHY THE DEFAULT MODE EXISTS. `drydock-macho-rewrite imports` on an image with no
  * bind stream at all must be a SUCCESSFUL report of zero rows (header line
  * included), not a refusal -- "no imports" and "refused to look" are one
  * exit code apart and are exactly what a consumer of that output most needs
@@ -19,7 +19,7 @@
  * past its header.
  *
  * WHY -special EXISTS. self/exe/flat/unknown are each printed by their own
- * arm of cli/machorewrite.c's imports_row switch, and nothing a linker
+ * arm of cli/drydock-macho-rewrite.c's imports_row switch, and nothing a linker
  * produces reliably exercises all four on every host -- BIND_SPECIAL_DYLIB_
  * FLAT_LOOKUP only shows up in a flat-namespace or `-undefined
  * dynamic_lookup` link, which is exactly the kind of host/linker-version

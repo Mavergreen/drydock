@@ -150,7 +150,7 @@ echo "chained-fixups: input uses LC_DYLD_CHAINED_FIXUPS, converting"
 # The CONVERTING path's last stdout line. patch_macho printed
 # "Wrote %s (%zu bytes)" only when it actually converted something, naming OUT
 # and OUT's size; compat/patch_macho.sh has to print that itself now, because
-# `machorewrite declassify` writes into a temp whose name must not leak. 10.9 cannot
+# `drydock-macho-rewrite declassify` writes into a temp whose name must not leak. 10.9 cannot
 # emit chained fixups, so this is the ONLY place the converting path runs --
 # tests/wrapper_test.sh can only reach the pass-through, where the line is
 # correctly absent.
@@ -178,8 +178,8 @@ echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 # the strongest available evidence that the move changed nothing. Done here,
 # before the rest of the pipeline edits "$T/out", and on the same real
 # host-linker fixture rather than a hand-built one.
-if [ -x "$BIN/machorewrite" ]; then
-    printf 'fixups set classic\n' | "$BIN/machorewrite" "$T/in" "$T/out.m9" >/dev/null 2>&1
+if [ -x "$BIN/drydock-macho-rewrite" ]; then
+    printf 'fixups set classic\n' | "$BIN/drydock-macho-rewrite" "$T/in" "$T/out.m9" >/dev/null 2>&1
     if cmp -s "$T/out" "$T/out.m9"; then
         echo "chained-fixups: the fixups statement is byte-identical to patch_macho"
     else
@@ -197,7 +197,7 @@ if [ -x "$BIN/machorewrite" ]; then
     # Idempotency, which install.sh's wrapper leans on: a second pass over an
     # already-converted binary passes it through unchanged rather than failing
     # on the fixups that are no longer there.
-    printf 'fixups set classic\n' | "$BIN/machorewrite" "$T/out.m9" "$T/out.m9.again" >/dev/null 2>&1
+    printf 'fixups set classic\n' | "$BIN/drydock-macho-rewrite" "$T/out.m9" "$T/out.m9.again" >/dev/null 2>&1
     if cmp -s "$T/out.m9" "$T/out.m9.again"; then
         echo "chained-fixups: a converted binary passes through unchanged"
     else
@@ -205,7 +205,7 @@ if [ -x "$BIN/machorewrite" ]; then
         exit 1
     fi
 else
-    echo "chained-fixups: no machorewrite in $BIN — skipping the declassify comparison"
+    echo "chained-fixups: no drydock-macho-rewrite in $BIN — skipping the declassify comparison"
 fi
 
 # The rest of the pipeline must accept what patch_macho produced. Before this,

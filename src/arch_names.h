@@ -1,5 +1,5 @@
-#ifndef MACHOREWRITE_ARCH_NAMES_H
-#define MACHOREWRITE_ARCH_NAMES_H
+#ifndef DRYDOCK_ARCH_NAMES_H
+#define DRYDOCK_ARCH_NAMES_H
 /*
  * ma_ -- lipo's architecture names, and the cputype/cpusubtype each means.
  *
@@ -30,4 +30,4 @@ void ma_describe(uint32_t cputype, uint32_t cpusubtype, char out[32]);
 /* Every name, comma-separated, for messages that list what was accepted. */
 void ma_list(char *out, size_t outsz);
 
-#endif /* MACHOREWRITE_ARCH_NAMES_H */
+#endif /* DRYDOCK_ARCH_NAMES_H */

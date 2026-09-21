@@ -33,8 +33,8 @@
  * it does and does not catch.
  */
 
-#ifndef MACHOREWRITE_ORDINALS_H
-#define MACHOREWRITE_ORDINALS_H
+#ifndef DRYDOCK_ORDINALS_H
+#define DRYDOCK_ORDINALS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -82,12 +82,12 @@ const char *mo_kind_name(uint32_t cmd);
  * hardcode their own copy of MO_KINDS (which is not exported: mo_kind_name
  * and mo_is_ordinal_lc are its only doors) but still need to enumerate
  * candidates and ask mo_kind_name which ones it answers for:
- *   - cli/machorewrite.c's `--capabilities` offers each of these to
+ *   - cli/drydock-macho-rewrite.c's `--capabilities` offers each of these to
  *     mo_kind_name and prints only the ones that come back non-NULL, so
  *     MO_KINDS growing a fifth entry surfaces there with NO edit to
- *     machorewrite.c, as long as the new LC_* constant is already listed
+ *     drydock-macho-rewrite.c, as long as the new LC_* constant is already listed
  *     here -- closing the THIRD-place drift a hand-maintained kinds[] array
- *     in machorewrite.c used to risk.
+ *     in drydock-macho-rewrite.c used to risk.
  *   - tests/relations_test.c's test_capabilities_kinds_track_mo_is_ordinal_lc
  *     walks this same list and fails if mo_kind_name and mo_is_ordinal_lc
  *     ever disagree about any one of them -- the two functions are still two
@@ -110,7 +110,7 @@ const char *mo_kind_name(uint32_t cmd);
  * cmdsize, making a naive `(char *)lc + offset` point past the command, into
  * whatever follows it (or past the mapped buffer entirely) instead of at a
  * NUL-terminated string. Every reader of one of these names must go through
- * here rather than repeating the check inline: cli/machorewrite.c's info dump,
+ * here rather than repeating the check inline: cli/drydock-macho-rewrite.c's info dump,
  * change_dylib.c's build_lcs, and mo_map_build below each used to compute
  * this pointer independently, and only one of the three actually checked.
  * Returns NULL for an out-of-bounds offset; the caller decides whether that
@@ -309,4 +309,4 @@ int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
  * data is the bug class this module exists to rule out. */
 int mo_fits(uint64_t off, uint64_t len, size_t size);
 
-#endif /* MACHOREWRITE_ORDINALS_H */
+#endif /* DRYDOCK_ORDINALS_H */

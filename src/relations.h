@@ -27,8 +27,8 @@
  * | sizeofcmds                        | the header pad                 | mr_build_lcs, mg_grow_header            |
  */
 
-#ifndef MACHOREWRITE_RELATIONS_H
-#define MACHOREWRITE_RELATIONS_H
+#ifndef DRYDOCK_RELATIONS_H
+#define DRYDOCK_RELATIONS_H
 
 #include "image.h"
 
@@ -67,4 +67,4 @@ const char *mrel_name(unsigned bit);
  * function-start offsets the gate checks. */
 int mrel_verify_applies(const mi_image *im, unsigned disturbed);
 
-#endif /* MACHOREWRITE_RELATIONS_H */
+#endif /* DRYDOCK_RELATIONS_H */

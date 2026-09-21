@@ -10,7 +10,7 @@
  * assertion passes against a tool that does nothing at all.
  *
  * Direct structure surgery, compiled by plain $CC with no special flags --
- * the same idiom tests/change_dylib_test.sh's ordinal_of.c uses. Not `machorewrite
+ * the same idiom tests/change_dylib_test.sh's ordinal_of.c uses. Not `drydock-macho-rewrite
  * lc -delete` or change_dylib's -strip-lc: neither vocabulary covers
  * LC_VERSION_MIN_MACOSX, and building a test's fixture with the tool under
  * test would be circular anyway.

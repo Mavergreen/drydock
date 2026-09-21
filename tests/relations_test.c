@@ -323,7 +323,7 @@ static void test_dylib_kind_names(void) {
     CHECK(mo_kind_from_name("LOAD") == 0, "kind names are not case-folded");
 }
 
-/* M-3's own test: `--capabilities`' dylib-kinds line (cli/machorewrite.c) no
+/* M-3's own test: `--capabilities`' dylib-kinds line (cli/drydock-macho-rewrite.c) no
  * longer hardcodes its own kinds[] array -- it offers MO_KIND_CANDIDATES
  * (ordinals.h) to mo_kind_name and prints whichever answer non-NULL, so the
  * advertised set can never itself drift from MO_KINDS (ordinals.c) by a

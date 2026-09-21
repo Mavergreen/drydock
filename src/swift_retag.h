@@ -1,5 +1,5 @@
-#ifndef MACHOREWRITE_SWIFT_RETAG_H
-#define MACHOREWRITE_SWIFT_RETAG_H
+#ifndef DRYDOCK_SWIFT_RETAG_H
+#define DRYDOCK_SWIFT_RETAG_H
 /*
  * mswift_ -- moving an Objective-C class record's is-Swift tag from the
  * stable-ABI bit to the legacy one, so a Swift runtime built for a
@@ -10,7 +10,7 @@
  * src/edit.c's `swift-abi set legacy`
  * statement is its only C front-end (through
  * mswift_retag_image, below, the same retag on an image already in memory) --
- * cli/machorewrite.c's `retag-swift` verb was the other until the verbs were
+ * cli/drydock-macho-rewrite.c's `retag-swift` verb was the other until the verbs were
  * deleted;
  * the old grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
  * through compat/retag_swift_classes.sh, the /bin/sh wrapper that replaced
@@ -115,4 +115,4 @@ int mswift_retag_image(mi_image *im);
  */
 int mswift_stable_tagged_image(const mi_image *im);
 
-#endif /* MACHOREWRITE_SWIFT_RETAG_H */
+#endif /* DRYDOCK_SWIFT_RETAG_H */

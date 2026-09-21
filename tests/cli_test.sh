@@ -1,5 +1,5 @@
 #!/bin/sh
-# tests/cli_test.sh — exercises the machorewrite CLI itself: --capabilities, the
+# tests/cli_test.sh — exercises the drydock-macho-rewrite CLI itself: --capabilities, the
 # three read-only verbs (verify, info, imports), and the bare `FILE OUT` form
 # that is the only way to change a binary.
 #
@@ -30,7 +30,7 @@
 # renumbering, insert/delete ordinal correctness, and header-growth end to
 # end, through change_dylib. The statements here call the very same
 # code -- src/edit.c into src/rewrite.c and src/version_min.c, which is all
-# change_dylib and add_version_min are too (see cli/machorewrite.c's file
+# change_dylib and add_version_min are too (see cli/drydock-macho-rewrite.c's file
 # header) -- so this asserts the TRANSLATION and DISPATCH are correct, one
 # exemplar op per statement kind, not the underlying rewrite a second time.
 #
@@ -39,17 +39,17 @@
 #     linker's LC_DYLD_CHAINED_FIXUPS default can't sneak in and ask a
 #     different question on the cross runner than it asks natively here.
 #   - nothing here parses otool/nm text. Facts about a binary come either
-#     from `machorewrite info`'s own stable output, or from a tiny C reader built
+#     from `drydock-macho-rewrite info`'s own stable output, or from a tiny C reader built
 #     alongside the fixtures (same trick change_dylib_test.sh's ordinal_of.c
 #     uses), never from a format Apple's tools are free to reformat.
 set -eu
 BIN="${1:?usage: cli_test.sh <bindir>}"
-MACHOREWRITE="$BIN/machorewrite"
-[ -x "$MACHOREWRITE" ] || { echo "cli_test: $MACHOREWRITE not found or not executable" >&2; exit 1; }
+DRYDOCK_MACHO_REWRITE="$BIN/drydock-macho-rewrite"
+[ -x "$DRYDOCK_MACHO_REWRITE" ] || { echo "cli_test: $DRYDOCK_MACHO_REWRITE not found or not executable" >&2; exit 1; }
 [ -x "$BIN/makefat" ] && [ -x "$BIN/fatcheck" ] || { echo "cli_test: need makefat and fatcheck in $BIN" >&2; exit 1; }
-# machorewrite needs NOTHING else in $BIN: the rewriting verbs used to run
+# drydock-macho-rewrite needs NOTHING else in $BIN: the rewriting verbs used to run
 # change_dylib/add_version_min as subprocesses found next to it, and this
-# script used to refuse to start without them. The "machorewrite alone in an empty
+# script used to refuse to start without them. The "drydock-macho-rewrite alone in an empty
 # directory" assertions below are what replaced that requirement -- they check
 # the property the requirement existed for, from the outside, instead of
 # taking it on trust.
@@ -75,22 +75,22 @@ skip() { echo "SKIP $1: $2"; }
 # section (which needs it three times) doesn't repeat the pipeline.
 sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
-# mts FILE STATEMENT...  -- run the bare `machorewrite FILE OUT` form and leave
+# mts FILE STATEMENT...  -- run the bare `drydock-macho-rewrite FILE OUT` form and leave
 # its result AT FILE, with each argument written as one line of the script on
 # stdin. This is what every assertion that used to name a mutating verb runs
 # now, and it is the ONLY route to a rewrite there is: `mts "$f" 'dylib replace
 # A B'` is what `machotool dylib "$f" -replace A B` used to be.
 #
-# WHY A HELPER AT ALL: machorewrite takes `FILE OUT` and never writes FILE, but
+# WHY A HELPER AT ALL: drydock-macho-rewrite takes `FILE OUT` and never writes FILE, but
 # most of the assertions below were written when the rewriting verbs rewrote
 # FILE, and they are about the REWRITE -- which load command moved, which
 # ordinal was renumbered, what the run printed, what it refused -- not about
 # which path the bytes land in. So they keep asking their own question, of a
 # file this helper puts the result back into: run with a temp beside FILE as
 # OUT, then mv the temp over FILE, which is precisely the two steps the compat
-# wrappers take (compat/machorewrite-compat.sh's install path).
+# wrappers take (compat/drydock-macho-rewrite-compat.sh's install path).
 #
-# WHAT THIS DOES NOT HIDE: that FILE is never written by machorewrite itself is
+# WHAT THIS DOES NOT HIDE: that FILE is never written by drydock-macho-rewrite itself is
 # asserted directly in "the mutating form never writes its input" below --
 # against FILE's bytes AND its inode, with no helper in the way. This one is an
 # ergonomic for everything else, not a stand-in for that.
@@ -111,14 +111,14 @@ sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 # only one of the two still see the other unchanged. Each filter passes its
 # prefix through the ENVIRONMENT, not `awk -v`: that escape-processes what it
 # assigns, so a $T containing a backslash would leave the line unsuppressed.
-# compat/machorewrite-compat.sh's mw_run_to_tmp, which this mirrors, has the
+# compat/drydock-macho-rewrite-compat.sh's mw_run_to_tmp, which this mirrors, has the
 # measurement.
 mts() {
     mts_file=$1; shift
     mts_tmp="$mts_file.mtip"
     rm -f "$mts_tmp"
     mts_rc=0
-    printf '%s\n' "$@" | "$MACHOREWRITE" "$mts_file" "$mts_tmp" \
+    printf '%s\n' "$@" | "$DRYDOCK_MACHO_REWRITE" "$mts_file" "$mts_tmp" \
         >"$T/mts.out" 2>"$T/mts.err" || mts_rc=$?
     MTIP_PREFIX="Wrote $mts_tmp (" awk 'index($0, ENVIRON["MTIP_PREFIX"]) != 1' "$T/mts.out"
     MTIP_PREFIX="$mts_tmp: written (" awk 'index($0, ENVIRON["MTIP_PREFIX"]) != 1' "$T/mts.err" >&2
@@ -192,9 +192,9 @@ int main(void) { return a_sym() == 11 && c_sym() == 33 ? 0 : 1; }
 EOF
 
 # The ordinals above are the premise, so check them rather than trust the
-# linker: `machorewrite info`'s own stable output, as the header says.
+# linker: `drydock-macho-rewrite info`'s own stable output, as the header says.
 fixture_ordinals() {
-    fo_info=$("$MACHOREWRITE" info "$1")
+    fo_info=$("$DRYDOCK_MACHO_REWRITE" info "$1")
     shift
     for fo_want in "$@"; do
         echo "$fo_info" | grep -qF "$fo_want" \
@@ -230,7 +230,7 @@ build_main_three_dylibs() {
 # So stop asserting what a linker emits and MAKE the premise true: strip the
 # kind first, unconditionally. A no-op where it was already absent.
 #
-# This uses machorewrite to set up a machorewrite test, which is circular only in
+# This uses drydock-macho-rewrite to set up a drydock-macho-rewrite test, which is circular only in
 # appearance: if the strip silently did nothing, the delete under test would
 # FIND build-version and report no miss, and the assertions fail loudly. The
 # setup cannot mask the defect it is setting up for.
@@ -238,7 +238,7 @@ build_main_without_build_version() {
     build_main "$1"
     mts "$1" "load-command delete build-version" >/dev/null 2>&1 || true
     # Assert the precondition rather than trusting the strip. otool, not
-    # machorewrite, so a machorewrite defect cannot certify its own setup. Without this
+    # drydock-macho-rewrite, so a drydock-macho-rewrite defect cannot certify its own setup. Without this
     # the test would pass on 10.9 for the OLD reason (the linker never
     # emitted it) and silently stop testing anything the day it does.
     if otool -l "$1" 2>/dev/null | grep -q LC_BUILD_VERSION; then
@@ -250,27 +250,27 @@ build_main_without_build_version() {
 # Host capability: can this host run a Mach-O binary that was modified
 # in-place after being signed at link time, AT ALL?
 #
-# This must be established WITHOUT running machorewrite on the probe binary. The
-# `lc` "still runs" assertions below rewrite a fixture with machorewrite and
+# This must be established WITHOUT running drydock-macho-rewrite on the probe binary. The
+# `lc` "still runs" assertions below rewrite a fixture with drydock-macho-rewrite and
 # then run it; if this host's kernel kills any modified binary, that proves
-# nothing about machorewrite -- but if the probe used to detect that ALSO goes
-# through machorewrite, a real machorewrite regression that corrupts its output looks
+# nothing about drydock-macho-rewrite -- but if the probe used to detect that ALSO goes
+# through drydock-macho-rewrite, a real drydock-macho-rewrite regression that corrupts its output looks
 # IDENTICAL to a host that kills modified binaries: same symptom (the child
-# doesn't run), same wrong conclusion ("host policy, not a machorewrite defect"),
+# doesn't run), same wrong conclusion ("host policy, not a drydock-macho-rewrite defect"),
 # and a genuine defect ships as a green, honest-looking SKIP. That is worse
 # than no check at all.
 #
-# So this probe never calls machorewrite. It builds a plain fixture, flips ONE
+# So this probe never calls drydock-macho-rewrite. It builds a plain fixture, flips ONE
 # byte inside the existing header pad (unused space between the end of the
 # load commands and the first section's file data -- computed here by an
-# independent read, not by calling into machorewrite/image.h, for the same
+# independent read, not by calling into drydock-macho-rewrite/image.h, for the same
 # non-circularity reason tests/strip_version_min.c is self-contained) via a
 # throwaway C program, and tries to run the result. If the kernel/dyld kills
 # THAT, this host enforces code-signing on any post-link modification,
 # unconditionally of what changed or which tool changed it -- an honest,
 # independently-established fact the `lc` sections can trust. If it
 # still runs, this host does NOT enforce that, and a failure to run
-# machorewrite's OWN rewritten fixture later is no longer explainable by host
+# drydock-macho-rewrite's OWN rewritten fixture later is no longer explainable by host
 # policy -- it must be treated as a real defect (FAIL), not silently
 # skipped.
 cat > "$T/perturb_pad.c" <<'EOF'
@@ -342,10 +342,10 @@ else
 fi
 if [ "$signing_probe_rc" -eq 0 ]; then
     signing_enforced=0
-    ok "host probe: a trivially-perturbed binary still runs (machorewrite-independent)"
+    ok "host probe: a trivially-perturbed binary still runs (drydock-macho-rewrite-independent)"
 elif [ "$signing_probe_rc" -eq 137 ]; then
     signing_enforced=1
-    ok "host probe: a trivially-perturbed binary is SIGKILLed (137) -- code-signing enforcement, independent of machorewrite"
+    ok "host probe: a trivially-perturbed binary is SIGKILLed (137) -- code-signing enforcement, independent of drydock-macho-rewrite"
 else
     # Neither a clean run nor the specific signal we know how to explain.
     # Per the coordinator: do not guess. Anything unrecognized here means the
@@ -374,13 +374,13 @@ fi
 # ============================================================================
 # --capabilities
 # ============================================================================
-caps=$("$MACHOREWRITE" --capabilities) || bad "capabilities: exit" "nonzero"
+caps=$("$DRYDOCK_MACHO_REWRITE" --capabilities) || bad "capabilities: exit" "nonzero"
 case "$caps" in
     "format 1"*) ok "capabilities: starts with format line" ;;
     *) bad "capabilities: format line" "got: $(echo "$caps" | head -1)" ;;
 esac
-# exitcodes documents EX_REFUSED (see cli/machorewrite.c) so a caller can tell
-# "machorewrite examined FILE and declined" apart from "machorewrite itself failed"
+# exitcodes documents EX_REFUSED (see cli/drydock-macho-rewrite.c) so a caller can tell
+# "drydock-macho-rewrite examined FILE and declined" apart from "drydock-macho-rewrite itself failed"
 # without scraping stderr text. Assert the line exists, names refused=1,
 # and that a real refusal (verify on a non-Mach-O file) actually exits with
 # that code -- not just some nonzero value. The corrected scheme is 0 ok, 1
@@ -393,7 +393,7 @@ echo "$caps" | grep -q "^exitcodes ok=0 refused=1 failed=2$" \
     || bad "capabilities: exitcodes line" "missing or wrong: $(echo "$caps" | grep '^exitcodes')"
 echo 'not a mach-o' > "$T/not-a-macho-in-cli-test"
 rc=0
-"$MACHOREWRITE" verify "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
+"$DRYDOCK_MACHO_REWRITE" verify "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] \
     && ok "capabilities: a real refusal (verify on a non-Mach-O) actually exits 1" \
     || bad "capabilities: exitcodes vs reality" "verify on a non-Mach-O exited $rc, not the documented 1"
@@ -425,7 +425,7 @@ for v in verify info imports; do
 done
 # AND THE NINE THAT ARE GONE MUST NOT BE ADVERTISED. print_capabilities' own
 # contract is "never advertise one that errors out", and each of these now
-# errors out -- `machorewrite dylib f o` is the bare form over a file named
+# errors out -- `drydock-macho-rewrite dylib f o` is the bare form over a file named
 # `dylib`, not a verb. A stale line here would send a wrapper at a verb this
 # build has no arm for. `grow` is on this list for the same reason as the
 # other seven, though unlike them it had no statement form to be sent to
@@ -442,7 +442,7 @@ done
 # usage() is the other place a caller reads about what this build can do, and
 # the bare `FILE OUT` form is the whole mutating surface now -- a usage line
 # that named only the read-only queries would leave a caller with no way in.
-"$MACHOREWRITE" >/dev/null 2>"$T/usage.err" || true
+"$DRYDOCK_MACHO_REWRITE" >/dev/null 2>"$T/usage.err" || true
 grep -q "FILE OUT" "$T/usage.err" \
     && ok "usage: the bare FILE OUT form is listed" \
     || bad "usage: bare form" "not mentioned at all: $(cat "$T/usage.err")"
@@ -473,7 +473,7 @@ fi
 # spelling that survived: dylib offers all six, rpath four, and rpath does NOT
 # offer reexport or retype (LC_RPATH has one kind, so there is nothing to
 # promote it to, or retype it as). Both lists come from ONE table
-# (src/script.c's MS_TABLE, which absorbed cli/machorewrite.c's DYLIB_OPS), so
+# (src/script.c's MS_TABLE, which absorbed cli/drydock-macho-rewrite.c's DYLIB_OPS), so
 # neither can advertise an op the parser refuses.
 caps_dylib_ops=$(echo "$caps" | sed -n 's/^statement dylib \([a-z-]*\) [0-9]*$/\1/p' | sort | tr '\n' ',')
 caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\1/p' | sort | tr '\n' ',')
@@ -541,17 +541,17 @@ fi
 # --capabilities' statement rows and the ms_parse that decides what a real
 # script accepts are built from ONE table (MS_TABLE in src/script.c) precisely
 # so they cannot say different things -- before this they were three
-# hand-copied lists (change_dylib's strippable[], machorewrite's own LC_KINDS[],
+# hand-copied lists (change_dylib's strippable[], drydock-macho-rewrite's own LC_KINDS[],
 # and a hardcoded "kinds=..." string) that a review found had already drifted
 # apart in spirit even where the values still matched by luck. This does not
-# re-derive the table (it can't see the C source); it drives machorewrite itself
+# re-derive the table (it can't see the C source); it drives drydock-macho-rewrite itself
 # with every name --capabilities claims and confirms none of them is refused
 # as unrecognized -- which is exactly what would happen if a row were ever
 # added to (or dropped from) one list and not the other.
 #
 # THE KIND VOCABULARY IS NO LONGER ADVERTISED. `kinds=` lived on the `verb lc`
 # line and went with it; `statement load-command delete 1` gives the operand
-# count, not which names are legal. So this sweeps the vocabulary machorewrite is
+# count, not which names are legal. So this sweeps the vocabulary drydock-macho-rewrite is
 # KNOWN to accept -- LC_STRIP_KINDS (src/lc_kinds.c), the same list compat's
 # MT_STRIP_KINDS freezes -- rather than a list read back out of --capabilities,
 # and the bogus-kind case below is what keeps that from passing vacuously.
@@ -642,11 +642,11 @@ SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../src" && pwd)
 "$CC" -O2 -I "$SRC_DIR" -o "$T/mkchained" "$HERE/mkchained.c"
 "$T/mkchained" make "$T/chained.in"
 
-# dcl IN OUT  -- exactly what `machorewrite declassify IN OUT` was, in the only
+# dcl IN OUT  -- exactly what `drydock-macho-rewrite declassify IN OUT` was, in the only
 # spelling left. Named so the assertions below read as they always did. No
 # output filtering: unlike mts, every one of these names its own OUT and reads
 # the streams directly, which is the point of several of them.
-dcl() { printf 'fixups set classic\n' | "$MACHOREWRITE" "$@"; }
+dcl() { printf 'fixups set classic\n' | "$DRYDOCK_MACHO_REWRITE" "$@"; }
 
 # What the fixture is, before anything touches it. If this ever stops holding,
 # every assertion below is asking the wrong question and would "pass" for the
@@ -824,14 +824,14 @@ fi
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
 # the conversion into src/declassify.c did not change it: the two front-ends
 # are handed the same buffer by md_declassify and must write the same bytes.
-# Not a hard requirement of THIS script (machorewrite stands alone, and $BIN need
+# Not a hard requirement of THIS script (drydock-macho-rewrite stands alone, and $BIN need
 # not hold anything else), so its absence is a SKIP, not a failure.
 if [ -x "$BIN/patch_macho" ]; then
     "$BIN/patch_macho" "$T/chained.in" "$T/chained.pm" >/dev/null 2>&1
     if cmp -s "$T/chained.out" "$T/chained.pm"; then
         ok "declassify: byte-identical to patch_macho's output"
     else
-        bad "declassify: byte-identity" "machorewrite and patch_macho produced different bytes"
+        bad "declassify: byte-identity" "drydock-macho-rewrite and patch_macho produced different bytes"
     fi
     # patch_macho returns a flat 1 for everything that goes wrong; this verb
     # distinguishes "examined it and declined" (EX_REFUSED=1) from an
@@ -867,7 +867,7 @@ fi
 
 # IN AND OUT MAY NO LONGER BE THE SAME PATH. This verb used to allow it (the
 # whole image is in memory before a byte is written, so it worked), and now
-# refuses it UP FRONT -- before any read -- because machorewrite never writes its
+# refuses it UP FRONT -- before any read -- because drydock-macho-rewrite never writes its
 # input. The same four facts every other converted verb is held to: refused
 # with 2, IN untouched in bytes AND inode, the refusal is the up-front one, and
 # a symlink to IN is caught too. `patch_macho IN IN` still converts IN: its
@@ -901,9 +901,9 @@ dcl "$T/inplace" "$T/dcl_mode_out" >/dev/null 2>"$T/dcl_mode.err" || rc=$?
     && ok "declassify: OUT is created with IN's mode" \
     || bad "declassify: OUT mode" "rc $rc, mode $(stat -f %Lp "$T/dcl_mode_out" 2>/dev/null): $(cat "$T/dcl_mode.err")"
 
-# Refusals. Each is a decision machorewrite made about the INPUT, so each is
+# Refusals. Each is a decision drydock-macho-rewrite made about the INPUT, so each is
 # EX_REFUSED (1), never EX_FAIL (2), which means "something went wrong running
-# machorewrite" -- that distinction is what --capabilities' exitcodes line promises.
+# drydock-macho-rewrite" -- that distinction is what --capabilities' exitcodes line promises.
 dcl "$T/not-a-macho-in-cli-test" "$T/nope" >/dev/null 2>"$T/nm.err" && rc=0 || rc=$?
 [ "$rc" -eq 1 ] && ok "declassify: refuses a non-Mach-O with EX_REFUSED" \
     || bad "declassify: non-Mach-O" "expected 1, got $rc"
@@ -922,30 +922,30 @@ grep -q "No chained fixups found" "$T/plain.err" \
     || bad "declassify: no fixups" "no reason on stderr: $(cat "$T/plain.err")"
 
 # An OUT that cannot be written is an OPERATIONAL failure, not a refusal: the
-# input was fine and machorewrite declined nothing. It must exit 2 (EX_FAIL), and
+# input was fine and drydock-macho-rewrite declined nothing. It must exit 2 (EX_FAIL), and
 # this is the assertion that keeps EX_REFUSED from decaying into "any nonzero".
 dcl "$T/chained.in" "$T/no/such/dir/out" >/dev/null 2>"$T/unwritable.err" && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && ok "declassify: an unwritable OUT is a failure (2), not a refusal (1)" \
     || bad "declassify: unwritable OUT" "expected 2, got $rc"
 
 # ============================================================================
-# machorewrite stands alone
+# drydock-macho-rewrite stands alone
 #
 # The rewriting verbs used to fork and exec change_dylib/add_version_min,
-# located next to machorewrite on disk, and --capabilities hid those four verbs
+# located next to drydock-macho-rewrite on disk, and --capabilities hid those four verbs
 # whenever the sibling was missing. Both are gone: the rewrite is linked in
 # (src/rewrite.c, src/version_min.c). That is the whole point of the
-# extraction -- it is what lets change_dylib become a wrapper AROUND machorewrite
+# extraction -- it is what lets change_dylib become a wrapper AROUND drydock-macho-rewrite
 # without a cycle -- so prove it from the outside rather than by reading the
-# source: copy ONLY machorewrite into an empty directory and make it do real work
+# source: copy ONLY drydock-macho-rewrite into an empty directory and make it do real work
 # there. A regression that restored the subprocess would fail here even
 # though every other assertion in this file, run from a full bindir, would
 # still pass. The statements are what run now; the subprocess they would
 # restore is the same one.
 # ============================================================================
 mkdir -p "$T/alone"
-cp "$MACHOREWRITE" "$T/alone/machorewrite"
-alone_caps=$("$T/alone/machorewrite" --capabilities)
+cp "$DRYDOCK_MACHO_REWRITE" "$T/alone/drydock-macho-rewrite"
+alone_caps=$("$T/alone/drydock-macho-rewrite" --capabilities)
 alone_missing=""
 for v in verify info imports; do
     echo "$alone_caps" | grep -q "^verb $v" || alone_missing="$alone_missing $v"
@@ -956,24 +956,24 @@ for s in 'dylib append 1' 'load-command delete 1' 'version-min set 1' 'segment r
     echo "$alone_caps" | grep -qxF "statement $s" || alone_missing="$alone_missing '$s'"
 done
 [ -z "$alone_missing" ] && ok "alone: --capabilities still advertises everything with no sibling present" \
-    || bad "alone: capabilities" "missing when machorewrite stands alone:$alone_missing"
+    || bad "alone: capabilities" "missing when drydock-macho-rewrite stands alone:$alone_missing"
 
 build_main "$T/alone/fixture"
 if printf 'dylib append @loader_path/libalone.dylib\n' \
-        | "$T/alone/machorewrite" "$T/alone/fixture" "$T/alone/fixture.out" \
+        | "$T/alone/drydock-macho-rewrite" "$T/alone/fixture" "$T/alone/fixture.out" \
         >"$T/alone_dylib.out" 2>&1; then
-    ok "alone: dylib append works with no change_dylib anywhere near machorewrite"
+    ok "alone: dylib append works with no change_dylib anywhere near drydock-macho-rewrite"
 else
     bad "alone: dylib append" "$(cat "$T/alone_dylib.out")"
 fi
-"$T/alone/machorewrite" info "$T/alone/fixture.out" | grep -qF "path=@loader_path/libalone.dylib" \
+"$T/alone/drydock-macho-rewrite" info "$T/alone/fixture.out" | grep -qF "path=@loader_path/libalone.dylib" \
     && ok "alone: the append really landed in the output" \
     || bad "alone: dylib append result" "new dependency not in info output"
 
 if printf 'load-command delete uuid\n' \
-        | "$T/alone/machorewrite" "$T/alone/fixture.out" "$T/alone/fixture.out2" \
+        | "$T/alone/drydock-macho-rewrite" "$T/alone/fixture.out" "$T/alone/fixture.out2" \
         >"$T/alone_lc.out" 2>&1; then
-    ok "alone: load-command delete works with no change_dylib anywhere near machorewrite"
+    ok "alone: load-command delete works with no change_dylib anywhere near drydock-macho-rewrite"
 else
     bad "alone: load-command delete" "$(cat "$T/alone_lc.out")"
 fi
@@ -987,14 +987,14 @@ fi
 # "already present" path), a 2026 one emits LC_BUILD_VERSION instead (so this
 # actually appends). Both are exit 0 and both prove the point, so accept
 # either MESSAGE rather than asserting which -- what must not happen is
-# machorewrite failing because a binary it no longer needs isn't there. (Note the
+# drydock-macho-rewrite failing because a binary it no longer needs isn't there. (Note the
 # fixture is deliberately NOT stripped of its version-min first: the helper
 # that does that is built further down, and this assertion is about reaching
 # the driver at all, not about which branch of it ran.)
 if printf 'version-min set 10.9\n' \
-        | "$T/alone/machorewrite" "$T/alone/fixture" "$T/alone/fixture.minos" \
+        | "$T/alone/drydock-macho-rewrite" "$T/alone/fixture" "$T/alone/fixture.minos" \
         >"$T/alone_minos.out" 2>&1; then
-    ok "alone: version-min set works with no add_version_min anywhere near machorewrite"
+    ok "alone: version-min set works with no add_version_min anywhere near drydock-macho-rewrite"
 else
     bad "alone: version-min set" "$(cat "$T/alone_minos.out")"
 fi
@@ -1003,7 +1003,7 @@ if grep -q "LC_VERSION_MIN_MACOSX" "$T/alone_minos.out"; then
 else
     bad "alone: version-min set output" "exited 0 but said nothing about LC_VERSION_MIN_MACOSX: $(cat "$T/alone_minos.out")"
 fi
-"$T/alone/machorewrite" info "$T/alone/fixture.minos" | grep -q "LC_VERSION_MIN_MACOSX" \
+"$T/alone/drydock-macho-rewrite" info "$T/alone/fixture.minos" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "alone: the output carries LC_VERSION_MIN_MACOSX afterward" \
     || bad "alone: version-min set result" "no LC_VERSION_MIN_MACOSX in info output after version-min set"
 
@@ -1011,7 +1011,7 @@ fi
 # verify
 # ============================================================================
 build_main "$T/verify_ok"
-if "$MACHOREWRITE" verify "$T/verify_ok" >"$T/verify_ok.out"; then
+if "$DRYDOCK_MACHO_REWRITE" verify "$T/verify_ok" >"$T/verify_ok.out"; then
     ok "verify: accepts a real binary"
 else
     bad "verify: real binary" "refused: $(cat "$T/verify_ok.out")"
@@ -1024,7 +1024,7 @@ fi
 grep -q ': OK' "$T/verify_ok.out" && ok "verify: reports OK" || bad "verify: OK text" "missing"
 
 echo 'not a mach-o' > "$T/verify_bad"
-if "$MACHOREWRITE" verify "$T/verify_bad" >/dev/null 2>&1; then
+if "$DRYDOCK_MACHO_REWRITE" verify "$T/verify_bad" >/dev/null 2>&1; then
     bad "verify: garbage file" "should have been refused"
 else
     ok "verify: refuses a non-Mach-O file"
@@ -1041,7 +1041,7 @@ fi
 # -headerpad is needed because neither assertion below grows the header.
 "$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/fixture.dylib" \
     "$T/a.c" -o "$T/fixture.dylib"
-if "$MACHOREWRITE" verify "$T/fixture.dylib" >"$T/dylibverify.out" 2>&1; then
+if "$DRYDOCK_MACHO_REWRITE" verify "$T/fixture.dylib" >"$T/dylibverify.out" 2>&1; then
     ok "verify: a dylib gets a real verdict"
 else
     bad "verify: a dylib gets a real verdict" "refused: $(cat "$T/dylibverify.out")"
@@ -1056,7 +1056,7 @@ else
 fi
 
 # The gate refusing every dylib meant no dylib could be rewritten at all:
-# mr_process_thin gates on mg_plausible, so machorewrite dylib/rpath/lc -- and
+# mr_process_thin gates on mg_plausible, so drydock-macho-rewrite dylib/rpath/lc -- and
 # change_dylib, which is the same code -- refused every dylib outright.
 cp "$T/fixture.dylib" "$T/dylibrw"
 if mts "$T/dylibrw" "load-command delete uuid" >"$T/dylibrw.out" 2>&1; then
@@ -1069,7 +1069,7 @@ fi
 # info
 # ============================================================================
 build_main "$T/info_fixture"
-info_out=$("$MACHOREWRITE" info "$T/info_fixture") || bad "info: exit" "nonzero"
+info_out=$("$DRYDOCK_MACHO_REWRITE" info "$T/info_fixture") || bad "info: exit" "nonzero"
 echo "$info_out" | grep -q "LC_SEGMENT_64" && ok "info: shows LC_SEGMENT_64" \
     || bad "info: segments" "not found in output"
 echo "$info_out" | grep -q "segname=__TEXT" && ok "info: shows __TEXT segment" \
@@ -1088,7 +1088,7 @@ echo "$info_out" | grep -q "header pad:" && ok "info: shows header pad line" \
 # by awk-ing the header row for its position instead of a fixed field number.
 build_main "$T/imp_in"
 rc=0
-"$MACHOREWRITE" imports "$T/imp_in" >"$T/imp.out" 2>"$T/imp.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_in" >"$T/imp.out" 2>"$T/imp.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "imports: succeeds on a real binary" \
     || bad "imports: real binary" "exited $rc: $(cat "$T/imp.err")"
 
@@ -1107,7 +1107,7 @@ head -1 "$T/imp.out" | grep -qxF "$imp_header" \
 # original of this section), so a future column reorder still finds the
 # right field instead of silently comparing the wrong one.
 #
-# The ordinal each row is checked against is DERIVED from `machorewrite
+# The ordinal each row is checked against is DERIVED from `drydock-macho-rewrite
 # info`'s own dylib table below, not a literal -- an exact ordinal is a HOST
 # FACT (this host's linker may place an extra load command, e.g. a
 # stack-check symbol's own dylib, ahead of libSystem, shifting every ordinal
@@ -1119,7 +1119,7 @@ head -1 "$T/imp.out" | grep -qxF "$imp_header" \
 # row's own ordinal) fails dyld_stub_binder's check even though a_ord and
 # sys_ord are read off this host, because the two derived ordinals can never
 # be equal to each other.
-info_out=$("$MACHOREWRITE" info "$T/imp_in" 2>/dev/null)
+info_out=$("$DRYDOCK_MACHO_REWRITE" info "$T/imp_in" 2>/dev/null)
 a_ord=$(printf '%s\n' "$info_out" | sed -n 's/^  ordinal=\([0-9]*\) path=@loader_path\/liba\.dylib$/\1/p' | head -1)
 sys_ord=$(printf '%s\n' "$info_out" | sed -n 's/^  ordinal=\([0-9]*\) path=\/usr\/lib\/libSystem\.B\.dylib$/\1/p' | head -1)
 [ -n "$a_ord" ] && [ -n "$sys_ord" ] && [ "$a_ord" != "$sys_ord" ] \
@@ -1154,7 +1154,7 @@ awk -F'\t' 'NR==1{n=NF} NF!=n{print NR; exit 1}' "$T/imp.out" >/dev/null \
     && ok "imports: every data row has the header's field count" \
     || bad "imports: ragged row" "a row's field count differs from the header's"
 
-"$MACHOREWRITE" imports "$T/imp_in" >"$T/imp2.out" 2>/dev/null
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_in" >"$T/imp2.out" 2>/dev/null
 cmp -s "$T/imp.out" "$T/imp2.out" \
     && ok "imports: deterministic -- same input, same bytes" \
     || bad "imports: deterministic" "two runs on the same input differ"
@@ -1162,7 +1162,7 @@ cmp -s "$T/imp.out" "$T/imp2.out" \
 # TAB/NEWLINE in an attacker-controlled field (install_name here; a symbol
 # name in the bind stream is the same hazard, checked the same way, in
 # src/imports.c) is refused, not escaped or emitted ragged -- see
-# cli/machorewrite.c's comment beside the header-row's append-only rule for
+# cli/drydock-macho-rewrite.c's comment beside the header-row's append-only rule for
 # the reasoning. This is also the ragged-row check above's first POSITIVE
 # control: without this fixture, that check has never had a ragged row to
 # catch and passes vacuously on every clean fixture.
@@ -1171,11 +1171,11 @@ cmp -s "$T/imp.out" "$T/imp2.out" \
 # -install_name is asking THIS HOST'S ld to do something no real build ever
 # does, and whether it accepts the byte, rejects it, warns-to-error on it, or
 # silently normalises it is a fact about that linker, not about
-# `machorewrite imports`. A bare failing `"$CC"` here would kill the whole
+# `drydock-macho-rewrite imports`. A bare failing `"$CC"` here would kill the whole
 # suite under `set -eu`; asserting the refusal without checking the byte
 # survived would pass vacuously (or fail for the wrong reason) if this
 # host's linker declined to carry it through. So: build under `if`, not
-# top-level, and read the result back with `machorewrite info` (which -- like
+# top-level, and read the result back with `drydock-macho-rewrite info` (which -- like
 # `imports` before this fixture ever reaches it -- prints load-command paths
 # raw, with no TAB handling of its own to interfere) to CONFIRM the byte
 # really made it into imp_tab's own LC_LOAD_DYLIB before trusting anything
@@ -1193,17 +1193,17 @@ if [ "$tab_build_ok" -eq 1 ] \
 fi
 tab_present=0
 if [ "$tab_build_ok" -eq 1 ] \
-    && "$MACHOREWRITE" info "$T/imp_tab" 2>/dev/null | grep -qF "$(printf 'a\tb')"; then
+    && "$DRYDOCK_MACHO_REWRITE" info "$T/imp_tab" 2>/dev/null | grep -qF "$(printf 'a\tb')"; then
     tab_present=1
 fi
 if [ "$tab_present" -eq 0 ]; then
     skip "imports: refuses an install_name carrying a TAB" \
-        "this host's linker did not carry a TAB through into imp_tab's own LC_LOAD_DYLIB (confirmed via 'machorewrite info', not assumed): $(cat "$T/libtab_build.err" "$T/imp_tab_build.err" 2>/dev/null)"
+        "this host's linker did not carry a TAB through into imp_tab's own LC_LOAD_DYLIB (confirmed via 'drydock-macho-rewrite info', not assumed): $(cat "$T/libtab_build.err" "$T/imp_tab_build.err" 2>/dev/null)"
     skip "imports: ... and prints nothing on stdout, not a partial row" "see above"
     skip "imports: ... naming the field and the offending byte" "see above"
 else
     rc=0
-    "$MACHOREWRITE" imports "$T/imp_tab" >"$T/imp_tab.out" 2>"$T/imp_tab.err" || rc=$?
+    "$DRYDOCK_MACHO_REWRITE" imports "$T/imp_tab" >"$T/imp_tab.out" 2>"$T/imp_tab.err" || rc=$?
     [ "$rc" -eq 1 ] && ok "imports: refuses an install_name carrying a TAB (exit 1)" \
         || bad "imports: TAB injection" "expected 1, got $rc: $(cat "$T/imp_tab.err")"
     [ ! -s "$T/imp_tab.out" ] \
@@ -1215,13 +1215,13 @@ else
 fi
 
 rc=0
-"$MACHOREWRITE" imports "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/not-a-macho-in-cli-test" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && ok "imports: refuses a non-Mach-O (exit 1)" \
     || bad "imports: non-Mach-O" "expected 1, got $rc"
 
 "$T/mkchained" make "$T/imp_chained"
 rc=0
-"$MACHOREWRITE" imports "$T/imp_chained" >/dev/null 2>"$T/imp_chained.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_chained" >/dev/null 2>"$T/imp_chained.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "imports: refuses a chained-fixups image (exit 1)" \
     || bad "imports: chained" "expected 1, got $rc: $(cat "$T/imp_chained.err")"
 grep -q 'fixups set' "$T/imp_chained.err" \
@@ -1240,7 +1240,7 @@ grep -q 'fixups set' "$T/imp_chained.err" \
 "$CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
 "$T/mknobind" "$T/imp_nobind"
 rc=0
-"$MACHOREWRITE" imports "$T/imp_nobind" >"$T/imp_nobind.out" 2>"$T/imp_nobind.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_nobind" >"$T/imp_nobind.out" 2>"$T/imp_nobind.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "imports: an image with no bind stream succeeds (exit 0)" \
     || bad "imports: no bind stream" "expected 0, got $rc: $(cat "$T/imp_nobind.err")"
 imp_nb_lines=$(wc -l < "$T/imp_nobind.out" | tr -d ' ')
@@ -1255,7 +1255,7 @@ imp_nb_lines=$(wc -l < "$T/imp_nobind.out" | tr -d ' ')
 # device as the no-bind-stream fixture just above.
 "$T/mknobind" "$T/imp_special" -special
 rc=0
-"$MACHOREWRITE" imports "$T/imp_special" >"$T/imp_special.out" 2>"$T/imp_special.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_special" >"$T/imp_special.out" 2>"$T/imp_special.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "imports: a special-ordinal fixture succeeds" \
     || bad "imports: special ordinals" "expected 0, got $rc: $(cat "$T/imp_special.err")"
 awk -F'\t' '
@@ -1282,7 +1282,7 @@ awk -F'\t' '
 # mach_header actually says).
 "$BIN/makefat" "$T/imp_fat" "$T/imp_in" 0x1000007 3 12 "$T/imp_in" 0x100000c 0 12
 rc=0
-"$MACHOREWRITE" imports "$T/imp_fat" >"$T/imp_fat.out" 2>"$T/imp_fat.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_fat" >"$T/imp_fat.out" 2>"$T/imp_fat.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "imports: a fat container reports (exit 0)" \
     || bad "imports: fat" "expected 0, got $rc: $(cat "$T/imp_fat.err")"
 imp_narch=$(awk -F'\t' 'NR>1{print $1}' "$T/imp_fat.out" | sort -u | wc -l | tr -d ' ')
@@ -1303,7 +1303,7 @@ imp_thin_rows=$(awk -F'\t' 'NR>1' "$T/imp.out" | wc -l | tr -d ' ')
 # reached.
 "$BIN/makefat" "$T/imp_fatchained" "$T/imp_in" 0x1000007 3 12 "$T/imp_chained" 0x100000c 0 12
 rc=0
-"$MACHOREWRITE" imports "$T/imp_fatchained" >"$T/imp_fatchained.out" 2>"$T/imp_fatchained.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" imports "$T/imp_fatchained" >"$T/imp_fatchained.out" 2>"$T/imp_fatchained.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "imports: a fat container with one chained slice refuses the WHOLE report" \
     || bad "imports: fat+chained" "expected 1, got $rc: $(cat "$T/imp_fatchained.err")"
 [ ! -s "$T/imp_fatchained.out" ] \
@@ -1315,7 +1315,7 @@ rc=0
 # ============================================================================
 # build_main's FIXTURE_FLAGS (-mmacosx-version-min=10.9) makes the linker
 # emit LC_VERSION_MIN_MACOSX itself -- so a fixture built that way already
-# HAS the load command machorewrite minos is supposed to add, and the "happy
+# HAS the load command drydock-macho-rewrite minos is supposed to add, and the "happy
 # path" below would pass even with cmd_minos's body replaced by `return 0`
 # (confirmed by doing exactly that -- see the commit message).
 #
@@ -1329,7 +1329,7 @@ rc=0
 # surgery, with a tiny throwaway C program compiled by plain $CC with no
 # special flags -- the same "read/write the structure directly" idiom
 # change_dylib_test.sh's ordinal_of.c already uses, so nothing here depends
-# on a specific ld/clang version, and nothing here depends on machorewrite or
+# on a specific ld/clang version, and nothing here depends on drydock-macho-rewrite or
 # change_dylib's own strip machinery either (their -strip-lc/`lc -delete`
 # vocabulary doesn't cover LC_VERSION_MIN_MACOSX today, and reusing the
 # tool under test to build that test's own fixture would be circular
@@ -1357,29 +1357,29 @@ if [ "$strip_rc" -ne 0 ]; then
     bad "minos: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
 fi
 # The precondition is specifically "no LC_VERSION_MIN_MACOSX" -- that is the
-# ONE load command machorewrite minos adds, and the thing the "present after"
+# ONE load command drydock-macho-rewrite minos adds, and the thing the "present after"
 # assertion below checks for. LC_BUILD_VERSION is a DIFFERENT load command a
 # modern linker emits instead (add_version_min.c only ever looks for
 # LC_VERSION_MIN_MACOSX, so LC_BUILD_VERSION's presence is orthogonal to
 # this test, not a disqualifier) -- asserting its absence too would be
 # asserting something about LC_BUILD_VERSION this test does not need and
 # cannot always get.
-before_minos=$("$MACHOREWRITE" info "$T/minos_fixture")
+before_minos=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_fixture")
 if echo "$before_minos" | grep -q "LC_VERSION_MIN_MACOSX"; then
     bad "minos: precondition" "fixture still carries LC_VERSION_MIN_MACOSX"
 else
     ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
 fi
 
-printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/minos_fixture" "$T/minos_out" \
+printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out" \
     >"$T/minos.out" 2>&1 || bad "minos: exit" "$(cat "$T/minos.out")"
-minos_info=$("$MACHOREWRITE" info "$T/minos_out")
+minos_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_out")
 echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos: LC_VERSION_MIN_MACOSX present after" \
     || bad "minos: version-min" "not found in info output"
 # Running it again must not error (add_version_min's own "already present"
 # path) -- this time reading the output of the run above, which HAS the
 # command, so the second run really takes that branch.
-if printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
+if printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
     ok "minos: idempotent re-run does not error"
 else
     bad "minos: re-run" "errored on an already-minos'd file"
@@ -1390,7 +1390,7 @@ fi
 # an unparseable script, not a verdict about FILE. Nonzero either way, which
 # is what this assertion has always asked, and no output is written either way.
 rm -f "$T/minos_out3"
-if printf 'version-min set 10.10\n' | "$MACHOREWRITE" "$T/minos_fixture" "$T/minos_out3" >/dev/null 2>"$T/minos_1010.err"; then
+if printf 'version-min set 10.10\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out3" >/dev/null 2>"$T/minos_1010.err"; then
     bad "minos: wrong version" "10.10 should be refused"
 else
     ok "minos: non-10.9 version refused"
@@ -1401,51 +1401,51 @@ fi
 # version-min never writes its input: FILE OUT, and an OUT that is FILE is refused.
 build_main "$T/mo_in"; "$T/strip_version_min" "$T/mo_in" >/dev/null
 mo_before=$(sha "$T/mo_in"); mo_ino=$(stat -f %i "$T/mo_in")
-printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/mo_in" "$T/mo_out" >"$T/mo.out" 2>"$T/mo.err" \
+printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_out" >"$T/mo.out" 2>"$T/mo.err" \
     && ok "minos FILE OUT: succeeds" || bad "minos FILE OUT" "$(cat "$T/mo.err")"
 [ "$(sha "$T/mo_in")" = "$mo_before" ] && [ "$(stat -f %i "$T/mo_in")" = "$mo_ino" ] \
     && ok "minos FILE OUT: FILE is untouched" || bad "minos FILE OUT" "FILE changed"
-"$MACHOREWRITE" info "$T/mo_out" | grep -q LC_VERSION_MIN_MACOSX \
+"$DRYDOCK_MACHO_REWRITE" info "$T/mo_out" | grep -q LC_VERSION_MIN_MACOSX \
     && ok "minos FILE OUT: OUT has the command" || bad "minos FILE OUT" "OUT lacks it"
 # The verb said `Wrote OUT (N bytes)` on STDOUT; a script run says
 # `OUT: written (N,NNN bytes)` on STDERR. Same claim -- it names the file it
 # wrote -- in the stream and wording me_run uses.
 grep -q "^$T/mo_out: written (" "$T/mo.err" \
     && ok "minos FILE OUT: says what it wrote" || bad "minos FILE OUT" "no written line: $(cat "$T/mo.err")"
-rc=0; printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/mo_in" "$T/mo_in" >/dev/null 2>"$T/mo_same.err" || rc=$?
+rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_in" >/dev/null 2>"$T/mo_same.err" || rc=$?
 [ "$rc" -eq 2 ] && [ "$(sha "$T/mo_in")" = "$mo_before" ] \
     && ok "minos: OUT that is FILE is refused (2), FILE untouched" || bad "minos OUT=FILE" "rc $rc"
 grep -q "never writes its input" "$T/mo_same.err" \
     && ok "minos: ... refused up front, before any work" \
     || bad "minos OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
 ln -s "$T/mo_in" "$T/mo_link"
-rc=0; printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/mo_in" "$T/mo_link" >/dev/null 2>&1 || rc=$?
+rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_link" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "minos: OUT that is a symlink to FILE is refused (2)" || bad "minos OUT=link" "rc $rc"
-# A missing OUT is still a usage error, and still 2 -- `machorewrite FILE` alone
+# A missing OUT is still a usage error, and still 2 -- `drydock-macho-rewrite FILE` alone
 # matches no verb and is not the two-positional bare form, so it falls through
 # to usage(). The verb reached the same place from its own argc check.
-rc=0; printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/mo_in" >/dev/null 2>&1 || rc=$?
+rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "minos: a missing OUT is a usage error (2)" || bad "minos no OUT" "rc $rc"
 
 # ============================================================================
 # lc -delete
 # ============================================================================
 build_main "$T/lc_fixture"
-before_info=$("$MACHOREWRITE" info "$T/lc_fixture")
+before_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/lc_fixture")
 echo "$before_info" | grep -q "LC_UUID" && ok "lc: fixture has LC_UUID before" \
     || bad "lc: precondition" "fixture has no LC_UUID to delete"
 mts "$T/lc_fixture" "load-command delete uuid" >"$T/lc.out" || bad "lc: exit" "$(cat "$T/lc.out")"
-after_info=$("$MACHOREWRITE" info "$T/lc_fixture")
+after_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/lc_fixture")
 if echo "$after_info" | grep -q "LC_UUID"; then
     bad "lc: delete uuid" "LC_UUID still present"
 else
     ok "lc: delete uuid removed it"
 fi
 # Whether a binary that's had its LC_UUID deleted can still be EXECUTED
-# turns on TWO independent host facts, not on machorewrite: (a) kernel
+# turns on TWO independent host facts, not on drydock-macho-rewrite: (a) kernel
 # code-signing enforcement, killing ANY binary modified since it was
 # signed -- see $signing_enforced, established above without ever running
-# machorewrite; (b) modern dyld separately refusing to load an image with no
+# drydock-macho-rewrite; (b) modern dyld separately refusing to load an image with no
 # LC_UUID at all ("missing LC_UUID load command"), which 10.9's dyld does
 # not require. These showed up as genuinely different failure modes on the
 # cross runner that motivated this (grow got SIGKILLed outright; this got
@@ -1453,13 +1453,13 @@ fi
 #
 # signing_enforced already answers (a) honestly. For (b), run lc_fixture
 # for real and read its OWN failure, rather than inferring it from a
-# separate machorewrite-produced probe (the same masking risk as grow's old
+# separate drydock-macho-rewrite-produced probe (the same masking risk as grow's old
 # probe): only a failure whose message literally names the missing-LC_UUID
 # refusal is treated as (b) and skipped; anything else, with signing
 # already ruled out, is a real defect and FAILS.
 if [ "$signing_enforced" -eq 1 ]; then
     skip "lc: binary still runs after uuid deletion" \
-        "this host SIGKILLs any binary modified since it was signed at link time (established independently of machorewrite by the host probe above); a host policy, not a machorewrite defect, and exercised for real on 10.9"
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of drydock-macho-rewrite by the host probe above); a host policy, not a drydock-macho-rewrite defect, and exercised for real on 10.9"
 else
     if (cd "$T" && ./lc_fixture) >"$T/lc_fixture_run.out" 2>&1; then
         ok "lc: binary still runs after uuid deletion"
@@ -1467,9 +1467,9 @@ else
         lc_run_rc=$?
         if grep -qi "missing LC_UUID" "$T/lc_fixture_run.out" 2>/dev/null; then
             skip "lc: binary still runs after uuid deletion" \
-                "modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement. Code-signing enforcement was independently ruled out above (a trivially-perturbed binary DID run on this host), so this is dyld's own content-driven refusal, not a masked machorewrite defect"
+                "modern dyld refuses to load any image with no LC_UUID at all ('missing LC_UUID load command'); 10.9's dyld has no such requirement. Code-signing enforcement was independently ruled out above (a trivially-perturbed binary DID run on this host), so this is dyld's own content-driven refusal, not a masked drydock-macho-rewrite defect"
         else
-            bad "lc: run" "binary failed to execute after uuid deletion (exit $lc_run_rc: $(head -1 "$T/lc_fixture_run.out" 2>/dev/null || echo 'no output')), this host DOES run a trivially-perturbed binary fine (see host probe above), and dyld did not report its missing-LC_UUID message -- code-signing and the known dyld requirement are both ruled out, so this looks like a real machorewrite defect"
+            bad "lc: run" "binary failed to execute after uuid deletion (exit $lc_run_rc: $(head -1 "$T/lc_fixture_run.out" 2>/dev/null || echo 'no output')), this host DOES run a trivially-perturbed binary fine (see host probe above), and dyld did not report its missing-LC_UUID message -- code-signing and the known dyld requirement are both ruled out, so this looks like a real drydock-macho-rewrite defect"
         fi
     fi
 fi
@@ -1514,7 +1514,7 @@ grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
 build_main "$T/lc_dup_fixture"
 mts "$T/lc_dup_fixture" "load-command delete uuid" "load-command delete uuid" \
     >/dev/null 2>"$T/lc_dup.err" || bad "lc: duplicate delete uuid" "$(cat "$T/lc_dup.err")"
-"$MACHOREWRITE" info "$T/lc_dup_fixture" | grep -q LC_UUID \
+"$DRYDOCK_MACHO_REWRITE" info "$T/lc_dup_fixture" | grep -q LC_UUID \
     && bad "lc: duplicate delete uuid" "LC_UUID survived two deletes: $(cat "$T/lc_dup.err")" \
     || ok "lc: a duplicate delete still strips the uuid and still exits 0"
 grep -q "no load command of kind uuid to delete" "$T/lc_dup.err" \
@@ -1596,7 +1596,7 @@ build_main "$T/dylib_fixture"
 newpath="@loader_path/renamed-liba.dylib"
 mts "$T/dylib_fixture" "dylib replace @loader_path/liba.dylib $newpath" \
     >"$T/dylib.out" || bad "dylib: -replace exit" "$(cat "$T/dylib.out")"
-dylib_info=$("$MACHOREWRITE" info "$T/dylib_fixture")
+dylib_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_fixture")
 echo "$dylib_info" | grep -q "path=$newpath" && ok "dylib: -replace changed the path" \
     || bad "dylib: -replace" "new path not found in info output"
 
@@ -1624,13 +1624,13 @@ if mts "$T/dylib_grow_fixture" allow-grow "dylib replace @loader_path/liba.dylib
 else
     bad "dylib: allow-grow" "$(cat "$T/dylib_grow.out")"
 fi
-grown_info=$("$MACHOREWRITE" info "$T/dylib_grow_fixture")
+grown_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_grow_fixture")
 echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: allow-grow result has the long path" \
     || bad "dylib: allow-grow result" "long path not found"
 
 # ============================================================================
 # dylib: pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file
-# and mi_open, which reaching this verb from machorewrite's own EX_REFUSED/EX_FAIL
+# and mi_open, which reaching this verb from drydock-macho-rewrite's own EX_REFUSED/EX_FAIL
 # checks never exercised. Without these, reverting the reclassification in
 # src/rewrite.c leaves this whole suite green -- confirmed by temporarily
 # reverting the 64-bit-fat classification below and watching this section's
@@ -1737,7 +1737,7 @@ echo "$unmatched_out" | grep -qF "libSystem.B.dylib -> /tmp/new.dylib" \
 # The block above says a hit/miss inversion "has to be checked for directly,
 # not just inferred from the positive cases passing". It said that of replace
 # and then did not do it for delete.
-# The deleted path must be one NOTHING BINDS TO: machorewrite refuses to delete a
+# The deleted path must be one NOTHING BINDS TO: drydock-macho-rewrite refuses to delete a
 # dylib a symbol still binds to, so using libSystem here would test the bind
 # guard and never reach the hit/miss report at all -- green for the wrong
 # reason, in a test written to catch exactly that.
@@ -1792,7 +1792,7 @@ mts "$T/dylib_conflict_fixture" \
         >"$T/conflict.out" 2>"$T/conflict.err" && conflict_rc=0 || conflict_rc=$?
 [ "$conflict_rc" -eq 0 ] && ok "dylib: replace then delete on the same path still exits 0" \
     || bad "dylib: replace+delete same path" "expected 0, got $conflict_rc: $(cat "$T/conflict.err")"
-conflict_info=$("$MACHOREWRITE" info "$T/dylib_conflict_fixture")
+conflict_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_conflict_fixture")
 if echo "$conflict_info" | grep -qF "path=$conflict_new"; then
     ok "dylib: replace+delete same path: the REPLACE won and the delete matched nothing"
 else
@@ -1831,7 +1831,7 @@ build_main "$T/dylib_fw_fixture"
 cp "$T/dylib_fw_fixture" "$T/dylib_fw_before"
 rm -f "$T/dylib_fw_out"
 printf 'fatal-warnings\ndylib replace @loader_path/liba.dylib @loader_path/renamed-fw.dylib\ndylib replace /nope/absent-fw.dylib /also/absent-fw.dylib\n' \
-    | "$MACHOREWRITE" "$T/dylib_fw_fixture" "$T/dylib_fw_out" \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/dylib_fw_fixture" "$T/dylib_fw_out" \
         >"$T/dylib_fw.out" 2>"$T/dylib_fw.err" && dylib_fw_rc=0 || dylib_fw_rc=$?
 [ "$dylib_fw_rc" -eq 1 ] && ok "dylib: fatal-warnings refuses an unmatched op (EX_REFUSED)" \
     || bad "dylib: fatal-warnings refusal" "expected exit 1, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
@@ -1840,7 +1840,7 @@ grep -qF "/nope/absent-fw.dylib matched nothing" "$T/dylib_fw.err" \
     || bad "dylib: fatal-warnings refusal message" "expected '/nope/absent-fw.dylib matched nothing' on stderr, got: $(cat "$T/dylib_fw.err")"
 [ ! -e "$T/dylib_fw_out" ] \
     && ok "dylib: fatal-warnings wrote no OUT, though one statement did match" \
-    || bad "dylib: fatal-warnings wrote OUT" "a refused run left $T/dylib_fw_out behind: $("$MACHOREWRITE" info "$T/dylib_fw_out")"
+    || bad "dylib: fatal-warnings wrote OUT" "a refused run left $T/dylib_fw_out behind: $("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_fw_out")"
 cmp -s "$T/dylib_fw_fixture" "$T/dylib_fw_before" \
     && ok "dylib: fatal-warnings left FILE byte-for-byte untouched" \
     || bad "dylib: fatal-warnings touched FILE" "FILE changed under a form that only reads it"
@@ -1873,7 +1873,7 @@ build_main "$T/dylib_fw_allmiss_fixture"
 cp "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before"
 rm -f "$T/dylib_fw_allmiss_out"
 printf 'fatal-warnings\ndylib replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dylib\n' \
-    | "$MACHOREWRITE" "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_out" \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_out" \
         >/dev/null 2>"$T/dylib_fw_allmiss.err" && dylib_fw_allmiss_rc=0 || dylib_fw_allmiss_rc=$?
 [ "$dylib_fw_allmiss_rc" -eq 1 ] && ok "dylib: fatal-warnings refuses when EVERY op matched nothing" \
     || bad "dylib: fatal-warnings (all miss)" "expected exit 1, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
@@ -1896,7 +1896,7 @@ mts "$T/segment_fw_fixture" fatal-warnings "segment rename __DATA __DATA_R9" \
     >/dev/null 2>"$T/segment_fw.err" \
     && ok "segment: fatal-warnings has nothing to promote, so a matching rename still succeeds" \
     || bad "segment: fatal-warnings" "a rename that matched was refused under fatal-warnings: $(cat "$T/segment_fw.err")"
-"$MACHOREWRITE" info "$T/segment_fw_fixture" | grep -q "segname=__DATA_R9" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/segment_fw_fixture" | grep -q "segname=__DATA_R9" \
     && ok "segment: ... and the rename really landed" \
     || bad "segment: fatal-warnings" "no __DATA_R9 segment after the rename"
 mts "$T/segment_fw_fixture" fatal-warnings "swift-abi set legacy" \
@@ -1908,13 +1908,13 @@ mts "$T/segment_fw_fixture" fatal-warnings "swift-abi set legacy" \
 # dylib -append / -insert / -delete / -reexport
 #
 # -replace and --allow-grow (above) exercise only two of change_dylib's
-# translation targets. The mapping itself -- machorewrite's flag to change_dylib's
+# translation targets. The mapping itself -- drydock-macho-rewrite's flag to change_dylib's
 # -- is the only new logic dylib/rpath add, so every op needs its own
 # observable check, not just an exit code: a swapped mapping (say -append
 # landing on change_dylib's -insert) would ship silently and INVERT dylib
 # initialization order, which is the whole reason -insert exists (see
 # docs/PROPOSAL.md "Why these names"). None of these dylibs need to exist on
-# disk -- only the load-command rewrite is being checked here, via `machorewrite
+# disk -- only the load-command rewrite is being checked here, via `drydock-macho-rewrite
 # info`, never by running the binary.
 # ============================================================================
 spare="@loader_path/libspare.dylib"
@@ -1925,11 +1925,11 @@ spare="@loader_path/libspare.dylib"
 # number (build_main's plain main.c still needs libSystem for _start/crt,
 # so liba=1, libSystem=2, and spare correctly lands at 3, not 2).
 build_main "$T/dylib_append_fixture"
-before_append_info=$("$MACHOREWRITE" info "$T/dylib_append_fixture")
+before_append_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_append_fixture")
 last_ordinal_before=$(echo "$before_append_info" | grep -o "ordinal=[0-9]*" | sed 's/ordinal=//' | sort -n | tail -1)
 mts "$T/dylib_append_fixture" "dylib append $spare" \
     >"$T/dylib_append.out" || bad "dylib: -append exit" "$(cat "$T/dylib_append.out")"
-append_info=$("$MACHOREWRITE" info "$T/dylib_append_fixture")
+append_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_append_fixture")
 expect_ordinal=$((last_ordinal_before + 1))
 echo "$append_info" | grep -qF "ordinal=$expect_ordinal path=$spare" \
     && ok "dylib: -append put the new dep last (ordinal $expect_ordinal)" \
@@ -1943,7 +1943,7 @@ echo "$append_info" | grep -qF "ordinal=1 path=@loader_path/liba.dylib" && ok "d
 build_main "$T/dylib_insert_fixture"
 mts "$T/dylib_insert_fixture" "dylib insert $spare" \
     >"$T/dylib_insert.out" || bad "dylib: -insert exit" "$(cat "$T/dylib_insert.out")"
-insert_info=$("$MACHOREWRITE" info "$T/dylib_insert_fixture")
+insert_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_insert_fixture")
 echo "$insert_info" | grep -qF "ordinal=1 path=$spare" && ok "dylib: -insert put the new dep at ordinal 1 (first)" \
     || bad "dylib: -insert" "expected ordinal=1 path=$spare in: $insert_info"
 echo "$insert_info" | grep -qF "ordinal=2 path=@loader_path/liba.dylib" && ok "dylib: -insert renumbered liba to ordinal 2" \
@@ -1955,7 +1955,7 @@ echo "$insert_info" | grep -qF "ordinal=2 path=@loader_path/liba.dylib" && ok "d
 # that would orphan a bound symbol) proves removal without disturbing liba.
 mts "$T/dylib_append_fixture" "dylib delete $spare" \
     >"$T/dylib_delete.out" || bad "dylib: -delete exit" "$(cat "$T/dylib_delete.out")"
-delete_info=$("$MACHOREWRITE" info "$T/dylib_append_fixture")
+delete_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_append_fixture")
 if echo "$delete_info" | grep -qF "path=$spare"; then
     bad "dylib: -delete" "spare still present in: $delete_info"
 else
@@ -1970,7 +1970,7 @@ echo "$delete_info" | grep -qF "ordinal=1 path=@loader_path/liba.dylib" && ok "d
 build_main "$T/dylib_reexport_fixture"
 mts "$T/dylib_reexport_fixture" "dylib reexport @loader_path/liba.dylib" \
     >"$T/dylib_reexport.out" || bad "dylib: -reexport exit" "$(cat "$T/dylib_reexport.out")"
-reexport_info=$("$MACHOREWRITE" info "$T/dylib_reexport_fixture")
+reexport_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_reexport_fixture")
 echo "$reexport_info" | grep -A1 "LC_REEXPORT_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
     && ok "dylib: -reexport promoted liba to LC_REEXPORT_DYLIB" \
     || bad "dylib: -reexport" "no LC_REEXPORT_DYLIB naming liba in: $reexport_info"
@@ -1981,12 +1981,12 @@ echo "$reexport_info" | grep -A1 "LC_REEXPORT_DYLIB" | grep -qF "path=@loader_pa
 # count never moves: only cmd changes, never cmdsize or the path.
 #
 # dylib_kind_of FILE PATH -- the LC[N] kind name on the line immediately
-# above the `ordinal=N path=PATH` line in `machorewrite info`'s output. Used
+# above the `ordinal=N path=PATH` line in `drydock-macho-rewrite info`'s output. Used
 # below to DERIVE the round-trip fixture's starting kind rather than assume
 # it: this repo lost a day of red CI to a test that pinned a host- or
 # fixture-fact nobody derived (see this file's own header).
 dylib_kind_of() {
-    "$MACHOREWRITE" info "$1" | awk -v want="path=$2" '
+    "$DRYDOCK_MACHO_REWRITE" info "$1" | awk -v want="path=$2" '
         /^LC\[/ { kind = $2 }
         index($0, want) { print kind; exit }
     '
@@ -2007,7 +2007,7 @@ retype_lc_for() {
 # assertion that THIS load command's cmdsize held still. This is that direct
 # assertion.
 dylib_cmdsize_of() {
-    "$MACHOREWRITE" info "$1" | awk -v want="path=$2" '
+    "$DRYDOCK_MACHO_REWRITE" info "$1" | awk -v want="path=$2" '
         /^LC\[/ { cmdsize = $0; sub(/.*cmdsize=/, "", cmdsize); cmdsize += 0 }
         index($0, want) { print cmdsize; exit }
     '
@@ -2025,10 +2025,10 @@ for k in weak reexport upward load; do
     after_cmdsize=$(dylib_cmdsize_of "$T/dylib_retype_fixture.$k" "@loader_path/liba.dylib")
     [ "$before_cmdsize" = "$after_cmdsize" ] \
         || bad "dylib: retype to $k" "changed liba's own cmdsize: $before_cmdsize -> $after_cmdsize"
-    "$MACHOREWRITE" verify "$T/dylib_retype_fixture.$k" >/dev/null 2>&1 \
-        || bad "dylib: retype to $k" "the result fails machorewrite verify"
+    "$DRYDOCK_MACHO_REWRITE" verify "$T/dylib_retype_fixture.$k" >/dev/null 2>&1 \
+        || bad "dylib: retype to $k" "the result fails drydock-macho-rewrite verify"
     want_lc=$(retype_lc_for "$k")
-    retype_info=$("$MACHOREWRITE" info "$T/dylib_retype_fixture.$k")
+    retype_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_retype_fixture.$k")
     echo "$retype_info" | grep -A1 "$want_lc" | grep -qF "path=@loader_path/liba.dylib" \
         && ok "dylib: retype to $k produced $want_lc naming liba, cmdsize unchanged ($before_cmdsize)" \
         || bad "dylib: retype to $k" "no $want_lc naming liba in: $retype_info"
@@ -2049,7 +2049,7 @@ mts "$T/dylib_retype_to_load_fixture" "dylib retype @loader_path/liba.dylib weak
 mts "$T/dylib_retype_to_load_fixture" "dylib retype @loader_path/liba.dylib load" \
     >"$T/dylib_retype_to_load.out" \
     || bad "dylib: retype to load from a non-load kind exit" "$(cat "$T/dylib_retype_to_load.out")"
-to_load_info=$("$MACHOREWRITE" info "$T/dylib_retype_to_load_fixture")
+to_load_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_retype_to_load_fixture")
 echo "$to_load_info" | grep -A1 "LC_LOAD_DYLIB" | grep -qF "path=@loader_path/liba.dylib" \
     && ok "dylib: retype to load from weak actually rewrites cmd (not skipped because target is load)" \
     || bad "dylib: retype to load from weak" "liba is not LC_LOAD_DYLIB after retyping from weak: $to_load_info"
@@ -2095,7 +2095,7 @@ mts "$T/dylib_retype_eq_b" "dylib retype @loader_path/liba.dylib reexport" \
 # (src/rewrite.c's mr_report_unmatched), not a silent success.
 build_main "$T/dylib_retype_miss_fixture"
 printf 'dylib retype /nope.dylib weak\n' \
-    | "$MACHOREWRITE" "$T/dylib_retype_miss_fixture" "$T/dylib_retype_miss.out" \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/dylib_retype_miss_fixture" "$T/dylib_retype_miss.out" \
     >/dev/null 2>"$T/dylib_retype_miss.err" || true
 grep -q 'matched nothing' "$T/dylib_retype_miss.err" \
     && ok "dylib: retype of an absent path reports a miss" \
@@ -2105,12 +2105,12 @@ grep -q 'matched nothing' "$T/dylib_retype_miss.err" \
 # rpath -append
 # ============================================================================
 build_main "$T/rpath_fixture" "/tmp/cli_test_original_rpath"
-before_rp=$("$MACHOREWRITE" info "$T/rpath_fixture")
+before_rp=$("$DRYDOCK_MACHO_REWRITE" info "$T/rpath_fixture")
 echo "$before_rp" | grep -q "rpath=/tmp/cli_test_original_rpath" && ok "rpath: fixture has original rpath" \
     || bad "rpath: precondition" "original rpath missing from info output"
 mts "$T/rpath_fixture" "rpath append /tmp/cli_test_appended_rpath" \
     >"$T/rpath.out" || bad "rpath: -append exit" "$(cat "$T/rpath.out")"
-after_rp=$("$MACHOREWRITE" info "$T/rpath_fixture")
+after_rp=$("$DRYDOCK_MACHO_REWRITE" info "$T/rpath_fixture")
 echo "$after_rp" | grep -q "rpath=/tmp/cli_test_original_rpath" && \
 echo "$after_rp" | grep -q "rpath=/tmp/cli_test_appended_rpath" && \
     ok "rpath: -append kept the original and added the new one" || \
@@ -2123,7 +2123,7 @@ echo "$after_rp" | grep -q "rpath=/tmp/cli_test_appended_rpath" && \
 build_main "$T/rpath_replace_fixture" "/tmp/cli_test_replace_before"
 mts "$T/rpath_replace_fixture" "rpath replace /tmp/cli_test_replace_before /tmp/cli_test_replace_after" \
     >"$T/rpath_replace.out" || bad "rpath: -replace exit" "$(cat "$T/rpath_replace.out")"
-replace_info=$("$MACHOREWRITE" info "$T/rpath_replace_fixture")
+replace_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/rpath_replace_fixture")
 if echo "$replace_info" | grep -q "rpath=/tmp/cli_test_replace_before"; then
     bad "rpath: -replace" "old rpath still present in: $replace_info"
 else
@@ -2135,7 +2135,7 @@ echo "$replace_info" | grep -q "rpath=/tmp/cli_test_replace_after" && ok "rpath:
 build_main "$T/rpath_delete_fixture" "/tmp/cli_test_delete_me"
 mts "$T/rpath_delete_fixture" "rpath delete /tmp/cli_test_delete_me" \
     >"$T/rpath_delete.out" || bad "rpath: -delete exit" "$(cat "$T/rpath_delete.out")"
-delete_rp_info=$("$MACHOREWRITE" info "$T/rpath_delete_fixture")
+delete_rp_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/rpath_delete_fixture")
 if echo "$delete_rp_info" | grep -q "^  rpath="; then
     bad "rpath: -delete" "an rpath is still present in: $delete_rp_info"
 else
@@ -2152,7 +2152,7 @@ mts "$T/rpath_miss_fixture" "rpath replace /tmp/cli_test_rpath_absent /tmp/cli_t
 grep -q "rpath /tmp/cli_test_rpath_absent matched nothing" "$T/rpath_miss.err" \
     && ok "rpath: names the -replace that matched nothing" \
     || bad "rpath: unmatched -replace" "expected 'rpath /tmp/cli_test_rpath_absent matched nothing' on stderr, got: $(cat "$T/rpath_miss.err")"
-rpath_miss_info=$("$MACHOREWRITE" info "$T/rpath_miss_fixture")
+rpath_miss_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/rpath_miss_fixture")
 echo "$rpath_miss_info" | grep -q "rpath=/tmp/cli_test_rpath_present" \
     && ok "rpath: an untouched rpath is left alone by the unmatched -replace" \
     || bad "rpath: unmatched -replace" "the ORIGINAL rpath disappeared: $rpath_miss_info"
@@ -2191,12 +2191,12 @@ mts "$T/rpath_fw_ok_fixture" fatal-warnings \
 # indistinguishable from an -append that silently stood in for it -- which is
 # exactly the wrong answer this operation exists to rule out
 # (docs/PROPOSAL.md: "flipping their order flips which one loads"). Every
-# assertion below therefore compares POSITIONS in `machorewrite info`'s rpath list,
+# assertion below therefore compares POSITIONS in `drydock-macho-rewrite info`'s rpath list,
 # never mere presence.
 #
 # `grep -n` over info's own stable "  rpath=" lines gives those positions
 # without parsing otool.
-rpath_positions() { "$MACHOREWRITE" info "$1" | grep -n "^  rpath=" | sed 's/:.*rpath=/ /'; }
+rpath_positions() { "$DRYDOCK_MACHO_REWRITE" info "$1" | grep -n "^  rpath=" | sed 's/:.*rpath=/ /'; }
 rpath_first() { rpath_positions "$1" | head -1 | sed 's/^[0-9]* //'; }
 rpath_last()  { rpath_positions "$1" | tail -1 | sed 's/^[0-9]* //'; }
 
@@ -2257,7 +2257,7 @@ mts "$T/rpath_append_cmp_fixture" "rpath append /tmp/cli_test_inserted_rpath" \
 # padding every fixture would silently disarm that refusal.
 "$CC" -O2 $FIXTURE_FLAGS -Wl,-headerpad,0x2000 \
     "$T/main.c" "$T/liba.dylib" -o "$T/rpath_insert_empty"
-"$MACHOREWRITE" info "$T/rpath_insert_empty" | grep -q "^  rpath=" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/rpath_insert_empty" | grep -q "^  rpath=" \
     && bad "rpath -insert: empty precondition" "fixture unexpectedly already has an rpath" \
     || ok "rpath -insert: empty-case fixture has no rpath to start with"
 mts "$T/rpath_insert_empty" "rpath insert /tmp/cli_test_empty_ins" "rpath append /tmp/cli_test_empty_app" \
@@ -2272,7 +2272,7 @@ empty_all=$(rpath_positions "$T/rpath_insert_empty" | sed 's/^[0-9]* //' | tr '\
 # failure rather than as a passing byte comparison.
 if [ "$signing_enforced" -eq 1 ]; then
     skip "rpath: -insert result still runs" \
-        "this host SIGKILLs any binary modified since it was signed at link time (established independently of machorewrite by the host probe above)"
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of drydock-macho-rewrite by the host probe above)"
 elif (cd "$T" && ./rpath_insert_fixture) >"$T/rpath_insert_run.out" 2>&1; then
     ok "rpath: -insert result still runs"
 else
@@ -2282,7 +2282,7 @@ fi
 # ============================================================================
 # segment: rename every matching LC_SEGMENT_64, and its sections' copy
 # ============================================================================
-# `machorewrite info` prints a segment's segname but NOT the copy of that name each
+# `drydock-macho-rewrite info` prints a segment's segname but NOT the copy of that name each
 # section_64 carries, and the section copies are half of what this verb must
 # change (getsectiondata matches on the section's copy -- see
 # src/segname.h's header comment). segread below is a purpose-built
@@ -2450,7 +2450,7 @@ grep -q "^SEG __DATA$" "$T/segs_after" \
 grep -q "^SEG __DATA_R9$" "$T/segs_after" \
     && ok "segment: the new name is what landed" \
     || bad "segment: new name" "no __DATA_R9 segment in: $(cat "$T/segs_after")"
-# The half `machorewrite info` cannot see: every section's own copy of the name.
+# The half `drydock-macho-rewrite info` cannot see: every section's own copy of the name.
 if grep -q "^SECT __DATA/" "$T/segs_after"; then
     bad "segment: section segnames" "a section still names __DATA: $(cat "$T/segs_after")"
 else
@@ -2471,7 +2471,7 @@ grep -q "^SEG __TEXT$" "$T/segs_after" && grep -q "^SECT __TEXT/__text$" "$T/seg
     || bad "segment: collateral" "__TEXT changed: $(cat "$T/segs_after")"
 if [ "$signing_enforced" -eq 1 ]; then
     skip "segment: the renamed binary still runs" \
-        "this host SIGKILLs any binary modified since it was signed at link time (established independently of machorewrite by the host probe above)"
+        "this host SIGKILLs any binary modified since it was signed at link time (established independently of drydock-macho-rewrite by the host probe above)"
 elif (cd "$T" && ./segment_fixture) >"$T/segment_run.out" 2>&1; then
     ok "segment: the renamed binary still runs"
 else
@@ -2552,10 +2552,10 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 "$T/mkimplausible" "$T/implausible"
 
 # `|| true`: a refusal is the expected outcome and this suite runs under set -e.
-"$MACHOREWRITE" verify "$T/implausible" >/dev/null 2>"$T/imp_verify.err" || true
+"$DRYDOCK_MACHO_REWRITE" verify "$T/implausible" >/dev/null 2>"$T/imp_verify.err" || true
 grep -q 'implausible' "$T/imp_verify.err" \
     && ok "segment: the fixture really is one mg_plausible rejects" \
-    || bad "segment: mg_plausible fixture" "machorewrite verify did not call it implausible: $(cat "$T/imp_verify.err")"
+    || bad "segment: mg_plausible fixture" "drydock-macho-rewrite verify did not call it implausible: $(cat "$T/imp_verify.err")"
 
 # `fixups set classic` genuinely disturbs the relation the gate checks --
 # unlike `lc -delete`, which only frees header pad and repacks the command
@@ -2603,7 +2603,7 @@ else
         "lc -delete uuid was refused, so the gate still runs on operations with nothing to check: $(cat "$T/imp_lc.err")"
 fi
 # ...and it really did the edit, rather than passing by doing nothing.
-"$MACHOREWRITE" info "$T/imp_lc" 2>/dev/null | grep -q 'LC_UUID' \
+"$DRYDOCK_MACHO_REWRITE" info "$T/imp_lc" 2>/dev/null | grep -q 'LC_UUID' \
     && bad "segment: mg_plausible scope" "lc -delete uuid exited 0 but the LC_UUID is still there" \
     || ok "lc -delete: and the command really is gone from the rewritten fixture"
 
@@ -2661,7 +2661,7 @@ grep -q 're-checked' "$T/imp_say.out" \
 # the rewrite path, with a message about base-relative offsets naming no known
 # function when the image had no function starts for anything to name.
 "$T/mkimplausible" "$T/emptystarts" -empty-starts
-if "$MACHOREWRITE" verify "$T/emptystarts" >"$T/es_verify.out" 2>&1; then
+if "$DRYDOCK_MACHO_REWRITE" verify "$T/emptystarts" >"$T/es_verify.out" 2>&1; then
     ok "verify: an image declaring no function starts is accepted"
 else
     bad "verify: empty LC_FUNCTION_STARTS" \
@@ -2749,7 +2749,7 @@ fi
 # path made the compiled slice refuse FIRST there, and every assertion below
 # passed while covering nothing about the second slice.
 mrerr_pad() {
-    "$MACHOREWRITE" info "$1" \
+    "$DRYDOCK_MACHO_REWRITE" info "$1" \
         | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
 }
 # What appending PATH costs: sizeof(struct dylib_command) + strlen + NUL,
@@ -2759,7 +2759,7 @@ mrerr_lc_cost() { echo $(( ((24 + $1 + 1 + 7) / 8) * 8 )); }
 mrerr_pad_compiled=$(mrerr_pad "$T/segment_fat_slice")
 mrerr_pad_fixture=$(mrerr_pad "$T/implausible")
 if [ -z "$mrerr_pad_compiled" ] || [ -z "$mrerr_pad_fixture" ]; then
-    bad "lc: MR_ERROR pads" "machorewrite info reported no header pad for one of the two slices"
+    bad "lc: MR_ERROR pads" "drydock-macho-rewrite info reported no header pad for one of the two slices"
     mrerr_pad_compiled=0; mrerr_pad_fixture=0
 fi
 if [ "$mrerr_pad_compiled" -gt "$mrerr_pad_fixture" ]; then
@@ -2793,7 +2793,7 @@ fi
 # neither slice can be -- both are 64-bit Mach-Os, and slice 1 is declared
 # x86_64 by the wrap. The refused one is slice 1, the second name.
 mrerr_have=$(printf 'arch i386\ndylib append %s\n' "$long_dylib" \
-    | "$MACHOREWRITE" "$T/mrerr_fat" "$T/mrerr_probe" 2>&1 || :)
+    | "$DRYDOCK_MACHO_REWRITE" "$T/mrerr_fat" "$T/mrerr_probe" 2>&1 || :)
 mrerr_slice1=$(printf '%s\n' "$mrerr_have" \
     | sed -n 's/.*(it has: [^,]*, *\([^)]*\)).*/\1/p')
 [ -n "$mrerr_slice1" ] \
@@ -2815,7 +2815,7 @@ fi
 # inconsistent". Neither string is reachable from any surviving front-end.
 # WHAT IS CLAIMED IS UNCHANGED: the whole file is refused, the slice is named,
 # the slice's own reason is still on stderr, and nothing is written.
-grep -q 'machorewrite edit: refused at statement' "$T/mrerr.err" \
+grep -q 'drydock-macho-rewrite edit: refused at statement' "$T/mrerr.err" \
     && ok "lc: and says so, naming the statement the whole file was refused at" \
     || bad "lc: MR_ERROR message" "expected me_run_fat's refusal, got: $(cat "$T/mrerr.err")"
 grep -q "in slice $mrerr_slice1" "$T/mrerr.err" \
@@ -2899,7 +2899,7 @@ grep -q 'slice x86_64: not a 64-bit Mach-O; passed through unchanged' "$T/fatdec
     || bad "fat: declared 64-bit over a non-Mach-O slice" \
            "no pass-through line naming the real reason: $(cat "$T/fatdecl64.err")"
 "$T/segread" dump "$T/fatdecl64" 0 "$T/fatdecl64_s0"
-"$MACHOREWRITE" info "$T/fatdecl64_s0" | grep -qF "path=/fatdecl64.dylib" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/fatdecl64_s0" | grep -qF "path=/fatdecl64.dylib" \
     && ok "fat: ... and the slice it DID understand was rewritten" \
     || bad "fat: declared 64-bit over a non-Mach-O slice" "slice 0 did not get the append"
 "$T/segread" dump "$T/fatdecl64" 1 "$T/fatdecl64_s1"
@@ -2987,7 +2987,7 @@ cmp -s "$T/fat32as64_s1" "$T/slice32" \
     || bad "fat: declared 64-bit over a 32-bit Mach-O slice" "the passed-through slice changed"
 # The premise: exit 0 above is a real rewrite, not a run that did nothing.
 "$BIN/fatcheck" dump "$T/fat32as64" 0 "$T/fat32as64_s0"
-"$MACHOREWRITE" info "$T/fat32as64_s0" | grep -qF "path=/fat32as64.dylib" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/fat32as64_s0" | grep -qF "path=/fat32as64.dylib" \
     && ok "fat: ... and the slice it DID understand was rewritten" \
     || bad "fat: declared 64-bit over a 32-bit Mach-O slice" "slice 0 did not get the append"
 
@@ -3020,7 +3020,7 @@ grep -q '^slice i386:$' "$T/fatarch32.err" \
     || bad "fat: arch over a declared-32-bit 64-bit slice" \
            "no 'slice i386:' heading: $(cat "$T/fatarch32.err")"
 "$BIN/fatcheck" dump "$T/fatarch32" 1 "$T/fatarch32_s1"
-"$MACHOREWRITE" info "$T/fatarch32_s1" | grep -qF "path=/fatarch32.dylib" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/fatarch32_s1" | grep -qF "path=/fatarch32.dylib" \
     && ok "fat: ... and that slice really carries the append" \
     || bad "fat: arch over a declared-32-bit 64-bit slice" "slice 1 did not get the append"
 grep -q 'slice x86_64: not selected by arch; passed through unchanged' "$T/fatarch32.err" \
@@ -3075,7 +3075,7 @@ nwi() {   # TAG then the one statement to run
     build_main "$nwi_in"
     nwi_sha=$(sha "$nwi_in"); nwi_ino=$(stat -f %i "$nwi_in")
     rm -f "$nwi_out"
-    printf '%s\n' "$nwi_stmt" | "$MACHOREWRITE" "$nwi_in" "$nwi_out" >"$T/nwi.out" 2>"$T/nwi.err" \
+    printf '%s\n' "$nwi_stmt" | "$DRYDOCK_MACHO_REWRITE" "$nwi_in" "$nwi_out" >"$T/nwi.out" 2>"$T/nwi.err" \
         && ok "$nwi_tag FILE OUT: succeeds" \
         || bad "$nwi_tag FILE OUT" "$(cat "$T/nwi.err")"
     [ "$(sha "$nwi_in")" = "$nwi_sha" ] && [ "$(stat -f %i "$nwi_in")" = "$nwi_ino" ] \
@@ -3087,7 +3087,7 @@ nwi() {   # TAG then the one statement to run
         && ok "$nwi_tag FILE OUT: says what it wrote" \
         || bad "$nwi_tag FILE OUT" "no written line: $(cat "$T/nwi.err")"
     rc=0
-    printf '%s\n' "$nwi_stmt" | "$MACHOREWRITE" "$nwi_in" "$nwi_in" >/dev/null 2>"$T/nwi_same.err" || rc=$?
+    printf '%s\n' "$nwi_stmt" | "$DRYDOCK_MACHO_REWRITE" "$nwi_in" "$nwi_in" >/dev/null 2>"$T/nwi_same.err" || rc=$?
     [ "$rc" -eq 2 ] && [ "$(sha "$nwi_in")" = "$nwi_sha" ] \
         && ok "$nwi_tag: OUT that is FILE is refused (2), FILE untouched" \
         || bad "$nwi_tag OUT=FILE" "rc $rc"
@@ -3096,28 +3096,28 @@ nwi() {   # TAG then the one statement to run
         || bad "$nwi_tag OUT=FILE" "not the up-front refusal: $(cat "$T/nwi_same.err")"
     rm -f "$T/nwi_link"; ln -s "$nwi_in" "$T/nwi_link"
     rc=0
-    printf '%s\n' "$nwi_stmt" | "$MACHOREWRITE" "$nwi_in" "$T/nwi_link" >/dev/null 2>&1 || rc=$?
+    printf '%s\n' "$nwi_stmt" | "$DRYDOCK_MACHO_REWRITE" "$nwi_in" "$T/nwi_link" >/dev/null 2>&1 || rc=$?
     [ "$rc" -eq 2 ] && ok "$nwi_tag: OUT that is a symlink to FILE is refused (2)" \
         || bad "$nwi_tag OUT=link" "rc $rc"
     rc=0
-    printf '%s\n' "$nwi_stmt" | "$MACHOREWRITE" "$nwi_in" >/dev/null 2>&1 || rc=$?
+    printf '%s\n' "$nwi_stmt" | "$DRYDOCK_MACHO_REWRITE" "$nwi_in" >/dev/null 2>&1 || rc=$?
     [ "$rc" -eq 2 ] && ok "$nwi_tag: a missing OUT is an error (2)" \
         || bad "$nwi_tag no OUT" "rc $rc"
 }
 nwi dylib "dylib append /nwi/appended.dylib"
-"$MACHOREWRITE" info "$T/nwi_dylib_out" | grep -qF "path=/nwi/appended.dylib" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/nwi_dylib_out" | grep -qF "path=/nwi/appended.dylib" \
     && ok "dylib FILE OUT: OUT carries the appended dependency" \
     || bad "dylib FILE OUT" "OUT lacks the appended dependency"
 nwi rpath "rpath append /nwi/appended/rpath"
-"$MACHOREWRITE" info "$T/nwi_rpath_out" | grep -qF "/nwi/appended/rpath" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/nwi_rpath_out" | grep -qF "/nwi/appended/rpath" \
     && ok "rpath FILE OUT: OUT carries the appended rpath" \
     || bad "rpath FILE OUT" "OUT lacks the appended rpath"
 nwi lc "load-command delete uuid"
-"$MACHOREWRITE" info "$T/nwi_lc_out" | grep -q "LC_UUID" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/nwi_lc_out" | grep -q "LC_UUID" \
     && bad "lc FILE OUT" "OUT still has LC_UUID" \
     || ok "lc FILE OUT: OUT has lost its LC_UUID"
 nwi segment "segment rename __DATA __DATA_NWI"
-"$MACHOREWRITE" info "$T/nwi_segment_out" | grep -q "segname=__DATA_NWI" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/nwi_segment_out" | grep -q "segname=__DATA_NWI" \
     && ok "segment FILE OUT: OUT carries the renamed segment" \
     || bad "segment FILE OUT" "OUT lacks the renamed segment"
 
@@ -3139,7 +3139,7 @@ nwi segment "segment rename __DATA __DATA_NWI"
 # rather than about bad_out -- which the `--output` case in the mutating-form
 # section below does instead. `grow`, `edit` and the six other verbs that took
 # an OUT were here until those verbs were deleted.
-nwid_run() {   # LABEL, the OUT word, then the whole argv after $MACHOREWRITE
+nwid_run() {   # LABEL, the OUT word, then the whole argv after $DRYDOCK_MACHO_REWRITE
     nwid_label=$1; nwid_out=$2; shift 2
     build_main "$T/nwid"
     rm -f -- "$T/$nwid_out"
@@ -3149,7 +3149,7 @@ nwid_run() {   # LABEL, the OUT word, then the whole argv after $MACHOREWRITE
     # spelled it "$T/-nwid-flag" would be asserting about a path that does not
     # begin with '-' at all. The `cd` is also what keeps the file the check
     # exists to prevent out of the source tree when the check is not there.
-    ( cd "$T" && "$MACHOREWRITE" "$@" </dev/null ) >/dev/null 2>"$T/nwid.err" || rc=$?
+    ( cd "$T" && "$DRYDOCK_MACHO_REWRITE" "$@" </dev/null ) >/dev/null 2>"$T/nwid.err" || rc=$?
     [ "$rc" -eq 2 ] && [ ! -e "$T/$nwid_out" ] \
         && grep -q "which begins with '-'" "$T/nwid.err" \
         && ok "$nwid_label: an OUT beginning with '-' is refused (2), not created" \
@@ -3159,7 +3159,7 @@ nwid_run "bare form" -nwid-flag nwid -nwid-flag
 # ... and the remedy the message names really does work, so the refusal is not
 # a wall in front of a legal path.
 build_main "$T/nwid2"
-( cd "$T" && printf 'load-command delete uuid\n' | "$MACHOREWRITE" nwid2 ./-nwid-out ) \
+( cd "$T" && printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" nwid2 ./-nwid-out ) \
     >/dev/null 2>"$T/nwid2.err" \
     && [ -e "$T/-nwid-out" ] \
     && ok "bare form: ... and './-name', the remedy the message names, writes that file" \
@@ -3172,7 +3172,7 @@ build_main "$T/nwid2"
 build_main "$T/nwi_noop"
 rm -f "$T/nwi_noop_out"
 printf 'dylib delete /not/linked/at/all.dylib\n' \
-    | "$MACHOREWRITE" "$T/nwi_noop" "$T/nwi_noop_out" \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/nwi_noop" "$T/nwi_noop_out" \
     >"$T/nwi_noop.out" 2>"$T/nwi_noop.err" && nwi_noop_rc=0 || nwi_noop_rc=$?
 [ "$nwi_noop_rc" -eq 0 ] \
     && ok "dylib: an operation that matched nothing still exits 0" \
@@ -3196,7 +3196,7 @@ meta 2 0x1000009c2" ] \
     || bad "retag-swift: precondition" "unexpected starting tags: $tags_before"
 
 swift_fixture_before=$(sha "$T/swift_fixture")
-printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/swift_fixture" "$T/swift_out1" \
+printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/swift_fixture" "$T/swift_out1" \
     >"$T/retag.out" 2>&1 \
     || bad "retag-swift: exit" "$(cat "$T/retag.out")"
 [ "$(sha "$T/swift_fixture")" = "$swift_fixture_before" ] \
@@ -3220,7 +3220,7 @@ grep -q "retagged 2 class records" "$T/retag.out" \
 # "retagged 0 class record(s)"; the statement says "nothing to retag", which is
 # the same claim about the same zero.
 swift_out1_before=$(sha "$T/swift_out1")
-printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/swift_out1" "$T/swift_out2" \
+printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/swift_out1" "$T/swift_out2" \
     >"$T/retag2.out" 2>&1 \
     || bad "retag-swift: second run exit" "$(cat "$T/retag2.out")"
 grep -q "nothing to retag" "$T/retag2.out" \
@@ -3242,7 +3242,7 @@ cmp -s "$T/swift_out1" "$T/swift_out2" \
 #
 # That is a capability GAIN, and it is deliberate: the fat work removed a
 # thin-only refusal from the CLI, having first put the refusal back where the
-# compat wrappers need it (compat/machorewrite-compat.sh's mw_thin_only), so no
+# compat wrappers need it (compat/drydock-macho-rewrite-compat.sh's mw_thin_only), so no
 # caller that relied on it lost it. Asserted here in its new form.
 #
 # The container is built HERE, out of the very fixture the assertions above
@@ -3259,7 +3259,7 @@ else
     printf 'not a mach-o at all, just bytes.\n' > "$T/retag_fat_blob"
     "$T/segread" wrap "$T/retag_fat" "$T/swift_fixture" "$T/retag_fat_blob"
     rc=0
-    printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/retag_fat" "$T/retag_fat_out" \
+    printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/retag_fat" "$T/retag_fat_out" \
         >"$T/retag_fat.out" 2>"$T/retag_fat.err" || rc=$?
     [ "$rc" -eq 0 ] && ok "retag-swift: a fat container is rewritten, not refused as it was at the verb" \
         || bad "retag-swift: fat" "expected exit 0, got $rc: $(cat "$T/retag_fat.out") $(cat "$T/retag_fat.err")"
@@ -3277,7 +3277,7 @@ else
     # worked inside a container.
     cp "$T/swift_fixture" "$T/retag_thin_control"
     rc=0
-    printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/retag_thin_control" "$T/retag_thin_control_out" \
+    printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/retag_thin_control" "$T/retag_thin_control_out" \
         >"$T/retag_thin_control.out" 2>&1 || rc=$?
     [ "$rc" -eq 0 ] \
         && ok "retag-swift: the same bytes, thin, are accepted too" \
@@ -3290,7 +3290,7 @@ fi
 # MSWIFT_ERROR; me_run makes the same split at its own open, and the exit code
 # is the observable either way.
 rc=0
-printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/no-such-file-for-retag" "$T/retag_missing_out" \
+printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/no-such-file-for-retag" "$T/retag_missing_out" \
     >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
 [ "$rc" -eq 2 ] \
     && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
@@ -3308,7 +3308,7 @@ printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/no-such-file-for-retag" "$
 # class to retag -- OUT is written either way.
 build_main "$T/rs_in"
 rs_before=$(sha "$T/rs_in"); rs_ino=$(stat -f %i "$T/rs_in")
-printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/rs_in" "$T/rs_out" >"$T/rs.out" 2>"$T/rs.err" \
+printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/rs_in" "$T/rs_out" >"$T/rs.out" 2>"$T/rs.err" \
     && ok "retag-swift FILE OUT: succeeds" || bad "retag-swift FILE OUT" "$(cat "$T/rs.err")"
 [ "$(sha "$T/rs_in")" = "$rs_before" ] && [ "$(stat -f %i "$T/rs_in")" = "$rs_ino" ] \
     && ok "retag-swift FILE OUT: FILE is untouched" || bad "retag-swift FILE OUT" "FILE changed"
@@ -3316,13 +3316,13 @@ printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/rs_in" "$T/rs_out" >"$T/rs
     && ok "retag-swift FILE OUT: OUT was written" || bad "retag-swift FILE OUT" "OUT is missing"
 grep -q "^$T/rs_out: written (" "$T/rs.err" \
     && ok "retag-swift FILE OUT: says what it wrote" || bad "retag-swift FILE OUT" "no written line: $(cat "$T/rs.err")"
-rc=0; printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/rs_in" "$T/rs_in" >/dev/null 2>"$T/rs_same.err" || rc=$?
+rc=0; printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/rs_in" "$T/rs_in" >/dev/null 2>"$T/rs_same.err" || rc=$?
 [ "$rc" -eq 2 ] && [ "$(sha "$T/rs_in")" = "$rs_before" ] \
     && ok "retag-swift: OUT that is FILE is refused (2), FILE untouched" || bad "retag-swift OUT=FILE" "rc $rc"
 grep -q "never writes its input" "$T/rs_same.err" \
     && ok "retag-swift: ... refused up front, before any work" \
     || bad "retag-swift OUT=FILE" "not the up-front refusal: $(cat "$T/rs_same.err")"
-rc=0; printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/rs_in" >/dev/null 2>&1 || rc=$?
+rc=0; printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/rs_in" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "retag-swift: a missing OUT is a usage error (2)" || bad "retag-swift no OUT" "rc $rc"
 
 # The MI_IO_ERROR branch inside mi_open specifically (not mswift_retag_file's
@@ -3330,7 +3330,7 @@ rc=0; printf 'swift-abi set legacy\n' | "$MACHOREWRITE" "$T/rs_in" >/dev/null 2>
 # exercises): verify and declassify are equally cheap to check on an absent
 # path, and neither had a numeric-exit-code assertion for one before.
 rc=0
-"$MACHOREWRITE" verify "$T/no-such-file-for-verify" >"$T/verify_missing.out" 2>"$T/verify_missing.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" verify "$T/no-such-file-for-verify" >"$T/verify_missing.out" 2>"$T/verify_missing.err" || rc=$?
 [ "$rc" -eq 2 ] && [ -s "$T/verify_missing.err" ] \
     && ok "verify: an absent file is a failure (2), not a refusal, and says something" \
     || bad "verify: missing path" "expected exit 2 with nonempty stderr, got $rc: $(cat "$T/verify_missing.err")"
@@ -3351,10 +3351,10 @@ dcl "$T/no-such-file-for-declassify" "$T/declassify_missing.out" \
 # exists for (a parse error costs nothing: the file is never opened for
 # writing).
 #
-# THERE IS NO `edit` VERB. `machorewrite edit FILE OUT SCRIPT` was a second
+# THERE IS NO `edit` VERB. `drydock-macho-rewrite edit FILE OUT SCRIPT` was a second
 # mutating spelling of this one: `edit` stopped being a verb name and became
 # the tool itself. A script that lives in a file is
-# `machorewrite FILE OUT < script`, which is the shell's job. Every case below
+# `drydock-macho-rewrite FILE OUT < script`, which is the shell's job. Every case below
 # that used to be typed with the verb word is typed with the redirection now;
 # the ones that only asserted about the verb's own argument scanner (a SCRIPT
 # positional, a SCRIPT path that cannot be read, three positionals versus four)
@@ -3376,7 +3376,7 @@ dylib         replace  @loader_path/liba.dylib  @loader_path/../S.dylib
 EOF
 edit_fixture_before=$(sha "$T/edit_fixture"); edit_fixture_ino=$(stat -f %i "$T/edit_fixture")
 rm -f "$T/edit_fixture_out"
-"$MACHOREWRITE" "$T/edit_fixture" "$T/edit_fixture_out" <"$T/prod.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_fixture" "$T/edit_fixture_out" <"$T/prod.edits" \
     >"$T/edit.out" 2>"$T/edit.err" && edit_rc=0 || edit_rc=$?
 [ "$edit_rc" -eq 0 ] && ok "edit: the production script succeeds" \
     || bad "edit" "expected 0, got $edit_rc: $(cat "$T/edit.err")"
@@ -3396,7 +3396,7 @@ otool -L "$T/edit_fixture_out" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
 # reading it would parse an empty script and succeed: the answer must be the
 # refusal about OUT.
 rc=0
-"$MACHOREWRITE" "$T/edit_fixture" "$T/edit_fixture" </dev/null \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_fixture" "$T/edit_fixture" </dev/null \
     >/dev/null 2>"$T/edit_same.err" || rc=$?
 [ "$rc" -eq 2 ] && [ "$(sha "$T/edit_fixture")" = "$edit_fixture_before" ] \
     && ok "edit: OUT that is FILE is refused (2), FILE untouched" \
@@ -3406,7 +3406,7 @@ grep -q "never writes its input" "$T/edit_same.err" \
     || bad "edit OUT=FILE" "not the up-front refusal: $(cat "$T/edit_same.err")"
 rm -f "$T/edit_link"; ln -s "$T/edit_fixture" "$T/edit_link"
 rc=0
-"$MACHOREWRITE" "$T/edit_fixture" "$T/edit_link" <"$T/prod.edits" >/dev/null 2>&1 || rc=$?
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_fixture" "$T/edit_link" <"$T/prod.edits" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: OUT that is a symlink to FILE is refused (2)" \
     || bad "edit OUT=link" "rc $rc"
 
@@ -3416,14 +3416,14 @@ rc=0
 # --dry-run said that this does not. Both positions, because either one is a
 # place the old habit could put a flag.
 rc=0
-"$MACHOREWRITE" --dry-run "$T/edit_dry_out" </dev/null \
+"$DRYDOCK_MACHO_REWRITE" --dry-run "$T/edit_dry_out" </dev/null \
     >/dev/null 2>"$T/edit_dry.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/edit_dry_out" ] \
     && grep -q "unknown flag '--dry-run'" "$T/edit_dry.err" \
     && ok "edit: --dry-run in FILE's place is an unknown flag (2), and writes no OUT" \
     || bad "edit --dry-run gone" "expected 2 and no OUT, got $rc: $(cat "$T/edit_dry.err")"
 rc=0
-"$MACHOREWRITE" "$T/edit_fixture" --output </dev/null \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_fixture" --output </dev/null \
     >/dev/null 2>"$T/edit_output.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/edit_fixture--output" ] \
     && grep -q "unknown flag '--output'" "$T/edit_output.err" \
@@ -3435,7 +3435,7 @@ rc=0
 build_main "$T/edit_noop"
 printf 'dylib delete /not/linked/at/all.dylib\n' >"$T/noop.edits"
 rm -f "$T/edit_noop_out"
-"$MACHOREWRITE" "$T/edit_noop" "$T/edit_noop_out" <"$T/noop.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_noop" "$T/edit_noop_out" <"$T/noop.edits" \
     >/dev/null 2>"$T/edit_noop.err" && edit_noop_rc=0 || edit_noop_rc=$?
 [ "$edit_noop_rc" -eq 0 ] && ok "edit: a script that changed nothing still exits 0" \
     || bad "edit nothing-to-change" "exit $edit_noop_rc: $(cat "$T/edit_noop.err")"
@@ -3451,7 +3451,7 @@ build_main "$T/edit_ref"
 ref_before=$(sha "$T/edit_ref")
 printf 'fatal-warnings\ndylib delete /definitely/not/linked.dylib\n' >"$T/ref.edits"
 rm -f "$T/edit_ref_out"
-"$MACHOREWRITE" "$T/edit_ref" "$T/edit_ref_out" <"$T/ref.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_ref" "$T/edit_ref_out" <"$T/ref.edits" \
     >/dev/null 2>"$T/edit_ref.err" && ref_rc=0 || ref_rc=$?
 [ "$ref_rc" -eq 1 ] \
     && ok "edit: an unmatched operation under fatal-warnings is refused (1)" \
@@ -3501,14 +3501,14 @@ printf 'load-command delete uuid\n' >"$T/ri.edits"
 # me_run's NULL-`out` guard, "no output file was named" -- is unreachable from
 # here: cmd_edit rejects two positionals with a usage message first, so that
 # guard is tests/edit_test.c's to cover, and is already covered there.)
-"$MACHOREWRITE" "$T/ri_in" "$T/ri_in" <"$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
+"$DRYDOCK_MACHO_REWRITE" "$T/ri_in" "$T/ri_in" <"$T/ri.edits" >/dev/null 2>"$T/ri2.err" || :
 ri_neither "OUT is PATH" "$T/ri2.err"
 
 # The ones where PATH's bytes never resolved into an image this tool parses.
-"$MACHOREWRITE" "$T/nosuchfile" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri3.err" || :
+"$DRYDOCK_MACHO_REWRITE" "$T/nosuchfile" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri3.err" || :
 ri_neither "cannot open or read" "$T/ri3.err"
 printf 'not a mach-o at all, not even close\n' >"$T/ri_text"
-"$MACHOREWRITE" "$T/ri_text" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri4.err" || :
+"$DRYDOCK_MACHO_REWRITE" "$T/ri_text" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri4.err" || :
 ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
 
 # Everything that got as far as an image names both. A fat64 container is
@@ -3517,14 +3517,14 @@ ri_neither "not a readable 64-bit Mach-O" "$T/ri4.err"
 # further up this file already does it.
 printf '%b' '\0277\0272\0376\0312' > "$T/ri_fat64"
 rm -f "$T/ri.out"
-"$MACHOREWRITE" "$T/ri_fat64" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
+"$DRYDOCK_MACHO_REWRITE" "$T/ri_fat64" "$T/ri.out" <"$T/ri.edits" >/dev/null 2>"$T/ri5.err" || :
 ri_both "fat_arch_64 container" "$T/ri5.err"
 
 # A statement's own refusal.
 printf 'fatal-warnings\nload-command delete uuid\n' >"$T/ri_fw.edits"
-printf 'load-command delete uuid\n' | "$MACHOREWRITE" "$T/ri_in" "$T/ri_nouuid" >/dev/null 2>&1
+printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ri_in" "$T/ri_nouuid" >/dev/null 2>&1
 rm -f "$T/ri.out"
-"$MACHOREWRITE" "$T/ri_nouuid" "$T/ri.out" <"$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
+"$DRYDOCK_MACHO_REWRITE" "$T/ri_nouuid" "$T/ri.out" <"$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
 ri_both "a statement that matched nothing under fatal-warnings" "$T/ri6.err"
 [ ! -e "$T/ri.out" ] \
     && ok "refusal inventory: and every one of them wrote no OUT" \
@@ -3543,21 +3543,21 @@ case "$(uname -m)" in
 esac
 printf 'arch %s\nload-command delete uuid\n' "$ri_foreign_arch" >"$T/ri_arch.edits"
 rm -f "$T/ri.out"
-"$MACHOREWRITE" "$T/ri_in" "$T/ri.out" <"$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
+"$DRYDOCK_MACHO_REWRITE" "$T/ri_in" "$T/ri.out" <"$T/ri_arch.edits" >/dev/null 2>"$T/ri7.err" || :
 ri_both "an arch directive the file cannot satisfy" "$T/ri7.err"
 
 # ---- the bare form: FILE OUT, statements on stdin ---------------------------
 #
 # A PIPE, not a redirection, so this is not the same shape as every other case
 # in this file: a generated script needs no temp file, and a pipe is not
-# seekable. `machorewrite edit FILE OUT -` was the other way to say this until
+# seekable. `drydock-macho-rewrite edit FILE OUT -` was the other way to say this until
 # the verb went; there is no second spelling left to compare against, so what is
 # asserted is the thing itself.
 build_main "$T/bare_in"
 printf 'load-command delete uuid\n' >"$T/bare.edits"
 rm -f "$T/bare_via_bare"
 bare_vb=0
-printf 'load-command delete uuid\n' | "$MACHOREWRITE" "$T/bare_in" "$T/bare_via_bare" \
+printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" "$T/bare_in" "$T/bare_via_bare" \
     >/dev/null 2>"$T/bare_vb.err" || bare_vb=$?
 [ "$bare_vb" -eq 0 ] && ok "bare form: FILE OUT with the statements piped in succeeds" \
     || bad "bare form" "exited $bare_vb: $(cat "$T/bare_vb.err")"
@@ -3573,9 +3573,9 @@ otool -l "$T/bare_via_bare" 2>/dev/null | grep -q LC_UUID \
 printf 'frobnicate everything\n' >"$T/bare_bad.edits"
 rm -f "$T/bare_bad_b"
 bare_fb=0
-"$MACHOREWRITE" "$T/bare_in" "$T/bare_bad_b" <"$T/bare_bad.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/bare_in" "$T/bare_bad_b" <"$T/bare_bad.edits" \
     >/dev/null 2>"$T/bare_fb.err" || bare_fb=$?
-[ "$bare_fb" -ne 0 ] && grep -q "machorewrite edit: stdin:" "$T/bare_fb.err" \
+[ "$bare_fb" -ne 0 ] && grep -q "drydock-macho-rewrite edit: stdin:" "$T/bare_fb.err" \
     && ok "bare form: a script that will not parse fails, naming stdin" \
     || bad "bare form parse error" "exited $bare_fb and said '$(cat "$T/bare_fb.err")'"
 [ ! -e "$T/bare_bad_b" ] \
@@ -3583,7 +3583,7 @@ bare_fb=0
     || bad "bare form parse error" "an OUT appeared despite a script that never parsed"
 
 # A VERB ALWAYS WINS over a file of the same name. The bare form is reached
-# only after every verb arm has declined, so `machorewrite info f` stays the info
+# only after every verb arm has declined, so `drydock-macho-rewrite info f` stays the info
 # query even with a file named `info` sitting in the working directory. A FILE
 # really named like a verb is spelled `./info` -- the same remedy bad_out
 # already names for an OUT beginning with '-'.
@@ -3591,7 +3591,7 @@ bare_fb=0
 # TWO NAMES ARE SHADOWED NOW, not eleven. `minos`, `segment`, `retag-swift`,
 # `lc`, `dylib`, `rpath`, `declassify`, `grow` and `edit` were verbs and
 # shadowed a file of the same name; they are ordinary words again, so
-# `machorewrite dylib out` reads a file called `dylib`. Nothing is lost --
+# `drydock-macho-rewrite dylib out` reads a file called `dylib`. Nothing is lost --
 # there is no verb behind those names for a caller to be denied -- and what
 # this loop guards is the two that ARE still verbs.
 mkdir -p "$T/shadow"
@@ -3601,7 +3601,7 @@ for bare_v in verify info; do
     rm -f "$T/shadow/$bare_v" "$T/shadow/shadow_out"
     cp "$T/shadow/fixture" "$T/shadow/$bare_v"
     ( cd "$T/shadow" \
-        && printf 'load-command delete uuid\n' | "$MACHOREWRITE" "$bare_v" shadow_out ) \
+        && printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" "$bare_v" shadow_out ) \
         >/dev/null 2>&1 || :
     [ -e "$T/shadow/shadow_out" ] && bare_shadowed="$bare_shadowed $bare_v"
     rm -f "$T/shadow/$bare_v"
@@ -3615,7 +3615,7 @@ rm -f "$T/shadow/info" "$T/shadow/remedy_out"
 cp "$T/shadow/fixture" "$T/shadow/info"
 bare_remedy=0
 ( cd "$T/shadow" \
-    && printf 'load-command delete uuid\n' | "$MACHOREWRITE" ./info remedy_out ) \
+    && printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" ./info remedy_out ) \
     >/dev/null 2>"$T/bare_remedy.err" || bare_remedy=$?
 [ "$bare_remedy" -eq 0 ] && [ -e "$T/shadow/remedy_out" ] \
     && ok "bare form: ... and './info' edits the file that is named like a verb" \
@@ -3626,7 +3626,7 @@ bare_remedy=0
 # it silently dropped.
 rm -f "$T/bare_extra_out"
 bare_extra=0
-"$MACHOREWRITE" "$T/bare_in" "$T/bare_extra_out" extra </dev/null \
+"$DRYDOCK_MACHO_REWRITE" "$T/bare_in" "$T/bare_extra_out" extra </dev/null \
     >/dev/null 2>"$T/bare_extra.err" || bare_extra=$?
 [ "$bare_extra" -eq 2 ] && [ ! -e "$T/bare_extra_out" ] \
     && ok "bare form: FILE OUT EXTRA is still a usage error (2), and writes no OUT" \
@@ -3639,7 +3639,7 @@ bad_before=$(sha "$T/edit_bad")
 printf 'load-command delete uuid\nfrobnicate everything\n' \
     >"$T/bad.edits"
 rm -f "$T/edit_bad_out"
-"$MACHOREWRITE" "$T/edit_bad" "$T/edit_bad_out" <"$T/bad.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_bad" "$T/edit_bad_out" <"$T/bad.edits" \
     >/dev/null 2>"$T/editbad.err" && editbad_rc=0 || editbad_rc=$?
 [ "$editbad_rc" -eq 2 ] && ok "edit: a parse error is an error (2), not a refusal" \
     || bad "edit parse error" "expected 2, got $editbad_rc"
@@ -3648,19 +3648,19 @@ grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
 [ "$(sha "$T/edit_bad")" = "$bad_before" ] && [ ! -e "$T/edit_bad_out" ] \
     && ok "edit: a parse error left FILE untouched and wrote no OUT" \
     || bad "edit parse error" "the file was modified, or an OUT appeared, despite a parse error"
-# `machorewrite edit: `: every one of src/edit.c's me_say format strings names
+# `drydock-macho-rewrite edit: `: every one of src/edit.c's me_say format strings names
 # the tool, as every other verb's diagnostics do. No digest protects those
 # strings -- tests/EXPECTED and tests/known-callers.sh's sha256s hash
 # converted file bytes with the tools' output sent to /dev/null -- so this
 # grep is one of the four readers that would actually break if they moved,
 # alongside tests/wrapper_test.sh's two unmatched-report assertions,
 # compat/rename_segment.sh's pair -- it counts `  Rename segment: OLD -> NEW`
-# and checks the zero case against `machorewrite: segment OLD matched nothing` --
+# and checks the zero case against `drydock-macho-rewrite: segment OLD matched nothing` --
 # and compat/patch_macho.sh's `^Already patched`. The last two are production
 # code rather than tests. All five move with what they read.
-grep -q "^machorewrite edit: " "$T/editbad.err" \
+grep -q "^drydock-macho-rewrite edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
-    || bad "edit parse error" "no 'machorewrite edit: ' prefix: $(cat "$T/editbad.err")"
+    || bad "edit parse error" "no 'drydock-macho-rewrite edit: ' prefix: $(cat "$T/editbad.err")"
 
 # Too few positionals is EX_FAIL (2) -- never a crash, never silently
 # accepted. There is no verb word to get wrong any more, so anything that is
@@ -3669,7 +3669,7 @@ grep -q "^machorewrite edit: " "$T/editbad.err" \
 # the bare form's shape.)
 build_main "$T/edit_usage"
 rc=0
-"$MACHOREWRITE" "$T/edit_usage" </dev/null >/dev/null 2>"$T/edit_usage2.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_usage" </dev/null >/dev/null 2>"$T/edit_usage2.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: one positional is a usage error (2)" \
     || bad "edit usage" "one positional: expected 2, got $rc"
 # A FILE WHOSE NAME STARTS WITH A DASH IS A FILE NAME. Only a double dash is
@@ -3680,7 +3680,7 @@ rc=0
 # (above), because a mistaken OUT is a file this tool CREATES.
 build_main "$T/-edit_dashy"
 rc=0
-(cd "$T" && "$MACHOREWRITE" -edit_dashy "$T/edit_dashy_out" <"$T/prod.edits") \
+(cd "$T" && "$DRYDOCK_MACHO_REWRITE" -edit_dashy "$T/edit_dashy_out" <"$T/prod.edits") \
     >/dev/null 2>"$T/edit_dash.err" || rc=$?
 [ "$rc" -eq 0 ] \
     && ok "edit: a FILE whose name starts with a dash is a file name, not a flag" \
@@ -3694,7 +3694,7 @@ rc=0
 # place a user can see it.
 build_main_two_dylibs "$T/edit_verb"
 printf 'dylib delete %s\n' "$T/libb.dylib" >"$T/verb.edits"
-"$MACHOREWRITE" "$T/edit_verb" "$T/edit_verb_out" <"$T/verb.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb" "$T/edit_verb_out" <"$T/verb.edits" \
     >/dev/null 2>"$T/verb.err" || bad "edit report" "$(cat "$T/verb.err")"
 grep -q "dylib delete" "$T/verb.err" \
     && ok "edit: names the statement" \
@@ -3737,7 +3737,7 @@ nl2=$(vb_nlist "$T/verb.err"); op2=$(vb_ops "$T/verb.err")
 # c_sym main also calls) renumbers one more ordinal, one more undefined
 # symbol, and one more ordinal opcode.
 build_main_three_dylibs "$T/edit_verb3"
-"$MACHOREWRITE" "$T/edit_verb3" "$T/edit_verb3_out" <"$T/verb.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb3" "$T/edit_verb3_out" <"$T/verb.edits" \
     >/dev/null 2>"$T/verb3.err" || bad "edit report (3 dylibs)" "$(cat "$T/verb3.err")"
 grep -qF "      renumbered 3 surviving ordinals: 2->1, 3->2, 4->3" "$T/verb3.err" \
     && ok "edit: a third dylib adds its ordinal to the map" \
@@ -3756,7 +3756,7 @@ nl3=$(vb_nlist "$T/verb3.err"); op3=$(vb_ops "$T/verb3.err")
 # modern cross runner's linker leaves (see the rpath -insert fixture above).
 build_main "$T/edit_verb_ins"
 printf 'dylib insert @loader_path/libn.dylib\n' >"$T/verb_ins.edits"
-"$MACHOREWRITE" "$T/edit_verb_ins" "$T/edit_verb_ins_out" <"$T/verb_ins.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb_ins" "$T/edit_verb_ins_out" <"$T/verb_ins.edits" \
     >/dev/null 2>"$T/verb_ins.err" || bad "edit report (insert)" "$(cat "$T/verb_ins.err")"
 grep -qF "      inserted LC_LOAD_DYLIB as ordinal 1" "$T/verb_ins.err" \
     && ok "edit: names the inserted command and its ordinal" \
@@ -3773,7 +3773,7 @@ nli=$(vb_nlist "$T/verb_ins.err"); opi=$(vb_ops "$T/verb_ins.err")
 # follow-up and must not claim one.
 build_main "$T/edit_verb_rep"
 printf 'dylib replace @loader_path/liba.dylib @loader_path/libz.dylib\n' >"$T/verb_rep.edits"
-"$MACHOREWRITE" "$T/edit_verb_rep" "$T/edit_verb_rep_out" <"$T/verb_rep.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb_rep" "$T/edit_verb_rep_out" <"$T/verb_rep.edits" \
     >/dev/null 2>"$T/verb_rep.err" || bad "edit report (replace)" "$(cat "$T/verb_rep.err")"
 grep -q "renumbered" "$T/verb_rep.err" \
     && bad "edit report (replace)" "a replace reported a renumbering: $(cat "$T/verb_rep.err")" \
@@ -3784,7 +3784,7 @@ grep -q "renumbered" "$T/verb_rep.err" \
 # through, and says so rather than staying silent.
 build_main "$T/edit_verb_fx"
 printf 'fixups set classic\n' >"$T/verb_fx.edits"
-"$MACHOREWRITE" "$T/edit_verb_fx" "$T/edit_verb_fx_out" <"$T/verb_fx.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb_fx" "$T/edit_verb_fx_out" <"$T/verb_fx.edits" \
     >/dev/null 2>"$T/verb_fx.err" || bad "edit report (fixups)" "$(cat "$T/verb_fx.err")"
 grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed through unchanged" \
     "$T/verb_fx.err" \
@@ -3795,7 +3795,7 @@ grep -qF "      already classic (LC_DYLD_INFO_ONLY, no chained fixups): passed t
 # LC_DYLD_EXPORTS_TRIE and LC_BUILD_VERSION to strip) it converts, and the
 # report carries the conversion's own figures.
 "$T/mkchained" make "$T/edit_verb_chained"
-"$MACHOREWRITE" "$T/edit_verb_chained" "$T/edit_verb_chained_out" <"$T/verb_fx.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb_chained" "$T/edit_verb_chained_out" <"$T/verb_fx.edits" \
     >/dev/null 2>"$T/verb_cf.err" || bad "edit report (chained)" "$(cat "$T/verb_cf.err")"
 grep -qF "      chained fixups -> LC_DYLD_INFO_ONLY" "$T/verb_cf.err" \
     && ok "edit: fixups on a chained image reports the conversion" \
@@ -3815,13 +3815,13 @@ grep -q "^      __LINKEDIT extended by [1-9][0-9,]* bytes" "$T/verb_cf.err" \
 # class and its metaclass on the stable-ABI bit, and build_main's has none.
 "$T/mkswift" make "$T/edit_verb_swift"
 printf 'swift-abi set legacy\n' >"$T/verb_sw.edits"
-"$MACHOREWRITE" "$T/edit_verb_swift" "$T/edit_verb_swift_out" <"$T/verb_sw.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb_swift" "$T/edit_verb_swift_out" <"$T/verb_sw.edits" \
     >/dev/null 2>"$T/verb_sw.err" || bad "edit report (swift-abi)" "$(cat "$T/verb_sw.err")"
 grep -qF "      retagged 2 class records" "$T/verb_sw.err" \
     && ok "edit: swift-abi reports the class records it retagged" \
     || bad "edit report (swift-abi)" "no 'retagged 2 class records': $(cat "$T/verb_sw.err")"
 build_main "$T/edit_verb_noswift"
-"$MACHOREWRITE" "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" <"$T/verb_sw.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_verb_noswift" "$T/edit_verb_noswift_out" <"$T/verb_sw.edits" \
     >/dev/null 2>"$T/verb_nosw.err" || bad "edit report (swift-abi)" "$(cat "$T/verb_nosw.err")"
 grep -qF "      nothing to retag" "$T/verb_nosw.err" \
     && ok "edit: swift-abi with no Swift classes says nothing to retag" \
@@ -3835,7 +3835,7 @@ build_main "$T/noverb"
 printf 'load-command delete uuid\n' >"$T/nv.edits"
 rm -f "$T/noverb_out"
 nv_rc=0
-"$MACHOREWRITE" --verbose "$T/noverb_out" <"$T/nv.edits" \
+"$DRYDOCK_MACHO_REWRITE" --verbose "$T/noverb_out" <"$T/nv.edits" \
     >/dev/null 2>"$T/nv.err" || nv_rc=$?
 # EX_FAIL (2) and no OUT, the same pair the --dry-run and --output cases above
 # check: "it exited non-zero" would also be satisfied by a build that refused
@@ -3850,7 +3850,7 @@ grep -q "unknown flag '--verbose'" "$T/nv.err" \
 # And the report happens anyway, with no flag asked for.
 build_main "$T/noverb2"
 rm -f "$T/noverb2_out"
-"$MACHOREWRITE" "$T/noverb2" "$T/noverb2_out" <"$T/nv.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/noverb2" "$T/noverb2_out" <"$T/nv.edits" \
     >"$T/nv2.out" 2>"$T/nv2.err" || bad "no quiet mode" "$(cat "$T/nv2.err")"
 grep -q "load-command delete" "$T/nv2.err" \
     && ok "edit: reports without being asked" \
@@ -3882,19 +3882,19 @@ grep -q "written (" "$T/nv2.out" \
 # md_declassify_buf.
 build_main "$T/vonly_lc"
 printf 'load-command delete uuid\ndylib append /x\n' >"$T/vonly_lc.edits"
-"$MACHOREWRITE" "$T/vonly_lc" "$T/vonly_lc.out" <"$T/vonly_lc.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/vonly_lc" "$T/vonly_lc.out" <"$T/vonly_lc.edits" \
     >"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "lc/dylib run: $(cat "$T/vonly.err")"
 build_main "$T/vonly_vm"; "$T/strip_version_min" "$T/vonly_vm" >/dev/null
 printf 'version-min set 10.9\n' >"$T/vonly_vm.edits"
-"$MACHOREWRITE" "$T/vonly_vm" "$T/vonly_vm.out" <"$T/vonly_vm.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/vonly_vm" "$T/vonly_vm.out" <"$T/vonly_vm.edits" \
     >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "version-min run: $(cat "$T/vonly.err")"
 "$T/mkswift" make "$T/vonly_sw"
 printf 'swift-abi set legacy\n' >"$T/vonly_sw.edits"
-"$MACHOREWRITE" "$T/vonly_sw" "$T/vonly_sw.out" <"$T/vonly_sw.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/vonly_sw" "$T/vonly_sw.out" <"$T/vonly_sw.edits" \
     >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "swift-abi run: $(cat "$T/vonly.err")"
 "$T/mkchained" make "$T/vonly_fx"
 printf 'fixups set classic\n' >"$T/vonly_fx.edits"
-"$MACHOREWRITE" "$T/vonly_fx" "$T/vonly_fx.out" <"$T/vonly_fx.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/vonly_fx" "$T/vonly_fx.out" <"$T/vonly_fx.edits" \
     >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "fixups run: $(cat "$T/vonly.err")"
 
 # The positive control, so "no verb line on stdout" cannot pass because stdout
@@ -3906,7 +3906,7 @@ grep -q ": header pad [0-9]* bytes available" "$T/vonly.out" \
 
 # Each string is one a VERB prints and a core does not. "Wrote OUT (N bytes)"
 # is src/rewrite.c's (dylib/rpath/lc), src/version_min.c's (minos) and
-# cli/machorewrite.c's (retag-swift, declassify); "Added LC_VERSION_MIN_MACOSX"
+# cli/drydock-macho-rewrite.c's (retag-swift, declassify); "Added LC_VERSION_MIN_MACOSX"
 # is minos's alone; "class record(s)" is retag-swift's, and the parentheses are
 # what separate it from the edit report's own "retagged N class records" --
 # which is on stderr, and which the swift-abi case above pins.
@@ -3927,7 +3927,7 @@ done
 # runner's linker leaves (as the `edit` insert case above notes), so the run
 # frees LC_UUID's 24 bytes first.
 #
-# THIS USED TO BE HALF OF A PAIR. `machorewrite dylib -insert A -insert B` was one
+# THIS USED TO BE HALF OF A PAIR. `drydock-macho-rewrite dylib -insert A -insert B` was one
 # pass over one ops array and kept its order -- A at ordinal 1, B at 2 -- and
 # the second half of this block ran it beside the script form to show the two
 # models disagreeing. There is no second model left to compare against, and no
@@ -3936,9 +3936,9 @@ done
 # two inserts do.
 build_main "$T/edit_ins2"
 printf 'load-command delete uuid\ndylib insert /A\ndylib insert /B\n' >"$T/ins2.edits"
-"$MACHOREWRITE" "$T/edit_ins2" "$T/edit_ins2_out" <"$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_ins2" "$T/edit_ins2_out" <"$T/ins2.edits" >/dev/null 2>"$T/ins2.err" \
     || bad "edit: two inserts" "$(cat "$T/ins2.err")"
-ins2=$("$MACHOREWRITE" info "$T/edit_ins2_out")
+ins2=$("$DRYDOCK_MACHO_REWRITE" info "$T/edit_ins2_out")
 echo "$ins2" | grep -qxF "  ordinal=1 path=/B" && echo "$ins2" | grep -qxF "  ordinal=2 path=/A" \
     && ok "edit: two dylib insert lines leave the second at ordinal 1 and the first at 2" \
     || bad "edit: two inserts" "expected /B at 1 and /A at 2: $(echo "$ins2" | grep 'ordinal=')"
@@ -3948,7 +3948,7 @@ echo "$ins2" | grep -qxF "  ordinal=1 path=/B" && echo "$ins2" | grep -qxF "  or
 build_main "$T/cli_ins2"
 mts "$T/cli_ins2" "load-command delete uuid" "dylib insert /A" "dylib insert /B" \
     >/dev/null 2>"$T/cli_ins2.err" || bad "dylib: two inserts" "$(cat "$T/cli_ins2.err")"
-cins2=$("$MACHOREWRITE" info "$T/cli_ins2")
+cins2=$("$DRYDOCK_MACHO_REWRITE" info "$T/cli_ins2")
 echo "$cins2" | grep -qxF "  ordinal=1 path=/B" && echo "$cins2" | grep -qxF "  ordinal=2 path=/A" \
     && ok "bare form: two dylib insert lines reverse the same way the edit verb's do" \
     || bad "dylib: two inserts" "expected /B at 1 and /A at 2: $(echo "$cins2" | grep 'ordinal=')"
@@ -3957,16 +3957,16 @@ echo "$cins2" | grep -qxF "  ordinal=1 path=/B" && echo "$cins2" | grep -qxF "  
 # reallocates the image partway through the script, and the NEXT statement
 # must run against the reallocated buffer. build_main's fixture is
 # MH_EXECUTE and PIE, the one shape mg_grow_header grows. The appended path
-# is sized from the fixture's own pad as `machorewrite info` reports it, not
+# is sized from the fixture's own pad as `drydock-macho-rewrite info` reports it, not
 # hard-coded, because each host's linker leaves a different pad: an
 # LC_LOAD_DYLIB is 24 bytes plus the path and its NUL, so a path longer
 # than the pad cannot fit in it. Messages are cut short because the path is
 # thousands of bytes long.
 build_main "$T/edit_grow"
-grow_pad=$("$MACHOREWRITE" info "$T/edit_grow" \
+grow_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/edit_grow" \
     | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 if [ -z "$grow_pad" ]; then
-    bad "edit allow-grow: fixture setup" "machorewrite info reported no header pad"
+    bad "edit allow-grow: fixture setup" "drydock-macho-rewrite info reported no header pad"
     grow_pad=0
 fi
 grow_path="/$(printf "%${grow_pad}s" '' | tr ' ' x)"
@@ -3975,7 +3975,7 @@ printf 'dylib append %s\nload-command delete uuid\n' "$grow_path" >"$T/grow_no.e
 grow_before=$(sha "$T/edit_grow")
 rm -f "$T/edit_grow_out"
 rc=0
-"$MACHOREWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_no.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_no.edits" \
     >/dev/null 2>"$T/grow_no.err" || rc=$?
 [ "$rc" -eq 1 ] \
     && ok "edit: a dylib append that overflows the ${grow_pad}-byte pad is refused (1) without allow-grow" \
@@ -3984,19 +3984,19 @@ rc=0
     && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
     || bad "edit allow-grow" "the refused run modified FILE, or created OUT"
 rc=0
-"$MACHOREWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_yes.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_yes.edits" \
     >/dev/null 2>"$T/grow_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: with allow-grow, the same script succeeds" \
     || bad "edit allow-grow" "with the directive: expected 0, got $rc: $(cut -c1-160 "$T/grow_yes.err")"
-grow_info=$("$MACHOREWRITE" info "$T/edit_grow_out")
+grow_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/edit_grow_out")
 echo "$grow_info" | grep -qF "path=$grow_path" \
     && ok "edit: allow-grow: the appended dylib is in the written image" \
     || bad "edit allow-grow" "the appended dylib is not in the image"
 echo "$grow_info" | grep -q "LC_UUID" \
     && bad "edit allow-grow" "LC_UUID survived: the statement after the grow did not apply" \
     || ok "edit: allow-grow: the statement after the grow applied to the grown image"
-"$MACHOREWRITE" verify "$T/edit_grow_out" >/dev/null 2>"$T/grow_verify.err" \
-    && ok "edit: allow-grow: the result passes machorewrite verify" \
+"$DRYDOCK_MACHO_REWRITE" verify "$T/edit_grow_out" >/dev/null 2>"$T/grow_verify.err" \
+    && ok "edit: allow-grow: the result passes drydock-macho-rewrite verify" \
     || bad "edit allow-grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
 # version-min set and allow-grow. LC_VERSION_MIN_MACOSX needs 16 bytes of
@@ -4006,10 +4006,10 @@ echo "$grow_info" | grep -q "LC_UUID" \
 # append whose LC_LOAD_DYLIB is the largest multiple of 8 that fits. An
 # LC_LOAD_DYLIB is 24 bytes plus the path and its NUL, rounded up to 8, so a
 # path of C-25 bytes makes a command of exactly C, leaving pad % 8 bytes --
-# fewer than 16. Sized from `machorewrite info`, not hard-coded, because each
+# fewer than 16. Sized from `drydock-macho-rewrite info`, not hard-coded, because each
 # host's linker leaves a different pad.
 vm_pad_of() {
-    "$MACHOREWRITE" info "$1" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
+    "$DRYDOCK_MACHO_REWRITE" info "$1" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p'
 }
 build_main "$T/vm_tight"
 "$T/strip_version_min" "$T/vm_tight" >/dev/null \
@@ -4034,7 +4034,7 @@ printf 'version-min set 10.9\n' >"$T/vm_no.edits"
 printf 'allow-grow\nversion-min set 10.9\n' >"$T/vm_yes.edits"
 rm -f "$T/vm_e_out"
 rc=0
-"$MACHOREWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "edit: version-min set without allow-grow is refused (1) when the pad is short" \
     || bad "edit version-min" "without the directive: expected 1, got $rc: $(cat "$T/vm_no.err")"
 [ "$(sha "$T/vm_e")" = "$vm_before" ] && [ "$(stat -f %i "$T/vm_e")" = "$vm_ino" ] \
@@ -4045,7 +4045,7 @@ grep -q "growing the header needs allow-grow" "$T/vm_no.err" \
     && ok "edit: ... and the refusal names allow-grow as the remedy" \
     || bad "edit version-min" "no allow-grow remedy in: $(cat "$T/vm_no.err")"
 rc=0
-"$MACHOREWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
+"$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
     || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
 # The grow lines on stdout are mg_ensure_pad's, labelled with the INPUT's path
@@ -4054,15 +4054,15 @@ rc=0
 grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
     && ok "edit: ... and stdout has 'PATH: grew header pad', naming the input" \
     || bad "edit version-min" "no 'PATH: grew header pad' line on stdout: $(cat "$T/vm_yes.out")"
-"$MACHOREWRITE" info "$T/vm_e_out" | grep -q "LC_VERSION_MIN_MACOSX" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/vm_e_out" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "edit: allow-grow: LC_VERSION_MIN_MACOSX is in the written image" \
     || bad "edit version-min" "no LC_VERSION_MIN_MACOSX after the grow"
-"$MACHOREWRITE" verify "$T/vm_e_out" >/dev/null 2>"$T/vm_verify.err" \
-    && ok "edit: allow-grow: the grown image passes machorewrite verify" \
+"$DRYDOCK_MACHO_REWRITE" verify "$T/vm_e_out" >/dev/null 2>"$T/vm_verify.err" \
+    && ok "edit: allow-grow: the grown image passes drydock-macho-rewrite verify" \
     || bad "edit version-min" "verify refused: $(cat "$T/vm_verify.err")"
 
 # The same pair through the BARE form rather than the `edit` verb. It was
-# `machorewrite minos FILE OUT 10.9 [--allow-grow]`, the flag after the version,
+# `drydock-macho-rewrite minos FILE OUT 10.9 [--allow-grow]`, the flag after the version,
 # as dylib/rpath took theirs; it is `allow-grow` as a directive line, and
 # without it the run refuses exactly as before. Kept beside the `edit` block
 # above because the two are different front-ends onto the same script, and the
@@ -4071,7 +4071,7 @@ cp "$T/vm_tight" "$T/vm_m"
 vm_m_before=$(sha "$T/vm_m")
 rc=0
 rm -f "$T/vm_m_out"
-printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/vm_m" "$T/vm_m_out" \
+printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_m" "$T/vm_m_out" \
     >/dev/null 2>"$T/vm_m_no.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "minos: without allow-grow a short pad is refused (1)" \
     || bad "minos allow-grow" "without the directive: expected 1, got $rc: $(cat "$T/vm_m_no.err")"
@@ -4082,7 +4082,7 @@ grep -q "allow-grow" "$T/vm_m_no.err" \
     && ok "minos: ... and the refusal names allow-grow" \
     || bad "minos allow-grow" "no allow-grow remedy in: $(cat "$T/vm_m_no.err")"
 rc=0
-printf 'allow-grow\nversion-min set 10.9\n' | "$MACHOREWRITE" "$T/vm_m" "$T/vm_m_out" \
+printf 'allow-grow\nversion-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_m" "$T/vm_m_out" \
     >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "minos: allow-grow grows the header and adds the command" \
     || bad "minos allow-grow" "with the directive: expected 0, got $rc: $(cat "$T/vm_m_yes.err")"
@@ -4090,17 +4090,17 @@ vm_m_grows=$(grep -c "grew header pad" "$T/vm_m_yes.out" || true)
 [ "$vm_m_grows" -eq 1 ] \
     && ok "minos: allow-grow: stdout has exactly one 'grew header pad' line" \
     || bad "minos allow-grow" "expected 1 'grew header pad' line, saw $vm_m_grows: $(cat "$T/vm_m_yes.out")"
-"$MACHOREWRITE" info "$T/vm_m_out" | grep -q "LC_VERSION_MIN_MACOSX" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/vm_m_out" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "minos: allow-grow: LC_VERSION_MIN_MACOSX is present" \
     || bad "minos allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
-"$MACHOREWRITE" verify "$T/vm_m_out" >/dev/null 2>"$T/vm_m_verify.err" \
-    && ok "minos: allow-grow: the grown file passes machorewrite verify" \
+"$DRYDOCK_MACHO_REWRITE" verify "$T/vm_m_out" >/dev/null 2>"$T/vm_m_verify.err" \
+    && ok "minos: allow-grow: the grown file passes drydock-macho-rewrite verify" \
     || bad "minos allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
 # An extra token after OUT is still a usage error (2). It was `minos`'s own
 # argc check; it is the bare form's, which takes exactly FILE and OUT and
 # matches no verb here, so main() falls through to usage().
 rc=0
-printf 'version-min set 10.9\n' | "$MACHOREWRITE" "$T/vm_m" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
+printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_m" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "minos: an unknown flag is a usage error (2)" \
     || bad "minos" "an unknown flag: expected 2, got $rc"
 
@@ -4135,12 +4135,12 @@ echo "$caps" | grep -qxF "statement version-min set 1" \
 # or it is not -- so these assertions pin behaviour, not a heuristic's mood.
 #
 # EVERY FIXTURE BELOW IS BUILT SO ITS CONDITION IS TRUE BY CONSTRUCTION, and
-# the premise is then read back with otool rather than with machorewrite. Hoping
+# the premise is then read back with otool rather than with drydock-macho-rewrite. Hoping
 # the host linker emits the shape a test needs is exactly what made three
 # assertions in this file pass here and fail on the cross runner, whose modern
 # linker emits LC_BUILD_VERSION where 10.9's does not
 # (build_main_without_build_version, above, is the fix that episode produced).
-# Where a fixture is set up with machorewrite itself, that is circular only in
+# Where a fixture is set up with drydock-macho-rewrite itself, that is circular only in
 # appearance: the otool check right after is what certifies the premise, and a
 # setup that silently did nothing would make the assertion fail loudly rather
 # than pass for the wrong reason.
@@ -4149,7 +4149,7 @@ printf 'target 10.9\n' >"$T/tgt.edits"
 # what this verb offers in place of a prediction.
 tgt_run() {
     rm -f "$2"
-    "$MACHOREWRITE" "$1" "$2" <"${3:-$T/tgt.edits}" \
+    "$DRYDOCK_MACHO_REWRITE" "$1" "$2" <"${3:-$T/tgt.edits}" \
         >"$T/tgt.out" 2>"$T/tgt.err"
 }
 
@@ -4199,7 +4199,7 @@ grep -qF "    nothing to do: this binary already targets 10.9" "$T/tgt.err" \
 # names could only ever hold on the cross runner. A reader built beside the
 # fixture asks the same question on every host -- the reason tests/README.md's
 # host-portability section gives for these readers existing -- and it is still
-# not machorewrite, so it cannot certify its own setup.
+# not drydock-macho-rewrite, so it cannot certify its own setup.
 "$T/mkchained" make "$T/tgt_chained"
 tgt_pre=$("$T/mkchained" check "$T/tgt_chained")
 echo "$tgt_pre" | grep -q "^chained=1" && echo "$tgt_pre" | grep -q "^buildver=1" \
@@ -4217,8 +4217,8 @@ echo "$tgt_chk" | grep -q "^chained=0" && echo "$tgt_chk" | grep -q "^dyldinfo=1
     && echo "$tgt_chk" | grep -q "^buildver=0" \
     && ok "target: ... and the written image is classic, with no LC_BUILD_VERSION" \
     || bad "target (chained)" "not converted: $(echo "$tgt_chk" | tr '\n' ' ')"
-"$MACHOREWRITE" verify "$T/tgt_chained.out" >/dev/null 2>"$T/tgt_v.err" \
-    && ok "target: ... and the result passes machorewrite verify" \
+"$DRYDOCK_MACHO_REWRITE" verify "$T/tgt_chained.out" >/dev/null 2>"$T/tgt_v.err" \
+    && ok "target: ... and the result passes drydock-macho-rewrite verify" \
     || bad "target (chained)" "verify refused: $(cat "$T/tgt_v.err")"
 # The inverse, so the detection is not "always emit it": a fixture with no
 # LC_BUILD_VERSION derives no delete for one.
@@ -4274,7 +4274,7 @@ fi
 # ROW 4: __DATA_CONST carrying __objc_* sections -> segment rename. No host
 # linker here emits __DATA_CONST either (Xcode 10 and later do), so the
 # fixture is mkswift's __DATA image with its segment renamed the other way --
-# and otool, not machorewrite, says the premise held.
+# and otool, not drydock-macho-rewrite, says the premise held.
 "$T/mkswift" make "$T/tgt_dc"
 mts "$T/tgt_dc" "segment rename __DATA __DATA_CONST" >/dev/null 2>"$T/tgt_seg.err" \
     || bad "target: fixture setup" "segment rename failed: $(cat "$T/tgt_seg.err")"
@@ -4304,7 +4304,7 @@ fi
 
 # ROW 5: class records carrying the stable-ABI Swift tag -> swift-abi set
 # legacy. mkswift's records carry tag bit 1 (value 2) by construction, and
-# mkswift's own reader -- not machorewrite -- says so, before and after. The same
+# mkswift's own reader -- not drydock-macho-rewrite -- says so, before and after. The same
 # fixture as the row above, run again so this row stands on its own.
 tgt_tags=$("$T/mkswift" tags "$T/tgt_nodc")
 tgt_run "$T/tgt_nodc" "$T/tgt_nodc.out" || bad "target (swift)" "$(cat "$T/tgt.err")"
@@ -4430,7 +4430,7 @@ tgt_run "$T/tgt_tight" "$T/tgt_tight.out" && tgt_tight_rc=0 || tgt_tight_rc=$?
     && [ "$(sha "$T/tgt_tight")" = "$tgt_before_sha" ] \
     && ok "target: a derived statement that needs allow-grow is refused (1) without it" \
     || bad "target (allow-grow)" "expected 1 and no OUT, got $tgt_tight_rc: $(cat "$T/tgt.err")"
-grep -qF "machorewrite edit: refused at statement 1 of 1 (line 1);" "$T/tgt.err" \
+grep -qF "drydock-macho-rewrite edit: refused at statement 1 of 1 (line 1);" "$T/tgt.err" \
     && ok "target: ... and the refusal names the target line, not a line nobody wrote" \
     || bad "target (allow-grow)" "not that wording: $(cat "$T/tgt.err")"
 printf 'allow-grow\ntarget 10.9\n' >"$T/tgt_ag.edits"
@@ -4445,7 +4445,7 @@ otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
 printf 'target 10.9\ntarget 10.9\n' >"$T/tgt_two.edits"
 rm -f "$T/tgt_two.out"
 rc=0
-"$MACHOREWRITE" "$T/tgt_plain" "$T/tgt_two.out" <"$T/tgt_two.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/tgt_plain" "$T/tgt_two.out" <"$T/tgt_two.edits" \
     >/dev/null 2>"$T/tgt_two.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/tgt_two.out" ] && grep -q "line 2" "$T/tgt_two.err" \
     && ok "target: a second target is a parse error (2) naming its line" \
@@ -4453,7 +4453,7 @@ rc=0
 printf 'target 10.10\n' >"$T/tgt_unknown.edits"
 rm -f "$T/tgt_unknown.out"
 rc=0
-"$MACHOREWRITE" "$T/tgt_plain" "$T/tgt_unknown.out" <"$T/tgt_unknown.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/tgt_plain" "$T/tgt_unknown.out" <"$T/tgt_unknown.edits" \
     >/dev/null 2>"$T/tgt_unknown.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/tgt_unknown.out" ] \
     && grep -q "10.10" "$T/tgt_unknown.err" && grep -q "10.9" "$T/tgt_unknown.err" \
@@ -4473,12 +4473,12 @@ rc=0
 build_main "$T/fat_s0"
 build_main "$T/fat_s1"
 "$BIN/makefat" "$T/fat_edit" "$T/fat_s0" 0x1000007 3 12 "$T/fat_s1" 0x100000c 0 12
-fat_pad=$("$MACHOREWRITE" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
+fat_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 [ -n "$fat_pad" ] || { bad "edit fat: fixture setup" "no header pad reported"; fat_pad=0; }
 fat_path="/$(printf "%${fat_pad}s" '' | tr ' ' f)"
 printf 'arch x86_64\nallow-grow\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
 rc=0
-"$MACHOREWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat.edits" \
     >/dev/null 2>"$T/fat.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "edit: a fat file's x86_64 slice is edited, growing it" \
     || bad "edit fat" "expected 0, got $rc: $(cut -c1-200 "$T/fat.err")"
@@ -4490,11 +4490,11 @@ grep -q "slice arm64: moved from offset" "$T/fat.err" \
     || bad "edit fat" "no moved line: $(cut -c1-300 "$T/fat.err")"
 "$BIN/fatcheck" dump "$T/fat_edit_out" 0 "$T/fat_out0"
 "$BIN/fatcheck" dump "$T/fat_edit_out" 1 "$T/fat_out1"
-"$MACHOREWRITE" info "$T/fat_out0" | grep -qF "path=$fat_path" \
+"$DRYDOCK_MACHO_REWRITE" info "$T/fat_out0" | grep -qF "path=$fat_path" \
     && ok "edit: the x86_64 slice carries the appended dylib" \
     || bad "edit fat" "the appended dylib is not in slice 0"
-"$MACHOREWRITE" verify "$T/fat_out0" >/dev/null 2>"$T/fat_v.err" \
-    && ok "edit: the grown x86_64 slice passes machorewrite verify" \
+"$DRYDOCK_MACHO_REWRITE" verify "$T/fat_out0" >/dev/null 2>"$T/fat_v.err" \
+    && ok "edit: the grown x86_64 slice passes drydock-macho-rewrite verify" \
     || bad "edit fat" "verify refused slice 0: $(cat "$T/fat_v.err")"
 cmp -s "$T/fat_out1" "$T/fat_s1" \
     && ok "edit: the arm64 slice is byte-identical, though it moved" \
@@ -4510,7 +4510,7 @@ cmp -s "$T/fat_out1" "$T/fat_s1" \
 "$BIN/makefat" "$T/fat_tgt" "$T/tgt_plain" 0x1000007 3 12 "$T/fat_tgt1" 0x100000c 0 12
 rm -f "$T/fat_tgt.out"
 rc=0
-"$MACHOREWRITE" "$T/fat_tgt" "$T/fat_tgt.out" <"$T/tgt.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/fat_tgt" "$T/fat_tgt.out" <"$T/tgt.edits" \
     >/dev/null 2>"$T/fat_tgt.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "target: a fat file's slices are each expanded" \
     || bad "target fat" "expected 0, got $rc: $(cat "$T/fat_tgt.err")"
@@ -4522,7 +4522,7 @@ fat_tgt_fx=$(grep -c "^    fixups set classic" "$T/fat_tgt.err" || true)
 
 printf 'arch amd64\nload-command delete uuid\n' >"$T/fat_bad.edits"
 rc=0
-"$MACHOREWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat_bad.edits" \
+"$DRYDOCK_MACHO_REWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat_bad.edits" \
     >/dev/null 2>"$T/fat_bad.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: an unknown arch name is a parse error (2)" \
     || bad "edit fat" "arch amd64: expected 2, got $rc: $(cat "$T/fat_bad.err")"

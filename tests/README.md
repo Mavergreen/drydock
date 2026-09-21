@@ -13,10 +13,10 @@ Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `change_dylib_test` | builds real dylibs, rewrites a real executable, and **runs it** — a wrong library ordinal shows up as a dyld failure, not a silent mis-binding. Also covers `src/fat.c`'s fat-arch validation (both read-side, via `fix_macho`, and write-side) and the install path's symlink / hard-link / ordinary-file handling as a caller of `change_dylib` sees it (a symlinked FILE updates its target and keeps the link; a hard-linked one is refused rather than split). It is also where **the repo's two fat loops are compared**: `src/rewrite.c`'s `mr_process_fat` and `src/edit.c`'s `me_run_fat` get the same operation over the same corpus of hand-built containers, and must return the same exit code and the same OUT byte for byte — with one pinned exception, `me_run_fat`'s no-editable-slice refusal. Moving callers from the first loop to the second is what `compat/`'s retirement did, and nothing compared them until this block |
 | `chained_fixups` | `patch_macho`'s chained-fixups conversion, against a fixture only a modern linker can produce. `SKIP`s (exit 77) on a host that can't emit chained fixups — 10.9 included — so it's real coverage on a modern host and an honest no-op on the target |
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
-| `cli_test` | `machorewrite`'s own CLI: `--capabilities` (including that every `statement` row it advertises is one the parser actually accepts, and that the one mutating form is advertised at all), the two read-only verbs, and one exemplar per statement the bare `FILE OUT` form implements. `rpath insert`, `segment rename` and `swift-abi set` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `insert` is only correct if the new search path lands FIRST (an `append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment rename` has to rename each section's own copy of the segment name (`machorewrite info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `swift-abi set` has to move the tag bit without disturbing the rest of the word. It also holds the fat classification: a slice is read as a 64-bit Mach-O from its own bytes, never from the `cputype` its `fat_arch` declares. **Count that radius along a named axis or it comes out wrong** — "two shapes" was the miscount, and it is the one this branch kept making. There are two DIRECTIONS (declared 32-bit over 64-bit-Mach-O bytes; declared 64-bit over bytes that are not), and along *(direction × whether an `arch` directive names the slice)* that is **four** behavioural cells, all four asserted here. Along *(direction × slice byte-shape)* it is **six**, because direction B has five byte-shapes (32-bit Mach-O, non-Mach-O, truncated, `MH_MAGIC_64` with load commands that do not fit, zero-length) and not one; three of the six are asserted here — direction A's, plus direction B's 32-bit-Mach-O and non-Mach-O — and the other three are driven through both fat loops by `change_dylib_test.sh`'s "two fat loops" block |
-| `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally. Also holds `machorewrite`'s load-command rewriters (the `dylib`, `rpath`, `load-command` and `segment` statements) to refusing, byte-for-byte unchanged, an image with no section data, and `info` to calling its header pad unknown. The two `grow` cases that stood beside those — an image with no section data, and one whose first section lies past its end, where `fsize - insert` once wrapped into a SIGSEGV — moved into `grow_test` with the verb, as `test_grow_refuses_an_image_with_no_section_data` and `test_grow_refuses_a_section_past_the_image`: the bug is in `mg_grow_header`, and no CLI can force a grow any more |
-| `translate_test` | `compat/translate.sh`, the old-grammar-to-`machorewrite` translator the wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every statement/KIND the translator can emit against `machorewrite --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
-| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `machorewrite` returns `EX_FAIL`, or `EX_REFUSED`, which is already 1; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/machorewrite.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
+| `cli_test` | `drydock-macho-rewrite`'s own CLI: `--capabilities` (including that every `statement` row it advertises is one the parser actually accepts, and that the one mutating form is advertised at all), the two read-only verbs, and one exemplar per statement the bare `FILE OUT` form implements. `rpath insert`, `segment rename` and `swift-abi set` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `insert` is only correct if the new search path lands FIRST (an `append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment rename` has to rename each section's own copy of the segment name (`drydock-macho-rewrite info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `swift-abi set` has to move the tag bit without disturbing the rest of the word. It also holds the fat classification: a slice is read as a 64-bit Mach-O from its own bytes, never from the `cputype` its `fat_arch` declares. **Count that radius along a named axis or it comes out wrong** — "two shapes" was the miscount, and it is the one this branch kept making. There are two DIRECTIONS (declared 32-bit over 64-bit-Mach-O bytes; declared 64-bit over bytes that are not), and along *(direction × whether an `arch` directive names the slice)* that is **four** behavioural cells, all four asserted here. Along *(direction × slice byte-shape)* it is **six**, because direction B has five byte-shapes (32-bit Mach-O, non-Mach-O, truncated, `MH_MAGIC_64` with load commands that do not fit, zero-length) and not one; three of the six are asserted here — direction A's, plus direction B's 32-bit-Mach-O and non-Mach-O — and the other three are driven through both fat loops by `change_dylib_test.sh`'s "two fat loops" block |
+| `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally. Also holds `drydock-macho-rewrite`'s load-command rewriters (the `dylib`, `rpath`, `load-command` and `segment` statements) to refusing, byte-for-byte unchanged, an image with no section data, and `info` to calling its header pad unknown. The two `grow` cases that stood beside those — an image with no section data, and one whose first section lies past its end, where `fsize - insert` once wrapped into a SIGSEGV — moved into `grow_test` with the verb, as `test_grow_refuses_an_image_with_no_section_data` and `test_grow_refuses_a_section_past_the_image`: the bug is in `mg_grow_header`, and no CLI can force a grow any more |
+| `translate_test` | `compat/translate.sh`, the old-grammar-to-`drydock-macho-rewrite` translator the wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every statement/KIND the translator can emit against `drydock-macho-rewrite --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
+| `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `drydock-macho-rewrite` returns `EX_FAIL`, or `EX_REFUSED`, which is already 1; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/drydock-macho-rewrite.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
 | `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. A wrapper that passes the test suite but breaks a real caller is a failure |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
@@ -30,12 +30,12 @@ real hardware, with their results committed or reported by hand:
   moved, the behaviour must not" shape of change. It compares bytes, exit
   code, stdout **and stderr** — so note that comparing a pre-wrapper build
   against a current one reports a **stderr** difference on every wrapper
-  invocation, because printing the `machorewrite` equivalent there is the whole
+  invocation, because printing the `drydock-macho-rewrite` equivalent there is the whole
   point of the wrappers. Read its report by category: bytes, exit and stdout
   are the ones that must be clean.
 - **`compat-sweep.sh`** runs every enumerated argument combination of the six
   historical tools BOTH ways -- the old binary, and `compat/translate.sh`'s
-  `machorewrite` command line(s) -- on the same input, and records what each did in
+  `drydock-macho-rewrite` command line(s) -- on the same input, and records what each did in
   `compat-matrix.tsv`: singles, ordered pairs and ordered triples of every
   flag (1110 combinations for `change_dylib`, 39 for `fix_macho`), plus every
   arity the four flagless tools distinguish, plus hand-picked cases the fixed
@@ -43,7 +43,7 @@ real hardware, with their results committed or reported by hand:
   the chained `-rename_seg`). **Point its `<bindir>` at a build of commit
   `91b30b3`** (`compat: refuse chained -rename_seg, and make the matrix
   replayable`), the last commit carrying all six `.c` files: all six are
-  shell wrappers around `machorewrite` now, so a current build makes the "old
+  shell wrappers around `drydock-macho-rewrite` now, so a current build makes the "old
   side" a wrapper and the comparison close to tautological. (`f500021`
   -- `tests: add the real elision detector, aimed at the case that can elide`
   -- is the last commit carrying the *pre-extraction* originals, from before
@@ -76,7 +76,7 @@ real hardware, with their results committed or reported by hand:
   On a header-pad-exhausted input the fork's header-growth trick needs
   `__PAGEZERO` to shrink and has none to shrink on any dylib (dylibs do not
   carry one) — it reports success anyway, and the file it wrote fails
-  `machorewrite verify`'s own plausibility check; this wrapper refuses
+  `drydock-macho-rewrite verify`'s own plausibility check; this wrapper refuses
   instead (`EX_REFUSED`, "growing needs allow-grow"), leaving the input
   untouched. (3) On an unwritable `--inplace` target the fork's own
   diagnostic lands on ITS STDOUT (`main.c`'s `printf`, not `perror`); this
@@ -102,9 +102,9 @@ comment or test that narrates what the binary was called when something
 happened, or quotes a command as it was actually run, keeps saying `macho9`
 for the same reason a quotation keeps the words it quotes.
 
-## `machorewrite`'s exit codes
+## `drydock-macho-rewrite`'s exit codes
 
-`machorewrite` uses three exit codes throughout. `verify`, `info` and the
+`drydock-macho-rewrite` uses three exit codes throughout. `verify`, `info` and the
 statement parser's KIND validation always have; a run's rewriting statements
 get theirs from the shared rewrite drivers they lower to (`mr_apply_image`,
 `mv_add_version_min`), which draw this exact same line themselves for
@@ -118,7 +118,7 @@ machine-readably in `--capabilities`' `exitcodes` line:
 | code | meaning |
 |---|---|
 | `0` | success |
-| `1` (`EX_REFUSED`) | `machorewrite` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or an operation that matched nothing — under a script's `fatal-warnings` directive. There is nothing to roll back: the bare `FILE OUT` form writes nothing at all when it refuses, this case included, because its single write comes after the last statement and the final verify — and it never writes FILE at all. That was not always so. `dylib`, `rpath` and `lc` were verbs (deleted in `3b34518`), and under them a refusal was clean only for an ALL-MISS run: a run with one matching operation refused having already rewritten FILE. There is no verb left to be that way, and no form that still is |
+| `1` (`EX_REFUSED`) | `drydock-macho-rewrite` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or an operation that matched nothing — under a script's `fatal-warnings` directive. There is nothing to roll back: the bare `FILE OUT` form writes nothing at all when it refuses, this case included, because its single write comes after the last statement and the final verify — and it never writes FILE at all. That was not always so. `dylib`, `rpath` and `lc` were verbs (deleted in `3b34518`), and under them a refusal was clean only for an ALL-MISS run: a run with one matching operation refused having already rewritten FILE. There is no verb left to be that way, and no form that still is |
 | `2` (`EX_FAIL`) | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal. ONE EXCEPTION: an allocation failure INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into `1` instead, same as every other reason either one refuses, on everything that reaches either one (`verify` and the bare `FILE OUT` form) — see `src/rewrite.c`'s comment on that fold |
 
 The numbering is deliberately backwards from what first shipped (`0` ok, `1`
@@ -128,8 +128,8 @@ answer, and this repo now follows that precedent instead of contradicting
 it.
 
 Refusal is load-bearing throughout this codebase (`-grow` refuses rather than
-widening a default case is a global rule, not a `machorewrite`-specific one), so a
-caller that wants to script around "this file just isn't one `machorewrite` will
+widening a default case is a global rule, not a `drydock-macho-rewrite`-specific one), so a
+caller that wants to script around "this file just isn't one `drydock-macho-rewrite` will
 touch" versus "something is actually broken, investigate or retry" can check
 for `1` specifically instead of scraping stderr text. Any existing caller
 checking only `== 0` or `!= 0` is unaffected by this distinction's addition
@@ -145,7 +145,7 @@ statement's code back through `me_run` from the shared rewrite drivers,
 names the sites that reach it, including several reached
 through a helper's own nonzero return rather than a check written out in
 that function -- so their exit codes ARE covered by the table above, exactly
-as `cli/machorewrite.c`'s own `--capabilities` comment says. What the table's
+as `cli/drydock-macho-rewrite.c`'s own `--capabilities` comment says. What the table's
 prose does not spell out per statement is WHICH of the rewriter's many
 considered-refusal cases fired -- that detail is on stderr, not in the exit
 code, same as everywhere else in this table.
@@ -201,7 +201,7 @@ reproducing the failure in new shapes:
 - **Never parse `nm`/`otool` human-readable output as an oracle.** Their
   output format is Apple's to reformat at will, on any OS release, with no
   compatibility promise to a test script parsing it. When a fact about a
-  binary is needed that a stable tool output (`machorewrite info`, `--capabilities`)
+  binary is needed that a stable tool output (`drydock-macho-rewrite info`, `--capabilities`)
   doesn't already provide, write a tiny throwaway C program that reads the
   Mach-O structure directly (`ordinal_of.c`, `has_lc.c`, `has_bytes.c`,
   `mk2fat_overlap.c`, and others in `change_dylib_test.sh`;
@@ -238,10 +238,10 @@ reproducing the failure in new shapes:
   in place), so **"run the rewritten binary" assertions are 10.9-only.**
   Do not assume this — probe it. `cli_test.sh` establishes whether the
   CURRENT host enforces this by perturbing a copy of a binary that never
-  went near machorewrite or change_dylib and observing the result (exit 137 means
-  yes) before it ever runs a machorewrite-modified binary; the "still
+  went near drydock-macho-rewrite or change_dylib and observing the result (exit 137 means
+  yes) before it ever runs a drydock-macho-rewrite-modified binary; the "still
   runs" assertions are gated on that probe, not on a Darwin version check,
-  distinguishing "this host's OS policy" from "machorewrite broke the binary" —
+  distinguishing "this host's OS policy" from "drydock-macho-rewrite broke the binary" —
   the same symptom (the child doesn't run) would otherwise look identical
   and either mask a real defect or fail a totally healthy build.
 

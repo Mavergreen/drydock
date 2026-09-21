@@ -1,5 +1,5 @@
 /*
- * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/machorewrite.c, by
+ * mr_ -- the dylib/rpath/load-command rewriter, shared by cli/drydock-macho-rewrite.c, by
  * src/edit.c's edit scripts (through mr_apply_image), and by the old
  * change_dylib grammar that reaches it through compat/change_dylib.sh.
  * See rewrite.h for the operation set and why this is a library function
@@ -1057,18 +1057,18 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
  * (ops->fatal_unmatched) without re-reading the hit counts itself. */
 static int mr_report_unmatched(const mr_ops *ops, int hit_dylib,
                                 int hit_rpath, int hit_strip) {
-    /* The "machorewrite: " prefix on the three lines below is DELIBERATE and is
+    /* The "drydock-macho-rewrite: " prefix on the three lines below is DELIBERATE and is
      * the one program-specific string in this file -- every other diagnostic
      * here is program-neutral ("ERROR: ..."), because this library does not
-     * otherwise know which front end is running it. It names machorewrite
-     * because the report names operations in MACHOREWRITE'S grammar ("-replace
-     * X matched nothing" is about a machorewrite operation, not about
+     * otherwise know which front end is running it. It names drydock-macho-rewrite
+     * because the report names operations in drydock-macho-rewrite's grammar ("-replace
+     * X matched nothing" is about a drydock-macho-rewrite operation, not about
      * whatever argv the caller typed), and every compat/ wrapper's job is to
-     * teach that grammar: each prints the equivalent machorewrite command line
-     * before running it, so a caller who sees "machorewrite: ..." on stderr has
-     * just been shown the machorewrite command it is talking about. That is
+     * teach that grammar: each prints the equivalent drydock-macho-rewrite command line
+     * before running it, so a caller who sees "drydock-macho-rewrite: ..." on stderr has
+     * just been shown the drydock-macho-rewrite command it is talking about. That is
      * also why the prefix had to move when the binary was renamed: it is
-     * the grammar's name, and the grammar is machorewrite's now. Changing it to
+     * the grammar's name, and the grammar is drydock-macho-rewrite's now. Changing it to
      * argv[0] instead would make the wrapper case name the old C tool and so
      * name a grammar these operations are not written in.
      *
@@ -1078,15 +1078,15 @@ static int mr_report_unmatched(const mr_ops *ops, int hit_dylib,
      * anchor on the prefix itself; the other two match the part after it. */
     int n = 0;
     if (ops->dylib_change && hit_dylib == 0) {
-        fprintf(stderr, "machorewrite: %s matched nothing\n", ops->dylib_change->old_path);
+        fprintf(stderr, "drydock-macho-rewrite: %s matched nothing\n", ops->dylib_change->old_path);
         n++;
     }
     if (ops->rpath_change && hit_rpath == 0) {
-        fprintf(stderr, "machorewrite: rpath %s matched nothing\n", ops->rpath_change->old_path);
+        fprintf(stderr, "drydock-macho-rewrite: rpath %s matched nothing\n", ops->rpath_change->old_path);
         n++;
     }
     if (ops->strip_cmd && hit_strip == 0) {
-        fprintf(stderr, "machorewrite: no load command of kind %s to delete\n",
+        fprintf(stderr, "drydock-macho-rewrite: no load command of kind %s to delete\n",
                 lc_kind_name(*ops->strip_cmd));
         n++;
     }
@@ -1176,7 +1176,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
      * function's business to refuse. (It used to open O_RDWR precisely so that
      * an unwritable file failed before any analysis. Reproducing that refusal
      * for the historical tools, which really did edit their argument, is the
-     * compat wrappers' job now: mw_prepare, compat/machorewrite-compat.sh.) The fd
+     * compat wrappers' job now: mw_prepare, compat/drydock-macho-rewrite-compat.sh.) The fd
      * is not used for the THIN read either: only to learn the size and to peek
      * the magic, since a fat file's magic isn't MH_MAGIC_64 and mi_open (thin
      * only) would refuse it outright. This is the one place that has to tell
@@ -1320,7 +1320,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
      * it has to exist either way -- an identical copy of `path` when no
      * operation matched. wa_write_new creates it afresh from `path`'s mode,
      * owner and xattrs and never touches `path`; WA_IS_INPUT can only happen if
-     * a path changed under us, since cli/machorewrite.c refuses `out` == `path` up
+     * a path changed under us, since cli/drydock-macho-rewrite.c refuses `out` == `path` up
      * front (see mr_apply_file's PRECONDITION in rewrite.h). `modified`, filled
      * in by the drivers above, no longer decides anything here. */
     if (rc == 0) {

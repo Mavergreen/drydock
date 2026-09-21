@@ -64,7 +64,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * `rpath` verbs alike. Data, not a strcmp chain, because --capabilities is
  * GENERATED from these rows rather than maintained beside them: this repo has
  * already had a defect from two such lists disagreeing, and the second list
- * was cli/machorewrite.c's own DYLIB_OPS, which is what this table absorbed.
+ * was cli/drydock-macho-rewrite.c's own DYLIB_OPS, which is what this table absorbed.
  * Adding an operation here is the whole of adding an operation -- to both
  * front-ends, to what --capabilities advertises, and (the disturbs column) to
  * what a run of it is known to invalidate. 16 rows: every "<kind> <op>" the
@@ -82,7 +82,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  *   KIND  KENUM  OP  OENUM  NARGS  FLAG  MODES  OPS_ORD  DISTURBS
  *
  * FLAG/MODES are the verb spelling of the same operation and which verbs
- * offer it (cli/machorewrite.c's `dylib` and `rpath` parse their operations out
+ * offer it (cli/drydock-macho-rewrite.c's `dylib` and `rpath` parse their operations out
  * of this table, so a verb and a statement cannot accept different things);
  * NULL/0 for a row no verb offers. OPS_ORD is that row's position in
  * --capabilities' "ops=" list, which is frozen interface text in an order

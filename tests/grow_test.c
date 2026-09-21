@@ -1634,7 +1634,7 @@ static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const 
  * documented contract every internal failure path in mg_grow_header shares
  * (see src/linkedit.h's ml_bump_all doc comment). What must hold is that the
  * OUTER caller never writes a refused buffer to disk. That used to be
- * verifiable through `machorewrite grow FILE OUT N` -- confirmed by hand on
+ * verifiable through `drydock-macho-rewrite grow FILE OUT N` -- confirmed by hand on
  * poked copies of tests/fixture.macho for all three guards (section offset,
  * reloff, entryoff): an observation made at or before cbcacd3 (the old
  * numbering, under which EX_REFUSED was 2), which reported exit 2 and left

@@ -27,7 +27,7 @@ set(CMAKE_OSX_ARCHITECTURES x86_64 CACHE STRING "Intel-only (10.9)")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/UPSTREAM_VERSION" MAVERICKS_VERSION LIMIT_COUNT 1)
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" MAVERICKS_VERSION_NUMERIC "${MAVERICKS_VERSION}")
 
-project(MachOTools VERSION ${MAVERICKS_VERSION_NUMERIC} LANGUAGES C)
+project(Drydock VERSION ${MAVERICKS_VERSION_NUMERIC} LANGUAGES C)
 
 # MavericksShipyard, not MavericksSharedCMake: shipyard ships
 # MavericksShipyardConfig.cmake, and the family is mid-rename (six local repos
@@ -39,7 +39,7 @@ include(MavericksCompatGuard)  # assert every shipped binary is 10.9-safe
 
 mavericks_build_mode(MAVERICKS_MODE)
 mavericks_require_expected_mode("${MAVERICKS_MODE}")
-message(STATUS "macho-tools ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
+message(STATUS "Drydock ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
 
 # Cross builds compile against the PINNED 10.9 SDK, not the host's. Building
 # with a modern SDK and only -mmacosx-version-min=10.9 is weaker: the compiler
@@ -49,7 +49,7 @@ message(STATUS "macho-tools ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
 if(MAVERICKS_MODE STREQUAL "cross")
   mavericks_fetch_sdk(MAVERICKS_SDK)
   set(CMAKE_OSX_SYSROOT "${MAVERICKS_SDK}" CACHE PATH "pinned 10.9 SDK" FORCE)
-  message(STATUS "macho-tools: cross build against ${MAVERICKS_SDK}")
+  message(STATUS "Drydock: cross build against ${MAVERICKS_SDK}")
 endif()
 
 # No -std=: src/declassify.c (patch_macho's conversion) assigns to an anonymous struct, which clang rejects under -std=c11 and accepts
@@ -59,29 +59,29 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # The toolkit library the seven rewriters were converged onto (docs/PROPOSAL.md
 # "Shape").
 #
-# Target name is machorewritecore, not machorewrite, so it does not collide with
-# the `machorewrite` CLI executable's target. It is deliberately NOT linked
+# Target name is drydockcore, not drydock-macho-rewrite, so it does not collide with
+# the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(machorewritecore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c)
-target_include_directories(machorewritecore PUBLIC src)
-target_compile_options(machorewritecore PRIVATE -O2 -Wall)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c)
+target_include_directories(drydockcore PUBLIC src)
+target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
-# ALL SIX historical tools are now /bin/sh WRAPPERS around machorewrite. Each keeps its original installed name, because
+# ALL SIX historical tools are now /bin/sh WRAPPERS around drydock-macho-rewrite. Each keeps its original installed name, because
 # mavericksforever.com/claude/install.sh fetches patch_macho, change_dylib and
 # add_version_min BY THOSE NAMES -- the wrappers are drop-in, and
 # compat/<tool>.sh's own header says how each one maps that tool's grammar,
-# its exit codes and its stdout onto machorewrite's.
+# its exit codes and its stdout onto drydock-macho-rewrite's.
 #
 # fix_macho was the holdout: it could not be wrapped while a wrapper had to
-# PRESERVE its behaviour, because `machorewrite dylib` rewrites a longer path using
+# PRESERVE its behaviour, because `drydock-macho-rewrite dylib` rewrites a longer path using
 # header pad where fix_macho refused outright, and a chained -rename_seg
 # chains where fix_macho's single pass did not. The repo owner ruled those --
 # and three more -- improvements to ADOPT deliberately, which is what made
 # this possible; compat/README.md's "fix_macho: the adopted divergences" table
 # states all five with their reasons and the test holding each.
 #
-# So machorewrite is now the ONLY Mach-O rewriting binary this repo builds or
+# So drydock-macho-rewrite is now the ONLY Mach-O rewriting binary this repo builds or
 # installs, and compat/ contains no C at all. MACHO_TOOLS is deliberately
 # still here, empty: it is the list a future compiled compat tool would join,
 # and its emptiness is the measurable form of "the goal is met".
@@ -104,7 +104,7 @@ set(MACHO_TOOLS)
 foreach(tool IN LISTS MACHO_TOOLS)
   add_executable(${tool} compat/${tool}.c)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
-  target_link_libraries(${tool} PRIVATE machorewritecore)
+  target_link_libraries(${tool} PRIVATE drydockcore)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
   # these, so the build fails if a binary declares a floor above 10.9 or links a
   # symbol 10.9 lacks. It matters more here than in most of the family, because
@@ -112,22 +112,22 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
-# The CLI: everything it does delegates in-process to machorewritecore. The
+# The CLI: everything it does delegates in-process to drydockcore. The
 # rewrites once ran as SUBPROCESSES (change_dylib / add_version_min next to
-# machorewrite), which made machorewrite depend at runtime on the very binaries
+# drydock-macho-rewrite), which made drydock-macho-rewrite depend at runtime on the very binaries
 # it is meant to replace; now the callers share the code instead. Kept
 # out of the ${tool}.c-named foreach above because its source lives in cli/. No
 # root include path is needed: every header it includes now lives in src/,
-# reached via machorewritecore's PUBLIC src include (below), same as every other tool.
-add_executable(machorewrite cli/machorewrite.c)
-target_compile_options(machorewrite PRIVATE -O2 -Wall)
-target_link_libraries(machorewrite PRIVATE machorewritecore)
-mavericks_assert_binary_compatible(machorewrite)
+# reached via drydockcore's PUBLIC src include (below), same as every other tool.
+add_executable(drydock-macho-rewrite cli/drydock-macho-rewrite.c)
+target_compile_options(drydock-macho-rewrite PRIVATE -O2 -Wall)
+target_link_libraries(drydock-macho-rewrite PRIVATE drydockcore)
+mavericks_assert_binary_compatible(drydock-macho-rewrite)
 
-# Stage the wrappers and the two files they source NEXT TO machorewrite in the build
+# Stage the wrappers and the two files they source NEXT TO drydock-macho-rewrite in the build
 # tree, under their installed names, so ctest exercises exactly the layout
-# that ships -- a wrapper looks for machorewrite, machorewrite-compat.sh and
-# machorewrite-translate.sh in its own directory. $<TARGET_FILE_DIR:machorewrite> rather
+# that ships -- a wrapper looks for drydock-macho-rewrite, drydock-macho-rewrite-compat.sh and
+# drydock-macho-rewrite-translate.sh in its own directory. $<TARGET_FILE_DIR:drydock-macho-rewrite> rather
 # than CMAKE_CURRENT_BINARY_DIR so this holds for a multi-config generator
 # too, and a plain ALL target rather than OUTPUT rules because a generator
 # expression in an OUTPUT needs CMake 3.20 and this project asks for 3.16.
@@ -136,39 +136,39 @@ mavericks_assert_binary_compatible(machorewrite)
 #
 # translate.sh is the one file renamed on the way out: a bin directory full of
 # tools should not gain a file called `translate.sh`. Nothing else about it
-# changes, and compat/machorewrite-compat.sh is what knows the installed name.
+# changes, and compat/drydock-macho-rewrite-compat.sh is what knows the installed name.
 add_custom_target(compat_wrappers ALL
-  COMMENT "staging the compat wrappers next to machorewrite")
-add_dependencies(compat_wrappers machorewrite)
+  COMMENT "staging the compat wrappers next to drydock-macho-rewrite")
+add_dependencies(compat_wrappers drydock-macho-rewrite)
 foreach(tool IN LISTS MACHO_WRAPPERS)
   add_custom_command(TARGET compat_wrappers POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/compat/${tool}.sh"
-            "$<TARGET_FILE_DIR:machorewrite>/${tool}")
+            "$<TARGET_FILE_DIR:drydock-macho-rewrite>/${tool}")
 endforeach()
 add_custom_command(TARGET compat_wrappers POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${CMAKE_CURRENT_SOURCE_DIR}/compat/machorewrite-compat.sh"
-          "$<TARGET_FILE_DIR:machorewrite>/machorewrite-compat.sh")
+          "${CMAKE_CURRENT_SOURCE_DIR}/compat/drydock-macho-rewrite-compat.sh"
+          "$<TARGET_FILE_DIR:drydock-macho-rewrite>/drydock-macho-rewrite-compat.sh")
 add_custom_command(TARGET compat_wrappers POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_SOURCE_DIR}/compat/translate.sh"
-          "$<TARGET_FILE_DIR:machorewrite>/machorewrite-translate.sh")
+          "$<TARGET_FILE_DIR:drydock-macho-rewrite>/drydock-macho-rewrite-translate.sh")
 
 # ${MACHO_TOOLS} is empty now that fix_macho is a wrapper, so this installs
-# machorewrite and nothing else. It is left expanded rather than deleted for the
+# drydock-macho-rewrite and nothing else. It is left expanded rather than deleted for the
 # same reason the empty list above is: a future compiled compat tool joins
 # that list and needs no change here.
-install(TARGETS ${MACHO_TOOLS} machorewrite RUNTIME DESTINATION bin)
+install(TARGETS ${MACHO_TOOLS} drydock-macho-rewrite RUNTIME DESTINATION bin)
 
 # The wrappers install under the historical binaries' exact names, into the
-# same directory as machorewrite -- that co-location is how each one finds machorewrite
+# same directory as drydock-macho-rewrite -- that co-location is how each one finds drydock-macho-rewrite
 # and its two support files at run time.
 foreach(tool IN LISTS MACHO_WRAPPERS)
   install(PROGRAMS "compat/${tool}.sh" DESTINATION bin RENAME "${tool}")
 endforeach()
-install(PROGRAMS "compat/machorewrite-compat.sh" DESTINATION bin)
-install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME machorewrite-translate.sh)
+install(PROGRAMS "compat/drydock-macho-rewrite-compat.sh" DESTINATION bin)
+install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewrite-translate.sh)
 
 enable_testing()
 
@@ -190,7 +190,7 @@ add_executable(grow_test tests/grow_test.c)
 # suppressed. -Wno-unused-function stays: src/grow.h declares helpers this
 # translation unit does not all use.
 target_compile_options(grow_test PRIVATE -O2 -Wall -Wno-unused-function)
-target_link_libraries(grow_test PRIVATE machorewritecore)
+target_link_libraries(grow_test PRIVATE drydockcore)
 add_test(NAME grow_test COMMAND grow_test)
 
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
@@ -201,7 +201,7 @@ add_test(NAME grow_test COMMAND grow_test)
 # does.)
 add_executable(image_test tests/image_test.c)
 target_compile_options(image_test PRIVATE -O2 -Wall)
-target_link_libraries(image_test PRIVATE machorewritecore)
+target_link_libraries(image_test PRIVATE drydockcore)
 add_test(NAME image_test COMMAND image_test
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -210,7 +210,7 @@ add_test(NAME image_test COMMAND image_test
 # buffers -- no fixture file needed, same reasoning as grow_test.
 add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
-target_link_libraries(trie_test PRIVATE machorewritecore)
+target_link_libraries(trie_test PRIVATE drydockcore)
 add_test(NAME trie_test COMMAND trie_test)
 
 # Hermetic tests for src/script.c's tokenizer: hand-written script text and
@@ -220,7 +220,7 @@ add_test(NAME trie_test COMMAND trie_test)
 # drift.
 add_executable(script_test tests/script_test.c)
 target_compile_options(script_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(script_test PRIVATE machorewritecore)
+target_link_libraries(script_test PRIVATE drydockcore)
 add_test(NAME script_test COMMAND script_test)
 # test_error_message_quoting_survives_the_free (a use-after-free regression
 # test) does not reliably fail on a plain run -- libc's allocator
@@ -237,7 +237,7 @@ set_tests_properties(script_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # garbage rather than crashing unless freed memory is scribbled.
 add_executable(fat_test tests/fat_test.c)
 target_compile_options(fat_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(fat_test PRIVATE machorewritecore)
+target_link_libraries(fat_test PRIVATE drydockcore)
 add_test(NAME fat_test COMMAND fat_test)
 set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
@@ -252,7 +252,7 @@ set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # luck on a plain run.
 add_executable(edit_test tests/edit_test.c)
 target_compile_options(edit_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(edit_test PRIVATE machorewritecore)
+target_link_libraries(edit_test PRIVATE drydockcore)
 add_test(NAME edit_test COMMAND edit_test)
 set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
@@ -261,7 +261,7 @@ set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # reasoning as trie_test.
 add_executable(linkedit_test tests/linkedit_test.c)
 target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(linkedit_test PRIVATE machorewritecore)
+target_link_libraries(linkedit_test PRIVATE drydockcore)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
 # Hermetic tests for src/relations.c: hand-built images, no fixture file, so
@@ -269,7 +269,7 @@ add_test(NAME linkedit_test COMMAND linkedit_test)
 # made cli_test's build-version fixtures pass here and fail on the cross runner.
 add_executable(relations_test tests/relations_test.c)
 target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(relations_test PRIVATE machorewritecore)
+target_link_libraries(relations_test PRIVATE drydockcore)
 add_test(NAME relations_test COMMAND relations_test)
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
@@ -281,13 +281,13 @@ add_test(NAME relations_test COMMAND relations_test)
 # memory is scribbled.
 add_executable(atomic_write_test tests/atomic_write_test.c)
 target_compile_options(atomic_write_test PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(atomic_write_test PRIVATE machorewritecore)
+target_link_libraries(atomic_write_test PRIVATE drydockcore)
 add_test(NAME atomic_write_test COMMAND atomic_write_test)
 set_tests_properties(atomic_write_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
 # Fixture helpers, not tests: build and inspect a fat container without
 # system lipo, whose accepted architectures are not the suites' to pin.
-# Built beside machorewrite so every CLI suite finds them in the directory it is
+# Built beside drydock-macho-rewrite so every CLI suite finds them in the directory it is
 # already given.
 add_executable(makefat tests/makefat.c)
 add_executable(fatcheck tests/fatcheck.c)
@@ -298,13 +298,13 @@ target_compile_options(fatcheck PRIVATE -O2 -Wall -Wextra)
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now
 # matches chained-fixups.sh/characterize.sh/cli_test.sh/leaf-tool-crashes.sh:
 # passed the bindir so it runs the change_dylib and fix_macho wrappers CMake
-# actually staged (and the machorewrite under them), instead of compiling its own
+# actually staged (and the drydock-macho-rewrite under them), instead of compiling its own
 # copies from a hand-enumerated source list that had to be kept in sync with
-# machorewritecore by hand -- it still builds machorewrite from source, deriving
+# drydockcore by hand -- it still builds drydock-macho-rewrite from source, deriving
 # the list from a glob, and copies the two wrappers beside it, when run
 # standalone with no bindir argument.
 add_test(NAME change_dylib_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Build equivalence. The tool binaries can never match across a 2014 clang and a
 # 2026 one, so comparing them is the wrong invariant. These tools are
@@ -317,41 +317,41 @@ add_test(NAME change_dylib_test
 # SKIPs (77) on hosts that cannot emit them -- 10.9 included -- so it is real
 # coverage on a modern host and an honest no-op on the target.
 add_test(NAME chained_fixups
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/chained-fixups.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/chained-fixups.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(chained_fixups PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME characterize
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:machorewrite>" check)
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>" check)
 
-# machorewrite's own CLI: --capabilities plus each verb it implements. Builds its own
+# drydock-macho-rewrite's own CLI: --capabilities plus each verb it implements. Builds its own
 # fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
 # change_dylib_test.sh) rather than reading tests/fixture.macho, so no
 # WORKING_DIRECTORY is needed -- everything it needs is the bindir, passed the
 # same way chained_fixups passes patch_macho's.
 add_test(NAME cli_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # compat/translate.sh: one assertion per translation from an old tool's grammar
-# to machorewrite's, pinning the EXACT emitted command line. Text only -- it never
-# runs machorewrite on a file; whether the emitted commands produce the same BYTES is
+# to drydock-macho-rewrite's, pinning the EXACT emitted command line. Text only -- it never
+# runs drydock-macho-rewrite on a file; whether the emitted commands produce the same BYTES is
 # tests/compat-sweep.sh's job, and that one is run by hand (it needs both
 # families of binaries and takes minutes), with its result committed as
 # tests/compat-matrix.tsv. The bindir is here for one thing: the last block
 # checks every verb/op/KIND the translator can emit against
-# `machorewrite --capabilities`, rather than assuming they agree.
+# `drydock-macho-rewrite --capabilities`, rather than assuming they agree.
 add_test(NAME translate_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/translate_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/translate_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # The six /bin/sh wrappers' own behaviour: the grammar each translates, the
 # exit codes it maps back to the C tool's, and the stdout it reshapes. Sits
-# between translate_test (which pins the emitted TEXT and never runs machorewrite on
+# between translate_test (which pins the emitted TEXT and never runs drydock-macho-rewrite on
 # a file) and known_callers (which replays the real callers end to end); every
 # assertion in it names the divergence it closes, from the list at the top of
-# compat/translate.sh or from cli/machorewrite.c's own "DELIBERATE DIVERGENCES"
+# compat/translate.sh or from cli/drydock-macho-rewrite.c's own "DELIBERATE DIVERGENCES"
 # blocks. Also parses every wrapper under /bin/sh AND /bin/ksh, the same
 # second-shell cross-check translate_test does.
 add_test(NAME wrapper_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # THE GATE for the wrappers: every known caller of the six historical tools,
 # replayed end to end against them. A wrapper that passes the test suite but
@@ -361,7 +361,7 @@ add_test(NAME wrapper_test
 # compat/*.c files) produced from tests/fixture.macho on real 10.9, the same
 # device tests/EXPECTED uses.
 add_test(NAME known_callers
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/known-callers.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/known-callers.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # compat/insert_dylib.sh's own suite: the seventh wrapper's grammar, its five
 # prompts (--all-yes and the no-tty refusal), and the divergences declared in
@@ -370,7 +370,7 @@ add_test(NAME known_callers
 # header for why (no known caller to replay, and the sweep's matrix is frozen
 # for the six historical tools).
 add_test(NAME insert_dylib_test
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/insert_dylib_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/insert_dylib_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 # A modest ceiling, not ctest's 1500s default: this is the one test in the
 # suite that opens /dev/tty through a detached (setsid'd) child expecting a
 # refusal, never a read. If the setsid detachment and the /dev/tty-has-no-
@@ -387,11 +387,11 @@ set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 # still contain an out-of-bounds reference. See the script's own header for
 # what each fixture is shaped to trigger.
 add_test(NAME leaf_tool_crashes
-  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:machorewrite>")
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # src/live.h -- the header-only, malloc-free query surface for
 # avxemu (docs/PROPOSAL.md's "Shape": "live.h is deliberately a header, not
-# part of the library"). Deliberately NOT linked against machorewritecore: live.h
+# part of the library"). Deliberately NOT linked against drydockcore: live.h
 # is standalone by design (see its own top comment), and this test proves
 # that by needing nothing but -I src. Queries run against this test binary's
 # OWN loaded image via _dyld_get_image_header/_dyld_get_image_vmaddr_slide,

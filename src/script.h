@@ -1,5 +1,5 @@
-#ifndef MACHOREWRITE_SCRIPT_H
-#define MACHOREWRITE_SCRIPT_H
+#ifndef DRYDOCK_SCRIPT_H
+#define DRYDOCK_SCRIPT_H
 
 #include <stddef.h>
 

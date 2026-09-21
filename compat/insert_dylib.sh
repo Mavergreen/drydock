@@ -15,7 +15,7 @@
 # and, down here, whether a prompt is asked at all and how it answers.
 #
 # FIVE PROMPTS, READ FROM /dev/tty, NEVER FROM STDIN -- stdin is the
-# statement channel to machorewrite, the same channel every other wrapper
+# statement channel to drydock-macho-rewrite, the same channel every other wrapper
 # here uses it for. See each PROMPT N below for what it asks and why;
 # id_confirm is where --all-yes and "no /dev/tty to ask on" are decided.
 #
@@ -23,24 +23,24 @@
 # table, which names the test pinning each one.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
-MW_DIR=${MACHOREWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
+MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
 # platform: a symlink to this wrapper on PATH makes MW_DIR the SYMLINK's
-# directory, not the one holding machorewrite -- which is why
-# MACHOREWRITE_COMPAT_DIR exists. Checked before sourcing so the message is this
+# directory, not the one holding drydock-macho-rewrite -- which is why
+# DRYDOCK_MACHO_REWRITE_COMPAT_DIR exists. Checked before sourcing so the message is this
 # one rather than the shell's own from the `.` below.
-[ -r "$MW_DIR/machorewrite-compat.sh" ] || {
-    printf '%s: cannot find machorewrite-compat.sh in %s -- machorewrite and its two support\n' "$0" "$MW_DIR" >&2
+[ -r "$MW_DIR/drydock-macho-rewrite-compat.sh" ] || {
+    printf '%s: cannot find drydock-macho-rewrite-compat.sh in %s -- drydock-macho-rewrite and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
-    printf '%s: SYMLINK directory, so set MACHOREWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set DRYDOCK_MACHO_REWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
     exit 1
 }
-. "$MW_DIR/machorewrite-compat.sh"
+. "$MW_DIR/drydock-macho-rewrite-compat.sh"
 
 MW_TOOL=insert_dylib
 
 # Parsed once, here, with the SAME parser compat/translate.sh's
 # mt_tr_insert_dylib uses (mt_id_parse; sourced in already by
-# machorewrite-compat.sh above) -- one argv walk, not two silently drifting
+# drydock-macho-rewrite-compat.sh above) -- one argv walk, not two silently drifting
 # apart. What this wrapper needs that a pure translation cannot give it: the
 # positionals and flags, ahead of the file inspection the prompts below do.
 mt_id_parse "$@" || exit 1
@@ -88,17 +88,17 @@ id_confirm() {
 # would have gotten.
 MT_ID_EFFSTRIP=$MT_ID_STRIP
 if [ -z "$MT_ID_STRIP" ] && [ -z "$MT_ID_NOSTRIP" ]; then
-    if machorewrite info "$MT_ID_BIN" 2>/dev/null | grep -q '^LC\[[0-9]*\] LC_CODE_SIGNATURE '; then
+    if drydock-macho-rewrite info "$MT_ID_BIN" 2>/dev/null | grep -q '^LC\[[0-9]*\] LC_CODE_SIGNATURE '; then
         id_confirm "LC_CODE_SIGNATURE load command found. Remove it?" && MT_ID_EFFSTRIP=1
     fi
 fi
 
-# PROMPT 2. `machorewrite info`'s "  ordinal=N path=PATH" lines are the same
+# PROMPT 2. `drydock-macho-rewrite info`'s "  ordinal=N path=PATH" lines are the same
 # ones every other wrapper here already reads (compat/change_dylib.sh's
 # insert-order assertion, for one); sed strips the fixed "  ordinal=N path="
 # prefix so what is left is compared with grep -F, never a regex built from
 # the caller's own path.
-machorewrite info "$MT_ID_BIN" 2>/dev/null \
+drydock-macho-rewrite info "$MT_ID_BIN" 2>/dev/null \
     | sed -n 's/^  ordinal=[0-9]* path=//p' >"$MW_T/id_paths"
 if grep -qxF -- "$MT_ID_DYLIB" "$MW_T/id_paths"; then
     id_confirm "Binary already contains a load command for that dylib. Continue anyway?" || {
@@ -109,7 +109,7 @@ fi
 
 # PROMPT 3 ("it doesn't seem like there is enough empty space") is not
 # reproduced as its own check -- `dylib append`'s own header-pad refusal,
-# forwarded through machorewrite's exit code below, already says no to the
+# forwarded through drydock-macho-rewrite's exit code below, already says no to the
 # same question a hand-rolled space estimate would ask a second time.
 
 # PROMPT 4. OUT already exists (suppressed by --overwrite). --inplace's OUT

@@ -4,7 +4,7 @@
 # (Wowfunhappy/insert_dylib, commit bd221b8) translated onto `dylib append`/
 # `dylib retype`/`load-command delete codesig`, its five interactive prompts
 # (read from /dev/tty, never stdin -- stdin is the statement channel to
-# machorewrite), and the divergences compat/README.md's insert_dylib table
+# drydock-macho-rewrite), and the divergences compat/README.md's insert_dylib table
 # declares.
 #
 #   sh tests/insert_dylib_test.sh <bindir>
@@ -28,7 +28,7 @@ FIXTURE="$HERE/fixture.macho"
 CC="${CC:-clang}"
 
 [ -x "$BIN/insert_dylib" ] || { echo "insert_dylib_test: $BIN/insert_dylib not found or not executable" >&2; exit 1; }
-[ -x "$BIN/machorewrite" ] || { echo "insert_dylib_test: $BIN/machorewrite not found or not executable" >&2; exit 1; }
+[ -x "$BIN/drydock-macho-rewrite" ] || { echo "insert_dylib_test: $BIN/drydock-macho-rewrite not found or not executable" >&2; exit 1; }
 
 pass=0; fail=0
 ok()   { echo "PASS $1"; pass=$((pass + 1)); }
@@ -63,15 +63,15 @@ rc=$?
 [ "$rc" -eq 0 ] \
     && ok "plain insert: exits 0" \
     || bad "plain insert" "exit $rc: $(cat "$T/1.err")"
-"$BIN/machorewrite" verify "$T/out" >/dev/null 2>"$T/1v.err" \
+"$BIN/drydock-macho-rewrite" verify "$T/out" >/dev/null 2>"$T/1v.err" \
     && ok "plain insert: output verifies" \
     || bad "plain insert" "output does not verify: $(cat "$T/1v.err")"
-"$BIN/machorewrite" imports "$T/out" >/dev/null 2>"$T/1i.err" \
+"$BIN/drydock-macho-rewrite" imports "$T/out" >/dev/null 2>"$T/1i.err" \
     && ok "plain insert: output has readable imports" \
     || bad "plain insert" "imports failed: $(cat "$T/1i.err")"
 
 # ---- 2. --weak really produces LC_LOAD_WEAK_DYLIB --------------------------
-# `machorewrite imports` reports the BIND STREAM, not the dylib table, so a
+# `drydock-macho-rewrite imports` reports the BIND STREAM, not the dylib table, so a
 # freshly appended dylib that nothing calls produces ZERO rows -- confirmed
 # by hand against tests/fixture.macho, which imports nothing from any
 # "libfoo". Observing --weak therefore needs a binary that already imports a
@@ -84,7 +84,7 @@ rc=$?
 # matching that path -- ordinal position, not name, is what the bind stream
 # addresses, so the ORIGINAL command (position 1, the one the real bind
 # already points at) is retyped to weak right along with the duplicate.
-# Measured by hand before writing this: `machorewrite imports` on the result
+# Measured by hand before writing this: `drydock-macho-rewrite imports` on the result
 # shows kind=weak for install_name=/usr/lib/libfoo.dylib.
 cat >"$T/foo_stub.c" <<'EOF'
 int foo_sym(void) { return 42; }
@@ -105,7 +105,7 @@ else
     [ "$rc" -eq 0 ] \
         && ok "--weak: exits 0" \
         || bad "--weak" "exit $rc: $(cat "$T/2.err")"
-    "$BIN/machorewrite" imports "$T/wk_out" 2>"$T/2i.err" \
+    "$BIN/drydock-macho-rewrite" imports "$T/wk_out" 2>"$T/2i.err" \
         | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i}
                       NR>1 && $c["install_name"]=="/usr/lib/libfoo.dylib"{print $c["kind"]}' \
         >"$T/2kinds.txt"
@@ -373,7 +373,7 @@ fi
 
 # ---- 9. prompt 2: the binary already names this dylib ----------------------
 # tests/fixture.macho already links /usr/lib/libSystem.B.dylib (confirmed by
-# hand: `machorewrite info` shows "ordinal=1 path=/usr/lib/libSystem.B.dylib"),
+# hand: `drydock-macho-rewrite info` shows "ordinal=1 path=/usr/lib/libSystem.B.dylib"),
 # so inserting that exact path is the direct way to reach this prompt's
 # detect step, not just steer around it. --no-strip-codesig keeps prompt 1
 # out of the way; the path is real, so prompt 5 cannot fire either.
@@ -397,7 +397,7 @@ else
     [ "$rc" -eq 0 ] \
         && ok "prompt 2: --all-yes proceeds past the duplicate" \
         || bad "prompt 2 --all-yes" "exit $rc (want 0): $(cat "$T/9b.err")"
-    got=$("$BIN/machorewrite" info "$T/dup_out2" 2>/dev/null \
+    got=$("$BIN/drydock-macho-rewrite" info "$T/dup_out2" 2>/dev/null \
         | grep -c 'path=/usr/lib/libSystem\.B\.dylib$')
     [ "$got" -eq 2 ] \
         && ok "prompt 2: the duplicate was really added (two load commands now name it)" \
@@ -441,7 +441,7 @@ if command -v codesign >/dev/null 2>&1 && codesign -s - "$T/cs" >/dev/null 2>&1;
     [ "$rc" -eq 0 ] \
         && ok "--strip-codesig: exits 0" \
         || bad "--strip-codesig" "exit $rc: $(cat "$T/11.err")"
-    "$BIN/machorewrite" info "$T/cs_out" 2>/dev/null | grep -q LC_CODE_SIGNATURE \
+    "$BIN/drydock-macho-rewrite" info "$T/cs_out" 2>/dev/null | grep -q LC_CODE_SIGNATURE \
         && bad "--strip-codesig" "LC_CODE_SIGNATURE is still present in the output" \
         || ok "--strip-codesig: LC_CODE_SIGNATURE is gone from the output"
 else
@@ -454,10 +454,10 @@ fi
 # which means `dylib retype` would find something to weaken whichever
 # statement ran first -- order was never actually observed. Here the path is
 # NOT already present in "$FIXTURE": `dylib retype` on a path nothing names
-# yet is a silent no-op (`machorewrite: PATH matched nothing`, exit 0 --
+# yet is a silent no-op (`drydock-macho-rewrite: PATH matched nothing`, exit 0 --
 # confirmed by hand), so a swapped emission order would still exit 0 and
 # still install a binary, just one whose new load command stayed
-# LC_LOAD_DYLIB instead of becoming LC_LOAD_WEAK_DYLIB. `machorewrite info`
+# LC_LOAD_DYLIB instead of becoming LC_LOAD_WEAK_DYLIB. `drydock-macho-rewrite info`
 # names the load-command KIND on its own "LC[n] <NAME> cmdsize=..." line, so
 # this reads that rather than the exit code.
 cp "$FIXTURE" "$T/ord"
@@ -467,7 +467,7 @@ rc=$?
 [ "$rc" -eq 0 ] \
     && ok "--weak order: exits 0" \
     || bad "--weak order" "exit $rc: $(cat "$T/12.err")"
-"$BIN/machorewrite" info "$T/ord_out" 2>/dev/null | grep -q LC_LOAD_WEAK_DYLIB \
+"$BIN/drydock-macho-rewrite" info "$T/ord_out" 2>/dev/null | grep -q LC_LOAD_WEAK_DYLIB \
     && ok "--weak order: append then retype -- the new command is LC_LOAD_WEAK_DYLIB" \
     || bad "--weak order" "no LC_LOAD_WEAK_DYLIB in the output; retype ran before append had anything to retype"
 
