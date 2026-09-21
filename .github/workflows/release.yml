@@ -4,7 +4,7 @@ name: release
 # equivalent to a native 10.9 build. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
-#   - X.Y.Z tag: build, then publish the binaries as a GitHub Release through
+#   - vX.Y.Z tag: build, then publish the binaries as a GitHub Release through
 #     shipyard's publish-release.yml. Tag-only, because this repo is its own
 #     upstream -- there is no external bump to auto-cut on, so a release is deliberate
 #
@@ -14,7 +14,7 @@ name: release
 on:
   push:
     branches: [main]
-    tags: ['[0-9]*.[0-9]*.[0-9]*']   # this repo's own X.Y.Z, not the family's -mavericks.N shape
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']   # this repo's own semver vX.Y.Z, not the family's -mavericks.N shape
   pull_request:
     branches: [main]          # the status check Renovate automerge waits on
 
@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 # Only a pull_request supersedes -- keyed per ref, so a force-push replaces its own predecessor.
-# Everything else (a branch push, an X.Y.Z tag) is keyed per RUN and is therefore alone in its
+# Everything else (a branch push, a vX.Y.Z tag) is keyed per RUN and is therefore alone in its
 # group: never queued, never evicted, never cancelled.
 #
 # cancel-in-progress:false was never the protection it looked like: it protects the RUNNING job and
@@ -45,6 +45,7 @@ jobs:
     runs-on: macos-26   # Apple Silicon; cross-builds the x86_64/10.9 slice. Use macos-15 if 26 is unavailable.
     outputs:
       version: ${{ steps.ver.outputs.full }}
+      tag: ${{ steps.ver.outputs.tag }}
       publish: ${{ steps.ver.outputs.release }}
     steps:
       - uses: actions/checkout@v7
@@ -73,25 +74,25 @@ jobs:
         run: echo "CROSS_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross" >> "$GITHUB_ENV"
 
       # Nothing external to derive from -- this repo is its own upstream -- so the version
-      # IS UPSTREAM_VERSION, hand-bumped, and a release is the X.Y.Z tag someone pushes on
+      # IS UPSTREAM_VERSION, hand-bumped, and a release is the vX.Y.Z tag someone pushes on
       # purpose. Computed here rather than through shipyard's version.sh or
       # resolve-version.sh: both only ever emit the <upstream>-mavericks.N shape a PORT
       # needs, which is exactly the suffix this repo does not carry. mavericks-porthole,
       # the family's other self-upstream repo, computes inline for the same reason.
-      - name: Version (X.Y.Z) + publish decision
+      - name: Version (vX.Y.Z) + publish decision
         id: ver
         run: |
           set -eu
           want="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            full="$GITHUB_REF_NAME"; tag="$GITHUB_REF_NAME"; rel=yes
+            tag="$GITHUB_REF_NAME"; full="${tag#v}"; rel=yes
             # The tag and the committed version must agree. CMakeLists.txt stamps the tools
             # from UPSTREAM_VERSION, so a tag that disagrees publishes a release whose own
             # binaries report a different version -- green the whole way, wrong at the end.
             # A release here is a hand bump plus a matching tag; this is the half that
             # would otherwise be forgotten quietly.
-            [ "$full" = "$want" ] || {
-              echo "::error::tag $full disagrees with UPSTREAM_VERSION ($want), which is what the binaries are stamped with -- bump the file and re-tag, or tag $want"
+            [ "$tag" = "v$want" ] || {
+              echo "::error::tag $tag disagrees with UPSTREAM_VERSION ($want), which is what the binaries are stamped with -- bump the file and re-tag, or tag v$want"
               exit 1
             }
           else
@@ -99,7 +100,7 @@ jobs:
             # so every non-tag run -- main, a branch, a pull request -- builds and publishes
             # nothing. Stricter than the family's "only main may release" guard and
             # subsuming it: a pull request cannot reach rel=yes, because nothing but a tag can.
-            full="$want"; tag="$want"; rel=no
+            full="$want"; tag="v$want"; rel=no
           fi
           printf '%s\n' "$full" > VERSION
           { echo "full=$full"; echo "tag=$tag"; echo "release=$rel"; } >> "$GITHUB_OUTPUT"
@@ -195,7 +196,7 @@ jobs:
 
       # Do the artifacts about to be published agree with each other and with the family's
       # schemes? Gated like the publish itself: this asks about a release, and a run that is
-      # not releasing has not produced the thing to ask about. The X.Y.Z scheme is a DECLARED
+      # not releasing has not produced the thing to ask about. The vX.Y.Z scheme is a DECLARED
       # deviation (INGREDIENTS.md) -- the shared check hard-requires <upstream>-mavericks.N
       # and has no self-upstream exemption -- which is what this step reads that declaration for.
       - name: Artifact conformance
@@ -223,5 +224,5 @@ jobs:
       contents: write
     uses: ModernMavericks/shipyard/.github/workflows/publish-release.yml@v1
     with:
-      version: ${{ needs.build.outputs.version }}
+      version: ${{ needs.build.outputs.tag }}
       artifact: drydock
