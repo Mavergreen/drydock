@@ -20,6 +20,10 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 14 | Spike: weaken binds in memory at load time | — | — | **spike done** 2026-09-12: answered NO; see below |
 | 15 | Flat-namespace shim: satisfy missing symbols at runtime | — | — | not started; came out of item 14's spike |
 | 16 | 32-bit (`LC_SEGMENT`) input | — | — | **to brainstorm**, raised 2026-09-20. Refused everywhere today, deliberately; `docs/prior-art.md` holds the reasoning and the two regression tests that pin it. Reopening it is what a Snow Leopard target would need, and what a fully drop-in `insert_dylib` would need |
+| 17 | Convert a newer NIB to one 10.9 can load, without Xcode | — | — | **to brainstorm**, raised 2026-09-21; see below |
+| 18 | "Will this run on Mavericks?" for an arbitrary binary or `.app` | — | — | **to brainstorm**, raised 2026-09-21; see below |
+| 19 | A new name for this repo | — | — | **to decide**, raised 2026-09-21; entangled with item 7, see below |
+| 20 | Other tools that belong here | — | — | **idea list**, raised 2026-09-21; see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1019,3 +1023,92 @@ been implemented, so it has not finished being true. Purging it discards
 unimplemented work; keeping it under `docs/superpowers/` keeps a directory the
 rule says should not exist. Most likely answer is that it survives the purge
 under a different path, but that is the owner's call, not a ruling to take.
+
+## Items 17–20, queued 2026-09-21
+
+### 17. Convert a newer NIB to one 10.9 can load, without Xcode
+
+**What is known.** A 2026-09-21 session outside this repo (transcript
+`~/.claude/projects/-Users-schmonz-Downloads/9413ca21-….jsonl`) analyzed a
+modern app for 10.9 and found every one of its 15 compiled nibs in the
+`NIBArchive` format (magic `4e49 4241 7263 6869 7665`). 10.9's AppKit rejects
+all of them:
+
+    -[NSKeyedUnarchiver initForReadingWithData:]: incomprehensible archive (0x4e, 0x49, 0x42, 0x41 ...
+
+That session's reading was that **the objects inside are fine** — it is the
+container format, not the contents, that 10.9 cannot read. Which makes the
+converter a re-serialisation (`NIBArchive` → `NSKeyedArchiver` plist), with a
+second, separate pass for classes 10.9 lacks (the same session parsed the class
+tables to find them; pan gesture recognizers were one). It also guessed that
+`ibtool` writes the old format when targeting 10.9 and said it had not verified
+that. Unverified; the point of this item is to not need `ibtool` at all.
+
+**What was not found.** The repo owner remembers getting "pretty far" with this
+earlier, during porthole's Chicken of the VNC period. A search of the porthole
+session transcripts found one passing mention and no conversion work, and the
+local `chicken` checkout's `4624382 old nibs converted` is a third party's
+conversion in the OTHER direction (old to newer). If that earlier work exists it
+is somewhere not yet looked. Ask before brainstorming.
+
+**Neighbours.** Storyboards (10.9 has no `NSStoryboard`; it arrived in 10.10) and
+asset catalogs (`Assets.car`) are the same shape of problem — see item 20.
+
+### 18. "Will this run on Mavericks?" for an arbitrary binary or `.app`
+
+Output is one of two things: **ready to try**, or **as exhaustive a list as
+possible of what stands in the way**. Exhaustive is the requirement: a tool that
+stops at the first blocker sends someone round the loop once per blocker.
+
+Most of the parts exist and this is mostly composition:
+
+* shipyard's `scripts/assert_binary_compatible.sh` already checks a *built*
+  binary for post-10.9 undefined imports, post-10.9 ObjC selectors, arch and
+  `LC_VERSION_MIN_MACOSX` — but it is a fail-fast guard for our own builds, not a
+  report on someone else's app;
+* this repo's `imports` verb (item 13 gap 7) already emits every import,
+  weak or not, as TSV — the raw material for the symbol half.
+
+What the report needs that neither does: walking an `.app` (every Mach-O in
+`Contents/MacOS`, `Frameworks`, `PlugIns`, `XPCServices`, `Library/LoginItems`),
+`Info.plist`'s `LSMinimumSystemVersion`, `LC_BUILD_VERSION` vs
+`LC_VERSION_MIN_MACOSX`, chained fixups, relative ObjC method lists (item 13 gap
+6), the Swift runtime, code-signature formats 10.9's `codesign` cannot read,
+`NIBArchive` nibs (item 17), storyboards and `Assets.car`. Each finding should
+say whether a tool in this repo already closes it — which turns the report into a
+plan, and is the reason it belongs here rather than in shipyard.
+
+### 19. A new name for this repo
+
+"macho-tools" undersells a repo that will also hold a nib converter and an
+app-readiness report, neither of which is about Mach-O. Candidates, to argue
+over rather than to pick from:
+
+* **drydock** — where a ship is hauled out to be refitted; sits beside shipyard
+  and porthole, the family's two nautical names;
+* **refit** — the same idea as a verb;
+* **backport-tools** — plain, and exactly what it is.
+
+Entangled with **item 7**, which already carries "the three rename steps" and
+rewrites history. A repo rename is cheapest done in the same pass, so decide the
+name before item 7 starts, not after.
+
+### 20. Other tools that belong here
+
+Ranked by how often the gap would bite, not by size:
+
+1. **Re-sign for 10.9 after an edit.** Every rewrite this repo performs
+   invalidates the signature, and a modern signature can carry forms 10.9's
+   `codesign` does not understand. Strip-and-ad-hoc-sign as a verb, so the last
+   step of a backport is not a hand-typed `codesign` line.
+2. **Downgrade an asset catalog.** A newer `Assets.car` is item 17's problem in
+   a different container. Probably the second-most common blocker item 18 reports.
+3. **Storyboard to nibs.** 10.9 has no `NSStoryboard`. Larger than item 17,
+   because it is a change of structure rather than of serialisation.
+4. **Generate a shim dylib from item 18's gap list.** The report names the
+   missing symbols; a generator stubs them and `dylib insert` adds the load
+   command. The runtime half of item 15.
+5. **`Info.plist` floor edits.** shipyard's `scripts/set_install_floor.sh`
+   already does part of this for our own pkgs; an app-level verb would belong
+   here.
+
