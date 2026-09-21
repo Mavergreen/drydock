@@ -29,7 +29,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 23 | Wrapper-dylib verb, from M-P-R's `build_wrappers.sh` and recipes | — | — | **to brainstorm**; see item 21 |
 | 24 | Stub/wrapper shim generator, designed from M-P-R's `framework-stubs/` | — | — | **to brainstorm**; this is item 20.4, see item 21 |
 | 25 | Take in magic-trackpad2's general reverse-engineering tools | — | — | **to brainstorm**, raised 2026-09-21; the generic half moves here and the trackpad half stays, see below |
-| 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **to do**, found 2026-09-21 by item 5's fix; small, see below |
+| 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
@@ -1333,10 +1333,20 @@ target is 36 bits and `high8` starts at bit 36. For `DYLD_CHAINED_PTR_64_OFFSET`
 the conversion drops `high8` entirely. The verifier `30720d0` added
 (`src/declassify.c:361`) decodes the widths correctly.
 
-**Consequence today: a refusal, never a wrong binary.** When `high8` is zero,
-which is the normal case on x86_64, both decodes agree. When it is not, the
-conversion computes a wrong target and the verifier refuses the file. Fixing
-the decode turns those refusals into correct conversions. Test it with
-`tests/mkchained.c`'s `make-high8` fixture, which is refused today and should
-convert cleanly with the right slot value once the decode is correct.
+**Consequence before the fix: a refusal, never a wrong binary.** When `high8`
+is zero, which is the normal case on x86_64, both decodes agreed. When it was
+not, the conversion computed a wrong target and the verifier refused the
+file.
+
+**Done** at `64ccef6`: both call sites now share one decode,
+`md_cf_rebase_target` (`src/declassify.c`), so the conversion and the
+verifier cannot drift apart again. `tests/mkchained.c`'s `make-high8` fixture
+(a `DYLD_CHAINED_PTR_64_OFFSET` rebase with high8 `0x5A`) used to be refused;
+`tests/cli_test.sh` now asserts it CONVERTS and that the converted slot holds
+`TEXT_VMADDR + REBASE_TARGET` with `0x5A` in the top byte. Layout confirmed
+against Apple's open-source dyld header (`https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/fixup-chains.h`,
+`struct dyld_chained_ptr_64_rebase`), not the 10.9 SDK this host builds
+against, which has no `fixup-chains.h`. Mutation-checked: reverting just the
+decode function makes the new/changed `cli_test.sh` assertions fail (2
+failures), confirmed by rebuild checksum, not just mtime.
 
