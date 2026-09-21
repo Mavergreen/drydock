@@ -59,6 +59,9 @@ jobs:
           [ -d "$SHIPYARD_SCRIPTS" ] || { echo "::error::SHIPYARD_SCRIPTS not set by install@v1"; exit 1; }
           echo "shipyard scripts: $SHIPYARD_SCRIPTS"
 
+      - name: Record the pre-build tree
+        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
+
       # Nothing external to derive from -- this repo is its own upstream -- so the version
       # IS UPSTREAM_VERSION, hand-bumped, and a release is the X.Y.Z tag someone pushes on
       # purpose. Computed here rather than through shipyard's version.sh or
@@ -134,6 +137,9 @@ jobs:
           set -eu
           echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
           sh tests/characterize.sh "$PWD/build-cross" check
+
+      - name: The build must not have written into the source tree
+        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
 
       # machorewrite and the two files the wrappers source belong in the artifact
       # too, and are not optional: all seven names below are /bin/sh wrappers
