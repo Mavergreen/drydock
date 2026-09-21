@@ -22,7 +22,7 @@ repo's own recipe. A change there is a repackage you cut deliberately.
 `check-artifact-conformance.sh`'s `scheme` check is repo-wide, not per-artifact, so it is declared
 unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-upstream deviation is:
 
-- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as X.Y.Z per the self-upstream rule, and there is no -mavericks.N axis to carry.
+- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as semver vX.Y.Z per the self-upstream rule (tag `v0.1.0` for `UPSTREAM_VERSION` `0.1.0`), and there is no -mavericks.N axis to carry.
 
 ## Why there is no Renovate customManager for the own upstream
 

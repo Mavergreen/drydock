@@ -498,8 +498,9 @@ drydock-macho-rewrite "$REAL" "$T" < claude.edits
   deliberately. See `docs/prior-art.md`.
 - This repo is its **own upstream**: the tools are not a port of somebody else's
   project. `UPSTREAM_VERSION` is still the family's file, but the version is
-  `X.Y.Z` with no `-mavericks.N` suffix — there is no external thing to
-  repackage, so there is no repackaging axis to carry. No Renovate customManager
+  semver `X.Y.Z` with no `-mavericks.N` suffix, released by pushing the tag
+  `vX.Y.Z` — there is no external thing to repackage, so there is no
+  repackaging axis to carry. No Renovate customManager
   watches it either, because nothing external releases it. See `INGREDIENTS.md`.
 
 ## Comments
