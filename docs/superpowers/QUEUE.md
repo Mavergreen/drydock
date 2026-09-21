@@ -849,6 +849,38 @@ files cite a passage, not by what fraction of its own lines are prose.
 
 ## For shipyard: build OUT of tree is documented but not operative
 
+**DONE 2026-09-21, and done differently from the resolution below.** A survey of
+all 15 org repos (not just the ones with presets) killed the preset-inspecting
+check: it would have exempted clang and golang, which build from shell scripts.
+What shipped instead asks what the source tree looks like AFTER a build, which
+holds for any build system: shipyard's `scripts/assert-tree-clean.sh`, with a
+committed `.mavericks-intree` allowlist, called before and after the build by
+all 15 repos, each with a red run before its build moved and a green run after.
+Conventions check 19 requires the pair of calls; check 20 requires
+`CMakeUserPresets.json` to be gitignored wherever `CMakePresets.json` is
+committed. shipyard's own ci.yml was the last in-tree build. A whole-branch
+review then found four ways the assertion could pass when it should fail; all
+four are fixed and mutation-tested (`81f5232`, `2b29718`, `8341e8d`).
+
+Still open, both shipyard's:
+
+- **Eleven workflows hard-code the path `${sourceDirName}` resolves to**, e.g.
+  `"$MAVERICKS_BUILD_ROOT/tailscale-cross"`. `${sourceDirName}` exists because a
+  checkout's directory name varies, so those eleven are right only for a default
+  `actions/checkout`. This repo paid for exactly this once on 2026-09-20: the
+  preset built into one directory, the workflow read another, and the tree-clean
+  assertion was GREEN throughout, because a build that goes somewhere unexpected
+  still leaves the source tree clean. Fix: a `shipyard-build-dir <mode>` helper,
+  plus a test that its output equals the `binaryDir` CMake actually reports.
+- **shipyard's own ci.yml prints two false "prune it" warnings** for `VERSION`
+  and `dist/`, which only its release job writes. Exit 0, and ci.yml runs only on
+  branches and pull requests, never on main, so it is rare noise; left rather
+  than fixed with a new knob. The cost is that it teaches people to ignore the
+  warning, which is how a stale allowlist rots.
+
+What follows is the record as written on 2026-09-20.
+
+
 Found 2026-09-20. `modernmavericks-conventions` SKILL.md already carries the
 rule, with its own measurement on THIS repo — local disk 2.96s wall / 88% CPU
 against in-tree-on-NFS 11.16s / 25%, user time identical at 1.78s vs 1.81s, so
