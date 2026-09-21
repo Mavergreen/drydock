@@ -15,8 +15,8 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 9 | `machotool` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | **done**, pushed, `bccd008..1c0c38c` |
 | 10 | `allow-grow` everywhere it is expected | `specs/2026-09-11-allow-grow-everywhere-design.md` | `plans/2026-09-11-allow-grow-everywhere.md` | **done**, pushed, `b76ddf1..9ae6835` |
 | 11 | `edit` on fat (universal) files | `specs/2026-09-11-edit-on-fat-files-design.md` | `plans/2026-09-11-edit-on-fat-files.md` | **done**, pushed, `8f17001..956b4f6` |
-| 12 | An `insert_dylib` wrapper | `specs/2026-09-20-insert-dylib-retype-imports-design.md` | — | **designed** 2026-09-20, with item 13 gaps 3 and 7; plan not yet written |
-| 13 | What real app backports need and we lack | `specs/2026-09-20-insert-dylib-retype-imports-design.md` (gaps 3 and 7 only) | — | researched 2026-09-11, see below. **Gaps 3 and 7 designed** 2026-09-20 with item 12; gaps 1, 2, 4, 5, 6 and the live half of 7 remain |
+| 12 | An `insert_dylib` wrapper | `specs/2026-09-20-insert-dylib-retype-imports-design.md` | `plans/2026-09-20-insert-dylib-retype-imports.md` | **done**, pushed, `47107c8..af3bec8`, CI green; built with item 13 gaps 3 and 7. A differential test (`tests/insert-dylib-diff.sh`) compares it against Wowfunhappy's fork at `bd221b8` |
+| 13 | What real app backports need and we lack | `specs/2026-09-20-insert-dylib-retype-imports-design.md` (gaps 3 and 7 only) | `plans/2026-09-20-insert-dylib-retype-imports.md` (gaps 3 and 7 only) | researched 2026-09-11, see below. **Gaps 3 and 7 done**, shipped with item 12 (`dylib retype` and the `imports` verb). **Gaps 1, 2, 4, 5, 6 and the live half of 7 remain**, not yet designed |
 | 14 | Spike: weaken binds in memory at load time | — | — | **spike done** 2026-09-12: answered NO; see below |
 | 15 | Flat-namespace shim: satisfy missing symbols at runtime | — | — | not started; came out of item 14's spike |
 | 16 | 32-bit (`LC_SEGMENT`) input | — | — | **to brainstorm**, raised 2026-09-20. Refused everywhere today, deliberately; `docs/prior-art.md` holds the reasoning and the two regression tests that pin it. Reopening it is what a Snow Leopard target would need, and what a fully drop-in `insert_dylib` would need |
@@ -992,10 +992,13 @@ directory:
 
 ```sh
 mv ~/.claude/projects/-Users-schmonz-Documents-code-trees-mavericks-macho-tools \
-   ~/.claude/projects/-Users-schmonz-Documents-code-trees-mavericks-machotool
+   ~/.claude/projects/-Users-schmonz-Documents-code-trees-mavericks-drydock
 mv ~/Documents/code/trees/mavericks-macho-tools \
-   ~/Documents/code/trees/mavericks-machotool
+   ~/Documents/code/trees/mavericks-drydock
 ```
+
+The destination was `mavericks-machotool` until 2026-09-21, when the repo owner
+named the repo **drydock** (item 19). The product binary stays `machotool`.
 
 Renaming the clone first orphans the memories and every transcript of this work.
 
