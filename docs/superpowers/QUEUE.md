@@ -24,6 +24,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 18 | "Will this run on Mavericks?" for an arbitrary binary or `.app` | — | — | **to brainstorm**, raised 2026-09-21; see below |
 | 19 | Rename this repo to **drydock** | — | — | **name decided** 2026-09-21; the rename itself waits for item 7, see below |
 | 20 | Other tools that belong here | — | — | **idea list**, raised 2026-09-21; see below |
+| 21 | Rehome Mavericks-Porting-Resources | — | — | **surveyed** 2026-09-21; Wowfunhappy is open to it being reorganized into the owner's repos, see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1172,4 +1173,59 @@ Ranked by how often the gap would bite, not by size:
 5. **`Info.plist` floor edits.** shipyard's `scripts/set_install_floor.sh`
    already does part of this for our own pkgs; an app-level verb would belong
    here.
+
+### 21. Rehome Mavericks-Porting-Resources
+
+Wowfunhappy is open to the repo owner reorganising everything in M-P-R into the
+owner's own repos. Surveyed 2026-09-21 at upstream `master` `6ead179`
+(2026-09-08), 217 files, identical in file set to the fork's checkout at
+`../Mavericks-Porting-Resources`. Its own `Readme.txt` says it is almost entirely
+AI-generated code that no human has reviewed, so treat every piece as a lead to
+verify, not as working code to copy.
+
+**Already placed. Nothing to do.**
+
+| M-P-R | where it went |
+|---|---|
+| `patch_macho.c`, `change_dylib.c`, `add_version_min.c`, `fix_macho.c`, `rename_segment.c`, `retag_swift_classes.c`, `macho_grow.h` | this repo: `machotool` plus the `compat/` wrappers under the old names |
+| `avxemu/` (AVX2/FMA/BMI on Sandy/Ivy Bridge) | its own repo, `mavericks-avxemu`. A local checkout exists with no remote yet; its last commit records an open licensing question. `docs/PROPOSAL.md` covers it |
+
+**For drydock, as tools.** Each of these is a tool rather than a library, and
+none is tied to one app:
+
+1. **`syscall_trace.c`**, 242 lines. A `DYLD_INSERT_LIBRARIES` interposer that
+   logs selected libSystem calls (socket, connect, kevent64, read/write and
+   others) with timestamps. Built for diagnosing a ported binary on 10.9
+   without dtrace. It is the **runtime half of item 18**: item 18 says what
+   *should* fail, and this shows what *did*.
+2. **The wrapper-dylib technique**: `build_wrappers.sh` plus
+   `libsystem_wrapper_build.md` and `icu_wrapper_build.md`. A wrapper dylib
+   re-exports the real 10.9 library and adds the symbols it lacks. The script
+   is hard-wired to one app and one person's paths (`Ex-Zodiac.app`,
+   `/Users/Jonathan/...`). What generalises is a verb: "wrap framework F,
+   adding symbols S, and repoint the binary's load command at the wrapper",
+   which `machotool`'s `dylib` rows already half-do. This is item 20.4's shim
+   generator with a worked method behind it.
+3. **`framework-stubs/`**, 34 files, with a README that separates **stubs** (the
+   framework does not exist on 10.9, e.g. CoreSpotlight or UserNotifications:
+   define the bound symbols, do nothing) from **wrappers** (the framework exists
+   but lacks a symbol, e.g. AppKit's `NSHapticFeedbackManager`: add it and
+   re-export the real one). That split is the right design for item 20.4. The
+   34 files are a library of outputs, so they belong beside the generator, or
+   in a repo of their own if they grow. They are not in this repo's core.
+
+**Not for drydock. Each has a better home.**
+
+| M-P-R | better home | why |
+|---|---|---|
+| `mavericks-legacy-support/` (the libSystem gap-fillers the wrapper recipes link) | org `macports-legacy-support`, or beside it | a library, not a tool. Its lineage relative to the org repo is not established yet (one git search attempt failed on that checkout's broken `.git`); compare before moving anything |
+| `dotnet_polyfills.c`, `security_seckey_rsa.c`, `security_wrapper_stubs.c`, `cxx_stream_stubs.cpp` | the same library | `dotnet_polyfills.c`'s own header says so ("fold them in there") |
+| `swift-backdeploy/patch_swift_custom_rr.py`, `legacy-swift-stubs/` | org `swift-runtime` | the patcher's header names ModernMavericks swift-runtime's patches 0003–0005; it exists only because of that runtime |
+| `compat_headers/`, `macos_compat.h`/`.mm` | the legacy-support headers | compile-time shims for source builds, and `macos_compat.h` names Godot |
+| `velopack_updatemac_stub.c` | with an osu! port, if one is made | specific to one app |
+| `CLAUDE.md`, and the fork's `mavericks-porting-skills` branch (`04de6a0`, "Add Claude agent skills and conventions for Mavericks porting") | shipyard's `claude-plugins/modernmavericks` | a porting playbook is a skill, and that plugin is where the family keeps its skills |
+
+**Before any of it moves:** agree the plan with Wowfunhappy, and settle
+licensing per piece. avxemu's is already an open question, and a file moving
+between repos carries its licence with it.
 
