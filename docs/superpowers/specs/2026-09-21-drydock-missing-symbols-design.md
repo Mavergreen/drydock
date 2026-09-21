@@ -13,7 +13,7 @@ every binary it is given.
 | Who operates drydock? | **An agent in a porting session, for now.** The goal is the repo owner operating it by hand, with an agent called in only when drydock meets a gap it does not know yet. So the knowledge must live in drydock (code, data, tests), not in agent sessions. |
 | How does an agent's fix become part of drydock? | **A catalog entry plus a test that fails without it**, landed like any other change. Nothing enters unverified; the next binary with that gap gets the repair automatically. |
 | What does "ready" promise? | **Graded: loads, launches, works.** Drydock claims only the level it measured. *Loads*: analysis says dyld binds everything. *Launches*: it ran on 10.9 and survived a first-run check. *Works*: a person confirmed it. A stub repair caps a binary at *loads* until it is run. |
-| Where does drydock run? | **Analysis and repair anywhere** (a modern Mac, CI, or 10.9), as `machotool` already does. Only *launches* needs a 10.9 machine. |
+| Where does drydock run? | **Analysis and repair anywhere** (a modern Mac, CI, or 10.9), as `drydock-macho-rewrite` already does. Only *launches* needs a 10.9 machine. |
 | First slice | **One gap class end to end — missing symbols** — so every stage boundary meets real data before any of them hardens. Later gap classes (formats, nibs, signatures) are further slices, not redesigns. |
 
 ## Gap vocabulary
@@ -69,7 +69,7 @@ nothing on its own. The two repair shapes Mavericks-Porting-Resources proved:
 
 * **wrapper** — the library exists on 10.9 but lacks the symbol. A small dylib
   re-exports the real library and defines the symbol; the binary's load command
-  is repointed at the wrapper (`dylib replace`, which `machotool` already has).
+  is repointed at the wrapper (`dylib replace`, which `drydock-macho-rewrite` already has).
 * **stub** — the library does not exist on 10.9. A dylib defining exactly the
   symbols the binary binds; the load command is repointed at it.
 
@@ -97,8 +97,8 @@ reproducible-builds convention proposed in shipyard's `BACKLOG.md` entry 20.
 2. Copy the needed wrappers and stubs **into the output**
    (`Contents/Frameworks/drydock/` in a bundle; beside a bare binary, reached via
    `@loader_path`). The system is never touched.
-3. Repoint each affected load command with a `machotool edit` script. The input
-   is never written; `machotool` already guarantees that.
+3. Repoint each affected load command with a `drydock-macho-rewrite` edit script.
+   The input is never written; `drydock-macho-rewrite` already guarantees that.
 4. Re-sign ad hoc, since editing invalidates the signature. Known soft spot: 10.9's
    `codesign` may not read newer signature formats, so stripping may have to come
    first. Queue item 20.1 generalises this.

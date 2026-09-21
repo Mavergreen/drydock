@@ -31,6 +31,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 25 | Take in magic-trackpad2's general reverse-engineering tools | — | — | **to brainstorm**, raised 2026-09-21; the generic half moves here and the trackpad half stays, see below |
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
+| 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1000,7 +1001,7 @@ mv ~/Documents/code/trees/mavericks-macho-tools \
 ```
 
 The destination was `mavericks-machotool` until 2026-09-21, when the repo owner
-named the repo **drydock** (item 19). The product binary stays `machotool`.
+named the repo **drydock** (item 19). The engine binary is `drydock-macho-rewrite` since `d6f684b`.
 
 Renaming the clone first orphans the memories and every transcript of this work.
 
@@ -1171,8 +1172,11 @@ converter and an app-readiness report, neither of which is about Mach-O.
 **Not yet: the rename waits for the right point in the sequence.** Item 7
 already carries "the three rename steps" and rewrites history, and the rename is
 cheapest done in that same pass. Do it there, not as a separate step first. The
-product binary `machotool` is a separate question. It does edit Mach-O files, so
-the repo name does not force a change to it.
+product became **Drydock** and the engine binary, formerly `machorewrite`,
+became `drydock-macho-rewrite` in `d6f684b` (2026-09-21). The name follows
+git's external-subcommand convention, so a future `drydock` command can hand
+`drydock macho-rewrite` to it. The compatibility names (`patch_macho` and the
+rest) are unchanged because external callers use them.
 
 ### 20. Other tools that belong here
 
@@ -1223,7 +1227,7 @@ none is tied to one app:
    is hard-wired to one app and one person's paths (`Ex-Zodiac.app`,
    `/Users/Jonathan/...`). What generalises is a verb: "wrap framework F,
    adding symbols S, and repoint the binary's load command at the wrapper",
-   which `machotool`'s `dylib` rows already half-do. This is item 20.4's shim
+   which `drydock-macho-rewrite`'s `dylib` rows already half-do. This is item 20.4's shim
    generator with a worked method behind it.
 3. **`framework-stubs/`**, 34 files, with a README that separates **stubs** (the
    framework does not exist on 10.9, e.g. CoreSpotlight or UserNotifications:
@@ -1292,7 +1296,7 @@ half of it has nothing to do with trackpads.
 * **`tools/macho_rebase.c`**, 64 lines. Rebases a carved kext to base 0 so the
   analysis tools can handle its addresses.
 
-These are the "read" half of what this repo does. `machotool` edits binaries,
+These are the "read" half of what this repo does. `drydock-macho-rewrite` edits binaries,
 `imports` reports on them, and these three and `re` let someone understand
 what a binary does before editing it. Item 18's readiness report is a
 consumer of the same kind of analysis.
@@ -1349,4 +1353,15 @@ against Apple's open-source dyld header (`https://github.com/apple-oss-distribut
 against, which has no `fixup-chains.h`. Mutation-checked: reverting just the
 decode function makes the new/changed `cli_test.sh` assertions fail (2
 failures), confirmed by rebuild checksum, not just mtime.
+
+### 28. A test for `ME_TARGET_MAX`
+
+`src/edit.c`'s `ME_TARGET_MAX` bounds how many statements `target 10.9`
+expands into. It is sized by README.md's "The `target` statement" table, and
+nothing tests it: no fixture triggers all five rows at once, so shrinking the
+constant would overflow without any test failing. The citation rewrite
+(`f636b68`) kept an inline sentence there for exactly that reason. A fixture
+needs chained fixups, `__DATA_CONST` with `__objc_` sections and Swift tags
+together; `tests/mkchained.c` is the natural place to build it. Once it exists,
+the sentence can go.
 
