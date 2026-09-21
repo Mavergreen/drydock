@@ -62,6 +62,13 @@ jobs:
       - name: Record the pre-build tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
 
+      # platform: shipyard's mavericks-native/mavericks-cross hidden presets pin their
+      # own environment.MAVERICKS_BUILD_ROOT to $penv{TMPDIR}/mm-build; CMake's preset
+      # environment merge applies that AFTER anything exported here, so without the
+      # matching environment override in this file's own native/cross presets, this
+      # export would be silently ignored by `--preset` and CROSS_BUILD_DIR below would
+      # name a directory nothing builds into. (Verified against v1.0.278, empty binaryDir
+      # otherwise.)
       - name: Build out of tree
         run: |
           echo "MAVERICKS_BUILD_ROOT=$RUNNER_TEMP/mm-build" >> "$GITHUB_ENV"

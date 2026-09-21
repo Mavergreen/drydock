@@ -7,12 +7,14 @@
       "name": "native",
       "inherits": "mavericks-native",
       "displayName": "native — build on Mavericks 10.9 with its own clang",
+      "environment": { "MAVERICKS_BUILD_ROOT": "$penv{MAVERICKS_BUILD_ROOT}" },
       "cacheVariables": { "MAVERICKS_EXPECTED_MODE": "native" }
     },
     {
       "name": "cross",
       "inherits": "mavericks-cross",
       "displayName": "cross — build for 10.9 on a modern host, against the pinned 10.9 SDK",
+      "environment": { "MAVERICKS_BUILD_ROOT": "$penv{MAVERICKS_BUILD_ROOT}" },
       "cacheVariables": { "MAVERICKS_EXPECTED_MODE": "cross" }
     }
   ],
