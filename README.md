@@ -156,14 +156,15 @@ Two independent checks back that up:
   guarantee into the paragraph above. An edit that fits the existing header
   pad — a `dylib`, `rpath`, `load-command` or `segment` statement — disturbs
   nothing this gate examines, so it is not refused for a property its input
-  already had. Inside one run, `fixups set
-  classic` (and a `target 10.9` that expands to it) does disturb the image base,
-  and such a run is refused rather than written. Across the `patch_macho` →
-  `add_version_min` → `change_dylib` chain it is **not**: each tool is its own
-  process and carries no record of what the previous one disturbed, so the
-  `change_dylib` step no longer re-checks the conversion `patch_macho`
-  performed. `src/rewrite.c`'s comment at the gate has the reasoning and the
-  measurement.
+  already had. `fixups set classic` (and a `target 10.9` that expands to it)
+  disturbs the image base, so its run meets this gate, but this gate never
+  reads a rebased pointer, so it is not what protects that conversion. The
+  conversion checks itself: before handing back an image it reads its own
+  rebase and bind streams back out of it and compares each one, location and
+  value, with the chained fixup it came from, and refuses on any difference.
+  `patch_macho` and every other route to the conversion inherit that, so the
+  `patch_macho` → `add_version_min` → `change_dylib` chain is checked at its
+  first step. `tests/cli_test.sh`'s `badord` and `high8` cases fail without it.
 
   What no caller can do is switch off a gate that applies: what decides is the
   image and the operations, never an environment variable. `MACHO_NO_VERIFY=1`

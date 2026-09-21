@@ -513,3 +513,58 @@ has three options and should not have them pre-empted:
 
 Until then, **no document should state that the chain is protected**, and the
 three places that did have been corrected.
+
+### Resolution of Amendment 3, 2026-09-21: option 2, and it was not already done
+
+The repo owner chose **option 2**: the conversion verifies its own output.
+
+**Measured first, because deleting the `declassify` verb could have closed
+this by accident.** It did not. The conversion now runs only as the `fixups set
+classic` statement (`compat/patch_macho.sh` pipes that statement into
+`machorewrite`), so it meets `src/edit.c`'s gate in the same process — but
+that gate is `mg_plausible`, which compares initializer, unwind, export and
+data-in-code targets against `LC_FUNCTION_STARTS`. It never reads a rebased
+pointer or a bind. Two mutations of `src/declassify.c`, each run through
+`patch_macho IN OUT`, `machorewrite IN OUT` with `fixups set classic`, and
+the `install.sh` chain (`patch_macho`, `add_version_min`, `change_dylib`):
+
+| mutation | fixture | every entry point |
+|---|---|---|
+| first rebase's slot written as target + 0x10 | `tests/mkchained.c` (no `LC_FUNCTION_STARTS`, so the gate did not apply) | exit 0, file written, `slot0=0x100001010` |
+| first rebase's `DO_REBASE` opcode dropped | the same | exit 0, file written, rebase stream 4 bytes instead of 5 |
+| first rebase's slot written as target + 0x10 | a real ld64-built x86_64 executable with chained fixups and `LC_FUNCTION_STARTS` (7,880 rebases, 1,281 binds) | exit 0; the gate **ran and printed `verified`**; `change_dylib` afterwards exit 0 |
+
+So the table above understated this too: the row reading
+`machotool edit 'fixups set classic'` — **refused** was true only of a
+conversion that went wrong in the ways `mg_plausible` checks, and a lowered
+rebase or bind is not one of those ways. Nothing, anywhere, checked the
+~94,900 rebases.
+
+**What shipped.** `md_declassify_buf` now copies the chained segments' file
+bytes before it rewrites them, and, after emitting, reads the output back as
+dyld would: it finds the new `LC_DYLD_INFO_ONLY`, interprets its rebase and
+bind streams, re-walks every chain from the saved bytes, and requires each
+link to be matched by the next emitted rebase or bind at the same segment and
+offset, with the slot holding the target the link decodes to (rebase) or 0
+and the right symbol, ordinal and weak flag (bind), and nothing emitted
+beyond the chains. Any difference is `MDCL_REFUSED`, so every entry point —
+the statement, `target 10.9`, `patch_macho`, and therefore the `install.sh`
+chain at its first step — refuses and writes nothing. Both mutations above
+are now refused through all three entry points.
+
+Two inputs the conversion used to turn into a wrong binary, exit 0, are now
+refused by that check and pinned by `tests/cli_test.sh` (`mkchained
+make-badord`, `make-high8`); both cases fail when the check's call is
+removed: a bind naming an import past `imports_count` (the walk dropped that
+link and the rest of its chain), and a rebase with nonzero `high8`, which the
+lowering discards. The second is a latent decode defect — the conversion's
+`DYLD_CHAINED_PTR_64` branch also reads `target` as 43 bits and `high8` from
+bits 43–50, where `<mach-o/fixup-chains.h>` has 36 and 36–43 — that is
+harmless while `high8` and the reserved bits are zero, which they are on
+x86_64. It is now a refusal rather than a wrong pointer; correcting the
+decode is separate work.
+
+The "no document should state that the chain is protected" instruction is
+retired: the chain is protected, by the conversion, not by the later
+`change_dylib`. `README.md` says so, and the paragraph in `src/rewrite.c`
+that described the gap is gone.

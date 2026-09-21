@@ -810,24 +810,6 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * `lc -delete`, a segment rename. That is the trade this narrowing makes,
      * not a side effect of it.
      *
-     * AND IT COSTS MORE THAN THAT ON THE COMPAT CHAIN. `disturbed` is what
-     * THIS PROCESS declared and did. The chained-fixups conversion this gate was
-     * written for happens in a DIFFERENT process -- `patch_macho`, whose own
-     * `fixups set classic` runs no plausibility check of its own --
-     * and the `change_dylib` run that follows it declares only what its own
-     * dylib and rpath operations declare. So the three-tool chain no longer
-     * re-checks that conversion here unless the later run also grows a
-     * header. Where the conversion IS still gated is inside ONE process: a
-     * `fixups set classic` statement declares MREL_BASE_REL and
-     * meets src/edit.c's verify. This is a consequence of deriving
-     * applicability from a run rather than from an image, and it is recorded
-     * rather than repaired because the repair is a product decision: the gate
-     * needing no "before" image is what made it work across process
-     * boundaries in the first place. What each sequence catches before and
-     * after, measured against a build of the parent commit, is tabulated in
-     * docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
-     * Amendment 3, along with the three options for what to do about it.
-     *
      * NOT AN ESCAPE HATCH, which is the objection this shape draws. An escape
      * hatch is caller-controlled -- a flag or an environment variable, set by
      * whoever wants a refusal to go away. This is computed from the image and

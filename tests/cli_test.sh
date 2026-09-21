@@ -777,6 +777,24 @@ for dcl_mode in nosect sectpast; do
         || ok "declassify: $dcl_mode: produces no output file"
 done
 
+for dcl_mode in badord high8; do
+    "$T/mkchained" make-$dcl_mode "$T/$dcl_mode.in"
+    rm -f "$T/$dcl_mode.out" "$T/$dcl_mode.pm"
+    dcl "$T/$dcl_mode.in" "$T/$dcl_mode.out" >/dev/null 2>"$T/$dcl_mode.err" \
+        && rc=0 || rc=$?
+    [ "$rc" -eq 1 ] && grep -q "verifying the conversion" "$T/$dcl_mode.err" \
+        && ok "declassify: $dcl_mode: a wrong conversion is refused (1) by its own check" \
+        || bad "declassify: $dcl_mode" "expected 1 + 'verifying the conversion', got $rc: $(cat "$T/$dcl_mode.err")"
+    [ -e "$T/$dcl_mode.out" ] && bad "declassify: $dcl_mode" "wrote an output for an input it refused" \
+        || ok "declassify: $dcl_mode: produces no output file"
+    if [ -x "$BIN/patch_macho" ]; then
+        "$BIN/patch_macho" "$T/$dcl_mode.in" "$T/$dcl_mode.pm" >/dev/null 2>&1 && rc=0 || rc=$?
+        [ "$rc" -eq 1 ] && [ ! -e "$T/$dcl_mode.pm" ] \
+            && ok "declassify: $dcl_mode: patch_macho refuses it too, writing nothing" \
+            || bad "declassify: $dcl_mode (patch_macho)" "expected 1 and no output, got $rc"
+    fi
+done
+
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
 # the conversion into src/declassify.c did not change it: the two front-ends
 # are handed the same buffer by md_declassify and must write the same bytes.

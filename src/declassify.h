@@ -115,11 +115,12 @@
  *     first section's file data, so an image with no section data, or whose
  *     first section's offset lies past its end, is MDCL_REFUSED too, rather
  *     than given a guessed bound.
- *   An unknown chained-fixups pointer format is MDCL_REFUSED. A fixup that
- *     points outside the file, or a bind naming an ordinal the import table
- *     does not have, abandons THAT CHAIN with a message and keeps going --
- *     the one place this conversion continues rather than refusing, unchanged
- *     from patch_macho.
+ *   An unknown chained-fixups pointer format is MDCL_REFUSED. So is an
+ *     output that does not account for every chain link: before returning
+ *     MDCL_CONVERTED the conversion reads its emitted streams back out of the
+ *     image and compares each rebase and bind, location and value, with the
+ *     link it came from. A link outside the file, a bind naming an ordinal the
+ *     import table lacks, and a wrongly lowered target all end there.
  *
  * A caller therefore never has to bound its input itself, and never has to
  * wonder whether a zero return means the whole file was converted. */
@@ -177,7 +178,7 @@ typedef struct {
  *
  * Returns the same codes as md_declassify, tested by name the same way, and
  * prints the same messages -- except that it has no file to fail to read, so
- * MDCL_ERROR here only ever means an opcode-buffer allocation failed. On
+ * MDCL_ERROR here only ever means an allocation failed. On
  * MDCL_CONVERTED *out_len is the converted image's length (at most `cap`); on
  * MDCL_PASSTHROUGH it is `fsize`, the image unchanged. On a negative return
  * *out_len is untouched and the buffer's contents are unspecified -- the

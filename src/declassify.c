@@ -19,6 +19,7 @@
 #include "declassify.h"
 #include "image.h"
 #include "mach_compat.h"
+#include "uleb.h"
 
 /* Chained fixups structures (not in 10.9 headers) */
 struct cf_header {
@@ -208,6 +209,179 @@ static int md_collect_lc(const struct load_command *lc_, void *ctx_) {
     return 0;
 }
 
+struct md_vctx {
+    uint64_t seg_off[32];
+    int nsegs;
+    const struct dyld_info_command *di;
+};
+
+static int md_vcollect(const struct load_command *lc, void *ctx_) {
+    struct md_vctx *c = ctx_;
+    if (lc->cmd == LC_SEGMENT_64 && c->nsegs < 32)
+        c->seg_off[c->nsegs++] = ((const struct segment_command_64 *)lc)->fileoff;
+    else if (lc->cmd == LC_DYLD_INFO_ONLY)
+        c->di = (const struct dyld_info_command *)lc;
+    return 0;
+}
+
+struct md_op {
+    const uint8_t *p, *end;
+    uint64_t seg, off;
+    unsigned times;
+    int64_t ord;
+    unsigned flags;
+    const char *sym;
+};
+
+static int md_op_uleb(struct md_op *o, uint64_t *v) {
+    int n = mu_decode(o->p, o->end, v);
+    o->p += n;
+    return n;
+}
+
+static int md_next_rebase(struct md_op *o) {
+    while (!o->times) {
+        if (o->p >= o->end) return -1;
+        uint8_t b = *o->p++, imm = b & REBASE_IMMEDIATE_MASK;
+        switch (b & REBASE_OPCODE_MASK) {
+        case REBASE_OPCODE_DONE: return 0;
+        case REBASE_OPCODE_SET_TYPE_IMM:
+            if (imm != REBASE_TYPE_POINTER) return -1;
+            break;
+        case REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+            o->seg = imm;
+            if (!md_op_uleb(o, &o->off)) return -1;
+            break;
+        case REBASE_OPCODE_DO_REBASE_IMM_TIMES:
+            o->times = imm;
+            break;
+        default: return -1;
+        }
+    }
+    o->times--;
+    return 1;
+}
+
+static int md_next_bind(struct md_op *o) {
+    for (;;) {
+        if (o->p >= o->end) return -1;
+        uint8_t b = *o->p++, imm = b & BIND_IMMEDIATE_MASK;
+        uint64_t v;
+        switch (b & BIND_OPCODE_MASK) {
+        case BIND_OPCODE_DONE: return 0;
+        case BIND_OPCODE_SET_TYPE_IMM:
+            if (imm != BIND_TYPE_POINTER) return -1;
+            break;
+        case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM: o->ord = imm; break;
+        case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB:
+            if (!md_op_uleb(o, &v)) return -1;
+            o->ord = (int64_t)v;
+            break;
+        case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM:
+            o->ord = imm ? (int8_t)(BIND_OPCODE_MASK | imm) : 0;
+            break;
+        case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+            o->flags = imm;
+            o->sym = (const char *)o->p;
+            while (o->p < o->end && *o->p) o->p++;
+            if (o->p++ >= o->end) return -1;
+            break;
+        case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+            o->seg = imm;
+            if (!md_op_uleb(o, &o->off)) return -1;
+            break;
+        case BIND_OPCODE_DO_BIND: return 1;
+        default: return -1;
+        }
+    }
+}
+
+static int md_verify_fail(const char *what, uint32_t si, uint64_t off) {
+    fprintf(stderr, "ERROR: verifying the conversion: %s (segment %u, offset 0x%llx); "
+                    "refusing rather than writing a binary whose fixups are wrong\n",
+            what, si, (unsigned long long)off);
+    return -1;
+}
+
+static int md_verify(uint8_t *out, size_t out_len, uint32_t fixups_off,
+                     const uint8_t *snap, uint64_t snap_lo, uint64_t snap_hi) {
+    mi_image im;
+    struct md_vctx vc;
+    memset(&vc, 0, sizeof vc);
+    uint64_t base = 0;
+    if (mi_wrap(out, out_len, &im) != 0 || !mi_each_lc(&im, md_vcollect, &vc) || !vc.di ||
+        (uint64_t)vc.di->rebase_off + vc.di->rebase_size > out_len ||
+        (uint64_t)vc.di->bind_off + vc.di->bind_size > out_len)
+        return md_verify_fail("the output has no readable LC_DYLD_INFO_ONLY", 0, 0);
+    int has_base = mi_image_base(&im, &base) == 0;
+
+    struct md_op rb, bd;
+    memset(&rb, 0, sizeof rb); memset(&bd, 0, sizeof bd);
+    rb.p = out + vc.di->rebase_off; rb.end = rb.p + vc.di->rebase_size;
+    bd.p = out + vc.di->bind_off;   bd.end = bd.p + vc.di->bind_size;
+
+    const struct cf_header *cfh = (const struct cf_header *)(out + fixups_off);
+    const struct cf_starts_image *csi = (const struct cf_starts_image *)((const uint8_t *)cfh + cfh->starts_offset);
+    const struct cf_import *imports = (const struct cf_import *)((const uint8_t *)cfh + cfh->imports_offset);
+    const char *sympool = (const char *)cfh + cfh->symbols_offset;
+    int rebases = 0, binds = 0;
+
+    for (uint32_t si = 0; si < csi->seg_count; si++) {
+        if (csi->seg_info_offset[si] == 0) continue;
+        if (si >= (uint32_t)vc.nsegs) return md_verify_fail("fixups name a segment the output lacks", si, 0);
+        const struct cf_starts_seg *ss = (const struct cf_starts_seg *)((const uint8_t *)csi + csi->seg_info_offset[si]);
+        int fmt = ss->pointer_format;
+        if (fmt != CF_PTR_64 && fmt != CF_PTR_64_OFFSET) return md_verify_fail("unknown pointer format", si, 0);
+        for (uint16_t pg = 0; pg < ss->page_count; pg++) {
+            if (ss->page_start[pg] == CF_START_NONE) continue;
+            uint64_t off = (uint64_t)pg * ss->page_size + ss->page_start[pg];
+            for (;;) {
+                uint64_t pos = vc.seg_off[si] + off, raw, now;
+                if (pos < snap_lo || pos + 8 > snap_hi || pos + 8 > out_len)
+                    return md_verify_fail("a chain link lies outside the fixed-up segments", si, off);
+                memcpy(&raw, snap + (pos - snap_lo), 8);
+                memcpy(&now, out + pos, 8);
+                if (raw >> 63) {
+                    uint32_t ordinal = raw & 0xFFFFFF;
+                    if (ordinal >= cfh->imports_count)
+                        return md_verify_fail("a bind names an import the table lacks", si, off);
+                    uint32_t bits = imports[ordinal].bits;
+                    int64_t ord = (int8_t)(bits & 0xFF);
+                    unsigned weak = (bits >> 8) & 1;
+                    if (ord == -3) { ord = BIND_SPECIAL_DYLIB_FLAT_LOOKUP; weak = 1; }
+                    if (md_next_bind(&bd) != 1 || bd.seg != si || bd.off != off)
+                        return md_verify_fail("a bind was not emitted where the chain has it", si, off);
+                    if (bd.ord != ord || !bd.sym || strcmp(bd.sym, sympool + (bits >> 9)) != 0 ||
+                        ((bd.flags & BIND_SYMBOL_FLAGS_WEAK_IMPORT) != 0) != weak || now != 0)
+                        return md_verify_fail("an emitted bind differs from the chain's", si, off);
+                    bd.off += 8;
+                    binds++;
+                } else {
+                    /* platform: <mach-o/fixup-chains.h>, dyld_chained_ptr_64_rebase */
+                    uint64_t want = ((raw & 0xFFFFFFFFFULL) | (((raw >> 36) & 0xFF) << 56));
+                    if (fmt == CF_PTR_64_OFFSET) {
+                        if (!has_base) return md_verify_fail("no image base for an offset rebase", si, off);
+                        want += base;
+                    }
+                    if (md_next_rebase(&rb) != 1 || rb.seg != si || rb.off != off)
+                        return md_verify_fail("a rebase was not emitted where the chain has it", si, off);
+                    if (now != want)
+                        return md_verify_fail("a rebased pointer holds the wrong target", si, off);
+                    rb.off += 8;
+                    rebases++;
+                }
+                uint64_t next = ((raw >> 51) & 0xFFF) * 4;
+                if (!next) break;
+                off += next;
+            }
+        }
+    }
+    if (md_next_rebase(&rb) != 0 || md_next_bind(&bd) != 0)
+        return md_verify_fail("more fixups were emitted than the chains hold", 0, 0);
+    printf("Verified %d rebases, %d binds against the chained fixups\n", rebases, binds);
+    return 0;
+}
+
 int md_declassify(const char *path, uint8_t **out_buf, size_t *out_len) {
     /* Read file. The MDCL_SLACK of headroom is this conversion's own
      * requirement: it appends the rebuilt rebase/bind streams into the tail
@@ -256,6 +430,8 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
     /* What the two cleanup labels at the bottom hand back. Declared here
      * because a goto may not jump over its initialization. */
     int rc;
+    uint8_t *snap = NULL;
+    uint64_t snap_lo = UINT64_MAX, snap_hi = 0;
 
     mi_image im;
     if (mi_wrap(buf, fsize, &im) != 0) return MDCL_NOT_MACHO;
@@ -331,6 +507,24 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
     ob_byte(&bind, BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER);
 
     int total_rebases = 0, total_binds = 0;
+
+    for (uint32_t si = 0; si < csi->seg_count && si < (uint32_t)nsegs; si++) {
+        if (csi->seg_info_offset[si] == 0) continue;
+        uint64_t lo = segs[si]->fileoff, hi = lo + segs[si]->filesize;
+        if (hi > fsize) hi = fsize;
+        if (lo < snap_lo) snap_lo = lo;
+        if (hi > snap_hi) snap_hi = hi;
+    }
+    if (snap_hi > snap_lo) {
+        snap = malloc((size_t)(snap_hi - snap_lo));
+        if (!snap) {
+            fprintf(stderr, "ERROR: could not allocate %llu bytes to verify the conversion against\n",
+                    (unsigned long long)(snap_hi - snap_lo));
+            rc = MDCL_ERROR;
+            goto fail;
+        }
+        memcpy(snap, buf + snap_lo, (size_t)(snap_hi - snap_lo));
+    }
 
     for (uint32_t si = 0; si < csi->seg_count && si < (uint32_t)nsegs; si++) {
         if (csi->seg_info_offset[si] == 0) continue;
@@ -580,6 +774,8 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
         linkedit->vmsize = new_vmsize;
     }
 
+    if (md_verify(buf, new_end, fixups_off, snap, snap_lo, snap_hi) != 0) goto refuse;
+
     *out_len = new_end;
     if (rep) {
         /* The removal table in load-command order is md_collect_lc's own,
@@ -596,7 +792,7 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
         rep->linkedit_before = linkedit_before;
         rep->linkedit_after = linkedit->filesize;
     }
-    free(rebase.data); free(bind.data);
+    free(rebase.data); free(bind.data); free(snap);
     return MDCL_CONVERTED;
 
     /* Every refusal raised after the opcode buffers exist reaches here instead
@@ -610,6 +806,6 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
 refuse:
     rc = MDCL_REFUSED;
 fail:
-    free(rebase.data); free(bind.data);
+    free(rebase.data); free(bind.data); free(snap);
     return rc;
 }
