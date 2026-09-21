@@ -30,6 +30,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 24 | Stub/wrapper shim generator, designed from M-P-R's `framework-stubs/` | — | — | **to brainstorm**; this is item 20.4, see item 21 |
 | 25 | Take in magic-trackpad2's general reverse-engineering tools | — | — | **to brainstorm**, raised 2026-09-21; the generic half moves here and the trackpad half stays, see below |
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **to do**, found 2026-09-21 by item 5's fix; small, see below |
+| 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
