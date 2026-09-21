@@ -28,6 +28,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 22 | Runtime trace for a ported binary, from M-P-R's `syscall_trace.c` | — | — | **to brainstorm**; the runtime half of item 18; see item 21 |
 | 23 | Wrapper-dylib verb, from M-P-R's `build_wrappers.sh` and recipes | — | — | **to brainstorm**; see item 21 |
 | 24 | Stub/wrapper shim generator, designed from M-P-R's `framework-stubs/` | — | — | **to brainstorm**; this is item 20.4, see item 21 |
+| 25 | Take in magic-trackpad2's general reverse-engineering tools | — | — | **to brainstorm**, raised 2026-09-21; the generic half moves here and the trackpad half stays, see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1252,4 +1253,58 @@ trade this family wants. Two things to settle before retiring the org repo:
 **Before any of it moves:** agree the plan with Wowfunhappy, and settle
 licensing per piece. avxemu's is already an open question, and a file moving
 between repos carries its licence with it.
+
+### 25. Take in magic-trackpad2's general reverse-engineering tools
+
+Surveyed 2026-09-21 at magic-trackpad2 `9f9179c`. That repo grew a
+reverse-engineering kit while it worked out Apple's multitouch stack. About
+half of it has nothing to do with trackpads.
+
+**Moves here: static analysis of Mach-O files and kernelcaches.**
+
+* **`tools/re`**, the static half. It is a 756-line POSIX `sh` script with one
+  command and many subcommands: `disasm`, `syms`, `objc-methods`, `calls` (who
+  calls an address or symbol), `str-xref` (string to the function that uses
+  it), `xref`, `xref-offset` (struct-field accesses), `vtable` (slot offset
+  to method), `strings`, `consts`, `hex`, `bcmp`, `plist`. It shells out to
+  `otool`, `nm` and `strings`, and its arch default follows the host (x86_64 on
+  10.9, arm64e on Apple Silicon).
+* **`tools/kc_lzss.c`**, 92 lines. Decompresses a 10.9 `complzss` kernelcache to
+  a plain Mach-O kernel, with no LZMA, LIEF or Python.
+* **`tools/kc_carve.c`**, 75 lines. Carves a prelinked kext out of the kernel by
+  virtual address. This is the only way to read the driver build that is
+  actually running, because the on-disk `/S/L/E` copy differs.
+* **`tools/macho_rebase.c`**, 64 lines. Rebases a carved kext to base 0 so the
+  analysis tools can handle its addresses.
+
+These are the "read" half of what this repo does. `machotool` edits binaries,
+`imports` reports on them, and these three and `re` let someone understand
+what a binary does before editing it. Item 18's readiness report is a
+consumer of the same kind of analysis.
+
+**Stays in magic-trackpad2: everything about the trackpad.**
+The live subcommands of `re` that are about this device (`amd-actuation`,
+`conn-trace`, `bt-timeline`, `mt-contacts`, `mt-devices`, `mt2-name`,
+`deployed`), plus `tools/rc`, `tools/mt2_*`, `tools/multitouch_*`,
+`tools/spikes/`, `trace_btnstack.d` and `captures/`.
+
+**Undecided:**
+* `re`'s generic live subcommands (`ioreg-class`, `ioreg-props`, `kexts`,
+  `klog`) are about IOKit, not trackpads. They could sit here beside item 22's
+  runtime trace, or stay put.
+* `kext-gesture/vtable_clone.h` overrides one C++ object's vtable in a kext
+  without touching the shared class. That is a real technique for refitting
+  kexts, but today it is a header inside one kext.
+* `tools/ORACLES.md` is a method rather than a tool: every measuring instrument
+  can mislead in its own way, and a fix must cite a ground-truth measurement,
+  not a stand-in. It belongs with the porting playbook in shipyard's
+  `claude-plugins/modernmavericks` (see item 21), not here.
+
+**The design question: `re` has to split without breaking.** One command
+covers both halves, and magic-trackpad2's workflows and allowlist rely on
+that. The split needs a way to add subcommands: the generic `re` ships here,
+and magic-trackpad2 keeps its device subcommands as a plugin that the shared
+`re` finds. Otherwise the repo that grew the tool loses it. A second question:
+whether some static subcommands, `syms` and `objc-methods` first, should run on
+this repo's own Mach-O parsers instead of 10.9's old `otool`/`nm`.
 
