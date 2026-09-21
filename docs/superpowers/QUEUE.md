@@ -20,9 +20,9 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 14 | Spike: weaken binds in memory at load time | — | — | **spike done** 2026-09-12: answered NO; see below |
 | 15 | Flat-namespace shim: satisfy missing symbols at runtime | — | — | not started; came out of item 14's spike |
 | 16 | 32-bit (`LC_SEGMENT`) input | — | — | **to brainstorm**, raised 2026-09-20. Refused everywhere today, deliberately; `docs/prior-art.md` holds the reasoning and the two regression tests that pin it. Reopening it is what a Snow Leopard target would need, and what a fully drop-in `insert_dylib` would need |
-| 17 | Convert a newer NIB to one 10.9 can load, without Xcode | — | — | **to brainstorm**, raised 2026-09-21; see below |
+| 17 | Convert a newer NIB to one 10.9 can load, without Xcode | — | — | **to brainstorm**, raised 2026-09-21; a working 148-line prototype exists in mavericks-1password history, see below |
 | 18 | "Will this run on Mavericks?" for an arbitrary binary or `.app` | — | — | **to brainstorm**, raised 2026-09-21; see below |
-| 19 | A new name for this repo | — | — | **to decide**, raised 2026-09-21; entangled with item 7, see below |
+| 19 | Rename this repo to **drydock** | — | — | **name decided** 2026-09-21; the rename itself waits for item 7, see below |
 | 20 | Other tools that belong here | — | — | **idea list**, raised 2026-09-21; see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
@@ -1076,12 +1076,43 @@ tables to find them; pan gesture recognizers were one). It also guessed that
 `ibtool` writes the old format when targeting 10.9 and said it had not verified
 that. Unverified; the point of this item is to not need `ibtool` at all.
 
-**What was not found.** The repo owner remembers getting "pretty far" with this
-earlier, during porthole's Chicken of the VNC period. A search of the porthole
-session transcripts found one passing mention and no conversion work, and the
-local `chicken` checkout's `4624382 old nibs converted` is a third party's
-conversion in the OTHER direction (old to newer). If that earlier work exists it
-is somewhere not yet looked. Ask before brainstorming.
+**Prior art: it worked, end to end, in mavericks-1password.** Commits
+`22293ab`, `dff06c5` (2026-07-09) added `viewer/nib2bplist.py`, 148 lines, which
+converted NIBArchive to classic `bplist00` `NSKeyedArchiver` for the Chicken of the
+VNC back-port. It parsed with the PyPI `nibarchive==1.1.0` package, wrote with
+`plistlib`, and ran from the Makefile over every
+`Base.lproj/*.nib/keyedobjects.nib` whose first bytes are `NIBArchive`. The
+result: the app launched on 10.9.5 and completed a real RFB session. It was
+retired with the whole viewer in `2c169a1` (2026-07-12) when OPXpra reached
+parity, and not because it failed. Recover it with
+`git -C ../mavericks-1password show 2c169a1^:viewer/nib2bplist.py`. The
+write-up offered upstream is in 1password's `docs/ays7-chicken-10.9-support.md`,
+§3, which is gitignored and on disk only.
+
+What a general tool must do that the script did not:
+
+* **Class hierarchies.** NIBArchive stores a class name but not its superclass
+  chain, and `NSKeyedArchiver`'s `$classes` needs the chain. The script
+  hard-coded 35 AppKit classes (`HIER`) and fell back to `[name, NSObject]` for
+  the rest. That was enough for one small app and wrong for anything else: a
+  custom `NSView` subclass would claim to descend from `NSObject` alone. A
+  general tool needs the real chains. Candidate sources are the ObjC metadata in
+  the app's own binary, via this repo's parsers, plus a table for AppKit.
+* **Value types.** It exited on any value type it did not handle ("unhandled
+  value type"). That is the right failure, but coverage was only as wide as one
+  app's nibs.
+* **Dependencies.** A Python dependency from PyPI does not suit a repo whose
+  tools are C with a 10.9 floor. Either port the parser, or make the Python
+  dependency a deliberate choice.
+
+The same 1password write-up says `ibtool` historically honours a low
+`--minimum-deployment-target` and emits the older format, and that recent Xcode
+may no longer do so. That is unverified, and it is moot: the point of this item
+is not to need Xcode.
+
+Also checked: the local `chicken` checkout's `4624382 old nibs converted` is a
+third party's conversion in the other direction (old to newer), so it is not
+prior art for this item.
 
 **Neighbours.** Storyboards (10.9 has no `NSStoryboard`; it arrived in 10.10) and
 asset catalogs (`Assets.car`) are the same shape of problem — see item 20.
@@ -1110,20 +1141,18 @@ What the report needs that neither does: walking an `.app` (every Mach-O in
 say whether a tool in this repo already closes it — which turns the report into a
 plan, and is the reason it belongs here rather than in shipyard.
 
-### 19. A new name for this repo
+### 19. A new name for this repo: **drydock**
 
-"macho-tools" undersells a repo that will also hold a nib converter and an
-app-readiness report, neither of which is about Mach-O. Candidates, to argue
-over rather than to pick from:
+**Decided by the repo owner 2026-09-21: the repo will be called `drydock`.** A
+drydock is where a ship is hauled out to be refitted. The name sits beside
+shipyard and porthole, and it covers what the repo is becoming: a nib
+converter and an app-readiness report, neither of which is about Mach-O.
 
-* **drydock** — where a ship is hauled out to be refitted; sits beside shipyard
-  and porthole, the family's two nautical names;
-* **refit** — the same idea as a verb;
-* **backport-tools** — plain, and exactly what it is.
-
-Entangled with **item 7**, which already carries "the three rename steps" and
-rewrites history. A repo rename is cheapest done in the same pass, so decide the
-name before item 7 starts, not after.
+**Not yet: the rename waits for the right point in the sequence.** Item 7
+already carries "the three rename steps" and rewrites history, and the rename is
+cheapest done in that same pass. Do it there, not as a separate step first. The
+product binary `machotool` is a separate question. It does edit Mach-O files, so
+the repo name does not force a change to it.
 
 ### 20. Other tools that belong here
 
