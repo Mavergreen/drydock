@@ -1,14 +1,14 @@
-#ifndef MACHOREWRITE_LC_KINDS_H
-#define MACHOREWRITE_LC_KINDS_H
+#ifndef DRYDOCK_LC_KINDS_H
+#define DRYDOCK_LC_KINDS_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-/* The KIND vocabulary change_dylib's -strip-lc and machorewrite's `lc -delete`
+/* The KIND vocabulary change_dylib's -strip-lc and drydock-macho-rewrite's `lc -delete`
  * both accept -- ONE table, in the shared library, so it has exactly one
  * place to edit. Before this, the same name->LC mapping was hand-copied in
- * three places (change_dylib.c's strippable[], cli/machorewrite.c's LC_KINDS[],
- * and a hardcoded "kinds=..." string inside machorewrite's --capabilities), which
+ * three places (change_dylib.c's strippable[], cli/drydock-macho-rewrite.c's LC_KINDS[],
+ * and a hardcoded "kinds=..." string inside drydock-macho-rewrite's --capabilities), which
  * defeats the one thing --capabilities exists for: a wrapper that trusts
  * the probe can be lied to just by editing one of the three and not the
  * others. Now both tools -- and --capabilities' advertised list -- read
@@ -33,7 +33,7 @@ const char *lc_kind_name(uint32_t cmd);
 /* The forward direction: the LC_* value a KIND name (as typed: "uuid",
  * "codesig", ...) stands for. Returns 0 and sets *cmd if `name` is one of
  * LC_STRIP_KINDS's entries; returns -1 and leaves *cmd alone otherwise.
- * Every front-end that accepts a KIND -- cli/machorewrite.c's `lc -delete`,
+ * Every front-end that accepts a KIND -- cli/drydock-macho-rewrite.c's `lc -delete`,
  * src/script.c's `load-command delete`, and src/edit.c's lowering of it --
  * asks this, so none of them carries its own copy of the lookup; each still
  * words its own refusal. */
@@ -43,7 +43,7 @@ int lc_kind_by_name(const char *name, uint32_t *cmd);
  * for every kind this toolkit names back to a user -- a different
  * vocabulary from the KIND names above, which cover only what `lc -delete`
  * can strip. Returns NULL for a kind not in its list, so each caller decides
- * how to show one it does not know. cli/machorewrite.c's `info` dump and
+ * how to show one it does not know. cli/drydock-macho-rewrite.c's `info` dump and
  * src/edit.c's report both ask this; it is the one list. */
 const char *lc_cmd_name(uint32_t cmd);
 

@@ -5,7 +5,7 @@
  * directly in the header. Splitting into grow.h (declarations) + grow.c
  * (definitions) is why each one below lost its `static` -- external linkage
  * is what a declaration in a header now promises callers in other
- * translation units (change_dylib.c, cli/machorewrite.c, tests/grow_test.c).
+ * translation units (change_dylib.c, cli/drydock-macho-rewrite.c, tests/grow_test.c).
  * Nothing else changed in this move; characterize and the (also-moved)
  * grow_test are the proof. */
 
@@ -750,7 +750,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
      * ran and `verify` printed a verdict it had not reached.
      *
      * This path says so on stderr because the caller that matters prints
-     * "FAILED (see above)" (cli/machorewrite.c's cmd_verify) and a silent -1 here
+     * "FAILED (see above)" (cli/drydock-macho-rewrite.c's cmd_verify) and a silent -1 here
      * is what made that line contentless -- the exact fingerprint this bug
      * was finally identified by. The refusal is correct and now rare; it
      * should still be legible when it happens.
@@ -955,7 +955,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * require fixing up absolute pointers — which this tool deliberately does
      * not do. Refuse loudly rather than silently corrupt.
      *
-     * 32-bit stays refused here too, on purpose (an insert_dylib parity gap):
+     * 32-bit stays refused here too, on purpose:
      * this function and everything it calls -- mg_first_sect_off, mg_collect
      * (which mg_snapshot_take/mg_verify use), mg_classify, mg_unwind_walk,
      * mg_init_offsets_pass, and the LC_SEGMENT_64/section_64 patching loop

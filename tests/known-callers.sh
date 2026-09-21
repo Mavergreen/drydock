@@ -7,8 +7,7 @@
 # WHY THIS TEST IS THE GATE. A wrapper that passes the test suite but breaks
 # a real caller is a failure. So the exhaustive argument sweep
 # (tests/compat-sweep.sh) is DISCOVERY and these replays are the decisive
-# gate -- a surprise in the
-# sweep starts a conversation, a failure here stops the work. The callers were
+# gate -- a surprise in the sweep starts a conversation, a failure here stops the work. The callers were
 # enumerated from evidence (by fetching and reading
 # mavericksforever.com/claude/install.sh in full, and grepping every
 # mavericks-* checkout on this machine); this file is that list, executed.
@@ -23,7 +22,7 @@
 #      libavxemu.dylib as an ordinary dependency.
 #   3. mavericks-magic-trackpad2's recorded, exact Bash permission entries --
 #      a slightly different shape (two patch_macho runs, and three -change
-#      flags with NO -strip-lc, so change_dylib translates to ONE machorewrite
+#      flags with NO -strip-lc, so change_dylib translates to ONE drydock-macho-rewrite
 #      command rather than two).
 #
 # The other callers found are this repo's own suites, and they are
@@ -49,8 +48,7 @@
 # If one moves, a wrapper has changed what a real caller gets -- fix the
 # wrapper, do not update the number.
 #
-# WHAT EACH CALLER ACTUALLY DEPENDS ON, read from each one's own source
-# (how it uses stdout, stderr and exit codes): every one
+# WHAT EACH CALLER ACTUALLY DEPENDS ON: every one
 # redirects stdout to /dev/null and checks the EXIT CODE -- `"$MF/$tool" ...
 # >/dev/null || { echo "claude: $tool failed" >&2; exit 1; }`. None parses
 # stdout as data. So this file asserts exit codes and resulting bytes first,
@@ -64,7 +62,7 @@ BIN="${1:?usage: known-callers.sh <bindir>}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIXTURE="$HERE/fixture.macho"
 
-for t in machorewrite patch_macho add_version_min change_dylib; do
+for t in drydock-macho-rewrite patch_macho add_version_min change_dylib; do
     [ -x "$BIN/$t" ] || { echo "known-callers: $BIN/$t not found or not executable" >&2; exit 1; }
 done
 [ -r "$FIXTURE" ] || { echo "known-callers: $FIXTURE missing" >&2; exit 1; }
@@ -80,8 +78,7 @@ sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
 # ---- caller 1: install.sh's /usr/local/bin/claude wrapper ----------------
 #
-# Verbatim from install.sh's generated wrapper (quoted from its
-# source), with $REAL/$T bound to a copy of the fixture. The `>/dev/null ||
+# Verbatim from install.sh's generated wrapper, with $REAL/$T bound to a copy of the fixture. The `>/dev/null ||
 # { ...; exit 1; }` shape is reproduced too, because the exit code is what
 # actually gates that wrapper's control flow.
 INSTALLSH_SHA=ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792
@@ -115,20 +112,20 @@ got=$(sha "$T/t")
 # STDERR -- stdout is redirected to /dev/null by this very caller, so a
 # message on stdout would vanish. One assertion per tool: the equivalent
 # command is in that tool's stderr, and it is the bare form -- statements
-# piped into `machorewrite FILE OUT`, which is the only way machorewrite modifies a
+# piped into `drydock-macho-rewrite FILE OUT`, which is the only way drydock-macho-rewrite modifies a
 # binary. Both halves are asserted, because a pipeline with the wrong
 # statement in it would still look like a pipeline.
-grep -q '| machorewrite ' "$T/e1" && grep -q 'fixups set classic' "$T/e1" \
-    && ok "install.sh: patch_macho taught its machorewrite equivalent on stderr" \
-    || bad "install.sh: patch_macho stderr" "no machorewrite equivalent: $(cat "$T/e1")"
-grep -q '| machorewrite ' "$T/e2" && grep -q 'version-min set 10.9' "$T/e2" \
-    && ok "install.sh: add_version_min taught its machorewrite equivalent on stderr" \
-    || bad "install.sh: add_version_min stderr" "no machorewrite equivalent: $(cat "$T/e2")"
+grep -q '| drydock-macho-rewrite ' "$T/e1" && grep -q 'fixups set classic' "$T/e1" \
+    && ok "install.sh: patch_macho taught its drydock-macho-rewrite equivalent on stderr" \
+    || bad "install.sh: patch_macho stderr" "no drydock-macho-rewrite equivalent: $(cat "$T/e1")"
+grep -q '| drydock-macho-rewrite ' "$T/e2" && grep -q 'version-min set 10.9' "$T/e2" \
+    && ok "install.sh: add_version_min taught its drydock-macho-rewrite equivalent on stderr" \
+    || bad "install.sh: add_version_min stderr" "no drydock-macho-rewrite equivalent: $(cat "$T/e2")"
 # This one invocation is worth several statements, so its equivalent carries
 # both kinds it needs in the one command.
-grep -q '| machorewrite ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
+grep -q '| drydock-macho-rewrite ' "$T/e3" && grep -q 'load-command delete uuid' "$T/e3" \
     && grep -q 'dylib replace' "$T/e3" \
-    && ok "install.sh: change_dylib taught its machorewrite equivalent on stderr" \
+    && ok "install.sh: change_dylib taught its drydock-macho-rewrite equivalent on stderr" \
     || bad "install.sh: change_dylib stderr" "missing an equivalent: $(cat "$T/e3")"
 
 # IDEMPOTENCY. install.sh's wrapper decides whether to run the pipeline at all
@@ -142,7 +139,7 @@ rc=0
     || bad "install.sh: patch_macho idempotency" "exit $rc, or the output differs from the input"
 
 # ...and it says so with md_declassify's own line and NOTHING else. The C tool
-# never named the file it wrote on this path; `machorewrite declassify` does, and
+# never named the file it wrote on this path; `drydock-macho-rewrite declassify` does, and
 # compat/patch_macho.sh drops that line again. This is the one stdout
 # difference the wrappers actively close, so it gets its own assertion.
 grep -q '^Already patched' "$T/o2" \
@@ -177,7 +174,7 @@ got=$(sha "$T/b1" 2>/dev/null || echo none)
 #
 # Two patch_macho runs from the same input, then add_version_min, then a
 # change_dylib with THREE -change flags and no -strip-lc -- which translates
-# to a SINGLE machorewrite command, so this replay covers the wrapper's non-sequence
+# to a SINGLE drydock-macho-rewrite command, so this replay covers the wrapper's non-sequence
 # path where caller 1 covers the sequence path.
 TRACKPAD_SHA=df2b12fe08ada595b71063ee6c6ab6821c3266e4f68579bb4a14698e466b34cd
 TRACKPAD_C1_SHA=b355358e586e4828a2dbafb349f1220f1985e074e1fdc223dc0d4fe6a23f878f
@@ -205,10 +202,10 @@ got1=$(sha "$T/c1" 2>/dev/null || echo none)
 #
 # `-strip-lc uuid -delete <a dylib something still binds to>` is that case,
 # and tests/compat-sweep.sh measured it as a regression when it is run as a
-# raw sequence: the C tool refused ATOMICALLY, while `machorewrite lc` followed by
-# `machorewrite dylib` refused only AFTER the first command had already rewritten
+# raw sequence: the C tool refused ATOMICALLY, while `drydock-macho-rewrite lc` followed by
+# `drydock-macho-rewrite dylib` refused only AFTER the first command had already rewritten
 # the file (the matrix marks those rows "both-refuse+partial"). A mixed-family
-# invocation is one `machorewrite edit` now, which reads the image once, applies
+# invocation is one `drydock-macho-rewrite edit` now, which reads the image once, applies
 # every statement to it in memory and writes once at the end -- so a refusal
 # at any statement writes nothing. That is what this asserts, rather than
 # only describing it.
@@ -218,7 +215,7 @@ before=$(sha "$T/atom")
 # question about the directory rather than about one temp-file spelling. The
 # wrapper used to make a `.NAME.macho9-compat.PID` copy and a grep for that
 # name was the check; nothing produces it now, so a grep for it can no longer
-# fail. machorewrite's own temp is `TARGET.XXXXXX`, and a refusal that left one
+# fail. drydock-macho-rewrite's own temp is `TARGET.XXXXXX`, and a refusal that left one
 # would show up here as surely as anything else.
 # Created first, so the redirection below does not itself count as something
 # the run left behind.
@@ -275,7 +272,7 @@ got=$(sha "$T/dir with space/t" 2>/dev/null || echo none)
 # the absence of one particular temp-file spelling. Naming a spelling is the
 # weaker test in both directions: a grep for a spelling nothing produces can
 # never fail, and one for a spelling that IS produced -- `mw_prepare` makes
-# `machorewrite-compat` temps today -- fails for a reason the assertion does
+# `drydock-macho-rewrite-compat` temps today -- fails for a reason the assertion does
 # not mean. Comparing the whole listing is indifferent to what temps are called. The
 # two listings are sorted the same way and compared whole, for the reason the
 # atomicity block above gives.

@@ -1,8 +1,7 @@
 #!/bin/sh
 # tests/leaf-tool-crashes.sh — regression coverage for two heap-overflow
 # crashes a code review found in add_version_min and retag_swift_classes
-# after the toolkit's first extraction step converted them onto
-# src/image.h.
+# after they were converted onto src/image.h.
 #
 # mi_open validates every LOAD COMMAND (magic, cmdsize bounds/alignment,
 # LC_SEGMENT_64/nsects agreement) but nothing about a SECTION's file range,
@@ -36,11 +35,11 @@
 #                      lay inside the buffer: no crash, but the rewriters'
 #                      commit zeroed real data up to it.
 #
-# nosect and oobsection fail `machorewrite verify` (no segment maps the header);
+# nosect and oobsection fail `drydock-macho-rewrite verify` (no segment maps the header);
 # sectionless passes it, so nothing upstream of the tools stops them.
 #
 # An `oobgrow.macho` stood beside these: the same out-of-bounds section offset
-# in an image `machorewrite grow FILE OUT N` accepted until it used it, where
+# in an image `drydock-macho-rewrite grow FILE OUT N` accepted until it used it, where
 # `fsize - insert` wrapped and the tool died of SIGSEGV. The verb is gone, and
 # no script can force that grow (mg_ensure_pad grows only when the load
 # commands actually need the room, which on that image they never do). The
@@ -61,7 +60,7 @@ BIN="${1:?usage: leaf-tool-crashes.sh <bindir>}"
 [ -x "$BIN/add_version_min" ] || { echo "leaf-tool-crashes: $BIN/add_version_min not found" >&2; exit 1; }
 [ -x "$BIN/retag_swift_classes" ] || { echo "leaf-tool-crashes: $BIN/retag_swift_classes not found" >&2; exit 1; }
 [ -x "$BIN/patch_macho" ] || { echo "leaf-tool-crashes: $BIN/patch_macho not found" >&2; exit 1; }
-[ -x "$BIN/machorewrite" ] || { echo "leaf-tool-crashes: $BIN/machorewrite not found" >&2; exit 1; }
+[ -x "$BIN/drydock-macho-rewrite" ] || { echo "leaf-tool-crashes: $BIN/drydock-macho-rewrite not found" >&2; exit 1; }
 
 CC="${CC:-clang}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -246,7 +245,7 @@ sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
 
 # mt_append GMALLOC FILE OUT  -- `dylib append /x` through the only mutating
 # interface there is, with `allow-grow` ahead of it when $grow is set. It was
-# `machorewrite dylib FILE OUT -append /x [--allow-grow]`; the fixtures, the
+# `drydock-macho-rewrite dylib FILE OUT -append /x [--allow-grow]`; the fixtures, the
 # refusals and every assertion below are unchanged, because the crash these
 # cases exist to catch is in the rewriter, not in how it was asked for.
 #
@@ -261,7 +260,7 @@ mt_append() {
         printf 'dylib append /x\n'
     } | (
         [ -n "$mt_gm" ] && { DYLD_INSERT_LIBRARIES=$mt_gm; export DYLD_INSERT_LIBRARIES; }
-        exec "$BIN/machorewrite" "$mt_file" "$mt_out"
+        exec "$BIN/drydock-macho-rewrite" "$mt_file" "$mt_out"
     )
 }
 for grow in "" --allow-grow; do
@@ -314,7 +313,7 @@ done
 # a dylib append would still be refused, by mg_ensure_pad, if mr_process_thin
 # stopped checking.
 #
-# `machorewrite grow <copy> OUT 4096` was held here to mg_grow_header's own
+# `drydock-macho-rewrite grow <copy> OUT 4096` was held here to mg_grow_header's own
 # wording ("refusing to grow it"). The verb is gone and no script forces a
 # grow, so that case is now tests/grow_test.c's
 # test_grow_refuses_an_image_with_no_section_data, which calls mg_grow_header
@@ -323,10 +322,10 @@ done
 # MG_NO_SECTION_DATA refusal fails that test and the case here identically.
 "$T/mkfixture" sectionless "$T/sectionless.macho" 8192
 # sectionless_script NEEDLE STATEMENT...
-#   -- runs the bare `machorewrite <copy> OUT` form with each argument as one
+#   -- runs the bare `drydock-macho-rewrite <copy> OUT` form with each argument as one
 #      line of the script on stdin, and asserts five facts. The load-command
-#      rewrites below were `machorewrite dylib|rpath|lc|segment <copy> OUT ...`
-#      until the verbs went, and the last of them was `machorewrite edit <copy>
+#      rewrites below were `drydock-macho-rewrite dylib|rpath|lc|segment <copy> OUT ...`
+#      until the verbs went, and the last of them was `drydock-macho-rewrite edit <copy>
 #      OUT SCRIPT`, which was this same script read from a file; the fixture,
 #      the refusal and every assertion are unchanged, because what must not
 #      crash is mr_process_thin, not the spelling that reaches it.
@@ -338,7 +337,7 @@ sectionless_script() {
     needle="$1"; shift
     sl_desc="$*"
     for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="machorewrite $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
+        what="drydock-macho-rewrite $sl_desc: sectionless 8192-byte image${gm:+ (libgmalloc)}"
         if [ -n "$gm" ] && [ ! -f "$gm" ]; then
             skip "$what" "no $gm on this host"
             continue
@@ -348,7 +347,7 @@ sectionless_script() {
         rc=0
         printf '%s\n' "$@" | (
             [ -n "$gm" ] && { DYLD_INSERT_LIBRARIES=$gm; export DYLD_INSERT_LIBRARIES; }
-            exec "$BIN/machorewrite" "$T/sl.macho" "$T/sl.out.macho"
+            exec "$BIN/drydock-macho-rewrite" "$T/sl.macho" "$T/sl.out.macho"
         ) >"$T/sl.out" 2>"$T/sl.err" || rc=$?
         if [ "$rc" -eq 1 ] && grep -qF "$needle" "$T/sl.err"; then
             ok "$what: refuses (1), naming the missing section data"
@@ -372,11 +371,11 @@ sectionless_script "$rewrite_refusal" 'load-command delete uuid'
 sectionless_script "$rewrite_refusal" 'segment rename __TEXT __TEXX'
 
 info_rc=0
-"$BIN/machorewrite" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
+"$BIN/drydock-macho-rewrite" info "$T/sectionless.macho" >"$T/sl_info.out" 2>&1 || info_rc=$?
 if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (no section data bounds it)$" "$T/sl_info.out"; then
-    ok "machorewrite info: sectionless image: the header pad is reported unknown, not a number"
+    ok "drydock-macho-rewrite info: sectionless image: the header pad is reported unknown, not a number"
 else
-    bad "machorewrite info: sectionless image" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/sl_info.out")"
+    bad "drydock-macho-rewrite info: sectionless image" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/sl_info.out")"
 fi
 
 # --- a dylib append statement, and info: a first section past the end of the image --------
@@ -384,7 +383,7 @@ fi
 # section's file offset. On oobsection.macho that offset is 0x7000 and the file
 # is 184 bytes, so trusting it clears roughly 28 KB past the buffer (SIGSEGV
 # under libgmalloc). It must refuse (1), with or without --allow-grow, before
-# anything uses the offset, and leave the file as it was. `machorewrite info` must
+# anything uses the offset, and leave the file as it was. `drydock-macho-rewrite info` must
 # not report a pad measured against that offset either.
 for grow in "" --allow-grow; do
     for gm in "" /usr/lib/libgmalloc.dylib; do
@@ -422,11 +421,11 @@ for grow in "" --allow-grow; do
 done
 
 info_rc=0
-"$BIN/machorewrite" info "$T/oobsection.macho" >"$T/oi.out" 2>&1 || info_rc=$?
+"$BIN/drydock-macho-rewrite" info "$T/oobsection.macho" >"$T/oi.out" 2>&1 || info_rc=$?
 if [ "$info_rc" -eq 0 ] && grep -q "^header pad: unknown (the first section lies past the end of the image)$" "$T/oi.out"; then
-    ok "machorewrite info: oobsection fixture: the header pad is reported unknown, not a number"
+    ok "drydock-macho-rewrite info: oobsection fixture: the header pad is reported unknown, not a number"
 else
-    bad "machorewrite info: oobsection fixture" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/oi.out")"
+    bad "drydock-macho-rewrite info: oobsection fixture" "expected exit 0 + 'header pad: unknown', got exit $info_rc: $(cat "$T/oi.out")"
 fi
 
 # --- retag_swift_classes ----------------------------------------------------
@@ -471,8 +470,8 @@ fi
 
 # --- patch_macho: pm_collect_ctx's to_remove[] must refuse, not overflow ----
 #
-# Converting to mi_each_lc moved patch_macho.c's collecting walk into an mi_each_lc callback
-# and put its fixed-size `to_remove[]` array (originally sized [4]) into the
+# Moving patch_macho.c's collecting walk into an mi_each_lc callback
+# put its fixed-size `to_remove[]` array (originally sized [4]) into the
 # SAME context struct as `int n_remove`, with n_remove declared immediately
 # after the array -- same layout hazard as segs[32]/nsegs just above it in
 # that struct, but without the matching `>= 32` style bound. With the array
@@ -481,7 +480,7 @@ fi
 # VERSION because it is trivial to repeat N times) wrote to_remove[4], one
 # element past the array, landing on n_remove itself; every push after that
 # walked further off the struct into main()'s locals. A malformed/
-# pathological input the pre-conversion tool declined cleanly went from a clean
+# pathological input the tool had declined cleanly went from a clean
 # refusal to a crash mid-run in a tool install.sh points at user binaries.
 #
 # The array was then enlarged from [4] to [16] (see patch_macho.c's own

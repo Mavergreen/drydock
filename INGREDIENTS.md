@@ -46,5 +46,5 @@ it must change only when someone means it to.
 
 ## Upstream release notes
 
-No upstream release notes: macho-tools is its own upstream (original ModernMavericks code), so
+No upstream release notes: Drydock is its own upstream (original ModernMavericks code), so
 there are no someone-else's notes for a release to link.

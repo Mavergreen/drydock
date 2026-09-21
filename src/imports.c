@@ -71,7 +71,7 @@ static void mimp_streams(const struct dyld_info_command *di, struct mimp_stream 
  * a NEWLINE lets a crafted row forge new ones. install_name and symbol are
  * both attacker-controlled file content (an lc_str, and a bind stream's
  * trailing symbol name), so both are checked before either is ever printed.
- * See cli/machorewrite.c, beside the header row's own append-only comment,
+ * See cli/drydock-macho-rewrite.c, beside the header row's own append-only comment,
  * for why this refuses rather than escapes. Returns a pointer to the first
  * offending byte, or NULL if `s` is clean. */
 static const char *mimp_bad_byte(const char *s) {
@@ -101,7 +101,7 @@ static int mimp_check_field(const char *arch, const char *field, const char *val
     if (!bad) return 0;
     char vis[200];
     mimp_visible(value, vis, sizeof vis);
-    fprintf(stderr, "machorewrite imports: %s: %s \"%s\" contains byte 0x%02x, which "
+    fprintf(stderr, "drydock-macho-rewrite imports: %s: %s \"%s\" contains byte 0x%02x, which "
                     "would corrupt the TSV row; refusing rather than guessing an "
                     "escaping convention\n",
             arch, field, vis, (unsigned char)*bad);
@@ -135,7 +135,7 @@ static int mimp_validate_slice(const mi_image *im, const char *arch, struct slic
     mi_each_lc(im, collect_lc, s);
 
     if (s->chained) {
-        fprintf(stderr, "machorewrite imports: %s: uses LC_DYLD_CHAINED_FIXUPS; its "
+        fprintf(stderr, "drydock-macho-rewrite imports: %s: uses LC_DYLD_CHAINED_FIXUPS; its "
                         "import table is not a bind-opcode stream this walk reads. "
                         "Convert first with `fixups set classic`, then report imports "
                         "against the converted output.\n", arch);
@@ -151,7 +151,7 @@ static int mimp_validate_slice(const mi_image *im, const char *arch, struct slic
         for (int i = 0; i < 3; i++) {
             if (streams[i].size == 0) continue;
             if (!mo_fits(streams[i].off, streams[i].size, im->size)) {
-                fprintf(stderr, "machorewrite imports: %s: %s stream (offset %u, %u "
+                fprintf(stderr, "drydock-macho-rewrite imports: %s: %s stream (offset %u, %u "
                                 "bytes) does not fit within the %zu-byte slice; "
                                 "refusing\n",
                         arch, streams[i].what, streams[i].off, streams[i].size, im->size);
@@ -242,7 +242,7 @@ int mimp_report(const uint8_t *buf, size_t size, mimp_row_fn fn, void *ctx) {
         int rc = MIMP_OK;
 
         if (!ims || !scs || !readable || !names) {
-            fprintf(stderr, "machorewrite imports: out of memory\n");
+            fprintf(stderr, "drydock-macho-rewrite imports: out of memory\n");
             rc = MIMP_REFUSED;
         } else {
             /* Pass 1 (validate every slice, emitting nothing) then pass 2

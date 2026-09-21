@@ -151,11 +151,12 @@ jobs:
       - name: The build must not have written into the source tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
 
-      # machorewrite and the two files the wrappers source belong in the artifact
-      # too, and are not optional: all seven names below are /bin/sh wrappers
-      # that look for machorewrite, machorewrite-compat.sh and
-      # machorewrite-translate.sh in their own directory, so an artifact without
-      # them is seven names that cannot run. (The binary itself was missing from
+      # drydock-macho-rewrite and the two files the wrappers source belong in
+      # the artifact too, and are not optional: all seven names below are
+      # /bin/sh wrappers that look for drydock-macho-rewrite,
+      # drydock-macho-rewrite-compat.sh and drydock-macho-rewrite-translate.sh
+      # in their own directory, so an artifact without them is seven names
+      # that cannot run. (The binary itself was missing from
       # this list even before that, when it was still a standalone CLI.)
       # insert_dylib is the one wrapper here with no known caller (its own
       # header says so); it ships anyway, the same way the other six do.
@@ -173,7 +174,8 @@ jobs:
         run: |
           set -eu
           mkdir -p dist
-          for f in machorewrite machorewrite-compat.sh machorewrite-translate.sh \
+          for f in drydock-macho-rewrite drydock-macho-rewrite-compat.sh \
+                   drydock-macho-rewrite-translate.sh \
                    patch_macho change_dylib add_version_min fix_macho \
                    rename_segment retag_swift_classes insert_dylib; do
             cp "$CROSS_BUILD_DIR/$f" dist/
@@ -188,7 +190,7 @@ jobs:
           set -eu
           sh "$SHIPYARD_SCRIPTS/release-notes.sh" \
             --tag '${{ steps.ver.outputs.tag }}' --version '${{ steps.ver.outputs.full }}' \
-            --product Machotool --min-os 10.9.5 --out dist/RELEASE_NOTES.md
+            --product Drydock --min-os 10.9.5 --out dist/RELEASE_NOTES.md
           echo "=== RELEASE_NOTES.md ==="; cat dist/RELEASE_NOTES.md
 
       # Do the artifacts about to be published agree with each other and with the family's
@@ -204,7 +206,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: macho-tools
+          name: drydock
           path: dist/*
 
   # The only writer to Releases, and only a tag reaches it: nothing else sets release=yes.
@@ -222,4 +224,4 @@ jobs:
     uses: ModernMavericks/shipyard/.github/workflows/publish-release.yml@v1
     with:
       version: ${{ needs.build.outputs.version }}
-      artifact: macho-tools
+      artifact: drydock

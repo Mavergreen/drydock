@@ -28,7 +28,7 @@
 # arm. Read that row as "what translate.sh did on 2026-09-10", never as what
 # it does. The other 30 refuser=translate rows are all `both-refuse` (usage
 # errors, unknown flags, capacity caps) and translate.sh still refuses every
-# one of them, for reasons no ruling has touched.
+# one of them, for reasons nothing since has touched.
 #
 # The 16 refuser=macho9 rows, and every non-refusing class, were not affected
 # by the wrapper conversion; they are what they were measured to be.
@@ -36,8 +36,8 @@
 #
 # Every enumerated argument combination of the six historical tools, run BOTH
 # ways on the same input: the old binary once, and compat/translate.sh's macho9
-# command line(s) in the order it printed them. Once the wrappers replace the C
-# sources this file is the surviving record of what those binaries did.
+# command line(s) in the order it printed them. With the C sources deleted,
+# this file is the surviving record of what those binaries did.
 #
 # base image: tests/fixture.macho + one appended LC_RPATH (@loader_path/../lib)
 #             + one appended LC_LOAD_DYLIB (@loader_path/spare0.dylib)
@@ -108,8 +108,8 @@
 #
 #   improvement is a MECHANICAL label meaning only "old refused, the new
 #   side did not". It is not a judgement. rename_segment's exit 2 for
-#   "nothing matched" lands in it, and that one
-#   must be REPRODUCED by the wrapper, not kept.
+#   "nothing matched" lands in it, and that one is deliberately
+#   REPRODUCED by the wrapper, not kept.
 #
 #   blocked with refuser=translate WAS compat/translate.sh refusing ON
 #   PURPOSE -- an argv the old tool accepted that, when measured, no macho9

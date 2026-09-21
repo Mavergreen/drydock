@@ -33,8 +33,8 @@
  * it does and does not catch.
  */
 
-#ifndef MACHOREWRITE_ORDINALS_H
-#define MACHOREWRITE_ORDINALS_H
+#ifndef DRYDOCK_ORDINALS_H
+#define DRYDOCK_ORDINALS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -82,12 +82,12 @@ const char *mo_kind_name(uint32_t cmd);
  * hardcode their own copy of MO_KINDS (which is not exported: mo_kind_name
  * and mo_is_ordinal_lc are its only doors) but still need to enumerate
  * candidates and ask mo_kind_name which ones it answers for:
- *   - cli/machorewrite.c's `--capabilities` offers each of these to
+ *   - cli/drydock-macho-rewrite.c's `--capabilities` offers each of these to
  *     mo_kind_name and prints only the ones that come back non-NULL, so
  *     MO_KINDS growing a fifth entry surfaces there with NO edit to
- *     machorewrite.c, as long as the new LC_* constant is already listed
+ *     drydock-macho-rewrite.c, as long as the new LC_* constant is already listed
  *     here -- closing the THIRD-place drift a hand-maintained kinds[] array
- *     in machorewrite.c used to risk.
+ *     in drydock-macho-rewrite.c used to risk.
  *   - tests/relations_test.c's test_capabilities_kinds_track_mo_is_ordinal_lc
  *     walks this same list and fails if mo_kind_name and mo_is_ordinal_lc
  *     ever disagree about any one of them -- the two functions are still two
@@ -110,7 +110,7 @@ const char *mo_kind_name(uint32_t cmd);
  * cmdsize, making a naive `(char *)lc + offset` point past the command, into
  * whatever follows it (or past the mapped buffer entirely) instead of at a
  * NUL-terminated string. Every reader of one of these names must go through
- * here rather than repeating the check inline: cli/machorewrite.c's info dump,
+ * here rather than repeating the check inline: cli/drydock-macho-rewrite.c's info dump,
  * change_dylib.c's build_lcs, and mo_map_build below each used to compute
  * this pointer independently, and only one of the three actually checked.
  * Returns NULL for an out-of-bounds offset; the caller decides whether that
@@ -292,7 +292,7 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map, int nold,
  * mo_bind_walk's `uint8_t *`. Casts away const exactly once, internally,
  * into the shared mo_bind_walk with `map = NULL` -- read-only-ness becomes
  * a property of which function a caller chose, not a runtime flag it has
- * to get right. The imports reporter calls this, not mo_bind_walk
+ * to get right. src/imports.c's reporter calls this, not mo_bind_walk
  * with a NULL map. */
 int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
                     mo_bind_obs obs, void *ctx);
@@ -301,12 +301,12 @@ int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
  * buffer? Written so the check itself cannot be fooled by the same integer
  * overflow it exists to catch: off/len come straight from the file (an
  * LC_SYMTAB or LC_DYLD_INFO command), so a malformed one is exactly the
- * input this guards against. mo_map_apply (this module) and the
- * imports reporter both need to bound a bind_off/bind_size (and weak/lazy)
+ * input this guards against. mo_map_apply (this module) and src/imports.c's
+ * reporter both need to bound a bind_off/bind_size (and weak/lazy)
  * pair against a slice before walking it; exported here, rather than each
  * writing its own copy, for the same reason mo_bind_walk's decode lives in
  * exactly one place -- two independent bounds checks over the same kind of
  * data is the bug class this module exists to rule out. */
 int mo_fits(uint64_t off, uint64_t len, size_t size);
 
-#endif /* MACHOREWRITE_ORDINALS_H */
+#endif /* DRYDOCK_ORDINALS_H */

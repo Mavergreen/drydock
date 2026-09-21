@@ -1,5 +1,5 @@
 #!/bin/sh
-# add_version_min -- a /bin/sh wrapper around `machorewrite FILE OUT` with one
+# add_version_min -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
 # `version-min set 10.9` statement on its stdin.
 #
 #   add_version_min binary
@@ -10,19 +10,19 @@
 # wrapper has to reshape is WHERE THE RESULT LANDS.
 #
 # GRAMMAR. `add_version_min FILE` -> `printf 'version-min set 10.9\n' |
-# machorewrite FILE OUT`. The version is spelled out because the C tool hardcoded
+# drydock-macho-rewrite FILE OUT`. The version is spelled out because the C tool hardcoded
 # 10.9 (mv_add_version_min only knows that floor); ms_parse accepts no other,
 # which is why the translation can name it literally rather than passing
 # something through.
 #
-# THE IN-PLACE EDIT. add_version_min rewrote FILE; machorewrite does not write
+# THE IN-PLACE EDIT. add_version_min rewrote FILE; drydock-macho-rewrite does not write
 # the file it is given. So this wrapper does what the old tool looked
 # like it did, safely: mw_prepare names a temp beside the file FILE really is
 # (following symlinks, refusing an unwritable FILE or one with other hard
 # links), mw_retranslate re-emits the command with that temp as OUT,
 # mw_run_to_tmp runs it, and mw_finish mv's the temp over the target -- or
 # discards it when the bytes did not change, since the C tool wrote nothing in
-# that case. machorewrite-compat.sh's "the install path" section has the reasoning
+# that case. drydock-macho-rewrite-compat.sh's "the install path" section has the reasoning
 # for each step; all of it is shared, none of it is this wrapper's own.
 #
 # ONE CONSEQUENCE WORTH NAMING: creating a temp beside FILE and renaming it
@@ -30,12 +30,12 @@
 # -- it opened FILE O_RDWR and wrote through that descriptor, never creating a
 # second name. So a writable binary inside a read-only directory, which
 # add_version_min patched, now fails: `mkstemp: Permission denied`, exit 2,
-# from machorewrite's own write of the temp, with FILE untouched. compat/
+# from drydock-macho-rewrite's own write of the temp, with FILE untouched. compat/
 # README.md's "change_dylib: the in-place edit" table records the same shape
 # for the same reason (the mirror-image case, an unwritable FILE in a writable
 # directory, is what mw_prepare's writability check exists to keep refusing).
 #
-# EXIT CODES. machorewrite's, forwarded unchanged, with the wrapper's own refusals
+# EXIT CODES. drydock-macho-rewrite's, forwarded unchanged, with the wrapper's own refusals
 # at 1. The old C tool returned mv_add_version_min's own 0/1 (0 ok, 1 the flat
 # "something went wrong" that function had no finer answer than); this wrapper
 # forwards the SAME function's return today too, but its vocabulary is no
@@ -75,23 +75,23 @@
 # and the teaching message this wrapper prints ahead of both.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
-MW_DIR=${MACHOREWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
+MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
 # Checked here, before sourcing, so a missing support file gets this message
 # rather than the shell's own "No such file or directory" from the `.` below.
 # The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
 # $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
-# one holding machorewrite -- which is why MACHOREWRITE_COMPAT_DIR exists.
-[ -r "$MW_DIR/machorewrite-compat.sh" ] || {
-    printf '%s: cannot find machorewrite-compat.sh in %s -- machorewrite and its two support\n' "$0" "$MW_DIR" >&2
+# one holding drydock-macho-rewrite -- which is why DRYDOCK_MACHO_REWRITE_COMPAT_DIR exists.
+[ -r "$MW_DIR/drydock-macho-rewrite-compat.sh" ] || {
+    printf '%s: cannot find drydock-macho-rewrite-compat.sh in %s -- drydock-macho-rewrite and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
-    printf '%s: SYMLINK directory, so set MACHOREWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
+    printf '%s: SYMLINK directory, so set DRYDOCK_MACHO_REWRITE_COMPAT_DIR to where they really are\n' "$0" >&2
     exit 1
 }
-. "$MW_DIR/machorewrite-compat.sh"
+. "$MW_DIR/drydock-macho-rewrite-compat.sh"
 
 mw_translate add_version_min "$@" || exit $?
 mw_prepare "$1" || exit 1
-# THIN ONLY, like mv_add_version_min's own mi_open. machorewrite-compat.sh's
+# THIN ONLY, like mv_add_version_min's own mi_open. drydock-macho-rewrite-compat.sh's
 # mw_thin_only has the measurement; the message is mv_add_version_min's, which
 # named the FILE and not the tool.
 if ! mw_thin_only "$1"; then

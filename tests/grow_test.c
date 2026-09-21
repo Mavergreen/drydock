@@ -630,8 +630,9 @@ static void test_grow_rebases_unwind_info(void) {
 /* ---- mg_unwind_find_cb's three untested branches (2026-09-09 review) ----
  * A code review round confirmed by mutation, forced rebuild, that all three
  * were unexercised by any suite in this repo -- real-binary and hermetic
- * alike -- and identical since before the move to src/grow.c (not a regression this
- * move introduced, but a gap it left standing). These three close it. */
+ * alike -- and identical since before this code moved to src/grow.c (not a
+ * regression the move introduced, but a gap it left standing). These three
+ * close it. */
 
 /* A __unwind_info section with size 0 is legal (if unusual): mg_unwind_walk
  * treats it as "nothing to do" and returns 0, not a refusal -- confirmed by
@@ -1604,8 +1605,8 @@ static void test_plausible_rejects_an_unrebased_initializer(void) {
  * (a code review round found ml_bump/ml_bump_all's overflow guard, but noted
  * the SAME class of bug still lived at the two ml_bump call sites left
  * inside mg_grow_header itself: a section's offset/reloff, and LC_MAIN's
- * entryoff. Fixing those before this code moves to src/grow.c means the
- * move carries already-correct code, not a known bug -- the mistake this project
+ * entryoff. Fixing those before this code was relocated meant the move
+ * carried already-correct code, not a known bug -- the mistake this project
  * already made once with change_dylib/mi_open.) */
 
 /* Every caller below builds its fixture via build_image, which always puts
@@ -1633,7 +1634,7 @@ static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const 
  * documented contract every internal failure path in mg_grow_header shares
  * (see src/linkedit.h's ml_bump_all doc comment). What must hold is that the
  * OUTER caller never writes a refused buffer to disk. That used to be
- * verifiable through `machorewrite grow FILE OUT N` -- confirmed by hand on
+ * verifiable through `drydock-macho-rewrite grow FILE OUT N` -- confirmed by hand on
  * poked copies of tests/fixture.macho for all three guards (section offset,
  * reloff, entryoff): an observation made under an older numbering, in which
  * EX_REFUSED was 2, which reported exit 2 and left

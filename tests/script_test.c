@@ -4,8 +4,7 @@
  * Ground truth is hand-written script text and the field vector it must
  * produce, so this is host-agnostic: no fixture file, no toolchain
  * dependence. The quoting cases are the ones mt_quote (compat/translate.sh)
- * actually emits, because the generator and this parser
- * cannot drift.
+ * actually emits, so the generator and this parser cannot drift.
  *
  * Build: clang -O2 -Wall -Isrc -o /tmp/scripttest tests/script_test.c \
  *   src/script.c && /tmp/scripttest
@@ -141,8 +140,8 @@ static void test_unknown_statement_and_wrong_arity(void) {
 }
 
 static void test_no_operation_cap(void) {
-    /* The old CLI capped at MR_MAX_OPS (32). Edit deliberately
-     * sizes from the parsed script, because the dominant real workload --
+    /* The old CLI capped at MR_MAX_OPS (32). A script sizes from what was
+     * parsed instead, because the dominant real workload --
      * repointing every framework in frameworks.json at a stub -- is 32
      * dylib replaces plus everything else. */
     char big[64 * 1024]; size_t len = 0;
@@ -323,13 +322,13 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Walks ms_table_row directly and confirms MS_TABLE has all 16 rows
- * (the "Statements" table's 15 kind/op pairs, plus `target 10.9`, whose
+/* Walks ms_table_row directly and confirms MS_TABLE has 16 rows
+ * (15 kind/op pairs, plus `target 10.9`, whose
  * profile occupies the op column), each of which round-trips through an
  * actual ms_parse -- not just that one known row's text appears somewhere.
  * tests/cli_test.sh separately counts --capabilities' own "statement " lines
  * (exactly 16, all unique); together the two catch the generator
- * (cli/machorewrite.c's loop over ms_table_row) and the table itself going out
+ * (cli/drydock-macho-rewrite.c's loop over ms_table_row) and the table itself going out
  * of step with each other -- a dropped, extra, or duplicated line on either
  * side. */
 static void test_capabilities_table_round_trips(void) {

@@ -19,8 +19,8 @@
  * labels/payloads, and reuses this repo's own src/uleb.h instead of a second
  * ULEB implementation. See docs/prior-art.md for the fuller licensing note.
  */
-#ifndef MACHOREWRITE_TRIE_H
-#define MACHOREWRITE_TRIE_H
+#ifndef DRYDOCK_TRIE_H
+#define DRYDOCK_TRIE_H
 
 #include <stdint.h>
 
@@ -58,4 +58,4 @@
 int mt_trie_rebuild(const uint8_t *trie, uint32_t size, uint64_t shift,
                      uint8_t **out, uint32_t *out_size);
 
-#endif /* MACHOREWRITE_TRIE_H */
+#endif /* DRYDOCK_TRIE_H */

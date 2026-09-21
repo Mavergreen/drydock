@@ -9,8 +9,9 @@
  * references at, so "is X live in this image" and "did this run disturb X"
  * have ONE place to be asked, not a new one per caller.
  *
- * A relation declares its REFERENT and its LIVENESS only.
- * Nothing here declares a check or a repair, and no repair code moves here:
+ * A relation declares its REFERENT and its LIVENESS only. Nothing here
+ * declares a check or a repair -- that would mean rewriting working repair
+ * code to buy a uniformity nothing needs -- and no repair code moves here:
  * mo_map_apply still repairs ordinals, src/grow.c still re-bases and bumps
  * offsets, mr_build_lcs/mg_grow_header still repack the header pad. This
  * module only says what each of those already-working repairs is FOR, and
@@ -26,8 +27,8 @@
  * | sizeofcmds                        | the header pad                 | mr_build_lcs, mg_grow_header            |
  */
 
-#ifndef MACHOREWRITE_RELATIONS_H
-#define MACHOREWRITE_RELATIONS_H
+#ifndef DRYDOCK_RELATIONS_H
+#define DRYDOCK_RELATIONS_H
 
 #include "image.h"
 
@@ -66,4 +67,4 @@ const char *mrel_name(unsigned bit);
  * function-start offsets the gate checks. */
 int mrel_verify_applies(const mi_image *im, unsigned disturbed);
 
-#endif /* MACHOREWRITE_RELATIONS_H */
+#endif /* DRYDOCK_RELATIONS_H */
