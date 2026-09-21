@@ -55,6 +55,19 @@ struct cf_import {
 #define CF_PTR_64_OFFSET 6
 #define CF_START_NONE    0xFFFF
 
+/* platform: https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/fixup-chains.h,
+ * struct dyld_chained_ptr_64_rebase: target:36, high8:8, reserved:7, next:12,
+ * bind:1. DYLD_CHAINED_PTR_64_OFFSET reuses the same layout; its target is an
+ * offset from image base rather than a vmaddr, added in before high8 is
+ * OR'd on top. The conversion (md_declassify_buf) and the verifier
+ * (md_verify) both call this so their decodes cannot drift apart. */
+static uint64_t md_cf_rebase_target(uint64_t raw, int is_offset_fmt, uint64_t image_base) {
+    uint64_t target = raw & 0xFFFFFFFFFULL; /* bits [35:0] */
+    uint64_t high8 = (raw >> 36) & 0xFF;    /* bits [43:36] */
+    if (is_offset_fmt) target += image_base;
+    return target | (high8 << 56);
+}
+
 /* Dynamic buffer for opcodes.
  *
  * OB_CAP is a fixed allocation, not a growing one, and `cap` is now the bound
@@ -357,12 +370,9 @@ static int md_verify(uint8_t *out, size_t out_len, uint32_t fixups_off,
                     bd.off += 8;
                     binds++;
                 } else {
-                    /* platform: <mach-o/fixup-chains.h>, dyld_chained_ptr_64_rebase */
-                    uint64_t want = ((raw & 0xFFFFFFFFFULL) | (((raw >> 36) & 0xFF) << 56));
-                    if (fmt == CF_PTR_64_OFFSET) {
-                        if (!has_base) return md_verify_fail("no image base for an offset rebase", si, off);
-                        want += base;
-                    }
+                    if (fmt == CF_PTR_64_OFFSET && !has_base)
+                        return md_verify_fail("no image base for an offset rebase", si, off);
+                    uint64_t want = md_cf_rebase_target(raw, fmt == CF_PTR_64_OFFSET, base);
                     if (md_next_rebase(&rb) != 1 || rb.seg != si || rb.off != off)
                         return md_verify_fail("a rebase was not emitted where the chain has it", si, off);
                     if (now != want)
@@ -607,15 +617,10 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
                      * bits packed in the chain). CF_PTR_64_OFFSET stores an
                      * offset from image base — we have to add image_base so the
                      * classic REBASE (which adds slide, not slide+image_base)
-                     * ends up at the right place. */
-                    uint64_t target;
-                    if (ss->pointer_format == CF_PTR_64) {
-                        target = raw & 0x7FFFFFFFFFF; /* bits [42:0] */
-                        uint8_t high8 = (raw >> 43) & 0xFF;
-                        target |= (uint64_t)high8 << 56;
-                    } else { /* CF_PTR_64_OFFSET */
-                        target = (raw & 0xFFFFFFFFF) + image_base_vmaddr;
-                    }
+                     * ends up at the right place. md_cf_rebase_target decodes
+                     * both the same way md_verify checks them. */
+                    uint64_t target = md_cf_rebase_target(raw, ss->pointer_format == CF_PTR_64_OFFSET,
+                                                           image_base_vmaddr);
 
                     ob_byte(&rebase, REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | si);
                     ob_uleb(&rebase, off_in_seg);

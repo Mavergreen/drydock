@@ -777,7 +777,7 @@ for dcl_mode in nosect sectpast; do
         || ok "declassify: $dcl_mode: produces no output file"
 done
 
-for dcl_mode in badord high8; do
+for dcl_mode in badord; do
     "$T/mkchained" make-$dcl_mode "$T/$dcl_mode.in"
     rm -f "$T/$dcl_mode.out" "$T/$dcl_mode.pm"
     dcl "$T/$dcl_mode.in" "$T/$dcl_mode.out" >/dev/null 2>"$T/$dcl_mode.err" \
@@ -794,6 +794,32 @@ for dcl_mode in badord high8; do
             || bad "declassify: $dcl_mode (patch_macho)" "expected 1 and no output, got $rc"
     fi
 done
+
+# HIGH8: a DYLD_CHAINED_PTR_64_OFFSET rebase whose high8 byte is nonzero
+# (0x5A, packed at raw bits [43:36] -- platform:
+# https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/fixup-chains.h,
+# struct dyld_chained_ptr_64_rebase). This must now CONVERT, not refuse: it
+# used to trip md_verify's own (correct) decode of the same raw value, because
+# the conversion's decode used the wrong widths. The converted slot is checked
+# for the right VALUE, not just a non-refusal: TEXT_VMADDR + REBASE_TARGET
+# with 0x5A or'd into the top byte.
+"$T/mkchained" make-high8 "$T/high8.in"
+rm -f "$T/high8.out" "$T/high8.pm"
+dcl "$T/high8.in" "$T/high8.out" >/dev/null 2>"$T/high8.err" && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && ok "declassify: high8: a nonzero high8 byte converts (0) instead of being refused" \
+    || bad "declassify: high8" "expected 0, got $rc: $(cat "$T/high8.err")"
+if [ "$rc" -eq 0 ]; then
+    dcl_out=$("$T/mkchained" check "$T/high8.out")
+    dcl_fail=0
+    dcl_expect slot0 0x5a00000100001000
+    [ "$dcl_fail" -eq 0 ] && ok "declassify: high8: the converted slot carries image_base+target with high8 in the top byte"
+fi
+if [ -x "$BIN/patch_macho" ]; then
+    "$BIN/patch_macho" "$T/high8.in" "$T/high8.pm" >/dev/null 2>&1 && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] && cmp -s "$T/high8.out" "$T/high8.pm" \
+        && ok "declassify: high8: patch_macho converts the same bytes" \
+        || bad "declassify: high8 (patch_macho)" "expected 0 and byte-identical output, got $rc"
+fi
 
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
 # the conversion into src/declassify.c did not change it: the two front-ends
