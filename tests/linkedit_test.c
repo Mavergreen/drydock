@@ -1,7 +1,6 @@
 /*
  * tests/linkedit_test.c — hermetic tests for src/linkedit.c's ml_bump_all,
- * the __LINKEDIT offset-bump table extracted out of macho_grow.h (Task 2b,
- * docs/superpowers/plans/2026-09-09-finish-the-convergence.md).
+ * the __LINKEDIT offset-bump table extracted out of macho_grow.h.
  *
  * Ground truth is a synthetic image built by hand (via mi_wrap, not a real
  * linker's output), so this is host-agnostic -- no fixture file, no
@@ -13,7 +12,7 @@
  * module must NOT touch (symbol/relocation counts and indices, datasize
  * fields, and a whole unrelated LC_UUID load command) gets a sentinel value
  * checked byte-for-byte unchanged afterward -- that is the "and that nothing
- * else changed" half of the brief. A second, full-coverage fixture
+ * else changed" half of the claim. A second, full-coverage fixture
  * (test_bump_all_every_field_discriminates) puts every one of the 17
  * bumped fields -- the original 14 plus LC_TWOLEVEL_HINTS.offset and
  * LC_ENCRYPTION_INFO[_64].cryptoff, added in a later review round -- and

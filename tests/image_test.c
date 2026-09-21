@@ -170,8 +170,7 @@ static void test_wrap_refuses_bad_magic(void) {
 
 /* Named separately from the generic bad-magic case above: a 32-bit Mach-O is
  * not "junk", it is a real, well-formed format this module deliberately does
- * not support (see image.h's file header -- "32-bit and fat are known gaps,
- * filed as Task 5"). Pinning it by name keeps that refusal from being an
+ * not support (see image.h's file header -- "32-bit and fat are known gaps"). Pinning it by name keeps that refusal from being an
  * accident of the generic magic check ever regressing into something looser.
  *
  * Reviewed and found tautological in its first form: a buffer sized to
@@ -374,7 +373,7 @@ static void test_each_lc_visits_every_command(void) {
 /* stop_after_cb: counts every command visited, same as count_cb, but asks
  * mi_each_lc to stop once it has seen `stop_at` commands. This is the
  * mutation-discriminating half of the coverage: a version of mi_each_lc that
- * ignored the callback's return value (the exact shape of the pre-Task-2a
+ * ignored the callback's return value (the exact shape of the earlier
  * bug this API replaces -- a caller that decides to stop but the walk keeps
  * calling it) would visit every command regardless of `stop_at`, and would
  * return "completed" even though the callback asked to stop. Both are

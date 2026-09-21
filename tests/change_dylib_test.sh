@@ -70,12 +70,12 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # -- never silently fall back to a from-source build. A wrong or stale bindir
 # (a typo, a build that didn't finish, a renamed preset) falling back here
 # would make ctest pass green while never once exercising the shipped
-# binary -- exactly the "green while broken" failure class Step 2 exists to
+# binary -- exactly the "green while broken" failure class a bindir exists to
 # close. So: no argument at all means standalone (compile from source, the
 # documented, intentional fallback); a NON-EMPTY argument is a hard
 # requirement, exactly like the other four suites' `BIN="${1:?usage...}"`.
 #
-# STANDALONE, AFTER TASK 2: change_dylib is no longer a C program to compile.
+# STANDALONE: change_dylib is no longer a C program to compile.
 # It is compat/change_dylib.sh, a wrapper that needs machorewrite and the two
 # files it sources sitting next to it -- so the standalone branch builds
 # machorewrite and then assembles that layout in $T, under the installed names,
@@ -83,8 +83,7 @@ trap 'rm -rf "$T"' EXIT INT TERM
 #
 # fix_macho joined it: compat/fix_macho.c is gone, and there is nothing left
 # in compat/ to compile at all. machorewrite is the only binary this branch
-# builds now, which is the whole retirement plan's headline seen from inside
-# a test.
+# builds now.
 if [ $# -eq 0 ]; then
     echo "change_dylib_test: no bindir given -- compiling standalone from source"
     mkdir -p "$T/bin"
@@ -371,10 +370,10 @@ else
 fi
 
 # --- 7. a path both -change'd and -delete'd in one invocation ----------------
-# THE ONE DELIBERATE BEHAVIOUR CHANGE OF THE script-is-the-only-interface
-# design, asserted in its new meaning.
+# THE ONE DELIBERATE BEHAVIOUR CHANGE OF RETIRING THE VERBS, asserted in its
+# new meaning.
 #
-# This was a regression test for a Task 3 review finding: build_lcs used to
+# This was a regression test for a review finding: build_lcs used to
 # decide deletion by "the FIRST `changes[]` entry matching this path has
 # new_path == NULL", while the ordinal map (mo_map_build, via ord_is_deleted)
 # decided by "ANY entry matching this path has new_path == NULL". Naming
@@ -389,9 +388,7 @@ fi
 # the -delete then looks for libspare and finds nothing. The dependency
 # SURVIVES, under its new name. The order-independence given up -- "-delete
 # anywhere beats -change anywhere" -- was a rule that had to be documented to
-# be predicted, and
-# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-# ("The one behaviour change, stated plainly") authorised the change in advance.
+# be predicted, and the repo owner authorised the change in advance.
 #
 # WHAT THE TEST STILL PROTECTS IS THE ORIGINAL BUG, and it protects it just as
 # well: the load command and the ordinal map must agree about what became of
@@ -632,8 +629,8 @@ else
 fi
 
 # --- 9b. fix_macho's option arrays had NO bounds check at all ----------------
-# The same defect, in the other tool, unfixed until the compat-retirement
-# plan's Task 2. docs/PROPOSAL.md records it being found and fixed in
+# The same defect, in the other tool, unfixed until the tool became a
+# wrapper. docs/PROPOSAL.md records it being found and fixed in
 # change_dylib -- "Repeated options wrote past their fixed-size arrays; 33
 # -change flags smashed the stack -- fixed, PR #9" -- and that fix only ever
 # covered change_dylib; fix_macho's changes[32] and renames[16] were still
@@ -848,8 +845,8 @@ fi
 # (confirmed with libgmalloc: SIGSEGV) that, WITHOUT a heap-corruption
 # detector watching, exited 0 after silently truncating this suite's 74088-
 # byte fixture down to 8192 bytes -- the real input gone, no error printed.
-# Reproduced against the pre-fix binary by hand during development (see
-# task-5-report.md) before writing this regression test.
+# Reproduced against the pre-fix binary by hand before writing this
+# regression test.
 #
 # mkdescfat builds that exact shape: a real linked x86_64 slice at a fixed
 # HIGH offset (0x10000) and the 32-bit slice at a fixed LOW offset (0x1000),
@@ -1563,7 +1560,7 @@ fi
 
 # --- 19. CRITICAL: build_lcs's malformed-LC_RPATH refusal must still ---------
 #     refuse, and refuse WITHOUT writing anything, now that its walk runs
-#     through the stop-capable mi_each_lc (Task 2a) instead of a hand-rolled
+#     through the stop-capable mi_each_lc instead of a hand-rolled
 #     loop with its own `return -1`.
 #
 # build_lcs_lc (change_dylib.c) calls mo_lc_str_at on every LC_RPATH's own
@@ -1577,8 +1574,8 @@ fi
 # normally"), the tool would use whatever partial `new_lcs` the callback had
 # written up to the point it detected the corruption, and either write a
 # truncated/corrupt load-command table or silently continue past a load
-# command it could not safely interpret. This is exactly the failure mode
-# the task brief calls out as "the worst possible outcome here".
+# command it could not safely interpret. That is the worst possible outcome
+# here.
 #
 # The fixture: link a real binary with one valid LC_RPATH (through
 # change_dylib itself, so the command is genuinely well-formed to start),

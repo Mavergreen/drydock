@@ -17,8 +17,8 @@
 # binaries where it does not hold." So every line this file emits is a CLAIM
 # that two spellings mean the same thing, and tests/translate_test.sh asserts
 # each claim's exact text. It lives here, in shell, and NOT inside machorewrite:
-# machorewrite must not learn the grammar it deliberately refused (controller ruling
-# L). Task 2's wrappers source this file, so the translation that was tested is
+# machorewrite must not learn the grammar it deliberately refused. The
+# wrappers source this file, so the translation that was tested is
 # literally the translation that ships.
 #
 # ---- output contract -----------------------------------------------------
@@ -37,7 +37,6 @@
 #     are a second way of asking for the same rewrites, with set semantics
 #     where a script has sequence semantics, and this file speaks only the one
 #     that survives.
-#     spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
 #   * EVERY COMMAND HERE NAMES AN OUTPUT of its own, because machorewrite never
 #     writes the file it is given. Which output depends on who is reading:
 #     with MT_OUT set (a wrapper, naming the temp it will install) the emitted
@@ -73,7 +72,7 @@
 #     mt_tr_fix_macho's -rename_seg arm made chaining a behaviour to ADOPT
 #     rather than to preserve.) Nothing goes to stdout; emitting a
 #     plausible-looking command that would do something else is exactly what
-#     the plan forbids.
+#     this file exists not to do.
 #   * Exit 1 means REFUSED, with a message on stderr and nothing on stdout, so
 #     a wrapper can refuse by just forwarding this exit code and never runs a
 #     half-translated command. Almost every case is one the OLD TOOL ITSELF
@@ -211,8 +210,6 @@
 # and each stopped existing once the repo owner ruled that the sequence's
 # answer -- doing what was asked, in the order it was asked -- is the one to
 # keep.
-# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-#       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
 
 # ---- quoting -------------------------------------------------------------
 #
@@ -475,8 +472,6 @@ $mt_st_dyins"
     # depending on whether an unrelated flag from another family happened to be
     # present. Nothing could be preserved, because there was no single
     # behaviour there to preserve.
-    # spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-    #       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
     #
     # The remaining order is about what the statements DO, not about resolving
     # conflicts between them:
@@ -590,15 +585,14 @@ mt_tr_fix_macho() {
             # separate `macho9 segment` passes chain and produce C. Measured on
             # tests/fixture.macho with the real binaries: different bytes, both
             # exiting 0. Emitting the sequence anyway would have been exactly
-            # the "plausible-looking command that would do something else" the
-            # retirement plan forbids, so it refused instead.
+            # the "plausible-looking command that would do something else" this
+            # file exists not to emit, so it refused instead.
             #
-            # WHAT REVERSED IT: the repo owner's ruling, recorded in
-            # docs/superpowers/plans/2026-09-10-report-what-macho9-did.md ("The
-            # decision this plan rests on"), that fix_macho's divergences from
+            # WHAT REVERSED IT: the repo owner's ruling that fix_macho's
+            # divergences from
             # the shared drivers are improvements to ADOPT deliberately rather
-            # than behaviour to preserve -- chaining is listed there as "doing
-            # what was asked". compat/fix_macho.c is gone; there is no longer a
+            # than behaviour to preserve -- chaining is "doing what was
+            # asked". compat/fix_macho.c is gone; there is no longer a
             # behaviour on the other side to preserve, so refusing a shape the
             # surviving implementation handles correctly would be the wrong
             # answer. compat/README.md's divergence table states the change as
@@ -862,14 +856,14 @@ mt_translate() {
         *)
             # Not one of the seven. There is deliberately no fallback and no
             # guess: emitting a plausible-looking machorewrite line for a tool this
-            # file has never heard of is the one failure mode the plan names
-            # outright.
+            # file has never heard of is the one failure mode this file exists
+            # to rule out.
             printf 'translate.sh: no equivalent -- unknown tool %s (expected one of: change_dylib add_version_min patch_macho rename_segment retag_swift_classes fix_macho insert_dylib)\n' "$mt_tool" >&2
             return 2 ;;
     esac
 }
 
-# Run directly, unless sourced with MT_SOURCED set (which is how Task 2's
+# Run directly, unless sourced with MT_SOURCED set (which is how the
 # wrappers pull the functions in without triggering a translation).
 if [ -z "${MT_SOURCED:-}" ]; then
     mt_translate "$@"

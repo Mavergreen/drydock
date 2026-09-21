@@ -69,7 +69,7 @@ typedef void (*mimp_row_fn)(const mimp_row *row, void *ctx);
  * file's bytes, thin or fat -- calling `fn` once per row, in the order each
  * stream (bind, then weak-bind, then lazy-bind) and slice (fat-arch-table
  * order) is walked. `buf` is const: this module never writes a byte of it,
- * the same property Task 5's mo_bind_observe establishes for the walk
+ * the same property mo_bind_observe establishes for the walk
  * underneath it.
  *
  * Every row `fn` sees is committed only after this call has already proven

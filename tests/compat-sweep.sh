@@ -4,8 +4,8 @@
 #
 #   sh tests/compat-sweep.sh <bindir> [outfile]
 #
-# <bindir> supplies the OLD side: the six historical binaries. After Task 2
-# five of them exist only in a build of commit 91b30b3 (the last commit
+# <bindir> supplies the OLD side: the six historical binaries. Since the wrapper
+# conversion, five of them exist only in a build of commit 91b30b3 (the last commit
 # carrying all six compat/*.c files; tests/README.md's "Not run by ctest"
 # section has the full account), so that is what to point it at. The NEW
 # side needs a machorewrite, and by default takes it from the same
@@ -24,13 +24,13 @@
 # further down, and its comment, for why that dated measurement cannot be
 # reproduced. Every row says what the OLD tool did and what the
 # compat/translate.sh -> machorewrite translation did, so the two can be compared
-# after the C sources are gone. Task 2 deletes them; from that commit on, these
+# after the C sources are gone. From the commit that deleted them on, these
 # rows and the SHA-256s in them are the only surviving record of what the old
 # binaries produced.
 #
 # WHY THIS IS NOT A ctest, and why differential.sh isn't either: it needs both
-# families of binaries built, it takes minutes, and Task 2 removes half of what
-# it drives. Run it by hand, on real 10.9, when the translation changes:
+# families of binaries built, it takes minutes, and the wrapper conversion removed
+# half of what it drives. Run it by hand, on real 10.9, when the translation changes:
 #
 #   shipyard-cmake --preset native-local && shipyard-cmake --build --preset native-local
 #   MACHO_SWEEP_NEW_BIN=/private/tmp/mm-build/schmonz/macho-tools/native \
@@ -38,10 +38,10 @@
 #
 # ---- what "exhaustive" means here ----------------------------------------
 #
-# Controller ruling M bounds it: every single flag, every ordered PAIR and
+# Bounded deliberately: every single flag, every ordered PAIR and
 # every ordered TRIPLE of the enumerated flags, over a fixed small argument
 # vocabulary, for all six tools. Order matters and is swept, because these
-# parsers are position-sensitive loops. Singles mostly look clean; the plan's
+# parsers are position-sensitive loops. Singles mostly look clean; this repo's
 # own precedent is that the surprises live in pairs and triples (`-change X`
 # with `-delete X` produced a binary dyld refused, exited 0, and shipped that
 # way for months, while each flag alone was fine).
@@ -85,26 +85,25 @@
 #   new side   compat/translate.sh, then each line it printed, in order,
 #              stopping at the first nonzero exit
 #
-# AFTER TASK 2, POINT <bindir> AT A PRE-TASK-2 BUILD. All six tools
-# are /bin/sh wrappers around machorewrite now (Task 2 converted five; fix_macho
-# followed once its divergences were ruled adopted rather than closed), so running this against a current
+# POINT <bindir> AT A PRE-WRAPPER BUILD. All six tools are /bin/sh wrappers
+# around machorewrite now (five converted first; fix_macho followed once its
+# divergences were ruled adopted rather than closed), so running this against a current
 # build makes the "old side" a wrapper and the comparison close to
 # tautological. The bindir is recorded in the matrix header for exactly that
 # reason -- a reader has to be able to tell which of the two the rows
 # describe. The committed matrix was generated against a build of the last
 # commit that still had the C sources.
 #
-# What is compared is the OUTPUT BYTES, the EXIT CODE and, since Task 2, STDOUT.
+# What is compared is the OUTPUT BYTES, the EXIT CODE and, since the wrappers, STDOUT.
 #
 # Stdout used to be left out on the grounds that mr_apply_file prints a "header
 # pad"/"updated" pair per pass, so one old invocation and a sequence of two or
-# three machorewrite ones cannot possibly print the same thing, and that the plan's
-# Task 0 evidence found no caller parsing these tools' stdout as data. Both
+# three machorewrite ones cannot possibly print the same thing, and that the evidence
+# gathered on the known callers found no caller parsing these tools' stdout as data. Both
 # statements are still true, but leaving it unmeasured meant nobody knew HOW
-# FAR apart the two sides' stdout was -- and Task 2's wrappers have to close
-# whatever part of that gap a caller or an in-repo test can see. A controller
-# ruling for that task therefore made this measurement a precondition of
-# writing them. So each row now carries a stdout verdict:
+# FAR apart the two sides' stdout was -- and the wrappers have to close
+# whatever part of that gap a caller or an in-repo test can see, so this
+# measurement was made a precondition of writing them. So each row now carries a stdout verdict:
 #
 #   the class picks up a "+stdout" suffix when the two sides' stdout differs
 #   byte-for-byte, and the last two columns hold the FIRST LINE of each side's
@@ -150,11 +149,11 @@
 #
 # Read "improvement" carefully: it is a mechanical label for "old refused, new
 # did not", and rename_segment's exit 2 for "nothing matched" lands in it. That
-# one is a divergence the wrapper must REPRODUCE (a controller ruling says so),
-# not an improvement to keep.
+# one is a divergence the wrapper deliberately REPRODUCES (tests/wrapper_test.sh
+# pins it), not an improvement to keep.
 #
 # "blocked" and "bytes-differ" are findings to report, not automatic blockers:
-# the plan weights this sweep as DISCOVERY, with the known-caller end-to-end
+# this sweep is DISCOVERY, with the known-caller end-to-end
 # tests as the decisive gate.
 #
 # A SWEEP THAT REWRITES NOTHING PROVES NOTHING, so the summary reports how many
@@ -204,7 +203,8 @@ done
 [ -r "$ROOT/compat/translate.sh" ] || { echo "compat-sweep: compat/translate.sh missing" >&2; exit 1; }
 
 # Source the translator instead of exec'ing it per combination: same code
-# either way (that is ruling L's whole point), one fewer process per row.
+# either way (that is why the translator is a sourced file at all), one fewer
+# process per row.
 MT_SOURCED=1
 export MT_SOURCED
 . "$ROOT/compat/translate.sh"
@@ -228,7 +228,7 @@ mkdir -p "$T/A" "$T/B"
 # Deleting libSystem from this image is refused for a real, good reason
 # ("symbol _printf still binds to the dylib being deleted"), and if the whole
 # cross product named it then every -delete row would be testing that one
-# refusal instead of the ordinal-renumbering rewrite the plan's own historical
+# refusal instead of the ordinal-renumbering rewrite this repo's own historical
 # bug lived in. The spare has nothing bound to it, so -delete really deletes
 # and really renumbers. The binding refusal is still swept, on libSystem, in
 # EXTRA CASES.
@@ -434,7 +434,7 @@ run_case() {
     # STDOUT. Compared byte-for-byte, and the verdict goes on the class as a
     # "+stdout" suffix rather than into a class of its own, because it is
     # orthogonal to every one of them: a preserved row and a both-refuse row
-    # can each print matching or differing stdout. Task 2's wrappers have to
+    # can each print matching or differing stdout. The wrappers have to
     # know which rows are which.
     if ! cmp -s "$T/a.out" "$T/b.out"; then
         class="$class+stdout"; n_stdout=$((n_stdout + 1))
@@ -588,8 +588,8 @@ run_case fix_macho f -change "$DY_OLD" "$LONGPAD"
 run_case fix_macho f -change "$DY_OLD" "$DY_NEW1" -strip_build_version -rename_seg "$SEG_OLD" "$SEG_NEW1"
 
 # The capacity caps: exactly at, and one past, each one. change_dylib prints
-# the origin message; compat/translate.sh must print the same text (ruling from
-# Task 0.5 -- routing through machorewrite would print machorewrite's own wording).
+# the origin message; compat/translate.sh must print the same text (routing
+# through machorewrite would print machorewrite's own wording).
 i=0; strip16=''; while [ $i -lt 16 ]; do strip16="$strip16 -strip-lc uuid"; i=$((i+1)); done
 run_case change_dylib f $strip16
 run_case change_dylib f $strip16 -strip-lc uuid
@@ -655,22 +655,22 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#"
     echo "# Every enumerated argument combination of the six historical tools, run BOTH"
     echo "# ways on the same input: the old binary once, and compat/translate.sh's machorewrite"
-    echo "# command line(s) in the order it printed them. After Task 2 deletes the C"
-    echo "# sources this file is the surviving record of what those binaries did."
+    echo "# command line(s) in the order it printed them. With the C sources deleted,"
+    echo "# this file is the surviving record of what those binaries did."
     echo "#"
     echo "# base image: tests/fixture.macho + one appended LC_RPATH ($RP_OLD)"
     echo "#             + one appended LC_LOAD_DYLIB ($DY_OLD)"
     echo "#             sha256[0:16] = $BASESHA"
     echo "# generated:  $(date -u '+%Y-%m-%dT%H:%M:%SZ') on $(uname -srm)"
     echo "# old side:   $BIN"
-    echo "#             (all six are shell wrappers now -- Task 2 converted five"
+    echo "#             (all six are shell wrappers now -- five converted first"
     echo "#              and fix_macho followed; these"
     echo "#              rows are only a record of the C binaries if that bindir"
     echo "#              is a build of commit 91b30b3 -- see this script's header)"
     echo "# new side:   $NEWBIN/machorewrite"
     echo "#             (the machorewrite the TRANSLATED side ran; the two directories"
     echo "#              differ whenever the C tools and the machorewrite under test"
-    echo "#              come from different commits, which after Task 2 is the"
+    echo "#              come from different commits, which since the wrappers is the"
     echo "#              only way to compare the two families at all)"
     echo "#"
     echo "# columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out"
@@ -688,7 +688,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#"
     echo "#   The OUTPUT BYTES, the EXIT-CODE SIGN and STDOUT are compared."
     echo "#"
-    echo "#   Stdout joined the comparison for Task 2: its wrappers have to"
+    echo "#   Stdout joined the comparison for the wrappers: they have to"
     echo "#   reproduce whatever part of the old tools' stdout a caller or an"
     echo "#   in-repo test can see, and until this run nobody had measured how"
     echo "#   far apart the two sides were. A row whose class carries a"
@@ -725,15 +725,15 @@ run_case rename_segment f "$SEG_OLD" "$SEG_OLD"
     echo "#"
     echo "#   improvement is a MECHANICAL label meaning only \"old refused, the new"
     echo "#   side did not\". It is not a judgement. rename_segment's exit 2 for"
-    echo "#   \"nothing matched\" lands in it, and a controller ruling says that one"
-    echo "#   must be REPRODUCED by the wrapper, not kept."
+    echo "#   \"nothing matched\" lands in it, and that one is deliberately"
+    echo "#   REPRODUCED by the wrapper, not kept."
     echo "#"
     echo "#   blocked with refuser=translate is compat/translate.sh refusing ON"
     echo "#   PURPOSE -- an argv the old tool accepted that no machorewrite command line"
     echo "#   means the same thing as. It is not a machorewrite gap. blocked with"
     echo "#   refuser=macho9 is the regression-shaped one."
     echo "#"
-    echo "#   The plan's sixth category, \"crashed -> refuses\", has no class of its"
+    echo "#   A sixth category, \"crashed -> refuses\", has no class of its"
     echo "#   own: a signal death and a clean refusal both land in both-refuse,"
     echo "#   since only the sign of the exit code is read. Nothing crashed in this"
     echo "#   sweep, so nothing was lost -- but a future run that does crash will"

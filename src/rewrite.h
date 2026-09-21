@@ -50,8 +50,6 @@ typedef struct {
  * one before it left. Two operations are never in flight at once, so nothing
  * here resolves a conflict between them: `dylib replace P X` followed by
  * `dylib delete P` renames P and then finds no P to delete.
- * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
- * -- "What gets deleted": the set model, and the precedence rule, both go.
  * spec: tests/cli_test.sh's "dylib: replace+delete same path" -- that
  * sequence, asserted to produce the rename. */
 typedef struct {

@@ -104,7 +104,7 @@ static const char *me_lc(char out[16], uint32_t cmd) {
 /* The follow-up a dylib insert or delete carries: the library-ordinal
  * renumbering, as the rewrite's own map and mo_map_apply's own counts
  * describe it (rewrite.h's mr_renumbering). Indented under the statement
- * line, in the spec's shape:
+ * line, in this shape:
  *
  *       removed LC_LOAD_DYLIB (was ordinal 4)
  *       renumbered 3 surviving ordinals: 5->4, 6->5, 7->6
@@ -481,7 +481,7 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
  * not. None of them guesses, so the expansion is reproducible from the image
  * alone.
  */
-#define ME_TARGET_MAX 5   /* the five rows of the spec's two tables */
+#define ME_TARGET_MAX 5   /* one per row of README.md's "The `target` statement" table */
 
 /* One derived statement, and the finding that produced it -- the report
  * carries both, because "why is this script doing that?" is exactly the
@@ -687,10 +687,7 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
  * An image this can no longer wrap is answered YES rather than skipped: the
  * derivation needs an image to read, and with none the only safe answer is to
  * run the gate -- which is also the one that says what is wrong, since
- * mg_plausible refuses an unwrappable buffer with its own line.
- *
- * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md
- * -- Decision 5, the derived applicability governs both front-ends. */
+ * mg_plausible refuses an unwrappable buffer with its own line. */
 static int me_verify_applies(uint8_t *buf, size_t size, unsigned disturbed) {
     mi_image im;
     if (mi_wrap(buf, size, &im) != 0) return 1;
@@ -766,9 +763,7 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     me_say(c->log, "slice %s:\n", name);
     /* One accumulator per SLICE, never one shared across the container: a
      * slice that disturbed nothing skips its own verify whatever its
-     * neighbours did.
-     * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md
-     * -- Decision 6, relations are evaluated per slice. */
+     * neighbours did. */
     unsigned disturbed = MREL_NONE;
     int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
                            c->hits, c->renamed, index == c->last, name, &disturbed);

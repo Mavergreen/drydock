@@ -6,10 +6,9 @@
 #   sh tests/differential.sh <ref-bindir> <new-bindir> [corpus-root...]
 #
 # This is the check that a refactor which is supposed to change NOTHING really
-# changed nothing. It was written for Task 0.5 (moving change_dylib's rewrite
-# into src/rewrite.c so macho9 stops fork/exec'ing it) and it is expected to be
-# useful for every later task in the compat-retirement plan, which are all the
-# same shape: replace how the work is reached without changing what it does.
+# changed nothing. It was written when change_dylib's rewrite moved into
+# src/rewrite.c (so macho9 stopped fork/exec'ing it), and it fits every change
+# of the same shape: replace how the work is reached without changing what it does.
 #
 # WHY THIS IS NOT A ctest. It needs two builds of this repo at different
 # commits, and a machine with hundreds of real Mach-O binaries on it. CI has
@@ -193,9 +192,9 @@ tool() {
 # statement over the same file.
 #
 # This tool does not rewrite its input: it reads IN and writes OUT, which is
-# why the helpers above could not sweep it and, until Task 0.6b, nothing did.
-# That task moved its chained-fixups conversion into src/declassify.c and gave
-# machorewrite a statement over the same code, so two questions get asked
+# why the helpers above could not sweep it and, until its chained-fixups
+# conversion moved, nothing did. That move put the conversion into
+# src/declassify.c and gave machorewrite a statement over the same code, so two questions get asked
 # here, both about bytes rather than exit status:
 #
 #   REF vs NEW patch_macho          did the extraction change what the tool
@@ -276,8 +275,8 @@ while IFS= read -r SRC; do
     tool change_dylib -strip-lc uuid -add "@loader_path/libspare.dylib"
     tool change_dylib -grow -change "$first" "$longpath"
     tool add_version_min
-    # rename_segment and retag_swift_classes joined this sweep when Task 0.6a
-    # moved their guts into src/segname.c and src/swift_retag.c -- the same
+    # rename_segment and retag_swift_classes joined this sweep when their guts
+    # moved into src/segname.c and src/swift_retag.c -- the same
     # "the work moved, the behaviour must not" shape change_dylib and
     # add_version_min were already swept for. __DATA_R9 is a name nothing
     # ships, so the rename really does change bytes on any thin 64-bit input

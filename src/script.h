@@ -136,9 +136,8 @@ int ms_table_row(int i, const char **kind, const char **op, int *nargs,
  * answered 0 would silently switch off every check that consults this, which
  * is the failure this column exists to prevent.
  *
- * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
- * Decision 2 -- "disturbs" means the referent CHANGES such that references to
- * it go stale, not that bytes were written near it. */
+ * "Disturbs" means the referent CHANGES such that references to it go stale,
+ * not that bytes were written near it. */
 unsigned ms_disturbs(int kind, int op);
 
 /* Did row `i` declare its disturbs mask, rather than inherit a zero nobody
@@ -154,9 +153,7 @@ int ms_row_disturbs_declared(int i);
  * ("-reexport") to its MS_* op. Both existed only to serve the seven mutating
  * verbs. The verbs are gone, "ops=" is no longer advertised, and no flag is
  * parsed anywhere, so they went too rather than stay as production code that
- * only a test called.
- * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
- * The table's flag/modes/ops_ord columns outlive them and are now read only by
+ * only a test called. The table's flag/modes/ops_ord columns outlive them and are now read only by
  * ms_table_row. */
 
 #endif

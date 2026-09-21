@@ -8,7 +8,7 @@
  * Scope, deliberately narrow: 64-bit thin Mach-O only, read whole file into a
  * heap buffer, no writing. Growing, ordinal renumbering and __LINKEDIT surgery
  * are other modules -- this one answers "what is in here?" and nothing else.
- * 32-bit and fat are known gaps, filed as Task 5 in the toolkit plan. */
+ * 32-bit and fat are known gaps. */
 
 #ifndef MACHOREWRITE_IMAGE_H
 #define MACHOREWRITE_IMAGE_H

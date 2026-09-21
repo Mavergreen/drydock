@@ -955,7 +955,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * require fixing up absolute pointers — which this tool deliberately does
      * not do. Refuse loudly rather than silently corrupt.
      *
-     * 32-bit stays refused here too, on purpose (toolkit plan Task 5, gap 2):
+     * 32-bit stays refused here too, on purpose:
      * this function and everything it calls -- mg_first_sect_off, mg_collect
      * (which mg_snapshot_take/mg_verify use), mg_classify, mg_unwind_walk,
      * mg_init_offsets_pass, and the LC_SEGMENT_64/section_64 patching loop

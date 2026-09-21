@@ -476,7 +476,7 @@ rc=$?
 # case 6 above: the fork does not refuse this combination, it silently picks
 # one file to write and ignores the other (--inplace wins; the 3rd
 # positional is never even read) -- measured by hand against a real build of
-# the fork (tests/insert-dylib-diff.sh's 2026-09-20 run, task-8 report).
+# the fork (tests/insert-dylib-diff.sh's 2026-09-20 run).
 # Matching that would mean silently overwriting the caller's input instead
 # of the output path they explicitly named, or vice versa: the data-loss
 # shape this toolkit refuses rather than guesses through everywhere else.

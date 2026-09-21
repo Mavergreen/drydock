@@ -266,7 +266,7 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
  * wrong one. It failed safe -- mg_verify would see pre-shift addresses
  * through the untouched first LC and refuse -- but "two places
  * independently deciding the same thing" is exactly the bug shape this
- * whole toolkit plan exists to eliminate, so it is not left as a coincidence
+ * whole toolkit exists to eliminate, so it is not left as a coincidence
  * that happens to agree today.) */
 int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cmd);
 

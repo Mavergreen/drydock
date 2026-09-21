@@ -1322,7 +1322,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
     rm_dir();
 }
 
-/* DECISION 6: RELATIONS ARE PER SLICE, so the accumulator is too. A slice that
+/* RELATIONS ARE PER SLICE, so the accumulator is too. A slice that
  * disturbed nothing the verify checks skips its own verify whatever its
  * NEIGHBOURS did -- which one accumulator shared across the container would
  * get wrong, and would get wrong silently, since the shared answer is the

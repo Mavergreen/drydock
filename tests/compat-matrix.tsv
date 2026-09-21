@@ -9,7 +9,7 @@
 #
 # WHEN: measured 2026-09-10T00:21:05Z (the `generated:` line below).
 #
-# AGAINST WHAT: the six historical tools as C BINARIES, in a pre-Task-2
+# AGAINST WHAT: the six historical tools as C BINARIES, in a pre-wrapper
 # bindir (the `old side:` line below). THOSE BINARIES NO LONGER EXIST AT
 # HEAD. All six -- change_dylib, add_version_min, rename_segment,
 # patch_macho, retag_swift_classes, fix_macho -- are now /bin/sh wrappers in
@@ -28,7 +28,7 @@
 # arm. Read that row as "what translate.sh did on 2026-09-10", never as what
 # it does. The other 30 refuser=translate rows are all `both-refuse` (usage
 # errors, unknown flags, capacity caps) and translate.sh still refuses every
-# one of them, for reasons no ruling has touched.
+# one of them, for reasons nothing since has touched.
 #
 # The 16 refuser=macho9 rows, and every non-refusing class, were not affected
 # by the wrapper conversion; they are what they were measured to be.
@@ -36,22 +36,22 @@
 #
 # Every enumerated argument combination of the six historical tools, run BOTH
 # ways on the same input: the old binary once, and compat/translate.sh's macho9
-# command line(s) in the order it printed them. After Task 2 deletes the C
-# sources this file is the surviving record of what those binaries did.
+# command line(s) in the order it printed them. With the C sources deleted,
+# this file is the surviving record of what those binaries did.
 #
 # base image: tests/fixture.macho + one appended LC_RPATH (@loader_path/../lib)
 #             + one appended LC_LOAD_DYLIB (@loader_path/spare0.dylib)
 #             sha256[0:16] = cbe6b73481d70434
 # generated:  2026-09-10T00:21:05Z on Darwin 13.4.0 x86_64
 # old side:   /private/tmp/mm-ref-task2
-#             (all six are shell wrappers now -- Task 2 converted five
+#             (all six are shell wrappers now -- five converted first
 #              and fix_macho followed; these
 #              rows are only a record of the C binaries if that bindir
-#              is a pre-Task-2 build -- see this script's header)
+#              is a pre-wrapper build -- see this script's header)
 # new side:   /private/tmp/mm-build/schmonz/macho-tools/native/macho9
 #             (the macho9 the TRANSLATED side ran; the two directories
 #              differ whenever the C tools and the macho9 under test
-#              come from different commits, which after Task 2 is the
+#              come from different commits, which since the wrappers is the
 #              only way to compare the two families at all)
 #
 # columns: tool  class  old_argv  translation  old_rc  old_sha  new_rc  new_sha  refuser  old_msg  new_msg  old_out  new_out
@@ -69,7 +69,7 @@
 #
 #   The OUTPUT BYTES, the EXIT-CODE SIGN and STDOUT are compared.
 #
-#   Stdout joined the comparison for Task 2: its wrappers have to
+#   Stdout joined the comparison for the wrappers: they have to
 #   reproduce whatever part of the old tools' stdout a caller or an
 #   in-repo test can see, and until this run nobody had measured how
 #   far apart the two sides were. A row whose class carries a
@@ -108,8 +108,8 @@
 #
 #   improvement is a MECHANICAL label meaning only "old refused, the new
 #   side did not". It is not a judgement. rename_segment's exit 2 for
-#   "nothing matched" lands in it, and a controller ruling says that one
-#   must be REPRODUCED by the wrapper, not kept.
+#   "nothing matched" lands in it, and that one is deliberately
+#   REPRODUCED by the wrapper, not kept.
 #
 #   blocked with refuser=translate WAS compat/translate.sh refusing ON
 #   PURPOSE -- an argv the old tool accepted that, when measured, no macho9
@@ -122,7 +122,7 @@
 #   row -- the other 30 -- is still exactly what it says, and still true.
 #   blocked with refuser=macho9 is the regression-shaped one.
 #
-#   The plan's sixth category, "crashed -> refuses", has no class of its
+#   A sixth category, "crashed -> refuses", has no class of its
 #   own: a signal death and a clean refusal both land in both-refuse,
 #   since only the sign of the exit code is read. Nothing crashed in this
 #   sweep, so nothing was lost -- but a future run that does crash will

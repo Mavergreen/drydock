@@ -4,20 +4,19 @@
 #
 #   sh tests/known-callers.sh <bindir>
 #
-# WHY THIS TEST IS THE GATE. The compat-retirement plan says it outright:
-# "A wrapper that passes the test suite but breaks a real caller is a
-# failure." It weights the exhaustive argument sweep (tests/compat-sweep.sh)
-# as DISCOVERY and these replays as the decisive gate -- a surprise in the
-# sweep starts a conversation, a failure here stops the work. Task 0 of that
-# plan enumerated the callers from evidence (it fetched and read
-# mavericksforever.com/claude/install.sh in full, and grepped every
+# WHY THIS TEST IS THE GATE. A wrapper that passes the test suite but breaks
+# a real caller is a failure. So the exhaustive argument sweep
+# (tests/compat-sweep.sh) is DISCOVERY and these replays are the decisive
+# gate -- a surprise in the sweep starts a conversation, a failure here stops the work. The callers were
+# enumerated from evidence (by fetching and reading
+# mavericksforever.com/claude/install.sh in full, and grepping every
 # mavericks-* checkout on this machine); this file is that list, executed.
 #
 # THE CALLERS, and where each one's invocation comes from:
 #
 #   1. mavericksforever.com/claude/install.sh's generated /usr/local/bin/claude
 #      wrapper -- the ONE production caller. Three tools in a fixed order
-#      against the user's real Claude Code binary. Quoted verbatim in the plan.
+#      against the user's real Claude Code binary.
 #   2. mavericks-claude-ongoing/scripts/mf-wrapper-rebase.sh -- the repo
 #      owner's own local rebase of that wrapper, which adds `-insert` to link
 #      libavxemu.dylib as an ordinary dependency.
@@ -26,7 +25,7 @@
 #      flags with NO -strip-lc, so change_dylib translates to ONE machorewrite
 #      command rather than two).
 #
-# The other callers Task 0 found are this repo's own suites, and they are
+# The other callers found are this repo's own suites, and they are
 # already ctest entries in their own right rather than replays here:
 # characterize (the same three-tool pipeline, digest-pinned against
 # tests/EXPECTED), chained_fixups (the same pipeline over a chained-fixups
@@ -49,8 +48,7 @@
 # If one moves, a wrapper has changed what a real caller gets -- fix the
 # wrapper, do not update the number.
 #
-# WHAT EACH CALLER ACTUALLY DEPENDS ON (Task 0's evidence, quoted in the
-# plan's "How the callers use stdout, stderr, and exit codes"): every one
+# WHAT EACH CALLER ACTUALLY DEPENDS ON: every one
 # redirects stdout to /dev/null and checks the EXIT CODE -- `"$MF/$tool" ...
 # >/dev/null || { echo "claude: $tool failed" >&2; exit 1; }`. None parses
 # stdout as data. So this file asserts exit codes and resulting bytes first,
@@ -80,8 +78,7 @@ sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 
 # ---- caller 1: install.sh's /usr/local/bin/claude wrapper ----------------
 #
-# Verbatim from the plan's "Exact invocation lines (quoted verbatim from
-# source)", with $REAL/$T bound to a copy of the fixture. The `>/dev/null ||
+# Verbatim from install.sh's generated wrapper, with $REAL/$T bound to a copy of the fixture. The `>/dev/null ||
 # { ...; exit 1; }` shape is reproduced too, because the exit code is what
 # actually gates that wrapper's control flow.
 INSTALLSH_SHA=ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792

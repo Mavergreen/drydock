@@ -11,9 +11,8 @@
  *   machorewrite imports FILE
  *
  * THERE WAS AN `edit FILE OUT SCRIPT` VERB, and it went with the other eight:
- * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
- * says `edit` "stops being a verb name and becomes the tool itself", and while
- * the verb survived, the line above claiming the bare form is the only way to
+ * `edit` stopped being a verb name and became the tool itself. While the verb
+ * survived, the line above claiming the bare form is the only way to
  * change anything was false in its own file. Nothing is lost -- a script that
  * lives in a file is `machorewrite FILE OUT < script`, which is the shell's job
  * and not this binary's.
@@ -27,11 +26,9 @@
  * minos, lc, dylib, rpath and grow. The first seven were each a thin
  * translation of their own flag grammar into an mr_ops, an mv_add_version_min
  * call or an md_declassify call. Every one of those had an exact statement
- * equivalent, and
- * spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
- * says why keeping both spellings was expensive rather than merely untidy: the
- * verb path applied a SET of operations in one pass and the script path applies
- * a SEQUENCE, one per pass, and the two models disagree on operations naming
+ * equivalent, and keeping both spellings was expensive rather than merely
+ * untidy: the verb path applied a SET of operations in one pass and the
+ * script path applies a SEQUENCE, one per pass, and the two models disagree on operations naming
  * the same path. They are gone; the statements they mapped onto are what this
  * binary offers instead, and src/edit.c sequences them.
  *
@@ -255,9 +252,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       TO BE LISTED HERE are gone, with their `ops=`, `kinds=`, `versions=`,
  *       `flags=` and `reports=` attributes; `edit` was the last of them, and
  *       the `mutate` line above plus the `statement` lines below are what a
- *       wrapper reads instead.
- *       spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
- *       decided that collapse. No attribute is left in use, so a reader that
+ *       wrapper reads instead. No attribute is left in use, so a reader that
  *       parsed them keeps working on a line that no longer carries any.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the statement
@@ -341,8 +336,8 @@ static void usage(const char *prog) {
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
  *
- * Exactly what the brief asks Step 2 to prove: dispatch works, and the verb
- * adds no logic of its own beyond opening the file and reporting the result.
+ * The verb adds no logic of its own beyond opening the file and reporting
+ * the result.
  */
 static int cmd_verify(const char *path) {
     mi_image im;

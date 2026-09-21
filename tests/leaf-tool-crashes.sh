@@ -1,8 +1,7 @@
 #!/bin/sh
 # tests/leaf-tool-crashes.sh — regression coverage for two heap-overflow
 # crashes a code review found in add_version_min and retag_swift_classes
-# after Task 1 of the toolkit convergence plan converted them onto
-# src/image.h.
+# after they were converted onto src/image.h.
 #
 # mi_open validates every LOAD COMMAND (magic, cmdsize bounds/alignment,
 # LC_SEGMENT_64/nsects agreement) but nothing about a SECTION's file range,
@@ -471,8 +470,8 @@ fi
 
 # --- patch_macho: pm_collect_ctx's to_remove[] must refuse, not overflow ----
 #
-# Task 2a moved patch_macho.c's collecting walk into an mi_each_lc callback
-# and put its fixed-size `to_remove[]` array (originally sized [4]) into the
+# Moving patch_macho.c's collecting walk into an mi_each_lc callback
+# put its fixed-size `to_remove[]` array (originally sized [4]) into the
 # SAME context struct as `int n_remove`, with n_remove declared immediately
 # after the array -- same layout hazard as segs[32]/nsegs just above it in
 # that struct, but without the matching `>= 32` style bound. With the array
@@ -481,7 +480,7 @@ fi
 # VERSION because it is trivial to repeat N times) wrote to_remove[4], one
 # element past the array, landing on n_remove itself; every push after that
 # walked further off the struct into main()'s locals. A malformed/
-# pathological input the pre-Task-2a tool declined cleanly went from a clean
+# pathological input the tool had declined cleanly went from a clean
 # refusal to a crash mid-run in a tool install.sh points at user binaries.
 #
 # The array was then enlarged from [4] to [16] (see patch_macho.c's own

@@ -9,9 +9,9 @@
  * references at, so "is X live in this image" and "did this run disturb X"
  * have ONE place to be asked, not a new one per caller.
  *
- * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
- * Decision 1 -- a relation declares its REFERENT and its LIVENESS only.
- * Nothing here declares a check or a repair, and no repair code moves here:
+ * A relation declares its REFERENT and its LIVENESS only. Nothing here
+ * declares a check or a repair -- that would mean rewriting working repair
+ * code to buy a uniformity nothing needs -- and no repair code moves here:
  * mo_map_apply still repairs ordinals, src/grow.c still re-bases and bumps
  * offsets, mr_build_lcs/mg_grow_header still repack the header pad. This
  * module only says what each of those already-working repairs is FOR, and
@@ -58,8 +58,7 @@ const char *mrel_name(unsigned bit);
  * base-relative values those offsets are (MREL_BASE_REL). Nonzero means run
  * the gate.
  *
- * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
- * amendment addendum, item 1 -- these are two DIFFERENT masks, not one. No
+ * These are two DIFFERENT masks, not one. No
  * operation ever disturbs MREL_FUNC_START (mg_plausible only ever checks
  * LC_FUNCTION_STARTS, never rewrites it), so `disturbed & MREL_FUNC_START`
  * is permanently zero and a derivation built on it would switch this gate

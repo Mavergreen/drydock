@@ -15,9 +15,9 @@ Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | `characterize` | **build equivalence**: the pipeline's output over `fixture.macho` must match `EXPECTED` |
 | `cli_test` | `machorewrite`'s own CLI: `--capabilities` (including that every `statement` row it advertises is one the parser actually accepts, and that the one mutating form is advertised at all), the two read-only verbs, and one exemplar per statement the bare `FILE OUT` form implements. `rpath insert`, `segment rename` and `swift-abi set` get more than one exemplar each, because each has an observable the exemplar alone cannot pin: `insert` is only correct if the new search path lands FIRST (an `append` of the very same path, asserted to land LAST, is what rules out a silent downgrade), `segment rename` has to rename each section's own copy of the segment name (`machorewrite info` does not print those, so a purpose-built reader does) and has to work on a fat container, and `swift-abi set` has to move the tag bit without disturbing the rest of the word. It also holds the fat classification: a slice is read as a 64-bit Mach-O from its own bytes, never from the `cputype` its `fat_arch` declares. **Count that radius along a named axis or it comes out wrong** — "two shapes" was the miscount, and it is the one this branch kept making. There are two DIRECTIONS (declared 32-bit over 64-bit-Mach-O bytes; declared 64-bit over bytes that are not), and along *(direction × whether an `arch` directive names the slice)* that is **four** behavioural cells, all four asserted here. Along *(direction × slice byte-shape)* it is **six**, because direction B has five byte-shapes (32-bit Mach-O, non-Mach-O, truncated, `MH_MAGIC_64` with load commands that do not fit, zero-length) and not one; three of the six are asserted here — direction A's, plus direction B's 32-bit-Mach-O and non-Mach-O — and the other three are driven through both fat loops by `change_dylib_test.sh`'s "two fat loops" block |
 | `leaf_tool_crashes` | regression coverage for heap-overflow/out-of-bounds crashes found by code review in `add_version_min`, `retag_swift_classes` and `patch_macho` after each was converted onto `src/image.h` — hand-built fixtures that pass `mi_open`'s load-command validation cleanly while still containing a section/offset a tool used to dereference unconditionally. Also holds `machorewrite`'s load-command rewriters (the `dylib`, `rpath`, `load-command` and `segment` statements) to refusing, byte-for-byte unchanged, an image with no section data, and `info` to calling its header pad unknown. The two `grow` cases that stood beside those — an image with no section data, and one whose first section lies past its end, where `fsize - insert` once wrapped into a SIGSEGV — moved into `grow_test` with the verb, as `test_grow_refuses_an_image_with_no_section_data` and `test_grow_refuses_a_section_past_the_image`: the bug is in `mg_grow_header`, and no CLI can force a grow any more |
-| `translate_test` | `compat/translate.sh`, the old-grammar-to-`machorewrite` translator Task 2's wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every statement/KIND the translator can emit against `machorewrite --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
+| `translate_test` | `compat/translate.sh`, the old-grammar-to-`machorewrite` translator the wrappers source: one assertion per translation, pinning the EXACT emitted command line (every flag of all six tools, every `-strip-lc` KIND, the mixed-family `lc`/`dylib`/`rpath` ordering, `install.sh`'s production line, the quoting, every refusal's origin message, and both capacity caps). Also checks every statement/KIND the translator can emit against `machorewrite --capabilities` rather than assuming they agree, and re-runs one translation under `/bin/ksh` so a bashism fails here rather than on the target |
 | `wrapper_test` | the six `/bin/sh` wrappers that replaced `patch_macho`, `change_dylib`, `add_version_min`, `rename_segment`, `retag_swift_classes` and `fix_macho`: the grammar each translates, the exit codes it maps back to the C tool's (`patch_macho`'s flat 1 where `machorewrite` returns `EX_FAIL`, or `EX_REFUSED`, which is already 1; `rename_segment`'s 2 for "nothing matched"; `retag_swift_classes`' silent skip of a non-Mach-O), and the stdout it reshapes. Every assertion names the divergence it closes, from the list at the top of `compat/translate.sh` or from `cli/machorewrite.c`'s own "DELIBERATE DIVERGENCES" blocks. Also parses every wrapper under `/bin/sh` **and** `/bin/ksh`, the same second-shell cross-check `translate_test` does |
-| `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. The retirement plan says it outright: "a wrapper that passes the test suite but breaks a real caller is a failure" |
+| `known_callers` | **the gate for the wrappers**: every known caller of the six historical tools, replayed end to end — `mavericksforever.com/claude/install.sh`'s generated `/usr/local/bin/claude` wrapper first, then the repo owner's local `-insert` variant and `magic-trackpad2`'s recorded invocations — plus the atomicity property a mixed-family refusal must keep (the caller's file untouched). Each pipeline's result is pinned to the SHA-256 the **C binaries built from commit `91b30b3`** produced from `fixture.macho` on real 10.9, the same device `EXPECTED` uses. A wrapper that passes the test suite but breaks a real caller is a failure |
 | `live_test` | `src/live.h`, the header-only malloc-free query surface for `avxemu`: queries run against this test binary's OWN loaded image (`_dyld_get_image_header` etc.), and a separate compile-and-`nm` check proves a translation unit that includes only `live.h` stays free of `malloc`/`free`/stdio |
 
 ## Not run by `ctest`: the by-hand sweeps
@@ -82,9 +82,9 @@ real hardware, with their results committed or reported by hand:
   diagnostic lands on ITS STDOUT (`main.c`'s `printf`, not `perror`); this
   wrapper's lands on stderr only — both still exit 1 having touched nothing.
 
-`compat-matrix.tsv` is a **committed artifact, not a report**: Task 2 of the
-retirement plan replaced five of the six C sources with shell wrappers, and a
-later commit replaced the sixth, `fix_macho`, so all six now exist as C only in
+`compat-matrix.tsv` is a **committed artifact, not a report**: five of the
+six C sources were replaced with shell wrappers, and a later commit replaced
+the sixth, `fix_macho`, so all six now exist as C only in
 git history. The matrix and the SHA-256s in
 it are what outlive them — as are `known-callers.sh`'s pinned pipeline
 digests. Regenerate it only from a real 10.9 build of both families, and say
@@ -98,12 +98,9 @@ so `compat-matrix.tsv` (and its generator's own `refuser` column vocabulary in
 `compat-sweep.sh`) keeps the old name on purpose.
 
 That grep will also hit a handful of other files, and that is expected too: a
-plan or spec that narrates the rename itself, quotes a command as it was
-actually run, or cites one of the plans above by its real (unrenamed)
-filename keeps saying `macho9` for the same reason a quotation keeps the
-words it quotes. The rename plan's own "What is deliberately NOT renamed"
-section has the reconciled list; treat any `macho9` hit outside it as a real
-miss, not as license to reword a passage until the grep goes quiet.
+comment or test that narrates what the binary was called when something
+happened, or quotes a command as it was actually run, keeps saying `macho9`
+for the same reason a quotation keeps the words it quotes.
 
 ## `machorewrite`'s exit codes
 
@@ -288,9 +285,8 @@ reproducing the failure in new shapes:
   Mutation testing (deliberately break the code, confirm the test you're
   trusting actually fails, then revert) is this project's primary technique
   for proving a test discriminates — used throughout `tests/grow_test.c`
-  (formerly `macho_grow_test.c`, before Task 3 of the toolkit convergence
-  plan moved `macho_grow.h` to `src/grow.c`/`src/grow.h` and this test with
-  it), `tests/trie_test.c`, and `tests/linkedit_test.c`'s own commit
+  (formerly `macho_grow_test.c`, before `macho_grow.h` moved to
+  `src/grow.c`/`src/grow.h` and this test with it), `tests/trie_test.c`, and `tests/linkedit_test.c`'s own commit
   history. It depends
   entirely on the binary under test actually reflecting the source edit.
   On at least one host, `cmake --build` after a one-line source edit

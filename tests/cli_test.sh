@@ -485,7 +485,7 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
     || bad "capabilities ops" "rpath ops moved: $caps_rpath_ops"
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
-# by looping ms_table_row, not hand-copied. The spec's statement vocabulary
+# by looping ms_table_row, not hand-copied. The statement vocabulary
 # has 15 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
 # column -- makes 16; tests/script_test.c's
 # test_capabilities_table_round_trips separately walks ms_table_row directly
@@ -616,7 +616,7 @@ mts "$T/vocab_fixture" "rpath reexport /no/such/path" >"$T/vocab_rpath_reexport.
 # ============================================================================
 # `fixups set classic`: chained fixups -> LC_DYLD_INFO_ONLY
 #
-# The conversion lives in src/declassify.c (Task 0.6b lifted it out of
+# The conversion lives in src/declassify.c (lifted out of
 # compat/patch_macho.c's main, before that file became a shell wrapper); this
 # statement is the only C front-end over it now, and the `patch_macho` name
 # reaches it through compat/patch_macho.sh. It was the `declassify` VERB until
@@ -1778,10 +1778,8 @@ fi
 # renames P to X, and the delete then looks for P and correctly finds nothing.
 # The dependency SURVIVES, under its new name. That is the more honest reading
 # of what was asked -- a caller who wrote a rename and then a delete of the old
-# name has described a rename -- and
-# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-# ("The one behaviour change, stated plainly") authorised it in advance. The
-# order-independence given up was a rule that had to be documented to be
+# name has described a rename -- and the repo owner authorised it in advance.
+# The order-independence given up was a rule that had to be documented to be
 # predicted.
 build_main "$T/dylib_conflict_fixture"
 conflict_path="@loader_path/libconflict.dylib"
@@ -2036,7 +2034,7 @@ for k in weak reexport upward load; do
         || bad "dylib: retype to $k" "no $want_lc naming liba in: $retype_info"
 done
 
-# GAP 2 (fix round 1): the per-kind loop above cannot observe a build that
+# GAP 2: the per-kind loop above cannot observe a build that
 # skips the retype write specifically when the TARGET is `load`, because
 # build_main's fixture already starts as LC_LOAD_DYLIB -- declining to write
 # is unobservable when the bytes it would write are the bytes already there.
@@ -2511,7 +2509,7 @@ cmp -s "$T/segment_nomatch_fixture" "$T/segment_nomatch_before" \
     || bad "segment: no-match" "the file changed although no segment matched"
 
 # --- segment on a FAT container --------------------------------------------
-# The case the retirement plan singles out: fix_macho's -rename_seg is
+# The case that matters for the wrappers: fix_macho's -rename_seg is
 # fat-capable and folds into this verb, so this verb has to be too. The
 # non-Mach-O second slice must come back byte for byte.
 "$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_fat_slice"
@@ -2594,7 +2592,7 @@ fi
 #
 # This is the assertion that fails if the derivation is thrown away and the
 # gate goes back to running on every rewrite -- which is exactly what it looked
-# like before item 5, and exactly what a reviewer restoring "safety" would do.
+# like before the derivation, and exactly what a reviewer restoring "safety" would do.
 # Its partner above (fixups set classic, refused) fails if the gate is deleted
 # instead. Neither alone pins the rule; the pair does.
 cp "$T/implausible" "$T/imp_lc"
@@ -3242,7 +3240,7 @@ cmp -s "$T/swift_out1" "$T/swift_out2" \
 # goes through me_run_fat, which rewrites each 64-bit slice it understands and
 # passes the rest through -- so the identical container is ACCEPTED.
 #
-# That is a capability GAIN, and it is deliberate: this plan removed a
+# That is a capability GAIN, and it is deliberate: the fat work removed a
 # thin-only refusal from the CLI, having first put the refusal back where the
 # compat wrappers need it (compat/machorewrite-compat.sh's mw_thin_only), so no
 # caller that relied on it lost it. Asserted here in its new form.
@@ -3349,13 +3347,13 @@ dcl "$T/no-such-file-for-declassify" "$T/declassify_missing.out" \
 
 # ============================================================================
 # the mutating form: parses the script on stdin and applies it through me_run
-# in one pass -- the shapes the spec names, plus the property the whole design
+# in one pass -- the shapes the grammar has, plus the property the whole design
 # exists for (a parse error costs nothing: the file is never opened for
 # writing).
 #
 # THERE IS NO `edit` VERB. `machorewrite edit FILE OUT SCRIPT` was a second
-# mutating spelling of this one, and the spec says `edit` "stops being a verb
-# name and becomes the tool itself"; a script that lives in a file is
+# mutating spelling of this one: `edit` stopped being a verb name and became
+# the tool itself. A script that lives in a file is
 # `machorewrite FILE OUT < script`, which is the shell's job. Every case below
 # that used to be typed with the verb word is typed with the redirection now;
 # the ones that only asserted about the verb's own argument scanner (a SCRIPT

@@ -15,8 +15,8 @@
 # working now that machorewrite refuses an OUT that is its input. See "the
 # install path" below.
 #
-# WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. Task 1 put the whole
-# old-grammar-to-machorewrite translation in ONE file (compat/translate.sh) so that
+# WHY THE WRAPPERS ARE NOT SIX COPIES OF THIS. The whole
+# old-grammar-to-machorewrite translation lives in ONE file (compat/translate.sh) so that
 # "the translation that was tested is literally the translation that ships".
 # The same argument applies to everything AROUND the translation -- finding
 # machorewrite, printing the teaching message, running what was translated, and the
@@ -52,7 +52,7 @@
 # tools BY NAME into a single directory. A layout that needed a subdirectory
 # would need that script changed; a flat one needs only the extra file names.
 # (It needs those either way -- a wrapper cannot work without machorewrite present,
-# which is a packaging consequence of this whole plan, not of this layout.)
+# which is a packaging consequence of wrapping at all, not of this layout.)
 #
 # ---- POSIX sh only -------------------------------------------------------
 #
@@ -61,9 +61,8 @@
 # the wrappers under /bin/ksh for the same reason tests/translate_test.sh
 # re-runs the translator under it.
 #
-# set -u, and deliberately NOT set -e: an earlier task in this plan found
-# `set -e` silently swallowing a real failure at two sites in this repo's
-# shell, so every failure here is checked where it happens. Same choice
+# set -u, and deliberately NOT set -e: `set -e` was found silently
+# swallowing a real failure at two sites in this repo's shell, so every failure here is checked where it happens. Same choice
 # tests/compat-sweep.sh and tests/translate_test.sh made.
 
 set -u
@@ -196,8 +195,8 @@ mw_translate() {
     return 0
 }
 
-# The plan's phase one, in one function: "the caller's script keeps working,
-# and the message teaches the new grammar". On STDERR, so stdout stays exactly
+# The kind form of deprecation, in one function: the caller's script keeps
+# working, and the message teaches the new grammar. On STDERR, so stdout stays exactly
 # what the C tool printed for anything reading it.
 mw_teach() {
     if [ "$MW_NCMDS" -eq 0 ]; then

@@ -630,8 +630,9 @@ static void test_grow_rebases_unwind_info(void) {
 /* ---- mg_unwind_find_cb's three untested branches (2026-09-09 review) ----
  * A code review round confirmed by mutation, forced rebuild, that all three
  * were unexercised by any suite in this repo -- real-binary and hermetic
- * alike -- and identical since before Task 3's move (not a regression this
- * task introduced, but a gap it left standing). These three close it. */
+ * alike -- and identical since before this code moved to src/grow.c (not a
+ * regression the move introduced, but a gap it left standing). These three
+ * close it. */
 
 /* A __unwind_info section with size 0 is legal (if unusual): mg_unwind_walk
  * treats it as "nothing to do" and returns 0, not a refusal -- confirmed by
@@ -1177,7 +1178,7 @@ static void test_grow_refuses_atom_info(void) {
  * ULEB-precise, snapshot-verified arithmetic (see mg_verify/mg_plausible above).
  * That is a lot of new surface, in the riskiest possible place, for a format
  * this toolkit's own image.h already drew the same line against ("32-bit and
- * fat are known gaps, filed as Task 5") -- and every one of the seven rewriters
+ * fat are known gaps") -- and every one of the seven rewriters
  * in this repo (fix_macho, patch_macho, ...) already refuses non-64-bit input
  * the same way, at the very first header check. So this stays a refusal: the
  * check at the top of mg_grow_header already catches it (magic != MH_MAGIC_64)
@@ -1604,8 +1605,8 @@ static void test_plausible_rejects_an_unrebased_initializer(void) {
  * (a code review round found ml_bump/ml_bump_all's overflow guard, but noted
  * the SAME class of bug still lived at the two ml_bump call sites left
  * inside mg_grow_header itself: a section's offset/reloff, and LC_MAIN's
- * entryoff. Fixing those before Task 3 relocates this code means Task 3
- * moves already-correct code, not a known bug -- the mistake this project
+ * entryoff. Fixing those before this code was relocated meant the move
+ * carried already-correct code, not a known bug -- the mistake this project
  * already made once with change_dylib/mi_open.) */
 
 /* Every caller below builds its fixture via build_image, which always puts

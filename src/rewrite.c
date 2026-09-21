@@ -843,15 +843,13 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
      * today's operation set, not a property of the code.
      *
      * MACHO_NO_VERIFY IS HONOURED HERE AND IGNORED AT src/edit.c's SITES, and
-     * that asymmetry is older than this narrowing: Decision 5 changed WHEN a
-     * gate applies and nothing about whether a caller may suppress one that
+     * that asymmetry is older than this narrowing: mrel_verify_applies changed
+     * WHEN a gate applies and nothing about whether a caller may suppress one that
      * does. A run that meets both sites therefore has one suppressible gate
      * and one that is not -- and since the paragraph above makes this gate
      * unreachable for a refusal today, what that variable actually suppresses
      * here is nothing. The verbs that used to reach this site directly are
-     * gone; src/edit.c's me_statements is the only way in now.
-     * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
-     * Decision 5 -- the derived applicability governs both front-ends. */
+     * gone; src/edit.c's me_statements is the only way in now. */
     if (mrel_verify_applies(&im, disturbed) && !getenv("MACHO_NO_VERIFY") &&
         mg_plausible(buf, fsize) != 0) {
         fprintf(stderr, "ERROR: refusing to modify %s -- it would carry base-relative "
@@ -907,9 +905,7 @@ static int mr_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     int mod = 0;
     /* Each slice derives its own applicability from the SAME declaration and
      * its OWN observations: one slice's grow decides nothing about its
-     * neighbour's verify.
-     * spec: docs/superpowers/specs/2026-09-10-relations-and-verb-lowering-design.md's
-     * Decision 6 -- relations are evaluated per slice. */
+     * neighbour's verify. */
     int rc = mr_process_thin(pbuf, psize, label, c->ops, c->declared_disturbs, &mod,
                              c->hit_dylib, c->hit_rpath, c->hit_strip);
     if (rc == MR_SKIP) {
@@ -1150,8 +1146,8 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
      * cannot tell that failure apart from every other reason those two
      * functions refuse. Splitting it would mean widening mg_grow_header's
      * and mg_plausible's own return contracts (both currently a flat "0 or
-     * -1") to say which -- a change later work already plans to make when
-     * it restructures those two functions, not one to fold in here as a
+     * -1") to say which -- a change for whoever restructures those two
+     * functions, not one to fold in here as a
      * side effect. So, plainly: an allocation failure inside either one
      * exits 1 (MR_REFUSED), not 2, same as every other reason
      * mg_grow_header or mg_plausible refuses -- and that is not confined to

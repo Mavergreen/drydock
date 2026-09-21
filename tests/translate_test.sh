@@ -21,8 +21,8 @@
 # tests/compat-sweep.sh answers it over 1200 combinations against real
 # binaries. This test is about the text.
 #
-# The bindir is used for exactly one thing: `machorewrite --capabilities`. The spec's
-# "Migration" section says that probe exists so the wrapper and the binary need
+# The bindir is used for exactly one thing: `machorewrite --capabilities`.
+# docs/PROPOSAL.md's "Migration" section says that probe exists so the wrapper and the binary need
 # not move in lockstep, and the last check below is what actually uses it --
 # every verb, op and KIND this translator can emit has to be one this build
 # advertises. Hardcoding that agreement instead of checking it is how the
@@ -183,8 +183,6 @@ mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 # than one emitted a SCRIPT, a sequence. The same conflict got two different
 # answers depending on whether an unrelated flag from another family happened
 # to be present.
-# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-#       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
 #
 # Every assertion below is a shape whose OUTCOME moved, measured against the
 # pre-migration binaries. The emitted text is pinned here; the resulting bytes
@@ -288,8 +286,8 @@ mv -f f.new f" -- fix_macho f -change a b -change b c
 ok fm-chain-lc "printf 'load-command delete build-version\ndylib replace a b\ndylib replace b c\n' | machorewrite f f.new
 mv -f f.new f" -- fix_macho f -change a b -change b c -strip_build_version
 
-# install.sh's production line -- the single most important translation in
-# this task, quoted from the plan's Task 0 evidence.
+# install.sh's production line -- the single most important translation
+# here, in the shape mavericksforever.com/claude/install.sh runs it.
 ok cd-production "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\ndylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib\ndylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib\n' | machorewrite /tmp/c /tmp/c.new
 mv -f /tmp/c.new /tmp/c" \
     -- change_dylib /tmp/c -strip-lc uuid -strip-lc codesig \
@@ -551,7 +549,7 @@ fi
 #
 # Every one of these is a case the OLD tool refused. The translation must
 # refuse identically, print nothing on stdout, and use the ORIGIN wording --
-# for the capacity caps that is a controller ruling, because cli/machorewrite.c
+# for the capacity caps that is deliberate, because cli/machorewrite.c
 # deliberately prints different text there so the new grammar never leaks the
 # old flag spellings.
 CD_USAGE='Usage: change_dylib input [-grow] [-change old new] [-delete path] [-reexport path] [-add path] [-insert path] [-strip-lc name] [-change-rpath old new] [-delete-rpath path] [-add-rpath path] ...'
@@ -575,7 +573,7 @@ refuses cd-bad-kind     1 'unknown -strip-lc kind: nope' -- change_dylib f -stri
 # families, in both wrappers. They existed because a sequence of statements
 # gave a different answer than one batch, and while REPRODUCING the batch was
 # the goal, emitting the sequence anyway would have been the "plausible-looking
-# command that would do something else" the retirement plan forbids.
+# command that would do something else" this translator exists not to emit.
 #
 # Reproduction is no longer the goal -- conflicts resolve in the order written
 # -- so a chain is simply a sequence and there is nothing to refuse. The

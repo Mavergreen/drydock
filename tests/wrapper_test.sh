@@ -158,9 +158,8 @@ run() {
 
 # ---- every name is there, and runs --------------------------------------
 #
-# The plan's first "what must be true when you are done": all six names still
-# install and still run -- and, since fix_macho joined them, all SIX are
-# /bin/sh scripts. That last part is the retirement plan's headline made
+# All six names still install and still run -- and, since fix_macho joined them, all SIX are
+# /bin/sh scripts. That last part is the whole point made
 # checkable: if any of these six is an executable rather than a script, this
 # repo is shipping a second Mach-O rewriting binary again.
 for t in patch_macho change_dylib add_version_min rename_segment retag_swift_classes fix_macho; do
@@ -217,7 +216,7 @@ rc=$?
 
 # ---- the teaching message is on STDERR, never on stdout -----------------
 #
-# The plan puts it on stderr precisely so stdout stays byte-identical for
+# It is on stderr precisely so stdout stays byte-identical for
 # anything reading it, and every known caller redirects stdout to /dev/null.
 fresh
 run add_version_min f
@@ -970,7 +969,7 @@ grep -q 'appended LC_VERSION_MIN_MACOSX 10.9' "$T/err" && avm_err_had_append=1
 fresh
 strip_vm "$T/f"
 # The oracle is the SAME STATEMENT the wrapper emits, run directly -- not
-# `machorewrite minos`, which this plan deletes. What this pins is that the
+# `machorewrite minos`, which no longer exists. What this pins is that the
 # wrapper installs exactly what machorewrite produced for the request, which is a
 # claim about the wrapper and outlives the verbs.
 ( cd "$T" && printf 'version-min set 10.9\n' | "$BIN/machorewrite" f mtout ) \
@@ -1084,8 +1083,9 @@ run rename_segment f __DATA __DATA_R1
     && ok "rename_segment: that one line is ALL of stdout" \
     || bad "rename_segment message" "$(wc -l < "$T/out") lines: $(cat "$T/out")"
 
-# EXIT 2 WHEN NOTHING MATCHED -- the divergence a controller ruling requires
-# reproducing, and the reason this wrapper counts the matches first.
+# EXIT 2 WHEN NOTHING MATCHED -- rename_segment's own answer, which
+# machorewrite does not give, so the wrapper reproduces it deliberately; it is
+# the reason this wrapper counts the matches first.
 fresh
 before=$(sha "$T/f")
 run rename_segment f __NOPE __ALSONOPE
@@ -1463,11 +1463,11 @@ run fix_macho f -rename_seg __DATA __DATA_F1
 # no LC_BUILD_VERSION (the load command postdates it by four years), so this
 # asserts the OTHER half, which is the half a caller depends on: the emitted
 # command is the right one, the operation that matched nothing SAYS SO on
-# stderr -- this plan's Task 1 report, which is what replaced fix_macho's
+# stderr -- machorewrite's report, which is what replaced fix_macho's
 # "No changes needed: F" -- and the exit code is still 0.
 #
-# THAT LAST PART IS A GATE, not a detail. Task 2 added `--fatal-warnings`,
-# which turns that report into a refusal. This wrapper must never pass it:
+# THAT LAST PART IS A GATE, not a detail. `--fatal-warnings`
+# turns that report into a refusal. This wrapper must never pass it:
 # fix_macho exited 0 when an operation matched nothing, and that is compat
 # surface. An exit of 2 here means the flag leaked into the translation.
 fresh
@@ -1632,7 +1632,7 @@ fi
 # printed "  Skipping arch N" and carried on, and the script path does the same
 # thing with a different message -- "slice i386: 32-bit; passed through
 # unchanged", on stderr, naming the architecture rather than an index.
-# Measured, not assumed -- the plan's table describes the fat divergence as
+# Measured, not assumed -- the fat divergence was first described as
 # "refuses the whole file", which is true only of a slice that IS a 64-bit
 # Mach-O whose edit failed, not of a slice that simply is not one. Asserting
 # the SKIP is what keeps that distinction from being quietly widened later.
@@ -1934,8 +1934,6 @@ rm -f "$T/two words"
 # precedence) and more than one emitted a SCRIPT (a sequence), so the same
 # conflict got two different answers depending on whether an unrelated flag
 # from another family happened to be present.
-# spec: docs/superpowers/specs/2026-09-14-script-is-the-only-interface-design.md
-#       "Amendment, 2026-09-14: conflicts resolve in flag order, uniformly"
 #
 # Each assertion states the NEW answer, measured against the pre-migration
 # binaries (commit 18ad6f0, built in a throwaway worktree) so that what moved

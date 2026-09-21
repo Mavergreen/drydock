@@ -52,26 +52,22 @@ if(MAVERICKS_MODE STREQUAL "cross")
   message(STATUS "macho-tools: cross build against ${MAVERICKS_SDK}")
 endif()
 
-# No -std=: src/declassify.c (patch_macho's conversion, extracted in Task 0.6b)
-# assigns to an anonymous struct, which clang rejects under -std=c11 and accepts
+# No -std=: src/declassify.c (patch_macho's conversion) assigns to an anonymous struct, which clang rejects under -std=c11 and accepts
 # in its default gnu dialect. Verified across all six.
 set(CMAKE_C_STANDARD_REQUIRED OFF)
 
-# The toolkit library the seven rewriters are being converged onto (docs/PROPOSAL.md
-# "Shape"; docs/superpowers/plans/2026-09-08-macho9-toolkit.md). It starts with the
-# smallest shared thing and grows one extraction at a time.
+# The toolkit library the seven rewriters were converged onto (docs/PROPOSAL.md
+# "Shape").
 #
-# Target name is machorewritecore, not machorewrite, so Task 4 can add the `machorewrite`
-# CLI executable without a target-name collision. It is deliberately NOT linked
+# Target name is machorewritecore, not machorewrite, so it does not collide with
+# the `machorewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
 add_library(machorewritecore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c)
 target_include_directories(machorewritecore PUBLIC src)
 target_compile_options(machorewritecore PRIVATE -O2 -Wall)
 
-# ALL SIX historical tools are now /bin/sh WRAPPERS around machorewrite (the
-# retirement plan's Task 2 did five; this plan's Task 3 did fix_macho, the
-# last one). Each keeps its original installed name, because
+# ALL SIX historical tools are now /bin/sh WRAPPERS around machorewrite. Each keeps its original installed name, because
 # mavericksforever.com/claude/install.sh fetches patch_macho, change_dylib and
 # add_version_min BY THOSE NAMES -- the wrappers are drop-in, and
 # compat/<tool>.sh's own header says how each one maps that tool's grammar,
@@ -116,13 +112,10 @@ foreach(tool IN LISTS MACHO_TOOLS)
   mavericks_assert_binary_compatible(${tool})
 endforeach()
 
-# The multi-call CLI (Task 4, docs/PROPOSAL.md "Verbs"): every verb it
-# implements delegates in-process to machorewritecore -- `verify`/`info`/`grow` to
-# src/grow.h and src/image.h, `dylib`/`rpath`/`lc` to src/rewrite.h and
-# `minos` to src/version_min.h. Those last four used to be run as SUBPROCESSES
-# (change_dylib / add_version_min next to machorewrite), which made machorewrite depend at
-# runtime on the very binaries it is meant to replace; Task 0.5 extracted the
-# rewrite into src/ so both callers share the code instead of the binary. Kept
+# The CLI: everything it does delegates in-process to machorewritecore. The
+# rewrites once ran as SUBPROCESSES (change_dylib / add_version_min next to
+# machorewrite), which made machorewrite depend at runtime on the very binaries
+# it is meant to replace; now the callers share the code instead. Kept
 # out of the ${tool}.c-named foreach above because its source lives in cli/. No
 # root include path is needed: every header it includes now lives in src/,
 # reached via machorewritecore's PUBLIC src include (below), same as every other tool.
@@ -212,7 +205,7 @@ target_link_libraries(image_test PRIVATE machorewritecore)
 add_test(NAME image_test COMMAND image_test
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# Hermetic tests for src/trie.c's export-trie rebuild (Task 5 gap 1): decode,
+# Hermetic tests for src/trie.c's export-trie rebuild: decode,
 # shift, re-serialize, all against hand-built and hand-computed trie byte
 # buffers -- no fixture file needed, same reasoning as grow_test.
 add_executable(trie_test tests/trie_test.c)
@@ -223,8 +216,8 @@ add_test(NAME trie_test COMMAND trie_test)
 # Hermetic tests for src/script.c's tokenizer: hand-written script text and
 # the field vector it must produce, so no fixture file is needed -- same
 # reasoning as trie_test. The quoting cases are exactly the shapes
-# compat/translate.sh's mt_quote emits, because the spec requires the
-# generator and the parser cannot drift.
+# compat/translate.sh's mt_quote emits, so the generator and the parser cannot
+# drift.
 add_executable(script_test tests/script_test.c)
 target_compile_options(script_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(script_test PRIVATE machorewritecore)
@@ -263,7 +256,7 @@ target_link_libraries(edit_test PRIVATE machorewritecore)
 add_test(NAME edit_test COMMAND edit_test)
 set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
-# Hermetic tests for src/linkedit.c's ml_bump_all (Task 2b): a synthetic
+# Hermetic tests for src/linkedit.c's ml_bump_all: a synthetic
 # image built by hand via mi_wrap, so no fixture file is needed -- same
 # reasoning as trie_test.
 add_executable(linkedit_test tests/linkedit_test.c)
@@ -307,7 +300,7 @@ target_compile_options(fatcheck PRIVATE -O2 -Wall -Wextra)
 # passed the bindir so it runs the change_dylib and fix_macho wrappers CMake
 # actually staged (and the machorewrite under them), instead of compiling its own
 # copies from a hand-enumerated source list that had to be kept in sync with
-# machorewritecore by hand (Task 5) -- it still builds machorewrite from source, deriving
+# machorewritecore by hand -- it still builds machorewrite from source, deriving
 # the list from a glob, and copies the two wrappers beside it, when run
 # standalone with no bindir argument.
 add_test(NAME change_dylib_test
@@ -360,11 +353,10 @@ add_test(NAME translate_test
 add_test(NAME wrapper_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:machorewrite>")
 
-# THE GATE for the compat-retirement plan's Task 2: every known caller of the
-# six historical tools, replayed end to end against the wrappers. The plan
-# says it outright -- "A wrapper that passes the test suite but breaks a real
-# caller is a failure" -- and weights the argument sweep as discovery and
-# these replays as decisive. Each pipeline's result is pinned to the SHA-256
+# THE GATE for the wrappers: every known caller of the six historical tools,
+# replayed end to end against them. A wrapper that passes the test suite but
+# breaks a real caller is a failure, so the argument sweep is discovery and
+# these replays are decisive. Each pipeline's result is pinned to the SHA-256
 # the C binaries built from commit 91b30b3 (the last commit carrying all six
 # compat/*.c files) produced from tests/fixture.macho on real 10.9, the same
 # device tests/EXPECTED uses.
@@ -389,7 +381,7 @@ add_test(NAME insert_dylib_test
 set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 
 # Regression coverage for two heap-overflow crashes a code review found in
-# add_version_min and retag_swift_classes after Task 1 converted them onto
+# add_version_min and retag_swift_classes after they were converted onto
 # src/image.h -- mi_open validates load commands, not section file ranges or
 # addresses derived from them, so a fixture can pass mi_open cleanly and
 # still contain an out-of-bounds reference. See the script's own header for
@@ -397,7 +389,7 @@ set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 add_test(NAME leaf_tool_crashes
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:machorewrite>")
 
-# src/live.h -- the header-only, malloc-free query surface Task 4 adds for
+# src/live.h -- the header-only, malloc-free query surface for
 # avxemu (docs/PROPOSAL.md's "Shape": "live.h is deliberately a header, not
 # part of the library"). Deliberately NOT linked against machorewritecore: live.h
 # is standalone by design (see its own top comment), and this test proves
@@ -407,7 +399,7 @@ add_test(NAME leaf_tool_crashes
 # of a synthetic one. WORKING_DIRECTORY is the source dir because the test
 # shells out to `cc -c tests/live_probe.c` and `nm` on the result to prove
 # a TU that includes only live.h stays free of malloc/free/stdio -- the
-# constraint pin `tests/README.md` and the task brief both call for, wired
+# constraint pin `tests/README.md` calls for, wired
 # into CI rather than left as an unchecked comment.
 add_executable(live_test tests/live_test.c)
 target_compile_options(live_test PRIVATE -O2 -Wall -Wextra)

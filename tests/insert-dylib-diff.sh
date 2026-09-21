@@ -66,7 +66,7 @@ FORK_COMMIT=bd221b8   # "Fixes for some executables"
 # already-known result on every 32-bit file found and crowd out anything new.
 #
 # --inplace PLUS AN EXPLICIT 3rd POSITIONAL IS A DECLARED DIVERGENCE, NOT A
-# SWEPT COMPARISON. Task 8 fix round 1 made this wrapper refuse that
+# SWEPT COMPARISON. This wrapper refuses that
 # combination outright (compat/translate.sh's mt_id_parse) rather than match
 # the fork's silent "--inplace wins" choice -- compat/README.md's table has
 # the reasoning. Comparing FORK against NEW for it, the way every other case

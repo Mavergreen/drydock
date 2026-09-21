@@ -292,7 +292,7 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map, int nold,
  * mo_bind_walk's `uint8_t *`. Casts away const exactly once, internally,
  * into the shared mo_bind_walk with `map = NULL` -- read-only-ness becomes
  * a property of which function a caller chose, not a runtime flag it has
- * to get right. Task 6's imports reporter calls this, not mo_bind_walk
+ * to get right. src/imports.c's reporter calls this, not mo_bind_walk
  * with a NULL map. */
 int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
                     mo_bind_obs obs, void *ctx);
@@ -301,8 +301,8 @@ int mo_bind_observe(const uint8_t *base, uint32_t size, const char *what,
  * buffer? Written so the check itself cannot be fooled by the same integer
  * overflow it exists to catch: off/len come straight from the file (an
  * LC_SYMTAB or LC_DYLD_INFO command), so a malformed one is exactly the
- * input this guards against. mo_map_apply (this module) and Task 6's
- * imports reporter both need to bound a bind_off/bind_size (and weak/lazy)
+ * input this guards against. mo_map_apply (this module) and src/imports.c's
+ * reporter both need to bound a bind_off/bind_size (and weak/lazy)
  * pair against a slice before walking it; exported here, rather than each
  * writing its own copy, for the same reason mo_bind_walk's decode lives in
  * exactly one place -- two independent bounds checks over the same kind of

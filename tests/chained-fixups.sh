@@ -172,7 +172,7 @@ if ! "$T/has_lc" "$T/out" "$LC_DYLD_INFO_ONLY"; then
 fi
 echo "chained-fixups: converted to LC_DYLD_INFO_ONLY"
 
-# The same conversion through the other front-end. Task 0.6b lifted it into
+# The same conversion through the other front-end. It lives in
 # src/declassify.c, so the `fixups set classic` statement and `patch_macho IN OUT` are
 # two drivers over ONE implementation and must write the same bytes -- which is
 # the strongest available evidence that the move changed nothing. Done here,

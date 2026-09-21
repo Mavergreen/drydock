@@ -68,7 +68,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * Adding an operation here is the whole of adding an operation -- to both
  * front-ends, to what --capabilities advertises, and (the disturbs column) to
  * what a run of it is known to invalidate. 16 rows: every "<kind> <op>" the
- * spec accepts.
+ * language accepts.
  *
  * The last row is `target 10.9`, whose second field is a PROFILE name, not a
  * verb. It sits in the op column because that is what makes the profile part
@@ -212,7 +212,7 @@ const char *ms_op_name(int op) {
  * Freeing here rather than at each call site also means every ms_parse
  * failure that stems from a specific source line goes through the exact
  * same sequence, so none of them can get the order wrong, forget to free,
- * or forget the "line N" prefix the spec requires. `stmts` may be NULL
+ * or forget the "line N" prefix every such error carries. `stmts` may be NULL
  * (cap == 0: pass 1 found no non-blank, non-comment line); `text` is never
  * NULL here (pass 2 only starts once it's allocated). free(NULL) is a
  * no-op either way. */

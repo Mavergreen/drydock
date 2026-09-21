@@ -501,6 +501,18 @@ machorewrite "$REAL" "$T" < claude.edits
   repackage, so there is no repackaging axis to carry. No Renovate customManager
   watches it either, because nothing external releases it. See `INGREDIENTS.md`.
 
+## Comments
+
+Prefer a test to a comment: a test whose failure message says the sentence you
+were about to write keeps saying it, and cannot go stale. A comment that
+survives cites a reason — `platform:` for a fact about the platform or a tool,
+or `spec:` for where a decision lives. **`spec:` must point at something
+durable in this tree** — a test file and case name, a README section, a source
+file — **never into `docs/`**, and never at a superpowers spec or plan by
+filename, by one of its numbered decisions or tasks, or by description. Those
+are deleted once they are implemented, so a pointer into one dangles; put the
+reason itself in a test, the commit message, a README or the comment instead.
+
 ## Provenance
 
 Extracted with full history from
