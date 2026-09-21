@@ -29,6 +29,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 23 | Wrapper-dylib verb, from M-P-R's `build_wrappers.sh` and recipes | — | — | **to brainstorm**; see item 21 |
 | 24 | Stub/wrapper shim generator, designed from M-P-R's `framework-stubs/` | — | — | **to brainstorm**; this is item 20.4, see item 21 |
 | 25 | Take in magic-trackpad2's general reverse-engineering tools | — | — | **to brainstorm**, raised 2026-09-21; the generic half moves here and the trackpad half stays, see below |
+| 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **to do**, found 2026-09-21 by item 5's fix; small, see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -869,19 +870,19 @@ four are fixed and mutation-tested (`81f5232`, `2b29718`, `8341e8d`).
 
 Still open, both shipyard's:
 
-- **Eleven workflows hard-code the path `${sourceDirName}` resolves to**, e.g.
-  `"$MAVERICKS_BUILD_ROOT/tailscale-cross"`. `${sourceDirName}` exists because a
-  checkout's directory name varies, so those eleven are right only for a default
-  `actions/checkout`. This repo paid for exactly this once on 2026-09-20: the
-  preset built into one directory, the workflow read another, and the tree-clean
-  assertion was GREEN throughout, because a build that goes somewhere unexpected
-  still leaves the source tree clean. Fix: a `shipyard-build-dir <mode>` helper,
-  plus a test that its output equals the `binaryDir` CMake actually reports.
-- **shipyard's own ci.yml prints two false "prune it" warnings** for `VERSION`
-  and `dist/`, which only its release job writes. Exit 0, and ci.yml runs only on
-  branches and pull requests, never on main, so it is rare noise; left rather
-  than fixed with a new knob. The cost is that it teaches people to ignore the
-  warning, which is how a stale allowlist rots.
+- **Done 2026-09-21: workflows that read a preset's build directory by a fixed
+  name.** The review counted eleven. Classifying all 15 repos found only two at
+  risk, where a preset names the directory after the checkout folder and the
+  workflow read it back by a literal: tailscale (`b1c7283`) and container-tools
+  (`0f6ab83`). Both now derive the path the way this repo does
+  (`$(basename "$PWD")`), and each green run lists real binaries in the
+  directory. The other 13 choose the path in their own scripts and read the
+  same literal back, or already derive it.
+- **Moved to shipyard's `BACKLOG.md`, entry 19:** the false "prune it" warnings
+  in shipyard's own ci.yml. Shipyard's backlog is where shipyard work is queued
+  now, along with entries 17, 18 and 20 found the same day (repackages that ship
+  nothing, a silent race for `-mavericks.N`, reproducible builds as a
+  convention).
 
 What follows is the record as written on 2026-09-20.
 
@@ -1145,7 +1146,17 @@ What the report needs that neither does: walking an `.app` (every Mach-O in
 `Info.plist`'s `LSMinimumSystemVersion`, `LC_BUILD_VERSION` vs
 `LC_VERSION_MIN_MACOSX`, chained fixups, relative ObjC method lists (item 13 gap
 6), the Swift runtime, code-signature formats 10.9's `codesign` cannot read,
-`NIBArchive` nibs (item 17), storyboards and `Assets.car`. Each finding should
+`NIBArchive` nibs (item 17), storyboards and `Assets.car`. **A first worked example already exists.** On 2026-09-21 a session in `~/Downloads`
+(transcript `~/.claude/projects/-Users-schmonz-Downloads/9413ca21-….jsonl`)
+produced exactly this report, by hand, for Objective-See's TaskExplorer. It found
+about 10 missing symbols ("easy to moderate"), all 15 nibs in `NIBArchive` ("the
+hard part", item 17), two repair routes (rebuild from source, or patch the
+binary with a shim dylib plus nib conversion), and a list of what is probably
+fine on 10.9. It is the first candidate for the collection of real binaries this
+report gets measured against, and its output is the shape this report should
+produce automatically.
+
+Each finding should
 say whether a tool in this repo already closes it — which turns the report into a
 plan, and is the reason it belongs here rather than in shipyard.
 
@@ -1310,4 +1321,21 @@ and magic-trackpad2 keeps its device subcommands as a plugin that the shared
 `re` finds. Otherwise the repo that grew the tool loses it. A second question:
 whether some static subcommands, `syms` and `objc-methods` first, should run on
 this repo's own Mach-O parsers instead of 10.9's old `otool`/`nm`.
+
+### 26. Decode `dyld_chained_ptr_64_rebase` at its real widths
+
+Found 2026-09-21 by the fix for item 5 (`30720d0`). The conversion in
+`src/declassify.c` reads a `DYLD_CHAINED_PTR_64` rebase target as 43 bits
+(`raw & 0x7FFFFFFFFFF`) and `high8` from bit 43. `<mach-o/fixup-chains.h>` lays
+the struct out as `target:36, high8:8, reserved:7, next:12, bind:1`, so the
+target is 36 bits and `high8` starts at bit 36. For `DYLD_CHAINED_PTR_64_OFFSET`,
+the conversion drops `high8` entirely. The verifier `30720d0` added
+(`src/declassify.c:361`) decodes the widths correctly.
+
+**Consequence today: a refusal, never a wrong binary.** When `high8` is zero,
+which is the normal case on x86_64, both decodes agree. When it is not, the
+conversion computes a wrong target and the verifier refuses the file. Fixing
+the decode turns those refusals into correct conversions. Test it with
+`tests/mkchained.c`'s `make-high8` fixture, which is refused today and should
+convert cleanly with the right slot value once the decode is correct.
 
