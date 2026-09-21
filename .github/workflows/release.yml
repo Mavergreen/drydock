@@ -62,6 +62,11 @@ jobs:
       - name: Record the pre-build tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
 
+      - name: Build out of tree
+        run: |
+          echo "MAVERICKS_BUILD_ROOT=$RUNNER_TEMP/mm-build" >> "$GITHUB_ENV"
+          echo "CROSS_BUILD_DIR=$RUNNER_TEMP/mm-build/macho-tools-cross" >> "$GITHUB_ENV"
+
       # Nothing external to derive from -- this repo is its own upstream -- so the version
       # IS UPSTREAM_VERSION, hand-bumped, and a release is the X.Y.Z tag someone pushes on
       # purpose. Computed here rather than through shipyard's version.sh or
@@ -125,7 +130,7 @@ jobs:
       - name: Cover patch_macho's chained-fixups conversion
         run: |
           set -eu
-          sh tests/chained-fixups.sh "$PWD/build-cross" && rc=0 || rc=$?
+          sh tests/chained-fixups.sh "$CROSS_BUILD_DIR" && rc=0 || rc=$?
           if [ "$rc" = 77 ]; then
             echo "::error::chained-fixups SKIPPED on a modern runner — it should be able to emit them"
             exit 1
@@ -136,7 +141,7 @@ jobs:
         run: |
           set -eu
           echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
-          sh tests/characterize.sh "$PWD/build-cross" check
+          sh tests/characterize.sh "$CROSS_BUILD_DIR" check
 
       - name: The build must not have written into the source tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
@@ -151,9 +156,9 @@ jobs:
       # header says so); it ships anyway, the same way the other six do.
       #
       # The paths below are unchanged by fix_macho becoming a wrapper: this
-      # list names FILES in build-cross/, not CMake targets, and CMake stages
-      # every wrapper there under its historical name -- so build-cross/
-      # fix_macho exists either way. Verified, not assumed.
+      # list names FILES in the cross build dir, not CMake targets, and CMake
+      # stages every wrapper there under its historical name -- so
+      # $CROSS_BUILD_DIR/fix_macho exists either way. Verified, not assumed.
       #
       # Staged FLAT into dist/, because that is what publishing needs: the shared
       # publisher downloads this artifact into one directory and attaches the files
@@ -166,7 +171,7 @@ jobs:
           for f in machorewrite machorewrite-compat.sh machorewrite-translate.sh \
                    patch_macho change_dylib add_version_min fix_macho \
                    rename_segment retag_swift_classes insert_dylib; do
-            cp "build-cross/$f" dist/
+            cp "$CROSS_BUILD_DIR/$f" dist/
           done
           ls -l dist
 

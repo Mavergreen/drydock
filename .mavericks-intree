@@ -1,0 +1,1 @@
+VERSION    # release.yml stamps the resolved version here and reads it back
