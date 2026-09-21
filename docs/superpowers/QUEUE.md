@@ -25,6 +25,9 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 19 | Rename this repo to **drydock** | — | — | **name decided** 2026-09-21; the rename itself waits for item 7, see below |
 | 20 | Other tools that belong here | — | — | **idea list**, raised 2026-09-21; see below |
 | 21 | Rehome Mavericks-Porting-Resources | — | — | **surveyed** 2026-09-21; Wowfunhappy is open to it being reorganized into the owner's repos, see below |
+| 22 | Runtime trace for a ported binary, from M-P-R's `syscall_trace.c` | — | — | **to brainstorm**; the runtime half of item 18; see item 21 |
+| 23 | Wrapper-dylib verb, from M-P-R's `build_wrappers.sh` and recipes | — | — | **to brainstorm**; see item 21 |
+| 24 | Stub/wrapper shim generator, designed from M-P-R's `framework-stubs/` | — | — | **to brainstorm**; this is item 20.4, see item 21 |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1218,12 +1221,33 @@ none is tied to one app:
 
 | M-P-R | better home | why |
 |---|---|---|
-| `mavericks-legacy-support/` (the libSystem gap-fillers the wrapper recipes link) | org `macports-legacy-support`, or beside it | a library, not a tool. Its lineage relative to the org repo is not established yet (one git search attempt failed on that checkout's broken `.git`); compare before moving anything |
+| `mavericks-legacy-support/` (the libSystem gap-fillers the wrapper recipes link) | **its own org repo, and org `macports-legacy-support` is retired or folded into it**, per the repo owner 2026-09-21 | see below |
 | `dotnet_polyfills.c`, `security_seckey_rsa.c`, `security_wrapper_stubs.c`, `cxx_stream_stubs.cpp` | the same library | `dotnet_polyfills.c`'s own header says so ("fold them in there") |
 | `swift-backdeploy/patch_swift_custom_rr.py`, `legacy-swift-stubs/` | org `swift-runtime` | the patcher's header names ModernMavericks swift-runtime's patches 0003–0005; it exists only because of that runtime |
 | `compat_headers/`, `macos_compat.h`/`.mm` | the legacy-support headers | compile-time shims for source builds, and `macos_compat.h` names Godot |
 | `velopack_updatemac_stub.c` | with an osu! port, if one is made | specific to one app |
 | `CLAUDE.md`, and the fork's `mavericks-porting-skills` branch (`04de6a0`, "Add Claude agent skills and conventions for Mavericks porting") | shipyard's `claude-plugins/modernmavericks` | a porting playbook is a skill, and that plugin is where the family keeps its skills |
+
+**legacy-support: the direction, and what to check first.** The repo owner
+believes M-P-R's `mavericks-legacy-support` is a superset of MacPorts' and
+should get its own org repo, with the org's `macports-legacy-support` retired or
+folded into it. Its README bears that out in part. The polyfill code is
+"copied verbatim from MacPorts", with the plumbing that targets 10.4 through
+current removed (SDK and target detection, the `__MPLS_SDK_*`/`__MPLS_LIB_*`
+gates). On top of that it adds the custom libSystem shims, such as
+`__ulock_wait`, `kevent64` and the `dlopen` handling, that
+`libsystem_wrapper_build.md` says used to live in `modern_api_polyfills.c`. So it
+is a superset in *functions for 10.9* and a subset in *OS range*, which is the
+trade this family wants. Two things to settle before retiring the org repo:
+
+* **Following upstream.** The org repo packages MacPorts `v1.5.2` unmodified,
+  fetched by `build/fetch-upstream.sh` and bumped by Renovate from
+  `macports/macports-legacy-support` tags. The verbatim copies in the spin have
+  nothing tracking them. Folding in the org repo without adding an equivalent
+  means MacPorts' fixes stop arriving.
+* **Measure the superset claim.** Compare the spin's function list against
+  MacPorts `v1.5.2`, and check what the org repo's current users link against,
+  before retiring anything.
 
 **Before any of it moves:** agree the plan with Wowfunhappy, and settle
 licensing per piece. avxemu's is already an open question, and a file moving
