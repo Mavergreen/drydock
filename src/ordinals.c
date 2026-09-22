@@ -163,9 +163,33 @@ int mo_map_validate(const mo_map *map, int base, int max_new, int nadds,
     return 0;
 }
 
-static const uint8_t *mo_uleb_skip(const uint8_t *p, const uint8_t *end) {
-    while (p < end && (*p & 0x80)) p++;
-    return p < end ? p + 1 : end;
+/* spec: tests/relations_test.c test_bind_walk_observes -- a truncated operand
+ * ends the walk rather than refusing, as skipping it always did. */
+static const uint8_t *mo_uleb_read(const uint8_t *p, const uint8_t *end, uint64_t *v) {
+    int s = 0;
+    *v = 0;
+    while (p < end) {
+        uint8_t b = *p++;
+        if (s < 64) *v |= (uint64_t)(b & 0x7f) << s;
+        s += 7;
+        if (!(b & 0x80)) break;
+    }
+    return p;
+}
+
+static const uint8_t *mo_sleb_read(const uint8_t *p, const uint8_t *end, int64_t *v) {
+    uint64_t r = 0;
+    int s = 0;
+    uint8_t b = 0;
+    while (p < end) {
+        b = *p++;
+        if (s < 64) r |= (uint64_t)(b & 0x7f) << s;
+        s += 7;
+        if (!(b & 0x80)) break;
+    }
+    if (s < 64 && (b & 0x40)) r |= ~(uint64_t)0 << s;
+    *v = (int64_t)r;
+    return p;
 }
 
 /* See ordinals.h for the full contract. */
@@ -173,12 +197,21 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map,
                   int nold, const char *what, long *changed,
                   mo_bind_obs obs, void *ctx) {
     uint8_t *p = base, *end = base + size;
-    mo_bind_state st = { 0, NULL, 0 };
+    mo_bind_state st;
+    memset(&st, 0, sizeof st);
     while (p < end) {
         uint8_t op = *p & BIND_OPCODE_MASK, imm = *p & BIND_IMMEDIATE_MASK;
+        uint8_t *op_at = p;
+        st.at = p;
+        st.count = 1;
+        st.skip = 0;
         switch (op) {
         case BIND_OPCODE_DONE:
+            st.done_at = p;
+            p++;
+            break;
         case BIND_OPCODE_SET_TYPE_IMM:
+            st.type = imm;
             p++;
             break;
         case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM: {
@@ -193,12 +226,15 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map,
             case -2: st.ordinal = MO_ORD_FLAT;    break;
             default: st.ordinal = MO_ORD_UNKNOWN; break;
             }
+            st.ord_at = p; st.ord_len = 1;
             p++;
             break;
         }
         case BIND_OPCODE_DO_BIND:
         case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
+            st.len = 1;
             if (obs) obs(&st, ctx);
+            st.offset += 8 + (op == BIND_OPCODE_DO_BIND ? 0 : (uint64_t)imm * 8);
             p++;
             break;
         case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM: {
@@ -223,6 +259,7 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map,
                 if (neu != old && changed) (*changed)++;
             }
             st.ordinal = neu;
+            st.ord_at = p; st.ord_len = 1;
             p++;
             break;
         }
@@ -271,6 +308,7 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map,
                 neu = (int)v;
             }
             st.ordinal = neu;
+            st.ord_at = p; st.ord_len = (uint32_t)(1 + len);
             p += 1 + len;
             break;
         }
@@ -301,19 +339,37 @@ int mo_bind_walk(uint8_t *base, uint32_t size, const int *map,
             break;
         }
         case BIND_OPCODE_SET_ADDEND_SLEB:
+            p = (uint8_t *)mo_sleb_read(p + 1, end, &st.addend);
+            break;
         case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
-        case BIND_OPCODE_ADD_ADDR_ULEB:
-            p = (uint8_t *)mo_uleb_skip(p + 1, end);
+            st.seg = imm;
+            p = (uint8_t *)mo_uleb_read(p + 1, end, &st.offset);
             break;
-        case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
-            p = (uint8_t *)mo_uleb_skip(p + 1, end);
+        case BIND_OPCODE_ADD_ADDR_ULEB: {
+            uint64_t v;
+            p = (uint8_t *)mo_uleb_read(p + 1, end, &v);
+            st.offset += v;
+            break;
+        }
+        case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB: {
+            uint64_t v;
+            p = (uint8_t *)mo_uleb_read(p + 1, end, &v);
+            st.len = (uint32_t)(p - op_at);
             if (obs) obs(&st, ctx);
+            st.offset += 8 + v;
             break;
-        case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
-            p = (uint8_t *)mo_uleb_skip(p + 1, end);
-            p = (uint8_t *)mo_uleb_skip(p, end);
+        }
+        case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB: {
+            uint64_t n, skip;
+            p = (uint8_t *)mo_uleb_read(p + 1, end, &n);
+            p = (uint8_t *)mo_uleb_read(p, end, &skip);
+            st.len = (uint32_t)(p - op_at);
+            st.count = n;
+            st.skip = skip;
             if (obs) obs(&st, ctx);
+            st.offset += n * (8 + skip);
             break;
+        }
         default:
             fprintf(stderr, "ERROR: %s: unknown bind opcode 0x%02x\n", what, op);
             return -1;

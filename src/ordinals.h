@@ -249,6 +249,14 @@ typedef struct {
     int         ordinal;
     const char *symbol;
     int         weak;
+    /* spec: tests/relations_test.c test_bind_walk_reports_positions_and_slots
+     * -- the DO opcode, the ordinal opcode in effect and the last DONE (NULL
+     * before any), and the slot bound, 64-bit pointers. */
+    const uint8_t *at, *ord_at, *done_at;
+    uint32_t    len, ord_len;
+    int         seg, type;
+    uint64_t    offset, count, skip;
+    int64_t     addend;
 } mo_bind_state;
 
 typedef void (*mo_bind_obs)(const mo_bind_state *st, void *ctx);

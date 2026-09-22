@@ -452,6 +452,60 @@ static void test_bind_walk_observes(void) {
  * undefined special of -3 (this SDK has no name for it; a newer SDK calls it
  * BIND_SPECIAL_DYLIB_WEAK_LOOKUP) would otherwise be indistinguishable from
  * a real FLAT lookup to any caller comparing against MO_ORD_FLAT. */
+struct places { int n; mo_bind_state st[4]; };
+
+static void keep(const mo_bind_state *st, void *ctx) {
+    struct places *p = ctx;
+    if (p->n < 4) p->st[p->n++] = *st;
+}
+
+/* What an editor of the stream needs from each bind besides its ordinal and
+ * symbol: where its own opcode and its ordinal opcode sit, the DONE before it,
+ * and the slot it binds -- segment, offset, type, addend, and a
+ * DO_BIND_ULEB_TIMES_SKIPPING_ULEB's count and skip. src/redirect.c rewrites
+ * from these positions and verifies by comparing these fields. */
+static void test_bind_walk_reports_positions_and_slots(void) {
+    const uint8_t stream[] = {
+        /* 0 */ BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 3,
+        /* 1 */ BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM, '_','a','\0',
+        /* 5 */ BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER,
+        /* 6 */ BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2, 0x90, 0x01,   /* 144 */
+        /* 9 */ BIND_OPCODE_SET_ADDEND_SLEB, 0x7c,                         /* -4 */
+        /* 11 */ BIND_OPCODE_DO_BIND,
+        /* 12 */ BIND_OPCODE_ADD_ADDR_ULEB, 0x08,
+        /* 14 */ BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB, 0x03, 0x10,
+        /* 17 */ BIND_OPCODE_DONE,
+        /* 18 */ BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB, 0x82, 0x01,           /* 130 */
+        /* 21 */ BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB, 0x20,
+        /* 23 */ BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED | 2,
+    };
+    struct places p;
+    memset(&p, 0, sizeof p);
+    CHECK(mo_bind_observe(stream, (uint32_t)sizeof stream, "test", keep, &p) == 0, "walk failed");
+    CHECK(p.n == 4, "saw %d binds, wanted 4", p.n);
+    if (p.n != 4) return;
+    CHECK(p.st[0].at == stream + 11 && p.st[0].len == 1, "bind 0's opcode is byte 11, 1 byte");
+    CHECK(p.st[0].ord_at == stream && p.st[0].ord_len == 1, "bind 0's ordinal opcode is byte 0");
+    CHECK(p.st[0].done_at == NULL, "bind 0 has no DONE before it");
+    CHECK(p.st[0].seg == 2 && p.st[0].offset == 144 && p.st[0].type == BIND_TYPE_POINTER &&
+          p.st[0].addend == -4 && p.st[0].count == 1,
+          "bind 0 is one pointer at segment 2 offset 144, addend -4 (got seg %d off %llu "
+          "type %d addend %lld count %llu)", p.st[0].seg, (unsigned long long)p.st[0].offset,
+          p.st[0].type, (long long)p.st[0].addend, (unsigned long long)p.st[0].count);
+    CHECK(p.st[1].at == stream + 14 && p.st[1].len == 3, "bind 1's opcode is bytes 14-16");
+    CHECK(p.st[1].offset == 144 + 8 + 8 && p.st[1].count == 3 && p.st[1].skip == 16,
+          "bind 1 starts past bind 0's slot and the ADD_ADDR, three times skipping 16 "
+          "(got off %llu count %llu skip %llu)", (unsigned long long)p.st[1].offset,
+          (unsigned long long)p.st[1].count, (unsigned long long)p.st[1].skip);
+    CHECK(p.st[2].ord_at == stream + 18 && p.st[2].ord_len == 3 && p.st[2].ordinal == 130,
+          "bind 2's ordinal opcode is the three-byte ULEB at 18");
+    CHECK(p.st[2].done_at == stream + 17, "bind 2 follows the DONE at 17");
+    CHECK(p.st[2].at == stream + 21 && p.st[2].len == 2 &&
+          p.st[2].offset == 160 + 3 * (8 + 16), "bind 2 is the ADD_ADDR_ULEB at 21, after bind 1's three");
+    CHECK(p.st[3].offset == p.st[2].offset + 8 + 0x20 && p.st[3].len == 1,
+          "bind 3 is past bind 2's slot and its 0x20");
+}
+
 static void test_bind_walk_observe_reports_undefined_special_as_unknown(void) {
     uint8_t stream[] = {
         BIND_OPCODE_SET_DYLIB_SPECIAL_IMM | 0x0D,   /* raw -3, sign-extended */
@@ -582,6 +636,7 @@ int main(void) {
     test_dylib_kind_names();
     test_capabilities_kinds_track_mo_is_ordinal_lc();
     test_bind_walk_observes();
+    test_bind_walk_reports_positions_and_slots();
     test_bind_walk_observe_reports_undefined_special_as_unknown();
     test_bind_walk_observe_refuses_out_of_range_uleb_ordinal();
     test_bind_walk_observe_refuses_unterminated_symbol();
