@@ -19,6 +19,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 CC="${CC:-clang}"
 FF="-mmacosx-version-min=10.9"
+# platform: a modern ld leaves 64 bytes of header pad by default, too few for
+# a shim path under $TMPDIR; 10.9's leaves thousands. Ask for room explicitly.
+PAD="-Wl,-headerpad,0x400"
 BAKE="$BIN/bake-mavericks-shim"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$BAKE" ] || { echo "bake_mavericks_shim_test: $BAKE not found or not executable" >&2; exit 1; }
@@ -87,11 +90,11 @@ EOF
 SHIM="$T/libshim.dylib" LIBA="$T/liba.dylib"
 "$CC" -dynamiclib $FF -install_name "$SHIM" -o "$SHIM" "$T/shim.c"
 "$CC" -dynamiclib $FF -install_name "$LIBA" -o "$LIBA" "$T/a.c"
-"$CC" $FF -o "$T/prog" "$T/prog.c" "$LIBA"
+"$CC" $FF $PAD -o "$T/prog" "$T/prog.c" "$LIBA"
 # -lSystem ahead of the shim, so getpid resolves to libSystem and the shim
 # is loaded for shim_only alone.
-"$CC" $FF -o "$T/reuse" "$T/reuse.c" -lSystem "$SHIM"
-"$CC" $FF -o "$T/other" "$T/other.c"
+"$CC" $FF $PAD -o "$T/reuse" "$T/reuse.c" -lSystem "$SHIM"
+"$CC" $FF $PAD -o "$T/other" "$T/other.c"
 HI_LIB=$SHIM; export HI_LIB
 
 # ---- 1. the central case: bake, then run with no DYLD_* at all ------------
@@ -183,19 +186,19 @@ bake --bogus prog
     && ok "usage: an unknown option is a usage error (2)" || bad "usage: bogus" "exit $brc"
 
 # No room in the header for the shim's load command: the wrapper declares no
-# allow-grow, so it refuses, as the Python does. The filler shrinks the pad
-# below what the command needs; how much filler that takes is read off
-# `info`, not assumed.
-# The linker packs __TEXT's sections against the end of a page, so filler
-# costs the pad byte for byte, less some alignment `k` measured from the first
-# attempt, modulo the page; the second attempt aims 40 bytes above the commands.
+# allow-grow, so it refuses, as the Python does. These links take the default
+# pad, not $PAD, which is a floor. platform: the linker packs __TEXT's sections
+# against the end of a page, so filler costs the pad byte for byte, less an
+# alignment `k` measured from the first attempt, modulo the page; the second
+# attempt aims 40 bytes above the commands.
 pad() { "$DMR" info "$1" | sed -n 's/^header pad: \([0-9]*\) bytes available.*/\1/p'; }
 tight() {
     printf '__attribute__((used)) static const char filler[%d] = { 1 };\n' "$1" >"$T/filler.c"
     "$CC" $FF -o "$T/tight" "$T/prog.c" "$T/filler.c" "$LIBA"
     pad "$T/tight"
 }
-p0=$(pad "$T/prog")
+"$CC" $FF -o "$T/loose" "$T/prog.c" "$LIBA"
+p0=$(pad "$T/loose")
 fill=$((p0 - 40))
 p1=$(tight "$fill")
 k=$(( ((p0 - fill - p1) % 4096 + 4096) % 4096 ))
@@ -245,7 +248,7 @@ nf=$("$DMR" imports "$T/fat.selfcontained" 2>/dev/null | awk -F'\t' 'NR==1 { for
     || bad "fat" "exit $brc, $nf slices: $(cat "$T/b.err")"
 
 # ---- 9. chained fixups, which the Python refuses -------------------------
-"$CC" -mmacosx-version-min=12.0 -o "$T/chained" "$T/prog.c" "$LIBA" 2>/dev/null
+"$CC" -mmacosx-version-min=12.0 $PAD -o "$T/chained" "$T/prog.c" "$LIBA" 2>/dev/null
 if [ -f "$T/chained" ] && "$DMR" info "$T/chained" 2>/dev/null | grep -q ' LC_DYLD_CHAINED_FIXUPS '; then
     bake chained --shim "$SHIM"
     [ "$brc" -eq 0 ] && has_import "$T/chained.selfcontained" _getpid &&
