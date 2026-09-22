@@ -213,10 +213,10 @@ static void test_init_offsets_rebase(void) {
                            * file offset -- see test_grow_refuses_overflowing_entryoff */
 #define MG_T_PLAINSECT 256   /* an S_REGULAR section with an unremarkable name --
                                * not __unwind_info (bounds-checked by mg_unwind_walk's
-                               * own pre-check before the segment loop ever runs),
+                               * own pre-check before the offset bump ever runs),
                                * not S_INIT_FUNC_OFFSETS (bounds-checked by mg_collect
-                               * the same way) -- so the segment loop's own section-
-                               * offset bump is the ONLY code that ever reads its
+                               * the same way) -- so mg_each_fileoff's section-
+                               * offset bump is the ONLY code that bounds its
                                * offset field. See
                                * test_grow_refuses_overflowing_section_offset. Uses
                                * the same section slot as MG_T_UNWIND; never combine
@@ -236,6 +236,10 @@ static void test_init_offsets_rebase(void) {
                                * because chained pointers encode offsets from the
                                * image base, which growing moves. See
                                * test_ensure_pad_refuses_what_cannot_grow. */
+#define MG_T_LINKEDIT 4096   /* __TEXT ends at 6144; a __LINKEDIT segment maps the
+                               * rest, so a later segment's fileoff has to move */
+#define MG_T_SYMTAB 8192     /* LC_SYMTAB: file offsets whose content nothing
+                               * re-bases, so only resolving them can watch them */
 
 /* note_command isn't in the 10.9 SDK's <mach-o/loader.h> (see
  * src/mach_compat.h's own comment on LC_NOTE); this is dyld/ld64's publicly
@@ -344,6 +348,26 @@ static uint8_t *build_image(size_t *fsize_out, uint32_t *sect_off_out, int opts)
     }
 
     uint8_t *lcend = (uint8_t *)tx + tx->cmdsize;
+
+    if (opts & MG_T_LINKEDIT) {
+        tx->vmsize = tx->filesize = 6144;
+        struct segment_command_64 *le = (struct segment_command_64 *)lcend;
+        le->cmd = LC_SEGMENT_64;
+        le->cmdsize = sizeof *le;
+        strcpy(le->segname, "__LINKEDIT");
+        le->vmaddr = tx->vmaddr + 6144;
+        le->vmsize = le->filesize = fsize - 6144;
+        le->fileoff = 6144;
+        h->ncmds++; h->sizeofcmds += le->cmdsize; lcend += le->cmdsize;
+    }
+    if (opts & MG_T_SYMTAB) {
+        struct symtab_command *st = (struct symtab_command *)lcend;
+        st->cmd = LC_SYMTAB;
+        st->cmdsize = sizeof *st;
+        st->symoff = 6656; st->nsyms = 1;
+        st->stroff = 6720; st->strsize = 8;
+        h->ncmds++; h->sizeofcmds += st->cmdsize; lcend += st->cmdsize;
+    }
 
     if (opts & MG_T_DICE) {
         struct linkedit_data_command *dc = (struct linkedit_data_command *)lcend;
@@ -861,7 +885,9 @@ static void test_verify_accepts_a_correct_grow(void) {
     uint8_t *buf = build_growable_image(&fsize, &sect_off);
     mg_snapshot snap;
     CHECK(mg_snapshot_take(buf, fsize, &snap) == 0, "snapshot taken before the grow");
-    CHECK(snap.n == 2, "snapshot found both __init_offsets entries (got %u)", snap.n);
+    /* both __init_offsets entries, plus the section's first and last byte */
+    CHECK(snap.n == 4, "snapshot found both __init_offsets entries and the section (got %u)",
+          snap.n);
 
     int r = mg_grow_header(&buf, &fsize, 0x1000);
     CHECK(r == 0, "grow succeeds (got %d)", r);
@@ -906,9 +932,11 @@ static void test_verify_watches_unwind_info(void) {
     mg_snapshot snap;
     CHECK(mg_snapshot_take(buf, fsize, &snap) == 0, "snapshot with unwind taken");
     /* 2 __init_offsets + 1 personality + 2 first-level (incl. sentinel)
-     * + 2 LSDA fields = 7. The compressed entries are deltas and must NOT
-     * be counted -- if they were, this would be 9. */
-    CHECK(snap.n == 7, "verify watches all 7 base-relative unwind+init fields (got %u)", snap.n);
+     * + 2 LSDA fields = 7, plus both sections' first and last bytes = 11.
+     * The compressed entries are deltas and must NOT be counted -- if they
+     * were, this would be 13. */
+    CHECK(snap.n == 11, "verify watches all 7 base-relative unwind+init fields and both "
+                        "sections (got %u)", snap.n);
 
     if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
         CHECK(0, "grow succeeded"); mg_snapshot_free(&snap); free(buf); return;
@@ -1642,11 +1670,11 @@ static struct section_64 *find_section_struct(uint8_t *buf, size_t fsize, const 
 
 /* __plain (MG_T_PLAINSECT) rather than __unwind_info: __unwind_info's offset
  * is bounds-checked by mg_unwind_walk's own pre-mutation audit (`offset +
- * size > fsize` -> refuse) before the segment loop with the NEW guard ever
+ * size > fsize` -> refuse) before the offset bump with the NEW guard ever
  * runs, so poking IT would exercise the pre-existing bounds check, not the
  * guard this test exists to pin. __plain is S_REGULAR with an unremarkable
- * name: nothing walks its content, so the segment loop's own section-offset
- * bump is the first and only code to read its offset field. */
+ * name: nothing walks its content, so mg_each_fileoff's section-offset bump
+ * is the only code that bounds its offset field. */
 /* Unlike check_refused_unchanged's cases (mg_classify refuses before ANY
  * byte moves, so "byte-identical" is trivially true there), these three
  * guards fire mid-transformation -- after the memmove/realloc that inserts
@@ -1707,6 +1735,105 @@ static void test_grow_refuses_overflowing_entryoff(void) {
     free(buf);
 }
 
+/* ---- mg_verify watches every field a grow adjusts ----
+ * Each case undoes ONE adjustment of an otherwise correct grow -- what a patcher
+ * that forgot it would leave -- and requires mg_verify to refuse. Dropping
+ * LC_MAIN's entryoff bump once produced binaries that died of SIGBUS while
+ * verify passed: it watched base-relative CONTENT, and entryoff, the segment
+ * geometry and every load command's file offset are not content. */
+typedef void (*mg_tweak)(uint8_t *buf, size_t fsize, uint32_t grow);
+
+static struct segment_command_64 *seg_named(uint8_t *buf, size_t fsize, const char *name) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return NULL;
+    return mi_find_segment(&im, name);
+}
+
+static void check_verify_rejects_undone(const char *what, int opts, mg_tweak setup,
+                                        mg_tweak undo) {
+    const uint32_t grow = 0x1000;
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, opts);
+    if (setup) setup(buf, fsize, grow);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) {
+        CHECK(0, "%s: snapshot", what); free(buf); return;
+    }
+    if (mg_grow_header(&buf, &fsize, grow) != 0) {
+        CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
+    }
+    CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the grow as made", what);
+    undo(buf, fsize, grow);
+    CHECK(mg_verify(buf, fsize, &snap) == -1, "verify REJECTS %s", what);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
+static void undo_entryoff(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct entry_point_command *ep = (struct entry_point_command *)find_lc(buf, fsize, LC_MAIN);
+    if (ep) ep->entryoff -= grow;
+}
+static void undo_plain_offset(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct section_64 *s = find_section_struct(buf, fsize, "__plain");
+    if (s) s->offset -= grow;
+}
+static void give_plain_relocs(uint8_t *buf, size_t fsize, uint32_t grow) {
+    (void)grow;
+    struct section_64 *s = find_section_struct(buf, fsize, "__plain");
+    if (s) s->reloff = 6400;
+}
+static void undo_plain_reloff(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct section_64 *s = find_section_struct(buf, fsize, "__plain");
+    if (s) s->reloff -= grow;
+}
+static void undo_symoff(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    if (st) st->symoff -= grow;
+}
+static void undo_export_off(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct dyld_info_command *di =
+        (struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY);
+    if (di) di->export_off -= grow;
+}
+static void undo_linkedit_fileoff(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct segment_command_64 *s = seg_named(buf, fsize, "__LINKEDIT");
+    if (s) s->fileoff -= grow;
+}
+static void undo_text_vmaddr(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct segment_command_64 *s = seg_named(buf, fsize, "__TEXT");
+    if (s) s->vmaddr += grow;
+}
+static void undo_text_filesize(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct segment_command_64 *s = seg_named(buf, fsize, "__TEXT");
+    if (s) s->filesize -= grow;
+}
+static void undo_text_vmsize(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct segment_command_64 *s = seg_named(buf, fsize, "__TEXT");
+    if (s) s->vmsize -= grow;
+}
+static void undo_pagezero_vmsize(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct segment_command_64 *s = seg_named(buf, fsize, "__PAGEZERO");
+    if (s) s->vmsize += grow;
+}
+
+static void test_verify_watches_every_adjusted_field(void) {
+    check_verify_rejects_undone("an un-bumped LC_MAIN entryoff", MG_T_MAIN, NULL, undo_entryoff);
+    check_verify_rejects_undone("an un-bumped section offset", MG_T_PLAINSECT, NULL,
+                                undo_plain_offset);
+    check_verify_rejects_undone("an un-bumped section reloff", MG_T_PLAINSECT,
+                                give_plain_relocs, undo_plain_reloff);
+    check_verify_rejects_undone("an un-bumped LC_SYMTAB symoff", MG_T_SYMTAB, NULL, undo_symoff);
+    check_verify_rejects_undone("an un-bumped later segment's fileoff",
+                                MG_T_LINKEDIT | MG_T_SYMTAB, NULL, undo_linkedit_fileoff);
+    check_verify_rejects_undone("an un-grown __TEXT filesize", 0, NULL, undo_text_filesize);
+    check_verify_rejects_undone("an un-grown __TEXT vmsize", 0, NULL, undo_text_vmsize);
+    check_verify_rejects_undone("an un-shrunk __PAGEZERO, overlapping __TEXT", 0, NULL,
+                                undo_pagezero_vmsize);
+    /* Watched before this list existed, through the content they locate: */
+    check_verify_rejects_undone("an un-lowered __TEXT vmaddr", 0, NULL, undo_text_vmaddr);
+    check_verify_rejects_undone("an un-bumped export_off", MG_T_TRIE, NULL, undo_export_off);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -1744,6 +1871,7 @@ int main(void) {
     test_grow_refuses_overflowing_section_offset();
     test_grow_refuses_overflowing_reloff();
     test_grow_refuses_overflowing_entryoff();
+    test_verify_watches_every_adjusted_field();
     test_ensure_pad_fits_is_a_noop();
     test_ensure_pad_grows_and_announces();
     test_ensure_pad_refuses_what_cannot_grow();

@@ -19,122 +19,137 @@ int ml_bump(uint32_t *off, uint32_t insert, uint32_t grow) {
     return 0;
 }
 
-struct ml_bump_ctx {
-    uint32_t insert;
-    uint32_t grow;
-};
-
 /* One function per member of linkedit.h's ML_PLAIN_OFFSET_LCS, named
- * ml_bump_<cmd> by the SAME macro that names it in grow.c's accept bucket
+ * ml_each_<cmd> by the SAME macro that names it in grow.c's accept bucket
  * (see linkedit.h's own comment on the macro for why). Forward-declared
  * here via the macro too: add a member to ML_PLAIN_OFFSET_LCS without
- * defining its ml_bump_<cmd> body below and the build fails at link time
+ * defining its ml_each_<cmd> body below and the build fails at link time
  * (undefined symbol) -- not silently, and not merely a test someone could
  * forget to run. That is what makes this coupling real rather than
  * advisory: grow.c's accept-bucket case labels for this group (see
  * mg_classify_cb) are generated from this same list, so a load command
  * cannot join grow.c's "safe, plain offset" bucket without a matching,
- * present ml_bump_<cmd> definition existing right here. */
-#define ML_DECLARE(cmd) static int ml_bump_##cmd(struct load_command *m, struct ml_bump_ctx *ctx);
+ * present ml_each_<cmd> definition existing right here. */
+struct ml_each_ctx {
+    ml_off_fn fn;
+    void *ctx;
+};
+#define ML_VISIT(cmd, field, flags) \
+    do { if (e->fn(&(field), (cmd), (flags), e->ctx) != 0) return 1; } while (0)
+
+#define ML_DECLARE(cmd) static int ml_each_##cmd(struct load_command *m, struct ml_each_ctx *e);
 ML_PLAIN_OFFSET_LCS(ML_DECLARE)
 #undef ML_DECLARE
 
-static int ml_bump_LC_SYMTAB(struct load_command *m, struct ml_bump_ctx *ctx) {
+static int ml_each_LC_SYMTAB(struct load_command *m, struct ml_each_ctx *e) {
     struct symtab_command *c = (struct symtab_command *)m;
-    int r = 0;
-    r |= ml_bump(&c->symoff, ctx->insert, ctx->grow);
-    r |= ml_bump(&c->stroff, ctx->insert, ctx->grow);
-    return r;
+    ML_VISIT(m->cmd, c->symoff, 0);
+    ML_VISIT(m->cmd, c->stroff, 0);
+    return 0;
 }
 
-static int ml_bump_LC_DYSYMTAB(struct load_command *m, struct ml_bump_ctx *ctx) {
+static int ml_each_LC_DYSYMTAB(struct load_command *m, struct ml_each_ctx *e) {
     struct dysymtab_command *c = (struct dysymtab_command *)m;
-    int r = 0;
-    r |= ml_bump(&c->tocoff, ctx->insert, ctx->grow);
-    r |= ml_bump(&c->modtaboff, ctx->insert, ctx->grow);
-    r |= ml_bump(&c->extrefsymoff, ctx->insert, ctx->grow);
-    r |= ml_bump(&c->indirectsymoff, ctx->insert, ctx->grow);
-    r |= ml_bump(&c->extreloff, ctx->insert, ctx->grow);
-    r |= ml_bump(&c->locreloff, ctx->insert, ctx->grow);
-    return r;
+    ML_VISIT(m->cmd, c->tocoff, 0);
+    ML_VISIT(m->cmd, c->modtaboff, 0);
+    ML_VISIT(m->cmd, c->extrefsymoff, 0);
+    ML_VISIT(m->cmd, c->indirectsymoff, 0);
+    ML_VISIT(m->cmd, c->extreloff, 0);
+    ML_VISIT(m->cmd, c->locreloff, 0);
+    return 0;
 }
 
-static int ml_bump_LC_CODE_SIGNATURE(struct load_command *m, struct ml_bump_ctx *ctx) {
-    struct linkedit_data_command *c = (struct linkedit_data_command *)m;
-    return ml_bump(&c->dataoff, ctx->insert, ctx->grow);
+static int ml_each_LC_CODE_SIGNATURE(struct load_command *m, struct ml_each_ctx *e) {
+    ML_VISIT(m->cmd, ((struct linkedit_data_command *)m)->dataoff, 0);
+    return 0;
 }
 
-static int ml_bump_LC_DYLIB_CODE_SIGN_DRS(struct load_command *m, struct ml_bump_ctx *ctx) {
-    struct linkedit_data_command *c = (struct linkedit_data_command *)m;
-    return ml_bump(&c->dataoff, ctx->insert, ctx->grow);
+static int ml_each_LC_DYLIB_CODE_SIGN_DRS(struct load_command *m, struct ml_each_ctx *e) {
+    ML_VISIT(m->cmd, ((struct linkedit_data_command *)m)->dataoff, 0);
+    return 0;
 }
 
-static int ml_bump_LC_TWOLEVEL_HINTS(struct load_command *m, struct ml_bump_ctx *ctx) {
-    struct twolevel_hints_command *c = (struct twolevel_hints_command *)m;
-    return ml_bump(&c->offset, ctx->insert, ctx->grow);
+static int ml_each_LC_TWOLEVEL_HINTS(struct load_command *m, struct ml_each_ctx *e) {
+    ML_VISIT(m->cmd, ((struct twolevel_hints_command *)m)->offset, 0);
+    return 0;
 }
 
-static int ml_bump_LC_ENCRYPTION_INFO(struct load_command *m, struct ml_bump_ctx *ctx) {
-    struct encryption_info_command *c = (struct encryption_info_command *)m;
-    return ml_bump(&c->cryptoff, ctx->insert, ctx->grow);
+static int ml_each_LC_ENCRYPTION_INFO(struct load_command *m, struct ml_each_ctx *e) {
+    ML_VISIT(m->cmd, ((struct encryption_info_command *)m)->cryptoff, 0);
+    return 0;
 }
 
-static int ml_bump_LC_ENCRYPTION_INFO_64(struct load_command *m, struct ml_bump_ctx *ctx) {
-    struct encryption_info_command_64 *c = (struct encryption_info_command_64 *)m;
-    return ml_bump(&c->cryptoff, ctx->insert, ctx->grow);
+static int ml_each_LC_ENCRYPTION_INFO_64(struct load_command *m, struct ml_each_ctx *e) {
+    ML_VISIT(m->cmd, ((struct encryption_info_command_64 *)m)->cryptoff, 0);
+    return 0;
 }
 
-/* mi_each_lc callback: bump the __LINKEDIT-resident offset field(s) of one
- * load command. Returns 0 to keep walking, or 1 to stop the walk the
- * instant any ml_bump call refuses (overflow) -- once one field cannot be
- * trusted, there is no reason to keep patching the rest of this command's
- * fields into what will be a discarded, refused buffer anyway. */
-static int ml_bump_lc(const struct load_command *lc, void *vctx) {
-    struct ml_bump_ctx *ctx = (struct ml_bump_ctx *)vctx;
-    /* Cast away const to write through the command's own fields: permitted
-     * by mi_each_lc's contract (see image.h) for anything except
-     * cmd/cmdsize/hdr->ncmds, none of which any case below touches. */
+/* mi_each_lc callback: visit the __LINKEDIT-resident offset field(s) of one
+ * load command. Returns 0 to keep walking, or 1 to stop the walk the instant
+ * the visitor does -- for ml_bump_all, an overflow: once one field cannot be
+ * trusted, there is no reason to keep patching the rest into what will be a
+ * discarded, refused buffer anyway. */
+static int ml_each_lc(const struct load_command *lc, void *vctx) {
+    struct ml_each_ctx *e = (struct ml_each_ctx *)vctx;
+    /* Cast away const so the visitor may write through the command's own
+     * fields: permitted by mi_each_lc's contract (see image.h) for anything
+     * except cmd/cmdsize/hdr->ncmds, none of which is ever visited. */
     struct load_command *m = (struct load_command *)lc;
-    int r = 0;
 
     switch (m->cmd) {
     /* Case labels generated from linkedit.h's ML_PLAIN_OFFSET_LCS, dispatch
-     * to the like-named ml_bump_<cmd> functions defined above -- see that
+     * to the like-named ml_each_<cmd> functions defined above -- see that
      * macro's own comment for what this couples and what it deliberately
      * does not. */
-#define ML_CASE(cmd) case cmd: r |= ml_bump_##cmd(m, ctx); break;
+#define ML_CASE(cmd) case cmd: return ml_each_##cmd(m, e);
     ML_PLAIN_OFFSET_LCS(ML_CASE)
 #undef ML_CASE
     case LC_DYLD_INFO:
     case LC_DYLD_INFO_ONLY: {
         struct dyld_info_command *c = (struct dyld_info_command *)m;
-        r |= ml_bump(&c->rebase_off, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->bind_off, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->weak_bind_off, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->lazy_bind_off, ctx->insert, ctx->grow);
-        r |= ml_bump(&c->export_off, ctx->insert, ctx->grow);
-        break;
+        ML_VISIT(m->cmd, c->rebase_off, 0);
+        ML_VISIT(m->cmd, c->bind_off, 0);
+        ML_VISIT(m->cmd, c->weak_bind_off, 0);
+        ML_VISIT(m->cmd, c->lazy_bind_off, 0);
+        ML_VISIT(m->cmd, c->export_off, ML_OFF_EXPORT_TRIE);
+        return 0;
     }
+    case LC_DYLD_EXPORTS_TRIE:
+        ML_VISIT(m->cmd, ((struct linkedit_data_command *)m)->dataoff, ML_OFF_EXPORT_TRIE);
+        return 0;
     case LC_FUNCTION_STARTS:
     case LC_DATA_IN_CODE:
     case LC_SEGMENT_SPLIT_INFO:
     case LC_LINKER_OPTIMIZATION_HINT:
-    case LC_DYLD_EXPORTS_TRIE:
-    case LC_DYLD_CHAINED_FIXUPS: {
-        struct linkedit_data_command *c = (struct linkedit_data_command *)m;
-        r |= ml_bump(&c->dataoff, ctx->insert, ctx->grow);
-        break;
-    }
+    case LC_DYLD_CHAINED_FIXUPS:
+        ML_VISIT(m->cmd, ((struct linkedit_data_command *)m)->dataoff, 0);
+        return 0;
     default:
-        break;  /* not a field this table knows about (segments and
-                  * LC_MAIN stay macho_grow.h's own job; LC_NOTE and
-                  * LC_ATOM_INFO are refused before this ever runs -- see
-                  * linkedit.h) */
+        return 0;  /* not a field this table knows about (segments and
+                    * LC_MAIN are grow.c's mg_each_fileoff; LC_NOTE and
+                    * LC_ATOM_INFO are refused before this ever runs -- see
+                    * linkedit.h) */
     }
-    return r != 0;   /* mi_each_lc: non-zero stops the walk */
+}
+#undef ML_VISIT
+
+int ml_each_off(mi_image *im, ml_off_fn fn, void *ctx) {
+    struct ml_each_ctx e = { fn, ctx };
+    return mi_each_lc(im, ml_each_lc, &e) ? 0 : -1;
+}
+
+struct ml_bump_ctx {
+    uint32_t insert;
+    uint32_t grow;
+};
+
+static int ml_bump_one(uint32_t *off, uint32_t cmd, int flags, void *vctx) {
+    struct ml_bump_ctx *ctx = (struct ml_bump_ctx *)vctx;
+    (void)cmd; (void)flags;
+    return ml_bump(off, ctx->insert, ctx->grow);
 }
 
 int ml_bump_all(mi_image *im, uint32_t insert, uint32_t grow) {
     struct ml_bump_ctx ctx = { insert, grow };
-    return mi_each_lc(im, ml_bump_lc, &ctx) ? 0 : -1;
+    return ml_each_off(im, ml_bump_one, &ctx);
 }
