@@ -300,7 +300,7 @@ Paths appear in all of them.
 
 `port`, the `.pkg`, the Sparkle updater and the publish job — packaging work with
 its own shape, deserving its own plan. The family conventions skill
-(`modernmavericks-conventions`, in the `modernmavericks` plugin) is its spec.
+(`mavergreen-conventions`, in the `mavergreen` plugin) is its spec.
 
 Retiring the `compat/` entry points is also out of scope. `change_dylib` survives
 as a compatibility entry point over `macho9 dylib`; removing it is a later

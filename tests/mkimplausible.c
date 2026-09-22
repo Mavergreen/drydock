@@ -41,7 +41,7 @@
  *
  *   - It is NOT stock 10.9. Swift postdates 10.9 by a year; nothing in
  *     /usr/lib/swift belongs to the OS.
- *   - It is NOT a Mavergreen product either. dev.modernmavericks
+ *   - It is NOT a Mavergreen product either. dev.mavergreen
  *     .swift-runtime's BOM carries exactly two files under /usr/lib/swift,
  *     libswiftCore.dylib and libswiftSwiftOnoneSupport.dylib, and this is
  *     neither. No receipt on this host owns it: it is one of seven

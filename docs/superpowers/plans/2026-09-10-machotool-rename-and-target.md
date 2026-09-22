@@ -217,7 +217,7 @@ git commit -m "refactor: the shared wrapper scripts become machotool-*"
 
 - [ ] **Step 1: Add the two naming registers**
 
-Per the family conventions, and per the spec's table: app identity is **"Mavericks Machotool"** (the `.app` bundle, `CFBundleName`, the Sparkle `PRODUCT_NAME`); prose is **"Machotool for Mavericks"** (the `.pkg` title, appcast channel title, README prose). The bundle id is `dev.modernmavericks.machotool`. Introduce these where the documents currently have no product name at all — they are new, not renamed.
+Per the family conventions, and per the spec's table: app identity is **"Mavericks Machotool"** (the `.app` bundle, `CFBundleName`, the Sparkle `PRODUCT_NAME`); prose is **"Machotool for Mavericks"** (the `.pkg` title, appcast channel title, README prose). The bundle id is `dev.mavergreen.machotool`. Introduce these where the documents currently have no product name at all — they are new, not renamed.
 
 - [ ] **Step 2: Rename in the pending documents**
 

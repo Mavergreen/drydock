@@ -889,7 +889,7 @@ Still open, both shipyard's:
 What follows is the record as written on 2026-09-20.
 
 
-Found 2026-09-20. `modernmavericks-conventions` SKILL.md already carries the
+Found 2026-09-20. `mavergreen-conventions` SKILL.md already carries the
 rule, with its own measurement on THIS repo — local disk 2.96s wall / 88% CPU
 against in-tree-on-NFS 11.16s / 25%, user time identical at 1.78s vs 1.81s, so
 the whole 3.8x is I/O wait. Nothing enforces it, and shipyard itself violates it.
@@ -1246,7 +1246,7 @@ none is tied to one app:
 | `swift-backdeploy/patch_swift_custom_rr.py`, `legacy-swift-stubs/` | org `swift-runtime` | the patcher's header names Mavergreen swift-runtime's patches 0003–0005; it exists only because of that runtime |
 | `compat_headers/`, `macos_compat.h`/`.mm` | the legacy-support headers | compile-time shims for source builds, and `macos_compat.h` names Godot |
 | `velopack_updatemac_stub.c` | with an osu! port, if one is made | specific to one app |
-| `CLAUDE.md`, and the fork's `mavericks-porting-skills` branch (`04de6a0`, "Add Claude agent skills and conventions for Mavericks porting") | shipyard's `claude-plugins/modernmavericks` | a porting playbook is a skill, and that plugin is where the family keeps its skills |
+| `CLAUDE.md`, and the fork's `mavericks-porting-skills` branch (`04de6a0`, "Add Claude agent skills and conventions for Mavericks porting") | shipyard's `claude-plugins/mavergreen` | a porting playbook is a skill, and that plugin is where the family keeps its skills |
 
 **legacy-support: the direction, and what to check first.** The repo owner
 believes M-P-R's `mavericks-legacy-support` is a superset of MacPorts' and
@@ -1317,7 +1317,7 @@ The live subcommands of `re` that are about this device (`amd-actuation`,
 * `tools/ORACLES.md` is a method rather than a tool: every measuring instrument
   can mislead in its own way, and a fix must cite a ground-truth measurement,
   not a stand-in. It belongs with the porting playbook in shipyard's
-  `claude-plugins/modernmavericks` (see item 21), not here.
+  `claude-plugins/mavergreen` (see item 21), not here.
 
 **The design question: `re` has to split without breaking.** One command
 covers both halves, and magic-trackpad2's workflows and allowlist rely on

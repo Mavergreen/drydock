@@ -45,7 +45,7 @@ document changed as a result.
 | translator | `macho9-translate.sh` | **`machotool-translate.sh`** |
 | app identity | — | **"Mavericks Machotool"** |
 | prose name | — | **"Machotool for Mavericks"** |
-| bundle id | — | **`dev.modernmavericks.machotool`** |
+| bundle id | — | **`dev.mavergreen.machotool`** |
 
 The two naming registers and the bundle-id form come from the family
 conventions: app identity is brand-forward ("Mavericks Foo") for the `.app`

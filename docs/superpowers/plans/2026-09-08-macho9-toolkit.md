@@ -327,7 +327,7 @@ genuinely widens — construct it rather than hunting for one.
 `port`, the `.pkg`, the Sparkle updater and the publish job. The proposal
 sequences them after `verify`, and `verify` is done, so they are ready to start —
 but they are packaging work with their own shape and deserve their own plan. The
-family conventions skill (`modernmavericks-conventions`, in the `modernmavericks`
+family conventions skill (`mavergreen-conventions`, in the `mavergreen`
 plugin) is the spec for that one.
 
 ## Self-Review

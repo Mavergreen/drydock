@@ -128,7 +128,7 @@ When `repair` leaves gaps:
    or Mavericks-Porting-Resources first, new code only when neither has it.
 3. `drydock score`: that binary's row improves, and **no other row may regress**.
 
-Written down as a drydock skill in shipyard's `claude-plugins/modernmavericks`,
+Written down as a drydock skill in shipyard's `claude-plugins/mavergreen`,
 beside the family's other skills, so every agent session runs the same loop.
 
 ## Safety

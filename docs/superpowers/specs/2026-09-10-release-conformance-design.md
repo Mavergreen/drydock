@@ -125,7 +125,7 @@ GitHub Release of the binaries.
 ## Settled against the live shipyard checkout
 
 Checked 2026-09-10 against `../mavericks-shipyard` at `836e9fc`, which is **ahead
-of the plugin cache** an agent loads (`modernmavericks@0.1.1`). Four questions,
+of the plugin cache** an agent loads (`mavergreen@0.1.1`). Four questions,
 all answered there.
 
 **The concurrency group is already the family doctrine — this repo is

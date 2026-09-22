@@ -290,7 +290,7 @@ on their 10.9 machine.
 **Naming, per the family conventions.** App identity — the `.app` bundle,
 `CFBundleName`, the Sparkle `PRODUCT_NAME` — is **"Mavericks Machotool"**.
 Prose — the `.pkg` title, the appcast channel title, README prose — is
-**"Machotool for Mavericks"**. The bundle id is `dev.modernmavericks.machotool`.
+**"Machotool for Mavericks"**. The bundle id is `dev.mavergreen.machotool`.
 
 **The repo count follows ownership, not function.** If Wowfunhappy would rather
 keep the Mach-O tools under his own account — reasonable, `patch_macho` and
