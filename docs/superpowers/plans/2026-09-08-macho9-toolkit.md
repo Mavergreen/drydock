@@ -12,7 +12,7 @@ subcommand grammar so the CLI breaks exactly once. Each step must leave the repo
 green — this code is shipped to real users through
 `mavericksforever.com/claude/install.sh`.
 
-**Tech Stack:** C (no `-std`; see below), CMake against `ModernMavericks/shipyard`,
+**Tech Stack:** C (no `-std`; see below), CMake against `Mavergreen/shipyard`,
 CTest, stock 10.9 clang natively and a modern clang cross.
 
 **Spec:** `docs/PROPOSAL.md` — read it first and in full. It settles the verb
@@ -21,7 +21,7 @@ alternative. This plan implements its "Sequencing" section.
 
 ## Where things stand (read before starting)
 
-You are in `ModernMavericks/macho-tools`, checked out locally as
+You are in `Mavergreen/macho-tools`, checked out locally as
 `~/Documents/code/trees/mavericks-macho-tools`. 40 commits, extracted with full
 history from `Wowfunhappy/Mavericks-Porting-Resources` — see `PROVENANCE.md`.
 

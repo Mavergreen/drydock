@@ -434,7 +434,7 @@ keys on the clone's directory name. When these three do happen, they must happen
    ```sh
    mv ~/Documents/code/trees/mavericks-macho-tools ~/Documents/code/trees/mavericks-machotool
    ```
-3. **Rename the GitHub repo** — `ModernMavericks/macho-tools` → `ModernMavericks/machotool` — and update the local remote. GitHub redirects the old URL, so every task above lands without it.
+3. **Rename the GitHub repo** — `Mavergreen/macho-tools` → `Mavergreen/machotool` — and update the local remote. GitHub redirects the old URL, so every task above lands without it.
 
 None of this affects the adoption path: `install.sh` fetches `patch_macho`, `change_dylib` and `add_version_min` by name from Wowfunhappy's repo, and none of those names change.
 

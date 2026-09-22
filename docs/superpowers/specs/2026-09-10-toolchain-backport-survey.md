@@ -240,7 +240,7 @@ Two cheap experiments would settle it:
 
 ---
 
-## Packaging candidates for ModernMavericks
+## Packaging candidates for Mavergreen
 
 Ranked by (ports unblocked) × (ease of packaging). The family has 14 public repos and none
 ships binutils, an SDK, libtapi, or a linker other than lld.

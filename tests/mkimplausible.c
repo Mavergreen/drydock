@@ -41,7 +41,7 @@
  *
  *   - It is NOT stock 10.9. Swift postdates 10.9 by a year; nothing in
  *     /usr/lib/swift belongs to the OS.
- *   - It is NOT a ModernMavericks product either. dev.modernmavericks
+ *   - It is NOT a Mavergreen product either. dev.modernmavericks
  *     .swift-runtime's BOM carries exactly two files under /usr/lib/swift,
  *     libswiftCore.dylib and libswiftSwiftOnoneSupport.dylib, and this is
  *     neither. No receipt on this host owns it: it is one of seven
@@ -55,7 +55,7 @@
  *     image gives eight zero bytes.
  *
  * So: zero stock 10.9 images in the swept corpus exhibit this shape, and
- * zero shipped ModernMavericks images do. The fix stands on the code being
+ * zero shipped Mavergreen images do. The fix stands on the code being
  * self-consistent -- an image that declares no function starts is the same
  * fact as one carrying no LC_FUNCTION_STARTS, which the gate has always
  * accepted -- and NOT on a claim that 10.9 is full of such images. It is

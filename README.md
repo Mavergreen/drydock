@@ -51,7 +51,7 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
 shipyard-cmake -S . -B build && shipyard-cmake --build build && shipyard-ctest --test-dir build
 ```
 
-Needs [shipyard](https://github.com/ModernMavericks/shipyard), the family's
+Needs [shipyard](https://github.com/Mavergreen/shipyard), the family's
 shared CMake helpers. Install its pkg once; among other things it puts
 `shipyard-cmake`, `shipyard-ctest` and `shipyard-cpack` in `/usr/local/bin`.
 **`shipyard-cmake` is the only cmake that configures this repo** — it supplies

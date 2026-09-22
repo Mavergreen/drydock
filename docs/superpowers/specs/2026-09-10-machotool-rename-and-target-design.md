@@ -221,8 +221,8 @@ mv ~/Documents/code/trees/mavericks-macho-tools \
    ~/Documents/code/trees/mavericks-machotool
 ```
 
-**3. Rename the GitHub repo** — `ModernMavericks/macho-tools` →
-`ModernMavericks/machotool` — and update the local remote. This is outward-facing
+**3. Rename the GitHub repo** — `Mavergreen/macho-tools` →
+`Mavergreen/machotool` — and update the local remote. This is outward-facing
 and yours; GitHub redirects the old URL, so nothing breaks in the meantime, and
 every other step of the plan lands without it.
 

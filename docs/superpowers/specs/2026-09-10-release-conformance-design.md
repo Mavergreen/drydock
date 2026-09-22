@@ -27,7 +27,7 @@ This repo has no someone-else. `docs/PROPOSAL.md` settled that:
 
 And the conventions are explicit about what that implies:
 
-> *"A repo that is its own upstream — original ModernMavericks code, not a port
+> *"A repo that is its own upstream — original Mavergreen code, not a port
 > (e.g. `mavericks-porthole`) — has no 'repackage-of-someone-else' axis, so it
 > **drops the `-mavericks` suffix** and versions itself directly."*
 
@@ -92,7 +92,7 @@ publish:
   needs: [build]
   if: needs.build.outputs.publish == 'true'
   permissions: { contents: write }
-  uses: ModernMavericks/shipyard/.github/workflows/publish-release.yml@v1
+  uses: Mavergreen/shipyard/.github/workflows/publish-release.yml@v1
   with: { version: "${{ needs.build.outputs.version }}", artifact: <name> }
 ```
 
@@ -116,7 +116,7 @@ the same green-gate. Do **not** set `ignoreTests` locally: the preset sets
 `check-family-conventions.sh` fails a local restatement.
 
 **6. A `.pkg` and a Sparkle updater.** `docs/PROPOSAL.md` intends one —
-*"ModernMavericks additionally ships a `.pkg` for people who want the tools on
+*"Mavergreen additionally ships a `.pkg` for people who want the tools on
 their 10.9 machine"* — and the conventions require the updater not link the
 product it updates. This is the largest single piece and the one most reasonably
 split into its own increment; everything above can land first and produce a

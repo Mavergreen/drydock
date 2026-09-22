@@ -24,7 +24,7 @@
 - **A comment or doc that claims more than the code does is a defect.** This repo means it literally, and this plan deletes a predicate whose replacement must be *proved* rather than asserted.
 - **Relations declare referent and liveness only.** No relation declares a check or a repair function; repair code does not move. That is Decision 1, and widening it is out of scope.
 - **CI is a gate, not an afterthought.** After each task's push, read `gh run
-  list --repo ModernMavericks/macho-tools --limit 3`. Local green is not CI
+  list --repo Mavergreen/macho-tools --limit 3`. Local green is not CI
   green: item 6 shipped a `cli_test` assertion that was red on `main` for a day
   because it named `arch arm64` as unsatisfiable while the fixture is built for
   the *host*, so it inverted on GitHub's `macos-26-arm64` runner and could not
@@ -960,7 +960,7 @@ git commit -m "refactor: edit's verify applies when something it checks was dist
 ```
 
 ```bash
-gh run list --repo ModernMavericks/macho-tools --limit 3
+gh run list --repo Mavergreen/macho-tools --limit 3
 ```
 
 ---
@@ -1105,7 +1105,7 @@ git commit -m "refactor: verbs lower to scripts; applicability is derived, not h
 ```
 
 ```bash
-gh run list --repo ModernMavericks/macho-tools --limit 3
+gh run list --repo Mavergreen/macho-tools --limit 3
 ```
 
 ---

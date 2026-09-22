@@ -1243,7 +1243,7 @@ none is tied to one app:
 |---|---|---|
 | `mavericks-legacy-support/` (the libSystem gap-fillers the wrapper recipes link) | **its own org repo, and org `macports-legacy-support` is retired or folded into it**, per the repo owner 2026-09-21 | see below |
 | `dotnet_polyfills.c`, `security_seckey_rsa.c`, `security_wrapper_stubs.c`, `cxx_stream_stubs.cpp` | the same library | `dotnet_polyfills.c`'s own header says so ("fold them in there") |
-| `swift-backdeploy/patch_swift_custom_rr.py`, `legacy-swift-stubs/` | org `swift-runtime` | the patcher's header names ModernMavericks swift-runtime's patches 0003–0005; it exists only because of that runtime |
+| `swift-backdeploy/patch_swift_custom_rr.py`, `legacy-swift-stubs/` | org `swift-runtime` | the patcher's header names Mavergreen swift-runtime's patches 0003–0005; it exists only because of that runtime |
 | `compat_headers/`, `macos_compat.h`/`.mm` | the legacy-support headers | compile-time shims for source builds, and `macos_compat.h` names Godot |
 | `velopack_updatemac_stub.c` | with an osu! port, if one is made | specific to one app |
 | `CLAUDE.md`, and the fork's `mavericks-porting-skills` branch (`04de6a0`, "Add Claude agent skills and conventions for Mavericks porting") | shipyard's `claude-plugins/modernmavericks` | a porting playbook is a skill, and that plugin is where the family keeps its skills |

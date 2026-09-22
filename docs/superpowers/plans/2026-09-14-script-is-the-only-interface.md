@@ -28,7 +28,7 @@
 - **A grep is evidence only once you have seen it return a hit on a case you know exists.** State a negative only after a positive control. Five false claims in the previous two items came from empty greps — a backtick, backticks around an identifier, `exit [0-9]` missing `exit "$mw_rc"`, `grep -c` counting the comment that stated the count, and a phrase spanning a line break.
 - **A mutation that does not compile is not a caught mutation, it is an invalid experiment.** Confirm the mutant builds, then watch the named test fail.
 - **A "dead branch" is a claim about reachability and can be false.** Exercise it at the parent commit rather than reading it.
-- **Check CI after each push**: `gh run list --repo ModernMavericks/macho-tools --limit 3`. The `conventions` job is expected red on a pre-existing `release-notes.sh` rule belonging to item 4; the `release` job's `build` must be green. Item 6 shipped a test that was red on `main` for a day because it could not fail on the architecture it was written on.
+- **Check CI after each push**: `gh run list --repo Mavergreen/macho-tools --limit 3`. The `conventions` job is expected red on a pre-existing `release-notes.sh` rule belonging to item 4; the `release` job's `build` must be green. Item 6 shipped a test that was red on `main` for a day because it could not fail on the architecture it was written on.
 - **Line-number citations into files this plan edits go stale as the plan proceeds.** Regenerate them from the tree at dispatch time; do not copy them forward. This bit the previous item twice.
 
 ## File structure

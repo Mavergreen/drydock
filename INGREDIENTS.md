@@ -11,7 +11,7 @@ not a port of somebody else's project — they were written for this problem, an
 | Ingredient | Pinned in | Renovate | On a bump |
 |---|---|---|---|
 | the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump plus a matching `X.Y.Z` tag cuts the release |
-| MacOSX10.9 SDK, CMake helpers, compat guard, test runner | `ModernMavericks/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
+| MacOSX10.9 SDK, CMake helpers, compat guard, test runner | `Mavergreen/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
 | `tests/fixture.macho` + `tests/EXPECTED` | committed | **untrackable** — a characterization reference, deliberately frozen | never bumped by a bot; changing it is a deliberate commit that says why |
 
 Not ingredients: `CMakeLists.txt`, the test scripts and the workflows are this
@@ -46,5 +46,5 @@ it must change only when someone means it to.
 
 ## Upstream release notes
 
-No upstream release notes: Drydock is its own upstream (original ModernMavericks code), so
+No upstream release notes: Drydock is its own upstream (original Mavergreen code), so
 there are no someone-else's notes for a release to link.

@@ -47,7 +47,7 @@ peak footprint ~3x the file where the C tool needed 2x.
 ## Who this is for
 
 This sets the design pressure, and two earlier drafts of it were wrong — first
-arguing from "one Claude binary", then from "the ModernMavericks family". Both
+arguing from "one Claude binary", then from "the Mavergreen family". Both
 undershot.
 
 **The population is arbitrary modern macOS applications: shipped as binaries,
@@ -475,7 +475,7 @@ in an intent-level statement that says it is bundling, not in `version-min`.
 
 ## Before any release
 
-Versioning, packaging and release mechanics must match the ModernMavericks family
+Versioning, packaging and release mechanics must match the Mavergreen family
 conventions before this repo cuts a release. That is a repo-level gate, not a
 property of this design, and it is recorded here so it is not discovered at
 release time.

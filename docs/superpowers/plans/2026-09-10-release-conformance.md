@@ -6,7 +6,7 @@
 
 **Architecture:** Four tasks. The first is the versioning decision made real — `X.Y.Z`, no `-mavericks` suffix, the tag trigger to match, `local_release` gone, and the deviation declared where the family's gate can see it. The second adds the `build/` script wrappers and `release-notes/`, copied in shape from `mavericks-golang`, which is the family's most complete reference. The third adds `renovate.json`. The fourth wires the `ver` step and the publish job.
 
-**Tech Stack:** POSIX `/bin/sh` (these run natively on 10.9), GitHub Actions, `ModernMavericks/shipyard` via its install action and reusable workflows.
+**Tech Stack:** POSIX `/bin/sh` (these run natively on 10.9), GitHub Actions, `Mavergreen/shipyard` via its install action and reusable workflows.
 
 **Spec:** `docs/superpowers/specs/2026-09-10-release-conformance-design.md`
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - **POSIX `/bin/sh` only** in anything a native 10.9 build executes — `build/*.sh`, packaging. 10.9's shell is old. No bashisms, no `python3` (10.9 ships Python 2 only), no `sort -V`. Scripts that only ever run in CI may use modern tools, but must say so.
-- **Consume shipyard's facilities; never hand-roll them.** Install via `ModernMavericks/shipyard/.github/actions/install@v1`, then use `$SHIPYARD_SCRIPTS`. Do not re-derive it from the CMake user package registry — the action exports it, and that incantation appeared eleven times across the family before it was exported once.
+- **Consume shipyard's facilities; never hand-roll them.** Install via `Mavergreen/shipyard/.github/actions/install@v1`, then use `$SHIPYARD_SCRIPTS`. Do not re-derive it from the CMake user package registry — the action exports it, and that incantation appeared eleven times across the family before it was exported once.
 - **Do not restate `ignoreTests: false` locally.** The shipyard preset sets it; a local copy silently stops tracking the preset the day the preset changes, and `check-family-conventions.sh` fails on it.
 - **`tests/EXPECTED` is never edited.** `tests/characterize.sh` must keep reproducing `ad12bdd780da4131f81a808e6d08b688e2034f37e434772f81df023332b39792`. Nothing in this plan touches a byte any tool emits, so a moved digest is a real defect.
 - **Do not move `@v1` by hand**, and do not push `../mavericks-shipyard` as part of this work. Pushing its `main` moves `@v1` family-wide.
@@ -192,7 +192,7 @@ git commit -m "feat: build/ wrappers and release-notes/, per the family shape"
 ```json
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>ModernMavericks/shipyard"]
+  "extends": ["github>Mavergreen/shipyard"]
 }
 ```
 
@@ -240,7 +240,7 @@ publish:
   needs: [build]
   if: needs.build.outputs.publish == 'true'
   permissions: { contents: write }
-  uses: ModernMavericks/shipyard/.github/workflows/publish-release.yml@v1
+  uses: Mavergreen/shipyard/.github/workflows/publish-release.yml@v1
   with: { version: "${{ needs.build.outputs.version }}", artifact: <name> }
 ```
 

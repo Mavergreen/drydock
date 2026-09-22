@@ -923,7 +923,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
      * On the provenance of the instance that found this, because the first
      * two tries got it wrong: it was /usr/lib/swift/libswiftObjectiveC.dylib,
      * which is NOT stock 10.9 (Swift postdates 10.9 by a year) and is NOT
-     * shipped by ModernMavericks swift-runtime either (that package's BOM
+     * shipped by Mavergreen swift-runtime either (that package's BOM
      * carries only libswiftCore and libswiftSwiftOnoneSupport). No receipt
      * owns it; it is an unreceipted development leftover. See
      * tests/mkimplausible.c for what a sweep of this host actually shows.
