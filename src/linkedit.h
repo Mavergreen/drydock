@@ -160,4 +160,16 @@ int ml_bump(uint32_t *off, uint32_t insert, uint32_t grow);
  * "discard this buffer, do not write it out", never partial success. */
 int ml_bump_all(mi_image *im, uint32_t insert, uint32_t grow);
 
+/* The list ml_bump_all bumps, as a visitor: `fn` sees each field listed
+ * above, in load-command order, with the command it belongs to. grow.c's
+ * mg_collect resolves every field this names, so a field added here is
+ * watched by mg_verify the moment it is bumped. A non-zero return from `fn`
+ * stops the walk; ml_each_off then returns -1, else 0.
+ * ML_OFF_EXPORT_TRIE marks the export trie's offset, which mg_grow_header
+ * may legitimately move a second time when it rebuilds the trie.
+ * spec: tests/grow_test.c test_verify_watches_every_adjusted_field */
+#define ML_OFF_EXPORT_TRIE 1
+typedef int (*ml_off_fn)(uint32_t *off, uint32_t cmd, int flags, void *ctx);
+int ml_each_off(mi_image *im, ml_off_fn fn, void *ctx);
+
 #endif /* DRYDOCK_LINKEDIT_H */

@@ -172,6 +172,21 @@ typedef struct { uint64_t *addr; uint32_t n; } mg_snapshot;
 
 #define MG_SNAP_MAX 65536
 
+/* Every file offset a grow moves, apart from the segments' own geometry:
+ * each section's offset (with its size as `span`) and reloff, LC_MAIN's
+ * entryoff (width 8), and linkedit.h's ml_each_off list (with its flags).
+ * mg_grow_header bumps exactly these and mg_collect resolves exactly these,
+ * so the patcher cannot adjust a field the check does not watch.
+ * spec: tests/grow_test.c test_verify_watches_every_adjusted_field */
+typedef int (*mg_off_fn)(void *field, int width, uint64_t span, int flags, void *ctx);
+int mg_each_fileoff(mi_image *im, mg_off_fn fn, void *ctx);
+
+/* The vm address file offset `off` loads at, through whichever segment maps
+ * it (min(filesize, vmsize) bytes of it); one past a segment's mapped end
+ * resolves there too. MG_UNMAPPED if no segment maps it. */
+#define MG_UNMAPPED UINT64_MAX
+uint64_t mg_fileoff_vm(const mi_image *im, uint64_t off);
+
 int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
                       uint32_t max, uint32_t *n_out);
 
@@ -182,8 +197,9 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s);
 void mg_snapshot_free(mg_snapshot *s);
 
 
-/* 0 if every base-relative structure resolves exactly where it did before the
- * grow; -1 (with a message naming the first mismatch) otherwise. */
+/* 0 if every base-relative structure and every mg_each_fileoff offset
+ * resolves exactly where it did before the grow, and no two segments overlap
+ * in memory; -1 (with a message naming the first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 

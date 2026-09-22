@@ -260,6 +260,85 @@ static int mg_collect_cb(const struct load_command *lc, void *ctx_) {
     return 0;
 }
 
+struct mg_each_ctx { mg_off_fn fn; void *ctx; };
+
+static int mg_each_seg_cb(const struct load_command *lc_in, void *ctx_) {
+    struct mg_each_ctx *e = (struct mg_each_ctx *)ctx_;
+    struct load_command *lc = (struct load_command *)lc_in;
+    if (lc->cmd == LC_SEGMENT_64) {
+        struct segment_command_64 *seg = (struct segment_command_64 *)lc;
+        struct section_64 *sect = (struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            if (e->fn(&sect[j].offset, 4, sect[j].size, 0, e->ctx) != 0) return 1;
+            if (e->fn(&sect[j].reloff, 4, 0, 0, e->ctx) != 0) return 1;
+        }
+    } else if (lc->cmd == LC_MAIN) {
+        struct entry_point_command *c = (struct entry_point_command *)lc;
+        if (e->fn(&c->entryoff, 8, 0, 0, e->ctx) != 0) return 1;
+    }
+    return 0;
+}
+
+static int mg_each_ml_cb(uint32_t *off, uint32_t cmd, int flags, void *ctx_) {
+    struct mg_each_ctx *e = (struct mg_each_ctx *)ctx_;
+    (void)cmd;
+    return e->fn(off, 4, 0, flags, e->ctx);
+}
+
+int mg_each_fileoff(mi_image *im, mg_off_fn fn, void *ctx) {
+    struct mg_each_ctx e = { fn, ctx };
+    if (!mi_each_lc(im, mg_each_seg_cb, &e)) return -1;
+    return ml_each_off(im, mg_each_ml_cb, &e);
+}
+
+struct mg_map_ctx { uint64_t off, vm, at_end; };
+
+static int mg_map_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_map_ctx *c = (struct mg_map_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    uint64_t mapped = seg->filesize < seg->vmsize ? seg->filesize : seg->vmsize;
+    if (mapped == 0 || c->off < seg->fileoff) return 0;
+    uint64_t rel = c->off - seg->fileoff;
+    if (rel < mapped) { c->vm = seg->vmaddr + rel; return 1; }
+    if (rel == mapped && c->at_end == MG_UNMAPPED) c->at_end = seg->vmaddr + rel;
+    return 0;
+}
+
+uint64_t mg_fileoff_vm(const mi_image *im, uint64_t off) {
+    struct mg_map_ctx c = { off, MG_UNMAPPED, MG_UNMAPPED };
+    mi_each_lc(im, mg_map_cb, &c);
+    return c.vm != MG_UNMAPPED ? c.vm : c.at_end;
+}
+
+struct mg_resolve_ctx {
+    const mi_image *im;
+    uint64_t *out;
+    uint8_t *kinds;
+    uint32_t max;
+    uint32_t n;
+};
+
+static int mg_resolve_emit(struct mg_resolve_ctx *c, uint64_t off) {
+    if (c->n >= c->max) return 1;
+    if (c->kinds) c->kinds[c->n] = MG_K_ANY;
+    c->out[c->n++] = mg_fileoff_vm(c->im, off);
+    return 0;
+}
+
+static int mg_resolve_cb(void *field, int width, uint64_t span, int flags, void *ctx_) {
+    struct mg_resolve_ctx *c = (struct mg_resolve_ctx *)ctx_;
+    /* The trie rebuild may move it; the trie walk watches its content.
+     * spec: tests/grow_test.c test_verify_watches_every_adjusted_field */
+    if (flags & ML_OFF_EXPORT_TRIE) return 0;
+    uint64_t off = width == 8 ? *(uint64_t *)field : *(uint32_t *)field;
+    if (off == 0) return 0;                     /* absent */
+    if (mg_resolve_emit(c, off) != 0) return 1;
+    if (span == 0) return 0;
+    uint64_t last = span - 1 > UINT64_MAX - off ? UINT64_MAX : off + span - 1;
+    return mg_resolve_emit(c, last);
+}
+
 int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
                       uint32_t max, uint32_t *n_out) {
     mi_image im;
@@ -281,6 +360,10 @@ int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
     if (mg_trie_walk((uint8_t *)buf, fsize, 0, 0, base, out, kinds, &n, max) != 0) return -1;
     if (mg_dice_walk((uint8_t *)buf, fsize, 0, 0, base, out, kinds, &n, max) != 0) return -1;
     if (mg_unwind_walk((uint8_t *)buf, fsize, 0, 0, base, out, kinds, &n, max) != 0) return -1;
+
+    struct mg_resolve_ctx rctx = { &im, out, kinds, max, n };
+    if (mg_each_fileoff(&im, mg_resolve_cb, &rctx) != 0) return -1;
+    n = rctx.n;
     *n_out = n;
     return 0;
 }
@@ -296,6 +379,27 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
 
 void mg_snapshot_free(mg_snapshot *s) { free(s->addr); s->addr = NULL; s->n = 0; }
 
+struct mg_overlap_ctx { const mi_image *im; const struct segment_command_64 *a, *hit; };
+
+static int mg_overlap_inner_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_overlap_ctx *c = (struct mg_overlap_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64 || (const void *)lc == (const void *)c->a) return 0;
+    const struct segment_command_64 *b = (const struct segment_command_64 *)lc;
+    if (b->vmsize == 0) return 0;
+    if (c->a->vmaddr < b->vmaddr + b->vmsize && b->vmaddr < c->a->vmaddr + c->a->vmsize) {
+        c->hit = b; return 1;
+    }
+    return 0;
+}
+
+static int mg_overlap_outer_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_overlap_ctx *c = (struct mg_overlap_ctx *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    c->a = (const struct segment_command_64 *)lc;
+    if (c->a->vmsize == 0) return 0;
+    return !mi_each_lc(c->im, mg_overlap_inner_cb, c);
+}
+
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     uint64_t *now = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!now) return -1;
@@ -305,14 +409,21 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
         free(now); return -1;
     }
     if (n != before->n) {
-        fprintf(stderr, "macho_grow: verify found %u base-relative entries, %u before -- "
+        fprintf(stderr, "macho_grow: verify found %u watched entries, %u before -- "
                         "the grow added or dropped one\n", n, before->n);
         free(now); return -1;
     }
     for (uint32_t i = 0; i < n; i++) {
         if (now[i] == before->addr[i]) continue;
+        if (now[i] == MG_UNMAPPED || before->addr[i] == MG_UNMAPPED) {
+            fprintf(stderr, "macho_grow: verify FAILED -- entry %u is a file offset that "
+                            "%s mapped before the grow and %s after; refusing.\n", i,
+                    before->addr[i] == MG_UNMAPPED ? "no segment" : "a segment",
+                    now[i] == MG_UNMAPPED ? "no segment" : "a segment");
+            free(now); return -1;
+        }
         int64_t moved = (int64_t)(now[i] - before->addr[i]);
-        fprintf(stderr, "macho_grow: verify FAILED -- base-relative entry %u resolved to "
+        fprintf(stderr, "macho_grow: verify FAILED -- entry %u resolved to "
                         "%#llx before the grow and %#llx after (moved %+lld bytes). The grow "
                         "must leave every resolved address unchanged; refusing.\n",
                 i, (unsigned long long)before->addr[i], (unsigned long long)now[i],
@@ -320,6 +431,15 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
         free(now); return -1;
     }
     free(now);
+
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
+    struct mg_overlap_ctx oc = { &im, NULL, NULL };
+    if (!mi_each_lc(&im, mg_overlap_outer_cb, &oc)) {
+        fprintf(stderr, "macho_grow: verify FAILED -- segments %.16s and %.16s overlap in "
+                        "memory after the grow; refusing.\n", oc.a->segname, oc.hit->segname);
+        return -1;
+    }
     return 0;
 }
 
@@ -866,82 +986,49 @@ static int mg_fs_find_cb(const struct load_command *lc, void *ctx_) {
 struct mg_patch_ctx {
     uint32_t insert;
     uint32_t grow;
-    int error;
 };
 
-/* mg_grow_header's mi_each_lc callback for the header-patch pass: edits
- * LC_SEGMENT_64's own fileoff/vmaddr/vmsize/filesize (and every section's
- * offset/reloff via ml_bump) plus LC_MAIN's entryoff -- never lc->cmd,
- * lc->cmdsize, or hdr->ncmds, so it stays inside mi_each_lc's mutation
- * contract. Returns non-zero to stop on the first refusal (an entryoff or
- * section offset/reloff that would overflow); ctx->error carries that so the
- * caller does ONE free(mg_new_trie)+mg_snapshot_free+return, not one copy per
- * refusal site the way the hand-rolled loop needed. */
+/* mg_grow_header's mi_each_lc callback for the segment geometry: __PAGEZERO
+ * donates `grow` bytes of vm, the header-bearing segment takes them, and a
+ * later segment's file content moves. Every other file offset a grow moves is
+ * mg_each_fileoff's, so mg_collect watches it. Edits never lc->cmd,
+ * lc->cmdsize or hdr->ncmds, per mi_each_lc's mutation contract. */
 static int mg_patch_cb(const struct load_command *lc_in, void *ctx_) {
     struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
-    struct load_command *lc = (struct load_command *)lc_in;
-    switch (lc->cmd) {
-    case LC_SEGMENT_64: {
-        struct segment_command_64 *seg = (struct segment_command_64 *)lc;
-        /* Identify segments by criteria, not by a saved pointer: the earlier
-         * realloc may have moved the buffer, invalidating any pointer found
-         * during validation. The header-bearing segment is the one mapped
-         * at file offset 0 with content (i.e. __TEXT, not __PAGEZERO). */
-        if (strcmp(seg->segname, "__PAGEZERO") == 0) {
-            seg->vmsize -= ctx->grow;            /* donate space below __TEXT */
-        } else if (seg->fileoff == 0 && seg->filesize > 0) {
-            seg->vmaddr  -= ctx->grow;           /* lower the image base */
-            seg->vmsize  += ctx->grow;
-            seg->filesize += ctx->grow;          /* fileoff stays 0 */
-        } else if (seg->fileoff >= ctx->insert) {
-            seg->fileoff += ctx->grow;           /* later segment: file moves, vm fixed */
-        }
-        struct section_64 *sect = (struct section_64 *)(seg + 1);
-        for (uint32_t j = 0; j < seg->nsects; j++) {
-            /* ml_bump refuses (returns -1, prints why) rather than wrap
-             * a section offset/reloff that sits within `grow` of
-             * UINT32_MAX -- same guard as src/linkedit.h's table, same
-             * reason: a wrapped file offset is a corrupt binary that
-             * still looks plausible. */
-            if (ml_bump(&sect[j].offset, ctx->insert, ctx->grow) != 0 ||   /* addr stays fixed */
-                (sect[j].reloff && ml_bump(&sect[j].reloff, ctx->insert, ctx->grow) != 0)) {
-                ctx->error = 1;
-                return 1;
-            }
-        }
-        break;
+    if (lc_in->cmd != LC_SEGMENT_64) return 0;
+    struct segment_command_64 *seg = (struct segment_command_64 *)lc_in;
+    /* Identify segments by criteria, not by a saved pointer: the earlier
+     * realloc may have moved the buffer, invalidating any pointer found
+     * during validation. The header-bearing segment is the one mapped
+     * at file offset 0 with content (i.e. __TEXT, not __PAGEZERO). */
+    if (strcmp(seg->segname, "__PAGEZERO") == 0) {
+        seg->vmsize -= ctx->grow;            /* donate space below __TEXT */
+    } else if (seg->fileoff == 0 && seg->filesize > 0) {
+        seg->vmaddr  -= ctx->grow;           /* lower the image base */
+        seg->vmsize  += ctx->grow;
+        seg->filesize += ctx->grow;          /* fileoff stays 0 */
+    } else if (seg->fileoff >= ctx->insert) {
+        seg->fileoff += ctx->grow;           /* later segment: file moves, vm fixed */
     }
-    case LC_MAIN: {
-        /* entryoff is a file offset within __TEXT; bumping it keeps the
-         * entry's vm address fixed (base went down by the same amount).
-         * entryoff is a uint64_t (entry_point_command), NOT uint32_t --
-         * bumped and overflow-checked directly at its own width, rather
-         * than through ml_bump's 32-bit-only guard, which would first
-         * silently truncate any entryoff at or past 4GB before ever
-         * checking anything. Real binaries never have an entryoff that
-         * large (it is a file offset within __TEXT), but "refuse rather
-         * than guess" means checking the real field, not an assumption
-         * about its range. */
-        struct entry_point_command *c = (struct entry_point_command *)lc;
-        if (c->entryoff >= (uint64_t)ctx->insert) {
-            if (c->entryoff > UINT64_MAX - (uint64_t)ctx->grow) {
-                fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
-                                "a 64-bit field after growing by %#x; refusing rather "
-                                "than wrap\n",
-                        (unsigned long long)c->entryoff, ctx->grow);
-                ctx->error = 1;
-                return 1;
-            }
-            c->entryoff += ctx->grow;
-        }
-        break;
+    return 0;
+}
+
+/* mg_each_fileoff's visitor for the grow: move each file offset at or past
+ * `insert` by `grow`, refusing rather than wrapping. entryoff is the one
+ * 64-bit field, checked at its own width rather than truncated to ml_bump's. */
+static int mg_bump_cb(void *field, int width, uint64_t span, int flags, void *ctx_) {
+    struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
+    (void)span; (void)flags;
+    if (width == 4) return ml_bump((uint32_t *)field, ctx->insert, ctx->grow) != 0;
+    uint64_t *v = (uint64_t *)field;
+    if (*v < (uint64_t)ctx->insert) return 0;
+    if (*v > UINT64_MAX - (uint64_t)ctx->grow) {
+        fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
+                        "a 64-bit field after growing by %#x; refusing rather "
+                        "than wrap\n", (unsigned long long)*v, ctx->grow);
+        return 1;
     }
-    default:
-        break;  /* everything else -- the __LINKEDIT-resident structures
-                  * (LC_SYMTAB, LC_DYSYMTAB, LC_DYLD_INFO[_ONLY], and the
-                  * linkedit_data_command family) plus anything carrying
-                  * no file offset at all -- is ml_bump_all's job, below. */
-    }
+    *v += ctx->grow;
     return 0;
 }
 
@@ -1186,10 +1273,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     size_t final_size = fsize + grow;
 
     /* Patch the header. Load commands live before `insert`, so memmove didn't
-     * touch them; mg_patch_cb (below) adjusts only file-offset fields, plus the
-     * three VM fields that keep every address fixed -- never lc->cmd,
-     * lc->cmdsize, or hdr->ncmds, so this stays inside mi_each_lc's mutation
-     * contract despite editing several fields in place per command. */
+     * touch them. The segment geometry first, then every file offset
+     * mg_each_fileoff names -- the list mg_collect resolves. A refusal
+     * (an offset would overflow) has already said why on stderr; fields
+     * visited before it are patched in place and not rolled back, so the
+     * caller must discard this buffer, never write it out. */
     {
         mi_image patch_im;
         if (mi_wrap(buf, final_size, &patch_im) != 0) {
@@ -1199,52 +1287,9 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             mg_snapshot_free(&snap);
             return -1;
         }
-        struct mg_patch_ctx pctx = { insert, grow, 0 };
+        struct mg_patch_ctx pctx = { insert, grow };
         mi_each_lc(&patch_im, mg_patch_cb, &pctx);
-        if (pctx.error) {
-            /* mg_patch_cb already printed why (LC_MAIN's entryoff would
-             * overflow, or ml_bump refused a section offset/reloff). Fields on
-             * commands visited before the one that failed are already patched
-             * in place -- not rolled back, same as every other internal
-             * failure path in this function: the caller must discard this
-             * buffer, never write it out. */
-            free(mg_new_trie);
-            mg_snapshot_free(&snap);
-            return -1;
-        }
-    }
-
-    /* The __LINKEDIT offset-bump table (src/linkedit.h): symtab, strtab,
-     * indirect symbols, dyld-info streams, function starts, data-in-code,
-     * code signature and siblings. A second pass over the same load-command
-     * chain the loop above just walked -- disjoint switch cases, so running
-     * them in either order or in one merged switch produces identical bytes.
-     * Re-wrapped rather than reusing a stale mi_image: buf/hdr above may be
-     * the realloc'd pointer from the __LINKEDIT-grow path earlier in this
-     * function, and cmdsize/ncmds/nsects are exactly what the loop just
-     * walked without changing, so this wrap can only re-confirm what is
-     * already true. */
-    {
-        mi_image im;
-        if (mi_wrap(buf, final_size, &im) != 0) {
-            fprintf(stderr, "macho_grow: internal error -- the header we just patched "
-                            "no longer validates\n");
-            /* mg_new_trie is still live here when mg_trie_needs_rebuild --
-             * it is not freed until the trie-rebasing block below runs.
-             * Every other post-realloc failure path in this function frees
-             * it; this one must too. free(NULL) is a no-op when it wasn't
-             * allocated. */
-            free(mg_new_trie);
-            mg_snapshot_free(&snap);
-            return -1;
-        }
-        if (ml_bump_all(&im, insert, grow) != 0) {
-            /* ml_bump/ml_bump_all already printed why (an offset would
-             * overflow a 32-bit field); nothing more to add. Some fields on
-             * commands walked before the one that overflowed are already
-             * bumped in place -- not rolled back, same as every other
-             * internal failure path here: the caller must discard this
-             * buffer rather than write it out. */
+        if (mg_each_fileoff(&patch_im, mg_bump_cb, &pctx) != 0) {
             free(mg_new_trie);
             mg_snapshot_free(&snap);
             return -1;
