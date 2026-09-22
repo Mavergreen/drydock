@@ -153,14 +153,15 @@ jobs:
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
 
       # drydock-macho-rewrite and the two files the wrappers source belong in
-      # the artifact too, and are not optional: all seven names below are
+      # the artifact too, and are not optional: all eight names below are
       # /bin/sh wrappers that look for drydock-macho-rewrite,
       # drydock-macho-rewrite-compat.sh and drydock-macho-rewrite-translate.sh
-      # in their own directory, so an artifact without them is seven names
+      # in their own directory, so an artifact without them is eight names
       # that cannot run. (The binary itself was missing from
       # this list even before that, when it was still a standalone CLI.)
-      # insert_dylib is the one wrapper here with no known caller (its own
-      # header says so); it ships anyway, the same way the other six do.
+      # insert_dylib and bake-mavericks-shim are the wrappers here with no
+      # known caller (their own headers say so); they ship anyway, the same
+      # way the other six do. Eleven files in all.
       #
       # The paths below are unchanged by fix_macho becoming a wrapper: this
       # list names FILES in the cross build dir, not CMake targets, and CMake
@@ -178,7 +179,8 @@ jobs:
           for f in drydock-macho-rewrite drydock-macho-rewrite-compat.sh \
                    drydock-macho-rewrite-translate.sh \
                    patch_macho change_dylib add_version_min fix_macho \
-                   rename_segment retag_swift_classes insert_dylib; do
+                   rename_segment retag_swift_classes insert_dylib \
+                   bake-mavericks-shim; do
             cp "$CROSS_BUILD_DIR/$f" dist/
           done
           ls -l dist

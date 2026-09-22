@@ -4,7 +4,8 @@ The six original entry points, kept for compatibility. All six are now
 `/bin/sh` wrappers around `drydock-macho-rewrite`. There is no C left in this directory.
 A seventh wrapper, `insert_dylib`, joined later — it is convenience for a
 grammar this repo never shipped, not compatibility debt; see "`insert_dylib`:
-not one of the six" below.
+not one of the six" below. An eighth, `bake-mavericks-shim`, is the same kind
+of convenience; see "`bake-mavericks-shim`" at the end.
 
 > **The goal is met.** The goal was "`macho9` becomes the only Mach-O
 > rewriting binary this repo ships." It is: `compat/` holds
@@ -29,6 +30,7 @@ where the old flag grammar becomes those statements.
 | `retag_swift_classes` | `retag_swift_classes.sh` → `swift-abi set legacy`, once per file, installed over each `FILE` |
 | `fix_macho` | `fix_macho.sh` → `load-command delete` / `dylib` / `segment rename` statements, however many the flags name (two renames are two statements) |
 | `insert_dylib` | `insert_dylib.sh` → `dylib append` / `dylib retype` / `load-command delete codesig` statements — not one of the six; see below |
+| `bake-mavericks-shim` | `bake-mavericks-shim.sh` → `load-command delete codesig` / `dylib append` / one `import redirect` per import the shim provides — not one of the six; see below |
 
 plus the two files every wrapper sources:
 
@@ -589,3 +591,73 @@ blocking a build script forever on a read nothing will ever answer.
 | `--inplace` together with an explicit `new_binary_path` is **refused**, where the fork silently picks one and never reads the other (`--inplace` wins; `main.c`'s `if(!inplace_flag) { ... }` block that would consume `argv[3]` is skipped entirely when `--inplace` is set, so the named file is never even opened). Matching the fork here would mean silently ignoring an output path the caller wrote out by hand and overwriting their input instead — the data-loss shape this toolkit refuses rather than guesses through everywhere else, and there are no known callers of this tool to break by refusing. `compat/translate.sh`'s `mt_id_parse` refuses it unconditionally, before any prompt, so `--all-yes` does not make it succeed either | `tests/insert_dylib_test.sh`, "--inplace + new_binary_path" (three assertions: refuses exit 1 even with `--all-yes`, names both `--inplace` and the path, and leaves both the input and the named path untouched) |
 | on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `drydock-macho-rewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refuses cleanly instead — `drydock-macho-rewrite edit: ERROR: ... don't fit in header pad (... avail); growing the header needs allow-grow`, exit 1, input untouched. This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
 | on an unwritable `--inplace` target, the fork's own diagnostic (`main.c`'s `printf("Couldn't open file %s\n", binary_path)`) lands on **its stdout**, not stderr; this wrapper's (`mw_require_writable`'s `open: Permission denied`) lands on **stderr only**. Both sides still exit 1 having touched nothing — this is a stream difference in the fork's own C, not a behaviour difference, and not chased | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on several root-owned binaries under `/usr/bin` (`atq`, `calendar`, `cupstestppd`, `newgrp`) |
+
+## `bake-mavericks-shim`
+
+`bake-mavericks-shim.sh` presents the command line of **Wowfunhappy's
+`bake-mavericks-shim.py`**, whose design this is: take a binary that only runs
+as
+
+```sh
+DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=/usr/local/lib/libMavericksLegacySystem.B.dylib ./binary
+```
+
+and make it load the shim itself, binding to the shim exactly the imports the
+shim exports and nothing else — the self-adjusting intersection his script
+introduced. The Python is not part of this repo; this is his behaviour
+implemented through `drydock-macho-rewrite`, not his code. It has no known caller, so
+`tests/known-callers.sh` and `tests/compat-sweep.sh` are silent for it, and
+`tests/bake_mavericks_shim_test.sh` is its test surface.
+
+```
+bake-mavericks-shim INPUT [OUTPUT] [--shim PATH]
+```
+
+`OUTPUT` defaults to `INPUT.selfcontained` and the shim to
+`/usr/local/lib/libMavericksLegacySystem.B.dylib`. The wrapper reads
+`drydock-macho-rewrite exports SHIM` and `drydock-macho-rewrite imports INPUT`
+and runs one edit script:
+
+| statement | when |
+|---|---|
+| `fixups set classic` | `INPUT` has chained fixups |
+| `load-command delete codesig` | `INPUT` is signed |
+| `dylib append SHIM` | `INPUT` does not already load `SHIM` |
+| `import redirect SYMBOL LIBRARY SHIM` | once per bind whose symbol `SHIM` exports, for every library it is imported from |
+
+Its stdout is the Python's summary — how many symbols the shim exports, whether
+a signature was stripped, the shim's ordinal and whether it was newly added,
+how many imports moved and which — and the weak-bind warning is the Python's
+too. `OUTPUT` is left mode 755, as the Python leaves it, and may name `INPUT`.
+
+| the difference from the Python | held by |
+|---|---|
+| an import is identified by **symbol and library**: each library a symbol is imported from gets its own `import redirect`, and the wrapper selects all of them, which is the Python's selection stated exactly. A bind with a special ordinal (flat lookup, self, main executable) names no library and is **not** redirected; the Python re-points every regular bind of a shim symbol, whatever ordinal it had | `tests/import_redirect_test.sh`, "same name, other library"; `tests/bake_mavericks_shim_test.sh`, "flat" |
+| a **fat** input is baked slice by slice; the Python refuses it | `tests/bake_mavericks_shim_test.sh`, "fat" |
+| a **chained-fixups** input is converted with `fixups set classic` first; the Python refuses it | `tests/bake_mavericks_shim_test.sh`, "chained" — it SKIPs on a host whose linker cannot emit chained fixups, 10.9 among them |
+| **ordinals above 15** work: a bind-stream opcode is re-encoded as `SET_DYLIB_ORDINAL_ULEB`, and a lazy one wherever its opcode is wide enough. The Python dies whenever the shim's ordinal is above 15 and a regular bind moves. A lazy bind whose opcode is one byte still cannot name an ordinal above 15 on either side, because no lazy program may grow | `tests/import_redirect_test.sh`, the "ordinal>15" block, whose last assertion is that refusal |
+| the **symbol table**'s undefined entries are redirected with the binds, so `nm -m` and a later `dylib delete` agree with dyld; the Python leaves them naming the old library | `tests/import_redirect_test.sh`, "regular: ... the symbol table's undefined _a_data" |
+| the result is **verified before it is written**: both streams are read back and every bind compared with what it was. The Python writes what it computed | `tests/import_redirect_test.sh`, "verification" |
+| the bind stream is rewritten **opcode for opcode**, in place when that fits; the Python re-emits the whole stream in its own encoding. When the stream has to grow, both put it at the end of `__LINKEDIT` | compared bind by bind with `dyldinfo` in the differential below |
+| the shim's exports come from its **export trie** (`drydock-macho-rewrite exports`), not from `nm -gU`'s text | `tests/import_redirect_test.sh`, "exports" |
+| `load-command delete codesig` removes the load command and **leaves the signature's bytes** in `__LINKEDIT`; the Python truncates them and shrinks `__LINKEDIT` | `tests/bake_mavericks_shim_test.sh`, "signed" (the command is gone; the bytes are not asserted either way) |
+| the appended `LC_LOAD_DYLIB` records **version 0.0.0**, as every `dylib append` does, so any build of the shim satisfies it; the Python records 1.0.0, and dyld refuses a shim built without `-compatibility_version 1.0` | the differential below, which had to build its shim with that flag for the Python's output to load |
+| the summary's `bind data:` names **where** each table went (`regular table in place`, `regular table relocated to the end of __LINKEDIT`, `lazy table rewritten in place`) without the Python's byte counts; `drydock-macho-rewrite`'s own report on stderr has the sizes | `tests/bake_mavericks_shim_test.sh`, "the Python's summary lines" |
+| stderr also carries `drydock-macho-rewrite`'s report of the edit, and a weak bind of a redirected symbol is warned about twice: the Python's list, then the engine's line for that symbol | `tests/bake_mavericks_shim_test.sh`, "weak" |
+| a refusal the engine makes is **in its words**: with no room in the header for the shim's load command, the Python says `no room in the Mach-O header to add a load command`, and this says what `dylib append` says. Both exit 1 and write nothing | `tests/bake_mavericks_shim_test.sh`, "no header room" |
+| exit codes are `drydock-macho-rewrite`'s 0/1/2, **forwarded**; the Python exits 1 for everything but a usage error, which is 2 on both sides | as for `insert_dylib`, above |
+| an image carrying `LC_LAZY_LOAD_DYLIB` is **refused**, as everywhere in this toolkit; the Python counts it as an ordinal | `dylib append` refuses it first, through `src/ordinals.c`'s `mo_map_build`, which `tests/change_dylib_test.sh` case 15 pins; `import redirect` refuses it again on its own |
+
+Matching behaviour, not a difference: with no room in the header for the
+shim's load command both refuse, because this wrapper's script carries no
+`allow-grow`.
+
+### `bake-mavericks-shim`: the differential
+
+Before the Python was deleted from the working tree, both were run over the
+same inputs on 10.9.5 and compared by what they mean rather than their bytes:
+every bind (`dyldinfo -bind -lazy_bind -weak_bind`), the `imports` report, the
+load-command list, the summary lines, and the output of running both results
+and the input. The inputs, and the Python's sha256, are in the message of the
+commit that added this wrapper.
+
