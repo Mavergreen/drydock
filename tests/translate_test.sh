@@ -103,7 +103,7 @@ ok cd-radd      "printf 'rpath append P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -add-rpath P
 ok cd-strip     "printf 'load-command delete uuid\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -strip-lc uuid
-ok cd-grow      "printf 'allow-grow\ndylib append P\n' | drydock-macho-rewrite f f.new
+ok cd-grow      "printf 'dylib append P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"  -- change_dylib f -grow -add P
 
 # -add is NOT -insert and -insert is NOT -add: an appended LC_LOAD_DYLIB gets
@@ -155,13 +155,13 @@ mv -f f.new f" -- change_dylib f -add-rpath R -add D -strip-lc uuid
 ok cd-mixed-order "printf 'load-command delete codesig\nload-command delete uuid\ndylib replace A B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
 
-# -grow becomes the `allow-grow` DIRECTIVE, which must precede every
-# operation (src/script.c refuses one that does not). Like the --allow-grow it
-# replaces, it reaches dylib and rpath and not the load-command deletes:
-# src/edit.c sets ops.allow_grow only for the statements that can outgrow the
-# pad, and deleting load commands can only shrink the table.
-ok cd-grow-mixed "printf 'allow-grow\nload-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
+# -grow is accepted and emits nothing: a statement that outgrows the pad
+# grows it with or without it, so the command is the one the same flags
+# without -grow produce.
+ok cd-grow-mixed "printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
+ok cd-nogrow-mixed "printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
+mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B -add-rpath R
 
 # EVERY INSERT IS EMITTED IN REVERSE FLAG ORDER, because each one goes to the
 # FRONT of the table: as a batch `-insert A -insert B` leaves A at ordinal 1
@@ -320,8 +320,7 @@ mv -f f.new f"            -- fix_macho f -rename_seg __DATA __D2
 # one command. Each rename is still its own pass, in argv order.
 ok fm-rename-2 "printf 'segment rename __A __B\nsegment rename __C __D\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __A __B -rename_seg __C __D
-# All three families, in load-command / dylib / segment order. No allow-grow
-# anywhere: fix_macho has no -grow and never enlarges a header.
+# All three families, in load-command / dylib / segment order.
 ok fm-all "printf 'load-command delete build-version\ndylib replace A B\nsegment rename __A __B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -change A B -strip_build_version -rename_seg __A __B
 # The flag is a boolean, so repeating it is still one load-command delete.

@@ -33,10 +33,10 @@
  * the same path. They are gone; the statements they mapped onto are what this
  * binary offers instead, and src/edit.c sequences them.
  *
- * `grow FILE OUT N` had no statement equivalent -- `allow-grow` is a directive
- * that PERMITS growth, not a request for a specific number of bytes -- and it
- * went anyway, because one mutation outside the only mutating interface would
- * defeat the design's single claim. It had no production caller (compat/ emits
+ * `grow FILE OUT N` had no statement equivalent -- a statement whose load
+ * commands outgrow the pad grows it by what they need, never by a requested
+ * number of bytes -- and it went anyway, because one mutation outside the
+ * only mutating interface would defeat the design's single claim. It had no production caller (compat/ emits
  * it zero times). What it did cost was crash coverage: `mg_ensure_pad` grows
  * only when `need_end > first_sect_off`, so no script can force a grow of an
  * image whose first section lies PAST the end of the file, where `fsize -
@@ -266,7 +266,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       replace OLD NEW`. One row's second field is a PROFILE rather than an
  *       op -- "statement target 10.9 0" is the `target 10.9` line, and a
  *       wrapper reads which profiles this build knows the same way it reads
- *       which ops each kind takes. Directives (allow-grow, fatal-warnings)
+ *       which ops each kind takes. Directives (arch, fatal-warnings)
  *       are deliberately not listed here -- that is a later decision. */
 static int print_capabilities(void) {
     printf("format 1\n");

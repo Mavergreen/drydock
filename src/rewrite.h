@@ -81,7 +81,6 @@ typedef struct {
      * and acting are the same question now that a run carries one operation:
      * the command this operation names is the command it rewrites. */
     int              fatal_unmatched;
-    int              allow_grow;       /* may enlarge the pad (mg_grow_header) */
 } mr_ops;
 
 /* The two failure codes. MR_REFUSED is a CONSIDERED refusal: something
@@ -136,7 +135,7 @@ typedef struct {
 
 /* mr_apply_file's thin-image step, without the file: apply `ops` to the thin
  * 64-bit Mach-O already in memory at *pbuf (*pfsize bytes), and write
- * nothing. *pbuf may be realloc'd (allow_grow reaches mg_grow_header), so on
+ * nothing. *pbuf may be realloc'd (a short pad reaches mg_grow_header), so on
  * return, success or not, *pbuf and *pfsize name the buffer the caller owns
  * and must free() -- its contents after a failure unspecified, so a caller
  * that sees a refusal must discard it, never write it. Prints what

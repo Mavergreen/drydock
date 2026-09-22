@@ -72,6 +72,13 @@ trap 'rm -rf "$T"' EXIT INT TERM
 
 fresh() { cp "$FIXTURE" "$T/f"; }
 sha()   { shasum -a 256 < "$1" | cut -d' ' -f1; }
+# unpie FILE -- clear MH_PIE, so a header grow refuses FILE ("not PIE").
+# platform: MH_PIE is 0x00200000 in the little-endian flags word at offset
+# 24, so bit 0x20 of byte 26.
+unpie() {
+    unpie_b=$(od -An -tu1 -j26 -N1 "$1" | tr -d ' ')
+    printf "\\$(printf %o $((unpie_b & ~32)))" | dd of="$1" bs=1 seek=26 conv=notrunc 2>/dev/null
+}
 
 # strip_vm FILE -- remove FILE's LC_VERSION_MIN_MACOSX, so add_version_min has
 # something to do to it. tests/fixture.macho is a real 10.9 binary and already
@@ -501,10 +508,12 @@ rm -f "$T/notmacho"
 # and the sequence refused having already written. It is one `drydock-macho-rewrite edit`
 # now: me_run reads the image once, applies every statement in memory,
 # verifies, and writes once. The -change below needs far more room than the
-# fixture's header pad and no -grow is given, so the run is refused at
-# statement 2 of 2 -- after statement 1 was applied in memory.
+# fixture's header pad, and this copy is not PIE so the header cannot grow,
+# so the run is refused at statement 2 of 2 -- after statement 1 was applied
+# in memory.
 rm -rf "$T/cdmid"; mkdir "$T/cdmid"
 cp "$FIXTURE" "$T/cdmid/f"
+unpie "$T/cdmid/f"
 cd_mid_before=$(sha "$T/cdmid/f")
 cd_huge="@loader_path/"
 i=0
@@ -1541,7 +1550,7 @@ fi
 # refused when it did not fit ("new path '...' too long (320 > 32)", exit 1,
 # file untouched -- a measured row of tests/compat-matrix.tsv). `drydock-macho-rewrite dylib
 # -replace` resizes the command into header pad the image already has, so this
-# now succeeds. No --allow-grow is emitted; this uses existing pad only.
+# now succeeds, with no header grow: the fixture's pad holds it.
 fresh
 fm_long="@loader_path/"
 i=0
@@ -1747,10 +1756,11 @@ rm -rf "$T/fmdir" "$T/fmdir.new"
 # A REFUSAL PART WAY THROUGH A MULTI-STATEMENT RUN LEAVES FILE EXACTLY AS IT
 # WAS. Two families, so one `drydock-macho-rewrite edit`: me_run reads the image once,
 # applies every statement in memory, verifies, and writes once. The -change
-# below needs far more room than the fixture's header pad and no --allow-grow
-# is ever emitted, so the run is refused at statement 2 of 2 -- after
-# statement 1 was applied in memory.
+# below needs far more room than the fixture's header pad, and this copy is
+# not PIE so the header cannot grow, so the run is refused at statement 2 of
+# 2 -- after statement 1 was applied in memory.
 fresh
+unpie "$T/f"
 fm_before=$(sha "$T/f")
 fm_huge="@loader_path/"
 i=0
@@ -1771,6 +1781,16 @@ ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' \
 ! grep -q 'the rewrite succeeded but installing it failed' "$T/err" \
     && ok "fix_macho: ... and says the run was refused, not that installing it failed" \
     || bad "fix_macho mid-script refusal" "a refused run told the caller the rewrite succeeded and the install failed, which sends them looking at directory permissions for a refusal drydock-macho-rewrite made about their image: $(grep 'installing it failed' "$T/err")"
+
+# ADOPTED CHANGE 6: THE SAME -change ON A PIE COPY GROWS THE HEADER. fix_macho
+# had no -grow and refused; the wrapper lowers the image base to make room,
+# and says so on stderr.
+fresh
+run fix_macho f -change /usr/lib/libSystem.B.dylib "$fm_huge"
+[ "$rc" -eq 0 ] && grep -q '^f: grew the header pad by ' "$T/err" \
+    && LC_ALL=C grep -q -- "$fm_huge" "$T/f" \
+    && ok "fix_macho: a replacement the pad cannot hold grows the header, announced (0)" \
+    || bad "fix_macho grow" "exit $rc (want 0, announced, the path in FILE): $(cut -c1-300 "$T/err")"
 
 # THE INSTALL IS A RENAME, not a write through FILE. drydock-macho-rewrite writes a temp
 # beside FILE and mw_finish mv's it over, which is what makes FILE wholly old

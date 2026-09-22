@@ -249,7 +249,7 @@ set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # linkedit_test. It writes that image into a mkdtemp directory because me_run
 # takes a path. MallocScribble=1 for the reason script_test has it, applied to
 # this module's own hazard: the image buffer is reallocated between
-# statements (allow-grow's header grow, `fixups set classic`'s room to
+# statements (a header grow, `fixups set classic`'s room to
 # append), and a pointer kept across one would still read the old bytes by
 # luck on a plain run.
 add_executable(edit_test tests/edit_test.c)
@@ -391,6 +391,11 @@ add_test(NAME import_redirect_test
 # with the shim's implementation and no DYLD_* variables.
 add_test(NAME bake_mavericks_shim_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/bake_mavericks_shim_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+
+# A grown binary, run beside its input with the same arguments and
+# environment: stdout, stderr and exit status must agree.
+add_test(NAME grown_binary_runs_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/grown_binary_runs_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after they were converted onto

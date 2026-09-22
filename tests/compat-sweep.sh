@@ -577,7 +577,8 @@ run_case fix_macho f -change "$DY_BOUND" "$DY_NEW1"
 # Two over-long replacement paths. LONGPAD fits in the base image's 2576-byte
 # header pad but NOT in the existing 56-byte LC_LOAD_DYLIB, which is exactly
 # where change_dylib (rebuilds the table) and fix_macho (writes in place) part
-# company. LONGGROW exceeds the pad as well, so it needs -grow / --allow-grow.
+# company. LONGGROW exceeds the pad as well: the historical change_dylib
+# needed -grow for it, and the wrapper grows without it.
 LONGPAD="@loader_path/$(printf 'y%.0s' $(seq 1 300)).dylib"
 LONGGROW="@loader_path/$(printf 'y%.0s' $(seq 1 3000)).dylib"
 run_case change_dylib f -change "$DY_OLD" "$LONGPAD"

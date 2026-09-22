@@ -154,7 +154,7 @@ static uint8_t *build_image(int flags) {
 /* A minimal MH_EXECUTE/MH_PIE image mg_grow_header (src/grow.c) can actually
  * grow: a __PAGEZERO donating vm space, and a __TEXT segment mapping the
  * header (fileoff 0) whose one section starts at GROWIMG_SECTOFF -- a small
- * enough header pad that appending a modest dylib path needs allow-grow to
+ * enough header pad that appending a modest dylib path has to grow it to
  * fit. No LC_FUNCTION_STARTS: with none present mg_plausible (and
  * mg_grow_header's own leading-delta check) have nothing base-relative to
  * verify, so this image is plausible as soon as it has a segment mapping
@@ -532,7 +532,7 @@ static void test_statements_apply_in_order(void) {
 
 /* THE PROPERTY THE WHOLE DESIGN EXISTS TO BUY. The first statement succeeds
  * and changes the in-memory image; the second is refused on its own merits (a
- * load command too long for the header pad, with no allow-grow). Nothing may
+ * load command too long for the header pad of an image that cannot grow). Nothing may
  * reach the disk: not the input, not an OUT created, not a temp file
  * abandoned. The input is compared by hash, byte for byte, and by inode,
  * because a rename-based write would keep the bytes of a successful rewrite
@@ -1137,15 +1137,17 @@ static void test_fat_a_refusal_in_the_second_slice_writes_nothing(void) {
     in_dir(out, sizeof out, "fat.out");
 
     /* Slice 0 has 496 bytes of header pad; slice 1 (labelled arm64) has NONE,
-     * its one section starting exactly where its load commands end. So one
-     * `dylib append` fits the first and cannot fit the second, and the refusal
-     * that follows is the second slice's alone. */
+     * its one section starting exactly where its load commands end, and is a
+     * dylib, which cannot grow. So one `dylib append` fits the first and
+     * cannot fit the second, and the refusal that follows is the second
+     * slice's alone. */
     uint8_t *s[2]; size_t l[2];
     uint32_t ct[2] = { (uint32_t)CPU_TYPE_X86_64, (uint32_t)CPU_TYPE_ARM64 };
     uint32_t cs[2] = { (uint32_t)CPU_SUBTYPE_X86_64_ALL, (uint32_t)CPU_SUBTYPE_ARM64_ALL };
     size_t flen;
     s[0] = build_image(0);                             l[0] = IMG_SIZE;
     s[1] = build_growable_image_at(GROWIMG_NO_PAD, 1); l[1] = GROWIMG_SIZE;
+    ((struct mach_header_64 *)s[1])->filetype = MH_DYLIB;
     uint8_t *fat = build_fat(2, s, l, ct, cs, &flen);
     write_file(path, fat, flen, 0755);
     free(s[0]); free(s[1]); free(fat);
@@ -1228,7 +1230,7 @@ static void test_fat_reassembly_refusal_leaves_the_file_untouched(void) {
     free(hi); free(lo); free(fat);
 
     /* 300 bytes of path: comfortably past the growable slice's small header
-     * pad (GROWIMG_SECTOFF minus its fixed load commands), so allow-grow
+     * pad (GROWIMG_SECTOFF minus its fixed load commands), so the append
      * grows it by a page -- which the fixed slice right above it, with no
      * gap, has no room for. */
     char longpath[320];
@@ -1236,7 +1238,7 @@ static void test_fat_reassembly_refusal_leaves_the_file_untouched(void) {
     longpath[0] = '/';
     longpath[300] = '\0';
     char script[512];
-    snprintf(script, sizeof script, "arch x86_64\nallow-grow\ndylib append %s\n", longpath);
+    snprintf(script, sizeof script, "arch x86_64\ndylib append %s\n", longpath);
 
     snap before = take(path);
     int rc = run(path, out, script);
@@ -1330,7 +1332,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
  *
  * The two slices run the same statement and disturb different things, which
  * only the OBSERVED half can produce: slice 0 has no header pad at all, so
- * `version-min set 10.9` under allow-grow must grow it -- a grow re-bases
+ * `version-min set 10.9` must grow it -- a grow re-bases
  * every base-relative value (MREL_BASE_REL) -- while slice 1 has 496 bytes
  * spare and the same statement only repacks its header (MREL_HEADER_PAD).
  * Slice 1 is the IMPLAUSIBLE image, so a gate that applied there would refuse
@@ -1360,7 +1362,7 @@ static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
     write_file(path, fat, flen, 0755);
     free(s[0]); free(s[1]); free(fat);
 
-    int rc = run(path, out, "allow-grow\nversion-min set 10.9\n");
+    int rc = run(path, out, "version-min set 10.9\n");
     CHECK(rc == 0, "per slice: a slice that disturbed nothing it checks is not refused "
           "for what another slice did (got %d; log: %s)", rc, g_log);
     CHECK(strstr(g_log, "slice arm64: this run disturbed sizeofcmds; "

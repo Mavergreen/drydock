@@ -5,6 +5,7 @@ Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
 | test | what it proves |
 |---|---|
 | `grow_test` | hermetic: the grow, every base-relative re-baser, `mg_verify`, `mg_plausible`, against synthetic images |
+| `grown_binary_runs_test` | runs what a header grow produced: a PIE executable linked with `-headerpad 0`, and `/usr/bin/printf` where it qualifies, each grown by more `LC_RPATH`s than its pad holds, then run beside its input with the same arguments and environment -- stdout, stderr and exit status must agree. Structure checks cannot see a wrong entry point: with `LC_MAIN`'s `entryoff` left unbumped the grown binary still passes `verify`, and dies here of SIGBUS |
 | `image_test` | walks `tests/fixture.macho`, a real 10.9-built executable, against `src/image.c`'s reader — exercised against a binary a linker actually emitted, not one this test invented |
 | `trie_test` | hermetic: `src/trie.c`'s export-trie rebuild (decode, shift, re-serialize) against hand-built and hand-computed trie byte buffers — no fixture file needed, same reasoning as `grow_test` |
 | `linkedit_test` | hermetic: `src/linkedit.c`'s `ml_bump_all` (the `__LINKEDIT` offset-bump table) against a synthetic image built by hand via `mi_wrap` — no fixture file needed, same reasoning as `trie_test` |
@@ -77,8 +78,8 @@ real hardware, with their results committed or reported by hand:
   `__PAGEZERO` to shrink and has none to shrink on any dylib (dylibs do not
   carry one) — it reports success anyway, and the file it wrote fails
   `drydock-macho-rewrite verify`'s own plausibility check; this wrapper refuses
-  instead (`EX_REFUSED`, "growing needs allow-grow"), leaving the input
-  untouched. (3) On an unwritable `--inplace` target the fork's own
+  instead (`EX_REFUSED`; a dylib cannot grow, which today's wording says as
+  "only MH_EXECUTE can be grown"), leaving the input untouched. (3) On an unwritable `--inplace` target the fork's own
   diagnostic lands on ITS STDOUT (`main.c`'s `printf`, not `perror`); this
   wrapper's lands on stderr only — both still exit 1 having touched nothing.
 
