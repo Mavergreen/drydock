@@ -1,6 +1,7 @@
 # tests
 
-Fifteen suites, all run by `ctest` (and so by shipyard's `run-repo-tests.sh`):
+The suites are the `add_test` entries in `../CMakeLists.txt`, all run by `ctest`
+(and so by shipyard's `run-repo-tests.sh`). Not every one has a row here yet:
 
 | test | what it proves |
 |---|---|
