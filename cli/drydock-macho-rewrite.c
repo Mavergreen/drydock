@@ -1,5 +1,5 @@
 /*
- * drydock-macho-rewrite — one mutating form, driven by a script, beside two read-only
+ * drydock-macho-rewrite — one mutating form, driven by a script, beside four read-only
  * queries.
  *
  * The grammar this build implements, verbatim:
@@ -9,6 +9,7 @@
  *   drydock-macho-rewrite info FILE
  *   drydock-macho-rewrite verify FILE
  *   drydock-macho-rewrite imports FILE
+ *   drydock-macho-rewrite exports FILE
  *
  * THERE WAS AN `edit FILE OUT SCRIPT` VERB, and it went with the other eight:
  * `edit` stopped being a verb name and became the tool itself. While the verb
@@ -48,7 +49,7 @@
  *
  * DELEGATION, not reimplementation, is still the rule for what remains.
  * `verify` and `info` call straight into mg_plausible and
- * mi_open/mi_each_lc; `imports` calls straight into mimp_report
+ * mi_open/mi_each_lc; `exports` into mexp_report (src/exports.h); `imports` calls straight into mimp_report
  * (src/imports.h), which itself is a thin, read-only front onto
  * mo_bind_observe -- the same bind-opcode decode the renumberer uses; the
  * script forms reach ms_parse
@@ -80,6 +81,7 @@
 #include "image.h"
 #include "ordinals.h"
 #include "imports.h"
+#include "exports.h"
 #include "grow.h"
 #include "lc_kinds.h"
 #include "atomic_write.h"
@@ -282,6 +284,7 @@ static int print_capabilities(void) {
     printf("verb verify\n");
     printf("verb info\n");
     printf("verb imports\n");
+    printf("verb exports\n");
     {
         /* NOT a hand-maintained copy of ordinals.c's MO_KINDS -- that used
          * to be a THIRD place, beside MO_KINDS itself and mo_is_ordinal_lc's
@@ -329,9 +332,11 @@ static void usage(const char *prog) {
         "       %s info FILE\n"
         "       %s verify FILE\n"
         "       %s imports FILE                             TSV: arch, ordinal, kind,\n"
-        "                                                    install_name, symbol, weak --\n"
-        "                                                    one row per bind\n",
-        prog, prog, prog, prog, prog, prog);
+        "                                                    install_name, symbol, weak,\n"
+        "                                                    stream -- one row per bind\n"
+        "       %s exports FILE                             TSV: arch, symbol, kind, weak,\n"
+        "                                                    source -- one row per export\n",
+        prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ---- verify: a thin shell over mg_plausible -----------------------------
@@ -479,7 +484,7 @@ struct imports_ctx { int header_printed; };
  * does not cover. Decided here, once, rather than left for a future reorder
  * to discover the hard way. */
 static void imports_print_header(void) {
-    printf("arch\tordinal\tkind\tinstall_name\tsymbol\tweak\n");
+    printf("arch\tordinal\tkind\tinstall_name\tsymbol\tweak\tstream\n");
 }
 
 /* Printed lazily, on the first row, so a refusal that arrives before any row
@@ -493,8 +498,8 @@ static void imports_row(const mimp_row *row, void *ctx_) {
     struct imports_ctx *ctx = ctx_;
     if (!ctx->header_printed) { imports_print_header(); ctx->header_printed = 1; }
     if (row->ordinal >= 1) {
-        printf("%s\t%d\t%s\t%s\t%s\t%d\n", row->arch, row->ordinal, row->kind,
-               row->install_name, row->symbol, row->weak);
+        printf("%s\t%d\t%s\t%s\t%s\t%d\t%s\n", row->arch, row->ordinal, row->kind,
+               row->install_name, row->symbol, row->weak, row->stream);
         return;
     }
     const char *special;
@@ -507,8 +512,8 @@ static void imports_row(const mimp_row *row, void *ctx_) {
      * as a raw number, per ordinals.h's own warning on MO_ORD_UNKNOWN. */
     default:          special = "unknown"; break;
     }
-    printf("%s\t%s\t%s\t%s\t%s\t%d\n", row->arch, special, row->kind,
-           row->install_name, row->symbol, row->weak);
+    printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\n", row->arch, special, row->kind,
+           row->install_name, row->symbol, row->weak, row->stream);
 }
 
 static int cmd_imports(const char *path) {
@@ -560,6 +565,71 @@ static int cmd_imports(const char *path) {
      * clean, header-only report, never a refusal. imports_row never fired,
      * so the header hasn't been printed yet. */
     if (!ctx.header_printed) imports_print_header();
+    return 0;
+}
+
+/* ---- exports: every symbol this image exports, as TSV --------------------
+ *
+ * spec: README.md "Read-only queries" -- columns are only ever appended. */
+struct exports_ctx { int header_printed; };
+
+static void exports_print_header(void) {
+    printf("arch\tsymbol\tkind\tweak\tsource\n");
+}
+
+static void exports_row(const mexp_row *row, void *ctx_) {
+    struct exports_ctx *ctx = ctx_;
+    if (!ctx->header_printed) { exports_print_header(); ctx->header_printed = 1; }
+    printf("%s\t%s\t%s\t%d\t%s\n", row->arch, row->symbol, row->kind, row->weak,
+           row->source);
+}
+
+static int read_file(const char *verb, const char *path, uint8_t **out, size_t *outlen) {
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size < 0) {
+        fprintf(stderr, "drydock-macho-rewrite %s: %s: cannot open or read\n", verb, path);
+        if (fd >= 0) close(fd);
+        return EX_FAIL;
+    }
+    size_t size = (size_t)st.st_size;
+    uint8_t *buf = malloc(size ? size : 1);
+    if (!buf) {
+        fprintf(stderr, "drydock-macho-rewrite %s: out of memory\n", verb);
+        close(fd);
+        return EX_FAIL;
+    }
+    size_t off = 0;
+    while (off < size) {
+        ssize_t n = read(fd, buf + off, size - off);
+        if (n <= 0) {
+            fprintf(stderr, "drydock-macho-rewrite %s: %s: cannot open or read\n", verb, path);
+            close(fd);
+            free(buf);
+            return EX_FAIL;
+        }
+        off += (size_t)n;
+    }
+    close(fd);
+    *out = buf;
+    *outlen = size;
+    return 0;
+}
+
+static int cmd_exports(const char *path) {
+    uint8_t *buf;
+    size_t size;
+    int rrc = read_file("exports", path, &buf, &size);
+    if (rrc != 0) return rrc;
+    struct exports_ctx ctx = { 0 };
+    int rc = mexp_report(buf, size, exports_row, &ctx);
+    free(buf);
+    if (rc != MEXP_OK) {
+        fprintf(stderr, "drydock-macho-rewrite exports: %s: not a readable 64-bit Mach-O, "
+                        "or refused (see above)\n", path);
+        return EX_REFUSED;
+    }
+    if (!ctx.header_printed) exports_print_header();
     return 0;
 }
 
@@ -693,6 +763,10 @@ int main(int argc, char **argv) {
         if (argc != 3) { fprintf(stderr, "usage: %s imports FILE\n", argv[0]); return EX_FAIL; }
         return cmd_imports(argv[2]);
     }
+    if (strcmp(verb, "exports") == 0) {
+        if (argc != 3) { fprintf(stderr, "usage: %s exports FILE\n", argv[0]); return EX_FAIL; }
+        return cmd_exports(argv[2]);
+    }
     /* The bare form: `drydock-macho-rewrite FILE OUT`, statements on stdin, and the
      * only way to change anything.
      *
@@ -703,8 +777,8 @@ int main(int argc, char **argv) {
      * OUT beginning with '-'. Reaching here means argv[1] matched no verb, so
      * there is nothing left for it to be but a file name.
      *
-     * THE THREE SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT: `verify`,
-     * `info` and, as of this build, `imports`. `edit`, `dylib`, `rpath`, `lc`,
+     * THE FOUR SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT: `verify`,
+     * `info`, `imports` and `exports`. `edit`, `dylib`, `rpath`, `lc`,
      * `minos`, `segment`, `retag-swift`, `grow` and `declassify` shadowed a
      * file of the same name while they were verbs; now `drydock-macho-rewrite dylib
      * out` reads a file named `dylib` and writes `out`, like any other pair.

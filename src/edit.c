@@ -34,6 +34,7 @@
 #include "version_min.h"
 #include "swift_retag.h"
 #include "declassify.h"
+#include "redirect.h"
 #include "atomic_write.h"
 #include "mach_compat.h"
 #include "fat.h"
@@ -83,6 +84,7 @@ static void me_log_stmt(FILE *log, const ms_stmt *st) {
     me_say(log, "  %s %s", ms_kind_name(st->kind), ms_op_name(st->op));
     if (st->a) me_say(log, " %s", st->a);
     if (st->b) me_say(log, " %s", st->b);
+    if (st->c) me_say(log, " %s", st->c);
     me_say(log, "\n");
 }
 
@@ -179,6 +181,35 @@ static void me_log_declassify(FILE *log, const md_report *r) {
                me_count(c1, (long)(r->linkedit_after - r->linkedit_before)));
 }
 
+/* spec: tests/import_redirect_test.sh "grow" -- growth is announced, always. */
+static void me_log_redirect(FILE *log, const mrd_report *r, const char *symbol) {
+    char c1[32], c2[32], c3[32], c4[32];
+    long n = r->bind + r->lazy;
+    if (n == 0 && r->nlist == 0) {
+        me_say(log, "      no bind of %s names that library here\n", symbol);
+    } else {
+        me_say(log, "      redirected %s bind%s (bind %s, lazy %s) and %s nlist entr%s "
+                    "from ordinal %d to ordinal %d\n",
+               me_count(c1, n), n == 1 ? "" : "s", me_count(c2, r->bind),
+               me_count(c3, r->lazy), me_count(c4, r->nlist), r->nlist == 1 ? "y" : "ies",
+               r->from, r->to);
+    }
+    if (r->bind_off_after != r->bind_off_before)
+        me_say(log, "      bind stream grew from %s to %s bytes; it now lives at file "
+                    "offset 0x%x, and __LINKEDIT grew from %s to %s bytes to cover it\n",
+               me_count(c1, (long)r->bind_before), me_count(c2, (long)r->bind_after),
+               r->bind_off_after, me_count(c3, (long)r->linkedit_before),
+               me_count(c4, (long)r->linkedit_after));
+    else if (r->bind)
+        me_say(log, "      bind stream rewritten in place (%s bytes)\n",
+               me_count(c1, (long)r->bind_after));
+    if (r->weak)
+        me_say(stderr, "WARNING: %s appears in the weak-bind table %s time%s; weak binds "
+                       "name no library, so %s not redirected\n", symbol,
+               me_count(c1, r->weak), r->weak == 1 ? "" : "s",
+               r->weak == 1 ? "it was" : "they were");
+}
+
 /* The version-min and swift-abi cores take an mi_image; the buffer is the
  * image as the previous statement left it, so it gets the same validation
  * mi_open would give a file. */
@@ -195,7 +226,8 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
  * verdict comes right after the statement, as it always has. */
 typedef struct {
     mr_hits *hits;      /* this statement's counts, summed across slices */
-    int     *renamed;   /* this statement's segment-rename count, likewise */
+    int     *renamed;   /* this statement's segment-rename or import-redirect
+                         * count, likewise */
     int      decide;    /* nonzero in the last selected slice */
     int      missed;    /* set when the verdict refused: it matched nothing */
 } me_verdict;
@@ -366,6 +398,20 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
                    retagged == 1 ? "" : "s");
         else
             me_say(log, "      nothing to retag\n");
+        return 0;
+    }
+
+    case MS_IMPORT: {
+        if (st->op != MS_REDIRECT) goto unknown;
+        mrd_report r;
+        int rc = mrd_redirect(pbuf, psize, st->a, st->b, st->c, &r);
+        if (rc != 0) return rc;
+        me_log_redirect(log, &r, st->a);
+        *v->renamed += (int)(r.bind + r.lazy + r.nlist);
+        if (!v->decide || *v->renamed > 0) return 0;
+        me_say(stderr, "drydock-macho-rewrite: import redirect %s %s %s matched nothing\n",
+               st->a, st->b, st->c);
+        if (s->fatal_warnings) { v->missed = 1; return MR_REFUSED; }
         return 0;
     }
 

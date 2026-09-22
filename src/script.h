@@ -38,16 +38,16 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
  * table matches it, counts its operands and advertises it exactly as it does
  * every other statement. */
 enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
-       MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET };
+       MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET, MS_IMPORT };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
-       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE };
+       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT };
 
-/* One operation line from an edit script. `a`/`.b` (NULL when the
+/* One operation line from an edit script. `a`/`.b`/`.c` (NULL when the
  * statement's arity doesn't use them) point into the owning ms_script's
  * `text`, not into separately allocated storage. `line` is the 1-based
  * source line, for diagnostics raised later (e.g. by whatever applies the
  * script) that still need to name where a statement came from. */
-typedef struct { int kind, op; const char *a, *b; int line; } ms_stmt;
+typedef struct { int kind, op; const char *a, *b, *c; int line; } ms_stmt;
 
 /* A parsed edit script: every operation line (not directive lines -- those
  * only set the three fields below) in source order. Every directive --

@@ -63,7 +63,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c)
 target_include_directories(drydockcore PUBLIC src)
 target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
@@ -379,6 +379,11 @@ add_test(NAME insert_dylib_test
 # eventually stop it -- 25 minutes of a hung CI run for what should be a
 # few seconds of real work building fixtures and running the wrapper.
 set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
+
+# `import redirect` and `exports`, against host-linked fixtures and bind
+# streams tests/mkbindstream.c writes by hand into them.
+add_test(NAME import_redirect_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/import_redirect_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after they were converted onto

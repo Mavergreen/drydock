@@ -67,10 +67,10 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * was cli/drydock-macho-rewrite.c's own DYLIB_OPS, which is what this table absorbed.
  * Adding an operation here is the whole of adding an operation -- to both
  * front-ends, to what --capabilities advertises, and (the disturbs column) to
- * what a run of it is known to invalidate. 16 rows: every "<kind> <op>" the
+ * what a run of it is known to invalidate. 17 rows: every "<kind> <op>" the
  * language accepts.
  *
- * The last row is `target 10.9`, whose second field is a PROFILE name, not a
+ * The second-last row is `target 10.9`, whose second field is a PROFILE name, not a
  * verb. It sits in the op column because that is what makes the profile part
  * of this one table: an unknown profile is refused by the same lookup that
  * refuses an unknown op, `target 10.9 extra` by the same arity check, and
@@ -103,7 +103,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  *
  * Each mask was derived from the code that implements the operation, not
  * from the operation's name; see ms_disturbs and tests/script_test.c's
- * test_disturbs_matches_the_spec_table, which pins all sixteen with the
+ * test_disturbs_matches_the_spec_table, which pins all seventeen with the
  * reason for each. */
 #define MS_TABLE_ROWS(R) \
   R("load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,       1, NULL,        0,             0, MREL_HEADER_PAD) \
@@ -127,7 +127,8 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
    * table. No static mask can describe this row, and a bare 0 would read as a
    * default nobody reviewed -- which is what the tripwire above exists to
    * prevent -- so it is spelled, with this sentence. */ \
-  R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE)
+  R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE) \
+  R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF)
 
 static const struct { const char *kind; int k; const char *op; int o; int nargs;
                       const char *flag; unsigned modes; int ops_ord;
@@ -192,13 +193,13 @@ const char *ms_op_name(int op) {
     return "unknown";
 }
 
-/* Room for a statement's kind, op, and both operands, plus slack above the
- * largest accepted arity (2) so that a handful of stray extra fields on an
+/* Room for a statement's kind, op, and its operands, plus slack above the
+ * largest accepted arity (3) so that a handful of stray extra fields on an
  * otherwise-recognizable line is matched against MS_TABLE and refused for
  * its arity (see test_extra_fields_report_arity_not_overflow in
  * tests/script_test.c), rather than every overlong line getting the same
  * generic "too many fields on one line" from ms_split. No accepted
- * statement needs more than 4 fields; a line with more than MS_MAX_FIELDS
+ * statement needs more than 5 fields; a line with more than MS_MAX_FIELDS
  * still falls back to that generic message. */
 #define MS_MAX_FIELDS 16
 
@@ -424,6 +425,10 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "dylib retype: unknown kind '%s'; accepted: load, weak, "
                     "reexport, upward", fields[3]);
+            } else if (kind == MS_IMPORT && op == MS_REDIRECT &&
+                       strcmp(fields[3], fields[4]) == 0) {
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "import redirect: FROM-LIB and TO-LIB are both '%s'", fields[3]);
             }
 
             /* One target per script. Two would each expand against the image
@@ -441,6 +446,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             stmts[n_stmts].op = op;
             stmts[n_stmts].a = nargs >= 1 ? fields[2] : NULL;
             stmts[n_stmts].b = nargs >= 2 ? fields[3] : NULL;
+            stmts[n_stmts].c = nargs >= 3 ? fields[4] : NULL;
             stmts[n_stmts].line = lineno;
             n_stmts++;
             seen_operation = 1;

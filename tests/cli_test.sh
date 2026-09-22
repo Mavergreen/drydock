@@ -416,7 +416,7 @@ echo "$caps" | grep -qxF "mutate bare script=stdin" \
     && ok "capabilities: the bare FILE OUT form is advertised, taking its script on stdin" \
     || bad "capabilities: mutate line" "the only mutating form is not advertised: $(echo "$caps" | grep '^mutate')"
 
-for v in verify info imports; do
+for v in verify info imports exports; do
     if echo "$caps" | grep -q "^verb $v"; then
         ok "capabilities: advertises $v"
     else
@@ -486,19 +486,19 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 
 # --capabilities' statement lines are generated from MS_TABLE (src/script.c)
 # by looping ms_table_row, not hand-copied. The statement vocabulary
-# has 15 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
-# column -- makes 16; tests/script_test.c's
+# has 16 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
+# column -- makes 17; tests/script_test.c's
 # test_capabilities_table_round_trips separately walks ms_table_row directly
-# and confirms MS_TABLE itself has those 16 rows, each of which round-trips
+# and confirms MS_TABLE itself has those 17 rows, each of which round-trips
 # through ms_parse. This assertion checks the other half of the same claim
 # from here, reusing the $caps already captured above: that
-# print_capabilities' loop over ms_table_row actually emitted 16 "statement "
+# print_capabilities' loop over ms_table_row actually emitted 17 "statement "
 # lines, with none dropped, none extra, and none duplicated. Together the
 # two catch the generator and the table going out of step with each other.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 16 ] && [ "$n_unique" -eq 16 ] \
-    && ok "capabilities: exactly 16 unique statement lines" \
+[ "$n_statements" -eq 17 ] && [ "$n_unique" -eq 17 ] \
+    && ok "capabilities: exactly 17 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 # The profile vocabulary is advertised from that same table, so a wrapper can
 # see which targets this build knows rather than guess. `target 10.9 0`: no
@@ -1092,9 +1092,11 @@ rc=0
 [ "$rc" -eq 0 ] && ok "imports: succeeds on a real binary" \
     || bad "imports: real binary" "exited $rc: $(cat "$T/imp.err")"
 
-imp_header=$(printf 'arch\tordinal\tkind\tinstall_name\tsymbol\tweak')
+# `stream` was appended after the first six, which is the only change the
+# header may ever see.
+imp_header=$(printf 'arch\tordinal\tkind\tinstall_name\tsymbol\tweak\tstream')
 head -1 "$T/imp.out" | grep -qxF "$imp_header" \
-    && ok "imports: header row names the six columns, in order" \
+    && ok "imports: header row names the seven columns, in order" \
     || bad "imports: header row" "changed: $(head -1 "$T/imp.out")"
 
 # A VALUE assertion, not a shape assertion: this tool's whole job is mapping
@@ -1129,17 +1131,19 @@ sys_ord=$(printf '%s\n' "$info_out" | sed -n 's/^  ordinal=\([0-9]*\) path=\/usr
 awk -F'\t' -v a_ord="$a_ord" -v sys_ord="$sys_ord" '
     NR==1 { for (i = 1; i <= NF; i++) c[$i] = i; next }
     $c["symbol"] == "_a_sym" && $c["install_name"] == "@loader_path/liba.dylib" &&
-    $c["kind"] == "load" && $c["ordinal"] == a_ord && $c["weak"] == "0" { f1 = 1 }
+    $c["kind"] == "load" && $c["ordinal"] == a_ord && $c["weak"] == "0" &&
+    $c["stream"] == "lazy" { f1 = 1 }
     $c["symbol"] == "dyld_stub_binder" && $c["install_name"] == "/usr/lib/libSystem.B.dylib" &&
-    $c["kind"] == "load" && $c["ordinal"] == sys_ord && $c["weak"] == "0" { f2 = 1 }
+    $c["kind"] == "load" && $c["ordinal"] == sys_ord && $c["weak"] == "0" &&
+    $c["stream"] == "bind" { f2 = 1 }
     END { exit !(f1 && f2) }
 ' "$T/imp.out" \
     && ok "imports: _a_sym and dyld_stub_binder each map to their OWN dylib, kind and ordinal" \
     || bad "imports: symbol-to-dylib mapping" "no matching rows: $(cat "$T/imp.out")"
 
-# AT LEAST two rows, not EXACTLY two: a_sym (bound eagerly) and libSystem's
-# dyld_stub_binder (bound lazily, the stub-call indirection every linked
-# binary carries) are the two THIS test relies on and checks by value above;
+# AT LEAST two rows, not EXACTLY two: a_sym (bound lazily, through a stub --
+# the `stream` check above) and libSystem's dyld_stub_binder (bound eagerly:
+# it is what every stub helper calls) are the two THIS test relies on and checks by value above;
 # a cross linker is free to add a bind this host's does not (another stub, a
 # second libSystem symbol) without that being wrong. An exact count is a HOST
 # FACT the same way an exact ordinal is. What still catches "the last row is
