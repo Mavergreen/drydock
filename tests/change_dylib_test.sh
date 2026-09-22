@@ -1159,7 +1159,7 @@ rpath_present() { "$T/has_rpath" "$1" "$2"; }
 # the one that changed. An xattr on the real file (quarantine et al. are
 # exactly this) must survive too.
 build_main "$T/wa_real"
-xattr -w dev.modernmavericks.drydock.test present "$T/wa_real" 2>/dev/null || true
+xattr -w dev.mavergreen.drydock.test present "$T/wa_real" 2>/dev/null || true
 ln -s wa_real "$T/wa_link"
 before_ino=$(stat -f %i "$T/wa_real")
 "$CHANGE_DYLIB" "$T/wa_link" -add-rpath /opt/drydock_test_wa_pad >/dev/null \
@@ -1178,7 +1178,7 @@ fi
 [ "$before_ino" != "$after_ino" ] \
     && ok "install: symlink's real target rewritten via mkstemp+rename (fresh inode = atomicity kept)" \
     || bad "install symlink" "wa_real's inode did not change ($before_ino) -- fell back to in-place write instead of the atomic path"
-xv=$(xattr -p dev.modernmavericks.drydock.test "$T/wa_real" 2>/dev/null || echo MISSING)
+xv=$(xattr -p dev.mavergreen.drydock.test "$T/wa_real" 2>/dev/null || echo MISSING)
 case "$xv" in
     present) ok "install: xattr on the real target survived" ;;
     MISSING) bad "install symlink" "xattr dropped from the real target" ;;

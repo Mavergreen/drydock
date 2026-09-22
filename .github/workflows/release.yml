@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 0   # the notes generator refuses a shallow clone
 
       - name: Install mavericks-shipyard
-        uses: ModernMavericks/shipyard/.github/actions/install@v1
+        uses: Mavergreen/shipyard/.github/actions/install@v1
 
       - name: Verify shipyard installed
         run: |
@@ -224,7 +224,7 @@ jobs:
     if: needs.build.outputs.publish == 'yes'
     permissions:
       contents: write
-    uses: ModernMavericks/shipyard/.github/workflows/publish-release.yml@v1
+    uses: Mavergreen/shipyard/.github/workflows/publish-release.yml@v1
     with:
       version: ${{ needs.build.outputs.tag }}
       artifact: drydock
