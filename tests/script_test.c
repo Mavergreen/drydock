@@ -112,17 +112,17 @@ static void test_parses_the_production_script(void) {
 }
 
 static void test_directives_set_flags_and_are_not_statements(void) {
-    static const char src[] = "allow-grow\nfatal-warnings\nload-command delete uuid\n";
+    static const char src[] = "arch x86_64\nfatal-warnings\nload-command delete uuid\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
-    CHECK(s.allow_grow == 1, "allow-grow set the flag");
+    CHECK(s.arch_mask != 0, "arch set the mask");
     CHECK(s.fatal_warnings == 1, "fatal-warnings set the flag");
     CHECK(s.n == 1, "directives are not statements (got n=%d)", s.n);
     ms_free(&s);
 }
 
 static void test_a_directive_after_an_operation_is_an_error(void) {
-    static const char src[] = "load-command delete uuid\nallow-grow\n";
+    static const char src[] = "load-command delete uuid\nfatal-warnings\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "a directive after an operation is refused");
@@ -202,23 +202,41 @@ static void test_crlf_is_refused(void) {
  * takes no operands. */
 
 static void test_repeated_directive_is_accepted(void) {
-    static const char src[] = "allow-grow\nallow-grow\nfatal-warnings\nfatal-warnings\ndylib delete /x\n";
+    static const char src[] = "arch x86_64\narch x86_64\nfatal-warnings\nfatal-warnings\ndylib delete /x\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0,
           "repeating a directive is idempotent, not an error (%s)", err);
-    CHECK(s.allow_grow == 1, "allow-grow still set");
+    CHECK(s.arch_mask != 0, "arch still set");
     CHECK(s.fatal_warnings == 1, "fatal-warnings still set");
     CHECK(s.n == 1, "only the operation counts as a statement (got %d)", s.n);
     ms_free(&s);
 }
 
 static void test_directive_with_operand_is_refused(void) {
-    static const char src[] = "allow-grow yes\n";
+    static const char src[] = "fatal-warnings yes\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "a directive given an operand is refused");
     CHECK(strstr(err, "line 1") != NULL, "and names the line (got: %s)", err);
     CHECK(strstr(err, "takes no operands") != NULL, "and names why (got: %s)", err);
+}
+
+/* `allow-grow` was a directive; growth needs no permission now, and a script
+ * that still says it gets what any other unknown word gets -- no special
+ * message. */
+static void test_allow_grow_is_an_unknown_statement(void) {
+    ms_script s;
+    char err[256] = {0}, other[256] = {0};
+    static const char gone[] = "allow-grow\n", never[] = "allow-grox\n";
+    CHECK(ms_parse(gone, sizeof gone - 1, &s, err, sizeof err) == -1, "allow-grow is refused");
+    CHECK(ms_parse(never, sizeof never - 1, &s, other, sizeof other) == -1,
+          "so is a word that was never a directive");
+    char *at = strstr(other, "allow-grox");
+    if (at) at[9] = 'w';
+    CHECK(strcmp(err, other) == 0, "with the same error (got '%s', unknown word gives '%s')",
+          err, other);
+    CHECK(strstr(err, "unknown statement 'allow-grow'") != NULL,
+          "which calls it an unknown statement (got: %s)", err);
 }
 
 /* The `if (s.n != 2) { ms_free(&s); return; }` guard this used to have,
@@ -463,13 +481,13 @@ static void test_disturbs_matches_the_spec_table(void) {
      * bind streams (base-relative content) and extending __LINKEDIT. Leaving
      * the pad bit off made the design's own table internally inconsistent, and
      * the bit is load-bearing: disturbing the pad is exactly the condition
-     * under which allow-grow becomes relevant. */
+     * under which a header grow becomes possible. */
     CHECK(ms_disturbs(MS_FIXUPS, MS_SET) ==
               (MREL_FILE_OFF | MREL_BASE_REL | MREL_HEADER_PAD),
           "fixups set classic rebuilds __LINKEDIT, re-bases, and costs pad");
 
     /* target 10.9 declares MREL_NONE, meaning "nothing OF ITS OWN". It is an
-     * MS_TABLE row, not an ms_script field like allow-grow, so the tripwire
+     * MS_TABLE row, not an ms_script field like fatal-warnings, so the tripwire
      * demands a mask -- and no static mask can describe it, because it expands
      * at run time against the image in front of it (me_expand_10_9,
      * src/edit.c:476-514, up to five derived statements). Each derived
@@ -581,7 +599,7 @@ static void test_arch_directive_errors(void) {
 }
 
 static void test_target_parses_and_is_positional(void) {
-    static const char src[] = "allow-grow\ntarget 10.9\nload-command delete uuid\n";
+    static const char src[] = "fatal-warnings\ntarget 10.9\nload-command delete uuid\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
     /* target IS a statement -- it occupies a position, because the expansion
@@ -622,13 +640,12 @@ static void test_unknown_target_is_refused_not_guessed(void) {
 }
 
 /* A directive describes the whole run, so it must precede every operation --
- * and `target` is an operation for that purpose, since allow-grow governs the
- * statements its expansion becomes. */
+ * and `target` is an operation for that purpose. */
 static void test_a_directive_after_target_is_an_error(void) {
-    static const char src[] = "target 10.9\nallow-grow\n";
+    static const char src[] = "target 10.9\nfatal-warnings\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
-          "allow-grow after target is refused");
+          "fatal-warnings after target is refused");
     CHECK(strstr(err, "line 2") != NULL, "and names line 2 (got: %s)", err);
 }
 
@@ -727,6 +744,7 @@ int main(void) {
     test_crlf_is_refused();
     test_repeated_directive_is_accepted();
     test_directive_with_operand_is_refused();
+    test_allow_grow_is_an_unknown_statement();
     test_final_line_without_newline_parses();
     test_blank_and_comment_lines_dont_shift_line_numbers();
     test_version_min_value_refusal();

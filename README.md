@@ -105,9 +105,9 @@ It rebuilds `__LINKEDIT` and expects the 2013-era ordering of its pieces; modern
 linkers emit a different order, so it bails before touching anything.
 
 The distinction runs deeper than convenience. `install_name_tool` **rewrites the
-file**; these tools **never move a byte of data**, editing only within existing
-header padding. That is why `-strip-lc` and `-grow` exist, and why a replacement
-path that is too long is an error here and a non-event with Apple's tool.
+file**; these tools edit load commands within the header padding, and when new
+ones outgrow it they make room by lowering the image base (see "Header growth")
+rather than by rearranging `__LINKEDIT`.
 
 ## drydock-macho-rewrite never writes its input
 
@@ -134,7 +134,7 @@ update every name for an inode at once.
 
 ## Prove it or refuse
 
-`-grow` makes header room by lowering the image base, which invalidates every
+A header grow makes room by lowering the image base, which invalidates every
 structure storing an offset *from* that base: the `LC_FUNCTION_STARTS` leading
 delta, `__TEXT,__init_offsets`, the export trie, `LC_DATA_IN_CODE`, and compact
 unwind. All five are re-based. Anything unrecognised — an unclassified load
@@ -334,9 +334,9 @@ image, while statements apply in sequence, each seeing what the one before
 left. Maintaining both is what the verbs cost, so they are gone.
 
 `grow` went with them. It enlarged the header pad by an exact byte count, which
-no statement expresses; `allow-grow`, below, is the directive that lets a
-`dylib`, `rpath` or `version-min set` statement grow the pad as a side effect,
-which is a different thing from naming a count.
+no statement expresses. A `dylib`, `rpath` or `version-min set` statement whose
+load commands do not fit grows the pad as a side effect instead — see "Header
+growth", below — which is a different thing from naming a count.
 
 There is one more line, `target 10.9`, which is neither of those: see "The
 `target` statement", below.
@@ -348,7 +348,7 @@ the front of the image as the statement before it left it: the lines
 
 ### Directives
 
-Three, and each must precede every operation in the script — a directive
+Two, and each must precede every operation in the script — a directive
 after *any* operation, not only the one it would have governed, is a parse
 error:
 
@@ -356,16 +356,39 @@ error:
 arch NAME           apply the script only to the slice named NAME (lipo's
                     names: x86_64, x86_64h, arm64, arm64e, i386); repeatable.
                     Without it, every 64-bit slice of a fat file is edited
-allow-grow          permission to enlarge the header pad by lowering the image
-                    base if new load commands do not fit; opt-in, and refused
-                    by default. MH_EXECUTE + MH_PIE only -- the image-base
-                    trick needs a __PAGEZERO and no absolute relocations to fix.
-                    Covers dylib, rpath and version-min set; not fixups set
-                    classic -- nothing grows while the image still has chained
-                    fixups, so put fixups set classic first
 fatal-warnings      an operation that matched nothing refuses the whole run
                     (exit 1, nothing written) instead of only being reported
 ```
+
+### Header growth
+
+When a `dylib`, `rpath` or `version-min set` statement's load commands do not
+fit in the header pad, the pad is grown: the image base is lowered into
+`__PAGEZERO` by whole pages and the file data after the load commands moves up
+with it, so every address stays where it was. No directive asks for this.
+The input is never written, so a bad result costs an output file, and the grow
+checks itself: every base-relative value it re-bases is read before and after
+and must resolve to the same address, or the run is refused. Every grow is
+announced on stderr, naming the input:
+
+```
+FILE: grew the header pad by 4096 bytes (40 -> 4136 available); image base 0x100000000 -> 0xfffff000
+```
+
+It is refused, and nothing is written, when:
+
+- the image is not a 64-bit PIE `MH_EXECUTE` — a dylib or bundle has no
+  `__PAGEZERO` to lower the base into, and a non-PIE executable has absolute
+  addresses to fix;
+- the image still has chained fixups — put `fixups set classic` first;
+- a load command or section type is one the grow does not know how to re-base
+  — unknown means unsafe;
+- no section has file data, or the first section lies past the end of the
+  file — there is then no pad boundary to grow from;
+- the check after the grow finds any value that moved.
+
+`segment rename` and `load-command delete` never grow: neither adds bytes to
+the load commands.
 
 ### The `target` statement
 
@@ -402,8 +425,6 @@ nothing reorders your statements — the script is the plan. Where you write
 the line is where the expansion lands:
 
 ```
-allow-grow
-
 target 10.9
 
 dylib replace /System/Library/Frameworks/Metal.framework/Versions/A/Metal  @loader_path/libMetalStub.dylib
@@ -427,10 +448,10 @@ The rest of the rules:
 - **One `target` per script.** A second is a parse error.
 - **An unknown target is a refusal.** `target 10.10` errors, naming what this
   build does know, rather than silently doing 10.9's work.
-- **The directives still govern the expansion** — `allow-grow` reaches a
-  derived `version-min set 10.9` exactly as it reaches one you wrote — and if
-  a derived statement is refused, the refusal names the `target` line, which
-  is the line you wrote.
+- **A derived statement behaves as the one you would have written** — a
+  derived `version-min set 10.9` grows a short header pad exactly as one you
+  wrote does — and if a derived statement is refused, the refusal names the
+  `target` line, which is the line you wrote.
 - **`target` never counts as unmatched under `fatal-warnings`,** and neither
   does anything it derived: "this binary already targets 10.9 correctly" is a
   correct answer for a profile, unlike for an explicit operation. (It happens
@@ -486,17 +507,14 @@ drydock-macho-rewrite "$REAL" "$T" < claude.edits
   slice —
   thin a file with `lipo` if you want one. A 64-bit fat container
   (`fat_arch_64`) is refused.
-- **`allow-grow` reaches `dylib`, `rpath` and `version-min set`** — the
-  statements whose load commands can outgrow the header pad — and only on a
-  64-bit PIE executable. It does not reach `fixups set classic`: growth
-  refuses an image that still has chained fixups. Nor does the conversion
-  need it: it removes whichever of `LC_DYLD_EXPORTS_TRIE`,
-  `LC_DYLD_CHAINED_FIXUPS` and `LC_BUILD_VERSION` are present before adding
-  its 48-byte `LC_DYLD_INFO_ONLY`, so on a modern chained binary, which
-  carries all three, it frees at least 56 bytes before using 48. On a
-  chained image nothing can grow until `fixups set classic` has run; put it
-  first. `segment rename` and `load-command delete` never need it, since
-  neither adds bytes to the load commands.
+- **Only `dylib`, `rpath` and `version-min set` grow the header pad** — the
+  statements whose load commands can outgrow it — and only on a 64-bit PIE
+  executable. `fixups set classic` never needs to: it removes whichever of
+  `LC_DYLD_EXPORTS_TRIE`, `LC_DYLD_CHAINED_FIXUPS` and `LC_BUILD_VERSION` are
+  present before adding its 48-byte `LC_DYLD_INFO_ONLY`, so on a modern
+  chained binary, which carries all three, it frees at least 56 bytes before
+  using 48. On a chained image nothing can grow until `fixups set classic`
+  has run; put it first.
 - **`fatal-warnings` covers the statements that can match nothing:**
   `load-command delete` (no command of that kind), `dylib replace/delete/
   reexport` and `rpath replace/delete` (no command naming that path), and

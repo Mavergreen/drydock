@@ -85,13 +85,26 @@ its own.
 
 The exit codes are identical to the C tools', and the rewritten file's bytes
 are identical everywhere `tests/differential.sh` and `tests/compat-sweep.sh`
-check them, with four known exceptions, truthfully not all the same KIND of
+check them, with five known exceptions, truthfully not all the same KIND of
 known: one reproduced on a real file (one out of 300 in the differential
-corpus, below), one argued unreachable in practice rather than observed, and
+corpus, below), one argued unreachable in practice rather than observed,
 two true by construction rather than by measurement -- they follow
 directly from reading what the wrappers' code does, not from a corpus
 row that exhibits them, so no file "reproduces" them and no argument is needed
-for why they would be rare:
+for why they would be rare -- and one decided on purpose:
+
+  * **A header pad too short for the new load commands is grown**, where the
+    C tools refused: `change_dylib` without `-grow`, `fix_macho` and
+    `add_version_min` all said there was no room, exit 1, file untouched. On
+    a 64-bit PIE executable the wrapper now lowers the image base to make
+    room, announces it on stderr ("FILE: grew the header pad by N bytes
+    ..."), and exits 0; anything else is still refused. The repo owner's
+    ruling: the engine never writes its input, and the grow verifies itself,
+    so an opt-in bought nothing. `tests/cli_test.sh`'s `add_version_min`
+    case ("a short pad is grown, announced, where the original refused")
+    holds it for that tool; the `change_dylib` and `fix_macho` tables below
+    hold it for theirs. Two rows of `tests/compat-matrix.tsv` record the
+    refusal as it was measured.
 
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
@@ -173,7 +186,7 @@ for why they would be rare:
     exception, `change_dylib`'s only: an allocation failure INSIDE
     `mg_grow_header` or `mg_plausible` (`src/grow.c`) exits 1, the same as
     every other reason either one refuses. This wrapper reaches both only
-    through `--allow-grow`: `mg_grow_header` by definition, and `mg_plausible`
+    when the header must grow: `mg_grow_header` by definition, and `mg_plausible`
     because `mr_process_thin` runs it only when the rewrite disturbed the
     base-relative values it checks (`src/relations.h`'s
     `mrel_verify_applies`), which for the operations `change_dylib` can ask
@@ -195,7 +208,7 @@ argument vocabulary short enough, that nothing in it ever needs to grow. 72
 of those rows DO give one old mixed-family `-grow` two chances to grow
 (compat/change_dylib.c issued one grow call for the whole operation set; the
 emitted script runs a dylib statement and an rpath statement as
-separate passes under one `allow-grow`, each capable of growing on its own),
+separate passes, each capable of growing on its own),
 and no row forces either of those to actually grow. `tests/change_dylib_test.sh`'s "mixed-family
 double grow" case closes that gap directly (not through the sweep) with
 inputs sized to force a real double grow, and compares the result byte-for-
@@ -261,7 +274,7 @@ One exception to the 1-vs-2 split, `change_dylib`'s only: an allocation failure
 INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into
 `MR_REFUSED`, the same as every other reason either one refuses —
 `src/rewrite.c`'s comment on that fold has the reasoning. This wrapper reaches
-both only through `--allow-grow`: `mg_grow_header` by definition, and
+both only when the header must grow: `mg_grow_header` by definition, and
 `mg_plausible` because `mr_process_thin` runs it only when the rewrite
 disturbed the base-relative values it checks (`src/relations.h`'s
 `mrel_verify_applies`) — which, for the operations this wrapper can ask for,
@@ -344,6 +357,18 @@ script is one statement or several, so both shapes install identically.
 | **the install is a rename**, so a changed run gives `FILE` a fresh inode and an interrupted one can never leave a half-written binary — and a symlinked `FILE` stays a symlink, with the real target rewritten and its xattrs intact | `tests/change_dylib_test.sh` case 14: 14a (symlink still a symlink to the same name, the real target changed, fresh inode, xattr survived), 14c (the ordinary case still goes through `mkstemp`+rename). Mode and quarantine on the multi-family path: `tests/wrapper_test.sh`, "mode and quarantine survive a MULTI-FAMILY run too" |
 | **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `drydock-macho-rewrite`'s own write of the temp, with `FILE` untouched | stated, not tested for `change_dylib`: the behaviour is `drydock-macho-rewrite`'s own write, not this wrapper's, and the equivalent case is asserted for `patch_macho` in `tests/wrapper_test.sh`. `compat/add_version_min.sh` and `compat/retag_swift_classes.sh`'s headers record the same shape |
 
+### `change_dylib`: header growth
+
+`-grow` asked the C tool to enlarge the header pad when new load commands did
+not fit; without it the tool refused. The wrapper grows whenever they do not
+fit, so `-grow` is accepted — it is in the tool's documented usage line,
+`change_dylib input [-grow] [-change old new] …` — and asks for nothing.
+
+| the difference | held by |
+|---|---|
+| **without `-grow`, a short header pad is grown** on a 64-bit PIE executable, announced on stderr, exit 0, where the C tool refused (`don't fit in header pad (... avail); pass -grow to enlarge it`, exit 1, file untouched) | `tests/change_dylib_test.sh`, "long -change (no -grow): grows the header where the original refused" and "... and the grow is announced on stderr"; `tests/compat-matrix.tsv`'s two 3000-character `-change` rows without `-grow` record the refusal as measured |
+| **`-grow` is a no-op**: the command emitted with it is the command emitted without it, and the file written is byte-identical | `tests/change_dylib_test.sh`, "-grow is a no-op -- the result is byte-identical to the run without it"; `tests/translate_test.sh`'s `cd-grow-mixed` and `cd-nogrow-mixed` |
+
 ### `change_dylib`: atomicity of a mixed-family invocation
 
 `install.sh`'s production line strips two load commands AND rewrites three dylib
@@ -389,7 +414,8 @@ because a wrapper had to **preserve** behaviour and `fix_macho`'s differs from
 the shared rewriter's. It stayed C for a while on that basis.
 
 What changed is not the code but the standard: the repo owner ruled those
-differences **improvements to adopt deliberately**. There are five, and this
+differences **improvements to adopt deliberately**. There are six — the sixth
+came later, when header growth stopped needing a directive — and this
 section is where they are stated — the wrapper itself no longer carries them,
 and points here instead.
 
@@ -401,11 +427,12 @@ it. "Held by" is the assertion that fails if someone reverses the decision.
 
 | # | the difference, and why adopting it is right | held by |
 |---|---|---|
-| 1 | **A replacement path longer than the existing command now SUCCEEDS.** `fix_macho` wrote the new path into the existing `LC_LOAD_DYLIB` and refused if it did not fit (`new path '...' too long (320 > 32)`, exit 1, file untouched); `drydock-macho-rewrite dylib -replace` rebuilds the load-command table and fits the longer path into header pad the image already has, exit 0. The limit was an artifact of a rewriter that never learned to resize a command, not a safety property: nothing in `docs/PROPOSAL.md` records a reason for it, and `drydock-macho-rewrite` does not have to inherit the old tools' artificial limits. The translation still emits no `--allow-grow` — this uses existing pad and never enlarges the header. | `tests/wrapper_test.sh`, "a longer replacement path is now rewritten into header pad, not refused"; `tests/translate_test.sh`'s `fm-*` cases, none of which emits `allow-grow` |
+| 1 | **A replacement path longer than the existing command now SUCCEEDS.** `fix_macho` wrote the new path into the existing `LC_LOAD_DYLIB` and refused if it did not fit (`new path '...' too long (320 > 32)`, exit 1, file untouched); `drydock-macho-rewrite dylib -replace` rebuilds the load-command table and fits the longer path into header pad the image already has, exit 0. The limit was an artifact of a rewriter that never learned to resize a command, not a safety property: nothing in `docs/PROPOSAL.md` records a reason for it, and `drydock-macho-rewrite` does not have to inherit the old tools' artificial limits. When the pad itself is too short, that is row 6. | `tests/wrapper_test.sh`, "a longer replacement path is now rewritten into header pad, not refused" |
 | 2 | **A chained `-rename_seg` now CHAINS.** `-rename_seg __DATA __X -rename_seg __X __Y` produced `__X` under `fix_macho`, which applied every pair in ONE pass and gave each segment its FIRST match, so the second pair never fired. Each pair is its own pass here — its own `segment rename` statement in the emitted edit script — and the second reads the first's result, so it produces `__Y`. Adopting it is doing what was asked. `compat/translate.sh` refused this shape outright until the ruling, correctly, while a wrapper still had to preserve `fix_macho`'s answer; its `-rename_seg` arm records the reversal. | `tests/wrapper_test.sh`, "a chained `-rename_seg` now produces the SECOND name, not the first" (asserts `__Y` present **and** `__X` absent); `tests/translate_test.sh`'s `fm-chain`, `fm-chain-3` |
 | 3 | **The write-back is ATOMIC.** `fix_macho` `lseek`'d to 0 and wrote the whole file back over itself, so a crash, a full disk or a kill mid-write left a corrupt binary. `drydock-macho-rewrite` never writes `FILE` at all: it writes a temp beside it (`wa_write_new`, `src/atomic_write.h` — `mkstemp` + `rename`, carrying `FILE`'s mode, owner and xattrs) and the wrapper installs that temp with one `mv` in the same directory, so the caller's file is either wholly old or wholly new. These tools exist to make binaries loadable; a half-written one is the failure they are supposed to prevent. There is no multi-write caveat: an invocation worth more than one command is one `printf … | drydock-macho-rewrite FILE OUT`, and `me_run` (`src/edit.c`) reads the image once, applies every statement in memory, verifies, and writes once — so a refusal at any statement leaves the temp unwritten and `FILE` exactly as it was. | `tests/wrapper_test.sh`: "a changed run installs by rename, so `FILE` gets a new inode"; "a refusal part way through a multi-statement run leaves `FILE` byte-identical and no temp beside it"; `hl_case fix_macho` ("a hard-linked `FILE` is refused (1), both names untouched", "and no temp was left beside it"). Mode, owner and xattrs: `tests/atomic_write_test.c` under `ctest` |
 | 4 | **A fat slice whose edit fails now REFUSES THE WHOLE FILE.** `fix_macho`'s fat loop treated every per-slice failure alike: `process_macho` returned -1 whether the slice was not a Mach-O at all or was one whose edit it refused, and the loop printed `  Skipping arch %u` and carried on, exiting 0 having rewritten the slices it did understand — a partially converted universal binary reported as a success. `mr_process_fat` (`src/rewrite.c`) splits the two: `MR_SKIP` for a slice that is not a 64-bit Mach-O, `MR_ERROR` for one that IS and whose edit failed, and only `MR_ERROR` refuses. Refuse rather than guess. **Narrower than it was first described:** that description read as covering both cases; a slice that is simply not a 64-bit Mach-O is still left unchanged, as `fix_macho` left it, with a different message and exit 0 — but *which* message, and *whether* exit 0, need saying precisely, because neither is what this row used to claim. **No wrapper reaches `mr_process_fat` at all**: `fix_macho` runs `me_run_fat` (`src/edit.c`), so the line a caller sees is that loop's, and there are two of them, chosen by what the `fat_arch` declared — `slice NAME: 32-bit; passed through unchanged` when it declares a 32-bit cputype, `slice NAME: not a 64-bit Mach-O; passed through unchanged` when it declares a 64-bit one over bytes that are not. `mr_fat_slice`'s `not a 64-bit Mach-O; leaving this slice unchanged`, which this row named, is emitted on a path nothing ships. And **exit 0 holds only while some slice is a 64-bit Mach-O**: a container in which none is exits **1** — `drydock-macho-rewrite edit: FILE has no 64-bit slice to edit (it has: arm64, i386); … left unmodified`, nothing written — which is `me_run_fat`'s no-editable-slice refusal, the one thing `mr_process_fat` does not do. (Measured through `build-native/fix_macho`, all three.) | the `MR_SKIP` half, through `fix_macho` on a hand-built two-slice container: `tests/wrapper_test.sh`, "a non-64-bit slice is left unchanged and the other slice is still rewritten", which asserts the line above as `slice i386: 32-bit; passed through unchanged` — so the distinction cannot be quietly widened. The other declared shape and the byte-shapes under it: `tests/cli_test.sh`'s "A SLICE IS WHAT ITS BYTES ARE" block. The two loops' agreement, and this row's one exception to it: `tests/change_dylib_test.sh`'s "two fat loops" block, which drives both over one corpus. The `MR_ERROR` half, at the verb: `tests/cli_test.sh`'s "MR_ERROR: one bad slice refuses the WHOLE fat file" block (message, slice label, per-slice reason, and the file unmodified) |
 | 5 | **A `-change` aimed at this dylib's own install name now matches NOTHING**, instead of rewriting it. `compat/fix_macho.c`'s match block opened on `mo_is_ordinal_lc(lc->cmd) \|\| lc->cmd == LC_ID_DYLIB` and then ran the `changes[]` loop with no `LC_ID_DYLIB` exclusion, so `-change <this dylib's own install name> NEW` rewrote the dylib's identity — even though the file's own comment said "nothing in `changes` is ever meant to match it". `src/rewrite.c` guards it now. Adopting it is right because (a) `install_name_tool` spells identity `-id` and its `-change` never touches `LC_ID_DYLIB`, so `drydock-macho-rewrite` matches the tool everyone already knows; (b) `fix_macho.c`'s own comment stated the contract `drydock-macho-rewrite` now enforces, so this is the C being fixed, not contradicted; (c) silently rewriting a dylib's own install name from an operation aimed at a DEPENDENCY is exactly the invisible edit this work exists to make visible. Measured: both sides exit 0 and the bytes differ, with nothing on stderr naming the reason (transcript below). | `tests/wrapper_test.sh`, "-change at a dylib's own install name leaves `LC_ID_DYLIB` unchanged, reported unmatched, while a real dependency's `-change` in the same run still lands" — one run, both halves, on a dylib fixture built for it |
+| 6 | **A header pad too short for the replacement is now GROWN**, on a 64-bit PIE executable: the image base is lowered to make room, announced on stderr, exit 0. `fix_macho` had no `-grow` and never enlarged a header. Adopted by the repo owner's ruling for every wrapper: the engine never writes its input and the grow verifies itself, so refusing bought nothing. A non-PIE executable or a dylib is still refused, exit 1, file untouched | `tests/wrapper_test.sh`, "a replacement the pad cannot hold grows the header, announced"; its `fix_macho` mid-script refusal clears `MH_PIE` on its copy so that it still refuses |
 
 #### The measurement behind row 5
 
@@ -587,9 +614,9 @@ blocking a build script forever on a read nothing will ever answer.
 | an image carrying `LC_LAZY_LOAD_DYLIB` is **refused**, where the fork proceeds | `tests/insert_dylib_test.sh`, "unknown load command (LC_LAZY_LOAD_DYLIB): refuses" — `dylib append` runs through `src/ordinals.c`'s `mo_map_build`, the same refusal `tests/change_dylib_test.sh` case 15 pins, inherited here with no code of this wrapper's own; SKIPs on a host whose linker cannot produce one |
 | exit codes are `drydock-macho-rewrite`'s own 0/1/2, **forwarded unchanged**; the fork exits 1 for everything | matches `change_dylib` and `add_version_min`'s own choice, for the same reason: it costs nothing to keep the distinction `drydock-macho-rewrite` already makes between a considered refusal and an operational failure. Not separately tested here beyond "exits 1"/"exits 0" on each case — there is no C binary left to compare a 2 against |
 | output **bytes** are not claimed equal to the fork's | never measured; there is no C `insert_dylib` binary in this repo's build to compare against |
-| the fork's prompt 3 ("it doesn't seem like there is enough empty space") is **not reproduced as its own interactive check** | untested as its own case; `dylib append`'s own header-pad refusal (forwarded through the exit code above) answers the same question a hand-rolled space estimate would ask a second time |
+| the fork's prompt 3 ("it doesn't seem like there is enough empty space") is **not asked**: on a 64-bit PIE executable a short header pad is grown, announced on stderr, exit 0, where the fork asked before its own expansion. Anything that cannot grow — a dylib, a non-PIE executable — is refused in `dylib append`'s words, forwarded through the exit code above | `tests/insert_dylib_test.sh`, "no room: the header grows, announced" |
 | `--inplace` together with an explicit `new_binary_path` is **refused**, where the fork silently picks one and never reads the other (`--inplace` wins; `main.c`'s `if(!inplace_flag) { ... }` block that would consume `argv[3]` is skipped entirely when `--inplace` is set, so the named file is never even opened). Matching the fork here would mean silently ignoring an output path the caller wrote out by hand and overwriting their input instead — the data-loss shape this toolkit refuses rather than guesses through everywhere else, and there are no known callers of this tool to break by refusing. `compat/translate.sh`'s `mt_id_parse` refuses it unconditionally, before any prompt, so `--all-yes` does not make it succeed either | `tests/insert_dylib_test.sh`, "--inplace + new_binary_path" (three assertions: refuses exit 1 even with `--all-yes`, names both `--inplace` and the path, and leaves both the input and the named path untouched) |
-| on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `drydock-macho-rewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refuses cleanly instead — `drydock-macho-rewrite edit: ERROR: ... don't fit in header pad (... avail); growing the header needs allow-grow`, exit 1, input untouched. This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
+| on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `drydock-macho-rewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refuses cleanly instead — `macho_grow: only MH_EXECUTE can be grown ...`, then `ERROR: ... don't fit in header pad (... avail), and the header could not be grown (see above)`, exit 1, input untouched. This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
 | on an unwritable `--inplace` target, the fork's own diagnostic (`main.c`'s `printf("Couldn't open file %s\n", binary_path)`) lands on **its stdout**, not stderr; this wrapper's (`mw_require_writable`'s `open: Permission denied`) lands on **stderr only**. Both sides still exit 1 having touched nothing — this is a stream difference in the fork's own C, not a behaviour difference, and not chased | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on several root-owned binaries under `/usr/bin` (`atq`, `calendar`, `cupstestppd`, `newgrp`) |
 
 ## `bake-mavericks-shim`
@@ -644,13 +671,9 @@ too. `OUTPUT` is left mode 755, as the Python leaves it, and may name `INPUT`.
 | the appended `LC_LOAD_DYLIB` records **version 0.0.0**, as every `dylib append` does, so any build of the shim satisfies it; the Python records 1.0.0, and dyld refuses a shim built without `-compatibility_version 1.0` | the differential below, which had to build its shim with that flag for the Python's output to load |
 | the summary's `bind data:` names **where** each table went (`regular table in place`, `regular table relocated to the end of __LINKEDIT`, `lazy table rewritten in place`) without the Python's byte counts; `drydock-macho-rewrite`'s own report on stderr has the sizes | `tests/bake_mavericks_shim_test.sh`, "the Python's summary lines" |
 | stderr also carries `drydock-macho-rewrite`'s report of the edit, and a weak bind of a redirected symbol is warned about twice: the Python's list, then the engine's line for that symbol | `tests/bake_mavericks_shim_test.sh`, "weak" |
-| a refusal the engine makes is **in its words**: with no room in the header for the shim's load command, the Python says `no room in the Mach-O header to add a load command`, and this says what `dylib append` says. Both exit 1 and write nothing | `tests/bake_mavericks_shim_test.sh`, "no header room" |
+| with **no room in the header** for the shim's load command, the Python dies with `no room in the Mach-O header to add a load command`, exit 1; this grows the header on a 64-bit PIE executable, announced on stderr, and the baked result runs. What cannot grow is refused in `dylib append`'s words, exit 1, nothing written | `tests/bake_mavericks_shim_test.sh`, "grow: no header room for the shim" and "... the grown, baked binary calls the shim's functions" |
 | exit codes are `drydock-macho-rewrite`'s 0/1/2, **forwarded**; the Python exits 1 for everything but a usage error, which is 2 on both sides | as for `insert_dylib`, above |
 | an image carrying `LC_LAZY_LOAD_DYLIB` is **refused**, as everywhere in this toolkit; the Python counts it as an ordinal | `dylib append` refuses it first, through `src/ordinals.c`'s `mo_map_build`, which `tests/change_dylib_test.sh` case 15 pins; `import redirect` refuses it again on its own |
-
-Matching behaviour, not a difference: with no room in the header for the
-shim's load command both refuse, because this wrapper's script carries no
-`allow-grow`.
 
 ### `bake-mavericks-shim`: the differential
 

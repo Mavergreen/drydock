@@ -1271,10 +1271,9 @@ static void test_grow_refuses_32bit_mach_header(void) {
 /* ---- mg_ensure_pad: the one place that decides whether there is room ---- */
 
 static uint32_t g_ensure_need;
-static int      g_ensure_allow;
 static int ensure_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
     (void)unused;
-    return mg_ensure_pad(pbuf, pfsize, g_ensure_need, g_ensure_allow, "t");
+    return mg_ensure_pad(pbuf, pfsize, g_ensure_need, "t");
 }
 
 static void test_ensure_pad_fits_is_a_noop(void) {
@@ -1287,9 +1286,9 @@ static void test_ensure_pad_fits_is_a_noop(void) {
 
     const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
     uint32_t lc_end = (uint32_t)sizeof *h + h->sizeofcmds;
-    int r = mg_ensure_pad(&buf, &fsize, lc_end, 0, "t");
+    int r = mg_ensure_pad(&buf, &fsize, lc_end, "t");
     CHECK(r == 0, "ensure_pad: the current load commands fit (got %d)", r);
-    r = mg_ensure_pad(&buf, &fsize, sect_off, 0, "t");
+    r = mg_ensure_pad(&buf, &fsize, sect_off, "t");
     CHECK(r == 0, "ensure_pad: reaching exactly the first section still fits (got %d)", r);
     CHECK(buf == orig && fsize == fsize0, "ensure_pad: a fit neither reallocates nor resizes");
     CHECK(memcmp(before, buf, fsize0) == 0, "ensure_pad: a fit leaves every byte alone");
@@ -1297,33 +1296,27 @@ static void test_ensure_pad_fits_is_a_noop(void) {
     free(buf);
 }
 
-static void test_ensure_pad_short_and_not_permitted_refuses(void) {
-    size_t fsize; uint32_t sect_off;
-    uint8_t *buf = build_growable_image(&fsize, &sect_off);
-    size_t fsize0 = fsize;
-    uint8_t *before = (uint8_t *)malloc(fsize0);
-    memcpy(before, buf, fsize0);
-
-    g_ensure_need = sect_off + 1; g_ensure_allow = 0;
-    int r;
-    int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
-                                      "growing the header needs allow-grow", &r);
-    CHECK(r == -1, "ensure_pad: short and not permitted is refused (got %d)", r);
-    CHECK(said, "ensure_pad: the refusal names allow-grow as the remedy");
-    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
-          "ensure_pad: a refusal leaves the image byte-identical");
-    free(before);
-    free(buf);
-}
-
-static void test_ensure_pad_grows_when_permitted(void) {
+/* No caller opts in to a grow: a short pad on a growable image grows, and
+ * says so on stderr -- by how much, the pad before and after, and the image
+ * base before and after -- in one line. */
+static void test_ensure_pad_grows_and_announces(void) {
     size_t fsize; uint32_t sect_off;
     /* MG_T_FUNCSTARTS so the plausibility check below has function starts
      * and initializers to check against each other after the base moved. */
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_FUNCSTARTS);
     size_t fsize0 = fsize;
-    int r = mg_ensure_pad(&buf, &fsize, sect_off + 1, 1, "t");
-    CHECK(r == 0, "ensure_pad: short and permitted grows (got %d)", r);
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+    uint32_t lc_end = (uint32_t)sizeof *h + h->sizeofcmds;
+    char line[256];
+    snprintf(line, sizeof line, "t: grew the header pad by %u bytes (%u -> %u available); "
+             "image base 0x100000000 -> 0xfffff000\n",
+             (unsigned)MG_PAGE, sect_off - lc_end, sect_off + (unsigned)MG_PAGE - lc_end);
+
+    g_ensure_need = sect_off + 1;
+    int r;
+    int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0, line, &r);
+    CHECK(r == 0, "ensure_pad: a short pad grows, with no permission asked (got %d)", r);
+    CHECK(said, "ensure_pad: stderr announces the grow as '%.*s'", (int)strlen(line) - 1, line);
     CHECK(fsize >= fsize0 + MG_PAGE, "ensure_pad: the image grew by at least a page "
           "(got %zu, was %zu)", fsize, fsize0);
     CHECK(mg_first_sect_off(buf, fsize) == sect_off + MG_PAGE,
@@ -1345,10 +1338,10 @@ static void check_ensure_refuses_unchanged(const char *what, int opts,
     uint8_t *before = (uint8_t *)malloc(fsize0);
     memcpy(before, buf, fsize0);
 
-    g_ensure_need = sect_off + 1; g_ensure_allow = 1;
+    g_ensure_need = sect_off + 1;
     int r;
     int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0, needle, &r);
-    CHECK(r == -1, "ensure_pad on %s: refused even when permitted (got %d)", what, r);
+    CHECK(r == -1, "ensure_pad on %s: refused (got %d)", what, r);
     CHECK(said, "ensure_pad on %s: the refusal says '%s'", what, needle);
     CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
           "ensure_pad on %s: the image is byte-identical", what);
@@ -1413,8 +1406,8 @@ static void test_first_sect_off_reports_no_section_data(void) {
 }
 
 /* mg_ensure_pad on an image with no section data: refused, image untouched,
- * whether or not growth is permitted and whether or not the new commands
- * would have fitted below the 4096 mg_first_sect_off used to answer. The
+ * whether or not the new commands would have fitted below the 4096
+ * mg_first_sect_off used to answer. The
  * 104-byte image is the one whose 4096 lay past the buffer (and so was
  * refused, before, for that); the 8192-byte one is the image whose 4096 lay
  * inside it, where "fits" was the answer and real data sat in the "pad". */
@@ -1430,21 +1423,18 @@ static void test_ensure_pad_refuses_an_image_with_no_section_data(void) {
         memcpy(before, buf, fsize0);
         uint32_t lc_end = (uint32_t)(sizeof *h + h->sizeofcmds);
 
-        for (int allow = 0; allow <= 1; allow++) {
-            g_ensure_need = lc_end + 16; g_ensure_allow = allow;
-            int r;
-            int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
-                                              "no section data bounds the header pad; "
-                                              "refusing rather than guess where it ends", &r);
-            CHECK(r == -1, "ensure_pad on a %zu-byte image with no section data "
-                  "(allow_grow=%d): refused (got %d)", fsize0, allow, r);
-            CHECK(said, "ensure_pad on a %zu-byte image with no section data "
-                  "(allow_grow=%d): the refusal says no section data bounds the pad",
-                  fsize0, allow);
-            CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
-                  "ensure_pad on a %zu-byte image with no section data (allow_grow=%d): "
-                  "the image is byte-identical and not reallocated", fsize0, allow);
-        }
+        g_ensure_need = lc_end + 16;
+        int r;
+        int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
+                                          "no section data bounds the header pad; "
+                                          "refusing rather than guess where it ends", &r);
+        CHECK(r == -1, "ensure_pad on a %zu-byte image with no section data: "
+              "refused (got %d)", fsize0, r);
+        CHECK(said, "ensure_pad on a %zu-byte image with no section data: "
+              "the refusal says no section data bounds the pad", fsize0);
+        CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+              "ensure_pad on a %zu-byte image with no section data: "
+              "the image is byte-identical and not reallocated", fsize0);
         free(before);
         free(buf);
     }
@@ -1484,19 +1474,17 @@ static void test_ensure_pad_refuses_a_section_past_the_image(void) {
     memcpy(before, buf, fsize0);
     uint32_t lc_end = (uint32_t)(sizeof *h + h->sizeofcmds);
 
-    for (int allow = 0; allow <= 1; allow++) {
-        g_ensure_need = lc_end + 16; g_ensure_allow = allow;
-        int r;
-        int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
-                                          "lies past the end of the image", &r);
-        CHECK(r == -1, "ensure_pad on a section past the image (allow_grow=%d): refused, "
-              "though 0x7000 would 'fit' (got %d)", allow, r);
-        CHECK(said, "ensure_pad on a section past the image (allow_grow=%d): the refusal "
-              "says the first section lies past the end of the image", allow);
-        CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
-              "ensure_pad on a section past the image (allow_grow=%d): the image is "
-              "byte-identical and not reallocated", allow);
-    }
+    g_ensure_need = lc_end + 16;
+    int r;
+    int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
+                                      "lies past the end of the image", &r);
+    CHECK(r == -1, "ensure_pad on a section past the image: refused, "
+          "though 0x7000 would 'fit' (got %d)", r);
+    CHECK(said, "ensure_pad on a section past the image: the refusal "
+          "says the first section lies past the end of the image");
+    CHECK(buf == orig && fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "ensure_pad on a section past the image: the image is "
+          "byte-identical and not reallocated");
     free(before);
     free(buf);
 }
@@ -1558,6 +1546,10 @@ static void test_ensure_pad_refuses_what_cannot_grow(void) {
                                    "not PIE");
     check_ensure_refuses_unchanged("an image with chained fixups", MG_T_CHAINED,
                                    MH_EXECUTE, MH_PIE, "fixups set classic");
+    check_ensure_refuses_unchanged("an unclassified load command", MG_T_UNKNOWN_LC,
+                                   MH_EXECUTE, MH_PIE, "Unknown means unsafe");
+    check_ensure_refuses_unchanged("an unclassified section type", MG_T_ODDSECT,
+                                   MH_EXECUTE, MH_PIE, "is not classified");
 }
 
 /* ---- plausibility: verification without a "before" ----
@@ -1724,8 +1716,7 @@ int main(void) {
     test_grow_refuses_overflowing_reloff();
     test_grow_refuses_overflowing_entryoff();
     test_ensure_pad_fits_is_a_noop();
-    test_ensure_pad_short_and_not_permitted_refuses();
-    test_ensure_pad_grows_when_permitted();
+    test_ensure_pad_grows_and_announces();
     test_ensure_pad_refuses_what_cannot_grow();
     test_first_sect_off_reports_no_section_data();
     test_ensure_pad_refuses_an_image_with_no_section_data();

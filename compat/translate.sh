@@ -128,7 +128,7 @@
 #     -delete-rpath P             rpath delete P
 #     -add-rpath P                rpath append P
 #     -strip-lc KIND              load-command delete KIND
-#     -grow                       allow-grow (a directive, ahead of the rest)
+#     -grow                       nothing: a short header pad grows anyway
 #
 #   fix_macho FILE ...
 #     -change O N                 dylib replace O N
@@ -376,12 +376,13 @@ mt_tr_change_dylib() {
     mt_st_dychg='' mt_st_rpchg=''
     mt_nchanges=0 mt_nadds=0 mt_ninserts=0
     mt_nrchanges=0 mt_nradds=0 mt_nstrip=0
-    mt_grow=''
 
     while [ $# -gt 0 ]; do
         case $1 in
         -grow)
-            mt_grow=1; shift ;;
+            # spec: compat/README.md "change_dylib: header growth" -- accepted, and
+            # asks for nothing: a statement that outgrows the pad grows it.
+            shift ;;
         -strip-lc)
             [ $# -ge 2 ] || { mt_die "bad arg: $1"; return 1; }
             mt_found=0
@@ -492,19 +493,11 @@ $mt_st_dyins"
         printf '%s%s%s%s%s%s' "$mt_st_lc" "$mt_st_dychg" "$mt_st_dyapp" \
             "$mt_st_dyins" "$mt_st_rpchg" "$mt_st_rpapp"
     })
-    # `change_dylib FILE -grow -grow` asks for nothing, so nothing is emitted
-    # -- not even `allow-grow`, which permits a growth no statement would
-    # request. (A single `-grow` never gets this far: the `[ $# -ge 3 ]` usage
-    # check above refuses it.) An install line with no command ahead of it
-    # would name an output nothing wrote, so it goes too.
+    # `change_dylib FILE -grow -grow` asks for nothing, so nothing is emitted.
+    # (A single `-grow` never gets this far: the `[ $# -ge 3 ]` usage check
+    # above refuses it.) An install line with no command ahead of it would
+    # name an output nothing wrote, so it goes too.
     [ -n "$mt_body" ] || return 0
-    # -grow becomes the `allow-grow` DIRECTIVE, which must precede every
-    # statement. Like the --allow-grow it replaces it reaches dylib and rpath
-    # and not the load-command deletes: src/edit.c sets ops.allow_grow only for
-    # the statements that can outgrow the pad, and deleting load commands can
-    # only shrink the table.
-    [ -n "$mt_grow" ] && mt_body="allow-grow
-$mt_body"
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_CD_BODY
 $mt_body
 MT_CD_BODY
@@ -605,12 +598,10 @@ mt_tr_fix_macho() {
         esac
     done
 
-    # No allow-grow: fix_macho had no -grow and never enlarged a header, so
-    # nothing in its grammar can ask for one. A `dylib replace` statement
-    # without it still resizes a command into EXISTING header pad, which
-    # fix_macho refused ("new path ... too long") -- the first of the five
-    # adopted changes compat/README.md's table lists. Growing the header
-    # outright is a further step, and this translation still does not take it.
+    # fix_macho had no -grow and never enlarged a header. A `dylib replace`
+    # statement resizes a command into the header pad, which fix_macho refused
+    # ("new path ... too long") -- the first of the adopted changes
+    # compat/README.md's table lists -- and grows the pad when it is short.
     #
     # lc, then dylib, then segment -- mt_tr_change_dylib's emission comment has
     # the reasoning for the first two, and a rename goes last because it

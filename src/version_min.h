@@ -32,12 +32,12 @@
  * on stderr. A non-zero return writes no `out` at all.
  *
  * The new command goes in the header pad. If the pad cannot hold it, this
- * refuses -- unless `allow_grow` is set and the image can be grown (a 64-bit
- * PIE executable without chained fixups; see mg_ensure_pad in src/grow.h),
- * in which case the pad is enlarged and `out` grows with it.
+ * is grown when the image can be (a 64-bit PIE executable without chained
+ * fixups; see mg_ensure_pad in src/grow.h), and `out` grows with it;
+ * otherwise this refuses.
  * Fat containers are not handled: add_version_min never did.
  */
-int mv_add_version_min(const char *path, const char *out, int allow_grow);
+int mv_add_version_min(const char *path, const char *out);
 
 /*
  * mv_add_version_min's edit, without the file: append LC_VERSION_MIN_MACOSX
@@ -49,14 +49,13 @@ int mv_add_version_min(const char *path, const char *out, int allow_grow);
  * *out_added = 0 if the image already had one (after printing "already
  * present; nothing to do." on stdout, as mv_add_version_min always has), or
  * MR_REFUSED with "no room for LC_VERSION_MIN_MACOSX" on stderr when the
- * command cannot be placed. When the pad is short and `allow_grow` is set,
- * growing it is mg_ensure_pad's decision; if it grows, *pbuf is reallocated,
- * *psize is larger, and every pointer the caller held into the buffer is
- * stale. `label` prefixes mg_ensure_pad's own lines -- its refusal on stderr
- * and, when it grows, "LABEL: load commands need ...; growing header..." and
- * "LABEL: grew header pad: ..." on stdout; both callers pass the file's path.
+ * command cannot be placed. When the pad is short, growing it is
+ * mg_ensure_pad's decision; if it grows, *pbuf is reallocated, *psize is
+ * larger, and every pointer the caller held into the buffer is stale.
+ * `label` prefixes mg_ensure_pad's own stderr lines -- its refusal, or its
+ * announcement of a grow; both callers pass the file's path.
  */
-int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
+int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
                              const char *label, int *out_added);
 
 #endif /* DRYDOCK_VERSION_MIN_H */

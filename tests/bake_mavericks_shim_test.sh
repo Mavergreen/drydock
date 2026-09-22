@@ -189,8 +189,10 @@ bake --bogus prog
 [ "$brc" -eq 2 ] && grep -q 'unrecognized arguments: --bogus' "$T/b.err" \
     && ok "usage: an unknown option is a usage error (2)" || bad "usage: bogus" "exit $brc"
 
-# No room in the header for the shim's load command: the wrapper declares no
-# allow-grow, so it refuses, as the Python does. These links take the default
+# No room in the header for the shim's load command: the Python died with "no
+# room in the Mach-O header"; the wrapper grows the header, announced, and the
+# result runs. spec: compat/README.md's bake-mavericks-shim table. These links
+# take the default
 # pad, not $PAD, which is a floor. platform: the linker packs __TEXT's sections
 # against the end of a page, so filler costs the pad byte for byte, less an
 # alignment `k` measured from the first attempt, modulo the page; the second
@@ -211,11 +213,16 @@ fill=$((p0 - k - 40))
 need=$(( (24 + ${#SHIM} + 1 + 7) / 8 * 8 ))
 if [ -n "$p1" ] && [ "$p1" -lt "$need" ]; then
     bake tight --shim "$SHIM"
-    [ "$brc" -eq 1 ] && [ ! -e "$T/tight.selfcontained" ] && ! grep -q 'shim linked' "$T/b.out" \
-        && ok "refuse: no header room for the shim ($p1 bytes, $need needed) -- exit 1, nothing written" \
-        || bad "refuse: no room" "exit $brc: $(cat "$T/b.err")"
+    [ "$brc" -eq 0 ] && grep -q ': grew the header pad by ' "$T/b.err" \
+        && ok "grow: no header room for the shim ($p1 bytes, $need needed) -- the header grows, announced (0)" \
+        || bad "grow: no room" "exit $brc: $(cat "$T/b.err")"
+    run=$(env -i PATH=/usr/bin:/bin "$T/tight.selfcontained" 2>&1)
+    set -- $run
+    [ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
+        && ok "grow: ... and the grown, baked binary calls the shim's functions" \
+        || bad "grow: runs" "printed '$run', wanted '4242 777 43'"
 else
-    bad "refuse: no room: precondition" "pad went from $p0 to ${p1:-unknown}; wanted under $need"
+    bad "grow: no room: precondition" "pad went from $p0 to ${p1:-unknown}; wanted under $need"
 fi
 
 # ---- 6. the weak-bind table ---------------------------------------------

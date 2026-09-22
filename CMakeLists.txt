@@ -249,7 +249,7 @@ set_tests_properties(fat_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # linkedit_test. It writes that image into a mkdtemp directory because me_run
 # takes a path. MallocScribble=1 for the reason script_test has it, applied to
 # this module's own hazard: the image buffer is reallocated between
-# statements (allow-grow's header grow, `fixups set classic`'s room to
+# statements (a header grow, `fixups set classic`'s room to
 # append), and a pointer kept across one would still read the old bytes by
 # luck on a plain run.
 add_executable(edit_test tests/edit_test.c)

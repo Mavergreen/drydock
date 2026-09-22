@@ -259,7 +259,7 @@ static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
 /* The lowering: one statement, one call to the code that performs it. Returns
  * 0, MR_REFUSED or MR_FAIL. *pbuf and *psize always name the current image
  * afterwards, whether or not the statement succeeded, because three of these
- * reallocate it: allow-grow's header grow, inside the rewrite and inside
+ * reallocate it: a header grow, inside the rewrite and inside
  * `version-min set`, and the room `fixups set classic` appends its opcode
  * streams into.
  *
@@ -349,12 +349,6 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
             if (rpath) ops.rpath_change = &change;
             else       ops.dylib_change = &change;
         }
-        /* allow-grow reaches only the statements that can outgrow the header
-         * pad. Setting it on a segment rename or a load-command delete would
-         * grow nothing -- and a grow is the one thing that makes the
-         * rewrite's own plausibility gate apply to a statement whose row
-         * declares no base-relative disturbance (src/rewrite.c). */
-        ops.allow_grow = s->allow_grow;
         /* Only a dylib statement can renumber: an LC_RPATH bears no
          * ordinal. The rewrite fills renum only when it did renumber --
          * an insert, or a delete that matched -- so a replace, an append, a
@@ -368,19 +362,18 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     case MS_VERSION_MIN: {
         /* ms_parse accepts only 10.9, and 10.9 is the only floor this core
          * writes; the parser's value check is the one place that says so.
-         * allow-grow reaches this statement: when the pad is short, growing
-         * it is mg_ensure_pad's decision, the same as for dylib and rpath. */
+         * When the pad is short, growing it is mg_ensure_pad's decision, the
+         * same as for dylib and rpath. */
         mi_image im;
         int added = 0;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        int rc = mv_add_version_min_image(pbuf, psize, s->allow_grow, path, &added);
+        int rc = mv_add_version_min_image(pbuf, psize, path, &added);
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it. The append's own
          * "Added ..." line belonged to the `minos` verb, which this does not
-         * call, so an append prints nothing on stdout -- unless it grew the
-         * header pad, when mg_ensure_pad's two grow lines, labelled with
-         * `path`, are there. */
+         * call, so an append prints nothing on stdout; a grow of the header
+         * pad is announced on stderr by mg_ensure_pad, labelled with `path`. */
         if (rc == 0 && added)
             me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
         return rc;
@@ -654,9 +647,7 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
     if (n == 0)
         me_say(log, "    nothing to do: this binary already targets 10.9\n");
 
-    /* The same script, minus fatal-warnings: allow-grow and everything else
-     * still govern the expansion, because the directives describe the run and
-     * the expansion is part of it. */
+    /* The same script, minus fatal-warnings. */
     {
         ms_script sub = *s;
         sub.fatal_warnings = 0;

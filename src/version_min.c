@@ -1,11 +1,10 @@
 /*
  * mv_ -- see version_min.h. This started as compat/add_version_min.c's
- * main(); only the argument check stayed behind in that tool. It now takes
- * an allow_grow flag: with it set, a short header pad is grown instead of
- * refused, via mg_ensure_pad (src/grow.h), whose own "ERROR: ... growing the
- * header needs allow-grow" line precedes this file's "no room for
- * LC_VERSION_MIN_MACOSX" when growth isn't permitted. Its in-memory middle
- * is mv_add_version_min_image, so an edit script can apply it to a buffer.
+ * main(); only the argument check stayed behind in that tool. A short header
+ * pad is grown, via mg_ensure_pad (src/grow.h), whose own refusal precedes
+ * this file's "no room for LC_VERSION_MIN_MACOSX" when the image cannot be
+ * grown. Its in-memory middle is mv_add_version_min_image, so an edit script
+ * can apply it to a buffer.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +47,7 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
 }
 
 /* This function's return value is forwarded verbatim by whatever calls it,
- * passing through its own allow_grow flag, the same arrangement mr_apply_file
+ * the same arrangement mr_apply_file
  * has with its own callers -- so every return below is MR_REFUSED or MR_FAIL,
  * the same two codes and the same dividing line rewrite.h's comment on the
  * MR_REFUSED/MR_FAIL #defines draws: MR_FAIL for this function's own
@@ -56,7 +55,7 @@ static int mv_scan_lc(const struct load_command *lc, void *ctx_) {
  * wa_write_new's failure to produce `out`; MR_REFUSED for every site that
  * examined the file and declined, including mi_open's MI_NOT_MACHO and
  * "no room for LC_VERSION_MIN_MACOSX". */
-int mv_add_version_min(const char *path, const char *out, int allow_grow) {
+int mv_add_version_min(const char *path, const char *out) {
     /* Opened only to report an unreadable `path` immediately, before any
      * analysis, in the words the historical tool's own open() produced;
      * mi_open (O_RDONLY too) does the actual read and validation. Nothing is
@@ -90,7 +89,7 @@ int mv_add_version_min(const char *path, const char *out, int allow_grow) {
     size_t fsize = im.size;
     uint8_t *buf = mi_release(&im);
     int added = 0;
-    int rc = mv_add_version_min_image(&buf, &fsize, allow_grow, path, &added);
+    int rc = mv_add_version_min_image(&buf, &fsize, path, &added);
     if (rc != 0) {
         free(buf);
         return rc;
@@ -114,7 +113,7 @@ int mv_add_version_min(const char *path, const char *out, int allow_grow) {
 /* See version_min.h. mv_add_version_min's former middle, moved rather than
  * copied: the scan, the "already present" and "no room" answers, and the
  * append, all against the caller's buffer and none of the file around it. */
-int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
+int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
                              const char *label, int *out_added) {
     *out_added = 0;
     mi_image im;
@@ -153,7 +152,7 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, int allow_grow,
      * every other load-command edit. It returns 0 at once, untouched, when
      * the command fits, and it refuses an image whose first section lies
      * past the buffer's end. */
-    if (mg_ensure_pad(pbuf, psize, need_end, allow_grow, label) != 0) {
+    if (mg_ensure_pad(pbuf, psize, need_end, label) != 0) {
         fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
         return MR_REFUSED;
     }

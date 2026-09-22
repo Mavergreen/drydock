@@ -10,8 +10,8 @@
  *
  *   1. build a brand-new load-command table (mr_build_lcs), sized to fit in
  *      the header pad between the last load command and the first section's
- *      file data -- or, with allow_grow, after mg_grow_header has enlarged
- *      that pad (src/grow.h; only a PIE executable can be grown at all);
+ *      file data -- or, when it does not fit, after mg_grow_header has
+ *      enlarged that pad (src/grow.h; only a PIE executable can be grown);
  *   2. renumber every library ordinal an insert or a delete shifted
  *      (src/ordinals.h), cross-checking the map against the table actually
  *      emitted rather than against its own arithmetic;
@@ -22,8 +22,8 @@
  *      own comment, at the site, has the rule and what it no longer covers.
  *
  * Nothing here moves a byte of file data; only the load commands are
- * rewritten, and only within the header pad. The one exception is -grow,
- * which is mg_grow_header's own reviewed exception, not a new one.
+ * rewritten, and only within the header pad. The one exception is a header
+ * grow, which is mg_grow_header's own reviewed exception, not a new one.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -689,9 +689,9 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     if (need_end > first_sect_off) {
         /* Whether there is room, and whether to grow, is mg_ensure_pad's
          * decision (src/grow.h) -- one place, shared with version-min. It
-         * prints the grow path's stdout lines itself, unchanged. */
+         * announces a grow itself. */
         size_t fsize_before_pad = fsize;
-        if (mg_ensure_pad(&buf, &fsize, need_end, ops->allow_grow, label) != 0) {
+        if (mg_ensure_pad(&buf, &fsize, need_end, label) != 0) {
             *pbuf = buf; *pfsize = fsize;   /* growth may have realloc'd before failing */
             free(new_lcs);
             return MR_ERROR;
@@ -956,14 +956,14 @@ static void mr_fat_placed(const mfat_arch *a, uint32_t index,
  * touched" contract can allow. See mr_process_thin's own comment for why
  * MR_SKIP and MR_ERROR need different treatment.
  *
- * Sizes: without -grow, or when growth was not needed, every slice keeps its
+ * Sizes: when no slice's header grew, every slice keeps its
  * original size, and this reassembly places every slice back at its ORIGINAL
  * file offset -- so a fat binary edited without size changes ends up with
  * exactly the same layout it started with. Only once some earlier slice's
  * size actually changes does a later slice's offset get recomputed, packed
  * tightly against the slice before it at that slice's own (preserved)
  * alignment. That is what keeps an unmodified multi-arch binary's on-disk
- * shape untouched while still supporting the resize -grow needs.
+ * shape untouched while still supporting the resize a header grow needs.
  *
  * hit_dylib/hit_rpath/hit_strip: the SAME three caller-owned counters are
  * passed to every slice's mr_process_thin call, so hits accumulate ACROSS
@@ -1151,7 +1151,7 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
      * side effect. So, plainly: an allocation failure inside either one
      * exits 1 (MR_REFUSED), not 2, same as every other reason
      * mg_grow_header or mg_plausible refuses -- and that is not confined to
-     * growing. mg_grow_header is reached only with allow_grow, but
+     * growing. mg_grow_header is reached only when the pad is short, but
      * mr_process_thin runs mg_plausible on a rewrite that disturbed what it
      * checks (see mrel_verify_applies, src/relations.h) unless
      * MACHO_NO_VERIFY is set, which today means a rewrite that grew the
@@ -1248,7 +1248,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
          * nsects agreement, none of which the magic-only peek above looked
          * at. mi_release hands this function ownership of the buffer,
          * needed because mg_grow_header (inside mr_process_thin, via
-         * allow_grow) reallocs it -- an mi_image left pointing at the old
+         * mg_ensure_pad) reallocs it -- an mi_image left pointing at the old
          * allocation would be a dangling pointer waiting for a mi_close that
          * never comes. */
         close(fd);

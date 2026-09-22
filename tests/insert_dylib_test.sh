@@ -500,6 +500,36 @@ grep -q -- '--inplace' "$T/13.err" && grep -q 'mx_out' "$T/13.err" \
     && ok "--inplace + new_binary_path: nothing was written to the named path either" \
     || bad "--inplace + new_binary_path" "wrote $T/mx_out despite refusing"
 
+# ---- 14. no room: prompt 3 is not asked; the header grows ------------------
+# The fork asked "it doesn't seem like there is enough empty space" before its
+# own expansion. A 5000-character path outgrows a page, and so any pad a
+# small image has; on a PIE executable the header grows, announced, and on a
+# dylib -- which has no __PAGEZERO to lower the base into -- it is refused.
+# spec: compat/README.md's insert_dylib table, the prompt 3 row.
+nr_path="/$(printf 'n%.0s' $(seq 1 5000)).dylib"
+cp "$FIXTURE" "$T/nr"
+( cd "$T" && "$BIN/insert_dylib" --all-yes "$nr_path" nr nr_out ) \
+    >"$T/14.out" 2>"$T/14.err"
+rc=$?
+[ "$rc" -eq 0 ] && grep -q ': grew the header pad by ' "$T/14.err" \
+    && ok "no room: the header grows, announced, and nothing is asked (exit 0)" \
+    || bad "no room" "exit $rc (want 0, announced): $(cut -c1-300 "$T/14.err")"
+"$BIN/drydock-macho-rewrite" info "$T/nr_out" 2>/dev/null | grep -qF "path=$nr_path" \
+    && "$BIN/drydock-macho-rewrite" verify "$T/nr_out" >/dev/null 2>&1 \
+    && ok "no room: ... the output names the dylib and verifies" \
+    || bad "no room" "the output lacks the dylib or does not verify"
+printf 'int nr_fn(void) { return 1; }\n' >"$T/nr.c"
+if "$CC" -dynamiclib -mmacosx-version-min=10.9 -o "$T/nr.dylib" "$T/nr.c" 2>"$T/nrcc.err"; then
+    ( cd "$T" && "$BIN/insert_dylib" --all-yes "$nr_path" nr.dylib nr_dy_out ) \
+        >"$T/14d.out" 2>"$T/14d.err"
+    rc=$?
+    [ "$rc" -eq 1 ] && [ ! -e "$T/nr_dy_out" ] && grep -q 'only MH_EXECUTE can be grown' "$T/14d.err" \
+        && ok "no room: a dylib cannot grow, and is refused (exit 1, nothing written)" \
+        || bad "no room (dylib)" "exit $rc (want 1): $(cut -c1-300 "$T/14d.err")"
+else
+    bad "no room (dylib)" "could not link the fixture: $(cat "$T/nrcc.err")"
+fi
+
 echo "insert_dylib_test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
 exit 0

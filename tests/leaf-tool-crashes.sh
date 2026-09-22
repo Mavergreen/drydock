@@ -239,13 +239,13 @@ fi
 # cleared the pad up to the first section's offset -- taken to be 4096 when
 # there is no section data at all, in a 104-byte buffer. With no section data
 # there is no pad boundary to find, so it must refuse before it looks for
-# one, with or without --allow-grow, and leave the file as it was.
+# one, and leave the file as it was.
 rewrite_refusal="no section data bounds the header pad; refusing to rewrite its load commands"
 sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
 
 # mt_append GMALLOC FILE OUT  -- `dylib append /x` through the only mutating
-# interface there is, with `allow-grow` ahead of it when $grow is set. It was
-# `drydock-macho-rewrite dylib FILE OUT -append /x [--allow-grow]`; the fixtures, the
+# interface there is. It was
+# `drydock-macho-rewrite dylib FILE OUT -append /x`; the fixtures, the
 # refusals and every assertion below are unchanged, because the crash these
 # cases exist to catch is in the rewriter, not in how it was asked for.
 #
@@ -255,46 +255,41 @@ sha_of() { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
 # keeps it to the one process it is meant for.
 mt_append() {
     mt_gm=$1; mt_file=$2; mt_out=$3
-    {
-        [ -n "$grow" ] && printf 'allow-grow\n'
-        printf 'dylib append /x\n'
-    } | (
+    printf 'dylib append /x\n' | (
         [ -n "$mt_gm" ] && { DYLD_INSERT_LIBRARIES=$mt_gm; export DYLD_INSERT_LIBRARIES; }
         exec "$BIN/drydock-macho-rewrite" "$mt_file" "$mt_out"
     )
 }
-for grow in "" --allow-grow; do
-    for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="dylib append${grow:+ +$grow}: nosect fixture${gm:+ (libgmalloc)}"
-        if [ -n "$gm" ] && [ ! -f "$gm" ]; then
-            skip "$what" "no $gm on this host"
-            continue
-        fi
-        cp "$T/nosect.macho" "$T/dy.macho"
-        rm -f "$T/dy.out.macho"
-        before=$(sha_of "$T/dy.macho")
-        rc=0
-        if [ -n "$gm" ]; then
-            mt_append "$gm" "$T/dy.macho" "$T/dy.out.macho" \
-                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
-        else
-            mt_append "" "$T/dy.macho" "$T/dy.out.macho" \
-                >"$T/dy.out" 2>"$T/dy.err" || rc=$?
-        fi
-        if [ "$rc" -gt 127 ]; then
-            bad "$what" "killed by a signal (exit $rc) -- the heap overflow this fixture exists to catch"
-        elif [ "$rc" -eq 1 ] && grep -qF "$rewrite_refusal" "$T/dy.err"; then
-            ok "$what: refuses (1), naming the missing section data"
-        else
-            bad "$what" "expected exit 1 + '$rewrite_refusal', got exit $rc: $(cat "$T/dy.err")"
-        fi
-        [ "$(sha_of "$T/dy.macho")" = "$before" ] \
-            && ok "$what: leaves the file unchanged" \
-            || bad "$what" "the refused run modified the file"
-        [ ! -e "$T/dy.out.macho" ] \
-            && ok "$what: writes no output either" \
-            || bad "$what" "a refused run left an output behind"
-    done
+for gm in "" /usr/lib/libgmalloc.dylib; do
+    what="dylib append: nosect fixture${gm:+ (libgmalloc)}"
+    if [ -n "$gm" ] && [ ! -f "$gm" ]; then
+        skip "$what" "no $gm on this host"
+        continue
+    fi
+    cp "$T/nosect.macho" "$T/dy.macho"
+    rm -f "$T/dy.out.macho"
+    before=$(sha_of "$T/dy.macho")
+    rc=0
+    if [ -n "$gm" ]; then
+        mt_append "$gm" "$T/dy.macho" "$T/dy.out.macho" \
+            >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+    else
+        mt_append "" "$T/dy.macho" "$T/dy.out.macho" \
+            >"$T/dy.out" 2>"$T/dy.err" || rc=$?
+    fi
+    if [ "$rc" -gt 127 ]; then
+        bad "$what" "killed by a signal (exit $rc) -- the heap overflow this fixture exists to catch"
+    elif [ "$rc" -eq 1 ] && grep -qF "$rewrite_refusal" "$T/dy.err"; then
+        ok "$what: refuses (1), naming the missing section data"
+    else
+        bad "$what" "expected exit 1 + '$rewrite_refusal', got exit $rc: $(cat "$T/dy.err")"
+    fi
+    [ "$(sha_of "$T/dy.macho")" = "$before" ] \
+        && ok "$what: leaves the file unchanged" \
+        || bad "$what" "the refused run modified the file"
+    [ ! -e "$T/dy.out.macho" ] \
+        && ok "$what: writes no output either" \
+        || bad "$what" "a refused run left an output behind"
 done
 
 # --- a sectionless image with 4096 inside it ---------------------------------
@@ -365,7 +360,6 @@ sectionless_script() {
     done
 }
 sectionless_script "$rewrite_refusal" 'dylib append /x'
-sectionless_script "$rewrite_refusal" allow-grow 'dylib append /x'
 sectionless_script "$rewrite_refusal" 'rpath append /x'
 sectionless_script "$rewrite_refusal" 'load-command delete uuid'
 sectionless_script "$rewrite_refusal" 'segment rename __TEXT __TEXX'
@@ -382,42 +376,40 @@ fi
 # mr_process_thin's commit memset clears the load-command area up to the first
 # section's file offset. On oobsection.macho that offset is 0x7000 and the file
 # is 184 bytes, so trusting it clears roughly 28 KB past the buffer (SIGSEGV
-# under libgmalloc). It must refuse (1), with or without --allow-grow, before
+# under libgmalloc). It must refuse (1) before
 # anything uses the offset, and leave the file as it was. `drydock-macho-rewrite info` must
 # not report a pad measured against that offset either.
-for grow in "" --allow-grow; do
-    for gm in "" /usr/lib/libgmalloc.dylib; do
-        what="dylib append${grow:+ +$grow}: oobsection fixture${gm:+ (libgmalloc)}"
-        if [ -n "$gm" ] && [ ! -f "$gm" ]; then
-            skip "$what" "no $gm on this host"
-            continue
-        fi
-        cp "$T/oobsection.macho" "$T/od.macho"
-        rm -f "$T/od.out.macho"
-        rc=0
-        if [ -n "$gm" ]; then
-            mt_append "$gm" "$T/od.macho" "$T/od.out.macho" \
-                >"$T/od.out" 2>"$T/od.err" || rc=$?
-        else
-            mt_append "" "$T/od.macho" "$T/od.out.macho" \
-                >"$T/od.out" 2>"$T/od.err" || rc=$?
-        fi
-        if [ "$rc" -gt 127 ]; then
-            bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds clear this fixture exists to catch"
-        elif [ "$rc" -eq 1 ] && grep -qF "lies past the end of the image" "$T/od.err"; then
-            ok "$what: refuses (1), naming the section past the end of the image"
-        else
-            bad "$what" "expected exit 1 + 'lies past the end of the image', got exit $rc: $(cat "$T/od.err")"
-        fi
-        if cmp -s "$T/oobsection.macho" "$T/od.macho"; then
-            ok "$what: leaves the file byte-identical"
-        else
-            bad "$what" "the file changed"
-        fi
-        [ ! -e "$T/od.out.macho" ] \
-            && ok "$what: writes no output either" \
-            || bad "$what" "a refused run left an output behind"
-    done
+for gm in "" /usr/lib/libgmalloc.dylib; do
+    what="dylib append: oobsection fixture${gm:+ (libgmalloc)}"
+    if [ -n "$gm" ] && [ ! -f "$gm" ]; then
+        skip "$what" "no $gm on this host"
+        continue
+    fi
+    cp "$T/oobsection.macho" "$T/od.macho"
+    rm -f "$T/od.out.macho"
+    rc=0
+    if [ -n "$gm" ]; then
+        mt_append "$gm" "$T/od.macho" "$T/od.out.macho" \
+            >"$T/od.out" 2>"$T/od.err" || rc=$?
+    else
+        mt_append "" "$T/od.macho" "$T/od.out.macho" \
+            >"$T/od.out" 2>"$T/od.err" || rc=$?
+    fi
+    if [ "$rc" -gt 127 ]; then
+        bad "$what" "killed by a signal (exit $rc) -- the out-of-bounds clear this fixture exists to catch"
+    elif [ "$rc" -eq 1 ] && grep -qF "lies past the end of the image" "$T/od.err"; then
+        ok "$what: refuses (1), naming the section past the end of the image"
+    else
+        bad "$what" "expected exit 1 + 'lies past the end of the image', got exit $rc: $(cat "$T/od.err")"
+    fi
+    if cmp -s "$T/oobsection.macho" "$T/od.macho"; then
+        ok "$what: leaves the file byte-identical"
+    else
+        bad "$what" "the file changed"
+    fi
+    [ ! -e "$T/od.out.macho" ] \
+        && ok "$what: writes no output either" \
+        || bad "$what" "a refused run left an output behind"
 done
 
 info_rc=0

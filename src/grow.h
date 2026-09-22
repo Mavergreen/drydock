@@ -99,14 +99,15 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * one place that decides whether there is room and whether to grow.
  *
  * Returns 0 with the image untouched (not reallocated) if it already fits.
- * Otherwise, when `allow_grow` is set, grows the header pad through
- * mg_grow_header and returns 0 with *pbuf / *pfsize updated: every pointer the
- * caller held into the buffer is stale. Prints, on stdout, the two lines the
- * grow path has always printed ("load commands need ...; growing header...",
- * "grew header pad: ...").
+ * Otherwise grows the header pad through mg_grow_header -- no caller opts in:
+ * growth verifies itself (mg_verify, mg_plausible) and nothing writes the
+ * input -- and returns 0 with *pbuf / *pfsize updated: every pointer the
+ * caller held into the buffer is stale. A grow is always announced, on
+ * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
+ * available); image base 0xOLD -> 0xNEW".
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
- * fit and growth was not permitted, or when growth failed. Also -1, with the
+ * fit and growth failed. Also -1, with the
  * image untouched and whether or not it would fit, in two cases where there is
  * no pad boundary to check against: when no section has file data
  * (mg_first_sect_off's MG_NO_SECTION_DATA; "no section data bounds the header
@@ -115,12 +116,12 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * file offset (N) lies past the end of the image (M bytes); refusing"). That
  * offset is the bound on every write into the pad, and past the buffer's end
  * it bounds nothing. If growth was
- * refused on a precondition (not a PIE executable, chained fixups, a load
- * command whose payload grow cannot re-base) the image is untouched; a
+ * refused on a precondition (not a 64-bit PIE MH_EXECUTE, chained fixups, a
+ * load command whose payload grow cannot re-base) the image is untouched; a
  * failure partway through growing can leave it modified. Either way the
  * caller must not write it, and *pbuf stays valid to free. */
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
-                  int allow_grow, const char *label);
+                  const char *label);
 
 
 /* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering

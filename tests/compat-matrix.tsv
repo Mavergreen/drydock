@@ -32,6 +32,16 @@
 #
 # The 16 refuser=macho9 rows, and every non-refusing class, were not affected
 # by the wrapper conversion; they are what they were measured to be.
+#
+# ALSO DATED SINCE: header growth no longer needs a directive. Two of the 16
+# refuser=macho9 rows are change_dylib's 3000-character -change WITHOUT -grow
+# (alone, and after -strip-lc uuid): both sides refused, "don't fit in header
+# pad ... pass -grow", and today's wrapper grows the header instead, announced
+# on stderr -- a deliberate divergence, recorded in compat/README.md's
+# change_dylib table. And 281 of the 1227 data rows (every one of them
+# preserved or preserved+stdout) carry `allow-grow` in the translation column:
+# the directive translate.sh emitted for -grow on 2026-09-10. It emits nothing
+# for -grow now, and the outcome those rows record is unchanged.
 # ============================================================================
 #
 # Every enumerated argument combination of the six historical tools, run BOTH

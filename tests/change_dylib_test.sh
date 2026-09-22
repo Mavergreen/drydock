@@ -1445,18 +1445,23 @@ LONG_PATH=$(printf 'Q%.0s' $(seq 1 9000))
 # can ask a different question (or none at all) depending on what's on a
 # given host's PATH.
 
-# Without -grow: must refuse cleanly (header pad can't possibly hold a
-# 9000-byte path), never crash.
+# Without -grow: the original refused (its header pad can't possibly hold a
+# 9000-byte path); the wrapper grows the header instead, announced, and never
+# crashes. spec: compat/README.md "change_dylib: header growth".
+cp "$T/longchange_fixture" "$T/longchange_noG"
 rc=0
-"$CHANGE_DYLIB" "$T/longchange_fixture" -change "@loader_path/liba.dylib" "$LONG_PATH" \
+"$CHANGE_DYLIB" "$T/longchange_noG" -change "@loader_path/liba.dylib" "$LONG_PATH" \
     >/dev/null 2>"$T/longchange_noG.err" || rc=$?
 if [ "$rc" -gt 127 ]; then
     bad "long -change (no -grow)" "tool was killed by a signal (exit $rc) -- looks like the heap overflow"
-elif [ "$rc" -eq 0 ]; then
-    bad "long -change (no -grow)" "expected a clean refusal (header pad can't hold 9000 bytes) but exited 0"
+elif [ "$rc" -ne 0 ]; then
+    bad "long -change (no -grow)" "expected the header to grow, but exited $rc: $(cat "$T/longchange_noG.err")"
 else
-    ok "long -change (no -grow): refused cleanly (exit $rc), no crash"
+    ok "long -change (no -grow): grows the header where the original refused (exit 0), no crash"
 fi
+grep -q ": grew the header pad by " "$T/longchange_noG.err" \
+    && ok "long -change (no -grow): ... and the grow is announced on stderr" \
+    || bad "long -change (no -grow)" "no announcement: $(cat "$T/longchange_noG.err")"
 
 # With -grow: must succeed, and the long path must land in the file intact.
 rc=0
@@ -1474,6 +1479,11 @@ if "$T/has_bytes" "$T/longchange_fixture" "$LONG_PATH"; then
 else
     bad "long -change (-grow)" "the long replacement path is not intact in the output file"
 fi
+# -grow is in the original's usage line, so it is still accepted -- and asks
+# for nothing: the same file, byte for byte, as the run without it.
+cmp -s "$T/longchange_noG" "$T/longchange_fixture" \
+    && ok "long -change: -grow is a no-op -- the result is byte-identical to the run without it" \
+    || bad "long -change: -grow no-op" "the runs with and without -grow wrote different files"
 
 # --- 18. heap overflow when TWO load commands share an install name and one
 #     -change matches both ---------------------------------------------------
@@ -1665,8 +1675,8 @@ grep -qi "malformed LC_RPATH" "$T/bad_rpath.err" \
 #     a second, structural gap that claim did not cover: a MIXED-FAMILY old
 #     invocation with -grow -- one that touches both the dylib table and the
 #     rpath table -- becomes TWO drydock-macho-rewrite invocations (compat/translate.sh
-#     emits a `dylib --allow-grow` line and a `rpath --allow-grow` line, in
-#     that order), where compat/change_dylib.c used to build ONE mr_ops
+#     emitted a `dylib` line and an `rpath` line, in that order), where
+#     compat/change_dylib.c used to build ONE mr_ops
 #     carrying both families and call mr_apply_file ONCE. mg_grow_header
 #     rounds each request up to a whole page, so growing twice for deltas a
 #     and b can cost ceil(a/P) + ceil(b/P) pages where growing once for the
@@ -1700,7 +1710,6 @@ int main(int argc, char **argv) {
      * one-pass baseline for the two-pass route below. */
     ops.dylib_change = &ch;
     ops.rpath_append = argv[5];
-    ops.allow_grow = 1;
     /* The disturbs mask cli/drydock-macho-rewrite.c's dylib verb would hand the same two
      * operations, read off the one operation table rather than written out
      * here: this helper is standing in for that verb, so it must not invent a
@@ -1730,7 +1739,7 @@ cp "$T/g_two" "$T/g_one"
 # Route A: the SHIPPED route -- the real compat/change_dylib.sh wrapper,
 # exactly as a caller invokes it. This is not a simulation of what
 # compat/translate.sh emits; it is that emission, run. It is ONE drydock-macho-rewrite
-# command now (`edit`, with `allow-grow` and one statement per family), but
+# command now (one statement per family), but
 # still two rewrites of the image, which is what this case is about: each
 # statement is its own pass and so its own chance to grow.
 rc=0
@@ -1739,10 +1748,10 @@ rc=0
 [ "$rc" -eq 0 ] \
     && ok "mixed-family double grow: the shipped two-pass route succeeds" \
     || bad "mixed-family double grow" "the shipped two-pass route failed (exit $rc): $(cat "$T/g_two.err")"
-two_grows=$(grep -c "grew header pad" "$T/g_two.out")
+two_grows=$(grep -c ": grew the header pad by " "$T/g_two.err")
 [ "$two_grows" -eq 2 ] \
     && ok "mixed-family double grow: the shipped route grows the header TWICE (measured, not assumed)" \
-    || bad "mixed-family double grow" "expected 2 \"grew header pad\" lines from the shipped route, saw $two_grows: $(cat "$T/g_two.out")"
+    || bad "mixed-family double grow" "expected 2 announcements from the shipped route, saw $two_grows: $(cat "$T/g_two.err")"
 
 # Route B: ONE mr_apply_file call carrying both families -- growing once for
 # the summed delta, the pre-wrapper C tool's shape.
@@ -1753,10 +1762,10 @@ rc=0
 [ "$rc" -eq 0 ] \
     && ok "mixed-family double grow: the one-call route succeeds" \
     || bad "mixed-family double grow" "the one-call route failed (exit $rc): $(cat "$T/g_one.err")"
-one_grows=$(grep -c "grew header pad" "$T/g_one.out")
+one_grows=$(grep -c ": grew the header pad by " "$T/g_one.err")
 [ "$one_grows" -eq 1 ] \
     && ok "mixed-family double grow: the one-call route grows the header ONCE" \
-    || bad "mixed-family double grow" "expected 1 \"grew header pad\" line from the one-call route, saw $one_grows: $(cat "$T/g_one.out")"
+    || bad "mixed-family double grow" "expected 1 announcement from the one-call route, saw $one_grows: $(cat "$T/g_one.err")"
 
 # Growing twice is a SIZE question, not a correctness one -- both results
 # still have to be images drydock-macho-rewrite itself accepts, and both have to actually
@@ -1781,8 +1790,7 @@ one_grows=$(grep -c "grew header pad" "$T/g_one.out")
 # one write, but still runs a pass per statement (src/edit.c says why it does
 # not batch), so both grows still happen. Full byte comparison, not just size: mg_grow_header
 # grows by the EXCESS over the pad IT SEES AT THAT MOMENT, rounded up to a
-# whole page ("load commands need N more bytes than the M-byte pad" above),
-# not by a fixed page count computed from the operation's own delta alone.
+# whole page, not by a fixed page count computed from the operation's own delta alone.
 # Because a grow always leaves behind a whole number of pages, the leftover
 # it hands to the NEXT call composes losslessly with that call's own excess:
 # ceil(e1/P)*P, then ceil(e2 - leftover/P)*P from there, lands on the exact

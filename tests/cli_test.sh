@@ -96,9 +96,8 @@ sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
 # ergonomic for everything else, not a stand-in for that.
 #
 # A directive is just another line,
-# so `--allow-grow` becomes a leading 'allow-grow' argument and
-# `--fatal-warnings` a leading 'fatal-warnings' one -- which is why the
-# arguments stay in the order the flags were typed.
+# so `--fatal-warnings` becomes a leading 'fatal-warnings' argument -- which
+# is why the arguments stay in the order the flags were typed.
 #
 # printf '%s\n' over the argument list rather than a heredoc per call site: the
 # statements are then visible ON the call line, next to the assertion that reads
@@ -519,16 +518,16 @@ echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
 ok "capabilities: retype kinds do not advertise lazy"
 
 # NO `flags=` FIELD IS ADVERTISED ANY MORE, and that is the claim now. It used
-# to be per-verb: `allow-grow` and `fatal-warnings` were verb-level flags, and
-# five assertions here checked which verb advertised which. Both are SCRIPT
-# DIRECTIVES today, and print_capabilities deliberately does not list
-# directives (see its own contract: "that is a later decision"), so a `flags=`
-# on any surviving line would be advertising something no form accepts.
+# to be per-verb: `fatal-warnings` was a verb-level flag, and assertions here
+# checked which verb advertised it. It is a SCRIPT DIRECTIVE today, and
+# print_capabilities deliberately does not list directives (see its own
+# contract: "that is a later decision"), so a `flags=` on any surviving line
+# would be advertising something no form accepts.
 #
 # WHAT THIS NO LONGER COVERS, stated rather than quietly dropped: a wrapper
-# cannot probe for `fatal-warnings` or `allow-grow` support. The BEHAVIOUR of
-# both is still asserted below, per statement kind, against a real fixture --
-# it is only the advertisement that went.
+# cannot probe for `fatal-warnings` support. Its BEHAVIOUR is still asserted
+# below, per statement kind, against a real fixture -- it is only the
+# advertisement that went.
 if echo "$caps" | grep -q 'flags='; then
     bad "capabilities: flags=" "a flags= field survived the verb collapse: $(echo "$caps" | grep 'flags=')"
 else
@@ -1560,41 +1559,29 @@ mts "$T/lc_fw_ok_fixture" fatal-warnings "load-command delete uuid" \
     || bad "lc: fatal-warnings (matched)" "expected 0, got $lc_fw_ok_rc: $(cat "$T/lc_fw_ok.err")"
 
 # ============================================================================
-# allow-grow alone, with no statement after it.
-#
-# THE EXPECTATION CHANGED WITH THE MODEL, and it is a deliberate change, not a
-# weakened test. As a VERB, `dylib FILE --allow-grow` had to be refused: it
-# named a verb whose whole grammar is a list of operations and gave none, and
-# --allow-grow used to count toward the "need at least one operation" guard, so
-# that exact invocation fell through to change_dylib and printed ITS usage --
-# leaking the -change/-add/-strip-lc/-add-rpath spellings this grammar
-# deliberately does not offer.
-#
-# A SCRIPT HAS NO SUCH REQUIREMENT. `allow-grow` is a directive; a script of
-# directives and no statements is a well-formed request to copy FILE to OUT,
-# and me_run honours it -- exit 0, OUT written, nothing changed. There is no
-# verb left whose usage could leak, which is why the third assertion below is
-# the one that survives intact: whatever this prints, it must not be
-# change_dylib's flag spellings.
+# A directive alone, with no statement after it: a well-formed request to copy
+# FILE to OUT -- exit 0, OUT written, nothing changed. There is no verb left
+# whose usage could leak, which is why the third assertion survives from when
+# there was: whatever this prints, it must not be change_dylib's spellings.
 # ============================================================================
 build_main "$T/dylib_noop_fixture"
 dylib_noop_before=$(sha "$T/dylib_noop_fixture")
-if mts "$T/dylib_noop_fixture" allow-grow >/dev/null 2>"$T/dylib_noop.err"; then
-    ok "allow-grow alone: a directive with no statement is a well-formed script (exit 0)"
+if mts "$T/dylib_noop_fixture" fatal-warnings >/dev/null 2>"$T/dylib_noop.err"; then
+    ok "a directive alone: with no statement it is a well-formed script (exit 0)"
 else
-    bad "allow-grow alone" "a directive-only script was refused: $(cat "$T/dylib_noop.err")"
+    bad "a directive alone" "a directive-only script was refused: $(cat "$T/dylib_noop.err")"
 fi
 [ "$(sha "$T/dylib_noop_fixture")" = "$dylib_noop_before" ] \
-    && ok "allow-grow alone: ... and changed nothing, OUT being a copy of FILE" \
-    || bad "allow-grow alone" "a script with no statement changed the bytes"
+    && ok "a directive alone: ... and changed nothing, OUT being a copy of FILE" \
+    || bad "a directive alone" "a script with no statement changed the bytes"
 if grep -qE -- "-strip-lc|-add-rpath" "$T/dylib_noop.err"; then
-    bad "allow-grow alone" "leaked change_dylib's usage (-strip-lc/-add-rpath) in: $(cat "$T/dylib_noop.err")"
+    bad "a directive alone" "leaked change_dylib's usage (-strip-lc/-add-rpath) in: $(cat "$T/dylib_noop.err")"
 else
-    ok "allow-grow alone does not leak change_dylib's spellings"
+    ok "a directive alone does not leak change_dylib's spellings"
 fi
 
 # ============================================================================
-# dylib -replace  (and --allow-grow forcing a real header growth)
+# dylib -replace  (and a replacement long enough to force a real header grow)
 # ============================================================================
 build_main "$T/dylib_fixture"
 newpath="@loader_path/renamed-liba.dylib"
@@ -1604,33 +1591,22 @@ dylib_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_fixture")
 echo "$dylib_info" | grep -q "path=$newpath" && ok "dylib: -replace changed the path" \
     || bad "dylib: -replace" "new path not found in info output"
 
-# A path long enough to overflow the header pad: refused without
-# --allow-grow, accepted with it -- proving the flag actually reaches
-# change_dylib's -grow rather than being silently dropped.
+# A path long enough to overflow the header pad on any plausible linker
+# default (10.9's leaves thousands of bytes): the header grows, with no
+# directive asked for, and the grow is announced on stderr.
 build_main "$T/dylib_grow_fixture"
-# The default linker leaves a generous header pad (observed: ~2.6KB on this
-# host), so the replacement has to overflow comfortably past that on any
-# plausible linker default -- not just squeak past this host's own number --
-# or the "without --allow-grow" half of this test is not actually exercising
-# the refusal path.
 longpath="@loader_path/$(printf 'x%.0s' $(seq 1 3500)).dylib"
 rc=0
 mts "$T/dylib_grow_fixture" "dylib replace @loader_path/liba.dylib $longpath" \
     >/dev/null 2>"$T/dylib_grow.err" || rc=$?
-# A considered refusal (mr_process_thin examined the header pad, decided
-# the new load commands do not fit, and declined without --allow-grow to
-# widen it) is MR_REFUSED, forwarded verbatim as EX_REFUSED.
-[ "$rc" -eq 1 ] && ok "dylib: long path without --allow-grow is refused (EX_REFUSED)" \
-    || bad "dylib: long path without --allow-grow" "expected exit 1, got $rc: $(cat "$T/dylib_grow.err")"
-if mts "$T/dylib_grow_fixture" allow-grow "dylib replace @loader_path/liba.dylib $longpath" \
-    >"$T/dylib_grow.out" 2>&1; then
-    ok "dylib: allow-grow lets the same replace through"
-else
-    bad "dylib: allow-grow" "$(cat "$T/dylib_grow.out")"
-fi
+[ "$rc" -eq 0 ] && ok "dylib: a replacement that overflows the pad grows the header (exit 0)" \
+    || bad "dylib: long path" "expected exit 0, got $rc: $(cat "$T/dylib_grow.err")"
+grep -q "^$T/dylib_grow_fixture: grew the header pad by [0-9]* bytes ([0-9]* -> [0-9]* available); image base 0x[0-9a-f]* -> 0x[0-9a-f]*\$" "$T/dylib_grow.err" \
+    && ok "dylib: ... and says so on stderr, naming the input" \
+    || bad "dylib: grow announced" "$(cut -c1-200 "$T/dylib_grow.err")"
 grown_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_grow_fixture")
-echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: allow-grow result has the long path" \
-    || bad "dylib: allow-grow result" "long path not found"
+echo "$grown_info" | grep -qF "path=$longpath" && ok "dylib: ... and the result has the long path" \
+    || bad "dylib: grown result" "long path not found"
 
 # ============================================================================
 # dylib: pinning the MR_REFUSED/MR_FAIL split (rewrite.h) through mr_apply_file
@@ -1911,7 +1887,7 @@ mts "$T/segment_fw_fixture" fatal-warnings "swift-abi set legacy" \
 # ============================================================================
 # dylib -append / -insert / -delete / -reexport
 #
-# -replace and --allow-grow (above) exercise only two of change_dylib's
+# -replace and the long-path grow (above) exercise only two of change_dylib's
 # translation targets. The mapping itself -- drydock-macho-rewrite's flag to change_dylib's
 # -- is the only new logic dylib/rpath add, so every op needs its own
 # observable check, not just an exit code: a swapped mapping (say -append
@@ -2256,9 +2232,9 @@ mts "$T/rpath_append_cmp_fixture" "rpath append /tmp/cli_test_inserted_rpath" \
 # -headerpad sets a FLOOR, so this is a no-op wherever the default already
 # exceeds it -- measured on this 10.9 host: 0x800 changed nothing, 0x2000 moved
 # the pad from 3128 to 11320. The value is deliberately well clear of what two
-# rpaths need. It must NOT go into FIXTURE_FLAGS: the --allow-grow case below
+# rpaths need. It must NOT go into FIXTURE_FLAGS: the long-path grow case above
 # depends on a 3500-character path overflowing whatever pad the linker left, so
-# padding every fixture would silently disarm that refusal.
+# padding every fixture would silently stop that case from growing.
 "$CC" -O2 $FIXTURE_FLAGS -Wl,-headerpad,0x2000 \
     "$T/main.c" "$T/liba.dylib" -o "$T/rpath_insert_empty"
 "$DRYDOCK_MACHO_REWRITE" info "$T/rpath_insert_empty" | grep -q "^  rpath=" \
@@ -3126,9 +3102,9 @@ nwi segment "segment rename __DATA __DATA_NWI"
     || bad "segment FILE OUT" "OUT lacks the renamed segment"
 
 # AN OUT THAT BEGINS WITH '-' IS REFUSED, not created. `dylib FILE
-# --allow-grow -append /x` was the flag-first habit from before these forms took
+# --some-flag -append /x` was the flag-first habit from before these forms took
 # an output, and nothing here treats a positional as a flag -- so without the
-# check it creates a regular file called "--allow-grow" and exits 0, doing
+# check it creates a regular file called "--some-flag" and exits 0, doing
 # something the caller did not ask for. There is one form left that takes an
 # OUT, and it gets that answer from bad_out.
 #
@@ -3957,7 +3933,7 @@ echo "$cins2" | grep -qxF "  ordinal=1 path=/B" && echo "$cins2" | grep -qxF "  
     && ok "bare form: two dylib insert lines reverse the same way the edit verb's do" \
     || bad "dylib: two inserts" "expected /B at 1 and /A at 2: $(echo "$cins2" | grep 'ordinal=')"
 
-# allow-grow through edit, on the riskiest path it has: the header grow
+# A header grow through a script, on the riskiest path it has: the grow
 # reallocates the image partway through the script, and the NEXT statement
 # must run against the reallocated buffer. build_main's fixture is
 # MH_EXECUTE and PIE, the one shape mg_grow_header grows. The appended path
@@ -3970,40 +3946,37 @@ build_main "$T/edit_grow"
 grow_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/edit_grow" \
     | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 if [ -z "$grow_pad" ]; then
-    bad "edit allow-grow: fixture setup" "drydock-macho-rewrite info reported no header pad"
+    bad "edit grow: fixture setup" "drydock-macho-rewrite info reported no header pad"
     grow_pad=0
 fi
 grow_path="/$(printf "%${grow_pad}s" '' | tr ' ' x)"
-printf 'dylib append %s\nload-command delete uuid\n' "$grow_path" >"$T/grow_no.edits"
-{ printf 'allow-grow\n'; cat "$T/grow_no.edits"; } >"$T/grow_yes.edits"
+printf 'dylib append %s\nload-command delete uuid\n' "$grow_path" >"$T/grow.edits"
 grow_before=$(sha "$T/edit_grow")
 rm -f "$T/edit_grow_out"
 rc=0
-"$DRYDOCK_MACHO_REWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_no.edits" \
-    >/dev/null 2>"$T/grow_no.err" || rc=$?
-[ "$rc" -eq 1 ] \
-    && ok "edit: a dylib append that overflows the ${grow_pad}-byte pad is refused (1) without allow-grow" \
-    || bad "edit allow-grow" "without the directive: expected 1, got $rc: $(cut -c1-160 "$T/grow_no.err")"
-[ "$(sha "$T/edit_grow")" = "$grow_before" ] && [ ! -e "$T/edit_grow_out" ] \
-    && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
-    || bad "edit allow-grow" "the refused run modified FILE, or created OUT"
-rc=0
-"$DRYDOCK_MACHO_REWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow_yes.edits" \
-    >/dev/null 2>"$T/grow_yes.err" || rc=$?
-[ "$rc" -eq 0 ] && ok "edit: with allow-grow, the same script succeeds" \
-    || bad "edit allow-grow" "with the directive: expected 0, got $rc: $(cut -c1-160 "$T/grow_yes.err")"
+"$DRYDOCK_MACHO_REWRITE" "$T/edit_grow" "$T/edit_grow_out" <"$T/grow.edits" \
+    >/dev/null 2>"$T/grow.err" || rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "edit: a dylib append that overflows the ${grow_pad}-byte pad grows the header, asked for by nothing (0)" \
+    || bad "edit grow" "expected 0, got $rc: $(cut -c1-160 "$T/grow.err")"
+grep -q "^$T/edit_grow: grew the header pad by [0-9]* bytes ($grow_pad -> [0-9]* available); image base 0x[0-9a-f]* -> 0x[0-9a-f]*\$" "$T/grow.err" \
+    && ok "edit: ... announcing it on stderr: by how much, the pad before and after, the image base before and after" \
+    || bad "edit grow" "no announcement: $(cut -c1-300 "$T/grow.err")"
+[ "$(sha "$T/edit_grow")" = "$grow_before" ] \
+    && ok "edit: ... and FILE is as it was" \
+    || bad "edit grow" "the run modified FILE"
 grow_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/edit_grow_out")
 echo "$grow_info" | grep -qF "path=$grow_path" \
-    && ok "edit: allow-grow: the appended dylib is in the written image" \
-    || bad "edit allow-grow" "the appended dylib is not in the image"
+    && ok "edit grow: the appended dylib is in the written image" \
+    || bad "edit grow" "the appended dylib is not in the image"
 echo "$grow_info" | grep -q "LC_UUID" \
-    && bad "edit allow-grow" "LC_UUID survived: the statement after the grow did not apply" \
-    || ok "edit: allow-grow: the statement after the grow applied to the grown image"
+    && bad "edit grow" "LC_UUID survived: the statement after the grow did not apply" \
+    || ok "edit grow: the statement after the grow applied to the grown image"
 "$DRYDOCK_MACHO_REWRITE" verify "$T/edit_grow_out" >/dev/null 2>"$T/grow_verify.err" \
-    && ok "edit: allow-grow: the result passes drydock-macho-rewrite verify" \
-    || bad "edit allow-grow" "verify refused the result: $(cat "$T/grow_verify.err")"
+    && ok "edit grow: the result passes drydock-macho-rewrite verify" \
+    || bad "edit grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
-# version-min set and allow-grow. LC_VERSION_MIN_MACOSX needs 16 bytes of
+# version-min set on a short pad. LC_VERSION_MIN_MACOSX needs 16 bytes of
 # header pad, and build_main's pad is far larger, so a fixture that is
 # genuinely short has to be made: strip any LC_VERSION_MIN_MACOSX the
 # linker emitted (strip_version_min, above), then fill the pad with a dylib
@@ -4017,115 +3990,75 @@ vm_pad_of() {
 }
 build_main "$T/vm_tight"
 "$T/strip_version_min" "$T/vm_tight" >/dev/null \
-    || bad "version-min allow-grow: fixture setup" "strip_version_min failed"
+    || bad "version-min grow: fixture setup" "strip_version_min failed"
 vm_pad=$(vm_pad_of "$T/vm_tight")
 if [ -z "$vm_pad" ] || [ "$vm_pad" -lt 32 ]; then
-    bad "version-min allow-grow: fixture setup" "pad '$vm_pad' too small to size a filler"
+    bad "version-min grow: fixture setup" "pad '$vm_pad' too small to size a filler"
     vm_pad=32
 fi
 vm_cmd=$((vm_pad - vm_pad % 8))
 vm_fill="/$(printf "%$((vm_cmd - 26))s" '' | tr ' ' v)"
 mts "$T/vm_tight" "dylib append $vm_fill" >/dev/null 2>"$T/vm_fill.err" \
-    || bad "version-min allow-grow: fixture setup" "filler append failed: $(cut -c1-160 "$T/vm_fill.err")"
+    || bad "version-min grow: fixture setup" "filler append failed: $(cut -c1-160 "$T/vm_fill.err")"
 vm_left=$(vm_pad_of "$T/vm_tight")
 [ -n "$vm_left" ] && [ "$vm_left" -lt 16 ] \
-    && ok "version-min allow-grow: fixture has ${vm_left} bytes of pad, fewer than the 16 needed" \
-    || bad "version-min allow-grow: fixture setup" "expected fewer than 16 bytes of pad, got '$vm_left'"
+    && ok "version-min grow: fixture has ${vm_left} bytes of pad, fewer than the 16 needed" \
+    || bad "version-min grow: fixture setup" "expected fewer than 16 bytes of pad, got '$vm_left'"
 
 cp "$T/vm_tight" "$T/vm_e"
 vm_before=$(sha "$T/vm_e"); vm_ino=$(stat -f %i "$T/vm_e")
-printf 'version-min set 10.9\n' >"$T/vm_no.edits"
-printf 'allow-grow\nversion-min set 10.9\n' >"$T/vm_yes.edits"
 rm -f "$T/vm_e_out"
 rc=0
-"$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_no.edits" >/dev/null 2>"$T/vm_no.err" || rc=$?
-[ "$rc" -eq 1 ] && ok "edit: version-min set without allow-grow is refused (1) when the pad is short" \
-    || bad "edit version-min" "without the directive: expected 1, got $rc: $(cat "$T/vm_no.err")"
+printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" \
+    >"$T/vm.out" 2>"$T/vm.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "version-min set: a short pad grows the header and succeeds (0)" \
+    || bad "version-min grow" "expected 0, got $rc: $(cat "$T/vm.err")"
 [ "$(sha "$T/vm_e")" = "$vm_before" ] && [ "$(stat -f %i "$T/vm_e")" = "$vm_ino" ] \
-    && [ ! -e "$T/vm_e_out" ] \
-    && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
-    || bad "edit version-min" "the refused run modified FILE, or created OUT"
-grep -q "growing the header needs allow-grow" "$T/vm_no.err" \
-    && ok "edit: ... and the refusal names allow-grow as the remedy" \
-    || bad "edit version-min" "no allow-grow remedy in: $(cat "$T/vm_no.err")"
-rc=0
-"$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" <"$T/vm_yes.edits" >"$T/vm_yes.out" 2>"$T/vm_yes.err" || rc=$?
-[ "$rc" -eq 0 ] && ok "edit: version-min set with allow-grow grows the header and succeeds" \
-    || bad "edit version-min" "with the directive: expected 0, got $rc: $(cat "$T/vm_yes.err")"
-# The grow lines on stdout are mg_ensure_pad's, labelled with the INPUT's path
-# -- the operations run against an image in memory and know nothing about OUT.
-# The assertion below is what holds that.
-grep -qF "$T/vm_e: grew header pad: " "$T/vm_yes.out" \
-    && ok "edit: ... and stdout has 'PATH: grew header pad', naming the input" \
-    || bad "edit version-min" "no 'PATH: grew header pad' line on stdout: $(cat "$T/vm_yes.out")"
+    && ok "version-min set: ... FILE is as it was" \
+    || bad "version-min grow" "the run modified FILE"
+# Labelled with the INPUT's path -- the operations run against an image in
+# memory and know nothing about OUT -- and printed once, however many lines
+# the run reports.
+vm_grows=$(grep -c "^$T/vm_e: grew the header pad by [0-9]* bytes ($vm_left -> [0-9]* available); image base 0x[0-9a-f]* -> 0x[0-9a-f]*\$" "$T/vm.err" || true)
+[ "$vm_grows" -eq 1 ] \
+    && ok "version-min set: ... stderr announces the grow exactly once, naming the input" \
+    || bad "version-min grow" "expected 1 announcement, saw $vm_grows: $(cat "$T/vm.err")"
+grep -q "grew" "$T/vm.out" \
+    && bad "version-min grow" "the announcement reached stdout: $(cat "$T/vm.out")" \
+    || ok "version-min set: ... and not on stdout"
 "$DRYDOCK_MACHO_REWRITE" info "$T/vm_e_out" | grep -q "LC_VERSION_MIN_MACOSX" \
-    && ok "edit: allow-grow: LC_VERSION_MIN_MACOSX is in the written image" \
-    || bad "edit version-min" "no LC_VERSION_MIN_MACOSX after the grow"
+    && ok "version-min set: LC_VERSION_MIN_MACOSX is in the written image" \
+    || bad "version-min grow" "no LC_VERSION_MIN_MACOSX after the grow"
 "$DRYDOCK_MACHO_REWRITE" verify "$T/vm_e_out" >/dev/null 2>"$T/vm_verify.err" \
-    && ok "edit: allow-grow: the grown image passes drydock-macho-rewrite verify" \
-    || bad "edit version-min" "verify refused: $(cat "$T/vm_verify.err")"
+    && ok "version-min set: the grown image passes drydock-macho-rewrite verify" \
+    || bad "version-min grow" "verify refused: $(cat "$T/vm_verify.err")"
 
-# The same pair through the BARE form rather than the `edit` verb. It was
-# `drydock-macho-rewrite minos FILE OUT 10.9 [--allow-grow]`, the flag after the version,
-# as dylib/rpath took theirs; it is `allow-grow` as a directive line, and
-# without it the run refuses exactly as before. Kept beside the `edit` block
-# above because the two are different front-ends onto the same script, and the
-# bare form is the one every caller now uses.
-cp "$T/vm_tight" "$T/vm_m"
-vm_m_before=$(sha "$T/vm_m")
-rc=0
-rm -f "$T/vm_m_out"
-printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_m" "$T/vm_m_out" \
-    >/dev/null 2>"$T/vm_m_no.err" || rc=$?
-[ "$rc" -eq 1 ] && ok "minos: without allow-grow a short pad is refused (1)" \
-    || bad "minos allow-grow" "without the directive: expected 1, got $rc: $(cat "$T/vm_m_no.err")"
-[ "$(sha "$T/vm_m")" = "$vm_m_before" ] && [ ! -e "$T/vm_m_out" ] \
-    && ok "minos: ... and the refused run left FILE unchanged and wrote no OUT" \
-    || bad "minos allow-grow" "the refused run modified FILE, or created OUT"
-grep -q "allow-grow" "$T/vm_m_no.err" \
-    && ok "minos: ... and the refusal names allow-grow" \
-    || bad "minos allow-grow" "no allow-grow remedy in: $(cat "$T/vm_m_no.err")"
-rc=0
-printf 'allow-grow\nversion-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_m" "$T/vm_m_out" \
-    >"$T/vm_m_yes.out" 2>"$T/vm_m_yes.err" || rc=$?
-[ "$rc" -eq 0 ] && ok "minos: allow-grow grows the header and adds the command" \
-    || bad "minos allow-grow" "with the directive: expected 0, got $rc: $(cat "$T/vm_m_yes.err")"
-vm_m_grows=$(grep -c "grew header pad" "$T/vm_m_yes.out" || true)
-[ "$vm_m_grows" -eq 1 ] \
-    && ok "minos: allow-grow: stdout has exactly one 'grew header pad' line" \
-    || bad "minos allow-grow" "expected 1 'grew header pad' line, saw $vm_m_grows: $(cat "$T/vm_m_yes.out")"
-"$DRYDOCK_MACHO_REWRITE" info "$T/vm_m_out" | grep -q "LC_VERSION_MIN_MACOSX" \
-    && ok "minos: allow-grow: LC_VERSION_MIN_MACOSX is present" \
-    || bad "minos allow-grow" "no LC_VERSION_MIN_MACOSX after the grow"
-"$DRYDOCK_MACHO_REWRITE" verify "$T/vm_m_out" >/dev/null 2>"$T/vm_m_verify.err" \
-    && ok "minos: allow-grow: the grown file passes drydock-macho-rewrite verify" \
-    || bad "minos allow-grow" "verify refused: $(cat "$T/vm_m_verify.err")"
 # An extra token after OUT is still a usage error (2). It was `minos`'s own
 # argc check; it is the bare form's, which takes exactly FILE and OUT and
 # matches no verb here, so main() falls through to usage().
 rc=0
-printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_m" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
+printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "minos: an unknown flag is a usage error (2)" \
     || bad "minos" "an unknown flag: expected 2, got $rc"
 
-# The historical add_version_min never grew, so its wrapper still refuses.
+# The historical add_version_min never grew and refused a short pad ("no room
+# for LC_VERSION_MIN_MACOSX"); its wrapper grows it, announced.
+# spec: compat/README.md "What drop-in means here, precisely".
 cp "$T/vm_tight" "$T/vm_w"
-vm_w_before=$(sha "$T/vm_w")
 rc=0
 "$BIN/add_version_min" "$T/vm_w" >/dev/null 2>"$T/vm_w.err" || rc=$?
-[ "$rc" -eq 1 ] && grep -q "no room for LC_VERSION_MIN_MACOSX" "$T/vm_w.err" \
-    && ok "add_version_min: still refuses a short pad (1, no room; never grows)" \
-    || bad "add_version_min" "expected 1 and 'no room for LC_VERSION_MIN_MACOSX', got $rc: $(cat "$T/vm_w.err")"
-[ "$(sha "$T/vm_w")" = "$vm_w_before" ] \
-    && ok "add_version_min: ... and the refused run left the file unchanged" \
-    || bad "add_version_min" "the refused run modified the file"
+[ "$rc" -eq 0 ] && grep -q ": grew the header pad by " "$T/vm_w.err" \
+    && ok "add_version_min: a short pad is grown, announced, where the original refused (0)" \
+    || bad "add_version_min" "expected 0 and an announced grow, got $rc: $(cat "$T/vm_w.err")"
+"$DRYDOCK_MACHO_REWRITE" info "$T/vm_w" | grep -q "LC_VERSION_MIN_MACOSX" \
+    && ok "add_version_min: ... and the file now carries LC_VERSION_MIN_MACOSX" \
+    || bad "add_version_min" "no LC_VERSION_MIN_MACOSX after the grow"
 
-# `verb minos versions=10.9 flags=allow-grow` used to be here, and the version
-# it advertised is the half that survived: `statement version-min set 1` says
+# `verb minos versions=10.9 flags=...` used to be here, and the version it
+# advertised is the half that survived: `statement version-min set 1` says
 # the statement takes one operand, and `statement target 10.9 0` (asserted with
 # the other statement rows above) is where the 10.9 PROFILE this build knows is
-# published. The `flags=allow-grow` half is gone with every other flags= field
-# -- allow-grow is a directive, and directives are deliberately unlisted.
+# published. The flags= half is gone with every other flags= field.
 echo "$caps" | grep -qxF "statement version-min set 1" \
     && ok "capabilities: the version-min statement is advertised" \
     || bad "capabilities version-min" "expected 'statement version-min set 1': $(echo "$caps" | grep '^statement version-min')"
@@ -4399,11 +4332,11 @@ tgt_run "$T/tgt_redlax" "$T/tgt_redlax.out" "$T/tgt_redlax.edits" \
     && ok "target: ... and without fatal-warnings the same redundancy is only reported" \
     || bad "target (redundant)" "expected 0 and an OUT, got $tgt_redlax_rc: $(cat "$T/tgt.err")"
 
-# THE DIRECTIVES STILL GOVERN THE EXPANSION, and a derived statement's
-# refusal is reported against the line the operator actually wrote. The
-# fixture has no LC_VERSION_MIN_MACOSX and a pad too short for one, so the
-# derived `version-min set 10.9` is refused without allow-grow and succeeds
-# with it -- the same answer the explicit statement gets.
+# A DERIVED STATEMENT GETS THE ANSWER THE EXPLICIT ONE GETS, and its refusal
+# is reported against the line the operator actually wrote. The fixture has
+# no LC_VERSION_MIN_MACOSX and a pad too short for one, so the derived
+# `version-min set 10.9` grows the header, as the explicit statement does;
+# with the PIE flag cleared the same fixture cannot grow, and is refused.
 #
 # NOT $T/vm_tight, though it is the same shape: this needs LC_BUILD_VERSION
 # ABSENT too. On a host whose linker emits one, the expansion would derive a
@@ -4428,21 +4361,28 @@ tgt_left=$(vm_pad_of "$T/tgt_tight")
 [ -n "$tgt_left" ] && [ "$tgt_left" -lt 16 ] \
     && ok "target: fixture setup: ${tgt_left} bytes of pad, fewer than the 16 version-min needs" \
     || bad "target: fixture setup" "expected fewer than 16 bytes of pad, got '$tgt_left'"
-tgt_before_sha=$(sha "$T/tgt_tight")
-tgt_run "$T/tgt_tight" "$T/tgt_tight.out" && tgt_tight_rc=0 || tgt_tight_rc=$?
-[ "$tgt_tight_rc" -eq 1 ] && [ ! -e "$T/tgt_tight.out" ] \
-    && [ "$(sha "$T/tgt_tight")" = "$tgt_before_sha" ] \
-    && ok "target: a derived statement that needs allow-grow is refused (1) without it" \
-    || bad "target (allow-grow)" "expected 1 and no OUT, got $tgt_tight_rc: $(cat "$T/tgt.err")"
+cp "$T/tgt_tight" "$T/tgt_nopie"
+tgt_run "$T/tgt_tight" "$T/tgt_tight.out" \
+    || bad "target (grow)" "expected 0: $(cat "$T/tgt.err")"
+otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+    && grep -q "^$T/tgt_tight: grew the header pad by " "$T/tgt.err" \
+    && ok "target: a derived statement grows the header, announced, and lands" \
+    || bad "target (grow)" "no announced grow, or no LC_VERSION_MIN_MACOSX: $(cat "$T/tgt.err")"
+# platform: MH_PIE is 0x00200000 in the little-endian flags word at offset
+# 24, so bit 0x20 of byte 26.
+tgt_flag=$(od -An -tu1 -j26 -N1 "$T/tgt_nopie" | tr -d ' ')
+printf "\\$(printf %o $((tgt_flag & ~32)))" \
+    | dd of="$T/tgt_nopie" bs=1 seek=26 conv=notrunc 2>/dev/null
+tgt_before_sha=$(sha "$T/tgt_nopie")
+tgt_run "$T/tgt_nopie" "$T/tgt_nopie.out" && tgt_nopie_rc=0 || tgt_nopie_rc=$?
+[ "$tgt_nopie_rc" -eq 1 ] && [ ! -e "$T/tgt_nopie.out" ] \
+    && [ "$(sha "$T/tgt_nopie")" = "$tgt_before_sha" ] \
+    && grep -q "not PIE" "$T/tgt.err" \
+    && ok "target: a derived statement that cannot grow a non-PIE image is refused (1)" \
+    || bad "target (no grow)" "expected 1, 'not PIE' and no OUT, got $tgt_nopie_rc: $(cat "$T/tgt.err")"
 grep -qF "drydock-macho-rewrite edit: refused at statement 1 of 1 (line 1);" "$T/tgt.err" \
     && ok "target: ... and the refusal names the target line, not a line nobody wrote" \
-    || bad "target (allow-grow)" "not that wording: $(cat "$T/tgt.err")"
-printf 'allow-grow\ntarget 10.9\n' >"$T/tgt_ag.edits"
-tgt_run "$T/tgt_tight" "$T/tgt_tight.out" "$T/tgt_ag.edits" \
-    || bad "target (allow-grow)" "with the directive: $(cat "$T/tgt.err")"
-otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
-    && ok "target: with allow-grow, the same expansion grows the header and lands" \
-    || bad "target (allow-grow)" "no LC_VERSION_MIN_MACOSX after the grow"
+    || bad "target (no grow)" "not that wording: $(cat "$T/tgt.err")"
 
 # ONE TARGET PER SCRIPT, AND AN UNKNOWN ONE IS A REFUSAL -- both at parse
 # time, so nothing is read and nothing is written.
@@ -4469,7 +4409,7 @@ rc=0
 # ============================================================================
 # edit on a fat file, end to end: two build_main executables in one
 # container, the second labelled arm64 in its fat_arch entry (edit names a
-# slice by that entry). allow-grow on the x86_64 slice alone grows it by a
+# slice by that entry). A dylib append on the x86_64 slice alone grows it by a
 # page, so the arm64 slice after it has to move -- the one consequence a
 # passed-through slice can have, and the report must say so. The appended
 # path is sized from the slice's own pad, not hard-coded, because each
@@ -4480,7 +4420,7 @@ build_main "$T/fat_s1"
 fat_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/fat_s0" | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 [ -n "$fat_pad" ] || { bad "edit fat: fixture setup" "no header pad reported"; fat_pad=0; }
 fat_path="/$(printf "%${fat_pad}s" '' | tr ' ' f)"
-printf 'arch x86_64\nallow-grow\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
+printf 'arch x86_64\ndylib append %s\n' "$fat_path" >"$T/fat.edits"
 rc=0
 "$DRYDOCK_MACHO_REWRITE" "$T/fat_edit" "$T/fat_edit_out" <"$T/fat.edits" \
     >/dev/null 2>"$T/fat.err" || rc=$?

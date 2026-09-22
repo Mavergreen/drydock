@@ -48,8 +48,16 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     return first == UINT32_MAX ? MG_NO_SECTION_DATA : first;
 }
 
+/* The image base, for mg_ensure_pad's announcement; 0 if unreadable. */
+static uint64_t mg_base_of(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    uint64_t base = 0;
+    if (mi_wrap(buf, fsize, &im) != 0 || mi_image_base(&im, &base) != 0) return 0;
+    return base;
+}
+
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
-                  int allow_grow, const char *label) {
+                  const char *label) {
     uint32_t first = mg_first_sect_off(*pbuf, *pfsize);
     if (first == UINT32_MAX) {
         fprintf(stderr, "ERROR: %s fails validation; refusing (see above)\n", label);
@@ -75,18 +83,14 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t cur_lc_end = (uint32_t)sizeof *hdr + hdr->sizeofcmds;
     uint32_t pad_avail  = first > cur_lc_end ? first - cur_lc_end : 0;
     uint32_t new_lcs    = need_end - (uint32_t)sizeof *hdr;
-    if (!allow_grow) {
-        fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail); "
-                        "growing the header needs allow-grow\n", label, new_lcs, pad_avail);
-        return -1;
-    }
+    uint32_t first_before = first;
+    uint64_t base_before = mg_base_of(*pbuf, *pfsize);
 
     uint32_t grow_req = need_end - first;
-    printf("%s: load commands need %u more bytes than the %u-byte pad; growing header...\n",
-           label, grow_req, pad_avail);
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
-        fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit and header could not be grown\n",
-                label, new_lcs);
+        fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail), "
+                        "and the header could not be grown (see above)\n",
+                label, new_lcs, pad_avail);
         return -1;
     }
     first = mg_first_sect_off(*pbuf, *pfsize);
@@ -94,15 +98,17 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
         fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
         return -1;
     }
-    /* Growth moves section data and never removes it, and this function
-     * refused an image with none above. Checked anyway: `first` is printed
-     * as the new boundary just below. */
     if (first == MG_NO_SECTION_DATA) {
         fprintf(stderr, "ERROR: %s: header grow left no section data to bound the pad\n", label);
         return -1;
     }
-    printf("%s: grew header pad: first sect now at %u (%u bytes available)\n",
-           label, first, first - cur_lc_end);
+    /* spec: tests/grow_test.c test_ensure_pad_grows_and_announces */
+    fflush(stdout);
+    fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); "
+                    "image base %#llx -> %#llx\n",
+            label, first - first_before, pad_avail, first - cur_lc_end,
+            (unsigned long long)base_before,
+            (unsigned long long)mg_base_of(*pbuf, *pfsize));
     return 0;
 }
 

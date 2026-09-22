@@ -71,8 +71,7 @@ rpaths() {
 
 # grow NAME IN OUT -- grow IN into OUT; status in $grc.
 grow() {
-    { printf 'allow-grow\n'
-      "$DMR" info "$2" | grep -q ' LC_CODE_SIGNATURE ' && printf 'load-command delete codesig\n'
+    { "$DMR" info "$2" | grep -q ' LC_CODE_SIGNATURE ' && printf 'load-command delete codesig\n'
       rpaths "$2"; } >"$T/$1.edits"
     grc=0
     "$DMR" "$2" "$3" <"$T/$1.edits" >"$T/$1.grow.out" 2>"$T/$1.grow.err" || grc=$?
@@ -110,6 +109,8 @@ same() {
 grow prog "$T/prog" "$T/prog.grown"
 [ "$grc" -eq 0 ] && ok "prog: the grow succeeds" \
     || bad "prog: grow" "exit $grc: $(cat "$T/prog.grow.err")"
+grep -q "^$T/prog: grew the header pad by " "$T/prog.grow.err" \
+    && ok "prog: ... and announces itself" || bad "prog: announced" "$(cat "$T/prog.grow.err")"
 lowered prog "$T/prog" "$T/prog.grown"
 "$DMR" verify "$T/prog.grown" >/dev/null 2>&1 \
     && ok "prog: ... and the result verifies" || bad "prog: verify" "refused"
