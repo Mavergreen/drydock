@@ -31,7 +31,10 @@ CC="${CC:-clang}"
 # Note this applies only to the fixtures. change_dylib/fix_macho themselves
 # (below) are /bin/sh wrappers around drydock-macho-rewrite, which is a host tool, built for
 # (or already built on) the host.
-FIXTURE_FLAGS="-mmacosx-version-min=10.9"
+#
+# platform: -arch x86_64 for the same reason: a modern runner's clang builds
+# arm64 by default, whose 16 KB pages the header grow refuses.
+FIXTURE_FLAGS="-arch x86_64 -mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/change_dylib_test.$$"
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT INT TERM

@@ -192,27 +192,32 @@ bake --bogus prog
 # No room in the header for the shim's load command: the Python died with "no
 # room in the Mach-O header"; the wrapper grows the header, announced, and the
 # result runs. spec: compat/README.md's bake-mavericks-shim table. These links
-# take the default
-# pad, not $PAD, which is a floor. platform: the linker packs __TEXT's sections
-# against the end of a page, so filler costs the pad byte for byte, less an
-# alignment `k` measured from the first attempt, modulo the page; the second
-# attempt aims 40 bytes above the commands.
+# take the default pad, not $PAD, which is a floor. platform: the linker packs
+# __TEXT's sections against the end of a page, so filler costs the pad byte
+# for byte, less an alignment `k` measured from the first attempt, modulo the
+# page; the second attempt aims 40 bytes above the commands. platform: x86_64
+# however this host's clang defaults, with a shim and liba to match -- the
+# grow refuses arm64, whose pages are 16 KB.
+XF="-arch x86_64 $FF"
+SHIMX="$T/libshim-x86_64.dylib" LIBAX="$T/liba-x86_64.dylib"
+"$CC" -dynamiclib $XF -install_name "$SHIMX" -o "$SHIMX" "$T/shim.c"
+"$CC" -dynamiclib $XF -install_name "$LIBAX" -o "$LIBAX" "$T/a.c"
 pad() { "$DMR" info "$1" | sed -n 's/^header pad: \([0-9]*\) bytes available.*/\1/p'; }
 tight() {
     printf '__attribute__((used)) static const char filler[%d] = { 1 };\n' "$1" >"$T/filler.c"
-    "$CC" $FF -o "$T/tight" "$T/prog.c" "$T/filler.c" "$LIBA"
+    "$CC" $XF -o "$T/tight" "$T/prog.c" "$T/filler.c" "$LIBAX"
     pad "$T/tight"
 }
-"$CC" $FF -o "$T/loose" "$T/prog.c" "$LIBA"
+"$CC" $XF -o "$T/loose" "$T/prog.c" "$LIBAX"
 p0=$(pad "$T/loose")
 fill=$((p0 - 40))
 p1=$(tight "$fill")
 k=$(( ((p0 - fill - p1) % 4096 + 4096) % 4096 ))
 fill=$((p0 - k - 40))
 [ "$fill" -gt 0 ] && p1=$(tight "$fill")
-need=$(( (24 + ${#SHIM} + 1 + 7) / 8 * 8 ))
+need=$(( (24 + ${#SHIMX} + 1 + 7) / 8 * 8 ))
 if [ -n "$p1" ] && [ "$p1" -lt "$need" ]; then
-    bake tight --shim "$SHIM"
+    bake tight --shim "$SHIMX"
     [ "$brc" -eq 0 ] && grep -q ': grew the header pad by ' "$T/b.err" \
         && ok "grow: no header room for the shim ($p1 bytes, $need needed) -- the header grows, announced (0)" \
         || bad "grow: no room" "exit $brc: $(cat "$T/b.err")"
@@ -221,7 +226,7 @@ if [ -n "$p1" ] && [ "$p1" -lt "$need" ]; then
     set -- $run
     [ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
         && ok "grow: ... and the grown, baked binary calls the shim's functions" \
-        || bad "grow: runs" "exit $grc, printed '$run', wanted '4242 777 43'; $(file "$T/tight" "$T/tight.selfcontained" | tr '\n' ' '); $("$DMR" info "$T/tight.selfcontained" 2>&1 | grep -E 'segname|LC_' | tr '\n' ' ')"
+        || bad "grow: runs" "exit $grc, printed '$run', wanted '4242 777 43'; $(file "$T/tight.selfcontained")"
 else
     bad "grow: no room: precondition" "pad went from $p0 to ${p1:-unknown}; wanted under $need"
 fi

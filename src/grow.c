@@ -994,6 +994,14 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                         "this tool does not do\n", hdr->flags);
         return -1;
     }
+    /* platform: arm64 maps 16 KB pages; a base lowered by MG_PAGE leaves
+     * every segment misaligned, and the kernel kills the process at exec. */
+    if (hdr->cputype == CPU_TYPE_ARM64) {
+        fprintf(stderr, "macho_grow: an arm64 image maps 16 KB pages, and this grow "
+                        "lowers the image base by 4 KB pages, which arm64 cannot load; "
+                        "refusing\n");
+        return -1;
+    }
 
     uint32_t insert = mg_first_sect_off(buf, fsize);
     if (insert == UINT32_MAX) return -1;   /* already explained itself on stderr */

@@ -380,6 +380,8 @@ It is refused, and nothing is written, when:
 - the image is not a 64-bit PIE `MH_EXECUTE` — a dylib or bundle has no
   `__PAGEZERO` to lower the base into, and a non-PIE executable has absolute
   addresses to fix;
+- the image is arm64 — it maps 16 KB pages, and the grow lowers the base by
+  4 KB pages;
 - the image still has chained fixups — put `fixups set classic` first;
 - a load command or section type is one the grow does not know how to re-base
   — unknown means unsafe;
@@ -508,7 +510,7 @@ drydock-macho-rewrite "$REAL" "$T" < claude.edits
   thin a file with `lipo` if you want one. A 64-bit fat container
   (`fat_arch_64`) is refused.
 - **Only `dylib`, `rpath` and `version-min set` grow the header pad** — the
-  statements whose load commands can outgrow it — and only on a 64-bit PIE
+  statements whose load commands can outgrow it — and only on an x86_64 PIE
   executable. `fixups set classic` never needs to: it removes whichever of
   `LC_DYLD_EXPORTS_TRIE`, `LC_DYLD_CHAINED_FIXUPS` and `LC_BUILD_VERSION` are
   present before adding its 48-byte `LC_DYLD_INFO_ONLY`, so on a modern

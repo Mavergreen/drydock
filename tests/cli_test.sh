@@ -58,7 +58,10 @@ CC="${CC:-clang}"
 # This script's own directory, for the fixture-builder C sources that live
 # beside it (tests/strip_version_min.c).
 HERE=$(cd "$(dirname "$0")" && pwd)
-FIXTURE_FLAGS="-mmacosx-version-min=10.9"
+# platform: x86_64, which is what this toolkit targets, on every host: a
+# modern runner's clang builds arm64 by default, whose 16 KB pages the header
+# grow refuses.
+FIXTURE_FLAGS="-arch x86_64 -mmacosx-version-min=10.9"
 T="${TMPDIR:-/tmp}/cli_test.$$"
 mkdir -p "$T"
 trap 'rm -rf "$T"' EXIT INT TERM

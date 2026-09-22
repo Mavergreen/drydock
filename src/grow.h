@@ -116,8 +116,9 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * file offset (N) lies past the end of the image (M bytes); refusing"). That
  * offset is the bound on every write into the pad, and past the buffer's end
  * it bounds nothing. If growth was
- * refused on a precondition (not a 64-bit PIE MH_EXECUTE, chained fixups, a
- * load command whose payload grow cannot re-base) the image is untouched; a
+ * refused on a precondition (not a 64-bit PIE MH_EXECUTE, arm64, chained
+ * fixups, a load command whose payload grow cannot re-base) the image is
+ * untouched; a
  * failure partway through growing can leave it modified. Either way the
  * caller must not write it, and *pbuf stays valid to free. */
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,

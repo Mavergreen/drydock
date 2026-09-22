@@ -1539,6 +1539,35 @@ static void test_grow_refuses_a_section_past_the_image(void) {
     free(buf);
 }
 
+/* The grow moves by 4 KB pages, and arm64 maps 16 KB: an arm64 image is
+ * refused, byte-identical. The same image labelled x86_64 grows, so the
+ * refusal is the cputype's and nothing else's. */
+static void test_ensure_pad_refuses_arm64(void) {
+    uint32_t types[2] = { (uint32_t)CPU_TYPE_ARM64, (uint32_t)CPU_TYPE_X86_64 };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize; uint32_t sect_off;
+        uint8_t *buf = build_image(&fsize, &sect_off, 0);
+        ((struct mach_header_64 *)buf)->cputype = (cpu_type_t)types[i];
+        size_t fsize0 = fsize;
+        uint8_t *before = (uint8_t *)malloc(fsize0);
+        memcpy(before, buf, fsize0);
+        g_ensure_need = sect_off + 1;
+        int r;
+        int said = stderr_contains_during(ensure_thunk, &buf, &fsize, 0,
+                                          "arm64 image maps 16 KB pages", &r);
+        if (i == 0) {
+            CHECK(r == -1, "ensure_pad on arm64: refused (got %d)", r);
+            CHECK(said, "ensure_pad on arm64: the refusal names the page size");
+            CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+                  "ensure_pad on arm64: the image is byte-identical");
+        } else {
+            CHECK(r == 0 && !said, "ensure_pad on the same image as x86_64: grows (got %d)", r);
+        }
+        free(before);
+        free(buf);
+    }
+}
+
 static void test_ensure_pad_refuses_what_cannot_grow(void) {
     check_ensure_refuses_unchanged("a dylib", 0, MH_DYLIB, MH_PIE,
                                    "cannot grow a dylib or bundle");
@@ -1718,6 +1747,7 @@ int main(void) {
     test_ensure_pad_fits_is_a_noop();
     test_ensure_pad_grows_and_announces();
     test_ensure_pad_refuses_what_cannot_grow();
+    test_ensure_pad_refuses_arm64();
     test_first_sect_off_reports_no_section_data();
     test_ensure_pad_refuses_an_image_with_no_section_data();
     test_ensure_pad_refuses_a_section_past_the_image();
