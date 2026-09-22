@@ -216,11 +216,12 @@ if [ -n "$p1" ] && [ "$p1" -lt "$need" ]; then
     [ "$brc" -eq 0 ] && grep -q ': grew the header pad by ' "$T/b.err" \
         && ok "grow: no header room for the shim ($p1 bytes, $need needed) -- the header grows, announced (0)" \
         || bad "grow: no room" "exit $brc: $(cat "$T/b.err")"
-    run=$(env -i PATH=/usr/bin:/bin "$T/tight.selfcontained" 2>&1)
+    grc=0
+    run=$(env -i PATH=/usr/bin:/bin "$T/tight.selfcontained" 2>&1) || grc=$?
     set -- $run
     [ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
         && ok "grow: ... and the grown, baked binary calls the shim's functions" \
-        || bad "grow: runs" "printed '$run', wanted '4242 777 43'"
+        || bad "grow: runs" "exit $grc, printed '$run', wanted '4242 777 43'; $(file "$T/tight" "$T/tight.selfcontained" | tr '\n' ' '); $("$DMR" info "$T/tight.selfcontained" 2>&1 | grep -E 'segname|LC_' | tr '\n' ' ')"
 else
     bad "grow: no room: precondition" "pad went from $p0 to ${p1:-unknown}; wanted under $need"
 fi

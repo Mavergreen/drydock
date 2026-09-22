@@ -74,6 +74,13 @@ skip() { echo "SKIP $1: $2"; }
 # shasum invocation already used a few times below, named once so the `edit`
 # section (which needs it three times) doesn't repeat the pipeline.
 sha()  { shasum -a 256 < "$1" | cut -d' ' -f1; }
+# unpie FILE -- clear MH_PIE, so a header grow refuses FILE ("not PIE").
+# platform: MH_PIE is 0x00200000 in the little-endian flags word at offset
+# 24, so bit 0x20 of byte 26.
+unpie() {
+    unpie_b=$(od -An -tu1 -j26 -N1 "$1" | tr -d ' ')
+    printf "\\$(printf %o $((unpie_b & ~32)))" | dd of="$1" bs=1 seek=26 conv=notrunc 2>/dev/null
+}
 
 # mts FILE STATEMENT...  -- run the bare `drydock-macho-rewrite FILE OUT` form and leave
 # its result AT FILE, with each argument written as one line of the script on
@@ -2749,6 +2756,11 @@ else
     mrerr_edited="$T/implausible";       mrerr_refused="$T/segment_fat_slice"
     mrerr_pad_hi=$mrerr_pad_fixture;     mrerr_pad_lo=$mrerr_pad_compiled
 fi
+# The tighter slice must refuse for want of room rather than grow: a copy of
+# it with MH_PIE cleared cannot grow, and its pad is the same.
+cp "$mrerr_refused" "$T/mrerr_refused"
+unpie "$T/mrerr_refused"
+mrerr_refused="$T/mrerr_refused"
 # The shortest path whose cost clears the tighter pad, whatever it is:
 # cost(pad - 16) is at least pad + 9 and at most pad + 16, and a path is at
 # least one character long.
@@ -4368,11 +4380,7 @@ otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     && grep -q "^$T/tgt_tight: grew the header pad by " "$T/tgt.err" \
     && ok "target: a derived statement grows the header, announced, and lands" \
     || bad "target (grow)" "no announced grow, or no LC_VERSION_MIN_MACOSX: $(cat "$T/tgt.err")"
-# platform: MH_PIE is 0x00200000 in the little-endian flags word at offset
-# 24, so bit 0x20 of byte 26.
-tgt_flag=$(od -An -tu1 -j26 -N1 "$T/tgt_nopie" | tr -d ' ')
-printf "\\$(printf %o $((tgt_flag & ~32)))" \
-    | dd of="$T/tgt_nopie" bs=1 seek=26 conv=notrunc 2>/dev/null
+unpie "$T/tgt_nopie"
 tgt_before_sha=$(sha "$T/tgt_nopie")
 tgt_run "$T/tgt_nopie" "$T/tgt_nopie.out" && tgt_nopie_rc=0 || tgt_nopie_rc=$?
 [ "$tgt_nopie_rc" -eq 1 ] && [ ! -e "$T/tgt_nopie.out" ] \
