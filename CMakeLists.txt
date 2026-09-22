@@ -86,10 +86,11 @@ target_compile_options(drydockcore PRIVATE -O2 -Wall)
 # still here, empty: it is the list a future compiled compat tool would join,
 # and its emptiness is the measurable form of "the goal is met".
 #
-# insert_dylib is the ONE NAME below that is not one of the six: it wraps a
-# grammar this repo never shipped (Wowfunhappy/insert_dylib), staged the same
-# way for the same reason -- convenience, not compatibility debt.
-# compat/insert_dylib.sh's own header says more.
+# insert_dylib and bake-mavericks-shim are the two names below that are not
+# among the six: each wraps a grammar this repo never shipped
+# (Wowfunhappy/insert_dylib, and Wowfunhappy's bake-mavericks-shim.py), staged
+# the same way for the same reason -- convenience, not compatibility debt.
+# Each wrapper's own header says more.
 set(MACHO_WRAPPERS
   patch_macho
   change_dylib
@@ -97,7 +98,8 @@ set(MACHO_WRAPPERS
   rename_segment
   retag_swift_classes
   fix_macho
-  insert_dylib)
+  insert_dylib
+  bake-mavericks-shim)
 
 set(MACHO_TOOLS)
 
@@ -384,6 +386,11 @@ set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 # streams tests/mkbindstream.c writes by hand into them.
 add_test(NAME import_redirect_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/import_redirect_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+
+# compat/bake-mavericks-shim.sh end to end, including a baked binary that runs
+# with the shim's implementation and no DYLD_* variables.
+add_test(NAME bake_mavericks_shim_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/bake_mavericks_shim_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after they were converted onto

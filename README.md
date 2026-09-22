@@ -32,7 +32,10 @@ no dependencies, and edits binaries produced by toolchains fifteen years newer.
   papered over — `compat/README.md` states each with its reason.
   Also here: `translate.sh`, the old-grammar-to-`drydock-macho-rewrite` translator the
   wrappers source, and `drydock-macho-rewrite-compat.sh`, the machinery they share. See
-  `compat/README.md`.
+  `compat/README.md`. Two more wrappers present grammars this repo never
+  shipped: `insert_dylib`, and `bake-mavericks-shim`, which makes a binary that
+  needs `DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=SHIM` load the shim
+  itself.
 
   **Packaging note:** the six wrappers need `drydock-macho-rewrite`, `drydock-macho-rewrite-compat.sh` and
   `drydock-macho-rewrite-translate.sh` installed beside them. Anything that fetches
