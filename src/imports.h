@@ -61,6 +61,7 @@ typedef struct {
     const char *install_name;
     const char *symbol;
     int         weak;
+    const char *stream;
 } mimp_row;
 
 typedef void (*mimp_row_fn)(const mimp_row *row, void *ctx);

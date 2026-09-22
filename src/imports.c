@@ -59,12 +59,13 @@ static int collect_lc(const struct load_command *lc, void *vctx) {
  * module reports it under -- shared between the bounds pass and the
  * emission pass so the two can never disagree about which three streams a
  * slice carries. */
-struct mimp_stream { uint32_t off, size; const char *what; };
+struct mimp_stream { uint32_t off, size; const char *what, *column; };
 
 static void mimp_streams(const struct dyld_info_command *di, struct mimp_stream out[3]) {
     out[0].off = di->bind_off;      out[0].size = di->bind_size;      out[0].what = "bind";
     out[1].off = di->weak_bind_off; out[1].size = di->weak_bind_size; out[1].what = "weak bind";
     out[2].off = di->lazy_bind_off; out[2].size = di->lazy_bind_size; out[2].what = "lazy bind";
+    out[0].column = "bind"; out[1].column = "weak"; out[2].column = "lazy";
 }
 
 /* A TAB in a TSV field raggeds the row a column-by-name consumer reads;
@@ -174,6 +175,7 @@ struct emit_ctx {
     const struct slice_ctx *s;
     mimp_row_fn             fn;
     void                   *ctx;
+    const char             *stream;
 };
 
 static void emit(const mo_bind_state *st, void *vctx) {
@@ -184,6 +186,7 @@ static void emit(const mo_bind_state *st, void *vctx) {
     row.ordinal = st->ordinal;
     row.symbol  = st->symbol ? st->symbol : "-";
     row.weak    = st->weak;
+    row.stream  = e->stream;
     if (st->ordinal >= 1 && st->ordinal <= s->n) {
         row.kind         = mo_kind_name(s->cmds[st->ordinal]);
         row.install_name = s->names[st->ordinal] ? s->names[st->ordinal] : "-";
@@ -207,11 +210,12 @@ static void emit(const mo_bind_state *st, void *vctx) {
 static int mimp_emit_slice(const mi_image *im, const struct slice_ctx *s,
                            mimp_row_fn fn, void *ctx) {
     if (!s->di) return MIMP_OK;   /* no dyld info at all: zero rows */
-    struct emit_ctx e = { s, fn, ctx };
+    struct emit_ctx e = { s, fn, ctx, NULL };
     struct mimp_stream streams[3];
     mimp_streams(s->di, streams);
     for (int i = 0; i < 3; i++) {
         if (streams[i].size == 0) continue;
+        e.stream = streams[i].column;
         if (mo_bind_observe(im->buf + streams[i].off, streams[i].size,
                             streams[i].what, emit, &e) != 0)
             return MIMP_REFUSED;

@@ -322,12 +322,12 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Walks ms_table_row directly and confirms MS_TABLE has 16 rows
- * (15 kind/op pairs, plus `target 10.9`, whose
+/* Walks ms_table_row directly and confirms MS_TABLE has 17 rows
+ * (16 kind/op pairs, plus `target 10.9`, whose
  * profile occupies the op column), each of which round-trips through an
  * actual ms_parse -- not just that one known row's text appears somewhere.
  * tests/cli_test.sh separately counts --capabilities' own "statement " lines
- * (exactly 16, all unique); together the two catch the generator
+ * (exactly 17, all unique); together the two catch the generator
  * (cli/drydock-macho-rewrite.c's loop over ms_table_row) and the table itself going out
  * of step with each other -- a dropped, extra, or duplicated line on either
  * side. */
@@ -340,6 +340,7 @@ static void test_capabilities_table_round_trips(void) {
         char line[256];
         const char *a = "x";
         const char *b = "y";
+        const char *c = "z";
         /* Every value/KIND gate ms_parse enforces is a separate check from
          * arity, so a dummy operand has to satisfy it too, or this row
          * would be refused for a reason that has nothing to do with what
@@ -350,7 +351,9 @@ static void test_capabilities_table_round_trips(void) {
         else if (strcmp(kind, "fixups") == 0) a = "classic";
         else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
 
-        if (nargs == 2)
+        if (nargs == 3)
+            snprintf(line, sizeof line, "%s %s %s %s %s\n", kind, op, a, b, c);
+        else if (nargs == 2)
             snprintf(line, sizeof line, "%s %s %s %s\n", kind, op, a, b);
         else if (nargs == 1)
             snprintf(line, sizeof line, "%s %s %s\n", kind, op, a);
@@ -374,10 +377,10 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 16, "the statement table has 16 rows (got %d)", n_rows);
+    CHECK(n_rows == 17, "the statement table has 17 rows (got %d)", n_rows);
 }
 
-/* One assertion per MS_TABLE row -- sixteen. Each mask below was read out of
+/* One assertion per MS_TABLE row -- seventeen. Each mask below was read out of
  * the code that implements the operation, not reasoned from the operation's
  * name, and is pinned here because a regression would be SILENT otherwise:
  * "disturbs nothing" is a plausible-looking answer for every row, and a row
@@ -475,6 +478,39 @@ static void test_disturbs_matches_the_spec_table(void) {
      * unreviewed default, which is what the tripwire exists to prevent. */
     CHECK(ms_disturbs(MS_TARGET, MS_PROFILE_10_9) == MREL_NONE,
           "target 10.9 disturbs nothing of its own; its expansion declares its own");
+
+    /* A redirect rewrites ordinal opcodes and n_desc in place, which moves no
+     * load command, no ordinal and no base-relative value -- but a bind stream
+     * that outgrows its slot moves to the end of __LINKEDIT, which extends
+     * over it (src/redirect.h), the same reason fixups set classic earns the
+     * bit. */
+    CHECK(ms_disturbs(MS_IMPORT, MS_REDIRECT) == MREL_FILE_OFF,
+          "import redirect can move the bind stream within __LINKEDIT, and nothing else");
+}
+
+static void test_import_redirect(void) {
+    ms_script s; char err[256] = {0};
+    const char *ok = "import redirect _getpid /usr/lib/libSystem.B.dylib /usr/local/lib/shim.dylib\n";
+    CHECK(ms_parse(ok, strlen(ok), &s, err, sizeof err) == 0, "redirect rejected: %s", err);
+    CHECK(s.n == 1 && s.stmts[0].kind == MS_IMPORT && s.stmts[0].op == MS_REDIRECT,
+          "wrong kind/op");
+    CHECK(s.n == 1 && strcmp(s.stmts[0].a, "_getpid") == 0 &&
+          strcmp(s.stmts[0].b, "/usr/lib/libSystem.B.dylib") == 0 &&
+          strcmp(s.stmts[0].c, "/usr/local/lib/shim.dylib") == 0,
+          "operands are SYMBOL, FROM-LIB, TO-LIB in that order");
+    ms_free(&s);
+
+    const char *two = "import redirect _getpid /usr/lib/libSystem.B.dylib\n";
+    err[0] = 0;
+    CHECK(ms_parse(two, strlen(two), &s, err, sizeof err) == -1 &&
+          strstr(err, "takes 3 arguments (got 2)") != NULL,
+          "two operands refused for arity: %s", err);
+
+    const char *same = "import redirect _getpid /usr/lib/libSystem.B.dylib /usr/lib/libSystem.B.dylib\n";
+    err[0] = 0;
+    CHECK(ms_parse(same, strlen(same), &s, err, sizeof err) == -1 &&
+          strstr(err, "FROM-LIB and TO-LIB are both") != NULL,
+          "the same library twice is refused: %s", err);
 }
 
 static void test_every_row_declares_its_disturbs(void) {
@@ -711,6 +747,7 @@ int main(void) {
     test_unknown_target_is_refused_not_guessed();
     test_a_directive_after_target_is_an_error();
     test_dylib_retype();
+    test_import_redirect();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

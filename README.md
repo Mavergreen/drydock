@@ -110,7 +110,7 @@ path that is too long is an error here and a non-event with Apple's tool.
 
 `drydock-macho-rewrite FILE OUT` takes its statements on stdin, and it is the only way to
 modify a binary: `FILE` is opened read-only and never touched, and the result
-goes to `OUT`. (`verify FILE` and `info FILE` are read-only and take no `OUT`.) An `OUT` that names `FILE` — the same path, a
+goes to `OUT`. (`verify`, `info`, `imports` and `exports` are read-only and take no `OUT`.) An `OUT` that names `FILE` — the same path, a
 symlink to it, or a hard link to it — is refused before any work is done.
 `drydock-macho-rewrite --capabilities`' `output positional=2 never-writes-input` line tells
 a caller to expect this shape rather than assume it.
@@ -209,8 +209,8 @@ doesn't, e.g. `./--name`. One leading dash is a file name there, as it was for
 every historical tool. Not for `OUT`, though: an `OUT` beginning with `-` is
 refused and says so, because `OUT` is a file this command creates, so a
 flag-looking one is a mistake rather than a name. A `FILE` named like one of the
-two surviving verbs (`verify`, `info`) is spelled `./verify`, for the same
-reason.
+four read-only verbs (`verify`, `info`, `imports`, `exports`) is spelled
+`./verify`, for the same reason.
 
 **Nothing is written unless every statement succeeded.** The whole script is
 parsed before `FILE` is opened at all, so a typo in the last line of a long
@@ -235,7 +235,10 @@ conversion's figures (rebases and binds emitted, the bytes of opcodes and the
 bytes appended, the commands stripped, how far `__LINKEDIT` grew) or that an
 already-classic image passed through, for `swift-abi set legacy` how many
 class records it retagged or that there was nothing to retag, for
-`version-min set` the `LC_VERSION_MIN_MACOSX` it appended, and for `target
+`version-min set` the `LC_VERSION_MIN_MACOSX` it appended, for `import
+redirect` how many binds and symbol-table entries it moved and whether the bind
+stream was rewritten in place or grew (how many bytes, and the file offset it
+now lives at), and for `target
 10.9` its whole expansion, line by line, each with the finding that produced
 it — or that this binary already targets 10.9; then `FILE: verified` (or
 `FILE: nothing this run disturbed is re-checked`, when the run moved nothing the
@@ -300,7 +303,25 @@ rpath         replace   OLD NEW
 rpath         delete    PATH
 rpath         append    PATH
 rpath         insert    PATH
+import        redirect  SYMBOL FROM-LIB TO-LIB
 ```
+
+`import redirect` makes every bind of `SYMBOL` that names the library
+`FROM-LIB` name `TO-LIB` instead — in the bind stream, the lazy-bind stream and
+the symbol table — and changes nothing else. Both libraries are install names
+as the load commands spell them, and `TO-LIB` must already be loaded, typically
+by a `dylib append` earlier in the same script. A bind of the same symbol from
+any other library is left alone. The lazy stream is patched in place, because
+each lazy program is addressed by its offset; a lazy bind whose one-byte ordinal
+opcode cannot hold `TO-LIB`'s ordinal (above 15), or whose ordinal opcode also
+serves a bind that is not moving, is refused. The bind stream is rewritten in
+place when that fits, and otherwise moves to the end of `__LINKEDIT`, which
+grows to cover it, and the report says so — no directive is needed, because
+nothing mapped moves. The weak-bind table names no library and is never
+changed; a weak bind of `SYMBOL` is reported as a warning. Before the image is
+handed on, both streams are read back and every bind compared with what it
+was: any bind that is not what the redirect meant is a refusal. A chained-fixups
+image is refused; put `fixups set classic` first.
 
 These statements are the whole mutating surface. `drydock-macho-rewrite` used to carry a
 second spelling of them — a CLI verb per operation, `drydock-macho-rewrite dylib FILE OUT
@@ -476,7 +497,8 @@ drydock-macho-rewrite "$REAL" "$T" < claude.edits
 - **`fatal-warnings` covers the statements that can match nothing:**
   `load-command delete` (no command of that kind), `dylib replace/delete/
   reexport` and `rpath replace/delete` (no command naming that path), and
-  `segment rename` (no segment of that name). `append` and `insert` always
+  `segment rename` (no segment of that name), and `import redirect` (no bind
+  of that symbol names that library). `append` and `insert` always
   act, and the three `set` statements treat "already so" as success, so none
   of those can miss. Neither can `target`, nor anything its expansion derived
   (see "The `target` statement", above). On a fat file, a statement has
@@ -491,6 +513,32 @@ drydock-macho-rewrite "$REAL" "$T" < claude.edits
   the grown image. What decides whether a check runs is the image and the
   operations, never the caller: a run that disturbed nothing it examines skips
   it, and nothing a caller can set will suppress one that applies.
+
+## Read-only queries
+
+```sh
+drydock-macho-rewrite info FILE      # load commands, library ordinals, header pad
+drydock-macho-rewrite verify FILE    # the plausibility check, on its own
+drydock-macho-rewrite imports FILE   # TSV, one row per bind
+drydock-macho-rewrite exports FILE   # TSV, one row per exported symbol
+```
+
+`imports` and `exports` print a header row, and a caller reads their columns by
+name: columns may be appended, never reordered, renamed or removed. A fat file
+is reported slice by slice (`arch` is `-` for a thin one), and a field that
+would carry a tab or a newline refuses the whole report.
+
+- **`imports`**: `arch`, `ordinal`, `kind`, `install_name`, `symbol`, `weak`,
+  `stream`. `stream` — `bind`, `weak` or `lazy` — says which of the three
+  `LC_DYLD_INFO` streams the bind is in; a weak-bind row names no library.
+  A chained-fixups image is refused; convert it with `fixups set classic`.
+- **`exports`**: `arch`, `symbol`, `kind` (`regular`, `thread-local`,
+  `absolute`, `reexport`, `stub-resolver`), `weak` (a weak definition) and
+  `source`. The symbols come from the export trie — `LC_DYLD_INFO`'s or
+  `LC_DYLD_EXPORTS_TRIE`'s — which is what dyld resolves an import against; an
+  image with no trie at all is read from its symbol table instead (every
+  external symbol that is not undefined), and `source` says which, `trie` or
+  `symtab`.
 
 ## Notes
 
