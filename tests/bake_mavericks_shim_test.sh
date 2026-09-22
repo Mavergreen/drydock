@@ -119,8 +119,12 @@ has_import "$T/prog.selfcontained" _printf \
     && ok "bake: ... and _printf, which the shim does not export, still binds to libSystem" \
     || bad "bake: printf untouched" "$("$DMR" imports "$T/prog.selfcontained")"
 HI_LIB=$SHIM; export HI_LIB
+# platform: a modern ld signs what it links, 10.9's does not -- so which line
+# is right is read off the input, not assumed.
+sig='none present'
+"$DMR" info "$T/prog" | grep -q ' LC_CODE_SIGNATURE ' && sig=stripped
 grep -qxF "shim exports 4 symbols ($SHIM)" "$T/b.out" &&
-    grep -qx 'code signature: none present' "$T/b.out" &&
+    grep -qx "code signature: $sig" "$T/b.out" &&
     grep -qx 'shim linked as ordinal [0-9]* (newly added)' "$T/b.out" &&
     grep -qx 'redirected 3 imports to the shim; bind data: .*:' "$T/b.out" &&
     grep -qx '    _getppid' "$T/b.out" &&
