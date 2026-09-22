@@ -392,6 +392,11 @@ add_test(NAME import_redirect_test
 add_test(NAME bake_mavericks_shim_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/bake_mavericks_shim_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
+# A grown binary, run beside its input with the same arguments and
+# environment: stdout, stderr and exit status must agree.
+add_test(NAME grown_binary_runs_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/grown_binary_runs_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+
 # Regression coverage for two heap-overflow crashes a code review found in
 # add_version_min and retag_swift_classes after they were converted onto
 # src/image.h -- mi_open validates load commands, not section file ranges or
