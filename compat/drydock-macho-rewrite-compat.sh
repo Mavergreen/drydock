@@ -201,7 +201,7 @@ mw_prepare() {
         mw_require_writable "$1" || return 1
         MW_TARGET=$(mw_resolve "$1") || return 1
         # Regular files only: a directory's link count is always above one,
-        # and a directory falls through to drydock-macho-rewrite's own refusal.
+        # and a directory falls through to drydock-macho-rewrite.
         mw_links=1
         if [ -f "$MW_TARGET" ]; then
             mw_links=$(stat -f %l "$MW_TARGET" 2>/dev/null) || mw_links=1
