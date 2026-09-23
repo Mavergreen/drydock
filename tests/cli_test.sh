@@ -493,9 +493,8 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
     && ok "capabilities: rpath advertises four ops, and still omits reexport" \
     || bad "capabilities ops" "rpath ops moved: $caps_rpath_ops"
 
-# --capabilities' statement lines are generated from MS_TABLE by looping
-# ms_table_row: 17 <kind,op> pairs plus `target 10.9` make 18, and
-# tests/script_test.c checks the table itself has those 18 rows.
+# --capabilities' statement lines are generated from MS_TABLE;
+# tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
 [ "$n_statements" -eq 18 ] && [ "$n_unique" -eq 18 ] \
@@ -1343,38 +1342,10 @@ rc=0
 # ============================================================================
 # version-min set
 # ============================================================================
-# build_main's FIXTURE_FLAGS (-mmacosx-version-min=10.9) makes the linker
-# emit LC_VERSION_MIN_MACOSX itself -- so a fixture built that way already
-# HAS the load command drydock-macho-rewrite minos is supposed to add, and the "happy
-# path" below would pass even with cmd_minos's body replaced by `return 0`
-# (confirmed by doing exactly that -- see the commit message).
-#
-# A first fix tried -Wl,-no_version_load_command to suppress it at link
-# time. That is 10.9-ld-only: it linked here and broke the whole suite on
-# the cross runner ("ld: unknown options: -no_version_load_command"),
-# trading one host dependency for a worse one -- a hard link failure
-# instead of one weak assertion. Fixed properly this time: build the
-# fixture NORMALLY (portable -- every fixture in this file does this) and
-# then remove the load command ourselves, by direct Mach-O structure
-# surgery, with a tiny throwaway C program compiled by plain $CC with no
-# special flags -- the same "read/write the structure directly" idiom
-# change_dylib_test.sh's ordinal_of.c already uses, so nothing here depends
-# on a specific ld/clang version, and nothing here depends on drydock-macho-rewrite or
-# change_dylib's own strip machinery either (their -strip-lc/`lc -delete`
-# vocabulary doesn't cover LC_VERSION_MIN_MACOSX today, and reusing the
-# tool under test to build that test's own fixture would be circular
-# regardless). The fixture is therefore test-tool-constructed, not
-# linker-constructed, for this one load command only.
-#
-# The program that does it is tests/strip_version_min.c, a file rather than a
-# here-document because tests/wrapper_test.sh needs exactly the same fixture
-# for exactly the same reason, and one copy of it is enough.
 "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
 
 "$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c"
 
-# info prints LC_BUILD_VERSION's fields as it prints LC_VERSION_MIN_MACOSX's,
-# so "what minimum does this image declare, and where?" is one query.
 build_main "$T/info_bv"
 "$T/mkminos" bv "$T/info_bv" 1 12.0 12.3 || bad "info build-version: fixture setup" "mkminos bv failed"
 [ "$("$T/mkminos" show "$T/info_bv")" = "build-version platform=1 minos=12.0.0 sdk=12.3.0" ] \
@@ -1408,14 +1379,8 @@ fi
 if [ "$strip_rc" -ne 0 ]; then
     bad "version-min set: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
 fi
-# The precondition is specifically "no LC_VERSION_MIN_MACOSX" -- that is the
-# ONE load command drydock-macho-rewrite minos adds, and the thing the "present after"
-# assertion below checks for. LC_BUILD_VERSION is a DIFFERENT load command a
-# modern linker emits instead (add_version_min.c only ever looks for
-# LC_VERSION_MIN_MACOSX, so LC_BUILD_VERSION's presence is orthogonal to
-# this test, not a disqualifier) -- asserting its absence too would be
-# asserting something about LC_BUILD_VERSION this test does not need and
-# cannot always get.
+# The premise is only that LC_VERSION_MIN_MACOSX, the command version-min set
+# adds, is absent; a modern linker's LC_BUILD_VERSION may stay.
 before_minos=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_fixture")
 if echo "$before_minos" | grep -q "LC_VERSION_MIN_MACOSX"; then
     bad "version-min set: fixture setup" "fixture still carries LC_VERSION_MIN_MACOSX"
@@ -1545,8 +1510,7 @@ rc=0; printf 'minos set 10.x\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_bad
     && ok "minos set: a malformed version is a parse error (2), nothing written" \
     || bad "minos set (bad version)" "rc $rc: $(cat "$T/ms.err")"
 
-# version-min set only appends: an image already declaring 10.12 keeps it,
-# as add_version_min's upstream did. minos set is the statement that rewrites.
+# add_version_min's upstream left a present command alone, so version-min set does too.
 rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_vmset.out" \
     >"$T/ms.out" 2>"$T/ms.err" || rc=$?
 [ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_vmset.out")" = "version-min version=10.12.0 sdk=10.13.0" ] \
@@ -4287,7 +4251,7 @@ grep -q "grew" "$T/vm.out" \
 rc=0
 printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "version-min set: an extra token after OUT is a usage error (2)" \
-    || bad "version-min set" "an unknown flag: expected 2, got $rc"
+    || bad "version-min set" "an extra token after OUT: expected 2, got $rc"
 
 # The historical add_version_min never grew and refused a short pad ("no room
 # for LC_VERSION_MIN_MACOSX"); its wrapper grows it, announced.
@@ -4442,8 +4406,8 @@ grep -qF "    version-min set 10.9  (no LC_VERSION_MIN_MACOSX)" "$T/tgt.err" \
 otool -l "$T/tgt_novm.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     && ok "target: ... and the written image has the command" \
     || bad "target (version-min)" "no LC_VERSION_MIN_MACOSX in the output"
-# The inverse: one that already has it. minos puts it there whatever the
-# linker did, and is a no-op on an image that already had one.
+# The inverse: one that already has it, put there by version-min set whatever the
+# linker did.
 build_main "$T/tgt_hasvm"
 mts "$T/tgt_hasvm" "version-min set 10.9" >/dev/null 2>"$T/tgt_minos.err" \
     || bad "target: fixture setup" "version-min set failed: $(cat "$T/tgt_minos.err")"
@@ -4537,9 +4501,7 @@ tgt_fx=$(tgt_at "$T/tgt.err" "^    fixups set classic")
     && ok "target: written first, its expansion is reported first" \
     || bad "target (position)" "expansion at '$tgt_fx', uuid at '$tgt_uuid': $(cat "$T/tgt.err")"
 
-# THE DECLARED MINIMUM: lowered when above 10.9, left when at or below it
-# (major.minor), and named on a `minimum:` line in every case. mkminos
-# writes and reads each premise.
+# The declared minimum; mkminos writes and reads each premise.
 tgt_minimum() { grep '^    minimum: ' "$T/tgt.err" || true; }
 
 # The reproduction: this host's own toolchain, asked for 10.12.

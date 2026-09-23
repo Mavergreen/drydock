@@ -5,14 +5,10 @@
  * produce, so this is host-agnostic: no fixture file, no toolchain
  * dependence. The quoting cases are the ones mt_quote (compat/translate.sh)
  * actually emits, so the generator and this parser cannot drift.
- *
- * Build: clang -O2 -Wall -Isrc -o /tmp/scripttest tests/script_test.c \
- *   src/script.c && /tmp/scripttest
  */
 #include "script.h"
 #include "arch_names.h"
 #include "relations.h"
-#include "version_min.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -366,12 +362,9 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Walks ms_table_row directly and confirms MS_TABLE has 18 rows
- * (17 kind/op pairs, plus `target 10.9`, whose
- * profile occupies the op column), each of which round-trips through an
- * actual ms_parse -- not just that one known row's text appears somewhere.
- * tests/cli_test.sh separately counts --capabilities' own "statement " lines
- * (exactly 18, all unique); together the two catch the generator
+/* Walks ms_table_row directly, and each row round-trips through an actual
+ * ms_parse. tests/cli_test.sh separately counts --capabilities' own
+ * "statement " lines; together the two catch the generator
  * (cli/drydock-macho-rewrite.c's loop over ms_table_row) and the table itself going out
  * of step with each other -- a dropped, extra, or duplicated line on either
  * side. */
@@ -424,7 +417,7 @@ static void test_capabilities_table_round_trips(void) {
     CHECK(n_rows == 18, "the statement table has 18 rows (got %d)", n_rows);
 }
 
-/* One assertion per MS_TABLE row -- eighteen. Each mask below was read out of
+/* One assertion per MS_TABLE row. Each mask below was read out of
  * the code that implements the operation, not reasoned from the operation's
  * name, and is pinned here because a regression would be SILENT otherwise:
  * "disturbs nothing" is a plausible-looking answer for every row, and a row
@@ -561,7 +554,7 @@ static void test_import_redirect(void) {
 }
 
 static void test_every_row_declares_its_disturbs(void) {
-    /* "Nothing" is a real and common answer -- five rows -- so it must be
+    /* "Nothing" is a real and common answer -- several rows -- so it must be
      * SPELLED. MS_TABLE_ROWS makes omitting it a compile error (a macro
      * invoked with eight arguments instead of nine), which is the enforcement;
      * this is the second, weaker half, and it catches the one path the macro
@@ -787,16 +780,6 @@ static void test_minos_set_takes_a_version(void) {
     }
 }
 
-static void test_mv_format_version_drops_a_zero_patch(void) {
-    char b[16];
-    mv_format_version(0x000A0C00, b);
-    CHECK(strcmp(b, "10.12") == 0, "0x000A0C00 formats as 10.12 (got %s)", b);
-    mv_format_version(0x000A0905, b);
-    CHECK(strcmp(b, "10.9.5") == 0, "0x000A0905 formats as 10.9.5 (got %s)", b);
-    mv_format_version(0x000B0000, b);
-    CHECK(strcmp(b, "11.0") == 0, "0x000B0000 formats as 11.0 (got %s)", b);
-}
-
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -840,7 +823,6 @@ int main(void) {
     test_dylib_retype();
     test_import_redirect();
     test_minos_set_takes_a_version();
-    test_mv_format_version_drops_a_zero_patch();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

@@ -74,7 +74,6 @@ typedef struct {
  * `version`, in place; never an sdk field, never a size. */
 void mv_set_minos(mi_image *im, uint32_t version, mv_minos_report *r);
 
-/* "10.12", or "10.9.5" when the patch is nonzero. */
 void mv_format_version(uint32_t v, char out[16]);
 
 #endif /* DRYDOCK_VERSION_MIN_H */

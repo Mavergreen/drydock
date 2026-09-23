@@ -31,6 +31,7 @@
 #include "rewrite.h"
 #include "script.h"
 #include "mach_compat.h"
+#include "version_min.h"
 
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
@@ -902,9 +903,8 @@ static void test_the_file_level_operations_run_in_memory(void) {
           "then gains a version-min (got %d; log: %s)", rc, g_log);
     CHECK(count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 1,
           "in memory: LC_VERSION_MIN_MACOSX was appended");
-    /* The append is the one trace the statement leaves: the stdout line
-     * that reports it belongs to `drydock-macho-rewrite minos`, which edit does not call.
-     * So the report says so, beneath the statement, as a follow-up. */
+    /* The append is the one trace the statement leaves, so the report says
+     * so, beneath the statement. */
     {
         const char *stmt = strstr(g_log, "  version-min set 10.9\n");
         const char *app = strstr(g_log, "\n      appended LC_VERSION_MIN_MACOSX 10.9\n");
@@ -1569,6 +1569,16 @@ static void test_target_with_both_commands_lets_version_min_decide(void) {
     rm_dir();
 }
 
+static void test_mv_format_version_drops_a_zero_patch(void) {
+    char b[16];
+    mv_format_version(0x000A0C00, b);
+    CHECK(strcmp(b, "10.12") == 0, "0x000A0C00 formats as 10.12 (got %s)", b);
+    mv_format_version(0x000A0905, b);
+    CHECK(strcmp(b, "10.9.5") == 0, "0x000A0905 formats as 10.9.5 (got %s)", b);
+    mv_format_version(0x000B0000, b);
+    CHECK(strcmp(b, "11.0") == 0, "0x000B0000 formats as 11.0 (got %s)", b);
+}
+
 static void test_fat_minos_set_matches_in_any_slice(void) {
     fresh_dir();
     char path[512], out[512], s1[512];
@@ -1624,6 +1634,7 @@ int main(void) {
     test_minos_set_with_nothing_declared_is_a_miss();
     test_target_with_both_commands_lets_version_min_decide();
     test_fat_minos_set_matches_in_any_slice();
+    test_mv_format_version_drops_a_zero_patch();
 
     printf("edit_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;

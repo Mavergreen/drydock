@@ -98,8 +98,8 @@ void ms_free(ms_script *s);
 const char *ms_kind_name(int kind);
 const char *ms_op_name(int op);
 
-/* MAJOR[.MINOR[.PATCH]], decimal, at most 65535.255.255 -> the packed
- * xxxx.yy.zz both version load commands use. 0, or -1 for anything else. */
+/* Packs MAJOR[.MINOR[.PATCH]], at most 65535.255.255, as xxxx.yy.zz;
+ * 0, or -1 if malformed. */
 int ms_parse_version(const char *s, uint32_t *out);
 
 /* Which verb grammar OFFERED a row's operation. `machotool dylib` and
@@ -147,7 +147,7 @@ int ms_table_row(int i, const char **kind, const char **op, int *nargs,
 unsigned ms_disturbs(int kind, int op);
 
 /* Did row `i` declare its disturbs mask, rather than inherit a zero nobody
- * chose? "Nothing" is a real and common answer -- five of the rows -- so it
+ * chose? "Nothing" is a real and common answer -- several rows -- so it
  * has to be SPELLED, and a row that spells nothing at all must be
  * distinguishable from one that spells MREL_NONE. The table makes skipping
  * it a compile error (see MS_TABLE_ROWS in src/script.c); this is how a test

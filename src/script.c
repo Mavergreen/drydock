@@ -67,10 +67,10 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * was cli/drydock-macho-rewrite.c's own DYLIB_OPS, which is what this table absorbed.
  * Adding an operation here is the whole of adding an operation -- to both
  * front-ends, to what --capabilities advertises, and (the disturbs column) to
- * what a run of it is known to invalidate. 18 rows: every "<kind> <op>" the
+ * what a run of it is known to invalidate. Every row is a "<kind> <op>" the
  * language accepts.
  *
- * The `target 10.9` row, whose second field is a PROFILE name, not a
+ * The `target 10.9` row's second field is a PROFILE name, not a
  * verb. It sits in the op column because that is what makes the profile part
  * of this one table: an unknown profile is refused by the same lookup that
  * refuses an unknown op, `target 10.9 extra` by the same arity check, and
@@ -93,7 +93,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * DISTURBS IS WHY THIS IS A MACRO AND NOT A BRACED INITIALIZER. A row added
  * without a disturbs mask invokes MS_ROW with eight arguments instead of
  * nine, which is a COMPILE ERROR ("macro requires 9 arguments, but only 8
- * given") -- not a test failure found later, and not a silent zero. Five
+ * given") -- not a test failure found later, and not a silent zero. Several
  * rows really do disturb nothing, so "nothing" cannot be the value a row
  * gets by saying nothing; it has to be spelled MREL_NONE. This is the same
  * move src/linkedit.h makes with ML_PLAIN_OFFSET_LCS, which turns one class
@@ -103,7 +103,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  *
  * Each mask was derived from the code that implements the operation, not
  * from the operation's name; see ms_disturbs and tests/script_test.c's
- * test_disturbs_matches_the_spec_table, which pins all eighteen with the
+ * test_disturbs_matches_the_spec_table, which pins every row with the
  * reason for each. */
 #define MS_TABLE_ROWS(R) \
   R("load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,       1, NULL,        0,             0, MREL_HEADER_PAD) \
