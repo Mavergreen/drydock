@@ -1308,7 +1308,7 @@ int mr_apply_file(const char *path, const char *out, const mr_ops *ops,
      *
      * Running it AFTER the write -- where it used to be, so that it read as a
      * summary of a result already on disk -- would now mean creating `out` and
-     * then returning MR_REFUSED for a --fatal-warnings miss: a refused run that
+     * then returning MR_REFUSED for an unmatched operation: a refused run that
      * left an output behind. That was harmless while the write was conditional
      * on `modified`, because a run where every operation missed changed nothing
      * and so wrote nothing; with `out` written unconditionally it is not. The

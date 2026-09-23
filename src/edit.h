@@ -42,10 +42,10 @@ typedef struct {
  * INPUT. A thin 64-bit Mach-O, or a fat (universal) file, which is edited
  * slice by slice and kept whole. Anything else is refused; an input that
  * cannot be opened or read at all is MR_FAIL. Beyond its statements the
- * script may carry directives -- `arch`, `fatal-warnings` -- which select
- * slices and turn an unmatched statement into a refusal of the whole run;
- * src/script.h defines them. A statement whose load commands outgrow the
- * header pad grows it (src/grow.h), and says so on stderr.
+ * script may carry directives -- `arch`, `allow-unmatched` -- which select
+ * slices and let an unmatched statement be a report rather than a refusal of
+ * the whole run; src/script.h defines them. A statement whose load commands
+ * outgrow the header pad grows it (src/grow.h), and says so on stderr.
  *
  * REPORT, to o->log. A refusal that has read the image names both files and
  * what became of each; one that never got that far says only what it can.

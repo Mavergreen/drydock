@@ -220,12 +220,12 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       drydock-macho-rewrite (or a shared rewrite driver it calls into) examined FILE and
  *       declined on purpose -- bad magic, implausible, an unsupported KIND/
  *       version, a grow mg_grow_header itself refused, new load commands
- *       that don't fit and can't be grown, an unmatched `fatal-warnings`
- *       statement, and more (rewrite.h's comment on mr_apply_image names the
- *       sites; its MR_REFUSED/MR_FAIL block has the one exception -- an allocation
- *       failure inside mg_grow_header or mg_plausible themselves stays
- *       refused=EX_REFUSED, not failed, same as every other reason either
- *       one refuses, on verify as well as a script run);
+ *       that don't fit and can't be grown, an unmatched statement in a
+ *       script without `allow-unmatched`, and more (rewrite.h's comment on
+ *       mr_apply_image names the sites; its MR_REFUSED/MR_FAIL block has the
+ *       one exception -- an allocation failure inside mg_grow_header or
+ *       mg_plausible themselves stays refused=EX_REFUSED, not failed, same as
+ *       every other reason either one refuses, on verify as well as a script run);
  *       failed=EX_FAIL is everything else (syscall/malloc failure, usage
  *       error, an unparseable script -- EX_REFUSED's own comment above has the
  *       exact allocation breakdown). The two numbers are 1 and 2, not the
@@ -262,7 +262,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       wrapper reads instead. One attribute is in use: `info`'s
  *       `flags=--thin` below -- a real CLI flag `info` itself parses,
  *       unlike the directives the old `flags=` fields advertised (arch,
- *       fatal-warnings; see "that is a later decision" below).
+ *       allow-unmatched; see "that is a later decision" below).
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the statement
  *       vocabulary ms_parse accepts, and so the whole mutating surface.
@@ -273,7 +273,7 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       replace OLD NEW`. One row's second field is a PROFILE rather than an
  *       op -- "statement target 10.9 0" is the `target 10.9` line, and a
  *       wrapper reads which profiles this build knows the same way it reads
- *       which ops each kind takes. Directives (arch, fatal-warnings)
+ *       which ops each kind takes. Directives (arch, allow-unmatched)
  *       are deliberately not listed here -- that is a later decision. */
 static int print_capabilities(void) {
     printf("format 1\n");

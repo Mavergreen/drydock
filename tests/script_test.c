@@ -112,17 +112,17 @@ static void test_parses_the_production_script(void) {
 }
 
 static void test_directives_set_flags_and_are_not_statements(void) {
-    static const char src[] = "arch x86_64\nfatal-warnings\nload-command delete uuid\n";
+    static const char src[] = "arch x86_64\nallow-unmatched\nload-command delete uuid\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
     CHECK(s.arch_mask != 0, "arch set the mask");
-    CHECK(s.fatal_warnings == 1, "fatal-warnings set the flag");
+    CHECK(s.allow_unmatched == 1, "allow-unmatched set the flag");
     CHECK(s.n == 1, "directives are not statements (got n=%d)", s.n);
     ms_free(&s);
 }
 
 static void test_a_directive_after_an_operation_is_an_error(void) {
-    static const char src[] = "load-command delete uuid\nfatal-warnings\n";
+    static const char src[] = "load-command delete uuid\nallow-unmatched\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "a directive after an operation is refused");
@@ -202,18 +202,18 @@ static void test_crlf_is_refused(void) {
  * takes no operands. */
 
 static void test_repeated_directive_is_accepted(void) {
-    static const char src[] = "arch x86_64\narch x86_64\nfatal-warnings\nfatal-warnings\ndylib delete /x\n";
+    static const char src[] = "arch x86_64\narch x86_64\nallow-unmatched\nallow-unmatched\ndylib delete /x\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0,
           "repeating a directive is idempotent, not an error (%s)", err);
     CHECK(s.arch_mask != 0, "arch still set");
-    CHECK(s.fatal_warnings == 1, "fatal-warnings still set");
+    CHECK(s.allow_unmatched == 1, "allow-unmatched still set");
     CHECK(s.n == 1, "only the operation counts as a statement (got %d)", s.n);
     ms_free(&s);
 }
 
 static void test_directive_with_operand_is_refused(void) {
-    static const char src[] = "fatal-warnings yes\n";
+    static const char src[] = "allow-unmatched yes\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
           "a directive given an operand is refused");
@@ -237,6 +237,64 @@ static void test_allow_grow_is_an_unknown_statement(void) {
           err, other);
     CHECK(strstr(err, "unknown statement 'allow-grow'") != NULL,
           "which calls it an unknown statement (got: %s)", err);
+}
+
+/* `fatal-warnings` was a directive; an unmatched operation refuses by default
+ * now, and a script asking for the old behaviour is asking for nothing. It is
+ * gone rather than accepted-and-ignored, and it is no more special than a
+ * typo -- there is no branch for it to hit, so it falls through to the same
+ * unknown-statement refusal `fatal-warnox` gets. */
+static void test_fatal_warnings_is_an_unknown_statement(void) {
+    ms_script s; char err[256] = {0};
+    static const char gone[] = "fatal-warnings\n", never[] = "fatal-warnox\n";
+    CHECK(ms_parse(gone, sizeof gone - 1, &s, err, sizeof err) == -1,
+          "fatal-warnings is refused");
+    CHECK(strstr(err, "unknown statement 'fatal-warnings'") != NULL,
+          "and as an unknown statement (got: %s)", err);
+    memset(err, 0, sizeof err);
+    CHECK(ms_parse(never, sizeof never - 1, &s, err, sizeof err) == -1,
+          "a typo is refused too");
+    CHECK(strstr(err, "unknown statement 'fatal-warnox'") != NULL,
+          "the same way (got: %s)", err);
+}
+
+/* The opt-in that replaces it, in the slot allow-grow vacated: a directive,
+ * no operands, and refused after any operation. */
+static void test_allow_unmatched_is_a_directive(void) {
+    ms_script s; char err[256] = {0};
+    static const char ok[] = "allow-unmatched\nload-command delete uuid\n";
+    static const char late[] = "load-command delete uuid\nallow-unmatched\n";
+    static const char operand[] = "allow-unmatched yes\n";
+
+    CHECK(ms_parse(ok, sizeof ok - 1, &s, err, sizeof err) == 0,
+          "allow-unmatched rejected: %s", err);
+    CHECK(s.allow_unmatched == 1, "allow-unmatched did not set the field");
+    CHECK(s.n == 1, "wanted 1 statement, got %d", s.n);
+    ms_free(&s);
+
+    memset(err, 0, sizeof err);
+    CHECK(ms_parse(late, sizeof late - 1, &s, err, sizeof err) == -1,
+          "allow-unmatched after an operation is refused");
+    CHECK(strstr(err, "must precede every operation") != NULL,
+          "and says why (got: %s)", err);
+
+    memset(err, 0, sizeof err);
+    CHECK(ms_parse(operand, sizeof operand - 1, &s, err, sizeof err) == -1,
+          "allow-unmatched with an operand is refused");
+    CHECK(strstr(err, "takes no operands") != NULL,
+          "and says why (got: %s)", err);
+}
+
+/* The DEFAULT is the change. A bare script refuses an operation that matched
+ * nothing; only allow-unmatched makes it a report. */
+static void test_unmatched_refuses_by_default(void) {
+    ms_script s; char err[256] = {0};
+    static const char bare[] = "load-command delete uuid\n";
+    CHECK(ms_parse(bare, sizeof bare - 1, &s, err, sizeof err) == 0,
+          "bare script rejected: %s", err);
+    CHECK(s.allow_unmatched == 0,
+          "a script that said nothing must not allow unmatched operations");
+    ms_free(&s);
 }
 
 /* The `if (s.n != 2) { ms_free(&s); return; }` guard this used to have,
@@ -487,7 +545,7 @@ static void test_disturbs_matches_the_spec_table(void) {
           "fixups set classic rebuilds __LINKEDIT, re-bases, and costs pad");
 
     /* target 10.9 declares MREL_NONE, meaning "nothing OF ITS OWN". It is an
-     * MS_TABLE row, not an ms_script field like fatal-warnings, so the tripwire
+     * MS_TABLE row, not an ms_script field like allow-unmatched, so the tripwire
      * demands a mask -- and no static mask can describe it, because it expands
      * at run time against the image in front of it (me_expand_10_9,
      * src/edit.c:476-514, up to five derived statements). Each derived
@@ -599,7 +657,7 @@ static void test_arch_directive_errors(void) {
 }
 
 static void test_target_parses_and_is_positional(void) {
-    static const char src[] = "fatal-warnings\ntarget 10.9\nload-command delete uuid\n";
+    static const char src[] = "allow-unmatched\ntarget 10.9\nload-command delete uuid\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == 0, "parses (%s)", err);
     /* target IS a statement -- it occupies a position, because the expansion
@@ -642,10 +700,10 @@ static void test_unknown_target_is_refused_not_guessed(void) {
 /* A directive describes the whole run, so it must precede every operation --
  * and `target` is an operation for that purpose. */
 static void test_a_directive_after_target_is_an_error(void) {
-    static const char src[] = "target 10.9\nfatal-warnings\n";
+    static const char src[] = "target 10.9\nallow-unmatched\n";
     ms_script s; char err[256] = {0};
     CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
-          "fatal-warnings after target is refused");
+          "allow-unmatched after target is refused");
     CHECK(strstr(err, "line 2") != NULL, "and names line 2 (got: %s)", err);
 }
 
@@ -745,6 +803,9 @@ int main(void) {
     test_repeated_directive_is_accepted();
     test_directive_with_operand_is_refused();
     test_allow_grow_is_an_unknown_statement();
+    test_fatal_warnings_is_an_unknown_statement();
+    test_allow_unmatched_is_a_directive();
+    test_unmatched_refuses_by_default();
     test_final_line_without_newline_parses();
     test_blank_and_comment_lines_dont_shift_line_numbers();
     test_version_min_value_refusal();

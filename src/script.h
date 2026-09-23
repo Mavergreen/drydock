@@ -51,14 +51,14 @@ typedef struct { int kind, op; const char *a, *b, *c; int line; } ms_stmt;
 
 /* A parsed edit script: every operation line (not directive lines -- those
  * only set the two fields below) in source order. Every directive --
- * `fatal-warnings`, `arch NAME` -- is repeatable and must
+ * `allow-unmatched`, `arch NAME` -- is repeatable and must
  * precede every operation, `target` included: it is a statement, and the
  * directives govern what its expansion may do. A script may name at most one
  * `target`; a second is a parse error. */
 typedef struct {
     ms_stmt *stmts;
     int      n;
-    int      fatal_warnings;
+    int      allow_unmatched;   /* set by the `allow-unmatched` directive */
     unsigned arch_mask;   /* bit r set when an `arch` directive named row r of
                            * src/arch_names.h's table; 0 when the script names
                            * no arch, which means every 64-bit slice */
