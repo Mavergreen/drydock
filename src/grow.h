@@ -1,5 +1,5 @@
 /*
- * macho_grow.h — make room in a Mach-O header so the load commands can expand.
+ * grow.h — make room in a Mach-O header so the load commands can expand.
  *
  * The problem: tools like change_dylib (and patch_macho's LC_DYLD_INFO_ONLY
  * insertion) write load commands in place, bounded by the file offset of the

@@ -45,7 +45,7 @@ static void test_rebuild_root_terminal_shifts_address(void) {
  * below; docs/... nothing else needs to agree with this, it's the ground
  * truth. */
 static void test_rebuild_widens_when_needed(void) {
-    /* Same 17-byte shape as macho_grow_test.c's MG_T_TRIE fixture, except
+    /* Same 17-byte shape as tests/grow_test.c's MG_T_TRIE fixture, except
      * node A's address is 16000 (0x3E80) instead of 0x1000 -- still a
      * 2-byte ULEB (16000 < 16384), but 16000 + 0x1000 = 20096 >= 16384,
      * which needs 3 bytes. Node B's address is 0 (the __mh_execute_header
@@ -68,7 +68,7 @@ static void test_rebuild_widens_when_needed(void) {
      *   node A (6B): 04 00 80 9D 01 00        (addr 20096 = 80 9D 01)
      *   node B (4B): 02 00 00 00
      * total 18 bytes -- ONE MORE than the original 17, which is exactly the
-     * "does not fit in place" case macho_grow.h must now handle by growing
+     * "does not fit in place" case mg_grow_header handles by growing
      * __LINKEDIT instead of refusing. */
     static const uint8_t expect[18] = {
         0x00, 0x02, 'A', 0x00, 0x08, 'B', 0x00, 0x0E,
@@ -263,7 +263,7 @@ static void test_rebuild_shared_offset_refuses(void) {
 /* ---- depth cap: refuses explicitly rather than blowing the C stack ----
  * A chain of 200 single-child nodes, each one byte long (term=0, nch=1,
  * label="" i.e. immediate NUL, child offset = next byte), terminated by a
- * leaf. 128 is macho_grow.h's own existing depth guard (mg_trie_node); this
+ * leaf. 128 is src/grow.c's own depth guard (mg_trie_node); this
  * module matches it on purpose. */
 static void test_rebuild_depth_cap_refuses(void) {
     const int CHAIN = 200;

@@ -1,9 +1,7 @@
 /* image.h — open, validate, iterate a 64-bit Mach-O.
  *
- * The layer under every rewriter in this repo. Today each of the seven opens a
- * file by hand (fstat, malloc, read, check MH_MAGIC_64) and walks load commands
- * with its own `for (i = 0; i < hdr->ncmds; i++)`; macho_grow.h does the walk
- * eleven times. They agree by coincidence. This is the one they converge on.
+ * The layer under every rewriter in this repo: one validated open and one
+ * load-command walk for all of them.
  *
  * Scope, deliberately narrow: 64-bit thin Mach-O only, read whole file into a
  * heap buffer, no writing. Growing, ordinal renumbering and __LINKEDIT surgery
@@ -72,7 +70,7 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out);
  * array its own nsects claims) and returns MI_NOT_MACHO on failure (never
  * MI_IO_ERROR: there is no I/O here to fail), leaving *out untouched. `cap`
  * is set to `size`. This is how a synthetic, in-memory Mach-O
- * (macho_grow_test.c builds several) gets the same validated view mi_open
+ * (tests/grow_test.c builds several) gets the same validated view mi_open
  * gives a file -- without a file to read. mi_close on a wrapped image never
  * frees `buf`: the caller still owns it. */
 int mi_wrap(uint8_t *buf, size_t size, mi_image *out);
@@ -93,9 +91,9 @@ uint8_t *mi_release(mi_image *im);
  * the caller's buffer is (mutable, for an owned or wrapped image opened
  * O_RDWR). A callback MAY write through a cast-away-const `lc` to edit a
  * command's own fixed-size fields, or fields several hops away through the
- * buffer -- a segment's segname (rename_segment.c's rs_rename_lc), a class
- * record's tag bits (retag_swift_classes.c's retag()), a fixup pointer's raw
- * bits (patch_macho.c's pm_collect_lc leaves these alone but a caller could).
+ * buffer -- a segment's segname (segname.c's mseg_rename_lc), a class
+ * record's tag bits (swift_retag.c's mswift_retag()), a fixup pointer's raw
+ * bits (declassify.c's md_collect_lc leaves these alone but a caller could).
  * The one invariant a callback must NEVER violate, no matter what else it
  * edits: THE COMMAND-CHAIN SHAPE ITSELF must stay exactly what it was when
  * the walk started -- concretely, never assign to `lc->cmd`, never assign to
@@ -112,7 +110,7 @@ uint8_t *mi_release(mi_image *im);
  * from it, is fair game.
  *
  * The callback returns int: 0 to continue, non-zero to stop the walk early
- * (a refusal partway through, e.g. change_dylib.c's build_lcs on a malformed
+ * (a refusal partway through, e.g. rewrite.c's mr_build_lcs_lc on a malformed
  * dylib/rpath name offset -- see its own comment for why it must not keep
  * calling the callback, and hence writing into the caller's output buffer,
  * once it has decided to refuse). mi_each_lc itself returns 1 if it visited
@@ -152,7 +150,7 @@ struct section_64 *mi_find_section(const mi_image *im, const char *seg, const ch
 
 /* The image base: the vmaddr of the segment whose file range covers offset 0 --
  * the one the header itself lives in. That is what every base-relative fixup in
- * macho_grow.h means by "base". Usually __TEXT, but derived rather than assumed.
+ * src/grow.c means by "base". Usually __TEXT, but derived rather than assumed.
  * Returns 0 if no segment maps the header -- which is indistinguishable from
  * a base that legitimately IS 0 (every dylib and bundle). A caller that uses
  * the base as a PRECONDITION must call mi_image_base below instead; two that

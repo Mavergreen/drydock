@@ -25,8 +25,8 @@
  * being fixed. A caller keeps the two in lockstep by implementing
  * `is_deleted` as one function and calling that SAME function -- not
  * reimplementing its logic -- everywhere it decides "does this dylib
- * survive?" (change_dylib.c's ord_is_deleted is called from both its own
- * load-command rewrite and from mo_map_build; see change_dylib.c). As a
+ * survive?" (src/rewrite.c's mr_is_deleted, called from both
+ * mr_build_lcs_lc and mo_map_build). As a
  * runtime backstop for when a caller gets that wrong anyway, mo_map_validate
  * can compare the map against the load-command table a caller actually
  * emitted and refuse if they disagree -- see its own comment below for what

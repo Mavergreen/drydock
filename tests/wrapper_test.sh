@@ -1920,6 +1920,12 @@ ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' \
     && ok "fix_macho: ... and says the run was refused, not that installing it failed" \
     || bad "fix_macho mid-script refusal" "a refused run told the caller the rewrite succeeded and the install failed, which sends them looking at directory permissions for a refusal drydock-macho-rewrite made about their image: $(grep 'installing it failed' "$T/err")"
 
+# The grow is library code, so the refusal a user sees names no program.
+grep -q '^ERROR: executable is not PIE (flags=0x' "$T/err" \
+    && ! grep -q '^macho_grow: ' "$T/err" \
+    && ok "fix_macho: ... and the grow's own refusal begins 'ERROR: ', naming no program" \
+    || bad "fix_macho mid-script refusal" "the grow's refusal is not program-neutral: $(grep 'not PIE' "$T/err")"
+
 # ADOPTED CHANGE 6: THE SAME -change ON A PIE COPY GROWS THE HEADER. fix_macho
 # had no -grow and refused; the wrapper lowers the image base to make room,
 # and says so on stderr.

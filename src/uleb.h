@@ -8,7 +8,7 @@
  * byte width, so the blob -- and all of __LINKEDIT after it -- never moves. That
  * is the constraint the whole toolkit is built around.
  *
- * Note the deliberate absence of a variable-width encoder here. patch_macho.c
+ * Note the deliberate absence of a variable-width encoder here. src/declassify.c
  * has one (ob_uleb), but it appends to a growable buffer while rebuilding a
  * stream from scratch, which is a different job from editing one in place. */
 

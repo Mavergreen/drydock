@@ -1,6 +1,6 @@
 /* trie.h — rebuild a dyld export trie whose addresses need to widen.
  *
- * macho_grow.h's image-base trick adds a fixed `shift` to every exported
+ * src/grow.c's image-base trick adds a fixed `shift` to every exported
  * address (a ULEB offset from the image base). Usually that re-encodes in
  * place, at the address's ORIGINAL byte width (see mg_trie_node) — but
  * sometimes adding `shift` pushes an address's minimal ULEB encoding one byte
@@ -26,7 +26,7 @@
 
 /* Recursion cap for mt_trie_rebuild's decode walk -- a pathological/
  * adversarial trie deep enough to risk exhausting the C stack is refused
- * rather than walked. macho_grow.h's own hand-rolled trie walks (mg_trie_scan
+ * rather than walked. src/grow.c's own hand-rolled trie walks (mg_trie_scan
  * and its neighbor, both scanning the IN-PLACE-shift path that mt_trie_rebuild
  * is the fallback for) enforce the identical depth limit, on the identical
  * kind of pathological input -- shared here, once, so the two can't quietly
@@ -43,9 +43,9 @@
  * immediately afterward). Caller owns *out and must free() it.
  *
  * On failure returns -1, *out is NULL, *out_size is 0, and a reason has been
- * printed to stderr — refuses rather than guesses, same rule as the rest of
- * macho_grow: a malformed trie (an offset outside the buffer, a truncated
- * ULEB, a terminal size or label running past the buffer's end), a node
+ * printed to stderr — refuses rather than guesses, on any of: a malformed
+ * trie (an offset outside the buffer, a truncated ULEB, a terminal size or
+ * label running past the buffer's end), a node
  * offset reachable more than one way (this rebuild does not support shared
  * subtrees — no well-formed export trie needs to, since ld64 emits a plain
  * tree), or recursion past MT_TRIE_MAX_DEPTH (a pathological/adversarial
