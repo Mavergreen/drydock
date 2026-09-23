@@ -126,9 +126,9 @@
 #   command line meant the same thing as. It was never a macho9 gap. It is
 #   now also not a live fact: this file has exactly one such row (fix_macho's
 #   chained -rename_seg) and translate.sh emits that chain today rather than
-#   refusing it -- "There is no shape this file refuses outright any more"
-#   (compat/translate.sh, near the end of its header). Read that one row as
-#   dated, per the scope note at the top. refuser=translate on a `both-refuse`
+#   refusing it (tests/translate_test.sh's -rename_seg `fm-chain`).
+#   Read that one row as dated, per the scope note at the top.
+#   refuser=translate on a `both-refuse`
 #   row -- the other 30 -- is still exactly what it says, and still true.
 #   blocked with refuser=macho9 is the regression-shaped one.
 #

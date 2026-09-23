@@ -59,7 +59,7 @@ one `printf ... | drydock-macho-rewrite FILE OUT`.
 | `change_dylib FILE -delete-rpath P` | `rpath delete P` |
 | `change_dylib FILE -add-rpath P` | `rpath append P` |
 | `change_dylib FILE -strip-lc KIND` | `load-command delete KIND` |
-| `change_dylib FILE -grow` | nothing; see "`change_dylib`: header growth" |
+| `change_dylib FILE -grow OP...` | nothing: `-grow` adds no statement; alone it is a usage error, exit 1 (`cd-usage-grow`) |
 | `fix_macho FILE -change O N` | `dylib replace O N` |
 | `fix_macho FILE -strip_build_version` | `load-command delete build-version` |
 | `fix_macho FILE -rename_seg O N` | `segment rename O N` |

@@ -569,7 +569,7 @@ q_roundtrip q-rt-empty     ''
 
 # ---- a FILE beginning with '-' ------------------------------------------
 # drydock-macho-rewrite refuses an OUT beginning with '-', so the teaching
-# form names ./-FILE.new, and both printed lines stay runnable.
+# form names ./-FILE.new.
 ok cd-dash-file "printf 'allow-unmatched\ndylib delete P\n' | drydock-macho-rewrite -f ./-f.new
 mv -f ./-f.new -f" -- change_dylib -f -delete P
 
