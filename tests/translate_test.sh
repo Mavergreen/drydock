@@ -567,6 +567,21 @@ q_roundtrip q-rt-quote     "it's"
 q_roundtrip q-rt-space     'p q'
 q_roundtrip q-rt-empty     ''
 
+# ---- a FILE beginning with '-' ------------------------------------------
+# drydock-macho-rewrite refuses an OUT beginning with '-', so the teaching
+# form names ./-FILE.new, and both printed lines stay runnable.
+ok cd-dash-file "printf 'allow-unmatched\ndylib delete P\n' | drydock-macho-rewrite -f ./-f.new
+mv -f ./-f.new -f" -- change_dylib -f -delete P
+
+# ---- MT_PROG is recomputed on every call --------------------------------
+# One sourced shell translating two tools names each in its usage line.
+got=$( MT_SOURCED=1 /bin/sh -c '. "$1"; mt_translate change_dylib x 2>/dev/null; mt_translate patch_macho 2>&1' sh "$TR" )
+if [ "$got" = "Usage: patch_macho input output" ]; then
+    pass=$((pass + 1))
+else
+    printf 'FAIL mt-prog-per-call: got %s\n' "$got" >&2; fail=$((fail + 1))
+fi
+
 # ---- DRYDOCK_MACHO_REWRITE names the program word ------------------------
 got=$( DRYDOCK_MACHO_REWRITE=/opt/bin/drydock-macho-rewrite /bin/sh "$TR" add_version_min f )
 if [ "$got" = "printf 'version-min set 10.9\n' | /opt/bin/drydock-macho-rewrite f f.new

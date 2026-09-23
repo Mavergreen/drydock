@@ -464,8 +464,7 @@ run_case() {
 }
 
 # Runs the emitted command lines in order, stopping at the first nonzero exit
-# and returning that exit code -- the contract compat/translate.sh's header
-# states, in the one place the sweep needs it executed.
+# and returning that exit code.
 cat > "$T/runner.sh" <<'RUNNER'
 while IFS= read -r line; do
     [ -n "$line" ] || continue

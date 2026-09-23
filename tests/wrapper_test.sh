@@ -21,10 +21,7 @@
 # commit 91b30b3 (the last commit carrying all six compat/*.c files) on real
 # 10.9 (Darwin 13.4), the same provenance tests/known-callers.sh's digests
 # have (tests/README.md's "Not run by ctest" section has the full account).
-# The divergences themselves are documented at their sites: the
-# list at the top of compat/translate.sh, and the "DELIBERATE DIVERGENCES
-# FROM <tool>" blocks in cli/drydock-macho-rewrite.c's cmd_segment, cmd_retag_swift and
-# cmd_declassify.
+# compat/README.md records each divergence and the test that holds it.
 #
 # set -u, not set -e: same reason as every other shell test here.
 set -u
@@ -1862,6 +1859,26 @@ if [ "$rc" -eq 0 ] && has_line "$T/err" 'slice i386: 32-bit; passed through unch
 else
     bad "fix_macho fat skip" "exit $rc; stdout: $(cat "$T/out"); stderr: $(cat "$T/err")"
 fi
+
+# A 16-character NEW of 32 bytes. In a UTF-8 locale ${#3} counts characters,
+# so translate.sh lets it through and mseg_name_fits refuses it; in the C
+# locale translate.sh refuses it itself. Exit 1 and FILE untouched either way.
+fm_mb=$(printf '\303\251%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+for fm_loc in en_US.UTF-8 C; do
+    fresh
+    fm_mb_before=$(sha "$T/f")
+    case $fm_loc in
+        C) fm_mb_want='new segment name longer than 16 bytes: ' ;;
+        *) fm_mb_want='longer than the 16 bytes a segname field holds' ;;
+    esac
+    rc=0
+    ( cd "$T" && LC_ALL=$fm_loc "$BIN/fix_macho" f -rename_seg __DATA "$fm_mb" ) \
+        >"$T/out" 2>"$T/err" || rc=$?
+    [ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$fm_mb_before" ] \
+        && grep -qF -- "$fm_mb_want" "$T/err" \
+        && ok "fix_macho: a 16-character NEW of 32 bytes is refused (1), file untouched, under LC_ALL=$fm_loc" \
+        || bad "fix_macho multibyte NEW ($fm_loc)" "exit $rc: $(tail -1 "$T/err")"
+done
 
 # THE CAPACITY CAPS, in fix_macho's own words. Both moved into
 # compat/translate.sh when compat/fix_macho.c retired, and the -rename_seg one

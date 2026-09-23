@@ -39,6 +39,38 @@ plus the two files every wrapper sources:
 | `translate.sh` | `drydock-macho-rewrite-translate.sh` | old argv → the `drydock-macho-rewrite` command line(s) it means. Pure text; runs nothing. |
 | `drydock-macho-rewrite-compat.sh` | `drydock-macho-rewrite-compat.sh` | finds `drydock-macho-rewrite`, prints the teaching message, and runs the translation. |
 
+## Which statement each old flag becomes
+
+`compat/translate.sh` holds this mapping, in shell rather than inside
+`drydock-macho-rewrite`, so the binary never learns the spellings
+`docs/PROPOSAL.md` chose against (`-change`, `-add`) or refused as synonyms
+(`-add_rpath`). The wrappers source the same file
+`tests/translate_test.sh` tests. Every statement for one `FILE` goes into
+one `printf ... | drydock-macho-rewrite FILE OUT`.
+
+| old flag | statement |
+|---|---|
+| `change_dylib FILE -change O N` | `dylib replace O N` |
+| `change_dylib FILE -delete P` | `dylib delete P` |
+| `change_dylib FILE -reexport P` | `dylib reexport P` |
+| `change_dylib FILE -add P` | `dylib append P` |
+| `change_dylib FILE -insert P` | `dylib insert P` |
+| `change_dylib FILE -change-rpath O N` | `rpath replace O N` |
+| `change_dylib FILE -delete-rpath P` | `rpath delete P` |
+| `change_dylib FILE -add-rpath P` | `rpath append P` |
+| `change_dylib FILE -strip-lc KIND` | `load-command delete KIND` |
+| `change_dylib FILE -grow` | nothing; see "`change_dylib`: header growth" |
+| `fix_macho FILE -change O N` | `dylib replace O N` |
+| `fix_macho FILE -strip_build_version` | `load-command delete build-version` |
+| `fix_macho FILE -rename_seg O N` | `segment rename O N` |
+| `add_version_min FILE` | `version-min set 10.9` |
+| `patch_macho IN OUT` | `fixups set classic`, into `OUT` (into `OUT.new` and then `mv` when `IN` and `OUT` are the same string) |
+| `rename_segment FILE O N` | `segment rename O N` |
+| `retag_swift_classes F1 F2 ...` | `swift-abi set legacy`, once per file |
+
+`tests/translate_test.sh`'s `cd-*`, `fm-*`, `avm`, `pm`, `pm-same`, `rs` and
+`rsc-*` cases hold each row.
+
 ## Thin only
 
 `patch_macho`, `add_version_min`, `retag_swift_classes` and `rename_segment`
