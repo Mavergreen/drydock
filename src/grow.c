@@ -1,13 +1,4 @@
-/* grow.c -- see grow.h for the design and every function's contract.
- *
- * This was macho_grow.h, a header-only library, until this move: every
- * function below was `static` with internal linkage and a body sitting
- * directly in the header. Splitting into grow.h (declarations) + grow.c
- * (definitions) is why each one below lost its `static` -- external linkage
- * is what a declaration in a header now promises callers in other
- * translation units (change_dylib.c, cli/drydock-macho-rewrite.c, tests/grow_test.c).
- * Nothing else changed in this move; characterize and the (also-moved)
- * grow_test are the proof. */
+/* grow.c -- see grow.h for the design and every function's contract. */
 
 #include "grow.h"
 
@@ -1061,7 +1052,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * either (src/image.h draws the identical line, deliberately, for the
      * same reason) and that Apple stopped shipping newly linked 10.9-era
      * binaries in years before this toolkit existed. See
-     * macho_grow_test.c's test_grow_refuses_32bit_mach_header for the pinned
+     * tests/grow_test.c's test_grow_refuses_32bit_mach_header for the pinned
      * regression test and docs/prior-art.md for the fuller write-up. */
     if (hdr->magic != MH_MAGIC_64) {
         fprintf(stderr, "ERROR: not a 64-bit Mach-O (magic=0x%x); 32-bit is a "

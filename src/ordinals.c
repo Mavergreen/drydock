@@ -46,7 +46,7 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
     const uint8_t *p = buf + sizeof(struct mach_header_64);
 
     /* Walks buf/ncmds directly, not via mi_each_lc: buf is the raw pre-rewrite
-     * buffer change_dylib.c owns and passes straight through, not an
+     * buffer mr_process_thin (src/rewrite.c) owns and passes straight through, not an
      * mi_image, so there is nothing here for mi_each_lc to iterate. */
     for (uint32_t i = 0; i < ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)p;

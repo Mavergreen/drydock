@@ -178,19 +178,10 @@ enable_testing()
 # against synthetic images built in memory. -Wno-unused-function because
 # src/grow.h declares helpers this translation unit does not all call.
 add_executable(grow_test tests/grow_test.c)
-# -Wall deploys lesson nine's detection net (tests/README.md): a
-# -Wfortify-source "will always overflow" diagnostic on a strcpy into a
-# char[16] segname/sectname fires here at COMPILE time, on any host, well
-# before a modern-clang runner would abort at RUNTIME building the same
-# fixture -- and this file holds the fixture builders. It was missing
-# -Wall entirely (silent since c06bdce first added this target); adding it
-# used to produce exactly one warning, unrelated to this file: a `static`
-# mg_trie_scan defined inside header-only macho_grow.h, included into
-# multiple translation units, tripped -Wunneeded-internal-declaration. Task
-# 3's move to src/grow.c gave every one of these functions external linkage,
-# which is exactly what that warning was asking for -- it is gone now, not
-# suppressed. -Wno-unused-function stays: src/grow.h declares helpers this
-# translation unit does not all use.
+# -Wall: a -Wfortify-source "will always overflow" strcpy into a char[16]
+# segname/sectname fires here at compile time, on any host, before a
+# modern-clang runner would abort at run time building the same fixture
+# (tests/README.md, lesson nine).
 target_compile_options(grow_test PRIVATE -O2 -Wall -Wno-unused-function)
 target_link_libraries(grow_test PRIVATE drydockcore)
 add_test(NAME grow_test COMMAND grow_test)

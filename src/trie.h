@@ -1,6 +1,6 @@
 /* trie.h — rebuild a dyld export trie whose addresses need to widen.
  *
- * macho_grow.h's image-base trick adds a fixed `shift` to every exported
+ * src/grow.c's image-base trick adds a fixed `shift` to every exported
  * address (a ULEB offset from the image base). Usually that re-encodes in
  * place, at the address's ORIGINAL byte width (see mg_trie_node) — but
  * sometimes adding `shift` pushes an address's minimal ULEB encoding one byte
@@ -26,7 +26,7 @@
 
 /* Recursion cap for mt_trie_rebuild's decode walk -- a pathological/
  * adversarial trie deep enough to risk exhausting the C stack is refused
- * rather than walked. macho_grow.h's own hand-rolled trie walks (mg_trie_scan
+ * rather than walked. src/grow.c's own hand-rolled trie walks (mg_trie_scan
  * and its neighbor, both scanning the IN-PLACE-shift path that mt_trie_rebuild
  * is the fallback for) enforce the identical depth limit, on the identical
  * kind of pathological input -- shared here, once, so the two can't quietly

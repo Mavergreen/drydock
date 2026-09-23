@@ -1421,7 +1421,7 @@ grep -qi "malformed fat file" "$T/overlap_fix.out" \
 # /usr/lib/libSystem.B.dylib <9000 chars>` -> SIGSEGV under libgmalloc.
 # Pre-existing (present in 868e2a6, long before this branch), fixed here by
 # including -change/-change-rpath's replacement lengths in add_bytes too --
-# see the comment on that calculation in change_dylib.c.
+# see mr_change_growth_bytes in src/rewrite.c.
 #
 # The overflow happens INSIDE build_lcs, before process_one's own "does it
 # fit the header pad" check ever runs -- so it reproduced with or without
@@ -1505,9 +1505,8 @@ cmp -s "$T/longchange_noG" "$T/longchange_fixture" \
 # corruption without a detector watching can silently succeed) -- which is
 # exactly why the assertion below runs THIS ONE case under libgmalloc itself
 # rather than relying on a by-hand confirmation. Fixed by change_growth_bytes,
-# which walks the REAL load commands instead of the -change arguments -- see
-# its own comment in change_dylib.c for the one (safe, over- not under-)
-# approximation it still makes.
+# which walks the REAL load commands instead of the -change arguments; see
+# mr_change_growth_bytes in src/rewrite.c.
 #
 # The fixture needs two commands sharing a name, which a normal link never
 # produces -- ld itself resolves a second dylib against the first one it
@@ -1576,7 +1575,7 @@ fi
 #     through the stop-capable mi_each_lc instead of a hand-rolled
 #     loop with its own `return -1`.
 #
-# build_lcs_lc (change_dylib.c) calls mo_lc_str_at on every LC_RPATH's own
+# mr_build_lcs_lc (src/rewrite.c) calls mo_lc_str_at on every LC_RPATH's own
 # path.offset and refuses the whole rewrite if the offset is out of bounds
 # for that command's cmdsize, by translating the stop-capable mi_each_lc
 # callback's "incomplete" report into its own -1; get that translation wrong

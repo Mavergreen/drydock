@@ -1,11 +1,8 @@
 /*
  * image_test.c — hermetic tests for src/image.c, the open/validate/iterate layer.
  *
- * What this pins: every one of the seven rewriters currently opens a Mach-O by
- * hand (fstat, malloc, read, check MH_MAGIC_64) and walks its load commands with
- * its own `for (i = 0; i < hdr->ncmds; i++)` — all seven files do, and
- * macho_grow.h does it eleven times. Those copies agree today by coincidence,
- * not by construction. This tests the one implementation they are converging on.
+ * What this pins: the one open/validate/iterate implementation every
+ * rewriter here goes through.
  *
  * Ground truth is tests/fixture.macho, a real 10.9-built executable committed to
  * the repo: 8528 bytes, 16 load commands, __PAGEZERO then __TEXT at 0x100000000.
@@ -137,7 +134,7 @@ static void test_open_refuses_a_non_macho(void) {
 /* ---- wrap ---- */
 
 static void test_wrap_accepts_a_caller_owned_buffer(void) {
-    /* macho_grow_test.c builds Mach-O images SYNTHETICALLY IN MEMORY and never
+    /* tests/grow_test.c builds Mach-O images SYNTHETICALLY IN MEMORY and never
      * from a file, so mi_open can't serve it. mi_wrap is how such a buffer gets
      * the same validated view, without mi_open's open()/read()/malloc. */
     mi_image src;
@@ -433,7 +430,7 @@ static void test_find_section(void) {
 
 static void test_text_base_is_the_segment_mapping_the_header(void) {
     /* Not simply "__TEXT.vmaddr": it is the segment whose file range covers
-     * offset 0, which is what every base-relative fixup in macho_grow.h means
+     * offset 0, which is what every base-relative fixup in src/grow.c means
      * by the image base. On this fixture they coincide, which is why the
      * assertion can be exact. */
     mi_image im;

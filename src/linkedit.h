@@ -1,6 +1,6 @@
 /* linkedit.h — the __LINKEDIT offset-bump table.
  *
- * macho_grow.h's image-base trick (see its own header comment) lowers the
+ * src/grow.h's image-base trick (see its header comment) lowers the
  * image base by `grow` bytes and inserts `grow` bytes of file space at
  * `insert`. Every VM address stays fixed, but every FILE OFFSET at or past
  * `insert` must move down by `grow` to keep pointing at the same bytes --
@@ -26,16 +26,15 @@
  * verified against any header available while this module was written --
  * the 10.9 SDK and the modern host SDK on hand both predate both commands.
  * Rather than guess a struct layout this module cannot check, growing a
- * file that carries either is refused outright by macho_grow.h's
+ * file that carries either is refused outright by src/grow.c's
  * mg_classify, before mg_grow_header ever reaches this module -- same
  * "refuse rather than guess" rule as an unclassified load command. See
  * mg_classify's LC_NOTE/LC_ATOM_INFO cases for the refusal text.
  *
  * Deliberately narrow otherwise: LC_SEGMENT_64's own fileoff/vmaddr/vmsize
  * and its sections' offset/reloff, and LC_MAIN's entryoff, stay in
- * macho_grow.h -- they are about repositioning the header pad and the
- * entry point, not about __LINKEDIT's own resident structures, and the
- * task that created this module scoped it to the latter only.
+ * src/grow.c -- they are about repositioning the header pad and the
+ * entry point, not about __LINKEDIT's own resident structures.
  */
 #ifndef DRYDOCK_LINKEDIT_H
 #define DRYDOCK_LINKEDIT_H

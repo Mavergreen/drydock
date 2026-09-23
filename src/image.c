@@ -46,8 +46,8 @@ static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **
          * aligned); an unaligned cmdsize is malformed, not merely unusual.
          * Without this check one is silently accepted and walked -- every
          * `p += lc->cmdsize` in this file and every caller that trusts this
-         * validation (mg_first_sect_off and friends in macho_grow.h,
-         * change_dylib.c's build_lcs, ordinals.c's mo_map_build) inherits
+         * validation (mg_first_sect_off and friends in src/grow.c,
+         * rewrite.c's mr_build_lcs_lc, ordinals.c's mo_map_build) inherits
          * whatever misalignment this let through. */
         if (lc->cmdsize % 8 != 0) return 1;
         if (off + lc->cmdsize > (size_t)hdr->sizeofcmds) return 1;

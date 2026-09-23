@@ -475,8 +475,8 @@ fi
 # pathological input the tool had declined cleanly went from a clean
 # refusal to a crash mid-run in a tool install.sh points at user binaries.
 #
-# The array was then enlarged from [4] to [16] (see patch_macho.c's own
-# comment on struct pm_collect_ctx): review found that [4] left ZERO margin
+# The array was then enlarged from [4] to [16] (see the comment above struct
+# md_collect_ctx in src/declassify.c): review found that [4] left ZERO margin
 # on a real, legitimate input -- a zippered (Mac Catalyst) binary carries two
 # LC_BUILD_VERSION commands plus at most one each of LC_DYLD_EXPORTS_TRIE/
 # LC_DYLD_CHAINED_FIXUPS, for 1+1+2 = 4, exactly the old cap. This fixture's

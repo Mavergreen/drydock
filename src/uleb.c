@@ -2,7 +2,7 @@
  *
  * Moved verbatim from macho_grow.h (mg_uleb_decode, mg_uleb_minlen,
  * mg_uleb_encode_fixed); only the prefix changed. The bodies are deliberately
- * untouched -- macho_grow_test already tests all three directly, so the safety
+ * untouched -- tests/grow_test.c tests all three directly, so the safety
  * net predates the move, and any behaviour change here would be a regression
  * hidden inside a refactor. */
 

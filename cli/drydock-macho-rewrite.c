@@ -379,9 +379,9 @@ struct info_ctx {
 
 /* dylib_command/rpath_command names are an lc_str offset relative to the
  * command's own start; the bounds check against cmdsize lives once, in
- * mo_lc_str_at (ordinals.h), which change_dylib.c's build_lcs and
+ * mo_lc_str_at (ordinals.h), which rewrite.c's mr_build_lcs_lc and
  * mo_map_build also call -- so this dump can't drift out of agreement with
- * what the rewriters consider in-bounds, the way it briefly did. */
+ * what the rewriters consider in-bounds. */
 static const char *lc_str_at(const struct load_command *lc, uint32_t offset) {
     const char *s = mo_lc_str_at(lc, offset);
     return s ? s : "(malformed: offset past cmdsize)";
