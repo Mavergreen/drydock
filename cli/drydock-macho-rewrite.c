@@ -282,7 +282,11 @@ static int print_capabilities(void) {
      * pass something this build refuses. */
     printf("mutate bare script=stdin\n");
     printf("verb verify\n");
-    printf("verb info\n");
+    /* The one query flag any verb takes. A wrapper reproducing an old tool's
+     * thin-only refusal checks for this line rather than assume the flag,
+     * because gating on plain `info` failing stopped working when `info`
+     * learned fat containers. */
+    printf("verb info flags=--thin\n");
     printf("verb imports\n");
     printf("verb exports\n");
     {
@@ -329,7 +333,7 @@ static void usage(const char *prog) {
         "                                                    '%s FILE OUT < script'.\n"
         "                                                    --capabilities lists every statement\n"
         "                                                    this build accepts\n"
-        "       %s info FILE\n"
+        "       %s info [--thin] FILE\n"
         "       %s verify FILE\n"
         "       %s imports FILE                             TSV: arch, ordinal, kind,\n"
         "                                                    install_name, symbol, weak,\n"
@@ -415,7 +419,7 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
     return 0;   /* prints every command; never needs to stop early */
 }
 
-static int cmd_info(const char *path) {
+static int cmd_info(const char *path, int thin_only) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
@@ -426,6 +430,7 @@ static int cmd_info(const char *path) {
         fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
+    (void)thin_only;   /* Task 5 gives this its only effect. */
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
            path, im.size, im.hdr->ncmds, im.hdr->filetype);
     struct info_ctx ctx = { 0, 0 };
@@ -756,8 +761,17 @@ int main(int argc, char **argv) {
         return cmd_verify(argv[2]);
     }
     if (strcmp(verb, "info") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s info FILE\n", argv[0]); return EX_FAIL; }
-        return cmd_info(argv[2]);
+        /* `--thin` is the ONE flag any query verb takes. It is recognised
+         * only in argv[2], so a FILE named `--thin` stays reachable as
+         * `./--thin`, the same remedy bad_out already names for an OUT beginning
+         * with '-'. */
+        int thin_only = 0, ai = 2;
+        if (argc > 2 && strcmp(argv[2], "--thin") == 0) { thin_only = 1; ai = 3; }
+        if (argc != ai + 1) {
+            fprintf(stderr, "usage: %s info [--thin] FILE\n", argv[0]);
+            return EX_FAIL;
+        }
+        return cmd_info(argv[ai], thin_only);
     }
     if (strcmp(verb, "imports") == 0) {
         if (argc != 3) { fprintf(stderr, "usage: %s imports FILE\n", argv[0]); return EX_FAIL; }
