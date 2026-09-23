@@ -139,9 +139,11 @@ for why they would be rare -- and one decided on purpose:
     the detail.
   * `change_dylib` and `add_version_min` are the two wrappers that forward
     script run's own exit code (`me_run`, `src/edit.h`) verbatim, with no
-    mapping at all -- unlike `fix_macho`,
-    `patch_macho` and `rename_segment`, which translate every nonzero
-    drydock-macho-rewrite exit to one flat historical code, and `retag_swift_classes`,
+    mapping at all -- unlike `fix_macho` and
+    `patch_macho`, which translate every nonzero
+    drydock-macho-rewrite exit to one flat historical code, `rename_segment`,
+    which classifies a refusal (its exit-code section below has the map), and
+    `retag_swift_classes`,
     which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
     header has it) and is likewise unaffected by this. (EVERY wrapper whose
     verb now writes an output the wrapper installs -- all six, `patch_macho`
@@ -251,9 +253,9 @@ assertion that fails if someone reverses the decision.
 ### `change_dylib`: exit codes
 
 `drydock-macho-rewrite`'s own, **forwarded unchanged**. This is one of only two wrappers
-here that maps nothing (`add_version_min` is the other); `fix_macho`,
-`patch_macho` and `rename_segment` all collapse every nonzero to one historical
-code. The C tool returned `mr_apply_file`'s flat 0/1, and 1 is still what a
+here that maps nothing (`add_version_min` is the other); `fix_macho` and
+`patch_macho` collapse every nonzero to one historical code, and
+`rename_segment` classifies a refusal ("`rename_segment`: exit codes", below). The C tool returned `mr_apply_file`'s flat 0/1, and 1 is still what a
 considered refusal exits — so the coincidence holds for every case a caller had
 seen — but the shared vocabulary is no longer flat (`src/rewrite.h`): 0
 ok, `MR_REFUSED` (1) for a refusal that read the image and declined,
@@ -280,19 +282,20 @@ disturbed the base-relative values it checks (`src/relations.h`'s
 `mrel_verify_applies`) — which, for the operations this wrapper can ask for,
 means only a rewrite that grew the header.
 
-`--fatal-warnings` is a separate fact, not what makes any of the above
-conditional: this translation never emits it — `change_dylib`'s grammar has no
-spelling for it, and never will, since `-change` matching nothing has always
-exited 0 and that is compat surface — so the one behaviour that
-flag adds (promoting "an operation matched nothing" to `MR_REFUSED`) is never
-reached here.
+Refusing an unmatched operation is a separate fact, not what makes any of the
+above conditional: it is `drydock-macho-rewrite`'s default now, not a flag a caller has
+to ask for, so this translation opts back OUT of it — `change_dylib`'s
+grammar has no spelling for the choice, and never will, since `-change`
+matching nothing has always exited 0 and that is compat surface — by heading
+its emitted script with the `allow-unmatched` directive, ahead of every
+operation.
 
 | the difference | held by |
 |---|---|
 | an operational failure exits **2**, where the C tool exited a flat 1 | `tests/wrapper_test.sh`: "`drydock-macho-rewrite`'s own code for this input is 2, an operational failure" (the setup, so the two below cannot rot into proving nothing), then "a single-family run forwards `drydock-macho-rewrite`'s own 2 rather than mapping it" and "… and so does a multi-family run, whose code is the bare `drydock-macho-rewrite` form's own" — a DIRECTORY as `FILE`, which `mw_prepare` passes through and `drydock-macho-rewrite`'s read fails on |
 | a considered refusal still exits **1**, so the two numbers really differ | `tests/wrapper_test.sh`, "a considered refusal is still the flat 1 the C tool always gave" |
 | every refusal the wrapper makes itself exits 1 | `tests/wrapper_test.sh`'s unwritable-`FILE` pair ("exits 1 (the C tool's only failure code), saying so, having changed neither its bytes nor its inode", on both paths), its absent-`FILE` assertion, and `hl_case change_dylib` on both paths. A **failed install** is the one of the four with no assertion anywhere — `mw_finish`'s `mv` has to fail for it, which nothing here can arrange — so it stays stated rather than tested |
-| `-change` matching nothing still exits 0, because `--fatal-warnings` is never emitted | `tests/wrapper_test.sh`, "a run that changed nothing prints no `Updated` line" (exit 0 on a `-change` aimed at a path the image does not carry) |
+| `-change` matching nothing still exits 0, because the translation heads its script with `allow-unmatched` | `tests/wrapper_test.sh`, "a run that changed nothing prints no `Updated` line" (exit 0 on a `-change` aimed at a path the image does not carry) |
 
 ### `change_dylib`: stdout
 
@@ -468,24 +471,25 @@ both are reported rather than worked around.
 ### `fix_macho`: exit codes
 
 0 and 1, the only two `fix_macho` had — so **every nonzero from `drydock-macho-rewrite` is
-mapped to 1**. It is the same mapping `compat/rename_segment.sh` and
-`compat/patch_macho.sh` make and for the same reason: `drydock-macho-rewrite`'s own
+mapped to 1**. It is the same mapping `compat/patch_macho.sh` makes, and for
+the same reason: `drydock-macho-rewrite`'s own
 `EX_FAIL` is 2, a value no `fix_macho` caller has ever seen, and forwarding it
 would invent a third outcome for a grammar that has two. `EX_REFUSED`, 1, is
 not the problem — it already coincides with `fix_macho`'s own flat failure code
 for any of the ordinary considered refusals this translation's
 `dylib`/`load-command`/`segment` statements can reach (bad magic, no room to
-grow, and the rest of `src/rewrite.h`'s list). The one refusal
-genuinely unreachable here is the `--fatal-warnings`-specific one, "an
-operation matched nothing" promoted to `MR_REFUSED`: this translation never
-emits that flag. It would not have needed mapping either way, being 1 like
-everything else the mapping collapses.
+grow, and the rest of `src/rewrite.h`'s list). The one refusal this
+translation deliberately avoids reaching is the one an unmatched operation
+gets by default now, "an operation matched nothing" promoted to
+`MR_REFUSED`: the emitted script heads with `allow-unmatched`, precisely so
+that refusal never fires. It would not have needed mapping either way, being
+1 like everything else the mapping collapses.
 
 Held by `tests/wrapper_test.sh`'s exit-fold pair — `drydock-macho-rewrite`'s own code for
 an unreadable `FILE` is 2, and `fix_macho` on the same input exits 1 — and by
 "`-strip_build_version` with nothing to strip exits 0, having written nothing",
-which is the assertion that fails if `--fatal-warnings` ever leaks into the
-translation.
+which is the assertion that fails if the translation ever stops asking for
+`allow-unmatched`.
 
 ### `fix_macho`: stdout is not reproduced
 
@@ -508,9 +512,10 @@ report names the operation in `drydock-macho-rewrite`'s grammar, which is the gr
 wrapper teaches (`src/rewrite.c`'s `mr_report_unmatched` says why the prefix is
 the tool's name and not `argv[0]`).
 
-`drydock-macho-rewrite --fatal-warnings` would turn that report into a refusal, and **this
-wrapper must not pass it**: `fix_macho` exited 0 when an operation matched
-nothing, and that is compat surface.
+Refusing on an unmatched operation is `drydock-macho-rewrite`'s own default now, and **this
+translation must opt back out of it** — which is why its script heads with
+`allow-unmatched`: `fix_macho` exited 0 when an operation matched nothing,
+and that is compat surface.
 
 Neither `tests/EXPECTED` nor `tests/known-callers.sh`'s sha256s have an opinion
 about any of these strings — both hash converted file bytes with the tools'
@@ -577,6 +582,31 @@ untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
 
 `fix_macho`'s only caller in this repo was `tests/change_dylib_test.sh`.
 
+## `rename_segment`: exit codes
+
+`rename_segment` had three answers: 0 renamed, 2 nothing matched, 1
+everything else. A `segment rename` that matches nothing is `EX_REFUSED`, and
+so is one on an `LC_LAZY_LOAD_DYLIB` binary, so the wrapper classifies an
+`EX_REFUSED` by asking `drydock-macho-rewrite info --thin FILE` whether a
+segment named OLD exists. The match rule is the C's own: OLD cut to 16 bytes,
+compared with `strncmp` over the 16-byte field (`src/segname.c`).
+
+| `rename_segment` answer | when | held by |
+|---|---|---|
+| 0 | renamed | `tests/wrapper_test.sh`, "rename_segment: prints its own one-line message, not mr_apply_file's chatter" |
+| 2, silent, file untouched | `EX_REFUSED` and OLD absent | "rename_segment: nothing matched exits 2, silently, without writing", "...and stderr is exactly the teaching block, never drydock-macho-rewrite's own refusal", and the stub case "a fake tool's exit 1 is 'nothing matched' when OLD does not exist, no matter what it says" |
+| 2, silent | `EX_REFUSED` on an `LC_LAZY_LOAD_DYLIB` binary and OLD absent: the C tool's own answer | "rename_segment: LC_LAZY_LOAD_DYLIB with an absent OLD exits 2, silently, as the C tool did" |
+| 1, refusal shown | `EX_REFUSED` and OLD present (`LC_LAZY_LOAD_DYLIB` is the real case) | "rename_segment: LC_LAZY_LOAD_DYLIB is a real refusal (exit 1), shown, once classified 'present'", and the stub case "a fake tool's exit 1 is shown, not swallowed, when OLD DOES exist" |
+| 1, shown | `EX_FAIL` or any other nonzero | the stub case "rename_segment: EX_FAIL stays 'everything else' -- shown, and exit 1, not 2" |
+| 1, shown | the classification query itself fails | no assertion: the thin-only gate runs the same query first, so a file that changes between the two calls reaches it, and so does an `EX_FAIL` from `info` itself (malloc, or an I/O error on the second read) |
+| 1, loud, file untouched | exit 0 with no `  Rename segment:` line (a mismatched install) | the stub case "rename_segment: a tool that exits 0 without naming a rename is a mismatched install: exit 1, loud, file untouched" |
+
+A known limit: `info` prints a segment name with `%.16s`, so a name that
+itself contains ` vmaddr=` makes its line ambiguous. After `segment rename
+__PAGEZERO 'A vmaddr=0x1'`, `rename_segment FILE A ZZ` finds `A` "present",
+and exits 1 with the refusal shown where the C tool exited 2 silently. No grep
+over `info`'s text can be exact for such a name.
+
 ## `insert_dylib`: not one of the six, and the differences it has from the fork
 
 `insert_dylib.sh` wraps a grammar this repo never shipped:
@@ -599,6 +629,18 @@ tool's whole test surface instead.
 | `--weak` | `dylib append DYLIB`, `dylib retype DYLIB weak` |
 | `--strip-codesig` | also: `load-command delete codesig` |
 | `--no-strip-codesig` | nothing extra, and the wrapper never asks about it |
+
+`--strip-codesig`'s `load-command delete codesig` statement can match
+nothing — on a binary carrying no code signature to begin with, the way
+`tests/fixture.macho` itself does — and that is **not** a divergence from
+the fork: the fork exited 0 there too, doing nothing rather than refusing.
+Refusing an unmatched operation is `drydock-macho-rewrite`'s default now, so
+`mt_tr_insert_dylib` (`compat/translate.sh`) heads its emitted script with
+the `allow-unmatched` directive to preserve that upstream fidelity, exactly
+as `change_dylib`'s and `fix_macho`'s translations do for the same reason
+(their own "exit codes" sections above). Held by
+`tests/insert_dylib_test.sh`, "--strip-codesig on an unsigned binary: exits
+0" and "... OUT still has the dylib appended".
 
 `--inplace`, `--overwrite` and `--all-yes` never become a statement: they
 choose `OUT` and, in the wrapper, whether each of the fork's five prompts is
@@ -632,7 +674,7 @@ a predecessor tool.
 
 | # | the difference, and why adopting it is right | held by |
 |---|---|---|
-| 1 | **Both interactive prompts now fire on a FAT binary.** Prompt 1 ("LC_CODE_SIGNATURE load command found. Remove it?") and prompt 2 ("Binary already contains a load command for that dylib. Continue anyway?") each read `drydock-macho-rewrite info $MT_ID_BIN` and grep its output. While plain `info` was a bare `mi_open` it failed outright on a fat container — `not a readable 64-bit Mach-O`, stderr discarded by this wrapper's own `2>/dev/null` — so both greps ran over empty input and neither prompt was ever asked: a fat binary silently skipped both questions, and the fork's own behaviour was not reproduced so much as accidentally bypassed. `info` reads fat containers now, printing "the same lines for a thin file and for each slice of a fat container" (`info_image`'s own header comment, `cli/drydock-macho-rewrite.c`) — the identical `  ordinal=N path=` and `LC[N] LC_CODE_SIGNATURE` lines, at the identical indentation, once per slice. Neither prompt's grep is scoped to one slice, so each fires the instant *either* slice matches — over the union of the slices, not one arbitrarily chosen one. Adopting it is right because the prompts exist to stop a caller doing something they did not mean, and a fat binary is where that matters most. | `tests/wrapper_test.sh`, "insert_dylib: the duplicate-dylib prompt now fires on a fat binary" |
+| 1 | **Both interactive prompts now fire on a FAT binary.** Prompt 1 ("LC_CODE_SIGNATURE load command found. Remove it?") and prompt 2 ("Binary already contains a load command for that dylib. Continue anyway?") each read `drydock-macho-rewrite info $MT_ID_BIN` and grep its output. While plain `info` was a bare `mi_open` it failed outright on a fat container — `not a readable 64-bit Mach-O`, stderr discarded by this wrapper's own `2>/dev/null` — so both greps ran over empty input and neither prompt was ever asked: a fat binary silently skipped both questions, and the fork's own behaviour was not reproduced so much as accidentally bypassed. `info` reads fat containers now, printing "the same lines for a thin file and for each slice of a fat container" (`info_image`'s own header comment, `cli/drydock-macho-rewrite.c`) — the identical `  ordinal=N path=` and `LC[N] LC_CODE_SIGNATURE` lines, each at its usual indentation, once per slice. Neither prompt's grep is scoped to one slice, so each fires the instant *either* slice matches — over the union of the slices, not one arbitrarily chosen one. Adopting it is right because the prompts exist to stop a caller doing something they did not mean, and a fat binary is where that matters most. | `tests/wrapper_test.sh`, "insert_dylib: the duplicate-dylib prompt fires on a fat binary whose second slice alone names the dylib" |
 
 ## `bake-mavericks-shim`
 

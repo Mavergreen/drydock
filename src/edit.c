@@ -234,10 +234,10 @@ typedef struct {
 
 /* One mr_ops through the rewrite, then -- in the last selected slice -- the
  * verdict on anything it asked for that matched nothing: a report on stderr,
- * and a refusal under fatal-warnings (ops->fatal_unmatched). The hit counts
- * are per statement, because each statement is its own rewrite of the image
- * as it now stands, and are summed across the slices that run it, because a
- * statement that matched in any selected slice has matched.
+ * and a refusal unless the script says allow-unmatched (ops->fatal_unmatched).
+ * The hit counts are per statement, because each statement is its own rewrite
+ * of the image as it now stands, and are summed across the slices that run
+ * it, because a statement that matched in any selected slice has matched.
  *
  * `declared` is the STATEMENT's own disturbs mask, not the script's union:
  * the rewrite's internal gate is about this one rewrite, and this module's
@@ -277,7 +277,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     memset(&ops, 0, sizeof ops);
     memset(&change, 0, sizeof change);
     memset(&renum, 0, sizeof renum);
-    ops.fatal_unmatched = s->fatal_warnings;
+    ops.fatal_unmatched = !s->allow_unmatched;
 
     switch (st->kind) {
     case MS_LOAD_COMMAND: {
@@ -304,7 +304,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * statement, the way mr_hits is. Zero in every one of them is this
          * statement's miss, judged in the last selected slice: reported on
          * stderr in the shape of the other "matched nothing" lines, and a
-         * refusal under fatal-warnings -- before anything is written,
+         * refusal unless allow-unmatched -- before anything is written,
          * because nothing is written until after the last statement. */
         int renamed = 0;
         ops.segment_rename_old = st->a;
@@ -315,7 +315,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         *v->renamed += renamed;
         if (!v->decide || *v->renamed > 0) return 0;
         me_say(stderr, "drydock-macho-rewrite: segment %s matched nothing\n", st->a);
-        if (s->fatal_warnings) { v->missed = 1; return MR_REFUSED; }
+        if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
         return 0;
     }
 
@@ -404,7 +404,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (!v->decide || *v->renamed > 0) return 0;
         me_say(stderr, "drydock-macho-rewrite: import redirect %s %s %s matched nothing\n",
                st->a, st->b, st->c);
-        if (s->fatal_warnings) { v->missed = 1; return MR_REFUSED; }
+        if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
         return 0;
     }
 
@@ -627,14 +627,14 @@ static void me_log_derived(FILE *log, const me_derived *d) {
  *
  * A derived statement NEVER counts as unmatched: "this binary already targets
  * 10.9 correctly" is a correct answer for a profile, unlike for an explicit
- * operation. Two things enforce that together -- fatal_warnings is cleared in
+ * operation. Two things enforce that together -- allow_unmatched is SET in
  * the script this runs under, and the verdict is not taken at all (decide is
  * 0), so no "matched nothing" line is printed either. It matters in practice:
  * `fixups set classic` strips LC_BUILD_VERSION itself, so the `load-command
  * delete build-version` the same expansion derived finds nothing left to do.
  * Writing `target 10.9` AND an explicit statement it would have derived is
  * the other side of this, and is not special-cased: the explicit one is
- * redundant, and fatal-warnings flags it. */
+ * redundant, and the default refusal flags it. */
 static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
                      const ms_script *s, const ms_stmt *st, FILE *log,
                      unsigned *disturbed) {
@@ -647,10 +647,10 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
     if (n == 0)
         me_say(log, "    nothing to do: this binary already targets 10.9\n");
 
-    /* The same script, minus fatal-warnings. */
+    /* The same script, plus allow-unmatched. */
     {
         ms_script sub = *s;
-        sub.fatal_warnings = 0;
+        sub.allow_unmatched = 1;
         for (i = 0; i < n; i++) {
             mr_hits hits;
             int renamed = 0, rc;

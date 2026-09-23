@@ -638,7 +638,7 @@ static void test_an_empty_script_disturbs_nothing_and_is_passed_through(void) {
 
     snap before = take(path);
     before.entries++;   /* OUT is the one expected newcomer */
-    int rc = run(path, out, "# nothing but a comment\nfatal-warnings\n");
+    int rc = run(path, out, "# nothing but a comment\nallow-unmatched\n");
     CHECK(rc == 0, "empty script: a script that disturbs nothing is not verified and "
           "not refused (got %d; log: %s)", rc, g_log);
     check_untouched("empty script: the input", path, &before);
@@ -720,7 +720,7 @@ static void test_the_final_verify_ignores_MACHO_NO_VERIFY(void) {
 
 /* Sequential, not batched: a statement sees what the one before it did. In
  * one batched operation set the replace could never match the command the
- * append creates, and fatal-warnings would refuse the run. */
+ * append creates, and a replace that matched nothing refuses the run. */
 static void test_later_statements_see_earlier_ones(void) {
     fresh_dir();
     char path[512], out[512];
@@ -731,7 +731,6 @@ static void test_later_statements_see_earlier_ones(void) {
     free(img);
 
     int rc = run(path, out,
-                 "fatal-warnings\n"
                  "dylib append /usr/lib/libfoo.dylib\n"
                  "dylib replace /usr/lib/libfoo.dylib /usr/lib/libbar.dylib\n");
     CHECK(rc == 0, "sequential: the replace matched the appended dylib (got %d)", rc);
@@ -781,9 +780,9 @@ static void test_dylib_retype_rewrites_the_load_command_kind(void) {
     }
 }
 
-/* An operation that matched nothing is a report without fatal-warnings and
- * a refusal with it. */
-static void test_fatal_warnings_refuses_an_unmatched_operation(void) {
+/* An operation that matched nothing is a refusal by default, and a report
+ * under allow-unmatched. */
+static void test_an_unmatched_operation_refuses_by_default(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "img");
@@ -794,27 +793,27 @@ static void test_fatal_warnings_refuses_an_unmatched_operation(void) {
 
     snap before = take(path);
     int rc = run(path, out,
-                 "fatal-warnings\n"
                  "load-command delete uuid\n"
                  "dylib delete /definitely/not/linked.dylib\n");
-    CHECK(rc == MR_REFUSED, "fatal-warnings: an unmatched operation refuses (got %d)", rc);
-    check_untouched("fatal-warnings", path, &before);
-    CHECK(access(out, F_OK) != 0, "fatal-warnings: %s was not created", out);
+    CHECK(rc == MR_REFUSED, "by default: an unmatched operation refuses (got %d)", rc);
+    check_untouched("by default", path, &before);
+    CHECK(access(out, F_OK) != 0, "by default: %s was not created", out);
 
     rc = run(path, out,
+             "allow-unmatched\n"
              "load-command delete uuid\n"
              "dylib delete /definitely/not/linked.dylib\n");
-    CHECK(rc == 0, "without fatal-warnings: the run continues and succeeds (got %d)", rc);
+    CHECK(rc == 0, "allow-unmatched: the run continues and succeeds (got %d)", rc);
     CHECK(count_lc(out, LC_UUID, NULL) == 0,
-          "without fatal-warnings: the statements that matched were applied");
+          "allow-unmatched: the statements that matched were applied");
     rm_dir();
 }
 
 /* A segment rename that renames nothing is a miss too. It has no hit count
- * for the dylib/rpath/lc report to read, so it needs its own, and under
- * fatal-warnings it must refuse the run -- after an earlier statement has
- * already changed the in-memory image, and without writing it. */
-static void test_fatal_warnings_refuses_an_unmatched_segment_rename(void) {
+ * for the dylib/rpath/lc report to read, so it needs its own, and by default
+ * it must refuse the run -- after an earlier statement has already changed
+ * the in-memory image, and without writing it. */
+static void test_an_unmatched_segment_rename_refuses_by_default(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "img");
@@ -825,24 +824,24 @@ static void test_fatal_warnings_refuses_an_unmatched_segment_rename(void) {
 
     snap before = take(path);
     int rc = run(path, out,
-                 "fatal-warnings\n"
                  "load-command delete uuid\n"
                  "segment rename __NOPE __X\n");
-    CHECK(rc == MR_REFUSED, "fatal-warnings: a rename that matched nothing refuses (got %d)", rc);
-    check_untouched("fatal-warnings, rename", path, &before);
-    CHECK(access(out, F_OK) != 0, "fatal-warnings, rename: %s was not created", out);
-    CHECK(strstr(g_log, "refused at statement 2 of 2 (line 3)") != NULL,
-          "fatal-warnings: the refusal names the rename (log: %s)", g_log);
+    CHECK(rc == MR_REFUSED, "by default: a rename that matched nothing refuses (got %d)", rc);
+    check_untouched("by default, rename", path, &before);
+    CHECK(access(out, F_OK) != 0, "by default, rename: %s was not created", out);
+    CHECK(strstr(g_log, "refused at statement 2 of 2 (line 2)") != NULL,
+          "by default: the refusal names the rename (log: %s)", g_log);
 
     rc = run(path, out,
+             "allow-unmatched\n"
              "load-command delete uuid\n"
              "segment rename __NOPE __X\n");
-    CHECK(rc == 0, "without fatal-warnings: an unmatched rename is reported and the run "
+    CHECK(rc == 0, "allow-unmatched: an unmatched rename is reported and the run "
           "succeeds (got %d)", rc);
     CHECK(count_lc(out, LC_UUID, NULL) == 0,
-          "without fatal-warnings: the statement before the rename was applied");
+          "allow-unmatched: the statement before the rename was applied");
     CHECK(has_segment(out, "__DATA", NULL) && !has_segment(out, "__X", NULL),
-          "without fatal-warnings: no segment was renamed");
+          "allow-unmatched: no segment was renamed");
     rm_dir();
 }
 
@@ -1081,29 +1080,29 @@ static void test_fat_two_missing_arch_names_are_both_reported(void) {
     rm_dir();
 }
 
-static void test_fat_fatal_warnings_counts_a_match_in_any_slice(void) {
+static void test_fat_unmatched_counts_a_match_in_any_slice(void) {
     fresh_dir();
     char path[512], out[512];
     in_dir(path, sizeof path, "fat");
     in_dir(out, sizeof out, "fat.out");
     write_fat(path, 0, NO_UUID, 0);   /* only the x86_64 slice has LC_UUID */
-    int rc = run(path, out, "fatal-warnings\nload-command delete uuid\n");
-    CHECK(rc == 0, "fat, fatal-warnings: a match in one slice is not a miss (got %d; log: %s)", rc, g_log);
+    int rc = run(path, out, "load-command delete uuid\n");
+    CHECK(rc == 0, "fat, unmatched: a match in one slice is not a miss (got %d; log: %s)", rc, g_log);
     /* The same, with the miss FIRST: the verdict has to wait for the last
      * selected slice. Deciding in each slice would refuse this one and not
      * the case above, where the counts a later slice reads already carry an
      * earlier slice's match. */
     write_fat(path, NO_UUID, 0, 0);   /* only the arm64 slice has LC_UUID */
-    rc = run(path, out, "fatal-warnings\nload-command delete uuid\n");
-    CHECK(rc == 0, "fat, fatal-warnings: a match in a LATER slice is not a miss "
+    rc = run(path, out, "load-command delete uuid\n");
+    CHECK(rc == 0, "fat, unmatched: a match in a LATER slice is not a miss "
           "(got %d; log: %s)", rc, g_log);
     write_fat(path, NO_UUID, NO_UUID, 0);   /* neither has it */
     snap before = take(path);
-    rc = run(path, out, "fatal-warnings\nload-command delete uuid\n");
-    CHECK(rc == MR_REFUSED, "fat, fatal-warnings: matching in no slice refuses (got %d)", rc);
+    rc = run(path, out, "load-command delete uuid\n");
+    CHECK(rc == MR_REFUSED, "fat, unmatched: matching in no slice refuses (got %d)", rc);
     check_untouched("fat, miss everywhere", path, &before);
     CHECK(strstr(g_log, "matched nothing in any selected slice") != NULL,
-          "fat, fatal-warnings: the refusal says it matched in no slice (log: %s)", g_log);
+          "fat, unmatched: the refusal says it matched in no slice (log: %s)", g_log);
     rm_dir();
 }
 
@@ -1396,7 +1395,8 @@ static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
  * the gate still does not apply, and it names the bit order too -- the list
  * runs low bit first, whatever order the statements were written in. It
  * matches nothing in this image, which is exactly the point: what a statement
- * DECLARES is disturbed is what the report has to say. */
+ * DECLARES is disturbed is what the report has to say -- so the script says
+ * allow-unmatched, or the miss would refuse the run before the report. */
 static void test_the_skip_line_names_what_the_run_disturbed(void) {
     fresh_dir();
     char path[512], out[512];
@@ -1406,7 +1406,7 @@ static void test_the_skip_line_names_what_the_run_disturbed(void) {
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
 
-    int rc = run(path, out, "dylib delete /x.dylib\nload-command delete uuid\n");
+    int rc = run(path, out, "allow-unmatched\ndylib delete /x.dylib\nload-command delete uuid\n");
     CHECK(rc == 0, "skip line: the run succeeds (got %d; log: %s)", rc, g_log);
     CHECK(strstr(g_log, ": this run disturbed library ordinal, sizeofcmds; "
                         "none of that is re-checked\n") != NULL,
@@ -1423,8 +1423,8 @@ int main(void) {
     test_the_final_verify_ignores_MACHO_NO_VERIFY();
     test_later_statements_see_earlier_ones();
     test_dylib_retype_rewrites_the_load_command_kind();
-    test_fatal_warnings_refuses_an_unmatched_operation();
-    test_fatal_warnings_refuses_an_unmatched_segment_rename();
+    test_an_unmatched_operation_refuses_by_default();
+    test_an_unmatched_segment_rename_refuses_by_default();
     test_the_file_level_operations_run_in_memory();
     test_out_takes_the_inputs_mode();
     test_what_edit_accepts();
@@ -1433,7 +1433,7 @@ int main(void) {
     test_arch_on_a_thin_file();
     test_fat_missing_or_32bit_arch_is_refused();
     test_fat_two_missing_arch_names_are_both_reported();
-    test_fat_fatal_warnings_counts_a_match_in_any_slice();
+    test_fat_unmatched_counts_a_match_in_any_slice();
     test_fat_a_refusal_in_the_second_slice_writes_nothing();
     test_fat_reassembly_refusal_leaves_the_file_untouched();
     test_fat_with_no_64bit_slice_is_refused();

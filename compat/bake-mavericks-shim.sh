@@ -92,11 +92,12 @@ done
 [ -e "$bk_shim" ] || bk_die "shim not found: $bk_shim"
 [ -n "$bk_out" ] || bk_out="$bk_in.selfcontained"
 
-# compat/README.md "bake-mavericks-shim": is there a signature, is the
-# shim loaded: no query answers either across a fat file's slices, so a trial
-# run under fatal-warnings does, by whether its one statement matched.
+# compat/README.md "bake-mavericks-shim": a trial run answers by whether
+# its one statement matched, so this wrapper never re-derives a statement's
+# match rule (or the fat rule "matched in any slice"). A miss refuses by
+# default, so the exit code is the answer.
 bk_matches() {
-    printf 'fatal-warnings\n%s\n' "$2" | drydock-macho-rewrite "$1" "$MW_T/probe" >/dev/null 2>&1
+    printf '%s\n' "$2" | drydock-macho-rewrite "$1" "$MW_T/probe" >/dev/null 2>&1
     bk_m=$?
     rm -f "$MW_T/probe"
     return "$bk_m"

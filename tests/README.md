@@ -110,17 +110,17 @@ for the same reason a quotation keeps the words it quotes.
 statement parser's KIND validation always have; a run's rewriting statements
 get theirs from the shared rewrite drivers they lower to (`mr_apply_image`,
 `mv_add_version_min`), which draw this exact same line themselves for
-EVERY considered refusal they can reach -- not only the one `--fatal-
-warnings` adds ("an operation matched nothing"), but every refusal those
-two functions already had (bad magic, no room to grow, and the rest of
-`src/rewrite.h`'s list). A run's own code comes from
+EVERY considered refusal they can reach -- not only the one an unmatched
+operation reaches by default ("an operation matched nothing"), but every
+refusal those two functions already had (bad magic, no room to grow, and
+the rest of `src/rewrite.h`'s list). A run's own code comes from
 `me_run` (`src/edit.h`), which draws the same line. Also documented
 machine-readably in `--capabilities`' `exitcodes` line:
 
 | code | meaning |
 |---|---|
 | `0` | success |
-| `1` (`EX_REFUSED`) | `drydock-macho-rewrite` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or an operation that matched nothing — under a script's `fatal-warnings` directive. There is nothing to roll back: the bare `FILE OUT` form writes nothing at all when it refuses, this case included, because its single write comes after the last statement and the final verify — and it never writes FILE at all. That was not always so. `dylib`, `rpath` and `lc` were verbs (since deleted), and under them a refusal was clean only for an ALL-MISS run: a run with one matching operation refused having already rewritten FILE. There is no verb left to be that way, and no form that still is |
+| `1` (`EX_REFUSED`) | `drydock-macho-rewrite` examined the input and declined ON PURPOSE — not a Mach-O, not plausible, an unsupported KIND/version, a `segment` NEW name longer than the 16 bytes a `segname` field holds, a grow `mg_grow_header` itself refused (its own "refuse rather than guess" rule), or an operation that matched nothing — refused by default unless the script opens with an `allow-unmatched` directive. There is nothing to roll back: the bare `FILE OUT` form writes nothing at all when it refuses, this case included, because its single write comes after the last statement and the final verify — and it never writes FILE at all. That was not always so. `dylib`, `rpath` and `lc` were verbs (since deleted), and under them a refusal was clean only for an ALL-MISS run: a run with one matching operation refused having already rewritten FILE. There is no verb left to be that way, and no form that still is |
 | `2` (`EX_FAIL`) | everything else: a syscall or malloc failure, a usage error — genuinely something going wrong, not a considered refusal. ONE EXCEPTION: an allocation failure INSIDE `mg_grow_header` or `mg_plausible` (`src/grow.c`) is folded into `1` instead, same as every other reason either one refuses, on everything that reaches either one (`verify` and the bare `FILE OUT` form) — see `src/rewrite.c`'s comment on that fold |
 
 The numbering is deliberately backwards from what first shipped (`0` ok, `1`

@@ -448,6 +448,20 @@ else
     skip "--strip-codesig" "codesign -s - is not available on this host"
 fi
 
+# ---- 11b. --strip-codesig on an unsigned binary: exits 0, not a refusal ---
+# The codesig delete misses, and allow-unmatched keeps the fork's exit 0.
+# Needs no codesign, so it never SKIPs.
+cp "$FIXTURE" "$T/ns"
+( cd "$T" && "$BIN/insert_dylib" --all-yes --strip-codesig \
+    /usr/lib/libfoo.dylib ns ns_out ) >"$T/11b.out" 2>"$T/11b.err"
+rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "--strip-codesig on an unsigned binary: exits 0" \
+    || bad "--strip-codesig unsigned" "exit $rc (want 0): $(cat "$T/11b.err")"
+"$BIN/drydock-macho-rewrite" info "$T/ns_out" 2>/dev/null | grep -qF 'path=/usr/lib/libfoo.dylib' \
+    && ok "--strip-codesig on an unsigned binary: OUT still has the dylib appended" \
+    || bad "--strip-codesig unsigned" "OUT does not name the appended dylib"
+
 # ---- 12. --weak's two statements run in the right order --------------------
 # Section 2's fixture already carried a load command for the path being
 # inserted (needed there so `imports` had a real bind to report against),

@@ -498,7 +498,9 @@ $mt_st_dyins"
     # above refuses it.) An install line with no command ahead of it would
     # name an output nothing wrote, so it goes too.
     [ -n "$mt_body" ] || return 0
+    # allow-unmatched: change_dylib exited 0 on a miss (compat/README.md).
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_CD_BODY
+allow-unmatched
 $mt_body
 MT_CD_BODY
     mt_install_line "$mt_file"
@@ -612,7 +614,9 @@ mt_tr_fix_macho() {
     # Unconditional, unlike change_dylib's: every fix_macho argv that reaches
     # here carries at least one operation (the usage check above rejects a
     # bare FILE), so the body is never empty.
+    # allow-unmatched: fix_macho exited 0 on a miss (compat/README.md).
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_FM_BODY
+allow-unmatched
 $mt_st_lc$mt_st_dychg$mt_st_seg
 MT_FM_BODY
     mt_install_line "$mt_file"
@@ -787,7 +791,9 @@ mt_tr_insert_dylib() {
     mt_id_parse "$@" || return 1
     mt_out=$(mt_id_out)
 
-    mt_body="dylib append$(mt_qargs "$MT_ID_DYLIB")
+    # allow-unmatched: --strip-codesig on an unsigned binary exited 0 upstream (compat/README.md).
+    mt_body="allow-unmatched
+dylib append$(mt_qargs "$MT_ID_DYLIB")
 "
     [ -n "$MT_ID_WEAK" ] && mt_body="$mt_body$(printf 'dylib retype%s' "$(mt_qargs "$MT_ID_DYLIB" weak)")
 "

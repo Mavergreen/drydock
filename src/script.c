@@ -291,7 +291,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
      * which one gets reported depends on that order, not on source
      * position (they're all on the same line). */
     int n_stmts = 0;
-    int fatal_warnings = 0, seen_operation = 0, seen_target = 0;
+    int allow_unmatched = 0, seen_operation = 0, seen_target = 0;
     unsigned arch_mask = 0;
     size_t i = 0;
     int lineno = 0;
@@ -342,14 +342,14 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             continue;
         }
 
-        if (strcmp(fields[0], "fatal-warnings") == 0) {
+        if (strcmp(fields[0], "allow-unmatched") == 0) {
             if (n != 1)
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "directive '%s' takes no operands", fields[0]);
             if (seen_operation)
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "directive '%s' must precede every operation", fields[0]);
-            fatal_warnings = 1;
+            allow_unmatched = 1;
             continue;
         }
 
@@ -453,7 +453,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
 
     out->stmts = stmts;
     out->n = n_stmts;
-    out->fatal_warnings = fatal_warnings;
+    out->allow_unmatched = allow_unmatched;
     out->arch_mask = arch_mask;
     out->text = text;
     return 0;
