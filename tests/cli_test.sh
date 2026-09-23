@@ -3905,10 +3905,12 @@ grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
 # converted file bytes with the tools' output sent to /dev/null -- so this
 # grep is one of the four readers that would actually break if they moved,
 # alongside tests/wrapper_test.sh's two unmatched-report assertions,
-# compat/rename_segment.sh's pair -- it counts `  Rename segment: OLD -> NEW`
-# and checks the zero case against `drydock-macho-rewrite: segment OLD matched nothing` --
-# and compat/patch_macho.sh's `^Already patched`. The last two are production
-# code rather than tests. All five move with what they read.
+# compat/rename_segment.sh's own grep -- it counts `  Rename segment: OLD ->
+# NEW`, for its report line, never any more for its zero-case verdict (Task 9
+# moved that to drydock-macho-rewrite's own exit code, once an unmatched
+# `segment rename` started refusing by default) -- and compat/patch_macho.sh's
+# `^Already patched`. The last two are production code rather than tests.
+# All four move with what they read.
 grep -q "^drydock-macho-rewrite edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
     || bad "edit parse error" "no 'drydock-macho-rewrite edit: ' prefix: $(cat "$T/editbad.err")"

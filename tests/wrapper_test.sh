@@ -1096,20 +1096,107 @@ run rename_segment f __DATA __DATA_R1
     || bad "rename_segment message" "$(wc -l < "$T/out") lines: $(cat "$T/out")"
 
 # EXIT 2 WHEN NOTHING MATCHED -- rename_segment's own answer, which
-# drydock-macho-rewrite does not give, so the wrapper reproduces it deliberately; it is
-# the reason this wrapper counts the matches first.
+# drydock-macho-rewrite does not give, so the wrapper reproduces it
+# deliberately. A `segment rename` matching nothing is EX_REFUSED (1) by
+# default now (Task 7's flip made an unmatched operation fatal), so this is
+# read from drydock-macho-rewrite's own exit code, not recovered by grepping
+# stderr for its wording -- see the stub-based pair below, which proves that
+# directly.
 fresh
 before=$(sha "$T/f")
 run rename_segment f __NOPE __ALSONOPE
 [ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && [ "$(sha "$T/f")" = "$before" ] \
     && ok "rename_segment: nothing matched exits 2, silently, without writing" \
     || bad "rename_segment no match" "exit $rc (want 2), stdout: $(cat "$T/out")"
+# NO MORE ON STDERR THAN mw_teach EVER PUT THERE. Before Task 7's flip,
+# `segment rename` matching nothing was a 0 exit from drydock-macho-rewrite,
+# so this case's stderr was always just the deprecation teaching every
+# invocation prints (mw_teach, drydock-macho-rewrite-compat.sh) -- never
+# drydock-macho-rewrite's own report. Now that the tool refuses instead, this
+# wrapper must not start showing the caller that refusal (its "segment X
+# matched nothing" line, or the `drydock-macho-rewrite edit: refused at
+# statement...` line above it) just because the verdict arrives as that
+# refusal.
+has_line "$T/err" 'rename_segment: deprecated -- drydock-macho-rewrite does this now. The equivalent commands, in this order, are:' \
+    && ! grep -q 'matched nothing' "$T/err" \
+    && ! grep -q 'drydock-macho-rewrite edit:' "$T/err" \
+    && ok "rename_segment: ...and stderr is only ever the teaching message, never drydock-macho-rewrite's own refusal" \
+    || bad "rename_segment no match" "stderr leaked drydock-macho-rewrite's report, or lost the teaching message: $(cat "$T/err")"
 # `drydock-macho-rewrite segment` DID write its output here -- a 0 exit means OUT is the
 # answer even when the answer is a copy -- so this is the one path where the
 # wrapper deliberately skips mw_finish and lets the EXIT trap remove the temp.
 ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' \
     && bad "rename_segment no match" "the unused temp survived" \
     || ok "rename_segment: ... and the output drydock-macho-rewrite did write is not left behind"
+
+# THE VERDICT IS THE EXIT CODE, NOT THE WORDING -- proved behaviourally, with
+# a fake drydock-macho-rewrite standing in for the real one, rather than by
+# grepping compat/rename_segment.sh's own source for what it no longer reads.
+# A source grep would assert on text (and would even match THIS comment,
+# which quotes the retired wording), where a stub proves the actual claim:
+# the wrapper's decision follows the number, never the words.
+#
+# STUBDIR holds a drydock-macho-rewrite that answers an `info` call for real
+# (exec'd straight through to the real binary, so rename_segment's own
+# thin-container gate keeps working) and answers anything else -- the
+# retranslated `segment rename` run itself, the one mw_run makes -- with
+# $MW_STUB_RC and $MW_STUB_ERR instead of doing any real work. The two files
+# every wrapper needs beside drydock-macho-rewrite are copies of the real
+# ones, so DRYDOCK_MACHO_REWRITE_COMPAT_DIR can point straight at it.
+#
+# The interception only works on the bare PATH word "drydock-macho-rewrite":
+# compat/translate.sh's mt_pre_word emits $DRYDOCK_MACHO_REWRITE verbatim
+# instead whenever it is set, and that can be an absolute path, which is not
+# something DRYDOCK_MACHO_REWRITE_COMPAT_DIR's PATH trick can redirect. So
+# the two stub assertions below run with it unset, restoring whatever this
+# invocation had -- unset or a real value -- once they are done.
+MW_HAD_DMR=${DRYDOCK_MACHO_REWRITE+1}
+MW_SAVED_DMR=${DRYDOCK_MACHO_REWRITE-}
+unset DRYDOCK_MACHO_REWRITE
+STUBDIR="$T/stubbin"
+mkdir -p "$STUBDIR"
+cp "$BIN/drydock-macho-rewrite-compat.sh" "$STUBDIR/drydock-macho-rewrite-compat.sh"
+cp "$BIN/drydock-macho-rewrite-translate.sh" "$STUBDIR/drydock-macho-rewrite-translate.sh"
+cat >"$STUBDIR/drydock-macho-rewrite" <<STUB
+#!/bin/sh
+case "\$1" in
+    info) exec "$BIN/drydock-macho-rewrite" "\$@" ;;
+esac
+printf '%s\n' "\$MW_STUB_ERR" >&2
+exit "\$MW_STUB_RC"
+STUB
+chmod +x "$STUBDIR/drydock-macho-rewrite"
+
+fresh
+before=$(sha "$T/f")
+DRYDOCK_MACHO_REWRITE_COMPAT_DIR="$STUBDIR"
+MW_STUB_RC=1
+MW_STUB_ERR='drydock-macho-rewrite: a completely different refusal, worded on purpose so nothing greps for it'
+export DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+run rename_segment f __NOPE __ALSONOPE
+[ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && ! grep -qF "$MW_STUB_ERR" "$T/err" && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "rename_segment: a fake tool's exit 1 is 'nothing matched' no matter what it says" \
+    || bad "rename_segment stub refusal" "exit $rc (want 2), stdout: $(cat "$T/out"), stderr: $(cat "$T/err")"
+unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+
+# EX_FAIL (2, an operational failure) is not EX_REFUSED (1, a considered
+# refusal), and must not collapse into the same silent exit 2: it keeps its
+# existing path here, shown on stderr with the wrapper exiting 1, same as any
+# other nonzero this build's `segment rename` was never specified to
+# produce. Distinguishable from the assertion just above on rc alone.
+fresh
+before=$(sha "$T/f")
+DRYDOCK_MACHO_REWRITE_COMPAT_DIR="$STUBDIR"
+MW_STUB_RC=2
+MW_STUB_ERR='drydock-macho-rewrite: pretend malloc failed'
+export DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+run rename_segment f __NOPE __ALSONOPE
+[ "$rc" -eq 1 ] && has_line "$T/err" "$MW_STUB_ERR" && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "rename_segment: EX_FAIL stays 'everything else' -- shown, and exit 1, not 2" \
+    || bad "rename_segment stub EX_FAIL" "exit $rc (want 1), stderr: $(cat "$T/err")"
+unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+[ -n "$MW_HAD_DMR" ] && { DRYDOCK_MACHO_REWRITE=$MW_SAVED_DMR; export DRYDOCK_MACHO_REWRITE; }
+unset MW_HAD_DMR MW_SAVED_DMR
 
 # A rename to the SAME name still MATCHED, so it is exit 0 with a count of 1 --
 # not exit 2. This is what rules out implementing "nothing matched" as
@@ -1497,14 +1584,16 @@ run fix_macho f -strip_build_version
 # NOTHING DIGESTS THIS. tests/EXPECTED and tests/known-callers.sh's sha256s
 # hash converted FILE BYTES, with every tool's stdout and stderr sent to
 # /dev/null, so renaming every emitted string moved neither. What pins these
-# strings is five greps in four files, and they are the whole list: this
+# strings is four greps in four files, and they are the whole list: this
 # assertion, the `matched nothing` one below it, tests/cli_test.sh's
-# `^drydock-macho-rewrite edit: ` prefix check, and -- the ones that are not tests --
-# compat/rename_segment.sh's pair (it counts `  Rename segment: OLD -> NEW`
-# and checks the zero case against `drydock-macho-rewrite: segment OLD matched nothing`,
-# which its exit code depends on) plus compat/patch_macho.sh's
-# `^Already patched`, which reads a line md_declassify prints rather than one
-# any verb did. All five move with the strings they read.
+# `^drydock-macho-rewrite edit: ` prefix check, and -- the one that is not a
+# test -- compat/patch_macho.sh's `^Already patched`, which reads a line
+# md_declassify prints rather than one any verb did. (compat/rename_segment.sh
+# used to carry a fifth grep here, checking its own zero case against
+# `drydock-macho-rewrite: segment OLD matched nothing`; Task 9 deleted it once
+# an unmatched `segment rename` started refusing by default, which gave that
+# wrapper an exit code to read instead.) All four move with the strings they
+# read.
 has_line "$T/err" 'drydock-macho-rewrite: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
