@@ -527,22 +527,23 @@ echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
 ! grep -q 'lazy' "$T/caps" || bad "capabilities kinds" "advertises lazy as a kind"
 ok "capabilities: retype kinds do not advertise lazy"
 
-# NO `flags=` FIELD IS ADVERTISED ANY MORE, and that is the claim now. It used
+# NO OTHER `flags=` FIELD IS ADVERTISED, and that is the claim now. It used
 # to be per-verb: `fatal-warnings` was a verb-level flag, and assertions here
 # checked which verb advertised it. It is a SCRIPT DIRECTIVE today, and
 # print_capabilities deliberately does not list directives (see its own
 # contract: "that is a later decision"), so a `flags=` on any surviving line
-# would be advertising something no form accepts.
+# would be advertising something no form accepts -- with one exception:
+# `verb info flags=--thin` names an actual CLI flag `info` itself parses
+# (tested below), not a directive in disguise, so it alone is allowed through.
 #
 # WHAT THIS NO LONGER COVERS, stated rather than quietly dropped: a wrapper
 # cannot probe for `fatal-warnings` support. Its BEHAVIOUR is still asserted
 # below, per statement kind, against a real fixture -- it is only the
 # advertisement that went.
-if echo "$caps" | grep -q 'flags='; then
-    bad "capabilities: flags=" "a flags= field survived the verb collapse: $(echo "$caps" | grep 'flags=')"
-else
-    ok "capabilities: no flags= field is advertised, the directives having replaced the verb flags"
-fi
+stray_flags=$(echo "$caps" | grep 'flags=' | grep -vxF 'verb info flags=--thin' || true)
+[ -z "$stray_flags" ] \
+    && ok "capabilities: the only flags= field advertised is info's --thin" \
+    || bad "capabilities: flags=" "an unexpected flags= field survived the verb collapse: $stray_flags"
 
 # ---- info --thin ---------------------------------------------------------
 # The flag exists before `info` learns fat containers, so the four wrappers
@@ -552,8 +553,8 @@ echo "$caps" | grep -qxF "verb info flags=--thin" \
     && ok "capabilities: info advertises --thin" \
     || bad "capabilities: info flags" "no 'verb info flags=--thin' line: $(echo "$caps" | grep '^verb info')"
 
-"$DRYDOCK_MACHO_REWRITE" info --thin "$T/signing_probe" >"$T/thin.out" 2>"$T/thin.err"
-[ $? -eq 0 ] && ok "info --thin: accepted on a thin Mach-O" \
+"$DRYDOCK_MACHO_REWRITE" info --thin "$T/signing_probe" >"$T/thin.out" 2>"$T/thin.err" \
+    && ok "info --thin: accepted on a thin Mach-O" \
     || bad "info --thin" "exited nonzero on a thin file: $(cat "$T/thin.err")"
 
 "$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" >"$T/nothin.out" 2>/dev/null
@@ -563,8 +564,8 @@ cmp -s "$T/thin.out" "$T/nothin.out" \
 
 # A FILE literally named --thin is still reachable as ./--thin, the same
 # remedy bad_out names for an OUT beginning with '-'.
-"$DRYDOCK_MACHO_REWRITE" info --thin >/dev/null 2>&1
-[ $? -eq 2 ] && ok "info --thin: --thin with no FILE is a usage error (2)" \
+rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "info --thin: --thin with no FILE is a usage error (2)" \
     || bad "info --thin usage" "--thin with no FILE did not exit 2"
 
 # ----------------------------------------------------------------------------
