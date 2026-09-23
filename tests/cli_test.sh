@@ -3903,14 +3903,12 @@ grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
 # the tool, as every other verb's diagnostics do. No digest protects those
 # strings -- tests/EXPECTED and tests/known-callers.sh's sha256s hash
 # converted file bytes with the tools' output sent to /dev/null -- so this
-# grep is one of the four readers that would actually break if they moved,
-# alongside tests/wrapper_test.sh's two unmatched-report assertions,
-# compat/rename_segment.sh's own grep -- it counts `  Rename segment: OLD ->
-# NEW`, for its report line, never any more for its zero-case verdict (Task 9
-# moved that to drydock-macho-rewrite's own exit code, once an unmatched
-# `segment rename` started refusing by default) -- and compat/patch_macho.sh's
-# `^Already patched`. The last two are production code rather than tests.
-# All four move with what they read.
+# grep is one of four readers, in three files, that would actually break if
+# they moved: this assertion, tests/wrapper_test.sh's two fix_macho
+# unmatched-report assertions, and -- the one that is production code
+# rather than a test -- compat/patch_macho.sh's `^Already patched`, which
+# reads a line md_declassify prints rather than one any verb did. All four
+# move with what they read.
 grep -q "^drydock-macho-rewrite edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
     || bad "edit parse error" "no 'drydock-macho-rewrite edit: ' prefix: $(cat "$T/editbad.err")"

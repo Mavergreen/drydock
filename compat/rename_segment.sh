@@ -42,35 +42,31 @@
 #      one per segment renamed, printed from inside the load-command walk
 #      (src/rewrite.c). It used to read a summary the `segment` VERB printed
 #      (`machotool segment: renamed=<N>`); a script prints no summary, and the
-#      per-rename line is what both forms have always had in common. A run
-#      that renames nothing prints none of them and refuses instead -- an
-#      unmatched `segment rename` is EX_REFUSED by default (Task 7's flip),
-#      and THAT EXIT CODE is what the zero case is checked against now, not
-#      the wording of the "matched nothing" line drydock-macho-rewrite still
-#      prints alongside it (`drydock-macho-rewrite: segment <OLD> matched
-#      nothing`, src/edit.c). A rephrasing of that line cannot move this
-#      wrapper's verdict any more; tests/wrapper_test.sh proves it with a
-#      stub drydock-macho-rewrite that exits 1 with different wording.
+#      per-rename line is what both forms have always had in common.
+#
+#      A run that matches nothing prints none of them and refuses instead --
+#      an unmatched `segment rename` is EX_REFUSED by default. So does a run
+#      that refuses for a reason that has nothing to do with matching (the
+#      fourth divergence below, LC_LAZY_LOAD_DYLIB, is the one this file has
+#      measured): both look identical from drydock-macho-rewrite's exit code
+#      alone, so EX_REFUSED by itself is not the zero-case verdict. Telling
+#      the two apart is a CLASSIFICATION step (see EXIT CODES, below): it
+#      asks `drydock-macho-rewrite info --thin FILE` whether a segment named
+#      OLD exists at all, using the tool's own match rule -- src/segname.c's
+#      mseg_rename_lc: `strncmp(segname, oldname, MSEG_NAME_MAX)`,
+#      MSEG_NAME_MAX 16 (src/segname.h) -- rather than assuming EX_REFUSED
+#      always means "nothing matched". Absent -> the old grammar's exit 2,
+#      silently. Present -> the refusal is about something else, and is
+#      shown.
 #
 #      No digest protects the per-rename line: tests/EXPECTED and
 #      tests/known-callers.sh's sha256s hash converted file bytes with the
-#      tools' output sent to /dev/null. What pins it is four greps in four
-#      files, and they are the whole list:
-#
-#        * the one grep below, the ONLY ONE THAT IS NOT A TEST -- production
-#          code a caller depends on for the count (this file used to carry a
-#          second one, checking the zero case against the "matched nothing"
-#          wording; Task 9 deleted it, once the exit code above made it
-#          redundant);
-#        * compat/patch_macho.sh's `^Already patched` grep, production code
-#          too, though that line comes from md_declassify rather than from any
-#          verb, so it did not move with this one;
-#        * tests/wrapper_test.sh's two unmatched-report assertions, which
-#          match whole lines beginning `drydock-macho-rewrite: `; and
-#        * tests/cli_test.sh's `^drydock-macho-rewrite edit: ` prefix check.
-#
-#      Each of the four carries this same list, so the set is findable from
-#      any one of them, and all four have to move with the strings they read.
+#      tools' output sent to /dev/null. What pins it is two readers, in two
+#      files: the grep below (production code, this file, the only thing
+#      this wrapper still reads that string for) and tests/wrapper_test.sh's
+#      "capabilities" assertion, which proves the build really emits it -- a
+#      build that stopped would make this wrapper report 0 renames and exit
+#      2 on a file it had just rewritten.
 #
 #      drydock-macho-rewrite's own stdout is otherwise SUPPRESSED and this wrapper prints
 #      rename_segment's single line with that count, byte-identical to the C
@@ -89,7 +85,15 @@
 #
 #      That was tests/README.md's second lesson -- never parse human-readable
 #      output as an oracle -- applied to `drydock-macho-rewrite info` instead of to `otool`.
-#      The count now comes from the code that did the matching.
+#      The count now comes from the code that did the matching. THE
+#      CLASSIFICATION ABOVE reads the same dump, but not with awk and not by
+#      counting: a single fixed-string grep for the WHOLE line
+#      `  segname=<OLD, cut to 16 bytes> vmaddr=` (cli/drydock-macho-rewrite.c's
+#      info_cb prints `  segname=%.16s vmaddr=...`), with OLD cut to 16
+#      bytes first, the same way the C truncates segname before either side
+#      of the comparison exists. Neither of the two awk bugs above can recur
+#      here: there is no field to split, and OLD is truncated before the
+#      grep runs, not left for a delimiter to cut wrong.
 #   3. THIN ONLY. rename_segment ran mi_open, which fails on a fat container,
 #      and printed "%s: not a readable 64-bit Mach-O" (exit 1). `drydock-macho-rewrite
 #      segment` goes through mr_apply_file, which HANDLES fat containers --
@@ -130,6 +134,23 @@
 #      shared rewriter has existed. What changed is only that the rename now
 #      travels through that rewriter.
 #
+#      RENAME_SEGMENT ITSELF, asked to rename a segment on such a binary,
+#      classifies the refusal the way EXIT CODES (below) describes: it asks
+#      `drydock-macho-rewrite info --thin` whether OLD names a real segment.
+#      On /usr/lib/libxcselect.dylib, `rename_segment x __TEXT __TEXX` (a
+#      segment that really exists) is classified "present" and exits 1 with
+#      drydock-macho-rewrite's own LC_LAZY_LOAD_DYLIB refusal shown -- the
+#      pre-wrapper shape, restored. A name libxcselect.dylib does NOT carry,
+#      on the same binary, is classified "absent" and exits 2 SILENTLY,
+#      exactly like an ordinary miss -- even though the true reason
+#      mo_map_build refused is this divergence, not the name. The
+#      classification only ever asks "does OLD exist", never "why did
+#      drydock-macho-rewrite refuse", so this one case is indistinguishable
+#      from a real miss in the wrapper's own output. Accepted rather than
+#      closed, for the same reason the gap above is: fixing it needs
+#      drydock-macho-rewrite to stop building the ordinal map for an
+#      operation that cannot renumber, which is that same unfixed gap.
+#
 #      It is the same SHAPE as the mg_plausible gate described below -- an
 #      offset-related gate running on an operation set that cannot move
 #      offsets -- but a different call site, so it does not fall out of
@@ -152,18 +173,33 @@
 # by anything a caller can pass.
 #
 # EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else -- the three
-# rename_segment had. Since Task 9, drydock-macho-rewrite's own exit code IS
-# what "nothing matched" is decided from, on purpose: EX_REFUSED (1) is a
-# considered refusal, and a `segment rename` statement refuses this way for
-# exactly one reason -- MS_SEGMENT's own unmatched case (src/edit.c) -- so
-# that number becomes this wrapper's exit 2, silently, matching the old
-# grammar's own exit 2 with the file untouched. Every OTHER nonzero --
-# EX_FAIL (2, an operational failure), or anything this build's `segment
-# rename` was never specified to produce -- becomes this wrapper's 1, shown
-# on stderr, which is what "everything else" always meant here. The two
-# tool exit codes therefore map to two DIFFERENT wrapper exit codes on
-# purpose: EX_REFUSED (1) to this wrapper's 2, EX_FAIL (2) to this wrapper's
-# 1, and nothing folds them together.
+# rename_segment had. EX_FAIL (2, an operational failure) always was
+# "everything else": it becomes this wrapper's 1, shown on stderr, whatever
+# this build's `segment rename` was never specified to produce lands here
+# too.
+#
+# EX_REFUSED (1) IS NOT, BY ITSELF, "nothing matched" -- a `segment rename`
+# statement also refuses this way for a reason that has nothing to do with
+# matching (the fourth divergence above, LC_LAZY_LOAD_DYLIB), and the two
+# are the same number from drydock-macho-rewrite's own exit alone. So an
+# EX_REFUSED is CLASSIFIED: `drydock-macho-rewrite info --thin FILE` is
+# asked whether a segment named OLD exists, with the same match rule
+# mseg_rename_lc uses (`strncmp(segname, oldname, 16)`, src/segname.c) --
+# OLD cut to 16 bytes, matched against info's own `  segname=%.16s vmaddr=`
+# line, whole-line and fixed-string. Absent -> this wrapper's old exit 2,
+# silently, matching the old grammar's own silence with the file untouched.
+# Present -> the refusal really is about something else, and is shown, same
+# as the pre-wrapper C tool would have shown whatever refused IT. If the
+# classification query itself fails (`info --thin` exits nonzero), that is
+# an operational failure of its own, distinct from either answer: shown, and
+# this wrapper exits 1.
+#
+# The one case this cannot tell apart from a real miss: a refusal for a
+# reason unrelated to matching (LC_LAZY_LOAD_DYLIB) COMBINED with an OLD
+# that also happens not to exist. The classification only asks "does OLD
+# exist", never "why did drydock-macho-rewrite refuse", so that combination
+# is reported as exit 2, silently -- the fourth divergence's own note above
+# has the measured case and why it is accepted rather than closed.
 #
 # THE IN-PLACE EDIT. rename_segment rewrote the binary it was given; `drydock-macho-rewrite
 # segment FILE OUT OLD NEW` does not write the file it is given. So this
@@ -232,37 +268,66 @@ mw_retranslate rename_segment "$@" || exit 1
 mw_run >"$MW_T/segout" 2>&1
 mw_rc=$?
 
-# NOTHING MATCHED: the old grammar's exit 2, and nothing is installed. An
-# unmatched `segment rename` is EX_REFUSED (1) by default now (Task 7's flip
-# made an unmatched operation fatal), so THAT number is the verdict -- it is
-# no longer recovered by grepping stderr for drydock-macho-rewrite's exact
-# "segment X matched nothing" wording, which made this wrapper depend on how
-# a human-readable line was phrased. Nothing is shown to the caller for it
-# either, matching the old grammar's own silence in this case: a refusal
-# writes no temp mw_finish would install, and mw_cleanup's EXIT trap removes
-# whatever drydock-macho-rewrite did leave behind either way.
-[ "$mw_rc" -eq 1 ] && exit 2
+if [ "$mw_rc" -eq 1 ]; then
+    # EX_REFUSED alone does not say WHY: a `segment rename` also refuses
+    # this way when the image carries LC_LAZY_LOAD_DYLIB (the FOURTH
+    # DIVERGENCE above), which has nothing to do with matching. Classify it
+    # by asking whether OLD names a real segment, with the tool's own match
+    # rule -- src/segname.c's mseg_rename_lc: strncmp(segname, oldname, 16),
+    # MSEG_NAME_MAX in src/segname.h -- rather than trusting EX_REFUSED to
+    # mean "nothing matched" on its own.
+    mw_old16=$(printf '%s' "$mw_old" | LC_ALL=C cut -c1-16)
+    if drydock-macho-rewrite info --thin "$mw_file" >"$MW_T/seginfo" 2>&1; then
+        # info's own line is `  segname=%.16s vmaddr=...` (cli/drydock-macho-rewrite.c's
+        # info_cb) -- whole-line-prefix, fixed-string, against OLD cut to
+        # the same 16 bytes the C compares, so neither of the two awk bugs
+        # the header above measured (a long OLD, a segname with whitespace)
+        # can recur here.
+        if LC_ALL=C grep -q -F -- "  segname=$mw_old16 vmaddr=" "$MW_T/seginfo"; then
+            # OLD exists: the refusal is about something else. Show it, the
+            # same shape "everything else" always had here.
+            cat "$MW_T/segout" >&2
+            exit 1
+        fi
+        # OLD does not exist: the old grammar's exit 2, silently. A refusal
+        # writes no temp mw_finish would install, and mw_cleanup's EXIT trap
+        # removes whatever drydock-macho-rewrite did leave behind either way.
+        exit 2
+    fi
+    # The classification query itself failed -- an operational failure of
+    # its own, not an answer either way.
+    cat "$MW_T/seginfo" >&2
+    exit 1
+fi
 
-# EVERYTHING ELSE -- EX_FAIL (2, an operational failure), or any exit this
-# build's `segment rename` statement was never specified to produce -- is
-# unchanged from before this task: shown on stderr, wrapper exit 1. This is
-# also what keeps EX_FAIL and EX_REFUSED from folding into the same number by
-# accident: only a 1 above becomes this wrapper's silent 2; everything else
-# lands here instead.
+# EX_FAIL (2, an operational failure), or any exit this build's `segment
+# rename` statement was never specified to produce, is shown on stderr,
+# wrapper exit 1 -- the "everything else" this wrapper always had.
 [ "$mw_rc" -eq 0 ] || { cat "$MW_T/segout" >&2; exit 1; }
 
-# THE MATCH COUNT, for the report line below -- not, any more, for the
-# verdict above. Counted from the renames themselves: the `segment` VERB
-# used to close with `machotool segment: renamed=N` and this read that number;
-# a script prints no such summary, so the count comes from the one line the
-# rewriter emits per segment it actually renames (src/rewrite.c's
-# "  Rename segment: OLD -> NEW", on stdout, inside the loop over load
-# commands -- so a fat container contributes one per slice, exactly as the
-# summary's own sum did). Whole-line and FIXED-string, so an OLD or NEW
-# carrying a regular-expression metacharacter counts as itself. A 0 exit from
-# drydock-macho-rewrite always matched something (MS_SEGMENT's own unmatched
-# case is exactly the EX_REFUSED above), so mw_n here is never 0.
+# THE MATCH COUNT, for the report line below. Counted from the renames
+# themselves: the `segment` VERB used to close with `machotool segment:
+# renamed=N` and this read that number; a script prints no such summary, so
+# the count comes from the one line the rewriter emits per segment it
+# actually renames (src/rewrite.c's "  Rename segment: OLD -> NEW", on
+# stdout, inside the loop over load commands -- so a fat container
+# contributes one per slice, exactly as the summary's own sum did).
+# Whole-line and FIXED-string, so an OLD or NEW carrying a regular-expression
+# metacharacter counts as itself.
 mw_n=$(grep -c -x -F -- "  Rename segment: $mw_old -> $mw_new" "$MW_T/segout") || mw_n=0
+if [ "$mw_n" -eq 0 ]; then
+    # A 0 exit always matched something -- MS_SEGMENT's own unmatched case
+    # is exactly the EX_REFUSED handled above -- so a 0 exit with nothing to
+    # count means this build's rewriter no longer prints the per-rename
+    # line this wrapper reads, not that the rename found nothing. Fail
+    # loudly rather than report a rename that did not happen: a build whose
+    # segment rename says nothing at all is a mismatched install, not a file
+    # this tool should report on.
+    printf '%s: %s: this drydock-macho-rewrite did not report what its segment rename matched\n' \
+        "$MW_TOOL" "$mw_file" >&2
+    cat "$MW_T/segout" >&2
+    exit 1
+fi
 
 mw_finish || exit 1
 

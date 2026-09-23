@@ -1097,62 +1097,73 @@ run rename_segment f __DATA __DATA_R1
 
 # EXIT 2 WHEN NOTHING MATCHED -- rename_segment's own answer, which
 # drydock-macho-rewrite does not give, so the wrapper reproduces it
-# deliberately. A `segment rename` matching nothing is EX_REFUSED (1) by
-# default now (Task 7's flip made an unmatched operation fatal), so this is
-# read from drydock-macho-rewrite's own exit code, not recovered by grepping
-# stderr for its wording -- see the stub-based pair below, which proves that
-# directly.
+# deliberately. A `segment rename` matching nothing is EX_REFUSED (1), which
+# this wrapper classifies by asking `drydock-macho-rewrite info --thin`
+# whether OLD names a real segment (compat/rename_segment.sh's EXIT CODES
+# section) -- __NOPE does not, on this fixture, so this is the "absent"
+# case: the old grammar's own exit 2.
 fresh
 before=$(sha "$T/f")
 run rename_segment f __NOPE __ALSONOPE
 [ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && [ "$(sha "$T/f")" = "$before" ] \
     && ok "rename_segment: nothing matched exits 2, silently, without writing" \
     || bad "rename_segment no match" "exit $rc (want 2), stdout: $(cat "$T/out")"
-# NO MORE ON STDERR THAN mw_teach EVER PUT THERE. Before Task 7's flip,
-# `segment rename` matching nothing was a 0 exit from drydock-macho-rewrite,
-# so this case's stderr was always just the deprecation teaching every
-# invocation prints (mw_teach, drydock-macho-rewrite-compat.sh) -- never
-# drydock-macho-rewrite's own report. Now that the tool refuses instead, this
-# wrapper must not start showing the caller that refusal (its "segment X
-# matched nothing" line, or the `drydock-macho-rewrite edit: refused at
-# statement...` line above it) just because the verdict arrives as that
-# refusal.
-has_line "$T/err" 'rename_segment: deprecated -- drydock-macho-rewrite does this now. The equivalent commands, in this order, are:' \
-    && ! grep -q 'matched nothing' "$T/err" \
-    && ! grep -q 'drydock-macho-rewrite edit:' "$T/err" \
-    && ok "rename_segment: ...and stderr is only ever the teaching message, never drydock-macho-rewrite's own refusal" \
-    || bad "rename_segment no match" "stderr leaked drydock-macho-rewrite's report, or lost the teaching message: $(cat "$T/err")"
-# `drydock-macho-rewrite segment` DID write its output here -- a 0 exit means OUT is the
-# answer even when the answer is a copy -- so this is the one path where the
-# wrapper deliberately skips mw_finish and lets the EXIT trap remove the temp.
+# STDERR IS EXACTLY THE TEACHING BLOCK -- the same three lines mw_teach
+# (drydock-macho-rewrite-compat.sh) prints before ANY run, diffed whole
+# against what this invocation actually wrote, not merely checked for the
+# teaching's first line plus the ABSENCE of drydock-macho-rewrite's own
+# report. A `segment rename` matching nothing used to be a 0 exit from
+# drydock-macho-rewrite, so this case's stderr was always just that block;
+# now that the tool refuses instead, this wrapper must not start showing the
+# caller that refusal (its "segment X matched nothing" line, or the
+# `drydock-macho-rewrite edit: refused at statement...` line above it) just
+# because the verdict arrives as that refusal.
+cat >"$T/rs_nomatch_expected.err" <<'RSEXPECTED'
+rename_segment: deprecated -- drydock-macho-rewrite does this now. The equivalent commands, in this order, are:
+    printf 'segment rename __NOPE __ALSONOPE\n' | drydock-macho-rewrite f f.new
+    mv -f f.new f
+RSEXPECTED
+diff -u "$T/rs_nomatch_expected.err" "$T/err" >"$T/rs_nomatch.diff" 2>&1
+[ ! -s "$T/rs_nomatch.diff" ] \
+    && ok "rename_segment: ...and stderr is exactly the teaching block, never drydock-macho-rewrite's own refusal" \
+    || bad "rename_segment no match" "stderr != the teaching-only expectation: $(cat "$T/rs_nomatch.diff")"
+# A refusal writes no temp mw_finish would install, so this is the one path
+# where the wrapper deliberately skips mw_finish and lets the EXIT trap
+# remove whatever drydock-macho-rewrite did leave behind.
 ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' \
     && bad "rename_segment no match" "the unused temp survived" \
     || ok "rename_segment: ... and the output drydock-macho-rewrite did write is not left behind"
 
-# THE VERDICT IS THE EXIT CODE, NOT THE WORDING -- proved behaviourally, with
-# a fake drydock-macho-rewrite standing in for the real one, rather than by
-# grepping compat/rename_segment.sh's own source for what it no longer reads.
-# A source grep would assert on text (and would even match THIS comment,
-# which quotes the retired wording), where a stub proves the actual claim:
-# the wrapper's decision follows the number, never the words.
+# THE VERDICT IS THE EXIT CODE PLUS A CLASSIFICATION QUERY, NOT THE WORDING
+# -- proved behaviourally, with a fake drydock-macho-rewrite standing in for
+# the real one, rather than by grepping compat/rename_segment.sh's own
+# source for what it no longer reads. A source grep would assert on text
+# (and would even match THIS comment, which quotes retired wording), where a
+# stub proves the actual claim: the wrapper's decision follows the number
+# AND the classification query's answer, never the refusal's own words.
 #
 # STUBDIR holds a drydock-macho-rewrite that answers an `info` call for real
-# (exec'd straight through to the real binary, so rename_segment's own
-# thin-container gate keeps working) and answers anything else -- the
-# retranslated `segment rename` run itself, the one mw_run makes -- with
-# $MW_STUB_RC and $MW_STUB_ERR instead of doing any real work. The two files
-# every wrapper needs beside drydock-macho-rewrite are copies of the real
-# ones, so DRYDOCK_MACHO_REWRITE_COMPAT_DIR can point straight at it.
+# (exec'd straight through to the real binary, so both the thin-container
+# gate AND the classification query below keep reading the real fixture's
+# real segments) and answers anything else -- the retranslated `segment
+# rename` run itself, the one mw_run makes -- with $MW_STUB_RC and
+# $MW_STUB_ERR instead of doing any real work, after touching $STUBDIR/ran
+# so a test can PROVE the stub actually ran rather than the real binary
+# (silently, by coincidence, giving the same answer).
 #
 # The interception only works on the bare PATH word "drydock-macho-rewrite":
 # compat/translate.sh's mt_pre_word emits $DRYDOCK_MACHO_REWRITE verbatim
 # instead whenever it is set, and that can be an absolute path, which is not
 # something DRYDOCK_MACHO_REWRITE_COMPAT_DIR's PATH trick can redirect. So
-# the two stub assertions below run with it unset, restoring whatever this
-# invocation had -- unset or a real value -- once they are done.
+# the stub assertions below run with it unset, and with
+# DRYDOCK_MACHO_REWRITE_COMPAT_DIR pointed at $STUBDIR instead of wherever it
+# was pointed (nowhere, under plain ctest) -- both saved here and restored to
+# whatever this invocation had, once every stub assertion is done.
 MW_HAD_DMR=${DRYDOCK_MACHO_REWRITE+1}
 MW_SAVED_DMR=${DRYDOCK_MACHO_REWRITE-}
 unset DRYDOCK_MACHO_REWRITE
+MW_HAD_CDIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR+1}
+MW_SAVED_CDIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR-}
 STUBDIR="$T/stubbin"
 mkdir -p "$STUBDIR"
 cp "$BIN/drydock-macho-rewrite-compat.sh" "$STUBDIR/drydock-macho-rewrite-compat.sh"
@@ -1162,41 +1173,146 @@ cat >"$STUBDIR/drydock-macho-rewrite" <<STUB
 case "\$1" in
     info) exec "$BIN/drydock-macho-rewrite" "\$@" ;;
 esac
+: >>"$STUBDIR/ran"
 printf '%s\n' "\$MW_STUB_ERR" >&2
 exit "\$MW_STUB_RC"
 STUB
 chmod +x "$STUBDIR/drydock-macho-rewrite"
+DRYDOCK_MACHO_REWRITE_COMPAT_DIR="$STUBDIR"
+export DRYDOCK_MACHO_REWRITE_COMPAT_DIR
 
+# Stub exits 1 (EX_REFUSED) for OLD=__NOPE, which does not exist on this
+# fixture: classified "absent", so this is still the silent exit 2 -- with
+# wording the real tool would never say, proving the classification (not the
+# stub's text) is what decided it.
 fresh
 before=$(sha "$T/f")
-DRYDOCK_MACHO_REWRITE_COMPAT_DIR="$STUBDIR"
+rm -f "$STUBDIR/ran"
 MW_STUB_RC=1
 MW_STUB_ERR='drydock-macho-rewrite: a completely different refusal, worded on purpose so nothing greps for it'
-export DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+export MW_STUB_RC MW_STUB_ERR
 run rename_segment f __NOPE __ALSONOPE
-[ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && ! grep -qF "$MW_STUB_ERR" "$T/err" && [ "$(sha "$T/f")" = "$before" ] \
-    && ok "rename_segment: a fake tool's exit 1 is 'nothing matched' no matter what it says" \
-    || bad "rename_segment stub refusal" "exit $rc (want 2), stdout: $(cat "$T/out"), stderr: $(cat "$T/err")"
-unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+[ -f "$STUBDIR/ran" ] && [ "$rc" -eq 2 ] && [ ! -s "$T/out" ] \
+    && ! grep -qF "$MW_STUB_ERR" "$T/err" && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "rename_segment: a fake tool's exit 1 is 'nothing matched' when OLD does not exist, no matter what it says" \
+    || bad "rename_segment stub refusal, absent" "stub ran=$([ -f "$STUBDIR/ran" ] && echo yes || echo NO), exit $rc (want 2), stdout: $(cat "$T/out"), stderr: $(cat "$T/err")"
 
-# EX_FAIL (2, an operational failure) is not EX_REFUSED (1, a considered
-# refusal), and must not collapse into the same silent exit 2: it keeps its
-# existing path here, shown on stderr with the wrapper exiting 1, same as any
-# other nonzero this build's `segment rename` was never specified to
-# produce. Distinguishable from the assertion just above on rc alone.
+# Same stub, same exit 1, but OLD=__DATA -- a segment this fixture DOES
+# carry. Classified "present": the refusal is about something else, so it is
+# SHOWN and the wrapper exits 1, not 2. This is the case Controller Ruling V
+# reproduced with /usr/lib/libxcselect.dylib (LC_LAZY_LOAD_DYLIB, below):
+# collapsing every EX_REFUSED into "nothing matched" hid the real reason.
 fresh
 before=$(sha "$T/f")
-DRYDOCK_MACHO_REWRITE_COMPAT_DIR="$STUBDIR"
+rm -f "$STUBDIR/ran"
+MW_STUB_RC=1
+MW_STUB_ERR='drydock-macho-rewrite: a refusal that has nothing to do with matching'
+export MW_STUB_RC MW_STUB_ERR
+run rename_segment f __DATA __DATA_STUBX
+[ -f "$STUBDIR/ran" ] && [ "$rc" -eq 1 ] && has_line "$T/err" "$MW_STUB_ERR" \
+    && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "rename_segment: a fake tool's exit 1 is shown, not swallowed, when OLD DOES exist" \
+    || bad "rename_segment stub refusal, present" "stub ran=$([ -f "$STUBDIR/ran" ] && echo yes || echo NO), exit $rc (want 1), stderr: $(cat "$T/err")"
+
+# EX_FAIL (2, an operational failure) is not EX_REFUSED (1, a considered
+# refusal) and is never classified at all: it keeps its existing path here,
+# shown on stderr with the wrapper exiting 1, same as any other nonzero this
+# build's `segment rename` was never specified to produce.
+fresh
+before=$(sha "$T/f")
+rm -f "$STUBDIR/ran"
 MW_STUB_RC=2
 MW_STUB_ERR='drydock-macho-rewrite: pretend malloc failed'
-export DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
+export MW_STUB_RC MW_STUB_ERR
 run rename_segment f __NOPE __ALSONOPE
-[ "$rc" -eq 1 ] && has_line "$T/err" "$MW_STUB_ERR" && [ "$(sha "$T/f")" = "$before" ] \
+[ -f "$STUBDIR/ran" ] && [ "$rc" -eq 1 ] && has_line "$T/err" "$MW_STUB_ERR" \
+    && [ "$(sha "$T/f")" = "$before" ] \
     && ok "rename_segment: EX_FAIL stays 'everything else' -- shown, and exit 1, not 2" \
-    || bad "rename_segment stub EX_FAIL" "exit $rc (want 1), stderr: $(cat "$T/err")"
-unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR MW_STUB_RC MW_STUB_ERR
-[ -n "$MW_HAD_DMR" ] && { DRYDOCK_MACHO_REWRITE=$MW_SAVED_DMR; export DRYDOCK_MACHO_REWRITE; }
+    || bad "rename_segment stub EX_FAIL" "stub ran=$([ -f "$STUBDIR/ran" ] && echo yes || echo NO), exit $rc (want 1), stderr: $(cat "$T/err")"
+
+unset MW_STUB_RC MW_STUB_ERR
+if [ -n "$MW_HAD_CDIR" ]; then DRYDOCK_MACHO_REWRITE_COMPAT_DIR=$MW_SAVED_CDIR; export DRYDOCK_MACHO_REWRITE_COMPAT_DIR
+else unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR; fi
+unset MW_HAD_CDIR MW_SAVED_CDIR
+if [ -n "$MW_HAD_DMR" ]; then DRYDOCK_MACHO_REWRITE=$MW_SAVED_DMR; export DRYDOCK_MACHO_REWRITE; fi
 unset MW_HAD_DMR MW_SAVED_DMR
+
+# THE REPRODUCTION: a real refusal that has nothing to do with matching,
+# on a real binary, through the real tool -- no stub. mo_map_build
+# (src/ordinals.c) refuses any image carrying LC_LAZY_LOAD_DYLIB before it
+# looks at what the operation even is (compat/rename_segment.sh's FOURTH
+# DIVERGENCE note), so `segment rename __TEXT ...` on such a binary is
+# EX_REFUSED even though __TEXT plainly exists. Before the classification
+# query existed, this collapsed into the silent "nothing matched" exit 2,
+# hiding the real reason; classified, it is exit 1 with the reason shown,
+# same as compat/rename_segment.c (the pre-wrapper C tool, which never went
+# near mr_apply_file and so never hit this refusal at all) would have let a
+# caller see something was wrong going through any OTHER front-end.
+#
+# HOST PORTABILITY, same approach and same loud-SKIP rule as
+# tests/change_dylib_test.sh's own LC_LAZY_LOAD_DYLIB case (search that file
+# for "-lazy_library" for the fuller account): `-lazy_library` is a legacy ld
+# flag, and nothing guarantees this host's linker still honors it. This
+# builds the fixture, then reads the fixture's OWN load commands with a tiny
+# C reader (never otool/nm text) to confirm LC_LAZY_LOAD_DYLIB is actually
+# present before asserting anything about rename_segment's behavior on it.
+cat > "$T/rs_has_lc.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <mach-o/loader.h>
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s file cmd-hex\n", argv[0]); return 2; }
+    uint32_t want = (uint32_t)strtoul(argv[2], NULL, 16);
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 2; }
+    struct stat st; fstat(fd, &st);
+    uint8_t *buf = malloc((size_t)st.st_size);
+    if (!buf || read(fd, buf, (size_t)st.st_size) != (ssize_t)st.st_size) {
+        fprintf(stderr, "read failed\n"); return 2;
+    }
+    close(fd);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    if (hdr->magic != MH_MAGIC_64) { fprintf(stderr, "not a 64-bit Mach-O\n"); return 2; }
+    uint8_t *lcp = buf + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)lcp;
+        if (lc->cmd == want) return 0;
+        lcp += lc->cmdsize;
+    }
+    return 1;
+}
+EOF
+"$CC" -O2 -o "$T/rs_has_lc" "$T/rs_has_lc.c"
+
+cat > "$T/rs_lazy_a.c" <<'EOF'
+int rs_lazy_a_sym(void) { return 77; }
+EOF
+cat > "$T/rs_lazy_main.c" <<'EOF'
+int rs_lazy_a_sym(void);
+int main(void) { return rs_lazy_a_sym() == 77 ? 0 : 1; }
+EOF
+"$CC" -dynamiclib -O2 -arch x86_64 -mmacosx-version-min=10.9 \
+    -install_name "@loader_path/librs_lazy_a.dylib" \
+    "$T/rs_lazy_a.c" -o "$T/librs_lazy_a.dylib"
+"$CC" -O2 -arch x86_64 -mmacosx-version-min=10.9 "$T/rs_lazy_main.c" \
+    -Xlinker -lazy_library -Xlinker "$T/librs_lazy_a.dylib" -o "$T/rs_lazy_main" \
+    2>"$T/rs_lazy_link.err" || true
+
+if [ ! -x "$T/rs_lazy_main" ] || ! "$T/rs_has_lc" "$T/rs_lazy_main" 0x20; then
+    skip "rename_segment: LC_LAZY_LOAD_DYLIB classification" \
+        "this host's linker did not produce an LC_LAZY_LOAD_DYLIB from -lazy_library ($(head -1 "$T/rs_lazy_link.err" 2>/dev/null || echo "no diagnostic"))"
+else
+    before=$(sha "$T/rs_lazy_main")
+    run rename_segment rs_lazy_main __TEXT __TEXX
+    [ "$rc" -eq 1 ] && grep -qi "LC_LAZY_LOAD_DYLIB" "$T/err" \
+        && [ "$(sha "$T/rs_lazy_main")" = "$before" ] \
+        && ok "rename_segment: LC_LAZY_LOAD_DYLIB is a real refusal (exit 1), shown, once classified 'present'" \
+        || bad "rename_segment LC_LAZY_LOAD_DYLIB" "exit $rc (want 1), stderr: $(cat "$T/err")"
+fi
 
 # A rename to the SAME name still MATCHED, so it is exit 0 with a count of 1 --
 # not exit 2. This is what rules out implementing "nothing matched" as
@@ -1584,16 +1700,12 @@ run fix_macho f -strip_build_version
 # NOTHING DIGESTS THIS. tests/EXPECTED and tests/known-callers.sh's sha256s
 # hash converted FILE BYTES, with every tool's stdout and stderr sent to
 # /dev/null, so renaming every emitted string moved neither. What pins these
-# strings is four greps in four files, and they are the whole list: this
+# strings is four readers, in three files, and they are the whole list: this
 # assertion, the `matched nothing` one below it, tests/cli_test.sh's
-# `^drydock-macho-rewrite edit: ` prefix check, and -- the one that is not a
-# test -- compat/patch_macho.sh's `^Already patched`, which reads a line
-# md_declassify prints rather than one any verb did. (compat/rename_segment.sh
-# used to carry a fifth grep here, checking its own zero case against
-# `drydock-macho-rewrite: segment OLD matched nothing`; Task 9 deleted it once
-# an unmatched `segment rename` started refusing by default, which gave that
-# wrapper an exit code to read instead.) All four move with the strings they
-# read.
+# `^drydock-macho-rewrite edit: ` prefix check, and -- the one that is
+# production code rather than a test -- compat/patch_macho.sh's
+# `^Already patched`, which reads a line md_declassify prints rather than
+# one any verb did. All four move with the strings they read.
 has_line "$T/err" 'drydock-macho-rewrite: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
