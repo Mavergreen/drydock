@@ -11,41 +11,10 @@
  *   drydock-macho-rewrite imports FILE
  *   drydock-macho-rewrite exports FILE
  *
- * THERE WAS AN `edit FILE OUT SCRIPT` VERB, and it went with the other eight:
- * `edit` stopped being a verb name and became the tool itself. While the verb
- * survived, the line above claiming the bare form is the only way to
- * change anything was false in its own file. Nothing is lost -- a script that
- * lives in a file is `drydock-macho-rewrite FILE OUT < script`, which is the shell's job
- * and not this binary's.
- *
  * `drydock-macho-rewrite --capabilities` is the machine-readable truth about what this
  * build accepts, so a wrapper and this binary never have to move in lockstep
  * (docs/PROPOSAL.md "Migration"). See print_capabilities() below for the exact
  * format.
- *
- * EIGHT MUTATING VERBS USED TO LIVE HERE -- declassify, segment, retag-swift,
- * minos, lc, dylib, rpath and grow. The first seven were each a thin
- * translation of their own flag grammar into an mr_ops, an mv_add_version_min
- * call or an md_declassify call. Every one of those had an exact statement
- * equivalent, and keeping both spellings was expensive rather than merely
- * untidy: the verb path applied a SET of operations in one pass and the
- * script path applies a SEQUENCE, one per pass, and the two models disagree on operations naming
- * the same path. They are gone; the statements they mapped onto are what this
- * binary offers instead, and src/edit.c sequences them.
- *
- * `grow FILE OUT N` had no statement equivalent -- a statement whose load
- * commands outgrow the pad grows it by what they need, never by a requested
- * number of bytes -- and it went anyway, because one mutation outside the
- * only mutating interface would defeat the design's single claim. It had no production caller (compat/ emits
- * it zero times). What it did cost was crash coverage: `mg_ensure_pad` grows
- * only when `need_end > first_sect_off`, so no script can force a grow of an
- * image whose first section lies PAST the end of the file, where `fsize -
- * insert` once wrapped and killed the tool with SIGSEGV. That regression, and
- * the no-section-data one beside it, now live where the bug always did -- in
- * the library, as tests/grow_test.c's test_grow_refuses_a_section_past_the_image
- * and test_grow_refuses_an_image_with_no_section_data, which call
- * mg_grow_header directly. Both were confirmed by mutation to catch exactly
- * what tests/leaf-tool-crashes.sh's `grow` cases caught.
  *
  * DELEGATION, not reimplementation, is still the rule for what remains.
  * `verify` and `info` call straight into mg_plausible and
@@ -74,10 +43,7 @@
 #include <mach-o/nlist.h>
 
 /* rewrite.h is here for MR_REFUSED/MR_FAIL alone -- the two typedefs below
- * pin them equal to this file's own exit codes, and me_run hands them back.
- * declassify.h, segname.h, version_min.h and relations.h left with the seven
- * mutating verbs that called into them; src/edit.c reaches the same work now,
- * through the statements. */
+ * pin them equal to this file's own exit codes, and me_run hands them back. */
 #include "image.h"
 #include "ordinals.h"
 #include "imports.h"
@@ -93,32 +59,12 @@
 #include "fat.h"
 #include "arch_names.h"
 
-/* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
- * which meant a caller checking only "did this exit nonzero" (still fully
- * supported -- see below) could not tell "macho9 examined FILE and declined,
- * on purpose, because of what it found" (not a Mach-O, not plausible, a
- * KIND/version/segment name this build doesn't support, mg_grow_header's own
- * designed refusal) apart from "something actually went wrong running macho9 itself"
- * (couldn't open/read/write, malloc failed, a usage error). Refusal is
- * load-bearing throughout this codebase -- "-grow refuses rather than
- * guesses" is a global rule, not an incidental behavior -- so a
- * caller that wants to script around "this file just isn't one drydock-macho-rewrite will
- * touch" (vs. "retry, or investigate an environment problem") deserves a way
- * to tell the two apart without scraping stderr text, which --capabilities
- * already exists to make unnecessary for everything else this binary
- * reports.
- *
- * THE SCHEME IS 0 OK, 1 REFUSED, 2 ERROR -- the reverse of what first
- * shipped (0 ok, 1 failed, 2 refused), and deliberately so. `diff`, `grep`
- * and `cmp` all reserve their HIGHEST code for "the tool could not do its
- * job" and a lower one for "a normal, expected, non-success answer"; the
- * original numbering had that backwards. binutils sets no precedent either
- * way -- it returns a flat 0 or 1 and has no notion of a considered refusal
- * at all, so there was no existing convention this binary owed compatibility
- * to. Nothing outside this repo had ever run the compat wrappers this
- * couples to (see MR_REFUSED's own comment, rewrite.h), so this was the last
- * point at which the numbering could change for free -- after the script
- * form ships, it no longer is.
+/* Exit codes: 0 ok; EX_REFUSED (1) when drydock-macho-rewrite examined FILE
+ * and declined on purpose; EX_FAIL (2) when something went wrong running it.
+ * The highest code means "could not do its job", as with diff, grep and cmp,
+ * so a caller can tell "this file just isn't one it will touch" from "retry,
+ * or investigate" without scraping stderr. A caller checking only nonzero
+ * needs nothing more.
  *
  * EX_REFUSED is used ONLY at a point where drydock-macho-rewrite itself examined the input
  * and made that call; it is never used for a genuine operational failure (a
@@ -135,9 +81,7 @@
  * exact, not an approximation, with one deliberate exception src/rewrite.c's
  * own comment carries: an allocation failure INSIDE mg_grow_header
  * or mg_plausible (src/grow.c) is folded into MR_REFUSED, same as every
- * other reason either one refuses, not split out to MR_FAIL. The same fold
- * holds on the one verb left that calls either directly -- cmd_verify
- * (mg_plausible) returns EX_REFUSED for any failure of its own. So a failed
+ * other reason either one refuses, not split out to MR_FAIL. So a failed
  * allocation that is checked at all is
  * EX_FAIL when it is mi_open's or mi_open_slack's, mfat_parse's,
  * wa_write_new's temp-name buffer, or one src/rewrite.c's
@@ -154,8 +98,7 @@
 /* MR_REFUSED (rewrite.h) is forwarded verbatim by cmd_script as this binary's
  * own exit code, so it has to equal EX_REFUSED or --capabilities' documented
  * refused=1 would be a lie for every refusal a script run makes. A mismatch
- * here is a build failure, not a hope -- the same device commit 247d09d used
- * for mg_classify/ml_bump_lc's coupling. */
+ * here is a build failure, not a hope. */
 typedef char mr_refused_is_ex_refused[(MR_REFUSED == EX_REFUSED) ? 1 : -1];
 
 /* Same coupling, same reason, for the other half of that vocabulary: every
@@ -176,20 +119,18 @@ typedef char mr_fail_is_ex_fail[(MR_FAIL == EX_FAIL) ? 1 : -1];
  * after the rewrite; this one arrives in the verb's own, immediately.
  *
  * OUT MUST NOT BEGIN WITH '-'. Nothing here treats a positional as a flag, so
- * a caller reaching for the old flag-first habit -- from before these forms
- * took an output -- would otherwise CREATE a file named after the flag and
+ * a caller reaching for a flag-first habit would otherwise CREATE a file
+ * named after the flag and
  * exit 0, having done something the caller plainly did not ask for. Silently
  * obeying that is the shape of failure this whole toolkit is written to
  * refuse. A caller who really does mean a file whose name starts with a dash
  * can spell it `./-name`, which the message says. FILE gets no such check: it
  * is only read, and mi_open's own failure names it.
  *
- * ONE function rather than the same lines in each form. There is one form
- * left to call it, so `verb` has one value -- "edit", the prefix src/edit.c's
- * whole report already carries, so a refusal that arrives before the script is
- * read reads like the ones that arrive after it. Both wordings are asserted
- * from the outside (tests/cli_test.sh greps for "never writes its input" and
- * for "which begins with '-'").
+ * `verb` is always "edit", the prefix src/edit.c's report carries, so a
+ * refusal before the script is read reads like the ones after it.
+ * tests/cli_test.sh greps for "never writes its input" and for "which
+ * begins with '-'".
  *
  * Returns 1 when it printed a refusal (the caller returns EX_FAIL), else 0. */
 static int bad_out(const char *verb, const char *path, const char *out) {
@@ -226,11 +167,8 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       every other reason either one refuses, on verify as well as a script run);
  *       failed=EX_FAIL is everything else (syscall/malloc failure, usage
  *       error, an unparseable script -- EX_REFUSED's own comment above has the
- *       exact allocation breakdown). The two numbers are 1 and 2, not the
- *       reverse -- see EX_REFUSED's own comment above for why this repo
- *       deliberately does not match what it originally shipped. A caller
- *       checking only nonzero needs no changes regardless of which way the
- *       numbers run. A script run returns me_run's own code verbatim, and
+ *       exact allocation breakdown). A script run returns me_run's own
+ *       code verbatim, and
  *       me_run uses this SAME EX_REFUSED/EX_FAIL split (as MR_REFUSED/MR_FAIL,
  *       rewrite.h, enforced equal to these two by the typedefs above) -- so
  *       its exit codes ARE covered by this line.
@@ -247,24 +185,17 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       as the first two positionals (the `output` line above gives their
  *       shape). `script=stdin` is where the statements come from. Without this
  *       line a machine-readable caller could read every `statement` row and
- *       still have no advertised way to send one, which is what
- *       --capabilities looked like while `verb edit` stood here instead.
+ *       still have no advertised way to send one.
  *   line 5+: "verb <name> [key=value ...]"
  *       one line per verb this build actually implements. A verb's absence
  *       means "not implemented" -- never advertise one that errors out. Only
- *       the three read-only queries are left (verify, info, imports). The
- *       NINE MUTATING VERBS THAT USED
- *       TO BE LISTED HERE are gone, with their `ops=`, `kinds=`, `versions=`,
- *       `flags=` and `reports=` attributes; `edit` was the last of them, and
- *       the `mutate` line above plus the `statement` lines below are what a
- *       wrapper reads instead. `info`'s `flags=--thin` is the one
- *       attribute in use.
+ *       the four read-only queries are listed (verify, info, imports,
+ *       exports). `info`'s `flags=--thin` is the one attribute in use.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the statement
  *       vocabulary ms_parse accepts, and so the whole mutating surface.
  *       Generated by looping over ms_table_row, the same table ms_parse
- *       matches statements against, so this can never advertise a statement
- *       the parser would refuse, or omit one it accepts. `nargs` is the operand
+ *       matches statements against. `nargs` is the operand
  *       count after `<kind> <op>`, e.g. "statement dylib replace 2" means `dylib
  *       replace OLD NEW`. One row's second field is a PROFILE rather than an
  *       op -- "statement target 10.9 0" is the `target 10.9` line, and a
@@ -714,18 +645,11 @@ static int cmd_exports(const char *path) {
  * `drydock-macho-rewrite FILE OUT`, and there is no other way to change a byte. It
  * takes NO FLAGS and no verb word: its two tokens are FILE and OUT, in that
  * order, and the statements come from stdin. A script that lives in a file is
- * `drydock-macho-rewrite FILE OUT < script` -- the redirection is the shell's job, and
- * an `edit FILE OUT SCRIPT` verb that did it in C was a second mutating
- * interface for no capability at all (it went; see this file's header).
+ * `drydock-macho-rewrite FILE OUT < script` -- the redirection is the shell's job.
  *
- * `--output` and `--dry-run` were flags while this form still wrote FILE and
- * could be asked to skip its write; `--verbose` was the last one standing,
- * and it went for a different reason: there is no quiet mode to ask out of.
- * The report is what this form is for, it goes to stderr, and `2>/dev/null`
- * silences it without help from us. So a `--`-prefixed token in either
- * position is refused BY NAME rather than opened as a file -- that is what
- * the check below is for, and the answer a caller passing any of those three
- * deserves.
+ * A `--`-prefixed token in either position is refused by name rather than
+ * opened as a file: this form has no flags. tests/cli_test.sh pins
+ * `--dry-run`, `--output` and `--verbose`.
  *
  * A SINGLE dash is not a flag: every historical tool open()ed whatever argv
  * handed it, so a file really named "-dashy" is a file name, and
@@ -742,9 +666,7 @@ static int cmd_exports(const char *path) {
  * own diagnostics are, and returns EX_FAIL: an unparseable script is an
  * operational failure (a typo in the script), not a considered refusal about
  * what FILE contains. me_run's own return (0 / MR_REFUSED / MR_FAIL) is
- * forwarded verbatim past that point -- the whole of this binary's mutating
- * exit-code vocabulary now that the nine verbs that forwarded mr_apply_file's
- * and mv_add_version_min's are gone.
+ * forwarded verbatim past that point.
  */
 enum { ME_READ_OK = 0, ME_READ_IO = -1, ME_READ_MEM = -2 };
 
@@ -856,16 +778,7 @@ int main(int argc, char **argv) {
      * named `info` is sitting right there. A FILE whose name collides with a
      * verb is spelled `./info`, the same remedy bad_out already names for an
      * OUT beginning with '-'. Reaching here means argv[1] matched no verb, so
-     * there is nothing left for it to be but a file name.
-     *
-     * THE FOUR SURVIVING VERB WORDS ARE THE ONLY SHADOWS LEFT: `verify`,
-     * `info`, `imports` and `exports`. `edit`, `dylib`, `rpath`, `lc`,
-     * `minos`, `segment`, `retag-swift`, `grow` and `declassify` shadowed a
-     * file of the same name while they were verbs; now `drydock-macho-rewrite dylib
-     * out` reads a file named `dylib` and writes `out`, like any other pair.
-     * `drydock-macho-rewrite imports out` reads a file named `imports` only through
-     * `./imports`, the same remedy bad_out already names for an OUT beginning
-     * with '-'. */
+     * there is nothing left for it to be but a file name. */
     if (argc == 3) return cmd_script(argv[1], argv[2]);
 
     fprintf(stderr, "drydock-macho-rewrite: unknown verb '%s'\n", verb);
