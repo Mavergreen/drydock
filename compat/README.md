@@ -619,6 +619,21 @@ blocking a build script forever on a read nothing will ever answer.
 | on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `drydock-macho-rewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refuses cleanly instead — `macho_grow: only MH_EXECUTE can be grown ...`, then `ERROR: ... don't fit in header pad (... avail), and the header could not be grown (see above)`, exit 1, input untouched. This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
 | on an unwritable `--inplace` target, the fork's own diagnostic (`main.c`'s `printf("Couldn't open file %s\n", binary_path)`) lands on **its stdout**, not stderr; this wrapper's (`mw_require_writable`'s `open: Permission denied`) lands on **stderr only**. Both sides still exit 1 having touched nothing — this is a stream difference in the fork's own C, not a behaviour difference, and not chased | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on several root-owned binaries under `/usr/bin` (`atq`, `calendar`, `cupstestppd`, `newgrp`) |
 
+### `insert_dylib`: the adopted divergence
+
+Not a difference from the fork — the fork does read fat containers
+(`docs/prior-art.md`'s prior-art table). This wrapper's own answer changed
+underneath it instead, found by auditing what reads `info`'s output rather
+than designed for, and the repo owner ruled it adopted rather than
+suppressed. Same shape as `fix_macho`'s adopted divergences above — an
+earlier answer and the current one disagree, and the current one is
+better — just measured against this wrapper's own prior commit rather than
+a predecessor tool.
+
+| # | the difference, and why adopting it is right | held by |
+|---|---|---|
+| 1 | **Both interactive prompts now fire on a FAT binary.** Prompt 1 ("LC_CODE_SIGNATURE load command found. Remove it?") and prompt 2 ("Binary already contains a load command for that dylib. Continue anyway?") each read `drydock-macho-rewrite info $MT_ID_BIN` and grep its output. While plain `info` was a bare `mi_open` it failed outright on a fat container — `not a readable 64-bit Mach-O`, stderr discarded by this wrapper's own `2>/dev/null` — so both greps ran over empty input and neither prompt was ever asked: a fat binary silently skipped both questions, and the fork's own behaviour was not reproduced so much as accidentally bypassed. `info` reads fat containers now, printing "the same lines for a thin file and for each slice of a fat container" (`info_image`'s own header comment, `cli/drydock-macho-rewrite.c`) — the identical `  ordinal=N path=` and `LC[N] LC_CODE_SIGNATURE` lines, at the identical indentation, once per slice. Neither prompt's grep is scoped to one slice, so each fires the instant *either* slice matches — over the union of the slices, not one arbitrarily chosen one. Adopting it is right because the prompts exist to stop a caller doing something they did not mean, and a fat binary is where that matters most. | `tests/wrapper_test.sh`, "insert_dylib: the duplicate-dylib prompt now fires on a fat binary" |
+
 ## `bake-mavericks-shim`
 
 `bake-mavericks-shim.sh` presents the command line of **Wowfunhappy's

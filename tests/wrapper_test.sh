@@ -2159,6 +2159,69 @@ run add_version_min "$T"
 [ "$rc" -eq 2 ] && ok "mw_thin_only: EX_FAIL (2) still falls through" \
     || bad "mw_thin_only EX_FAIL" "a directory did not exit 2, got $rc"
 
+# ---- insert_dylib's prompts now fire on a fat binary ----------------------
+#
+# A CONSEQUENCE OF FAT `info`, ADOPTED RATHER THAN SUPPRESSED
+# (compat/README.md's insert_dylib adopted-divergence row). compat/
+# insert_dylib.sh's prompt 2 greps `drydock-macho-rewrite info $MT_ID_BIN` for
+# "  ordinal=N path=" -- the same two-space-indented line info_image
+# (cli/drydock-macho-rewrite.c) prints once per slice of a fat container, not
+# just for a thin file, so the match fires the instant EITHER slice's dylib
+# table names the path: the union of the slices, not one arbitrarily chosen
+# one. While plain `info` was a bare `mi_open` it failed outright on a fat
+# container and the pipeline read empty input, so the prompt never fired at
+# all -- a fat binary silently skipped the question.
+#
+# TESTED VIA THE NO-TTY REFUSAL, not by answering the prompt: insert_dylib's
+# prompts read /dev/tty, never stdin (tests/insert_dylib_test.sh's own header
+# and its case 5), so a stdin pipe answers nothing -- and the prompt TEXT
+# itself is written to fd 3 (`>&3`), not to stdout or stderr, so a redirected
+# capture could not see it even if it were. The refusal path
+# (compat/insert_dylib.sh's id_no_tty_refuse) DOES print the prompt text to
+# stderr, ahead of its own "no /dev/tty" line, which is what this greps.
+# idnotty.c is tests/insert_dylib_test.sh's own notty.c technique --
+# setsid(2) before exec, so /dev/tty genuinely has nothing to resolve to --
+# duplicated here in miniature (built from this file's own $T) rather than
+# shared, the same way strip_vm/mkswift_fixture/mkchained_fixture above each
+# build their own helper on first use.
+cat >"$T/idnotty.c" <<'EOF'
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc < 2) return 2;
+    setsid();
+    execvp(argv[1], argv + 1);
+    return 127;
+}
+EOF
+"$CC" -O2 -o "$T/idnotty" "$T/idnotty.c" 2>"$T/idnotty_build.err"
+if [ ! -x "$T/idnotty" ]; then
+    skip "insert_dylib fat prompt" "cannot build the notty helper: $(cat "$T/idnotty_build.err")"
+elif [ ! -x "$BIN/insert_dylib" ]; then
+    skip "insert_dylib fat prompt" "$BIN/insert_dylib is not installed"
+else
+    fm_mkfat "$T/idfat" "$FIXTURE" 16777223 "$FIXTURE" 16777223
+    # Ask the fat file itself what it names, rather than assume -- the same
+    # care tests/insert_dylib_test.sh's case 9 takes with the thin fixture.
+    id_have=$("$BIN/drydock-macho-rewrite" info "$T/idfat" 2>/dev/null \
+        | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
+    if [ -z "$id_have" ]; then
+        bad "insert_dylib fat prompt" "the fat fixture names no dylib; this proves nothing"
+    else
+        # --no-strip-codesig keeps prompt 1 out of the way, so the
+        # duplicate-dylib check (prompt 2) is the only one this run can
+        # reach; $id_have is a path the fat file already names, on both
+        # slices, so it is reached for real, not steered around.
+        ( cd "$T" && "$T/idnotty" "$BIN/insert_dylib" --no-strip-codesig \
+            "$id_have" idfat idfat.out </dev/null ) >"$T/id.out" 2>"$T/id.err"
+        rc=$?
+        if [ "$rc" -eq 1 ] && grep -qF 'already contains a load command for that dylib' "$T/id.err"; then
+            ok "insert_dylib: the duplicate-dylib prompt now fires on a fat binary"
+        else
+            bad "insert_dylib fat prompt" "exit $rc (want 1, refused with no tty to ask on): $(cat "$T/id.err")"
+        fi
+    fi
+fi
+
 # ---- the emitted grammar is one this build actually has -----------------
 #
 # Same check tests/translate_test.sh makes of the translator, made here of the
