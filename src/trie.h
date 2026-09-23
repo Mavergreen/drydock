@@ -43,9 +43,9 @@
  * immediately afterward). Caller owns *out and must free() it.
  *
  * On failure returns -1, *out is NULL, *out_size is 0, and a reason has been
- * printed to stderr — refuses rather than guesses, same rule as the rest of
- * macho_grow: a malformed trie (an offset outside the buffer, a truncated
- * ULEB, a terminal size or label running past the buffer's end), a node
+ * printed to stderr — refuses rather than guesses, on any of: a malformed
+ * trie (an offset outside the buffer, a truncated ULEB, a terminal size or
+ * label running past the buffer's end), a node
  * offset reachable more than one way (this rebuild does not support shared
  * subtrees — no well-formed export trie needs to, since ld64 emits a plain
  * tree), or recursion past MT_TRIE_MAX_DEPTH (a pathological/adversarial

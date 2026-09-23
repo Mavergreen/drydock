@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -465,8 +466,36 @@ static void test_bump_all_refuses_on_overflow(void) {
     mi_image im;
     CHECK(mi_wrap(b.buf, IMG_SIZE, &im) == 0, "wrap ok");
 
+    const char *needle = "^ERROR: ";
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    char path[512];
+    snprintf(path, sizeof path, "%s/linkedit_test_stderr.%d", tmpdir, (int)getpid());
+    fflush(stderr);
+    int saved_fd = dup(fileno(stderr));
+    int captured = freopen(path, "w", stderr) != NULL;
+
     int r = ml_bump_all(&im, INSERT, GROW);
+
+    fflush(stderr);
+    dup2(saved_fd, fileno(stderr));
+    close(saved_fd);
+    clearerr(stderr);
+
+    int said = 0;
+    if (captured) {
+        FILE *rf = fopen(path, "r");
+        if (rf) {
+            char line[1024];
+            while (fgets(line, sizeof line, rf))
+                if (strncmp(line, needle + 1, strlen(needle + 1)) == 0) { said = 1; break; }
+            fclose(rf);
+        }
+    }
+    unlink(path);
+
     CHECK(r == -1, "ml_bump_all refuses an overflowing field (got %d)", r);
+    CHECK(said, "the overflow refusal begins 'ERROR: ', naming no program");
     CHECK(b.symtab->stroff == 0xfffff000u,
           "the overflowing field itself is left untouched, not wrapped (got %#x)",
           b.symtab->stroff);

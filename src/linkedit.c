@@ -10,7 +10,7 @@
 int ml_bump(uint32_t *off, uint32_t insert, uint32_t grow) {
     if (*off < insert) return 0;
     if (*off > UINT32_MAX - grow) {
-        fprintf(stderr, "macho_grow: a __LINKEDIT file offset (%#x) would overflow a "
+        fprintf(stderr, "ERROR: a __LINKEDIT file offset (%#x) would overflow a "
                         "32-bit field after growing by %#x; refusing rather than wrap\n",
                 *off, grow);
         return -1;
