@@ -210,6 +210,21 @@ static void me_log_redirect(FILE *log, const mrd_report *r, const char *symbol) 
                r->weak == 1 ? "it was" : "they were");
 }
 
+static void me_log_minos(FILE *log, const mv_minos_report *r, uint32_t want) {
+    char was[16], now[16];
+    mv_format_version(want, now);
+    if (r->version_min) {
+        mv_format_version(r->version_min_was, was);
+        me_say(log, "      version-min %s -> %s\n", was, now);
+    }
+    if (r->build_version) {
+        mv_format_version(r->build_version_was, was);
+        me_say(log, "      build-version minos %s -> %s\n", was, now);
+    }
+    if (!r->version_min && !r->build_version)
+        me_say(log, "      no LC_VERSION_MIN_MACOSX or macOS LC_BUILD_VERSION to set\n");
+}
+
 /* The version-min and swift-abi cores take an mi_image; the buffer is the
  * image as the previous statement left it, so it gets the same validation
  * mi_open would give a file. */
@@ -226,8 +241,8 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
  * verdict comes right after the statement, as it always has. */
 typedef struct {
     mr_hits *hits;      /* this statement's counts, summed across slices */
-    int     *renamed;   /* this statement's segment-rename or import-redirect
-                         * count, likewise */
+    int     *renamed;   /* this statement's segment-rename, import-redirect or
+                         * minos-set count, likewise */
     int      decide;    /* nonzero in the last selected slice */
     int      missed;    /* set when the verdict refused: it matched nothing */
 } me_verdict;
@@ -404,6 +419,21 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (!v->decide || *v->renamed > 0) return 0;
         me_say(stderr, "drydock-macho-rewrite: import redirect %s %s %s matched nothing\n",
                st->a, st->b, st->c);
+        if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
+        return 0;
+    }
+
+    case MS_MINOS: {
+        uint32_t want = 0;
+        mv_minos_report r;
+        mi_image im;
+        if (st->op != MS_SET || ms_parse_version(st->a, &want) != 0) goto unknown;
+        if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
+        mv_set_minos(&im, want, &r);
+        me_log_minos(log, &r, want);
+        *v->renamed += r.version_min + r.build_version;
+        if (!v->decide || *v->renamed > 0) return 0;
+        me_say(stderr, "drydock-macho-rewrite: minos set %s matched nothing\n", st->a);
         if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
         return 0;
     }

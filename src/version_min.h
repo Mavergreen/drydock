@@ -58,4 +58,22 @@ int mv_add_version_min(const char *path, const char *out);
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
                              const char *label, int *out_added);
 
+#define MV_PLATFORM_MACOS 1   /* LC_BUILD_VERSION.platform */
+
+/* What mv_set_minos rewrote: how many of each command, and the first one's
+ * value before. Both counts 0 means the image declares no macOS minimum. */
+typedef struct {
+    int      version_min;
+    uint32_t version_min_was;
+    int      build_version;
+    uint32_t build_version_was;
+} mv_minos_report;
+
+/* Set LC_VERSION_MIN_MACOSX.version and a macOS LC_BUILD_VERSION's minos to
+ * `version`, in place; never an sdk field, never a size. */
+void mv_set_minos(mi_image *im, uint32_t version, mv_minos_report *r);
+
+/* "10.12", or "10.9.5" when the patch is nonzero. */
+void mv_format_version(uint32_t v, char out[16]);
+
 #endif /* DRYDOCK_VERSION_MIN_H */

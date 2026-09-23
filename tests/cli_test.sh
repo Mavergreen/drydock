@@ -493,22 +493,17 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
     && ok "capabilities: rpath advertises four ops, and still omits reexport" \
     || bad "capabilities ops" "rpath ops moved: $caps_rpath_ops"
 
-# --capabilities' statement lines are generated from MS_TABLE (src/script.c)
-# by looping ms_table_row, not hand-copied. The statement vocabulary
-# has 16 <kind,op> pairs, and `target 10.9` -- whose profile occupies the op
-# column -- makes 17; tests/script_test.c's
-# test_capabilities_table_round_trips separately walks ms_table_row directly
-# and confirms MS_TABLE itself has those 17 rows, each of which round-trips
-# through ms_parse. This assertion checks the other half of the same claim
-# from here, reusing the $caps already captured above: that
-# print_capabilities' loop over ms_table_row actually emitted 17 "statement "
-# lines, with none dropped, none extra, and none duplicated. Together the
-# two catch the generator and the table going out of step with each other.
+# --capabilities' statement lines are generated from MS_TABLE by looping
+# ms_table_row: 17 <kind,op> pairs plus `target 10.9` make 18, and
+# tests/script_test.c checks the table itself has those 18 rows.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 17 ] && [ "$n_unique" -eq 17 ] \
-    && ok "capabilities: exactly 17 unique statement lines" \
+[ "$n_statements" -eq 18 ] && [ "$n_unique" -eq 18 ] \
+    && ok "capabilities: exactly 18 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
+echo "$caps" | grep -qxF "statement minos set 1" \
+    && ok "capabilities: minos set is advertised" \
+    || bad "capabilities statements" "no 'statement minos set 1' line: $(echo "$caps" | grep '^statement')"
 # The profile vocabulary is advertised from that same table, so a wrapper can
 # see which targets this build knows rather than guess. `target 10.9 0`: no
 # operands after the profile.
@@ -1346,7 +1341,7 @@ rc=0
     || bad "imports: fat+chained stdout" "expected empty, got: $(cat "$T/imp_fatchained.out")"
 
 # ============================================================================
-# minos
+# version-min set
 # ============================================================================
 # build_main's FIXTURE_FLAGS (-mmacosx-version-min=10.9) makes the linker
 # emit LC_VERSION_MIN_MACOSX itself -- so a fixture built that way already
@@ -1411,7 +1406,7 @@ else
     strip_rc=$?
 fi
 if [ "$strip_rc" -ne 0 ]; then
-    bad "minos: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
+    bad "version-min set: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
 fi
 # The precondition is specifically "no LC_VERSION_MIN_MACOSX" -- that is the
 # ONE load command drydock-macho-rewrite minos adds, and the thing the "present after"
@@ -1423,23 +1418,23 @@ fi
 # cannot always get.
 before_minos=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_fixture")
 if echo "$before_minos" | grep -q "LC_VERSION_MIN_MACOSX"; then
-    bad "minos: precondition" "fixture still carries LC_VERSION_MIN_MACOSX"
+    bad "version-min set: fixture setup" "fixture still carries LC_VERSION_MIN_MACOSX"
 else
-    ok "minos: fixture genuinely has no LC_VERSION_MIN_MACOSX before"
+    ok "version-min set: the fixture has no LC_VERSION_MIN_MACOSX before"
 fi
 
 printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out" \
-    >"$T/minos.out" 2>&1 || bad "minos: exit" "$(cat "$T/minos.out")"
+    >"$T/minos.out" 2>&1 || bad "version-min set: appends when absent" "$(cat "$T/minos.out")"
 minos_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_out")
-echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos: LC_VERSION_MIN_MACOSX present after" \
-    || bad "minos: version-min" "not found in info output"
+echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "version-min set: appends when absent" \
+    || bad "version-min set: appends when absent" "not found in info output"
 # Running it again must not error (add_version_min's own "already present"
 # path) -- this time reading the output of the run above, which HAS the
 # command, so the second run really takes that branch.
 if printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
-    ok "minos: idempotent re-run does not error"
+    ok "version-min set: leaves a present one alone, exit 0"
 else
-    bad "minos: re-run" "errored on an already-minos'd file"
+    bad "version-min set: leaves a present one alone" "errored on a file that already has one"
 fi
 # Any other version is refused up front -- this build can only target 10.9.
 # The VERB refused it (EX_REFUSED) after parsing its own positional; the
@@ -1448,41 +1443,116 @@ fi
 # is what this assertion has always asked, and no output is written either way.
 rm -f "$T/minos_out3"
 if printf 'version-min set 10.10\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out3" >/dev/null 2>"$T/minos_1010.err"; then
-    bad "minos: wrong version" "10.10 should be refused"
+    bad "version-min set: accepts only 10.9" "10.10 should be refused"
 else
-    ok "minos: non-10.9 version refused"
+    ok "version-min set: accepts only 10.9"
 fi
-[ -e "$T/minos_out3" ] && bad "minos: wrong version" "wrote an output for a version it refused" \
-    || ok "minos: a refused version produces no output file"
+[ -e "$T/minos_out3" ] && bad "version-min set: accepts only 10.9" "wrote an output for a version it refused" \
+    || ok "version-min set: a refused version writes no OUT"
 
 # version-min never writes its input: FILE OUT, and an OUT that is FILE is refused.
 build_main "$T/mo_in"; "$T/strip_version_min" "$T/mo_in" >/dev/null
 mo_before=$(sha "$T/mo_in"); mo_ino=$(stat -f %i "$T/mo_in")
 printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_out" >"$T/mo.out" 2>"$T/mo.err" \
-    && ok "minos FILE OUT: succeeds" || bad "minos FILE OUT" "$(cat "$T/mo.err")"
+    && ok "version-min set FILE OUT: succeeds" || bad "version-min set FILE OUT" "$(cat "$T/mo.err")"
 [ "$(sha "$T/mo_in")" = "$mo_before" ] && [ "$(stat -f %i "$T/mo_in")" = "$mo_ino" ] \
-    && ok "minos FILE OUT: FILE is untouched" || bad "minos FILE OUT" "FILE changed"
+    && ok "version-min set FILE OUT: FILE is untouched" || bad "version-min set FILE OUT" "FILE changed"
 "$DRYDOCK_MACHO_REWRITE" info "$T/mo_out" | grep -q LC_VERSION_MIN_MACOSX \
-    && ok "minos FILE OUT: OUT has the command" || bad "minos FILE OUT" "OUT lacks it"
+    && ok "version-min set FILE OUT: OUT has the command" || bad "version-min set FILE OUT" "OUT lacks it"
 # The verb said `Wrote OUT (N bytes)` on STDOUT; a script run says
 # `OUT: written (N,NNN bytes)` on STDERR. Same claim -- it names the file it
 # wrote -- in the stream and wording me_run uses.
 grep -q "^$T/mo_out: written (" "$T/mo.err" \
-    && ok "minos FILE OUT: says what it wrote" || bad "minos FILE OUT" "no written line: $(cat "$T/mo.err")"
+    && ok "version-min set FILE OUT: says what it wrote" || bad "version-min set FILE OUT" "no written line: $(cat "$T/mo.err")"
 rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_in" >/dev/null 2>"$T/mo_same.err" || rc=$?
 [ "$rc" -eq 2 ] && [ "$(sha "$T/mo_in")" = "$mo_before" ] \
-    && ok "minos: OUT that is FILE is refused (2), FILE untouched" || bad "minos OUT=FILE" "rc $rc"
+    && ok "version-min set: OUT that is FILE is refused (2), FILE untouched" || bad "version-min set OUT=FILE" "rc $rc"
 grep -q "never writes its input" "$T/mo_same.err" \
-    && ok "minos: ... refused up front, before any work" \
-    || bad "minos OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
+    && ok "version-min set: ... refused up front, before any work" \
+    || bad "version-min set OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
 ln -s "$T/mo_in" "$T/mo_link"
 rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_link" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "minos: OUT that is a symlink to FILE is refused (2)" || bad "minos OUT=link" "rc $rc"
+[ "$rc" -eq 2 ] && ok "version-min set: OUT that is a symlink to FILE is refused (2)" || bad "version-min set OUT=link" "rc $rc"
 # A missing OUT is still a usage error, and still 2 -- `drydock-macho-rewrite FILE` alone
 # matches no verb and is not the two-positional bare form, so it falls through
 # to usage(). The verb reached the same place from its own argc check.
 rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "minos: a missing OUT is a usage error (2)" || bad "minos no OUT" "rc $rc"
+[ "$rc" -eq 2 ] && ok "version-min set: a missing OUT is a usage error (2)" || bad "version-min set no OUT" "rc $rc"
+
+# ============================================================================
+# minos set
+# ============================================================================
+build_main "$T/ms_vm"
+"$T/mkminos" vmin "$T/ms_vm" 10.12 10.13 || bad "minos set: fixture setup" "mkminos vmin failed"
+[ "$("$T/mkminos" show "$T/ms_vm")" = "version-min version=10.12.0 sdk=10.13.0" ] \
+    || bad "minos set: fixture setup" "not 10.12: $("$T/mkminos" show "$T/ms_vm")"
+rc=0; printf 'minos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_vm.out" \
+    >/dev/null 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_vm.out")" = "version-min version=10.9.0 sdk=10.13.0" ] \
+    && ok "minos set: LC_VERSION_MIN_MACOSX 10.12 becomes 10.9, sdk untouched" \
+    || bad "minos set (version-min)" "rc $rc: $("$T/mkminos" show "$T/ms_vm.out" 2>&1); $(cat "$T/ms.err")"
+[ "$(cmp -l "$T/ms_vm" "$T/ms_vm.out" | wc -l | tr -d ' ')" = 1 ] \
+    && ok "minos set: ... in place, one byte of the file changed" \
+    || bad "minos set (version-min)" "$(cmp -l "$T/ms_vm" "$T/ms_vm.out" | wc -l | tr -d ' ') bytes changed"
+grep -qxF "      version-min 10.12 -> 10.9" "$T/ms.err" \
+    && ok "minos set: ... and the report says old -> new" \
+    || bad "minos set (version-min)" "no old -> new line: $(cat "$T/ms.err")"
+rc=0; "$DRYDOCK_MACHO_REWRITE" verify "$T/ms_vm.out" >/dev/null 2>"$T/ms_v.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "minos set: ... and the result passes verify" \
+    || bad "minos set (version-min)" "verify refused: $(cat "$T/ms_v.err")"
+
+build_main "$T/ms_bv"
+"$T/mkminos" bv "$T/ms_bv" 1 12.0 12.3 || bad "minos set: fixture setup" "mkminos bv failed"
+rc=0; printf 'minos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_bv" "$T/ms_bv.out" \
+    >/dev/null 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_bv.out")" = "build-version platform=1 minos=10.9.0 sdk=12.3.0" ] \
+    && ok "minos set: LC_BUILD_VERSION minos 12.0 becomes 10.9, sdk untouched, nothing appended" \
+    || bad "minos set (build-version)" "rc $rc: $("$T/mkminos" show "$T/ms_bv.out" 2>&1); $(cat "$T/ms.err")"
+grep -qxF "      build-version minos 12.0 -> 10.9" "$T/ms.err" \
+    && ok "minos set: ... and the report says old -> new" \
+    || bad "minos set (build-version)" "no old -> new line: $(cat "$T/ms.err")"
+
+rc=0; printf 'minos set 10.13\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm.out" "$T/ms_up.out" \
+    >/dev/null 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_up.out")" = "version-min version=10.13.0 sdk=10.13.0" ] \
+    && ok "minos set: an explicit statement may raise" \
+    || bad "minos set (raise)" "rc $rc: $("$T/mkminos" show "$T/ms_up.out" 2>&1)"
+
+build_main "$T/ms_none"
+"$T/mkminos" none "$T/ms_none" || bad "minos set: fixture setup" "mkminos none failed"
+[ "$("$T/mkminos" show "$T/ms_none")" = none ] \
+    || bad "minos set: fixture setup" "still declares: $("$T/mkminos" show "$T/ms_none")"
+ms_before=$(sha "$T/ms_none")
+rm -f "$T/ms_none.out"
+rc=0; printf 'minos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_none" "$T/ms_none.out" \
+    >/dev/null 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$T/ms_none.out" ] && [ "$(sha "$T/ms_none")" = "$ms_before" ] \
+    && ok "minos set: with no minimum declared it matches nothing, and refuses (1)" \
+    || bad "minos set (miss)" "expected 1 and no OUT, got $rc: $(cat "$T/ms.err")"
+grep -qF "drydock-macho-rewrite: minos set 10.9 matched nothing" "$T/ms.err" \
+    && ok "minos set: ... and says it matched nothing" \
+    || bad "minos set (miss)" "no miss line: $(cat "$T/ms.err")"
+rc=0; printf 'allow-unmatched\nminos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_none" "$T/ms_none.out" \
+    >/dev/null 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_none.out")" = none ] \
+    && ok "minos set: allow-unmatched makes the miss a report, and nothing is appended" \
+    || bad "minos set (allowed miss)" "rc $rc: $("$T/mkminos" show "$T/ms_none.out" 2>&1)"
+
+rm -f "$T/ms_bad.out"
+rc=0; printf 'minos set 10.x\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_bad.out" \
+    >/dev/null 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/ms_bad.out" ] && grep -q "not a version" "$T/ms.err" \
+    && ok "minos set: a malformed version is a parse error (2), nothing written" \
+    || bad "minos set (bad version)" "rc $rc: $(cat "$T/ms.err")"
+
+# version-min set only appends: an image already declaring 10.12 keeps it,
+# as add_version_min's upstream did. minos set is the statement that rewrites.
+rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_vmset.out" \
+    >"$T/ms.out" 2>"$T/ms.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_vmset.out")" = "version-min version=10.12.0 sdk=10.13.0" ] \
+    && grep -q "already present" "$T/ms.out" \
+    && ok "version-min set: leaves a declared 10.12 alone; only minos set rewrites" \
+    || bad "version-min set (present)" "rc $rc: $("$T/mkminos" show "$T/ms_vmset.out" 2>&1)"
 
 # ============================================================================
 # lc -delete
@@ -4216,8 +4286,8 @@ grep -q "grew" "$T/vm.out" \
 # matches no verb here, so main() falls through to usage().
 rc=0
 printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "minos: an unknown flag is a usage error (2)" \
-    || bad "minos" "an unknown flag: expected 2, got $rc"
+[ "$rc" -eq 2 ] && ok "version-min set: an extra token after OUT is a usage error (2)" \
+    || bad "version-min set" "an unknown flag: expected 2, got $rc"
 
 # The historical add_version_min never grew and refused a short pad ("no room
 # for LC_VERSION_MIN_MACOSX"); its wrapper grows it, announced.
@@ -4293,7 +4363,7 @@ grep -qF "  target 10.9" "$T/tgt.err" \
 # -- no linker on any host this repo supports can emit at all.
 build_main_without_build_version "$T/tgt_empty"
 mts "$T/tgt_empty" "version-min set 10.9" >/dev/null 2>"$T/tgt_empty_minos.err" \
-    || bad "target: fixture setup" "minos failed: $(cat "$T/tgt_empty_minos.err")"
+    || bad "target: fixture setup" "version-min set failed: $(cat "$T/tgt_empty_minos.err")"
 otool -l "$T/tgt_empty" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     || bad "target: fixture setup" "tgt_empty has no LC_VERSION_MIN_MACOSX"
 tgt_run "$T/tgt_empty" "$T/tgt_empty.out" && tgt_empty_rc=0 || tgt_empty_rc=$?
@@ -4376,7 +4446,7 @@ otool -l "$T/tgt_novm.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
 # linker did, and is a no-op on an image that already had one.
 build_main "$T/tgt_hasvm"
 mts "$T/tgt_hasvm" "version-min set 10.9" >/dev/null 2>"$T/tgt_minos.err" \
-    || bad "target: fixture setup" "minos failed: $(cat "$T/tgt_minos.err")"
+    || bad "target: fixture setup" "version-min set failed: $(cat "$T/tgt_minos.err")"
 otool -l "$T/tgt_hasvm" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     || bad "target: fixture setup" "tgt_hasvm has no LC_VERSION_MIN_MACOSX"
 tgt_run "$T/tgt_hasvm" "$T/tgt_hasvm.out" || bad "target (has version-min)" "$(cat "$T/tgt.err")"

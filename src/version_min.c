@@ -16,6 +16,7 @@
 #include <mach-o/loader.h>
 
 #include "version_min.h"
+#include "mach_compat.h"
 #include "image.h"
 #include "grow.h"
 #include "atomic_write.h"   /* wa_write_new: `path` is read, `out` is written */
@@ -168,4 +169,32 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
     hdr->sizeofcmds += sizeof(*vm);
     *out_added = 1;
     return 0;
+}
+
+struct mv_set_ctx { uint32_t version; mv_minos_report *r; };
+
+static int mv_set_lc(const struct load_command *lc, void *ctx_) {
+    struct mv_set_ctx *c = ctx_;
+    if (lc->cmd == LC_VERSION_MIN_MACOSX && lc->cmdsize >= sizeof(struct version_min_command)) {
+        struct version_min_command *vm = (struct version_min_command *)lc;
+        if (c->r->version_min++ == 0) c->r->version_min_was = vm->version;
+        vm->version = c->version;
+    } else if (lc->cmd == LC_BUILD_VERSION && lc->cmdsize >= 24) {
+        uint32_t *w = (uint32_t *)lc;   /* cmd, cmdsize, platform, minos, sdk, ntools */
+        if (w[2] != MV_PLATFORM_MACOS) return 0;
+        if (c->r->build_version++ == 0) c->r->build_version_was = w[3];
+        w[3] = c->version;
+    }
+    return 0;
+}
+
+void mv_set_minos(mi_image *im, uint32_t version, mv_minos_report *r) {
+    struct mv_set_ctx c = { version, r };
+    memset(r, 0, sizeof *r);
+    mi_each_lc(im, mv_set_lc, &c);
+}
+
+void mv_format_version(uint32_t v, char out[16]) {
+    if (v & 0xff) snprintf(out, 16, "%u.%u.%u", v >> 16, (v >> 8) & 0xff, v & 0xff);
+    else          snprintf(out, 16, "%u.%u", v >> 16, (v >> 8) & 0xff);
 }

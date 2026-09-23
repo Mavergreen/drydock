@@ -12,8 +12,10 @@
 #include "script.h"
 #include "arch_names.h"
 #include "relations.h"
+#include "version_min.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -364,12 +366,12 @@ static void test_first_error_reported_is_earliest_in_line_order(void) {
           "names the earlier (semantic) error's line, not the later (syntax) one (got: %s)", err);
 }
 
-/* Walks ms_table_row directly and confirms MS_TABLE has 17 rows
- * (16 kind/op pairs, plus `target 10.9`, whose
+/* Walks ms_table_row directly and confirms MS_TABLE has 18 rows
+ * (17 kind/op pairs, plus `target 10.9`, whose
  * profile occupies the op column), each of which round-trips through an
  * actual ms_parse -- not just that one known row's text appears somewhere.
  * tests/cli_test.sh separately counts --capabilities' own "statement " lines
- * (exactly 17, all unique); together the two catch the generator
+ * (exactly 18, all unique); together the two catch the generator
  * (cli/drydock-macho-rewrite.c's loop over ms_table_row) and the table itself going out
  * of step with each other -- a dropped, extra, or duplicated line on either
  * side. */
@@ -388,7 +390,7 @@ static void test_capabilities_table_round_trips(void) {
          * would be refused for a reason that has nothing to do with what
          * this test is proving. */
         if (strcmp(kind, "load-command") == 0 && strcmp(op, "delete") == 0) a = "uuid";
-        else if (strcmp(kind, "version-min") == 0) a = "10.9";
+        else if (strcmp(kind, "version-min") == 0 || strcmp(kind, "minos") == 0) a = "10.9";
         else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
         else if (strcmp(kind, "fixups") == 0) a = "classic";
         else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
@@ -419,10 +421,10 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 17, "the statement table has 17 rows (got %d)", n_rows);
+    CHECK(n_rows == 18, "the statement table has 18 rows (got %d)", n_rows);
 }
 
-/* One assertion per MS_TABLE row -- seventeen. Each mask below was read out of
+/* One assertion per MS_TABLE row -- eighteen. Each mask below was read out of
  * the code that implements the operation, not reasoned from the operation's
  * name, and is pinned here because a regression would be SILENT otherwise:
  * "disturbs nothing" is a plausible-looking answer for every row, and a row
@@ -528,6 +530,9 @@ static void test_disturbs_matches_the_spec_table(void) {
      * bit. */
     CHECK(ms_disturbs(MS_IMPORT, MS_REDIRECT) == MREL_FILE_OFF,
           "import redirect can move the bind stream within __LINKEDIT, and nothing else");
+
+    CHECK(ms_disturbs(MS_MINOS, MS_SET) == MREL_NONE,
+          "minos set rewrites one field in place: no command changes size, nothing moves");
 }
 
 static void test_import_redirect(void) {
@@ -750,6 +755,48 @@ static void test_dylib_retype(void) {
           "rpath retype accepted");
 }
 
+static void test_minos_set_takes_a_version(void) {
+    static const char *good[] = { "10.9", "10.12", "10.9.5", "11", "65535.255.255", "0.0" };
+    static const uint32_t packed[] = { 0x000A0900, 0x000A0C00, 0x000A0905, 0x000B0000,
+                                       0xFFFFFFFF, 0 };
+    static const char *bad[] = { "", "10.", ".9", "10..9", "10.9.5.1", "10.256",
+                                 "65536", "-10.9", "+10", "10.9a", "ten", "10.9.256" };
+    size_t i;
+    for (i = 0; i < sizeof good / sizeof *good; i++) {
+        char line[64], err[256] = {0};
+        ms_script s;
+        uint32_t v = 1;
+        snprintf(line, sizeof line, "minos set %s\n", good[i]);
+        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == 0,
+              "minos set %s parses (%s)", good[i], err);
+        if (s.n == 1)
+            CHECK(s.stmts[0].kind == MS_MINOS && s.stmts[0].op == MS_SET &&
+                  strcmp(s.stmts[0].a, good[i]) == 0,
+                  "minos set %s is one MS_MINOS/MS_SET statement carrying its operand", good[i]);
+        ms_free(&s);
+        CHECK(ms_parse_version(good[i], &v) == 0 && v == packed[i],
+              "%s packs to 0x%08x (got 0x%08x)", good[i], packed[i], v);
+    }
+    for (i = 0; i < sizeof bad / sizeof *bad; i++) {
+        char line[64], err[256] = {0};
+        ms_script s;
+        snprintf(line, sizeof line, "minos set '%s'\n", bad[i]);
+        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == -1 &&
+              strstr(err, "line 1") && strstr(err, "not a version"),
+              "minos set '%s' is refused as not a version (got: %s)", bad[i], err);
+    }
+}
+
+static void test_mv_format_version_drops_a_zero_patch(void) {
+    char b[16];
+    mv_format_version(0x000A0C00, b);
+    CHECK(strcmp(b, "10.12") == 0, "0x000A0C00 formats as 10.12 (got %s)", b);
+    mv_format_version(0x000A0905, b);
+    CHECK(strcmp(b, "10.9.5") == 0, "0x000A0905 formats as 10.9.5 (got %s)", b);
+    mv_format_version(0x000B0000, b);
+    CHECK(strcmp(b, "11.0") == 0, "0x000B0000 formats as 11.0 (got %s)", b);
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -792,6 +839,8 @@ int main(void) {
     test_a_directive_after_target_is_an_error();
     test_dylib_retype();
     test_import_redirect();
+    test_minos_set_takes_a_version();
+    test_mv_format_version_drops_a_zero_patch();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

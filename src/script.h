@@ -2,6 +2,7 @@
 #define DRYDOCK_SCRIPT_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Splits ONE line into fields using shell word rules, in place.
  *
@@ -38,7 +39,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
  * table matches it, counts its operands and advertises it exactly as it does
  * every other statement. */
 enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
-       MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET, MS_IMPORT };
+       MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET, MS_IMPORT, MS_MINOS };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
        MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT };
 
@@ -94,6 +95,10 @@ void ms_free(ms_script *s);
  * place (either MS_TABLE's own constants, or an ms_stmt ms_parse filled). */
 const char *ms_kind_name(int kind);
 const char *ms_op_name(int op);
+
+/* MAJOR[.MINOR[.PATCH]], decimal, at most 65535.255.255 -> the packed
+ * xxxx.yy.zz both version load commands use. 0, or -1 for anything else. */
+int ms_parse_version(const char *s, uint32_t *out);
 
 /* Which verb grammar OFFERED a row's operation. `machotool dylib` and
  * `machotool rpath` took their operations from the SAME table an edit

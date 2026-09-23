@@ -63,6 +63,9 @@ static int fails = 0;
 #define IMPLAUSIBLE 1   /* the initializer names no function start */
 #define DYLD_INFO   2   /* carry an (empty) LC_DYLD_INFO_ONLY: already classic */
 #define NO_UUID     4   /* leave out LC_UUID */
+#define VMIN_1012    8    /* LC_VERSION_MIN_MACOSX 10.12, sdk 10.13 */
+#define BUILDVER_12  16   /* macOS LC_BUILD_VERSION, minos 12.0, sdk 12.3 */
+#define BUILDVER_IOS 32   /* the same LC_BUILD_VERSION, for iOS (platform 2) */
 
 static void set16(char *field, const char *name) {
     size_t len = strlen(name);
@@ -138,6 +141,19 @@ static uint8_t *build_image(int flags) {
         struct dyld_info_command *di = (struct dyld_info_command *)p;
         di->cmd = LC_DYLD_INFO_ONLY; di->cmdsize = sizeof *di;
         p += di->cmdsize; ncmds++;
+    }
+
+    if (flags & VMIN_1012) {
+        struct version_min_command *vm = (struct version_min_command *)p;
+        vm->cmd = LC_VERSION_MIN_MACOSX; vm->cmdsize = sizeof *vm;
+        vm->version = 0x000A0C00; vm->sdk = 0x000A0D00;
+        p += vm->cmdsize; ncmds++;
+    }
+    if (flags & (BUILDVER_12 | BUILDVER_IOS)) {
+        uint32_t *bv = (uint32_t *)p;   /* cmd, cmdsize, platform, minos, sdk, ntools */
+        bv[0] = LC_BUILD_VERSION; bv[1] = 24; bv[2] = (flags & BUILDVER_IOS) ? 2 : 1;
+        bv[3] = 0x000C0000; bv[4] = 0x000C0300; bv[5] = 0;
+        p += 24; ncmds++;
     }
 
     h->ncmds = ncmds;
@@ -436,6 +452,27 @@ static int count_lc(const char *path, uint32_t cmd, const char *name) {
     mi_each_lc(&im, find_cb, &c);
     free(buf);
     return c.n;
+}
+
+struct word_ctx { uint32_t cmd, field, value; int n; };
+
+static int word_cb(const struct load_command *lc, void *ctx_) {
+    struct word_ctx *c = ctx_;
+    if (lc->cmd == c->cmd && c->n++ == 0) c->value = ((const uint32_t *)lc)[c->field];
+    return 0;
+}
+
+/* Word `field` (cmd is word 0) of the first `cmd` load command in the file at
+ * `path`; 0 when there is none. */
+static uint32_t lc_word(const char *path, uint32_t cmd, uint32_t field) {
+    size_t len = 0;
+    uint8_t *buf = read_file(path, &len);
+    mi_image im;
+    struct word_ctx c = { cmd, field, 0, 0 };
+    if (!buf) return 0;
+    if (mi_wrap(buf, len, &im) == 0) mi_each_lc(&im, word_cb, &c);
+    free(buf);
+    return c.value;
 }
 
 static int has_segment(const char *path, const char *seg, const char *sect_segname) {
@@ -1415,6 +1452,114 @@ static void test_the_skip_line_names_what_the_run_disturbed(void) {
     rm_dir();
 }
 
+static void test_minos_set_rewrites_the_declared_minimum_in_place(void) {
+    fresh_dir();
+    char path[512], o1[512], o2[512], o3[512], o4[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(o1, sizeof o1, "o1"); in_dir(o2, sizeof o2, "o2");
+    in_dir(o3, sizeof o3, "o3"); in_dir(o4, sizeof o4, "o4");
+
+    uint8_t *img = build_image(VMIN_1012);
+    write_file(path, img, IMG_SIZE, 0755);
+    int rc = run(path, o1, "minos set 10.9\n");
+    CHECK(rc == 0, "minos set: a 10.12 version-min is lowered (got %d; log: %s)", rc, g_log);
+    CHECK(lc_word(o1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
+          "minos set: version is 10.9 (got 0x%08x)", lc_word(o1, LC_VERSION_MIN_MACOSX, 2));
+    CHECK(lc_word(o1, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
+          "minos set: sdk is still 10.13 (got 0x%08x)", lc_word(o1, LC_VERSION_MIN_MACOSX, 3));
+    {
+        size_t len = 0, diff = 0;
+        uint8_t *now = read_file(o1, &len);
+        for (size_t i = 0; now && i < len && i < IMG_SIZE; i++) diff += now[i] != img[i];
+        CHECK(now && len == IMG_SIZE && diff == 1,
+              "minos set: in place, one byte changed (size %zu, %zu differ)", len, diff);
+        free(now);
+    }
+    CHECK(strstr(g_log, "  minos set 10.9\n      version-min 10.12 -> 10.9\n") != NULL,
+          "minos set: the report says old -> new beneath the statement (log: %s)", g_log);
+    rc = run(path, o2, "minos set 10.13\n");
+    CHECK(rc == 0 && lc_word(o2, LC_VERSION_MIN_MACOSX, 2) == 0x000A0D00,
+          "minos set: an explicit statement may raise (got %d; log: %s)", rc, g_log);
+    free(img);
+
+    img = build_image(BUILDVER_12);
+    write_file(path, img, IMG_SIZE, 0755);
+    rc = run(path, o3, "minos set 10.9\n");
+    CHECK(rc == 0, "minos set: a macOS build-version is lowered (got %d; log: %s)", rc, g_log);
+    CHECK(lc_word(o3, LC_BUILD_VERSION, 3) == 0x000A0900 &&
+          lc_word(o3, LC_BUILD_VERSION, 4) == 0x000C0300 &&
+          lc_word(o3, LC_BUILD_VERSION, 2) == 1,
+          "minos set: build-version minos is 10.9; sdk and platform untouched");
+    CHECK(count_lc(o3, LC_VERSION_MIN_MACOSX, NULL) == 0,
+          "minos set: appends no LC_VERSION_MIN_MACOSX");
+    CHECK(strstr(g_log, "      build-version minos 12.0 -> 10.9\n") != NULL,
+          "minos set: the build-version report line (log: %s)", g_log);
+    free(img);
+
+    img = build_image(VMIN_1012 | BUILDVER_12);
+    write_file(path, img, IMG_SIZE, 0755);
+    rc = run(path, o4, "minos set 10.9\n");
+    CHECK(rc == 0 && lc_word(o4, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
+          lc_word(o4, LC_BUILD_VERSION, 3) == 0x000A0900,
+          "minos set: both declarations are lowered (got %d; log: %s)", rc, g_log);
+    free(img);
+    rm_dir();
+}
+
+static void test_minos_set_with_nothing_declared_is_a_miss(void) {
+    fresh_dir();
+    char path[512], out[512], out2[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(out, sizeof out, "img.out");
+    in_dir(out2, sizeof out2, "img.out2");
+
+    uint8_t *img = build_image(0);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    snap before = take(path);
+    int rc = run(path, out, "minos set 10.9\n");
+    CHECK(rc == MR_REFUSED, "minos set: nothing declared refuses by default (got %d)", rc);
+    check_untouched("minos set miss", path, &before);
+    CHECK(strstr(g_log, "      no LC_VERSION_MIN_MACOSX or macOS LC_BUILD_VERSION to set\n") != NULL,
+          "minos set: the report says there was nothing to set (log: %s)", g_log);
+    rc = run(path, out, "allow-unmatched\nminos set 10.9\n");
+    CHECK(rc == 0 && count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 0 &&
+          count_lc(out, LC_BUILD_VERSION, NULL) == 0,
+          "minos set: allowed to miss, it still appends nothing (got %d)", rc);
+
+    img = build_image(BUILDVER_IOS);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    before = take(path);
+    rc = run(path, out2, "minos set 10.9\n");
+    CHECK(rc == MR_REFUSED, "minos set: an iOS build-version is not a macOS minimum (got %d)", rc);
+    check_untouched("minos set on iOS build-version", path, &before);
+    rm_dir();
+}
+
+static void test_fat_minos_set_matches_in_any_slice(void) {
+    fresh_dir();
+    char path[512], out[512], s1[512];
+    in_dir(path, sizeof path, "fat");
+    in_dir(out, sizeof out, "fat.out");
+    in_dir(s1, sizeof s1, "s1");
+    write_fat(path, 0, VMIN_1012, 0);   /* only the second slice declares one */
+    int rc = run(path, out, "minos set 10.9\n");
+    CHECK(rc == 0, "fat, minos set: a declaration in a later slice is a match (got %d; log: %s)",
+          rc, g_log);
+    slice_to_file(out, 1, s1);
+    CHECK(lc_word(s1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
+          "fat, minos set: the second slice was lowered");
+    write_fat(path, 0, 0, 0);
+    snap before = take(path);
+    rc = run(path, out, "minos set 10.9\n");
+    CHECK(rc == MR_REFUSED, "fat, minos set: declared in no slice refuses (got %d)", rc);
+    check_untouched("fat, minos set miss everywhere", path, &before);
+    CHECK(strstr(g_log, "matched nothing in any selected slice") != NULL,
+          "fat, minos set: the refusal says no slice matched (log: %s)", g_log);
+    rm_dir();
+}
+
 int main(void) {
     test_statements_apply_in_order();
     test_a_failure_part_way_writes_nothing();
@@ -1441,6 +1586,9 @@ int main(void) {
     test_fat_writes_out_and_not_the_input();
     test_fat_a_slice_skips_its_verify_on_its_own_terms();
     test_the_skip_line_names_what_the_run_disturbed();
+    test_minos_set_rewrites_the_declared_minimum_in_place();
+    test_minos_set_with_nothing_declared_is_a_miss();
+    test_fat_minos_set_matches_in_any_slice();
 
     printf("edit_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
