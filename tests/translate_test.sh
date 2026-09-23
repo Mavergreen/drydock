@@ -85,52 +85,52 @@ refuses() {
 # All ten flags its parser accepts, each alone. `-grow` cannot appear alone
 # (see the usage-error section below), so it is asserted with the smallest
 # operation that lets it through.
-ok cd-change    "printf 'dylib replace OLD NEW\n' | drydock-macho-rewrite f f.new
+ok cd-change    "printf 'allow-unmatched\ndylib replace OLD NEW\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"        -- change_dylib f -change OLD NEW
-ok cd-delete    "printf 'dylib delete P\n' | drydock-macho-rewrite f f.new
+ok cd-delete    "printf 'allow-unmatched\ndylib delete P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -delete P
-ok cd-reexport  "printf 'dylib reexport P\n' | drydock-macho-rewrite f f.new
+ok cd-reexport  "printf 'allow-unmatched\ndylib reexport P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"             -- change_dylib f -reexport P
-ok cd-add       "printf 'dylib append P\n' | drydock-macho-rewrite f f.new
+ok cd-add       "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -add P
-ok cd-insert    "printf 'dylib insert P\n' | drydock-macho-rewrite f f.new
+ok cd-insert    "printf 'allow-unmatched\ndylib insert P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -insert P
-ok cd-rchange   "printf 'rpath replace OLD NEW\n' | drydock-macho-rewrite f f.new
+ok cd-rchange   "printf 'allow-unmatched\nrpath replace OLD NEW\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"        -- change_dylib f -change-rpath OLD NEW
-ok cd-rdelete   "printf 'rpath delete P\n' | drydock-macho-rewrite f f.new
+ok cd-rdelete   "printf 'allow-unmatched\nrpath delete P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -delete-rpath P
-ok cd-radd      "printf 'rpath append P\n' | drydock-macho-rewrite f f.new
+ok cd-radd      "printf 'allow-unmatched\nrpath append P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -add-rpath P
-ok cd-strip     "printf 'load-command delete uuid\n' | drydock-macho-rewrite f f.new
+ok cd-strip     "printf 'allow-unmatched\nload-command delete uuid\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"               -- change_dylib f -strip-lc uuid
-ok cd-grow      "printf 'dylib append P\n' | drydock-macho-rewrite f f.new
+ok cd-grow      "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"  -- change_dylib f -grow -add P
 
 # -add is NOT -insert and -insert is NOT -add: an appended LC_LOAD_DYLIB gets
 # the highest library ordinal, an inserted one gets ordinal 1. Asserting the
 # pair together is what would catch a translation that silently downgraded one
 # to the other.
-ok cd-add-vs-insert "printf 'dylib append A\ndylib insert B\n' | drydock-macho-rewrite f f.new
+ok cd-add-vs-insert "printf 'allow-unmatched\ndylib append A\ndylib insert B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -add A -insert B
 
 # Every -strip-lc KIND, since the vocabulary is a table and a table can lose a
 # row. These are change_dylib's own five, from src/lc_kinds.c.
-ok cd-kind-uuid     "printf 'load-command delete uuid\n' | drydock-macho-rewrite f f.new
+ok cd-kind-uuid     "printf 'allow-unmatched\nload-command delete uuid\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"           -- change_dylib f -strip-lc uuid
-ok cd-kind-codesig  "printf 'load-command delete codesig\n' | drydock-macho-rewrite f f.new
+ok cd-kind-codesig  "printf 'allow-unmatched\nload-command delete codesig\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"        -- change_dylib f -strip-lc codesig
-ok cd-kind-srcver   "printf 'load-command delete source-version\n' | drydock-macho-rewrite f f.new
+ok cd-kind-srcver   "printf 'allow-unmatched\nload-command delete source-version\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc source-version
-ok cd-kind-buildver "printf 'load-command delete build-version\n' | drydock-macho-rewrite f f.new
+ok cd-kind-buildver "printf 'allow-unmatched\nload-command delete build-version\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"  -- change_dylib f -strip-lc build-version
-ok cd-kind-drs      "printf 'load-command delete code-sign-drs\n' | drydock-macho-rewrite f f.new
+ok cd-kind-drs      "printf 'allow-unmatched\nload-command delete code-sign-drs\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"  -- change_dylib f -strip-lc code-sign-drs
 
 # Repeats accumulate into ONE command, in the order typed -- not one command
 # per operation. Order between statements is meaningful to the rewriter.
-ok cd-repeat "printf 'dylib replace A B\ndylib replace C D\n' | drydock-macho-rewrite f f.new
+ok cd-repeat "printf 'allow-unmatched\ndylib replace A B\ndylib replace C D\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change A B -change C D
-ok cd-strip-repeat "printf 'load-command delete uuid\nload-command delete codesig\n' | drydock-macho-rewrite f f.new
+ok cd-strip-repeat "printf 'allow-unmatched\nload-command delete uuid\nload-command delete codesig\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -strip-lc codesig
 
 # ---- change_dylib: several operations, still ONE command -----------------
@@ -144,23 +144,23 @@ mv -f f.new f" -- change_dylib f -strip-lc uuid -strip-lc codesig
 # The order is load-command, then dylib, then rpath: deleting load commands
 # hands header pad back, and the other two consume it. Getting this backwards
 # is how a mixed invocation that used to fit stops fitting.
-ok cd-mixed-2 "printf 'load-command delete uuid\ndylib replace A B\n' | drydock-macho-rewrite f f.new
+ok cd-mixed-2 "printf 'allow-unmatched\nload-command delete uuid\ndylib replace A B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B
 
-ok cd-mixed-3 "printf 'load-command delete uuid\ndylib append D\nrpath append R\n' | drydock-macho-rewrite f f.new
+ok cd-mixed-3 "printf 'allow-unmatched\nload-command delete uuid\ndylib append D\nrpath append R\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -add-rpath R -add D -strip-lc uuid
 
 # The ORDER OF THE FLAGS does not change the order of the statements between
 # families -- only the order within each family's own block.
-ok cd-mixed-order "printf 'load-command delete codesig\nload-command delete uuid\ndylib replace A B\n' | drydock-macho-rewrite f f.new
+ok cd-mixed-order "printf 'allow-unmatched\nload-command delete codesig\nload-command delete uuid\ndylib replace A B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change A B -strip-lc codesig -strip-lc uuid
 
 # -grow is accepted and emits nothing: a statement that outgrows the pad
 # grows it with or without it, so the command is the one the same flags
 # without -grow produce.
-ok cd-grow-mixed "printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
+ok cd-grow-mixed "printf 'allow-unmatched\nload-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -grow -strip-lc uuid -change A B -add-rpath R
-ok cd-nogrow-mixed "printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
+ok cd-nogrow-mixed "printf 'allow-unmatched\nload-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B -add-rpath R
 
 # EVERY INSERT IS EMITTED IN REVERSE FLAG ORDER, because each one goes to the
@@ -168,7 +168,7 @@ mv -f f.new f" -- change_dylib f -strip-lc uuid -change A B -add-rpath R
 # and B at 2, and a sequence reproduces that only by inserting B first. This
 # is the assertion that catches the emission getting it the natural way round.
 # tests/wrapper_test.sh asserts the resulting ordinals on a real binary.
-ok cd-insert-reverse "printf 'load-command delete uuid\ndylib insert B\ndylib insert A\n' | drydock-macho-rewrite f f.new
+ok cd-insert-reverse "printf 'allow-unmatched\nload-command delete uuid\ndylib insert B\ndylib insert A\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
 # ---- conflicts resolve in the order written -----------------------------
@@ -192,103 +192,103 @@ mv -f f.new f" -- change_dylib f -insert A -insert B -strip-lc uuid
 
 # A -delete no longer beats a -change written before it: the rename happens,
 # then the delete finds nothing. Both orders, because only the first moved.
-ok cd-change-then-delete "printf 'dylib replace P Q\ndylib delete P\n' | drydock-macho-rewrite f f.new
+ok cd-change-then-delete "printf 'allow-unmatched\ndylib replace P Q\ndylib delete P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -delete P
-ok cd-delete-then-change "printf 'dylib delete P\ndylib replace P Q\n' | drydock-macho-rewrite f f.new
+ok cd-delete-then-change "printf 'allow-unmatched\ndylib delete P\ndylib replace P Q\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -delete P -change P Q
 
 # A -reexport and a -change on one path both apply, in order.
-ok cd-reexport-then-change "printf 'dylib reexport P\ndylib replace P Q\n' | drydock-macho-rewrite f f.new
+ok cd-reexport-then-change "printf 'allow-unmatched\ndylib reexport P\ndylib replace P Q\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -reexport P -change P Q
-ok cd-change-then-reexport "printf 'dylib replace P Q\ndylib reexport P\n' | drydock-macho-rewrite f f.new
+ok cd-change-then-reexport "printf 'allow-unmatched\ndylib replace P Q\ndylib reexport P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -reexport P
-ok cd-reexport-then-delete "printf 'dylib reexport P\ndylib delete P\n' | drydock-macho-rewrite f f.new
+ok cd-reexport-then-delete "printf 'allow-unmatched\ndylib reexport P\ndylib delete P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -reexport P -delete P
 
 # Two -changes naming the same old path: the first renames it, so the second
 # matches nothing. Emitted anyway -- dropping it would be the translator
 # deciding, which is the job it no longer has.
-ok cd-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | drydock-macho-rewrite f f.new
+ok cd-dup-replace "printf 'allow-unmatched\ndylib replace P Q\ndylib replace P Z\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -change P Z
-ok fm-dup-replace "printf 'dylib replace P Q\ndylib replace P Z\n' | drydock-macho-rewrite f f.new
+ok fm-dup-replace "printf 'allow-unmatched\ndylib replace P Q\ndylib replace P Z\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -change P Q -change P Z
 
 # The rpath spellings, which now read exactly like the dylib ones. They did
 # not before: the single-family form went through a verb with no delete-wins
 # rule while the multi-family form hoisted the delete.
-ok cd-rpath-change-then-delete "printf 'rpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
+ok cd-rpath-change-then-delete "printf 'allow-unmatched\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath X Y -delete-rpath X
-ok cd-rpath-delete-then-change "printf 'rpath delete X\nrpath replace X Y\n' | drydock-macho-rewrite f f.new
+ok cd-rpath-delete-then-change "printf 'allow-unmatched\nrpath delete X\nrpath replace X Y\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -delete-rpath X -change-rpath X Y
-ok cd-rpath-dup "printf 'rpath replace X Y\nrpath replace X Z\n' | drydock-macho-rewrite f f.new
+ok cd-rpath-dup "printf 'allow-unmatched\nrpath replace X Y\nrpath replace X Z\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath X Y -change-rpath X Z
 
 # ADDING AN UNRELATED FLAG FROM ANOTHER FAMILY CHANGES NOTHING about how the
 # conflict resolves. On the parent it decided everything, because it decided
 # which code path ran. These four are the same conflicts as above with a
 # -strip-lc in front, and they emit the same statements in the same order.
-ok cd-mf-change-then-delete "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | drydock-macho-rewrite f f.new
+ok cd-mf-change-then-delete "printf 'allow-unmatched\nload-command delete uuid\ndylib replace P Q\ndylib delete P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -delete P
-ok cd-mf-change-then-reexport "printf 'load-command delete uuid\ndylib replace P Q\ndylib reexport P\n' | drydock-macho-rewrite f f.new
+ok cd-mf-change-then-reexport "printf 'allow-unmatched\nload-command delete uuid\ndylib replace P Q\ndylib reexport P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change P Q -reexport P
-ok cd-mf-rpath-change-then-delete "printf 'load-command delete uuid\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
+ok cd-mf-rpath-change-then-delete "printf 'allow-unmatched\nload-command delete uuid\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change-rpath X Y -delete-rpath X
 # ... and a -strip-lc written BETWEEN the two conflicting flags still lands
 # first, because a load-command delete hands header pad back and everything
 # else may need the room. Flag order governs the conflict, not the emission
 # of unrelated families.
-ok cd-mf-lc-between "printf 'load-command delete uuid\ndylib replace P Q\ndylib delete P\n' | drydock-macho-rewrite f f.new
+ok cd-mf-lc-between "printf 'allow-unmatched\nload-command delete uuid\ndylib replace P Q\ndylib delete P\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change P Q -strip-lc uuid -delete P
 
 # BOTH FAMILIES CONFLICTING AT ONCE, and the two resolutions do not interact:
 # each family's statements come out in its own flag order.
-ok cd-mf-both-conflict "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
+ok cd-mf-both-conflict "printf 'allow-unmatched\ndylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" \
     -- change_dylib f -change A Q -delete A -change-rpath X Y -delete-rpath X
 # ... and INTERLEAVING the flags across families changes nothing: each family
 # keeps the relative order of ITS OWN flags, which is what "the order written"
 # means when two families are being written at once.
-ok cd-mf-interleaved "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
+ok cd-mf-interleaved "printf 'allow-unmatched\ndylib replace A Q\ndylib delete A\nrpath replace X Y\nrpath delete X\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" \
     -- change_dylib f -change A Q -change-rpath X Y -delete A -delete-rpath X
 # A dylib conflict with an unrelated RPATH operation present -- the other half
 # of "an unrelated flag from another family decides nothing", where the flag is
 # a real rewrite rather than a -strip-lc.
-ok cd-mf-dylib-conflict-rpath-op "printf 'dylib replace A Q\ndylib delete A\nrpath replace X Y\n' | drydock-macho-rewrite f f.new
+ok cd-mf-dylib-conflict-rpath-op "printf 'allow-unmatched\ndylib replace A Q\ndylib delete A\nrpath replace X Y\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change A Q -delete A -change-rpath X Y
 
 # A CHAIN IS JUST A SEQUENCE NOW, and these assertions used to be refusals.
 # `-change a b -change b c` renames the a's to b, then those b's to c. No
 # emission order reproduces what one batch did with it, which is why it was
 # refused while reproduction was the goal; reproduction is not the goal.
-ok cd-chain "printf 'dylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
+ok cd-chain "printf 'allow-unmatched\ndylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b c
-ok cd-chain-lc "printf 'load-command delete uuid\ndylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
+ok cd-chain-lc "printf 'allow-unmatched\nload-command delete uuid\ndylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b c -strip-lc uuid
-ok cd-chain-3 "printf 'dylib replace a b\ndylib replace b c\ndylib replace c d\n' | drydock-macho-rewrite f f.new
+ok cd-chain-3 "printf 'allow-unmatched\ndylib replace a b\ndylib replace b c\ndylib replace c d\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b c -change c d
 # A SWAP too: b becomes a, then every a -- including the ones the first
 # statement just made -- becomes b.
-ok cd-swap "printf 'dylib replace a b\ndylib replace b a\n' | drydock-macho-rewrite f f.new
+ok cd-swap "printf 'allow-unmatched\ndylib replace a b\ndylib replace b a\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change a b -change b a
 # An rpath SWAP, which returns the rpath to the name it started with.
-ok cd-rpath-swap "printf 'rpath replace a b\nrpath replace b a\n' | drydock-macho-rewrite f f.new
+ok cd-rpath-swap "printf 'allow-unmatched\nrpath replace a b\nrpath replace b a\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath a b -change-rpath b a
 # The rpath chain, which is the one the re-review found was STILL refused
 # after the previous round.
-ok cd-rpath-chain "printf 'rpath replace a b\nrpath replace b c\n' | drydock-macho-rewrite f f.new
+ok cd-rpath-chain "printf 'allow-unmatched\nrpath replace a b\nrpath replace b c\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change-rpath a b -change-rpath b c
-ok cd-rpath-chain-lc "printf 'load-command delete uuid\nrpath replace a b\nrpath replace b c\n' | drydock-macho-rewrite f f.new
+ok cd-rpath-chain-lc "printf 'allow-unmatched\nload-command delete uuid\nrpath replace a b\nrpath replace b c\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -strip-lc uuid -change-rpath a b -change-rpath b c
 # ... and fix_macho's -change, on the same rule.
-ok fm-chain "printf 'dylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
+ok fm-chain "printf 'allow-unmatched\ndylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -change a b -change b c
-ok fm-chain-lc "printf 'load-command delete build-version\ndylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
+ok fm-chain-lc "printf 'allow-unmatched\nload-command delete build-version\ndylib replace a b\ndylib replace b c\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -change a b -change b c -strip_build_version
 
 # install.sh's production line -- the single most important translation
 # here, in the shape mavericksforever.com/claude/install.sh runs it.
-ok cd-production "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\ndylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib\ndylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib\n' | drydock-macho-rewrite /tmp/c /tmp/c.new
+ok cd-production "printf 'allow-unmatched\nload-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\ndylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib\ndylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib\n' | drydock-macho-rewrite /tmp/c /tmp/c.new
 mv -f /tmp/c.new /tmp/c" \
     -- change_dylib /tmp/c -strip-lc uuid -strip-lc codesig \
         -change /usr/lib/libSystem.B.dylib @loader_path/../S.dylib \
@@ -296,7 +296,7 @@ mv -f /tmp/c.new /tmp/c" \
         -change /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib
 
 # tests/characterize.sh's line, this repo's own CI equivalence gate.
-ok cd-characterize "printf 'load-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\n' | drydock-macho-rewrite out out.new
+ok cd-characterize "printf 'allow-unmatched\nload-command delete uuid\nload-command delete codesig\ndylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib\n' | drydock-macho-rewrite out out.new
 mv -f out.new out" \
     -- change_dylib out -strip-lc uuid -strip-lc codesig \
         -change /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
@@ -308,23 +308,23 @@ mv -f out.new out" \
 ok cd-grow-only '' -- change_dylib f -grow -grow
 
 # ---- fix_macho ----------------------------------------------------------
-ok fm-change   "printf 'dylib replace OLD NEW\n' | drydock-macho-rewrite f f.new
+ok fm-change   "printf 'allow-unmatched\ndylib replace OLD NEW\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"         -- fix_macho f -change OLD NEW
-ok fm-stripbv  "printf 'load-command delete build-version\n' | drydock-macho-rewrite f f.new
+ok fm-stripbv  "printf 'allow-unmatched\nload-command delete build-version\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"       -- fix_macho f -strip_build_version
 # -rename_seg is accepted by fix_macho's parser and appears NOWHERE in its
 # usage text. Enumerating from the parser is what found it.
-ok fm-rename   "printf 'segment rename __DATA __D2\n' | drydock-macho-rewrite f f.new
+ok fm-rename   "printf 'allow-unmatched\nsegment rename __DATA __D2\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"            -- fix_macho f -rename_seg __DATA __D2
 # One rename statement is one pass, so two renames are two statements in the
 # one command. Each rename is still its own pass, in argv order.
-ok fm-rename-2 "printf 'segment rename __A __B\nsegment rename __C __D\n' | drydock-macho-rewrite f f.new
+ok fm-rename-2 "printf 'allow-unmatched\nsegment rename __A __B\nsegment rename __C __D\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __A __B -rename_seg __C __D
 # All three families, in load-command / dylib / segment order.
-ok fm-all "printf 'load-command delete build-version\ndylib replace A B\nsegment rename __A __B\n' | drydock-macho-rewrite f f.new
+ok fm-all "printf 'allow-unmatched\nload-command delete build-version\ndylib replace A B\nsegment rename __A __B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -change A B -strip_build_version -rename_seg __A __B
 # The flag is a boolean, so repeating it is still one load-command delete.
-ok fm-stripbv-twice "printf 'load-command delete build-version\n' | drydock-macho-rewrite f f.new
+ok fm-stripbv-twice "printf 'allow-unmatched\nload-command delete build-version\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" \
     -- fix_macho f -strip_build_version -strip_build_version
 
@@ -338,11 +338,11 @@ mv -f f.new f" \
 # was asked" -- and the C tool is gone, so there is no longer a second answer
 # to preserve. These now pin the translation, in the same place they used to
 # pin the refusal; compat/translate.sh's -rename_seg arm records the reversal.
-ok fm-chain "printf 'segment rename __DATA __X\nsegment rename __X __Y\n' | drydock-macho-rewrite f f.new
+ok fm-chain "printf 'allow-unmatched\nsegment rename __DATA __X\nsegment rename __X __Y\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
 # A chain of three emits three passes, in argv order -- every link, not just
 # the first (which is where the refusal used to trip).
-ok fm-chain-3 "printf 'segment rename __DATA __P\nsegment rename __P __Q\nsegment rename __Q __R\n' | drydock-macho-rewrite f f.new
+ok fm-chain-3 "printf 'allow-unmatched\nsegment rename __DATA __P\nsegment rename __P __Q\nsegment rename __Q __R\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" \
     -- fix_macho f -rename_seg __DATA __P -rename_seg __P __Q -rename_seg __Q __R
 # The empty string is a legal NEW -- a segname may be all NULs -- and it stays
@@ -352,7 +352,7 @@ mv -f f.new f" \
 # silently dropped), and it is still worth pinning now that the check is gone.
 # mt_quote's '' is also exactly what src/script.c's ms_split reads back as an
 # empty field, so the statement still has four words.
-ok fm-chain-empty "printf 'segment rename __DATA '\\'''\\''\nsegment rename '\\'''\\'' __Y\n' | drydock-macho-rewrite f f.new
+ok fm-chain-empty "printf 'allow-unmatched\nsegment rename __DATA '\\'''\\''\nsegment rename '\\'''\\'' __Y\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" \
     -- fix_macho f -rename_seg __DATA '' -rename_seg '' __Y
 # The three shapes that were never affected by that refusal, and are not
@@ -363,11 +363,11 @@ mv -f f.new f" \
 # chain check that once watched for this shape (and never watched -rename_seg)
 # is gone with the rest of the reproduction machinery. Renames sequence, and
 # always did.
-ok fm-same-old "printf 'segment rename __DATA __A\nsegment rename __DATA __B\n' | drydock-macho-rewrite f f.new
+ok fm-same-old "printf 'allow-unmatched\nsegment rename __DATA __A\nsegment rename __DATA __B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __DATA __B
-ok fm-new-eq-earlier-old "printf 'segment rename __DATA __B\nsegment rename __TEXT __DATA\n' | drydock-macho-rewrite f f.new
+ok fm-new-eq-earlier-old "printf 'allow-unmatched\nsegment rename __DATA __B\nsegment rename __TEXT __DATA\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __B -rename_seg __TEXT __DATA
-ok fm-independent "printf 'segment rename __DATA __A\nsegment rename __TEXT __B\n' | drydock-macho-rewrite f f.new
+ok fm-independent "printf 'allow-unmatched\nsegment rename __DATA __A\nsegment rename __TEXT __B\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
 
 # ---- the four fixed-arity tools -----------------------------------------
@@ -438,24 +438,24 @@ fi
 # NOT one of the six -- see compat/translate.sh's own "insert_dylib" section.
 # An explicit new_binary_path keeps OUT deterministic for the plain mapping
 # cases, the same way `pm`'s explicit "in out" above does.
-ok id-append "printf 'dylib append P\n' | drydock-macho-rewrite bin out"          -- insert_dylib P bin out
-ok id-weak   "printf 'dylib append P\ndylib retype P weak\n' | drydock-macho-rewrite bin out" \
+ok id-append "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite bin out"          -- insert_dylib P bin out
+ok id-weak   "printf 'allow-unmatched\ndylib append P\ndylib retype P weak\n' | drydock-macho-rewrite bin out" \
                                                                            -- insert_dylib --weak P bin out
-ok id-strip  "printf 'dylib append P\nload-command delete codesig\n' | drydock-macho-rewrite bin out" \
+ok id-strip  "printf 'allow-unmatched\ndylib append P\nload-command delete codesig\n' | drydock-macho-rewrite bin out" \
                                                                            -- insert_dylib --strip-codesig P bin out
-ok id-nostrip "printf 'dylib append P\n' | drydock-macho-rewrite bin out"         -- insert_dylib --no-strip-codesig P bin out
-ok id-weak-strip "printf 'dylib append P\ndylib retype P weak\nload-command delete codesig\n' | drydock-macho-rewrite bin out" \
+ok id-nostrip "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite bin out"         -- insert_dylib --no-strip-codesig P bin out
+ok id-weak-strip "printf 'allow-unmatched\ndylib append P\ndylib retype P weak\nload-command delete codesig\n' | drydock-macho-rewrite bin out" \
                                                                            -- insert_dylib --weak --strip-codesig P bin out
 
 # No new_binary_path and no --inplace: the fork's own default, OUT =
 # "<binary_path>_patched" -- a file of its own, so (unlike the six in-place
 # tools) there is no install line to append.
-ok id-default "printf 'dylib append P\n' | drydock-macho-rewrite bin bin_patched" -- insert_dylib P bin
+ok id-default "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite bin bin_patched" -- insert_dylib P bin
 
 # --inplace: OUT is BIN itself, which drydock-macho-rewrite refuses to write straight
 # to -- the same OUT-plus-install treatment patch_macho's `pm-same` gets,
 # above.
-ok id-inplace "printf 'dylib append P\n' | drydock-macho-rewrite bin bin.new
+ok id-inplace "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite bin bin.new
 mv -f bin.new bin" -- insert_dylib --inplace P bin
 
 # MT_OUT is the wrapper's own temp, for both the default-output shape and the
@@ -463,13 +463,13 @@ mv -f bin.new bin" -- insert_dylib --inplace P bin
 # writes its own temp directly and installs it itself, regardless of what OUT
 # a teaching form would have shown.
 id_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" insert_dylib P bin )
-if [ "$id_out_got" = "printf 'dylib append P\n' | drydock-macho-rewrite bin /tmp/t.tmp" ]; then
+if [ "$id_out_got" = "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite bin /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL id-mt-out: got %s\n' "$id_out_got" >&2; fail=$((fail + 1))
 fi
 id_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" insert_dylib --inplace P bin )
-if [ "$id_out_got" = "printf 'dylib append P\n' | drydock-macho-rewrite bin /tmp/t.tmp" ]; then
+if [ "$id_out_got" = "printf 'allow-unmatched\ndylib append P\n' | drydock-macho-rewrite bin /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL id-mt-out-inplace: got %s\n' "$id_out_got" >&2; fail=$((fail + 1))
@@ -485,6 +485,49 @@ refuses id-mutex 1 'insert_dylib: --strip-codesig and --no-strip-codesig are mut
     -- insert_dylib --strip-codesig --no-strip-codesig d b
 refuses id-unknown 1 'insert_dylib: unknown option --bogus' -- insert_dylib --bogus d b
 
+# ---- allow-unmatched: exactly the three upstreams that exited 0 on a miss -
+#
+# change_dylib, fix_macho and insert_dylib have upstreams that exited 0 when
+# an operation matched nothing, and that is compat surface: refusing an
+# unmatched operation is drydock-macho-rewrite's default now, so each of the
+# three heads its emitted script with the `allow-unmatched` directive to opt
+# back out (mt_tr_change_dylib, mt_tr_fix_macho, mt_tr_insert_dylib). The
+# other four emit only statements that cannot miss, and rename_segment WANTS
+# the refusal -- see its exit 2.
+au_case() {   # au_case NAME want(yes/no) -- TOOL ARG...
+    au_name=$1; au_want=$2; shift 3
+    au_got=$( /bin/sh "$TR" "$@" 2>"$T/err" ); au_rc=$?
+    # THE POSITIVE CONTROL: a translation that failed to print anything would
+    # make the "does not ask for allow-unmatched" half of this pass
+    # vacuously, so an empty or refused translation is its own failure, not a
+    # silent pass.
+    if [ "$au_rc" -ne 0 ] || [ -z "$au_got" ]; then
+        printf 'FAIL %s: produced no translation at all (exit %d, stderr: %s) -- cannot tell whether it asks for allow-unmatched\n' \
+            "$au_name" "$au_rc" "$(cat "$T/err")" >&2
+        fail=$((fail + 1)); return 0
+    fi
+    case $au_got in
+        "printf 'allow-unmatched"*) au_has=yes ;;
+        *)                          au_has=no ;;
+    esac
+    if [ "$au_has" = "$au_want" ]; then
+        pass=$((pass + 1))
+    else
+        printf 'FAIL %s: allow-unmatched present=%s, want %s\n  got: %s\n' \
+            "$au_name" "$au_has" "$au_want" "$au_got" >&2
+        fail=$((fail + 1))
+    fi
+}
+
+au_case au-change_dylib yes -- change_dylib f -change /nope/libx.dylib /also/nope.dylib
+au_case au-fix_macho    yes -- fix_macho f -change /nope/libx.dylib /also/nope.dylib
+au_case au-insert_dylib yes -- insert_dylib --strip-codesig /nope/libx.dylib bin out
+
+au_case na-patch_macho         no -- patch_macho in out
+au_case na-add_version_min     no -- add_version_min f
+au_case na-rename_segment      no -- rename_segment f __DATA __DATB
+au_case na-retag_swift_classes no -- retag_swift_classes f
+
 # ---- quoting ------------------------------------------------------------
 #
 # Each emitted line has to be eval-safe, because that is how a wrapper runs it.
@@ -497,9 +540,9 @@ mv -f 'a b.new' 'a b'"      -- rename_segment 'a b' __DATA __D2
 ok q-quote "printf 'fixups set classic\n' | drydock-macho-rewrite 'it'\\''s' out"  -- patch_macho "it's" out
 ok q-empty "printf 'segment rename __DATA '\\'''\\''\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"            -- rename_segment f __DATA ''
-ok q-percent "printf 'dylib append a%%sb\n' | drydock-macho-rewrite f f.new
+ok q-percent "printf 'allow-unmatched\ndylib append a%%sb\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -add 'a%sb'
-ok q-backslash "printf 'dylib append '\\''back\\\\slash/f'\\''\n' | drydock-macho-rewrite f f.new
+ok q-backslash "printf 'allow-unmatched\ndylib append '\\''back\\\\slash/f'\\''\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -add 'back\slash/f'
 
 # ... and RUNNING the emitted pipeline really does hand drydock-macho-rewrite the path the
@@ -518,9 +561,18 @@ q_roundtrip() {   # q_roundtrip NAME PATH
     chmod +x "$T/qstub/drydock-macho-rewrite"
     rm -f "$T/stmt"
     ( PATH="$T/qstub:$PATH"; eval "$q_line" )
-    set --; eval "set -- $(cat "$T/stmt")"
+    # change_dylib's translation now heads its body with `allow-unmatched`
+    # on its own line (see mt_tr_change_dylib), so the stub captures TWO
+    # lines now, not one; ms_split works one line at a time, so the directive
+    # line is checked on its own and the dylib statement -- the one under
+    # test -- is taken from the SECOND line, not fed to eval alongside the
+    # first (a raw embedded newline there would split into two commands and
+    # the second would run as one, which is exactly what broke here first).
+    q_dir_line=$(sed -n '1p' "$T/stmt")
+    set --; eval "set -- $(sed -n '2p' "$T/stmt")"
     q_got=${3:-}
-    if [ "$q_got" = "$q_want" ] && [ "${1:-}" = dylib ] && [ "${2:-}" = append ]; then
+    if [ "$q_got" = "$q_want" ] && [ "$q_dir_line" = allow-unmatched ] \
+        && [ "${1:-}" = dylib ] && [ "${2:-}" = append ]; then
         pass=$((pass + 1))
     else
         printf 'FAIL %s: emitted [%s]; a caller running it appends [%s], not [%s]\n' \
@@ -583,7 +635,7 @@ refuses cd-bad-kind     1 'unknown -strip-lc kind: nope' -- change_dylib f -stri
 # A -change whose NEW is its OWN old was never a chain, and is unaffected.
 # And a -change whose NEW is its OWN old is not a chain: no OTHER statement
 # rewrites what it produced, so a statement and a batch agree.
-ok cd-self-replace "printf 'load-command delete uuid\ndylib replace a a\ndylib replace c d\n' | drydock-macho-rewrite f f.new
+ok cd-self-replace "printf 'allow-unmatched\nload-command delete uuid\ndylib replace a a\ndylib replace c d\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f -change a a -change c d -strip-lc uuid
 
 refuses fm-usage        1 'Usage: fix_macho <file> [-change old new] [-strip_build_version]' -- fix_macho f
@@ -617,7 +669,7 @@ mkcap() { i=0; out=''; while [ $i -lt $2 ]; do out="$out $1"; i=$((i + 1)); done
 # format, which is what the emitted command carries now.
 mkrep() { i=0; out=''; while [ $i -lt $2 ]; do out="$out$1"; i=$((i + 1)); done; printf '%s' "$out"; }
 
-ok cap-strip-16-fits "printf '$(mkrep 'load-command delete uuid\n' 16)' | drydock-macho-rewrite f f.new
+ok cap-strip-16-fits "printf 'allow-unmatched\n$(mkrep 'load-command delete uuid\n' 16)' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- change_dylib f $(mkcap '-strip-lc uuid' 16)
 refuses cap-strip-17 1 'too many -strip-lc (max 16)' -- change_dylib f $(mkcap '-strip-lc uuid' 17)
 refuses cap-add-33   1 'too many -add (max 32)'      -- change_dylib f $(mkcap '-add P' 33)
@@ -640,7 +692,7 @@ refuses cap-shared 1 'too many -delete (max 32)' \
 # What this pins is the ACCEPTANCE at capacity -- `ok` requires exit 0, and the
 # 33rd is refused just below. A check one too eager would silently halve what a
 # caller can ask for, and would fail here rather than there.
-ok fm-cap-change-32-fits "printf '$(mkrep 'dylib replace A B\n' 32)' | drydock-macho-rewrite f f.new
+ok fm-cap-change-32-fits "printf 'allow-unmatched\n$(mkrep 'dylib replace A B\n' 32)' | drydock-macho-rewrite f f.new
 mv -f f.new f" \
     -- fix_macho f $(mkcap '-change A B' 32)
 refuses fm-cap-change-33 1 'too many -change (max 32)' -- fix_macho f $(mkcap '-change A B' 33)
@@ -747,7 +799,7 @@ stmtcheck segment rename 2
 # somebody's machine.
 if [ -x /bin/ksh ]; then
     got=$( /bin/ksh "$TR" change_dylib f -strip-lc uuid -change A B -add-rpath R 2>&1 )
-    want="printf 'load-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
+    want="printf 'allow-unmatched\nload-command delete uuid\ndylib replace A B\nrpath append R\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"
     if [ "$got" = "$want" ]; then
         pass=$((pass + 1))

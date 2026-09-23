@@ -498,7 +498,13 @@ $mt_st_dyins"
     # above refuses it.) An install line with no command ahead of it would
     # name an output nothing wrote, so it goes too.
     [ -n "$mt_body" ] || return 0
+    # An unmatched operation refuses by default now (compat/README.md's
+    # "change_dylib: exit codes" section), but `-change` matching nothing has
+    # always exited 0 for this tool and that is compat surface -- so the
+    # directive that opts back out of the default heads the script, ahead of
+    # every operation, the way the grammar requires.
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_CD_BODY
+allow-unmatched
 $mt_body
 MT_CD_BODY
     mt_install_line "$mt_file"
@@ -612,7 +618,13 @@ mt_tr_fix_macho() {
     # Unconditional, unlike change_dylib's: every fix_macho argv that reaches
     # here carries at least one operation (the usage check above rejects a
     # bare FILE), so the body is never empty.
+    #
+    # allow-unmatched heads it for the same reason change_dylib's does
+    # (compat/README.md's "fix_macho: exit codes" section): fix_macho exited 0
+    # when an operation matched nothing, and refusing is now the default this
+    # translation has to opt back out of.
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_FM_BODY
+allow-unmatched
 $mt_st_lc$mt_st_dychg$mt_st_seg
 MT_FM_BODY
     mt_install_line "$mt_file"
@@ -787,7 +799,15 @@ mt_tr_insert_dylib() {
     mt_id_parse "$@" || return 1
     mt_out=$(mt_id_out)
 
-    mt_body="dylib append$(mt_qargs "$MT_ID_DYLIB")
+    # --strip-codesig emits `load-command delete codesig` below, which misses
+    # on a binary carrying no signature -- and the fork exited 0 there, which
+    # is compat surface (compat/README.md's "insert_dylib" flag table, the
+    # `--strip-codesig` row). Refusing an unmatched operation is
+    # drydock-macho-rewrite's default now, so this heads the script with the
+    # directive that opts back out; the other statement this builds (`dylib
+    # append`) cannot miss.
+    mt_body="allow-unmatched
+dylib append$(mt_qargs "$MT_ID_DYLIB")
 "
     [ -n "$MT_ID_WEAK" ] && mt_body="$mt_body$(printf 'dylib retype%s' "$(mt_qargs "$MT_ID_DYLIB" weak)")
 "

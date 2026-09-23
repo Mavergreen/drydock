@@ -280,19 +280,20 @@ disturbed the base-relative values it checks (`src/relations.h`'s
 `mrel_verify_applies`) — which, for the operations this wrapper can ask for,
 means only a rewrite that grew the header.
 
-`--fatal-warnings` is a separate fact, not what makes any of the above
-conditional: this translation never emits it — `change_dylib`'s grammar has no
-spelling for it, and never will, since `-change` matching nothing has always
-exited 0 and that is compat surface — so the one behaviour that
-flag adds (promoting "an operation matched nothing" to `MR_REFUSED`) is never
-reached here.
+Refusing an unmatched operation is a separate fact, not what makes any of the
+above conditional: it is `drydock-macho-rewrite`'s default now, not a flag a caller has
+to ask for, so this translation opts back OUT of it — `change_dylib`'s
+grammar has no spelling for the choice, and never will, since `-change`
+matching nothing has always exited 0 and that is compat surface — by heading
+its emitted script with the `allow-unmatched` directive, ahead of every
+operation.
 
 | the difference | held by |
 |---|---|
 | an operational failure exits **2**, where the C tool exited a flat 1 | `tests/wrapper_test.sh`: "`drydock-macho-rewrite`'s own code for this input is 2, an operational failure" (the setup, so the two below cannot rot into proving nothing), then "a single-family run forwards `drydock-macho-rewrite`'s own 2 rather than mapping it" and "… and so does a multi-family run, whose code is the bare `drydock-macho-rewrite` form's own" — a DIRECTORY as `FILE`, which `mw_prepare` passes through and `drydock-macho-rewrite`'s read fails on |
 | a considered refusal still exits **1**, so the two numbers really differ | `tests/wrapper_test.sh`, "a considered refusal is still the flat 1 the C tool always gave" |
 | every refusal the wrapper makes itself exits 1 | `tests/wrapper_test.sh`'s unwritable-`FILE` pair ("exits 1 (the C tool's only failure code), saying so, having changed neither its bytes nor its inode", on both paths), its absent-`FILE` assertion, and `hl_case change_dylib` on both paths. A **failed install** is the one of the four with no assertion anywhere — `mw_finish`'s `mv` has to fail for it, which nothing here can arrange — so it stays stated rather than tested |
-| `-change` matching nothing still exits 0, because `--fatal-warnings` is never emitted | `tests/wrapper_test.sh`, "a run that changed nothing prints no `Updated` line" (exit 0 on a `-change` aimed at a path the image does not carry) |
+| `-change` matching nothing still exits 0, because the translation heads its script with `allow-unmatched` | `tests/wrapper_test.sh`, "a run that changed nothing prints no `Updated` line" (exit 0 on a `-change` aimed at a path the image does not carry) |
 
 ### `change_dylib`: stdout
 
@@ -475,17 +476,18 @@ would invent a third outcome for a grammar that has two. `EX_REFUSED`, 1, is
 not the problem — it already coincides with `fix_macho`'s own flat failure code
 for any of the ordinary considered refusals this translation's
 `dylib`/`load-command`/`segment` statements can reach (bad magic, no room to
-grow, and the rest of `src/rewrite.h`'s list). The one refusal
-genuinely unreachable here is the `--fatal-warnings`-specific one, "an
-operation matched nothing" promoted to `MR_REFUSED`: this translation never
-emits that flag. It would not have needed mapping either way, being 1 like
-everything else the mapping collapses.
+grow, and the rest of `src/rewrite.h`'s list). The one refusal this
+translation deliberately avoids reaching is the one an unmatched operation
+gets by default now, "an operation matched nothing" promoted to
+`MR_REFUSED`: the emitted script heads with `allow-unmatched`, precisely so
+that refusal never fires. It would not have needed mapping either way, being
+1 like everything else the mapping collapses.
 
 Held by `tests/wrapper_test.sh`'s exit-fold pair — `drydock-macho-rewrite`'s own code for
 an unreadable `FILE` is 2, and `fix_macho` on the same input exits 1 — and by
 "`-strip_build_version` with nothing to strip exits 0, having written nothing",
-which is the assertion that fails if `--fatal-warnings` ever leaks into the
-translation.
+which is the assertion that fails if the translation ever stops asking for
+`allow-unmatched`.
 
 ### `fix_macho`: stdout is not reproduced
 
@@ -508,9 +510,10 @@ report names the operation in `drydock-macho-rewrite`'s grammar, which is the gr
 wrapper teaches (`src/rewrite.c`'s `mr_report_unmatched` says why the prefix is
 the tool's name and not `argv[0]`).
 
-`drydock-macho-rewrite --fatal-warnings` would turn that report into a refusal, and **this
-wrapper must not pass it**: `fix_macho` exited 0 when an operation matched
-nothing, and that is compat surface.
+Refusing on an unmatched operation is `drydock-macho-rewrite`'s own default now, and **this
+translation must opt back out of it** — which is why its script heads with
+`allow-unmatched`: `fix_macho` exited 0 when an operation matched nothing,
+and that is compat surface.
 
 Neither `tests/EXPECTED` nor `tests/known-callers.sh`'s sha256s have an opinion
 about any of these strings — both hash converted file bytes with the tools'

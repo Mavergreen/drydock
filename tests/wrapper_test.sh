@@ -327,7 +327,10 @@ bsrc2=$?
     || bad "add_version_min backslash path" "exit $bsrc2, stdout: $(cat "$T/bs2.out")"
 # The teaching message reaches awk the same way, for command COUNTING and for
 # indenting the block, so it is measured on the same path rather than assumed.
-grep -q "^    printf 'load-command delete uuid" "$T/bs.err" \
+# The printf format now starts with `allow-unmatched` -- change_dylib's
+# translation heads its script with it -- ahead of the load-command statement
+# this run actually asked for.
+grep -q "^    printf 'allow-unmatched" "$T/bs.err" \
     && ok "change_dylib: ... and the teaching block is still indented and counted" \
     || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
 rm -rf "$T/bs"
@@ -1505,7 +1508,7 @@ run fix_macho f -strip_build_version
 has_line "$T/err" 'drydock-macho-rewrite: no load command of kind build-version to delete' \
     && ok "fix_macho: an operation that matched nothing says so on stderr" \
     || bad "fix_macho unmatched report" "stderr: $(cat "$T/err")"
-has_line "$T/err" "    printf 'load-command delete build-version\\n' | drydock-macho-rewrite f f.new" \
+has_line "$T/err" "    printf 'allow-unmatched\\nload-command delete build-version\\n' | drydock-macho-rewrite f f.new" \
     && ok "fix_macho: -strip_build_version translates to load-command delete build-version" \
     || bad "fix_macho -strip_build_version translation" "stderr: $(cat "$T/err")"
 
