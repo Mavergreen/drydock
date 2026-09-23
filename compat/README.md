@@ -39,6 +39,56 @@ plus the two files every wrapper sources:
 | `translate.sh` | `drydock-macho-rewrite-translate.sh` | old argv → the `drydock-macho-rewrite` command line(s) it means. Pure text; runs nothing. |
 | `drydock-macho-rewrite-compat.sh` | `drydock-macho-rewrite-compat.sh` | finds `drydock-macho-rewrite`, prints the teaching message, and runs the translation. |
 
+## Which statement each old flag becomes
+
+`compat/translate.sh` holds this mapping, in shell rather than inside
+`drydock-macho-rewrite`, so the binary never learns the spellings
+`docs/PROPOSAL.md` chose against (`-change`, `-add`) or refused as synonyms
+(`-add_rpath`). The wrappers source the same file
+`tests/translate_test.sh` tests. Every statement for one `FILE` goes into
+one `printf ... | drydock-macho-rewrite FILE OUT`.
+
+| old flag | statement |
+|---|---|
+| `change_dylib FILE -change O N` | `dylib replace O N` |
+| `change_dylib FILE -delete P` | `dylib delete P` |
+| `change_dylib FILE -reexport P` | `dylib reexport P` |
+| `change_dylib FILE -add P` | `dylib append P` |
+| `change_dylib FILE -insert P` | `dylib insert P` |
+| `change_dylib FILE -change-rpath O N` | `rpath replace O N` |
+| `change_dylib FILE -delete-rpath P` | `rpath delete P` |
+| `change_dylib FILE -add-rpath P` | `rpath append P` |
+| `change_dylib FILE -strip-lc KIND` | `load-command delete KIND` |
+| `change_dylib FILE -grow OP...` | nothing: `-grow` adds no statement; alone it is a usage error, exit 1 (`cd-usage-grow`) |
+| `fix_macho FILE -change O N` | `dylib replace O N` |
+| `fix_macho FILE -strip_build_version` | `load-command delete build-version` |
+| `fix_macho FILE -rename_seg O N` | `segment rename O N` |
+| `add_version_min FILE` | `version-min set 10.9` |
+| `patch_macho IN OUT` | `fixups set classic`, into `OUT` (into `OUT.new` and then `mv` when `IN` and `OUT` are the same string) |
+| `rename_segment FILE O N` | `segment rename O N` |
+| `retag_swift_classes F1 F2 ...` | `swift-abi set legacy`, once per file |
+
+`tests/translate_test.sh`'s `cd-*`, `fm-*`, `avm`, `pm`, `pm-same`, `rs` and
+`rsc-*` cases hold each row.
+
+## Thin only
+
+`patch_macho`, `add_version_min`, `retag_swift_classes` and `rename_segment`
+read one thin 64-bit image and refused a fat container. A script rewrites
+every slice. So each wrapper asks `drydock-macho-rewrite info --thin` first
+(`mw_thin_only`, or `rename_segment.sh`'s own call). The first three rows were
+measured against the pre-migration binaries on a two-slice x86_64 fat file:
+
+| invocation | the C tool | a script, with no gate | held by (`tests/wrapper_test.sh`) |
+|---|---|---|---|
+| `add_version_min FAT` | exit 1, nothing written | exit 0, every slice rewritten | "add_version_min: a fat container is refused, untouched, as mv_add_version_min's own mi_open did" |
+| `patch_macho FAT OUT` | exit 1, no `OUT` | exit 0, `OUT` written | "patch_macho: a fat container is refused and no output is created" |
+| `retag_swift_classes FAT` | exit 0, file untouched | exit 0 and `total: 0`, with the file retagged | "retag_swift_classes: a fat container is the benign skip it always was, and the file is untouched" |
+| `rename_segment FAT OLD NEW` | exit 1 | a rename in every slice | "rename_segment: a fat container is still refused (1)" |
+
+Only `EX_REFUSED` (1) from `info --thin` is intercepted. `EX_FAIL` (2) falls
+through ("mw_thin_only: EX_FAIL (2) still falls through").
+
 ## Why the six wrapper names are unchanged
 
 The *support* files were renamed with the binary — `drydock-macho-rewrite-compat.sh` and
@@ -109,8 +159,11 @@ for why they would be rare -- and one decided on purpose:
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
     library-ordinal map before it looks at whether any operation could
-    renumber. `compat/rename_segment.sh`'s header has the measurement. It is
-    one file out of 300 in `tests/differential.sh`'s corpus, and closing it
+    renumber. Measured on `/usr/lib/libxcselect.dylib`: the C tool renamed it
+    (exit 0), and a `segment rename` statement, a `load-command delete`
+    statement and the pre-wrapper `change_dylib` all refuse it (exit 1) with
+    the same message, so the refusal is the shared rewriter's, not the
+    rename's. It is one file out of 300 in `tests/differential.sh`'s corpus, and closing it
     means changing `drydock-macho-rewrite`.
   * `patch_macho`'s `OUT` gets a NEW INODE where the C tool's
     `open(O_WRONLY|O_CREAT|O_TRUNC)` wrote through the path and kept it. The
@@ -126,17 +179,15 @@ for why they would be rare -- and one decided on purpose:
     a dangling symlink at `OUT` is refused as well, where the C tool created
     the link's target, and an `OUT` that exists but is not a regular file (a
     directory, a fifo, a device) is refused where the C tool's `open()` either
-    wrote to it or failed with `EISDIR`. Those `OUT` pre-checks also answer
-    BEFORE the input is diagnosed, so when IN **and** OUT are both bad it is now
-    OUT that is named — the same shape as `retag_swift_classes`' pre-check
-    below, and exit 1 on both sides either way.
-    `compat/patch_macho.sh`'s header has all of it.
-  * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
-    before any analysis exactly as the C tool's `open(O_RDWR)` did) can
+    wrote to it or failed with `EISDIR`. With a bad `IN`, only a non-regular
+    `OUT` is named ahead of it.
+    The "`patch_macho`" section below names the test for each.
+  * The writability pre-check the shared `mw_prepare` runs on every
+    wrapper's `FILE` (`mw_require_writable`'s `test -w`, to fail before any
+    analysis as the C tools' `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
     does not see ACLs. It agrees on the two cases that actually reach a
-    caller (absent, and mode-denied); `compat/rename_segment.sh`'s header has
-    the detail.
+    caller (absent, and mode-denied).
   * `change_dylib` and `add_version_min` are the two wrappers that forward
     script run's own exit code (`me_run`, `src/edit.h`) verbatim, with no
     mapping at all -- unlike `fix_macho` and
@@ -164,14 +215,15 @@ for why they would be rare -- and one decided on purpose:
     matches. `add_version_min.sh` has no such gap: its own C tool's
     `perror("open")` already said literally "open: ...", so the wrapper's
     identical wording was never a divergence to begin with. A WRITABLE
-    `FILE` inside a NON-writable directory is a fourth case neither wrapper's
-    own pre-checks catch -- the write itself fails, `mkstemp: Permission
-    denied`, because installing needs the directory writable where the old
-    tools needed only `FILE` itself to be; `compat/add_version_min.sh` and
-    `compat/retag_swift_classes.sh`'s own headers both name it, and for
-    `retag_swift_classes` it surfaces as `had_error` (exit 1) rather than
-    `add_version_min`'s raw, forwarded 2, since this wrapper never forwards
-    one argument's exit code as the whole run's.
+    `FILE` inside a NON-writable directory is a case no wrapper's own
+    pre-checks catch -- the write itself fails, `mkstemp: Permission
+    denied`, with `FILE` untouched, because installing needs the directory
+    writable where the old tools needed only `FILE` itself to be. Every
+    in-place form does this: `rename_segment`, `fix_macho`,
+    `retag_swift_classes` and `patch_macho IN IN` exit 1, and `change_dylib`
+    and `add_version_min` forward the rewriter's 2 (`tests/wrapper_test.sh`,
+    "TOOL: a writable FILE in a read-only directory fails (N), untouched, no
+    temp left", one per tool).
     `change_dylib` briefly had an unwritable-`FILE` guard of its own that
     exited 2, chosen to match what `mr_apply_file`'s `open(O_RDWR)` then gave
     on the single-family path; that path opens `FILE` read-only now, so there
@@ -308,13 +360,10 @@ different difference than it did then.
 
   * **ONE emitted command — 459 rows — stdout is byte-identical.** Both sides
     one pass over the same file with the same ops — the C tool's
-    `mr_apply_file` then, one `mr_apply_image` call under `me_run` now. Two lines
-    of `drydock-macho-rewrite`'s are reshaped to get there, both consequences of the verb
-    writing a temp instead of `FILE`: `mw_run_to_tmp` drops its `Wrote <temp>
-    (N bytes)` line, which names a file no caller has heard of, and the wrapper
-    prints `Updated FILE (N bytes)` itself after the install, only when the
-    bytes changed — the same line `mr_apply_file` used to print, under the same
-    condition, naming the same path.
+    `mr_apply_file` then, one `mr_apply_image` call under `me_run` now.
+    `drydock-macho-rewrite`'s stdout names no file, and the wrapper prints
+    `Updated FILE (N bytes)` itself after the install, only when the bytes
+    changed, as `mr_apply_file` did.
   * **MORE THAN ONE FAMILY — 669 rows — stdout DIFFERS, unavoidably.** Each
     statement of the one script is its own pass over the image, so a
     `header pad …` / `updated …` pair is printed PER STATEMENT where one
@@ -358,7 +407,7 @@ script is one statement or several, so both shapes install identically.
 | **an absent or unwritable `FILE` is refused**, in the C tool's own `perror("open")` words, before `drydock-macho-rewrite` runs. `change_dylib` opened `FILE` `O_RDWR` first, so either failed immediately having changed nothing. No `drydock-macho-rewrite` invocation reproduces that: a form that writes an output opens `FILE` `O_RDONLY` and has no opinion about `FILE`'s mode, and the wrapper installs by rename, which needs the DIRECTORY writable (measured before this check existed: a mode-444 binary replaced, fresh inode, exit 0 — a silent rewrite of a file its owner marked read-only). `test -e`/`test -w` are not `open(O_RDWR)` — they consult the real uid and do not see ACLs, so they can disagree at the edges; they agree on the two cases that reach a caller, and both follow a symlink, which is what is wanted, since the install lands on the symlink's target and it is that file's mode that decides | `tests/wrapper_test.sh`'s unwritable pair, on BOTH paths, asserting exit 1, `open: Permission denied`, and neither the bytes nor the inode moved; and "an absent `FILE` exits 1 with the C tool's own `open()` message" |
 | **a hard-linked `FILE` is refused (1)** — new, and the one behaviour a caller can see that no version of `change_dylib` had: the C tool wrote through its own descriptor so every link saw the change, while an install by `mv` would leave the others on the old content. Refused rather than silently split, which is the trade every wrapper on this path makes; `mw_prepare` has the message and the remedy | `hl_case change_dylib` in `tests/wrapper_test.sh`, on both the single- and the multi-family path (exit 1, "hard link" named, both names byte-identical, no temp left); `tests/change_dylib_test.sh` case 14b also asserts the group is still one inode, unsplit |
 | **the install is a rename**, so a changed run gives `FILE` a fresh inode and an interrupted one can never leave a half-written binary — and a symlinked `FILE` stays a symlink, with the real target rewritten and its xattrs intact | `tests/change_dylib_test.sh` case 14: 14a (symlink still a symlink to the same name, the real target changed, fresh inode, xattr survived), 14c (the ordinary case still goes through `mkstemp`+rename). Mode and quarantine on the multi-family path: `tests/wrapper_test.sh`, "mode and quarantine survive a MULTI-FAMILY run too" |
-| **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `drydock-macho-rewrite`'s own write of the temp, with `FILE` untouched | stated, not tested for `change_dylib`: the behaviour is `drydock-macho-rewrite`'s own write, not this wrapper's, and the equivalent case is asserted for `patch_macho` in `tests/wrapper_test.sh`. `compat/add_version_min.sh` and `compat/retag_swift_classes.sh`'s headers record the same shape |
+| **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `drydock-macho-rewrite`'s own write of the temp, with `FILE` untouched | `tests/wrapper_test.sh`, "change_dylib: a writable FILE in a read-only directory fails (2), untouched, no temp left" |
 
 ### `change_dylib`: header growth
 
@@ -466,7 +515,7 @@ both are reported rather than worked around.
 | the difference | held by |
 |---|---|
 | **`mg_plausible`.** The rewriter runs that gate before writing only when the run disturbed what it checks — the gate asks an OFFSET question about base-relative values, and `src/relations.h`'s `mrel_verify_applies` decides. Of the operations this driver offers, only a header grow disturbs them, so in practice `fix_macho`'s replacement reaches this gate where `fix_macho` itself had none, and skips it where the rewrite moved no offset. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for `fixups set classic`, which disturbs the relation, and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
-| **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. `compat/rename_segment.sh`'s header has the measurement (on `/usr/lib/libxcselect.dylib`) and the note that the smallest fix is a change to `drydock-macho-rewrite`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
+| **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. The "drop-in" section above has the measurement (on `/usr/lib/libxcselect.dylib`); the smallest fix is to skip building the ordinal map when no operation can renumber, a change to `drydock-macho-rewrite`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
 
 ### `fix_macho`: exit codes
 
@@ -529,8 +578,7 @@ wrapper's whole stdout against a one-statement `drydock-macho-rewrite FILE OUT`'
 
 `fix_macho` rewrote the file it was given; `drydock-macho-rewrite` does not. So the wrapper takes the shared install path — `mw_prepare` names a temp
 beside the file `FILE` really is, `mw_retranslate` re-emits the command with
-that temp as its output, `mw_run_to_tmp` runs it and drops the `Wrote <temp>`
-line no C tool ever printed, and `mw_finish` `mv`s the temp over the target or
+that temp as its output, `mw_run_to_tmp` runs it, and `mw_finish` `mv`s the temp over the target or
 discards it when the bytes did not change. `drydock-macho-rewrite-compat.sh`'s "the install
 path" section has the reasoning for each step. `drydock-macho-rewrite` takes that temp
 as its `OUT` positional whether the script is one statement or several, so both
@@ -581,6 +629,27 @@ one statement per operation being the only shape `drydock-macho-rewrite` has. He
 untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
 
 `fix_macho`'s only caller in this repo was `tests/change_dylib_test.sh`.
+
+## `patch_macho`: the differences, and what holds each one
+
+`patch_macho IN OUT` becomes `fixups set classic` into a temp beside `OUT`,
+installed over `OUT`. The conversion is `md_declassify` on both sides, so what
+differs is everything around it. "Held by" names assertions in
+`tests/wrapper_test.sh` unless it says otherwise.
+
+| the difference | held by |
+|---|---|
+| **every nonzero exit is 1**, the only failure code `patch_macho` had: `EX_FAIL` (2) is folded, and `EX_REFUSED` already is 1 | "patch_macho: an absent IN maps drydock-macho-rewrite's EX_FAIL back to a flat 1", "patch_macho: a non-Mach-O input exits 1, not 2" |
+| **thin only**: a fat `IN` is refused and no `OUT` is created (see "Thin only", above) | "patch_macho: a fat container is refused and no output is created" |
+| **`OUT`'s mode is the C tool's**: `0755 & ~umask` for a fresh `OUT`, and its own mode for an existing one. It is not the input's mode, which is what `drydock-macho-rewrite` gives | "patch_macho: a fresh OUT gets 0755 masked by the umask (0700 under 077)", "patch_macho: and 0755 under umask 022, not the input's own mode", "patch_macho: an existing OUT keeps its mode"; on the converting path, "patch_macho: a converting run's fresh OUT is 0755 & ~umask too", "patch_macho: a converting run's existing OUT keeps its mode, with a new inode" |
+| **`OUT` is installed by rename**, so it gets a new inode when its bytes change, where the C tool's `open(O_TRUNC)` kept it. An unchanged pass-through installs nothing, so `patch_macho IN IN` on a converted input keeps its inode | "patch_macho: ... and is installed atomically, so its inode is new", "patch_macho: ... and an unchanged pass-through installs nothing, so the inode stands", "patch_macho: IN == OUT converts IN in place, to drydock-macho-rewrite's own bytes", "patch_macho: ... installed by rename, so the inode is new when the bytes change" |
+| **an `OUT` with other hard links is refused** (1), where the C tool wrote through every link | "patch_macho: a hard-linked OUT is refused (1), both names untouched", "patch_macho: a hard-linked OUT is refused (1) even when IN converts" |
+| **an unwritable existing `OUT` fails**, as `open(O_WRONLY)` did | "patch_macho: an unwritable existing OUT fails, as open(O_WRONLY) did", "patch_macho: an unwritable OUT is refused (1), untouched, even when IN converts" |
+| **an `OUT` that is a directory** is refused in the C tool's own words, `create output: Is a directory`. `mv` alone would move the temp into it and exit 0 | "patch_macho: an OUT that is a directory is refused (1), as open() did" |
+| **a dangling symlink at `OUT` is refused** (1), where the C tool created the link's target | "patch_macho: a dangling symlink as OUT is refused (1), and its target is not created" |
+| **an `OUT` that is another non-regular file** (a fifo, a device) is refused (1) as `OUT is not a regular file`, where the C tool's `open()` would have written to it | "patch_macho: a fifo as OUT is refused (1), and left a fifo" |
+| **with a bad `IN` and an `OUT` that is a directory or other non-regular file, `OUT` is named**, where the C tool named `IN`. An unwritable, hard-linked or dangling `OUT` still yields to `IN`'s diagnosis. Exit 1 either way | "patch_macho: with a bad IN and a directory as OUT, the directory is the one named", "patch_macho: with a bad IN and an unwritable OUT, IN is the one named" |
+| **stdout**: `md_declassify`'s own lines pass through, and `Wrote OUT (N bytes)` is printed only on the converting path, as `patch_macho` printed it. A pass-through, recognised by `md_declassify`'s `Already patched` line, names no file | "patch_macho: the pass-through prints no 'Wrote ...' line", "patch_macho: ... and its last stdout line names OUT and OUT's size", "patch_macho: ... and exactly one 'Wrote ' line", "patch_macho: ... and md_declassify's own lines still come through"; `tests/known-callers.sh`, "install.sh: patch_macho passes an already-converted binary through unchanged" |
 
 ## `rename_segment`: exit codes
 

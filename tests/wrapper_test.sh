@@ -21,10 +21,7 @@
 # the last commit carrying all six compat/*.c files, on real
 # 10.9 (Darwin 13.4), the same provenance tests/known-callers.sh's digests
 # have (tests/README.md's "Not run by ctest" section has the full account).
-# The divergences themselves are documented at their sites: the
-# list at the top of compat/translate.sh, and the "DELIBERATE DIVERGENCES
-# FROM <tool>" blocks in cli/drydock-macho-rewrite.c's cmd_segment, cmd_retag_swift and
-# cmd_declassify.
+# compat/README.md records each divergence and the test that holds it.
 #
 # set -u, not set -e: same reason as every other shell test here.
 set -u
@@ -207,6 +204,20 @@ if [ -x /bin/ksh ]; then
 else
     skip "the second-shell cross-check" "/bin/ksh is not present on this host"
 fi
+
+# ---- a symlinked wrapper, away from its support files -------------------
+for w in patch_macho change_dylib add_version_min fix_macho rename_segment \
+         retag_swift_classes insert_dylib bake-mavericks-shim; do
+    rm -rf "$T/lnk"; mkdir "$T/lnk"; ln -s "$BIN/$w" "$T/lnk/$w"
+    rc=0
+    ( unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR; "$T/lnk/$w" ) >"$T/out" 2>"$T/err" || rc=$?
+    [ "$rc" -eq 1 ] \
+        && firstline_is "$T/err" "$T/lnk/$w: cannot find drydock-macho-rewrite-compat.sh in $T/lnk -- drydock-macho-rewrite and its two support" \
+        && grep -qF 'set DRYDOCK_MACHO_REWRITE_COMPAT_DIR to where they really are' "$T/err" \
+        && ok "$w: a symlink to it elsewhere says to set DRYDOCK_MACHO_REWRITE_COMPAT_DIR (1)" \
+        || bad "$w symlinked" "exit $rc: $(cat "$T/err")"
+done
+rm -rf "$T/lnk"
 
 # ---- a wrapper finds drydock-macho-rewrite next to itself, not on PATH -----------------
 #
@@ -773,6 +784,26 @@ for pm_sh in /bin/sh /bin/ksh; do
 done
 chmod 755 "$T/ro"; rm -rf "$T/ro"
 
+# The C tools wrote through FILE's own descriptor; an install by mv needs the directory writable.
+for ro_case in 'rename_segment 1 ro/f __DATA __DATB' \
+               'change_dylib 2 ro/f -change /usr/lib/libSystem.B.dylib /usr/lib/libSystem.C.dylib' \
+               'add_version_min 2 ro/f' \
+               'fix_macho 1 ro/f -rename_seg __DATA __DATB' \
+               'retag_swift_classes 1 ro/f' \
+               'patch_macho 1 ro/f ro/f'; do
+    set -- $ro_case; ro_tool=$1; ro_want=$2; shift 2
+    rm -rf "$T/ro"; mkdir "$T/ro"; cp "$FIXTURE" "$T/ro/f"; chmod 555 "$T/ro"
+    ro_before=$(sha "$T/ro/f")
+    run "$ro_tool" "$@"
+    ro_ls=$(ls -A "$T/ro")
+    chmod 755 "$T/ro"
+    [ "$rc" -eq "$ro_want" ] && grep -q -xF 'mkstemp: Permission denied' "$T/err" \
+        && [ "$(sha "$T/ro/f")" = "$ro_before" ] && [ "$ro_ls" = f ] \
+        && ok "$ro_tool: a writable FILE in a read-only directory fails ($ro_want), untouched, no temp left" \
+        || bad "$ro_tool read-only directory" "exit $rc (want $ro_want), dir: $ro_ls, stderr: $(cat "$T/err")"
+done
+rm -rf "$T/ro"
+
 # 5b. AN OUT THAT IS A DIRECTORY is refused, in the C tool's own perror words.
 #     Neither layer below would refuse it: drydock-macho-rewrite writes a temp BESIDE OUT and
 #     never looks at OUT, and `mv` given a directory destination moves the temp
@@ -790,6 +821,43 @@ run patch_macho f adir
     && ok "patch_macho: an OUT that is a directory is refused (1), as open() did" \
     || bad "patch_macho directory OUT" "exit $rc, stderr: $(cat "$T/err")"
 rm -rf "$T/adir"
+
+printf 'not a mach-o at all\n' > "$T/nm"
+rm -rf "$T/adir"; mkdir "$T/adir"
+run patch_macho nm adir
+[ "$rc" -eq 1 ] && grep -qxF 'create output: Is a directory' "$T/err" \
+    && ! grep -q 'not a readable 64-bit Mach-O' "$T/err" \
+    && ok "patch_macho: with a bad IN and a directory as OUT, the directory is the one named" \
+    || bad "patch_macho both bad" "exit $rc, stderr: $(cat "$T/err")"
+rm -rf "$T/adir"
+
+rm -f "$T/pmro"; : > "$T/pmro"; chmod 444 "$T/pmro"
+run patch_macho nm pmro
+[ "$rc" -eq 1 ] && grep -q 'not a readable 64-bit Mach-O' "$T/err" \
+    && ! grep -q 'Permission denied' "$T/err" \
+    && ok "patch_macho: with a bad IN and an unwritable OUT, IN is the one named" \
+    || bad "patch_macho bad IN, unwritable OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/pmro" "$T/nm"
+
+# A dangling symlink at OUT is refused; the C tool created the link's target.
+fresh
+rm -f "$T/pmdangle" "$T/pmnowhere"; ln -s pmnowhere "$T/pmdangle"
+run patch_macho f pmdangle
+[ "$rc" -eq 1 ] && [ -L "$T/pmdangle" ] && [ ! -e "$T/pmnowhere" ] \
+    && ok "patch_macho: a dangling symlink as OUT is refused (1), and its target is not created" \
+    || bad "patch_macho dangling OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/pmdangle" "$T/pmnowhere"
+
+# The background writer lets a regression that reads the fifo finish, not hang.
+fresh
+rm -f "$T/pmfifo"; mkfifo "$T/pmfifo"
+( : > "$T/pmfifo" ) 2>/dev/null & pm_w=$!
+run patch_macho f pmfifo
+kill "$pm_w" 2>/dev/null || true; wait "$pm_w" 2>/dev/null || true
+[ "$rc" -eq 1 ] && [ -p "$T/pmfifo" ] && grep -qF 'pmfifo is not a regular file' "$T/err" \
+    && ok "patch_macho: a fifo as OUT is refused (1), and left a fifo" \
+    || bad "patch_macho fifo OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/pmfifo"
 
 # 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
 #     the C tool's open(). `drydock-macho-rewrite declassify` refuses such an OUT now
@@ -841,11 +909,7 @@ rm -rf "$T/pmdir"
 # only what the pass-through cannot reach.
 
 # A. THE CONVERTING PATH'S STDOUT. `Wrote OUT (N bytes)` is patch_macho's own
-#    closing line, printed by the wrapper because drydock-macho-rewrite's names the temp; N is
-#    OUT's size. Asserted as the LAST line, as EXACTLY ONE `Wrote ` line (so
-#    mw_run_to_tmp's filter cannot leak `Wrote <temp> (...)` and the wrapper's
-#    own line cannot double), and alongside md_declassify's own progress lines,
-#    which must still come through untouched.
+#    closing line, printed by the wrapper: drydock-macho-rewrite's stdout names no file.
 mkchained_fixture "$T/cf"
 run patch_macho cf cfout
 cf_n=$(wc -c < "$T/cfout" 2>/dev/null | tr -d ' ')
@@ -856,7 +920,7 @@ cf_n=$(wc -c < "$T/cfout" 2>/dev/null | tr -d ' ')
     && ok "patch_macho: ... and its last stdout line names OUT and OUT's size" \
     || bad "patch_macho converting stdout" "last line is [$(sed -n '$p' "$T/out")], want [Wrote cfout ($cf_n bytes)]"
 [ "$(grep -c '^Wrote ' "$T/out" | tr -d ' ')" = 1 ] \
-    && ok "patch_macho: ... and exactly one 'Wrote ' line, so drydock-macho-rewrite's cannot leak" \
+    && ok "patch_macho: ... and exactly one 'Wrote ' line" \
     || bad "patch_macho converting stdout" "$(grep -c '^Wrote ' "$T/out") 'Wrote ' lines: $(cat "$T/out")"
 grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T/out" \
     && ok "patch_macho: ... and md_declassify's own lines still come through" \
@@ -1795,6 +1859,26 @@ if [ "$rc" -eq 0 ] && has_line "$T/err" 'slice i386: 32-bit; passed through unch
 else
     bad "fix_macho fat skip" "exit $rc; stdout: $(cat "$T/out"); stderr: $(cat "$T/err")"
 fi
+
+# A 16-character NEW of 32 bytes. In a UTF-8 locale ${#3} counts characters,
+# so translate.sh lets it through and mseg_name_fits refuses it; in the C
+# locale translate.sh refuses it itself. Exit 1 and FILE untouched either way.
+fm_mb=$(printf '\303\251%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+for fm_loc in en_US.UTF-8 C; do
+    fresh
+    fm_mb_before=$(sha "$T/f")
+    case $fm_loc in
+        C) fm_mb_want='new segment name longer than 16 bytes: ' ;;
+        *) fm_mb_want='longer than the 16 bytes a segname field holds' ;;
+    esac
+    rc=0
+    ( cd "$T" && LC_ALL=$fm_loc "$BIN/fix_macho" f -rename_seg __DATA "$fm_mb" ) \
+        >"$T/out" 2>"$T/err" || rc=$?
+    [ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$fm_mb_before" ] \
+        && grep -qF -- "$fm_mb_want" "$T/err" \
+        && ok "fix_macho: a 16-character NEW of 32 bytes is refused (1), file untouched, under LC_ALL=$fm_loc" \
+        || bad "fix_macho multibyte NEW ($fm_loc)" "exit $rc: $(tail -1 "$T/err")"
+done
 
 # THE CAPACITY CAPS, in fix_macho's own words. Both moved into
 # compat/translate.sh when compat/fix_macho.c retired, and the -rename_seg one

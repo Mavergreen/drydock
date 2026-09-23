@@ -339,9 +339,8 @@ add_test(NAME translate_test
 # exit codes it maps back to the C tool's, and the stdout it reshapes. Sits
 # between translate_test (which pins the emitted TEXT and never runs drydock-macho-rewrite on
 # a file) and known_callers (which replays the real callers end to end); every
-# assertion in it names the divergence it closes, from the list at the top of
-# compat/translate.sh or from cli/drydock-macho-rewrite.c's own "DELIBERATE DIVERGENCES"
-# blocks. Also parses every wrapper under /bin/sh AND /bin/ksh, the same
+# assertion in it names the divergence it closes, which compat/README.md
+# records. Also parses every wrapper under /bin/sh AND /bin/ksh, the same
 # second-shell cross-check translate_test does.
 add_test(NAME wrapper_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
