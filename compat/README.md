@@ -127,8 +127,11 @@ for why they would be rare -- and one decided on purpose:
   * `rename_segment` on a binary carrying `LC_LAZY_LOAD_DYLIB` refuses where
     the C tool renamed, because the shared rewriter builds its
     library-ordinal map before it looks at whether any operation could
-    renumber. `compat/rename_segment.sh`'s header has the measurement. It is
-    one file out of 300 in `tests/differential.sh`'s corpus, and closing it
+    renumber. Measured on `/usr/lib/libxcselect.dylib`: the C tool renamed it
+    (exit 0), and a `segment rename` statement, a `load-command delete`
+    statement and the pre-wrapper `change_dylib` all refuse it (exit 1) with
+    the same message, so the refusal is the shared rewriter's, not the
+    rename's. It is one file out of 300 in `tests/differential.sh`'s corpus, and closing it
     means changing `drydock-macho-rewrite`.
   * `patch_macho`'s `OUT` gets a NEW INODE where the C tool's
     `open(O_WRONLY|O_CREAT|O_TRUNC)` wrote through the path and kept it. The
@@ -151,8 +154,7 @@ for why they would be rare -- and one decided on purpose:
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
     does not see ACLs. It agrees on the two cases that actually reach a
-    caller (absent, and mode-denied); `compat/rename_segment.sh`'s header has
-    the detail.
+    caller (absent, and mode-denied).
   * `change_dylib` and `add_version_min` are the two wrappers that forward
     script run's own exit code (`me_run`, `src/edit.h`) verbatim, with no
     mapping at all -- unlike `fix_macho` and
@@ -479,7 +481,7 @@ both are reported rather than worked around.
 | the difference | held by |
 |---|---|
 | **`mg_plausible`.** The rewriter runs that gate before writing only when the run disturbed what it checks — the gate asks an OFFSET question about base-relative values, and `src/relations.h`'s `mrel_verify_applies` decides. Of the operations this driver offers, only a header grow disturbs them, so in practice `fix_macho`'s replacement reaches this gate where `fix_macho` itself had none, and skips it where the rewrite moved no offset. It is a check on the INPUT, not on what the rewrite did. | `tests/wrapper_test.sh`'s `mg_plausible` pair on `tests/mkimplausible.c`'s fixture — the fixture is refused for `fixups set classic`, which disturbs the relation, and renamed successfully — and `tests/cli_test.sh`'s "segment does NOT meet the `mg_plausible` gate" block at the verb |
-| **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. `compat/rename_segment.sh`'s header has the measurement (on `/usr/lib/libxcselect.dylib`) and the note that the smallest fix is a change to `drydock-macho-rewrite`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
+| **`LC_LAZY_LOAD_DYLIB`.** `mo_map_build` (`src/ordinals.c`) refuses any image carrying one, up front, before it looks at what the operations are. `fix_macho` never built an ordinal map and rewrote such an image happily. The "drop-in" section above has the measurement (on `/usr/lib/libxcselect.dylib`); the smallest fix is to skip building the ordinal map when no operation can renumber, a change to `drydock-macho-rewrite`, not to a wrapper. | `tests/change_dylib_test.sh`'s `LC_LAZY_LOAD_DYLIB` case (refusal, the refusal naming the load command, and the input untouched) — through `change_dylib`, on the same shared driver, and it SKIPs loudly where the host's linker will not emit one |
 
 ### `fix_macho`: exit codes
 

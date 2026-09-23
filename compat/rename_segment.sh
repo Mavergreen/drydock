@@ -4,165 +4,11 @@
 #
 #   rename_segment binary OLDNAME NEWNAME
 #
-# WHAT THIS REPLACED. compat/rename_segment.c was this tool's argument
-# grammar, a thin-only mi_open + lseek/write driver, its exit 2 when nothing
-# matched, and its one message, over its own mi_each_lc loop calling
-# mseg_rename_lc (src/segname.h) on every matching command -- the same
-# per-command function a `segment rename` statement calls, once per command,
-# from inside mr_apply_file's own load-command walk. (rename_segment.c's own image-wide
-# loop, mseg_rename_image, was deleted along with rename_segment.c itself:
-# nothing else ever called it.) The rename itself is therefore the same code
-# either way.
-#
-# Why the tool exists at all (10.9's libobjc looks for __objc_* sections in
-# __DATA, and Xcode 10+ linkers put them in __DATA_CONST) is written down in
-# src/segname.h's header, which outlives the C front-end this replaces.
-#
-# GRAMMAR. `rename_segment FILE OLD NEW` -> `printf 'segment rename OLD NEW\n'
-# | drydock-macho-rewrite FILE OUT`.
-# `argc != 4` and a NEW longer than the 16 bytes a segname field holds are
-# both refused before any I/O, by compat/translate.sh, in rename_segment's own
-# words.
-#
-# FIVE DELIBERATE DIVERGENCES a wrapper has to account for -- the list
-# cli/drydock-macho-rewrite.c's cmd_segment carried until that verb was deleted -- plus a
-# note on a sixth that used to be on it and no longer is (mg_plausible, below).
-# They are the `segment rename` statement's divergences: the statement reaches
-# the rename through the same code. The first of the five -- that the rewrite
-# reads FILE and writes OUT rather than rewriting FILE -- is closed by "the
-# in-place edit" at the end of this header; the rest are numbered below.
-#
-#   1. EXIT 2 WHEN NOTHING MATCHED, and 2. THE ONE-LINE MESSAGE. Both need the
-#      same number: how many LC_SEGMENT_64s the rename actually matched.
-#      rename_segment got it from mseg_rename_image's return value; this
-#      wrapper COUNTS the rewriter's own per-rename line,
-#
-#          "  Rename segment: <OLD> -> <NEW>"
-#
-#      one per segment renamed, printed from inside the load-command walk
-#      (src/rewrite.c). It used to read a summary the `segment` VERB printed
-#      (`machotool segment: renamed=<N>`); a script prints no summary, and the
-#      per-rename line is what both forms have always had in common.
-#
-#      EX_REFUSED is classified with `info --thin` (compat/README.md,
-#      rename_segment: exit codes).
-#
-#      drydock-macho-rewrite's own stdout is otherwise SUPPRESSED and this wrapper prints
-#      rename_segment's single line with that count, byte-identical to the C
-#      tool's.
-#
-#      IT IS NOT DERIVED FROM `drydock-macho-rewrite info`. An earlier version of this wrapper
-#      counted "  segname=NAME ..." lines out of that dump with awk, and it was
-#      wrong twice over, both cases reachable and both measured: mseg_rename_lc
-#      matches with strncmp over the 16-byte segname field, so an OLD LONGER
-#      than 16 bytes whose first 16 match is a match the field-splitting count
-#      missed, and a segname CONTAINING WHITESPACE (legal, and producible with
-#      a `segment rename __TEXT 'A B'` statement, ms_split quoting the name)
-#      split across awk fields and missed too.
-#      Both made this wrapper exit 2, leaving the file untouched, where the C
-#      tool renamed and exited 0. tests/wrapper_test.sh pins both.
-#
-#      That was tests/README.md's second lesson -- never parse human-readable
-#      output as an oracle -- applied to `drydock-macho-rewrite info` instead of to `otool`.
-#      The count now comes from the code that did the matching.
-#   3. THIN ONLY. rename_segment ran mi_open, which fails on a fat container,
-#      and printed "%s: not a readable 64-bit Mach-O" (exit 1). `drydock-macho-rewrite
-#      segment` goes through mr_apply_file, which HANDLES fat containers --
-#      so it would rename inside a fat file that rename_segment refused
-#      outright. `drydock-macho-rewrite info --thin` refuses a fat container
-#      in exactly rename_segment's sense, so gating on its EXIT STATUS
-#      reproduces the old refusal. Its output is not read: the exit status
-#      is the whole signal, which is the difference between using a
-#      machine-readable result and parsing a human-readable one. This
-#      matters in practice: most binaries under /System/Library/Frameworks
-#      are fat, so without the gate tests/differential.sh would show this
-#      wrapper rewriting files the C tool would not have.
-#
-#   4. LC_LAZY_LOAD_DYLIB, NOT CLOSED, and the one real gap this wrapper
-#      ships with. mr_apply_file builds the library-ordinal map
-#      (mo_map_build, src/ordinals.c) up front, before it looks at what the
-#      operations actually are, and that builder REFUSES any image carrying
-#      an LC_LAZY_LOAD_DYLIB -- "it carries an ordinal like LC_LOAD_DYLIB
-#      does, but this codebase has never exercised renumbering it". A
-#      segment rename touches no ordinal at all, so the refusal cannot be
-#      protecting anything here; it is simply on the path. rename_segment,
-#      which never went near mr_apply_file at all, renamed such a binary
-#      happily.
-#
-#      MEASURED, on /usr/lib/libxcselect.dylib -- the one file in
-#      tests/differential.sh's corpus that carries one:
-#
-#        compat/rename_segment.c (pre-wrapper)  renamed it, exit 0
-#        a `segment rename` statement           refuses, exit 1
-#        a `load-command delete` statement      refuses too, with the SAME message
-#        change_dylib (pre-wrapper)             refuses too, with the SAME message
-#
-#      The last two lines are the point: this is NOT rename-specific and NOT
-#      something these wrappers introduced. mo_map_build has refused this
-#      file for every operation, through every front-end, for as long as the
-#      shared rewriter has existed. What changed is only that the rename now
-#      travels through that rewriter.
-#
-#      It is the same SHAPE as the mg_plausible gate described below -- an
-#      offset-related gate running on an operation set that cannot move
-#      offsets -- but a different call site, so it does not fall out of
-#      that fix. The smallest fix would be to skip building the ordinal map
-#      when nothing in the operation set can renumber, which is a change to
-#      drydock-macho-rewrite, not to this wrapper. Reported rather than made.
-#
-# mg_plausible USED TO BE a fifth divergence and no longer is: mr_apply_file
-# used to run it before writing, on every operation, and refuse if it failed;
-# rename_segment had no such gate. NOT reproduced HERE, because it is no
-# longer a divergence: src/rewrite.c now runs that gate only when the run
-# disturbed the base-relative values it checks (src/relations.h), and says at
-# the site why that is a statement about what mg_plausible checks (an OFFSET
-# question) rather than a concession. A rename writes characters into
-# segname/sectname and moves nothing, so the gate could only ever re-decide a
-# property the input already had.
-#
-# This wrapper therefore sets NO environment variable and switches nothing
-# off. What reaches the gate is decided by the image and the operation, never
-# by anything a caller can pass.
-#
-# EXIT CODES. 0 renamed, 2 nothing matched, 1 everything else, as
-# rename_segment had. compat/README.md's "rename_segment: exit codes" maps
-# each drydock-macho-rewrite exit and names the test that holds it.
-#
-# THE IN-PLACE EDIT. rename_segment rewrote the binary it was given; `drydock-macho-rewrite
-# segment FILE OUT OLD NEW` does not write the file it is given. So this
-# wrapper takes the shared install path around its existing flow: mw_prepare
-# names a temp beside the file FILE really is, mw_retranslate re-emits the
-# command with that temp as OUT, and mw_finish mv's the temp over the target
-# -- but only once drydock-macho-rewrite's own exit said something was
-# renamed (a 0 exit, not EX_REFUSED), since the old grammar reported
-# "nothing matched" as exit 2 with the file untouched.
-# drydock-macho-rewrite-compat.sh's "the install path" section has the reasoning for each
-# step.
-#
-# THE WRITABILITY CHECK comes with mw_prepare. rename_segment opened the file
-# O_RDWR before it looked at it, so an unwritable (or absent) file failed
-# immediately, with no analysis and no write. drydock-macho-rewrite opens FILE
-# O_RDONLY now and has no opinion about whether FILE is writable, and the
-# install by mv needs only the DIRECTORY writable -- so without this check the
-# wrapper would rewrite files the C tool refused. `test -w` is not
-# open(O_RDWR): it consults the real uid and does not see ACLs, so it can
-# disagree at the edges. It agrees on the two cases that actually reach a
-# caller (absent, and mode-denied), and both sides exit 1 either way.
-#
-# A HARD-LINKED FILE IS NOW REFUSED (exit 1), the one behaviour here the C tool
-# did not have: it wrote through its own descriptor, so every link saw the
-# rename, while an install by mv would leave the others on the old content.
-# Every wrapper on this install path makes the same trade. And the temp needs
-# the DIRECTORY writable, where the C tool needed only FILE itself to be, so a
-# writable binary in a read-only directory now fails with FILE untouched.
+# compat/translate.sh holds the grammar; compat/README.md's "rename_segment:
+# exit codes" maps each drydock-macho-rewrite exit to this tool's 0, 1 or 2.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
-# Checked here, before sourcing, so a missing support file gets this message
-# rather than the shell's own "No such file or directory" from the `.` below.
-# The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
-# $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
-# one holding drydock-macho-rewrite -- which is why DRYDOCK_MACHO_REWRITE_COMPAT_DIR exists.
 [ -r "$MW_DIR/drydock-macho-rewrite-compat.sh" ] || {
     printf '%s: cannot find drydock-macho-rewrite-compat.sh in %s -- drydock-macho-rewrite and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
@@ -208,7 +54,6 @@ fi
 
 [ "$mw_rc" -eq 0 ] || { cat "$MW_T/segout" >&2; exit 1; }
 
-# Count from the rewriter's per-rename line (one per slice for a fat file);
 # -x -F so metacharacters in OLD/NEW count as themselves.
 mw_n=$(grep -c -x -F -- "  Rename segment: $mw_old -> $mw_new" "$MW_T/segout") || mw_n=0
 if [ "$mw_n" -eq 0 ]; then
