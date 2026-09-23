@@ -41,9 +41,9 @@ int mv_add_version_min(const char *path, const char *out);
 
 /*
  * mv_add_version_min's edit, without the file: append LC_VERSION_MIN_MACOSX
- * 10.9 to the image in *pbuf, and nothing else -- no open, no race guard, no
- * write. src/edit.c calls it for `version-min set 10.9` against the image it
- * writes once, itself, after the last statement.
+ * 10.9, with `sdk`, to the image in *pbuf, and nothing else -- no open, no
+ * race guard, no write. src/edit.c calls it for `version-min set 10.9`
+ * against the image it writes once, itself, after the last statement.
  *
  * Returns 0 with *out_added = 1 if it appended the command, 0 with
  * *out_added = 0 if the image already had one (after printing "already
@@ -56,7 +56,7 @@ int mv_add_version_min(const char *path, const char *out);
  * announcement of a grow; both callers pass the file's path.
  */
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
-                             const char *label, int *out_added);
+                             const char *label, uint32_t sdk, int *out_added);
 
 #define MV_PLATFORM_MACOS 1   /* LC_BUILD_VERSION.platform */
 

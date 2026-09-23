@@ -516,10 +516,10 @@ static void test_disturbs_matches_the_spec_table(void) {
      * MS_TABLE row, not an ms_script field like allow-unmatched, so the tripwire
      * demands a mask -- and no static mask can describe it, because it expands
      * at run time against the image in front of it (me_expand_10_9,
-     * src/edit.c:476-514, up to five derived statements). Each derived
-     * statement is one of the rows above and declares its own mask, so the
-     * union is computed from what actually ran. A bare 0 here would read as an
-     * unreviewed default, which is what the tripwire exists to prevent. */
+     * src/edit.c). Each derived statement is one of the rows above and
+     * declares its own mask, so the union is computed from what actually ran.
+     * A bare 0 here would read as an unreviewed default, which is what the
+     * tripwire exists to prevent. */
     CHECK(ms_disturbs(MS_TARGET, MS_PROFILE_10_9) == MREL_NONE,
           "target 10.9 disturbs nothing of its own; its expansion declares its own");
 

@@ -382,15 +382,22 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         mi_image im;
         int added = 0;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        int rc = mv_add_version_min_image(pbuf, psize, path, &added);
         /* Whether it appended a command or found one already there, as the
          * core reports it through `added`. The already-there case is on
          * stdout, where the core has always printed it. The append's own
          * "Added ..." line belonged to the `minos` verb, which this does not
          * call, so an append prints nothing on stdout; a grow of the header
          * pad is announced on stderr by mg_ensure_pad, labelled with `path`. */
-        if (rc == 0 && added)
-            me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
+        uint32_t sdk = st->sdk ? st->sdk : 0x000A0900u;
+        int rc = mv_add_version_min_image(pbuf, psize, path, sdk, &added);
+        if (rc == 0 && added) {
+            char sdks[16];
+            mv_format_version(sdk, sdks);
+            if (sdk == 0x000A0900u)
+                me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
+            else
+                me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9, sdk %s\n", sdks);
+        }
         return rc;
     }
 
@@ -550,21 +557,46 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
  * not. None of them guesses, so the expansion is reproducible from the image
  * alone.
  */
-#define ME_TARGET_MAX 5   /* one per row of README.md's "The `target` statement" table */
+#define ME_TARGET_MAX 7   /* one per row of README.md's "The `target` statement" table */
+#define ME_10_9 0x000A0900u
+
+/* Major.minor only: every 10.9.x is 10.9. */
+static int me_above_10_9(uint32_t v) { return (v & 0xffffff00u) > ME_10_9; }
 
 /* One derived statement, and the finding that produced it -- the report
  * carries both, because "why is this script doing that?" is exactly the
  * question a profile line raises. */
-typedef struct { ms_stmt stmt; const char *why; } me_derived;
+typedef struct { ms_stmt stmt; const char *why; char arg[16]; } me_derived;
 
 /* What the load commands say about this image. */
-typedef struct { int chained, buildver, version_min, dataconst_objc; } me_seen;
+typedef struct {
+    int chained, buildver, version_min, dataconst_objc;
+    uint32_t version_min_version, version_min_sdk;   /* the first LC_VERSION_MIN_MACOSX's */
+    int bv_macos;                   /* a macOS LC_BUILD_VERSION was seen ... */
+    uint32_t bv_minos, bv_sdk;      /* ... and the first one's minos and sdk */
+} me_seen;
 
 static int me_target_lc(const struct load_command *lc, void *ctx_) {
     me_seen *f = (me_seen *)ctx_;
     if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) { f->chained = 1; return 0; }
-    if (lc->cmd == LC_BUILD_VERSION)       { f->buildver = 1; return 0; }
-    if (lc->cmd == LC_VERSION_MIN_MACOSX)  { f->version_min = 1; return 0; }
+    if (lc->cmd == LC_BUILD_VERSION) {
+        const uint32_t *w = (const uint32_t *)lc;   /* cmd, cmdsize, platform, minos, sdk, ntools */
+        f->buildver = 1;
+        if (lc->cmdsize >= 24 && w[2] == MV_PLATFORM_MACOS && !f->bv_macos) {
+            f->bv_macos = 1;
+            f->bv_minos = w[3];
+            f->bv_sdk = w[4];
+        }
+        return 0;
+    }
+    if (lc->cmd == LC_VERSION_MIN_MACOSX) {
+        if (!f->version_min && lc->cmdsize >= sizeof(struct version_min_command)) {
+            f->version_min_version = ((const struct version_min_command *)lc)->version;
+            f->version_min_sdk = ((const struct version_min_command *)lc)->sdk;
+        }
+        f->version_min = 1;
+        return 0;
+    }
     if (lc->cmd == LC_SEGMENT_64) {
         const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
         /* segname/sectname are 16 bytes and need not be NUL-terminated, which
@@ -588,7 +620,8 @@ static int me_target_lc(const struct load_command *lc, void *ctx_) {
  * The order is the order they must run in. `fixups set classic` comes first
  * because nothing can grow the header while the image still has chained
  * fixups (src/grow.h), and every statement after it sees the __LINKEDIT and
- * the header pad it left. The rest are independent of each other.
+ * the header pad it left. `minos set` follows `version-min set`, whose
+ * command it may rewrite; the rest are independent of each other.
  *
  * NEVER dylib or rpath work: no tool can guess which stub dylib you meant,
  * and that is the dominant real workload. A profile that guessed would be
@@ -598,7 +631,8 @@ static int me_target_lc(const struct load_command *lc, void *ctx_) {
  * is where it came from and the only line anyone wrote.
  *
  * `im` is a view, and is not written. */
-static int me_expand_10_9(const mi_image *im, me_derived *d, int line) {
+static int me_expand_10_9(const mi_image *im, me_derived *d, int line,
+                          char *minimum, size_t minsz) {
     me_seen f;
     int n = 0;
     memset(&f, 0, sizeof f);
@@ -621,7 +655,20 @@ static int me_expand_10_9(const mi_image *im, me_derived *d, int line) {
         d[n].stmt.kind = MS_VERSION_MIN; d[n].stmt.op = MS_SET;
         d[n].stmt.a = "10.9"; d[n].stmt.b = NULL;
         d[n].stmt.line = line;
+        if (f.bv_macos) d[n].stmt.sdk = f.bv_sdk;   /* the binary was built against it */
         d[n++].why = "no LC_VERSION_MIN_MACOSX";
+        if (f.bv_macos && !me_above_10_9(f.bv_minos) && f.bv_minos != ME_10_9) {
+            mv_format_version(f.bv_minos, d[n].arg);
+            d[n].stmt.kind = MS_MINOS; d[n].stmt.op = MS_SET;
+            d[n].stmt.a = d[n].arg; d[n].stmt.b = NULL;
+            d[n].stmt.line = line;
+            d[n++].why = "LC_BUILD_VERSION's minimum, carried over";
+        }
+    } else if (me_above_10_9(f.version_min_version)) {
+        d[n].stmt.kind = MS_MINOS; d[n].stmt.op = MS_SET;
+        d[n].stmt.a = "10.9"; d[n].stmt.b = NULL;
+        d[n].stmt.line = line;
+        d[n++].why = "LC_VERSION_MIN_MACOSX declares a minimum above 10.9";
     }
     if (f.dataconst_objc) {
         d[n].stmt.kind = MS_SEGMENT; d[n].stmt.op = MS_RENAME;
@@ -634,6 +681,26 @@ static int me_expand_10_9(const mi_image *im, me_derived *d, int line) {
         d[n].stmt.a = "legacy"; d[n].stmt.b = NULL;
         d[n].stmt.line = line;
         d[n++].why = "class records carry the stable-ABI Swift tag";
+    }
+    {
+        char was[16], now[16], sdk[16];
+        if (f.version_min) {
+            mv_format_version(f.version_min_version, was);
+            mv_format_version(f.version_min_sdk, sdk);
+            if (me_above_10_9(f.version_min_version))
+                snprintf(minimum, minsz, "version-min %s -> 10.9; sdk %s untouched", was, sdk);
+            else
+                snprintf(minimum, minsz, "version-min %s, at or below 10.9; left as declared; "
+                                         "sdk %s untouched", was, sdk);
+        } else if (f.bv_macos) {
+            mv_format_version(f.bv_minos, was);
+            mv_format_version(me_above_10_9(f.bv_minos) ? ME_10_9 : f.bv_minos, now);
+            mv_format_version(f.bv_sdk, sdk);
+            snprintf(minimum, minsz, "build-version %s -> version-min %s; sdk %s carried over",
+                     was, now, sdk);
+        } else {
+            snprintf(minimum, minsz, "none declared -> version-min 10.9; sdk 10.9 written");
+        }
     }
     return n;
 }
@@ -673,7 +740,9 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
     int n, i;
 
     if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-    n = me_expand_10_9(&im, d, st->line);
+    char minimum[128];
+    n = me_expand_10_9(&im, d, st->line, minimum, sizeof minimum);
+    me_say(log, "    minimum: %s\n", minimum);
     if (n == 0)
         me_say(log, "    nothing to do: this binary already targets 10.9\n");
 

@@ -90,7 +90,7 @@ int mv_add_version_min(const char *path, const char *out) {
     size_t fsize = im.size;
     uint8_t *buf = mi_release(&im);
     int added = 0;
-    int rc = mv_add_version_min_image(&buf, &fsize, path, &added);
+    int rc = mv_add_version_min_image(&buf, &fsize, path, (10 << 16) | (9 << 8), &added);
     if (rc != 0) {
         free(buf);
         return rc;
@@ -115,7 +115,7 @@ int mv_add_version_min(const char *path, const char *out) {
  * copied: the scan, the "already present" and "no room" answers, and the
  * append, all against the caller's buffer and none of the file around it. */
 int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
-                             const char *label, int *out_added) {
+                             const char *label, uint32_t sdk, int *out_added) {
     *out_added = 0;
     mi_image im;
     if (mi_wrap(*pbuf, *psize, &im) != 0) {
@@ -164,7 +164,7 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
     vm->cmd = LC_VERSION_MIN_MACOSX;
     vm->cmdsize = sizeof(*vm);
     vm->version = (10 << 16) | (9 << 8);   /* 10.9.0 */
-    vm->sdk     = (10 << 16) | (9 << 8);
+    vm->sdk     = sdk;
     hdr->ncmds++;
     hdr->sizeofcmds += sizeof(*vm);
     *out_added = 1;

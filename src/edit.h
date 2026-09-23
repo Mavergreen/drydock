@@ -66,12 +66,13 @@ typedef struct {
  * produced it:
  *
  *       target 10.9
+ *         minimum: build-version 12.0 -> version-min 10.9; sdk 12.3 carried over
  *         fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
  *         version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
  *
- * -- or "nothing to do: this binary already targets 10.9" when the expansion
- * is empty. The expansion never derives `dylib` or `rpath` work, and
- * `fixups set classic` comes first within it.
+ * -- the `minimum:` line in every case, and "nothing to do: this binary
+ * already targets 10.9" when the expansion is empty. The expansion never
+ * derives `dylib` or `rpath` work, and `fixups set classic` comes first within it.
  * spec: src/grow.h -- growth refuses an image that still has chained fixups,
  * which is what fixes that order.
  */
