@@ -1,291 +1,51 @@
-# Drydock for Mavericks
+# Drydock
 
-**This README has not been read or edited by a human yet.** Until it has, this
-project cannot cut its first release.
+Source code can often be adjusted to build and run on Mavericks.
+When all you have is a binary executable, there's Drydock.
 
-Mach-O surgery for hosts too old to have any. Builds with the stock 10.9 clang,
-no dependencies, and edits binaries produced by toolchains fifteen years newer.
+## Example usage
 
-| tool | job |
-|---|---|
-| `patch_macho` | rewrite chained fixups as `LC_DYLD_INFO_ONLY`, so 10.9's dyld can load the image |
-| `change_dylib` | edit `LC_LOAD_DYLIB` / `LC_RPATH` — change, delete, add, insert, re-export — with library-ordinal renumbering; `-strip-lc`; `-grow` |
-| `add_version_min` | append `LC_VERSION_MIN_MACOSX` |
-| `fix_macho` | change install names and strip build version, including in fat binaries |
-| `rename_segment` | `__DATA_CONST` → `__DATA`, so 10.9's libobjc finds the metadata |
-| `retag_swift_classes` | move the is-Swift tag from the stable-ABI bit to the legacy one |
-
-## Layout
-
-- `src/` — the shared toolkit library (`drydockcore`): image parsing, ULEB,
-  ordinals, fat-arch validation, export-trie rebuild, `__LINKEDIT` bumping,
-  header growth, LC-kind tables, the atomic-write helper, the dylib/rpath
-  load-command rewriter, the `LC_VERSION_MIN_MACOSX` appender, the segment
-  rename, and the Swift class-record retag.
-- `compat/` — these six tools' entry points. They predate `drydock-macho-rewrite` and keep
-  their original names because `install.sh` fetches some of them by name. All
-  six are now `/bin/sh` wrappers that print the `drydock-macho-rewrite` equivalent of what
-  they were asked to do and then do it through `drydock-macho-rewrite`, so **`drydock-macho-rewrite` is the
-  only Mach-O rewriting binary this repo ships** and `compat/` contains no C
-  at all. `fix_macho` was the last holdout: wrapping it changes what it does
-  in five ways, and those changes were adopted deliberately rather than
-  papered over — `compat/README.md` states each with its reason.
-  Also here: `translate.sh`, the old-grammar-to-`drydock-macho-rewrite` translator the
-  wrappers source, and `drydock-macho-rewrite-compat.sh`, the machinery they share. See
-  `compat/README.md`. Two more wrappers present grammars this repo never
-  shipped: `insert_dylib`, and `bake-mavericks-shim`, which makes a binary that
-  needs `DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=SHIM` load the shim
-  itself.
-
-  **Packaging note:** the six wrappers need `drydock-macho-rewrite`, `drydock-macho-rewrite-compat.sh` and
-  `drydock-macho-rewrite-translate.sh` installed beside them. Anything that fetches
-  `patch_macho`, `change_dylib` or `add_version_min` by name now has three
-  more files to fetch. `compat/README.md` says what that means for
-  `mavericksforever.com/claude/install.sh`, which has not been told.
-- `cli/` — `drydock-macho-rewrite`, the multi-verb CLI built on `src/`.
-- `tests/` — everything `ctest` runs, plus the fixtures it reads.
-
-## Building
+To adapt Claude Code to load and run, [Mavericks Forever's installer](https://mavericksforever.com/claude/install.sh) performs a `patch_macho` + `add_version_min` + `change_dylib` sequence.
+Here's the Drydock equivalent:
 
 ```sh
-shipyard-cmake -S . -B build && shipyard-cmake --build build && shipyard-ctest --test-dir build
+cat >drydock-claude <<EOF
+fixups        set      classic
+version-min   set      10.9
+load-command  delete   uuid
+load-command  delete   codesig
+dylib         replace  /usr/lib/libSystem.B.dylib   @loader_path/../S.dylib
+dylib         replace  /usr/lib/libicucore.A.dylib  @loader_path/../I.dylib
+dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
+EOF
+drydock-macho-rewrite claude claude-mavericks < drydock-claude
+./claude-mavericks
 ```
 
-Needs [shipyard](https://github.com/Mavergreen/shipyard), the family's
-shared CMake helpers. Install its pkg once; among other things it puts
-`shipyard-cmake`, `shipyard-ctest` and `shipyard-cpack` in `/usr/local/bin`.
-**`shipyard-cmake` is the only cmake that configures this repo** — it supplies
-the prefix `find_package(MavericksShipyard)` resolves from, and
-`MavericksShipyardConfig.cmake` refuses any other cmake. Use `shipyard-ctest`
-and `shipyard-cpack` for the same reason: same rule, same commands.
+## drydock-macho-rewrite
 
-Presets pick the build mode:
+Writes a minimally modified copy of a Mach-O executable, given instructions on stdin.
 
-```sh
-shipyard-cmake --preset native   # on 10.9, with its own clang
-shipyard-cmake --preset cross    # on a modern host, against the pinned 10.9 SDK
-```
+Convenience wrappers are provided for:
 
-Every tool is gated by shipyard's compat guard, which fails the build if a
-binary declares a floor above 10.9 or links a symbol 10.9 lacks. That matters
-more here than elsewhere in the family: these are the tools that make *other*
-binaries loadable on 10.9, so they had better load there themselves.
+* `add_version_min`       ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/add_version_min.c))
+* `bake-mavericks-shim`   ([original](https://forums.macrumors.com/threads/tailscale-for-mavericks.2489200/?post=34788880#post-34788880))
+* `change_dylib`          ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/change_dylib.c))
+* `fix_macho`             ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/fix_macho.c))
+* `insert_dylib`          ([original](https://github.com/Wowfunhappy/insert_dylib))
+* `patch_macho`           ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/patch_macho.c))
+* `rename_segment`        ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/rename_segment.c))
+* `retag_swift_classes`   ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/retag_swift_classes.c))
 
-## Build equivalence
+### Script format
 
-There is no 10.9 runner in CI, so a cross-build has to be shown equivalent to a
-native one rather than assumed to be. Comparing the tool binaries is the wrong
-test — a 2014 clang and a 2026 one will never emit the same bytes.
-
-These tools are **deterministic file transformers**, so what they *produce* is
-the invariant worth pinning. `tests/characterize.sh` runs the whole pipeline
-over a committed fixture and compares the output digest against
-`tests/EXPECTED`; `ctest` runs it. Build natively and cross, and the digests
-must match.
-
-Two properties make that runnable in CI: the pipeline is deterministic (verified
-— same input, same flags, identical output), and a cross-built tool is x86_64
-with a 10.9 *floor*, which still runs on a modern host, so the runner can
-execute what it just built.
-
-Known gap: the committed fixture is a 10.9-built binary, so it has no chained
-fixups and does not exercise `patch_macho`'s conversion — the heaviest transform
-in the pipeline. A fixture from a modern toolchain should be added; 10.9's clang
-cannot emit one.
-
-## Why not install_name_tool
-
-On these binaries, 10.9's `install_name_tool` **refuses to open the file**:
-
-```
-install_name_tool: file not in an order that can be processed (dyld_info out of place)
-```
-
-It rebuilds `__LINKEDIT` and expects the 2013-era ordering of its pieces; modern
-linkers emit a different order, so it bails before touching anything.
-
-The distinction runs deeper than convenience. `install_name_tool` **rewrites the
-file**; these tools edit load commands within the header padding, and when new
-ones outgrow it they make room by lowering the image base (see "Header growth")
-rather than by rearranging `__LINKEDIT`.
-
-## drydock-macho-rewrite never writes its input
-
-`drydock-macho-rewrite FILE OUT` takes its statements on stdin, and it is the only way to
-modify a binary: `FILE` is opened read-only and never touched, and the result
-goes to `OUT`. (`verify`, `info`, `imports` and `exports` are read-only and take no `OUT`.) An `OUT` that names `FILE` — the same path, a
-symlink to it, or a hard link to it — is refused before any work is done.
-`drydock-macho-rewrite --capabilities`' `output positional=2 never-writes-input` line tells
-a caller to expect this shape rather than assume it.
-
-A successful write gives `OUT` `FILE`'s permission bits, `FILE`'s owner
-(best-effort — changing owner needs privilege), and every extended attribute
-`FILE` carries (quarantine and the like), then renames a temp file onto
-`OUT`: `OUT` ends up either its previous content or the whole new file, never
-a partial one, and a symlink at `OUT` is followed to its target rather than
-replaced.
-
-The six `compat/` wrappers still *look* like they edit in place, the way the
-retired C tools did: each writes to a temp file beside `FILE` and moves it
-over `FILE` once the run succeeds. A `FILE` with more than one hard link is
-refused up front instead — moving the temp over one name would leave every
-other name for that inode on the old content, and there is no atomic way to
-update every name for an inode at once.
-
-## Prove it or refuse
-
-A header grow makes room by lowering the image base, which invalidates every
-structure storing an offset *from* that base: the `LC_FUNCTION_STARTS` leading
-delta, `__TEXT,__init_offsets`, the export trie, `LC_DATA_IN_CODE`, and compact
-unwind. All five are re-based. Anything unrecognised — an unclassified load
-command, an unknown section type — is refused rather than grown past.
-
-Two independent checks back that up:
-
-- **`mg_verify`** proves every base-relative structure resolves to the same
-  address after the grow as before. A handler that never ran, ran twice, or ran
-  with the wrong delta all look the same to it: a moved address.
-- **`mg_plausible`** asks a different question of the finished file — do
-  initializers and unwind entries still land on an address `LC_FUNCTION_STARTS`
-  lists? It needs no "before" image, so it can be run on a file nothing kept a
-  snapshot of. It runs when there is something for it to re-check: the image
-  carries an `LC_FUNCTION_STARTS` **and** the run disturbed the base-relative
-  values those offsets are (`src/relations.h`'s `mrel_verify_applies` — one
-  expression, shared by every gate site). A grow is such a run, and
-  `mg_grow_header` runs this check on every image it grows before handing it
-  back.
-
-  What that leaves out is worth stating plainly, because it is easy to read a
-  guarantee into the paragraph above. An edit that fits the existing header
-  pad — a `dylib`, `rpath`, `load-command` or `segment` statement — disturbs
-  nothing this gate examines, so it is not refused for a property its input
-  already had. `fixups set classic` (and a `target 10.9` that expands to it)
-  disturbs the image base, so its run meets this gate, but this gate never
-  reads a rebased pointer, so it is not what protects that conversion. The
-  conversion checks itself: before handing back an image it reads its own
-  rebase and bind streams back out of it and compares each one, location and
-  value, with the chained fixup it came from, and refuses on any difference.
-  `patch_macho` and every other route to the conversion inherit that, so the
-  `patch_macho` → `add_version_min` → `change_dylib` chain is checked at its
-  first step. `tests/cli_test.sh`'s `badord` and `high8` cases fail without it.
-
-  What no caller can do is switch off a gate that applies: what decides is the
-  image and the operations, never an environment variable. `MACHO_NO_VERIFY=1`
-  is what remains of an older, caller-controlled opt-out, and on a `drydock-macho-rewrite`
-  verb run it no longer changes anything — the one gate that consults it is
-  reached only by a rewrite that grew the header, and `mg_grow_header` has
-  already run the same check on that image unconditionally.
-
-That gate exists because every defect ever found in this code has been a silent
-success: the tool reported OK and the binary died in the loader — or worse,
-didn't.
-
-## `drydock-macho-rewrite FILE OUT` — edit scripts
-
-`install.sh`-style porting runs several rewrites in sequence — strip a load
-command, then repoint a handful of dylibs — each of which used to be its own
-invocation and its own full write of the file. `drydock-macho-rewrite` takes a script
-naming every statement instead, applies them all to one in-memory copy, and
-writes once:
-
-```sh
-printf 'load-command delete uuid\n' | drydock-macho-rewrite FILE OUT   # statements on stdin
-drydock-macho-rewrite FILE OUT < script                                # a script that lives in a file
-```
-
-There is no second spelling. `drydock-macho-rewrite edit FILE OUT SCRIPT` was one until
-the `edit` verb was deleted; the shell's `<` does what its `SCRIPT` argument
-did, and the design's claim that one form is the only way to change a binary is
-worth more than saving a caller four characters.
-
-`FILE` is only read, and `OUT` must not be it — the same file twice, or a
-symlink or hard link to it, is refused before the script is even read. A
-successful run always leaves `OUT` there, even when no statement changed
-anything: `OUT` is the answer. To see what a script would do without disturbing
-anything, give it a scratch `OUT` — that is the same run, and the result is a
-file you can inspect rather than a prediction.
-
-It takes no flags at all — its two arguments are `FILE` and `OUT`, in that
-order. There is no `--` to end flag parsing, so a `FILE` whose real name starts
-with `--` is refused as an unknown flag; reference it through a path that
-doesn't, e.g. `./--name`. One leading dash is a file name there, as it was for
-every historical tool. Not for `OUT`, though: an `OUT` beginning with `-` is
-refused and says so, because `OUT` is a file this command creates, so a
-flag-looking one is a mistake rather than a name. A `FILE` named like one of the
-four read-only verbs (`verify`, `info`, `imports`, `exports`) is spelled
-`./verify`, for the same reason.
-
-**Nothing is written unless every statement succeeded.** The whole script is
-parsed before `FILE` is opened at all, so a typo in the last line of a long
-script costs nothing. Each statement then runs against the image in memory, in
-the order written; if any statement is refused, `OUT` is not written and `FILE`
-is exactly as it was found. The finished image is verified after the last
-statement and before the write — whenever the run disturbed anything that check
-covers, and with no opt-out when it applies — and only then written, once. A run
-that disturbed nothing it checks says so instead: `nothing this run disturbed is
-re-checked`.
-
-**Every run logs, on stderr, what it did — there is no quiet mode, so there
-is no flag.** A tool whose job is to make edits nobody can see afterwards
-should not have an option to say nothing about them, and anyone who wants
-silence has `2>/dev/null`, which needs no cooperation from `drydock-macho-rewrite`. The
-report is each statement as it starts; beneath it, indented, the follow-up
-work it did that its line does not name — for `dylib insert` and `dylib
-delete` the ordinal renumbering (the command inserted or removed and its
-ordinal, the old-to-new map, and how many nlist entries and
-`SET_DYLIB_ORDINAL` opcodes changed), for `fixups set classic` the
-conversion's figures (rebases and binds emitted, the bytes of opcodes and the
-bytes appended, the commands stripped, how far `__LINKEDIT` grew) or that an
-already-classic image passed through, for `swift-abi set legacy` how many
-class records it retagged or that there was nothing to retag, for
-`version-min set` the `LC_VERSION_MIN_MACOSX` it appended, for `import
-redirect` how many binds and symbol-table entries it moved and whether the bind
-stream was rewritten in place or grew (how many bytes, and the file offset it
-now lives at), and for `target
-10.9` its whole expansion, line by line, each with the finding that produced
-it — or that this binary already targets 10.9; then `FILE: verified` (or
-`FILE: nothing this run disturbed is re-checked`, when the run moved nothing the
-check looks at) and `OUT: written (N bytes)`.
-
-Stderr, not stdout, and that division is load-bearing: the operations' own
-progress lines go to stdout, where the compat wrappers' callers have always
-read them, so the report can be unconditional without changing a byte of what
-any wrapper prints.
-
-**On a fat file, each slice is accounted for too.** `slice NAME:` before an
-edited slice's statements and `slice NAME: verified` after; `slice NAME: not
-selected by arch; passed through unchanged`, `slice NAME: 32-bit; passed
-through unchanged` or `slice NAME: not a 64-bit Mach-O; passed through
-unchanged` for the rest — whether a slice is a 64-bit Mach-O is decided by its
-own bytes, never by the `cputype` its `fat_arch` entry declares; and, once the slices are laid out again,
-`slice NAME: moved from offset 0x… to 0x…` for any slice an earlier slice's
-growth moved.
-
-**The refusal line on stderr and the exit code are what tell you whether the
-file was written.** The operations still print their own progress to stdout
-as each statement runs — `FILE: updated (sizeofcmds=...)` and the like — but
-during an edit run such a line describes the image in memory, not the file. A
-run refused at a later statement, or at verification, writes nothing, even
-after printing it. On a fat file the refusal line names the slice too — or,
-for a statement's own miss (see `fatal-warnings`, below), says it matched
-nothing in any selected slice.
-
-**The write never touches `FILE`.** `drydock-macho-rewrite` takes `FILE OUT` and writes
-only `OUT`, by way of a temp file and a rename —
-see "drydock-macho-rewrite never writes its input", above, for what that guarantees. So
-whether `FILE` is writable is not a question it asks either; a read-only
-(`0444`) `FILE` in a writable directory is read just fine, and the run exits
-0.
-
-### File format
-
-One statement per line. Fields are whitespace-separated, with single- and
-double-quote grouping and backslash escapes — shell word rules. `#` begins a
-comment only at the start of an unquoted field, matching shell: `a#b` is the
-literal field `a#b`, not `a` followed by a comment. Blank lines are ignored.
-A CR (or any other control byte except tab) anywhere in a line is a parse
-error, not a silently-accepted character — so a script saved with CRLF line
-endings will not parse; use LF.
+One statement per line.
+Blank lines are ignored.
+Begin a comment with `#` at the start of an unquoted field.
+Fields are split like shell words:
+- Whitespace-separated
+- Single- and double-quote grouping
+- Backslash escapes
 
 ### Statements
 
@@ -309,48 +69,12 @@ rpath         insert    PATH
 import        redirect  SYMBOL FROM-LIB TO-LIB
 ```
 
-`import redirect` makes every bind of `SYMBOL` that names the library
-`FROM-LIB` name `TO-LIB` instead — in the bind stream, the lazy-bind stream and
-the symbol table — and changes nothing else. Both libraries are install names
-as the load commands spell them, and `TO-LIB` must already be loaded, typically
-by a `dylib append` earlier in the same script. A bind of the same symbol from
-any other library is left alone. The lazy stream is patched in place, because
-each lazy program is addressed by its offset; a lazy bind whose one-byte ordinal
-opcode cannot hold `TO-LIB`'s ordinal (above 15), or whose ordinal opcode also
-serves a bind that is not moving, is refused. The bind stream is rewritten in
-place when that fits, and otherwise moves to the end of `__LINKEDIT`, which
-grows to cover it, and the report says so — no directive is needed, because
-nothing mapped moves. The weak-bind table names no library and is never
-changed; a weak bind of `SYMBOL` is reported as a warning. Before the image is
-handed on, both streams are read back and every bind compared with what it
-was: any bind that is not what the redirect meant is a refusal. A chained-fixups
-image is refused; put `fixups set classic` first.
-
-These statements are the whole mutating surface. `drydock-macho-rewrite` used to carry a
-second spelling of them — a CLI verb per operation, `drydock-macho-rewrite dylib FILE OUT
--replace A B` beside the line `dylib replace A B` — and the two had different
-semantics: a verb applied all its operations in one pass against the original
-image, while statements apply in sequence, each seeing what the one before
-left. Maintaining both is what the verbs cost, so they are gone.
-
-`grow` went with them. It enlarged the header pad by an exact byte count, which
-no statement expresses. A `dylib`, `rpath` or `version-min set` statement whose
-load commands do not fit grows the pad as a side effect instead — see "Header
-growth", below — which is a different thing from naming a count.
-
-There is one more line, `target 10.9`, which is neither of those: see "The
-`target` statement", below.
-
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
 `dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal 2.
 `rpath insert` works the same way, so dyld searches B before A.
 
 ### Directives
-
-Two, and each must precede every operation in the script — a directive
-after *any* operation, not only the one it would have governed, is a parse
-error:
 
 ```
 arch NAME           apply the script only to the slice named NAME (lipo's
@@ -360,39 +84,24 @@ fatal-warnings      an operation that matched nothing refuses the whole run
                     (exit 1, nothing written) instead of only being reported
 ```
 
-### Header growth
+If used, these must appear before any other operations.
 
-When a `dylib`, `rpath` or `version-min set` statement's load commands do not
-fit in the header pad, the pad is grown: the image base is lowered into
-`__PAGEZERO` by whole pages and the file data after the load commands moves up
-with it, so every address stays where it was. No directive asks for this.
-The input is never written, so a bad result costs an output file, and the grow
-checks itself: every base-relative value it re-bases is read before and after
-and must resolve to the same address, or the run is refused. Every grow is
-announced on stderr, naming the input:
+`fatal-warnings` covers the statements that can match nothing:
 
-```
-FILE: grew the header pad by 4096 bytes (40 -> 4136 available); image base 0x100000000 -> 0xfffff000
-```
+- `load-command delete` (no command of that kind)
+- `dylib replace/delete/reexport` and `rpath replace/delete` (no command naming that path)
+- `segment rename` (no segment of that name)
+- `import redirect` (no bind of that symbol names that library). 
 
-It is refused, and nothing is written, when:
+On a fat file, a statement has matched if it matched in any selected slice.
 
-- the image is not a 64-bit PIE `MH_EXECUTE` — a dylib or bundle has no
-  `__PAGEZERO` to lower the base into, and a non-PIE executable has absolute
-  addresses to fix;
-- the image is arm64 — it maps 16 KB pages, and the grow lowers the base by
-  4 KB pages;
-- the image still has chained fixups — put `fixups set classic` first;
-- a load command or section type is one the grow does not know how to re-base
-  — unknown means unsafe;
-- no section has file data, or the first section lies past the end of the
-  file — there is then no pad boundary to grow from;
-- the check after the grow finds any value that moved.
-
-`segment rename` and `load-command delete` never grow: neither adds bytes to
-the load commands.
+XXX why do we have `fatal-warnings`? still used for anything? does it need to exist, or can we just always error out in such cases?
 
 ### The `target` statement
+
+XXX why isn't this documented under Statements?
+
+XXX this seems really weird and non-orthogonal -- what motivated adding it, and is that motivation still valid?
 
 ```
 target        10.9
@@ -464,137 +173,12 @@ The rest of the rules:
   makes the explicit one redundant, and `fatal-warnings` will flag it.** That
   is right, and is documented rather than special-cased.
 
-### Worked example
+## Limitations
 
-What `install.sh` does today as three tools and three full writes of a ~200MB
-binary:
+- 32-bit input is currently refused.
+- 64-bit fat containers (`fat_arch_64`) are currently refused.
 
-```sh
-patch_macho     "$REAL" "$T"
-add_version_min "$T"
-change_dylib    "$T" -strip-lc uuid -strip-lc codesig \
-    -change "/usr/lib/libSystem.B.dylib"  "@loader_path/../S.dylib" \
-    -change "/usr/lib/libicucore.A.dylib" "@loader_path/../I.dylib" \
-    -change "/usr/lib/libc++.1.dylib"     "@loader_path/../c++.1.dylib"
-```
+## Other related tools
 
-becomes one script, `claude.edits`:
-
-```
-# Claude Code -> 10.9
-fixups        set      classic
-version-min   set      10.9
-load-command  delete   uuid
-load-command  delete   codesig
-dylib         replace  /usr/lib/libSystem.B.dylib   @loader_path/../S.dylib
-dylib         replace  /usr/lib/libicucore.A.dylib  @loader_path/../I.dylib
-dylib         replace  /usr/lib/libc++.1.dylib      @loader_path/../c++.1.dylib
-```
-
-and one invocation:
-
-```sh
-drydock-macho-rewrite "$REAL" "$T" < claude.edits
-```
-
-### Limits
-
-- **A fat (universal) file is edited slice by slice, and kept whole.** With
-  no `arch` directive every 64-bit slice is edited and everything else passes
-  through; with `arch` directives, exactly the named slices. Whether a slice is
-  a 64-bit Mach-O is read from the slice's own bytes, not from the `cputype`
-  its `fat_arch` entry declares — a container where the two disagree is
-  malformed, and the bytes are the thing being edited. Naming a slice the file
-  lacks, or one that is not a 64-bit Mach-O, is refused. Nothing ever drops a
-  slice —
-  thin a file with `lipo` if you want one. A 64-bit fat container
-  (`fat_arch_64`) is refused.
-- **Only `dylib`, `rpath` and `version-min set` grow the header pad** — the
-  statements whose load commands can outgrow it — and only on an x86_64 PIE
-  executable. `fixups set classic` never needs to: it removes whichever of
-  `LC_DYLD_EXPORTS_TRIE`, `LC_DYLD_CHAINED_FIXUPS` and `LC_BUILD_VERSION` are
-  present before adding its 48-byte `LC_DYLD_INFO_ONLY`, so on a modern
-  chained binary, which carries all three, it frees at least 56 bytes before
-  using 48. On a chained image nothing can grow until `fixups set classic`
-  has run; put it first.
-- **`fatal-warnings` covers the statements that can match nothing:**
-  `load-command delete` (no command of that kind), `dylib replace/delete/
-  reexport` and `rpath replace/delete` (no command naming that path), and
-  `segment rename` (no segment of that name), and `import redirect` (no bind
-  of that symbol names that library). `append` and `insert` always
-  act, and the three `set` statements treat "already so" as success, so none
-  of those can miss. Neither can `target`, nor anything its expansion derived
-  (see "The `target` statement", above). On a fat file, a statement has
-  matched if it matched in any selected slice.
-- **`MACHO_NO_VERIFY` changes nothing about a script run.** The check that
-  runs after the *last* statement, before the single write, has never consulted
-  it and still does not. A `dylib`/`rpath`/`load-command` statement also runs
-  the same per-step plausibility check the shared rewriter runs (see
-  "Prove it or refuse" above); that per-step check is the one place in the
-  tools that reads the variable, and it now applies only to a step that grew
-  the header — which `mg_grow_header` has already checked, unconditionally, on
-  the grown image. What decides whether a check runs is the image and the
-  operations, never the caller: a run that disturbed nothing it examines skips
-  it, and nothing a caller can set will suppress one that applies.
-
-## Read-only queries
-
-```sh
-drydock-macho-rewrite info FILE      # load commands, library ordinals, header pad
-drydock-macho-rewrite verify FILE    # the plausibility check, on its own
-drydock-macho-rewrite imports FILE   # TSV, one row per bind
-drydock-macho-rewrite exports FILE   # TSV, one row per exported symbol
-```
-
-`imports` and `exports` print a header row, and a caller reads their columns by
-name: columns may be appended, never reordered, renamed or removed. A fat file
-is reported slice by slice (`arch` is `-` for a thin one), and a field that
-would carry a tab or a newline refuses the whole report.
-
-- **`imports`**: `arch`, `ordinal`, `kind`, `install_name`, `symbol`, `weak`,
-  `stream`. `stream` — `bind`, `weak` or `lazy` — says which of the three
-  `LC_DYLD_INFO` streams the bind is in; a weak-bind row names no library.
-  A chained-fixups image is refused; convert it with `fixups set classic`.
-- **`exports`**: `arch`, `symbol`, `kind` (`regular`, `thread-local`,
-  `absolute`, `reexport`, `stub-resolver`), `weak` (a weak definition) and
-  `source`. The symbols come from the export trie — `LC_DYLD_INFO`'s or
-  `LC_DYLD_EXPORTS_TRIE`'s — which is what dyld resolves an import against; an
-  image with no trie at all is read from its symbol table instead (every
-  external symbol that is not undefined), and `source` says which, `trie` or
-  `symtab`.
-
-## Notes
-
-- Not yet a drop-in replacement for `insert_dylib` on 32-bit input, refused
-  deliberately. See `docs/prior-art.md`.
-- This repo is its **own upstream**: the tools are not a port of somebody else's
-  project. `UPSTREAM_VERSION` is still the family's file, but the version is
-  semver `X.Y.Z` with no `-mavericks.N` suffix, released by pushing the tag
-  `vX.Y.Z` — there is no external thing to repackage, so there is no
-  repackaging axis to carry. No Renovate customManager
-  watches it either, because nothing external releases it. See `INGREDIENTS.md`.
-
-## Comments
-
-Prefer a test to a comment: a test whose failure message says the sentence you
-were about to write keeps saying it, and cannot go stale. A comment that
-survives cites a reason — `platform:` for a fact about the platform or a tool,
-or `spec:` for where a decision lives. **`spec:` must point at something
-durable in this tree** — a test file and case name, a README section, a source
-file — **never into `docs/`**, and never at a superpowers spec or plan by
-filename, by one of its numbered decisions or tasks, or by description. Those
-are deleted once they are implemented, so a pointer into one dangles; put the
-reason itself in a test, the commit message, a README or the comment instead.
-
-## Provenance
-
-Extracted with full history from
-[Wowfunhappy/Mavericks-Porting-Resources](https://github.com/Wowfunhappy/Mavericks-Porting-Resources).
-`patch_macho` and `fix_macho` are substantially Wowfunhappy's; header growth, the
-re-basers, ordinal renumbering and verification are Amitai Schleier's. The commit
-log is the accurate record. Details, including what was extracted and from where:
-[`PROVENANCE.md`](PROVENANCE.md).
-
-Four commits in that history also touched files that stayed behind, so their
-messages mention unrelated work. The changes are correct; only the messages are
-wider than their diffs.
+- `install_name_tool` from the Mavericks Command Line Tools
+- `llvm-install-name-tool` from [clang](https://github.com/Mavergreen/clang)
