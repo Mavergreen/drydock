@@ -75,9 +75,11 @@
 
 /* rewrite.h is here for MR_REFUSED/MR_FAIL alone -- the two typedefs below
  * pin them equal to this file's own exit codes, and me_run hands them back.
- * declassify.h, segname.h, swift_retag.h, version_min.h and relations.h left
- * with the seven mutating verbs that called into them; src/edit.c reaches the
- * same work now, through the statements. */
+ * declassify.h, segname.h, version_min.h and relations.h left with the seven
+ * mutating verbs that called into them; src/edit.c reaches the same work now,
+ * through the statements. swift_retag.h came back for cmd_info alone, below:
+ * mswift_stable_tagged_image is the one fact from src/edit.c's own retag
+ * statement that info can now report without rewriting anything. */
 #include "image.h"
 #include "ordinals.h"
 #include "imports.h"
@@ -89,6 +91,7 @@
 #include "mach_compat.h"
 #include "script.h"
 #include "edit.h"
+#include "swift_retag.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
@@ -446,6 +449,22 @@ static int cmd_info(const char *path, int thin_only) {
            path, im.size, im.hdr->ncmds, im.hdr->filetype);
     struct info_ctx ctx = { 0, 0 };
     mi_each_lc(&im, info_cb, &ctx);
+
+    /* The fifth of target 10.9's detections, and the only one with no other
+     * way to ask: mswift_stable_tagged_image (src/swift_retag.h) had exactly
+     * one caller, me_expand_10_9. It returns a COUNT of tagged class records,
+     * so >0 is "tagged"; a negative is the walk refusing the image, which is
+     * said rather than rounded to "no". Flush left, beside `header pad:`,
+     * because it describes the image and not a load command. */
+    {
+        int tagged = mswift_stable_tagged_image(&im);
+        if (tagged < 0)
+            printf("swift-abi: unknown (class records could not be walked)\n");
+        else if (tagged > 0)
+            printf("swift-abi: class records carry the stable-ABI tag\n");
+        else
+            printf("swift-abi: no class records carry the stable-ABI tag\n");
+    }
 
     uint32_t first_sect_off = mg_first_sect_off(im.buf, im.size);
     if (first_sect_off == MG_NO_SECTION_DATA) {

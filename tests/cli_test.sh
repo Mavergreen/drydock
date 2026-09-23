@@ -3250,6 +3250,43 @@ cmp -s "$T/nwi_noop" "$T/nwi_noop_out" \
 # with real Swift class records to retag, not fixture.macho's usual zero.
 "$CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c"
 "$T/mkswift" make "$T/swift_fixture"
+
+# ---- info: the Swift stable-ABI tag ---------------------------------------
+# The last of target 10.9's five detections to become askable.
+# mswift_stable_tagged_image was reachable only from me_expand_10_9, so this
+# fact had no query at all. Printed in EVERY state, so absence is never
+# ambiguous with "info forgot to look". $T/signing_probe (built above, plain
+# and non-Swift) stands in for the brief's $FIXTURE, which this suite has no
+# variable of that name for.
+"$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null | grep -q '^swift-abi: ' \
+    && ok "info: a swift-abi line is always printed" \
+    || bad "info swift-abi" "no swift-abi line on the plain fixture"
+
+"$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null \
+    | grep -qxF 'swift-abi: no class records carry the stable-ABI tag' \
+    && ok "info: an untagged image says so" \
+    || bad "info swift-abi" "wrong wording: $("$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null | grep '^swift-abi:')"
+
+# The tagged half, on swift_fixture itself, just built above and not yet
+# mutated by anything below. No SKIP branch: this build always has the
+# fixture, unlike wrapper_test.sh's LC_LAZY_LOAD_DYLIB case.
+"$DRYDOCK_MACHO_REWRITE" info "$T/swift_fixture" 2>/dev/null \
+    | grep -qxF 'swift-abi: class records carry the stable-ABI tag' \
+    && ok "info: a tagged image says so" \
+    || bad "info swift-abi tagged" "wrong wording: $("$DRYDOCK_MACHO_REWRITE" info "$T/swift_fixture" 2>/dev/null | grep '^swift-abi:')"
+
+# And the line follows the statement: retag, then ask again. The retag's own
+# exit status is checked before trusting the second info call -- a silent
+# failure here would leave swift_retagged still tagged, and the assertion
+# below would then be testing nothing.
+cp "$T/swift_fixture" "$T/swift_retagged"
+mts "$T/swift_retagged" "swift-abi set legacy" >/dev/null 2>&1 \
+    || bad "info swift-abi retag" "swift-abi set legacy failed on swift_retagged"
+"$DRYDOCK_MACHO_REWRITE" info "$T/swift_retagged" 2>/dev/null \
+    | grep -qxF 'swift-abi: no class records carry the stable-ABI tag' \
+    && ok "info: the tag is gone after swift-abi set legacy" \
+    || bad "info swift-abi after retag" "still reports tagged records"
+
 tags_before=$("$T/mkswift" tags "$T/swift_fixture")
 [ "$tags_before" = "class 2 0x1000009c2
 meta 2 0x1000009c2" ] \
