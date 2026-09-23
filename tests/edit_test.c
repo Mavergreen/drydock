@@ -1454,10 +1454,11 @@ static void test_the_skip_line_names_what_the_run_disturbed(void) {
 
 static void test_minos_set_rewrites_the_declared_minimum_in_place(void) {
     fresh_dir();
-    char path[512], o1[512], o2[512], o3[512], o4[512];
+    char path[512], o1[512], o2[512], o3[512], o4[512], o5[512];
     in_dir(path, sizeof path, "img");
     in_dir(o1, sizeof o1, "o1"); in_dir(o2, sizeof o2, "o2");
     in_dir(o3, sizeof o3, "o3"); in_dir(o4, sizeof o4, "o4");
+    in_dir(o5, sizeof o5, "o5");
 
     uint8_t *img = build_image(VMIN_1012);
     write_file(path, img, IMG_SIZE, 0755);
@@ -1477,6 +1478,17 @@ static void test_minos_set_rewrites_the_declared_minimum_in_place(void) {
     }
     CHECK(strstr(g_log, "  minos set 10.9\n      version-min 10.12 -> 10.9\n") != NULL,
           "minos set: the report says old -> new beneath the statement (log: %s)", g_log);
+    rc = run(o1, o5, "minos set 10.9\n");
+    CHECK(rc == 0 && strstr(g_log, "      version-min 10.9 -> 10.9\n") != NULL,
+          "minos set: run again on its own output, an equal value has matched (got %d; log: %s)",
+          rc, g_log);
+    {
+        size_t l1 = 0, l5 = 0;
+        uint8_t *b1 = read_file(o1, &l1), *b5 = read_file(o5, &l5);
+        CHECK(b1 && b5 && l1 == l5 && memcmp(b1, b5, l1) == 0,
+              "minos set: run again on its own output, the file is unchanged");
+        free(b1); free(b5);
+    }
     rc = run(path, o2, "minos set 10.13\n");
     CHECK(rc == 0 && lc_word(o2, LC_VERSION_MIN_MACOSX, 2) == 0x000A0D00,
           "minos set: an explicit statement may raise (got %d; log: %s)", rc, g_log);
@@ -1537,6 +1549,25 @@ static void test_minos_set_with_nothing_declared_is_a_miss(void) {
     rm_dir();
 }
 
+static void test_target_with_both_commands_lets_version_min_decide(void) {
+    fresh_dir();
+    char path[512], out[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(out, sizeof out, "img.out");
+    uint8_t *img = build_image(VMIN_1012 | BUILDVER_12);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    int rc = run(path, out, "target 10.9\n");
+    CHECK(rc == 0, "target, both commands: runs (got %d; log: %s)", rc, g_log);
+    CHECK(strstr(g_log, "    minimum: version-min 10.12 -> 10.9; sdk 10.13 untouched\n") != NULL,
+          "target, both commands: the version-min decides the minimum line (log: %s)", g_log);
+    CHECK(count_lc(out, LC_BUILD_VERSION, NULL) == 0 &&
+          lc_word(out, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
+          lc_word(out, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
+          "target, both commands: build-version deleted, version-min 10.9 with sdk 10.13 kept");
+    rm_dir();
+}
+
 static void test_fat_minos_set_matches_in_any_slice(void) {
     fresh_dir();
     char path[512], out[512], s1[512];
@@ -1547,9 +1578,11 @@ static void test_fat_minos_set_matches_in_any_slice(void) {
     int rc = run(path, out, "minos set 10.9\n");
     CHECK(rc == 0, "fat, minos set: a declaration in a later slice is a match (got %d; log: %s)",
           rc, g_log);
-    slice_to_file(out, 1, s1);
-    CHECK(lc_word(s1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
-          "fat, minos set: the second slice was lowered");
+    if (rc == 0) {
+        slice_to_file(out, 1, s1);
+        CHECK(lc_word(s1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
+              "fat, minos set: the second slice was lowered");
+    }
     write_fat(path, 0, 0, 0);
     snap before = take(path);
     rc = run(path, out, "minos set 10.9\n");
@@ -1588,6 +1621,7 @@ int main(void) {
     test_the_skip_line_names_what_the_run_disturbed();
     test_minos_set_rewrites_the_declared_minimum_in_place();
     test_minos_set_with_nothing_declared_is_a_miss();
+    test_target_with_both_commands_lets_version_min_decide();
     test_fat_minos_set_matches_in_any_slice();
 
     printf("edit_test: %d failure(s)\n", fails);

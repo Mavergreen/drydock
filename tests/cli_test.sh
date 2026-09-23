@@ -4655,6 +4655,31 @@ tgt_mss=$(tgt_at "$T/tgt.err" "^    minos set 10.7")
     && ok "target: ... in the order delete, append, then minos set" \
     || bad "target (build-version 10.7)" "order '$tgt_del' '$tgt_vms' '$tgt_mss': $(cat "$T/tgt.err")"
 
+for tgt_bvlow in 10.9 10.9.5; do
+    build_main "$T/tgt_bvlow"
+    "$T/mkminos" bv "$T/tgt_bvlow" 1 "$tgt_bvlow" 10.10 || bad "target: fixture setup" "mkminos bv $tgt_bvlow failed"
+    tgt_run "$T/tgt_bvlow" "$T/tgt_bvlow.out" || bad "target (build-version $tgt_bvlow)" "$(cat "$T/tgt.err")"
+    case $tgt_bvlow in
+        10.9) tgt_want=10.9.0 ;;
+        *)    tgt_want=$tgt_bvlow
+              grep -qxF "    minos set $tgt_bvlow  (LC_BUILD_VERSION's minimum, carried over)" "$T/tgt.err" \
+                  && ok "target: build-version $tgt_bvlow is carried over by a derived minos set" \
+                  || bad "target (build-version $tgt_bvlow)" "no minos set line: $(cat "$T/tgt.err")" ;;
+    esac
+    if [ "$tgt_bvlow" = 10.9 ]; then
+        if grep -q "^    version-min set 10.9" "$T/tgt.err"; then
+            grep -q "^    minos set" "$T/tgt.err" \
+                && bad "target (build-version 10.9)" "derived a minos set: $(cat "$T/tgt.err")" \
+                || ok "target: build-version 10.9.0 derives no minos set"
+        else
+            bad "target (build-version 10.9)" "no version-min set line: $(cat "$T/tgt.err")"
+        fi
+    fi
+    [ "$("$T/mkminos" show "$T/tgt_bvlow.out")" = "version-min version=$tgt_want sdk=10.10.0" ] \
+        && ok "target: ... and the written image declares $tgt_want" \
+        || bad "target (build-version $tgt_bvlow)" "$("$T/mkminos" show "$T/tgt_bvlow.out" 2>&1)"
+done
+
 build_main "$T/tgt_nomin"
 "$T/mkminos" none "$T/tgt_nomin" || bad "target: fixture setup" "mkminos none failed"
 tgt_run "$T/tgt_nomin" "$T/tgt_nomin.out" || bad "target (none declared)" "$(cat "$T/tgt.err")"
