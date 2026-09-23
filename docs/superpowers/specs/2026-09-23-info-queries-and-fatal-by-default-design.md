@@ -24,8 +24,8 @@ any other way: `info` prints segnames and `nsects` but never section names
 (`src/swift_retag.h:116`) is called only from `me_expand_10_9`, so the Swift
 tag cannot be asked at all. A statement exists because a query is missing.
 
-**`fatal-warnings` is the wrong default.** It is opt-in only to preserve
-`fix_macho` and `change_dylib` exiting 0 when an operation matched nothing.
+**`fatal-warnings` is the wrong default.** It is opt-in only to preserve three
+wrappers' upstreams exiting 0 when an operation matched nothing.
 That default costs the tool's own interface its integrity, and it shows:
 `compat/rename_segment.sh:227` scrapes stderr for the exact string
 `drydock-macho-rewrite: segment <OLD> matched nothing` to recover a verdict the
@@ -131,10 +131,20 @@ removed from the same slot.
 
 Consequences:
 
-- `change_dylib` and `fix_macho` emit `allow-unmatched` in their translations
-  (`compat/translate.sh`). Upstream fidelity is preserved exactly, so the
+- **Three** wrappers emit `allow-unmatched` in their translations
+  (`compat/translate.sh`): `change_dylib` (`mt_tr_change_dylib`, line 501),
+  `fix_macho` (`mt_tr_fix_macho`, line 615) and `insert_dylib`
+  (`mt_tr_insert_dylib`, line 806/811) — the last because an explicit
+  `--strip-codesig` emits `load-command delete codesig`, which misses on a
+  binary carrying no signature. Upstream fidelity is preserved exactly, so the
   shipped `mavericksforever.com/claude/install.sh` is unaffected, and the
   divergence stays visible in the wrapper source rather than being adopted.
+
+  The other four need nothing, because every statement they emit is one that
+  cannot miss: `patch_macho` emits only `fixups set classic`,
+  `add_version_min` only `version-min set 10.9`, `retag_swift_classes` only
+  `swift-abi set legacy`, and `rename_segment` emits `segment rename` and
+  *wants* the refusal — that is the point of the change.
 - **`rename_segment.sh:227` deletes its stderr grep.** Zero renames is now a
   nonzero exit; the wrapper reads the exit code and maps it to its exit 2. This
   is the concrete integrity win — a wrapper stops depending on the wording of a
