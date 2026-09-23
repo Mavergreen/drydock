@@ -144,10 +144,8 @@ for why they would be rare -- and one decided on purpose:
     a dangling symlink at `OUT` is refused as well, where the C tool created
     the link's target, and an `OUT` that exists but is not a regular file (a
     directory, a fifo, a device) is refused where the C tool's `open()` either
-    wrote to it or failed with `EISDIR`. Those `OUT` pre-checks also answer
-    BEFORE the input is diagnosed, so when IN **and** OUT are both bad it is now
-    OUT that is named — the same shape as `retag_swift_classes`' pre-check
-    below, and exit 1 on both sides either way.
+    wrote to it or failed with `EISDIR`. With a bad `IN`, only a non-regular
+    `OUT` is named ahead of it.
     The "`patch_macho`" section below names the test for each.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
@@ -326,13 +324,10 @@ different difference than it did then.
 
   * **ONE emitted command — 459 rows — stdout is byte-identical.** Both sides
     one pass over the same file with the same ops — the C tool's
-    `mr_apply_file` then, one `mr_apply_image` call under `me_run` now. Two lines
-    of `drydock-macho-rewrite`'s are reshaped to get there, both consequences of the verb
-    writing a temp instead of `FILE`: `mw_run_to_tmp` drops its `Wrote <temp>
-    (N bytes)` line, which names a file no caller has heard of, and the wrapper
-    prints `Updated FILE (N bytes)` itself after the install, only when the
-    bytes changed — the same line `mr_apply_file` used to print, under the same
-    condition, naming the same path.
+    `mr_apply_file` then, one `mr_apply_image` call under `me_run` now.
+    `drydock-macho-rewrite`'s stdout names no file, and the wrapper prints
+    `Updated FILE (N bytes)` itself after the install, only when the bytes
+    changed, as `mr_apply_file` did.
   * **MORE THAN ONE FAMILY — 669 rows — stdout DIFFERS, unavoidably.** Each
     statement of the one script is its own pass over the image, so a
     `header pad …` / `updated …` pair is printed PER STATEMENT where one
@@ -547,8 +542,7 @@ wrapper's whole stdout against a one-statement `drydock-macho-rewrite FILE OUT`'
 
 `fix_macho` rewrote the file it was given; `drydock-macho-rewrite` does not. So the wrapper takes the shared install path — `mw_prepare` names a temp
 beside the file `FILE` really is, `mw_retranslate` re-emits the command with
-that temp as its output, `mw_run_to_tmp` runs it and drops the `Wrote <temp>`
-line no C tool ever printed, and `mw_finish` `mv`s the temp over the target or
+that temp as its output, `mw_run_to_tmp` runs it, and `mw_finish` `mv`s the temp over the target or
 discards it when the bytes did not change. `drydock-macho-rewrite-compat.sh`'s "the install
 path" section has the reasoning for each step. `drydock-macho-rewrite` takes that temp
 as its `OUT` positional whether the script is one statement or several, so both
@@ -617,8 +611,9 @@ differs is everything around it. "Held by" names assertions in
 | **an unwritable existing `OUT` fails**, as `open(O_WRONLY)` did | "patch_macho: an unwritable existing OUT fails, as open(O_WRONLY) did", "patch_macho: an unwritable OUT is refused (1), untouched, even when IN converts" |
 | **an `OUT` that is a directory** is refused in the C tool's own words, `create output: Is a directory`. `mv` alone would move the temp into it and exit 0 | "patch_macho: an OUT that is a directory is refused (1), as open() did" |
 | **a dangling symlink at `OUT` is refused** (1), where the C tool created the link's target | "patch_macho: a dangling symlink as OUT is refused (1), and its target is not created" |
-| **with `IN` and `OUT` both bad, `OUT` is named**. The `OUT` checks run before the rewrite because they decide where it writes; the C tool converted first and opened `OUT` last. Exit 1 either way | "patch_macho: with IN and OUT both bad, OUT's refusal is the one named" |
-| **stdout**: `md_declassify`'s own lines pass through, and `Wrote OUT (N bytes)` is printed only on the converting path, as `patch_macho` printed it. A pass-through, recognised by `md_declassify`'s `Already patched` line, names no file | "patch_macho: the pass-through prints no 'Wrote ...' line", "patch_macho: ... and its last stdout line names OUT and OUT's size", "patch_macho: ... and exactly one 'Wrote ' line, so drydock-macho-rewrite's cannot leak", "patch_macho: ... and md_declassify's own lines still come through"; `tests/known-callers.sh`, "install.sh: patch_macho passes an already-converted binary through unchanged" |
+| **an `OUT` that is another non-regular file** (a fifo, a device) is refused (1) as `OUT is not a regular file`, where the C tool's `open()` would have written to it | "patch_macho: a fifo as OUT is refused (1), and left a fifo" |
+| **with a bad `IN` and an `OUT` that is a directory or other non-regular file, `OUT` is named**, where the C tool named `IN`. An unwritable, hard-linked or dangling `OUT` still yields to `IN`'s diagnosis. Exit 1 either way | "patch_macho: with a bad IN and a directory as OUT, the directory is the one named", "patch_macho: with a bad IN and an unwritable OUT, IN is the one named" |
+| **stdout**: `md_declassify`'s own lines pass through, and `Wrote OUT (N bytes)` is printed only on the converting path, as `patch_macho` printed it. A pass-through, recognised by `md_declassify`'s `Already patched` line, names no file | "patch_macho: the pass-through prints no 'Wrote ...' line", "patch_macho: ... and its last stdout line names OUT and OUT's size", "patch_macho: ... and exactly one 'Wrote ' line", "patch_macho: ... and md_declassify's own lines still come through"; `tests/known-callers.sh`, "install.sh: patch_macho passes an already-converted binary through unchanged" |
 
 ## `rename_segment`: exit codes
 

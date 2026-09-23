@@ -805,17 +805,22 @@ run patch_macho f adir
     || bad "patch_macho directory OUT" "exit $rc, stderr: $(cat "$T/err")"
 rm -rf "$T/adir"
 
-# With IN and OUT both bad, OUT is named: the OUT checks decide where the
-# rewrite writes, so they run first. The C tool converted first and opened
-# OUT last. Exit 1 either way.
 printf 'not a mach-o at all\n' > "$T/nm"
 rm -rf "$T/adir"; mkdir "$T/adir"
 run patch_macho nm adir
 [ "$rc" -eq 1 ] && grep -qxF 'create output: Is a directory' "$T/err" \
     && ! grep -q 'not a readable 64-bit Mach-O' "$T/err" \
-    && ok "patch_macho: with IN and OUT both bad, OUT's refusal is the one named" \
+    && ok "patch_macho: with a bad IN and a directory as OUT, the directory is the one named" \
     || bad "patch_macho both bad" "exit $rc, stderr: $(cat "$T/err")"
-rm -rf "$T/adir" "$T/nm"
+rm -rf "$T/adir"
+
+rm -f "$T/pmro"; : > "$T/pmro"; chmod 444 "$T/pmro"
+run patch_macho nm pmro
+[ "$rc" -eq 1 ] && grep -q 'not a readable 64-bit Mach-O' "$T/err" \
+    && ! grep -q 'Permission denied' "$T/err" \
+    && ok "patch_macho: with a bad IN and an unwritable OUT, IN is the one named" \
+    || bad "patch_macho bad IN, unwritable OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/pmro" "$T/nm"
 
 # A dangling symlink at OUT is refused; the C tool created the link's target.
 fresh
@@ -825,6 +830,17 @@ run patch_macho f pmdangle
     && ok "patch_macho: a dangling symlink as OUT is refused (1), and its target is not created" \
     || bad "patch_macho dangling OUT" "exit $rc, stderr: $(cat "$T/err")"
 rm -f "$T/pmdangle" "$T/pmnowhere"
+
+# The background writer lets a regression that reads the fifo finish, not hang.
+fresh
+rm -f "$T/pmfifo"; mkfifo "$T/pmfifo"
+( : > "$T/pmfifo" ) 2>/dev/null & pm_w=$!
+run patch_macho f pmfifo
+kill "$pm_w" 2>/dev/null || true; wait "$pm_w" 2>/dev/null || true
+[ "$rc" -eq 1 ] && [ -p "$T/pmfifo" ] && grep -qF 'pmfifo is not a regular file' "$T/err" \
+    && ok "patch_macho: a fifo as OUT is refused (1), and left a fifo" \
+    || bad "patch_macho fifo OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/pmfifo"
 
 # 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
 #     the C tool's open(). `drydock-macho-rewrite declassify` refuses such an OUT now
@@ -876,11 +892,7 @@ rm -rf "$T/pmdir"
 # only what the pass-through cannot reach.
 
 # A. THE CONVERTING PATH'S STDOUT. `Wrote OUT (N bytes)` is patch_macho's own
-#    closing line, printed by the wrapper because drydock-macho-rewrite's names the temp; N is
-#    OUT's size. Asserted as the LAST line, as EXACTLY ONE `Wrote ` line (so
-#    mw_run_to_tmp's filter cannot leak `Wrote <temp> (...)` and the wrapper's
-#    own line cannot double), and alongside md_declassify's own progress lines,
-#    which must still come through untouched.
+#    closing line, printed by the wrapper: drydock-macho-rewrite's stdout names no file.
 mkchained_fixture "$T/cf"
 run patch_macho cf cfout
 cf_n=$(wc -c < "$T/cfout" 2>/dev/null | tr -d ' ')
@@ -891,7 +903,7 @@ cf_n=$(wc -c < "$T/cfout" 2>/dev/null | tr -d ' ')
     && ok "patch_macho: ... and its last stdout line names OUT and OUT's size" \
     || bad "patch_macho converting stdout" "last line is [$(sed -n '$p' "$T/out")], want [Wrote cfout ($cf_n bytes)]"
 [ "$(grep -c '^Wrote ' "$T/out" | tr -d ' ')" = 1 ] \
-    && ok "patch_macho: ... and exactly one 'Wrote ' line, so drydock-macho-rewrite's cannot leak" \
+    && ok "patch_macho: ... and exactly one 'Wrote ' line" \
     || bad "patch_macho converting stdout" "$(grep -c '^Wrote ' "$T/out") 'Wrote ' lines: $(cat "$T/out")"
 grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T/out" \
     && ok "patch_macho: ... and md_declassify's own lines still come through" \
