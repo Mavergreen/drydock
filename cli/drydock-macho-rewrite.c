@@ -75,9 +75,11 @@
 
 /* rewrite.h is here for MR_REFUSED/MR_FAIL alone -- the two typedefs below
  * pin them equal to this file's own exit codes, and me_run hands them back.
- * declassify.h, segname.h, swift_retag.h, version_min.h and relations.h left
- * with the seven mutating verbs that called into them; src/edit.c reaches the
- * same work now, through the statements. */
+ * declassify.h, segname.h, version_min.h and relations.h left with the seven
+ * mutating verbs that called into them; src/edit.c reaches the same work now,
+ * through the statements. swift_retag.h came back for cmd_info alone, below:
+ * mswift_stable_tagged_image is the one fact from src/edit.c's own retag
+ * statement that info can now report without rewriting anything. */
 #include "image.h"
 #include "ordinals.h"
 #include "imports.h"
@@ -89,6 +91,9 @@
 #include "mach_compat.h"
 #include "script.h"
 #include "edit.h"
+#include "swift_retag.h"
+#include "fat.h"
+#include "arch_names.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
@@ -254,8 +259,10 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       TO BE LISTED HERE are gone, with their `ops=`, `kinds=`, `versions=`,
  *       `flags=` and `reports=` attributes; `edit` was the last of them, and
  *       the `mutate` line above plus the `statement` lines below are what a
- *       wrapper reads instead. No attribute is left in use, so a reader that
- *       parsed them keeps working on a line that no longer carries any.
+ *       wrapper reads instead. One attribute is in use: `info`'s
+ *       `flags=--thin` below -- a real CLI flag `info` itself parses,
+ *       unlike the directives the old `flags=` fields advertised (arch,
+ *       fatal-warnings; see "that is a later decision" below).
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the statement
  *       vocabulary ms_parse accepts, and so the whole mutating surface.
@@ -282,7 +289,11 @@ static int print_capabilities(void) {
      * pass something this build refuses. */
     printf("mutate bare script=stdin\n");
     printf("verb verify\n");
-    printf("verb info\n");
+    /* The one query flag any verb takes. A wrapper reproducing an old tool's
+     * thin-only refusal checks for this line rather than assume the flag,
+     * because gating on plain `info` failing stopped working when `info`
+     * learned fat containers. */
+    printf("verb info flags=--thin\n");
     printf("verb imports\n");
     printf("verb exports\n");
     {
@@ -329,7 +340,7 @@ static void usage(const char *prog) {
         "                                                    '%s FILE OUT < script'.\n"
         "                                                    --capabilities lists every statement\n"
         "                                                    this build accepts\n"
-        "       %s info FILE\n"
+        "       %s info [--thin] FILE\n"
         "       %s verify FILE\n"
         "       %s imports FILE                             TSV: arch, ordinal, kind,\n"
         "                                                    install_name, symbol, weak,\n"
@@ -395,6 +406,15 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
         printf("  segname=%.16s vmaddr=0x%llx vmsize=0x%llx fileoff=%llu filesize=%llu nsects=%u\n",
                seg->segname, (unsigned long long)seg->vmaddr, (unsigned long long)seg->vmsize,
                (unsigned long long)seg->fileoff, (unsigned long long)seg->filesize, seg->nsects);
+        /* mi_wrap has already proved cmdsize covers the section array nsects
+         * claims, which is what makes this walk in-bounds -- the same
+         * guarantee me_target_lc (src/edit.c) relies on for the same walk.
+         * sectname is 16 bytes and need not be NUL-terminated, so %.16s, not
+         * %s. Printed for EVERY segment, not just __DATA_CONST: a query
+         * answers what is there and the caller decides what it means. */
+        const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+        for (uint32_t k = 0; k < seg->nsects; k++)
+            printf("    sectname=%.16s\n", sect[k].sectname);
     }
     if (mo_is_ordinal_lc(lc->cmd)) {
         ctx->ordinal++;
@@ -415,41 +435,138 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
     return 0;   /* prints every command; never needs to stop early */
 }
 
-static int cmd_info(const char *path) {
+/* Forward-declared: cmd_info's fat path (below) reads the whole file the
+ * same way cmd_exports does, but read_file's own definition sits after both,
+ * beside cmd_exports -- the read-only verbs' historical order, which this
+ * one declaration keeps from having to be reshuffled to satisfy. */
+static int read_file(const char *verb, const char *path, uint8_t **out, size_t *outlen);
+
+/* One image's report: the same lines for a thin file and for each slice of a
+ * fat container, so there is one description of what info says and not two.
+ * `label` heads it -- the path for a thin file, `slice NAME` for a slice. */
+static void info_image(mi_image *im, const char *label) {
+    printf("%s: %zu bytes, %u load commands, filetype=%u\n",
+           label, im->size, im->hdr->ncmds, im->hdr->filetype);
+    struct info_ctx ctx = { 0, 0 };
+    mi_each_lc(im, info_cb, &ctx);
+
+    /* The fifth of target 10.9's detections, and the only one with no other
+     * way to ask: mswift_stable_tagged_image (src/swift_retag.h) had exactly
+     * one caller, me_expand_10_9. It returns a COUNT of tagged class records,
+     * so >0 is "tagged". Nothing in swift_retag.h promises a negative
+     * return -- mswift_stable_tagged_image's own declaration and its sibling
+     * mswift_retag_image's ("0 or more; it has no failure of its own") both
+     * rule it out, and today's mswift_walk never returns one: a missing or
+     * out-of-bounds __objc_classlist/__objc_nlclslist section is skipped,
+     * not refused. The "unknown" branch below is defensive only, kept in
+     * case that ever changes, not because it can fire today. Flush left,
+     * beside `header pad:`, because it describes the image and not a load
+     * command. */
+    {
+        int tagged = mswift_stable_tagged_image(im);
+        if (tagged < 0)
+            printf("swift-abi: unknown (class records could not be walked)\n");
+        else if (tagged > 0)
+            printf("swift-abi: class records carry the stable-ABI tag\n");
+        else
+            printf("swift-abi: no class records carry the stable-ABI tag\n");
+    }
+
+    uint32_t first_sect_off = mg_first_sect_off(im->buf, im->size);
+    if (first_sect_off == MG_NO_SECTION_DATA) {
+        /* Nothing in the image says where the pad ends, so no number would
+         * be true; the rewriting verbs refuse such an image for the same
+         * reason. */
+        printf("header pad: unknown (no section data bounds it)\n");
+    } else if (first_sect_off != UINT32_MAX && first_sect_off > im->size) {
+        /* The offset is read from the file, and a pad measured to a point
+         * past the end of the image would be a number no write could use;
+         * the rewriting verbs refuse this image too. */
+        printf("header pad: unknown (the first section lies past the end of the image)\n");
+    } else if (first_sect_off != UINT32_MAX) {
+        uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) + im->hdr->sizeofcmds;
+        uint32_t pad = first_sect_off > lc_end ? first_sect_off - lc_end : 0;
+        printf("header pad: %u bytes available (LC end=%u, first sect=%u)\n",
+               pad, lc_end, first_sect_off);
+    }
+}
+
+static int cmd_info(const char *path, int thin_only) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
     if (mo_rc == MI_IO_ERROR) {
         fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
         return EX_FAIL;
     }
-    if (mo_rc != 0) {
+    if (mo_rc == 0) {
+        info_image(&im, path);
+        mi_close(&im);
+        return 0;
+    }
+
+    /* Not a thin 64-bit Mach-O. With --thin that is the whole answer, and it
+     * is mi_open's verdict verbatim -- the four wrappers that gate on this
+     * reproduce their upstreams' refusal by its exit status alone
+     * (compat/drydock-macho-rewrite-compat.sh's mw_thin_only). */
+    if (thin_only) {
         fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
-    printf("%s: %zu bytes, %u load commands, filetype=%u\n",
-           path, im.size, im.hdr->ncmds, im.hdr->filetype);
-    struct info_ctx ctx = { 0, 0 };
-    mi_each_lc(&im, info_cb, &ctx);
 
-    uint32_t first_sect_off = mg_first_sect_off(im.buf, im.size);
-    if (first_sect_off == MG_NO_SECTION_DATA) {
-        /* Nothing in the image says where the pad ends, so no number would
-         * be true; the rewriting verbs refuse such an image for the same
-         * reason. */
-        printf("header pad: unknown (no section data bounds it)\n");
-    } else if (first_sect_off != UINT32_MAX && first_sect_off > im.size) {
-        /* The offset is read from the file, and a pad measured to a point
-         * past the end of the image would be a number no write could use;
-         * the rewriting verbs refuse this image too. */
-        printf("header pad: unknown (the first section lies past the end of the image)\n");
-    } else if (first_sect_off != UINT32_MAX) {
-        uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) + im.hdr->sizeofcmds;
-        uint32_t pad = first_sect_off > lc_end ? first_sect_off - lc_end : 0;
-        printf("header pad: %u bytes available (LC end=%u, first sect=%u)\n",
-               pad, lc_end, first_sect_off);
+    {
+        uint8_t *buf = NULL;
+        size_t size = 0;
+        uint32_t narch = 0, i;
+        int swapped = 0, rrc;
+
+        rrc = read_file("info", path, &buf, &size);
+        if (rrc != 0) return rrc;
+
+        {
+            int frc = mfat_parse(buf, size, &narch, &swapped);
+            if (frc == MFAT_IO_ERROR) {
+                /* mfat_parse's own environmental failure (one of the two
+                 * mallocs it uses to check for overlaps) is not a
+                 * considered refusal about what FILE contains -- same
+                 * distinction MI_IO_ERROR draws above, same wording. */
+                free(buf);
+                fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
+                return EX_FAIL;
+            }
+            if (frc != 0) {
+                free(buf);
+                fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
+                return EX_REFUSED;
+            }
+        }
+
+        printf("%s: %zu bytes, %u slices\n", path, size, narch);
+        for (i = 0; i < narch; i++) {
+            mfat_arch a;
+            mi_image sl;
+            char name[32], label[64];
+            mfat_get(buf, swapped, i, &a);
+            ma_describe(a.cputype, a.cpusubtype, name);
+            /* mfat_parse proved offset+size is in bounds, so this slicing
+             * needs no further check of its own. */
+            if (mi_wrap(buf + a.offset, a.size, &sl) != 0) {
+                /* me_run_fat's own wording, reused rather than reinvented
+                 * (src/edit.c's me_fat_slice) -- the fact is the same one,
+                 * and a caller should not have to learn a second vocabulary
+                 * for it. That walk also distinguishes a THIRD reason, "not
+                 * selected by arch", which cannot arise here: info never
+                 * selects slices by arch, it reports every one. */
+                printf("slice %s: %s; passed through unchanged\n", name,
+                       (a.cputype & CPU_ARCH_ABI64) ? "not a 64-bit Mach-O" : "32-bit");
+                continue;
+            }
+            snprintf(label, sizeof label, "slice %s", name);
+            info_image(&sl, label);
+            mi_close(&sl);   /* mi_wrap's image is unowned (owned=0); frees nothing */
+        }
+        free(buf);
+        return 0;
     }
-    mi_close(&im);
-    return 0;
 }
 
 /* ---- imports: every (install_name, symbol) pair this image binds, as TSV --
@@ -756,8 +873,17 @@ int main(int argc, char **argv) {
         return cmd_verify(argv[2]);
     }
     if (strcmp(verb, "info") == 0) {
-        if (argc != 3) { fprintf(stderr, "usage: %s info FILE\n", argv[0]); return EX_FAIL; }
-        return cmd_info(argv[2]);
+        /* `--thin` is the ONE flag any query verb takes. It is recognised
+         * only in argv[2], so a FILE named `--thin` stays reachable as
+         * `./--thin`, the same remedy bad_out already names for an OUT beginning
+         * with '-'. */
+        int thin_only = 0, ai = 2;
+        if (argc > 2 && strcmp(argv[2], "--thin") == 0) { thin_only = 1; ai = 3; }
+        if (argc != ai + 1) {
+            fprintf(stderr, "usage: %s info [--thin] FILE\n", argv[0]);
+            return EX_FAIL;
+        }
+        return cmd_info(argv[ai], thin_only);
     }
     if (strcmp(verb, "imports") == 0) {
         if (argc != 3) { fprintf(stderr, "usage: %s imports FILE\n", argv[0]); return EX_FAIL; }

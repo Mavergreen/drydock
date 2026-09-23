@@ -2107,6 +2107,121 @@ rt_lines=$( printf 'swift-abi set legacy\n' \
     && ok "drydock-macho-rewrite reports a retag once per slice, which is why the wrapper SUMS the count" \
     || bad "retag count per slice" "$rt_lines 'retagged' lines for a two-slice fat file, want 2; if this is now 1 the sum is pointless, and if it is more than one line the wrapper's count must add them up rather than read them as one number"
 
+# ---- the gate is `info --thin`, not plain `info` -------------------------
+#
+# Once `info` learns to read a fat container (as it later does), the plain form
+# stops failing on one, and a wrapper still gating on it would start
+# rewriting files its upstream refused outright. Asserted on the WRAPPERS,
+# not on mw_thin_only directly, because the contract a caller sees is the
+# wrapper's exit code and the wrapper's file, not the helper function's
+# return value.
+fm_mkfat "$T/gatefat" "$FIXTURE" 16777223 "$FIXTURE" 16777223
+for gate_tool in patch_macho add_version_min rename_segment retag_swift_classes; do
+    # retag_swift_classes' gate turning into a no-op is invisible on a plain
+    # (non-Swift) fat file: with nothing to retag, drydock-macho-rewrite
+    # would write back the identical bytes and mw_finish discards an
+    # unchanged install, so the untouched check cannot tell "gated" from
+    # "processed and coincidentally unchanged" -- $T/fatswift (built above)
+    # actually has class records to retag, so a broken gate really does
+    # change its bytes.
+    case $gate_tool in
+        retag_swift_classes) cp "$T/fatswift" "$T/gf" ;;
+        *)                   cp "$T/gatefat" "$T/gf" ;;
+    esac
+    gate_before=$(sha "$T/gf")
+    rm -f "$T/gfout"
+    case $gate_tool in
+        # FILE OLD NEW: a real OLD/NEW pair, so the gate is what stops this,
+        # not a wrong-arity usage error.
+        rename_segment)      run rename_segment gf __DATA __DATB; gate_want=1 ;;
+        # FILE OUT: an argc mismatch would refuse for the wrong reason,
+        # before mw_thin_only is ever called.
+        patch_macho)         run patch_macho gf gfout;            gate_want=1 ;;
+        # The gate's refusal reaches this wrapper's loop as MSWIFT_NOT_MACHO
+        # -- the same BENIGN SKIP a non-Mach-O argument gets (its own header
+        # above), so the exit stays 0, not 1, even though the file is
+        # refused just the same as the other three.
+        retag_swift_classes) run retag_swift_classes gf;          gate_want=0 ;;
+        *)                   run "$gate_tool" gf;                 gate_want=1 ;;
+    esac
+    [ "$rc" -eq "$gate_want" ] \
+        && ok "$gate_tool: a fat container is still refused ($gate_want)" \
+        || bad "$gate_tool fat gate" "exited $rc, not $gate_want: $(cat "$T/err")"
+    [ "$(sha "$T/gf")" = "$gate_before" ] \
+        && ok "$gate_tool: the refused fat container is untouched" \
+        || bad "$gate_tool fat gate" "the input changed"
+done
+
+# EX_FAIL still falls through, which is what makes `add_version_min <dir>`
+# exit 2 on both sides. A directory is the measurement mw_thin_only's own
+# comment names.
+run add_version_min "$T"
+[ "$rc" -eq 2 ] && ok "mw_thin_only: EX_FAIL (2) still falls through" \
+    || bad "mw_thin_only EX_FAIL" "a directory did not exit 2, got $rc"
+
+# ---- insert_dylib's prompts now fire on a fat binary ----------------------
+#
+# A CONSEQUENCE OF FAT `info`, ADOPTED RATHER THAN SUPPRESSED
+# (compat/README.md's insert_dylib adopted-divergence row). compat/
+# insert_dylib.sh's prompt 2 greps `drydock-macho-rewrite info $MT_ID_BIN` for
+# "  ordinal=N path=" -- the same two-space-indented line info_image
+# (cli/drydock-macho-rewrite.c) prints once per slice of a fat container, not
+# just for a thin file, so the match fires the instant EITHER slice's dylib
+# table names the path: the union of the slices, not one arbitrarily chosen
+# one. While plain `info` was a bare `mi_open` it failed outright on a fat
+# container and the pipeline read empty input, so the prompt never fired at
+# all -- a fat binary silently skipped the question.
+#
+# TESTED VIA THE NO-TTY REFUSAL, not by answering the prompt: insert_dylib's
+# prompts read /dev/tty, never stdin (tests/insert_dylib_test.sh's own header
+# and its case 5), so a stdin pipe answers nothing -- and the prompt TEXT
+# itself is written to fd 3 (`>&3`), not to stdout or stderr, so a redirected
+# capture could not see it even if it were. The refusal path
+# (compat/insert_dylib.sh's id_no_tty_refuse) DOES print the prompt text to
+# stderr, ahead of its own "no /dev/tty" line, which is what this greps.
+# idnotty.c is tests/insert_dylib_test.sh's own notty.c technique --
+# setsid(2) before exec, so /dev/tty genuinely has nothing to resolve to --
+# duplicated here in miniature (built from this file's own $T) rather than
+# shared, the same way strip_vm/mkswift_fixture/mkchained_fixture above each
+# build their own helper on first use.
+cat >"$T/idnotty.c" <<'EOF'
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc < 2) return 2;
+    setsid();
+    execvp(argv[1], argv + 1);
+    return 127;
+}
+EOF
+"$CC" -O2 -o "$T/idnotty" "$T/idnotty.c" 2>"$T/idnotty_build.err"
+if [ ! -x "$T/idnotty" ]; then
+    skip "insert_dylib fat prompt" "cannot build the notty helper: $(cat "$T/idnotty_build.err")"
+elif [ ! -x "$BIN/insert_dylib" ]; then
+    skip "insert_dylib fat prompt" "$BIN/insert_dylib is not installed"
+else
+    fm_mkfat "$T/idfat" "$FIXTURE" 16777223 "$FIXTURE" 16777223
+    # Ask the fat file itself what it names, rather than assume -- the same
+    # care tests/insert_dylib_test.sh's case 9 takes with the thin fixture.
+    id_have=$("$BIN/drydock-macho-rewrite" info "$T/idfat" 2>/dev/null \
+        | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
+    if [ -z "$id_have" ]; then
+        bad "insert_dylib fat prompt" "the fat fixture names no dylib; this proves nothing"
+    else
+        # --no-strip-codesig keeps prompt 1 out of the way, so the
+        # duplicate-dylib check (prompt 2) is the only one this run can
+        # reach; $id_have is a path the fat file already names, on both
+        # slices, so it is reached for real, not steered around.
+        ( cd "$T" && "$T/idnotty" "$BIN/insert_dylib" --no-strip-codesig \
+            "$id_have" idfat idfat.out </dev/null ) >"$T/id.out" 2>"$T/id.err"
+        rc=$?
+        if [ "$rc" -eq 1 ] && grep -qF 'already contains a load command for that dylib' "$T/id.err"; then
+            ok "insert_dylib: the duplicate-dylib prompt now fires on a fat binary"
+        else
+            bad "insert_dylib fat prompt" "exit $rc (want 1, refused with no tty to ask on): $(cat "$T/id.err")"
+        fi
+    fi
+fi
+
 # ---- the emitted grammar is one this build actually has -----------------
 #
 # Same check tests/translate_test.sh makes of the translator, made here of the

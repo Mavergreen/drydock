@@ -87,14 +87,16 @@
 #      and printed "%s: not a readable 64-bit Mach-O" (exit 1). `drydock-macho-rewrite
 #      segment` goes through mr_apply_file, which HANDLES fat containers --
 #      so it would rename inside a fat file that rename_segment refused
-#      outright. `drydock-macho-rewrite info` is thin-only in exactly rename_segment's sense
-#      (it is a bare mi_open), so gating on its EXIT STATUS reproduces the
-#      old refusal. Its output is not read: the exit status is the whole
-#      signal, which is the difference between using a machine-readable
-#      result and parsing a human-readable one. This matters in practice:
-#      most binaries under /System/Library/Frameworks are fat, so without the
-#      gate tests/differential.sh would show this wrapper rewriting files the
-#      C tool would not have.
+#      outright. `drydock-macho-rewrite info --thin` refuses a fat container
+#      in exactly rename_segment's sense -- that is the reason the flag
+#      exists, not an incidental side effect of a bare mi_open -- so gating
+#      on its EXIT STATUS reproduces the old refusal. Its output is not
+#      read: the exit status is the whole signal, which is the difference
+#      between using a machine-readable result and parsing a human-readable
+#      one. This matters in practice: most binaries under
+#      /System/Library/Frameworks are fat, so without the gate
+#      tests/differential.sh would show this wrapper rewriting files the C
+#      tool would not have.
 #
 #   4. LC_LAZY_LOAD_DYLIB, NOT CLOSED, and the one real gap this wrapper
 #      ships with. mr_apply_file builds the library-ordinal map
@@ -201,12 +203,13 @@ mw_new=$3
 
 mw_prepare "$mw_file" || exit 1
 
-# THIN ONLY: `drydock-macho-rewrite info` is a bare mi_open, which is the gate
-# rename_segment itself had. Only the exit status is used; the output is
-# discarded, deliberately (see the FOURTH DIVERGENCE note above). Before the
-# retranslate, so a fat FILE is refused without drydock-macho-rewrite ever being asked to
-# write a temp for it.
-if ! drydock-macho-rewrite info "$mw_file" >/dev/null 2>&1; then
+# THIN ONLY: `drydock-macho-rewrite info --thin` refuses a fat container,
+# which is the gate rename_segment itself had -- plain `info` reports one
+# instead of refusing it, which is why the flag exists. Only the exit status
+# is used; the output is discarded, deliberately (see the FOURTH DIVERGENCE
+# note above). Before the retranslate, so a fat FILE is refused without
+# drydock-macho-rewrite ever being asked to write a temp for it.
+if ! drydock-macho-rewrite info --thin "$mw_file" >/dev/null 2>&1; then
     printf '%s: not a readable 64-bit Mach-O\n' "$mw_file" >&2
     exit 1
 fi
