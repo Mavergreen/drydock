@@ -2534,6 +2534,11 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat" >"$T/fat.out" 2>"$T/fat.err" |
 "$T/segread" dump "$T/info_fat" 0 "$T/info_fat_s0"
 "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat_s0" 2>/dev/null | grep '^LC\[' >"$T/fat.thin.lc"
 awk '/^slice /{n++} n==1' "$T/fat.out" | grep '^LC\[' >"$T/fat.s0.lc"
+# Positive control: cmp of two EMPTY files also succeeds, which would make
+# the match below pass vacuously if either extraction came up empty.
+[ -s "$T/fat.s0.lc" ] \
+    && ok "info fat: slice 0's LC lines were actually captured (positive control)" \
+    || bad "info fat slice body" "empty extract -- the cmp below would pass vacuously: $(cat "$T/fat.out")"
 cmp -s "$T/fat.thin.lc" "$T/fat.s0.lc" \
     && ok "info fat: a slice's load commands match the same slice read alone" \
     || bad "info fat slice body" "$(diff "$T/fat.thin.lc" "$T/fat.s0.lc" | head -5)"
@@ -2569,10 +2574,29 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/info_fat" >"$T/fatthin.out" 2>"$T
     && ok "info fat: a 32-bit slice reuses me_run_fat's wording" \
     || bad "info fat 32-bit" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/info_fat32" 2>/dev/null | grep '^slice ')"
 
+# The other wording that same branch can print: a slice tagged with a
+# cputype that DOES carry the 64-bit ABI bit (CPU_TYPE_X86_64 = 16777223,
+# same tag the good slices above use) but whose bytes are not a Mach-O at
+# all. me_run_fat tells this apart from "32-bit" by that bit alone, not by
+# the bytes -- something 32-bit and something 64-bit-tagged-but-unreadable
+# are different facts and get different words.
+"$T/segread" wrap "$T/info_fat64bad" "$T/segment_fixture" "$T/notmacho" 16777223
+"$DRYDOCK_MACHO_REWRITE" info "$T/info_fat64bad" 2>/dev/null | grep -q '^slice .*: not a 64-bit Mach-O; passed through unchanged$' \
+    && ok "info fat: a 64-bit-tagged non-Mach-O slice reuses me_run_fat's other wording" \
+    || bad "info fat 64-bit non-macho" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/info_fat64bad" 2>/dev/null | grep '^slice ')"
+
 # A thin file's output is unchanged by all of this. signing_probe (built
 # earlier, for the code-signing host probe) stands in for a plain thin
-# fixture here.
-"$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null | grep -q '^slice ' \
+# fixture here. Checked as three separate facts, not one grep -q that a
+# failed or empty run would satisfy just as well as a correct one: the run
+# has to succeed, print its own thin header line, AND print no slice header.
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" >"$T/thinagain.out" 2>"$T/thinagain.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "info: a thin file is still accepted" \
+    || bad "info thin" "exited $rc: $(cat "$T/thinagain.err")"
+grep -qE '^[^:]+: [0-9]+ bytes, [0-9]+ load commands, filetype=[0-9]+$' "$T/thinagain.out" \
+    && ok "info: a thin file still prints its own header line" \
+    || bad "info thin" "no thin header line in: $(cat "$T/thinagain.out")"
+grep -q '^slice ' "$T/thinagain.out" \
     && bad "info thin" "a thin file grew a slice header" \
     || ok "info: a thin file still prints no slice header"
 

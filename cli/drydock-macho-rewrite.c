@@ -453,13 +453,15 @@ static void info_image(mi_image *im, const char *label) {
     /* The fifth of target 10.9's detections, and the only one with no other
      * way to ask: mswift_stable_tagged_image (src/swift_retag.h) had exactly
      * one caller, me_expand_10_9. It returns a COUNT of tagged class records,
-     * so >0 is "tagged". swift_retag.h's own contract allows a negative
-     * return for a walk that refuses the image, so the "unknown" branch below
-     * stays to honor that contract -- but today's mswift_walk never takes it:
-     * a missing or out-of-bounds __objc_classlist/__objc_nlclslist section is
-     * skipped, not refused, so this can currently only ever print >0 or ==0.
-     * Flush left, beside `header pad:`, because it describes the image and
-     * not a load command. */
+     * so >0 is "tagged". Nothing in swift_retag.h promises a negative
+     * return -- mswift_stable_tagged_image's own declaration and its sibling
+     * mswift_retag_image's ("0 or more; it has no failure of its own") both
+     * rule it out, and today's mswift_walk never returns one: a missing or
+     * out-of-bounds __objc_classlist/__objc_nlclslist section is skipped,
+     * not refused. The "unknown" branch below is defensive only, kept in
+     * case that ever changes, not because it can fire today. Flush left,
+     * beside `header pad:`, because it describes the image and not a load
+     * command. */
     {
         int tagged = mswift_stable_tagged_image(im);
         if (tagged < 0)
@@ -520,10 +522,22 @@ static int cmd_info(const char *path, int thin_only) {
         rrc = read_file("info", path, &buf, &size);
         if (rrc != 0) return rrc;
 
-        if (mfat_parse(buf, size, &narch, &swapped) != 0) {
-            free(buf);
-            fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
-            return EX_REFUSED;
+        {
+            int frc = mfat_parse(buf, size, &narch, &swapped);
+            if (frc == MFAT_IO_ERROR) {
+                /* mfat_parse's own environmental failure (one of the two
+                 * mallocs it uses to check for overlaps) is not a
+                 * considered refusal about what FILE contains -- same
+                 * distinction MI_IO_ERROR draws above, same wording. */
+                free(buf);
+                fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
+                return EX_FAIL;
+            }
+            if (frc != 0) {
+                free(buf);
+                fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
+                return EX_REFUSED;
+            }
         }
 
         printf("%s: %zu bytes, %u slices\n", path, size, narch);
