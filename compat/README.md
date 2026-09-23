@@ -150,8 +150,9 @@ for why they would be rare -- and one decided on purpose:
     wrote to it or failed with `EISDIR`. With a bad `IN`, only a non-regular
     `OUT` is named ahead of it.
     The "`patch_macho`" section below names the test for each.
-  * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
-    before any analysis exactly as the C tool's `open(O_RDWR)` did) can
+  * The writability pre-check the shared `mw_prepare` runs on every
+    wrapper's `FILE` (`mw_require_writable`'s `test -w`, to fail before any
+    analysis as the C tools' `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
     does not see ACLs. It agrees on the two cases that actually reach a
     caller (absent, and mode-denied).
@@ -182,14 +183,15 @@ for why they would be rare -- and one decided on purpose:
     matches. `add_version_min.sh` has no such gap: its own C tool's
     `perror("open")` already said literally "open: ...", so the wrapper's
     identical wording was never a divergence to begin with. A WRITABLE
-    `FILE` inside a NON-writable directory is a fourth case neither wrapper's
-    own pre-checks catch -- the write itself fails, `mkstemp: Permission
-    denied`, because installing needs the directory writable where the old
-    tools needed only `FILE` itself to be; `compat/add_version_min.sh` and
-    `compat/retag_swift_classes.sh`'s own headers both name it, and for
-    `retag_swift_classes` it surfaces as `had_error` (exit 1) rather than
-    `add_version_min`'s raw, forwarded 2, since this wrapper never forwards
-    one argument's exit code as the whole run's.
+    `FILE` inside a NON-writable directory is a case no wrapper's own
+    pre-checks catch -- the write itself fails, `mkstemp: Permission
+    denied`, with `FILE` untouched, because installing needs the directory
+    writable where the old tools needed only `FILE` itself to be. Every
+    in-place form does this: `rename_segment`, `fix_macho`,
+    `retag_swift_classes` and `patch_macho IN IN` exit 1, and `change_dylib`
+    and `add_version_min` forward the rewriter's 2 (`tests/wrapper_test.sh`,
+    "TOOL: a writable FILE in a read-only directory fails (N), untouched, no
+    temp left", one per tool).
     `change_dylib` briefly had an unwritable-`FILE` guard of its own that
     exited 2, chosen to match what `mr_apply_file`'s `open(O_RDWR)` then gave
     on the single-family path; that path opens `FILE` read-only now, so there
@@ -373,7 +375,7 @@ script is one statement or several, so both shapes install identically.
 | **an absent or unwritable `FILE` is refused**, in the C tool's own `perror("open")` words, before `drydock-macho-rewrite` runs. `change_dylib` opened `FILE` `O_RDWR` first, so either failed immediately having changed nothing. No `drydock-macho-rewrite` invocation reproduces that: a form that writes an output opens `FILE` `O_RDONLY` and has no opinion about `FILE`'s mode, and the wrapper installs by rename, which needs the DIRECTORY writable (measured before this check existed: a mode-444 binary replaced, fresh inode, exit 0 — a silent rewrite of a file its owner marked read-only). `test -e`/`test -w` are not `open(O_RDWR)` — they consult the real uid and do not see ACLs, so they can disagree at the edges; they agree on the two cases that reach a caller, and both follow a symlink, which is what is wanted, since the install lands on the symlink's target and it is that file's mode that decides | `tests/wrapper_test.sh`'s unwritable pair, on BOTH paths, asserting exit 1, `open: Permission denied`, and neither the bytes nor the inode moved; and "an absent `FILE` exits 1 with the C tool's own `open()` message" |
 | **a hard-linked `FILE` is refused (1)** — new, and the one behaviour a caller can see that no version of `change_dylib` had: the C tool wrote through its own descriptor so every link saw the change, while an install by `mv` would leave the others on the old content. Refused rather than silently split, which is the trade every wrapper on this path makes; `mw_prepare` has the message and the remedy | `hl_case change_dylib` in `tests/wrapper_test.sh`, on both the single- and the multi-family path (exit 1, "hard link" named, both names byte-identical, no temp left); `tests/change_dylib_test.sh` case 14b also asserts the group is still one inode, unsplit |
 | **the install is a rename**, so a changed run gives `FILE` a fresh inode and an interrupted one can never leave a half-written binary — and a symlinked `FILE` stays a symlink, with the real target rewritten and its xattrs intact | `tests/change_dylib_test.sh` case 14: 14a (symlink still a symlink to the same name, the real target changed, fresh inode, xattr survived), 14c (the ordinary case still goes through `mkstemp`+rename). Mode and quarantine on the multi-family path: `tests/wrapper_test.sh`, "mode and quarantine survive a MULTI-FAMILY run too" |
-| **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `drydock-macho-rewrite`'s own write of the temp, with `FILE` untouched | stated, not tested for `change_dylib`: the behaviour is `drydock-macho-rewrite`'s own write, not this wrapper's, and the equivalent case is asserted for `patch_macho` in `tests/wrapper_test.sh`. `compat/add_version_min.sh` and `compat/retag_swift_classes.sh`'s headers record the same shape |
+| **a writable binary inside a read-only directory now fails**, because creating a temp beside `FILE` and renaming it needs the DIRECTORY writable where the C tool needed only `FILE` itself to be: `mkstemp: Permission denied`, from `drydock-macho-rewrite`'s own write of the temp, with `FILE` untouched | `tests/wrapper_test.sh`, "change_dylib: a writable FILE in a read-only directory fails (2), untouched, no temp left" |
 
 ### `change_dylib`: header growth
 

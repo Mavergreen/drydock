@@ -25,7 +25,6 @@ mw_new=$3
 
 mw_prepare "$mw_file" || exit 1
 
-# THIN ONLY: rename_segment refused a fat container; info --thin does too.
 if ! drydock-macho-rewrite info --thin "$mw_file" >/dev/null 2>&1; then
     printf '%s: not a readable 64-bit Mach-O\n' "$mw_file" >&2
     exit 1
@@ -54,7 +53,7 @@ fi
 
 [ "$mw_rc" -eq 0 ] || { cat "$MW_T/segout" >&2; exit 1; }
 
-# -x -F so metacharacters in OLD/NEW count as themselves.
+# -F: OLD and NEW are literal text; -x: only a whole line counts.
 mw_n=$(grep -c -x -F -- "  Rename segment: $mw_old -> $mw_new" "$MW_T/segout") || mw_n=0
 if [ "$mw_n" -eq 0 ]; then
     printf '%s: %s: this drydock-macho-rewrite did not report what its segment rename matched\n' \

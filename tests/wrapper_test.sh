@@ -787,6 +787,26 @@ for pm_sh in /bin/sh /bin/ksh; do
 done
 chmod 755 "$T/ro"; rm -rf "$T/ro"
 
+# The C tools wrote through FILE's own descriptor; an install by mv needs the directory writable.
+for ro_case in 'rename_segment 1 ro/f __DATA __DATB' \
+               'change_dylib 2 ro/f -change /usr/lib/libSystem.B.dylib /usr/lib/libSystem.C.dylib' \
+               'add_version_min 2 ro/f' \
+               'fix_macho 1 ro/f -rename_seg __DATA __DATB' \
+               'retag_swift_classes 1 ro/f' \
+               'patch_macho 1 ro/f ro/f'; do
+    set -- $ro_case; ro_tool=$1; ro_want=$2; shift 2
+    rm -rf "$T/ro"; mkdir "$T/ro"; cp "$FIXTURE" "$T/ro/f"; chmod 555 "$T/ro"
+    ro_before=$(sha "$T/ro/f")
+    run "$ro_tool" "$@"
+    ro_ls=$(ls -A "$T/ro")
+    chmod 755 "$T/ro"
+    [ "$rc" -eq "$ro_want" ] && grep -q -xF 'mkstemp: Permission denied' "$T/err" \
+        && [ "$(sha "$T/ro/f")" = "$ro_before" ] && [ "$ro_ls" = f ] \
+        && ok "$ro_tool: a writable FILE in a read-only directory fails ($ro_want), untouched, no temp left" \
+        || bad "$ro_tool read-only directory" "exit $rc (want $ro_want), dir: $ro_ls, stderr: $(cat "$T/err")"
+done
+rm -rf "$T/ro"
+
 # 5b. AN OUT THAT IS A DIRECTORY is refused, in the C tool's own perror words.
 #     Neither layer below would refuse it: drydock-macho-rewrite writes a temp BESIDE OUT and
 #     never looks at OUT, and `mv` given a directory destination moves the temp
