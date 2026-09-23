@@ -418,6 +418,12 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
                vc->version >> 16, (vc->version >> 8) & 0xff, vc->version & 0xff,
                vc->sdk >> 16, (vc->sdk >> 8) & 0xff, vc->sdk & 0xff);
     }
+    if (lc->cmd == LC_BUILD_VERSION && lc->cmdsize >= 24) {
+        const uint32_t *w = (const uint32_t *)lc;   /* cmd, cmdsize, platform, minos, sdk, ntools */
+        printf("  platform=%u minos=%u.%u.%u sdk=%u.%u.%u\n", w[2],
+               w[3] >> 16, (w[3] >> 8) & 0xff, w[3] & 0xff,
+               w[4] >> 16, (w[4] >> 8) & 0xff, w[4] & 0xff);
+    }
     ctx->idx++;
     return 0;   /* prints every command; never needs to stop early */
 }

@@ -1376,6 +1376,28 @@ rc=0
 # for exactly the same reason, and one copy of it is enough.
 "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
 
+"$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c"
+
+# info prints LC_BUILD_VERSION's fields as it prints LC_VERSION_MIN_MACOSX's,
+# so "what minimum does this image declare, and where?" is one query.
+build_main "$T/info_bv"
+"$T/mkminos" bv "$T/info_bv" 1 12.0 12.3 || bad "info build-version: fixture setup" "mkminos bv failed"
+[ "$("$T/mkminos" show "$T/info_bv")" = "build-version platform=1 minos=12.0.0 sdk=12.3.0" ] \
+    || bad "info build-version: fixture setup" "got: $("$T/mkminos" show "$T/info_bv")"
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_bv" >"$T/info_bv.txt" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && grep -q '^LC\[[0-9]*\] LC_BUILD_VERSION cmdsize=24$' "$T/info_bv.txt" \
+    && ok "info: the fixture's LC_BUILD_VERSION is listed" \
+    || bad "info build-version" "rc $rc, no LC_BUILD_VERSION line: $(cat "$T/info_bv.txt")"
+grep -qxF "  platform=1 minos=12.0.0 sdk=12.3.0" "$T/info_bv.txt" \
+    && ok "info: LC_BUILD_VERSION's platform, minos and sdk are printed beneath it" \
+    || bad "info build-version" "no platform/minos/sdk line: $(grep -A1 LC_BUILD_VERSION "$T/info_bv.txt")"
+build_main "$T/info_vm"
+"$T/mkminos" vmin "$T/info_vm" 10.12 10.13 || bad "info version-min: fixture setup" "mkminos vmin failed"
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_vm" >"$T/info_vm.txt" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && grep -qxF "  version=10.12.0 sdk=10.13.0" "$T/info_vm.txt" \
+    && ok "info: the version-min line agrees with mkminos" \
+    || bad "info version-min" "rc $rc: $(grep -A1 LC_VERSION_MIN_MACOSX "$T/info_vm.txt")"
+
 build_main "$T/minos_fixture"
 # A BARE invocation here would let `set -e` kill the WHOLE script the
 # instant this ever exits nonzero -- which used to happen legitimately
