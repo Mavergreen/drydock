@@ -2497,6 +2497,109 @@ EOF
     && ok "info: a 16-byte sectname prints whole, with nothing after it" \
     || bad "info sectname 16" "expected the exact line '    sectname=ABCDEFGHIJKLMNOP': $("$DRYDOCK_MACHO_REWRITE" info "$T/sect16_fixture" 2>/dev/null | grep '^    sectname=')"
 
+# ---- info: fat containers -------------------------------------------------
+# info was a bare mi_open and failed outright on a fat container, which is
+# why bake-mavericks-shim needs a trial rewrite to learn anything about one
+# (compat/bake-mavericks-shim.sh's probe). One block per 64-bit slice now.
+#
+# Run here, against segment_fixture, BEFORE the segment rename below
+# retargets it -- this section only needs a fixture with real sections, not
+# an unmutated one, but reading it before that mutation keeps its state
+# known, same as the sectname assertions just above.
+#
+# A non-Mach-O blob of our own: cli_test.sh has no $T/notmacho of its own to
+# reuse (unlike $T/dylib_notmacho, which belongs to the dylib-replace
+# section), so this makes one.
+echo 'not a mach-o, just bytes' > "$T/notmacho"
+
+# Both slices below share one arch: segment_fixture wrapped around a second
+# copy of itself, tagged with the very cputype (CPU_TYPE_X86_64 = 16777223)
+# it already has. A caller reading this output sees two identical
+# "slice x86_64:" headers and can only tell the slices apart by their order,
+# never by name -- a real fat binary never repeats an arch, but nothing
+# stops one that does from being read, and that is exactly what this
+# fixture needs to exercise "two slices, same name".
+"$T/segread" wrap "$T/info_fat" "$T/segment_fixture" "$T/segment_fixture" 16777223
+
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat" >"$T/fat.out" 2>"$T/fat.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "info: a fat container is read, not refused" \
+    || bad "info fat" "exited $rc: $(cat "$T/fat.err")"
+
+[ "$(grep -c '^slice ' "$T/fat.out")" -eq 2 ] \
+    && ok "info fat: one slice header per 64-bit slice" \
+    || bad "info fat" "wanted 2 slice headers, got $(grep -c '^slice ' "$T/fat.out"): $(grep '^slice ' "$T/fat.out")"
+
+# Each slice's body is the thin body. Compare slice 0's load commands with
+# what info prints for that same slice standing alone.
+"$T/segread" dump "$T/info_fat" 0 "$T/info_fat_s0"
+"$DRYDOCK_MACHO_REWRITE" info "$T/info_fat_s0" 2>/dev/null | grep '^LC\[' >"$T/fat.thin.lc"
+awk '/^slice /{n++} n==1' "$T/fat.out" | grep '^LC\[' >"$T/fat.s0.lc"
+cmp -s "$T/fat.thin.lc" "$T/fat.s0.lc" \
+    && ok "info fat: a slice's load commands match the same slice read alone" \
+    || bad "info fat slice body" "$(diff "$T/fat.thin.lc" "$T/fat.s0.lc" | head -5)"
+
+# Every detection, on a fat file. This is the whole point of the task.
+grep -q '^    sectname=' "$T/fat.out" \
+    && ok "info fat: section names are printed per slice" \
+    || bad "info fat" "no sectname lines"
+[ "$(grep -c '^swift-abi: ' "$T/fat.out")" -eq 2 ] \
+    && ok "info fat: a swift-abi line per slice" \
+    || bad "info fat" "wanted 2 swift-abi lines, got $(grep -c '^swift-abi: ' "$T/fat.out")"
+
+# --thin's refusal is now real, not vacuous -- and it has to say exactly what
+# plain `info` on a fat container said before info learned fat containers at
+# all: exit 1, nothing on stdout, "drydock-macho-rewrite info: PATH: not a
+# readable 64-bit Mach-O" on stderr. Captured by hand against the pre-change
+# binary before any of this file's C changed, so this is pinning that
+# capture, not guessing at it.
+rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/info_fat" >"$T/fatthin.out" 2>"$T/fatthin.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "info --thin: a fat container is refused (1)" \
+    || bad "info --thin fat" "did not exit 1 (got $rc)"
+[ ! -s "$T/fatthin.out" ] \
+    && ok "info --thin: a refused fat container prints nothing to stdout" \
+    || bad "info --thin fat" "unexpected stdout: $(cat "$T/fatthin.out")"
+[ "$(cat "$T/fatthin.err")" = "drydock-macho-rewrite info: $T/info_fat: not a readable 64-bit Mach-O" ] \
+    && ok "info --thin: the refusal keeps mi_open's wording, byte for byte" \
+    || bad "info --thin fat" "wrong message: $(cat "$T/fatthin.err")"
+
+# A non-Mach-O slice is named and passed over, in me_run_fat's words -- not a
+# second vocabulary for the same fact.
+"$T/segread" wrap "$T/info_fat32" "$T/segment_fixture" "$T/notmacho" 7
+"$DRYDOCK_MACHO_REWRITE" info "$T/info_fat32" 2>/dev/null | grep -q '^slice .*: 32-bit; passed through unchanged$' \
+    && ok "info fat: a 32-bit slice reuses me_run_fat's wording" \
+    || bad "info fat 32-bit" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/info_fat32" 2>/dev/null | grep '^slice ')"
+
+# A thin file's output is unchanged by all of this. signing_probe (built
+# earlier, for the code-signing host probe) stands in for a plain thin
+# fixture here.
+"$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null | grep -q '^slice ' \
+    && bad "info thin" "a thin file grew a slice header" \
+    || ok "info: a thin file still prints no slice header"
+
+# A non-Mach-O, non-fat file: mfat_parse refuses it too, so it never reaches
+# the new fat path at all -- plain `info` and `info --thin` both have to
+# keep saying exactly what they said before info learned fat containers.
+# Captured by hand against the pre-change binary, same as the fat case
+# above: exit 1, nothing on stdout, "drydock-macho-rewrite info: PATH: not a
+# readable 64-bit Mach-O" on stderr, for both.
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/notmacho" >"$T/nm.out" 2>"$T/nm.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "info notmacho: refused (1)" \
+    || bad "info notmacho" "did not exit 1 (got $rc)"
+[ ! -s "$T/nm.out" ] && ok "info notmacho: nothing to stdout" \
+    || bad "info notmacho" "unexpected stdout: $(cat "$T/nm.out")"
+[ "$(cat "$T/nm.err")" = "drydock-macho-rewrite info: $T/notmacho: not a readable 64-bit Mach-O" ] \
+    && ok "info notmacho: byte-identical wording to before info learned fat" \
+    || bad "info notmacho" "wrong message: $(cat "$T/nm.err")"
+
+rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/notmacho" >"$T/nmthin.out" 2>"$T/nmthin.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "info --thin notmacho: refused (1)" \
+    || bad "info --thin notmacho" "did not exit 1 (got $rc)"
+[ ! -s "$T/nmthin.out" ] && ok "info --thin notmacho: nothing to stdout" \
+    || bad "info --thin notmacho" "unexpected stdout: $(cat "$T/nmthin.out")"
+[ "$(cat "$T/nmthin.err")" = "drydock-macho-rewrite info: $T/notmacho: not a readable 64-bit Mach-O" ] \
+    && ok "info --thin notmacho: byte-identical wording to before info learned fat" \
+    || bad "info --thin notmacho" "wrong message: $(cat "$T/nmthin.err")"
+
 mts "$T/segment_fixture" "segment rename __DATA __DATA_R9" \
     >"$T/segment.out" 2>&1 || bad "segment: exit" "$(cat "$T/segment.out")"
 "$T/segread" segs "$T/segment_fixture" > "$T/segs_after"

@@ -92,6 +92,8 @@
 #include "script.h"
 #include "edit.h"
 #include "swift_retag.h"
+#include "fat.h"
+#include "arch_names.h"
 
 /* Exit codes. 0 is success, as always. Everything else used to be a flat 1,
  * which meant a caller checking only "did this exit nonzero" (still fully
@@ -433,31 +435,33 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
     return 0;   /* prints every command; never needs to stop early */
 }
 
-static int cmd_info(const char *path, int thin_only) {
-    mi_image im;
-    int mo_rc = mi_open(path, &im);
-    if (mo_rc == MI_IO_ERROR) {
-        fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
-        return EX_FAIL;
-    }
-    if (mo_rc != 0) {
-        fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
-        return EX_REFUSED;
-    }
-    (void)thin_only;   /* A no-op until info itself learns fat containers. */
+/* Forward-declared: cmd_info's fat path (below) reads the whole file the
+ * same way cmd_exports does, but read_file's own definition sits after both,
+ * beside cmd_exports -- the read-only verbs' historical order, which this
+ * one declaration keeps from having to be reshuffled to satisfy. */
+static int read_file(const char *verb, const char *path, uint8_t **out, size_t *outlen);
+
+/* One image's report: the same lines for a thin file and for each slice of a
+ * fat container, so there is one description of what info says and not two.
+ * `label` heads it -- the path for a thin file, `slice NAME` for a slice. */
+static void info_image(mi_image *im, const char *label) {
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
-           path, im.size, im.hdr->ncmds, im.hdr->filetype);
+           label, im->size, im->hdr->ncmds, im->hdr->filetype);
     struct info_ctx ctx = { 0, 0 };
-    mi_each_lc(&im, info_cb, &ctx);
+    mi_each_lc(im, info_cb, &ctx);
 
     /* The fifth of target 10.9's detections, and the only one with no other
      * way to ask: mswift_stable_tagged_image (src/swift_retag.h) had exactly
      * one caller, me_expand_10_9. It returns a COUNT of tagged class records,
-     * so >0 is "tagged"; a negative is the walk refusing the image, which is
-     * said rather than rounded to "no". Flush left, beside `header pad:`,
-     * because it describes the image and not a load command. */
+     * so >0 is "tagged". swift_retag.h's own contract allows a negative
+     * return for a walk that refuses the image, so the "unknown" branch below
+     * stays to honor that contract -- but today's mswift_walk never takes it:
+     * a missing or out-of-bounds __objc_classlist/__objc_nlclslist section is
+     * skipped, not refused, so this can currently only ever print >0 or ==0.
+     * Flush left, beside `header pad:`, because it describes the image and
+     * not a load command. */
     {
-        int tagged = mswift_stable_tagged_image(&im);
+        int tagged = mswift_stable_tagged_image(im);
         if (tagged < 0)
             printf("swift-abi: unknown (class records could not be walked)\n");
         else if (tagged > 0)
@@ -466,25 +470,89 @@ static int cmd_info(const char *path, int thin_only) {
             printf("swift-abi: no class records carry the stable-ABI tag\n");
     }
 
-    uint32_t first_sect_off = mg_first_sect_off(im.buf, im.size);
+    uint32_t first_sect_off = mg_first_sect_off(im->buf, im->size);
     if (first_sect_off == MG_NO_SECTION_DATA) {
         /* Nothing in the image says where the pad ends, so no number would
          * be true; the rewriting verbs refuse such an image for the same
          * reason. */
         printf("header pad: unknown (no section data bounds it)\n");
-    } else if (first_sect_off != UINT32_MAX && first_sect_off > im.size) {
+    } else if (first_sect_off != UINT32_MAX && first_sect_off > im->size) {
         /* The offset is read from the file, and a pad measured to a point
          * past the end of the image would be a number no write could use;
          * the rewriting verbs refuse this image too. */
         printf("header pad: unknown (the first section lies past the end of the image)\n");
     } else if (first_sect_off != UINT32_MAX) {
-        uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) + im.hdr->sizeofcmds;
+        uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) + im->hdr->sizeofcmds;
         uint32_t pad = first_sect_off > lc_end ? first_sect_off - lc_end : 0;
         printf("header pad: %u bytes available (LC end=%u, first sect=%u)\n",
                pad, lc_end, first_sect_off);
     }
-    mi_close(&im);
-    return 0;
+}
+
+static int cmd_info(const char *path, int thin_only) {
+    mi_image im;
+    int mo_rc = mi_open(path, &im);
+    if (mo_rc == MI_IO_ERROR) {
+        fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
+        return EX_FAIL;
+    }
+    if (mo_rc == 0) {
+        info_image(&im, path);
+        mi_close(&im);
+        return 0;
+    }
+
+    /* Not a thin 64-bit Mach-O. With --thin that is the whole answer, and it
+     * is mi_open's verdict verbatim -- the four wrappers that gate on this
+     * reproduce their upstreams' refusal by its exit status alone
+     * (compat/drydock-macho-rewrite-compat.sh's mw_thin_only). */
+    if (thin_only) {
+        fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
+        return EX_REFUSED;
+    }
+
+    {
+        uint8_t *buf = NULL;
+        size_t size = 0;
+        uint32_t narch = 0, i;
+        int swapped = 0, rrc;
+
+        rrc = read_file("info", path, &buf, &size);
+        if (rrc != 0) return rrc;
+
+        if (mfat_parse(buf, size, &narch, &swapped) != 0) {
+            free(buf);
+            fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
+            return EX_REFUSED;
+        }
+
+        printf("%s: %zu bytes, %u slices\n", path, size, narch);
+        for (i = 0; i < narch; i++) {
+            mfat_arch a;
+            mi_image sl;
+            char name[32], label[64];
+            mfat_get(buf, swapped, i, &a);
+            ma_describe(a.cputype, a.cpusubtype, name);
+            /* mfat_parse proved offset+size is in bounds, so this slicing
+             * needs no further check of its own. */
+            if (mi_wrap(buf + a.offset, a.size, &sl) != 0) {
+                /* me_run_fat's own wording, reused rather than reinvented
+                 * (src/edit.c's me_fat_slice) -- the fact is the same one,
+                 * and a caller should not have to learn a second vocabulary
+                 * for it. That walk also distinguishes a THIRD reason, "not
+                 * selected by arch", which cannot arise here: info never
+                 * selects slices by arch, it reports every one. */
+                printf("slice %s: %s; passed through unchanged\n", name,
+                       (a.cputype & CPU_ARCH_ABI64) ? "not a 64-bit Mach-O" : "32-bit");
+                continue;
+            }
+            snprintf(label, sizeof label, "slice %s", name);
+            info_image(&sl, label);
+            mi_close(&sl);   /* mi_wrap's image is unowned (owned=0); frees nothing */
+        }
+        free(buf);
+        return 0;
+    }
 }
 
 /* ---- imports: every (install_name, symbol) pair this image binds, as TSV --
