@@ -603,6 +603,18 @@ tool's whole test surface instead.
 | `--strip-codesig` | also: `load-command delete codesig` |
 | `--no-strip-codesig` | nothing extra, and the wrapper never asks about it |
 
+`--strip-codesig`'s `load-command delete codesig` statement can match
+nothing — on a binary carrying no code signature to begin with, the way
+`tests/fixture.macho` itself does — and that is **not** a divergence from
+the fork: the fork exited 0 there too, doing nothing rather than refusing.
+Refusing an unmatched operation is `drydock-macho-rewrite`'s default now, so
+`mt_tr_insert_dylib` (`compat/translate.sh`) heads its emitted script with
+the `allow-unmatched` directive to preserve that upstream fidelity, exactly
+as `change_dylib`'s and `fix_macho`'s translations do for the same reason
+(their own "exit codes" sections above). Held by
+`tests/insert_dylib_test.sh`, "--strip-codesig on an unsigned binary: exits
+0" and "... OUT still has the dylib appended".
+
 `--inplace`, `--overwrite` and `--all-yes` never become a statement: they
 choose `OUT` and, in the wrapper, whether each of the fork's five prompts is
 asked and how it answers. Every prompt reads `/dev/tty`, never stdin — stdin

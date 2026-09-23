@@ -799,13 +799,14 @@ mt_tr_insert_dylib() {
     mt_id_parse "$@" || return 1
     mt_out=$(mt_id_out)
 
-    # --strip-codesig emits `load-command delete codesig` below, which misses
-    # on a binary carrying no signature -- and the fork exited 0 there, which
-    # is compat surface (compat/README.md's "insert_dylib" flag table, the
-    # `--strip-codesig` row). Refusing an unmatched operation is
-    # drydock-macho-rewrite's default now, so this heads the script with the
-    # directive that opts back out; the other statement this builds (`dylib
-    # append`) cannot miss.
+    # allow-unmatched heads the script because --strip-codesig below can
+    # miss: `load-command delete codesig` matches nothing on a binary
+    # carrying no signature, and the fork exited 0 there too -- upstream
+    # fidelity, not a divergence (compat/README.md's "insert_dylib" section,
+    # right after the flag table). The other two statements this builds
+    # cannot miss: `dylib append` always runs, unconditionally, and `dylib
+    # retype DYLIB weak` (--weak) names the very dylib `dylib append` just
+    # added, so it always finds what it is looking for.
     mt_body="allow-unmatched
 dylib append$(mt_qargs "$MT_ID_DYLIB")
 "

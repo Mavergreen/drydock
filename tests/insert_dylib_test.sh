@@ -448,6 +448,29 @@ else
     skip "--strip-codesig" "codesign -s - is not available on this host"
 fi
 
+# ---- 11b. --strip-codesig on an unsigned binary: exits 0, not a refusal ---
+#
+# `load-command delete codesig` -- the statement --strip-codesig emits --
+# matches nothing here: unlike case 11's ad-hoc-signed copy, "$FIXTURE"
+# itself carries no LC_CODE_SIGNATURE at all. An unmatched operation refuses
+# by default now, so this would exit 1 if `mt_tr_insert_dylib`
+# (compat/translate.sh) ever stopped heading its script with
+# `allow-unmatched` -- the directive is what keeps this the fork's own exit
+# 0, upstream fidelity rather than a divergence (compat/README.md's
+# insert_dylib section, right after the flag table). Unlike case 11, this
+# needs no `codesign` on the host at all -- "$FIXTURE" is already unsigned --
+# so it runs unconditionally and cannot SKIP here.
+cp "$FIXTURE" "$T/ns"
+( cd "$T" && "$BIN/insert_dylib" --all-yes --strip-codesig \
+    /usr/lib/libfoo.dylib ns ns_out ) >"$T/11b.out" 2>"$T/11b.err"
+rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "--strip-codesig on an unsigned binary: exits 0" \
+    || bad "--strip-codesig unsigned" "exit $rc (want 0): $(cat "$T/11b.err")"
+"$BIN/drydock-macho-rewrite" info "$T/ns_out" 2>/dev/null | grep -qF 'path=/usr/lib/libfoo.dylib' \
+    && ok "--strip-codesig on an unsigned binary: OUT still has the dylib appended" \
+    || bad "--strip-codesig unsigned" "OUT does not name the appended dylib"
+
 # ---- 12. --weak's two statements run in the right order --------------------
 # Section 2's fixture already carried a load command for the path being
 # inserted (needed there so `imports` had a real bind to report against),
