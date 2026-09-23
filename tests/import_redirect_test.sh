@@ -260,13 +260,13 @@ run "$T/alias" "$T/alias.out" "dylib append $SHIM" "import redirect _a_data $LIB
     || bad "verification: overlap" "exit $run_rc: $(cat "$T/run.err")"
 
 run "$T/lazy" "$T/none.out" "dylib append $SHIM" "import redirect _nosuch $LIBA $SHIM"
-[ "$run_rc" -eq 0 ] && grep -q "import redirect _nosuch .* matched nothing" "$T/run.err" \
-    && ok "matched nothing: reported, not refused" \
-    || bad "matched nothing" "exit $run_rc: $(cat "$T/run.err")"
-run "$T/lazy" "$T/none.out" fatal-warnings "dylib append $SHIM" "import redirect _nosuch $LIBA $SHIM"
 [ "$run_rc" -eq 1 ] && [ ! -e "$T/none.out" ] \
-    && ok "matched nothing: ... and refused under fatal-warnings" \
-    || bad "matched nothing: fatal" "exit $run_rc"
+    && ok "matched nothing: refused by default" \
+    || bad "matched nothing" "exit $run_rc: $(cat "$T/run.err")"
+run "$T/lazy" "$T/none.out" allow-unmatched "dylib append $SHIM" "import redirect _nosuch $LIBA $SHIM"
+[ "$run_rc" -eq 0 ] && grep -q "import redirect _nosuch .* matched nothing" "$T/run.err" \
+    && ok "matched nothing: ... and allow-unmatched reports it instead" \
+    || bad "matched nothing: allow-unmatched" "exit $run_rc: $(cat "$T/run.err")"
 
 run "$T/lazy" "$T/same.out" "import redirect _a_fn $LIBA $LIBA"
 [ "$run_rc" -eq 2 ] && grep -q "FROM-LIB and TO-LIB are both" "$T/run.err" \

@@ -106,7 +106,7 @@ unpie() {
 # ergonomic for everything else, not a stand-in for that.
 #
 # A directive is just another line,
-# so `--fatal-warnings` becomes a leading 'fatal-warnings' argument -- which
+# so `--allow-unmatched` becomes a leading 'allow-unmatched' argument -- which
 # is why the arguments stay in the order the flags were typed.
 #
 # printf '%s\n' over the argument list rather than a heredoc per call site: the
@@ -528,16 +528,17 @@ echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
 ok "capabilities: retype kinds do not advertise lazy"
 
 # NO OTHER `flags=` FIELD IS ADVERTISED, and that is the claim now. It used
-# to be per-verb: `fatal-warnings` was a verb-level flag, and assertions here
-# checked which verb advertised it. It is a SCRIPT DIRECTIVE today, and
-# print_capabilities deliberately does not list directives (see its own
-# contract: "that is a later decision"), so a `flags=` on any surviving line
-# would be advertising something no form accepts -- with one exception:
-# `verb info flags=--thin` names an actual CLI flag `info` itself parses
-# (tested below), not a directive in disguise, so it alone is allowed through.
+# to be per-verb: an unmatched-is-fatal switch was a verb-level flag, and
+# assertions here checked which verb advertised it. That behaviour is a
+# SCRIPT DIRECTIVE today, `allow-unmatched`, and print_capabilities
+# deliberately does not list directives (see its own contract: "that is a
+# later decision"), so a `flags=` on any surviving line would be advertising
+# something no form accepts -- with one exception: `verb info flags=--thin`
+# names an actual CLI flag `info` itself parses (tested below), not a
+# directive in disguise, so it alone is allowed through.
 #
 # WHAT THIS NO LONGER COVERS, stated rather than quietly dropped: a wrapper
-# cannot probe for `fatal-warnings` support. Its BEHAVIOUR is still asserted
+# cannot probe for `allow-unmatched` support. Its BEHAVIOUR is still asserted
 # below, per statement kind, against a real fixture -- it is only the
 # advertisement that went.
 stray_flags=$(echo "$caps" | grep 'flags=' | grep -vxF 'verb info flags=--thin' || true)
@@ -1523,14 +1524,15 @@ fi
 grep -q "load-command delete: unknown kind 'bogus-kind'" "$T/lc_bad.err" && ok "lc: bad kind message" \
     || bad "lc: bad kind message" "missing \"load-command delete: unknown kind 'bogus-kind'\": $(cat "$T/lc_bad.err")"
 # lc -delete naming a KIND the file does not carry: the strip-cmds twin of
-# the dylib -replace miss report above. The absence is MADE true by
+# the dylib -replace miss report above, so it needs the same allow-unmatched
+# to avoid the new default refusal. The absence is MADE true by
 # build_main_without_build_version rather than assumed from what the host's
 # linker happens to emit -- see that helper for why the old assumption was
 # false on the cross runner. So this is a guaranteed miss, not a maybe.
 build_main_without_build_version "$T/lc_miss_fixture"
-mts "$T/lc_miss_fixture" "load-command delete build-version" \
+mts "$T/lc_miss_fixture" allow-unmatched "load-command delete build-version" \
     >"$T/lc_miss.out" 2>"$T/lc_miss.err" && lc_miss_rc=0 || lc_miss_rc=$?
-[ "$lc_miss_rc" -eq 0 ] && ok "lc: -delete of an absent kind still exits 0" \
+[ "$lc_miss_rc" -eq 0 ] && ok "lc: allow-unmatched over an absent kind still exits 0" \
     || bad "lc: -delete of an absent kind" "expected 0, got $lc_miss_rc: $(cat "$T/lc_miss.err")"
 grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
     && ok "lc: names the kind that matched nothing" \
@@ -1547,9 +1549,10 @@ grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
 # second really finds nothing, so the miss is REAL and saying so is correct --
 # the sequential model has no shadowing to forgive. What survives unchanged is
 # the property the old assertion existed to protect: the run still SUCCEEDS,
-# and the LC_UUID is gone.
+# and the LC_UUID is gone -- which needs allow-unmatched now, since the
+# second delete's real miss would otherwise refuse the run by default.
 build_main "$T/lc_dup_fixture"
-mts "$T/lc_dup_fixture" "load-command delete uuid" "load-command delete uuid" \
+mts "$T/lc_dup_fixture" allow-unmatched "load-command delete uuid" "load-command delete uuid" \
     >/dev/null 2>"$T/lc_dup.err" || bad "lc: duplicate delete uuid" "$(cat "$T/lc_dup.err")"
 "$DRYDOCK_MACHO_REWRITE" info "$T/lc_dup_fixture" | grep -q LC_UUID \
     && bad "lc: duplicate delete uuid" "LC_UUID survived two deletes: $(cat "$T/lc_dup.err")" \
@@ -1559,38 +1562,36 @@ grep -q "no load command of kind uuid to delete" "$T/lc_dup.err" \
     || bad "lc: duplicate delete uuid" "the second delete found nothing but did not say so: $(cat "$T/lc_dup.err")"
 
 # ============================================================================
-# load-command delete under `fatal-warnings`: the same "matched nothing" report
+# load-command delete of an unmatched KIND: the same "matched nothing" report
 # as `load-command delete build-version` above (the fixture is stripped of it
-# first, not assumed to lack it), turned
-# into a refusal instead of just a stderr note. EX_REFUSED (1), the same
-# code a deliberate refusal uses elsewhere (cmd_verify),
-# because mr_apply_image returns MR_REFUSED for this and MR_REFUSED is
-# defined (src/rewrite.h) to equal EX_REFUSED. It was a verb FLAG
-# (--fatal-warnings); it is a script DIRECTIVE, a line of its own before the
-# statements it governs.
+# first, not assumed to lack it), refused by default instead of just a
+# stderr note. EX_REFUSED (1), the same code a deliberate refusal uses
+# elsewhere (cmd_verify), because mr_apply_image returns MR_REFUSED for this
+# and MR_REFUSED is defined (src/rewrite.h) to equal EX_REFUSED.
 # ============================================================================
 build_main_without_build_version "$T/lc_fw_fixture"
-mts "$T/lc_fw_fixture" fatal-warnings "load-command delete build-version" \
+mts "$T/lc_fw_fixture" "load-command delete build-version" \
     >/dev/null 2>"$T/lc_fw.err" && lc_fw_rc=0 || lc_fw_rc=$?
-[ "$lc_fw_rc" -eq 1 ] && ok "lc: fatal-warnings refuses when a KIND matched nothing (EX_REFUSED)" \
-    || bad "lc: fatal-warnings refusal" "expected exit 1, got $lc_fw_rc: $(cat "$T/lc_fw.err")"
+[ "$lc_fw_rc" -eq 1 ] && ok "lc: an unmatched KIND refuses by default (EX_REFUSED)" \
+    || bad "lc: unmatched refusal" "expected exit 1, got $lc_fw_rc: $(cat "$T/lc_fw.err")"
 grep -q "no load command of kind build-version to delete" "$T/lc_fw.err" \
-    && ok "lc: fatal-warnings still names the KIND that matched nothing" \
-    || bad "lc: fatal-warnings refusal message" "expected 'no load command of kind build-version to delete', got: $(cat "$T/lc_fw.err")"
-# Without the directive, the identical script still succeeds -- so the
-# directive is what changed the answer, not something else about this fixture.
+    && ok "lc: the refusal still names the KIND that matched nothing" \
+    || bad "lc: unmatched refusal message" "expected 'no load command of kind build-version to delete', got: $(cat "$T/lc_fw.err")"
+# allow-unmatched opts back into the old lenient behaviour: the identical
+# script now succeeds -- so the directive is what changed the answer, not
+# something else about this fixture.
 build_main_without_build_version "$T/lc_fw_lax_fixture"
-mts "$T/lc_fw_lax_fixture" "load-command delete build-version" \
+mts "$T/lc_fw_lax_fixture" allow-unmatched "load-command delete build-version" \
     >/dev/null 2>/dev/null && lc_fw_lax_rc=0 || lc_fw_lax_rc=$?
-[ "$lc_fw_lax_rc" -eq 0 ] && ok "lc: without fatal-warnings the same unmatched KIND still succeeds" \
-    || bad "lc: no fatal-warnings" "expected 0, got $lc_fw_lax_rc"
-# And when every delete DOES match, fatal-warnings must not refuse a run
+[ "$lc_fw_lax_rc" -eq 0 ] && ok "lc: allow-unmatched lets the same unmatched KIND succeed" \
+    || bad "lc: allow-unmatched" "expected 0, got $lc_fw_lax_rc"
+# And when every delete DOES match, allow-unmatched must not refuse a run
 # that had nothing to complain about.
 build_main "$T/lc_fw_ok_fixture"
-mts "$T/lc_fw_ok_fixture" fatal-warnings "load-command delete uuid" \
+mts "$T/lc_fw_ok_fixture" allow-unmatched "load-command delete uuid" \
     >/dev/null 2>"$T/lc_fw_ok.err" && lc_fw_ok_rc=0 || lc_fw_ok_rc=$?
-[ "$lc_fw_ok_rc" -eq 0 ] && ok "lc: fatal-warnings succeeds when the KIND matched" \
-    || bad "lc: fatal-warnings (matched)" "expected 0, got $lc_fw_ok_rc: $(cat "$T/lc_fw_ok.err")"
+[ "$lc_fw_ok_rc" -eq 0 ] && ok "lc: allow-unmatched succeeds when the KIND matched" \
+    || bad "lc: allow-unmatched (matched)" "expected 0, got $lc_fw_ok_rc: $(cat "$T/lc_fw_ok.err")"
 
 # ============================================================================
 # A directive alone, with no statement after it: a well-formed request to copy
@@ -1600,7 +1601,7 @@ mts "$T/lc_fw_ok_fixture" fatal-warnings "load-command delete uuid" \
 # ============================================================================
 build_main "$T/dylib_noop_fixture"
 dylib_noop_before=$(sha "$T/dylib_noop_fixture")
-if mts "$T/dylib_noop_fixture" fatal-warnings >/dev/null 2>"$T/dylib_noop.err"; then
+if mts "$T/dylib_noop_fixture" allow-unmatched >/dev/null 2>"$T/dylib_noop.err"; then
     ok "a directive alone: with no statement it is a well-formed script (exit 0)"
 else
     bad "a directive alone" "a directive-only script was refused: $(cat "$T/dylib_noop.err")"
@@ -1613,6 +1614,18 @@ if grep -qE -- "-strip-lc|-add-rpath" "$T/dylib_noop.err"; then
 else
     ok "a directive alone does not leak change_dylib's spellings"
 fi
+
+# `fatal-warnings` is GONE, not merely deprecated: it is an unknown statement
+# now, refused at parse time (2) like any other typo, before any statement
+# runs -- the end-to-end twin of script_test.c's
+# test_fatal_warnings_is_an_unknown_statement.
+mts "$T/dylib_noop_fixture" fatal-warnings "load-command delete uuid" \
+    >/dev/null 2>"$T/fw_gone.err" && fw_gone_rc=0 || fw_gone_rc=$?
+[ "$fw_gone_rc" -eq 2 ] && ok "fatal-warnings: refused as an unknown statement (2)" \
+    || bad "fatal-warnings gone" "expected exit 2, got $fw_gone_rc: $(cat "$T/fw_gone.err")"
+grep -qF "unknown statement 'fatal-warnings'" "$T/fw_gone.err" \
+    && ok "fatal-warnings: ... named exactly that" \
+    || bad "fatal-warnings gone message" "expected \"unknown statement 'fatal-warnings'\", got: $(cat "$T/fw_gone.err")"
 
 # ============================================================================
 # dylib -replace  (and a replacement long enough to force a real header grow)
@@ -1713,7 +1726,9 @@ grep -q "fat_arch_64" "$T/dylib_fat64.err" \
 # the tool used to say so NOWHERE: stdout reported only the -replace that DID
 # fire, and the exit code was 0. Ask for two, get one, no way to tell -- the
 # silent partial success docs/PROPOSAL.md's "verify" section exists to rule
-# out ("Every defect found in this code has been a silent success.").
+# out ("Every defect found in this code has been a silent success."). By
+# default this now refuses outright (below); allow-unmatched opts back into
+# reporting the miss and finishing the run, which is what this block proves.
 #
 # The report has to land on stderr, not stdout: the compat/ wrappers need
 # stdout byte-identical to the tools they replaced (tests/known-callers.sh,
@@ -1721,11 +1736,11 @@ grep -q "fat_arch_64" "$T/dylib_fat64.err" \
 # look.
 # ============================================================================
 build_main "$T/unmatched_fixture"
-unmatched_out=$(mts "$T/unmatched_fixture" \
+unmatched_out=$(mts "$T/unmatched_fixture" allow-unmatched \
         "dylib replace /usr/lib/libSystem.B.dylib /tmp/new.dylib" \
         "dylib replace /nope/absent.dylib /also/absent.dylib" \
         2>"$T/unmatched.err") && unmatched_rc=0 || unmatched_rc=$?
-[ "$unmatched_rc" -eq 0 ] && ok "dylib: unmatched replace still exits 0" \
+[ "$unmatched_rc" -eq 0 ] && ok "dylib: allow-unmatched still exits 0 despite the miss" \
     || bad "dylib: unmatched replace exit" "expected 0, got $unmatched_rc: $(cat "$T/unmatched.err")"
 grep -qF "/nope/absent.dylib matched nothing" "$T/unmatched.err" \
     && ok "dylib: names the replace that matched nothing" \
@@ -1746,7 +1761,7 @@ echo "$unmatched_out" | grep -qF "libSystem.B.dylib -> /tmp/new.dylib" \
 # dylib hit only when new_path != NULL leaves `replace` correct and makes every
 # successful DELETE report itself as a miss: ctest, all six shell suites and the
 # characterize digest stay green while `dylib delete P` prints "P matched
-# nothing" for a P it just removed. Under --fatal-warnings that miss becomes a
+# nothing" for a P it just removed. By default that miss becomes a
 # refusal, so the tool declines work it actually did and writes no OUT.
 # The block above says a hit/miss inversion "has to be checked for directly,
 # not just inferred from the positive cases passing". It said that of replace
@@ -1763,7 +1778,7 @@ mts "$T/del_hit_fixture" "dylib delete /tmp/del_hit_unbound.dylib" \
     && ok "dylib: a delete that matched exits 0" \
     || bad "dylib: matched delete exit" "expected 0, got $del_hit_rc: $(cat "$T/del_hit.err")"
 if grep -q "matched nothing" "$T/del_hit.err"; then
-    bad "dylib: matched delete reported as a miss"         "a delete that REMOVED a command reported it matched nothing -- under --fatal-warnings that refuses work the tool actually did: $(cat "$T/del_hit.err")"
+    bad "dylib: matched delete reported as a miss"         "a delete that REMOVED a command reported it matched nothing -- by default that refuses work the tool actually did: $(cat "$T/del_hit.err")"
 else
     ok "dylib: a delete that matched is not reported as a miss"
 fi
@@ -1795,16 +1810,19 @@ fi
 # name has described a rename -- and the repo owner authorised it in advance.
 # The order-independence given up was a rule that had to be documented to be
 # predicted.
+# allow-unmatched, because the delete's real miss (below) would otherwise
+# refuse the run by default -- this block is about what the miss reports,
+# which needs a run that finishes to observe.
 build_main "$T/dylib_conflict_fixture"
 conflict_path="@loader_path/libconflict.dylib"
 conflict_new="/also/absent.dylib"
 mts "$T/dylib_conflict_fixture" "dylib append $conflict_path" \
     >/dev/null 2>&1 || bad "dylib: conflict fixture setup" "append of $conflict_path failed"
-mts "$T/dylib_conflict_fixture" \
+mts "$T/dylib_conflict_fixture" allow-unmatched \
         "dylib replace $conflict_path $conflict_new" \
         "dylib delete $conflict_path" \
         >"$T/conflict.out" 2>"$T/conflict.err" && conflict_rc=0 || conflict_rc=$?
-[ "$conflict_rc" -eq 0 ] && ok "dylib: replace then delete on the same path still exits 0" \
+[ "$conflict_rc" -eq 0 ] && ok "dylib: allow-unmatched, replace then delete on the same path still exits 0" \
     || bad "dylib: replace+delete same path" "expected 0, got $conflict_rc: $(cat "$T/conflict.err")"
 conflict_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_conflict_fixture")
 if echo "$conflict_info" | grep -qF "path=$conflict_new"; then
@@ -1826,9 +1844,9 @@ grep -qF "$conflict_path matched nothing" "$T/conflict.err" \
     || bad "dylib: replace+delete same path" "the delete found nothing but did not say so: $(cat "$T/conflict.err")"
 
 # ============================================================================
-# dylib --fatal-warnings: turns the "matched nothing" report just above from
-# a stderr note into a refusal. Two -replace ops, one of which matches and
-# one of which cannot -- so this also proves that a refused run WRITES
+# dylib unmatched by default: turns the "matched nothing" report just above
+# from a stderr note into a refusal. Two -replace ops, one of which matches
+# and one of which cannot -- so this also proves that a refused run WRITES
 # NOTHING, even though the rewrite itself succeeded: the verdict is decided
 # before mr_apply_file's wa_write_new, so OUT is never created and the op that
 # DID match lands nowhere.
@@ -1844,79 +1862,78 @@ grep -qF "$conflict_path matched nothing" "$T/conflict.err" \
 build_main "$T/dylib_fw_fixture"
 cp "$T/dylib_fw_fixture" "$T/dylib_fw_before"
 rm -f "$T/dylib_fw_out"
-printf 'fatal-warnings\ndylib replace @loader_path/liba.dylib @loader_path/renamed-fw.dylib\ndylib replace /nope/absent-fw.dylib /also/absent-fw.dylib\n' \
+printf 'dylib replace @loader_path/liba.dylib @loader_path/renamed-fw.dylib\ndylib replace /nope/absent-fw.dylib /also/absent-fw.dylib\n' \
     | "$DRYDOCK_MACHO_REWRITE" "$T/dylib_fw_fixture" "$T/dylib_fw_out" \
         >"$T/dylib_fw.out" 2>"$T/dylib_fw.err" && dylib_fw_rc=0 || dylib_fw_rc=$?
-[ "$dylib_fw_rc" -eq 1 ] && ok "dylib: fatal-warnings refuses an unmatched op (EX_REFUSED)" \
-    || bad "dylib: fatal-warnings refusal" "expected exit 1, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
+[ "$dylib_fw_rc" -eq 1 ] && ok "dylib: an unmatched op refuses by default (EX_REFUSED)" \
+    || bad "dylib: unmatched refusal" "expected exit 1, got $dylib_fw_rc: $(cat "$T/dylib_fw.err")"
 grep -qF "/nope/absent-fw.dylib matched nothing" "$T/dylib_fw.err" \
-    && ok "dylib: fatal-warnings still names the op that matched nothing" \
-    || bad "dylib: fatal-warnings refusal message" "expected '/nope/absent-fw.dylib matched nothing' on stderr, got: $(cat "$T/dylib_fw.err")"
+    && ok "dylib: the refusal still names the op that matched nothing" \
+    || bad "dylib: unmatched refusal message" "expected '/nope/absent-fw.dylib matched nothing' on stderr, got: $(cat "$T/dylib_fw.err")"
 [ ! -e "$T/dylib_fw_out" ] \
-    && ok "dylib: fatal-warnings wrote no OUT, though one statement did match" \
-    || bad "dylib: fatal-warnings wrote OUT" "a refused run left $T/dylib_fw_out behind: $("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_fw_out")"
+    && ok "dylib: the refusal wrote no OUT, though one statement did match" \
+    || bad "dylib: unmatched refusal wrote OUT" "a refused run left $T/dylib_fw_out behind: $("$DRYDOCK_MACHO_REWRITE" info "$T/dylib_fw_out")"
 cmp -s "$T/dylib_fw_fixture" "$T/dylib_fw_before" \
-    && ok "dylib: fatal-warnings left FILE byte-for-byte untouched" \
-    || bad "dylib: fatal-warnings touched FILE" "FILE changed under a form that only reads it"
-# Without the directive, the identical script still succeeds -- so the
-# directive is what changed the answer, not something else about this fixture.
+    && ok "dylib: the refusal left FILE byte-for-byte untouched" \
+    || bad "dylib: unmatched refusal touched FILE" "FILE changed under a form that only reads it"
+# allow-unmatched opts back into the old lenient behaviour: the identical
+# script now succeeds -- so the directive is what changed the answer, not
+# something else about this fixture.
 build_main "$T/dylib_fw_lax_fixture"
-mts "$T/dylib_fw_lax_fixture" \
+mts "$T/dylib_fw_lax_fixture" allow-unmatched \
         "dylib replace @loader_path/liba.dylib @loader_path/renamed-fw-lax.dylib" \
         "dylib replace /nope/absent-fw.dylib /also/absent-fw.dylib" \
         >/dev/null 2>/dev/null && dylib_fw_lax_rc=0 || dylib_fw_lax_rc=$?
-[ "$dylib_fw_lax_rc" -eq 0 ] && ok "dylib: without fatal-warnings the same unmatched op still succeeds" \
-    || bad "dylib: no fatal-warnings" "expected 0, got $dylib_fw_lax_rc"
-# And when every op DOES match, fatal-warnings must not refuse a run that
+[ "$dylib_fw_lax_rc" -eq 0 ] && ok "dylib: allow-unmatched lets the same unmatched op succeed" \
+    || bad "dylib: allow-unmatched" "expected 0, got $dylib_fw_lax_rc"
+# And when every op DOES match, allow-unmatched must not refuse a run that
 # had nothing to complain about.
 build_main "$T/dylib_fw_ok_fixture"
-mts "$T/dylib_fw_ok_fixture" fatal-warnings \
+mts "$T/dylib_fw_ok_fixture" allow-unmatched \
         "dylib replace @loader_path/liba.dylib @loader_path/renamed-fw-ok.dylib" \
         >"$T/dylib_fw_ok.out" 2>"$T/dylib_fw_ok.err" && dylib_fw_ok_rc=0 || dylib_fw_ok_rc=$?
-[ "$dylib_fw_ok_rc" -eq 0 ] && ok "dylib: fatal-warnings succeeds when nothing is unmatched" \
-    || bad "dylib: fatal-warnings (matched)" "expected 0, got $dylib_fw_ok_rc: $(cat "$T/dylib_fw_ok.err")"
+[ "$dylib_fw_ok_rc" -eq 0 ] && ok "dylib: allow-unmatched succeeds when nothing is unmatched" \
+    || bad "dylib: allow-unmatched (matched)" "expected 0, got $dylib_fw_ok_rc: $(cat "$T/dylib_fw_ok.err")"
 
 # EVERY operation matches nothing, not just one of several -- the case that
-# used to be the only one where a --fatal-warnings refusal wrote nothing,
-# because mr_process_thin's "nothing to change" early return left *out_modified
-# at 0 and the conditional write never ran. It is no longer the special case:
-# the assertion above now says the same thing about a run where one operation
+# used to be the only one where an unmatched refusal wrote nothing, because
+# mr_process_thin's "nothing to change" early return left *out_modified at 0
+# and the conditional write never ran. It is no longer the special case: the
+# assertion above now says the same thing about a run where one operation
 # DID match. Kept, because the two reach the refusal by different routes and
 # both must end with no OUT.
 build_main "$T/dylib_fw_allmiss_fixture"
 cp "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before"
 rm -f "$T/dylib_fw_allmiss_out"
-printf 'fatal-warnings\ndylib replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dylib\n' \
+printf 'dylib replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dylib\n' \
     | "$DRYDOCK_MACHO_REWRITE" "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_out" \
         >/dev/null 2>"$T/dylib_fw_allmiss.err" && dylib_fw_allmiss_rc=0 || dylib_fw_allmiss_rc=$?
-[ "$dylib_fw_allmiss_rc" -eq 1 ] && ok "dylib: fatal-warnings refuses when EVERY op matched nothing" \
-    || bad "dylib: fatal-warnings (all miss)" "expected exit 1, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
+[ "$dylib_fw_allmiss_rc" -eq 1 ] && ok "dylib: refuses by default when EVERY op matched nothing" \
+    || bad "dylib: unmatched refusal (all miss)" "expected exit 1, got $dylib_fw_allmiss_rc: $(cat "$T/dylib_fw_allmiss.err")"
 [ ! -e "$T/dylib_fw_allmiss_out" ] \
-    && ok "dylib: fatal-warnings wrote no OUT when nothing at all matched" \
-    || bad "dylib: fatal-warnings (all miss)" "a refused run left an OUT behind"
+    && ok "dylib: the refusal wrote no OUT when nothing at all matched" \
+    || bad "dylib: unmatched refusal (all miss)" "a refused run left an OUT behind"
 cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
-    && ok "dylib: fatal-warnings left the file byte-for-byte untouched when nothing at all matched" \
-    || bad "dylib: fatal-warnings (all miss)" "the file was modified despite every operation matching nothing"
+    && ok "dylib: the refusal left the file byte-for-byte untouched when nothing at all matched" \
+    || bad "dylib: unmatched refusal (all miss)" "the file was modified despite every operation matching nothing"
 
 # `segment rename` and `swift-abi set` name no path that could miss, so
-# fatal-warnings has nothing to promote for either. It was a VERB FLAG the two
-# verbs did not parse, refused as a wrong argument count with each verb's own
-# usage line; it is a DIRECTIVE now, accepted by every script, and the claim
-# that survives is the one that matters: turning it on must not turn a run that
-# renamed (or retagged) successfully into a refusal, because there was never a
-# miss to promote.
+# refusing an unmatched operation by default has nothing to promote for
+# either. The claim that matters: the new default must not turn a run that
+# renamed (or retagged) successfully into a refusal, because there was never
+# a miss to promote.
 build_main "$T/segment_fw_fixture"
-mts "$T/segment_fw_fixture" fatal-warnings "segment rename __DATA __DATA_R9" \
+mts "$T/segment_fw_fixture" "segment rename __DATA __DATA_R9" \
     >/dev/null 2>"$T/segment_fw.err" \
-    && ok "segment: fatal-warnings has nothing to promote, so a matching rename still succeeds" \
-    || bad "segment: fatal-warnings" "a rename that matched was refused under fatal-warnings: $(cat "$T/segment_fw.err")"
+    && ok "segment: nothing to promote, so a matching rename still succeeds by default" \
+    || bad "segment: unmatched refusal" "a rename that matched was refused: $(cat "$T/segment_fw.err")"
 "$DRYDOCK_MACHO_REWRITE" info "$T/segment_fw_fixture" | grep -q "segname=__DATA_R9" \
     && ok "segment: ... and the rename really landed" \
-    || bad "segment: fatal-warnings" "no __DATA_R9 segment after the rename"
-mts "$T/segment_fw_fixture" fatal-warnings "swift-abi set legacy" \
+    || bad "segment: unmatched refusal" "no __DATA_R9 segment after the rename"
+mts "$T/segment_fw_fixture" "swift-abi set legacy" \
     >/dev/null 2>"$T/retag_fw.err" \
-    && ok "swift-abi: fatal-warnings has nothing to promote, so a retag of a binary with no Swift classes still succeeds" \
-    || bad "swift-abi: fatal-warnings" "refused under fatal-warnings: $(cat "$T/retag_fw.err")"
+    && ok "swift-abi: nothing to promote, so a retag of a binary with no Swift classes still succeeds by default" \
+    || bad "swift-abi: unmatched refusal" "refused: $(cat "$T/retag_fw.err")"
 
 # ============================================================================
 # dylib -append / -insert / -delete / -reexport
@@ -2157,11 +2174,12 @@ else
 fi
 
 # rpath -replace naming a search path the file does not have: the rpath twin
-# of the dylib -replace miss report above.
+# of the dylib -replace miss report above. allow-unmatched, for the same
+# reason: by default this would refuse.
 build_main "$T/rpath_miss_fixture" "/tmp/cli_test_rpath_present"
-mts "$T/rpath_miss_fixture" "rpath replace /tmp/cli_test_rpath_absent /tmp/cli_test_rpath_new" \
+mts "$T/rpath_miss_fixture" allow-unmatched "rpath replace /tmp/cli_test_rpath_absent /tmp/cli_test_rpath_new" \
     >"$T/rpath_miss.out" 2>"$T/rpath_miss.err" && rpath_miss_rc=0 || rpath_miss_rc=$?
-[ "$rpath_miss_rc" -eq 0 ] && ok "rpath: unmatched -replace still exits 0" \
+[ "$rpath_miss_rc" -eq 0 ] && ok "rpath: allow-unmatched -replace still exits 0" \
     || bad "rpath: unmatched -replace" "expected 0, got $rpath_miss_rc: $(cat "$T/rpath_miss.err")"
 grep -q "rpath /tmp/cli_test_rpath_absent matched nothing" "$T/rpath_miss.err" \
     && ok "rpath: names the -replace that matched nothing" \
@@ -2171,31 +2189,32 @@ echo "$rpath_miss_info" | grep -q "rpath=/tmp/cli_test_rpath_present" \
     && ok "rpath: an untouched rpath is left alone by the unmatched -replace" \
     || bad "rpath: unmatched -replace" "the ORIGINAL rpath disappeared: $rpath_miss_info"
 
-# rpath --fatal-warnings: the same miss report just above, turned into a
-# refusal, the rpath twin of the dylib --fatal-warnings block above.
+# rpath unmatched by default: the same miss report just above, turned into a
+# refusal, the rpath twin of the dylib unmatched-by-default block above.
 build_main "$T/rpath_fw_fixture" "/tmp/cli_test_rpath_fw_present"
-mts "$T/rpath_fw_fixture" fatal-warnings \
+mts "$T/rpath_fw_fixture" \
         "rpath replace /tmp/cli_test_rpath_fw_absent /tmp/cli_test_rpath_fw_new" \
         >/dev/null 2>"$T/rpath_fw.err" && rpath_fw_rc=0 || rpath_fw_rc=$?
-[ "$rpath_fw_rc" -eq 1 ] && ok "rpath: --fatal-warnings refuses an unmatched op (EX_REFUSED)" \
-    || bad "rpath: --fatal-warnings refusal" "expected exit 1, got $rpath_fw_rc: $(cat "$T/rpath_fw.err")"
+[ "$rpath_fw_rc" -eq 1 ] && ok "rpath: an unmatched op refuses by default (EX_REFUSED)" \
+    || bad "rpath: unmatched refusal" "expected exit 1, got $rpath_fw_rc: $(cat "$T/rpath_fw.err")"
 grep -q "rpath /tmp/cli_test_rpath_fw_absent matched nothing" "$T/rpath_fw.err" \
-    && ok "rpath: --fatal-warnings still names the op that matched nothing" \
-    || bad "rpath: --fatal-warnings refusal message" "expected the miss message on stderr, got: $(cat "$T/rpath_fw.err")"
-# Without --fatal-warnings, the identical invocation still succeeds.
+    && ok "rpath: the refusal still names the op that matched nothing" \
+    || bad "rpath: unmatched refusal message" "expected the miss message on stderr, got: $(cat "$T/rpath_fw.err")"
+# allow-unmatched opts back into the old lenient behaviour: the identical
+# invocation now succeeds.
 build_main "$T/rpath_fw_lax_fixture" "/tmp/cli_test_rpath_fw_lax_present"
-mts "$T/rpath_fw_lax_fixture" \
+mts "$T/rpath_fw_lax_fixture" allow-unmatched \
         "rpath replace /tmp/cli_test_rpath_fw_absent /tmp/cli_test_rpath_fw_new" \
         >/dev/null 2>/dev/null && rpath_fw_lax_rc=0 || rpath_fw_lax_rc=$?
-[ "$rpath_fw_lax_rc" -eq 0 ] && ok "rpath: without --fatal-warnings the same unmatched op still succeeds" \
-    || bad "rpath: no --fatal-warnings" "expected 0, got $rpath_fw_lax_rc"
-# And when the op DOES match, --fatal-warnings must not refuse.
+[ "$rpath_fw_lax_rc" -eq 0 ] && ok "rpath: allow-unmatched lets the same unmatched op succeed" \
+    || bad "rpath: allow-unmatched" "expected 0, got $rpath_fw_lax_rc"
+# And when the op DOES match, allow-unmatched must not refuse.
 build_main "$T/rpath_fw_ok_fixture" "/tmp/cli_test_rpath_fw_ok_present"
-mts "$T/rpath_fw_ok_fixture" fatal-warnings \
+mts "$T/rpath_fw_ok_fixture" allow-unmatched \
         "rpath replace /tmp/cli_test_rpath_fw_ok_present /tmp/cli_test_rpath_fw_ok_new" \
         >"$T/rpath_fw_ok.out" 2>"$T/rpath_fw_ok.err" && rpath_fw_ok_rc=0 || rpath_fw_ok_rc=$?
-[ "$rpath_fw_ok_rc" -eq 0 ] && ok "rpath: --fatal-warnings succeeds when nothing is unmatched" \
-    || bad "rpath: --fatal-warnings (matched)" "expected 0, got $rpath_fw_ok_rc: $(cat "$T/rpath_fw_ok.err")"
+[ "$rpath_fw_ok_rc" -eq 0 ] && ok "rpath: allow-unmatched succeeds when nothing is unmatched" \
+    || bad "rpath: allow-unmatched (matched)" "expected 0, got $rpath_fw_ok_rc: $(cat "$T/rpath_fw_ok.err")"
 
 # ============================================================================
 # rpath -insert: the search path lands FIRST, not last
@@ -2682,11 +2701,15 @@ cmp -s "$T/segment_17_fixture" "$T/segment_17_before" \
     && ok "segment: a refused rename left the file byte-for-byte unchanged" \
     || bad "segment: 17-byte name" "the file was modified despite the refusal"
 
-# A segment name nothing matches must leave the file alone -- and say so.
+# A segment name nothing matches refuses by default -- and leaves the file
+# alone.
 "$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_nomatch_fixture"
 cp "$T/segment_nomatch_fixture" "$T/segment_nomatch_before"
+rc=0
 mts "$T/segment_nomatch_fixture" "segment rename __NOSUCHSEG __OTHER" \
-    >"$T/segment_nomatch.out" 2>&1 || bad "segment: no-match exit" "$(cat "$T/segment_nomatch.out")"
+    >"$T/segment_nomatch.out" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && ok "segment: a rename that matches nothing refuses by default (EX_REFUSED)" \
+    || bad "segment: no-match exit" "expected exit 1, got $rc: $(cat "$T/segment_nomatch.out")"
 cmp -s "$T/segment_nomatch_fixture" "$T/segment_nomatch_before" \
     && ok "segment: a rename that matched nothing did not touch the file" \
     || bad "segment: no-match" "the file changed although no segment matched"
@@ -3355,15 +3378,16 @@ build_main "$T/nwid2"
 
 # A 0 EXIT MUST LEAVE OUT THERE, even when there was nothing to change: OUT is
 # the answer, so a caller that got exit 0 and no OUT would have been told the
-# work succeeded and handed nothing. Nothing matched here, so OUT has to be a
-# byte-for-byte copy of FILE.
+# work succeeded and handed nothing. Nothing matches here, so without
+# allow-unmatched the run would refuse (below); with it, OUT still has to be
+# a byte-for-byte copy of FILE.
 build_main "$T/nwi_noop"
 rm -f "$T/nwi_noop_out"
-printf 'dylib delete /not/linked/at/all.dylib\n' \
+printf 'allow-unmatched\ndylib delete /not/linked/at/all.dylib\n' \
     | "$DRYDOCK_MACHO_REWRITE" "$T/nwi_noop" "$T/nwi_noop_out" \
     >"$T/nwi_noop.out" 2>"$T/nwi_noop.err" && nwi_noop_rc=0 || nwi_noop_rc=$?
 [ "$nwi_noop_rc" -eq 0 ] \
-    && ok "dylib: an operation that matched nothing still exits 0" \
+    && ok "dylib: allow-unmatched with nothing to change still exits 0" \
     || bad "dylib nothing-to-change" "exit $nwi_noop_rc: $(cat "$T/nwi_noop.err")"
 cmp -s "$T/nwi_noop" "$T/nwi_noop_out" \
     && ok "dylib: ... and OUT is there, byte-identical to FILE" \
@@ -3656,30 +3680,32 @@ rc=0
     || bad "edit --output gone" "expected 2, got $rc: $(cat "$T/edit_output.err")"
 
 # A 0 EXIT LEAVES OUT THERE, even when no statement changed anything: OUT is
-# the answer, so exit 0 with no OUT would hand a caller nothing.
+# the answer, so exit 0 with no OUT would hand a caller nothing. Without
+# allow-unmatched a statement that changes nothing would refuse (below), so
+# it has to lead the script here too.
 build_main "$T/edit_noop"
-printf 'dylib delete /not/linked/at/all.dylib\n' >"$T/noop.edits"
+printf 'allow-unmatched\ndylib delete /not/linked/at/all.dylib\n' >"$T/noop.edits"
 rm -f "$T/edit_noop_out"
 "$DRYDOCK_MACHO_REWRITE" "$T/edit_noop" "$T/edit_noop_out" <"$T/noop.edits" \
     >/dev/null 2>"$T/edit_noop.err" && edit_noop_rc=0 || edit_noop_rc=$?
-[ "$edit_noop_rc" -eq 0 ] && ok "edit: a script that changed nothing still exits 0" \
+[ "$edit_noop_rc" -eq 0 ] && ok "edit: allow-unmatched over a script that changed nothing still exits 0" \
     || bad "edit nothing-to-change" "exit $edit_noop_rc: $(cat "$T/edit_noop.err")"
 cmp -s "$T/edit_noop" "$T/edit_noop_out" \
     && ok "edit: ... and OUT is there, byte-identical to FILE" \
     || bad "edit nothing-to-change" "OUT is missing or differs from FILE"
 
 # A REFUSED RUN WRITES NOTHING AT ALL: not FILE, which `edit` never writes,
-# and not OUT, which may never have existed. fatal-warnings over an operation
-# that matches nothing is the cheapest way to reach a refusal after the image
-# has already been read.
+# and not OUT, which may never have existed. An operation that matches
+# nothing is refused by default -- the cheapest way to reach a refusal after
+# the image has already been read.
 build_main "$T/edit_ref"
 ref_before=$(sha "$T/edit_ref")
-printf 'fatal-warnings\ndylib delete /definitely/not/linked.dylib\n' >"$T/ref.edits"
+printf 'dylib delete /definitely/not/linked.dylib\n' >"$T/ref.edits"
 rm -f "$T/edit_ref_out"
 "$DRYDOCK_MACHO_REWRITE" "$T/edit_ref" "$T/edit_ref_out" <"$T/ref.edits" \
     >/dev/null 2>"$T/edit_ref.err" && ref_rc=0 || ref_rc=$?
 [ "$ref_rc" -eq 1 ] \
-    && ok "edit: an unmatched operation under fatal-warnings is refused (1)" \
+    && ok "edit: an unmatched operation is refused by default (1)" \
     || bad "edit refusal" "expected 1, got $ref_rc: $(cat "$T/edit_ref.err")"
 [ "$(sha "$T/edit_ref")" = "$ref_before" ] && [ ! -e "$T/edit_ref_out" ] \
     && ok "edit: ... and the refused run left FILE unchanged and wrote no OUT" \
@@ -3746,11 +3772,11 @@ rm -f "$T/ri.out"
 ri_both "fat_arch_64 container" "$T/ri5.err"
 
 # A statement's own refusal.
-printf 'fatal-warnings\nload-command delete uuid\n' >"$T/ri_fw.edits"
+printf 'load-command delete uuid\n' >"$T/ri_fw.edits"
 printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ri_in" "$T/ri_nouuid" >/dev/null 2>&1
 rm -f "$T/ri.out"
 "$DRYDOCK_MACHO_REWRITE" "$T/ri_nouuid" "$T/ri.out" <"$T/ri_fw.edits" >/dev/null 2>"$T/ri6.err" || :
-ri_both "a statement that matched nothing under fatal-warnings" "$T/ri6.err"
+ri_both "a statement that matched nothing, refused by default" "$T/ri6.err"
 [ ! -e "$T/ri.out" ] \
     && ok "refusal inventory: and every one of them wrote no OUT" \
     || bad "refusal inventory" "OUT exists after a refusal"
@@ -4503,9 +4529,14 @@ fi
 # every dylib replace after it, and this tool does not reorder statements --
 # the script is the plan. So the expansion has to land at the target line's
 # own position, which the report's order is what shows.
+#
+# mkchained's fixture is hand-built with no LC_UUID (see tests/mkchained.c),
+# so `load-command delete uuid` here is a deliberate miss, incidental to what
+# this block tests -- allow-unmatched keeps the run finishing so the report's
+# ORDER can still be read.
 tgt_at() { grep -n "$2" "$1" | head -1 | cut -d: -f1; }
-printf 'load-command delete uuid\ntarget 10.9\n' >"$T/tgt_after.edits"
-printf 'target 10.9\nload-command delete uuid\n' >"$T/tgt_before.edits"
+printf 'allow-unmatched\nload-command delete uuid\ntarget 10.9\n' >"$T/tgt_after.edits"
+printf 'allow-unmatched\ntarget 10.9\nload-command delete uuid\n' >"$T/tgt_before.edits"
 "$T/mkchained" make "$T/tgt_pos1"
 "$T/mkchained" make "$T/tgt_pos2"
 tgt_run "$T/tgt_pos1" "$T/tgt_pos1.out" "$T/tgt_after.edits" \
@@ -4523,49 +4554,49 @@ tgt_fx=$(tgt_at "$T/tgt.err" "^    fixups set classic")
     && ok "target: written first, its expansion is reported first" \
     || bad "target (position)" "expansion at '$tgt_fx', uuid at '$tgt_uuid': $(cat "$T/tgt.err")"
 
-# TARGET NEVER COUNTS AS UNMATCHED UNDER fatal-warnings. On a chained image
-# the expansion derives both `fixups set classic` and `load-command delete
-# build-version` -- and the first strips LC_BUILD_VERSION itself, so the
-# second finds nothing left to do. "This binary already targets 10.9
-# correctly" is a correct answer for a profile, so that is not a miss.
-printf 'fatal-warnings\ntarget 10.9\n' >"$T/tgt_fw.edits"
+# TARGET NEVER COUNTS AS UNMATCHED. On a chained image the expansion derives
+# both `fixups set classic` and `load-command delete build-version` -- and
+# the first strips LC_BUILD_VERSION itself, so the second finds nothing left
+# to do. "This binary already targets 10.9 correctly" is a correct answer
+# for a profile, so that is not a miss, and it must not refuse by default.
+printf 'target 10.9\n' >"$T/tgt_fw.edits"
 "$T/mkchained" make "$T/tgt_fw"
 tgt_run "$T/tgt_fw" "$T/tgt_fw.out" "$T/tgt_fw.edits" && tgt_fw_rc=0 || tgt_fw_rc=$?
 [ "$tgt_fw_rc" -eq 0 ] && [ -e "$T/tgt_fw.out" ] \
-    && ok "target: a derived statement that matches nothing is not a miss under fatal-warnings" \
-    || bad "target (fatal-warnings)" "exit $tgt_fw_rc: $(cat "$T/tgt.err")"
+    && ok "target: a derived statement that matches nothing is not a miss, and does not refuse by default" \
+    || bad "target (unmatched)" "exit $tgt_fw_rc: $(cat "$T/tgt.err")"
 grep -q "matched nothing" "$T/tgt.err" \
-    && bad "target (fatal-warnings)" "reported a derived statement as unmatched: $(cat "$T/tgt.err")" \
+    && bad "target (unmatched)" "reported a derived statement as unmatched: $(cat "$T/tgt.err")" \
     || ok "target: ... and nothing is reported as having matched nothing"
 
 # THE OTHER SIDE OF THAT, WHICH IS NOT SPECIAL-CASED: writing `target 10.9`
 # AND an explicit statement it would have derived makes the explicit one
-# redundant, and fatal-warnings flags it. Same script as above with one line
+# redundant, and it refuses by default. Same script as above with one line
 # added -- the expansion's `fixups set classic` strips LC_BUILD_VERSION, so by
 # the time the EXPLICIT `load-command delete build-version` runs there is
 # nothing of that kind left. A statement somebody wrote that matched nothing
-# is a miss, and under fatal-warnings a refusal. Both halves are documented
-# rather than smoothed over, so both halves are pinned.
-printf 'fatal-warnings\ntarget 10.9\nload-command delete build-version\n' >"$T/tgt_redundant.edits"
+# is a miss, and by default a refusal. Both halves are documented rather
+# than smoothed over, so both halves are pinned.
+printf 'target 10.9\nload-command delete build-version\n' >"$T/tgt_redundant.edits"
 "$T/mkchained" make "$T/tgt_redundant"
 tgt_red_before=$(sha "$T/tgt_redundant")
 tgt_run "$T/tgt_redundant" "$T/tgt_redundant.out" "$T/tgt_redundant.edits" \
     && tgt_red_rc=0 || tgt_red_rc=$?
 [ "$tgt_red_rc" -eq 1 ] && [ ! -e "$T/tgt_redundant.out" ] \
     && [ "$(sha "$T/tgt_redundant")" = "$tgt_red_before" ] \
-    && ok "target: an explicit statement the expansion already did is redundant, and fatal-warnings refuses it (1)" \
+    && ok "target: an explicit statement the expansion already did is redundant, and refuses it by default (1)" \
     || bad "target (redundant)" "expected 1 and no OUT, got $tgt_red_rc: $(cat "$T/tgt.err")"
 grep -q "no load command of kind build-version to delete" "$T/tgt.err" \
     && ok "target: ... and the miss reported is the explicit statement's, not the derived one's" \
     || bad "target (redundant)" "no miss reported for the explicit statement: $(cat "$T/tgt.err")"
-# Without fatal-warnings the same script is a report and not a refusal, which
-# is what makes the line above fatal-warnings' doing rather than target's.
-printf 'target 10.9\nload-command delete build-version\n' >"$T/tgt_redlax.edits"
+# With allow-unmatched the same script is a report and not a refusal, which
+# is what makes the line above the default's doing rather than target's.
+printf 'allow-unmatched\ntarget 10.9\nload-command delete build-version\n' >"$T/tgt_redlax.edits"
 "$T/mkchained" make "$T/tgt_redlax"
 tgt_run "$T/tgt_redlax" "$T/tgt_redlax.out" "$T/tgt_redlax.edits" \
     && tgt_redlax_rc=0 || tgt_redlax_rc=$?
 [ "$tgt_redlax_rc" -eq 0 ] && [ -e "$T/tgt_redlax.out" ] \
-    && ok "target: ... and without fatal-warnings the same redundancy is only reported" \
+    && ok "target: ... and with allow-unmatched the same redundancy is only reported" \
     || bad "target (redundant)" "expected 0 and an OUT, got $tgt_redlax_rc: $(cat "$T/tgt.err")"
 
 # A DERIVED STATEMENT GETS THE ANSWER THE EXPLICIT ONE GETS, and its refusal
