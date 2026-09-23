@@ -382,18 +382,12 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         mi_image im;
         int added = 0;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        /* Whether it appended a command or found one already there, as the
-         * core reports it through `added`. The already-there case is on
-         * stdout, where the core has always printed it. The append's own
-         * "Added ..." line belonged to the `minos` verb, which this does not
-         * call, so an append prints nothing on stdout; a grow of the header
-         * pad is announced on stderr by mg_ensure_pad, labelled with `path`. */
-        uint32_t sdk = st->has_sdk ? st->sdk : 0x000A0900u;
+        uint32_t sdk = st->has_sdk ? st->sdk : MV_10_9;
         int rc = mv_add_version_min_image(pbuf, psize, path, sdk, &added);
         if (rc == 0 && added) {
             char sdks[16];
             mv_format_version(sdk, sdks);
-            if (sdk == 0x000A0900u)
+            if (sdk == MV_10_9)
                 me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
             else
                 me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9, sdk %s\n", sdks);
@@ -557,35 +551,36 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
  * not. None of them guesses, so the expansion is reproducible from the image
  * alone.
  */
-#define ME_TARGET_MAX 7   /* the most statements one target 10.9 expansion can derive */
-#define ME_10_9 0x000A0900u
+#define ME_TARGET_MAX 6   /* the most statements one target 10.9 expansion can derive */
 
 /* Major.minor only: every 10.9.x is 10.9. */
-static int me_above_10_9(uint32_t v) { return (v & 0xffffff00u) > ME_10_9; }
+static int me_above_10_9(uint32_t v) { return (v & 0xffffff00u) > MV_10_9; }
 
 /* One derived statement, and the finding that produced it -- the report
  * carries both, because "why is this script doing that?" is exactly the
  * question a profile line raises. */
 typedef struct { ms_stmt stmt; const char *why; char arg[16]; } me_derived;
 
-/* What the load commands say about this image. */
+/* What the load commands say about this image, with the first
+ * LC_VERSION_MIN_MACOSX's version and sdk, and the first macOS
+ * LC_BUILD_VERSION's minos and sdk. */
 typedef struct {
     int chained, buildver, version_min, dataconst_objc;
-    uint32_t version_min_version, version_min_sdk;   /* the first LC_VERSION_MIN_MACOSX's */
-    int bv_macos;                   /* a macOS LC_BUILD_VERSION was seen ... */
-    uint32_t bv_minos, bv_sdk;      /* ... and the first one's minos and sdk */
+    uint32_t version_min_version, version_min_sdk;
+    int bv_macos;
+    uint32_t bv_minos, bv_sdk;
 } me_seen;
 
 static int me_target_lc(const struct load_command *lc, void *ctx_) {
     me_seen *f = (me_seen *)ctx_;
     if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) { f->chained = 1; return 0; }
     if (lc->cmd == LC_BUILD_VERSION) {
-        const uint32_t *w = (const uint32_t *)lc;   /* cmd, cmdsize, platform, minos, sdk, ntools */
+        const struct mc_build_version *bv = (const struct mc_build_version *)lc;
         f->buildver = 1;
-        if (lc->cmdsize >= 24 && w[2] == MV_PLATFORM_MACOS && !f->bv_macos) {
+        if (lc->cmdsize >= sizeof *bv && bv->platform == MV_PLATFORM_MACOS && !f->bv_macos) {
             f->bv_macos = 1;
-            f->bv_minos = w[3];
-            f->bv_sdk = w[4];
+            f->bv_minos = bv->minos;
+            f->bv_sdk = bv->sdk;
         }
         return 0;
     }
@@ -657,7 +652,7 @@ static int me_expand_10_9(const mi_image *im, me_derived *d, int line,
         d[n].stmt.line = line;
         if (f.bv_macos) { d[n].stmt.has_sdk = 1; d[n].stmt.sdk = f.bv_sdk; }
         d[n++].why = "no LC_VERSION_MIN_MACOSX";
-        if (f.bv_macos && !me_above_10_9(f.bv_minos) && f.bv_minos != ME_10_9) {
+        if (f.bv_macos && !me_above_10_9(f.bv_minos) && f.bv_minos != MV_10_9) {
             mv_format_version(f.bv_minos, d[n].arg);
             d[n].stmt.kind = MS_MINOS; d[n].stmt.op = MS_SET;
             d[n].stmt.a = d[n].arg; d[n].stmt.b = NULL;
@@ -694,7 +689,7 @@ static int me_expand_10_9(const mi_image *im, me_derived *d, int line,
                                          "sdk %s untouched", was, sdk);
         } else if (f.bv_macos) {
             mv_format_version(f.bv_minos, was);
-            mv_format_version(me_above_10_9(f.bv_minos) ? ME_10_9 : f.bv_minos, now);
+            mv_format_version(me_above_10_9(f.bv_minos) ? MV_10_9 : f.bv_minos, now);
             mv_format_version(f.bv_sdk, sdk);
             snprintf(minimum, minsz, "build-version %s -> version-min %s; sdk %s carried over",
                      was, now, sdk);

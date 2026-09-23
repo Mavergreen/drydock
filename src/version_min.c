@@ -90,7 +90,7 @@ int mv_add_version_min(const char *path, const char *out) {
     size_t fsize = im.size;
     uint8_t *buf = mi_release(&im);
     int added = 0;
-    int rc = mv_add_version_min_image(&buf, &fsize, path, (10 << 16) | (9 << 8), &added);
+    int rc = mv_add_version_min_image(&buf, &fsize, path, MV_10_9, &added);
     if (rc != 0) {
         free(buf);
         return rc;
@@ -163,7 +163,7 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
     memset(vm, 0, sizeof(*vm));
     vm->cmd = LC_VERSION_MIN_MACOSX;
     vm->cmdsize = sizeof(*vm);
-    vm->version = (10 << 16) | (9 << 8);   /* 10.9.0 */
+    vm->version = MV_10_9;
     vm->sdk     = sdk;
     hdr->ncmds++;
     hdr->sizeofcmds += sizeof(*vm);
@@ -179,11 +179,11 @@ static int mv_set_lc(const struct load_command *lc, void *ctx_) {
         struct version_min_command *vm = (struct version_min_command *)lc;
         if (c->r->version_min++ == 0) c->r->version_min_was = vm->version;
         vm->version = c->version;
-    } else if (lc->cmd == LC_BUILD_VERSION && lc->cmdsize >= 24) {
-        uint32_t *w = (uint32_t *)lc;   /* cmd, cmdsize, platform, minos, sdk, ntools */
-        if (w[2] != MV_PLATFORM_MACOS) return 0;
-        if (c->r->build_version++ == 0) c->r->build_version_was = w[3];
-        w[3] = c->version;
+    } else if (lc->cmd == LC_BUILD_VERSION && lc->cmdsize >= sizeof(struct mc_build_version)) {
+        struct mc_build_version *bv = (struct mc_build_version *)lc;
+        if (bv->platform != MV_PLATFORM_MACOS) return 0;
+        if (c->r->build_version++ == 0) c->r->build_version_was = bv->minos;
+        bv->minos = c->version;
     }
     return 0;
 }

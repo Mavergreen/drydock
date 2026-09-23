@@ -150,10 +150,11 @@ static uint8_t *build_image(int flags) {
         p += vm->cmdsize; ncmds++;
     }
     if (flags & (BUILDVER_12 | BUILDVER_IOS)) {
-        uint32_t *bv = (uint32_t *)p;   /* cmd, cmdsize, platform, minos, sdk, ntools */
-        bv[0] = LC_BUILD_VERSION; bv[1] = 24; bv[2] = (flags & BUILDVER_IOS) ? 2 : 1;
-        bv[3] = 0x000C0000; bv[4] = 0x000C0300; bv[5] = 0;
-        p += 24; ncmds++;
+        struct mc_build_version *bv = (struct mc_build_version *)p;
+        bv->cmd = LC_BUILD_VERSION; bv->cmdsize = sizeof *bv;
+        bv->platform = (flags & BUILDVER_IOS) ? 2 : 1;
+        bv->minos = 0x000C0000; bv->sdk = 0x000C0300; bv->ntools = 0;
+        p += bv->cmdsize; ncmds++;
     }
 
     h->ncmds = ncmds;

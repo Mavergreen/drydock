@@ -59,6 +59,7 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
                              const char *label, uint32_t sdk, int *out_added);
 
 #define MV_PLATFORM_MACOS 1   /* LC_BUILD_VERSION.platform */
+#define MV_10_9 0x000A0900u
 
 /* What mv_set_minos rewrote: how many of each command, and the first one's
  * value before. Both counts 0 means the image declares no macOS minimum. */
