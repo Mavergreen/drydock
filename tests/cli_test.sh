@@ -844,6 +844,14 @@ if [ -x "$BIN/patch_macho" ]; then
         || bad "declassify: high8 (patch_macho)" "expected 0 and byte-identical output, got $rc"
 fi
 
+"$T/mkchained" make-lcfirst "$T/lcfirst.in"
+dcl "$T/lcfirst.in" "$T/lcfirst.out" >/dev/null 2>"$T/lcfirst.err" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$("$T/mkchained" check "$T/lcfirst.out")" = "$("$T/mkchained" check "$T/chained.out")" ]; then
+    ok "declassify: a stripped command before a segment does not shift the segment it rewrites"
+else
+    bad "declassify: lcfirst" "expected 0 and the plain fixture's result, got $rc: $(cat "$T/lcfirst.err")"
+fi
+
 # BYTE-IDENTITY WITH patch_macho, the strongest available proof that lifting
 # the conversion into src/declassify.c did not change it: the two front-ends
 # are handed the same buffer by md_declassify and must write the same bytes.

@@ -678,6 +678,11 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
         hdr->sizeofcmds -= sz;
         printf("Removed cmd at %ld (size %u)\n", pos - buf, sz);
     }
+    struct md_collect_ctx moved;
+    memset(&moved, 0, sizeof moved);
+    mi_each_lc(&im, md_collect_lc, &moved);
+    segs = moved.segs;
+    nsegs = moved.nsegs;
 
     /* Add LC_DYLD_INFO_ONLY */
     /* Append data at end of file (aligned).
