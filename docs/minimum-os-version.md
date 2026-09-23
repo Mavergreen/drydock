@@ -213,12 +213,48 @@ Facts that constrain the design:
 - **Two version commands in one slice fail on 10.14+** for a main executable.
 - **Declared minimums above the supported OS** are ordinary in shipped software.
 
+## Edited, signed images on 10.9
+
+MEASURED on the same host with a small dylib (linked, and `dlopen`ed) and an
+executable. Each was ad-hoc signed after its version command was set, then edited.
+The sdk was absent, 0.0, 10.8, 10.9 or 12.3. The edit was either Drydock's
+`dylib append`, which changes only the header, or one flipped byte in `__TEXT`'s
+code. `vm.cs_enforcement`, `cs_force_kill` and `cs_force_hard` were all 0.
+
+- **By default, everything ran.** Every edited dylib and executable exited 0 with
+  correct output at every sdk. There was no dyld error and nothing was killed.
+- **The sdk rule is real.**
+  - For a dylib with sdk ≥ 10.9, dyld registers its stale signature. On the first
+    fault of an edited page, the kernel logs
+    `CODE SIGNING: cs_invalid_page … allowing (remove VALID) page`, and the process
+    loses `CS_VALID` but keeps running.
+  - For a dylib with sdk < 10.9, or with no version command, dyld ignores the
+    signature. There is no log line.
+  - An executable's signature is checked at exec whatever its sdk.
+- **It becomes a failure only when the host process is signed with the kill flag**
+  (`codesign -o kill`, flags `0x202`).
+  - An edited dylib with sdk ≥ 10.9 then gets the process SIGKILLed. The kernel logs
+    `denying page sending SIGKILL`.
+  - The same edit with sdk < 10.9, or with no version command, runs.
+  - An edited executable signed with the kill flag dies at any sdk.
+  - Only the host's flag counts; the dylib's own flag does not.
+- **A header-only edit is as fatal as a flipped code byte**, because the load commands
+  sit on a hashed page of `__TEXT`. With a kill-flagged host it dies inside `dlopen`.
+- **Stripping the signature (`load-command delete codesig`) fixed every case**, at
+  every sdk, with or without the kill flag.
+- **A malformed signature is harmless.** With the SuperBlob magic zeroed, dyld-239
+  prints `dyld: Registered code signature for …` (its failure message) and loads
+  the dylib as unsigned, even under a kill-flagged host. Only a well-formed but stale
+  signature can hurt.
+
+So on 10.9 the sdk decides whether an edited, still-signed dylib can take down a
+kill-flagged host, and stripping the signature makes the sdk irrelevant to loading.
+
 Open questions:
 
-- **An edited dylib's signature.** When a rewrite invalidates it and the sdk is
-  ≥ 10.9, 10.9's dyld registers the invalid signature; with sdk 0 it would ignore
-  it. Not measured. It bears on every rewrite, and on what sdk a freshly appended
-  `LC_VERSION_MIN_MACOSX` should carry.
+- **Modern macOS.** Whether edited x86_64 outputs run under Rosetta, and arm64 ones
+  natively, with the signature stale, stripped, or re-signed; and whether the
+  two-version-command case is refused there. Not measured.
 - **The shipped CoreFoundation.** Its exact `_CFExecutableLinkedOnOrAfter` logic is unknown.
 - **LaunchServices' stored minimum.** Whether 10.9 LaunchServices uses it anywhere,
   e.g. in "Open with" filtering, was not observed.
