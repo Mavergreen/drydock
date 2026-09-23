@@ -1265,7 +1265,8 @@ static int stderr_contains_during(int (*call)(uint8_t **, size_t *, uint32_t),
     if (rf) {
         char line[1024];
         while (fgets(line, sizeof line, rf))
-            if (strstr(line, needle)) { found = 1; break; }
+            if (needle[0] == '^' ? strncmp(line, needle + 1, strlen(needle + 1)) == 0
+                                 : strstr(line, needle) != NULL) { found = 1; break; }
         fclose(rf);
     }
     unlink(path);
@@ -1833,6 +1834,52 @@ static void test_verify_watches_every_adjusted_field(void) {
     check_verify_rejects_undone("an un-bumped export_off", MG_T_TRIE, NULL, undo_export_off);
 }
 
+static int plausible_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
+    (void)unused;
+    return mg_plausible(*pbuf, *pfsize);
+}
+
+/* grow.c is a library, so its diagnostics name no program: each begins
+ * "ERROR: ", as src/rewrite.c's do. A needle starting '^' must start the
+ * line. One message of each kind. */
+static void test_grow_diagnostics_name_no_program(void) {
+    check_ensure_refuses_unchanged("a dylib, by its prefix", 0, MH_DYLIB, MH_PIE,
+                                   "^ERROR: only MH_EXECUTE can be grown (filetype=6)");
+    check_ensure_refuses_unchanged("a non-PIE executable, by its prefix", 0, MH_EXECUTE, 0,
+                                   "^ERROR: executable is not PIE (flags=0x");
+    check_ensure_refuses_unchanged("an unclassified load command, by its prefix",
+                                   MG_T_UNKNOWN_LC, MH_EXECUTE, MH_PIE,
+                                   "^ERROR: load command 0x");
+    check_ensure_refuses_unchanged("chained fixups, by its prefix", MG_T_CHAINED,
+                                   MH_EXECUTE, MH_PIE,
+                                   "^ERROR: LC_DYLD_CHAINED_FIXUPS: chained pointers");
+    check_grow_precondition_refused("no __PAGEZERO, by its prefix", 0, 0, 0,
+                                    "^ERROR: need a __PAGEZERO >= 4096 bytes");
+
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_growable_image(&fsize, &sect_off);
+    ((struct mach_header *)buf)->magic = MH_MAGIC;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+                                      "^ERROR: not a 64-bit Mach-O (magic=0xfeedface)", &r);
+    CHECK(said && r == -1, "a 32-bit header's refusal begins 'ERROR: ' (got %d)", r);
+    free(buf);
+
+    size_t jsize = 64;
+    uint8_t *junk = (uint8_t *)calloc(1, jsize);
+    said = stderr_contains_during(first_sect_thunk, &junk, &jsize, 0,
+                                  "^ERROR: image fails validation (bad magic", &r);
+    CHECK(said && g_first == UINT32_MAX,
+          "mg_first_sect_off's validation failure begins 'ERROR: ' (got %u)", g_first);
+    free(junk);
+
+    buf = build_image(&fsize, &sect_off, MG_T_FUNCSTARTS);
+    ((uint32_t *)(buf + sect_off))[0] += 0x10;
+    said = stderr_contains_during(plausible_thunk, &buf, &fsize, 0,
+                                  "^ERROR: implausible -- ", &r);
+    CHECK(said && r == -1, "mg_plausible's refusal begins 'ERROR: ' (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -1880,6 +1927,7 @@ int main(void) {
     test_ensure_pad_refuses_a_section_past_the_image();
     test_grow_refuses_an_image_with_no_section_data();
     test_grow_refuses_a_section_past_the_image();
+    test_grow_diagnostics_name_no_program();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

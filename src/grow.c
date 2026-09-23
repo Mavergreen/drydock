@@ -36,7 +36,7 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
      * does not let this function itself break the "never modifies buf"
      * contract its own `const uint8_t *buf` parameter promises callers. */
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
-        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+        fprintf(stderr, "ERROR: image fails validation (bad magic, or load commands "
                         "that don't fit); refusing to guess the header pad boundary\n");
         return UINT32_MAX;
     }
@@ -405,25 +405,25 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     if (!now) return -1;
     uint32_t n = 0;
     if (mg_collect(buf, fsize, now, NULL, MG_SNAP_MAX, &n) != 0) {
-        fprintf(stderr, "macho_grow: verify could not re-read the base-relative structures\n");
+        fprintf(stderr, "ERROR: verify could not re-read the base-relative structures\n");
         free(now); return -1;
     }
     if (n != before->n) {
-        fprintf(stderr, "macho_grow: verify found %u watched entries, %u before -- "
+        fprintf(stderr, "ERROR: verify found %u watched entries, %u before -- "
                         "the grow added or dropped one\n", n, before->n);
         free(now); return -1;
     }
     for (uint32_t i = 0; i < n; i++) {
         if (now[i] == before->addr[i]) continue;
         if (now[i] == MG_UNMAPPED || before->addr[i] == MG_UNMAPPED) {
-            fprintf(stderr, "macho_grow: verify FAILED -- entry %u is a file offset that "
+            fprintf(stderr, "ERROR: verify FAILED -- entry %u is a file offset that "
                             "%s mapped before the grow and %s after; refusing.\n", i,
                     before->addr[i] == MG_UNMAPPED ? "no segment" : "a segment",
                     now[i] == MG_UNMAPPED ? "no segment" : "a segment");
             free(now); return -1;
         }
         int64_t moved = (int64_t)(now[i] - before->addr[i]);
-        fprintf(stderr, "macho_grow: verify FAILED -- entry %u resolved to "
+        fprintf(stderr, "ERROR: verify FAILED -- entry %u resolved to "
                         "%#llx before the grow and %#llx after (moved %+lld bytes). The grow "
                         "must leave every resolved address unchanged; refusing.\n",
                 i, (unsigned long long)before->addr[i], (unsigned long long)now[i],
@@ -436,7 +436,7 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
     struct mg_overlap_ctx oc = { &im, NULL, NULL };
     if (!mi_each_lc(&im, mg_overlap_outer_cb, &oc)) {
-        fprintf(stderr, "macho_grow: verify FAILED -- segments %.16s and %.16s overlap in "
+        fprintf(stderr, "ERROR: verify FAILED -- segments %.16s and %.16s overlap in "
                         "memory after the grow; refusing.\n", oc.a->segname, oc.hit->segname);
         return -1;
     }
@@ -789,14 +789,14 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
                   "or re-base";
             break;
         default:
-            fprintf(stderr, "macho_grow: load command %#x is not classified, so it cannot be "
+            fprintf(stderr, "ERROR: load command %#x is not classified, so it cannot be "
                             "shown safe to grow past. Unknown means unsafe: it may hold "
                             "offsets from the image base, as LC_DATA_IN_CODE does. Refusing.\n",
                     lc->cmd);
             return -1;
         }
         if (why) {
-            fprintf(stderr, "macho_grow: %s. Refusing to grow. Reclaim header bytes "
+            fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
                             "instead by deleting load commands (uuid, codesig).\n", why);
             return -1;
         }
@@ -807,7 +807,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
             for (uint32_t j = 0; j < seg->nsects; j++) {
                 uint32_t type = sect[j].flags & SECTION_TYPE;
                 if (type > S_INIT_FUNC_OFFSETS) {
-                    fprintf(stderr, "macho_grow: %.16s,%.16s has section type %#x, which is not "
+                    fprintf(stderr, "ERROR: %.16s,%.16s has section type %#x, which is not "
                                     "classified; it may hold offsets from the image base. "
                                     "Refusing.\n", sect[j].segname, sect[j].sectname, type);
                     return -1;
@@ -825,7 +825,7 @@ int mg_classify(const uint8_t *buf, size_t fsize) {
      * so casting away const here does not let this function itself violate
      * its own `const uint8_t *buf` promise to callers. */
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
-        fprintf(stderr, "macho_grow: image fails validation (bad magic, or load commands "
+        fprintf(stderr, "ERROR: image fails validation (bad magic, or load commands "
                         "that don't fit); refusing to classify\n");
         return -1;
     }
@@ -864,7 +864,7 @@ static int mg_plausible_find_cb(const struct load_command *lc, void *ctx_) {
 int mg_plausible(const uint8_t *buf, size_t fsize) {
     mi_image im;
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
-        fprintf(stderr, "macho_grow: implausible -- not a 64-bit Mach-O with a load-command "
+        fprintf(stderr, "ERROR: implausible -- not a 64-bit Mach-O with a load-command "
                         "chain this can walk\n");
         return -1;
     }
@@ -887,7 +887,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
      * contentless "FAILED (see above)". */
     uint64_t base;
     if (mi_image_base(&im, &base) != 0) {
-        fprintf(stderr, "macho_grow: implausible -- no segment maps the header, so there "
+        fprintf(stderr, "ERROR: implausible -- no segment maps the header, so there "
                         "is no image base to resolve base-relative entries against\n");
         return -1;
     }
@@ -897,7 +897,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
     uint32_t fsoff = fctx.fsoff, fssize = fctx.fssize;
     if (!fsoff || !fssize) return 0;                 /* nothing to check against */
     if ((uint64_t)fsoff + fssize > fsize) {
-        fprintf(stderr, "macho_grow: implausible -- LC_FUNCTION_STARTS claims %u bytes at "
+        fprintf(stderr, "ERROR: implausible -- LC_FUNCTION_STARTS claims %u bytes at "
                         "offset %u, which runs past the end of the %llu-byte file\n",
                 fssize, fsoff, (unsigned long long)fsize);
         return -1;
@@ -907,7 +907,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
     uint64_t *addr   = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     uint8_t  *kinds  = (uint8_t  *)malloc(MG_SNAP_MAX);
     if (!starts || !addr || !kinds) {
-        fprintf(stderr, "macho_grow: cannot check plausibility -- out of memory\n");
+        fprintf(stderr, "ERROR: cannot check plausibility -- out of memory\n");
         free(starts); free(addr); free(kinds); return -1;
     }
 
@@ -935,7 +935,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
     int rc = 0;
     if (ns < 0) {
         /* the blob would not decode: a ULEB128 entry runs off its end. */
-        fprintf(stderr, "macho_grow: implausible -- the %u-byte LC_FUNCTION_STARTS blob at "
+        fprintf(stderr, "ERROR: implausible -- the %u-byte LC_FUNCTION_STARTS blob at "
                         "offset %u does not decode: a ULEB128 entry runs off its end\n",
                 fssize, fsoff);
         rc = -1;
@@ -949,7 +949,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
         /* collection itself failed -- a malformed or overflowing structure
          * among the base-relative entries, or more of them than MG_SNAP_MAX.
          * Nothing was compared, so this is not a verdict about the offsets. */
-        fprintf(stderr, "macho_grow: implausible -- the base-relative entries (initializers, "
+        fprintf(stderr, "ERROR: implausible -- the base-relative entries (initializers, "
                         "export-trie, data-in-code and unwind starts) could not be "
                         "collected, so nothing could be checked against "
                         "LC_FUNCTION_STARTS\n");
@@ -958,7 +958,7 @@ int mg_plausible(const uint8_t *buf, size_t fsize) {
         for (uint32_t i = 0; i < n && rc == 0; i++) {
             if (kinds[i] != MG_K_FUNC) continue;      /* only these name functions */
             if (mg_addr_known(starts, ns, addr[i])) continue;
-            fprintf(stderr, "macho_grow: implausible -- a base-relative entry names %#llx, "
+            fprintf(stderr, "ERROR: implausible -- a base-relative entry names %#llx, "
                             "which is not one of the %d addresses in LC_FUNCTION_STARTS. "
                             "Initializers and unwind entries must land on a function start; "
                             "this is what an un-re-based offset looks like.\n",
@@ -1023,7 +1023,7 @@ static int mg_bump_cb(void *field, int width, uint64_t span, int flags, void *ct
     uint64_t *v = (uint64_t *)field;
     if (*v < (uint64_t)ctx->insert) return 0;
     if (*v > UINT64_MAX - (uint64_t)ctx->grow) {
-        fprintf(stderr, "macho_grow: LC_MAIN's entryoff (%#llx) would overflow "
+        fprintf(stderr, "ERROR: LC_MAIN's entryoff (%#llx) would overflow "
                         "a 64-bit field after growing by %#x; refusing rather "
                         "than wrap\n", (unsigned long long)*v, ctx->grow);
         return 1;
@@ -1064,19 +1064,19 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * macho_grow_test.c's test_grow_refuses_32bit_mach_header for the pinned
      * regression test and docs/prior-art.md for the fuller write-up. */
     if (hdr->magic != MH_MAGIC_64) {
-        fprintf(stderr, "macho_grow: not a 64-bit Mach-O (magic=0x%x); 32-bit is a "
+        fprintf(stderr, "ERROR: not a 64-bit Mach-O (magic=0x%x); 32-bit is a "
                         "deliberately unsupported format, not a bug -- see the comment "
                         "above this check\n", hdr->magic);
         return -1;
     }
     if (hdr->filetype != MH_EXECUTE) {
-        fprintf(stderr, "macho_grow: only MH_EXECUTE can be grown (filetype=%u): growing "
+        fprintf(stderr, "ERROR: only MH_EXECUTE can be grown (filetype=%u): growing "
                         "lowers the image base into __PAGEZERO, and a dylib or bundle has "
                         "none. This tool cannot grow a dylib or bundle.\n", hdr->filetype);
         return -1;
     }
     if (!(hdr->flags & MH_PIE)) {
-        fprintf(stderr, "macho_grow: executable is not PIE (flags=0x%x); lowering the "
+        fprintf(stderr, "ERROR: executable is not PIE (flags=0x%x); lowering the "
                         "image base would require fixing absolute relocations, which "
                         "this tool does not do\n", hdr->flags);
         return -1;
@@ -1084,7 +1084,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     /* platform: arm64 maps 16 KB pages; a base lowered by MG_PAGE leaves
      * every segment misaligned, and the kernel kills the process at exec. */
     if (hdr->cputype == CPU_TYPE_ARM64) {
-        fprintf(stderr, "macho_grow: an arm64 image maps 16 KB pages, and this grow "
+        fprintf(stderr, "ERROR: an arm64 image maps 16 KB pages, and this grow "
                         "lowers the image base by 4 KB pages, which arm64 cannot load; "
                         "refusing\n");
         return -1;
@@ -1093,7 +1093,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint32_t insert = mg_first_sect_off(buf, fsize);
     if (insert == UINT32_MAX) return -1;   /* already explained itself on stderr */
     if (insert == MG_NO_SECTION_DATA) {
-        fprintf(stderr, "macho_grow: no section data bounds the header pad; refusing to "
+        fprintf(stderr, "ERROR: no section data bounds the header pad; refusing to "
                         "grow it rather than guess where it ends\n");
         return -1;
     }
@@ -1103,7 +1103,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * 256-byte image whose one section claimed offset 0x7000 died of SIGSEGV
      * (tests/grow_test.c's test_grow_refuses_a_section_past_the_image). */
     if (insert > fsize) {
-        fprintf(stderr, "macho_grow: the first section's file offset (%u) lies past the end "
+        fprintf(stderr, "ERROR: the first section's file offset (%u) lies past the end "
                         "of the image (%zu bytes); refusing to grow it\n", insert, fsize);
         return -1;
     }
@@ -1115,7 +1115,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * corrupt it. */
     uint32_t lc_end = (uint32_t)sizeof(*hdr) + hdr->sizeofcmds;
     if (insert < lc_end) {
-        fprintf(stderr, "macho_grow: first section (%u) precedes end of load commands "
+        fprintf(stderr, "ERROR: first section (%u) precedes end of load commands "
                         "(%u); refusing to grow a malformed header\n", insert, lc_end);
         return -1;
     }
@@ -1134,16 +1134,16 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * conversion documented neither at the time. Recorded here now. */
     mi_image find_im;
     if (mi_wrap(buf, fsize, &find_im) != 0) {
-        fprintf(stderr, "macho_grow: internal error -- the header no longer validates\n");
+        fprintf(stderr, "ERROR: internal error -- the header no longer validates\n");
         return -1;
     }
     struct segment_command_64 *pagezero = mi_find_segment(&find_im, "__PAGEZERO");
     if (!mi_text_base(&find_im)) {
-        fprintf(stderr, "macho_grow: no __TEXT-like segment holds the header\n");
+        fprintf(stderr, "ERROR: no __TEXT-like segment holds the header\n");
         return -1;
     }
     if (!pagezero || pagezero->vmsize < grow) {
-        fprintf(stderr, "macho_grow: need a __PAGEZERO >= %u bytes to lower the image "
+        fprintf(stderr, "ERROR: need a __PAGEZERO >= %u bytes to lower the image "
                         "base (image-base trick requires a PIE executable)\n", grow);
         return -1;
     }
@@ -1167,11 +1167,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         uint64_t d0; int n0 = mu_decode(buf + fs_dataoff,
                                              buf + fs_dataoff + fs_datasize, &d0);
         if (n0 == 0) {
-            fprintf(stderr, "macho_grow: malformed LC_FUNCTION_STARTS leading delta\n");
+            fprintf(stderr, "ERROR: malformed LC_FUNCTION_STARTS leading delta\n");
             return -1;
         }
         if (mu_minlen(d0 + grow) > n0) {
-            fprintf(stderr, "macho_grow: grow of %u would widen the LC_FUNCTION_STARTS "
+            fprintf(stderr, "ERROR: grow of %u would widen the LC_FUNCTION_STARTS "
                             "leading delta (%llu -> %llu crosses a ULEB byte boundary); "
                             "in-place re-encode impossible and __LINKEDIT resize is not "
                             "implemented. Use a smaller grow.\n",
@@ -1185,17 +1185,17 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * or exports are `grow` bytes low is far worse than failing here. */
     if (mg_classify(buf, fsize) != 0) return -1;
     if (mg_dice_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0) != 0) {
-        fprintf(stderr, "macho_grow: LC_DATA_IN_CODE is malformed or an entry offset would "
+        fprintf(stderr, "ERROR: LC_DATA_IN_CODE is malformed or an entry offset would "
                         "overflow; refusing to grow\n");
         return -1;
     }
     if (mg_unwind_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0) != 0) {
-        fprintf(stderr, "macho_grow: __TEXT,__unwind_info is malformed, uses a layout this "
+        fprintf(stderr, "ERROR: __TEXT,__unwind_info is malformed, uses a layout this "
                         "does not understand, or an offset would overflow; refusing to grow\n");
         return -1;
     }
     if (mg_init_offsets_pass(buf, fsize, grow, 0) != 0) {
-        fprintf(stderr, "macho_grow: malformed S_INIT_FUNC_OFFSETS section; refusing to grow\n");
+        fprintf(stderr, "ERROR: malformed S_INIT_FUNC_OFFSETS section; refusing to grow\n");
         return -1;
     }
     /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
@@ -1217,18 +1217,18 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     {
         int r = mg_trie_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0);
         if (r < 0) {
-            fprintf(stderr, "macho_grow: export trie is malformed; refusing to grow\n");
+            fprintf(stderr, "ERROR: export trie is malformed; refusing to grow\n");
             return -1;
         }
         if (r > 0) {
             uint32_t toff, tsize;
             if (!mg_find_trie(buf, fsize, &toff, &tsize) || !toff || !tsize) {
-                fprintf(stderr, "macho_grow: internal error locating the export trie that "
+                fprintf(stderr, "ERROR: internal error locating the export trie that "
                                 "just reported needing a wider ULEB\n");
                 return -1;
             }
             if (mt_trie_rebuild(buf + toff, tsize, grow, &mg_new_trie, &mg_new_trie_size) != 0) {
-                fprintf(stderr, "macho_grow: refusing to grow -- see the trie error above.\n");
+                fprintf(stderr, "ERROR: refusing to grow -- see the trie error above.\n");
                 return -1;
             }
             mg_trie_needs_rebuild = 1;
@@ -1241,7 +1241,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * blind. */
     mg_snapshot snap;
     if (mg_snapshot_take(buf, fsize, &snap) != 0) {
-        fprintf(stderr, "macho_grow: could not snapshot the base-relative structures; "
+        fprintf(stderr, "ERROR: could not snapshot the base-relative structures; "
                         "refusing to grow without a way to verify the result\n");
         free(mg_new_trie);
         return -1;
@@ -1250,7 +1250,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     /* Insert `grow` zero bytes after the load commands, shifting file data down. */
     uint8_t *nbuf = (uint8_t *)realloc(buf, fsize + grow);
     if (!nbuf) {
-        fprintf(stderr, "macho_grow: realloc failed\n");
+        fprintf(stderr, "ERROR: realloc failed\n");
         mg_snapshot_free(&snap);
         free(mg_new_trie);
         return -1;
@@ -1281,7 +1281,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     {
         mi_image patch_im;
         if (mi_wrap(buf, final_size, &patch_im) != 0) {
-            fprintf(stderr, "macho_grow: internal error -- the header we just moved no "
+            fprintf(stderr, "ERROR: internal error -- the header we just moved no "
                             "longer validates\n");
             free(mg_new_trie);
             mg_snapshot_free(&snap);
@@ -1306,7 +1306,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
          * re-encodes in its ORIGINAL byte width, so the trie -- and every
          * __LINKEDIT offset after it -- keeps its size. */
         if (mg_trie_walk(buf, final_size, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
-            fprintf(stderr, "macho_grow: internal error re-basing the export trie after "
+            fprintf(stderr, "ERROR: internal error re-basing the export trie after "
                             "passing the pre-check\n");
             mg_snapshot_free(&snap);
             return -1;
@@ -1318,7 +1318,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
          * trie outright. */
         uint32_t toff, tsize;
         if (!mg_find_trie(buf, final_size, &toff, &tsize)) {
-            fprintf(stderr, "macho_grow: internal error -- the export trie load command "
+            fprintf(stderr, "ERROR: internal error -- the export trie load command "
                             "vanished after growing\n");
             free(mg_new_trie);
             mg_snapshot_free(&snap);
@@ -1369,7 +1369,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             long export_lc_off = -1; uint32_t export_lc_cmd = 0;
             mg_find_trie_lc(buf, final_size, &export_lc_off, &export_lc_cmd);
             if (linkedit_lc_off < 0 || export_lc_off < 0) {
-                fprintf(stderr, "macho_grow: no __LINKEDIT segment (or no export-trie load "
+                fprintf(stderr, "ERROR: no __LINKEDIT segment (or no export-trie load "
                                 "command) to grow the rebuilt export trie into; refusing\n");
                 free(mg_new_trie);
                 mg_snapshot_free(&snap);
@@ -1382,7 +1382,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                 (struct segment_command_64 *)(buf + linkedit_lc_off);
             uint64_t append_off = linkedit->fileoff + linkedit->filesize;
             if (append_off != final_size) {
-                fprintf(stderr, "macho_grow: export trie widened, but __LINKEDIT (ending at "
+                fprintf(stderr, "ERROR: export trie widened, but __LINKEDIT (ending at "
                                 "%llu) is not the last thing in the file (file is %zu bytes); "
                                 "appending would overwrite unknown data or leave a hole, so "
                                 "refusing rather than guess\n",
@@ -1392,7 +1392,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                 return -1;
             }
             if (append_off > UINT32_MAX || mg_new_trie_size > UINT32_MAX - append_off) {
-                fprintf(stderr, "macho_grow: rebuilt export trie would land past a 32-bit "
+                fprintf(stderr, "ERROR: rebuilt export trie would land past a 32-bit "
                                 "file-offset field; refusing\n");
                 free(mg_new_trie);
                 mg_snapshot_free(&snap);
@@ -1401,7 +1401,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             uint64_t new_total = final_size + mg_new_trie_size;
             uint8_t *g = (uint8_t *)realloc(buf, (size_t)new_total);
             if (!g) {
-                fprintf(stderr, "macho_grow: realloc failed growing __LINKEDIT for the "
+                fprintf(stderr, "ERROR: realloc failed growing __LINKEDIT for the "
                                 "rebuilt export trie\n");
                 free(mg_new_trie);
                 mg_snapshot_free(&snap);
@@ -1437,19 +1437,19 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     free(mg_new_trie);
     mg_new_trie = NULL;
     if (mg_dice_walk(buf, final_size, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
-        fprintf(stderr, "macho_grow: internal error re-basing LC_DATA_IN_CODE after passing "
+        fprintf(stderr, "ERROR: internal error re-basing LC_DATA_IN_CODE after passing "
                         "the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
     }
     if (mg_unwind_walk(buf, final_size, grow, 1, 0, NULL, NULL, NULL, 0) != 0) {
-        fprintf(stderr, "macho_grow: internal error re-basing __TEXT,__unwind_info after "
+        fprintf(stderr, "ERROR: internal error re-basing __TEXT,__unwind_info after "
                         "passing the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
     }
     if (mg_init_offsets_pass(buf, final_size, grow, 1) != 0) {
-        fprintf(stderr, "macho_grow: internal error patching S_INIT_FUNC_OFFSETS after "
+        fprintf(stderr, "ERROR: internal error patching S_INIT_FUNC_OFFSETS after "
                         "passing the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
@@ -1463,7 +1463,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     if (fs_dataoff && fs_datasize) {
         int r = mg_reencode_funcstarts_base(buf + fs_dataoff + grow, fs_datasize, grow);
         if (r != 1) {
-            fprintf(stderr, "macho_grow: internal error re-encoding function-starts "
+            fprintf(stderr, "ERROR: internal error re-encoding function-starts "
                             "leading delta (r=%d) after passing the width pre-check\n", r);
             mg_snapshot_free(&snap);
             return -1;
@@ -1489,7 +1489,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * unwind entries still land on function starts -- so the two fail for
      * different reasons. */
     if (mg_plausible(buf, final_size) != 0) {
-        fprintf(stderr, "macho_grow: the grown image does not pass its own plausibility "
+        fprintf(stderr, "ERROR: the grown image does not pass its own plausibility "
                         "check; refusing. Discard this buffer.\n");
         return -1;
     }
