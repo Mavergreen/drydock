@@ -54,6 +54,7 @@ load-command  delete    KIND        uuid | codesig | source-version
                                     | build-version | code-sign-drs
 segment       rename    OLD NEW
 version-min   set       10.9
+minos         set       VERSION     e.g. 10.9, 10.12, 10.9.5
 swift-abi     set       legacy
 fixups        set       classic
 dylib         replace   OLD NEW
@@ -70,6 +71,13 @@ import        redirect  SYMBOL FROM-LIB TO-LIB
 target        10.9                  the one statement whose meaning depends on
                                     the binary; see "The `target` statement"
 ```
+
+> `version-min set 10.9` appends an `LC_VERSION_MIN_MACOSX` to an image that
+> declares none, and leaves one that is already there alone, whatever it says.
+> `minos set VERSION` rewrites the minimum an image already declares, in
+> `LC_VERSION_MIN_MACOSX` or a macOS `LC_BUILD_VERSION`, in place. It never
+> changes the `sdk` beside it, because frameworks key linked-on-or-after
+> behaviour off the SDK.
 
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
@@ -95,6 +103,7 @@ written). These are the statements that can match nothing:
 - `dylib replace/delete/reexport/retype` and `rpath replace/delete` (no command naming that path)
 - `segment rename` (no segment of that name)
 - `import redirect` (no bind of that symbol names that library)
+- `minos set` (no `LC_VERSION_MIN_MACOSX` and no macOS `LC_BUILD_VERSION`)
 
 On a fat file, a statement has matched if it matched in any selected slice.
 
@@ -126,6 +135,8 @@ has** — the ones this binary actually needs — and those run in its place:
 | `LC_DYLD_CHAINED_FIXUPS` present | `fixups set classic` |
 | `LC_BUILD_VERSION` present | `load-command delete build-version` |
 | no `LC_VERSION_MIN_MACOSX` | `version-min set 10.9` |
+| `LC_VERSION_MIN_MACOSX` above 10.9 | `minos set 10.9` |
+| `LC_BUILD_VERSION` at or below 10.9, other than 10.9.0, and no `LC_VERSION_MIN_MACOSX` | `minos set` to that version, after the append |
 | `__DATA_CONST` carrying `__objc_*` sections | `segment rename __DATA_CONST __DATA` |
 | class records carrying the stable-ABI Swift tag | `swift-abi set legacy` |
 
@@ -142,6 +153,11 @@ line refuses. It puts that line
 first, and it reports why it derived each line. A second profile is what would show the
 design earns its place; this build has one, and refuses any other.
 
+> A declared minimum at or below 10.9 (every 10.9.x counts as 10.9) is left
+> as it is: raising it would discard a true fact and buy nothing. 10.9's dyld
+> does not enforce the field — a 10.12 executable runs, and a 10.12 dylib
+> loads — so lowering it keeps the file honest rather than making it load.
+
 **Use `target 10.9`** to make a whole binary built for a newer macOS run on
 10.9, especially one with chained fixups or more than one slice. It combines
 with the `dylib` and `rpath` lines it never derives, as below.
@@ -149,6 +165,8 @@ with the `dylib` and `rpath` lines it never derives, as below.
 **Write the statements by hand** when you want some of those changes and not
 the rest, such as only `version-min set 10.9`. Then:
 
+- to lower a declared minimum and nothing else, write `minos set 10.9`;
+  `version-min set 10.9` only appends one where none is declared;
 - put `fixups set classic` first, and leave it out for an image with neither
   chained fixups nor `LC_DYLD_INFO_ONLY` (it refuses);
 - leave out `load-command delete build-version` after `fixups set classic`
@@ -179,12 +197,17 @@ each, since the same line does different things to different binaries:
 
 ```
   target 10.9
+    minimum: build-version 12.0 -> version-min 10.9; sdk 12.3 carried over
     fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
+    load-command delete build-version  (LC_BUILD_VERSION present)
     version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
 ```
 
-and says `nothing to do: this binary already targets 10.9` when the
-expansion is empty.
+> The `minimum:` line is always there, and names the minimum the binary
+> declared, the one it declares now, and its sdk. Converting an
+> `LC_BUILD_VERSION` keeps its sdk, since the binary was built against it. The report says `nothing to do: this
+> binary already targets 10.9` when the expansion is empty, which happens
+> only when that minimum was left as declared.
 
 The rest of the rules:
 
@@ -224,6 +247,11 @@ row names its slice in an `arch` column, and the header row names the columns.
 `info` answers each of `target 10.9`'s five detections: an `LC[n]` line for
 `LC_DYLD_CHAINED_FIXUPS`, `LC_BUILD_VERSION` or `LC_VERSION_MIN_MACOSX`, a
 `sectname=` line under `segname=__DATA_CONST`, and the `swift-abi:` line.
+
+> The declared minimum is on the line beneath its command: `version=… sdk=…`
+> under `LC_VERSION_MIN_MACOSX`, `platform=… minos=… sdk=…` under
+> `LC_BUILD_VERSION`.
+
 From `drydock-macho-rewrite info hello`, on a two-slice x86_64 + i386 build:
 
 ```

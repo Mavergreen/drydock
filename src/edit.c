@@ -557,7 +557,7 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
  * not. None of them guesses, so the expansion is reproducible from the image
  * alone.
  */
-#define ME_TARGET_MAX 7   /* one per row of README.md's "The `target` statement" table */
+#define ME_TARGET_MAX 7   /* the most statements one target 10.9 expansion can derive */
 #define ME_10_9 0x000A0900u
 
 /* Major.minor only: every 10.9.x is 10.9. */
