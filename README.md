@@ -98,8 +98,10 @@ written). These are the statements that can match nothing:
 
 On a fat file, a statement has matched if it matched in any selected slice.
 
-The rest cannot miss: with nothing to do, `fixups set`, `version-min set` and
-`swift-abi set` are no-ops.
+`version-min set` and `swift-abi set` cannot miss: with nothing to do, they
+are no-ops. `fixups set classic` is a no-op on an image that already uses
+`LC_DYLD_INFO_ONLY`, but it refuses an image with neither that nor chained
+fixups, and `allow-unmatched` does not cover that refusal.
 
 `allow-unmatched` is for the wrappers that reproduce tools which exited 0
 when an operation matched nothing: `change_dylib`, `fix_macho` and
@@ -133,14 +135,29 @@ or it is not. **Never `dylib` or `rpath` work** — no tool can guess which stub
 dylib you meant, and that is the dominant real workload, so a profile stops
 where the guessing would start.
 
-Every statement it derives is safe to write by hand: where not needed, the
-`fixups`, `version-min` and `swift-abi` lines are no-ops, the rename is
-harmless on a `__DATA_CONST` with no `__objc_` sections, and the rest match
-nothing, which `allow-unmatched` reports.
-What `target` adds is the report — which of the five this binary needed, and
-why — and the ordering, `fixups set classic` first. A second profile is what
-would show the design earns its place; this build has one, and refuses any
-other.
+It decides per slice: each slice of a fat file gets only the lines that slice
+needs. It derives `fixups set classic` only where there are chained fixups to
+convert, so never on an image where that line refuses. It puts that line
+first, and it reports why it derived each line. A second profile is what would show the
+design earns its place; this build has one, and refuses any other.
+
+**Use `target 10.9`** to make a whole binary built for a newer macOS run on
+10.9, especially one with chained fixups or more than one slice. It combines
+with the `dylib` and `rpath` lines it never derives, as below.
+
+**Write the statements by hand** when you want some of those changes and not
+the rest, such as only `version-min set 10.9`. Then:
+
+- put `fixups set classic` first, and leave it out for an image with neither
+  chained fixups nor `LC_DYLD_INFO_ONLY` (it refuses);
+- leave out `load-command delete build-version` after `fixups set classic`,
+  which already removes `LC_BUILD_VERSION`, so the delete would match nothing;
+- rename `__DATA_CONST` only where `info` shows `__objc_` sections in it;
+- when slices need different lines, run one script per slice with `arch`,
+  since a directive applies to the whole script.
+
+`info` shows what `target` would act on: each of its detections is an `info`
+line (see [Queries](#queries)).
 
 **Position is not cosmetic, which is why this is a statement and not a
 flag.** `fixups set classic` rewrites `__LINKEDIT` and strips load commands,
