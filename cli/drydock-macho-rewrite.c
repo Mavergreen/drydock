@@ -254,8 +254,10 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       TO BE LISTED HERE are gone, with their `ops=`, `kinds=`, `versions=`,
  *       `flags=` and `reports=` attributes; `edit` was the last of them, and
  *       the `mutate` line above plus the `statement` lines below are what a
- *       wrapper reads instead. No attribute is left in use, so a reader that
- *       parsed them keeps working on a line that no longer carries any.
+ *       wrapper reads instead. One attribute is in use: `info`'s
+ *       `flags=--thin` below -- a real CLI flag `info` itself parses,
+ *       unlike the directives the old `flags=` fields advertised (arch,
+ *       fatal-warnings; see "that is a later decision" below).
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the statement
  *       vocabulary ms_parse accepts, and so the whole mutating surface.
@@ -430,7 +432,7 @@ static int cmd_info(const char *path, int thin_only) {
         fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
     }
-    (void)thin_only;   /* Task 5 gives this its only effect. */
+    (void)thin_only;   /* A no-op until info itself learns fat containers. */
     printf("%s: %zu bytes, %u load commands, filetype=%u\n",
            path, im.size, im.hdr->ncmds, im.hdr->filetype);
     struct info_ctx ctx = { 0, 0 };
