@@ -39,6 +39,24 @@ plus the two files every wrapper sources:
 | `translate.sh` | `drydock-macho-rewrite-translate.sh` | old argv → the `drydock-macho-rewrite` command line(s) it means. Pure text; runs nothing. |
 | `drydock-macho-rewrite-compat.sh` | `drydock-macho-rewrite-compat.sh` | finds `drydock-macho-rewrite`, prints the teaching message, and runs the translation. |
 
+## Thin only
+
+`patch_macho`, `add_version_min`, `retag_swift_classes` and `rename_segment`
+read one thin 64-bit image and refused a fat container. A script rewrites
+every slice. So each wrapper asks `drydock-macho-rewrite info --thin` first
+(`mw_thin_only`, or `rename_segment.sh`'s own call). Measured against the
+pre-migration binaries on a two-slice x86_64 fat file:
+
+| invocation | the C tool | a script, with no gate | held by (`tests/wrapper_test.sh`) |
+|---|---|---|---|
+| `add_version_min FAT` | exit 1, nothing written | exit 0, every slice rewritten | "add_version_min: a fat container is refused, untouched, as mv_add_version_min's own mi_open did" |
+| `patch_macho FAT OUT` | exit 1, no `OUT` | exit 0, `OUT` written | "patch_macho: a fat container is refused and no output is created" |
+| `retag_swift_classes FAT` | exit 0, file untouched | exit 0 and `total: 0`, with the file retagged | "retag_swift_classes: a fat container is the benign skip it always was, and the file is untouched" |
+| `rename_segment FAT OLD NEW` | exit 1 | a rename in every slice | "rename_segment: a fat container is refused, as it always was" |
+
+Only `EX_REFUSED` (1) from `info --thin` is intercepted. `EX_FAIL` (2) falls
+through ("mw_thin_only: EX_FAIL (2) still falls through").
+
 ## Why the six wrapper names are unchanged
 
 The *support* files were renamed with the binary — `drydock-macho-rewrite-compat.sh` and

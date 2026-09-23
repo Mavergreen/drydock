@@ -208,6 +208,20 @@ else
     skip "the second-shell cross-check" "/bin/ksh is not present on this host"
 fi
 
+# ---- a symlinked wrapper, away from its support files -------------------
+for w in patch_macho change_dylib add_version_min fix_macho rename_segment \
+         retag_swift_classes insert_dylib bake-mavericks-shim; do
+    rm -rf "$T/lnk"; mkdir "$T/lnk"; ln -s "$BIN/$w" "$T/lnk/$w"
+    rc=0
+    ( unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR; "$T/lnk/$w" ) >"$T/out" 2>"$T/err" || rc=$?
+    [ "$rc" -eq 1 ] \
+        && firstline_is "$T/err" "$T/lnk/$w: cannot find drydock-macho-rewrite-compat.sh in $T/lnk -- drydock-macho-rewrite and its two support" \
+        && grep -qF 'set DRYDOCK_MACHO_REWRITE_COMPAT_DIR to where they really are' "$T/err" \
+        && ok "$w: a symlink to it elsewhere says to set DRYDOCK_MACHO_REWRITE_COMPAT_DIR (1)" \
+        || bad "$w symlinked" "exit $rc: $(cat "$T/err")"
+done
+rm -rf "$T/lnk"
+
 # ---- a wrapper finds drydock-macho-rewrite next to itself, not on PATH -----------------
 #
 # The wrappers are meant to be dropped into a directory beside drydock-macho-rewrite, which
