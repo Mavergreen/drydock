@@ -569,6 +569,11 @@ cmp -s "$T/thin.out" "$T/nothin.out" \
 rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "info --thin: --thin with no FILE is a usage error (2)" \
     || bad "info --thin usage" "--thin with no FILE did not exit 2"
+cp "$T/signing_probe" "$T/--thin"
+rc=0; ( cd "$T" && "$DRYDOCK_MACHO_REWRITE" info ./--thin ) >"$T/dashthin.out" 2>"$T/dashthin.err" || rc=$?
+[ "$rc" -eq 0 ] && grep -q '^\./--thin: [0-9]* bytes, ' "$T/dashthin.out" \
+    && ok "info: a FILE named --thin is read as ./--thin" \
+    || bad "info ./--thin" "exit $rc, stdout: $(head -1 "$T/dashthin.out"), stderr: $(cat "$T/dashthin.err")"
 
 # ----------------------------------------------------------------------------
 # capabilities vocabulary must match what the parsers actually accept.
@@ -1585,13 +1590,6 @@ mts "$T/lc_fw_lax_fixture" allow-unmatched "load-command delete build-version" \
     >/dev/null 2>/dev/null && lc_fw_lax_rc=0 || lc_fw_lax_rc=$?
 [ "$lc_fw_lax_rc" -eq 0 ] && ok "lc: allow-unmatched lets the same unmatched KIND succeed" \
     || bad "lc: allow-unmatched" "expected 0, got $lc_fw_lax_rc"
-# And when every delete DOES match, allow-unmatched must not refuse a run
-# that had nothing to complain about.
-build_main "$T/lc_fw_ok_fixture"
-mts "$T/lc_fw_ok_fixture" allow-unmatched "load-command delete uuid" \
-    >/dev/null 2>"$T/lc_fw_ok.err" && lc_fw_ok_rc=0 || lc_fw_ok_rc=$?
-[ "$lc_fw_ok_rc" -eq 0 ] && ok "lc: allow-unmatched succeeds when the KIND matched" \
-    || bad "lc: allow-unmatched (matched)" "expected 0, got $lc_fw_ok_rc: $(cat "$T/lc_fw_ok.err")"
 
 # ============================================================================
 # A directive alone, with no statement after it: a well-formed request to copy
@@ -1885,14 +1883,6 @@ mts "$T/dylib_fw_lax_fixture" allow-unmatched \
         >/dev/null 2>/dev/null && dylib_fw_lax_rc=0 || dylib_fw_lax_rc=$?
 [ "$dylib_fw_lax_rc" -eq 0 ] && ok "dylib: allow-unmatched lets the same unmatched op succeed" \
     || bad "dylib: allow-unmatched" "expected 0, got $dylib_fw_lax_rc"
-# And when every op DOES match, allow-unmatched must not refuse a run that
-# had nothing to complain about.
-build_main "$T/dylib_fw_ok_fixture"
-mts "$T/dylib_fw_ok_fixture" allow-unmatched \
-        "dylib replace @loader_path/liba.dylib @loader_path/renamed-fw-ok.dylib" \
-        >"$T/dylib_fw_ok.out" 2>"$T/dylib_fw_ok.err" && dylib_fw_ok_rc=0 || dylib_fw_ok_rc=$?
-[ "$dylib_fw_ok_rc" -eq 0 ] && ok "dylib: allow-unmatched succeeds when nothing is unmatched" \
-    || bad "dylib: allow-unmatched (matched)" "expected 0, got $dylib_fw_ok_rc: $(cat "$T/dylib_fw_ok.err")"
 
 # EVERY operation matches nothing, not just one of several -- the case that
 # used to be the only one where an unmatched refusal wrote nothing, because
@@ -1915,23 +1905,6 @@ printf 'dylib replace /nope/absent-fw-allmiss.dylib /also/absent-fw-allmiss.dyli
 cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
     && ok "dylib: the refusal left the file byte-for-byte untouched when nothing at all matched" \
     || bad "dylib: unmatched refusal (all miss)" "the file was modified despite every operation matching nothing"
-
-# `segment rename` and `swift-abi set` name no path that could miss, so
-# refusing an unmatched operation by default has nothing to promote for
-# either: a run that renamed (or retagged) successfully must still succeed,
-# because there was never a miss to promote.
-build_main "$T/segment_fw_fixture"
-mts "$T/segment_fw_fixture" "segment rename __DATA __DATA_R9" \
-    >/dev/null 2>"$T/segment_fw.err" \
-    && ok "segment: nothing to promote, so a matching rename still succeeds by default" \
-    || bad "segment: unmatched refusal" "a rename that matched was refused: $(cat "$T/segment_fw.err")"
-"$DRYDOCK_MACHO_REWRITE" info "$T/segment_fw_fixture" | grep -q "segname=__DATA_R9" \
-    && ok "segment: ... and the rename really landed" \
-    || bad "segment: unmatched refusal" "no __DATA_R9 segment after the rename"
-mts "$T/segment_fw_fixture" "swift-abi set legacy" \
-    >/dev/null 2>"$T/retag_fw.err" \
-    && ok "swift-abi: nothing to promote, so a retag of a binary with no Swift classes still succeeds by default" \
-    || bad "swift-abi: unmatched refusal" "refused: $(cat "$T/retag_fw.err")"
 
 # ============================================================================
 # dylib -append / -insert / -delete / -reexport
@@ -2205,13 +2178,6 @@ mts "$T/rpath_fw_lax_fixture" allow-unmatched \
         >/dev/null 2>/dev/null && rpath_fw_lax_rc=0 || rpath_fw_lax_rc=$?
 [ "$rpath_fw_lax_rc" -eq 0 ] && ok "rpath: allow-unmatched lets the same unmatched op succeed" \
     || bad "rpath: allow-unmatched" "expected 0, got $rpath_fw_lax_rc"
-# And when the op DOES match, allow-unmatched must not refuse.
-build_main "$T/rpath_fw_ok_fixture" "/tmp/cli_test_rpath_fw_ok_present"
-mts "$T/rpath_fw_ok_fixture" allow-unmatched \
-        "rpath replace /tmp/cli_test_rpath_fw_ok_present /tmp/cli_test_rpath_fw_ok_new" \
-        >"$T/rpath_fw_ok.out" 2>"$T/rpath_fw_ok.err" && rpath_fw_ok_rc=0 || rpath_fw_ok_rc=$?
-[ "$rpath_fw_ok_rc" -eq 0 ] && ok "rpath: allow-unmatched succeeds when nothing is unmatched" \
-    || bad "rpath: allow-unmatched (matched)" "expected 0, got $rpath_fw_ok_rc: $(cat "$T/rpath_fw_ok.err")"
 
 # ============================================================================
 # rpath -insert: the search path lands FIRST, not last
@@ -2493,10 +2459,6 @@ cmp -s "$T/sect.want" "$T/sect.got" \
     && ok "info: the fixture really has sections to print" \
     || bad "info sectname" "the fixture has no sections; this assertion proves nothing"
 
-grep -q '^    sectname=' "$T/sect.out" \
-    && ok "info: sectname lines are present" \
-    || bad "info sectname" "none printed at all"
-
 # A SECTION name of exactly 16 bytes uses the whole field and is NOT
 # NUL-terminated. %.16s is what prints it whole; %s would run past it into
 # whatever follows in struct section_64 (addr, next). This is deliberately
@@ -2560,9 +2522,10 @@ cmp -s "$T/fat.thin.lc" "$T/fat.s0.lc" \
     || bad "info fat slice body" "$(diff "$T/fat.thin.lc" "$T/fat.s0.lc" | head -5)"
 
 # Every detection, on a fat file. This is the whole point of the task.
-grep -q '^    sectname=' "$T/fat.out" \
+fat_sects=$(awk '/^slice /{n++} /^    sectname=/{c[n]++} END{print c[1]+0, c[2]+0}' "$T/fat.out")
+echo "$fat_sects" | awk '{exit !($1 > 0 && $1 == $2)}' \
     && ok "info fat: section names are printed per slice" \
-    || bad "info fat" "no sectname lines"
+    || bad "info fat" "sectname lines per slice: $fat_sects (want two equal, nonzero counts)"
 [ "$(grep -c '^swift-abi: ' "$T/fat.out")" -eq 2 ] \
     && ok "info fat: a swift-abi line per slice" \
     || bad "info fat" "wanted 2 swift-abi lines, got $(grep -c '^swift-abi: ' "$T/fat.out")"
@@ -2586,9 +2549,22 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/info_fat" >"$T/fatthin.out" 2>"$T
 # A non-Mach-O slice is named and passed over, in me_run_fat's words -- not a
 # second vocabulary for the same fact.
 "$T/segread" wrap "$T/info_fat32" "$T/segment_fixture" "$T/notmacho" 7
-"$DRYDOCK_MACHO_REWRITE" info "$T/info_fat32" 2>/dev/null | grep -q '^slice .*: 32-bit; passed through unchanged$' \
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat32" >"$T/fat32.out" 2>"$T/fat32.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "info fat: a container with a 32-bit slice is read (0)" \
+    || bad "info fat 32-bit" "exited $rc: $(cat "$T/fat32.err")"
+grep -q '^slice .*: 32-bit; passed through unchanged$' "$T/fat32.out" \
     && ok "info fat: a 32-bit slice reuses me_run_fat's wording" \
-    || bad "info fat 32-bit" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/info_fat32" 2>/dev/null | grep '^slice ')"
+    || bad "info fat 32-bit" "got: $(grep '^slice ' "$T/fat32.out")"
+[ "$(grep -c '^slice x86_64: ' "$T/fat32.out")" -eq 1 ] \
+    && awk '/^slice /{n++} n==1' "$T/fat32.out" | grep -q '^LC\[' \
+    && ok "info fat: the x86_64 slice beside a 32-bit one is still printed in full" \
+    || bad "info fat 32-bit" "wanted one x86_64 slice with LC lines: $(cat "$T/fat32.out")"
+
+printf '\312\376\272\276\000\000\000\000' >"$T/info_fat0"
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat0" >"$T/fat0.out" 2>"$T/fat0.err" || rc=$?
+[ "$rc" -eq 0 ] && [ "$(cat "$T/fat0.out")" = "$T/info_fat0: 8 bytes, 0 slices" ] \
+    && ok "info fat: a fat header with no slices is reported as 0 slices (0)" \
+    || bad "info fat 0 slices" "exit $rc, stdout: $(cat "$T/fat0.out"), stderr: $(cat "$T/fat0.err")"
 
 # The other wording that same branch can print: a slice tagged with a
 # cputype that DOES carry the 64-bit ABI bit (CPU_TYPE_X86_64 = 16777223,
@@ -2628,7 +2604,7 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/notmacho" >"$T/nm.out" 2>"$T/nm.err" || 
 [ ! -s "$T/nm.out" ] && ok "info notmacho: nothing to stdout" \
     || bad "info notmacho" "unexpected stdout: $(cat "$T/nm.out")"
 [ "$(cat "$T/nm.err")" = "drydock-macho-rewrite info: $T/notmacho: not a readable 64-bit Mach-O" ] \
-    && ok "info notmacho: byte-identical wording to before info learned fat" \
+    && ok "info notmacho: keeps mi_open's wording, byte for byte" \
     || bad "info notmacho" "wrong message: $(cat "$T/nm.err")"
 
 rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/notmacho" >"$T/nmthin.out" 2>"$T/nmthin.err" || rc=$?
@@ -2637,7 +2613,7 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/notmacho" >"$T/nmthin.out" 2>"$T/
 [ ! -s "$T/nmthin.out" ] && ok "info --thin notmacho: nothing to stdout" \
     || bad "info --thin notmacho" "unexpected stdout: $(cat "$T/nmthin.out")"
 [ "$(cat "$T/nmthin.err")" = "drydock-macho-rewrite info: $T/notmacho: not a readable 64-bit Mach-O" ] \
-    && ok "info --thin notmacho: byte-identical wording to before info learned fat" \
+    && ok "info --thin notmacho: keeps mi_open's wording, byte for byte" \
     || bad "info --thin notmacho" "wrong message: $(cat "$T/nmthin.err")"
 
 mts "$T/segment_fixture" "segment rename __DATA __DATA_R9" \

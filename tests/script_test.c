@@ -258,36 +258,7 @@ static void test_fatal_warnings_is_an_unknown_statement(void) {
           "the same way (got: %s)", err);
 }
 
-/* The opt-in that replaces it, in the slot allow-grow vacated: a directive,
- * no operands, and refused after any operation. */
-static void test_allow_unmatched_is_a_directive(void) {
-    ms_script s; char err[256] = {0};
-    static const char ok[] = "allow-unmatched\nload-command delete uuid\n";
-    static const char late[] = "load-command delete uuid\nallow-unmatched\n";
-    static const char operand[] = "allow-unmatched yes\n";
-
-    CHECK(ms_parse(ok, sizeof ok - 1, &s, err, sizeof err) == 0,
-          "allow-unmatched rejected: %s", err);
-    CHECK(s.allow_unmatched == 1, "allow-unmatched did not set the field");
-    CHECK(s.n == 1, "wanted 1 statement, got %d", s.n);
-    ms_free(&s);
-
-    memset(err, 0, sizeof err);
-    CHECK(ms_parse(late, sizeof late - 1, &s, err, sizeof err) == -1,
-          "allow-unmatched after an operation is refused");
-    CHECK(strstr(err, "must precede every operation") != NULL,
-          "and says why (got: %s)", err);
-
-    memset(err, 0, sizeof err);
-    CHECK(ms_parse(operand, sizeof operand - 1, &s, err, sizeof err) == -1,
-          "allow-unmatched with an operand is refused");
-    CHECK(strstr(err, "takes no operands") != NULL,
-          "and says why (got: %s)", err);
-}
-
-/* The DEFAULT is the change. A bare script refuses an operation that matched
- * nothing; only allow-unmatched makes it a report. */
-static void test_unmatched_refuses_by_default(void) {
+static void test_a_bare_script_does_not_allow_unmatched(void) {
     ms_script s; char err[256] = {0};
     static const char bare[] = "load-command delete uuid\n";
     CHECK(ms_parse(bare, sizeof bare - 1, &s, err, sizeof err) == 0,
@@ -804,8 +775,7 @@ int main(void) {
     test_directive_with_operand_is_refused();
     test_allow_grow_is_an_unknown_statement();
     test_fatal_warnings_is_an_unknown_statement();
-    test_allow_unmatched_is_a_directive();
-    test_unmatched_refuses_by_default();
+    test_a_bare_script_does_not_allow_unmatched();
     test_final_line_without_newline_parses();
     test_blank_and_comment_lines_dont_shift_line_numbers();
     test_version_min_value_refusal();

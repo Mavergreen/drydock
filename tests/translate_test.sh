@@ -506,10 +506,7 @@ au_case() {   # au_case NAME want(yes/no) -- TOOL ARG...
             "$au_name" "$au_rc" "$(cat "$T/err")" >&2
         fail=$((fail + 1)); return 0
     fi
-    case $au_got in
-        "printf 'allow-unmatched"*) au_has=yes ;;
-        *)                          au_has=no ;;
-    esac
+    if printf '%s\n' "$au_got" | grep -q 'allow-unmatched'; then au_has=yes; else au_has=no; fi
     if [ "$au_has" = "$au_want" ]; then
         pass=$((pass + 1))
     else

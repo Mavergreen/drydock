@@ -330,7 +330,7 @@ bsrc2=$?
 # The printf format now starts with `allow-unmatched` -- change_dylib's
 # translation heads its script with it -- ahead of the load-command statement
 # this run actually asked for.
-grep -q "^    printf 'allow-unmatched" "$T/bs.err" \
+grep -qF "    printf 'allow-unmatched\\nload-command delete uuid" "$T/bs.err" \
     && ok "change_dylib: ... and the teaching block is still indented and counted" \
     || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
 rm -rf "$T/bs"
@@ -1132,7 +1132,7 @@ diff -u "$T/rs_nomatch_expected.err" "$T/err" >"$T/rs_nomatch.diff" 2>&1
 # remove whatever drydock-macho-rewrite did leave behind.
 ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' \
     && bad "rename_segment no match" "the unused temp survived" \
-    || ok "rename_segment: ... and the output drydock-macho-rewrite did write is not left behind"
+    || ok "rename_segment: ... and the temp mw_prepare named is not left behind"
 
 # THE VERDICT IS THE EXIT CODE PLUS A CLASSIFICATION QUERY, NOT THE WORDING
 # -- proved behaviourally, with a fake drydock-macho-rewrite standing in for
@@ -1230,6 +1230,19 @@ run rename_segment f __NOPE __ALSONOPE
     && ok "rename_segment: EX_FAIL stays 'everything else' -- shown, and exit 1, not 2" \
     || bad "rename_segment stub EX_FAIL" "stub ran=$([ -f "$STUBDIR/ran" ] && echo yes || echo NO), exit $rc (want 1), stderr: $(cat "$T/err")"
 
+fresh
+before=$(sha "$T/f")
+rm -f "$STUBDIR/ran"
+MW_STUB_RC=0
+MW_STUB_ERR=''
+export MW_STUB_RC MW_STUB_ERR
+run rename_segment f __DATA __DATA_STUBX
+[ -f "$STUBDIR/ran" ] && [ "$rc" -eq 1 ] && [ ! -s "$T/out" ] \
+    && grep -qF 'did not report what its segment rename matched' "$T/err" \
+    && [ "$(sha "$T/f")" = "$before" ] \
+    && ok "rename_segment: a tool that exits 0 without naming a rename is a mismatched install: exit 1, loud, file untouched" \
+    || bad "rename_segment stub silent 0" "stub ran=$([ -f "$STUBDIR/ran" ] && echo yes || echo NO), exit $rc (want 1), stdout: $(cat "$T/out"), stderr: $(cat "$T/err")"
+
 unset MW_STUB_RC MW_STUB_ERR
 if [ -n "$MW_HAD_CDIR" ]; then DRYDOCK_MACHO_REWRITE_COMPAT_DIR=$MW_SAVED_CDIR; export DRYDOCK_MACHO_REWRITE_COMPAT_DIR
 else unset DRYDOCK_MACHO_REWRITE_COMPAT_DIR; fi
@@ -1312,6 +1325,11 @@ else
         && [ "$(sha "$T/rs_lazy_main")" = "$before" ] \
         && ok "rename_segment: LC_LAZY_LOAD_DYLIB is a real refusal (exit 1), shown, once classified 'present'" \
         || bad "rename_segment LC_LAZY_LOAD_DYLIB" "exit $rc (want 1), stderr: $(cat "$T/err")"
+    run rename_segment rs_lazy_main __NOPE __X
+    [ "$rc" -eq 2 ] && [ ! -s "$T/out" ] && ! grep -qi "LC_LAZY_LOAD_DYLIB" "$T/err" \
+        && [ "$(sha "$T/rs_lazy_main")" = "$before" ] \
+        && ok "rename_segment: LC_LAZY_LOAD_DYLIB with an absent OLD exits 2, silently, as the C tool did" \
+        || bad "rename_segment LC_LAZY_LOAD_DYLIB, absent OLD" "exit $rc (want 2), stdout: $(cat "$T/out"), stderr: $(cat "$T/err")"
 fi
 
 # A rename to the SAME name still MATCHED, so it is exit 0 with a count of 1 --
@@ -1383,7 +1401,7 @@ RSCAP
 ) >"$T/cap.out" 2>/dev/null
 grep -qxF '  Rename segment: __DATA -> __CAPCHK' "$T/cap.out" \
     && ok "capabilities: this build names each segment it renames, which is where the count comes from" \
-    || bad "capabilities" "no '  Rename segment: OLD -> NEW' line, so rename_segment cannot tell a rename from a miss and would exit 2 on a file it rewrote: $(cat "$T/cap.out")"
+    || bad "capabilities" "no '  Rename segment: OLD -> NEW' line, so rename_segment would exit 1 on every rename, installing nothing: $(cat "$T/cap.out")"
 
 # THIN ONLY. rename_segment ran mi_open, which refuses a fat container;
 # `drydock-macho-rewrite segment` goes through mr_apply_file, which handles one. Without the
@@ -2404,13 +2422,14 @@ if [ ! -x "$T/idnotty" ]; then
 elif [ ! -x "$BIN/insert_dylib" ]; then
     skip "insert_dylib fat prompt" "$BIN/insert_dylib is not installed"
 else
-    fm_mkfat "$T/idfat" "$FIXTURE" 16777223 "$FIXTURE" 16777223
-    # Ask the fat file itself what it names, rather than assume -- the same
-    # care tests/insert_dylib_test.sh's case 9 takes with the thin fixture.
-    id_have=$("$BIN/drydock-macho-rewrite" info "$T/idfat" 2>/dev/null \
-        | sed -n 's/^  ordinal=[0-9]* path=//p' | head -1)
-    if [ -z "$id_have" ]; then
-        bad "insert_dylib fat prompt" "the fat fixture names no dylib; this proves nothing"
+    id_have=/usr/lib/libdrydock_slice2_only.dylib
+    printf 'dylib append %s\n' "$id_have" | "$BIN/drydock-macho-rewrite" "$FIXTURE" "$T/idslice2" >/dev/null 2>&1
+    fm_mkfat "$T/idfat" "$FIXTURE" 16777223 "$T/idslice2" 16777223
+    "$BIN/drydock-macho-rewrite" info "$T/idfat" >"$T/idfat.info" 2>/dev/null
+    id_s1=$(awk '/^slice /{n++} n==1' "$T/idfat.info" | grep -cF "path=$id_have")
+    id_s2=$(awk '/^slice /{n++} n==2' "$T/idfat.info" | grep -cF "path=$id_have")
+    if [ "$id_s1" -ne 0 ] || [ "$id_s2" -ne 1 ]; then
+        bad "insert_dylib fat prompt" "wanted $id_have named by slice 2 only, got slice 1: $id_s1, slice 2: $id_s2; this proves nothing"
     else
         # --no-strip-codesig keeps prompt 1 out of the way, so the
         # duplicate-dylib check (prompt 2) is the only one this run can
@@ -2420,7 +2439,7 @@ else
             "$id_have" idfat idfat.out </dev/null ) >"$T/id.out" 2>"$T/id.err"
         rc=$?
         if [ "$rc" -eq 1 ] && grep -qF 'already contains a load command for that dylib' "$T/id.err"; then
-            ok "insert_dylib: the duplicate-dylib prompt now fires on a fat binary"
+            ok "insert_dylib: the duplicate-dylib prompt fires on a fat binary whose second slice alone names the dylib"
         else
             bad "insert_dylib fat prompt" "exit $rc (want 1, refused with no tty to ask on): $(cat "$T/id.err")"
         fi
