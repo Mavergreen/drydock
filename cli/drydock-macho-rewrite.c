@@ -450,27 +450,10 @@ static void info_image(mi_image *im, const char *label) {
     struct info_ctx ctx = { 0, 0 };
     mi_each_lc(im, info_cb, &ctx);
 
-    /* The fifth of target 10.9's detections, and the only one with no other
-     * way to ask: mswift_stable_tagged_image (src/swift_retag.h) had exactly
-     * one caller, me_expand_10_9. It returns a COUNT of tagged class records,
-     * so >0 is "tagged". Nothing in swift_retag.h promises a negative
-     * return -- mswift_stable_tagged_image's own declaration and its sibling
-     * mswift_retag_image's ("0 or more; it has no failure of its own") both
-     * rule it out, and today's mswift_walk never returns one: a missing or
-     * out-of-bounds __objc_classlist/__objc_nlclslist section is skipped,
-     * not refused. The "unknown" branch below is defensive only, kept in
-     * case that ever changes, not because it can fire today. Flush left,
-     * beside `header pad:`, because it describes the image and not a load
-     * command. */
-    {
-        int tagged = mswift_stable_tagged_image(im);
-        if (tagged < 0)
-            printf("swift-abi: unknown (class records could not be walked)\n");
-        else if (tagged > 0)
-            printf("swift-abi: class records carry the stable-ABI tag\n");
-        else
-            printf("swift-abi: no class records carry the stable-ABI tag\n");
-    }
+    if (mswift_stable_tagged_image(im) > 0)
+        printf("swift-abi: class records carry the stable-ABI tag\n");
+    else
+        printf("swift-abi: no class records carry the stable-ABI tag\n");
 
     uint32_t first_sect_off = mg_first_sect_off(im->buf, im->size);
     if (first_sect_off == MG_NO_SECTION_DATA) {
