@@ -1578,17 +1578,11 @@ fi
 #
 # build_lcs_lc (change_dylib.c) calls mo_lc_str_at on every LC_RPATH's own
 # path.offset and refuses the whole rewrite if the offset is out of bounds
-# for that command's cmdsize -- BEFORE this task, that early exit worked
-# because the walk was hand-rolled and could just `return -1` straight out
-# of the loop. After converting it to an mi_each_lc callback, "stop" means
-# the callback returns 1 and mi_each_lc reports incomplete; build_lcs then
-# has to translate that into its own -1. If that translation were wrong (or
-# missing -- e.g. build_lcs treating "stopped early" the same as "finished
-# normally"), the tool would use whatever partial `new_lcs` the callback had
-# written up to the point it detected the corruption, and either write a
-# truncated/corrupt load-command table or silently continue past a load
-# command it could not safely interpret. That is the worst possible outcome
-# here.
+# for that command's cmdsize, by translating the stop-capable mi_each_lc
+# callback's "incomplete" report into its own -1; get that translation wrong
+# and the tool writes whatever partial `new_lcs` the callback had produced --
+# a truncated/corrupt load-command table, or one that silently continues past
+# a load command it could not safely interpret.
 #
 # The fixture: link a real binary with one valid LC_RPATH (through
 # change_dylib itself, so the command is genuinely well-formed to start),

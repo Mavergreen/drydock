@@ -988,14 +988,13 @@ static void test_grow_rebases_export_trie(void) {
     free(buf);
 }
 
-/* ---- THE gap this task closes: a trie that genuinely WIDENS under grow ----
+/* ---- A trie that genuinely WIDENS under grow ----
  * Node A's address is 16000 (0x3E80): a 2-byte ULEB (16000 < 16384), but
  * 16000 + 0x1000 = 20096 needs 3 (>= 16384). An in-place patch (the path
- * above) cannot absorb that -- see mg_trie_node's `return 1`. Before this
- * task, mg_grow_header refused outright; now it must REBUILD the trie via
- * src/trie.c's mt_trie_rebuild and, when the rebuild no longer fits the
- * original space (it doesn't here: 18 bytes where there were 17), grow
- * __LINKEDIT to hold it.
+ * above) cannot absorb that -- see mg_trie_node's `return 1`. mg_grow_header
+ * must REBUILD the trie via src/trie.c's mt_trie_rebuild and, when the
+ * rebuild no longer fits the original space (it doesn't here: 18 bytes
+ * where there were 17), grow __LINKEDIT to hold it.
  *
  * This fixture is deliberately NOT build_image()'s 8192-byte layout: that
  * fixture has trailing zero padding past its trie, which would make

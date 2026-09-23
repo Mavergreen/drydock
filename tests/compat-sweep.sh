@@ -544,8 +544,7 @@ run_case retag_swift_classes f nm f                       # three files
 # Invocations the fixed vocabulary structurally cannot reach.
 echo "compat-sweep: sweeping the hand-picked extra cases"
 
-# install.sh's production line, verbatim but for the file name -- the single
-# most important translation in this task.
+# install.sh's production line, verbatim but for the file name.
 run_case change_dylib f -strip-lc uuid -strip-lc codesig \
     -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib' \
     -change /usr/lib/libicucore.A.dylib '@loader_path/../I.dylib' \

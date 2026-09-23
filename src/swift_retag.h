@@ -44,8 +44,8 @@
  * file became a shell wrapper; it is here now because it is the reason the
  * code is here, and it must outlive whichever front-end reaches it.)
  *
- * THIN ONLY, deliberately: retag_swift_classes never handled a fat container
- * and this task does not change what it does. A caller handed one gets
+ * THIN ONLY, deliberately: retag_swift_classes never handled a fat container.
+ * A caller handed one gets
  * MSWIFT_NOT_MACHO and is expected to say so rather than report a silent
  * success -- which is what the old tool's bare "return 0" looked like from
  * the outside.

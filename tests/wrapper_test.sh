@@ -1364,15 +1364,8 @@ fi
 # mrel_verify_applies), and a segment rename disturbs nothing; this is the same
 # property seen through the wrapper, which is where a caller sees it.
 #
-# The input is tests/mkimplausible.c's committed fixture, built here. It used
-# to be a scan of /usr/lib for a dylib the gate refused, with a SKIP when none
-# turned up -- which passes on 10.9 and covers nothing on the cross runner,
-# leaving the one behavioural change this task made to drydock-macho-rewrite with no coverage
-# where it is built. (Those /usr/lib refusals were not the heuristic getting
-# real dylibs wrong: mg_plausible read a dylib's image base of 0 as
-# mi_text_base's "no segment maps the header" sentinel and bailed before the
-# heuristic ran. mi_image_base fixed that and all 26 now pass -- so the scan
-# would find nothing today either. The fixture is refused on its merits.)
+# The input is tests/mkimplausible.c's committed fixture, built here. The
+# fixture is refused on its merits.
 "$CC" -O2 -Wall -Wextra -I "$ROOT/src" -o "$T/mkimplausible" "$HERE/mkimplausible.c"
 "$T/mkimplausible" "$T/imp"
 
