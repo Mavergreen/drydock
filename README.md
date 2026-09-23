@@ -136,7 +136,7 @@ has** — the ones this binary actually needs — and those run in its place:
 | `LC_BUILD_VERSION` present | `load-command delete build-version` |
 | no `LC_VERSION_MIN_MACOSX` | `version-min set 10.9` |
 | `LC_VERSION_MIN_MACOSX` above 10.9 | `minos set 10.9` |
-| `LC_BUILD_VERSION` at or below 10.9, other than 10.9.0, and no `LC_VERSION_MIN_MACOSX` | `minos set` to that version, after the append |
+| a macOS `LC_BUILD_VERSION` at or below 10.9, other than 10.9.0, and no `LC_VERSION_MIN_MACOSX` | `minos set` to that version, after the append |
 | `__DATA_CONST` carrying `__objc_*` sections | `segment rename __DATA_CONST __DATA` |
 | class records carrying the stable-ABI Swift tag | `swift-abi set legacy` |
 
@@ -205,9 +205,10 @@ each, since the same line does different things to different binaries:
 
 > The `minimum:` line is always there, and names the minimum the binary
 > declared, the one it declares now, and its sdk. Converting an
-> `LC_BUILD_VERSION` keeps its sdk, since the binary was built against it. The report says `nothing to do: this
-> binary already targets 10.9` when the expansion is empty, which happens
-> only when that minimum was left as declared.
+> `LC_BUILD_VERSION` keeps its sdk, since the binary was built against it.
+> The report says `nothing to do: this binary already targets 10.9` when the
+> expansion is empty, which happens only when that minimum was left as
+> declared.
 
 The rest of the rules:
 
