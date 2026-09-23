@@ -110,10 +110,10 @@ for the same reason a quotation keeps the words it quotes.
 statement parser's KIND validation always have; a run's rewriting statements
 get theirs from the shared rewrite drivers they lower to (`mr_apply_image`,
 `mv_add_version_min`), which draw this exact same line themselves for
-EVERY considered refusal they can reach -- not only the one `--fatal-
-warnings` adds ("an operation matched nothing"), but every refusal those
-two functions already had (bad magic, no room to grow, and the rest of
-`src/rewrite.h`'s list). A run's own code comes from
+EVERY considered refusal they can reach -- not only the one an unmatched
+operation reaches by default ("an operation matched nothing"), but every
+refusal those two functions already had (bad magic, no room to grow, and
+the rest of `src/rewrite.h`'s list). A run's own code comes from
 `me_run` (`src/edit.h`), which draws the same line. Also documented
 machine-readably in `--capabilities`' `exitcodes` line:
 

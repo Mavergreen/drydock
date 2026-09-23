@@ -105,9 +105,9 @@ unpie() {
 # against FILE's bytes AND its inode, with no helper in the way. This one is an
 # ergonomic for everything else, not a stand-in for that.
 #
-# A directive is just another line,
-# so `--allow-unmatched` becomes a leading 'allow-unmatched' argument -- which
-# is why the arguments stay in the order the flags were typed.
+# A directive is just another line: a leading argument such as
+# `allow-unmatched` becomes a directive line -- which is why the arguments
+# stay in the order they were given.
 #
 # printf '%s\n' over the argument list rather than a heredoc per call site: the
 # statements are then visible ON the call line, next to the assertion that reads
@@ -528,14 +528,15 @@ echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
 ok "capabilities: retype kinds do not advertise lazy"
 
 # NO OTHER `flags=` FIELD IS ADVERTISED, and that is the claim now. It used
-# to be per-verb: an unmatched-is-fatal switch was a verb-level flag, and
-# assertions here checked which verb advertised it. That behaviour is a
-# SCRIPT DIRECTIVE today, `allow-unmatched`, and print_capabilities
-# deliberately does not list directives (see its own contract: "that is a
-# later decision"), so a `flags=` on any surviving line would be advertising
-# something no form accepts -- with one exception: `verb info flags=--thin`
-# names an actual CLI flag `info` itself parses (tested below), not a
-# directive in disguise, so it alone is allowed through.
+# to be per-verb: `--fatal-warnings` was a verb-level flag, and assertions
+# here checked which verb advertised it. Refusing an unmatched operation is
+# the default today, and its opt-out, `allow-unmatched`, is a SCRIPT
+# DIRECTIVE; print_capabilities deliberately does not list directives (see
+# its own contract: "that is a later decision"), so a `flags=` on any
+# surviving line would be advertising something no form accepts -- with one
+# exception: `verb info flags=--thin` names an actual CLI flag `info` itself
+# parses (tested below), not a directive in disguise, so it alone is allowed
+# through.
 #
 # WHAT THIS NO LONGER COVERS, stated rather than quietly dropped: a wrapper
 # cannot probe for `allow-unmatched` support. Its BEHAVIOUR is still asserted
@@ -1524,8 +1525,8 @@ fi
 grep -q "load-command delete: unknown kind 'bogus-kind'" "$T/lc_bad.err" && ok "lc: bad kind message" \
     || bad "lc: bad kind message" "missing \"load-command delete: unknown kind 'bogus-kind'\": $(cat "$T/lc_bad.err")"
 # lc -delete naming a KIND the file does not carry: the strip-cmds twin of
-# the dylib -replace miss report above, so it needs the same allow-unmatched
-# to avoid the new default refusal. The absence is MADE true by
+# the dylib -replace miss report above, so it needs the same allow-unmatched:
+# an unmatched operation refuses by default. The absence is MADE true by
 # build_main_without_build_version rather than assumed from what the host's
 # linker happens to emit -- see that helper for why the old assumption was
 # false on the cross runner. So this is a guaranteed miss, not a maybe.
@@ -1549,8 +1550,8 @@ grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
 # second really finds nothing, so the miss is REAL and saying so is correct --
 # the sequential model has no shadowing to forgive. What survives unchanged is
 # the property the old assertion existed to protect: the run still SUCCEEDS,
-# and the LC_UUID is gone -- which needs allow-unmatched now, since the
-# second delete's real miss would otherwise refuse the run by default.
+# and the LC_UUID is gone -- which needs allow-unmatched, since the second
+# delete's real miss refuses the run by default.
 build_main "$T/lc_dup_fixture"
 mts "$T/lc_dup_fixture" allow-unmatched "load-command delete uuid" "load-command delete uuid" \
     >/dev/null 2>"$T/lc_dup.err" || bad "lc: duplicate delete uuid" "$(cat "$T/lc_dup.err")"
@@ -1577,9 +1578,8 @@ mts "$T/lc_fw_fixture" "load-command delete build-version" \
 grep -q "no load command of kind build-version to delete" "$T/lc_fw.err" \
     && ok "lc: the refusal still names the KIND that matched nothing" \
     || bad "lc: unmatched refusal message" "expected 'no load command of kind build-version to delete', got: $(cat "$T/lc_fw.err")"
-# allow-unmatched opts back into the old lenient behaviour: the identical
-# script now succeeds -- so the directive is what changed the answer, not
-# something else about this fixture.
+# allow-unmatched lets the identical script succeed -- so the directive is
+# what changed the answer, not something else about this fixture.
 build_main_without_build_version "$T/lc_fw_lax_fixture"
 mts "$T/lc_fw_lax_fixture" allow-unmatched "load-command delete build-version" \
     >/dev/null 2>/dev/null && lc_fw_lax_rc=0 || lc_fw_lax_rc=$?
@@ -1727,8 +1727,8 @@ grep -q "fat_arch_64" "$T/dylib_fat64.err" \
 # fire, and the exit code was 0. Ask for two, get one, no way to tell -- the
 # silent partial success docs/PROPOSAL.md's "verify" section exists to rule
 # out ("Every defect found in this code has been a silent success."). By
-# default this now refuses outright (below); allow-unmatched opts back into
-# reporting the miss and finishing the run, which is what this block proves.
+# default this refuses outright (below); allow-unmatched lets it report the
+# miss and finish the run, which is what this block proves.
 #
 # The report has to land on stderr, not stdout: the compat/ wrappers need
 # stdout byte-identical to the tools they replaced (tests/known-callers.sh,
@@ -1876,9 +1876,8 @@ grep -qF "/nope/absent-fw.dylib matched nothing" "$T/dylib_fw.err" \
 cmp -s "$T/dylib_fw_fixture" "$T/dylib_fw_before" \
     && ok "dylib: the refusal left FILE byte-for-byte untouched" \
     || bad "dylib: unmatched refusal touched FILE" "FILE changed under a form that only reads it"
-# allow-unmatched opts back into the old lenient behaviour: the identical
-# script now succeeds -- so the directive is what changed the answer, not
-# something else about this fixture.
+# allow-unmatched lets the identical script succeed -- so the directive is
+# what changed the answer, not something else about this fixture.
 build_main "$T/dylib_fw_lax_fixture"
 mts "$T/dylib_fw_lax_fixture" allow-unmatched \
         "dylib replace @loader_path/liba.dylib @loader_path/renamed-fw-lax.dylib" \
@@ -1919,9 +1918,8 @@ cmp -s "$T/dylib_fw_allmiss_fixture" "$T/dylib_fw_allmiss_before" \
 
 # `segment rename` and `swift-abi set` name no path that could miss, so
 # refusing an unmatched operation by default has nothing to promote for
-# either. The claim that matters: the new default must not turn a run that
-# renamed (or retagged) successfully into a refusal, because there was never
-# a miss to promote.
+# either: a run that renamed (or retagged) successfully must still succeed,
+# because there was never a miss to promote.
 build_main "$T/segment_fw_fixture"
 mts "$T/segment_fw_fixture" "segment rename __DATA __DATA_R9" \
     >/dev/null 2>"$T/segment_fw.err" \
@@ -2200,8 +2198,7 @@ mts "$T/rpath_fw_fixture" \
 grep -q "rpath /tmp/cli_test_rpath_fw_absent matched nothing" "$T/rpath_fw.err" \
     && ok "rpath: the refusal still names the op that matched nothing" \
     || bad "rpath: unmatched refusal message" "expected the miss message on stderr, got: $(cat "$T/rpath_fw.err")"
-# allow-unmatched opts back into the old lenient behaviour: the identical
-# invocation now succeeds.
+# allow-unmatched lets the identical invocation succeed.
 build_main "$T/rpath_fw_lax_fixture" "/tmp/cli_test_rpath_fw_lax_present"
 mts "$T/rpath_fw_lax_fixture" allow-unmatched \
         "rpath replace /tmp/cli_test_rpath_fw_absent /tmp/cli_test_rpath_fw_new" \
@@ -2710,9 +2707,21 @@ mts "$T/segment_nomatch_fixture" "segment rename __NOSUCHSEG __OTHER" \
     >"$T/segment_nomatch.out" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && ok "segment: a rename that matches nothing refuses by default (EX_REFUSED)" \
     || bad "segment: no-match exit" "expected exit 1, got $rc: $(cat "$T/segment_nomatch.out")"
+grep -q "segment __NOSUCHSEG matched nothing" "$T/segment_nomatch.out" \
+    && ok "segment: the refusal names the segment that matched nothing" \
+    || bad "segment: no-match message" "expected 'segment __NOSUCHSEG matched nothing', got: $(cat "$T/segment_nomatch.out")"
 cmp -s "$T/segment_nomatch_fixture" "$T/segment_nomatch_before" \
     && ok "segment: a rename that matched nothing did not touch the file" \
     || bad "segment: no-match" "the file changed although no segment matched"
+# allow-unmatched lets the identical rename succeed, still reporting the miss.
+"$CC" -O2 $FIXTURE_FLAGS "$T/segmain.c" -o "$T/segment_nomatch_lax_fixture"
+mts "$T/segment_nomatch_lax_fixture" allow-unmatched "segment rename __NOSUCHSEG __OTHER" \
+    >/dev/null 2>"$T/segment_nomatch_lax.err" && seg_nomatch_lax_rc=0 || seg_nomatch_lax_rc=$?
+[ "$seg_nomatch_lax_rc" -eq 0 ] && ok "segment: allow-unmatched lets a rename that matches nothing succeed" \
+    || bad "segment: no-match (allow-unmatched)" "expected 0, got $seg_nomatch_lax_rc: $(cat "$T/segment_nomatch_lax.err")"
+grep -q "segment __NOSUCHSEG matched nothing" "$T/segment_nomatch_lax.err" \
+    && ok "segment: ... and the miss is still reported" \
+    || bad "segment: no-match (allow-unmatched) message" "expected 'segment __NOSUCHSEG matched nothing', got: $(cat "$T/segment_nomatch_lax.err")"
 
 # --- segment on a FAT container --------------------------------------------
 # The case that matters for the wrappers: fix_macho's -rename_seg is

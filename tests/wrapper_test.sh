@@ -1475,8 +1475,8 @@ run fix_macho f -rename_seg __DATA __DATA_F1
 # stderr -- drydock-macho-rewrite's report, which is what replaced fix_macho's
 # "No changes needed: F" -- and the exit code is still 0.
 #
-# THAT LAST PART IS A GATE, not a detail. An unmatched operation now refuses
-# by default, so this wrapper's translation must open every script with
+# THAT LAST PART IS A GATE, not a detail. An unmatched operation refuses by
+# default, so this wrapper's translation must open every script with
 # `allow-unmatched` to keep fix_macho's old behaviour: fix_macho exited 0
 # when an operation matched nothing, and that is compat surface. A refusal
 # (1) here means the translation is missing the directive.
