@@ -598,7 +598,7 @@ compared with `strncmp` over the 16-byte field (`src/segname.c`).
 | 2, silent | `EX_REFUSED` on an `LC_LAZY_LOAD_DYLIB` binary and OLD absent: the C tool's own answer | "rename_segment: LC_LAZY_LOAD_DYLIB with an absent OLD exits 2, silently, as the C tool did" |
 | 1, refusal shown | `EX_REFUSED` and OLD present (`LC_LAZY_LOAD_DYLIB` is the real case) | "rename_segment: LC_LAZY_LOAD_DYLIB is a real refusal (exit 1), shown, once classified 'present'", and the stub case "a fake tool's exit 1 is shown, not swallowed, when OLD DOES exist" |
 | 1, shown | `EX_FAIL` or any other nonzero | the stub case "rename_segment: EX_FAIL stays 'everything else' -- shown, and exit 1, not 2" |
-| 1, shown | the classification query itself fails | no assertion: the thin-only gate runs the same query first, so only a file that changes between the two calls reaches it |
+| 1, shown | the classification query itself fails | no assertion: the thin-only gate runs the same query first, so a file that changes between the two calls reaches it, and so does an `EX_FAIL` from `info` itself (malloc, or an I/O error on the second read) |
 | 1, loud, file untouched | exit 0 with no `  Rename segment:` line (a mismatched install) | the stub case "rename_segment: a tool that exits 0 without naming a rename is a mismatched install: exit 1, loud, file untouched" |
 
 A known limit: `info` prints a segment name with `%.16s`, so a name that

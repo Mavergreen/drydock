@@ -137,7 +137,8 @@ where the guessing would start.
 
 It decides per slice: each slice of a fat file gets only the lines that slice
 needs. It derives `fixups set classic` only where there are chained fixups to
-convert, so never on an image where that line refuses. It puts that line
+convert, so never on an image with no fixup information to convert, where the
+line refuses. It puts that line
 first, and it reports why it derived each line. A second profile is what would show the
 design earns its place; this build has one, and refuses any other.
 
@@ -150,8 +151,9 @@ the rest, such as only `version-min set 10.9`. Then:
 
 - put `fixups set classic` first, and leave it out for an image with neither
   chained fixups nor `LC_DYLD_INFO_ONLY` (it refuses);
-- leave out `load-command delete build-version` after `fixups set classic`,
-  which already removes `LC_BUILD_VERSION`, so the delete would match nothing;
+- leave out `load-command delete build-version` after `fixups set classic`
+  on an image with chained fixups, which already removes `LC_BUILD_VERSION`,
+  so the delete would match nothing;
 - rename `__DATA_CONST` only where `info` shows `__objc_` sections in it;
 - when slices need different lines, run one script per slice with `arch`,
   since a directive applies to the whole script.
