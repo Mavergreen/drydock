@@ -101,7 +101,7 @@ One line per slice under the statement. `at-most` uses exactly one of the first 
 
 Today `md_declassify` strips `LC_BUILD_VERSION` along with the chained-fixups commands, which loses the declared minimum and sdk. `target` works around that with a hidden channel: `ms_stmt.sdk` / `has_sdk`, filled in at detection time. A hand-written script cannot use that channel.
 
-**Change:** when `md_declassify` strips a macOS `LC_BUILD_VERSION`, it writes an `LC_VERSION_MIN_MACOSX` carrying that command's minos and sdk. It does not lower the minimum; that is `minos`'s job. The new command is 16 bytes, where the old one was 24 or more, so the net header change still shrinks.
+**Change:** when `md_declassify` strips a macOS `LC_BUILD_VERSION`, it writes an `LC_VERSION_MIN_MACOSX` carrying that command's minos and sdk. The new command goes directly before the `LC_DYLD_INFO_ONLY` that declassify appends, not in the build-version's old slot. That placement makes "`fixups set classic`, then `minos`" and "`minos`, then `fixups set classic`" produce byte-identical output, and a test pins that. It does not lower the minimum; that is `minos`'s job. The new command is 16 bytes, where the old one was 24 or more, so the net header change still shrinks.
 
 - A Mac Catalyst `LC_BUILD_VERSION` is stripped as today.
 - An image that already has an `LC_VERSION_MIN_MACOSX` gets no second one; its `LC_BUILD_VERSION` is stripped as today.
@@ -110,7 +110,19 @@ After `fixups set classic`, then, no information is lost, and a following `minos
 
 This is a behaviour change to `fixups set classic`. Its report line gains `; LC_BUILD_VERSION A.B (sdk C.D) kept as LC_VERSION_MIN_MACOSX`.
 
+## `swift-abi set legacy` refuses what it cannot read
+
+Measured 2026-09-23: on a chained-fixups image, `swift-abi set legacy` cannot follow the class-record pointers. It reports "nothing to retag", exits 0, and leaves the stable-ABI tag set. That answer is false, and a hand-written script that orders `swift-abi` before `fixups` gets it silently. `target 10.9` hits the same bug: it tests for the tag on the image before its own `fixups set classic` has run, so on a chained Swift binary it never derives the retag.
+
+**Change:** on an image with `LC_DYLD_CHAINED_FIXUPS`, `swift-abi set legacy` refuses (exit 1) with "the class records' pointers are chained; write `fixups set classic` before `swift-abi set legacy`". It no longer answers a question it could not read. After this, statement order in a 10.9 script matters only by being refused, never by silently producing a different result.
+
+`mswift_stable_tagged_image`'s callers treat a chained image the same way. `info`'s `swift-abi:` line says `swift-abi: unknown (pointers are chained; fixups set classic first)` rather than "no class records carry the stable-ABI tag".
+
 ## `target 10.9`
+
+`target 10.9` is a published recipe, not a hidden policy. The README prints its expansion as the script it is equivalent to, and a test pins that running the recipe by hand gives the same bytes as `target 10.9`, on a thin chained Swift image and on a fat one.
+
+It detects each condition **on the image as the preceding derived statements leave it**, not on the input. In particular, the Swift tag is tested after `fixups set classic` has run, which fixes the bug described above.
 
 The expansion becomes, in order, whichever of these apply:
 
@@ -147,6 +159,16 @@ Beside it, three sentences:
 
 The owner is editing README.md by hand. The plan's README task changes only the lines this feature touches, and stops if the file has uncommitted edits.
 
+What `target` adds over a hand-written recipe, and the README says so in these terms:
+- it renames `__DATA_CONST` only where `__objc_` sections need it, per slice. Renaming a C-only `__DATA_CONST` breaks nothing measured on 10.9, but it leaves two segments named `__DATA`, which `getsegbyname` and tools cannot tell apart;
+- it chooses per slice of a fat file;
+- it derives `fixups set classic` only where there are chained fixups, so it never hits that statement's refusal on an image with no fixup information;
+- it reports why each line was derived.
+
+## `verify`'s limit
+
+Measured: `verify` passes an Objective-C image whose `__objc_` sections sit in `__DATA_CONST`, and that image dies at launch on 10.9 ("no class for metaclass", SIGILL). `verify` checks structure, not what 10.9's runtime requires. README's Queries section says so in one sentence. Making `verify` check this is out of scope.
+
 ## Out of scope
 
 - Whether a rewrite should strip, keep or re-sign a signature it has made stale. That is a separate decision, waiting on measurements from a modern arm64 Mac. On 10.9 it matters only when a kill-flagged host loads an edited dylib whose sdk is 10.9 or later (`docs/minimum-os-version.md`).
@@ -171,4 +193,8 @@ The owner is editing README.md by hand. The plan's README task changes only the 
 | `target 10.9` derives `minos at-most 10.9`, in position 2, and never `load-command delete build-version` | `tests/cli_test.sh` |
 | the 10.12 reproduction still reports a lowering, never "nothing to do" | `tests/cli_test.sh` |
 | `add_version_min` translates to `minos if-absent 10.9`; build-version-only input gives one command; the "already present" output is unchanged | `tests/translate_test.sh`, `tests/wrapper_test.sh`, `tests/add_version_min*` |
+| `fixups set classic` places the kept `LC_VERSION_MIN_MACOSX` before `LC_DYLD_INFO_ONLY`; `fixups`-then-`minos` and `minos`-then-`fixups` give identical bytes, including on the 8-byte-pad chained dylib | `tests/cli_test.sh`, `mkchained` |
+| `swift-abi set legacy` on a chained image refuses (1) and names the fix; `info` reports `swift-abi: unknown (…)` there | `tests/cli_test.sh`, a chained Swift fixture (`mkswift` + `mkchained`, or the synthetic one the measurement built) |
+| `target 10.9` on a chained Swift image derives and applies the retag (the bug) | `tests/cli_test.sh` |
+| the README's published recipe, run by hand, equals `target 10.9` byte for byte, thin and fat | `tests/cli_test.sh` |
 | every mutation named in the plan fails its test | each task's mutation step |
