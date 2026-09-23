@@ -388,7 +388,7 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
          * "Added ..." line belonged to the `minos` verb, which this does not
          * call, so an append prints nothing on stdout; a grow of the header
          * pad is announced on stderr by mg_ensure_pad, labelled with `path`. */
-        uint32_t sdk = st->sdk ? st->sdk : 0x000A0900u;
+        uint32_t sdk = st->has_sdk ? st->sdk : 0x000A0900u;
         int rc = mv_add_version_min_image(pbuf, psize, path, sdk, &added);
         if (rc == 0 && added) {
             char sdks[16];
@@ -655,7 +655,7 @@ static int me_expand_10_9(const mi_image *im, me_derived *d, int line,
         d[n].stmt.kind = MS_VERSION_MIN; d[n].stmt.op = MS_SET;
         d[n].stmt.a = "10.9"; d[n].stmt.b = NULL;
         d[n].stmt.line = line;
-        if (f.bv_macos) d[n].stmt.sdk = f.bv_sdk;   /* the binary was built against it */
+        if (f.bv_macos) { d[n].stmt.has_sdk = 1; d[n].stmt.sdk = f.bv_sdk; }
         d[n++].why = "no LC_VERSION_MIN_MACOSX";
         if (f.bv_macos && !me_above_10_9(f.bv_minos) && f.bv_minos != ME_10_9) {
             mv_format_version(f.bv_minos, d[n].arg);

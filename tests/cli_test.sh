@@ -4621,7 +4621,16 @@ fi
 grep -qxF "      appended LC_VERSION_MIN_MACOSX 10.9, sdk 12.3" "$T/tgt.err" \
     && ok "target: ... and the append's report line names the sdk it wrote" \
     || bad "target (build-version 12.0)" "no sdk on the append line: $(cat "$T/tgt.err")"
-# A written version-min set, outside target, still writes sdk 10.9.
+build_main "$T/tgt_bv0"
+"$T/mkminos" bv "$T/tgt_bv0" 1 12.0 0.0 || bad "target: fixture setup" "mkminos bv failed"
+tgt_run "$T/tgt_bv0" "$T/tgt_bv0.out" || bad "target (build-version sdk 0)" "$(cat "$T/tgt.err")"
+[ "$(tgt_minimum)" = "    minimum: build-version 12.0 -> version-min 10.9; sdk 0.0 carried over" ] \
+    && grep -qxF "      appended LC_VERSION_MIN_MACOSX 10.9, sdk 0.0" "$T/tgt.err" \
+    && ok "target: a build-version sdk of 0.0 is reported carried over, and so is the append" \
+    || bad "target (build-version sdk 0)" "$(cat "$T/tgt.err")"
+[ "$("$T/mkminos" show "$T/tgt_bv0.out")" = "version-min version=10.9.0 sdk=0.0.0" ] \
+    && ok "target: ... and the written image carries sdk 0.0 over" \
+    || bad "target (build-version sdk 0)" "$("$T/mkminos" show "$T/tgt_bv0.out" 2>&1)"
 rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/tgt_bv12" "$T/tgt_bv12.vm" \
     >/dev/null 2>"$T/tgt_vm.err" || rc=$?
 [ "$rc" -eq 0 ] && "$T/mkminos" show "$T/tgt_bv12.vm" | grep -qxF "version-min version=10.9.0 sdk=10.9.0" \

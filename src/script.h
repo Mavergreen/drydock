@@ -47,10 +47,10 @@ enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
  * statement's arity doesn't use them) point into the owning ms_script's
  * `text`, not into separately allocated storage. `line` is the 1-based
  * source line, for diagnostics raised later (e.g. by whatever applies the
- * script) that still need to name where a statement came from. `sdk` is 0
- * on every parsed statement; `target` sets it on a derived `version-min set`
- * to carry an `LC_BUILD_VERSION`'s sdk over. */
-typedef struct { int kind, op; const char *a, *b, *c; int line; uint32_t sdk; } ms_stmt;
+ * script) that still need to name where a statement came from. `target` sets
+ * `has_sdk` and `sdk` on a derived `version-min set` to carry an
+ * `LC_BUILD_VERSION`'s sdk over. */
+typedef struct { int kind, op; const char *a, *b, *c; int line; int has_sdk; uint32_t sdk; } ms_stmt;
 
 /* A parsed edit script: every operation line (not directive lines -- those
  * only set the two fields below) in source order. Every directive --

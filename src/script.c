@@ -473,6 +473,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             stmts[n_stmts].b = nargs >= 2 ? fields[3] : NULL;
             stmts[n_stmts].c = nargs >= 3 ? fields[4] : NULL;
             stmts[n_stmts].line = lineno;
+            stmts[n_stmts].has_sdk = 0;
             stmts[n_stmts].sdk = 0;
             n_stmts++;
             seen_operation = 1;
