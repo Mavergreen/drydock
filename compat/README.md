@@ -148,7 +148,7 @@ for why they would be rare -- and one decided on purpose:
     BEFORE the input is diagnosed, so when IN **and** OUT are both bad it is now
     OUT that is named — the same shape as `retag_swift_classes`' pre-check
     below, and exit 1 on both sides either way.
-    `compat/patch_macho.sh`'s header has all of it.
+    The "`patch_macho`" section below names the test for each.
   * The writability pre-check `rename_segment.sh` runs (`test -w`, to fail
     before any analysis exactly as the C tool's `open(O_RDWR)` did) can
     disagree with the real open at the edges -- it consults the real uid and
@@ -599,6 +599,26 @@ one statement per operation being the only shape `drydock-macho-rewrite` has. He
 untouched) and `tests/translate_test.sh`'s `fm-cap-*` cases.
 
 `fix_macho`'s only caller in this repo was `tests/change_dylib_test.sh`.
+
+## `patch_macho`: the differences, and what holds each one
+
+`patch_macho IN OUT` becomes `fixups set classic` into a temp beside `OUT`,
+installed over `OUT`. The conversion is `md_declassify` on both sides, so what
+differs is everything around it. "Held by" names assertions in
+`tests/wrapper_test.sh` unless it says otherwise.
+
+| the difference | held by |
+|---|---|
+| **every nonzero exit is 1**, the only failure code `patch_macho` had: `EX_FAIL` (2) is folded, and `EX_REFUSED` already is 1 | "patch_macho: an absent IN maps drydock-macho-rewrite's EX_FAIL back to a flat 1", "patch_macho: a non-Mach-O input exits 1, not 2" |
+| **thin only**: a fat `IN` is refused and no `OUT` is created (see "Thin only", above) | "patch_macho: a fat container is refused and no output is created" |
+| **`OUT`'s mode is the C tool's**: `0755 & ~umask` for a fresh `OUT`, and its own mode for an existing one. It is not the input's mode, which is what `drydock-macho-rewrite` gives | "patch_macho: a fresh OUT gets 0755 masked by the umask (0700 under 077)", "patch_macho: and 0755 under umask 022, not the input's own mode", "patch_macho: an existing OUT keeps its mode"; on the converting path, "patch_macho: a converting run's fresh OUT is 0755 & ~umask too", "patch_macho: a converting run's existing OUT keeps its mode, with a new inode" |
+| **`OUT` is installed by rename**, so it gets a new inode when its bytes change, where the C tool's `open(O_TRUNC)` kept it. An unchanged pass-through installs nothing, so `patch_macho IN IN` on a converted input keeps its inode | "patch_macho: ... and is installed atomically, so its inode is new", "patch_macho: ... and an unchanged pass-through installs nothing, so the inode stands", "patch_macho: IN == OUT converts IN in place, to drydock-macho-rewrite's own bytes", "patch_macho: ... installed by rename, so the inode is new when the bytes change" |
+| **an `OUT` with other hard links is refused** (1), where the C tool wrote through every link | "patch_macho: a hard-linked OUT is refused (1), both names untouched", "patch_macho: a hard-linked OUT is refused (1) even when IN converts" |
+| **an unwritable existing `OUT` fails**, as `open(O_WRONLY)` did | "patch_macho: an unwritable existing OUT fails, as open(O_WRONLY) did", "patch_macho: an unwritable OUT is refused (1), untouched, even when IN converts" |
+| **an `OUT` that is a directory** is refused in the C tool's own words, `create output: Is a directory`. `mv` alone would move the temp into it and exit 0 | "patch_macho: an OUT that is a directory is refused (1), as open() did" |
+| **a dangling symlink at `OUT` is refused** (1), where the C tool created the link's target | "patch_macho: a dangling symlink as OUT is refused (1), and its target is not created" |
+| **with `IN` and `OUT` both bad, `OUT` is named**. The `OUT` checks run before the rewrite because they decide where it writes; the C tool converted first and opened `OUT` last. Exit 1 either way | "patch_macho: with IN and OUT both bad, OUT's refusal is the one named" |
+| **stdout**: `md_declassify`'s own lines pass through, and `Wrote OUT (N bytes)` is printed only on the converting path, as `patch_macho` printed it. A pass-through, recognised by `md_declassify`'s `Already patched` line, names no file | "patch_macho: the pass-through prints no 'Wrote ...' line", "patch_macho: ... and its last stdout line names OUT and OUT's size", "patch_macho: ... and exactly one 'Wrote ' line, so drydock-macho-rewrite's cannot leak", "patch_macho: ... and md_declassify's own lines still come through"; `tests/known-callers.sh`, "install.sh: patch_macho passes an already-converted binary through unchanged" |
 
 ## `rename_segment`: exit codes
 

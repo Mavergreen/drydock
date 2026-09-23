@@ -805,6 +805,27 @@ run patch_macho f adir
     || bad "patch_macho directory OUT" "exit $rc, stderr: $(cat "$T/err")"
 rm -rf "$T/adir"
 
+# With IN and OUT both bad, OUT is named: the OUT checks decide where the
+# rewrite writes, so they run first. The C tool converted first and opened
+# OUT last. Exit 1 either way.
+printf 'not a mach-o at all\n' > "$T/nm"
+rm -rf "$T/adir"; mkdir "$T/adir"
+run patch_macho nm adir
+[ "$rc" -eq 1 ] && grep -qxF 'create output: Is a directory' "$T/err" \
+    && ! grep -q 'not a readable 64-bit Mach-O' "$T/err" \
+    && ok "patch_macho: with IN and OUT both bad, OUT's refusal is the one named" \
+    || bad "patch_macho both bad" "exit $rc, stderr: $(cat "$T/err")"
+rm -rf "$T/adir" "$T/nm"
+
+# A dangling symlink at OUT is refused; the C tool created the link's target.
+fresh
+rm -f "$T/pmdangle" "$T/pmnowhere"; ln -s pmnowhere "$T/pmdangle"
+run patch_macho f pmdangle
+[ "$rc" -eq 1 ] && [ -L "$T/pmdangle" ] && [ ! -e "$T/pmnowhere" ] \
+    && ok "patch_macho: a dangling symlink as OUT is refused (1), and its target is not created" \
+    || bad "patch_macho dangling OUT" "exit $rc, stderr: $(cat "$T/err")"
+rm -f "$T/pmdangle" "$T/pmnowhere"
+
 # 5c. AN OUT WHOSE NAME BEGINS WITH A DASH is still a file name, as it was for
 #     the C tool's open(). `drydock-macho-rewrite declassify` refuses such an OUT now
 #     (bad_out, since `-flag`-looking positionals are the mistake its own

@@ -864,8 +864,8 @@ if [ -x "$BIN/patch_macho" ]; then
     # happen to agree (both 1) -- that is a coincidence of the corrected
     # numbering, not a design goal -- but a wrapper that must look like
     # patch_macho still has real mapping work to do for the EX_FAIL=2 case,
-    # where the numbers diverge; compat/patch_macho.sh's own header covers
-    # both.
+    # where the numbers diverge; compat/README.md's "patch_macho" section
+    # covers both.
     "$BIN/patch_macho" "$T/not-a-macho-in-cli-test" "$T/nope_pm" >/dev/null 2>&1 && pm_rc=0 || pm_rc=$?
     [ "$pm_rc" -eq 1 ] && ok "declassify: patch_macho's flat 1 and this verb's EX_REFUSED agree on this refusal" \
         || bad "declassify: patch_macho exit" "expected the historical flat 1, got $pm_rc"
