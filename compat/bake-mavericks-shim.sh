@@ -93,10 +93,14 @@ done
 [ -n "$bk_out" ] || bk_out="$bk_in.selfcontained"
 
 # spec: compat/README.md "bake-mavericks-shim" -- is there a signature, is the
-# shim loaded: no query answers either across a fat file's slices, so a trial
-# run under fatal-warnings does, by whether its one statement matched.
+# shim loaded: a trial run answers by whether its one statement matched,
+# rather than this wrapper re-deriving each statement's own matching rule --
+# or, for a fat file, `src/rewrite.c`'s rule that an operation matched in one
+# slice and not another has matched -- from a query's facts. An unmatched
+# operation refuses by default, so the exit code is the answer with nothing
+# to ask for.
 bk_matches() {
-    printf 'fatal-warnings\n%s\n' "$2" | drydock-macho-rewrite "$1" "$MW_T/probe" >/dev/null 2>&1
+    printf '%s\n' "$2" | drydock-macho-rewrite "$1" "$MW_T/probe" >/dev/null 2>&1
     bk_m=$?
     rm -f "$MW_T/probe"
     return "$bk_m"
