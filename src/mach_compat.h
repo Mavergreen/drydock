@@ -64,6 +64,7 @@
 #ifndef LC_BUILD_VERSION
 #define LC_BUILD_VERSION 0x32
 #endif
+struct mc_build_version { uint32_t cmd, cmdsize, platform, minos, sdk, ntools; };
 #ifndef LC_DYLD_EXPORTS_TRIE
 #define LC_DYLD_EXPORTS_TRIE 0x80000033
 #endif

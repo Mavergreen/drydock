@@ -9,7 +9,7 @@
  * bytes)` line, skipping the install when IN == OUT) went unnoticed by every
  * suite while this file could only be built from one of them.
  *
- * mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8 OUT
+ * mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst OUT
  *                        -- write a tiny 64-bit Mach-O that uses CHAINED
  *                          FIXUPS, the format `declassify`/patch_macho exists
  *                          to lower. No linker on any host this repo supports
@@ -49,6 +49,9 @@
  * LC_DYLD_INFO_ONLY goes into. make-sectpast puts __text's offset past the end
  * of the file (and __data's at 0), so the pad's bound lies outside the image.
  * The conversion must refuse both rather than guess where the pad ends.
+ *
+ * make-lcfirst differs in ORDER: the three stripped commands come before the
+ * segments, so stripping them moves every segment command.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +79,7 @@
 #define BIND_SLOT_OFF    8
 #define SYMNAME          "_mkchained_sym"
 
-enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST, MK_BADORD, MK_HIGH8 };
+enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST, MK_BADORD, MK_HIGH8, MK_LCFIRST };
 
 /* segname/sectname are char[16] and need NOT be NUL-terminated; see
  * tests/README.md's host-portability section for why strcpy is wrong here. */
@@ -112,6 +115,27 @@ static void put_sect(struct segment_command_64 *seg, int i, const char *sect,
     s->addr = addr; s->size = size; s->offset = offset;
 }
 
+static uint8_t *put_strippable(uint8_t *p, uint64_t fixups_off, uint64_t trie_off) {
+    struct linkedit_data_command *cf = (struct linkedit_data_command *)p;
+    cf->cmd = LC_DYLD_CHAINED_FIXUPS; cf->cmdsize = sizeof *cf;
+    cf->dataoff = (uint32_t)fixups_off; cf->datasize = FIXUPS_SIZE;
+    p += cf->cmdsize;
+
+    struct linkedit_data_command *tr = (struct linkedit_data_command *)p;
+    tr->cmd = LC_DYLD_EXPORTS_TRIE; tr->cmdsize = sizeof *tr;
+    tr->dataoff = (uint32_t)trie_off; tr->datasize = TRIE_SIZE;
+    p += tr->cmdsize;
+
+    /* LC_BUILD_VERSION by hand: 10.9's <mach-o/loader.h> has no
+     * build_version_command struct, only the command number mach_compat.h
+     * supplies. cmd, cmdsize, platform, minos, sdk, ntools. */
+    uint32_t *bv = (uint32_t *)p;
+    bv[0] = LC_BUILD_VERSION; bv[1] = 24; bv[2] = 1;
+    bv[3] = 0x000C0000; bv[4] = 0x000C0000; bv[5] = 0;
+    p += 24;
+    return p;
+}
+
 static int make(const char *path, int mode) {
     uint64_t data_size = (mode == MK_BIG) ? BIG_DATA_SIZE : DATA_SIZE;
     uint64_t linkedit_off = DATA_OFF + data_size;
@@ -131,6 +155,8 @@ static int make(const char *path, int mode) {
 
     uint8_t *p = buf + sizeof *h;
 
+    if (mode == MK_LCFIRST) p = put_strippable(p, fixups_off, trie_off);
+
     struct segment_command_64 *text = put_seg(p, "__TEXT", TEXT_VMADDR, 0x1000, 0, 0x1000, 1);
     uint32_t text_off = (mode == MK_NOSECT) ? 0
                       : (mode == MK_SECTPAST) ? (uint32_t)fsize + 0x1000 : SECT_OFF;
@@ -147,23 +173,7 @@ static int make(const char *path, int mode) {
                                             linkedit_off, 0x1000, 0);
     p += le->cmdsize;
 
-    struct linkedit_data_command *cf = (struct linkedit_data_command *)p;
-    cf->cmd = LC_DYLD_CHAINED_FIXUPS; cf->cmdsize = sizeof *cf;
-    cf->dataoff = (uint32_t)fixups_off; cf->datasize = FIXUPS_SIZE;
-    p += cf->cmdsize;
-
-    struct linkedit_data_command *tr = (struct linkedit_data_command *)p;
-    tr->cmd = LC_DYLD_EXPORTS_TRIE; tr->cmdsize = sizeof *tr;
-    tr->dataoff = (uint32_t)trie_off; tr->datasize = TRIE_SIZE;
-    p += tr->cmdsize;
-
-    /* LC_BUILD_VERSION by hand: 10.9's <mach-o/loader.h> has no
-     * build_version_command struct, only the command number mach_compat.h
-     * supplies. cmd, cmdsize, platform, minos, sdk, ntools. */
-    uint32_t *bv = (uint32_t *)p;
-    bv[0] = LC_BUILD_VERSION; bv[1] = 24; bv[2] = 1;
-    bv[3] = 0x000C0000; bv[4] = 0x000C0000; bv[5] = 0;
-    p += 24;
+    if (mode != MK_LCFIRST) p = put_strippable(p, fixups_off, trie_off);
 
     h->ncmds = 6;
     h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
@@ -302,7 +312,7 @@ static int check(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|check FILE\n"); return 2; }
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|check FILE\n"); return 2; }
     if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
     if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
     if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
@@ -310,7 +320,8 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "make-sectpast") == 0) return make(argv[2], MK_SECTPAST);
     if (strcmp(argv[1], "make-badord") == 0) return make(argv[2], MK_BADORD);
     if (strcmp(argv[1], "make-high8") == 0) return make(argv[2], MK_HIGH8);
+    if (strcmp(argv[1], "make-lcfirst") == 0) return make(argv[2], MK_LCFIRST);
     if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|check FILE\n");
+    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|check FILE\n");
     return 2;
 }

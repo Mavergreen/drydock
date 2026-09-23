@@ -67,10 +67,10 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * was cli/drydock-macho-rewrite.c's own DYLIB_OPS, which is what this table absorbed.
  * Adding an operation here is the whole of adding an operation -- to both
  * front-ends, to what --capabilities advertises, and (the disturbs column) to
- * what a run of it is known to invalidate. 17 rows: every "<kind> <op>" the
+ * what a run of it is known to invalidate. Every row is a "<kind> <op>" the
  * language accepts.
  *
- * The second-last row is `target 10.9`, whose second field is a PROFILE name, not a
+ * The `target 10.9` row's second field is a PROFILE name, not a
  * verb. It sits in the op column because that is what makes the profile part
  * of this one table: an unknown profile is refused by the same lookup that
  * refuses an unknown op, `target 10.9 extra` by the same arity check, and
@@ -93,7 +93,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  * DISTURBS IS WHY THIS IS A MACRO AND NOT A BRACED INITIALIZER. A row added
  * without a disturbs mask invokes MS_ROW with eight arguments instead of
  * nine, which is a COMPILE ERROR ("macro requires 9 arguments, but only 8
- * given") -- not a test failure found later, and not a silent zero. Five
+ * given") -- not a test failure found later, and not a silent zero. Several
  * rows really do disturb nothing, so "nothing" cannot be the value a row
  * gets by saying nothing; it has to be spelled MREL_NONE. This is the same
  * move src/linkedit.h makes with ML_PLAIN_OFFSET_LCS, which turns one class
@@ -103,7 +103,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
  *
  * Each mask was derived from the code that implements the operation, not
  * from the operation's name; see ms_disturbs and tests/script_test.c's
- * test_disturbs_matches_the_spec_table, which pins all seventeen with the
+ * test_disturbs_matches_the_spec_table, which pins every row with the
  * reason for each. */
 #define MS_TABLE_ROWS(R) \
   R("load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,       1, NULL,        0,             0, MREL_HEADER_PAD) \
@@ -122,13 +122,14 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
   R("rpath",        MS_RPATH,        "append",   MS_APPEND,       1, "-append",   MS_MODE_RPATH, 2, MREL_HEADER_PAD) \
   R("rpath",        MS_RPATH,        "insert",   MS_INSERT,       1, "-insert",   MS_MODE_RPATH, 3, MREL_HEADER_PAD) \
   /* MREL_NONE here means "nothing OF ITS OWN": `target 10.9` expands, against
-   * the image in front of it, into up to five other statements (me_expand_10_9,
+   * the image in front of it, into other statements (me_expand_10_9,
    * src/edit.c), and each of those declares its own mask through this same
    * table. No static mask can describe this row, and a bare 0 would read as a
    * default nobody reviewed -- which is what the tripwire above exists to
    * prevent -- so it is spelled, with this sentence. */ \
   R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE) \
-  R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF)
+  R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF) \
+  R("minos",        MS_MINOS,        "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE)
 
 static const struct { const char *kind; int k; const char *op; int o; int nargs;
                       const char *flag; unsigned modes; int ops_ord;
@@ -191,6 +192,26 @@ const char *ms_op_name(int op) {
     for (i = 0; i < MS_TABLE_N; i++)
         if (MS_TABLE[i].o == op) return MS_TABLE[i].op;
     return "unknown";
+}
+
+int ms_parse_version(const char *s, uint32_t *out) {
+    static const unsigned long max[3] = { 65535, 255, 255 };
+    unsigned long part[3] = { 0, 0, 0 };
+    int n = 0;
+    for (;;) {
+        unsigned long v = 0;
+        if (*s < '0' || *s > '9') return -1;
+        while (*s >= '0' && *s <= '9') {
+            v = v * 10 + (unsigned long)(*s++ - '0');
+            if (v > max[n]) return -1;
+        }
+        part[n++] = v;
+        if (*s == '\0') break;
+        if (*s != '.' || n == 3) return -1;
+        s++;
+    }
+    *out = (uint32_t)(part[0] << 16 | part[1] << 8 | part[2]);
+    return 0;
 }
 
 /* Room for a statement's kind, op, and its operands, plus slack above the
@@ -394,6 +415,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
 
         {
             int kind = MS_TABLE[found].k, op = MS_TABLE[found].o;
+            uint32_t ver;
 
             if (kind == MS_LOAD_COMMAND && op == MS_DELETE) {
                 uint32_t cmd;
@@ -404,6 +426,11 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[2], "10.9") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "version-min set accepts only '10.9' (got '%s')", fields[2]);
+            } else if (kind == MS_MINOS && op == MS_SET &&
+                       ms_parse_version(fields[2], &ver) != 0) {
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "minos set: '%s' is not a version (MAJOR[.MINOR[.PATCH]], "
+                    "at most 65535.255.255)", fields[2]);
             } else if (kind == MS_SWIFT_ABI && op == MS_SET &&
                        strcmp(fields[2], "legacy") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
@@ -446,6 +473,8 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             stmts[n_stmts].b = nargs >= 2 ? fields[3] : NULL;
             stmts[n_stmts].c = nargs >= 3 ? fields[4] : NULL;
             stmts[n_stmts].line = lineno;
+            stmts[n_stmts].has_sdk = 0;
+            stmts[n_stmts].sdk = 0;
             n_stmts++;
             seen_operation = 1;
         }
