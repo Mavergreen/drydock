@@ -401,6 +401,15 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
         printf("  segname=%.16s vmaddr=0x%llx vmsize=0x%llx fileoff=%llu filesize=%llu nsects=%u\n",
                seg->segname, (unsigned long long)seg->vmaddr, (unsigned long long)seg->vmsize,
                (unsigned long long)seg->fileoff, (unsigned long long)seg->filesize, seg->nsects);
+        /* mi_wrap has already proved cmdsize covers the section array nsects
+         * claims, which is what makes this walk in-bounds -- the same
+         * guarantee me_target_lc (src/edit.c) relies on for the same walk.
+         * sectname is 16 bytes and need not be NUL-terminated, so %.16s, not
+         * %s. Printed for EVERY segment, not just __DATA_CONST: a query
+         * answers what is there and the caller decides what it means. */
+        const struct section_64 *sect = (const struct section_64 *)(seg + 1);
+        for (uint32_t k = 0; k < seg->nsects; k++)
+            printf("    sectname=%.16s\n", sect[k].sectname);
     }
     if (mo_is_ordinal_lc(lc->cmd)) {
         ctx->ordinal++;

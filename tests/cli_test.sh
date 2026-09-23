@@ -2455,6 +2455,48 @@ grep -q "^SEG __DATA$" "$T/segs_before" && grep -q "^SECT __DATA/" "$T/segs_befo
     && ok "segment: fixture has a __DATA segment whose sections name it" \
     || bad "segment: precondition" "no __DATA segment/section in: $(cat "$T/segs_before")"
 
+# ---- info: section names --------------------------------------------------
+# The detection `target 10.9` makes for __DATA_CONST is "does it carry any
+# __objc_ section", and until now nothing could ask: info printed segname and
+# nsects but never a section name. Four spaces, one level deeper than
+# "  segname=", so no existing consumer's grep can reach these. Read against
+# segment_fixture here, before the rename below retargets it: this section's
+# assertions are about what info prints for a fixture with real segments and
+# sections, not about the rename.
+"$DRYDOCK_MACHO_REWRITE" info "$T/segment_fixture" >"$T/sect.out" 2>/dev/null
+
+# Cross-checked against segread, never against otool, and never against a
+# hand-written list: the two readers must agree on names AND on count.
+"$T/segread" segs "$T/segment_fixture" | sed -n 's|^SECT [^/]*/||p' | sort >"$T/sect.want"
+sed -n 's/^    sectname=//p' "$T/sect.out" | sort >"$T/sect.got"
+cmp -s "$T/sect.want" "$T/sect.got" \
+    && ok "info: sectname lines match segread, name for name" \
+    || bad "info sectname" "differs: $(diff "$T/sect.want" "$T/sect.got" | head -5)"
+
+[ -s "$T/sect.want" ] \
+    && ok "info: the fixture really has sections to print" \
+    || bad "info sectname" "the fixture has no sections; this assertion proves nothing"
+
+grep -q '^    sectname=' "$T/sect.out" \
+    && ok "info: sectname lines are present" \
+    || bad "info sectname" "none printed at all"
+
+# A SECTION name of exactly 16 bytes uses the whole field and is NOT
+# NUL-terminated. %.16s is what prints it whole; %s would run past it into
+# whatever follows in struct section_64 (addr, next). This is deliberately
+# NOT segment_16_fixture below: that fixture's 16-byte name is on the
+# SEGMENT, and its sections keep the compiler's ordinary short names
+# (__text, __data, ...), so it cannot exercise a 16-byte SECTION name.
+cat > "$T/sect16main.c" <<'EOF'
+__attribute__((section("__DATA,ABCDEFGHIJKLMNOP"))) int g_sect16 = 1;
+int main(void) { return g_sect16 == 1 ? 0 : 1; }
+EOF
+"$CC" -O2 $FIXTURE_FLAGS "$T/sect16main.c" -o "$T/sect16_fixture"
+"$DRYDOCK_MACHO_REWRITE" info "$T/sect16_fixture" 2>/dev/null \
+    | grep -qx '    sectname=ABCDEFGHIJKLMNOP' \
+    && ok "info: a 16-byte sectname prints whole, with nothing after it" \
+    || bad "info sectname 16" "expected the exact line '    sectname=ABCDEFGHIJKLMNOP': $("$DRYDOCK_MACHO_REWRITE" info "$T/sect16_fixture" 2>/dev/null | grep '^    sectname=')"
+
 mts "$T/segment_fixture" "segment rename __DATA __DATA_R9" \
     >"$T/segment.out" 2>&1 || bad "segment: exit" "$(cat "$T/segment.out")"
 "$T/segread" segs "$T/segment_fixture" > "$T/segs_after"
