@@ -486,21 +486,10 @@ refuses id-mutex 1 'insert_dylib: --strip-codesig and --no-strip-codesig are mut
 refuses id-unknown 1 'insert_dylib: unknown option --bogus' -- insert_dylib --bogus d b
 
 # ---- allow-unmatched: exactly the three upstreams that exited 0 on a miss -
-#
-# change_dylib, fix_macho and insert_dylib have upstreams that exited 0 when
-# an operation matched nothing, and that is compat surface: refusing an
-# unmatched operation is drydock-macho-rewrite's default now, so each of the
-# three heads its emitted script with the `allow-unmatched` directive to opt
-# back out (mt_tr_change_dylib, mt_tr_fix_macho, mt_tr_insert_dylib). The
-# other four emit only statements that cannot miss, and rename_segment WANTS
-# the refusal -- see its exit 2.
 au_case() {   # au_case NAME want(yes/no) -- TOOL ARG...
     au_name=$1; au_want=$2; shift 3
     au_got=$( /bin/sh "$TR" "$@" 2>"$T/err" ); au_rc=$?
-    # THE POSITIVE CONTROL: a translation that failed to print anything would
-    # make the "does not ask for allow-unmatched" half of this pass
-    # vacuously, so an empty or refused translation is its own failure, not a
-    # silent pass.
+    # An empty translation would pass the "no" half vacuously.
     if [ "$au_rc" -ne 0 ] || [ -z "$au_got" ]; then
         printf 'FAIL %s: produced no translation at all (exit %d, stderr: %s) -- cannot tell whether it asks for allow-unmatched\n' \
             "$au_name" "$au_rc" "$(cat "$T/err")" >&2
@@ -558,13 +547,7 @@ q_roundtrip() {   # q_roundtrip NAME PATH
     chmod +x "$T/qstub/drydock-macho-rewrite"
     rm -f "$T/stmt"
     ( PATH="$T/qstub:$PATH"; eval "$q_line" )
-    # change_dylib's translation now heads its body with `allow-unmatched`
-    # on its own line (see mt_tr_change_dylib), so the stub captures TWO
-    # lines now, not one; ms_split works one line at a time, so the directive
-    # line is checked on its own and the dylib statement -- the one under
-    # test -- is taken from the SECOND line, not fed to eval alongside the
-    # first (a raw embedded newline there would split into two commands and
-    # the second would run as one, which is exactly what broke here first).
+    # Line 1 is the directive; the statement under test is line 2.
     q_dir_line=$(sed -n '1p' "$T/stmt")
     set --; eval "set -- $(sed -n '2p' "$T/stmt")"
     q_got=${3:-}

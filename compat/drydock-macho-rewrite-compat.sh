@@ -251,7 +251,7 @@ mw_run() {
 # writes FILE. (`dylib`/`rpath`/`lc`/`segment` used to give this refusal for
 # free, from mr_apply_file's own O_RDWR; a script reads FILE O_RDONLY and only
 # discovers an unwritable OUT when it writes it.) And
-# rename_segment gates on `drydock-macho-rewrite info`, which is O_RDONLY too. So preserving
+# rename_segment gates on `drydock-macho-rewrite info --thin`, which is O_RDONLY too. So preserving
 # the historical refusal is permanently this layer's job, which is why
 # mw_prepare calls this before anything runs.
 #
@@ -296,16 +296,9 @@ mw_require_writable() {
 # The third is the one that matters most: same exit code, same stdout,
 # different bytes on the caller's file.
 #
-# `drydock-macho-rewrite info --thin` refuses a fat container, so its verdict
-# IS the old verb's -- plain `info` reports one, which is why the flag
-# exists. That is why compat/rename_segment.sh has gated on it since that
-# wrapper was written, and why `rename_segment FAT` never drifted. ONLY its
-# EX_REFUSED (1) is intercepted: that is mi_open's "not a readable 64-bit
-# Mach-O", covering a fat container and a non-Mach-O alike. EX_FAIL (2) -- a
-# directory, an unreadable file -- falls through untouched, because
-# drydock-macho-rewrite already gives those callers the answer the C tools
-# gave (measured: `add_version_min <dir>` exits 2 saying "cannot open or
-# read" on both sides).
+# `info --thin` refuses a fat container, as the replaced verbs' mi_open did.
+# Only its EX_REFUSED (1) is intercepted; EX_FAIL (2) falls through
+# (add_version_min <dir> exits 2 on both sides).
 mw_thin_only() {
     drydock-macho-rewrite info --thin "$1" >/dev/null 2>&1
     mw_to_rc=$?

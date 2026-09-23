@@ -239,11 +239,6 @@ static void test_allow_grow_is_an_unknown_statement(void) {
           "which calls it an unknown statement (got: %s)", err);
 }
 
-/* `fatal-warnings` was a directive; an unmatched operation refuses by default
- * now, and a script asking for the old behaviour is asking for nothing. It is
- * gone rather than accepted-and-ignored, and it is no more special than a
- * typo -- there is no branch for it to hit, so it falls through to the same
- * unknown-statement refusal `fatal-warnox` gets. */
 static void test_fatal_warnings_is_an_unknown_statement(void) {
     ms_script s; char err[256] = {0};
     static const char gone[] = "fatal-warnings\n", never[] = "fatal-warnox\n";

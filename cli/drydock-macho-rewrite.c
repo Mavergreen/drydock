@@ -77,9 +77,7 @@
  * pin them equal to this file's own exit codes, and me_run hands them back.
  * declassify.h, segname.h, version_min.h and relations.h left with the seven
  * mutating verbs that called into them; src/edit.c reaches the same work now,
- * through the statements. swift_retag.h came back for cmd_info alone, below:
- * mswift_stable_tagged_image is the one fact from src/edit.c's own retag
- * statement that info can now report without rewriting anything. */
+ * through the statements. */
 #include "image.h"
 #include "ordinals.h"
 #include "imports.h"
@@ -259,10 +257,8 @@ static int bad_out(const char *verb, const char *path, const char *out) {
  *       TO BE LISTED HERE are gone, with their `ops=`, `kinds=`, `versions=`,
  *       `flags=` and `reports=` attributes; `edit` was the last of them, and
  *       the `mutate` line above plus the `statement` lines below are what a
- *       wrapper reads instead. One attribute is in use: `info`'s
- *       `flags=--thin` below -- a real CLI flag `info` itself parses,
- *       unlike the directives the old `flags=` fields advertised (arch,
- *       allow-unmatched; see "that is a later decision" below).
+ *       wrapper reads instead. `info`'s `flags=--thin` is the one
+ *       attribute in use.
  *   line N+: "statement <kind> <op> <nargs>"
  *       one line per row of src/script.c's MS_TABLE -- the statement
  *       vocabulary ms_parse accepts, and so the whole mutating surface.
@@ -289,10 +285,6 @@ static int print_capabilities(void) {
      * pass something this build refuses. */
     printf("mutate bare script=stdin\n");
     printf("verb verify\n");
-    /* The one query flag any verb takes. A wrapper reproducing an old tool's
-     * thin-only refusal checks for this line rather than assume the flag,
-     * because gating on plain `info` failing stopped working when `info`
-     * learned fat containers. */
     printf("verb info flags=--thin\n");
     printf("verb imports\n");
     printf("verb exports\n");
@@ -406,12 +398,7 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
         printf("  segname=%.16s vmaddr=0x%llx vmsize=0x%llx fileoff=%llu filesize=%llu nsects=%u\n",
                seg->segname, (unsigned long long)seg->vmaddr, (unsigned long long)seg->vmsize,
                (unsigned long long)seg->fileoff, (unsigned long long)seg->filesize, seg->nsects);
-        /* mi_wrap has already proved cmdsize covers the section array nsects
-         * claims, which is what makes this walk in-bounds -- the same
-         * guarantee me_target_lc (src/edit.c) relies on for the same walk.
-         * sectname is 16 bytes and need not be NUL-terminated, so %.16s, not
-         * %s. Printed for EVERY segment, not just __DATA_CONST: a query
-         * answers what is there and the caller decides what it means. */
+        /* In bounds: mi_wrap checked cmdsize against nsects. */
         const struct section_64 *sect = (const struct section_64 *)(seg + 1);
         for (uint32_t k = 0; k < seg->nsects; k++)
             printf("    sectname=%.16s\n", sect[k].sectname);
@@ -435,10 +422,6 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
     return 0;   /* prints every command; never needs to stop early */
 }
 
-/* Forward-declared: cmd_info's fat path (below) reads the whole file the
- * same way cmd_exports does, but read_file's own definition sits after both,
- * beside cmd_exports -- the read-only verbs' historical order, which this
- * one declaration keeps from having to be reshuffled to satisfy. */
 static int read_file(const char *verb, const char *path, uint8_t **out, size_t *outlen);
 
 /* One image's report: the same lines for a thin file and for each slice of a
@@ -487,10 +470,6 @@ static int cmd_info(const char *path, int thin_only) {
         return 0;
     }
 
-    /* Not a thin 64-bit Mach-O. With --thin that is the whole answer, and it
-     * is mi_open's verdict verbatim -- the four wrappers that gate on this
-     * reproduce their upstreams' refusal by its exit status alone
-     * (compat/drydock-macho-rewrite-compat.sh's mw_thin_only). */
     if (thin_only) {
         fprintf(stderr, "drydock-macho-rewrite info: %s: not a readable 64-bit Mach-O\n", path);
         return EX_REFUSED;
@@ -508,10 +487,7 @@ static int cmd_info(const char *path, int thin_only) {
         {
             int frc = mfat_parse(buf, size, &narch, &swapped);
             if (frc == MFAT_IO_ERROR) {
-                /* mfat_parse's own environmental failure (one of the two
-                 * mallocs it uses to check for overlaps) is not a
-                 * considered refusal about what FILE contains -- same
-                 * distinction MI_IO_ERROR draws above, same wording. */
+                /* A malloc failure inside mfat_parse, not a verdict on FILE. */
                 free(buf);
                 fprintf(stderr, "drydock-macho-rewrite info: %s: cannot open or read\n", path);
                 return EX_FAIL;
@@ -533,12 +509,6 @@ static int cmd_info(const char *path, int thin_only) {
             /* mfat_parse proved offset+size is in bounds, so this slicing
              * needs no further check of its own. */
             if (mi_wrap(buf + a.offset, a.size, &sl) != 0) {
-                /* me_run_fat's own wording, reused rather than reinvented
-                 * (src/edit.c's me_fat_slice) -- the fact is the same one,
-                 * and a caller should not have to learn a second vocabulary
-                 * for it. That walk also distinguishes a THIRD reason, "not
-                 * selected by arch", which cannot arise here: info never
-                 * selects slices by arch, it reports every one. */
                 printf("slice %s: %s; passed through unchanged\n", name,
                        (a.cputype & CPU_ARCH_ABI64) ? "not a 64-bit Mach-O" : "32-bit");
                 continue;
@@ -856,10 +826,6 @@ int main(int argc, char **argv) {
         return cmd_verify(argv[2]);
     }
     if (strcmp(verb, "info") == 0) {
-        /* `--thin` is the ONE flag any query verb takes. It is recognised
-         * only in argv[2], so a FILE named `--thin` stays reachable as
-         * `./--thin`, the same remedy bad_out already names for an OUT beginning
-         * with '-'. */
         int thin_only = 0, ai = 2;
         if (argc > 2 && strcmp(argv[2], "--thin") == 0) { thin_only = 1; ai = 3; }
         if (argc != ai + 1) {

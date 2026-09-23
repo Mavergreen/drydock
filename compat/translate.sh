@@ -498,11 +498,7 @@ $mt_st_dyins"
     # above refuses it.) An install line with no command ahead of it would
     # name an output nothing wrote, so it goes too.
     [ -n "$mt_body" ] || return 0
-    # An unmatched operation refuses by default now (compat/README.md's
-    # "change_dylib: exit codes" section), but `-change` matching nothing has
-    # always exited 0 for this tool and that is compat surface -- so the
-    # directive that opts back out of the default heads the script, ahead of
-    # every operation, the way the grammar requires.
+    # allow-unmatched: change_dylib exited 0 on a miss (compat/README.md).
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_CD_BODY
 allow-unmatched
 $mt_body
@@ -618,11 +614,7 @@ mt_tr_fix_macho() {
     # Unconditional, unlike change_dylib's: every fix_macho argv that reaches
     # here carries at least one operation (the usage check above rejects a
     # bare FILE), so the body is never empty.
-    #
-    # allow-unmatched heads it for the same reason change_dylib's does
-    # (compat/README.md's "fix_macho: exit codes" section): fix_macho exited 0
-    # when an operation matched nothing, and refusing is now the default this
-    # translation has to opt back out of.
+    # allow-unmatched: fix_macho exited 0 on a miss (compat/README.md).
     mt_emit "$mt_file" "$(mt_out_for "$mt_file")" <<MT_FM_BODY
 allow-unmatched
 $mt_st_lc$mt_st_dychg$mt_st_seg
@@ -799,14 +791,7 @@ mt_tr_insert_dylib() {
     mt_id_parse "$@" || return 1
     mt_out=$(mt_id_out)
 
-    # allow-unmatched heads the script because --strip-codesig below can
-    # miss: `load-command delete codesig` matches nothing on a binary
-    # carrying no signature, and the fork exited 0 there too -- upstream
-    # fidelity, not a divergence (compat/README.md's "insert_dylib" section,
-    # right after the flag table). The other two statements this builds
-    # cannot miss: `dylib append` always runs, unconditionally, and `dylib
-    # retype DYLIB weak` (--weak) names the very dylib `dylib append` just
-    # added, so it always finds what it is looking for.
+    # allow-unmatched: --strip-codesig on an unsigned binary exited 0 upstream (compat/README.md).
     mt_body="allow-unmatched
 dylib append$(mt_qargs "$MT_ID_DYLIB")
 "

@@ -58,7 +58,7 @@ typedef struct { int kind, op; const char *a, *b, *c; int line; } ms_stmt;
 typedef struct {
     ms_stmt *stmts;
     int      n;
-    int      allow_unmatched;   /* set by the `allow-unmatched` directive */
+    int      allow_unmatched;
     unsigned arch_mask;   /* bit r set when an `arch` directive named row r of
                            * src/arch_names.h's table; 0 when the script names
                            * no arch, which means every 64-bit slice */

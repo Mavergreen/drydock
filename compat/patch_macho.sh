@@ -109,9 +109,7 @@
 # drydock-macho-rewrite's stable stdout, the same oracle tests/cli_test.sh asserts against,
 # and explicitly not otool/nm text (tests/README.md's second lesson).
 #
-# THAT GREP IS ONE OF FIVE READERS of drydock-macho-rewrite's emitted text, and the list is
-# in compat/rename_segment.sh's divergence 1, which carries it for all of them.
-# This one did NOT have to move when the wrappers stopped emitting verbs,
+# This grep did NOT have to move when the wrappers stopped emitting verbs,
 # because the line comes from md_declassify (src/declassify.c) rather than from
 # `drydock-macho-rewrite declassify`: the statement calls the same function and prints the
 # same line on the same stream. Measured, on a converted input and on a fresh

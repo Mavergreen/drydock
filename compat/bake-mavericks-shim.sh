@@ -92,13 +92,10 @@ done
 [ -e "$bk_shim" ] || bk_die "shim not found: $bk_shim"
 [ -n "$bk_out" ] || bk_out="$bk_in.selfcontained"
 
-# spec: compat/README.md "bake-mavericks-shim" -- is there a signature, is the
-# shim loaded: a trial run answers by whether its one statement matched,
-# rather than this wrapper re-deriving each statement's own matching rule --
-# or, for a fat file, `src/rewrite.c`'s rule that an operation matched in one
-# slice and not another has matched -- from a query's facts. An unmatched
-# operation refuses by default, so the exit code is the answer with nothing
-# to ask for.
+# spec: compat/README.md "bake-mavericks-shim". A trial run answers by whether
+# its one statement matched, so this wrapper never re-derives a statement's
+# match rule (or the fat rule "matched in any slice"). A miss refuses by
+# default, so the exit code is the answer.
 bk_matches() {
     printf '%s\n' "$2" | drydock-macho-rewrite "$1" "$MW_T/probe" >/dev/null 2>&1
     bk_m=$?

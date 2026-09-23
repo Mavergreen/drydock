@@ -527,30 +527,15 @@ echo "$caps" | grep -qxF "dylib-kinds load weak reexport upward" \
 ! grep -q 'lazy' "$T/caps" || bad "capabilities kinds" "advertises lazy as a kind"
 ok "capabilities: retype kinds do not advertise lazy"
 
-# NO OTHER `flags=` FIELD IS ADVERTISED, and that is the claim now. It used
-# to be per-verb: `--fatal-warnings` was a verb-level flag, and assertions
-# here checked which verb advertised it. Refusing an unmatched operation is
-# the default today, and its opt-out, `allow-unmatched`, is a SCRIPT
-# DIRECTIVE; print_capabilities deliberately does not list directives (see
-# its own contract: "that is a later decision"), so a `flags=` on any
-# surviving line would be advertising something no form accepts -- with one
-# exception: `verb info flags=--thin` names an actual CLI flag `info` itself
-# parses (tested below), not a directive in disguise, so it alone is allowed
-# through.
-#
-# WHAT THIS NO LONGER COVERS, stated rather than quietly dropped: a wrapper
-# cannot probe for `allow-unmatched` support. Its BEHAVIOUR is still asserted
-# below, per statement kind, against a real fixture -- it is only the
-# advertisement that went.
+# Directives are not advertised, so only `info`'s real `--thin` flag may
+# carry `flags=`. A wrapper cannot probe for allow-unmatched; its behaviour is
+# asserted per statement below.
 stray_flags=$(echo "$caps" | grep 'flags=' | grep -vxF 'verb info flags=--thin' || true)
 [ -z "$stray_flags" ] \
     && ok "capabilities: the only flags= field advertised is info's --thin" \
     || bad "capabilities: flags=" "an unexpected flags= field survived the verb collapse: $stray_flags"
 
 # ---- info --thin ---------------------------------------------------------
-# The flag exists before `info` learns fat containers, so the four wrappers
-# that reproduce their upstreams' thin-only refusal by gating on info's EXIT
-# STATUS have somewhere to move first. On a thin file it changes nothing.
 echo "$caps" | grep -qxF "verb info flags=--thin" \
     && ok "capabilities: info advertises --thin" \
     || bad "capabilities: info flags" "no 'verb info flags=--thin' line: $(echo "$caps" | grep '^verb info')"
@@ -564,8 +549,6 @@ cmp -s "$T/thin.out" "$T/nothin.out" \
     && ok "info --thin: identical output to plain info on a thin file" \
     || bad "info --thin output" "differs from plain info: $(diff "$T/nothin.out" "$T/thin.out" | head -5)"
 
-# A FILE literally named --thin is still reachable as ./--thin, the same
-# remedy bad_out names for an OUT beginning with '-'.
 rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "info --thin: --thin with no FILE is a usage error (2)" \
     || bad "info --thin usage" "--thin with no FILE did not exit 2"
@@ -1530,8 +1513,7 @@ fi
 grep -q "load-command delete: unknown kind 'bogus-kind'" "$T/lc_bad.err" && ok "lc: bad kind message" \
     || bad "lc: bad kind message" "missing \"load-command delete: unknown kind 'bogus-kind'\": $(cat "$T/lc_bad.err")"
 # lc -delete naming a KIND the file does not carry: the strip-cmds twin of
-# the dylib -replace miss report above, so it needs the same allow-unmatched:
-# an unmatched operation refuses by default. The absence is MADE true by
+# the dylib -replace miss report above. The absence is MADE true by
 # build_main_without_build_version rather than assumed from what the host's
 # linker happens to emit -- see that helper for why the old assumption was
 # false on the cross runner. So this is a guaranteed miss, not a maybe.
@@ -1555,8 +1537,7 @@ grep -q "no load command of kind build-version to delete" "$T/lc_miss.err" \
 # second really finds nothing, so the miss is REAL and saying so is correct --
 # the sequential model has no shadowing to forgive. What survives unchanged is
 # the property the old assertion existed to protect: the run still SUCCEEDS,
-# and the LC_UUID is gone -- which needs allow-unmatched, since the second
-# delete's real miss refuses the run by default.
+# and the LC_UUID is gone.
 build_main "$T/lc_dup_fixture"
 mts "$T/lc_dup_fixture" allow-unmatched "load-command delete uuid" "load-command delete uuid" \
     >/dev/null 2>"$T/lc_dup.err" || bad "lc: duplicate delete uuid" "$(cat "$T/lc_dup.err")"
@@ -1613,10 +1594,6 @@ else
     ok "a directive alone does not leak change_dylib's spellings"
 fi
 
-# `fatal-warnings` is GONE, not merely deprecated: it is an unknown statement
-# now, refused at parse time (2) like any other typo, before any statement
-# runs -- the end-to-end twin of script_test.c's
-# test_fatal_warnings_is_an_unknown_statement.
 mts "$T/dylib_noop_fixture" fatal-warnings "load-command delete uuid" \
     >/dev/null 2>"$T/fw_gone.err" && fw_gone_rc=0 || fw_gone_rc=$?
 [ "$fw_gone_rc" -eq 2 ] && ok "fatal-warnings: refused as an unknown statement (2)" \
@@ -1724,9 +1701,7 @@ grep -q "fat_arch_64" "$T/dylib_fat64.err" \
 # the tool used to say so NOWHERE: stdout reported only the -replace that DID
 # fire, and the exit code was 0. Ask for two, get one, no way to tell -- the
 # silent partial success docs/PROPOSAL.md's "verify" section exists to rule
-# out ("Every defect found in this code has been a silent success."). By
-# default this refuses outright (below); allow-unmatched lets it report the
-# miss and finish the run, which is what this block proves.
+# out ("Every defect found in this code has been a silent success.").
 #
 # The report has to land on stderr, not stdout: the compat/ wrappers need
 # stdout byte-identical to the tools they replaced (tests/known-callers.sh,
@@ -1808,9 +1783,6 @@ fi
 # name has described a rename -- and the repo owner authorised it in advance.
 # The order-independence given up was a rule that had to be documented to be
 # predicted.
-# allow-unmatched, because the delete's real miss (below) would otherwise
-# refuse the run by default -- this block is about what the miss reports,
-# which needs a run that finishes to observe.
 build_main "$T/dylib_conflict_fixture"
 conflict_path="@loader_path/libconflict.dylib"
 conflict_new="/also/absent.dylib"
@@ -2145,8 +2117,7 @@ else
 fi
 
 # rpath -replace naming a search path the file does not have: the rpath twin
-# of the dylib -replace miss report above. allow-unmatched, for the same
-# reason: by default this would refuse.
+# of the dylib -replace miss report above.
 build_main "$T/rpath_miss_fixture" "/tmp/cli_test_rpath_present"
 mts "$T/rpath_miss_fixture" allow-unmatched "rpath replace /tmp/cli_test_rpath_absent /tmp/cli_test_rpath_new" \
     >"$T/rpath_miss.out" 2>"$T/rpath_miss.err" && rpath_miss_rc=0 || rpath_miss_rc=$?
@@ -2438,13 +2409,7 @@ grep -q "^SEG __DATA$" "$T/segs_before" && grep -q "^SECT __DATA/" "$T/segs_befo
     || bad "segment: precondition" "no __DATA segment/section in: $(cat "$T/segs_before")"
 
 # ---- info: section names --------------------------------------------------
-# The detection `target 10.9` makes for __DATA_CONST is "does it carry any
-# __objc_ section", and until now nothing could ask: info printed segname and
-# nsects but never a section name. Four spaces, one level deeper than
-# "  segname=", so no existing consumer's grep can reach these. Read against
-# segment_fixture here, before the rename below retargets it: this section's
-# assertions are about what info prints for a fixture with real segments and
-# sections, not about the rename.
+# info: sectname lines, four spaces deep, read before the rename below mutates the fixture.
 "$DRYDOCK_MACHO_REWRITE" info "$T/segment_fixture" >"$T/sect.out" 2>/dev/null
 
 # Cross-checked against segread, never against otool, and never against a
@@ -2459,12 +2424,8 @@ cmp -s "$T/sect.want" "$T/sect.got" \
     && ok "info: the fixture really has sections to print" \
     || bad "info sectname" "the fixture has no sections; this assertion proves nothing"
 
-# A SECTION name of exactly 16 bytes uses the whole field and is NOT
-# NUL-terminated. %.16s is what prints it whole; %s would run past it into
-# whatever follows in struct section_64 (addr, next). This is deliberately
-# NOT segment_16_fixture below: that fixture's 16-byte name is on the
-# SEGMENT, and its sections keep the compiler's ordinary short names
-# (__text, __data, ...), so it cannot exercise a 16-byte SECTION name.
+# A 16-byte section name has no NUL, so %s would overrun. segment_16_fixture's
+# long name is on the segment, not a section.
 cat > "$T/sect16main.c" <<'EOF'
 __attribute__((section("__DATA,ABCDEFGHIJKLMNOP"))) int g_sect16 = 1;
 int main(void) { return g_sect16 == 1 ? 0 : 1; }
@@ -2476,27 +2437,9 @@ EOF
     || bad "info sectname 16" "expected the exact line '    sectname=ABCDEFGHIJKLMNOP': $("$DRYDOCK_MACHO_REWRITE" info "$T/sect16_fixture" 2>/dev/null | grep '^    sectname=')"
 
 # ---- info: fat containers -------------------------------------------------
-# info was a bare mi_open and failed outright on a fat container, which is
-# why bake-mavericks-shim needs a trial rewrite to learn anything about one
-# (compat/bake-mavericks-shim.sh's probe). One block per 64-bit slice now.
-#
-# Run here, against segment_fixture, BEFORE the segment rename below
-# retargets it -- this section only needs a fixture with real sections, not
-# an unmutated one, but reading it before that mutation keeps its state
-# known, same as the sectname assertions just above.
-#
-# A non-Mach-O blob of our own: cli_test.sh has no $T/notmacho of its own to
-# reuse (unlike $T/dylib_notmacho, which belongs to the dylib-replace
-# section), so this makes one.
 echo 'not a mach-o, just bytes' > "$T/notmacho"
 
-# Both slices below share one arch: segment_fixture wrapped around a second
-# copy of itself, tagged with the very cputype (CPU_TYPE_X86_64 = 16777223)
-# it already has. A caller reading this output sees two identical
-# "slice x86_64:" headers and can only tell the slices apart by their order,
-# never by name -- a real fat binary never repeats an arch, but nothing
-# stops one that does from being read, and that is exactly what this
-# fixture needs to exercise "two slices, same name".
+# Two slices, same cputype: a real fat file never repeats an arch, but info must still read one.
 "$T/segread" wrap "$T/info_fat" "$T/segment_fixture" "$T/segment_fixture" 16777223
 
 rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat" >"$T/fat.out" 2>"$T/fat.err" || rc=$?
@@ -2521,7 +2464,7 @@ cmp -s "$T/fat.thin.lc" "$T/fat.s0.lc" \
     && ok "info fat: a slice's load commands match the same slice read alone" \
     || bad "info fat slice body" "$(diff "$T/fat.thin.lc" "$T/fat.s0.lc" | head -5)"
 
-# Every detection, on a fat file. This is the whole point of the task.
+# Every detection, on a fat file.
 fat_sects=$(awk '/^slice /{n++} /^    sectname=/{c[n]++} END{print c[1]+0, c[2]+0}' "$T/fat.out")
 echo "$fat_sects" | awk '{exit !($1 > 0 && $1 == $2)}' \
     && ok "info fat: section names are printed per slice" \
@@ -2530,12 +2473,6 @@ echo "$fat_sects" | awk '{exit !($1 > 0 && $1 == $2)}' \
     && ok "info fat: a swift-abi line per slice" \
     || bad "info fat" "wanted 2 swift-abi lines, got $(grep -c '^swift-abi: ' "$T/fat.out")"
 
-# --thin's refusal is now real, not vacuous -- and it has to say exactly what
-# plain `info` on a fat container said before info learned fat containers at
-# all: exit 1, nothing on stdout, "drydock-macho-rewrite info: PATH: not a
-# readable 64-bit Mach-O" on stderr. Captured by hand against the pre-change
-# binary before any of this file's C changed, so this is pinning that
-# capture, not guessing at it.
 rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/info_fat" >"$T/fatthin.out" 2>"$T/fatthin.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "info --thin: a fat container is refused (1)" \
     || bad "info --thin fat" "did not exit 1 (got $rc)"
@@ -2566,22 +2503,12 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat0" >"$T/fat0.out" 2>"$T/fat0.err
     && ok "info fat: a fat header with no slices is reported as 0 slices (0)" \
     || bad "info fat 0 slices" "exit $rc, stdout: $(cat "$T/fat0.out"), stderr: $(cat "$T/fat0.err")"
 
-# The other wording that same branch can print: a slice tagged with a
-# cputype that DOES carry the 64-bit ABI bit (CPU_TYPE_X86_64 = 16777223,
-# same tag the good slices above use) but whose bytes are not a Mach-O at
-# all. me_run_fat tells this apart from "32-bit" by that bit alone, not by
-# the bytes -- something 32-bit and something 64-bit-tagged-but-unreadable
-# are different facts and get different words.
+# Tagged 64-bit but not a Mach-O: the other wording, chosen by the ABI bit alone.
 "$T/segread" wrap "$T/info_fat64bad" "$T/segment_fixture" "$T/notmacho" 16777223
 "$DRYDOCK_MACHO_REWRITE" info "$T/info_fat64bad" 2>/dev/null | grep -q '^slice .*: not a 64-bit Mach-O; passed through unchanged$' \
     && ok "info fat: a 64-bit-tagged non-Mach-O slice reuses me_run_fat's other wording" \
     || bad "info fat 64-bit non-macho" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/info_fat64bad" 2>/dev/null | grep '^slice ')"
 
-# A thin file's output is unchanged by all of this. signing_probe (built
-# earlier, for the code-signing host probe) stands in for a plain thin
-# fixture here. Checked as three separate facts, not one grep -q that a
-# failed or empty run would satisfy just as well as a correct one: the run
-# has to succeed, print its own thin header line, AND print no slice header.
 rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" >"$T/thinagain.out" 2>"$T/thinagain.err" || rc=$?
 [ "$rc" -eq 0 ] && ok "info: a thin file is still accepted" \
     || bad "info thin" "exited $rc: $(cat "$T/thinagain.err")"
@@ -2592,12 +2519,6 @@ grep -q '^slice ' "$T/thinagain.out" \
     && bad "info thin" "a thin file grew a slice header" \
     || ok "info: a thin file still prints no slice header"
 
-# A non-Mach-O, non-fat file: mfat_parse refuses it too, so it never reaches
-# the new fat path at all -- plain `info` and `info --thin` both have to
-# keep saying exactly what they said before info learned fat containers.
-# Captured by hand against the pre-change binary, same as the fat case
-# above: exit 1, nothing on stdout, "drydock-macho-rewrite info: PATH: not a
-# readable 64-bit Mach-O" on stderr, for both.
 rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/notmacho" >"$T/nm.out" 2>"$T/nm.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "info notmacho: refused (1)" \
     || bad "info notmacho" "did not exit 1 (got $rc)"
@@ -3364,7 +3285,7 @@ build_main "$T/nwid2"
 # A 0 EXIT MUST LEAVE OUT THERE, even when there was nothing to change: OUT is
 # the answer, so a caller that got exit 0 and no OUT would have been told the
 # work succeeded and handed nothing. Nothing matches here, so without
-# allow-unmatched the run would refuse (below); with it, OUT still has to be
+# allow-unmatched the run would refuse; with it, OUT still has to be
 # a byte-for-byte copy of FILE.
 build_main "$T/nwi_noop"
 rm -f "$T/nwi_noop_out"
@@ -3388,12 +3309,7 @@ cmp -s "$T/nwi_noop" "$T/nwi_noop_out" \
 "$T/mkswift" make "$T/swift_fixture"
 
 # ---- info: the Swift stable-ABI tag ---------------------------------------
-# The last of target 10.9's five detections to become askable.
-# mswift_stable_tagged_image was reachable only from me_expand_10_9, so this
-# fact had no query at all. Printed in EVERY state, so absence is never
-# ambiguous with "info forgot to look". $T/signing_probe (built above, plain
-# and non-Swift) stands in for the brief's $FIXTURE, which this suite has no
-# variable of that name for.
+# info: the swift-abi line, printed in both states.
 "$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null | grep -q '^swift-abi: ' \
     && ok "info: a swift-abi line is always printed" \
     || bad "info swift-abi" "no swift-abi line on the plain fixture"
@@ -3403,18 +3319,12 @@ cmp -s "$T/nwi_noop" "$T/nwi_noop_out" \
     && ok "info: an untagged image says so" \
     || bad "info swift-abi" "wrong wording: $("$DRYDOCK_MACHO_REWRITE" info "$T/signing_probe" 2>/dev/null | grep '^swift-abi:')"
 
-# The tagged half, on swift_fixture itself, just built above and not yet
-# mutated by anything below. No SKIP branch: this build always has the
-# fixture, unlike wrapper_test.sh's LC_LAZY_LOAD_DYLIB case.
+# No SKIP: mkswift builds this fixture on every host.
 "$DRYDOCK_MACHO_REWRITE" info "$T/swift_fixture" 2>/dev/null \
     | grep -qxF 'swift-abi: class records carry the stable-ABI tag' \
     && ok "info: a tagged image says so" \
     || bad "info swift-abi tagged" "wrong wording: $("$DRYDOCK_MACHO_REWRITE" info "$T/swift_fixture" 2>/dev/null | grep '^swift-abi:')"
 
-# And the line follows the statement: retag, then ask again. The retag's own
-# exit status is checked before trusting the second info call -- a silent
-# failure here would leave swift_retagged still tagged, and the assertion
-# below would then be testing nothing.
 cp "$T/swift_fixture" "$T/swift_retagged"
 mts "$T/swift_retagged" "swift-abi set legacy" >/dev/null 2>&1 \
     || bad "info swift-abi retag" "swift-abi set legacy failed on swift_retagged"
@@ -3665,9 +3575,8 @@ rc=0
     || bad "edit --output gone" "expected 2, got $rc: $(cat "$T/edit_output.err")"
 
 # A 0 EXIT LEAVES OUT THERE, even when no statement changed anything: OUT is
-# the answer, so exit 0 with no OUT would hand a caller nothing. Without
-# allow-unmatched a statement that changes nothing would refuse (below), so
-# it has to lead the script here too.
+# the answer, so exit 0 with no OUT would hand a caller nothing.
+# allow-unmatched, or this miss would refuse.
 build_main "$T/edit_noop"
 printf 'allow-unmatched\ndylib delete /not/linked/at/all.dylib\n' >"$T/noop.edits"
 rm -f "$T/edit_noop_out"
@@ -3876,15 +3785,7 @@ grep -q "line 2" "$T/editbad.err" && ok "edit: names the offending line" \
     && ok "edit: a parse error left FILE untouched and wrote no OUT" \
     || bad "edit parse error" "the file was modified, or an OUT appeared, despite a parse error"
 # `drydock-macho-rewrite edit: `: every one of src/edit.c's me_say format strings names
-# the tool, as every other verb's diagnostics do. No digest protects those
-# strings -- tests/EXPECTED and tests/known-callers.sh's sha256s hash
-# converted file bytes with the tools' output sent to /dev/null -- so this
-# grep is one of four readers, in three files, that would actually break if
-# they moved: this assertion, tests/wrapper_test.sh's two fix_macho
-# unmatched-report assertions, and -- the one that is production code
-# rather than a test -- compat/patch_macho.sh's `^Already patched`, which
-# reads a line md_declassify prints rather than one any verb did. All four
-# move with what they read.
+# the tool, as every other verb's diagnostics do.
 grep -q "^drydock-macho-rewrite edit: " "$T/editbad.err" \
     && ok "edit: parse error is prefixed like every other verb's diagnostics" \
     || bad "edit parse error" "no 'drydock-macho-rewrite edit: ' prefix: $(cat "$T/editbad.err")"
@@ -4515,10 +4416,7 @@ fi
 # the script is the plan. So the expansion has to land at the target line's
 # own position, which the report's order is what shows.
 #
-# mkchained's fixture is hand-built with no LC_UUID (see tests/mkchained.c),
-# so `load-command delete uuid` here is a deliberate miss, incidental to what
-# this block tests -- allow-unmatched keeps the run finishing so the report's
-# ORDER can still be read.
+# mkchained has no LC_UUID, so allow-unmatched keeps the run finishing.
 tgt_at() { grep -n "$2" "$1" | head -1 | cut -d: -f1; }
 printf 'allow-unmatched\nload-command delete uuid\ntarget 10.9\n' >"$T/tgt_after.edits"
 printf 'allow-unmatched\ntarget 10.9\nload-command delete uuid\n' >"$T/tgt_before.edits"
