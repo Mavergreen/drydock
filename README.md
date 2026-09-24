@@ -130,7 +130,10 @@ no-ops. `swift-abi set legacy` refuses an image that still has chained
 fixups, whose class-record pointers it cannot read: write `fixups set
 classic` before it. `fixups set classic` is a no-op on an image that already uses
 `LC_DYLD_INFO_ONLY`, but it refuses an image with neither that nor chained
-fixups, and `allow-unmatched` does not cover that refusal.
+fixups. On a chained image it also refuses when there is no single macOS
+`LC_BUILD_VERSION` to keep as a version-min. That means two macOS ones, or one
+for a platform other than macOS (such as iOS or a simulator), alone or beside
+macOS. `allow-unmatched` covers none of these refusals.
 
 `allow-unmatched` is for the wrappers that reproduce tools which exited 0
 when an operation matched nothing: `change_dylib`, `fix_macho` and
