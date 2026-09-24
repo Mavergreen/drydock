@@ -1610,6 +1610,14 @@ for fo_mode in make make-lcfirst make-tight; do
         || bad "fixups/minos order ($fo_mode)" "rc $rc: $("$T/mkminos" show "$T/fo_fm" 2>&1) vs $("$T/mkminos" show "$T/fo_mf" 2>&1): $(cat "$T/fo.err")"
 done
 
+"$T/mkchained" make-tight7 "$T/fk_t7"
+"$DRYDOCK_MACHO_REWRITE" info "$T/fk_t7" | grep -q '^header pad: 7 bytes available' \
+    || bad "fixups keeps: fixture setup" "make-tight7's pad is not 7 bytes"
+fk_run "$T/fk_t7" "$T/fk_t7.out"
+[ "$rc" -eq 1 ] && [ ! -e "$T/fk_t7.out" ] && grep -qF "need 64 bytes, have 63" "$T/fk.err" \
+    && ok "fixups set classic: 7 bytes of pad cannot hold the kept command too; refused (1), nothing written" \
+    || bad "fixups keeps (7 bytes of pad)" "rc $rc: $(cat "$T/fk.err")"
+
 # ============================================================================
 # lc -delete
 # ============================================================================
@@ -4431,11 +4439,7 @@ tgt_run() {
 build_main "$T/tgt_plain"
 tgt_run "$T/tgt_plain" "$T/tgt_plain.out" || bad "target" "$(cat "$T/tgt.err")"
 # The profile line is named in the report whatever the binary turns out to
-# need. NOT "a fixture built for 10.9 needs nothing": build_main's fixture
-# needs nothing HERE, and on the cross runner carries LC_BUILD_VERSION and so
-# derives a delete for it. That is precisely the premise this block's own
-# header warns against stating, so it is not stated -- the empty expansion
-# gets a fixture built for it, below.
+# need.
 grep -qF "  target 10.9" "$T/tgt.err" \
     && ok "target: the report names the profile line" \
     || bad "target" "no target line in the report: $(cat "$T/tgt.err")"
@@ -4446,7 +4450,7 @@ grep -qF "  target 10.9" "$T/tgt.err" \
 # nothing (which would be indistinguishable from the line having done
 # nothing at all).
 #
-# The fixture needs every one of the five detections to be false on any host,
+# The fixture needs each of the four steps to change nothing on any host,
 # which no plain build_main can promise: strip LC_BUILD_VERSION and add
 # LC_VERSION_MIN_MACOSX, each already otool-certified by the helper that does
 # it. The other three -- chained fixups, a __DATA_CONST, Swift class records
@@ -4515,7 +4519,7 @@ grep -A1 -xF '    minos at-most 10.9  (always)' "$T/tgt.err" \
     && ok "target: ... and the written image declares it" \
     || bad "target (none declared)" "$("$T/mkminos" show "$T/tgt_novm.out" 2>&1)"
 
-# ROW 4: __DATA_CONST carrying __objc_* sections -> segment rename. No host
+# ROW 3: __DATA_CONST carrying __objc_* sections -> segment rename. No host
 # linker here emits __DATA_CONST either (Xcode 10 and later do), so the
 # fixture is mkswift's __DATA image with its segment renamed the other way --
 # and otool, not drydock-macho-rewrite, says the premise held.
@@ -4546,7 +4550,7 @@ else
     bad "target (no __DATA_CONST)" "expected a report with no segment rename line: $(cat "$T/tgt.err")"
 fi
 
-# ROW 5: class records carrying the stable-ABI Swift tag -> swift-abi set
+# ROW 4: class records carrying the stable-ABI Swift tag -> swift-abi set
 # legacy. mkswift's records carry tag bit 1 (value 2) by construction, and
 # mkswift's own reader -- not drydock-macho-rewrite -- says so, before and after. The same
 # fixture as the row above, run again so this row stands on its own.
@@ -4743,7 +4747,7 @@ printf 'target 10.9\n' >"$T/tgt_fw.edits"
 "$T/mkchained" make "$T/tgt_fw"
 tgt_run "$T/tgt_fw" "$T/tgt_fw.out" "$T/tgt_fw.edits" && tgt_fw_rc=0 || tgt_fw_rc=$?
 [ "$tgt_fw_rc" -eq 0 ] && [ -e "$T/tgt_fw.out" ] \
-    && ok "target: a derived statement that matches nothing is not a miss, and does not refuse by default" \
+    && ok "target: it does not refuse by default" \
     || bad "target (unmatched)" "exit $tgt_fw_rc: $(cat "$T/tgt.err")"
 grep -q "matched nothing" "$T/tgt.err" \
     && bad "target (unmatched)" "reported a derived statement as unmatched: $(cat "$T/tgt.err")" \

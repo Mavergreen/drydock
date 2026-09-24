@@ -564,7 +564,7 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
  * not. None of them guesses, so the expansion is reproducible from the image
  * alone.
  */
-#define ME_TARGET_MAX 4   /* the steps of target 10.9's edit script, in README.md's order */
+#define ME_TARGET_MAX 4   /* the steps of target 10.9's edit script */
 
 /* One derived statement, and the finding that produced it -- the report
  * carries both, because "why is this script doing that?" is exactly the

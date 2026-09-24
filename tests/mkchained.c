@@ -9,7 +9,7 @@
  * bytes)` line, skipping the install when IN == OUT) went unnoticed by every
  * suite while this file could only be built from one of them.
  *
- * mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight OUT
+ * mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7 OUT
  *                        -- write a tiny 64-bit Mach-O that uses CHAINED
  *                          FIXUPS, the format `declassify`/patch_macho exists
  *                          to lower. No linker on any host this repo supports
@@ -63,7 +63,7 @@
  *
  * make-swiftdc is make-swift with the segment named __DATA_CONST, as an
  * Xcode 10+ link names it. make-tight is make with its first section at
- * 0x1d8, leaving 8 bytes of header pad.
+ * 0x1d8, leaving 8 bytes of header pad; make-tight7 at 0x1d7, leaving 7.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,7 +96,7 @@
 #define SW_RO    0x200   /* ... the class's read-only data; the metaclass's is +0x40 */
 
 enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST, MK_BADORD, MK_HIGH8, MK_LCFIRST,
-       MK_SWIFT, MK_SWIFTDC, MK_TIGHT };
+       MK_SWIFT, MK_SWIFTDC, MK_TIGHT, MK_TIGHT7 };
 
 /* segname/sectname are char[16] and need NOT be NUL-terminated; see
  * tests/README.md's host-portability section for why strcpy is wrong here. */
@@ -181,7 +181,8 @@ static int make(const char *path, int mode) {
     if (mode == MK_LCFIRST) p = put_strippable(p, fixups_off, trie_off);
 
     struct segment_command_64 *text = put_seg(p, "__TEXT", TEXT_VMADDR, 0x1000, 0, 0x1000, 1);
-    uint32_t sect_off = (mode == MK_TIGHT) ? TIGHT_SECT_OFF : SECT_OFF;
+    uint32_t sect_off = (mode == MK_TIGHT) ? TIGHT_SECT_OFF
+                      : (mode == MK_TIGHT7) ? TIGHT_SECT_OFF - 1 : SECT_OFF;
     uint32_t text_off = (mode == MK_NOSECT) ? 0
                       : (mode == MK_SECTPAST) ? (uint32_t)fsize + 0x1000 : sect_off;
     put_sect(text, 0, "__text", "__TEXT", TEXT_VMADDR + sect_off, 4, text_off);
@@ -365,7 +366,7 @@ static int tags(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|check|tags FILE\n"); return 2; }
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7|check|tags FILE\n"); return 2; }
     if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
     if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
     if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
@@ -377,8 +378,9 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "make-swift") == 0) return make(argv[2], MK_SWIFT);
     if (strcmp(argv[1], "make-swiftdc") == 0) return make(argv[2], MK_SWIFTDC);
     if (strcmp(argv[1], "make-tight") == 0) return make(argv[2], MK_TIGHT);
+    if (strcmp(argv[1], "make-tight7") == 0) return make(argv[2], MK_TIGHT7);
     if (strcmp(argv[1], "tags") == 0) return tags(argv[2]);
     if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|check|tags FILE\n");
+    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7|check|tags FILE\n");
     return 2;
 }

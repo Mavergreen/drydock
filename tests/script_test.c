@@ -798,12 +798,12 @@ static void test_minos_at_most_and_if_absent_take_a_version(void) {
 
 static void test_retired_minimum_statements_are_unknown(void) {
     static const char *lines[] = { "minos set 10.9\n", "minos at-mots 10.9\n" };
-    static const char *said[] = { "unknown statement 'minos set'",
-                                  "unknown statement 'minos at-mots'" };
+    static const char *said[] = { "line 1: unknown statement 'minos set'",
+                                  "line 1: unknown statement 'minos at-mots'" };
     for (size_t i = 0; i < sizeof lines / sizeof *lines; i++) {
         ms_script s; char err[256] = {0};
         CHECK(ms_parse(lines[i], strlen(lines[i]), &s, err, sizeof err) == -1 &&
-              strstr(err, said[i]) != NULL,
+              strcmp(err, said[i]) == 0,
               "%s is refused as %s, with no message of its own (got: %s)", lines[i], said[i], err);
     }
 }
