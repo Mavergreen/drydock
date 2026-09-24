@@ -427,12 +427,9 @@ run change_dylib f -change /nope/absent.dylib /also/absent.dylib
     && ok "change_dylib: a run that changed nothing prints no Updated line" \
     || bad "change_dylib Updated (no-op)" "exit $rc, stdout: $(cat "$T/out")"
 
-# A HARD-LINKED FILE IS REFUSED (1) BY EVERY WRAPPER ON THE INSTALL PATH, which
-# for these three is new: their C tools wrote through their own descriptor, so
-# every name for the inode saw the change, while installing by mv would leave
-# the siblings on the old content. add_version_min's own case is asserted
-# above; these are the three whose verbs converted together. Each must refuse
-# before running anything, leave BOTH names byte-identical, and leave no temp.
+# A HARD-LINKED FILE IS REFUSED (1): the C tools wrote through their own
+# descriptor, so every name for the inode saw the change, while installing by
+# mv would leave the siblings on the old content.
 rm -rf "$T/hl"; mkdir "$T/hl"
 hl_case() {   # hl_case TOOL ARG...
     hl_tool=$1; shift
@@ -453,6 +450,7 @@ hl_case change_dylib -strip-lc uuid
 hl_case change_dylib -strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib
 hl_case fix_macho -change /usr/lib/libSystem.B.dylib /x/y.dylib
 hl_case rename_segment __DATA __DATA_HL
+hl_case add_version_min
 rm -rf "$T/hl"
 
 # A RUN drydock-macho-rewrite REFUSES LEAVES NO TEMP BESIDE FILE EITHER. The temp is made by
@@ -1120,8 +1118,7 @@ run patch_macho pmsim pmsim
 
 # The wrappers keep editing FILE "in place" -- by writing a temp beside the
 # real target and mv-ing it over. A symlinked FILE updates its target and
-# stays a symlink; a hard-linked FILE is refused; a refusal leaves no temp
-# behind; mode and xattrs survive.
+# stays a symlink; a refusal leaves no temp behind; mode and xattrs survive.
 cp "$FIXTURE" "$T/w_real"; strip_vm "$T/w_real"
 ln -s w_real "$T/w_link"
 ( cd "$T" && "$BIN/add_version_min" w_link ) >/dev/null 2>"$T/w.err" \
@@ -1143,15 +1140,6 @@ w_ino=$(stat -f %i "$T/w_real")
 grep -qxF 'LC_VERSION_MIN_MACOSX already present; nothing to do.' "$T/w2.out" \
     && ok "wrapper: ... and prints the C tool's 'already present' line" \
     || bad "wrapper no-op run" "stdout: $(cat "$T/w2.out")"
-
-cp "$FIXTURE" "$T/w_h1"; strip_vm "$T/w_h1"; ln "$T/w_h1" "$T/w_h2"
-h_before=$(shasum -a 256 < "$T/w_h1")
-rc=0; "$BIN/add_version_min" "$T/w_h1" >/dev/null 2>"$T/wh.err" || rc=$?
-[ "$rc" -eq 1 ] && [ "$(shasum -a 256 < "$T/w_h1")" = "$h_before" ] \
-    && ok "wrapper: a hard-linked FILE is refused (1), untouched" || bad "wrapper hard link" "rc $rc"
-grep -q "hard link" "$T/wh.err" && ok "wrapper: ... and says why" || bad "wrapper hard link" "$(cat "$T/wh.err")"
-ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' && bad "wrapper" "a temp file was left behind" \
-    || ok "wrapper: no temp file left behind"
 
 # A DIRECTORY IS NOT A HARD-LINK PROBLEM. Every directory's link count is
 # greater than one (`.`, its parent's entry, one per subdirectory), so a

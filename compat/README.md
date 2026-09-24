@@ -250,9 +250,8 @@ for why they would be rare -- and one decided on purpose:
     on that fold has the reasoning. An invocation touching more than one family is
     no longer a sequence of `drydock-macho-rewrite` lines with shell steps between them:
     it is one `printf … | drydock-macho-rewrite FILE OUT`, whose exit code is `me_run`'s own, from
-    the same `MR_REFUSED`/`MR_FAIL` vocabulary. The "`change_dylib`: the
-    differences" tables below and `compat/add_version_min.sh`'s own header
-    have the rest of the detail.
+    the same `MR_REFUSED`/`MR_FAIL` vocabulary. The "`change_dylib`" and
+    "`add_version_min`" differences tables below have the rest of the detail.
 
 There is a fifth gap this list used to omit entirely: no argument
 combination in `tests/compat-sweep.sh`'s 1227-row matrix ever exercises
@@ -279,8 +278,9 @@ families, a fat container, or every possible order.
 Stdout is identical everywhere a caller or an in-repo test can see it, and the
 places where it is not are **enumerated** with the measurement behind each one
 (`tests/compat-matrix.tsv` records what all 1227 enumerated argument
-combinations did on both sides, stdout included) — for `change_dylib` and
-`fix_macho` in the sections below, and for the other four in their own headers.
+combinations did on both sides, stdout included) — for `change_dylib`,
+`fix_macho` and `add_version_min` in the sections below, and for the other
+three in their own headers.
 `fix_macho` is the one whose stdout is deliberately not reproduced at all.
 
 Stderr is where the wrappers deliberately differ: each one prints the
@@ -666,6 +666,9 @@ differs is everything around it. "Held by" names assertions in
 | **the append is announced on stderr** as `none -> version-min 10.9; sdk 10.9 written`, not as the C tool's "Added LC_VERSION_MIN_MACOSX 10.9 (...)" on stdout | "add_version_min: stdout is empty -- the append is announced on stderr now", "add_version_min: ... and stderr is where the announcement went" |
 | **a binary declaring a platform other than macOS is refused, exit 1, untouched**: one whose only version command is a non-macOS `LC_BUILD_VERSION` ("declares platform N, not macOS"), or one with a non-macOS, non-Mac-Catalyst `LC_BUILD_VERSION` beside its `LC_VERSION_MIN_MACOSX` ("declares platform N beside macOS"). The C tool appended `LC_VERSION_MIN_MACOSX` 10.9 to the first and said "already present" for the second, exit 0. The slice is not a macOS image, and adding a command would leave it declaring two platforms | "add_version_min: a binary declaring only platform 2 is refused (1), untouched, saying why", "add_version_min: ... and one declaring platform 2 beside a version-min is refused (1), untouched, saying why" |
 | **"LC_VERSION_MIN_MACOSX already present; nothing to do." is printed by the wrapper**, when the run changed no byte | "wrapper: ... and prints the C tool's 'already present' line" |
+| **`drydock-macho-rewrite`'s exit code is forwarded unchanged**: 1 for a considered refusal, 2 for an operational failure, where the C tool exited 1 for both | "mw_thin_only: EX_FAIL (2) still falls through" (a directory as `FILE`) |
+| **a hard-linked `FILE` is refused, exit 1, both names untouched**. The C tool wrote through its own descriptor, so every name saw the change; installing by `mv` would leave the other names on the old content | "add_version_min: a hard-linked FILE is refused (1), both names untouched" |
+| **a writable `FILE` in a read-only directory fails**, `mkstemp: Permission denied`, exit 2, `FILE` untouched. Installing needs the directory writable; the C tool needed only `FILE` | "add_version_min: a writable FILE in a read-only directory fails (2), untouched, no temp left" |
 
 ## `rename_segment`: exit codes
 
