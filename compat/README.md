@@ -163,25 +163,12 @@ for why they would be rare -- and one decided on purpose:
     (exit 0), and a `segment rename` statement, a `load-command delete`
     statement and the pre-wrapper `change_dylib` all refuse it (exit 1) with
     the same message, so the refusal is the shared rewriter's, not the
-    rename's. It is one file out of 300 in `tests/differential.sh`'s corpus, and closing it
-    means changing `drydock-macho-rewrite`.
-  * `patch_macho`'s `OUT` gets a NEW INODE where the C tool's
-    `open(O_WRONLY|O_CREAT|O_TRUNC)` wrote through the path and kept it. The
-    install is `mv`, like every other wrapper's, which is what makes `OUT`
-    wholly old or wholly new rather than possibly half-written (neither the C
-    tool's write nor the `cat TEMP > OUT` that first replaced it was atomic).
-    Its MODE is still exactly what the C tool left -- `0755 & ~umask` for an
-    `OUT` that did not exist, `OUT`'s own mode for one that did -- and an
-    unchanged run (the pass-through, including `patch_macho IN IN`) installs
-    nothing, so that case keeps its inode too. What a rename cannot keep is
-    `OUT`'s other HARD LINKS, so an `OUT` carrying any is refused (exit 1)
-    instead of being silently split, exactly as `FILE` is for the other five;
-    a dangling symlink at `OUT` is refused as well, where the C tool created
-    the link's target, and an `OUT` that exists but is not a regular file (a
-    directory, a fifo, a device) is refused where the C tool's `open()` either
-    wrote to it or failed with `EISDIR`. With a bad `IN`, only a non-regular
-    `OUT` is named ahead of it.
-    The "`patch_macho`" section below names the test for each.
+    rename's. It is one file out of 300 in `tests/differential.sh`'s corpus,
+    and closing it means changing `drydock-macho-rewrite`.
+  * `patch_macho` installs `OUT` by rename, so it gets a new inode when its
+    bytes change, where the C tool's `open(O_WRONLY|O_CREAT|O_TRUNC)` kept it.
+    The "`patch_macho`" section below has the rest of how `OUT` differs, and
+    the test for each.
   * The writability pre-check the shared `mw_prepare` runs on every
     wrapper's `FILE` (`mw_require_writable`'s `test -w`, to fail before any
     analysis as the C tools' `open(O_RDWR)` did) can
@@ -375,8 +362,8 @@ redirect it to `/dev/null`.
 
 | the difference | held by |
 |---|---|
-| a single-family run's stdout is byte-identical to a one-statement `drydock-macho-rewrite FILE OUT`'s, `Wrote <temp>` reshaped to `Updated FILE` | `tests/wrapper_test.sh`, "a single-family run is byte-identical to `drydock-macho-rewrite`'s, stdout included" — it runs both and compares, with exactly that one line reshaped, so any other wording fails |
-| the `Wrote <temp>` line is suppressed even when the caller's path contains a backslash | `tests/wrapper_test.sh`, "a path containing a backslash still suppresses the temp-naming line" (and the companion assertion that the teaching block is still counted and indented) |
+| a single-family run's stdout is byte-identical to a one-statement `drydock-macho-rewrite FILE OUT`'s, with `Updated FILE (N bytes)` appended | `tests/wrapper_test.sh`, "a single-family run is byte-identical to `drydock-macho-rewrite`'s, stdout included" — it runs both and compares, with exactly that one line appended, so any other wording fails |
+| a caller's path containing a backslash is named intact in the `Updated FILE` line | `tests/wrapper_test.sh`, "a path containing a backslash is named intact in the Updated line" (and the companion assertion that the teaching block is still counted and indented) |
 | a multi-family run's lines name `FILE`, never the temp | `tests/wrapper_test.sh`, "a multi-family run's stdout names FILE, not a copy", plus "a multi-family run leaves no stray file beside FILE" |
 | `Updated FILE (N bytes)` closes a run that changed the bytes, on both paths, and is absent when nothing changed | `tests/wrapper_test.sh`'s `Updated` pair (single- and multi-family) and "a run that changed nothing prints no `Updated` line" |
 | an invocation that asks for nothing prints nothing, where the C tool printed two lines | `tests/wrapper_test.sh`, "an invocation that asks for nothing exits 0, prints nothing, and leaves FILE alone"; `tests/translate_test.sh`'s `cd-grow-only` pins the empty emission as text |
@@ -389,8 +376,7 @@ file it is given. So the wrapper takes the shared install path —
 re-emits the command with that temp as its output, `mw_run_to_tmp` runs it, and
 `mw_finish` `mv`s the temp over the target or discards it when the bytes did not
 change, since the C tool wrote nothing in that case.
-`drydock-macho-rewrite-compat.sh`'s "the install path" section has the reasoning for each
-step. `drydock-macho-rewrite` takes that temp as its `OUT` positional whether the
+`drydock-macho-rewrite` takes that temp as its `OUT` positional whether the
 script is one statement or several, so both shapes install identically.
 
 | the difference | held by |
@@ -647,7 +633,7 @@ differs is everything around it. "Held by" names assertions in
 ## `add_version_min`: the differences, and what holds each one
 
 `add_version_min FILE` becomes `minos if-absent 10.9` into a temp beside
-`FILE`, installed over it. "Held by" names assertions in
+`FILE`, installed over it when a byte changed. "Held by" names assertions in
 `tests/wrapper_test.sh`.
 
 | the difference | held by |
@@ -657,7 +643,7 @@ differs is everything around it. "Held by" names assertions in
 | **the append is announced on stderr** as `none -> version-min 10.9; sdk 10.9 written`, not as the C tool's "Added LC_VERSION_MIN_MACOSX 10.9 (...)" on stdout | "add_version_min: stdout is empty -- the append is announced on stderr now", "add_version_min: ... and stderr is where the announcement went" |
 | **a binary declaring a platform other than macOS is refused, exit 1, untouched**: one whose only version command is a non-macOS `LC_BUILD_VERSION` ("declares platform N, not macOS"), or one with a non-macOS, non-Mac-Catalyst `LC_BUILD_VERSION` beside its `LC_VERSION_MIN_MACOSX` ("declares platform N beside macOS"). The C tool appended `LC_VERSION_MIN_MACOSX` 10.9 to the first and said "already present" for the second, exit 0. The slice is not a macOS image, and adding a command would leave it declaring two platforms | "add_version_min: a binary declaring only platform 2 is refused (1), untouched, saying why", "add_version_min: ... and one declaring platform 2 beside a version-min is refused (1), untouched, saying why" |
 | **"LC_VERSION_MIN_MACOSX already present; nothing to do." is printed by the wrapper**, when the run changed no byte | "wrapper: ... and prints the C tool's 'already present' line" |
-| **`drydock-macho-rewrite`'s exit code is forwarded unchanged**: 1 for a considered refusal, 2 for an operational failure, where the C tool exited 1 for both | "add_version_min: a binary declaring only platform 2 is refused (1), untouched, saying why"; "mw_thin_only: EX_FAIL (2) still falls through" (a directory as `FILE`) |
+| **`drydock-macho-rewrite`'s exit code is forwarded unchanged**: 1 for a considered refusal, 2 for an operational failure, where the C tool exited 1 for both | "add_version_min: a binary declaring only platform 2 is refused (1), untouched, saying why"; "mw_thin_only: EX_FAIL (2) still falls through" (a directory on HFS+ as `FILE`) |
 | **a short header pad is grown**, announced on stderr, exit 0, where the C tool refused with "no room for LC_VERSION_MIN_MACOSX" | `tests/cli_test.sh`, "add_version_min: a short pad is grown, announced, where the original refused (0)" |
 | **a fat container is still refused**, exit 1, untouched, in the C tool's words, by a gate the wrapper adds because the statement alone would rewrite every slice (see "Thin only", above) | "add_version_min: a fat container is refused, untouched, as mv_add_version_min's own mi_open did" |
 | **a hard-linked `FILE` is refused, exit 1, both names untouched**. The C tool wrote through its own descriptor, so every name saw the change; installing by `mv` would leave the other names on the old content | "add_version_min: a hard-linked FILE is refused (1), both names untouched" |
@@ -691,7 +677,8 @@ over `info`'s text can be exact for such a name.
 ## `retag_swift_classes`: exit codes and stdout
 
 `retag_swift_classes F1 F2 ...` runs one `swift-abi set legacy` per argument,
-in argv order, each into a temp beside the argument and installed over it.
+in argv order, each into a temp beside the argument and installed over it
+when a byte changed.
 The exit is 1 if any argument was an error and 0 otherwise, as the C tool's
 was, and the last stdout line is always `total: N class record(s) retagged`,
 which `tests/leaf-tool-crashes.sh` greps for on a malformed fixture. "Held

@@ -135,8 +135,8 @@
 # as well. NOTE, for anyone reading the COMMITTED tests/compat-matrix.tsv: it
 # has 31 refuser=translate rows, and only ONE of them is `blocked+stdout` --
 # fix_macho's chained -rename_seg -- and that refusal is GONE: compat/
-# translate.sh now emits the chain, deliberately, per the ruling recorded at
-# its -rename_seg arm. Re-running this sweep would produce no `blocked` row
+# translate.sh now emits the chain, per compat/README.md's adopted fix_macho
+# divergence 2. Re-running this sweep would produce no `blocked` row
 # for it. The other 30 refuser=translate rows are `both-refuse` (usage
 # errors, unknown flags, capacity caps -- refusals translate.sh still makes,
 # for reasons this ruling does not touch) and are unaffected; re-running the

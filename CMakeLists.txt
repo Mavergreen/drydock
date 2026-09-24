@@ -69,9 +69,8 @@ target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
 # ALL SIX historical tools are now /bin/sh WRAPPERS around drydock-macho-rewrite. Each keeps its original installed name, because
 # mavericksforever.com/claude/install.sh fetches patch_macho, change_dylib and
-# add_version_min BY THOSE NAMES -- the wrappers are drop-in, and
-# compat/<tool>.sh's own header says how each one maps that tool's grammar,
-# its exit codes and its stdout onto drydock-macho-rewrite's.
+# add_version_min BY THOSE NAMES -- the wrappers are drop-in, as
+# compat/README.md's 'What "drop-in" means here, precisely' defines it.
 #
 # fix_macho was the holdout: it could not be wrapped while a wrapper had to
 # PRESERVE its behaviour, because `drydock-macho-rewrite dylib` rewrites a longer path using

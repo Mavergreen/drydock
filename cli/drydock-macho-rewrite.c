@@ -220,10 +220,7 @@ static int print_capabilities(void) {
     printf("verb imports\n");
     printf("verb exports\n");
     {
-        /* NOT a hand-maintained copy of ordinals.c's MO_KINDS -- that used
-         * to be a THIRD place, beside MO_KINDS itself and mo_is_ordinal_lc's
-         * own accept-list, that had to be edited by hand every time a kind
-         * was added, with nothing to notice if it wasn't. MO_KIND_CANDIDATES
+        /* NOT a hand-maintained copy of ordinals.c's MO_KINDS. MO_KIND_CANDIDATES
          * (ordinals.h) is every LC_* mach-o/loader.h defines for a
          * library/dylib/framework load command, not just the ones MO_KINDS
          * recognizes today; offering each to mo_kind_name and printing only
@@ -580,7 +577,7 @@ static int cmd_imports(const char *path) {
 
 /* ---- exports: every symbol this image exports, as TSV --------------------
  *
- * spec: README.md "Read-only queries" -- columns are only ever appended. */
+ * spec: README.md "Queries" -- columns are only ever appended. */
 struct exports_ctx { int header_printed; };
 
 static void exports_print_header(void) {

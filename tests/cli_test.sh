@@ -120,8 +120,6 @@ unpie() {
 # only one of the two still see the other unchanged. Each filter passes its
 # prefix through the ENVIRONMENT, not `awk -v`: that escape-processes what it
 # assigns, so a $T containing a backslash would leave the line unsuppressed.
-# compat/drydock-macho-rewrite-compat.sh's mw_run_to_tmp, which this mirrors, has the
-# measurement.
 mts() {
     mts_file=$1; shift
     mts_tmp="$mts_file.mtip"

@@ -313,15 +313,7 @@ cdmixrc=$?
 rm -rf "$T/stray"
 
 # A BACKSLASH IN THE PATH. The temp mw_prepare names is derived from the
-# caller's own path, so its name is the caller's to choose -- and the filter
-# that suppresses drydock-macho-rewrite's "Wrote <temp> (N bytes)" line has to compare against
-# that name exactly. It once did not: passing the prefix to awk with `-v` ran it
-# through awk's string-escape processing, so for a path containing a backslash
-# awk looked for something the line does not start with and the stray line
-# reached stdout, naming a temp no caller has heard of and breaking the
-# byte-identical claim the assertion above makes. Both wrappers here go through
-# the SAME shared mw_run_to_tmp, so one of them would have been enough to catch
-# it; both are asserted because both leaked.
+# caller's own path, so its name is the caller's to choose.
 rm -rf "$T/bs"; mkdir "$T/bs" "$T/bs/back\slash"
 cp "$FIXTURE" "$T/bs/back\slash/f"; cp "$FIXTURE" "$T/bs/back\slash/g"
 strip_vm "$T/bs/back\slash/g"
@@ -329,15 +321,15 @@ strip_vm "$T/bs/back\slash/g"
 bsrc=$?
 [ "$bsrc" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs.out" \
     && has_line "$T/bs.out" 'Updated back\slash/f (8528 bytes)' \
-    && ok "change_dylib: a path containing a backslash still suppresses the temp-naming line" \
+    && ok "change_dylib: a path containing a backslash is named intact in the Updated line" \
     || bad "change_dylib backslash path" "exit $bsrc, stdout: $(cat "$T/bs.out")"
 ( cd "$T/bs" && "$BIN/add_version_min" 'back\slash/g' ) >"$T/bs2.out" 2>"$T/bs2.err"
 bsrc2=$?
 [ "$bsrc2" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs2.out" \
-    && ok "add_version_min: ... and so does every other wrapper on the shared path" \
+    && ok "add_version_min: a path containing a backslash exits 0, with no Wrote line" \
     || bad "add_version_min backslash path" "exit $bsrc2, stdout: $(cat "$T/bs2.out")"
-# The teaching message reaches awk the same way, for command COUNTING and for
-# indenting the block, so it is measured on the same path rather than assumed.
+# The teaching block reaches awk as input, to be counted and indented, so it
+# is measured on this path too.
 grep -qF "    printf 'allow-unmatched\\nload-command delete uuid" "$T/bs.err" \
     && ok "change_dylib: ... and the teaching block is still indented and counted" \
     || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
@@ -2165,8 +2157,7 @@ run fix_macho -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib
     || bad "fix_macho leading dash" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
 
-# THE TAUGHT BLOCK ITSELF MUST BE PASTEABLE, not just descriptive
-# (compat/translate.sh's "reads as a pasteable equivalent" claim). For a
+# THE TAUGHT BLOCK ITSELF MUST BE PASTEABLE, not just descriptive. For a
 # leading-dash FILE with no directory part, FILE.new begins with '-' too, and
 # drydock-macho-rewrite deliberately refuses an OUT spelled that way -- so before
 # mt_out_for/mt_install_line learned to write OUT as ./FILE.new here, the
@@ -2435,9 +2426,8 @@ for gate_tool in patch_macho add_version_min rename_segment retag_swift_classes;
         || bad "$gate_tool fat gate" "the input changed"
 done
 
-# EX_FAIL still falls through, which is what makes `add_version_min <dir>`
-# exit 2 on both sides. A directory is the measurement mw_thin_only's own
-# comment names.
+# EX_FAIL still falls through. $T is a directory: on HFS+ `info --thin`
+# cannot read it (2); on NFS it refuses it (1), and this would fail.
 run add_version_min "$T"
 [ "$rc" -eq 2 ] && ok "mw_thin_only: EX_FAIL (2) still falls through" \
     || bad "mw_thin_only EX_FAIL" "a directory did not exit 2, got $rc"
