@@ -566,6 +566,23 @@ static int run(const char *path, const char *out, const char *text) {
     return rc;
 }
 
+/* run(), with what the run printed on stderr in `err`. */
+static int run_stderr(const char *path, const char *out, const char *text, char *err, size_t size) {
+    FILE *cap = tmpfile();
+    fflush(stderr);
+    int saved = dup(2);
+    dup2(fileno(cap), 2);
+    int rc = run(path, out, text);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    rewind(cap);
+    size_t n = fread(err, 1, size - 1, cap);
+    err[n] = '\0';
+    fclose(cap);
+    return rc;
+}
+
 /* ---- the tests ----------------------------------------------------------- */
 
 static void test_statements_apply_in_order(void) {
@@ -922,8 +939,6 @@ static void test_an_unmatched_segment_rename_refuses_by_default(void) {
     rm_dir();
 }
 
-/* minos, swift-abi and fixups were reachable only through file-level
- * entry points; each must run against the in-memory image. */
 static void test_the_file_level_operations_run_in_memory(void) {
     fresh_dir();
     char path[512], out[512], out2[512];
@@ -1534,6 +1549,8 @@ static void test_minos_decides_the_minimum_per_rule(void) {
           0x000A0700, 0x000A0D00, "      version-min 10.7, at or below 10.9: kept; sdk 10.13 kept\n" },
         { "minos at-most 10.9\n", VMIN_1012, LC_VERSION_MIN_MACOSX, 2, 0x000A0905,
           0x000A0905, 0x000A0D00, "      version-min 10.9.5, at or below 10.9: kept; sdk 10.13 kept\n" },
+        { "minos at-most 10\n", VMIN_1012, 0, 0, 0, 0x000A0C00, 0x000A0D00,
+          "      version-min 10.12, at or below 10: kept; sdk 10.13 kept\n" },
         { "minos at-most 10.9.3\n", VMIN_1012, LC_VERSION_MIN_MACOSX, 2, 0x000A0905,
           0x000A0903, 0x000A0D00, "      version-min 10.9.5 -> 10.9.3; sdk 10.13 kept\n" },
         { "minos at-most 10.9\n", BUILDVER_12, 0, 0, 0, 0x000A0900, 0x000C0300,
@@ -1610,11 +1627,15 @@ static void test_minos_leaves_a_declared_10_9_byte_for_byte(void) {
 }
 
 static void test_minos_refuses_what_is_not_one_macos_declaration(void) {
-    static const struct { int flags; uint32_t second_bv_platform; const char *what; } rows[] = {
-        { BUILDVER_IOS, 0, "an iOS-only slice" },
-        { VMIN_1012 | SECOND_VMIN, 0, "two LC_VERSION_MIN_MACOSX" },
-        { BUILDVER_12 | CATALYST, MV_PLATFORM_MACOS, "two macOS LC_BUILD_VERSION" },
-        { VMIN_1012 | BUILDVER_IOS, 0, "an iOS LC_BUILD_VERSION beside a macOS version-min" },
+    static const struct { int flags; uint32_t second_bv_platform; const char *what, *why; } rows[] = {
+        { BUILDVER_IOS, 0, "an iOS-only slice",
+          ": declares platform 2, not macOS; refusing to add a macOS minimum to it\n" },
+        { VMIN_1012 | SECOND_VMIN, 0, "two LC_VERSION_MIN_MACOSX",
+          ": 2 LC_VERSION_MIN_MACOSX commands; refusing rather than choose one\n" },
+        { BUILDVER_12 | CATALYST, MV_PLATFORM_MACOS, "two macOS LC_BUILD_VERSION",
+          ": 2 macOS LC_BUILD_VERSION commands; refusing rather than choose one\n" },
+        { VMIN_1012 | BUILDVER_IOS, 0, "an iOS LC_BUILD_VERSION beside a macOS version-min",
+          ": declares platform 2 beside macOS; refusing rather than guess which it is\n" },
     };
     static const char *scripts[] = { "minos at-most 10.9\n", "minos if-absent 10.9\n" };
     fresh_dir();
@@ -1629,9 +1650,12 @@ static void test_minos_refuses_what_is_not_one_macos_declaration(void) {
             write_file(path, img, IMG_SIZE, 0755);
             free(img);
             snap before = take(path);
-            int rc = run(path, out, scripts[j]);
+            char err[1024];
+            int rc = run_stderr(path, out, scripts[j], err, sizeof err);
             CHECK(rc == MR_REFUSED, "%s, %s: refused (got %d; log: %s)",
                   rows[i].what, scripts[j], rc, g_log);
+            CHECK(strstr(err, rows[i].why) != NULL, "%s, %s: ... saying why (stderr: %s)",
+                  rows[i].what, scripts[j], err);
             check_untouched(rows[i].what, path, &before);
         }
     }

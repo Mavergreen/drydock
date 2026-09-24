@@ -94,7 +94,7 @@ static void test_parses_the_production_script(void) {
     static const char src[] =
         "# Claude Code -> 10.9\n"
         "fixups        set      classic\n"
-        "minos         if-absent 10.9\n"
+        "minos         at-most  10.9\n"
         "load-command  delete   uuid\n"
         "dylib         replace  /usr/lib/libSystem.B.dylib  @loader_path/../S.dylib\n";
     ms_script s; char err[256] = {0};
@@ -103,6 +103,7 @@ static void test_parses_the_production_script(void) {
     if (r != 0) return;
     CHECK(s.n == 4, "four statements (got %d)", s.n);
     CHECK(s.stmts[0].kind == MS_FIXUPS && s.stmts[0].op == MS_SET, "stmt0 is fixups set");
+    CHECK(s.stmts[1].kind == MS_MINOS && s.stmts[1].op == MS_AT_MOST, "stmt1 is minos at-most");
     CHECK(s.stmts[3].kind == MS_DYLIB && s.stmts[3].op == MS_REPLACE, "stmt3 is dylib replace");
     CHECK(strcmp(s.stmts[3].b, "@loader_path/../S.dylib") == 0, "stmt3 operand b");
     CHECK(s.stmts[3].line == 5, "stmt3 remembers its source line (got %d)", s.stmts[3].line);

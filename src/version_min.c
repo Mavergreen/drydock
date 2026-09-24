@@ -1,8 +1,4 @@
-/*
- * mv_ -- see version_min.h. A short header pad is grown through
- * mg_ensure_pad (src/grow.h), whose own refusal precedes "no room for
- * LC_VERSION_MIN_MACOSX" when the image cannot be grown.
- */
+/* mv_ -- see version_min.h. */
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -150,7 +146,7 @@ int mv_declare_minos(uint8_t **pbuf, size_t *psize, const char *label, int rule,
         uint32_t need_end = (uint32_t)sizeof(struct mach_header_64) + im.hdr->sizeofcmds +
                             (uint32_t)sizeof(struct version_min_command);
         if (mg_ensure_pad(pbuf, psize, need_end, label) != 0 || need_end > *psize) {
-            fprintf(stderr, "no room for LC_VERSION_MIN_MACOSX\n");
+            fprintf(stderr, "%s: no room for LC_VERSION_MIN_MACOSX\n", label);
             return MR_REFUSED;
         }
         mv_append_version_min(*pbuf, r->minos, r->sdk);
