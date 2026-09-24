@@ -120,7 +120,7 @@ Measured 2026-09-23: on a chained-fixups image, `swift-abi set legacy` cannot fo
 
 ## `target 10.9`
 
-`target 10.9` is a published recipe, not a hidden policy. The README prints its expansion as the script it is equivalent to, and a test pins that running the recipe by hand gives the same bytes as `target 10.9`, on a thin chained Swift image and on a fat one.
+`target 10.9` is published as the edit script it expands to, not a hidden policy. The README prints that edit script, and a test pins that running it by hand gives the same bytes as `target 10.9`, on a thin chained Swift image and on a fat one.
 
 It detects each condition **on the image as the preceding derived statements leave it**, not on the input. In particular, the Swift tag is tested after `fixups set classic` has run, which fixes the bug described above.
 
@@ -153,7 +153,7 @@ So on 10.9, any sdk ≥ 10.9 behaves identically. On newer macOS, the real sdk i
 
 **Claude Code is the primary application.** A single run of `drydock-macho-rewrite` with one committed script must produce the Claude Code binary that `install.sh`'s wrapper pipeline produces today, or one that is behaviour-identical to it. No wrappers are involved. The output is expected to differ in bytes: its sdk becomes 26.5 where today's is 10.9, and its load-command order changes. By the measurement above, that is behaviour-identical on 10.9.
 
-- **The recipe** lives at `recipes/claude-code.edits`, a new top-level directory for scripts that users run. It is:
+- **The edit script** lives at `edit-scripts/claude-code.edits`, in a new top-level directory for edit scripts users run. It is:
   - `allow-unmatched`;
   - `fixups set classic`;
   - `minos at-most 10.9`;
@@ -163,8 +163,8 @@ So on 10.9, any sdk ≥ 10.9 behaves identically. On newer macOS, the real sdk i
   - and, as a separate variant for CPUs without AVX2, `dylib insert` of the AVX emulator.
 
   The wrapper script `/usr/local/bin/claude` is the source of truth for the paths.
-- **Its smoke test runs before a release, and it is not a merge gate.** Apply the recipe to the current real Claude Code binary, then run `--version`, `--help` and one `-p` prompt, and compare them with today's pipeline output. The result is recorded in the plan's report. If Claude misbehaves later, the sdk question is revisited then, with this measurement as its baseline.
-- **Moving `install.sh` onto the recipe** is the owner's release step, not part of this plan.
+- **A one-time manual check before Drydock's first release, and never a merge gate or a recurring release step.** Apply the edit script to the current real Claude Code binary, then run `--version`, `--help` and one `-p` prompt, and compare them with today's pipeline output. The owner records the result. If Claude misbehaves later, the sdk question is revisited then, with this measurement as its baseline.
+- **Moving `install.sh` onto the edit script** is the owner's to do, not part of this plan.
 
 ## README
 
@@ -184,7 +184,7 @@ Beside it, three sentences:
 
 The owner is editing README.md by hand. The plan's README task changes only the lines this feature touches, and stops if the file has uncommitted edits.
 
-What `target` adds over a hand-written recipe, and the README says so in these terms:
+What `target` adds over writing its edit script by hand, and the README says so in these terms:
 - it renames `__DATA_CONST` only where `__objc_` sections need it, per slice. Renaming a C-only `__DATA_CONST` breaks nothing measured on 10.9, but it leaves two segments named `__DATA`, which `getsegbyname` and tools cannot tell apart;
 - it chooses per slice of a fat file;
 - it derives `fixups set classic` only where there are chained fixups, so it never hits that statement's refusal on an image with no fixup information;
@@ -221,5 +221,5 @@ Measured: `verify` passes an Objective-C image whose `__objc_` sections sit in `
 | `fixups set classic` places the kept `LC_VERSION_MIN_MACOSX` before `LC_DYLD_INFO_ONLY`; `fixups`-then-`minos` and `minos`-then-`fixups` give identical bytes, including on the 8-byte-pad chained dylib | `tests/cli_test.sh`, `mkchained` |
 | `swift-abi set legacy` on a chained image refuses (1) and names the fix; `info` reports `swift-abi: unknown (…)` there | `tests/cli_test.sh`, a chained Swift fixture (`mkswift` + `mkchained`, or the synthetic one the measurement built) |
 | `target 10.9` on a chained Swift image derives and applies the retag (the bug) | `tests/cli_test.sh` |
-| the README's published recipe, run by hand, equals `target 10.9` byte for byte, thin and fat | `tests/cli_test.sh` |
+| the README's published edit script, run by hand, equals `target 10.9` byte for byte, thin and fat | `tests/cli_test.sh` |
 | every mutation named in the plan fails its test | each task's mutation step |
