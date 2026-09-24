@@ -225,6 +225,29 @@ static void me_log_minos(FILE *log, const mv_minos_report *r, uint32_t want) {
         me_say(log, "      no LC_VERSION_MIN_MACOSX or macOS LC_BUILD_VERSION to set\n");
 }
 
+static void me_log_declared(FILE *log, const mv_decl_report *r, const char *version) {
+    char d[16], n[16], s[16], x[16];
+    mv_format_version(r->declared, d);
+    mv_format_version(r->minos, n);
+    mv_format_version(r->sdk, s);
+    if (r->from == MV_FROM_NONE)
+        me_say(log, "      none -> version-min %s; sdk %s written", n, s);
+    else if (r->from == MV_FROM_BUILD_VERSION)
+        me_say(log, "      build-version %s -> version-min %s; sdk %s carried over", d, n, s);
+    else if (r->minos != r->declared)
+        me_say(log, "      version-min %s -> %s; sdk %s kept", d, n, s);
+    else if (r->above)
+        me_say(log, "      version-min %s kept (declared); sdk %s kept", d, s);
+    else
+        me_say(log, "      version-min %s, at or below %s: kept; sdk %s kept", d, version, s);
+    if (r->dropped_macos) {
+        mv_format_version(r->dropped_minos, x);
+        me_say(log, "; build-version %s removed", x);
+    }
+    if (r->catalyst) me_say(log, "; Mac Catalyst build-version removed");
+    me_say(log, "\n");
+}
+
 /* The version-min and swift-abi cores take an mi_image; the buffer is the
  * image as the previous statement left it, so it gets the same validation
  * mi_open would give a file. */
@@ -430,11 +453,21 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
     }
 
     case MS_MINOS: {
-        uint32_t want = 0;
-        mv_minos_report r;
+        uint32_t want = 0, mask = 0;
         mi_image im;
-        if (st->op != MS_SET || ms_parse_version(st->a, &want) != 0) goto unknown;
+        if (ms_parse_version(st->a, &want, &mask) != 0) goto unknown;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
+        if (st->op == MS_AT_MOST || st->op == MS_IF_ABSENT) {
+            mv_decl_report d;
+            int rc = mv_declare_minos(pbuf, psize, path,
+                                      st->op == MS_AT_MOST ? MV_AT_MOST : MV_IF_ABSENT,
+                                      want, mask, &d);
+            if (rc != 0) return rc;
+            me_log_declared(log, &d, st->a);
+            return 0;
+        }
+        if (st->op != MS_SET) goto unknown;
+        mv_minos_report r;
         mv_set_minos(&im, want, &r);
         me_log_minos(log, &r, want);
         *v->renamed += r.version_min + r.build_version;

@@ -497,12 +497,17 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 # tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 18 ] && [ "$n_unique" -eq 18 ] \
-    && ok "capabilities: exactly 18 unique statement lines" \
+[ "$n_statements" -eq 20 ] && [ "$n_unique" -eq 20 ] \
+    && ok "capabilities: exactly 20 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 echo "$caps" | grep -qxF "statement minos set 1" \
     && ok "capabilities: minos set is advertised" \
     || bad "capabilities statements" "no 'statement minos set 1' line: $(echo "$caps" | grep '^statement')"
+for caps_minos in 'at-most' 'if-absent'; do
+    echo "$caps" | grep -qxF "statement minos $caps_minos 1" \
+        && ok "capabilities: minos $caps_minos is advertised" \
+        || bad "capabilities statements" "no 'statement minos $caps_minos 1': $(echo "$caps" | grep '^statement minos')"
+done
 # The profile vocabulary is advertised from that same table, so a wrapper can
 # see which targets this build knows rather than guess. `target 10.9 0`: no
 # operands after the profile.
@@ -1517,6 +1522,94 @@ rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/
     && grep -q "already present" "$T/ms.out" \
     && ok "version-min set: leaves a declared 10.12 alone; only minos set rewrites" \
     || bad "version-min set (present)" "rc $rc: $("$T/mkminos" show "$T/ms_vmset.out" 2>&1)"
+
+# ============================================================================
+# minos at-most, minos if-absent
+# ============================================================================
+# mn_setup FILE MODE ARG... -- one mkminos surgery on FILE.
+mn_setup() { mn_f=$1; shift; mn_m=$1; shift; "$T/mkminos" "$mn_m" "$mn_f" "$@"; }
+# statement | mkminos setup | mkminos show afterwards | the report line
+while IFS='|' read -r mn_st mn_how mn_want mn_line; do
+    build_main "$T/mn"
+    mn_setup "$T/mn" $mn_how || bad "minos $mn_st: fixture setup" "mkminos $mn_how failed"
+    rc=0; printf 'minos %s\n' "$mn_st" | "$DRYDOCK_MACHO_REWRITE" "$T/mn" "$T/mn.out" \
+        >/dev/null 2>"$T/mn.err" || rc=$?
+    [ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/mn.out")" = "$mn_want" ] \
+        && ok "minos $mn_st on '$mn_how': the image ends as $mn_want" \
+        || bad "minos $mn_st ($mn_how)" "rc $rc: $("$T/mkminos" show "$T/mn.out" 2>&1); $(cat "$T/mn.err")"
+    grep -qxF "      $mn_line" "$T/mn.err" \
+        && ok "minos $mn_st on '$mn_how': ... and the report says '$mn_line'" \
+        || bad "minos $mn_st ($mn_how)" "no report line: $(cat "$T/mn.err")"
+done <<'EOF'
+at-most 10.9|vmin 10.12 10.13|version-min version=10.9.0 sdk=10.13.0|version-min 10.12 -> 10.9; sdk 10.13 kept
+at-most 10.9|vmin 10.7 10.9|version-min version=10.7.0 sdk=10.9.0|version-min 10.7, at or below 10.9: kept; sdk 10.9 kept
+at-most 10.9|bv 1 12.0 12.3|version-min version=10.9.0 sdk=12.3.0|build-version 12.0 -> version-min 10.9; sdk 12.3 carried over
+at-most 10.9|bv 1 10.7 10.10|version-min version=10.7.0 sdk=10.10.0|build-version 10.7 -> version-min 10.7; sdk 10.10 carried over
+at-most 10.9|none|version-min version=10.9.0 sdk=10.9.0|none -> version-min 10.9; sdk 10.9 written
+if-absent 10.9|vmin 10.12 10.13|version-min version=10.12.0 sdk=10.13.0|version-min 10.12 kept (declared); sdk 10.13 kept
+if-absent 10.9|vmin 10.7 10.9|version-min version=10.7.0 sdk=10.9.0|version-min 10.7, at or below 10.9: kept; sdk 10.9 kept
+if-absent 10.9|bv 1 12.0 12.3|version-min version=12.0.0 sdk=12.3.0|build-version 12.0 -> version-min 12.0; sdk 12.3 carried over
+if-absent 10.9|bv 1 10.7 10.10|version-min version=10.7.0 sdk=10.10.0|build-version 10.7 -> version-min 10.7; sdk 10.10 carried over
+if-absent 10.9|none|version-min version=10.9.0 sdk=10.9.0|none -> version-min 10.9; sdk 10.9 written
+EOF
+
+# A zippered slice carries two LC_BUILD_VERSIONs; either statement leaves one
+# LC_VERSION_MIN_MACOSX and neither of them.
+build_main "$T/mn_zip"
+"$T/mkminos" bv "$T/mn_zip" 1 12.0 12.3 && "$T/mkminos" add-bv "$T/mn_zip" 6 13.0 13.0 \
+    || bad "minos zippered: fixture setup" "mkminos failed"
+[ "$("$T/mkminos" show "$T/mn_zip")" = "build-version platform=1 minos=12.0.0 sdk=12.3.0
+build-version platform=6 minos=13.0.0 sdk=13.0.0" ] \
+    || bad "minos zippered: fixture setup" "not macOS + Mac Catalyst: $("$T/mkminos" show "$T/mn_zip")"
+for mn_st in 'at-most 10.9' 'if-absent 10.9'; do
+    case $mn_st in
+        at-*) mn_want='version-min version=10.9.0 sdk=12.3.0' ;;
+        *)    mn_want='version-min version=12.0.0 sdk=12.3.0' ;;
+    esac
+    rc=0; printf 'minos %s\n' "$mn_st" | "$DRYDOCK_MACHO_REWRITE" "$T/mn_zip" "$T/mn_zip.out" \
+        >/dev/null 2>"$T/mn.err" || rc=$?
+    [ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/mn_zip.out")" = "$mn_want" ] \
+        && ok "minos $mn_st: a zippered slice ends with one LC_VERSION_MIN_MACOSX and no LC_BUILD_VERSION" \
+        || bad "minos $mn_st (zippered)" "rc $rc: $("$T/mkminos" show "$T/mn_zip.out" 2>&1)"
+    grep -q '^      build-version 12\.0 -> .*; Mac Catalyst build-version removed$' "$T/mn.err" \
+        && ok "minos $mn_st: ... and the report names the Mac Catalyst command it removed" \
+        || bad "minos $mn_st (zippered)" "no removal named: $(cat "$T/mn.err")"
+done
+
+# A slice that already holds one version-min at or below VERSION, and nothing
+# else, is written byte for byte.
+build_main "$T/mn_same"
+"$T/mkminos" vmin "$T/mn_same" 10.9 10.9 || bad "minos unchanged: fixture setup" "mkminos vmin failed"
+for mn_st in 'at-most 10.9' 'if-absent 10.9'; do
+    rc=0; printf 'minos %s\n' "$mn_st" | "$DRYDOCK_MACHO_REWRITE" "$T/mn_same" "$T/mn_same.out" \
+        >/dev/null 2>"$T/mn.err" || rc=$?
+    [ "$rc" -eq 0 ] && cmp -s "$T/mn_same" "$T/mn_same.out" \
+        && ok "minos $mn_st: a slice already at version-min 10.9 is written byte for byte" \
+        || bad "minos $mn_st (unchanged)" "rc $rc, or the bytes changed: $(cat "$T/mn.err")"
+done
+
+# A slice that declares only a non-macOS platform is refused, not a miss:
+# allow-unmatched does not cover it.
+build_main "$T/mn_ios"
+"$T/mkminos" bv "$T/mn_ios" 2 12.0 12.3 || bad "minos iOS: fixture setup" "mkminos bv failed"
+mn_before=$(sha "$T/mn_ios")
+for mn_script in 'minos at-most 10.9' 'allow-unmatched
+minos if-absent 10.9'; do
+    rm -f "$T/mn_ios.out"
+    rc=0; printf '%s\n' "$mn_script" | "$DRYDOCK_MACHO_REWRITE" "$T/mn_ios" "$T/mn_ios.out" \
+        >/dev/null 2>"$T/mn.err" || rc=$?
+    [ "$rc" -eq 1 ] && [ ! -e "$T/mn_ios.out" ] && [ "$(sha "$T/mn_ios")" = "$mn_before" ] \
+        && grep -qF "declares platform 2, not macOS; refusing to add a macOS minimum to it" "$T/mn.err" \
+        && ok "minos: an iOS-only slice is refused (1), nothing written ($(echo "$mn_script" | tr '\n' ' '))" \
+        || bad "minos (iOS)" "rc $rc: $(cat "$T/mn.err")"
+done
+
+rm -f "$T/mn_bad.out"
+rc=0; printf 'minos at-most 10.x\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mn_same" "$T/mn_bad.out" \
+    >/dev/null 2>"$T/mn.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/mn_bad.out" ] && grep -q "minos at-most: '10.x' is not a version" "$T/mn.err" \
+    && ok "minos at-most: a malformed version is a parse error (2), nothing written" \
+    || bad "minos at-most (bad version)" "rc $rc: $(cat "$T/mn.err")"
 
 # ============================================================================
 # lc -delete

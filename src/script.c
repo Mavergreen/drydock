@@ -129,7 +129,9 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
    * prevent -- so it is spelled, with this sentence. */ \
   R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE) \
   R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF) \
-  R("minos",        MS_MINOS,        "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE)
+  R("minos",        MS_MINOS,        "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE) \
+  R("minos",        MS_MINOS,        "at-most",  MS_AT_MOST,      1, NULL,        0,             0, MREL_HEADER_PAD) \
+  R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD)
 
 static const struct { const char *kind; int k; const char *op; int o; int nargs;
                       const char *flag; unsigned modes; int ops_ord;
@@ -194,8 +196,9 @@ const char *ms_op_name(int op) {
     return "unknown";
 }
 
-int ms_parse_version(const char *s, uint32_t *out) {
+int ms_parse_version(const char *s, uint32_t *out, uint32_t *mask) {
     static const unsigned long max[3] = { 65535, 255, 255 };
+    static const uint32_t masks[3] = { 0xFFFF0000u, 0xFFFFFF00u, 0xFFFFFFFFu };
     unsigned long part[3] = { 0, 0, 0 };
     int n = 0;
     for (;;) {
@@ -211,6 +214,7 @@ int ms_parse_version(const char *s, uint32_t *out) {
         s++;
     }
     *out = (uint32_t)(part[0] << 16 | part[1] << 8 | part[2]);
+    if (mask) *mask = masks[n - 1];
     return 0;
 }
 
@@ -426,11 +430,10 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[2], "10.9") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "version-min set accepts only '10.9' (got '%s')", fields[2]);
-            } else if (kind == MS_MINOS && op == MS_SET &&
-                       ms_parse_version(fields[2], &ver) != 0) {
+            } else if (kind == MS_MINOS && ms_parse_version(fields[2], &ver, NULL) != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
-                    "minos set: '%s' is not a version (MAJOR[.MINOR[.PATCH]], "
-                    "at most 65535.255.255)", fields[2]);
+                    "minos %s: '%s' is not a version (MAJOR[.MINOR[.PATCH]], "
+                    "at most 65535.255.255)", fields[1], fields[2]);
             } else if (kind == MS_SWIFT_ABI && op == MS_SET &&
                        strcmp(fields[2], "legacy") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
