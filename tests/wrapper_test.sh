@@ -1630,6 +1630,25 @@ chmod 644 "$T/rsc_u"
     && ok "retag_swift_classes: ... the unwritable one is untouched" \
     || bad "retag_swift_classes unwritable mix" "rsc_u changed"
 
+# good/read-only-directory/good: mw_prepare passes, and drydock-macho-rewrite's EX_FAIL is the error.
+rm -rf "$T/rsc_ro"; mkdir "$T/rsc_ro"
+mkswift_fixture "$T/rsc_g7"
+mkswift_fixture "$T/rsc_ro/b"
+mkswift_fixture "$T/rsc_g8"
+rsc_ro_before=$(sha "$T/rsc_ro/b")
+chmod 555 "$T/rsc_ro"
+run retag_swift_classes rsc_g7 rsc_ro/b rsc_g8
+chmod 755 "$T/rsc_ro"
+[ "$rc" -eq 1 ] && grep -qxF 'rsc_g7: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'rsc_g8: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'total: 4 class record(s) retagged' "$T/out" \
+    && ! grep -q 'rsc_ro/b' "$T/out" \
+    && grep -qxF 'mkstemp: Permission denied' "$T/err" \
+    && [ "$(sha "$T/rsc_ro/b")" = "$rsc_ro_before" ] \
+    && ok "retag_swift_classes: a writable file in a read-only directory is an error, untouched, and the loop goes on" \
+    || bad "retag_swift_classes read-only dir" "exit $rc, stdout: $(cat "$T/out"), stderr: $(tail -2 "$T/err")"
+rm -rf "$T/rsc_ro"
+
 # No `.*.drydock-macho-rewrite-compat.$$` temp survives either mid-loop refusal above.
 ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' && bad "retag_swift_classes" "a temp file was left behind" \
     || ok "retag_swift_classes: no temp file left behind after a mid-loop refusal"

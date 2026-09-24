@@ -195,26 +195,17 @@ for why they would be rare -- and one decided on purpose:
     drydock-macho-rewrite exit to one flat historical code, `rename_segment`,
     which classifies a refusal (its exit-code section below has the map), and
     `retag_swift_classes`,
-    which has its own real 1-vs-2 mapping (`compat/retag_swift_classes.sh`'s
-    header has it) and is likewise unaffected by this. (EVERY wrapper whose
+    which has its own real 1-vs-2 mapping (its section below has it) and is
+    likewise unaffected by this. (EVERY wrapper whose
     verb now writes an output the wrapper installs -- all six, `patch_macho`
     included: its verb's output goes to a temp beside the `OUT` it was asked
     for, and is installed onto it --
     has refusals of its OWN on top of that,
     exiting 1, made before drydock-macho-rewrite runs for the argument in question: an
     absent or unwritable `FILE`, a `FILE` carrying other hard links, and a
-    failed install. Those are the wrapper's, not a forwarded code -- and for
-    `retag_swift_classes` an absent or unwritable argument is a WORDING
-    divergence too: `tests/compat-matrix.tsv`'s rows for that case (measured
-    before the wrapper's own pre-check began answering first) have both
-    sides agreeing on `perror(path)`'s
-    "`<path>: No such file or directory`", which is still what
-    `mswift_retag_file` itself prints when drydock-macho-rewrite actually reaches the
-    open() -- but the wrapper's own pre-check now answers first, in its own
-    words (`open: No such file or directory`), so only the exit code still
-    matches. `add_version_min.sh` has no such gap: its own C tool's
-    `perror("open")` already said literally "open: ...", so the wrapper's
-    identical wording was never a divergence to begin with. A WRITABLE
+    failed install. Those are the wrapper's, not a forwarded code, and for
+    `retag_swift_classes` an absent argument's wording differs too (its
+    section below). A WRITABLE
     `FILE` inside a NON-writable directory is a case no wrapper's own
     pre-checks catch -- the write itself fails, `mkstemp: Permission
     denied`, with `FILE` untouched, because installing needs the directory
@@ -279,8 +270,8 @@ Stdout is identical everywhere a caller or an in-repo test can see it, and the
 places where it is not are **enumerated** with the measurement behind each one
 (`tests/compat-matrix.tsv` records what all 1227 enumerated argument
 combinations did on both sides, stdout included) — for `change_dylib`,
-`fix_macho`, `patch_macho` and `add_version_min` in the sections below, and
-for `retag_swift_classes` in its own header.
+`fix_macho`, `patch_macho`, `add_version_min` and `retag_swift_classes` in
+the sections below.
 `fix_macho` is the one whose stdout is deliberately not reproduced at all.
 
 Stderr is where the wrappers deliberately differ: each one prints the
@@ -696,6 +687,23 @@ itself contains ` vmaddr=` makes its line ambiguous. After `segment rename
 __PAGEZERO 'A vmaddr=0x1'`, `rename_segment FILE A ZZ` finds `A` "present",
 and exits 1 with the refusal shown where the C tool exited 2 silently. No grep
 over `info`'s text can be exact for such a name.
+
+## `retag_swift_classes`: exit codes and stdout
+
+`retag_swift_classes F1 F2 ...` runs one `swift-abi set legacy` per argument,
+in argv order, each into a temp beside the argument and installed over it.
+The exit is 1 if any argument was an error and 0 otherwise, as the C tool's
+was, and the last stdout line is always `total: N class record(s) retagged`,
+which `tests/leaf-tool-crashes.sh` greps for on a malformed fixture. "Held
+by" names assertions in `tests/wrapper_test.sh`.
+
+| per argument | what the wrapper does | held by |
+|---|---|---|
+| `info --thin` refuses it: not a Mach-O, or a fat container | skips it silently: nothing printed, not an error, file untouched | "retag_swift_classes: a non-Mach-O argument is skipped, and the loop continues", "retag_swift_classes: the skip is silent, as it always was", "retag_swift_classes: a fat container is the benign skip it always was, and the file is untouched" |
+| `drydock-macho-rewrite` exits 1: a chained image, which `swift-abi set legacy` refuses | the same silent skip, so the caller sees the C tool's exit 0 and `total: 0` | "retag_swift_classes: a chained Swift binary is the C tool's silent zero, untouched" |
+| exits 0 | sums the statement's `retagged N class record(s)` lines (stderr, one per slice), installs the temp or discards it when no byte changed, and prints `FILE: retagged N class record(s)` when N > 0 | "retag_swift_classes: a nonzero-count binary prints its own line and the right total", "retag_swift_classes: ... and its bytes really changed (this was not a discarded no-op)", "retag_swift_classes: a 0-count binary among nonzero ones prints no line of its own, and the total excludes it", "retag_swift_classes: ... and its INODE is unchanged (discarded, not reinstalled)", "drydock-macho-rewrite reports a retag once per slice, which is why the wrapper SUMS the count" |
+| exits 2 or anything else, including a writable argument in a read-only directory (`mkstemp: Permission denied`) | shows its stderr, counts an error, goes on | "retag_swift_classes: a writable file in a read-only directory is an error, untouched, and the loop goes on", "retag_swift_classes: a writable FILE in a read-only directory fails (1), untouched, no temp left" |
+| the wrapper refuses it before running: absent, unwritable, or hard-linked | says so, counts an error, goes on. An absent argument is reported as `open: No such file or directory`, where the C tool said `<path>: No such file or directory` (`tests/compat-matrix.tsv`'s absent-path rows), so only the exit code matches | "retag_swift_classes: an absent path exits 1 and still prints the total", "retag_swift_classes: good/hardlinked/good -- exit 1, the two good lines, and the reduced total", "retag_swift_classes: ... and says why the hard-linked one was skipped", "retag_swift_classes: good/unwritable/good -- exit 1, the two good lines, and the reduced total", "retag_swift_classes: no temp file left behind after a mid-loop refusal" |
 
 ## `insert_dylib`: not one of the six, and the differences it has from the fork
 

@@ -4,117 +4,11 @@
 #
 #   retag_swift_classes binary [binary ...]
 #
-# WHAT THIS REPLACED. compat/retag_swift_classes.c was a multi-file argv loop,
-# two messages and a `had_error ? 1 : 0` exit over mswift_retag_file
-# (src/swift_retag.h) -- the same image the `swift-abi set legacy` statement
-# retags. Why the
-# retag is needed (a Swift runtime built for a pre-10.14.4 target tests the
-# LEGACY is-swift bit, while a modern linker sets the stable-ABI one) is
-# written down in src/swift_retag.h, which outlives this front-end.
-#
-# GRAMMAR -- THE ONE VARIADIC TOOL. One drydock-macho-rewrite command names exactly ONE
-# FILE and one OUT; this tool takes any number of files. So the translation is
-# a LOOP, one emitted command+install pair per argument in argv order, and this
-# wrapper runs them one at a time rather than through mw_run: mw_run evaluates
-# a translation as ONE script and hands back one exit code, and this tool
-# needs each file's own code and each file's own stdout to rebuild its
-# per-file and total lines. It is also the only translation that is still
-# more than one command, which is why mw_run does not loop. For each file this
-# wrapper follows the same install path add_version_min.sh does --
-# mw_prepare, retranslate naming the temp, run, mw_finish -- just once per
-# argument instead of once for the whole invocation.
-#
-# EXIT CODES -- MAPPED, per the "ONE DELIBERATE DIVERGENCE FROM
-# retag_swift_classes" that cli/drydock-macho-rewrite.c's cmd_retag_swift named until that
-# verb was deleted. drydock-macho-rewrite's own scheme is 0 ok, 1 refused, 2 error
-# (cli/drydock-macho-rewrite.c's top-of-file comment):
-#
-#   drydock-macho-rewrite 1 (EX_REFUSED)  -> SKIPPED, silently, and the loop keeps going.
-#       This is MSWIFT_NOT_MACHO and nothing else. retag_swift_classes treated
-#       a non-Mach-O argument as a benign skip -- it printed nothing and did
-#       not set had_error -- so drydock-macho-rewrite's diagnostic for it is discarded too,
-#       which is why each file's stderr is captured rather than passed
-#       straight through. tests/compat-matrix.tsv has three "blocked" rows
-#       that are exactly this case (`nm`, `f nm`, `f nm f`); this is what
-#       unblocks them.
-#   drydock-macho-rewrite 2 (EX_FAIL)     -> had_error, and the loop keeps going. That covers
-#       MSWIFT_ERROR, which is what retag_swift_classes counted as an error
-#       too -- an unreadable argument (including a DIRECTORY: mw_prepare's
-#       hard-link check only looks at regular files, so a directory falls
-#       through it and reaches drydock-macho-rewrite itself, which refuses with its own
-#       words, `d: cannot open or read`, from mi_open's read failing on one)
-#       -- and, new with this wrapper's install step, a write that drydock-macho-rewrite itself
-#       cannot make: a WRITABLE argument inside a NON-writable directory.
-#       mw_prepare's own checks pass (the argument itself is fine), but the
-#       temp drydock-macho-rewrite writes beside it needs the DIRECTORY writable, which the
-#       old tool never needed -- it wrote through the already-open descriptor,
-#       never creating a second name. Measured (`chmod 555 ro`, arguments
-#       `a ro/b`): `a` is retagged and printed; `ro/b` is not -- drydock-macho-rewrite fails
-#       the write with `mkstemp: Permission denied` on stderr, exits EX_FAIL,
-#       and this wrapper's had_error path takes it from there, the same as any
-#       other drydock-macho-rewrite failure. compat/add_version_min.sh's own header names the
-#       identical shape for its one file (there it surfaces as that wrapper's
-#       raw, forwarded exit 2; here it is folded into had_error's flat 1, since
-#       this wrapper never forwards one argument's exit code as the whole
-#       run's), and compat/README.md's "change_dylib: the in-place edit" table
-#       records it too.
-#   drydock-macho-rewrite 0               -> count it, then install: mw_finish installs the
-#       temp over the argument, or discards it when the bytes did not change,
-#       same as add_version_min.sh.
-#
-# This wrapper's OWN pre-checks (mw_prepare, run once per argument, BEFORE
-# drydock-macho-rewrite ever runs) are a fourth source of per-file failure the old tool never
-# had, in this wrapper's own words rather than drydock-macho-rewrite's: an absent argument
-# (`open: No such file or directory`), an unwritable one (`open: Permission
-# denied`), or a regular file carrying other hard links (`... has N hard
-# links; ...`) -- each reported on stderr, counted as had_error, and the loop
-# moves on to the next argument. The old tool wrote through the open file
-# descriptor directly, so a hard-linked argument was retagged like any other;
-# this wrapper installs via mv instead (drydock-macho-rewrite-compat.sh's "the install path"
-# has the reasoning), so a hard-linked argument is refused rather than
-# retagged, the same trade add_version_min.sh's own header names for its one
-# file.
-#
-# UNLIKE add_version_min.sh, these first two are a WORDING divergence too, not
-# just an earlier-than-drydock-macho-rewrite one. add_version_min.c's own open() failure
-# printed literally "open: ..." (its perror's argument was the string "open",
-# not the path), so mw_require_writable's identical words happen to match the
-# old tool's own by construction. retag_swift_classes.c's open() failure used
-# perror(path) instead -- "<path>: No such file or directory" -- which is
-# still what mswift_retag_file itself prints when drydock-macho-rewrite actually reaches the
-# open() (tests/compat-matrix.tsv's rows for an absent argument recorded both
-# sides matching on that wording, before the wrapper's own pre-check began
-# answering first). mw_require_writable now
-# intercepts first and says "open: ..." instead, so an absent or unwritable
-# argument no longer matches the old tool's wording, only its exit code.
-#
-# The final exit is `had_error ? 1 : 0`, as it always was.
-#
-# STDOUT -- REBUILT, because two things differ:
-#
-#   * a `swift-abi set legacy` statement reports what it retagged on STDERR,
-#     as "      retagged %d class record%s" (src/edit.c), or "      nothing to
-#     retag" when there was none; retag_swift_classes printed a count line on
-#     STDOUT, only when it was nonzero, and named no temp at all.
-#   * retag_swift_classes ends with "total: %d class record(s) retagged",
-#     which one file's run has nothing to say about.
-#
-# So drydock-macho-rewrite's streams are captured, the count is read back out of its
-# report, and this wrapper prints the C tool's two messages itself. The count
-# is extracted with an anchored substitution over drydock-macho-rewrite's own stable output
-# -- the same oracle tests/cli_test.sh asserts against, and explicitly not
-# otool/nm text (tests/README.md's second lesson).
-# tests/leaf-tool-crashes.sh greps stdout for "^total: 0 class record(s)
-# retagged$" on a deliberately malformed fixture, so the total line is
-# load-bearing, not decoration.
+# compat/README.md's "retag_swift_classes" section maps each argument's
+# outcome to its exit code and stdout, and names the test for each.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
-# Checked here, before sourcing, so a missing support file gets this message
-# rather than the shell's own "No such file or directory" from the `.` below.
-# The case that actually reaches it: a SYMLINK to this wrapper placed on PATH.
-# $0 resolves to the symlink, so MW_DIR is the symlink's directory, not the
-# one holding drydock-macho-rewrite -- which is why DRYDOCK_MACHO_REWRITE_COMPAT_DIR exists.
 [ -r "$MW_DIR/drydock-macho-rewrite-compat.sh" ] || {
     printf '%s: cannot find drydock-macho-rewrite-compat.sh in %s -- drydock-macho-rewrite and its two support\n' "$0" "$MW_DIR" >&2
     printf '%s: files must sit beside this wrapper; a symlink to it resolves to the\n' "$0" >&2
@@ -129,20 +23,10 @@ mw_total=0
 mw_had_error=0
 for mw_f in "$@"; do
     mw_prepare "$mw_f" || { mw_had_error=1; continue; }
-    # THIN ONLY, like mswift_retag_file's own mi_open -- and a refusal here is
-    # the BENIGN SKIP this tool has always made of a non-Mach-O argument: no
-    # message, no error flag, nothing written. A fat container reaches it by
-    # the same road (drydock-macho-rewrite-compat.sh's mw_thin_only has the measurement),
-    # which is what keeps `retag_swift_classes FAT` leaving the file alone
-    # rather than retagging every slice and still reporting a total of 0.
     if ! mw_thin_only "$mw_f"; then
         rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
         continue
     fi
-    # mw_retranslate's signature is TOOL ARG..., so retranslating THIS ONE
-    # argument -- naming the temp mw_prepare just chose -- is the same call
-    # mw_translate itself made above, with $mw_f standing in for the whole
-    # original argv.
     mw_retranslate retag_swift_classes "$mw_f" || {
         mw_had_error=1
         rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
@@ -152,20 +36,6 @@ for mw_f in "$@"; do
     mw_rc=$?
     case $mw_rc in
     0)
-        # Read BEFORE the forward, because the report is on stderr now: the
-        # statement's own "      retagged N class record(s)" line, whose noun
-        # is singular for one record. A run with nothing to retag says
-        # "nothing to retag" and matches neither, which is the 0 this wants.
-        # SUMMED, not read as one number: the report is printed once per
-        # SLICE, so a fat argument yields one line per slice and `mw_n` would
-        # be a multi-line string that `[ "$mw_n" -gt 0 ]` below rejects with
-        # "integer expression expected" -- on a file drydock-macho-rewrite had already
-        # retagged and this wrapper was about to install. awk makes it one
-        # integer by construction, and prints 0 when there is no line at all
-        # (a run with nothing to retag says "nothing to retag" instead).
-        # mw_thin_only above means a fat argument no longer gets this far
-        # through THIS wrapper, but the arithmetic has to be right on its own:
-        # it is what would break next if that gate ever moved.
         mw_n=$(sed -n 's/^  *retagged \([0-9][0-9]*\) class records*$/\1/p' "$MW_T/err" \
             | awk '{ n += $1 } END { print n + 0 }')
         cat "$MW_T/err" >&2
@@ -179,8 +49,6 @@ for mw_f in "$@"; do
         fi
         ;;
     1)
-        # MSWIFT_NOT_MACHO: the benign skip. No message, no error flag, and
-        # nothing was written -- discard the unused temp mw_prepare made.
         rm -f -- "$MW_TMPFILE"; MW_TMPFILE=''
         ;;
     *)
