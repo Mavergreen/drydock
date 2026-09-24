@@ -213,6 +213,59 @@ Facts that constrain the design:
 - **Two version commands in one slice fail on 10.14+** for a main executable.
 - **Declared minimums above the supported OS** are ordinary in shipped software.
 
+## Every sdk check in 10.9.5's own code
+
+MEASURED, by disassembly (`otool -arch x86_64 -tV`, `nm -m`) of 10.9.5's dyld,
+CoreFoundation, Foundation and AppKit. As a positive control, dyld's known
+code-signature gate was found and read.
+
+- **Everything that reads the sdk field makes one unsigned, ordered comparison.**
+  There are three reads:
+
+  | where | instructions | effect |
+  |---|---|---|
+  | dyld `ImageLoaderMachO::loadCodeSignature` | `cmpl $0xa0900; jb` | skip the signature if sdk < 10.9 |
+  | CoreFoundation, a compatibility hack for one bundle ID (`com.apple.motionapp`) | `cmpl $0xa0800; setb` | active if sdk < 10.8 |
+  | Foundation `-[NSBundle pathForResource:ofType:]`, a hack for `com.mackiev.*` bundle IDs | `cmpl $0xa08ff; ja` | skipped if sdk > 10.8.x |
+
+  `dyld_get_sdk_version` returns the raw field, unmasked. None of the three has an
+  equality test, an upper bound, a mask, a signed compare or a table indexed by
+  major version. The only special value is sdk 0.
+- **AppKit imports no sdk API at all.** It uses only `_CFExecutableLinkedOnOrAfter`.
+- **`_CFExecutableLinkedOnOrAfter` does not read the sdk field.** For each linked
+  library it takes the version recorded at link time
+  (`NSVersionOfLinkTimeLibrary(lib) >> 16`). It compares that, with `setae`, against
+  a per-release table: for 10.9 the thresholds are System 178, AppKit 1190,
+  Foundation 1001 and CoreFoundation 801.
+  - A binary built with a modern SDK records far larger library versions, so on
+    10.9 it counts as linked on or after everything, whatever its sdk field says.
+  - Its constant call sites are: CoreFoundation 90, Foundation 85, AppKit 355.
+    None of them passes a release later than 10.9.
+- Not scanned: system libraries other than these four.
+
+**Conclusion: on 10.9, an sdk of 26.5 behaves exactly like an sdk of 10.9.** Any
+sdk at or above 10.9 behaves identically. Below 10.9, dyld skips signature
+registration, and two app-specific compatibility hacks can engage.
+
+**Apple's documentation on newer macOS** (SOURCED) supports carrying the binary's
+real sdk:
+
+- the 10.14 SDK opts an app into dark mode and layer-backed windows (AppKit 10.14
+  release notes);
+- notarization requires sdk ≥ 10.9 (Apple DTS,
+  <https://developer.apple.com/forums/thread/659964>);
+- macOS 11 and later report "10.16" to binaries whose sdk is 10.15 or lower.
+
+**Why the original `add_version_min` writes sdk 10.9.** Its one commit (`8866412`,
+Wowfunhappy/Mavericks-Porting-Resources) gives only this rationale: `patch_macho`
+leaves no platform declaration, and "10.9's dyld uses that signal for some behaviors
+(including, possibly, TLV handling)". 10.9 was the target, and no requirement for
+that sdk specifically is recorded anywhere.
+
+- The TLV hunch doesn't hold: dyld-239's TLV code reads no sdk.
+- A missing command's real effect is that dyld sees sdk 0 and skips signature
+  registration. Any value ≥ 10.9 avoids that.
+
 ## Edited, signed images on 10.9
 
 MEASURED on the same host with a small dylib (linked, and `dlopen`ed) and an
