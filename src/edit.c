@@ -582,10 +582,6 @@ static int me_target_lc(const struct load_command *lc, void *ctx_) {
 /* Step `step` of the 10.9 profile, asked of the image as the steps before it
  * left it: 1, with `d` filled, when this image needs that step, else 0.
  *
- * `fixups set classic` comes first because nothing can grow the header while
- * the image still has chained fixups (src/grow.h), and every step after it
- * sees the __LINKEDIT, the header pad and the class-record pointers it left.
- *
  * NEVER dylib or rpath work: no tool can guess which stub dylib you meant,
  * and that is the dominant real workload. A profile that guessed would be
  * wrong silently, which is the failure class this toolkit exists to remove.
@@ -640,16 +636,7 @@ static void me_log_derived(FILE *log, const me_derived *d) {
 /* Run the profile's steps in order, at this position, each derived from the
  * image the step before it left. Returns 0, or the first derived statement's
  * own MR_REFUSED/MR_FAIL -- which me_statements then reports against the
- * `target` line, since that is the line the operator wrote.
- *
- * A derived statement NEVER counts as unmatched: "this binary already
- * targets 10.9 correctly" is a correct answer for a profile, unlike for an
- * explicit operation. Two things enforce that together -- allow_unmatched is
- * SET in the script this runs under, and the verdict is not taken at all
- * (decide is 0), so no "matched nothing" line is printed either. Writing
- * `target 10.9` AND an explicit statement it would have derived is the other
- * side of this, and is not special-cased: the explicit one is redundant, and
- * the default refusal flags it. */
+ * `target` line, since that is the line the operator wrote. */
 static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
                      const ms_script *s, const ms_stmt *st, FILE *log,
                      unsigned *disturbed) {

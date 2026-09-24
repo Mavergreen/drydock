@@ -926,9 +926,7 @@ grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T
     && ok "patch_macho: ... and md_declassify's own lines still come through" \
     || bad "patch_macho converting stdout" "not the converting transcript: $(cat "$T/out")"
 
-# THE DECLARATION SURVIVES. The C tool dropped mkchained's LC_BUILD_VERSION
-# (macOS, 12.0, sdk 12.0) and left no version command. As install.sh runs the
-# two, add_version_min then appended 10.9, sdk 10.9; now it finds 12.0 present.
+# The declaration survives: mkchained's LC_BUILD_VERSION is macOS 12.0, sdk 12.0.
 [ "$("$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -c '^LC\[[0-9]*\] LC_VERSION_MIN_MACOSX ')" = 1 ] \
     && "$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -qxF '  version=12.0.0 sdk=12.0.0' \
     && ok "patch_macho: ... and OUT keeps the build-version's minimum and sdk as one LC_VERSION_MIN_MACOSX" \
@@ -1033,11 +1031,7 @@ run patch_macho cfm cfm_out2
 # output for the same request -- run both, compare, rather than pin a
 # transcript.
 #
-# STDOUT MOVED, and this pins where it went. add_version_min printed "Added
-# LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)" on stdout; the
-# statement reports the append on STDERR, as "      none -> version-min 10.9;
-# sdk 10.9 written". The repo owner's ruling of 2026-09-13 is that wrapper TEXT
-# may change where bytes and exit codes may not, so both halves are asserted.
+# The C tool announced the append on stdout; the statement reports it on stderr.
 fresh
 strip_vm "$T/f"
 avm_in=$(sha "$T/f")
@@ -1073,9 +1067,7 @@ run add_version_min
     && ok "add_version_min: no argument is a usage error naming argv[0]" \
     || bad "add_version_min usage" "exit $rc, stderr: $(head -1 "$T/err")"
 
-# A build-version-only binary ends with ONE version command, keeping the
-# build-version's minimum and sdk. The C tool appended LC_VERSION_MIN_MACOSX
-# 10.9 beside it: the pair 10.14's dyld and the 10.15+ kernel refuse.
+# A build-version-only binary ends with one version command, not the C tool's pair.
 mkminos_run() {
     [ -x "$T/mkminos" ] || "$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c" 2>"$T/mkminos.out" \
         || { bad "mkminos_run" "cannot build $HERE/mkminos.c: $(cat "$T/mkminos.out")"; return 1; }
@@ -1098,9 +1090,7 @@ run add_version_min f
     && ok "add_version_min: ... and, having changed the file, does not say 'already present'" \
     || bad "add_version_min both stdout" "expected nothing on stdout; got: $(cat "$T/out")"
 
-# A slice that declares a platform other than macOS is refused, untouched,
-# where the C tool appended LC_VERSION_MIN_MACOSX (or, beside one, said
-# "already present").
+# A slice that declares a platform other than macOS is refused, untouched.
 fresh
 mkminos_run bv "$T/f" 2 12.0 12.3 || bad "add_version_min iOS build-version: fixture setup" "mkminos bv failed"
 avm_ios_in=$(sha "$T/f")

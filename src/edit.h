@@ -62,21 +62,7 @@ typedef struct {
  * A statement that succeeds logs, indented beneath its statement line, the
  * work it did beyond what it names -- every figure one the operation computed
  * while doing the work, never a second look at the image. `target 10.9` logs
- * its expansion that way, each derived line followed by the finding that
- * produced it:
- *
- *       target 10.9
- *         fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
- *           chained fixups -> LC_DYLD_INFO_ONLY; LC_BUILD_VERSION 12.0 (sdk 12.3) kept as LC_VERSION_MIN_MACOSX
- *         minos at-most 10.9  (always)
- *           version-min 12.0 -> 10.9; sdk 12.3 kept
- *
- * -- each line derived from the image as the lines before it left it, and
- * "nothing to do: this binary already targets 10.9" when none of them changed
- * it. The expansion never derives `dylib` or `rpath` work, and `fixups set
- * classic` comes first within it.
- * spec: src/grow.h -- growth refuses an image that still has chained fixups,
- * which is what fixes that order.
+ * its expansion that way, as README.md's "The `target` statement" shows.
  */
 int me_run(const char *path, const char *out, const ms_script *s,
            const me_opts *o);

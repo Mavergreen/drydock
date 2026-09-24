@@ -502,13 +502,13 @@ n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 if echo "$caps" | grep -qxF "statement minos at-most 1"; then
     if echo "$caps" | grep -qxF "statement minos set 1"; then
-        bad "capabilities statements" "minos set is still advertised"
+        bad "capabilities statements" "minos set is advertised"
     else
-        ok "capabilities: minos set is no longer advertised"
+        ok "capabilities: minos set is not advertised"
     fi
     echo "$caps" | grep -qxF "statement version-min set 1" \
-        && bad "capabilities statements" "version-min set is still advertised" \
-        || ok "capabilities: version-min set is no longer advertised"
+        && bad "capabilities statements" "version-min set is advertised" \
+        || ok "capabilities: version-min set is not advertised"
 else
     bad "capabilities statements" "no minos at-most line, so the absent minos set and version-min set prove nothing"
 fi
@@ -1394,8 +1394,7 @@ printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$
 minos_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_out")
 echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos if-absent: appends when absent" \
     || bad "minos if-absent: appends when absent" "not found in info output"
-# Running it again must not error -- this time reading the output of the run
-# above, which HAS the command, so the second run really takes that branch.
+# Running it again, on the output above, which has the command, must not error.
 if printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
     ok "minos if-absent: leaves a present one alone, exit 0"
 else
@@ -4723,9 +4722,8 @@ rc=0; "$DRYDOCK_MACHO_REWRITE" "$T/script_fat" "$T/script_fat.hand" <"$T/tgt_scr
     && ok "target: ... and on a fat file" \
     || bad "target (edit script, fat)" "rc $rc, or the bytes differ: $(cat "$T/tgt_script.err")"
 
-# TARGET NEVER COUNTS AS UNMATCHED. Each line it derives has work on the image
-# in front of it, and minos cannot miss, so nothing is reported as unmatched
-# and nothing refuses by default.
+# TARGET NEVER COUNTS AS UNMATCHED: each conditional line is derived only where
+# it has work, and minos cannot miss, so nothing is reported unmatched.
 printf 'target 10.9\n' >"$T/tgt_fw.edits"
 "$T/mkchained" make "$T/tgt_fw"
 tgt_run "$T/tgt_fw" "$T/tgt_fw.out" "$T/tgt_fw.edits" && tgt_fw_rc=0 || tgt_fw_rc=$?
@@ -4775,10 +4773,9 @@ tgt_run "$T/tgt_redlax" "$T/tgt_redlax.out" "$T/tgt_redlax.edits" \
 # NOT $T/vm_tight, though it is the same shape: this needs LC_BUILD_VERSION
 # ABSENT too. On a host whose linker emits one, minos at-most would convert
 # it, freeing at least 24 bytes -- more than the 16 LC_VERSION_MIN_MACOSX
-# needs -- so the run would
-# succeed and this assertion would fail there and pass here. Same trap,
-# same fix: make the premise true (build_main_without_build_version) rather
-# than assume it.
+# needs -- so the run would succeed and this assertion would fail there and
+# pass here. Same trap, same fix: make the premise true
+# (build_main_without_build_version) rather than assume it.
 build_main_without_build_version "$T/tgt_tight"
 "$T/strip_version_min" "$T/tgt_tight" >/dev/null \
     || bad "target: fixture setup" "strip_version_min failed on tgt_tight"
