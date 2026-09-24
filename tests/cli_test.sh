@@ -1623,6 +1623,13 @@ for fk_case in 'fk_sim|declares platform 7, not macOS; refusing to add a macOS m
     done
 done
 
+fk_before=$(sha "$T/fk_two"); rm -f "$T/fk_two.out"
+rc=0; printf 'target 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/fk_two" "$T/fk_two.out" >/dev/null 2>"$T/fk.err" || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$T/fk_two.out" ] && [ "$(sha "$T/fk_two")" = "$fk_before" ] \
+    && grep -qF "2 macOS LC_BUILD_VERSION commands" "$T/fk.err" \
+    && ok "target 10.9 with two macOS LC_BUILD_VERSIONs: refused (1), nothing written" \
+    || bad "target two macOS" "rc $rc: $(cat "$T/fk.err")"
+
 # ============================================================================
 # lc -delete
 # ============================================================================
