@@ -94,9 +94,9 @@ mw_translate() {
     mw_trc=$?
     unset MT_PROG0
     [ "$mw_trc" -eq 0 ] || return "$mw_trc"
-    # Count commands by their fixed first words. Caller text never reaches
-    # awk here; any that must goes through ENVIRON, not -v, which runs it
-    # through escape processing.
+    # Count commands by their fixed first words. Caller text reaches awk here
+    # only as input; any that must reach it otherwise goes through ENVIRON,
+    # not -v, which runs it through escape processing.
     MW_NCMDS=$(printf '%s\n' "$MW_CMDS" \
         | awk 'index($0, "printf ") == 1 || index($0, "mv -f ") == 1 { n++ } END { print n + 0 }')
     mw_teach
@@ -149,8 +149,7 @@ mw_require_writable() {
 
 # mw_thin_only FILE -- return 1 when `info --thin` refuses FILE (EX_REFUSED):
 # a fat container, or not a Mach-O. compat/README.md's "Thin only" has what
-# each thin-only tool would do without this gate. EX_FAIL (2) falls through,
-# so `add_version_min DIR` exits 2 on both sides.
+# each thin-only tool would do without this gate. EX_FAIL (2) falls through.
 mw_thin_only() {
     drydock-macho-rewrite info --thin "$1" >/dev/null 2>&1
     mw_to_rc=$?

@@ -313,15 +313,7 @@ cdmixrc=$?
 rm -rf "$T/stray"
 
 # A BACKSLASH IN THE PATH. The temp mw_prepare names is derived from the
-# caller's own path, so its name is the caller's to choose -- and the filter
-# that suppresses drydock-macho-rewrite's "Wrote <temp> (N bytes)" line has to compare against
-# that name exactly. It once did not: passing the prefix to awk with `-v` ran it
-# through awk's string-escape processing, so for a path containing a backslash
-# awk looked for something the line does not start with and the stray line
-# reached stdout, naming a temp no caller has heard of and breaking the
-# byte-identical claim the assertion above makes. Both wrappers here go through
-# the SAME shared mw_run_to_tmp, so one of them would have been enough to catch
-# it; both are asserted because both leaked.
+# caller's own path, so its name is the caller's to choose.
 rm -rf "$T/bs"; mkdir "$T/bs" "$T/bs/back\slash"
 cp "$FIXTURE" "$T/bs/back\slash/f"; cp "$FIXTURE" "$T/bs/back\slash/g"
 strip_vm "$T/bs/back\slash/g"
@@ -329,15 +321,15 @@ strip_vm "$T/bs/back\slash/g"
 bsrc=$?
 [ "$bsrc" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs.out" \
     && has_line "$T/bs.out" 'Updated back\slash/f (8528 bytes)' \
-    && ok "change_dylib: a path containing a backslash still suppresses the temp-naming line" \
+    && ok "change_dylib: a path containing a backslash is named intact in the Updated line" \
     || bad "change_dylib backslash path" "exit $bsrc, stdout: $(cat "$T/bs.out")"
 ( cd "$T/bs" && "$BIN/add_version_min" 'back\slash/g' ) >"$T/bs2.out" 2>"$T/bs2.err"
 bsrc2=$?
 [ "$bsrc2" -eq 0 ] && ! grep -q '^Wrote ' "$T/bs2.out" \
-    && ok "add_version_min: ... and so does every other wrapper on the shared path" \
+    && ok "add_version_min: a path containing a backslash exits 0, with no Wrote line" \
     || bad "add_version_min backslash path" "exit $bsrc2, stdout: $(cat "$T/bs2.out")"
-# The teaching message reaches awk the same way, for command COUNTING and for
-# indenting the block, so it is measured on the same path rather than assumed.
+# The teaching block reaches awk as input, to be counted and indented, so it
+# is measured on this path too.
 grep -qF "    printf 'allow-unmatched\\nload-command delete uuid" "$T/bs.err" \
     && ok "change_dylib: ... and the teaching block is still indented and counted" \
     || bad "change_dylib backslash path" "teaching message: $(cat "$T/bs.err")"
@@ -427,16 +419,13 @@ run change_dylib f -change /nope/absent.dylib /also/absent.dylib
     && ok "change_dylib: a run that changed nothing prints no Updated line" \
     || bad "change_dylib Updated (no-op)" "exit $rc, stdout: $(cat "$T/out")"
 
-# A HARD-LINKED FILE IS REFUSED (1) BY EVERY WRAPPER ON THE INSTALL PATH, which
-# for these three is new: their C tools wrote through their own descriptor, so
-# every name for the inode saw the change, while installing by mv would leave
-# the siblings on the old content. add_version_min's own case is asserted
-# above; these are the three whose verbs converted together. Each must refuse
-# before running anything, leave BOTH names byte-identical, and leave no temp.
+# A HARD-LINKED FILE IS REFUSED (1): the C tools wrote through their own
+# descriptor, so every name for the inode saw the change, while installing by
+# mv would leave the siblings on the old content.
 rm -rf "$T/hl"; mkdir "$T/hl"
 hl_case() {   # hl_case TOOL ARG...
     hl_tool=$1; shift
-    cp "$FIXTURE" "$T/hl/f"; ln "$T/hl/f" "$T/hl/f2"
+    cp "$FIXTURE" "$T/hl/f"; strip_vm "$T/hl/f"; ln "$T/hl/f" "$T/hl/f2"
     hl_sha=$(sha "$T/hl/f")
     hl_rc=0
     ( cd "$T/hl" && "$BIN/$hl_tool" f "$@" ) >"$T/hl.out" 2>"$T/hl.err" || hl_rc=$?
@@ -453,6 +442,7 @@ hl_case change_dylib -strip-lc uuid
 hl_case change_dylib -strip-lc uuid -change /usr/lib/libSystem.B.dylib /x/y.dylib
 hl_case fix_macho -change /usr/lib/libSystem.B.dylib /x/y.dylib
 hl_case rename_segment __DATA __DATA_HL
+hl_case add_version_min
 rm -rf "$T/hl"
 
 # A RUN drydock-macho-rewrite REFUSES LEAVES NO TEMP BESIDE FILE EITHER. The temp is made by
@@ -926,9 +916,7 @@ grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T
     && ok "patch_macho: ... and md_declassify's own lines still come through" \
     || bad "patch_macho converting stdout" "not the converting transcript: $(cat "$T/out")"
 
-# THE DECLARATION SURVIVES. The C tool dropped mkchained's LC_BUILD_VERSION
-# (macOS, 12.0, sdk 12.0) and left no version command. As install.sh runs the
-# two, add_version_min then appended 10.9, sdk 10.9; now it finds 12.0 present.
+# The declaration survives: mkchained's LC_BUILD_VERSION is macOS 12.0, sdk 12.0.
 [ "$("$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -c '^LC\[[0-9]*\] LC_VERSION_MIN_MACOSX ')" = 1 ] \
     && "$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -qxF '  version=12.0.0 sdk=12.0.0' \
     && ok "patch_macho: ... and OUT keeps the build-version's minimum and sdk as one LC_VERSION_MIN_MACOSX" \
@@ -1033,11 +1021,7 @@ run patch_macho cfm cfm_out2
 # output for the same request -- run both, compare, rather than pin a
 # transcript.
 #
-# STDOUT MOVED, and this pins where it went. add_version_min printed "Added
-# LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)" on stdout; the
-# statement reports the append on STDERR, as "      none -> version-min 10.9;
-# sdk 10.9 written". The repo owner's ruling of 2026-09-13 is that wrapper TEXT
-# may change where bytes and exit codes may not, so both halves are asserted.
+# The C tool announced the append on stdout; the statement reports it on stderr.
 fresh
 strip_vm "$T/f"
 avm_in=$(sha "$T/f")
@@ -1073,9 +1057,7 @@ run add_version_min
     && ok "add_version_min: no argument is a usage error naming argv[0]" \
     || bad "add_version_min usage" "exit $rc, stderr: $(head -1 "$T/err")"
 
-# A build-version-only binary ends with ONE version command, keeping the
-# build-version's minimum and sdk. The C tool appended LC_VERSION_MIN_MACOSX
-# 10.9 beside it: the pair 10.14's dyld and the 10.15+ kernel refuse.
+# A build-version-only binary ends with one version command, not the C tool's pair.
 mkminos_run() {
     [ -x "$T/mkminos" ] || "$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c" 2>"$T/mkminos.out" \
         || { bad "mkminos_run" "cannot build $HERE/mkminos.c: $(cat "$T/mkminos.out")"; return 1; }
@@ -1098,9 +1080,7 @@ run add_version_min f
     && ok "add_version_min: ... and, having changed the file, does not say 'already present'" \
     || bad "add_version_min both stdout" "expected nothing on stdout; got: $(cat "$T/out")"
 
-# A slice that declares a platform other than macOS is refused, untouched,
-# where the C tool appended LC_VERSION_MIN_MACOSX (or, beside one, said
-# "already present").
+# A slice that declares a platform other than macOS is refused, untouched.
 fresh
 mkminos_run bv "$T/f" 2 12.0 12.3 || bad "add_version_min iOS build-version: fixture setup" "mkminos bv failed"
 avm_ios_in=$(sha "$T/f")
@@ -1130,8 +1110,7 @@ run patch_macho pmsim pmsim
 
 # The wrappers keep editing FILE "in place" -- by writing a temp beside the
 # real target and mv-ing it over. A symlinked FILE updates its target and
-# stays a symlink; a hard-linked FILE is refused; a refusal leaves no temp
-# behind; mode and xattrs survive.
+# stays a symlink; a refusal leaves no temp behind; mode and xattrs survive.
 cp "$FIXTURE" "$T/w_real"; strip_vm "$T/w_real"
 ln -s w_real "$T/w_link"
 ( cd "$T" && "$BIN/add_version_min" w_link ) >/dev/null 2>"$T/w.err" \
@@ -1153,15 +1132,6 @@ w_ino=$(stat -f %i "$T/w_real")
 grep -qxF 'LC_VERSION_MIN_MACOSX already present; nothing to do.' "$T/w2.out" \
     && ok "wrapper: ... and prints the C tool's 'already present' line" \
     || bad "wrapper no-op run" "stdout: $(cat "$T/w2.out")"
-
-cp "$FIXTURE" "$T/w_h1"; strip_vm "$T/w_h1"; ln "$T/w_h1" "$T/w_h2"
-h_before=$(shasum -a 256 < "$T/w_h1")
-rc=0; "$BIN/add_version_min" "$T/w_h1" >/dev/null 2>"$T/wh.err" || rc=$?
-[ "$rc" -eq 1 ] && [ "$(shasum -a 256 < "$T/w_h1")" = "$h_before" ] \
-    && ok "wrapper: a hard-linked FILE is refused (1), untouched" || bad "wrapper hard link" "rc $rc"
-grep -q "hard link" "$T/wh.err" && ok "wrapper: ... and says why" || bad "wrapper hard link" "$(cat "$T/wh.err")"
-ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' && bad "wrapper" "a temp file was left behind" \
-    || ok "wrapper: no temp file left behind"
 
 # A DIRECTORY IS NOT A HARD-LINK PROBLEM. Every directory's link count is
 # greater than one (`.`, its parent's entry, one per subdirectory), so a
@@ -1651,6 +1621,25 @@ chmod 644 "$T/rsc_u"
 [ "$(sha "$T/rsc_u")" = "$rsc_u_before" ] \
     && ok "retag_swift_classes: ... the unwritable one is untouched" \
     || bad "retag_swift_classes unwritable mix" "rsc_u changed"
+
+# good/read-only-directory/good: mw_prepare passes, and drydock-macho-rewrite's EX_FAIL is the error.
+rm -rf "$T/rsc_ro"; mkdir "$T/rsc_ro"
+mkswift_fixture "$T/rsc_g7"
+mkswift_fixture "$T/rsc_ro/b"
+mkswift_fixture "$T/rsc_g8"
+rsc_ro_before=$(sha "$T/rsc_ro/b")
+chmod 555 "$T/rsc_ro"
+run retag_swift_classes rsc_g7 rsc_ro/b rsc_g8
+chmod 755 "$T/rsc_ro"
+[ "$rc" -eq 1 ] && grep -qxF 'rsc_g7: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'rsc_g8: retagged 2 class record(s)' "$T/out" \
+    && grep -qxF 'total: 4 class record(s) retagged' "$T/out" \
+    && ! grep -q 'rsc_ro/b' "$T/out" \
+    && grep -qxF 'mkstemp: Permission denied' "$T/err" \
+    && [ "$(sha "$T/rsc_ro/b")" = "$rsc_ro_before" ] \
+    && ok "retag_swift_classes: a writable file in a read-only directory is an error, untouched, and the loop goes on" \
+    || bad "retag_swift_classes read-only dir" "exit $rc, stdout: $(cat "$T/out"), stderr: $(tail -2 "$T/err")"
+rm -rf "$T/rsc_ro"
 
 # No `.*.drydock-macho-rewrite-compat.$$` temp survives either mid-loop refusal above.
 ls -a "$T" | grep -q 'drydock-macho-rewrite-compat' && bad "retag_swift_classes" "a temp file was left behind" \
@@ -2168,8 +2157,7 @@ run fix_macho -dashy -change /usr/lib/libSystem.B.dylib '@loader_path/../S.dylib
     || bad "fix_macho leading dash" "exit $rc: $(cat "$T/err")"
 rm -f "$T/-dashy"
 
-# THE TAUGHT BLOCK ITSELF MUST BE PASTEABLE, not just descriptive
-# (compat/translate.sh's "reads as a pasteable equivalent" claim). For a
+# THE TAUGHT BLOCK ITSELF MUST BE PASTEABLE, not just descriptive. For a
 # leading-dash FILE with no directory part, FILE.new begins with '-' too, and
 # drydock-macho-rewrite deliberately refuses an OUT spelled that way -- so before
 # mt_out_for/mt_install_line learned to write OUT as ./FILE.new here, the
@@ -2438,9 +2426,8 @@ for gate_tool in patch_macho add_version_min rename_segment retag_swift_classes;
         || bad "$gate_tool fat gate" "the input changed"
 done
 
-# EX_FAIL still falls through, which is what makes `add_version_min <dir>`
-# exit 2 on both sides. A directory is the measurement mw_thin_only's own
-# comment names.
+# EX_FAIL still falls through. $T is a directory: on HFS+ `info --thin`
+# cannot read it (2); on NFS it refuses it (1), and this would fail.
 run add_version_min "$T"
 [ "$rc" -eq 2 ] && ok "mw_thin_only: EX_FAIL (2) still falls through" \
     || bad "mw_thin_only EX_FAIL" "a directory did not exit 2, got $rc"

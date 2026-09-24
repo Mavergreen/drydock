@@ -95,7 +95,8 @@ Finder and LaunchServices refuse to launch on `LSMinimumSystemVersion` in
 whether dyld registers a dylib's code signature; see
 [docs/minimum-os-version.md](docs/minimum-os-version.md). Each `minos`
 statement leaves exactly one `LC_VERSION_MIN_MACOSX` per slice, and no
-`LC_BUILD_VERSION`.
+`LC_BUILD_VERSION`. On a universal binary, write `arch x86_64` to leave the
+other slices' minimums alone.
 
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines

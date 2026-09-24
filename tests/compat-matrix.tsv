@@ -24,8 +24,8 @@
 # chained `-rename_seg __DATA __X -rename_seg __X __Y`. Both the refusal it
 # records and the diagnostic string in its new_msg column are GONE: nothing
 # in the tree emits them, because compat/translate.sh now emits the chain,
-# deliberately, per the ruling recorded at its mt_tr_fix_macho -rename_seg
-# arm. Read that row as "what translate.sh did on 2026-09-10", never as what
+# deliberately, per compat/README.md's adopted fix_macho divergence 2. Read
+# that row as "what translate.sh did on 2026-09-10", never as what
 # it does. The other 30 refuser=translate rows are all `both-refuse` (usage
 # errors, unknown flags, capacity caps) and translate.sh still refuses every
 # one of them, for reasons nothing since has touched.

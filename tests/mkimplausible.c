@@ -104,8 +104,7 @@
  *                 (see FX_OFF's use in main() for the field-by-field layout).
  *
  * It carries NO dylib load command, so it cannot be refused earlier by
- * mo_map_build (see compat/rename_segment.sh's divergence 5 for what that
- * refuses and why), and no LC_LAZY_LOAD_DYLIB.
+ * mo_map_build, and no LC_LAZY_LOAD_DYLIB.
  *
  * THE -empty-starts TWIN. Same image, one difference: the 8-byte
  * LC_FUNCTION_STARTS blob is left as the calloc'd zeros instead of holding

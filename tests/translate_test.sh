@@ -337,7 +337,7 @@ mv -f f.new f" \
 # owner has since ruled that difference an improvement to ADOPT -- "doing what
 # was asked" -- and the C tool is gone, so there is no longer a second answer
 # to preserve. These now pin the translation, in the same place they used to
-# pin the refusal; compat/translate.sh's -rename_seg arm records the reversal.
+# pin the refusal; compat/README.md's adopted fix_macho divergence 2 has it.
 ok fm-chain "printf 'allow-unmatched\nsegment rename __DATA __X\nsegment rename __X __Y\n' | drydock-macho-rewrite f f.new
 mv -f f.new f" -- fix_macho f -rename_seg __DATA __X -rename_seg __X __Y
 # A chain of three emits three passes, in argv order -- every link, not just

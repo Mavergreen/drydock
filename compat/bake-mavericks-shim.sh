@@ -144,8 +144,7 @@ else
 fi
 
 # platform: `awk -v` escape-processes what it assigns, so the shim's path
-# reaches awk through the environment (compat/drydock-macho-rewrite-compat.sh,
-# mw_run_to_tmp, has the measurement).
+# reaches awk through the environment.
 BK_SHIM=$bk_shim
 export BK_SHIM
 awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) c[$i] = i; next }
