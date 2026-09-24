@@ -11,7 +11,7 @@ Here's the Drydock equivalent:
 ```sh
 cat >drydock-claude <<EOF
 fixups        set      classic
-version-min   set      10.9
+minos         at-most  10.9
 load-command  delete   uuid
 load-command  delete   codesig
 dylib         replace  /usr/lib/libSystem.B.dylib   @loader_path/../S.dylib
@@ -57,8 +57,8 @@ Fields are split like shell words:
 load-command  delete    KIND        uuid | codesig | source-version
                                     | build-version | code-sign-drs
 segment       rename    OLD NEW
-version-min   set       10.9
-minos         set       VERSION     e.g. 10.9, 10.12, 10.9.5
+minos         at-most   VERSION     e.g. 10.9, 10.12, 10.9.5
+minos         if-absent VERSION
 swift-abi     set       legacy
 fixups        set       classic
 dylib         replace   OLD NEW
@@ -76,12 +76,26 @@ target        10.9                  the one statement whose meaning depends on
                                     the binary; see "The `target` statement"
 ```
 
-> `version-min set 10.9` appends an `LC_VERSION_MIN_MACOSX` to an image that
-> declares none, and leaves one that is already there alone, whatever it says.
-> `minos set VERSION` rewrites the minimum an image already declares, in
-> `LC_VERSION_MIN_MACOSX` or a macOS `LC_BUILD_VERSION`, in place. It never
-> changes the `sdk` beside it, because frameworks key linked-on-or-after
-> behaviour off the SDK.
+`minos at-most VERSION` lowers a declared minimum above VERSION to VERSION;
+`minos if-absent VERSION` leaves any declared minimum as it is. Both declare
+VERSION where nothing is declared, and both compare at VERSION's own
+precision, so `minos at-most 10.9` keeps a declared 10.9.5. A minimum read
+from an `LC_BUILD_VERSION` keeps that command's sdk; with nothing declared,
+the sdk written is 10.9.
+
+| you want | write |
+|---|---|
+| a binary built for a newer macOS to say it targets 10.9 | `minos at-most 10.9`, or let `target 10.9` derive it |
+| a minimum declared where there is none, and nothing else changed | `minos if-absent 10.9` |
+| to keep an honest lower minimum such as 10.7 | either; neither raises one |
+
+Finder and LaunchServices refuse to launch on `LSMinimumSystemVersion` in
+`Info.plist`, not on the Mach-O minimum, and Drydock does not edit
+`Info.plist`. On 10.9 the sdk field decides linked-on-or-after behaviour and
+whether dyld registers a dylib's code signature; see
+[docs/minimum-os-version.md](docs/minimum-os-version.md). Each `minos`
+statement leaves exactly one `LC_VERSION_MIN_MACOSX` per slice, and no
+`LC_BUILD_VERSION`.
 
 Statements run one at a time, in the order written, so each `insert` goes to
 the front of the image as the statement before it left it: the lines
@@ -107,12 +121,13 @@ written). These are the statements that can match nothing:
 - `dylib replace/delete/reexport/retype` and `rpath replace/delete` (no command naming that path)
 - `segment rename` (no segment of that name)
 - `import redirect` (no bind of that symbol names that library)
-- `minos set` (no `LC_VERSION_MIN_MACOSX` and no macOS `LC_BUILD_VERSION`)
 
 On a fat file, a statement has matched if it matched in any selected slice.
 
-`version-min set` and `swift-abi set` cannot miss: with nothing to do, they
-are no-ops. `fixups set classic` is a no-op on an image that already uses
+`minos` and `swift-abi set` cannot miss: with nothing to do, they are
+no-ops. `swift-abi set legacy` refuses an image that still has chained
+fixups, whose class-record pointers it cannot read: write `fixups set
+classic` before it. `fixups set classic` is a no-op on an image that already uses
 `LC_DYLD_INFO_ONLY`, but it refuses an image with neither that nor chained
 fixups, and `allow-unmatched` does not cover that refusal.
 
@@ -132,17 +147,20 @@ A B` may match nothing, but *what it asks for* is fixed. `target 10.9` asks a
 different question of every binary and answers it differently.
 
 **It expands, where it is written, into statements the language already
-has** — the ones this binary actually needs — and those run in its place:
+has** — the ones this binary actually needs — and those run in its place.
+It is this script, with each conditional line kept only where its
+condition holds:
 
-| detected | expands to |
-|---|---|
-| `LC_DYLD_CHAINED_FIXUPS` present | `fixups set classic` |
-| `LC_BUILD_VERSION` present | `load-command delete build-version` |
-| no `LC_VERSION_MIN_MACOSX` | `version-min set 10.9` |
-| `LC_VERSION_MIN_MACOSX` above 10.9 | `minos set 10.9` |
-| a macOS `LC_BUILD_VERSION` at or below 10.9, other than 10.9.0, and no `LC_VERSION_MIN_MACOSX` | `minos set` to that version, after the append |
-| `__DATA_CONST` carrying `__objc_*` sections | `segment rename __DATA_CONST __DATA` |
-| class records carrying the stable-ABI Swift tag | `swift-abi set legacy` |
+```
+fixups set classic                   # where LC_DYLD_CHAINED_FIXUPS is present
+minos at-most 10.9
+segment rename __DATA_CONST __DATA   # where __DATA_CONST holds __objc_ sections
+swift-abi set legacy                 # where class records carry the stable-ABI Swift tag
+```
+
+Each condition is tested on the image as the lines before it left it, so
+the Swift tag is read after `fixups set classic` has made the class-record
+pointers readable.
 
 Each detection is exact rather than a guess: a load command is present or it
 is not, a section name begins with `__objc_` or it does not, a tag bit is set
@@ -150,12 +168,19 @@ or it is not. **Never `dylib` or `rpath` work** — no tool can guess which stub
 dylib you meant, and that is the dominant real workload, so a profile stops
 where the guessing would start.
 
-It decides per slice: each slice of a fat file gets only the lines that slice
-needs. It derives `fixups set classic` only where there are chained fixups to
-convert, so never on an image with no fixup information to convert, where the
-line refuses. It puts that line
-first, and it reports why it derived each line. A second profile is what would show the
-design earns its place; this build has one, and refuses any other.
+What `target` adds over writing that script by hand:
+
+- it renames `__DATA_CONST` only where `__objc_` sections need it, per
+  slice. Renaming a C-only `__DATA_CONST` breaks nothing measured on 10.9,
+  but it leaves two segments named `__DATA`, which `getsegbyname` and tools
+  cannot tell apart;
+- it chooses per slice of a fat file;
+- it derives `fixups set classic` only where there are chained fixups, so it
+  never hits that statement's refusal on an image with no fixup information;
+- it reports why each line was derived.
+
+A second profile is what would show the design earns its place; this build
+has one, and refuses any other.
 
 > A declared minimum at or below 10.9 (every 10.9.x counts as 10.9) is left
 > as it is: raising it would discard a true fact and buy nothing. 10.9's dyld
@@ -167,15 +192,12 @@ design earns its place; this build has one, and refuses any other.
 with the `dylib` and `rpath` lines it never derives, as below.
 
 **Write the statements by hand** when you want some of those changes and not
-the rest, such as only `version-min set 10.9`. Then:
+the rest. Then:
 
-- to lower a declared minimum and nothing else, write `minos set 10.9`;
-  `version-min set 10.9` only appends one where none is declared;
 - put `fixups set classic` first, and leave it out for an image with neither
   chained fixups nor `LC_DYLD_INFO_ONLY` (it refuses);
-- leave out `load-command delete build-version` after `fixups set classic`
-  on an image with chained fixups, which already removes `LC_BUILD_VERSION`,
-  so the delete would match nothing;
+- put `swift-abi set legacy` after it (it refuses an image that still has
+  chained fixups);
 - rename `__DATA_CONST` only where `info` shows `__objc_` sections in it;
 - when slices need different lines, run one script per slice with `arch`,
   since a directive applies to the whole script.
@@ -201,18 +223,17 @@ each, since the same line does different things to different binaries:
 
 ```
   target 10.9
-    minimum: build-version 12.0 -> version-min 10.9; sdk 12.3 carried over
     fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
-    load-command delete build-version  (LC_BUILD_VERSION present)
-    version-min set 10.9  (no LC_VERSION_MIN_MACOSX)
+      chained fixups -> LC_DYLD_INFO_ONLY; LC_BUILD_VERSION 12.0 (sdk 12.3) kept as LC_VERSION_MIN_MACOSX
+    minos at-most 10.9  (always)
+      version-min 12.0 -> 10.9; sdk 12.3 kept
 ```
 
-> The `minimum:` line is always there, and names the minimum the binary
-> declared, the one it declares now, and its sdk. Converting an
-> `LC_BUILD_VERSION` keeps its sdk, since the binary was built against it.
-> The report says `nothing to do: this binary already targets 10.9` when the
-> expansion is empty, which happens only when that minimum was left as
-> declared.
+> Each statement's own lines follow it; the conversion's other figures are
+> left out here. The report says `nothing to do: this binary already
+> targets 10.9` only when no line changed the image: the slice already held
+> one `LC_VERSION_MIN_MACOSX` at or below 10.9, no `LC_BUILD_VERSION`, and
+> nothing else to convert.
 
 The rest of the rules:
 
@@ -220,14 +241,12 @@ The rest of the rules:
 - **An unknown target is a refusal.** `target 10.10` errors, naming what this
   build does know, rather than silently doing 10.9's work.
 - **A derived statement behaves as the one you would have written** — a
-  derived `version-min set 10.9` grows a short header pad exactly as one you
+  derived `minos at-most 10.9` grows a short header pad exactly as one you
   wrote does — and if a derived statement is refused, the refusal names the
   `target` line, which is the line you wrote.
 - **`target` never counts as unmatched,** and neither does anything it
   derived: "this binary already targets 10.9 correctly" is a correct answer
-  for a profile, unlike for an explicit operation. (It happens for real:
-  `fixups set classic` strips `LC_BUILD_VERSION` itself, so the `load-command
-  delete build-version` the same expansion derived finds nothing left to do.)
+  for a profile, unlike for an explicit operation.
 - **Writing `target 10.9` *and*, after it, an explicit statement it derived
   makes the explicit one redundant, and if that statement can miss, it
   refuses as unmatched.** That is right, and is documented rather than
@@ -249,9 +268,14 @@ slices it passes over; `--thin` refuses a fat container instead (exit 1).
 `verify` reads only a thin file. `imports` and `exports` read either; each
 row names its slice in an `arch` column, and the header row names the columns.
 
-`info` answers each of `target 10.9`'s five detections: an `LC[n]` line for
-`LC_DYLD_CHAINED_FIXUPS`, `LC_BUILD_VERSION` or `LC_VERSION_MIN_MACOSX`, a
-`sectname=` line under `segname=__DATA_CONST`, and the `swift-abi:` line.
+`verify` checks structure, not what 10.9's runtime requires: it passes an
+Objective-C image whose `__objc_` sections sit in `__DATA_CONST`, and that
+image dies at launch on 10.9.
+
+`info` answers each of `target 10.9`'s three detections: an `LC[n]` line
+for `LC_DYLD_CHAINED_FIXUPS`, a `sectname=` line under
+`segname=__DATA_CONST`, and the `swift-abi:` line, which says `unknown`
+on an image whose fixups are still chained.
 
 > The declared minimum is on the line beneath its command: `version=… sdk=…`
 > under `LC_VERSION_MIN_MACOSX`, `platform=… minos=… sdk=…` under
