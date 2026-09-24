@@ -37,6 +37,10 @@ Convenience wrappers are provided for:
 * `rename_segment`        ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/rename_segment.c))
 * `retag_swift_classes`   ([original](https://github.com/Wowfunhappy/Mavericks-Porting-Resources/blob/master/retag_swift_classes.c))
 
+The wrappers will go away. Each one prints the `drydock-macho-rewrite` script it
+runs. Switch to that script, and
+[report](https://github.com/Mavergreen/drydock/issues) anything the switch breaks.
+
 ### Script format
 
 One statement per line.
