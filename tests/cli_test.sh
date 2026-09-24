@@ -3397,6 +3397,40 @@ mts "$T/swift_retagged" "swift-abi set legacy" >/dev/null 2>&1 \
     && ok "info: the tag is gone after swift-abi set legacy" \
     || bad "info swift-abi after retag" "still reports tagged records"
 
+# ON A CHAINED IMAGE THE CLASS-RECORD POINTERS ARE CHAIN LINKS, which the
+# walk cannot follow: info says so, and swift-abi set legacy refuses rather
+# than answer "nothing to retag" about records it never read.
+"$T/mkchained" make-swift "$T/swift_chained"
+[ "$("$T/mkchained" tags "$T/swift_chained")" = "class 2
+meta 2" ] || bad "swift-abi chained: fixture setup" \
+    "not both on the stable-ABI tag: $("$T/mkchained" tags "$T/swift_chained")"
+"$DRYDOCK_MACHO_REWRITE" info "$T/swift_chained" 2>/dev/null \
+    | grep -qxF 'swift-abi: unknown (pointers are chained; fixups set classic first)' \
+    && ok "info: on a chained image the swift-abi line says unknown, and why" \
+    || bad "info swift-abi chained" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/swift_chained" 2>/dev/null | grep '^swift-abi:')"
+"$T/mkchained" make "$T/c_chained"
+"$DRYDOCK_MACHO_REWRITE" info "$T/c_chained" 2>/dev/null \
+    | grep -qxF 'swift-abi: unknown (pointers are chained; fixups set classic first)' \
+    && ok "info: ... on any chained image, Swift or not" \
+    || bad "info swift-abi chained" "got: $("$DRYDOCK_MACHO_REWRITE" info "$T/c_chained" 2>/dev/null | grep '^swift-abi:')"
+swc_before=$(sha "$T/swift_chained")
+rm -f "$T/swift_chained.out"
+rc=0; printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/swift_chained" "$T/swift_chained.out" \
+    >/dev/null 2>"$T/swc.err" || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$T/swift_chained.out" ] && [ "$(sha "$T/swift_chained")" = "$swc_before" ] \
+    && ok "swift-abi set legacy: a chained image is refused (1), nothing written" \
+    || bad "swift-abi chained" "expected 1 and no OUT, got $rc: $(cat "$T/swc.err")"
+grep -q 'pointers are chained; write .fixups set classic. before .swift-abi set legacy.' "$T/swc.err" \
+    && ok "swift-abi set legacy: ... and the refusal names the fix" \
+    || bad "swift-abi chained" "no fix named: $(cat "$T/swc.err")"
+rc=0; printf 'fixups set classic\nswift-abi set legacy\n' \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/swift_chained" "$T/swift_chained.out" >/dev/null 2>"$T/swc.err" || rc=$?
+[ "$rc" -eq 0 ] && grep -qxF "      retagged 2 class records" "$T/swc.err" \
+    && [ "$("$T/mkchained" tags "$T/swift_chained.out")" = "class 1
+meta 1" ] \
+    && ok "swift-abi set legacy: after fixups set classic the same records are retagged" \
+    || bad "swift-abi chained, fixups first" "rc $rc: $(cat "$T/swc.err")"
+
 tags_before=$("$T/mkswift" tags "$T/swift_fixture")
 [ "$tags_before" = "class 2 0x1000009c2
 meta 2 0x1000009c2" ] \

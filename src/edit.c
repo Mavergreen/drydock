@@ -402,6 +402,11 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         mi_image im;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
         int retagged = mswift_retag_image(&im);
+        if (retagged == MSWIFT_CHAINED) {
+            me_say(log, "drydock-macho-rewrite edit: %s: the class records' pointers are chained; "
+                        "write `fixups set classic` before `swift-abi set legacy`\n", path);
+            return MR_REFUSED;
+        }
         if (retagged > 0)
             me_say(log, "      retagged %d class record%s\n", retagged,
                    retagged == 1 ? "" : "s");

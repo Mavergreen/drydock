@@ -26,6 +26,7 @@
 
 #include "swift_retag.h"
 #include "image.h"
+#include "mach_compat.h"   /* LC_DYLD_CHAINED_FIXUPS */
 #include "atomic_write.h"   /* wa_write_new: `path` is read, `out` is written */
 
 #define IS_SWIFT_STABLE 2
@@ -130,6 +131,12 @@ static int mswift_retag(uint8_t *buf, size_t fsize, struct mswift_seg *segs, int
     return 1;
 }
 
+static int mswift_chained_lc(const struct load_command *lc, void *ctx_) {
+    if (lc->cmd != LC_DYLD_CHAINED_FIXUPS) return 0;
+    *(int *)ctx_ = 1;
+    return 1;
+}
+
 /* mswift_retag_file's former middle, moved rather than copied: every list,
  * every class and its metaclass, in the caller's buffer -- retagged when
  * `apply` is set, only counted when it is not.
@@ -142,6 +149,9 @@ static int mswift_retag(uint8_t *buf, size_t fsize, struct mswift_seg *segs, int
  * which is why it, and not a qualifier, is what the two entry points differ
  * in. */
 static int mswift_walk(const mi_image *im, int apply) {
+    int chained = 0;
+    mi_each_lc(im, mswift_chained_lc, &chained);
+    if (chained) return MSWIFT_CHAINED;
     size_t fsize = im->size;
 
     struct mswift_seg segs[64];
@@ -229,6 +239,7 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size) {
 
     /* The retag itself, in memory; what is left here is the file around it. */
     int changed = mswift_retag_image(&im);
+    if (changed < 0) { mi_close(&im); return changed; }
 
     /* mi_release, not the image, owns the buffer from here: the retag wrote
      * straight into it (mswift_retag()) and this eventually free()s it. */

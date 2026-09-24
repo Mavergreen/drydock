@@ -52,15 +52,18 @@
  */
 #include "image.h"
 
-/* Negative returns from mswift_retag_file. A caller must test for these by
- * name, not with a bare `< 0`: only MSWIFT_ERROR is a failure of the tool
- * itself, and the compat front-end's exit code has always turned on exactly
- * that distinction. */
+/* Negative returns from mswift_retag_file (and MSWIFT_CHAINED from all three).
+ * A caller must test for these by name, not with a bare `< 0`: only
+ * MSWIFT_ERROR is a failure of the tool itself, and the compat front-end's exit
+ * code has always turned on exactly that distinction. */
 #define MSWIFT_ERROR      (-1)  /* open/fstat/write failed, or mi_open's own
                                  * open, fstat, read or whole-file malloc did
                                  * (MI_IO_ERROR); already reported */
 #define MSWIFT_NOT_MACHO  (-2)  /* not a readable 64-bit Mach-O; NOTHING printed,
                                  * so a front-end that cares must say so itself */
+#define MSWIFT_CHAINED    (-3)  /* the image has LC_DYLD_CHAINED_FIXUPS, so its class
+                                 * records' pointers are chain links this walk cannot
+                                 * follow; nothing printed, nothing changed */
 
 /*
  * Retag every class record reachable from `path`'s __objc_classlist and
@@ -73,9 +76,10 @@
  *
  * Returns the number of class records retagged (0 if there were none to do,
  * in which case `out` is still written -- a non-negative return always means
- * `out` is the answer), or one of the MSWIFT_* codes above. Nothing is
- * written when the return is negative. On a non-negative return, `*out_size`
- * is set to `out`'s size in bytes -- this function already has it in hand
+ * `out` is the answer), or one of the MSWIFT_* codes above; MSWIFT_CHAINED
+ * writes no `out`. Nothing is written when the return is negative. On a
+ * non-negative return, `*out_size` is set to `out`'s size in bytes -- this
+ * function already has it in hand
  * (im.size, unchanged by the retag: only tag bits move, see
  * mswift_retag_image below), so a caller reporting "Wrote OUT (N bytes)"
  * has no reason to stat() `out` back out for a number already computed here.
@@ -91,20 +95,21 @@ int mswift_retag_file(const char *path, const char *out, size_t *out_size);
  * src/edit.c calls it for `swift-abi set legacy` against the image it writes
  * once, itself, after the last statement.
  *
- * Returns the number of class records retagged, 0 or more; it has no failure
- * of its own and prints nothing. Only tag bits in __DATA's (or
+ * Returns the number of class records retagged, 0 or more, or MSWIFT_CHAINED
+ * having changed nothing; it prints nothing. Only tag bits in __DATA's (or
  * __DATA_CONST's) class records change, so im->size does not.
  */
 int mswift_retag_image(mi_image *im);
 
 /*
  * How many of those class records carry the stable-ABI tag right now --
- * mswift_retag_image's walk, counting instead of writing. Nothing in `im`
- * changes, which is why it is taken by const pointer -- though that is a
- * statement of intent rather than a guarantee the compiler can make here,
- * since C's const is shallow and the buf a `const mi_image *` yields still
- * points at writable bytes. What actually decides is the shared walk's
- * `apply` flag (src/swift_retag.c), which this passes as 0.
+ * mswift_retag_image's walk, counting instead of writing. MSWIFT_CHAINED on a
+ * chained image. Nothing in `im` changes, which is why it is taken by const
+ * pointer -- though that is a statement of intent rather than a guarantee the
+ * compiler can make here, since C's const is shallow and the buf a
+ * `const mi_image *` yields still points at writable bytes. What actually
+ * decides is the shared walk's `apply` flag (src/swift_retag.c), which this
+ * passes as 0.
  *
  * This is what `target 10.9` detects on (src/script.h's MS_TARGET): a tag
  * bit is set or it is not, so the detection is exact rather than a guess, and

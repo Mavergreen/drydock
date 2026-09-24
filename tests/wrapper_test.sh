@@ -2323,6 +2323,19 @@ run retag_swift_classes f
     && ok "retag_swift_classes: a fat container is the benign skip it always was, and the file is untouched" \
     || bad "retag_swift_classes fat" "exit $rc, changed=$([ "$(sha "$T/f")" = "$fat_before" ] && echo no || echo YES); this is the SILENT one -- same exit code, same 'total: 0' line, and the caller's binary rewritten underneath it"
 
+# A chained Swift binary: drydock-macho-rewrite refuses swift-abi set legacy on
+# it (1), and this wrapper's exit-1 arm is its silent skip, so the caller gets
+# what the C tool gave -- exit 0, total 0, the file untouched.
+[ -x "$T/mkchained" ] || "$CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" \
+    || bad "retag_swift_classes chained: fixture setup" "cannot build $HERE/mkchained.c"
+"$T/mkchained" make-swift "$T/f" || bad "retag_swift_classes chained: fixture setup" "make-swift failed"
+ch_before=$(sha "$T/f")
+run retag_swift_classes f
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" = "$ch_before" ] \
+    && has_line "$T/out" 'total: 0 class record(s) retagged' \
+    && ok "retag_swift_classes: a chained Swift binary is the C tool's silent zero, untouched" \
+    || bad "retag_swift_classes chained" "exit $rc: $(cat "$T/out") $(cat "$T/err")"
+
 # WHY THE COUNT IS SUMMED. drydock-macho-rewrite reports what it retagged once per SLICE,
 # so a fat argument yields one line per slice. Read as a single number that is
 # "2\n2", which `[ "$mw_n" -gt 0 ]` rejects outright. Asserted against drydock-macho-rewrite

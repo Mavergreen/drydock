@@ -370,7 +370,10 @@ static void info_image(mi_image *im, const char *label) {
     struct info_ctx ctx = { 0, 0 };
     mi_each_lc(im, info_cb, &ctx);
 
-    if (mswift_stable_tagged_image(im) > 0)
+    int tagged = mswift_stable_tagged_image(im);
+    if (tagged == MSWIFT_CHAINED)
+        printf("swift-abi: unknown (pointers are chained; fixups set classic first)\n");
+    else if (tagged > 0)
         printf("swift-abi: class records carry the stable-ABI tag\n");
     else
         printf("swift-abi: no class records carry the stable-ABI tag\n");
