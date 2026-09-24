@@ -1117,7 +1117,7 @@ int mr_apply_image(uint8_t **pbuf, size_t *pfsize, const char *label,
          * exact buffer with the identical algorithm mr_process_thin's own
          * mi_wrap runs on it, so mi_wrap cannot disagree. From src/edit.c
          * the buffer is whatever the previous statement left, and not every
-         * operation validates what it hands back (mv_add_version_min_image,
+         * operation validates what it hands back (mv_declare_minos,
          * mswift_retag_image and md_declassify_buf do not). What keeps this
          * unreachable there in practice is that each of those writes
          * well-formed load commands, and that this very mi_wrap -- or the

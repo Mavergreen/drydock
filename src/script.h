@@ -38,19 +38,18 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
  * enum has one entry that is not a verb -- occupying the same slot means the
  * table matches it, counts its operands and advertises it exactly as it does
  * every other statement. */
-enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
+enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_SWIFT_ABI,
        MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET, MS_IMPORT, MS_MINOS };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
-       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT };
+       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT,
+       MS_AT_MOST, MS_IF_ABSENT };
 
 /* One operation line from an edit script. `a`/`.b`/`.c` (NULL when the
  * statement's arity doesn't use them) point into the owning ms_script's
  * `text`, not into separately allocated storage. `line` is the 1-based
  * source line, for diagnostics raised later (e.g. by whatever applies the
- * script) that still need to name where a statement came from. `target` sets
- * `has_sdk` and `sdk` on a derived `version-min set` to carry an
- * `LC_BUILD_VERSION`'s sdk over. */
-typedef struct { int kind, op; const char *a, *b, *c; int line; int has_sdk; uint32_t sdk; } ms_stmt;
+ * script) that still need to name where a statement came from. */
+typedef struct { int kind, op; const char *a, *b, *c; int line; } ms_stmt;
 
 /* A parsed edit script: every operation line (not directive lines -- those
  * only set the two fields below) in source order. Every directive --
@@ -98,9 +97,10 @@ void ms_free(ms_script *s);
 const char *ms_kind_name(int kind);
 const char *ms_op_name(int op);
 
-/* Packs MAJOR[.MINOR[.PATCH]], at most 65535.255.255, as xxxx.yy.zz;
- * 0, or -1 if malformed. */
-int ms_parse_version(const char *s, uint32_t *out);
+/* Packs MAJOR[.MINOR[.PATCH]], at most 65535.255.255, as xxxx.yy.zz, and sets
+ * *mask (unless NULL) to the parts it names: 0xFFFF0000, 0xFFFFFF00 or
+ * 0xFFFFFFFF. 0, or -1 if malformed. */
+int ms_parse_version(const char *s, uint32_t *out, uint32_t *mask);
 
 /* Which verb grammar OFFERED a row's operation. `machotool dylib` and
  * `machotool rpath` took their operations from the SAME table an edit

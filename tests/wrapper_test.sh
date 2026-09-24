@@ -238,7 +238,7 @@ rc=$?
 # anything reading it, and every known caller redirects stdout to /dev/null.
 fresh
 run add_version_min f
-has_line "$T/err" "    printf 'version-min set 10.9\n' | drydock-macho-rewrite f f.new" \
+has_line "$T/err" "    printf 'minos if-absent 10.9\n' | drydock-macho-rewrite f f.new" \
     && ok "teaching message: on stderr" \
     || bad "teaching message" "not on stderr, or it no longer names FILE and OUT: $(cat "$T/err")"
 # The teaching form is COMPLETE: drydock-macho-rewrite never writes its input, so the
@@ -248,7 +248,7 @@ has_line "$T/err" "    printf 'version-min set 10.9\n' | drydock-macho-rewrite f
 has_line "$T/err" '    mv -f f.new f' \
     && ok "teaching message: ... and it names the install step too" \
     || bad "teaching message" "no 'mv -f f.new f' line: $(cat "$T/err")"
-grep -q 'version-min set' "$T/out" \
+grep -q 'minos if-absent' "$T/out" \
     && bad "teaching message" "leaked onto stdout: $(cat "$T/out")" \
     || ok "teaching message: not on stdout"
 
@@ -926,6 +926,19 @@ grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T
     && ok "patch_macho: ... and md_declassify's own lines still come through" \
     || bad "patch_macho converting stdout" "not the converting transcript: $(cat "$T/out")"
 
+# THE DECLARATION SURVIVES. The C tool dropped mkchained's LC_BUILD_VERSION
+# (macOS, 12.0, sdk 12.0) and left no version command. As install.sh runs the
+# two, add_version_min then appended 10.9, sdk 10.9; now it finds 12.0 present.
+[ "$("$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -c '^LC\[[0-9]*\] LC_VERSION_MIN_MACOSX ')" = 1 ] \
+    && "$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -qxF '  version=12.0.0 sdk=12.0.0' \
+    && ok "patch_macho: ... and OUT keeps the build-version's minimum and sdk as one LC_VERSION_MIN_MACOSX" \
+    || bad "patch_macho keeps the declaration" "$("$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -A1 VERSION)"
+cp "$T/cfout" "$T/cfpipe"
+run add_version_min cfpipe
+[ "$rc" -eq 0 ] && "$BIN/drydock-macho-rewrite" info "$T/cfpipe" | grep -qxF '  version=12.0.0 sdk=12.0.0' \
+    && ok "patch_macho then add_version_min: the binary declares the build-version's minimum and sdk, not 10.9" \
+    || bad "patch_macho then add_version_min" "exit $rc: $("$BIN/drydock-macho-rewrite" info "$T/cfpipe" | grep -A1 VERSION)"
+
 # THE INSTALLED BYTES ARE THE CONVERTED ONES. tests/cli_test.sh compares the two
 # FRONT-ENDS' output for the same input (its byte-identity assertion); these two
 # are about the INSTALL -- that what lands at OUT is what drydock-macho-rewrite wrote, and is
@@ -1020,16 +1033,11 @@ run patch_macho cfm cfm_out2
 # output for the same request -- run both, compare, rather than pin a
 # transcript.
 #
-# STDOUT MOVED, and this pins where it went. add_version_min printed
-# mv_add_version_min's "Added LC_VERSION_MIN_MACOSX 10.9 (ncmds=...,
-# sizeofcmds=...)" on stdout, and so does `drydock-macho-rewrite minos`; a `version-min set
-# 10.9` STATEMENT reports the append on STDERR instead, as "      appended
-# LC_VERSION_MIN_MACOSX 10.9" (src/edit.c says why: the "Added ..." line
-# belongs to the verb, which a script does not call). The repo owner's ruling
-# of 2026-09-13 is that wrapper TEXT may change where bytes and exit codes may
-# not, so this asserts the new shape rather than the old -- but it asserts
-# BOTH halves, because a caller looking for the announcement has to be able to
-# find it somewhere.
+# STDOUT MOVED, and this pins where it went. add_version_min printed "Added
+# LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)" on stdout; the
+# statement reports the append on STDERR, as "      none -> version-min 10.9;
+# sdk 10.9 written". The repo owner's ruling of 2026-09-13 is that wrapper TEXT
+# may change where bytes and exit codes may not, so both halves are asserted.
 fresh
 strip_vm "$T/f"
 avm_in=$(sha "$T/f")
@@ -1038,14 +1046,14 @@ avmrc=$rc
 cp "$T/out" "$T/avm.out"
 avmsha=$(sha "$T/f")
 avm_err_had_append=0
-grep -q 'appended LC_VERSION_MIN_MACOSX 10.9' "$T/err" && avm_err_had_append=1
+grep -qxF '      none -> version-min 10.9; sdk 10.9 written' "$T/err" && avm_err_had_append=1
 fresh
 strip_vm "$T/f"
 # The oracle is the SAME STATEMENT the wrapper emits, run directly -- not
 # `drydock-macho-rewrite minos`, which no longer exists. What this pins is that the
 # wrapper installs exactly what drydock-macho-rewrite produced for the request, which is a
 # claim about the wrapper and outlives the verbs.
-( cd "$T" && printf 'version-min set 10.9\n' | "$BIN/drydock-macho-rewrite" f mtout ) \
+( cd "$T" && printf 'minos if-absent 10.9\n' | "$BIN/drydock-macho-rewrite" f mtout ) \
     >"$T/mt.out" 2>/dev/null
 [ "$avmrc" -eq 0 ] && [ "$avmsha" = "$(sha "$T/mtout")" ] \
     && ok "add_version_min: the bytes it installs are drydock-macho-rewrite's own" \
@@ -1064,6 +1072,61 @@ run add_version_min
 [ "$rc" -eq 1 ] && firstline_is "$T/err" "Usage: $BIN/add_version_min binary" \
     && ok "add_version_min: no argument is a usage error naming argv[0]" \
     || bad "add_version_min usage" "exit $rc, stderr: $(head -1 "$T/err")"
+
+# A build-version-only binary ends with ONE version command, keeping the
+# build-version's minimum and sdk. The C tool appended LC_VERSION_MIN_MACOSX
+# 10.9 beside it: the pair 10.14's dyld and the 10.15+ kernel refuse.
+mkminos_run() {
+    [ -x "$T/mkminos" ] || "$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c" 2>"$T/mkminos.out" \
+        || { bad "mkminos_run" "cannot build $HERE/mkminos.c: $(cat "$T/mkminos.out")"; return 1; }
+    "$T/mkminos" "$@"
+}
+fresh
+mkminos_run bv "$T/f" 1 12.0 12.3 || bad "add_version_min build-version: fixture setup" "mkminos bv failed"
+run add_version_min f
+[ "$rc" -eq 0 ] && [ "$(mkminos_run show "$T/f")" = "version-min version=12.0.0 sdk=12.3.0" ] \
+    && ok "add_version_min: a build-version-only binary ends with one LC_VERSION_MIN_MACOSX, its minimum and sdk kept" \
+    || bad "add_version_min build-version" "exit $rc: $(mkminos_run show "$T/f" 2>&1)"
+fresh
+mkminos_run vmin "$T/f" 10.9 10.9 && mkminos_run add-bv "$T/f" 1 12.0 12.3 \
+    || bad "add_version_min both: fixture setup" "mkminos failed"
+run add_version_min f
+[ "$rc" -eq 0 ] && [ "$(mkminos_run show "$T/f")" = "version-min version=10.9.0 sdk=10.9.0" ] \
+    && ok "add_version_min: ... and one carrying both loses the LC_BUILD_VERSION, its version-min unchanged" \
+    || bad "add_version_min both" "exit $rc: $(mkminos_run show "$T/f" 2>&1)"
+[ ! -s "$T/out" ] \
+    && ok "add_version_min: ... and, having changed the file, does not say 'already present'" \
+    || bad "add_version_min both stdout" "expected nothing on stdout; got: $(cat "$T/out")"
+
+# A slice that declares a platform other than macOS is refused, untouched,
+# where the C tool appended LC_VERSION_MIN_MACOSX (or, beside one, said
+# "already present").
+fresh
+mkminos_run bv "$T/f" 2 12.0 12.3 || bad "add_version_min iOS build-version: fixture setup" "mkminos bv failed"
+avm_ios_in=$(sha "$T/f")
+run add_version_min f
+[ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$avm_ios_in" ] \
+    && grep -qF "declares platform 2, not macOS; refusing to add a macOS minimum to it" "$T/err" \
+    && ok "add_version_min: a binary declaring only platform 2 is refused (1), untouched, saying why" \
+    || bad "add_version_min iOS build-version" "exit $rc: $(cat "$T/err")"
+fresh
+mkminos_run vmin "$T/f" 10.9 10.9 && mkminos_run add-bv "$T/f" 2 12.0 12.3 \
+    || bad "add_version_min version-min beside iOS: fixture setup" "mkminos failed"
+avm_ios_in=$(sha "$T/f")
+run add_version_min f
+[ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$avm_ios_in" ] \
+    && grep -qF "declares platform 2 beside macOS; refusing rather than guess which it is" "$T/err" \
+    && ok "add_version_min: ... and one declaring platform 2 beside a version-min is refused (1), untouched, saying why" \
+    || bad "add_version_min version-min beside iOS" "exit $rc: $(cat "$T/err")"
+
+mkchained_fixture "$T/pmsim" && mkminos_run bv "$T/pmsim" 7 15.0 15.0 \
+    || bad "patch_macho iOS simulator: fixture setup" "mkminos bv failed"
+pmsim_in=$(sha "$T/pmsim")
+run patch_macho pmsim pmsim
+[ "$rc" -eq 1 ] && [ "$(sha "$T/pmsim")" = "$pmsim_in" ] \
+    && grep -qF "declares platform 7, not macOS; refusing to add a macOS minimum to it" "$T/err" \
+    && ok "patch_macho: a chained binary declaring only platform 7 is refused (1), untouched, saying why" \
+    || bad "patch_macho iOS simulator" "exit $rc: $(cat "$T/err")"
 
 # The wrappers keep editing FILE "in place" -- by writing a temp beside the
 # real target and mv-ing it over. A symlinked FILE updates its target and
@@ -1087,7 +1150,7 @@ w_ino=$(stat -f %i "$T/w_real")
 [ "$(stat -f %i "$T/w_real")" = "$w_ino" ] \
     && ok "wrapper: a run that changes nothing discards its temp, keeping the inode" \
     || bad "wrapper no-op run" "the target got a new inode"
-grep -q "already present" "$T/w2.out" \
+grep -qxF 'LC_VERSION_MIN_MACOSX already present; nothing to do.' "$T/w2.out" \
     && ok "wrapper: ... and prints the C tool's 'already present' line" \
     || bad "wrapper no-op run" "stdout: $(cat "$T/w2.out")"
 
@@ -2323,6 +2386,19 @@ run retag_swift_classes f
     && ok "retag_swift_classes: a fat container is the benign skip it always was, and the file is untouched" \
     || bad "retag_swift_classes fat" "exit $rc, changed=$([ "$(sha "$T/f")" = "$fat_before" ] && echo no || echo YES); this is the SILENT one -- same exit code, same 'total: 0' line, and the caller's binary rewritten underneath it"
 
+# A chained Swift binary: drydock-macho-rewrite refuses swift-abi set legacy on
+# it (1), and this wrapper's exit-1 arm is its silent skip, so the caller gets
+# what the C tool gave -- exit 0, total 0, the file untouched.
+[ -x "$T/mkchained" ] || "$CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" \
+    || bad "retag_swift_classes chained: fixture setup" "cannot build $HERE/mkchained.c"
+"$T/mkchained" make-swift "$T/f" || bad "retag_swift_classes chained: fixture setup" "make-swift failed"
+ch_before=$(sha "$T/f")
+run retag_swift_classes f
+[ "$rc" -eq 0 ] && [ "$(sha "$T/f")" = "$ch_before" ] \
+    && has_line "$T/out" 'total: 0 class record(s) retagged' \
+    && ok "retag_swift_classes: a chained Swift binary is the C tool's silent zero, untouched" \
+    || bad "retag_swift_classes chained" "exit $rc: $(cat "$T/out") $(cat "$T/err")"
+
 # WHY THE COUNT IS SUMMED. drydock-macho-rewrite reports what it retagged once per SLICE,
 # so a fat argument yields one line per slice. Read as a single number that is
 # "2\n2", which `[ "$mw_n" -gt 0 ]` rejects outright. Asserted against drydock-macho-rewrite
@@ -2350,8 +2426,7 @@ for gate_tool in patch_macho add_version_min rename_segment retag_swift_classes;
     case $gate_tool in
         rename_segment)      run rename_segment gf __DATA __DATB; gate_want=1 ;;
         patch_macho)         run patch_macho gf gfout;            gate_want=1 ;;
-        # The gate's refusal is retag's benign skip (MSWIFT_NOT_MACHO), so
-        # exit 0 with the file untouched.
+        # The gate's refusal is retag's benign skip: exit 0, file untouched.
         retag_swift_classes) run retag_swift_classes gf;          gate_want=0 ;;
         *)                   run "$gate_tool" gf;                 gate_want=1 ;;
     esac
@@ -2422,7 +2497,7 @@ fi
 # verb: the script fails to parse AFTER the wrapper has already told the caller
 # what it was about to run.
 "$BIN/drydock-macho-rewrite" --capabilities > "$T/caps" 2>/dev/null
-for st in 'fixups set 1' 'version-min set 1' 'swift-abi set 1' 'segment rename 2' \
+for st in 'fixups set 1' 'minos if-absent 1' 'swift-abi set 1' 'segment rename 2' \
           'load-command delete 1' 'dylib replace 2' 'dylib delete 1' 'dylib reexport 1' \
           'dylib append 1' 'dylib insert 1' 'rpath replace 2' 'rpath delete 1' \
           'rpath append 1'; do

@@ -291,12 +291,10 @@ MT_FM_BODY
 
 # ---- the four fixed-arity tools -----------------------------------------
 mt_tr_add_version_min() {
-    # `argc != 2`. The 10.9 floor is hardcoded in add_version_min itself
-    # (mv_add_version_min), which is why the version appears here and not in
-    # the old argv.
+    # `argc != 2`; the C tool took no version, and 10.9 was its floor.
     [ $# -eq 1 ] || { printf 'Usage: %s binary\n' "$MT_PROG" >&2; return 1; }
     mt_emit "$1" "$(mt_out_for "$1")" <<'MT_AVM_BODY'
-version-min set 10.9
+minos if-absent 10.9
 MT_AVM_BODY
     mt_install_line "$1"
 }

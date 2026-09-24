@@ -532,7 +532,7 @@ run_case rename_segment f "$SEG_OLD" "$SEG_NEW1" extra    # argc 5
 run_case retag_swift_classes                              # argc 1: usage error
 run_case retag_swift_classes f                            # one file
 run_case retag_swift_classes nm                           # a non-Mach-O: skipped
-run_case retag_swift_classes "$ABSENT"                    # absent: MSWIFT_ERROR
+run_case retag_swift_classes "$ABSENT"                    # absent: an error
 run_case retag_swift_classes f f                          # two files
 run_case retag_swift_classes f nm                         # one good, one skipped
 run_case retag_swift_classes f "$ABSENT"                  # one good, one failing

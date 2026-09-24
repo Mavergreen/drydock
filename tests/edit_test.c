@@ -67,6 +67,8 @@ static int fails = 0;
 #define VMIN_1012    8    /* LC_VERSION_MIN_MACOSX 10.12, sdk 10.13 */
 #define BUILDVER_12  16   /* macOS LC_BUILD_VERSION, minos 12.0, sdk 12.3 */
 #define BUILDVER_IOS 32   /* the same LC_BUILD_VERSION, for iOS (platform 2) */
+#define CATALYST     64   /* a Mac Catalyst LC_BUILD_VERSION (platform 6), minos 13.0, sdk 13.0 */
+#define SECOND_VMIN 128   /* a second LC_VERSION_MIN_MACOSX, 10.12, sdk 10.13 */
 
 static void set16(char *field, const char *name) {
     size_t len = strlen(name);
@@ -156,6 +158,20 @@ static uint8_t *build_image(int flags) {
         bv->platform = (flags & BUILDVER_IOS) ? 2 : 1;
         bv->minos = 0x000C0000; bv->sdk = 0x000C0300; bv->ntools = 0;
         p += bv->cmdsize; ncmds++;
+    }
+
+    if (flags & CATALYST) {
+        struct mc_build_version *bv = (struct mc_build_version *)p;
+        bv->cmd = LC_BUILD_VERSION; bv->cmdsize = sizeof *bv;
+        bv->platform = MV_PLATFORM_MACCATALYST;
+        bv->minos = 0x000D0000; bv->sdk = 0x000D0000; bv->ntools = 0;
+        p += bv->cmdsize; ncmds++;
+    }
+    if (flags & SECOND_VMIN) {
+        struct version_min_command *vm = (struct version_min_command *)p;
+        vm->cmd = LC_VERSION_MIN_MACOSX; vm->cmdsize = sizeof *vm;
+        vm->version = 0x000A0C00; vm->sdk = 0x000A0D00;
+        p += vm->cmdsize; ncmds++;
     }
 
     h->ncmds = ncmds;
@@ -477,6 +493,28 @@ static uint32_t lc_word(const char *path, uint32_t cmd, uint32_t field) {
     return c.value;
 }
 
+/* Set word `field` (cmd is word 0) of the nth (0-based) `cmd` load command of
+ * a build_image buffer. */
+static void poke_lc(uint8_t *img, uint32_t cmd, int nth, uint32_t field, uint32_t value) {
+    struct mach_header_64 *h = (struct mach_header_64 *)img;
+    uint8_t *p = img + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)p;
+        if (lc->cmd == cmd && nth-- == 0) { ((uint32_t *)p)[field] = value; return; }
+        p += lc->cmdsize;
+    }
+    assert(!"poke_lc: no such command");
+}
+
+static int same_file(const char *a, const char *b) {
+    size_t la = 0, lb = 0;
+    uint8_t *x = read_file(a, &la), *y = read_file(b, &lb);
+    int same = x && y && la == lb && memcmp(x, y, la) == 0;
+    free(x);
+    free(y);
+    return same;
+}
+
 static int has_segment(const char *path, const char *seg, const char *sect_segname) {
     size_t len = 0;
     uint8_t *buf = read_file(path, &len);
@@ -525,6 +563,23 @@ static int run(const char *path, const char *out, const char *text) {
     g_log[n] = '\0';
     fclose(log);
     ms_free(&s);
+    return rc;
+}
+
+/* run(), with what the run printed on stderr in `err`. */
+static int run_stderr(const char *path, const char *out, const char *text, char *err, size_t size) {
+    FILE *cap = tmpfile();
+    fflush(stderr);
+    int saved = dup(2);
+    dup2(fileno(cap), 2);
+    int rc = run(path, out, text);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    rewind(cap);
+    size_t n = fread(err, 1, size - 1, cap);
+    err[n] = '\0';
+    fclose(cap);
     return rc;
 }
 
@@ -884,8 +939,6 @@ static void test_an_unmatched_segment_rename_refuses_by_default(void) {
     rm_dir();
 }
 
-/* version-min, swift-abi and fixups were reachable only through file-level
- * entry points; each must run against the in-memory image. */
 static void test_the_file_level_operations_run_in_memory(void) {
     fresh_dir();
     char path[512], out[512], out2[512];
@@ -897,7 +950,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
 
     int rc = run(path, out,
                  "fixups set classic\n"
-                 "version-min set 10.9\n"
+                 "minos if-absent 10.9\n"
                  "swift-abi set legacy\n");
     CHECK(rc == 0, "in memory: an already-classic image passes fixups set classic, "
           "then gains a version-min (got %d; log: %s)", rc, g_log);
@@ -906,21 +959,21 @@ static void test_the_file_level_operations_run_in_memory(void) {
     /* The append is the one trace the statement leaves, so the report says
      * so, beneath the statement. */
     {
-        const char *stmt = strstr(g_log, "  version-min set 10.9\n");
-        const char *app = strstr(g_log, "\n      appended LC_VERSION_MIN_MACOSX 10.9\n");
+        const char *stmt = strstr(g_log, "  minos if-absent 10.9\n");
+        const char *app = strstr(g_log, "\n      none -> version-min 10.9; sdk 10.9 written\n");
         const char *next = strstr(g_log, "  swift-abi set legacy\n");
         CHECK(stmt && app && next && stmt < app && app < next,
-              "in memory: the report logs the version-min append beneath its statement "
+              "in memory: the report logs the declaration beneath its statement "
               "(log: %s)", g_log);
     }
     /* Run again over the result, which already has one: nothing appended,
-     * nothing claimed. */
-    rc = run(out, out2, "version-min set 10.9\n");
-    CHECK(rc == 0, "in memory: version-min set on an image that has one succeeds (got %d)", rc);
+     * and the report says the declaration was kept. */
+    rc = run(out, out2, "minos if-absent 10.9\n");
+    CHECK(rc == 0, "in memory: minos if-absent on an image that has one succeeds (got %d)", rc);
     CHECK(count_lc(out2, LC_VERSION_MIN_MACOSX, NULL) == 1,
-          "in memory: a second version-min set appends no second command");
-    CHECK(strstr(g_log, "appended") == NULL,
-          "in memory: the report claims no append when there was none (log: %s)", g_log);
+          "in memory: a second minos if-absent appends no second command");
+    CHECK(strstr(g_log, "      version-min 10.9, at or below 10.9: kept; sdk 10.9 kept\n") != NULL,
+          "in memory: the report says the declared one was kept (log: %s)", g_log);
     {
         size_t len = 0;
         uint8_t *now = read_file(out, &len);
@@ -936,7 +989,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
     snap before = take(path);
-    rc = run(path, out, "version-min set 10.9\nfixups set classic\n");
+    rc = run(path, out, "minos if-absent 10.9\nfixups set classic\n");
     CHECK(rc == MR_REFUSED, "in memory: fixups set classic with nothing to lower refuses (got %d)", rc);
     check_untouched("fixups refused", path, &before);
     rm_dir();
@@ -1369,7 +1422,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
  *
  * The two slices run the same statement and disturb different things, which
  * only the OBSERVED half can produce: slice 0 has no header pad at all, so
- * `version-min set 10.9` must grow it -- a grow re-bases
+ * `minos if-absent 10.9` must grow it -- a grow re-bases
  * every base-relative value (MREL_BASE_REL) -- while slice 1 has 496 bytes
  * spare and the same statement only repacks its header (MREL_HEADER_PAD).
  * Slice 1 is the IMPLAUSIBLE image, so a gate that applied there would refuse
@@ -1379,7 +1432,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
  * The same fixture pins the OBSERVED half of the accumulator, which nothing
  * else can: slice 0 carries an LC_FUNCTION_STARTS, so its own gate applies and
  * it reports "verified" -- and the only thing that made it apply is the grow,
- * since `version-min set 10.9` DECLARES only MREL_HEADER_PAD. An accumulator
+ * since `minos if-absent 10.9` DECLARES only MREL_HEADER_PAD. An accumulator
  * that read declared masks alone would report the skip line for slice 0 too,
  * and would skip the verify after every header grow there is. */
 static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
@@ -1399,7 +1452,7 @@ static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
     write_file(path, fat, flen, 0755);
     free(s[0]); free(s[1]); free(fat);
 
-    int rc = run(path, out, "version-min set 10.9\n");
+    int rc = run(path, out, "minos if-absent 10.9\n");
     CHECK(rc == 0, "per slice: a slice that disturbed nothing it checks is not refused "
           "for what another slice did (got %d; log: %s)", rc, g_log);
     CHECK(strstr(g_log, "slice arm64: this run disturbed sizeofcmds; "
@@ -1453,103 +1506,6 @@ static void test_the_skip_line_names_what_the_run_disturbed(void) {
     rm_dir();
 }
 
-static void test_minos_set_rewrites_the_declared_minimum_in_place(void) {
-    fresh_dir();
-    char path[512], o1[512], o2[512], o3[512], o4[512], o5[512];
-    in_dir(path, sizeof path, "img");
-    in_dir(o1, sizeof o1, "o1"); in_dir(o2, sizeof o2, "o2");
-    in_dir(o3, sizeof o3, "o3"); in_dir(o4, sizeof o4, "o4");
-    in_dir(o5, sizeof o5, "o5");
-
-    uint8_t *img = build_image(VMIN_1012);
-    write_file(path, img, IMG_SIZE, 0755);
-    int rc = run(path, o1, "minos set 10.9\n");
-    CHECK(rc == 0, "minos set: a 10.12 version-min is lowered (got %d; log: %s)", rc, g_log);
-    CHECK(lc_word(o1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
-          "minos set: version is 10.9 (got 0x%08x)", lc_word(o1, LC_VERSION_MIN_MACOSX, 2));
-    CHECK(lc_word(o1, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
-          "minos set: sdk is still 10.13 (got 0x%08x)", lc_word(o1, LC_VERSION_MIN_MACOSX, 3));
-    {
-        size_t len = 0, diff = 0;
-        uint8_t *now = read_file(o1, &len);
-        for (size_t i = 0; now && i < len && i < IMG_SIZE; i++) diff += now[i] != img[i];
-        CHECK(now && len == IMG_SIZE && diff == 1,
-              "minos set: in place, one byte changed (size %zu, %zu differ)", len, diff);
-        free(now);
-    }
-    CHECK(strstr(g_log, "  minos set 10.9\n      version-min 10.12 -> 10.9\n") != NULL,
-          "minos set: the report says old -> new beneath the statement (log: %s)", g_log);
-    rc = run(o1, o5, "minos set 10.9\n");
-    CHECK(rc == 0 && strstr(g_log, "      version-min 10.9 -> 10.9\n") != NULL,
-          "minos set: run again on its own output, an equal value has matched (got %d; log: %s)",
-          rc, g_log);
-    {
-        size_t l1 = 0, l5 = 0;
-        uint8_t *b1 = read_file(o1, &l1), *b5 = read_file(o5, &l5);
-        CHECK(b1 && b5 && l1 == l5 && memcmp(b1, b5, l1) == 0,
-              "minos set: run again on its own output, the file is unchanged");
-        free(b1); free(b5);
-    }
-    rc = run(path, o2, "minos set 10.13\n");
-    CHECK(rc == 0 && lc_word(o2, LC_VERSION_MIN_MACOSX, 2) == 0x000A0D00,
-          "minos set: an explicit statement may raise (got %d; log: %s)", rc, g_log);
-    free(img);
-
-    img = build_image(BUILDVER_12);
-    write_file(path, img, IMG_SIZE, 0755);
-    rc = run(path, o3, "minos set 10.9\n");
-    CHECK(rc == 0, "minos set: a macOS build-version is lowered (got %d; log: %s)", rc, g_log);
-    CHECK(lc_word(o3, LC_BUILD_VERSION, 3) == 0x000A0900 &&
-          lc_word(o3, LC_BUILD_VERSION, 4) == 0x000C0300 &&
-          lc_word(o3, LC_BUILD_VERSION, 2) == 1,
-          "minos set: build-version minos is 10.9; sdk and platform untouched");
-    CHECK(count_lc(o3, LC_VERSION_MIN_MACOSX, NULL) == 0,
-          "minos set: appends no LC_VERSION_MIN_MACOSX");
-    CHECK(strstr(g_log, "      build-version minos 12.0 -> 10.9\n") != NULL,
-          "minos set: the build-version report line (log: %s)", g_log);
-    free(img);
-
-    img = build_image(VMIN_1012 | BUILDVER_12);
-    write_file(path, img, IMG_SIZE, 0755);
-    rc = run(path, o4, "minos set 10.9\n");
-    CHECK(rc == 0 && lc_word(o4, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
-          lc_word(o4, LC_BUILD_VERSION, 3) == 0x000A0900,
-          "minos set: both declarations are lowered (got %d; log: %s)", rc, g_log);
-    free(img);
-    rm_dir();
-}
-
-static void test_minos_set_with_nothing_declared_is_a_miss(void) {
-    fresh_dir();
-    char path[512], out[512], out2[512];
-    in_dir(path, sizeof path, "img");
-    in_dir(out, sizeof out, "img.out");
-    in_dir(out2, sizeof out2, "img.out2");
-
-    uint8_t *img = build_image(0);
-    write_file(path, img, IMG_SIZE, 0755);
-    free(img);
-    snap before = take(path);
-    int rc = run(path, out, "minos set 10.9\n");
-    CHECK(rc == MR_REFUSED, "minos set: nothing declared refuses by default (got %d)", rc);
-    check_untouched("minos set miss", path, &before);
-    CHECK(strstr(g_log, "      no LC_VERSION_MIN_MACOSX or macOS LC_BUILD_VERSION to set\n") != NULL,
-          "minos set: the report says there was nothing to set (log: %s)", g_log);
-    rc = run(path, out, "allow-unmatched\nminos set 10.9\n");
-    CHECK(rc == 0 && count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 0 &&
-          count_lc(out, LC_BUILD_VERSION, NULL) == 0,
-          "minos set: allowed to miss, it still appends nothing (got %d)", rc);
-
-    img = build_image(BUILDVER_IOS);
-    write_file(path, img, IMG_SIZE, 0755);
-    free(img);
-    before = take(path);
-    rc = run(path, out2, "minos set 10.9\n");
-    CHECK(rc == MR_REFUSED, "minos set: an iOS build-version is not a macOS minimum (got %d)", rc);
-    check_untouched("minos set on iOS build-version", path, &before);
-    rm_dir();
-}
-
 static void test_target_with_both_commands_lets_version_min_decide(void) {
     fresh_dir();
     char path[512], out[512];
@@ -1560,12 +1516,15 @@ static void test_target_with_both_commands_lets_version_min_decide(void) {
     free(img);
     int rc = run(path, out, "target 10.9\n");
     CHECK(rc == 0, "target, both commands: runs (got %d; log: %s)", rc, g_log);
-    CHECK(strstr(g_log, "    minimum: version-min 10.12 -> 10.9; sdk 10.13 untouched\n") != NULL,
-          "target, both commands: the version-min decides the minimum line (log: %s)", g_log);
+    CHECK(strstr(g_log, "    minos at-most 10.9  (always)\n"
+                        "      version-min 10.12 -> 10.9; sdk 10.13 kept; build-version 12.0 removed\n")
+          != NULL,
+          "target, both commands: the version-min decides, and the build-version's removal is named "
+          "(log: %s)", g_log);
     CHECK(count_lc(out, LC_BUILD_VERSION, NULL) == 0 &&
           lc_word(out, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
           lc_word(out, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
-          "target, both commands: build-version deleted, version-min 10.9 with sdk 10.13 kept");
+          "target, both commands: build-version gone, version-min 10.9 with sdk 10.13 kept");
     rm_dir();
 }
 
@@ -1579,28 +1538,158 @@ static void test_mv_format_version_drops_a_zero_patch(void) {
     CHECK(strcmp(b, "11.0") == 0, "0x000B0000 formats as 11.0 (got %s)", b);
 }
 
-static void test_fat_minos_set_matches_in_any_slice(void) {
+static void test_minos_decides_the_minimum_per_rule(void) {
+    static const struct {
+        const char *script; int flags; uint32_t poke_cmd, poke_field, poke_value;
+        uint32_t want_version, want_sdk; const char *line;
+    } rows[] = {
+        { "minos at-most 10.9\n", VMIN_1012, 0, 0, 0, 0x000A0900, 0x000A0D00,
+          "  minos at-most 10.9\n      version-min 10.12 -> 10.9; sdk 10.13 kept\n" },
+        { "minos at-most 10.9\n", VMIN_1012, LC_VERSION_MIN_MACOSX, 2, 0x000A0700,
+          0x000A0700, 0x000A0D00, "      version-min 10.7, at or below 10.9: kept; sdk 10.13 kept\n" },
+        { "minos at-most 10.9\n", VMIN_1012, LC_VERSION_MIN_MACOSX, 2, 0x000A0905,
+          0x000A0905, 0x000A0D00, "      version-min 10.9.5, at or below 10.9: kept; sdk 10.13 kept\n" },
+        { "minos at-most 10\n", VMIN_1012, 0, 0, 0, 0x000A0C00, 0x000A0D00,
+          "      version-min 10.12, at or below 10: kept; sdk 10.13 kept\n" },
+        { "minos at-most 10.9.3\n", VMIN_1012, LC_VERSION_MIN_MACOSX, 2, 0x000A0905,
+          0x000A0903, 0x000A0D00, "      version-min 10.9.5 -> 10.9.3; sdk 10.13 kept\n" },
+        { "minos at-most 10.9\n", BUILDVER_12, 0, 0, 0, 0x000A0900, 0x000C0300,
+          "      build-version 12.0 -> version-min 10.9; sdk 12.3 carried over\n" },
+        { "minos at-most 10.9\n", BUILDVER_12, LC_BUILD_VERSION, 3, 0x000A0700,
+          0x000A0700, 0x000C0300, "      build-version 10.7 -> version-min 10.7; sdk 12.3 carried over\n" },
+        { "minos at-most 10.9\n", 0, 0, 0, 0, 0x000A0900, 0x000A0900,
+          "      none -> version-min 10.9; sdk 10.9 written\n" },
+        { "minos at-most 10.7\n", 0, 0, 0, 0, 0x000A0700, 0x000A0900,
+          "      none -> version-min 10.7; sdk 10.9 written\n" },
+        { "minos if-absent 10.9\n", VMIN_1012, 0, 0, 0, 0x000A0C00, 0x000A0D00,
+          "      version-min 10.12 kept (declared); sdk 10.13 kept\n" },
+        { "minos if-absent 10.9\n", VMIN_1012, LC_VERSION_MIN_MACOSX, 2, 0x000A0700,
+          0x000A0700, 0x000A0D00, "      version-min 10.7, at or below 10.9: kept; sdk 10.13 kept\n" },
+        { "minos if-absent 10.9\n", BUILDVER_12, 0, 0, 0, 0x000C0000, 0x000C0300,
+          "      build-version 12.0 -> version-min 12.0; sdk 12.3 carried over\n" },
+        { "minos if-absent 10.9\n", BUILDVER_12, LC_BUILD_VERSION, 3, 0x000A0700,
+          0x000A0700, 0x000C0300, "      build-version 10.7 -> version-min 10.7; sdk 12.3 carried over\n" },
+        { "minos if-absent 10.9\n", 0, 0, 0, 0, 0x000A0900, 0x000A0900,
+          "      none -> version-min 10.9; sdk 10.9 written\n" },
+        { "minos at-most 10.9\n", VMIN_1012 | BUILDVER_12, 0, 0, 0, 0x000A0900, 0x000A0D00,
+          "      version-min 10.12 -> 10.9; sdk 10.13 kept; build-version 12.0 removed\n" },
+        { "minos at-most 10.9\n", BUILDVER_12 | CATALYST, 0, 0, 0, 0x000A0900, 0x000C0300,
+          "      build-version 12.0 -> version-min 10.9; sdk 12.3 carried over; "
+          "Mac Catalyst build-version removed\n" },
+    };
     fresh_dir();
-    char path[512], out[512], s1[512];
+    char path[512], out[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(out, sizeof out, "img.out");
+    for (size_t i = 0; i < sizeof rows / sizeof *rows; i++) {
+        uint8_t *img = build_image(rows[i].flags);
+        if (rows[i].poke_cmd) poke_lc(img, rows[i].poke_cmd, 0, rows[i].poke_field, rows[i].poke_value);
+        write_file(path, img, IMG_SIZE, 0755);
+        free(img);
+        int rc = run(path, out, rows[i].script);
+        CHECK(rc == 0, "row %zu, %s: runs (got %d; log: %s)", i, rows[i].script, rc, g_log);
+        CHECK(count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 1 &&
+              count_lc(out, LC_BUILD_VERSION, NULL) == 0,
+              "row %zu: one LC_VERSION_MIN_MACOSX and no LC_BUILD_VERSION after it", i);
+        CHECK(lc_word(out, LC_VERSION_MIN_MACOSX, 2) == rows[i].want_version &&
+              lc_word(out, LC_VERSION_MIN_MACOSX, 3) == rows[i].want_sdk,
+              "row %zu: version-min 0x%08x sdk 0x%08x (got 0x%08x sdk 0x%08x)", i,
+              rows[i].want_version, rows[i].want_sdk, lc_word(out, LC_VERSION_MIN_MACOSX, 2),
+              lc_word(out, LC_VERSION_MIN_MACOSX, 3));
+        CHECK(strstr(g_log, rows[i].line) != NULL,
+              "row %zu: the report says %s(log: %s)", i, rows[i].line, g_log);
+    }
+    rm_dir();
+}
+
+static void test_minos_leaves_a_declared_10_9_byte_for_byte(void) {
+    fresh_dir();
+    char path[512], out[512], out2[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(out, sizeof out, "img.out");
+    in_dir(out2, sizeof out2, "img.out2");
+    uint8_t *img = build_image(VMIN_1012);
+    poke_lc(img, LC_VERSION_MIN_MACOSX, 0, 2, 0x000A0900);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    int rc = run(path, out, "minos at-most 10.9\n");
+    CHECK(rc == 0 && same_file(path, out), "at-most leaves a version-min 10.9 byte for byte (got %d)", rc);
+    rc = run(path, out, "minos if-absent 10.9\n");
+    CHECK(rc == 0 && same_file(path, out), "if-absent does too (got %d)", rc);
+    img = build_image(VMIN_1012 | BUILDVER_12);
+    write_file(path, img, IMG_SIZE, 0755);
+    free(img);
+    rc = run(path, out, "minos at-most 10.9\n");
+    CHECK(rc == 0 && !same_file(path, out), "at-most lowers and converts that image (got %d)", rc);
+    rc = run(out, out2, "minos at-most 10.9\n");
+    CHECK(rc == 0 && same_file(out, out2), "run again on its own output it changes nothing (got %d)", rc);
+    rm_dir();
+}
+
+static void test_minos_refuses_what_is_not_one_macos_declaration(void) {
+    static const struct { int flags; uint32_t second_bv_platform; const char *what, *why; } rows[] = {
+        { BUILDVER_IOS, 0, "an iOS-only slice",
+          ": declares platform 2, not macOS; refusing to add a macOS minimum to it\n" },
+        { VMIN_1012 | SECOND_VMIN, 0, "two LC_VERSION_MIN_MACOSX",
+          ": 2 LC_VERSION_MIN_MACOSX commands; refusing rather than choose one\n" },
+        { BUILDVER_12 | CATALYST, MV_PLATFORM_MACOS, "two macOS LC_BUILD_VERSION",
+          ": 2 macOS LC_BUILD_VERSION commands; refusing rather than choose one\n" },
+        { VMIN_1012 | BUILDVER_IOS, 0, "an iOS LC_BUILD_VERSION beside a macOS version-min",
+          ": declares platform 2 beside macOS; refusing rather than guess which it is\n" },
+    };
+    static const char *scripts[] = { "minos at-most 10.9\n", "minos if-absent 10.9\n" };
+    fresh_dir();
+    char path[512], out[512];
+    in_dir(path, sizeof path, "img");
+    in_dir(out, sizeof out, "img.out");
+    for (size_t i = 0; i < sizeof rows / sizeof *rows; i++) {
+        for (size_t j = 0; j < 2; j++) {
+            uint8_t *img = build_image(rows[i].flags);
+            if (rows[i].second_bv_platform)
+                poke_lc(img, LC_BUILD_VERSION, 1, 2, rows[i].second_bv_platform);
+            write_file(path, img, IMG_SIZE, 0755);
+            free(img);
+            snap before = take(path);
+            char err[1024];
+            int rc = run_stderr(path, out, scripts[j], err, sizeof err);
+            CHECK(rc == MR_REFUSED, "%s, %s: refused (got %d; log: %s)",
+                  rows[i].what, scripts[j], rc, g_log);
+            CHECK(strstr(err, rows[i].why) != NULL, "%s, %s: ... saying why (stderr: %s)",
+                  rows[i].what, scripts[j], err);
+            check_untouched(rows[i].what, path, &before);
+        }
+    }
+    rm_dir();
+}
+
+static void test_fat_minos_decides_per_slice(void) {
+    fresh_dir();
+    char path[512], out[512], s0[512], s1[512], in1[512];
     in_dir(path, sizeof path, "fat");
     in_dir(out, sizeof out, "fat.out");
+    in_dir(s0, sizeof s0, "s0");
     in_dir(s1, sizeof s1, "s1");
-    write_fat(path, 0, VMIN_1012, 0);   /* only the second slice declares one */
-    int rc = run(path, out, "minos set 10.9\n");
-    CHECK(rc == 0, "fat, minos set: a declaration in a later slice is a match (got %d; log: %s)",
-          rc, g_log);
-    if (rc == 0) {
-        slice_to_file(out, 1, s1);
-        CHECK(lc_word(s1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
-              "fat, minos set: the second slice was lowered");
-    }
-    write_fat(path, 0, 0, 0);
-    snap before = take(path);
-    rc = run(path, out, "minos set 10.9\n");
-    CHECK(rc == MR_REFUSED, "fat, minos set: declared in no slice refuses (got %d)", rc);
-    check_untouched("fat, minos set miss everywhere", path, &before);
-    CHECK(strstr(g_log, "matched nothing in any selected slice") != NULL,
-          "fat, minos set: the refusal says no slice matched (log: %s)", g_log);
+    in_dir(in1, sizeof in1, "in1");
+    write_fat(path, VMIN_1012, BUILDVER_12, 0);
+    int rc = run(path, out, "minos at-most 10.9\n");
+    CHECK(rc == 0, "fat, minos at-most: runs (got %d; log: %s)", rc, g_log);
+    slice_to_file(out, 0, s0);
+    slice_to_file(out, 1, s1);
+    CHECK(lc_word(s0, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
+          lc_word(s0, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
+          "fat: slice 0's version-min 10.12 is lowered to 10.9, sdk 10.13 kept");
+    CHECK(count_lc(s1, LC_BUILD_VERSION, NULL) == 0 &&
+          lc_word(s1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
+          lc_word(s1, LC_VERSION_MIN_MACOSX, 3) == 0x000C0300,
+          "fat: slice 1's build-version 12.0 becomes version-min 10.9, sdk 12.3 carried over");
+    rc = run(path, out, "arch x86_64\nminos at-most 10.9\n");
+    slice_to_file(path, 1, in1);
+    slice_to_file(out, 0, s0);
+    slice_to_file(out, 1, s1);
+    CHECK(rc == 0 && same_file(in1, s1),
+          "fat, arch x86_64: the arm64 slice passes through byte for byte (got %d)", rc);
+    CHECK(lc_word(s0, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
+          "fat, arch x86_64: ... and the x86_64 slice is lowered");
     rm_dir();
 }
 
@@ -1630,11 +1719,12 @@ int main(void) {
     test_fat_writes_out_and_not_the_input();
     test_fat_a_slice_skips_its_verify_on_its_own_terms();
     test_the_skip_line_names_what_the_run_disturbed();
-    test_minos_set_rewrites_the_declared_minimum_in_place();
-    test_minos_set_with_nothing_declared_is_a_miss();
     test_target_with_both_commands_lets_version_min_decide();
-    test_fat_minos_set_matches_in_any_slice();
     test_mv_format_version_drops_a_zero_patch();
+    test_minos_decides_the_minimum_per_rule();
+    test_minos_leaves_a_declared_10_9_byte_for_byte();
+    test_minos_refuses_what_is_not_one_macos_declaration();
+    test_fat_minos_decides_per_slice();
 
     printf("edit_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;

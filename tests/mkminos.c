@@ -6,6 +6,7 @@
  *                                           and LC_BUILD_VERSION
  *   mkminos vmin FILE VERSION SDK           ... then append LC_VERSION_MIN_MACOSX
  *   mkminos bv FILE PLATFORM MINOS SDK      ... then append LC_BUILD_VERSION, no tools
+ *   mkminos add-bv FILE PLATFORM MINOS SDK  append LC_BUILD_VERSION, removing nothing
  *   mkminos show FILE                       one line per such command, or "none"
  *
  * Versions are X.Y or X.Y.Z. FILE is edited in place. Exit 0, or 2 on any
@@ -145,8 +146,14 @@ int main(int argc, char **argv) {
         strip_all();
         return append(w, 6) || save(argv[2]) ? 2 : 0;
     }
+    if (strcmp(argv[1], "add-bv") == 0 && argc == 6) {
+        uint32_t plat = (uint32_t)strtoul(argv[3], NULL, 10);
+        if (version(argv[4], &v) || version(argv[5], &s)) return 2;
+        uint32_t w[6] = { LC_BUILD_VERSION, 24, plat, v, s, 0 };
+        return append(w, 6) || save(argv[2]) ? 2 : 0;
+    }
 usage:
     fprintf(stderr, "usage: mkminos none|show FILE | vmin FILE VERSION SDK"
-                    " | bv FILE PLATFORM MINOS SDK\n");
+                    " | bv|add-bv FILE PLATFORM MINOS SDK\n");
     return 2;
 }

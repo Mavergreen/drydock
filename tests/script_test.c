@@ -94,7 +94,7 @@ static void test_parses_the_production_script(void) {
     static const char src[] =
         "# Claude Code -> 10.9\n"
         "fixups        set      classic\n"
-        "version-min   set      10.9\n"
+        "minos         at-most  10.9\n"
         "load-command  delete   uuid\n"
         "dylib         replace  /usr/lib/libSystem.B.dylib  @loader_path/../S.dylib\n";
     ms_script s; char err[256] = {0};
@@ -103,6 +103,7 @@ static void test_parses_the_production_script(void) {
     if (r != 0) return;
     CHECK(s.n == 4, "four statements (got %d)", s.n);
     CHECK(s.stmts[0].kind == MS_FIXUPS && s.stmts[0].op == MS_SET, "stmt0 is fixups set");
+    CHECK(s.stmts[1].kind == MS_MINOS && s.stmts[1].op == MS_AT_MOST, "stmt1 is minos at-most");
     CHECK(s.stmts[3].kind == MS_DYLIB && s.stmts[3].op == MS_REPLACE, "stmt3 is dylib replace");
     CHECK(strcmp(s.stmts[3].b, "@loader_path/../S.dylib") == 0, "stmt3 operand b");
     CHECK(s.stmts[3].line == 5, "stmt3 remembers its source line (got %d)", s.stmts[3].line);
@@ -300,14 +301,6 @@ static void test_blank_and_comment_lines_dont_shift_line_numbers(void) {
     ms_free(&s);
 }
 
-static void test_version_min_value_refusal(void) {
-    static const char src[] = "version-min set 10.10\n";
-    ms_script s; char err[256] = {0};
-    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
-          "version-min set 10.10 is refused");
-    CHECK(strstr(err, "10.9") != NULL, "names what is accepted (got: %s)", err);
-}
-
 static void test_swift_abi_value_refusal(void) {
     static const char src[] = "swift-abi set native\n";
     ms_script s; char err[256] = {0};
@@ -383,7 +376,7 @@ static void test_capabilities_table_round_trips(void) {
          * would be refused for a reason that has nothing to do with what
          * this test is proving. */
         if (strcmp(kind, "load-command") == 0 && strcmp(op, "delete") == 0) a = "uuid";
-        else if (strcmp(kind, "version-min") == 0 || strcmp(kind, "minos") == 0) a = "10.9";
+        else if (strcmp(kind, "minos") == 0) a = "10.9";
         else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
         else if (strcmp(kind, "fixups") == 0) a = "classic";
         else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
@@ -487,16 +480,12 @@ static void test_disturbs_matches_the_spec_table(void) {
      * they are, so the pad is the whole of it. */
     CHECK(ms_disturbs(MS_LOAD_COMMAND, MS_DELETE) == MREL_HEADER_PAD,
           "load-command delete frees pad and moves no section offset");
-    /* mv_add_version_min appends LC_VERSION_MIN_MACOSX into the pad
-     * (src/version_min.h). */
-    CHECK(ms_disturbs(MS_VERSION_MIN, MS_SET) == MREL_HEADER_PAD,
-          "version-min set appends a command, so the pad is what it costs");
 
     /* THREE bits, not two. src/declassify.h:32-37: the conversion strips
      * LC_DYLD_EXPORTS_TRIE, LC_DYLD_CHAINED_FIXUPS and every LC_BUILD_VERSION,
      * then adds a 48-byte LC_DYLD_INFO_ONLY -- which is "frees pad" and
      * "appends a command", the same two reasons load-command delete and
-     * version-min set earn MREL_HEADER_PAD -- while rebuilding the rebase and
+     * minos at-most earn MREL_HEADER_PAD -- while rebuilding the rebase and
      * bind streams (base-relative content) and extending __LINKEDIT. Leaving
      * the pad bit off made the design's own table internally inconsistent, and
      * the bit is load-bearing: disturbing the pad is exactly the condition
@@ -524,8 +513,10 @@ static void test_disturbs_matches_the_spec_table(void) {
     CHECK(ms_disturbs(MS_IMPORT, MS_REDIRECT) == MREL_FILE_OFF,
           "import redirect can move the bind stream within __LINKEDIT, and nothing else");
 
-    CHECK(ms_disturbs(MS_MINOS, MS_SET) == MREL_NONE,
-          "minos set rewrites one field in place: no command changes size, nothing moves");
+    CHECK(ms_disturbs(MS_MINOS, MS_AT_MOST) == MREL_HEADER_PAD,
+          "minos at-most removes build-versions and may append a version-min: the pad");
+    CHECK(ms_disturbs(MS_MINOS, MS_IF_ABSENT) == MREL_HEADER_PAD,
+          "minos if-absent does the same, so it costs the same");
 }
 
 static void test_import_redirect(void) {
@@ -748,35 +739,63 @@ static void test_dylib_retype(void) {
           "rpath retype accepted");
 }
 
-static void test_minos_set_takes_a_version(void) {
+static void test_minos_at_most_and_if_absent_take_a_version(void) {
+    static const char *ops[] = { "at-most", "if-absent" };
+    const int op_enum[] = { MS_AT_MOST, MS_IF_ABSENT };
     static const char *good[] = { "10.9", "10.12", "10.9.5", "11", "65535.255.255", "0.0" };
     static const uint32_t packed[] = { 0x000A0900, 0x000A0C00, 0x000A0905, 0x000B0000,
                                        0xFFFFFFFF, 0 };
+    static const uint32_t mask[] = { 0xFFFFFF00, 0xFFFFFF00, 0xFFFFFFFF, 0xFFFF0000,
+                                     0xFFFFFFFF, 0xFFFFFF00 };
     static const char *bad[] = { "", "10.", ".9", "10..9", "10.9.5.1", "10.256",
                                  "65536", "-10.9", "+10", "10.9a", "ten", "10.9.256" };
-    size_t i;
-    for (i = 0; i < sizeof good / sizeof *good; i++) {
-        char line[64], err[256] = {0};
-        ms_script s;
-        uint32_t v = 1;
-        snprintf(line, sizeof line, "minos set %s\n", good[i]);
-        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == 0,
-              "minos set %s parses (%s)", good[i], err);
-        if (s.n == 1)
-            CHECK(s.stmts[0].kind == MS_MINOS && s.stmts[0].op == MS_SET &&
-                  strcmp(s.stmts[0].a, good[i]) == 0,
-                  "minos set %s is one MS_MINOS/MS_SET statement carrying its operand", good[i]);
-        ms_free(&s);
-        CHECK(ms_parse_version(good[i], &v) == 0 && v == packed[i],
-              "%s packs to 0x%08x (got 0x%08x)", good[i], packed[i], v);
+    size_t o, i;
+    for (o = 0; o < 2; o++) {
+        for (i = 0; i < sizeof good / sizeof *good; i++) {
+            char line[64], err[256] = {0};
+            ms_script s;
+            snprintf(line, sizeof line, "minos %s %s\n", ops[o], good[i]);
+            CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == 0,
+                  "minos %s %s parses (%s)", ops[o], good[i], err);
+            if (s.n == 1)
+                CHECK(s.stmts[0].kind == MS_MINOS && s.stmts[0].op == op_enum[o] &&
+                      strcmp(s.stmts[0].a, good[i]) == 0,
+                      "minos %s %s is one MS_MINOS statement carrying its operand", ops[o], good[i]);
+            ms_free(&s);
+        }
+        for (i = 0; i < sizeof bad / sizeof *bad; i++) {
+            char line[64], err[256] = {0};
+            ms_script s;
+            snprintf(line, sizeof line, "minos %s '%s'\n", ops[o], bad[i]);
+            CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == -1 &&
+                  strstr(err, "line 1") && strstr(err, "not a version") && strstr(err, ops[o]),
+                  "minos %s '%s' is refused as not a version (got: %s)", ops[o], bad[i], err);
+        }
     }
-    for (i = 0; i < sizeof bad / sizeof *bad; i++) {
-        char line[64], err[256] = {0};
-        ms_script s;
-        snprintf(line, sizeof line, "minos set '%s'\n", bad[i]);
-        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == -1 &&
-              strstr(err, "line 1") && strstr(err, "not a version"),
-              "minos set '%s' is refused as not a version (got: %s)", bad[i], err);
+    for (i = 0; i < sizeof good / sizeof *good; i++) {
+        uint32_t v = 1, m = 1;
+        CHECK(ms_parse_version(good[i], &v, &m) == 0 && v == packed[i] && m == mask[i],
+              "%s packs to 0x%08x with mask 0x%08x (got 0x%08x, 0x%08x)",
+              good[i], packed[i], mask[i], v, m);
+    }
+    {
+        uint32_t v = 0;
+        CHECK(ms_parse_version("10.9", &v, NULL) == 0 && v == 0x000A0900,
+              "a NULL mask is allowed");
+    }
+}
+
+static void test_retired_minimum_statements_are_unknown(void) {
+    static const char *lines[] = { "version-min set 10.9\n", "minos set 10.9\n",
+                                   "minos at-mots 10.9\n" };
+    static const char *said[] = { "line 1: unknown statement 'version-min set'",
+                                  "line 1: unknown statement 'minos set'",
+                                  "line 1: unknown statement 'minos at-mots'" };
+    for (size_t i = 0; i < sizeof lines / sizeof *lines; i++) {
+        ms_script s; char err[256] = {0};
+        CHECK(ms_parse(lines[i], strlen(lines[i]), &s, err, sizeof err) == -1 &&
+              strcmp(err, said[i]) == 0,
+              "%s is refused as %s, with no message of its own (got: %s)", lines[i], said[i], err);
     }
 }
 
@@ -803,7 +822,6 @@ int main(void) {
     test_a_bare_script_does_not_allow_unmatched();
     test_final_line_without_newline_parses();
     test_blank_and_comment_lines_dont_shift_line_numbers();
-    test_version_min_value_refusal();
     test_swift_abi_value_refusal();
     test_fixups_value_refusal();
     test_kind_and_op_names();
@@ -822,7 +840,8 @@ int main(void) {
     test_a_directive_after_target_is_an_error();
     test_dylib_retype();
     test_import_redirect();
-    test_minos_set_takes_a_version();
+    test_minos_at_most_and_if_absent_take_a_version();
+    test_retired_minimum_statements_are_unknown();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }
