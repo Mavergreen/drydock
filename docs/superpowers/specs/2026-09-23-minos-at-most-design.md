@@ -141,6 +141,31 @@ Its translation becomes `minos if-absent 10.9`. Upstream `add_version_min` appen
 
 The wrapper's "already present" output for an image that already has an `LC_VERSION_MIN_MACOSX` must be unchanged, because a test pins it.
 
+## The sdk, and Claude Code
+
+The rule is unchanged: keep an existing sdk, carry a build-version's sdk over, and write 10.9 only when there is none. It now rests on measurement. Disassembling 10.9.5's dyld, CoreFoundation, Foundation and AppKit shows three things (`docs/minimum-os-version.md`, "Every sdk check in 10.9.5's own code"):
+
+- Every read of the sdk field is one unsigned ordered compare against a constant ≤ 10.9.
+- AppKit never reads the field at all.
+- `_CFExecutableLinkedOnOrAfter` decides by link-time library versions, not by the sdk.
+
+So on 10.9, any sdk ≥ 10.9 behaves identically. On newer macOS, the real sdk is what keeps dark mode, correct OS-version reporting and notarization eligibility.
+
+**Claude Code is the primary application.** A single run of `drydock-macho-rewrite` with one committed script must produce the Claude Code binary that `install.sh`'s wrapper pipeline produces today, or one that is behaviour-identical to it. No wrappers are involved. The output is expected to differ in bytes: its sdk becomes 26.5 where today's is 10.9, and its load-command order changes. By the measurement above, that is behaviour-identical on 10.9.
+
+- **The recipe** lives at `recipes/claude-code.edits`, a new top-level directory for scripts that users run. It is:
+  - `allow-unmatched`;
+  - `fixups set classic`;
+  - `minos at-most 10.9`;
+  - `load-command delete uuid`;
+  - `load-command delete codesig`;
+  - the nine `dylib replace` lines the installer's `change_dylib` pairs make;
+  - and, as a separate variant for CPUs without AVX2, `dylib insert` of the AVX emulator.
+
+  The wrapper script `/usr/local/bin/claude` is the source of truth for the paths.
+- **Its smoke test runs before a release, and it is not a merge gate.** Apply the recipe to the current real Claude Code binary, then run `--version`, `--help` and one `-p` prompt, and compare them with today's pipeline output. The result is recorded in the plan's report. If Claude misbehaves later, the sdk question is revisited then, with this measurement as its baseline.
+- **Moving `install.sh` onto the recipe** is the owner's release step, not part of this plan.
+
 ## README
 
 The statements section gets a short decision table. It is the "when to use which" the owner asked for:
