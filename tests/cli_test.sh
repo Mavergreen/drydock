@@ -1488,13 +1488,27 @@ done
 # else, is written byte for byte.
 build_main "$T/mn_same"
 "$T/mkminos" vmin "$T/mn_same" 10.9 10.9 || bad "minos unchanged: fixture setup" "mkminos vmin failed"
-for mn_st in 'at-most 10.9' 'if-absent 10.9'; do
-    rc=0; printf 'minos %s\n' "$mn_st" | "$DRYDOCK_MACHO_REWRITE" "$T/mn_same" "$T/mn_same.out" \
+for mn_st in 'minos at-most 10.9' 'minos if-absent 10.9' 'target 10.9'; do
+    rc=0; printf '%s\n' "$mn_st" | "$DRYDOCK_MACHO_REWRITE" "$T/mn_same" "$T/mn_same.out" \
         >/dev/null 2>"$T/mn.err" || rc=$?
     [ "$rc" -eq 0 ] && cmp -s "$T/mn_same" "$T/mn_same.out" \
-        && ok "minos $mn_st: a slice already at version-min 10.9 is written byte for byte" \
-        || bad "minos $mn_st (unchanged)" "rc $rc, or the bytes changed: $(cat "$T/mn.err")"
+        && ok "$mn_st: a slice already at version-min 10.9 is written byte for byte" \
+        || bad "$mn_st (unchanged)" "rc $rc, or the bytes changed: $(cat "$T/mn.err")"
+    grep -qxF "$T/mn_same: this run disturbed nothing, so there is nothing to re-check" "$T/mn.err" \
+        && ! grep -q 'disturbed sizeofcmds' "$T/mn.err" \
+        && ok "$mn_st: ... and the run reports that it disturbed nothing" \
+        || bad "$mn_st (unchanged)" "not reported as disturbing nothing: $(cat "$T/mn.err")"
 done
+grep -qxF '    nothing to do: this binary already targets 10.9' "$T/mn.err" \
+    && ok "target 10.9: ... and says there is nothing to do" \
+    || bad "target 10.9 (unchanged)" "no 'nothing to do': $(cat "$T/mn.err")"
+build_main "$T/mn_low"
+"$T/mkminos" vmin "$T/mn_low" 10.12 10.13 || bad "minos lowered: fixture setup" "mkminos vmin failed"
+rc=0; printf 'minos at-most 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mn_low" "$T/mn_low.out" \
+    >/dev/null 2>"$T/mn.err" || rc=$?
+[ "$rc" -eq 0 ] && grep -qxF "$T/mn_low: this run disturbed sizeofcmds; none of that is re-checked" "$T/mn.err" \
+    && ok "minos at-most 10.9: a run that lowers the minimum reports that it disturbed sizeofcmds" \
+    || bad "minos at-most 10.9 (lowered)" "rc $rc: $(cat "$T/mn.err")"
 
 # A slice that declares only a non-macOS platform is refused, not a miss:
 # allow-unmatched does not cover it.

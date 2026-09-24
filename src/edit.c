@@ -672,7 +672,8 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
         uint32_t first_before = mg_first_sect_off(*pbuf, *psize);
         rc = me_apply(pbuf, psize, path, &sub, &d.stmt, log, &v);
         if (rc != 0) return rc;
-        me_note_disturbed(disturbed, &d.stmt, first_before, mg_first_sect_off(*pbuf, *psize));
+        if (v.changed)
+            me_note_disturbed(disturbed, &d.stmt, first_before, mg_first_sect_off(*pbuf, *psize));
         changed |= v.changed;
     }
     if (!changed)
@@ -721,8 +722,9 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
             me_say_left(log, path, out);
             return rc;
         }
-        me_note_disturbed(disturbed, stmt, first_before,
-                          mg_first_sect_off(*pbuf, *psize));
+        if (stmt->kind != MS_MINOS || v.changed)
+            me_note_disturbed(disturbed, stmt, first_before,
+                              mg_first_sect_off(*pbuf, *psize));
     }
     return 0;
 }
