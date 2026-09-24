@@ -34,6 +34,10 @@ typedef struct {
  * decide the minimum; the sdk is the declaring command's, or 10.9 when
  * nothing was declared. Returns 0, or MR_REFUSED with the reason on stderr
  * prefixed by `label`. A grow may reallocate *pbuf. */
+/* 1, with the reason on stderr prefixed by `label`, when mv_declare_minos
+ * would refuse the image for the platform it declares; else 0. */
+int mv_foreign_platform(const mi_image *im, const char *label);
+
 int mv_declare_minos(uint8_t **pbuf, size_t *psize, const char *label, int rule,
                      uint32_t version, uint32_t mask, mv_decl_report *r);
 

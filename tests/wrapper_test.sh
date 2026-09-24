@@ -1119,6 +1119,15 @@ run add_version_min f
     && ok "add_version_min: ... and one declaring platform 2 beside a version-min is refused (1), untouched, saying why" \
     || bad "add_version_min version-min beside iOS" "exit $rc: $(cat "$T/err")"
 
+mkchained_fixture "$T/pmsim" && mkminos_run bv "$T/pmsim" 7 15.0 15.0 \
+    || bad "patch_macho iOS simulator: fixture setup" "mkminos bv failed"
+pmsim_in=$(sha "$T/pmsim")
+run patch_macho pmsim pmsim
+[ "$rc" -eq 1 ] && [ "$(sha "$T/pmsim")" = "$pmsim_in" ] \
+    && grep -qF "declares platform 7, not macOS; refusing to add a macOS minimum to it" "$T/err" \
+    && ok "patch_macho: a chained binary declaring only platform 7 is refused (1), untouched, saying why" \
+    || bad "patch_macho iOS simulator" "exit $rc: $(cat "$T/err")"
+
 # The wrappers keep editing FILE "in place" -- by writing a temp beside the
 # real target and mv-ing it over. A symlinked FILE updates its target and
 # stays a symlink; a hard-linked FILE is refused; a refusal leaves no temp

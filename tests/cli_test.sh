@@ -1594,6 +1594,24 @@ fk_run "$T/fk_t7" "$T/fk_t7.out"
     && ok "fixups set classic: 7 bytes of pad cannot hold the kept command too; refused (1), nothing written" \
     || bad "fixups keeps (7 bytes of pad)" "rc $rc: $(cat "$T/fk.err")"
 
+"$T/mkchained" make "$T/fk_sim"; "$T/mkchained" make "$T/fk_simmac"
+"$T/mkminos" bv "$T/fk_sim" 7 15.0 15.0 && "$T/mkminos" add-bv "$T/fk_simmac" 7 15.0 15.0 \
+    || bad "fixups foreign platform: fixture setup" "mkminos failed"
+for fk_case in 'fk_sim|declares platform 7, not macOS; refusing to add a macOS minimum to it' \
+               'fk_simmac|declares platform 7 beside macOS; refusing rather than guess which it is'; do
+    fk_f=${fk_case%%|*}; fk_why=${fk_case#*|}; fk_before=$(sha "$T/$fk_f")
+    for fk_script in 'fixups set classic' 'target 10.9' 'fixups set classic\nminos at-most 10.9' \
+                     'minos at-most 10.9\nfixups set classic'; do
+        rm -f "$T/$fk_f.out"
+        rc=0; printf '%b\n' "$fk_script" | "$DRYDOCK_MACHO_REWRITE" "$T/$fk_f" "$T/$fk_f.out" \
+            >/dev/null 2>"$T/fk.err" || rc=$?
+        [ "$rc" -eq 1 ] && [ ! -e "$T/$fk_f.out" ] && [ "$(sha "$T/$fk_f")" = "$fk_before" ] \
+            && grep -qF "$fk_why" "$T/fk.err" \
+            && ok "$(printf '%s' "$fk_script" | sed 's/\\n/, then /') on $fk_f: refused (1), nothing written: $fk_why" \
+            || bad "fixups foreign platform ($fk_f: $fk_script)" "rc $rc: $(cat "$T/fk.err")"
+    done
+done
+
 # ============================================================================
 # lc -delete
 # ============================================================================

@@ -20,7 +20,7 @@
 #include "image.h"
 #include "mach_compat.h"
 #include "uleb.h"
-#include "version_min.h"   /* MV_PLATFORM_MACOS */
+#include "version_min.h"
 
 /* Chained fixups structures (not in 10.9 headers) */
 struct cf_header {
@@ -507,7 +507,8 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
                         "choose whose minimum to keep\n", cctx.n_macos_bv);
         return MDCL_REFUSED;
     }
-    int keep = cctx.n_macos_bv == 1 && !cctx.has_version_min;
+    if (mv_foreign_platform(&im, "ERROR")) return MDCL_REFUSED;
+    int keep =cctx.n_macos_bv == 1 && !cctx.has_version_min;
     uint32_t keep_len = keep ? (uint32_t)sizeof(struct version_min_command) : 0;
     printf("Found %d segments\n", nsegs);
 

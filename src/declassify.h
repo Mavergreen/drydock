@@ -34,7 +34,7 @@
  *     LC_BUILD_VERSION (10.9's dyld understands none of them);
  *   - keeps a macOS LC_BUILD_VERSION's minos and sdk as an LC_VERSION_MIN_MACOSX,
  *     written just before the new LC_DYLD_INFO_ONLY, unless the image already
- *     has one; two macOS LC_BUILD_VERSIONs are refused;
+ *     has one; two macOS LC_BUILD_VERSIONs, or a platform minos refuses, are refused;
  *   - appends the two opcode streams past the end of the file, adds a 48-byte
  *     LC_DYLD_INFO_ONLY pointing at them (and at the export trie, still in
  *     place), and EXTENDS __LINKEDIT to cover them -- dyld only reads file

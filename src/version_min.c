@@ -45,6 +45,27 @@ static int mv_decl_lc(const struct load_command *lc, void *ctx_) {
     return 0;
 }
 
+static int mv_refuse_platform(const struct mv_decl_scan *c, const char *label) {
+    if (c->n_foreign && !c->n_vm && !c->n_macos) {
+        fprintf(stderr, "%s: declares platform %u, not macOS; refusing to add a macOS minimum to it\n",
+                label, c->foreign);
+        return 1;
+    }
+    if (c->n_other) {
+        fprintf(stderr, "%s: declares platform %u beside macOS; refusing rather than guess which it is\n",
+                label, c->other);
+        return 1;
+    }
+    return 0;
+}
+
+int mv_foreign_platform(const mi_image *im, const char *label) {
+    struct mv_decl_scan c;
+    memset(&c, 0, sizeof c);
+    mi_each_lc(im, mv_decl_lc, &c);
+    return mv_refuse_platform(&c, label);
+}
+
 static void mv_remove_build_versions(uint8_t *buf) {
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
     uint8_t *p = buf + sizeof *h;
@@ -112,16 +133,7 @@ int mv_declare_minos(uint8_t **pbuf, size_t *psize, const char *label, int rule,
                 label, c.n_macos);
         return MR_REFUSED;
     }
-    if (c.n_foreign && !c.n_vm && !c.n_macos) {
-        fprintf(stderr, "%s: declares platform %u, not macOS; refusing to add a macOS minimum to it\n",
-                label, c.foreign);
-        return MR_REFUSED;
-    }
-    if (c.n_other) {
-        fprintf(stderr, "%s: declares platform %u beside macOS; refusing rather than guess which it is\n",
-                label, c.other);
-        return MR_REFUSED;
-    }
+    if (mv_refuse_platform(&c, label)) return MR_REFUSED;
 
     r->from = c.n_vm ? MV_FROM_VERSION_MIN : c.n_macos ? MV_FROM_BUILD_VERSION : MV_FROM_NONE;
     r->declared = r->from == MV_FROM_VERSION_MIN ? c.vm_version : c.bv_minos;
