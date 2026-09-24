@@ -105,6 +105,61 @@ Two consequences for this toolkit:
   everything modern, this toolkit is the only thing that can read these binaries
   at all.
 
+### A modern one: llvm-install-name-tool
+
+Measured 2026-09-24 with `llvm-install-name-tool` from LLVM 22.1.1
+([Mavergreen/clang](https://github.com/Mavergreen/clang)) against Claude Code
+2.1.281. The binary has chained fixups and 64 bytes of header pad. It opens the
+modern layout that 10.9's `install_name_tool` refuses. It still isn't a
+substitute, for three reasons.
+
+**When the new path doesn't fit, it writes a corrupt binary and exits 0.**
+
+```
+$ cp cc huge
+$ llvm-install-name-tool -change /usr/lib/libSystem.B.dylib \
+    /usr/local/$(printf 'x%.0s' {1..120})/libSystemWrapper.dylib huge; echo $?
+0
+$ otool -L huge | sed -n 5p
+	/usr/local/xxx…xxx/libSystemWraUH��AWAVATSH��@I��A��H����P (compatibility version 1.0.0, …)
+$ llvm-objdump --macho --private-headers huge
+llvm-objdump: error: 'huge': truncated or malformed object (offset field of
+section 0 in LC_SEGMENT_64 command 1 not past the headers of the file)
+```
+
+`sizeofcmds` became 2,912 bytes, which ends at 2,944, but `__text` starts at
+2,880. The tail of the load-command table is `__text`'s first instructions. On the
+same edit, `drydock-macho-rewrite cc out` refuses, names the chained fixups as
+the reason it can't grow the header, and writes no `out`.
+
+**When the new path fits, it still rewrites the whole file.** The same `-change`
+to `/usr/local/lib/libSystemWrapper.dylib`, which fits in the pad:
+
+| | `llvm-install-name-tool` | `drydock-macho-rewrite` (`dylib replace`) |
+|---|---|---|
+| bytes differing from the input (`cmp -l \| wc -l`) | 1,981,655 | 72 |
+| file size | 229,236,176 (27,536 smaller) | 229,263,712 (unchanged) |
+| `__BUN` segment filesize | 8,192 bytes smaller | unchanged |
+| `__LINKEDIT` fileoff | moved | unchanged |
+| code signature | replaced with an ad-hoc one | left in place |
+
+The `__BUN` section's contents and offset were unchanged. Only the padding after
+them was dropped. That is probably harmless, but it is not the byte-preserving
+edit this toolkit performs.
+
+**It has seven options:** `-change`, `-id`, `-add_rpath`, `-prepend_rpath`,
+`-rpath`, `-delete_rpath` and `-delete_all_rpaths`. Claude's edit needs:
+
+- library insertion and deletion;
+- weak retyping;
+- lowering chained fixups;
+- the minimum OS version;
+- segment renames and Swift ABI tags.
+
+It cannot do any of those, so it would be one step among several. Each step
+would read and write the whole file, the multi-write pattern that the one-pass
+edit script replaces.
+
 ## Shape
 
 One repo, one library, one multi-call CLI. Working name `machorewrite` — Mach-O
