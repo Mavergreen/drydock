@@ -1094,6 +1094,30 @@ run add_version_min f
 [ "$rc" -eq 0 ] && [ "$(mkminos_run show "$T/f")" = "version-min version=10.9.0 sdk=10.9.0" ] \
     && ok "add_version_min: ... and one carrying both loses the LC_BUILD_VERSION, its version-min unchanged" \
     || bad "add_version_min both" "exit $rc: $(mkminos_run show "$T/f" 2>&1)"
+[ ! -s "$T/out" ] \
+    && ok "add_version_min: ... and, having changed the file, does not say 'already present'" \
+    || bad "add_version_min both stdout" "expected nothing on stdout; got: $(cat "$T/out")"
+
+# A slice that declares a platform other than macOS is refused, untouched,
+# where the C tool appended LC_VERSION_MIN_MACOSX (or, beside one, said
+# "already present").
+fresh
+mkminos_run bv "$T/f" 2 12.0 12.3 || bad "add_version_min iOS build-version: fixture setup" "mkminos bv failed"
+avm_ios_in=$(sha "$T/f")
+run add_version_min f
+[ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$avm_ios_in" ] \
+    && grep -qF "declares platform 2, not macOS; refusing to add a macOS minimum to it" "$T/err" \
+    && ok "add_version_min: a binary declaring only platform 2 is refused (1), untouched, saying why" \
+    || bad "add_version_min iOS build-version" "exit $rc: $(cat "$T/err")"
+fresh
+mkminos_run vmin "$T/f" 10.9 10.9 && mkminos_run add-bv "$T/f" 2 12.0 12.3 \
+    || bad "add_version_min version-min beside iOS: fixture setup" "mkminos failed"
+avm_ios_in=$(sha "$T/f")
+run add_version_min f
+[ "$rc" -eq 1 ] && [ "$(sha "$T/f")" = "$avm_ios_in" ] \
+    && grep -qF "declares platform 2 beside macOS; refusing rather than guess which it is" "$T/err" \
+    && ok "add_version_min: ... and one declaring platform 2 beside a version-min is refused (1), untouched, saying why" \
+    || bad "add_version_min version-min beside iOS" "exit $rc: $(cat "$T/err")"
 
 # The wrappers keep editing FILE "in place" -- by writing a temp beside the
 # real target and mv-ing it over. A symlinked FILE updates its target and
@@ -1117,7 +1141,7 @@ w_ino=$(stat -f %i "$T/w_real")
 [ "$(stat -f %i "$T/w_real")" = "$w_ino" ] \
     && ok "wrapper: a run that changes nothing discards its temp, keeping the inode" \
     || bad "wrapper no-op run" "the target got a new inode"
-grep -q "already present" "$T/w2.out" \
+grep -qxF 'LC_VERSION_MIN_MACOSX already present; nothing to do.' "$T/w2.out" \
     && ok "wrapper: ... and prints the C tool's 'already present' line" \
     || bad "wrapper no-op run" "stdout: $(cat "$T/w2.out")"
 

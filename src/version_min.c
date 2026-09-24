@@ -12,10 +12,7 @@
 #include "mach_compat.h"
 #include "image.h"
 #include "grow.h"
-#include "rewrite.h"    /* MR_REFUSED/MR_FAIL: this function's own exit-code
-                         * vocabulary, shared with mr_apply_file -- see the
-                         * comment on the MR_REFUSED/MR_FAIL #defines there
-                         * for the dividing line this follows. */
+#include "rewrite.h"
 
 void mv_format_version(uint32_t v, char out[16]) {
     if (v & 0xff) snprintf(out, 16, "%u.%u.%u", v >> 16, (v >> 8) & 0xff, v & 0xff);

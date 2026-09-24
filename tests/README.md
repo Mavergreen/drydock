@@ -138,9 +138,8 @@ checking only `== 0` or `!= 0` is unaffected by this distinction's addition
 regardless of which of `1`/`2` means which.
 
 A `dylib`, `rpath`, `load-command` or `segment` statement (past the parser's
-own KIND check) and `minos` hand their
-statement's code back through `me_run` from the shared cores,
-`mr_apply_image` and `mv_declare_minos` (`src/rewrite.h`,
+own KIND check) and `minos` hand their statement's code back through `me_run`
+from the shared cores, `mr_apply_image` and `mv_declare_minos` (`src/rewrite.h`,
 `src/version_min.h`). Those two use the very same `MR_REFUSED` (1) /
 `MR_FAIL` (2) split this table documents -- `src/rewrite.h`'s
 `MR_REFUSED`/`MR_FAIL` block states the rule and `mr_apply_image`'s own comment

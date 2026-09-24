@@ -1017,8 +1017,6 @@ else
     bad "alone: load-command delete" "$(cat "$T/alone_lc.out")"
 fi
 
-# minos if-absent was the one statement gated on add_version_min rather than
-# change_dylib, so it needs its own standalone run.
 if printf 'minos if-absent 10.9\n' \
         | "$T/alone/drydock-macho-rewrite" "$T/alone/fixture" "$T/alone/fixture.minos" \
         >"$T/alone_minos.out" 2>&1; then
@@ -1396,9 +1394,8 @@ printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$
 minos_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_out")
 echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos if-absent: appends when absent" \
     || bad "minos if-absent: appends when absent" "not found in info output"
-# Running it again must not error (add_version_min's own "already present"
-# path) -- this time reading the output of the run above, which HAS the
-# command, so the second run really takes that branch.
+# Running it again must not error -- this time reading the output of the run
+# above, which HAS the command, so the second run really takes that branch.
 if printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
     ok "minos if-absent: leaves a present one alone, exit 0"
 else
