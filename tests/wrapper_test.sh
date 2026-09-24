@@ -433,7 +433,7 @@ run change_dylib f -change /nope/absent.dylib /also/absent.dylib
 rm -rf "$T/hl"; mkdir "$T/hl"
 hl_case() {   # hl_case TOOL ARG...
     hl_tool=$1; shift
-    cp "$FIXTURE" "$T/hl/f"; ln "$T/hl/f" "$T/hl/f2"
+    cp "$FIXTURE" "$T/hl/f"; strip_vm "$T/hl/f"; ln "$T/hl/f" "$T/hl/f2"
     hl_sha=$(sha "$T/hl/f")
     hl_rc=0
     ( cd "$T/hl" && "$BIN/$hl_tool" f "$@" ) >"$T/hl.out" 2>"$T/hl.err" || hl_rc=$?

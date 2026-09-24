@@ -4,8 +4,8 @@
 #
 #   add_version_min binary
 #
-# compat/README.md's "add_version_min" section holds every difference from
-# the C tool and the test for each.
+# compat/README.md's "add_version_min" section lists how it differs from the
+# C tool, and the test for each.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
