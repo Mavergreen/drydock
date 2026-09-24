@@ -20,6 +20,7 @@
 #include "image.h"
 #include "mach_compat.h"
 #include "uleb.h"
+#include "version_min.h"   /* MV_PLATFORM_MACOS */
 
 /* Chained fixups structures (not in 10.9 headers) */
 struct cf_header {
@@ -140,6 +141,9 @@ struct md_collect_ctx {
     uint32_t exports_off, exports_size;
     uint32_t fixups_off, fixups_size;
     int has_dyld_info_only;
+    int has_version_min;
+    int n_macos_bv;
+    uint32_t bv_minos, bv_sdk;   /* the macOS LC_BUILD_VERSION's */
     struct { uint8_t *pos; uint32_t size; uint32_t cmd; } to_remove[MDCL_MAX_STRIP];
     int n_remove;
 };
@@ -217,7 +221,15 @@ static int md_collect_lc(const struct load_command *lc_, void *ctx_) {
     } else if (lc->cmd == LC_DYLD_INFO_ONLY) {
         ctx->has_dyld_info_only = 1;
     } else if (lc->cmd == LC_BUILD_VERSION) {
+        const struct mc_build_version *bv = (const struct mc_build_version *)lc;
+        if (lc->cmdsize >= sizeof *bv && bv->platform == MV_PLATFORM_MACOS &&
+            ctx->n_macos_bv++ == 0) {
+            ctx->bv_minos = bv->minos;
+            ctx->bv_sdk = bv->sdk;
+        }
         if (md_remove_push(ctx, (uint8_t *)lc, lc->cmdsize, lc->cmd)) return 1;
+    } else if (lc->cmd == LC_VERSION_MIN_MACOSX) {
+        ctx->has_version_min = 1;
     }
     return 0;
 }
@@ -490,6 +502,13 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
         return MDCL_PASSTHROUGH;
     }
     if (!fixups_off) { fprintf(stderr, "No chained fixups found\n"); return MDCL_REFUSED; }
+    if (cctx.n_macos_bv > 1) {
+        fprintf(stderr, "ERROR: %d macOS LC_BUILD_VERSION commands; refusing rather than "
+                        "choose whose minimum to keep\n", cctx.n_macos_bv);
+        return MDCL_REFUSED;
+    }
+    int keep = cctx.n_macos_bv == 1 && !cctx.has_version_min;
+    uint32_t keep_len = keep ? (uint32_t)sizeof(struct version_min_command) : 0;
     printf("Found %d segments\n", nsegs);
 
     /* Parse chained fixups */
@@ -743,10 +762,20 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
         goto refuse;
     }
     uint8_t *first_data = buf + first_sect_off;
-    if (lcmds_end + 48 > first_data) {
-        fprintf(stderr, "ERROR: No room for LC_DYLD_INFO_ONLY (need 48 bytes, have %ld)\n",
-                first_data - lcmds_end);
+    if (lcmds_end + keep_len + 48 > first_data) {
+        fprintf(stderr, "ERROR: No room for LC_DYLD_INFO_ONLY (need %u bytes, have %ld)\n",
+                48 + keep_len, first_data - lcmds_end);
         goto refuse;
+    }
+    if (keep) {
+        struct version_min_command *vm = (struct version_min_command *)lcmds_end;
+        vm->cmd = LC_VERSION_MIN_MACOSX;
+        vm->cmdsize = keep_len;
+        vm->version = cctx.bv_minos;
+        vm->sdk = cctx.bv_sdk;
+        lcmds_end += keep_len;
+        hdr->ncmds++;
+        hdr->sizeofcmds += keep_len;
     }
 
     struct dyld_info_command *di = (struct dyld_info_command *)lcmds_end;
@@ -799,6 +828,9 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
         rep->appended = new_end - fsize;
         for (int i = 0; i < cctx.n_remove; i++) rep->stripped[i] = cctx.to_remove[i].cmd;
         rep->n_stripped = cctx.n_remove;
+        rep->kept_version_min = keep;
+        rep->kept_minos = cctx.bv_minos;
+        rep->kept_sdk = cctx.bv_sdk;
         rep->linkedit_before = linkedit_before;
         rep->linkedit_after = linkedit->filesize;
     }

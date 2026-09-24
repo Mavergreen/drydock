@@ -1491,103 +1491,6 @@ static void test_the_skip_line_names_what_the_run_disturbed(void) {
     rm_dir();
 }
 
-static void test_minos_set_rewrites_the_declared_minimum_in_place(void) {
-    fresh_dir();
-    char path[512], o1[512], o2[512], o3[512], o4[512], o5[512];
-    in_dir(path, sizeof path, "img");
-    in_dir(o1, sizeof o1, "o1"); in_dir(o2, sizeof o2, "o2");
-    in_dir(o3, sizeof o3, "o3"); in_dir(o4, sizeof o4, "o4");
-    in_dir(o5, sizeof o5, "o5");
-
-    uint8_t *img = build_image(VMIN_1012);
-    write_file(path, img, IMG_SIZE, 0755);
-    int rc = run(path, o1, "minos set 10.9\n");
-    CHECK(rc == 0, "minos set: a 10.12 version-min is lowered (got %d; log: %s)", rc, g_log);
-    CHECK(lc_word(o1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
-          "minos set: version is 10.9 (got 0x%08x)", lc_word(o1, LC_VERSION_MIN_MACOSX, 2));
-    CHECK(lc_word(o1, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
-          "minos set: sdk is still 10.13 (got 0x%08x)", lc_word(o1, LC_VERSION_MIN_MACOSX, 3));
-    {
-        size_t len = 0, diff = 0;
-        uint8_t *now = read_file(o1, &len);
-        for (size_t i = 0; now && i < len && i < IMG_SIZE; i++) diff += now[i] != img[i];
-        CHECK(now && len == IMG_SIZE && diff == 1,
-              "minos set: in place, one byte changed (size %zu, %zu differ)", len, diff);
-        free(now);
-    }
-    CHECK(strstr(g_log, "  minos set 10.9\n      version-min 10.12 -> 10.9\n") != NULL,
-          "minos set: the report says old -> new beneath the statement (log: %s)", g_log);
-    rc = run(o1, o5, "minos set 10.9\n");
-    CHECK(rc == 0 && strstr(g_log, "      version-min 10.9 -> 10.9\n") != NULL,
-          "minos set: run again on its own output, an equal value has matched (got %d; log: %s)",
-          rc, g_log);
-    {
-        size_t l1 = 0, l5 = 0;
-        uint8_t *b1 = read_file(o1, &l1), *b5 = read_file(o5, &l5);
-        CHECK(b1 && b5 && l1 == l5 && memcmp(b1, b5, l1) == 0,
-              "minos set: run again on its own output, the file is unchanged");
-        free(b1); free(b5);
-    }
-    rc = run(path, o2, "minos set 10.13\n");
-    CHECK(rc == 0 && lc_word(o2, LC_VERSION_MIN_MACOSX, 2) == 0x000A0D00,
-          "minos set: an explicit statement may raise (got %d; log: %s)", rc, g_log);
-    free(img);
-
-    img = build_image(BUILDVER_12);
-    write_file(path, img, IMG_SIZE, 0755);
-    rc = run(path, o3, "minos set 10.9\n");
-    CHECK(rc == 0, "minos set: a macOS build-version is lowered (got %d; log: %s)", rc, g_log);
-    CHECK(lc_word(o3, LC_BUILD_VERSION, 3) == 0x000A0900 &&
-          lc_word(o3, LC_BUILD_VERSION, 4) == 0x000C0300 &&
-          lc_word(o3, LC_BUILD_VERSION, 2) == 1,
-          "minos set: build-version minos is 10.9; sdk and platform untouched");
-    CHECK(count_lc(o3, LC_VERSION_MIN_MACOSX, NULL) == 0,
-          "minos set: appends no LC_VERSION_MIN_MACOSX");
-    CHECK(strstr(g_log, "      build-version minos 12.0 -> 10.9\n") != NULL,
-          "minos set: the build-version report line (log: %s)", g_log);
-    free(img);
-
-    img = build_image(VMIN_1012 | BUILDVER_12);
-    write_file(path, img, IMG_SIZE, 0755);
-    rc = run(path, o4, "minos set 10.9\n");
-    CHECK(rc == 0 && lc_word(o4, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
-          lc_word(o4, LC_BUILD_VERSION, 3) == 0x000A0900,
-          "minos set: both declarations are lowered (got %d; log: %s)", rc, g_log);
-    free(img);
-    rm_dir();
-}
-
-static void test_minos_set_with_nothing_declared_is_a_miss(void) {
-    fresh_dir();
-    char path[512], out[512], out2[512];
-    in_dir(path, sizeof path, "img");
-    in_dir(out, sizeof out, "img.out");
-    in_dir(out2, sizeof out2, "img.out2");
-
-    uint8_t *img = build_image(0);
-    write_file(path, img, IMG_SIZE, 0755);
-    free(img);
-    snap before = take(path);
-    int rc = run(path, out, "minos set 10.9\n");
-    CHECK(rc == MR_REFUSED, "minos set: nothing declared refuses by default (got %d)", rc);
-    check_untouched("minos set miss", path, &before);
-    CHECK(strstr(g_log, "      no LC_VERSION_MIN_MACOSX or macOS LC_BUILD_VERSION to set\n") != NULL,
-          "minos set: the report says there was nothing to set (log: %s)", g_log);
-    rc = run(path, out, "allow-unmatched\nminos set 10.9\n");
-    CHECK(rc == 0 && count_lc(out, LC_VERSION_MIN_MACOSX, NULL) == 0 &&
-          count_lc(out, LC_BUILD_VERSION, NULL) == 0,
-          "minos set: allowed to miss, it still appends nothing (got %d)", rc);
-
-    img = build_image(BUILDVER_IOS);
-    write_file(path, img, IMG_SIZE, 0755);
-    free(img);
-    before = take(path);
-    rc = run(path, out2, "minos set 10.9\n");
-    CHECK(rc == MR_REFUSED, "minos set: an iOS build-version is not a macOS minimum (got %d)", rc);
-    check_untouched("minos set on iOS build-version", path, &before);
-    rm_dir();
-}
-
 static void test_target_with_both_commands_lets_version_min_decide(void) {
     fresh_dir();
     char path[512], out[512];
@@ -1598,12 +1501,15 @@ static void test_target_with_both_commands_lets_version_min_decide(void) {
     free(img);
     int rc = run(path, out, "target 10.9\n");
     CHECK(rc == 0, "target, both commands: runs (got %d; log: %s)", rc, g_log);
-    CHECK(strstr(g_log, "    minimum: version-min 10.12 -> 10.9; sdk 10.13 untouched\n") != NULL,
-          "target, both commands: the version-min decides the minimum line (log: %s)", g_log);
+    CHECK(strstr(g_log, "    minos at-most 10.9  (always)\n"
+                        "      version-min 10.12 -> 10.9; sdk 10.13 kept; build-version 12.0 removed\n")
+          != NULL,
+          "target, both commands: the version-min decides, and the build-version's removal is named "
+          "(log: %s)", g_log);
     CHECK(count_lc(out, LC_BUILD_VERSION, NULL) == 0 &&
           lc_word(out, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900 &&
           lc_word(out, LC_VERSION_MIN_MACOSX, 3) == 0x000A0D00,
-          "target, both commands: build-version deleted, version-min 10.9 with sdk 10.13 kept");
+          "target, both commands: build-version gone, version-min 10.9 with sdk 10.13 kept");
     rm_dir();
 }
 
@@ -1615,31 +1521,6 @@ static void test_mv_format_version_drops_a_zero_patch(void) {
     CHECK(strcmp(b, "10.9.5") == 0, "0x000A0905 formats as 10.9.5 (got %s)", b);
     mv_format_version(0x000B0000, b);
     CHECK(strcmp(b, "11.0") == 0, "0x000B0000 formats as 11.0 (got %s)", b);
-}
-
-static void test_fat_minos_set_matches_in_any_slice(void) {
-    fresh_dir();
-    char path[512], out[512], s1[512];
-    in_dir(path, sizeof path, "fat");
-    in_dir(out, sizeof out, "fat.out");
-    in_dir(s1, sizeof s1, "s1");
-    write_fat(path, 0, VMIN_1012, 0);   /* only the second slice declares one */
-    int rc = run(path, out, "minos set 10.9\n");
-    CHECK(rc == 0, "fat, minos set: a declaration in a later slice is a match (got %d; log: %s)",
-          rc, g_log);
-    if (rc == 0) {
-        slice_to_file(out, 1, s1);
-        CHECK(lc_word(s1, LC_VERSION_MIN_MACOSX, 2) == 0x000A0900,
-              "fat, minos set: the second slice was lowered");
-    }
-    write_fat(path, 0, 0, 0);
-    snap before = take(path);
-    rc = run(path, out, "minos set 10.9\n");
-    CHECK(rc == MR_REFUSED, "fat, minos set: declared in no slice refuses (got %d)", rc);
-    check_untouched("fat, minos set miss everywhere", path, &before);
-    CHECK(strstr(g_log, "matched nothing in any selected slice") != NULL,
-          "fat, minos set: the refusal says no slice matched (log: %s)", g_log);
-    rm_dir();
 }
 
 static void test_minos_decides_the_minimum_per_rule(void) {
@@ -1814,10 +1695,7 @@ int main(void) {
     test_fat_writes_out_and_not_the_input();
     test_fat_a_slice_skips_its_verify_on_its_own_terms();
     test_the_skip_line_names_what_the_run_disturbed();
-    test_minos_set_rewrites_the_declared_minimum_in_place();
-    test_minos_set_with_nothing_declared_is_a_miss();
     test_target_with_both_commands_lets_version_min_decide();
-    test_fat_minos_set_matches_in_any_slice();
     test_mv_format_version_drops_a_zero_patch();
     test_minos_decides_the_minimum_per_rule();
     test_minos_leaves_a_declared_10_9_byte_for_byte();

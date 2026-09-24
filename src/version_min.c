@@ -90,7 +90,7 @@ int mv_add_version_min(const char *path, const char *out) {
     size_t fsize = im.size;
     uint8_t *buf = mi_release(&im);
     int added = 0;
-    int rc = mv_add_version_min_image(&buf, &fsize, path, MV_10_9, &added);
+    int rc = mv_add_version_min_image(&buf, &fsize, path, &added);
     if (rc != 0) {
         free(buf);
         return rc;
@@ -114,8 +114,7 @@ int mv_add_version_min(const char *path, const char *out) {
 /* See version_min.h. mv_add_version_min's former middle, moved rather than
  * copied: the scan, the "already present" and "no room" answers, and the
  * append, all against the caller's buffer and none of the file around it. */
-int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
-                             const char *label, uint32_t sdk, int *out_added) {
+int mv_add_version_min_image(uint8_t **pbuf, size_t *psize, const char *label, int *out_added) {
     *out_added = 0;
     mi_image im;
     if (mi_wrap(*pbuf, *psize, &im) != 0) {
@@ -164,34 +163,11 @@ int mv_add_version_min_image(uint8_t **pbuf, size_t *psize,
     vm->cmd = LC_VERSION_MIN_MACOSX;
     vm->cmdsize = sizeof(*vm);
     vm->version = MV_10_9;
-    vm->sdk     = sdk;
+    vm->sdk     = MV_10_9;
     hdr->ncmds++;
     hdr->sizeofcmds += sizeof(*vm);
     *out_added = 1;
     return 0;
-}
-
-struct mv_set_ctx { uint32_t version; mv_minos_report *r; };
-
-static int mv_set_lc(const struct load_command *lc, void *ctx_) {
-    struct mv_set_ctx *c = ctx_;
-    if (lc->cmd == LC_VERSION_MIN_MACOSX && lc->cmdsize >= sizeof(struct version_min_command)) {
-        struct version_min_command *vm = (struct version_min_command *)lc;
-        if (c->r->version_min++ == 0) c->r->version_min_was = vm->version;
-        vm->version = c->version;
-    } else if (lc->cmd == LC_BUILD_VERSION && lc->cmdsize >= sizeof(struct mc_build_version)) {
-        struct mc_build_version *bv = (struct mc_build_version *)lc;
-        if (bv->platform != MV_PLATFORM_MACOS) return 0;
-        if (c->r->build_version++ == 0) c->r->build_version_was = bv->minos;
-        bv->minos = c->version;
-    }
-    return 0;
-}
-
-void mv_set_minos(mi_image *im, uint32_t version, mv_minos_report *r) {
-    struct mv_set_ctx c = { version, r };
-    memset(r, 0, sizeof *r);
-    mi_each_lc(im, mv_set_lc, &c);
 }
 
 void mv_format_version(uint32_t v, char out[16]) {

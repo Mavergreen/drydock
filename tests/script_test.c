@@ -414,7 +414,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 20, "the statement table has 20 rows (got %d)", n_rows);
+    CHECK(n_rows == 19, "the statement table has 19 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row. Each mask below was read out of
@@ -524,8 +524,6 @@ static void test_disturbs_matches_the_spec_table(void) {
     CHECK(ms_disturbs(MS_IMPORT, MS_REDIRECT) == MREL_FILE_OFF,
           "import redirect can move the bind stream within __LINKEDIT, and nothing else");
 
-    CHECK(ms_disturbs(MS_MINOS, MS_SET) == MREL_NONE,
-          "minos set rewrites one field in place: no command changes size, nothing moves");
     CHECK(ms_disturbs(MS_MINOS, MS_AT_MOST) == MREL_HEADER_PAD,
           "minos at-most removes build-versions and may append a version-min: the pad");
     CHECK(ms_disturbs(MS_MINOS, MS_IF_ABSENT) == MREL_HEADER_PAD,
@@ -752,38 +750,6 @@ static void test_dylib_retype(void) {
           "rpath retype accepted");
 }
 
-static void test_minos_set_takes_a_version(void) {
-    static const char *good[] = { "10.9", "10.12", "10.9.5", "11", "65535.255.255", "0.0" };
-    static const uint32_t packed[] = { 0x000A0900, 0x000A0C00, 0x000A0905, 0x000B0000,
-                                       0xFFFFFFFF, 0 };
-    static const char *bad[] = { "", "10.", ".9", "10..9", "10.9.5.1", "10.256",
-                                 "65536", "-10.9", "+10", "10.9a", "ten", "10.9.256" };
-    size_t i;
-    for (i = 0; i < sizeof good / sizeof *good; i++) {
-        char line[64], err[256] = {0};
-        ms_script s;
-        uint32_t v = 1;
-        snprintf(line, sizeof line, "minos set %s\n", good[i]);
-        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == 0,
-              "minos set %s parses (%s)", good[i], err);
-        if (s.n == 1)
-            CHECK(s.stmts[0].kind == MS_MINOS && s.stmts[0].op == MS_SET &&
-                  strcmp(s.stmts[0].a, good[i]) == 0,
-                  "minos set %s is one MS_MINOS/MS_SET statement carrying its operand", good[i]);
-        ms_free(&s);
-        CHECK(ms_parse_version(good[i], &v, NULL) == 0 && v == packed[i],
-              "%s packs to 0x%08x (got 0x%08x)", good[i], packed[i], v);
-    }
-    for (i = 0; i < sizeof bad / sizeof *bad; i++) {
-        char line[64], err[256] = {0};
-        ms_script s;
-        snprintf(line, sizeof line, "minos set '%s'\n", bad[i]);
-        CHECK(ms_parse(line, strlen(line), &s, err, sizeof err) == -1 &&
-              strstr(err, "line 1") && strstr(err, "not a version"),
-              "minos set '%s' is refused as not a version (got: %s)", bad[i], err);
-    }
-}
-
 static void test_minos_at_most_and_if_absent_take_a_version(void) {
     static const char *ops[] = { "at-most", "if-absent" };
     const int op_enum[] = { MS_AT_MOST, MS_IF_ABSENT };
@@ -830,6 +796,18 @@ static void test_minos_at_most_and_if_absent_take_a_version(void) {
     }
 }
 
+static void test_retired_minimum_statements_are_unknown(void) {
+    static const char *lines[] = { "minos set 10.9\n", "minos at-mots 10.9\n" };
+    static const char *said[] = { "unknown statement 'minos set'",
+                                  "unknown statement 'minos at-mots'" };
+    for (size_t i = 0; i < sizeof lines / sizeof *lines; i++) {
+        ms_script s; char err[256] = {0};
+        CHECK(ms_parse(lines[i], strlen(lines[i]), &s, err, sizeof err) == -1 &&
+              strstr(err, said[i]) != NULL,
+              "%s is refused as %s, with no message of its own (got: %s)", lines[i], said[i], err);
+    }
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -872,8 +850,8 @@ int main(void) {
     test_a_directive_after_target_is_an_error();
     test_dylib_retype();
     test_import_redirect();
-    test_minos_set_takes_a_version();
     test_minos_at_most_and_if_absent_take_a_version();
+    test_retired_minimum_statements_are_unknown();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

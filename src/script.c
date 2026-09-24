@@ -129,7 +129,6 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
    * prevent -- so it is spelled, with this sentence. */ \
   R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE) \
   R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF) \
-  R("minos",        MS_MINOS,        "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE) \
   R("minos",        MS_MINOS,        "at-most",  MS_AT_MOST,      1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD)
 
@@ -476,8 +475,6 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
             stmts[n_stmts].b = nargs >= 2 ? fields[3] : NULL;
             stmts[n_stmts].c = nargs >= 3 ? fields[4] : NULL;
             stmts[n_stmts].line = lineno;
-            stmts[n_stmts].has_sdk = 0;
-            stmts[n_stmts].sdk = 0;
             n_stmts++;
             seen_operation = 1;
         }

@@ -926,6 +926,19 @@ grep -q '^Added LC_DYLD_INFO_ONLY:' "$T/out" && ! grep -q '^Already patched' "$T
     && ok "patch_macho: ... and md_declassify's own lines still come through" \
     || bad "patch_macho converting stdout" "not the converting transcript: $(cat "$T/out")"
 
+# THE DECLARATION SURVIVES. The C tool dropped mkchained's LC_BUILD_VERSION
+# (macOS, 12.0, sdk 12.0) and left no version command. As install.sh runs the
+# two, add_version_min then appended 10.9, sdk 10.9; now it finds 12.0 present.
+[ "$("$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -c '^LC\[[0-9]*\] LC_VERSION_MIN_MACOSX ')" = 1 ] \
+    && "$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -qxF '  version=12.0.0 sdk=12.0.0' \
+    && ok "patch_macho: ... and OUT keeps the build-version's minimum and sdk as one LC_VERSION_MIN_MACOSX" \
+    || bad "patch_macho keeps the declaration" "$("$BIN/drydock-macho-rewrite" info "$T/cfout" | grep -A1 VERSION)"
+cp "$T/cfout" "$T/cfpipe"
+run add_version_min cfpipe
+[ "$rc" -eq 0 ] && "$BIN/drydock-macho-rewrite" info "$T/cfpipe" | grep -qxF '  version=12.0.0 sdk=12.0.0' \
+    && ok "patch_macho then add_version_min: the binary declares the build-version's minimum and sdk, not 10.9" \
+    || bad "patch_macho then add_version_min" "exit $rc: $("$BIN/drydock-macho-rewrite" info "$T/cfpipe" | grep -A1 VERSION)"
+
 # THE INSTALLED BYTES ARE THE CONVERTED ONES. tests/cli_test.sh compares the two
 # FRONT-ENDS' output for the same input (its byte-identity assertion); these two
 # are about the INSTALL -- that what lands at OUT is what drydock-macho-rewrite wrote, and is

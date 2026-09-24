@@ -32,6 +32,9 @@
  *     REBASE_/BIND_ opcodes that say what it just undid;
  *   - strips LC_DYLD_EXPORTS_TRIE, LC_DYLD_CHAINED_FIXUPS and every
  *     LC_BUILD_VERSION (10.9's dyld understands none of them);
+ *   - keeps a macOS LC_BUILD_VERSION's minos and sdk as an LC_VERSION_MIN_MACOSX,
+ *     written just before the new LC_DYLD_INFO_ONLY, unless the image already
+ *     has one; two macOS LC_BUILD_VERSIONs are refused;
  *   - appends the two opcode streams past the end of the file, adds a 48-byte
  *     LC_DYLD_INFO_ONLY pointing at them (and at the export trie, still in
  *     place), and EXTENDS __LINKEDIT to cover them -- dyld only reads file
@@ -110,8 +113,9 @@
  *   2MB of slack past the end of the file (MDCL_SLACK, below), which both
  *     finished streams plus their 8-byte alignment must fit inside --
  *     MDCL_REFUSED otherwise.
- *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY, and a __LINKEDIT
- *     segment to extend -- MDCL_REFUSED without either. The pad ends at the
+ *   48 bytes of header pad for the new LC_DYLD_INFO_ONLY (64 with a kept
+ *     LC_VERSION_MIN_MACOSX), and a __LINKEDIT segment to extend --
+ *     MDCL_REFUSED without either. The pad ends at the
  *     first section's file data, so an image with no section data, or whose
  *     first section's offset lies past its end, is MDCL_REFUSED too, rather
  *     than given a guessed bound.
@@ -162,6 +166,8 @@ typedef struct {
     uint32_t stripped[MDCL_MAX_STRIP]; /* the commands removed, as LC_*
                                         * values, in load-command order */
     int      n_stripped;
+    int      kept_version_min; /* a macOS LC_BUILD_VERSION was kept as ... */
+    uint32_t kept_minos, kept_sdk; /* ... an LC_VERSION_MIN_MACOSX with these */
     uint64_t linkedit_before;  /* __LINKEDIT's filesize as found */
     uint64_t linkedit_after;   /* ... and as left: larger when the conversion
                                 * extended it over the streams, else equal */

@@ -497,12 +497,18 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 # tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 20 ] && [ "$n_unique" -eq 20 ] \
-    && ok "capabilities: exactly 20 unique statement lines" \
+[ "$n_statements" -eq 19 ] && [ "$n_unique" -eq 19 ] \
+    && ok "capabilities: exactly 19 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
-echo "$caps" | grep -qxF "statement minos set 1" \
-    && ok "capabilities: minos set is advertised" \
-    || bad "capabilities statements" "no 'statement minos set 1' line: $(echo "$caps" | grep '^statement')"
+if echo "$caps" | grep -qxF "statement minos at-most 1"; then
+    if echo "$caps" | grep -qxF "statement minos set 1"; then
+        bad "capabilities statements" "minos set is still advertised"
+    else
+        ok "capabilities: minos set is no longer advertised"
+    fi
+else
+    bad "capabilities statements" "no minos at-most line, so the absent minos set proves nothing"
+fi
 for caps_minos in 'at-most' 'if-absent'; do
     echo "$caps" | grep -qxF "statement minos $caps_minos 1" \
         && ok "capabilities: minos $caps_minos is advertised" \
@@ -1450,80 +1456,6 @@ rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" >/de
 [ "$rc" -eq 2 ] && ok "version-min set: a missing OUT is a usage error (2)" || bad "version-min set no OUT" "rc $rc"
 
 # ============================================================================
-# minos set
-# ============================================================================
-build_main "$T/ms_vm"
-"$T/mkminos" vmin "$T/ms_vm" 10.12 10.13 || bad "minos set: fixture setup" "mkminos vmin failed"
-[ "$("$T/mkminos" show "$T/ms_vm")" = "version-min version=10.12.0 sdk=10.13.0" ] \
-    || bad "minos set: fixture setup" "not 10.12: $("$T/mkminos" show "$T/ms_vm")"
-rc=0; printf 'minos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_vm.out" \
-    >/dev/null 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_vm.out")" = "version-min version=10.9.0 sdk=10.13.0" ] \
-    && ok "minos set: LC_VERSION_MIN_MACOSX 10.12 becomes 10.9, sdk untouched" \
-    || bad "minos set (version-min)" "rc $rc: $("$T/mkminos" show "$T/ms_vm.out" 2>&1); $(cat "$T/ms.err")"
-[ "$(cmp -l "$T/ms_vm" "$T/ms_vm.out" | wc -l | tr -d ' ')" = 1 ] \
-    && ok "minos set: ... in place, one byte of the file changed" \
-    || bad "minos set (version-min)" "$(cmp -l "$T/ms_vm" "$T/ms_vm.out" | wc -l | tr -d ' ') bytes changed"
-grep -qxF "      version-min 10.12 -> 10.9" "$T/ms.err" \
-    && ok "minos set: ... and the report says old -> new" \
-    || bad "minos set (version-min)" "no old -> new line: $(cat "$T/ms.err")"
-rc=0; "$DRYDOCK_MACHO_REWRITE" verify "$T/ms_vm.out" >/dev/null 2>"$T/ms_v.err" || rc=$?
-[ "$rc" -eq 0 ] && ok "minos set: ... and the result passes verify" \
-    || bad "minos set (version-min)" "verify refused: $(cat "$T/ms_v.err")"
-
-build_main "$T/ms_bv"
-"$T/mkminos" bv "$T/ms_bv" 1 12.0 12.3 || bad "minos set: fixture setup" "mkminos bv failed"
-rc=0; printf 'minos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_bv" "$T/ms_bv.out" \
-    >/dev/null 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_bv.out")" = "build-version platform=1 minos=10.9.0 sdk=12.3.0" ] \
-    && ok "minos set: LC_BUILD_VERSION minos 12.0 becomes 10.9, sdk untouched, nothing appended" \
-    || bad "minos set (build-version)" "rc $rc: $("$T/mkminos" show "$T/ms_bv.out" 2>&1); $(cat "$T/ms.err")"
-grep -qxF "      build-version minos 12.0 -> 10.9" "$T/ms.err" \
-    && ok "minos set: ... and the report says old -> new" \
-    || bad "minos set (build-version)" "no old -> new line: $(cat "$T/ms.err")"
-
-rc=0; printf 'minos set 10.13\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm.out" "$T/ms_up.out" \
-    >/dev/null 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_up.out")" = "version-min version=10.13.0 sdk=10.13.0" ] \
-    && ok "minos set: an explicit statement may raise" \
-    || bad "minos set (raise)" "rc $rc: $("$T/mkminos" show "$T/ms_up.out" 2>&1)"
-
-build_main "$T/ms_none"
-"$T/mkminos" none "$T/ms_none" || bad "minos set: fixture setup" "mkminos none failed"
-[ "$("$T/mkminos" show "$T/ms_none")" = none ] \
-    || bad "minos set: fixture setup" "still declares: $("$T/mkminos" show "$T/ms_none")"
-ms_before=$(sha "$T/ms_none")
-rm -f "$T/ms_none.out"
-rc=0; printf 'minos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_none" "$T/ms_none.out" \
-    >/dev/null 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 1 ] && [ ! -e "$T/ms_none.out" ] && [ "$(sha "$T/ms_none")" = "$ms_before" ] \
-    && ok "minos set: with no minimum declared it matches nothing, and refuses (1)" \
-    || bad "minos set (miss)" "expected 1 and no OUT, got $rc: $(cat "$T/ms.err")"
-grep -qF "drydock-macho-rewrite: minos set 10.9 matched nothing" "$T/ms.err" \
-    && ok "minos set: ... and says it matched nothing" \
-    || bad "minos set (miss)" "no miss line: $(cat "$T/ms.err")"
-rc=0; printf 'allow-unmatched\nminos set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_none" "$T/ms_none.out" \
-    >/dev/null 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_none.out")" = none ] \
-    && ok "minos set: allow-unmatched makes the miss a report, and nothing is appended" \
-    || bad "minos set (allowed miss)" "rc $rc: $("$T/mkminos" show "$T/ms_none.out" 2>&1)"
-
-rm -f "$T/ms_bad.out"
-rc=0; printf 'minos set 10.x\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_bad.out" \
-    >/dev/null 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 2 ] && [ ! -e "$T/ms_bad.out" ] && grep -q "not a version" "$T/ms.err" \
-    && ok "minos set: a malformed version is a parse error (2), nothing written" \
-    || bad "minos set (bad version)" "rc $rc: $(cat "$T/ms.err")"
-
-# add_version_min's upstream left a present command alone, so version-min set does too.
-rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/ms_vm" "$T/ms_vmset.out" \
-    >"$T/ms.out" 2>"$T/ms.err" || rc=$?
-[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/ms_vmset.out")" = "version-min version=10.12.0 sdk=10.13.0" ] \
-    && grep -q "already present" "$T/ms.out" \
-    && ok "version-min set: leaves a declared 10.12 alone; only minos set rewrites" \
-    || bad "version-min set (present)" "rc $rc: $("$T/mkminos" show "$T/ms_vmset.out" 2>&1)"
-
-# ============================================================================
 # minos at-most, minos if-absent
 # ============================================================================
 # mn_setup FILE MODE ARG... -- one mkminos surgery on FILE.
@@ -1610,6 +1542,73 @@ rc=0; printf 'minos at-most 10.x\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mn_same" "$T/
 [ "$rc" -eq 2 ] && [ ! -e "$T/mn_bad.out" ] && grep -q "minos at-most: '10.x' is not a version" "$T/mn.err" \
     && ok "minos at-most: a malformed version is a parse error (2), nothing written" \
     || bad "minos at-most (bad version)" "rc $rc: $(cat "$T/mn.err")"
+
+# ============================================================================
+# fixups set classic keeps the declaration
+# ============================================================================
+# mkchained's LC_BUILD_VERSION is macOS, minos 12.0, sdk 12.0. The conversion
+# keeps it as one LC_VERSION_MIN_MACOSX, just before the LC_DYLD_INFO_ONLY it
+# adds: mkminos reads the values, info the order.
+fk_order() { "$DRYDOCK_MACHO_REWRITE" info "$1" | sed -n 's/^LC\[[0-9]*\] //p' | tail -2; }
+fk_run() { rm -f "$2"; rc=0; printf 'fixups set classic\n' | "$DRYDOCK_MACHO_REWRITE" "$1" "$2" \
+    >/dev/null 2>"$T/fk.err" || rc=$?; }
+"$T/mkchained" make "$T/fk_in"
+fk_run "$T/fk_in" "$T/fk_out"
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/fk_out")" = "version-min version=12.0.0 sdk=12.0.0" ] \
+    && ok "fixups set classic: a macOS LC_BUILD_VERSION is kept as LC_VERSION_MIN_MACOSX, minimum and sdk" \
+    || bad "fixups keeps (values)" "rc $rc: $("$T/mkminos" show "$T/fk_out" 2>&1); $(cat "$T/fk.err")"
+[ "$(fk_order "$T/fk_out")" = "LC_VERSION_MIN_MACOSX cmdsize=16
+LC_DYLD_INFO_ONLY cmdsize=48" ] \
+    && ok "fixups set classic: ... placed directly before the LC_DYLD_INFO_ONLY it adds" \
+    || bad "fixups keeps (order)" "last two commands: $(fk_order "$T/fk_out")"
+grep -qxF "      chained fixups -> LC_DYLD_INFO_ONLY; LC_BUILD_VERSION 12.0 (sdk 12.0) kept as LC_VERSION_MIN_MACOSX" \
+    "$T/fk.err" \
+    && ok "fixups set classic: ... and its report line says what it kept" \
+    || bad "fixups keeps (report)" "$(cat "$T/fk.err")"
+
+"$T/mkchained" make "$T/fk_vm"
+"$T/mkminos" vmin "$T/fk_vm" 10.9 10.9 && "$T/mkminos" add-bv "$T/fk_vm" 1 12.0 12.0 \
+    || bad "fixups keeps: fixture setup" "mkminos failed"
+fk_run "$T/fk_vm" "$T/fk_vm.out"
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/fk_vm.out")" = "version-min version=10.9.0 sdk=10.9.0" ] \
+    && ok "fixups set classic: an image that already has LC_VERSION_MIN_MACOSX gets no second one" \
+    || bad "fixups keeps (has version-min)" "rc $rc: $("$T/mkminos" show "$T/fk_vm.out" 2>&1)"
+grep -qxF "      chained fixups -> LC_DYLD_INFO_ONLY" "$T/fk.err" \
+    && ok "fixups set classic: ... and its report line keeps nothing" \
+    || bad "fixups keeps (has version-min)" "$(cat "$T/fk.err")"
+
+"$T/mkchained" make "$T/fk_cat"
+"$T/mkminos" add-bv "$T/fk_cat" 6 13.0 13.0 || bad "fixups keeps: fixture setup" "mkminos add-bv failed"
+fk_run "$T/fk_cat" "$T/fk_cat.out"
+[ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/fk_cat.out")" = "version-min version=12.0.0 sdk=12.0.0" ] \
+    && ok "fixups set classic: a Mac Catalyst LC_BUILD_VERSION is stripped; only the macOS one is kept" \
+    || bad "fixups keeps (Mac Catalyst)" "rc $rc: $("$T/mkminos" show "$T/fk_cat.out" 2>&1)"
+
+"$T/mkchained" make "$T/fk_two"
+"$T/mkminos" add-bv "$T/fk_two" 1 13.0 13.0 || bad "fixups keeps: fixture setup" "mkminos add-bv failed"
+fk_run "$T/fk_two" "$T/fk_two.out"
+[ "$rc" -eq 1 ] && [ ! -e "$T/fk_two.out" ] && grep -qF "2 macOS LC_BUILD_VERSION commands" "$T/fk.err" \
+    && ok "fixups set classic: two macOS LC_BUILD_VERSIONs are refused (1), nothing written" \
+    || bad "fixups keeps (two)" "rc $rc: $(cat "$T/fk.err")"
+
+# FIXUPS THEN MINOS, OR MINOS THEN FIXUPS: THE SAME BYTES, with the stripped
+# commands first, and with only 8 bytes of header pad.
+for fo_mode in make make-lcfirst make-tight; do
+    "$T/mkchained" "$fo_mode" "$T/fo_in"
+    [ "$fo_mode" != make-tight ] \
+        || "$DRYDOCK_MACHO_REWRITE" info "$T/fo_in" | grep -q '^header pad: 8 bytes available' \
+        || bad "fixups/minos order: fixture setup" "make-tight's pad is not 8 bytes"
+    rm -f "$T/fo_fm" "$T/fo_mf"
+    rc=0
+    printf 'fixups set classic\nminos at-most 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/fo_in" "$T/fo_fm" \
+        >/dev/null 2>"$T/fo.err" || rc=$?
+    printf 'minos at-most 10.9\nfixups set classic\n' | "$DRYDOCK_MACHO_REWRITE" "$T/fo_in" "$T/fo_mf" \
+        >/dev/null 2>>"$T/fo.err" || rc=$?
+    [ "$rc" -eq 0 ] && [ "$("$T/mkminos" show "$T/fo_fm")" = "version-min version=10.9.0 sdk=12.0.0" ] \
+        && cmp -s "$T/fo_fm" "$T/fo_mf" \
+        && ok "fixups and minos at-most, in either order, write the same bytes ($fo_mode)" \
+        || bad "fixups/minos order ($fo_mode)" "rc $rc: $("$T/mkminos" show "$T/fo_fm" 2>&1) vs $("$T/mkminos" show "$T/fo_mf" 2>&1): $(cat "$T/fo.err")"
+done
 
 # ============================================================================
 # lc -delete
@@ -4453,8 +4452,8 @@ grep -qF "  target 10.9" "$T/tgt.err" \
 # it. The other three -- chained fixups, a __DATA_CONST, Swift class records
 # -- no linker on any host this repo supports can emit at all.
 build_main_without_build_version "$T/tgt_empty"
-mts "$T/tgt_empty" "version-min set 10.9" >/dev/null 2>"$T/tgt_empty_minos.err" \
-    || bad "target: fixture setup" "version-min set failed: $(cat "$T/tgt_empty_minos.err")"
+mts "$T/tgt_empty" "minos if-absent 10.9" >/dev/null 2>"$T/tgt_empty_minos.err" \
+    || bad "target: fixture setup" "minos if-absent failed: $(cat "$T/tgt_empty_minos.err")"
 otool -l "$T/tgt_empty" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     || bad "target: fixture setup" "tgt_empty has no LC_VERSION_MIN_MACOSX"
 tgt_run "$T/tgt_empty" "$T/tgt_empty.out" && tgt_empty_rc=0 || tgt_empty_rc=$?
@@ -4465,8 +4464,9 @@ grep -qF "    nothing to do: this binary already targets 10.9" "$T/tgt.err" \
     && ok "target: ... and the report says so rather than saying nothing" \
     || bad "target (empty)" "no 'nothing to do' line: $(cat "$T/tgt.err")"
 
-# ROW 1: LC_DYLD_CHAINED_FIXUPS present -> fixups set classic.
-# ROW 2: LC_BUILD_VERSION present -> load-command delete build-version.
+# ROW 1: LC_DYLD_CHAINED_FIXUPS present -> fixups set classic, first.
+# ROW 2: always -> minos at-most 10.9, which leaves no LC_BUILD_VERSION, so
+# load-command delete build-version is never derived.
 # mkchained's hand-built image carries both by construction (10.9's linker
 # predates chained fixups by a decade, so no host can be asked for one).
 # The premise is read by mkchained's own `check`, not by otool: chained
@@ -4484,9 +4484,15 @@ tgt_run "$T/tgt_chained" "$T/tgt_chained.out" || bad "target (chained)" "$(cat "
 grep -qF "    fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)" "$T/tgt.err" \
     && ok "target: chained fixups expand to fixups set classic" \
     || bad "target (chained)" "no fixups line: $(cat "$T/tgt.err")"
-grep -qF "    load-command delete build-version  (LC_BUILD_VERSION present)" "$T/tgt.err" \
-    && ok "target: LC_BUILD_VERSION expands to load-command delete build-version" \
-    || bad "target (chained)" "no build-version line: $(cat "$T/tgt.err")"
+if grep -qxF "    minos at-most 10.9  (always)" "$T/tgt.err"; then
+    if grep -q "^    load-command delete build-version" "$T/tgt.err"; then
+        bad "target (chained)" "derived load-command delete build-version: $(cat "$T/tgt.err")"
+    else
+        ok "target: minos at-most 10.9 is derived, and load-command delete build-version never is"
+    fi
+else
+    bad "target (chained)" "no minos at-most line: $(cat "$T/tgt.err")"
+fi
 # The expansion RAN, it was not merely reported: the output is classic.
 tgt_chk=$("$T/mkchained" check "$T/tgt_chained.out")
 echo "$tgt_chk" | grep -q "^chained=0" && echo "$tgt_chk" | grep -q "^dyldinfo=1" \
@@ -4496,56 +4502,18 @@ echo "$tgt_chk" | grep -q "^chained=0" && echo "$tgt_chk" | grep -q "^dyldinfo=1
 "$DRYDOCK_MACHO_REWRITE" verify "$T/tgt_chained.out" >/dev/null 2>"$T/tgt_v.err" \
     && ok "target: ... and the result passes drydock-macho-rewrite verify" \
     || bad "target (chained)" "verify refused: $(cat "$T/tgt_v.err")"
-# The inverse, so the detection is not "always emit it": a fixture with no
-# LC_BUILD_VERSION derives no delete for one.
-#
-# Every one of these inverses pairs its negative grep with a positive one: a
-# report that stopped being produced at all would satisfy "no build-version
-# line" just as well as a correct detection does, and then four assertions
-# would pass vacuously, together, for the one reason that ought to fail them.
-build_main_without_build_version "$T/tgt_nobv"
-tgt_run "$T/tgt_nobv" "$T/tgt_nobv.out" || bad "target (no build-version)" "$(cat "$T/tgt.err")"
-# Written as a nested `if` with no `!` anywhere: a !-negated command never
-# trips errexit, so the shape is a hazard wherever it is not a test's last
-# line, and the family's shell-portability gate refuses it outright.
-if grep -qF "  target 10.9" "$T/tgt.err"; then
-    if grep -q "load-command delete build-version" "$T/tgt.err"; then
-        bad "target (no build-version)" "a delete was derived for an image with no LC_BUILD_VERSION: $(cat "$T/tgt.err")"
-    else
-        ok "target: an image without LC_BUILD_VERSION derives no delete for it"
-    fi
-else
-    bad "target (no build-version)" "no report at all, so the absent build-version line proves nothing: $(cat "$T/tgt.err")"
-fi
 
-# ROW 3: no LC_VERSION_MIN_MACOSX -> version-min set 10.9. strip_version_min
-# makes the premise true whatever the host's linker emitted.
+# An image that declares nothing gets version-min 10.9, sdk 10.9.
 build_main "$T/tgt_novm"
-"$T/strip_version_min" "$T/tgt_novm" >/dev/null \
-    || bad "target: fixture setup" "strip_version_min failed"
-if otool -l "$T/tgt_novm" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX; then
-    bad "target: fixture setup" "tgt_novm still has LC_VERSION_MIN_MACOSX"
-fi
-tgt_run "$T/tgt_novm" "$T/tgt_novm.out" || bad "target (version-min)" "$(cat "$T/tgt.err")"
-grep -qF "    version-min set 10.9  (no LC_VERSION_MIN_MACOSX)" "$T/tgt.err" \
-    && ok "target: a missing LC_VERSION_MIN_MACOSX expands to version-min set 10.9" \
-    || bad "target (version-min)" "no version-min line: $(cat "$T/tgt.err")"
-otool -l "$T/tgt_novm.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
-    && ok "target: ... and the written image has the command" \
-    || bad "target (version-min)" "no LC_VERSION_MIN_MACOSX in the output"
-# The inverse: one that already has it, put there by version-min set whatever the
-# linker did.
-build_main "$T/tgt_hasvm"
-mts "$T/tgt_hasvm" "version-min set 10.9" >/dev/null 2>"$T/tgt_minos.err" \
-    || bad "target: fixture setup" "version-min set failed: $(cat "$T/tgt_minos.err")"
-otool -l "$T/tgt_hasvm" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
-    || bad "target: fixture setup" "tgt_hasvm has no LC_VERSION_MIN_MACOSX"
-tgt_run "$T/tgt_hasvm" "$T/tgt_hasvm.out" || bad "target (has version-min)" "$(cat "$T/tgt.err")"
-if grep -qF "  target 10.9" "$T/tgt.err" && ! grep -q "version-min set" "$T/tgt.err"; then
-    ok "target: an image that already has LC_VERSION_MIN_MACOSX derives no version-min"
-else
-    bad "target (has version-min)" "expected a report with no version-min line: $(cat "$T/tgt.err")"
-fi
+"$T/mkminos" none "$T/tgt_novm" || bad "target: fixture setup" "mkminos none failed"
+tgt_run "$T/tgt_novm" "$T/tgt_novm.out" || bad "target (none declared)" "$(cat "$T/tgt.err")"
+grep -A1 -xF '    minos at-most 10.9  (always)' "$T/tgt.err" \
+    | grep -qxF '      none -> version-min 10.9; sdk 10.9 written' \
+    && ok "target: an image declaring nothing gets version-min 10.9, sdk 10.9, and says so" \
+    || bad "target (none declared)" "$(cat "$T/tgt.err")"
+[ "$("$T/mkminos" show "$T/tgt_novm.out")" = "version-min version=10.9.0 sdk=10.9.0" ] \
+    && ok "target: ... and the written image declares it" \
+    || bad "target (none declared)" "$("$T/mkminos" show "$T/tgt_novm.out" 2>&1)"
 
 # ROW 4: __DATA_CONST carrying __objc_* sections -> segment rename. No host
 # linker here emits __DATA_CONST either (Xcode 10 and later do), so the
@@ -4628,8 +4596,9 @@ tgt_fx=$(tgt_at "$T/tgt.err" "^    fixups set classic")
     && ok "target: written first, its expansion is reported first" \
     || bad "target (position)" "expansion at '$tgt_fx', uuid at '$tgt_uuid': $(cat "$T/tgt.err")"
 
-# The declared minimum; mkminos writes and reads each premise.
-tgt_minimum() { grep '^    minimum: ' "$T/tgt.err" || true; }
+# THE DECLARED MINIMUM, through the derived minos at-most 10.9; mkminos writes
+# and reads each premise.
+tgt_minos() { grep -A1 -xF '    minos at-most 10.9  (always)' "$T/tgt.err" | sed -n 2p; }
 
 # The reproduction: this host's own toolchain, asked for 10.12.
 printf 'int main(void){return 0;}\n' >"$T/min1012.c"
@@ -4656,144 +4625,120 @@ fi
 build_main "$T/tgt_vm12"
 "$T/mkminos" vmin "$T/tgt_vm12" 10.12 10.13 || bad "target: fixture setup" "mkminos vmin failed"
 tgt_run "$T/tgt_vm12" "$T/tgt_vm12.out" || bad "target (version-min 10.12)" "$(cat "$T/tgt.err")"
-[ "$(tgt_minimum)" = "    minimum: version-min 10.12 -> 10.9; sdk 10.13 untouched" ] \
-    && ok "target: a version-min above 10.9 is reported old -> new" \
-    || bad "target (version-min 10.12)" "minimum line: '$(tgt_minimum)'"
-grep -qxF "    minos set 10.9  (LC_VERSION_MIN_MACOSX declares a minimum above 10.9)" "$T/tgt.err" \
-    && ok "target: ... it derives minos set 10.9" \
-    || bad "target (version-min 10.12)" "no minos set line: $(cat "$T/tgt.err")"
-[ "$("$T/mkminos" show "$T/tgt_vm12.out")" = "version-min version=10.9.0 sdk=10.13.0" ] \
-    && ok "target: ... and the written image declares 10.9 with its sdk untouched" \
-    || bad "target (version-min 10.12)" "$("$T/mkminos" show "$T/tgt_vm12.out" 2>&1)"
+[ "$(tgt_minos)" = "      version-min 10.12 -> 10.9; sdk 10.13 kept" ] \
+    && [ "$("$T/mkminos" show "$T/tgt_vm12.out")" = "version-min version=10.9.0 sdk=10.13.0" ] \
+    && ok "target: a version-min above 10.9 is lowered, its sdk kept, and the report says so" \
+    || bad "target (version-min 10.12)" "report '$(tgt_minos)': $("$T/mkminos" show "$T/tgt_vm12.out" 2>&1)"
 
 for tgt_low in 10.8 10.9 10.9.5; do
-    case $tgt_low in 10.9.5) tgt_want=10.9.5 ;; *) tgt_want=$tgt_low.0 ;; esac
     build_main "$T/tgt_low"
     "$T/mkminos" vmin "$T/tgt_low" "$tgt_low" 10.9 || bad "target: fixture setup" "mkminos vmin $tgt_low failed"
     tgt_run "$T/tgt_low" "$T/tgt_low.out" || bad "target (version-min $tgt_low)" "$(cat "$T/tgt.err")"
-    [ "$(tgt_minimum)" = "    minimum: version-min $tgt_low, at or below 10.9; left as declared; sdk 10.9 untouched" ] \
+    [ "$(tgt_minos)" = "      version-min $tgt_low, at or below 10.9: kept; sdk 10.9 kept" ] \
         && ok "target: version-min $tgt_low is at or below 10.9, and the report says so" \
-        || bad "target (version-min $tgt_low)" "minimum line: '$(tgt_minimum)'"
-    if grep -qF "  target 10.9" "$T/tgt.err"; then
-        if grep -q "^    minos set" "$T/tgt.err"; then
-            bad "target (version-min $tgt_low)" "derived a minos set: $(cat "$T/tgt.err")"
-        else
-            ok "target: ... derives no minos set for it"
-        fi
-    else
-        bad "target (version-min $tgt_low)" "no report at all: $(cat "$T/tgt.err")"
-    fi
+        || bad "target (version-min $tgt_low)" "report '$(tgt_minos)'"
     grep -qxF "    nothing to do: this binary already targets 10.9" "$T/tgt.err" \
-        && [ "$("$T/mkminos" show "$T/tgt_low.out")" = "version-min version=$tgt_want sdk=10.9.0" ] \
-        && ok "target: ... nothing to do, and the minimum is still $tgt_low" \
-        || bad "target (version-min $tgt_low)" "$("$T/mkminos" show "$T/tgt_low.out" 2>&1): $(cat "$T/tgt.err")"
+        && cmp -s "$T/tgt_low" "$T/tgt_low.out" \
+        && ok "target: ... nothing to do, and the image is written byte for byte" \
+        || bad "target (version-min $tgt_low)" "$(cat "$T/tgt.err")"
 done
 
 build_main "$T/tgt_bv12"
 "$T/mkminos" bv "$T/tgt_bv12" 1 12.0 12.3 || bad "target: fixture setup" "mkminos bv failed"
 tgt_run "$T/tgt_bv12" "$T/tgt_bv12.out" || bad "target (build-version 12.0)" "$(cat "$T/tgt.err")"
-[ "$(tgt_minimum)" = "    minimum: build-version 12.0 -> version-min 10.9; sdk 12.3 carried over" ] \
-    && ok "target: build-version 12.0 is converted to version-min 10.9, keeping sdk 12.3, and says so" \
-    || bad "target (build-version 12.0)" "minimum line: '$(tgt_minimum)'"
-if grep -q "^    version-min set 10.9" "$T/tgt.err"; then
-    if grep -q "^    minos set" "$T/tgt.err"; then
-        bad "target (build-version 12.0)" "derived a minos set: $(cat "$T/tgt.err")"
+[ "$(tgt_minos)" = "      build-version 12.0 -> version-min 10.9; sdk 12.3 carried over" ] \
+    && [ "$("$T/mkminos" show "$T/tgt_bv12.out")" = "version-min version=10.9.0 sdk=12.3.0" ] \
+    && ok "target: build-version 12.0 becomes version-min 10.9, sdk 12.3 carried over, and says so" \
+    || bad "target (build-version 12.0)" "report '$(tgt_minos)': $("$T/mkminos" show "$T/tgt_bv12.out" 2>&1)"
+if [ -n "$(tgt_minos)" ]; then
+    if grep -q "^    load-command delete build-version" "$T/tgt.err"; then
+        bad "target (build-version 12.0)" "derived load-command delete build-version: $(cat "$T/tgt.err")"
     else
-        ok "target: ... by delete and append, with no minos set"
+        ok "target: ... with no load-command delete build-version derived"
     fi
 else
-    bad "target (build-version 12.0)" "no version-min set line: $(cat "$T/tgt.err")"
+    bad "target (build-version 12.0)" "no minos report, so the absent delete proves nothing"
 fi
-[ "$("$T/mkminos" show "$T/tgt_bv12.out")" = "version-min version=10.9.0 sdk=12.3.0" ] \
-    && ok "target: ... and the written image declares only version-min 10.9, with the original sdk 12.3" \
-    || bad "target (build-version 12.0)" "$("$T/mkminos" show "$T/tgt_bv12.out" 2>&1)"
-grep -qxF "      appended LC_VERSION_MIN_MACOSX 10.9, sdk 12.3" "$T/tgt.err" \
-    && ok "target: ... and the append's report line names the sdk it wrote" \
-    || bad "target (build-version 12.0)" "no sdk on the append line: $(cat "$T/tgt.err")"
+
 build_main "$T/tgt_bv0"
 "$T/mkminos" bv "$T/tgt_bv0" 1 12.0 0.0 || bad "target: fixture setup" "mkminos bv failed"
 tgt_run "$T/tgt_bv0" "$T/tgt_bv0.out" || bad "target (build-version sdk 0)" "$(cat "$T/tgt.err")"
-[ "$(tgt_minimum)" = "    minimum: build-version 12.0 -> version-min 10.9; sdk 0.0 carried over" ] \
-    && grep -qxF "      appended LC_VERSION_MIN_MACOSX 10.9, sdk 0.0" "$T/tgt.err" \
-    && ok "target: a build-version sdk of 0.0 is reported carried over, and so is the append" \
-    || bad "target (build-version sdk 0)" "$(cat "$T/tgt.err")"
-[ "$("$T/mkminos" show "$T/tgt_bv0.out")" = "version-min version=10.9.0 sdk=0.0.0" ] \
-    && ok "target: ... and the written image carries sdk 0.0 over" \
-    || bad "target (build-version sdk 0)" "$("$T/mkminos" show "$T/tgt_bv0.out" 2>&1)"
-rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/tgt_bv12" "$T/tgt_bv12.vm" \
-    >/dev/null 2>"$T/tgt_vm.err" || rc=$?
-[ "$rc" -eq 0 ] && "$T/mkminos" show "$T/tgt_bv12.vm" | grep -qxF "version-min version=10.9.0 sdk=10.9.0" \
-    && ok "version-min set: written by hand, it still appends sdk 10.9" \
-    || bad "version-min set (sdk)" "rc $rc: $("$T/mkminos" show "$T/tgt_bv12.vm" 2>&1)"
+[ "$(tgt_minos)" = "      build-version 12.0 -> version-min 10.9; sdk 0.0 carried over" ] \
+    && [ "$("$T/mkminos" show "$T/tgt_bv0.out")" = "version-min version=10.9.0 sdk=0.0.0" ] \
+    && ok "target: a build-version sdk of 0.0 is carried over too" \
+    || bad "target (build-version sdk 0)" "report '$(tgt_minos)': $("$T/mkminos" show "$T/tgt_bv0.out" 2>&1)"
 
-build_main "$T/tgt_bv7"
-"$T/mkminos" bv "$T/tgt_bv7" 1 10.7 10.10 || bad "target: fixture setup" "mkminos bv failed"
-tgt_run "$T/tgt_bv7" "$T/tgt_bv7.out" || bad "target (build-version 10.7)" "$(cat "$T/tgt.err")"
-[ "$(tgt_minimum)" = "    minimum: build-version 10.7 -> version-min 10.7; sdk 10.10 carried over" ] \
-    && ok "target: build-version 10.7 is carried over, and says so" \
-    || bad "target (build-version 10.7)" "minimum line: '$(tgt_minimum)'"
-grep -qxF "    minos set 10.7  (LC_BUILD_VERSION's minimum, carried over)" "$T/tgt.err" \
-    && [ "$("$T/mkminos" show "$T/tgt_bv7.out")" = "version-min version=10.7.0 sdk=10.10.0" ] \
-    && ok "target: ... by a derived minos set, and the written image declares 10.7" \
-    || bad "target (build-version 10.7)" "$("$T/mkminos" show "$T/tgt_bv7.out" 2>&1): $(cat "$T/tgt.err")"
-tgt_del=$(tgt_at "$T/tgt.err" "^    load-command delete build-version")
-tgt_vms=$(tgt_at "$T/tgt.err" "^    version-min set 10.9")
-tgt_mss=$(tgt_at "$T/tgt.err" "^    minos set 10.7")
-[ -n "$tgt_del" ] && [ -n "$tgt_vms" ] && [ -n "$tgt_mss" ] \
-    && [ "$tgt_del" -lt "$tgt_vms" ] && [ "$tgt_vms" -lt "$tgt_mss" ] \
-    && ok "target: ... in the order delete, append, then minos set" \
-    || bad "target (build-version 10.7)" "order '$tgt_del' '$tgt_vms' '$tgt_mss': $(cat "$T/tgt.err")"
-
-for tgt_bvlow in 10.9 10.9.5; do
+for tgt_bvlow in 10.7 10.9 10.9.5; do
+    case $tgt_bvlow in 10.9.5) tgt_want=10.9.5 ;; *) tgt_want=$tgt_bvlow.0 ;; esac
     build_main "$T/tgt_bvlow"
     "$T/mkminos" bv "$T/tgt_bvlow" 1 "$tgt_bvlow" 10.10 || bad "target: fixture setup" "mkminos bv $tgt_bvlow failed"
     tgt_run "$T/tgt_bvlow" "$T/tgt_bvlow.out" || bad "target (build-version $tgt_bvlow)" "$(cat "$T/tgt.err")"
-    case $tgt_bvlow in
-        10.9) tgt_want=10.9.0 ;;
-        *)    tgt_want=$tgt_bvlow
-              grep -qxF "    minos set $tgt_bvlow  (LC_BUILD_VERSION's minimum, carried over)" "$T/tgt.err" \
-                  && ok "target: build-version $tgt_bvlow is carried over by a derived minos set" \
-                  || bad "target (build-version $tgt_bvlow)" "no minos set line: $(cat "$T/tgt.err")" ;;
-    esac
-    if [ "$tgt_bvlow" = 10.9 ]; then
-        if grep -q "^    version-min set 10.9" "$T/tgt.err"; then
-            grep -q "^    minos set" "$T/tgt.err" \
-                && bad "target (build-version 10.9)" "derived a minos set: $(cat "$T/tgt.err")" \
-                || ok "target: build-version 10.9.0 derives no minos set"
-        else
-            bad "target (build-version 10.9)" "no version-min set line: $(cat "$T/tgt.err")"
-        fi
-    fi
-    [ "$("$T/mkminos" show "$T/tgt_bvlow.out")" = "version-min version=$tgt_want sdk=10.10.0" ] \
-        && ok "target: ... and the written image declares $tgt_want" \
-        || bad "target (build-version $tgt_bvlow)" "$("$T/mkminos" show "$T/tgt_bvlow.out" 2>&1)"
+    [ "$(tgt_minos)" = "      build-version $tgt_bvlow -> version-min $tgt_bvlow; sdk 10.10 carried over" ] \
+        && [ "$("$T/mkminos" show "$T/tgt_bvlow.out")" = "version-min version=$tgt_want sdk=10.10.0" ] \
+        && ok "target: build-version $tgt_bvlow is carried over as version-min $tgt_bvlow" \
+        || bad "target (build-version $tgt_bvlow)" "report '$(tgt_minos)': $("$T/mkminos" show "$T/tgt_bvlow.out" 2>&1)"
 done
-
-build_main "$T/tgt_nomin"
-"$T/mkminos" none "$T/tgt_nomin" || bad "target: fixture setup" "mkminos none failed"
-tgt_run "$T/tgt_nomin" "$T/tgt_nomin.out" || bad "target (none declared)" "$(cat "$T/tgt.err")"
-[ "$(tgt_minimum)" = "    minimum: none declared -> version-min 10.9; sdk 10.9 written" ] \
-    && ok "target: an image declaring no minimum says so" \
-    || bad "target (none declared)" "minimum line: '$(tgt_minimum)'"
 
 "$T/mkchained" make "$T/tgt_chmin"
 tgt_run "$T/tgt_chmin" "$T/tgt_chmin.out" || bad "target (chained minimum)" "$(cat "$T/tgt.err")"
-[ "$(tgt_minimum)" = "    minimum: build-version 12.0 -> version-min 10.9; sdk 12.0 carried over" ] \
-    && ok "target: a chained image's build-version minimum is named, though fixups strips it" \
-    || bad "target (chained minimum)" "minimum line: '$(tgt_minimum)'"
+grep -qxF "      chained fixups -> LC_DYLD_INFO_ONLY; LC_BUILD_VERSION 12.0 (sdk 12.0) kept as LC_VERSION_MIN_MACOSX" \
+    "$T/tgt.err" \
+    && [ "$(tgt_minos)" = "      version-min 12.0 -> 10.9; sdk 12.0 kept" ] \
+    && ok "target: a chained image's build-version is kept by fixups, then lowered by minos" \
+    || bad "target (chained minimum)" "$(cat "$T/tgt.err")"
 "$T/mkminos" show "$T/tgt_chmin.out" | grep -qxF "version-min version=10.9.0 sdk=12.0.0" \
     && ok "target: ... and the chained image's sdk 12.0 survives the conversion" \
     || bad "target (chained minimum)" "$("$T/mkminos" show "$T/tgt_chmin.out" 2>&1)"
-tgt_first=$(grep '^    [a-z]' "$T/tgt.err" | grep -v '^    minimum: ' | head -1)
+tgt_first=$(grep '^    [a-z]' "$T/tgt.err" | head -1)
 [ "$tgt_first" = "    fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)" ] \
-    && ok "target: ... and fixups set classic is still the first derived line" \
+    && ok "target: ... and fixups set classic is the first derived line" \
     || bad "target (chained minimum)" "first derived line: '$tgt_first'"
 
-# TARGET NEVER COUNTS AS UNMATCHED. On a chained image the expansion derives
-# both `fixups set classic` and `load-command delete build-version` -- and
-# the first strips LC_BUILD_VERSION itself, so the second finds nothing left
-# to do. "This binary already targets 10.9 correctly" is a correct answer
-# for a profile, so that is not a miss, and it must not refuse by default.
+# THE SWIFT TAG IS READ AFTER fixups set classic. On a chained image the class
+# records' pointers are chain links until the conversion lowers them.
+"$T/mkchained" make-swift "$T/tgt_chsw"
+tgt_run "$T/tgt_chsw" "$T/tgt_chsw.out" || bad "target (chained Swift)" "$(cat "$T/tgt.err")"
+grep -qxF "    swift-abi set legacy  (class records carry the stable-ABI Swift tag)" "$T/tgt.err" \
+    && [ "$("$T/mkchained" tags "$T/tgt_chsw.out")" = "class 1
+meta 1" ] \
+    && ok "target: a chained Swift image is retagged, detected after fixups set classic" \
+    || bad "target (chained Swift)" "tags $("$T/mkchained" tags "$T/tgt_chsw.out" | tr '\n' ' '): $(cat "$T/tgt.err")"
+
+"$T/mkchained" make-swiftdc "$T/tgt_all"
+tgt_run "$T/tgt_all" "$T/tgt_all.out" || bad "target (all four)" "$(cat "$T/tgt.err")"
+tgt_o1=$(tgt_at "$T/tgt.err" "^    fixups set classic  ")
+tgt_o2=$(tgt_at "$T/tgt.err" "^    minos at-most 10.9  ")
+tgt_o3=$(tgt_at "$T/tgt.err" "^    segment rename __DATA_CONST __DATA  ")
+tgt_o4=$(tgt_at "$T/tgt.err" "^    swift-abi set legacy  ")
+[ -n "$tgt_o1" ] && [ -n "$tgt_o2" ] && [ -n "$tgt_o3" ] && [ -n "$tgt_o4" ] \
+    && [ "$tgt_o1" -lt "$tgt_o2" ] && [ "$tgt_o2" -lt "$tgt_o3" ] && [ "$tgt_o3" -lt "$tgt_o4" ] \
+    && ok "target: the four lines are derived in the edit script's order, minos at-most second" \
+    || bad "target (all four)" "order '$tgt_o1' '$tgt_o2' '$tgt_o3' '$tgt_o4': $(cat "$T/tgt.err")"
+
+# THE PUBLISHED EDIT SCRIPT. README.md prints target 10.9's expansion as a script;
+# run by hand it must write target's own bytes, thin and fat. The thin image
+# needs all four lines; the fat one adds a plain chained slice, where the
+# rename and the retag are no-ops.
+printf 'fixups set classic\nminos at-most 10.9\nsegment rename __DATA_CONST __DATA\nswift-abi set legacy\n' \
+    >"$T/tgt_script.edits"
+rc=0; "$DRYDOCK_MACHO_REWRITE" "$T/tgt_all" "$T/tgt_all.hand" <"$T/tgt_script.edits" \
+    >/dev/null 2>"$T/tgt_script.err" || rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$T/tgt_all.hand" "$T/tgt_all.out" && ! cmp -s "$T/tgt_all" "$T/tgt_all.out" \
+    && ok "target: the published edit script, run by hand, writes target's own bytes (thin)" \
+    || bad "target (edit script, thin)" "rc $rc, or the bytes differ: $(cat "$T/tgt_script.err")"
+"$T/mkchained" make "$T/script_s1"
+"$BIN/makefat" "$T/script_fat" "$T/tgt_all" 0x1000007 3 12 "$T/script_s1" 0x100000c 0 12
+tgt_run "$T/script_fat" "$T/script_fat.out" || bad "target (edit script, fat)" "$(cat "$T/tgt.err")"
+rc=0; "$DRYDOCK_MACHO_REWRITE" "$T/script_fat" "$T/script_fat.hand" <"$T/tgt_script.edits" \
+    >/dev/null 2>"$T/tgt_script.err" || rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$T/script_fat.hand" "$T/script_fat.out" \
+    && ! cmp -s "$T/script_fat" "$T/script_fat.out" \
+    && ok "target: ... and on a fat file" \
+    || bad "target (edit script, fat)" "rc $rc, or the bytes differ: $(cat "$T/tgt_script.err")"
+
+# TARGET NEVER COUNTS AS UNMATCHED. Each line it derives has work on the image
+# in front of it, and minos cannot miss, so nothing is reported as unmatched
+# and nothing refuses by default.
 printf 'target 10.9\n' >"$T/tgt_fw.edits"
 "$T/mkchained" make "$T/tgt_fw"
 tgt_run "$T/tgt_fw" "$T/tgt_fw.out" "$T/tgt_fw.edits" && tgt_fw_rc=0 || tgt_fw_rc=$?
@@ -4807,7 +4752,7 @@ grep -q "matched nothing" "$T/tgt.err" \
 # THE OTHER SIDE OF THAT, WHICH IS NOT SPECIAL-CASED: writing `target 10.9`
 # AND an explicit statement it would have derived makes the explicit one
 # redundant, and it refuses by default. Same script as above with one line
-# added -- the expansion's `fixups set classic` strips LC_BUILD_VERSION, so by
+# added -- the expansion leaves no LC_BUILD_VERSION, so by
 # the time the EXPLICIT `load-command delete build-version` runs there is
 # nothing of that kind left. A statement somebody wrote that matched nothing
 # is a miss, and by default a refusal. Both halves are documented rather
@@ -4837,13 +4782,13 @@ tgt_run "$T/tgt_redlax" "$T/tgt_redlax.out" "$T/tgt_redlax.edits" \
 # A DERIVED STATEMENT GETS THE ANSWER THE EXPLICIT ONE GETS, and its refusal
 # is reported against the line the operator actually wrote. The fixture has
 # no LC_VERSION_MIN_MACOSX and a pad too short for one, so the derived
-# `version-min set 10.9` grows the header, as the explicit statement does;
+# `minos at-most 10.9` grows the header, as the explicit statement does;
 # with the PIE flag cleared the same fixture cannot grow, and is refused.
 #
 # NOT $T/vm_tight, though it is the same shape: this needs LC_BUILD_VERSION
-# ABSENT too. On a host whose linker emits one, the expansion would derive a
-# `load-command delete build-version` that runs first and frees at least 24
-# bytes -- more than the 16 LC_VERSION_MIN_MACOSX needs -- so the run would
+# ABSENT too. On a host whose linker emits one, minos at-most would convert
+# it, freeing at least 24 bytes -- more than the 16 LC_VERSION_MIN_MACOSX
+# needs -- so the run would
 # succeed and this assertion would fail there and pass here. Same trap,
 # same fix: make the premise true (build_main_without_build_version) rather
 # than assume it.
@@ -4961,9 +4906,9 @@ fat_tgt_fx=$(grep -c "^    fixups set classic" "$T/fat_tgt.err" || true)
 [ "$fat_tgt_n" -eq 2 ] && [ "$fat_tgt_fx" -eq 1 ] \
     && ok "target: ... the same line in both slices, expanding differently in each" \
     || bad "target fat" "expected 2 target lines and 1 fixups line, got $fat_tgt_n and $fat_tgt_fx: $(cat "$T/fat_tgt.err")"
-fat_tgt_min=$(grep -c "^    minimum: " "$T/fat_tgt.err" || true)
-[ "$fat_tgt_min" -eq 2 ] && ok "target: ... and each slice names its own minimum" \
-    || bad "target fat" "expected 2 minimum lines, got $fat_tgt_min: $(cat "$T/fat_tgt.err")"
+fat_tgt_min=$(grep -c "^    minos at-most 10.9  (always)$" "$T/fat_tgt.err" || true)
+[ "$fat_tgt_min" -eq 2 ] && ok "target: ... and each slice derives its own minos at-most 10.9" \
+    || bad "target fat" "expected 2 minos lines, got $fat_tgt_min: $(cat "$T/fat_tgt.err")"
 
 printf 'arch amd64\nload-command delete uuid\n' >"$T/fat_bad.edits"
 rc=0
