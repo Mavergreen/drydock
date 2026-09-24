@@ -3583,17 +3583,9 @@ cmp -s "$T/swift_out1" "$T/swift_out2" \
     && ok "retag-swift: a no-op run's OUT still carries the same bytes" \
     || bad "retag-swift: idempotence" "OUT differs from FILE on a no-op run"
 
-# THE STATEMENT IS FAT-CAPABLE WHERE THE VERB WAS THIN-ONLY, and this block is
-# where that shows. `retag-swift` refused a fat container outright (EX_REFUSED,
-# "not a readable 64-bit Mach-O"), exactly like retag_swift_classes, because
-# cmd_retag_swift called mswift_retag_file, which is thin-only. A script run
-# goes through me_run_fat, which rewrites each 64-bit slice it understands and
-# passes the rest through -- so the identical container is ACCEPTED.
-#
-# That is a capability GAIN, and it is deliberate: the fat work removed a
-# thin-only refusal from the CLI, having first put the refusal back where the
-# compat wrappers need it (compat/drydock-macho-rewrite-compat.sh's mw_thin_only), so no
-# caller that relied on it lost it. Asserted here in its new form.
+# The statement is fat-capable: me_run_fat rewrites each 64-bit slice it
+# understands and passes the rest through, so a container retag_swift_classes
+# refused is accepted. The wrappers keep that refusal (mw_thin_only).
 #
 # The container is built HERE, out of the very fixture the assertions above
 # just retagged successfully, rather than borrowed from the `segment` section
@@ -3636,19 +3628,14 @@ fi
 
 # A path that cannot even be opened must be EX_FAIL (2) -- a
 # genuine operational failure, NOT the EX_REFUSED an unreadable-input case
-# gets, and certainly not 0. This covered cmd_retag_swift's by-name test of
-# MSWIFT_ERROR; me_run makes the same split at its own open, and the exit code
-# is the observable either way.
+# gets, and certainly not 0.
 rc=0
 printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/no-such-file-for-retag" "$T/retag_missing_out" \
     >"$T/retag_missing.out" 2>"$T/retag_missing.err" || rc=$?
 [ "$rc" -eq 2 ] \
     && ok "retag-swift: an unopenable path is a failure (2), not a refusal (1) and not silent success" \
     || bad "retag-swift: missing path" "expected exit 2, got $rc: $(cat "$T/retag_missing.out") $(cat "$T/retag_missing.err")"
-# An unopenable path must SAY so. cmd_retag_swift relied on MSWIFT_ERROR's
-# "already reported" contract (swift_retag.h) and printed nothing itself; me_run
-# names the file and the reason. Either way the run must exit 2 with something
-# on stderr, which is the property a caller depends on.
+# An unopenable path must SAY so, on stderr.
 [ -s "$T/retag_missing.err" ] \
     && ok "retag-swift: an unopenable path prints something rather than failing silently" \
     || bad "retag-swift: missing path stderr" "exit 2 but stderr was empty"
@@ -3675,10 +3662,7 @@ grep -q "never writes its input" "$T/rs_same.err" \
 rc=0; printf 'swift-abi set legacy\n' | "$DRYDOCK_MACHO_REWRITE" "$T/rs_in" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] && ok "retag-swift: a missing OUT is a usage error (2)" || bad "retag-swift no OUT" "rc $rc"
 
-# The MI_IO_ERROR branch inside mi_open specifically (not mswift_retag_file's
-# own earlier open()/fstat(), which the absent-file case above already
-# exercises): verify and declassify are equally cheap to check on an absent
-# path, and neither had a numeric-exit-code assertion for one before.
+# mi_open's MI_IO_ERROR branch, through verify and declassify on an absent path.
 rc=0
 "$DRYDOCK_MACHO_REWRITE" verify "$T/no-such-file-for-verify" >"$T/verify_missing.out" 2>"$T/verify_missing.err" || rc=$?
 [ "$rc" -eq 2 ] && [ -s "$T/verify_missing.err" ] \

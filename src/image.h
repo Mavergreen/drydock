@@ -33,8 +33,8 @@ typedef struct {
  * MR_REFUSED/MR_FAIL, both need exactly this distinction and used to have no
  * way to get it from these two functions). Both are negative so 0 stays
  * success. -1 and -2 are NOT reserved values -- they equal, among others,
- * declassify.h's MDCL_NOT_MACHO/MDCL_REFUSED, swift_retag.h's MSWIFT_ERROR/
- * MSWIFT_NOT_MACHO, and src/rewrite.c's own private MR_ERROR/MR_SKIP -- but
+ * declassify.h's MDCL_NOT_MACHO/MDCL_REFUSED and src/rewrite.c's own private
+ * MR_ERROR/MR_SKIP -- but
  * that never matters, because every caller of any of these tests its
  * result BY NAME, never by comparing the raw number, so which small
  * negative integer any one module happens to pick is not a namespace two

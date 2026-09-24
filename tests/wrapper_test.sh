@@ -2426,8 +2426,7 @@ for gate_tool in patch_macho add_version_min rename_segment retag_swift_classes;
     case $gate_tool in
         rename_segment)      run rename_segment gf __DATA __DATB; gate_want=1 ;;
         patch_macho)         run patch_macho gf gfout;            gate_want=1 ;;
-        # The gate's refusal is retag's benign skip (MSWIFT_NOT_MACHO), so
-        # exit 0 with the file untouched.
+        # The gate's refusal is retag's benign skip: exit 0, file untouched.
         retag_swift_classes) run retag_swift_classes gf;          gate_want=0 ;;
         *)                   run "$gate_tool" gf;                 gate_want=1 ;;
     esac

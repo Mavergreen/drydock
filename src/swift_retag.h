@@ -5,19 +5,6 @@
  * stable-ABI bit to the legacy one, so a Swift runtime built for a
  * pre-10.14.4 deployment target recognises the class.
  *
- * This is compat/retag_swift_classes.c's whole per-file process(), lifted out
- * of that tool so it is a library function rather than one program's static.
- * src/edit.c's `swift-abi set legacy`
- * statement is its only C front-end (through
- * mswift_retag_image, below, the same retag on an image already in memory) --
- * cli/drydock-macho-rewrite.c's `retag-swift` verb was the other until the verbs were
- * deleted;
- * the old grammar, `retag_swift_classes binary [binary ...]`, reaches this same code
- * through compat/retag_swift_classes.sh, the /bin/sh wrapper that replaced
- * compat/retag_swift_classes.c -- and that wrapper is what still keeps the
- * multi-file argv loop, the per-file "%s: retagged %d class record(s)" and
- * "total: ..." messages, and the `had_error ? 1 : 0` exit.
- *
  * WHY THE TWO BITS EXIST, and what a mismatch does at runtime. A class
  * record's data word carries a tag in its low two bits saying whether the
  * class is a Swift class, and which bit is used depends on the deployment
@@ -39,61 +26,17 @@
  * Objective-C itself is indifferent: objc masks both bits off before using the
  * pointer, and on 10.9 pure Objective-C classes leave them zero, so moving the
  * tag from one bit to the other changes nothing for the Objective-C runtime.
- *
- * (This explanation lived in compat/retag_swift_classes.c's header until that
- * file became a shell wrapper; it is here now because it is the reason the
- * code is here, and it must outlive whichever front-end reaches it.)
- *
- * THIN ONLY, deliberately: retag_swift_classes never handled a fat container.
- * A caller handed one gets
- * MSWIFT_NOT_MACHO and is expected to say so rather than report a silent
- * success -- which is what the old tool's bare "return 0" looked like from
- * the outside.
  */
 #include "image.h"
 
-/* Negative returns from mswift_retag_file (and MSWIFT_CHAINED from all three).
- * A caller must test for these by name, not with a bare `< 0`: only
- * MSWIFT_ERROR is a failure of the tool itself, and the compat front-end's exit
- * code has always turned on exactly that distinction. */
-#define MSWIFT_ERROR      (-1)  /* open/fstat/write failed, or mi_open's own
-                                 * open, fstat, read or whole-file malloc did
-                                 * (MI_IO_ERROR); already reported */
-#define MSWIFT_NOT_MACHO  (-2)  /* not a readable 64-bit Mach-O; NOTHING printed,
-                                 * so a front-end that cares must say so itself */
 #define MSWIFT_CHAINED    (-3)  /* the image has LC_DYLD_CHAINED_FIXUPS, so its class
                                  * records' pointers are chain links this walk cannot
                                  * follow; nothing printed, nothing changed */
 
 /*
- * Retag every class record reachable from `path`'s __objc_classlist and
+ * Retag every class record reachable from __objc_classlist and
  * __objc_nlclslist (in either __DATA or __DATA_CONST), and the metaclass each
- * one's isa points at, and write the result as `out`. `path` is READ and
- * never written; `out` is created afresh (wa_write_new, src/atomic_write.h),
- * carrying `path`'s mode, owner and xattrs. `out` must not be `path` --
- * wa_write_new refuses that and this returns MSWIFT_ERROR without writing
- * anything.
- *
- * Returns the number of class records retagged (0 if there were none to do,
- * in which case `out` is still written -- a non-negative return always means
- * `out` is the answer), or one of the MSWIFT_* codes above; MSWIFT_CHAINED
- * writes no `out`. Nothing is written when the return is negative. On a
- * non-negative return, `*out_size` is set to `out`'s size in bytes -- this
- * function already has it in hand
- * (im.size, unchanged by the retag: only tag bits move, see
- * mswift_retag_image below), so a caller reporting "Wrote OUT (N bytes)"
- * has no reason to stat() `out` back out for a number already computed here.
- * Untouched on a negative return.
- */
-int mswift_retag_file(const char *path, const char *out, size_t *out_size);
-
-/*
- * mswift_retag_file's retag, without the file: the same walk over the image
- * `im` views (from mi_open or mi_wrap), rewriting tag bits in place in its
- * buffer -- no open, no write. mswift_retag_file is this plus those (and,
- * once, a race guard that went with the in-place write it no longer does);
- * src/edit.c calls it for `swift-abi set legacy` against the image it writes
- * once, itself, after the last statement.
+ * one's isa points at, in the buffer `im` views -- no open, no write.
  *
  * Returns the number of class records retagged, 0 or more, or MSWIFT_CHAINED
  * having changed nothing; it prints nothing. Only tag bits in __DATA's (or
