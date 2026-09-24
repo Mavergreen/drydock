@@ -9,7 +9,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 3 | Rename + target | `specs/2026-09-10-machotool-rename-and-target-design.md` | `plans/2026-09-10-machotool-rename-and-target.md` | **done**, pushed, `9e39a57..770433f` |
 | 4 | Release conformance | `specs/2026-09-10-release-conformance-design.md` | `plans/2026-09-10-release-conformance.md` | **done**, pushed, `ed7f4e4..452175a`; the first release is refused until item 6 removes the README marker |
 | 5 | Relations + verb lowering | `specs/2026-09-10-relations-and-verb-lowering-design.md` | `plans/2026-09-10-relations-and-verb-lowering.md` | **done**, `e0eee27..5595a0f`, not yet pushed. Amendment 3's open decision is closed: option 2, the conversion verifies its own output (every entry point refuses a wrong lowering). Measured and resolved in the spec's "Resolution of Amendment 3" |
-| 6 | **Human code review + excellent documentation** | `specs/2026-09-12-narration-into-tests-design.md` (first half) | `plans/2026-09-12-narration-into-tests.md` (first half) | **first half done**, pushed, `3ce226a..fb241d3`, CI green. Second half — the human review and the README rewrite that removes the marker — is the repo owner's and is what still blocks the first release |
+| 6 | **Human code review + excellent documentation** | `specs/2026-09-12-narration-into-tests-design.md` (first half) | `plans/2026-09-12-narration-into-tests.md` (first half) | **first half done**, pushed, `3ce226a..fb241d3`, CI green. **Machine half of the second half done**, see "The machine half" below. What remains is the repo owner's: the human review and the README rewrite that removes the marker, which still blocks the first release |
 | 7 | History rewrite + the three rename steps | — | — | last of the in-tree work |
 | 8 | `.pkg` + Sparkle updater | — | — | after 7; not yet designed |
 | 9 | `machotool` never writes its input (replaces "skip the write when nothing changed") | `specs/2026-09-11-never-write-the-input-design.md` | `plans/2026-09-11-never-write-the-input.md` | **done**, pushed, `bccd008..1c0c38c` |
@@ -213,12 +213,13 @@ in six other files). Plan-artifact *paths* (`docs/superpowers/...`) number
 class would be swept away as a side effect was sound only because the class was
 already almost empty; it was never the 87-comment liability recorded here.
 
-Also for item 6, and still open: in `md_declassify_buf` (`src/declassify.c`),
-the first-section walk and the
-`__LINKEDIT` extension go through `segs[]` pointers taken before the loop that
-`memmove`s the removed load commands out, and never refreshed: in a crafted
-file where a removed command precedes a segment command, both would read and
-write shifted content.
+Also for item 6, found along the way and now fixed in `d1cab99`: in
+`md_declassify_buf` (`src/declassify.c`), the first-section walk and the
+`__LINKEDIT` extension went through `segs[]` pointers taken before the loop
+that `memmove`s the removed load commands out, and never refreshed: in a
+crafted file where a removed command precedes a segment command, both read and
+wrote shifted content. `mkchained make-lcfirst` reproduces the order; a
+`cli_test` assertion pins the fix.
 
 ## Carried out of item 10
 
@@ -363,6 +364,17 @@ approach rests on:
    imports and ask the live 10.9 loader which are missing. Our `info` is
    structural. Emitting the import list as parseable output is also the natural
    on-ramp to gaps 1 and 2, since that manifest is exactly their selector list.
+
+**Audited 2026-09-24, after item 6's machine half landed.** Gaps 3 and 7 had
+already landed: `dylib retype PATH KIND weak` (`README.md:69`) is the
+`LC_LOAD_WEAK_DYLIB` flip, and `drydock-macho-rewrite imports FILE`
+(`README.md:263`) is the machine-readable import list. Gap 4 became `minos
+at-most`/`minos if-absent` (`specs/2026-09-23-minos-at-most-design.md`),
+landed. Gaps 1+2, 5 and 6 each have a spec and a plan
+(`specs/2026-09-23-bind-stream-edit-design.md`,
+`specs/2026-09-23-section-retype-design.md`,
+`specs/2026-09-23-objc-method-lists-design.md`) that are not executed; each
+spec's own "Questions for the owner" is unanswered.
 
 **Where their practice bears on our refusals:**
 
@@ -806,7 +818,8 @@ a reader to go read a file that is not there — `src/image.h:5`, `:75`, `:155`,
 measures under the worst-offender threshold and was therefore out of scope.
 This part is cheap, mechanical, fully verifiable and carries no behaviour risk.
 It belongs to item 7 (the history rewrite already touches the rename) or to the
-human review that is item 6's second half.
+human review that is item 6's second half. **Done** by item 6's machine half
+("The machine half", below).
 
 **Part two: `src/grow.c`'s 48 stderr prefixes — not prose, and not zero-risk.**
 `src/grow.c` has 50 lines mentioning `macho_grow`, and **48 of them are
@@ -827,7 +840,8 @@ which front end is running it." `grow.c`'s 48 prefixes name a program that no
 longer exists, from a library that has no business naming one. Fixing them is
 worth doing, but it needs **tests written first** — assertions on the new
 prefix, mutation-proven — so it is **a plan of its own, and explicitly not part
-of the zero-risk sweep**.
+of the zero-risk sweep**. **Done** by item 6's machine half, tests first: all
+50 now begin `ERROR: `.
 
 **A scope note, because these counts will not match across documents.** Bare
 `macho_grow` occurrences: **84 in the code tree**, **122 across the whole
@@ -854,6 +868,39 @@ files cite a passage, not by what fraction of its own lines are prose.
   is.** Where a claim has parts nothing can reach, the test's own comment names
   them and says why. A constraint may go untested when nothing can trigger it,
   but then somebody has to be told.
+
+### The machine half
+
+Nine commits, Tasks 2 to 10 in order: `a4d2a9a`, `454ee83`, `2eb1539`,
+`257f851`, `0a97b93`, `e8366c7`, `d3b76b0`, `f37f2fa`, `e684af2`. Measured
+before at `d1cab99`, with the rule above: `#` counts in shell, and
+preprocessor lines are code in C.
+
+| file | before: total / comment / code, first code | after |
+|---|---|---|
+| `compat/patch_macho.sh` | 224 / 169 / 45, line 137 | 69 / 14 / 45, line 10 |
+| `compat/rename_segment.sh` | 224 / 167 / 44, line 159 | 68 / 11 / 44, line 10 |
+| `compat/add_version_min.sh` | 106 / 82 / 21, line 77 | 32 / 7 / 22, line 10 |
+| `compat/retag_swift_classes.sh` | 196 / 139 / 52, line 111 | 64 / 7 / 52, line 10 |
+| `compat/translate.sh` | 868 / 509 / 326, line 230 | 480 / 121 / 326, line 18 |
+| `compat/drydock-macho-rewrite-compat.sh` | 448 / 266 / 164, line 68 | 268 / 86 / 164, line 16 |
+| `cli/drydock-macho-rewrite.c` | 874 / 389 / 441, line 65 (at `26d6f8c`) | 790 / 302 / 444, line 34 |
+
+- `src/grow.c`'s 50 `macho_grow: ` diagnostics begin `ERROR: `. They are held by
+  `tests/grow_test.c`'s `test_grow_diagnostics_name_no_program`, whose needle
+  is anchored to the line start, and by one `tests/wrapper_test.sh` assertion.
+- Retired-filename citations (scope `src/ cli/ tests/ compat/ CMakeLists.txt`,
+  the eight names): 97 lines before and 49 after, every survivor past-tense
+  provenance.
+- Eleven new assertions hold what only comments had claimed. One comment in
+  `tests/wrapper_test.sh` claimed an `add_version_min` hard-link assertion that
+  did not exist. It exists now.
+- **Deferred:** `tests/cli_test.sh:933`'s comment narrates OUT's mode in "used
+  to"/"is now" terms; Task 5 found it outside the lines item 6 named it to
+  touch.
+- **Not done, and not the machine's:** the owner's review and `README.md`; the
+  module prefixes; the `tests/*.sh` headers' own narration (for example
+  `tests/change_dylib_test.sh:44-72`), which item 6 did not name.
 
 ## For shipyard: build OUT of tree is documented but not operative
 
