@@ -871,8 +871,12 @@ files cite a passage, not by what fraction of its own lines are prose.
 
 ### The machine half
 
-Nine commits, Tasks 2 to 10 in order: `a4d2a9a`, `454ee83`, `2eb1539`,
-`257f851`, `0a97b93`, `e8366c7`, `d3b76b0`, `f37f2fa`, `e684af2`. Measured
+Sixteen commits, by task: Tasks 1+2 `1bf2b0f`, fixed in `a4d2a9a`; Task 3
+`454ee83`; Task 4 `cb0297b`, `2eb1539`; Task 5 `3a8567e`, `257f851`; Task 6
+`979ecc3`, `0a97b93`; Task 10 `e684af2`; Task 9 `f37f2fa`, `5d99b65`;
+Task 7 `694881d`, `e8366c7`; Task 8 `d3b76b0`; and this entry, `1b98770`.
+Tasks 10 and 9 ran before 7 and 8, which waited for the minos-at-most plan;
+that plan's commits are interleaved and are not listed. Measured
 before at `d1cab99`, with the rule above: `#` counts in shell, and
 preprocessor lines are code in C.
 
@@ -890,11 +894,13 @@ preprocessor lines are code in C.
   `tests/grow_test.c`'s `test_grow_diagnostics_name_no_program`, whose needle
   is anchored to the line start, and by one `tests/wrapper_test.sh` assertion.
 - Retired-filename citations (scope `src/ cli/ tests/ compat/ CMakeLists.txt`,
-  the eight names): 97 lines before and 49 after, every survivor past-tense
+  the eight names, counted in lines): 97 at `d1cab99` and 42 at `d3b76b0`;
+  item 6 removed 47, the other plans 8. Every survivor is past-tense
   provenance.
-- Eleven new assertions hold what only comments had claimed. One comment in
-  `tests/wrapper_test.sh` claimed an `add_version_min` hard-link assertion that
-  did not exist. It exists now.
+- New assertions hold what only comments had claimed. One comment in
+  `tests/wrapper_test.sh` said an `add_version_min` hard-link assertion was
+  above; it was a separate block below. `694881d` folded that block into
+  `hl_case add_version_min`, and `e8366c7` made the case able to fail.
 - **Deferred:** `tests/cli_test.sh:933`'s comment narrates OUT's mode in "used
   to"/"is now" terms; Task 5 found it outside the lines item 6 named it to
   touch.
