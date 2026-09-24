@@ -497,8 +497,8 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 # tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 19 ] && [ "$n_unique" -eq 19 ] \
-    && ok "capabilities: exactly 19 unique statement lines" \
+[ "$n_statements" -eq 18 ] && [ "$n_unique" -eq 18 ] \
+    && ok "capabilities: exactly 18 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 if echo "$caps" | grep -qxF "statement minos at-most 1"; then
     if echo "$caps" | grep -qxF "statement minos set 1"; then
@@ -506,8 +506,11 @@ if echo "$caps" | grep -qxF "statement minos at-most 1"; then
     else
         ok "capabilities: minos set is no longer advertised"
     fi
+    echo "$caps" | grep -qxF "statement version-min set 1" \
+        && bad "capabilities statements" "version-min set is still advertised" \
+        || ok "capabilities: version-min set is no longer advertised"
 else
-    bad "capabilities statements" "no minos at-most line, so the absent minos set proves nothing"
+    bad "capabilities statements" "no minos at-most line, so the absent minos set and version-min set prove nothing"
 fi
 for caps_minos in 'at-most' 'if-absent'; do
     echo "$caps" | grep -qxF "statement minos $caps_minos 1" \
@@ -988,7 +991,7 @@ for v in verify info imports; do
 done
 echo "$alone_caps" | grep -qxF "mutate bare script=stdin" \
     || alone_missing="$alone_missing 'mutate bare script=stdin'"
-for s in 'dylib append 1' 'load-command delete 1' 'version-min set 1' 'segment rename 2' 'swift-abi set 1' 'fixups set 1'; do
+for s in 'dylib append 1' 'load-command delete 1' 'minos if-absent 1' 'segment rename 2' 'swift-abi set 1' 'fixups set 1'; do
     echo "$alone_caps" | grep -qxF "statement $s" || alone_missing="$alone_missing '$s'"
 done
 [ -z "$alone_missing" ] && ok "alone: --capabilities still advertises everything with no sibling present" \
@@ -1014,34 +1017,23 @@ else
     bad "alone: load-command delete" "$(cat "$T/alone_lc.out")"
 fi
 
-# `version-min set` is the one statement that was gated on add_version_min
-# rather than change_dylib, so it needs its own standalone run -- a regression
-# that restored only THAT subprocess would sail past the two assertions above.
-#
-# Which of mv_add_version_min's two success paths runs here depends on the
-# host's linker: a 10.9 ld emits LC_VERSION_MIN_MACOSX itself (so this is the
-# "already present" path), a 2026 one emits LC_BUILD_VERSION instead (so this
-# actually appends). Both are exit 0 and both prove the point, so accept
-# either MESSAGE rather than asserting which -- what must not happen is
-# drydock-macho-rewrite failing because a binary it no longer needs isn't there. (Note the
-# fixture is deliberately NOT stripped of its version-min first: the helper
-# that does that is built further down, and this assertion is about reaching
-# the driver at all, not about which branch of it ran.)
-if printf 'version-min set 10.9\n' \
+# minos if-absent was the one statement gated on add_version_min rather than
+# change_dylib, so it needs its own standalone run.
+if printf 'minos if-absent 10.9\n' \
         | "$T/alone/drydock-macho-rewrite" "$T/alone/fixture" "$T/alone/fixture.minos" \
         >"$T/alone_minos.out" 2>&1; then
-    ok "alone: version-min set works with no add_version_min anywhere near drydock-macho-rewrite"
+    ok "alone: minos if-absent works with no add_version_min anywhere near drydock-macho-rewrite"
 else
-    bad "alone: version-min set" "$(cat "$T/alone_minos.out")"
+    bad "alone: minos if-absent" "$(cat "$T/alone_minos.out")"
 fi
-if grep -q "LC_VERSION_MIN_MACOSX" "$T/alone_minos.out"; then
-    ok "alone: version-min set reached the version-min driver in-process (said what it did)"
+if grep -q "^      .*version-min " "$T/alone_minos.out"; then
+    ok "alone: minos if-absent reached its core in-process (said what it did)"
 else
-    bad "alone: version-min set output" "exited 0 but said nothing about LC_VERSION_MIN_MACOSX: $(cat "$T/alone_minos.out")"
+    bad "alone: minos if-absent output" "exited 0 but reported no version-min: $(cat "$T/alone_minos.out")"
 fi
 "$T/alone/drydock-macho-rewrite" info "$T/alone/fixture.minos" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "alone: the output carries LC_VERSION_MIN_MACOSX afterward" \
-    || bad "alone: version-min set result" "no LC_VERSION_MIN_MACOSX in info output after version-min set"
+    || bad "alone: minos if-absent result" "no LC_VERSION_MIN_MACOSX in info output after minos if-absent"
 
 # ============================================================================
 # verify
@@ -1351,7 +1343,7 @@ rc=0
     || bad "imports: fat+chained stdout" "expected empty, got: $(cat "$T/imp_fatchained.out")"
 
 # ============================================================================
-# version-min set
+# minos if-absent
 # ============================================================================
 "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
 
@@ -1388,72 +1380,59 @@ else
     strip_rc=$?
 fi
 if [ "$strip_rc" -ne 0 ]; then
-    bad "version-min set: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
+    bad "minos if-absent: fixture setup" "strip_version_min exited $strip_rc: $(cat "$T/strip_version_min.out")"
 fi
-# The premise is only that LC_VERSION_MIN_MACOSX, the command version-min set
+# The premise is only that LC_VERSION_MIN_MACOSX, the command minos if-absent
 # adds, is absent; a modern linker's LC_BUILD_VERSION may stay.
 before_minos=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_fixture")
 if echo "$before_minos" | grep -q "LC_VERSION_MIN_MACOSX"; then
-    bad "version-min set: fixture setup" "fixture still carries LC_VERSION_MIN_MACOSX"
+    bad "minos if-absent: fixture setup" "fixture still carries LC_VERSION_MIN_MACOSX"
 else
-    ok "version-min set: the fixture has no LC_VERSION_MIN_MACOSX before"
+    ok "minos if-absent: the fixture has no LC_VERSION_MIN_MACOSX before"
 fi
 
-printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out" \
-    >"$T/minos.out" 2>&1 || bad "version-min set: appends when absent" "$(cat "$T/minos.out")"
+printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out" \
+    >"$T/minos.out" 2>&1 || bad "minos if-absent: appends when absent" "$(cat "$T/minos.out")"
 minos_info=$("$DRYDOCK_MACHO_REWRITE" info "$T/minos_out")
-echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "version-min set: appends when absent" \
-    || bad "version-min set: appends when absent" "not found in info output"
+echo "$minos_info" | grep -q "LC_VERSION_MIN_MACOSX" && ok "minos if-absent: appends when absent" \
+    || bad "minos if-absent: appends when absent" "not found in info output"
 # Running it again must not error (add_version_min's own "already present"
 # path) -- this time reading the output of the run above, which HAS the
 # command, so the second run really takes that branch.
-if printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
-    ok "version-min set: leaves a present one alone, exit 0"
+if printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_out" "$T/minos_out2" >/dev/null 2>&1; then
+    ok "minos if-absent: leaves a present one alone, exit 0"
 else
-    bad "version-min set: leaves a present one alone" "errored on a file that already has one"
+    bad "minos if-absent: leaves a present one alone" "errored on a file that already has one"
 fi
-# Any other version is refused up front -- this build can only target 10.9.
-# The VERB refused it (EX_REFUSED) after parsing its own positional; the
-# STATEMENT is refused by ms_parse before anything runs, which is EX_FAIL --
-# an unparseable script, not a verdict about FILE. Nonzero either way, which
-# is what this assertion has always asked, and no output is written either way.
-rm -f "$T/minos_out3"
-if printf 'version-min set 10.10\n' | "$DRYDOCK_MACHO_REWRITE" "$T/minos_fixture" "$T/minos_out3" >/dev/null 2>"$T/minos_1010.err"; then
-    bad "version-min set: accepts only 10.9" "10.10 should be refused"
-else
-    ok "version-min set: accepts only 10.9"
-fi
-[ -e "$T/minos_out3" ] && bad "version-min set: accepts only 10.9" "wrote an output for a version it refused" \
-    || ok "version-min set: a refused version writes no OUT"
 
 # version-min never writes its input: FILE OUT, and an OUT that is FILE is refused.
 build_main "$T/mo_in"; "$T/strip_version_min" "$T/mo_in" >/dev/null
 mo_before=$(sha "$T/mo_in"); mo_ino=$(stat -f %i "$T/mo_in")
-printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_out" >"$T/mo.out" 2>"$T/mo.err" \
-    && ok "version-min set FILE OUT: succeeds" || bad "version-min set FILE OUT" "$(cat "$T/mo.err")"
+printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_out" >"$T/mo.out" 2>"$T/mo.err" \
+    && ok "minos if-absent FILE OUT: succeeds" || bad "minos if-absent FILE OUT" "$(cat "$T/mo.err")"
 [ "$(sha "$T/mo_in")" = "$mo_before" ] && [ "$(stat -f %i "$T/mo_in")" = "$mo_ino" ] \
-    && ok "version-min set FILE OUT: FILE is untouched" || bad "version-min set FILE OUT" "FILE changed"
+    && ok "minos if-absent FILE OUT: FILE is untouched" || bad "minos if-absent FILE OUT" "FILE changed"
 "$DRYDOCK_MACHO_REWRITE" info "$T/mo_out" | grep -q LC_VERSION_MIN_MACOSX \
-    && ok "version-min set FILE OUT: OUT has the command" || bad "version-min set FILE OUT" "OUT lacks it"
+    && ok "minos if-absent FILE OUT: OUT has the command" || bad "minos if-absent FILE OUT" "OUT lacks it"
 # The verb said `Wrote OUT (N bytes)` on STDOUT; a script run says
 # `OUT: written (N,NNN bytes)` on STDERR. Same claim -- it names the file it
 # wrote -- in the stream and wording me_run uses.
 grep -q "^$T/mo_out: written (" "$T/mo.err" \
-    && ok "version-min set FILE OUT: says what it wrote" || bad "version-min set FILE OUT" "no written line: $(cat "$T/mo.err")"
-rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_in" >/dev/null 2>"$T/mo_same.err" || rc=$?
+    && ok "minos if-absent FILE OUT: says what it wrote" || bad "minos if-absent FILE OUT" "no written line: $(cat "$T/mo.err")"
+rc=0; printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_in" >/dev/null 2>"$T/mo_same.err" || rc=$?
 [ "$rc" -eq 2 ] && [ "$(sha "$T/mo_in")" = "$mo_before" ] \
-    && ok "version-min set: OUT that is FILE is refused (2), FILE untouched" || bad "version-min set OUT=FILE" "rc $rc"
+    && ok "minos if-absent: OUT that is FILE is refused (2), FILE untouched" || bad "minos if-absent OUT=FILE" "rc $rc"
 grep -q "never writes its input" "$T/mo_same.err" \
-    && ok "version-min set: ... refused up front, before any work" \
-    || bad "version-min set OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
+    && ok "minos if-absent: ... refused up front, before any work" \
+    || bad "minos if-absent OUT=FILE" "not the up-front refusal: $(cat "$T/mo_same.err")"
 ln -s "$T/mo_in" "$T/mo_link"
-rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_link" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "version-min set: OUT that is a symlink to FILE is refused (2)" || bad "version-min set OUT=link" "rc $rc"
+rc=0; printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" "$T/mo_link" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos if-absent: OUT that is a symlink to FILE is refused (2)" || bad "minos if-absent OUT=link" "rc $rc"
 # A missing OUT is still a usage error, and still 2 -- `drydock-macho-rewrite FILE` alone
 # matches no verb and is not the two-positional bare form, so it falls through
 # to usage(). The verb reached the same place from its own argc check.
-rc=0; printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "version-min set: a missing OUT is a usage error (2)" || bad "version-min set no OUT" "rc $rc"
+rc=0; printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/mo_in" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos if-absent: a missing OUT is a usage error (2)" || bad "minos if-absent no OUT" "rc $rc"
 
 # ============================================================================
 # minos at-most, minos if-absent
@@ -4204,16 +4183,16 @@ grep -q "written (" "$T/nv2.out" \
 #
 # The four runs below cover every core an edit statement can reach, so the
 # absence greps are not vacuous for want of a code path: mr_apply_image
-# (load-command/dylib), mv_add_version_min_image, mswift_retag_image and
+# (load-command/dylib), mv_declare_minos, mswift_retag_image and
 # md_declassify_buf.
 build_main "$T/vonly_lc"
 printf 'load-command delete uuid\ndylib append /x\n' >"$T/vonly_lc.edits"
 "$DRYDOCK_MACHO_REWRITE" "$T/vonly_lc" "$T/vonly_lc.out" <"$T/vonly_lc.edits" \
     >"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "lc/dylib run: $(cat "$T/vonly.err")"
 build_main "$T/vonly_vm"; "$T/strip_version_min" "$T/vonly_vm" >/dev/null
-printf 'version-min set 10.9\n' >"$T/vonly_vm.edits"
+printf 'minos if-absent 10.9\n' >"$T/vonly_vm.edits"
 "$DRYDOCK_MACHO_REWRITE" "$T/vonly_vm" "$T/vonly_vm.out" <"$T/vonly_vm.edits" \
-    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "version-min run: $(cat "$T/vonly.err")"
+    >>"$T/vonly.out" 2>"$T/vonly.err" || bad "edit verb-only lines" "minos run: $(cat "$T/vonly.err")"
 "$T/mkswift" make "$T/vonly_sw"
 printf 'swift-abi set legacy\n' >"$T/vonly_sw.edits"
 "$DRYDOCK_MACHO_REWRITE" "$T/vonly_sw" "$T/vonly_sw.out" <"$T/vonly_sw.edits" \
@@ -4322,7 +4301,7 @@ echo "$grow_info" | grep -q "LC_UUID" \
     && ok "edit grow: the result passes drydock-macho-rewrite verify" \
     || bad "edit grow" "verify refused the result: $(cat "$T/grow_verify.err")"
 
-# version-min set on a short pad. LC_VERSION_MIN_MACOSX needs 16 bytes of
+# minos if-absent on a short pad. LC_VERSION_MIN_MACOSX needs 16 bytes of
 # header pad, and build_main's pad is far larger, so a fixture that is
 # genuinely short has to be made: strip any LC_VERSION_MIN_MACOSX the
 # linker emitted (strip_version_min, above), then fill the pad with a dylib
@@ -4355,37 +4334,37 @@ cp "$T/vm_tight" "$T/vm_e"
 vm_before=$(sha "$T/vm_e"); vm_ino=$(stat -f %i "$T/vm_e")
 rm -f "$T/vm_e_out"
 rc=0
-printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" \
+printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_e_out" \
     >"$T/vm.out" 2>"$T/vm.err" || rc=$?
-[ "$rc" -eq 0 ] && ok "version-min set: a short pad grows the header and succeeds (0)" \
+[ "$rc" -eq 0 ] && ok "minos if-absent: a short pad grows the header and succeeds (0)" \
     || bad "version-min grow" "expected 0, got $rc: $(cat "$T/vm.err")"
 [ "$(sha "$T/vm_e")" = "$vm_before" ] && [ "$(stat -f %i "$T/vm_e")" = "$vm_ino" ] \
-    && ok "version-min set: ... FILE is as it was" \
+    && ok "minos if-absent: ... FILE is as it was" \
     || bad "version-min grow" "the run modified FILE"
 # Labelled with the INPUT's path -- the operations run against an image in
 # memory and know nothing about OUT -- and printed once, however many lines
 # the run reports.
 vm_grows=$(grep -c "^$T/vm_e: grew the header pad by [0-9]* bytes ($vm_left -> [0-9]* available); image base 0x[0-9a-f]* -> 0x[0-9a-f]*\$" "$T/vm.err" || true)
 [ "$vm_grows" -eq 1 ] \
-    && ok "version-min set: ... stderr announces the grow exactly once, naming the input" \
+    && ok "minos if-absent: ... stderr announces the grow exactly once, naming the input" \
     || bad "version-min grow" "expected 1 announcement, saw $vm_grows: $(cat "$T/vm.err")"
 grep -q "grew" "$T/vm.out" \
     && bad "version-min grow" "the announcement reached stdout: $(cat "$T/vm.out")" \
-    || ok "version-min set: ... and not on stdout"
+    || ok "minos if-absent: ... and not on stdout"
 "$DRYDOCK_MACHO_REWRITE" info "$T/vm_e_out" | grep -q "LC_VERSION_MIN_MACOSX" \
-    && ok "version-min set: LC_VERSION_MIN_MACOSX is in the written image" \
+    && ok "minos if-absent: LC_VERSION_MIN_MACOSX is in the written image" \
     || bad "version-min grow" "no LC_VERSION_MIN_MACOSX after the grow"
 "$DRYDOCK_MACHO_REWRITE" verify "$T/vm_e_out" >/dev/null 2>"$T/vm_verify.err" \
-    && ok "version-min set: the grown image passes drydock-macho-rewrite verify" \
+    && ok "minos if-absent: the grown image passes drydock-macho-rewrite verify" \
     || bad "version-min grow" "verify refused: $(cat "$T/vm_verify.err")"
 
 # An extra token after OUT is still a usage error (2). It was `minos`'s own
 # argc check; it is the bare form's, which takes exactly FILE and OUT and
 # matches no verb here, so main() falls through to usage().
 rc=0
-printf 'version-min set 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 2 ] && ok "version-min set: an extra token after OUT is a usage error (2)" \
-    || bad "version-min set" "an extra token after OUT: expected 2, got $rc"
+printf 'minos if-absent 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$T/vm_e" "$T/vm_m_out" --bogus >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] && ok "minos if-absent: an extra token after OUT is a usage error (2)" \
+    || bad "minos if-absent" "an extra token after OUT: expected 2, got $rc"
 
 # The historical add_version_min never grew and refused a short pad ("no room
 # for LC_VERSION_MIN_MACOSX"); its wrapper grows it, announced.
@@ -4399,15 +4378,6 @@ rc=0
 "$DRYDOCK_MACHO_REWRITE" info "$T/vm_w" | grep -q "LC_VERSION_MIN_MACOSX" \
     && ok "add_version_min: ... and the file now carries LC_VERSION_MIN_MACOSX" \
     || bad "add_version_min" "no LC_VERSION_MIN_MACOSX after the grow"
-
-# `verb minos versions=10.9 flags=...` used to be here, and the version it
-# advertised is the half that survived: `statement version-min set 1` says
-# the statement takes one operand, and `statement target 10.9 0` (asserted with
-# the other statement rows above) is where the 10.9 PROFILE this build knows is
-# published. The flags= half is gone with every other flags= field.
-echo "$caps" | grep -qxF "statement version-min set 1" \
-    && ok "capabilities: the version-min statement is advertised" \
-    || bad "capabilities version-min" "expected 'statement version-min set 1': $(echo "$caps" | grep '^statement version-min')"
 
 # ============================================================================
 # target 10.9 -- the one statement whose meaning depends on the binary

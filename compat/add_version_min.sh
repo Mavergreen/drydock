@@ -1,19 +1,13 @@
 #!/bin/sh
 # add_version_min -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
-# `version-min set 10.9` statement on its stdin.
+# `minos if-absent 10.9` statement on its stdin.
 #
 #   add_version_min binary
 #
-# WHAT THIS REPLACED. compat/add_version_min.c was eighteen lines: an argc
-# check and a call to mv_add_version_min (src/version_min.h). The
-# `version-min set` statement calls that same function, so the only thing this
-# wrapper has to reshape is WHERE THE RESULT LANDS.
-#
-# GRAMMAR. `add_version_min FILE` -> `printf 'version-min set 10.9\n' |
-# drydock-macho-rewrite FILE OUT`. The version is spelled out because the C tool hardcoded
-# 10.9 (mv_add_version_min only knows that floor); ms_parse accepts no other,
-# which is why the translation can name it literally rather than passing
-# something through.
+# GRAMMAR. `add_version_min FILE` -> `printf 'minos if-absent 10.9\n' |
+# drydock-macho-rewrite FILE OUT`: declare 10.9 where nothing is declared, and
+# leave a declared minimum as it is, as the C tool did. compat/README.md's
+# "add_version_min" section has where the two differ.
 #
 # THE IN-PLACE EDIT. add_version_min rewrote FILE; drydock-macho-rewrite does not write
 # the file it is given. So this wrapper does what the old tool looked
@@ -35,44 +29,18 @@
 # for the same reason (the mirror-image case, an unwritable FILE in a writable
 # directory, is what mw_prepare's writability check exists to keep refusing).
 #
-# EXIT CODES. drydock-macho-rewrite's, forwarded unchanged, with the wrapper's own refusals
-# at 1. The old C tool returned mv_add_version_min's own 0/1 (0 ok, 1 the flat
-# "something went wrong" that function had no finer answer than); this wrapper
-# forwards the SAME function's return today too, but its vocabulary is no
-# longer that flat 0/1 (src/rewrite.h): 0 ok, MR_REFUSED (1) for a considered
-# refusal -- "not a readable 64-bit Mach-O" (including mi_open's own
-# MI_NOT_MACHO) or "no room for LC_VERSION_MIN_MACOSX" -- or MR_FAIL (2) for a
-# genuine open/fstat failure, mi_open's own I/O errors (a second, independent
-# open of the same path, which can fail on its own even though this function's
-# own earlier open succeeded), or a failure to write OUT. A considered refusal
-# still exits 1 here, matching the C tool by coincidence, not construction; an
-# operational failure now exits 2, where the C tool always exited a flat 1
-# -- see compat/README.md's "drop-in" section for this as a named
-# exception. The two exit codes the COMMAND has of its own are unreachable
-# from here: EX_FAIL=2 for a script that does not parse, since the one
-# statement is emitted by compat/translate.sh rather than typed, and EX_FAIL=2
-# for an OUT that is FILE, since mw_prepare names a temp that is neither. The wrapper's OWN refusals -- an absent or
-# unwritable FILE (`open: ...`, mw_require_writable's words, which are the C
-# tool's own open() failing), a hard-linked FILE, and a failed install -- all
-# exit 1, the only failure code this tool ever had.
+# EXIT CODES. drydock-macho-rewrite's, forwarded unchanged: 0, 1 for a
+# considered refusal, 2 for an operational failure, where the C tool exited a
+# flat 1 for both (compat/README.md's "drop-in" section names it). The
+# wrapper's own refusals -- an absent or unwritable FILE (`open: ...`, the C
+# tool's own words), a hard-linked FILE, and a failed install -- exit 1.
 #
-# STDOUT -- ONE OF THE C TOOL'S TWO LINES, and this is the one place the
-# wrapper's text is not what it was. mv_add_version_min printed either
-# "LC_VERSION_MIN_MACOSX already present; nothing to do." or "Added
-# LC_VERSION_MIN_MACOSX 10.9 (ncmds=..., sizeofcmds=...)". The first still
-# comes through on stdout, from the same printf inside the same function. The
-# second does NOT: that line belongs to the `minos` VERB, which a script does
-# not call, and a `version-min set 10.9` statement announces its append on
-# STDERR instead -- "      appended LC_VERSION_MIN_MACOSX 10.9" (src/edit.c).
-# Nothing reads it: tests/known-callers.sh's evidence is that every caller
-# sends stdout to /dev/null and branches on the exit code, and the repo owner
-# ruled on 2026-09-13 that wrapper text may change where bytes and exit codes
-# may not. tests/wrapper_test.sh's add_version_min block asserts both halves --
-# stdout empty on an append, the announcement present on stderr -- so the move
-# is pinned rather than merely tolerated.
+# STDOUT. The C tool printed "LC_VERSION_MIN_MACOSX already present; nothing
+# to do." or "Added LC_VERSION_MIN_MACOSX 10.9 (...)". This wrapper prints the
+# first when the run changed nothing; the second became the statement's report
+# on stderr.
 #
-# STDERR. mv_add_version_min's own diagnostics, the statement report above,
-# and the teaching message this wrapper prints ahead of both.
+# STDERR. The statement's diagnostics and report, after the teaching message.
 
 MW_SELF=$(command -v "$0" 2>/dev/null) || MW_SELF=$0
 MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
@@ -91,9 +59,7 @@ MW_DIR=${DRYDOCK_MACHO_REWRITE_COMPAT_DIR:-$(dirname "$MW_SELF")}
 
 mw_translate add_version_min "$@" || exit $?
 mw_prepare "$1" || exit 1
-# THIN ONLY, like mv_add_version_min's own mi_open. drydock-macho-rewrite-compat.sh's
-# mw_thin_only has the measurement; the message is mv_add_version_min's, which
-# named the FILE and not the tool.
+# THIN ONLY, as the C tool was; the message is the one it printed, naming FILE.
 if ! mw_thin_only "$1"; then
     printf '%s: not a readable 64-bit Mach-O\n' "$1" >&2
     exit 1
@@ -103,4 +69,5 @@ mw_run_to_tmp
 mw_rc=$?
 [ "$mw_rc" -eq 0 ] || exit "$mw_rc"
 mw_finish || exit 1
+[ "$MW_CHANGED" -eq 1 ] || printf 'LC_VERSION_MIN_MACOSX already present; nothing to do.\n'
 exit 0

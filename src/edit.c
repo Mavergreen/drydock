@@ -11,7 +11,7 @@
  * the follow-up work an operation does beyond what its statement names, from
  * figures the operation hands back through an out-parameter -- mr_ops'
  * `renumbering`, md_declassify_buf's md_report, mswift_retag_image's return,
- * mv_add_version_min_image's `added` -- and never from a second look at the
+ * mv_declare_minos's report -- and never from a second look at the
  * image.
  */
 #include <stdarg.h>
@@ -289,14 +289,13 @@ static int me_rewrite(uint8_t **pbuf, size_t *psize, const char *path,
  * 0, MR_REFUSED or MR_FAIL. *pbuf and *psize always name the current image
  * afterwards, whether or not the statement succeeded, because three of these
  * reallocate it: a header grow, inside the rewrite and inside
- * `version-min set`, and the room `fixups set classic` appends its opcode
+ * `minos`, and the room `fixups set classic` appends its opcode
  * streams into.
  *
  * A statement that succeeded logs, indented beneath its statement line, the
  * work it did beyond what it names: the ordinal renumbering of a dylib insert
  * or delete, what `fixups set classic` converted or that it passed the image
- * through, what `swift-abi set legacy` retagged, and the command
- * `version-min set` appended. */
+ * through, what `swift-abi set legacy` retagged, and what `minos` declared. */
 static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
                     const ms_script *s, const ms_stmt *st, FILE *log,
                     me_verdict *v) {
@@ -385,20 +384,6 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (!rpath) ops.renumbering = &renum;
         int rc = me_rewrite(pbuf, psize, path, &ops, ms_disturbs(st->kind, st->op), v);
         if (rc == 0 && renum.done) me_log_renumbering(log, &renum);
-        return rc;
-    }
-
-    case MS_VERSION_MIN: {
-        /* ms_parse accepts only 10.9, and 10.9 is the only floor this core
-         * writes; the parser's value check is the one place that says so.
-         * When the pad is short, growing it is mg_ensure_pad's decision, the
-         * same as for dylib and rpath. */
-        mi_image im;
-        int added = 0;
-        if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        int rc = mv_add_version_min_image(pbuf, psize, path, &added);
-        if (rc == 0 && added)
-            me_say(log, "      appended LC_VERSION_MIN_MACOSX 10.9\n");
         return rc;
     }
 

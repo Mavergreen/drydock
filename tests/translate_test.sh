@@ -375,13 +375,13 @@ mv -f f.new f" -- fix_macho f -rename_seg __DATA __A -rename_seg __TEXT __B
 # own and ends with the install step -- two lines, and both of them pinned:
 # what a reader is shown has to be the complete equivalent of the old in-place
 # edit, not the half of it that rewrites nothing.
-ok avm     "printf 'version-min set 10.9\n' | drydock-macho-rewrite f f.new
+ok avm     "printf 'minos if-absent 10.9\n' | drydock-macho-rewrite f f.new
 mv -f f.new f"                               -- add_version_min f
 # MT_OUT is how a wrapper names the temp it is going to install: the command
 # writes exactly that, and the `mv` disappears because the wrapper does the
 # installing itself.
 mt_out_got=$( MT_OUT=/tmp/t.tmp /bin/sh "$TR" add_version_min f )
-if [ "$mt_out_got" = "printf 'version-min set 10.9\n' | drydock-macho-rewrite f /tmp/t.tmp" ]; then
+if [ "$mt_out_got" = "printf 'minos if-absent 10.9\n' | drydock-macho-rewrite f /tmp/t.tmp" ]; then
     pass=$((pass + 1))
 else
     printf 'FAIL avm-mt-out: got %s\n' "$mt_out_got" >&2; fail=$((fail + 1))
@@ -584,7 +584,7 @@ fi
 
 # ---- DRYDOCK_MACHO_REWRITE names the program word ------------------------
 got=$( DRYDOCK_MACHO_REWRITE=/opt/bin/drydock-macho-rewrite /bin/sh "$TR" add_version_min f )
-if [ "$got" = "printf 'version-min set 10.9\n' | /opt/bin/drydock-macho-rewrite f f.new
+if [ "$got" = "printf 'minos if-absent 10.9\n' | /opt/bin/drydock-macho-rewrite f f.new
 mv -f f.new f" ]; then
     pass=$((pass + 1))
 else
@@ -772,7 +772,7 @@ stmtcheck() {   # stmtcheck <kind> <op> <nargs>
     fi
 }
 stmtcheck load-command delete 1
-stmtcheck version-min set 1
+stmtcheck minos if-absent 1
 stmtcheck swift-abi set 1
 stmtcheck fixups set 1
 stmtcheck dylib replace 2

@@ -94,7 +94,7 @@ static void test_parses_the_production_script(void) {
     static const char src[] =
         "# Claude Code -> 10.9\n"
         "fixups        set      classic\n"
-        "version-min   set      10.9\n"
+        "minos         if-absent 10.9\n"
         "load-command  delete   uuid\n"
         "dylib         replace  /usr/lib/libSystem.B.dylib  @loader_path/../S.dylib\n";
     ms_script s; char err[256] = {0};
@@ -300,14 +300,6 @@ static void test_blank_and_comment_lines_dont_shift_line_numbers(void) {
     ms_free(&s);
 }
 
-static void test_version_min_value_refusal(void) {
-    static const char src[] = "version-min set 10.10\n";
-    ms_script s; char err[256] = {0};
-    CHECK(ms_parse(src, sizeof src - 1, &s, err, sizeof err) == -1,
-          "version-min set 10.10 is refused");
-    CHECK(strstr(err, "10.9") != NULL, "names what is accepted (got: %s)", err);
-}
-
 static void test_swift_abi_value_refusal(void) {
     static const char src[] = "swift-abi set native\n";
     ms_script s; char err[256] = {0};
@@ -383,7 +375,7 @@ static void test_capabilities_table_round_trips(void) {
          * would be refused for a reason that has nothing to do with what
          * this test is proving. */
         if (strcmp(kind, "load-command") == 0 && strcmp(op, "delete") == 0) a = "uuid";
-        else if (strcmp(kind, "version-min") == 0 || strcmp(kind, "minos") == 0) a = "10.9";
+        else if (strcmp(kind, "minos") == 0) a = "10.9";
         else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
         else if (strcmp(kind, "fixups") == 0) a = "classic";
         else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
@@ -414,7 +406,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 19, "the statement table has 19 rows (got %d)", n_rows);
+    CHECK(n_rows == 18, "the statement table has 18 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row. Each mask below was read out of
@@ -487,16 +479,12 @@ static void test_disturbs_matches_the_spec_table(void) {
      * they are, so the pad is the whole of it. */
     CHECK(ms_disturbs(MS_LOAD_COMMAND, MS_DELETE) == MREL_HEADER_PAD,
           "load-command delete frees pad and moves no section offset");
-    /* mv_add_version_min appends LC_VERSION_MIN_MACOSX into the pad
-     * (src/version_min.h). */
-    CHECK(ms_disturbs(MS_VERSION_MIN, MS_SET) == MREL_HEADER_PAD,
-          "version-min set appends a command, so the pad is what it costs");
 
     /* THREE bits, not two. src/declassify.h:32-37: the conversion strips
      * LC_DYLD_EXPORTS_TRIE, LC_DYLD_CHAINED_FIXUPS and every LC_BUILD_VERSION,
      * then adds a 48-byte LC_DYLD_INFO_ONLY -- which is "frees pad" and
      * "appends a command", the same two reasons load-command delete and
-     * version-min set earn MREL_HEADER_PAD -- while rebuilding the rebase and
+     * minos at-most earn MREL_HEADER_PAD -- while rebuilding the rebase and
      * bind streams (base-relative content) and extending __LINKEDIT. Leaving
      * the pad bit off made the design's own table internally inconsistent, and
      * the bit is load-bearing: disturbing the pad is exactly the condition
@@ -797,8 +785,10 @@ static void test_minos_at_most_and_if_absent_take_a_version(void) {
 }
 
 static void test_retired_minimum_statements_are_unknown(void) {
-    static const char *lines[] = { "minos set 10.9\n", "minos at-mots 10.9\n" };
-    static const char *said[] = { "line 1: unknown statement 'minos set'",
+    static const char *lines[] = { "version-min set 10.9\n", "minos set 10.9\n",
+                                   "minos at-mots 10.9\n" };
+    static const char *said[] = { "line 1: unknown statement 'version-min set'",
+                                  "line 1: unknown statement 'minos set'",
                                   "line 1: unknown statement 'minos at-mots'" };
     for (size_t i = 0; i < sizeof lines / sizeof *lines; i++) {
         ms_script s; char err[256] = {0};
@@ -831,7 +821,6 @@ int main(void) {
     test_a_bare_script_does_not_allow_unmatched();
     test_final_line_without_newline_parses();
     test_blank_and_comment_lines_dont_shift_line_numbers();
-    test_version_min_value_refusal();
     test_swift_abi_value_refusal();
     test_fixups_value_refusal();
     test_kind_and_op_names();

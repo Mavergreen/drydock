@@ -118,7 +118,7 @@ got=$(sha "$T/t")
 grep -q '| drydock-macho-rewrite ' "$T/e1" && grep -q 'fixups set classic' "$T/e1" \
     && ok "install.sh: patch_macho taught its drydock-macho-rewrite equivalent on stderr" \
     || bad "install.sh: patch_macho stderr" "no drydock-macho-rewrite equivalent: $(cat "$T/e1")"
-grep -q '| drydock-macho-rewrite ' "$T/e2" && grep -q 'version-min set 10.9' "$T/e2" \
+grep -q '| drydock-macho-rewrite ' "$T/e2" && grep -q 'minos if-absent 10.9' "$T/e2" \
     && ok "install.sh: add_version_min taught its drydock-macho-rewrite equivalent on stderr" \
     || bad "install.sh: add_version_min stderr" "no drydock-macho-rewrite equivalent: $(cat "$T/e2")"
 # This one invocation is worth several statements, so its equivalent carries

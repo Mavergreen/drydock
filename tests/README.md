@@ -109,7 +109,7 @@ for the same reason a quotation keeps the words it quotes.
 `drydock-macho-rewrite` uses three exit codes throughout. `verify`, `info` and the
 statement parser's KIND validation always have; a run's rewriting statements
 get theirs from the shared rewrite drivers they lower to (`mr_apply_image`,
-`mv_add_version_min`), which draw this exact same line themselves for
+`mv_declare_minos`), which draw this exact same line themselves for
 EVERY considered refusal they can reach -- not only the one an unmatched
 operation reaches by default ("an operation matched nothing"), but every
 refusal those two functions already had (bad magic, no room to grow, and
@@ -138,9 +138,9 @@ checking only `== 0` or `!= 0` is unaffected by this distinction's addition
 regardless of which of `1`/`2` means which.
 
 A `dylib`, `rpath`, `load-command` or `segment` statement (past the parser's
-own KIND check) and `version-min set` (past its own version check) hand their
-statement's code back through `me_run` from the shared rewrite drivers,
-`mr_apply_image` and `mv_add_version_min` (`src/rewrite.h`,
+own KIND check) and `minos` hand their
+statement's code back through `me_run` from the shared cores,
+`mr_apply_image` and `mv_declare_minos` (`src/rewrite.h`,
 `src/version_min.h`). Those two use the very same `MR_REFUSED` (1) /
 `MR_FAIL` (2) split this table documents -- `src/rewrite.h`'s
 `MR_REFUSED`/`MR_FAIL` block states the rule and `mr_apply_image`'s own comment
@@ -220,7 +220,7 @@ reproducing the failure in new shapes:
   load command, not assume a normal build lacks it — a modern host's default
   build already lacks it (it emits `LC_BUILD_VERSION` instead), which makes
   a naive assertion pass for the wrong reason and silently stop testing what
-  it claims to. See `cli_test.sh`'s `version-min set` fixture construction for the
+  it claims to. See `cli_test.sh`'s `minos if-absent` fixture construction for the
   full story, including the failed first fix below.
 
 - **`-Wl,-no_version_load_command` exists only on 10.9's `ld`.** A first fix

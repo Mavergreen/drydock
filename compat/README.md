@@ -25,7 +25,7 @@ where the old flag grammar becomes those statements.
 |---|---|
 | `patch_macho` | `patch_macho.sh` → `fixups set classic`, installed over `OUT` |
 | `change_dylib` | `change_dylib.sh` → `load-command delete` / `dylib` / `rpath` statements, however many the flags name |
-| `add_version_min` | `add_version_min.sh` → `version-min set 10.9`, installed over `FILE` |
+| `add_version_min` | `add_version_min.sh` → `minos if-absent 10.9`, installed over `FILE` |
 | `rename_segment` | `rename_segment.sh` → `segment rename OLD NEW` |
 | `retag_swift_classes` | `retag_swift_classes.sh` → `swift-abi set legacy`, once per file, installed over each `FILE` |
 | `fix_macho` | `fix_macho.sh` → `load-command delete` / `dylib` / `segment rename` statements, however many the flags name (two renames are two statements) |
@@ -63,7 +63,7 @@ one `printf ... | drydock-macho-rewrite FILE OUT`.
 | `fix_macho FILE -change O N` | `dylib replace O N` |
 | `fix_macho FILE -strip_build_version` | `load-command delete build-version` |
 | `fix_macho FILE -rename_seg O N` | `segment rename O N` |
-| `add_version_min FILE` | `version-min set 10.9` |
+| `add_version_min FILE` | `minos if-absent 10.9` |
 | `patch_macho IN OUT` | `fixups set classic`, into `OUT` (into `OUT.new` and then `mv` when `IN` and `OUT` are the same string) |
 | `rename_segment FILE O N` | `segment rename O N` |
 | `retag_swift_classes F1 F2 ...` | `swift-abi set legacy`, once per file |
@@ -651,6 +651,19 @@ differs is everything around it. "Held by" names assertions in
 | **with a bad `IN` and an `OUT` that is a directory or other non-regular file, `OUT` is named**, where the C tool named `IN`. An unwritable, hard-linked or dangling `OUT` still yields to `IN`'s diagnosis. Exit 1 either way | "patch_macho: with a bad IN and a directory as OUT, the directory is the one named", "patch_macho: with a bad IN and an unwritable OUT, IN is the one named" |
 | **stdout**: `md_declassify`'s own lines pass through, and `Wrote OUT (N bytes)` is printed only on the converting path, as `patch_macho` printed it. A pass-through, recognised by `md_declassify`'s `Already patched` line, names no file | "patch_macho: the pass-through prints no 'Wrote ...' line", "patch_macho: ... and its last stdout line names OUT and OUT's size", "patch_macho: ... and exactly one 'Wrote ' line", "patch_macho: ... and md_declassify's own lines still come through"; `tests/known-callers.sh`, "install.sh: patch_macho passes an already-converted binary through unchanged" |
 | **a macOS `LC_BUILD_VERSION` is kept as an `LC_VERSION_MIN_MACOSX`** carrying its minimum and sdk, just before the new `LC_DYLD_INFO_ONLY`; the C tool dropped it and left no version command. Run before `add_version_min`, as install.sh runs them, the binary ends declaring the build-version's minimum and sdk, where the C tools left 10.9 and sdk 10.9. On 10.9 any sdk at or above 10.9 behaves identically (`docs/minimum-os-version.md`, "Every sdk check in 10.9.5's own code"). The kept command needs 16 more bytes of header pad, and two macOS `LC_BUILD_VERSION`s are refused | "patch_macho: ... and OUT keeps the build-version's minimum and sdk as one LC_VERSION_MIN_MACOSX", "patch_macho then add_version_min: the binary declares the build-version's minimum and sdk, not 10.9"; `tests/cli_test.sh`'s "fixups set classic: …" block |
+
+## `add_version_min`: the differences, and what holds each one
+
+`add_version_min FILE` becomes `minos if-absent 10.9` into a temp beside
+`FILE`, installed over it. "Held by" names assertions in
+`tests/wrapper_test.sh`.
+
+| the difference | held by |
+|---|---|
+| **a binary whose only version command is a macOS `LC_BUILD_VERSION` ends with one `LC_VERSION_MIN_MACOSX`** carrying that command's minimum and sdk. The C tool appended `LC_VERSION_MIN_MACOSX` 10.9 beside it, leaving the pair that 10.14's dyld and the 10.15+ kernel refuse | "add_version_min: a build-version-only binary ends with one LC_VERSION_MIN_MACOSX, its minimum and sdk kept" |
+| **a binary carrying both loses the `LC_BUILD_VERSION`**; its `LC_VERSION_MIN_MACOSX` is unchanged. The C tool left both | "add_version_min: ... and one carrying both loses the LC_BUILD_VERSION, its version-min unchanged" |
+| **the append is announced on stderr** as `none -> version-min 10.9; sdk 10.9 written`, not as the C tool's "Added LC_VERSION_MIN_MACOSX 10.9 (...)" on stdout | "add_version_min: stdout is empty -- the append is announced on stderr now", "add_version_min: ... and stderr is where the announcement went" |
+| **"LC_VERSION_MIN_MACOSX already present; nothing to do." is printed by the wrapper**, when the run changed no byte | "wrapper: ... and prints the C tool's 'already present' line" |
 
 ## `rename_segment`: exit codes
 

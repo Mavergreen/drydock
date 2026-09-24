@@ -38,7 +38,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
  * enum has one entry that is not a verb -- occupying the same slot means the
  * table matches it, counts its operands and advertises it exactly as it does
  * every other statement. */
-enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_VERSION_MIN, MS_SWIFT_ABI,
+enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_SWIFT_ABI,
        MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET, MS_IMPORT, MS_MINOS };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
        MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT,

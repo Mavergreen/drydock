@@ -108,7 +108,6 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
 #define MS_TABLE_ROWS(R) \
   R("load-command", MS_LOAD_COMMAND, "delete",   MS_DELETE,       1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("segment",      MS_SEGMENT,      "rename",   MS_RENAME,       2, NULL,        0,             0, MREL_NONE) \
-  R("version-min",  MS_VERSION_MIN,  "set",      MS_SET,          1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("swift-abi",    MS_SWIFT_ABI,    "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE) \
   R("fixups",       MS_FIXUPS,       "set",      MS_SET,          1, NULL,        0,             0, MREL_FILE_OFF | MREL_BASE_REL | MREL_HEADER_PAD) \
   R("dylib",        MS_DYLIB,        "replace",  MS_REPLACE,      2, "-replace",  MS_MODE_DYLIB, 0, MREL_HEADER_PAD) \
@@ -425,10 +424,6 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                 if (lc_kind_by_name(fields[2], &cmd) != 0)
                     return ms_failf(stmts, text, out, err, errsz, lineno,
                         "load-command delete: unknown kind '%s'", fields[2]);
-            } else if (kind == MS_VERSION_MIN && op == MS_SET &&
-                       strcmp(fields[2], "10.9") != 0) {
-                return ms_failf(stmts, text, out, err, errsz, lineno,
-                    "version-min set accepts only '10.9' (got '%s')", fields[2]);
             } else if (kind == MS_MINOS && ms_parse_version(fields[2], &ver, NULL) != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "minos %s: '%s' is not a version (MAJOR[.MINOR[.PATCH]], "

@@ -219,6 +219,9 @@ elif [ "$rc" -eq 1 ] && grep -q "no room for LC_VERSION_MIN_MACOSX" "$T/av.err";
 else
     bad "add_version_min: nosect fixture" "expected exit 1 + 'no room' message, got exit $rc: $(cat "$T/av.err")"
 fi
+grep -qF "av.macho: no section data bounds the header pad; refusing rather than guess where it ends" "$T/av.err" \
+    && ok "add_version_min: ... and says why, naming the file" \
+    || bad "add_version_min: nosect fixture" "no labelled reason for the refusal: $(cat "$T/av.err")"
 
 if [ -f /usr/lib/libgmalloc.dylib ]; then
     cp "$T/nosect.macho" "$T/av_gm.macho"

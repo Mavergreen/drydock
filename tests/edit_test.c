@@ -922,7 +922,7 @@ static void test_an_unmatched_segment_rename_refuses_by_default(void) {
     rm_dir();
 }
 
-/* version-min, swift-abi and fixups were reachable only through file-level
+/* minos, swift-abi and fixups were reachable only through file-level
  * entry points; each must run against the in-memory image. */
 static void test_the_file_level_operations_run_in_memory(void) {
     fresh_dir();
@@ -935,7 +935,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
 
     int rc = run(path, out,
                  "fixups set classic\n"
-                 "version-min set 10.9\n"
+                 "minos if-absent 10.9\n"
                  "swift-abi set legacy\n");
     CHECK(rc == 0, "in memory: an already-classic image passes fixups set classic, "
           "then gains a version-min (got %d; log: %s)", rc, g_log);
@@ -944,21 +944,21 @@ static void test_the_file_level_operations_run_in_memory(void) {
     /* The append is the one trace the statement leaves, so the report says
      * so, beneath the statement. */
     {
-        const char *stmt = strstr(g_log, "  version-min set 10.9\n");
-        const char *app = strstr(g_log, "\n      appended LC_VERSION_MIN_MACOSX 10.9\n");
+        const char *stmt = strstr(g_log, "  minos if-absent 10.9\n");
+        const char *app = strstr(g_log, "\n      none -> version-min 10.9; sdk 10.9 written\n");
         const char *next = strstr(g_log, "  swift-abi set legacy\n");
         CHECK(stmt && app && next && stmt < app && app < next,
-              "in memory: the report logs the version-min append beneath its statement "
+              "in memory: the report logs the declaration beneath its statement "
               "(log: %s)", g_log);
     }
     /* Run again over the result, which already has one: nothing appended,
-     * nothing claimed. */
-    rc = run(out, out2, "version-min set 10.9\n");
-    CHECK(rc == 0, "in memory: version-min set on an image that has one succeeds (got %d)", rc);
+     * and the report says the declaration was kept. */
+    rc = run(out, out2, "minos if-absent 10.9\n");
+    CHECK(rc == 0, "in memory: minos if-absent on an image that has one succeeds (got %d)", rc);
     CHECK(count_lc(out2, LC_VERSION_MIN_MACOSX, NULL) == 1,
-          "in memory: a second version-min set appends no second command");
-    CHECK(strstr(g_log, "appended") == NULL,
-          "in memory: the report claims no append when there was none (log: %s)", g_log);
+          "in memory: a second minos if-absent appends no second command");
+    CHECK(strstr(g_log, "      version-min 10.9, at or below 10.9: kept; sdk 10.9 kept\n") != NULL,
+          "in memory: the report says the declared one was kept (log: %s)", g_log);
     {
         size_t len = 0;
         uint8_t *now = read_file(out, &len);
@@ -974,7 +974,7 @@ static void test_the_file_level_operations_run_in_memory(void) {
     write_file(path, img, IMG_SIZE, 0755);
     free(img);
     snap before = take(path);
-    rc = run(path, out, "version-min set 10.9\nfixups set classic\n");
+    rc = run(path, out, "minos if-absent 10.9\nfixups set classic\n");
     CHECK(rc == MR_REFUSED, "in memory: fixups set classic with nothing to lower refuses (got %d)", rc);
     check_untouched("fixups refused", path, &before);
     rm_dir();
@@ -1407,7 +1407,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
  *
  * The two slices run the same statement and disturb different things, which
  * only the OBSERVED half can produce: slice 0 has no header pad at all, so
- * `version-min set 10.9` must grow it -- a grow re-bases
+ * `minos if-absent 10.9` must grow it -- a grow re-bases
  * every base-relative value (MREL_BASE_REL) -- while slice 1 has 496 bytes
  * spare and the same statement only repacks its header (MREL_HEADER_PAD).
  * Slice 1 is the IMPLAUSIBLE image, so a gate that applied there would refuse
@@ -1417,7 +1417,7 @@ static void test_fat_writes_out_and_not_the_input(void) {
  * The same fixture pins the OBSERVED half of the accumulator, which nothing
  * else can: slice 0 carries an LC_FUNCTION_STARTS, so its own gate applies and
  * it reports "verified" -- and the only thing that made it apply is the grow,
- * since `version-min set 10.9` DECLARES only MREL_HEADER_PAD. An accumulator
+ * since `minos if-absent 10.9` DECLARES only MREL_HEADER_PAD. An accumulator
  * that read declared masks alone would report the skip line for slice 0 too,
  * and would skip the verify after every header grow there is. */
 static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
@@ -1437,7 +1437,7 @@ static void test_fat_a_slice_skips_its_verify_on_its_own_terms(void) {
     write_file(path, fat, flen, 0755);
     free(s[0]); free(s[1]); free(fat);
 
-    int rc = run(path, out, "version-min set 10.9\n");
+    int rc = run(path, out, "minos if-absent 10.9\n");
     CHECK(rc == 0, "per slice: a slice that disturbed nothing it checks is not refused "
           "for what another slice did (got %d; log: %s)", rc, g_log);
     CHECK(strstr(g_log, "slice arm64: this run disturbed sizeofcmds; "
