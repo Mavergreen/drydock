@@ -153,18 +153,13 @@ So on 10.9, any sdk ≥ 10.9 behaves identically. On newer macOS, the real sdk i
 
 **Claude Code is the primary application.** A single run of `drydock-macho-rewrite` with one committed script must produce the Claude Code binary that `install.sh`'s wrapper pipeline produces today, or one that is behaviour-identical to it. No wrappers are involved. The output is expected to differ in bytes: its sdk becomes 26.5 where today's is 10.9, and its load-command order changes. By the measurement above, that is behaviour-identical on 10.9.
 
-- **The edit script** lives at `edit-scripts/claude-code.edits`, in a new top-level directory for edit scripts users run. It is:
-  - `allow-unmatched`;
-  - `fixups set classic`;
-  - `minos at-most 10.9`;
-  - `load-command delete uuid`;
-  - `load-command delete codesig`;
-  - the nine `dylib replace` lines the installer's `change_dylib` pairs make;
-  - and, as a separate variant for CPUs without AVX2, `dylib insert` of the AVX emulator.
-
-  The wrapper script `/usr/local/bin/claude` is the source of truth for the paths.
+- **Drydock commits no Claude Code edit script.** The edit scripts belong to the Mavergreen packages that will ship avxemu and Claude Code after Drydock does. For the check below, generate a single edit script on the spot, from the paths in the installed wrapper `/usr/local/bin/claude`. It contains:
+  - `allow-unmatched`, `fixups set classic` and `minos at-most 10.9`;
+  - `load-command delete uuid` and `load-command delete codesig`;
+  - the wrapper's nine `dylib replace` pairs;
+  - and, on a CPU without AVX2, `dylib insert` of the emulator.
 - **A one-time manual check before Drydock's first release, and never a merge gate or a recurring release step.** Apply the edit script to the current real Claude Code binary, then run `--version`, `--help` and one `-p` prompt, and compare them with today's pipeline output. The owner records the result. If Claude misbehaves later, the sdk question is revisited then, with this measurement as its baseline.
-- **Moving `install.sh` onto the edit script** is the owner's to do, not part of this plan.
+- **Moving `install.sh` and the packages onto edit scripts** is the owner's to do, not part of this plan.
 
 ## README
 
