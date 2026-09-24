@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace `version-min set 10.9` and `minos set VERSION` with `minos at-most VERSION` and `minos if-absent VERSION`, each leaving every slice with exactly one `LC_VERSION_MIN_MACOSX`; make `fixups set classic` keep a macOS `LC_BUILD_VERSION` as that command; make `swift-abi set legacy` refuse a chained image; publish `target 10.9` as the edit script it expands to, detected step by step; and commit `edit-scripts/claude-code.edits`, one edit script that turns the binary Anthropic ships into the Claude Code install.sh's wrappers produce today.
+**Goal:** Replace `version-min set 10.9` and `minos set VERSION` with `minos at-most VERSION` and `minos if-absent VERSION`, each leaving every slice with exactly one `LC_VERSION_MIN_MACOSX`; make `fixups set classic` keep a macOS `LC_BUILD_VERSION` as that command; make `swift-abi set legacy` refuse a chained image; publish `target 10.9` as the edit script it expands to, detected step by step. Drydock commits no Claude Code edit script; a one-time manual check generates one on the spot.
 
-**Architecture:** One new in-memory core, `mv_declare_minos` (src/version_min.c), reads a slice's declaration, decides the minimum by rule, and writes one `LC_VERSION_MIN_MACOSX`, removing every `LC_BUILD_VERSION`. `md_declassify_buf` writes the kept command directly before the `LC_DYLD_INFO_ONLY` it appends, so either order of `fixups` and `minos` gives the same bytes. `target 10.9` becomes four steps, each detected on the image the previous steps left. The hidden sdk channel, `minos set`, `version-min set`, and `mv_add_version_min[_image]` are deleted. Two committed edit scripts in `edit-scripts/` do install.sh's whole Claude Code patch in one run.
+**Architecture:** One new in-memory core, `mv_declare_minos` (src/version_min.c), reads a slice's declaration, decides the minimum by rule, and writes one `LC_VERSION_MIN_MACOSX`, removing every `LC_BUILD_VERSION`. `md_declassify_buf` writes the kept command directly before the `LC_DYLD_INFO_ONLY` it appends, so either order of `fixups` and `minos` gives the same bytes. `target 10.9` becomes four steps, each detected on the image the previous steps left. The hidden sdk channel, `minos set`, `version-min set`, and `mv_add_version_min[_image]` are deleted.
 
 **Tech Stack:** C99, CMake + CTest via shipyard, POSIX `/bin/sh` suites (`tests/cli_test.sh`, `tests/wrapper_test.sh`, `tests/translate_test.sh`, `tests/known-callers.sh`), C test binaries (`tests/script_test.c`, `tests/edit_test.c`), fixture builders compiled by the suites (`tests/mkminos.c`, `tests/mkchained.c`).
 
@@ -21,7 +21,7 @@
 - **Shell assertions:** capture a status with `rc=0; cmd || rc=$?`, never a bare command that can exit nonzero (`cli_test.sh` runs under `set -eu`). Every grep-based negative is paired with a positive control, so a missing report cannot make it pass.
 - **Staging:** name every path in `git add`. Never `git add -A` or `git add .`.
 - **Before Task 1:** run `git status --short`. It should show only `?? .superpowers/` and `?? READMES-OWED.md`. If any file this plan touches shows as modified, that is someone else's work: stop and ask the owner.
-- **README.md is being edited by hand by the owner.** Task 6 touches only its named passages and stops if `git diff HEAD -- README.md` prints anything.
+- **README.md is being edited by hand by the owner.** Task 5 touches only its named passages and stops if `git diff HEAD -- README.md` prints anything.
 - **Never push.**
 - **Commit trailer**, exactly:
   ```
@@ -54,7 +54,7 @@ The test suites compile `tests/mkminos.c`, `tests/mkchained.c` and `tests/mkswif
 
 ## Decisions this plan makes that the spec left open
 
-1. **Task order is swift-abi, core, fixups+target, wrapper, Claude Code edit scripts, README.** `fixups set classic` keeping a `LC_VERSION_MIN_MACOSX` 12.0 breaks today's `target` (its derived `version-min set` sees one present and leaves 12.0), and `target`'s new expansion without the kept command loses the sdk. So those two land together (Task 3). `version-min set` is what the wrapper emits, so it goes with the wrapper's new translation (Task 4). The statement count is therefore 20 after Task 2, 19 after Task 3 and 18 after Task 4, each pinned by that task's tests.
+1. **Task order is swift-abi, core, fixups+target, wrapper, README.** `fixups set classic` keeping a `LC_VERSION_MIN_MACOSX` 12.0 breaks today's `target` (its derived `version-min set` sees one present and leaves 12.0), and `target`'s new expansion without the kept command loses the sdk. So those two land together (Task 3). `version-min set` is what the wrapper emits, so it goes with the wrapper's new translation (Task 4). The statement count is therefore 20 after Task 2, 19 after Task 3 and 18 after Task 4, each pinned by that task's tests.
 2. **VERSION's precision comes from `ms_parse_version`**, which gains a `uint32_t *mask` out-parameter (NULL allowed): `0xFFFF0000`, `0xFFFFFF00` or `0xFFFFFFFF` for one, two or three parts. "Above" is `(D & mask) > VERSION`.
 3. **The new core is `mv_declare_minos`, with its own report type `mv_decl_report`.** It does its own append, through `mg_ensure_pad`, with the same "no room for LC_VERSION_MIN_MACOSX" refusal that `tests/leaf-tool-crashes.sh` greps. `mv_add_version_min_image` loses its sdk parameter in Task 3, as the spec says, and is deleted in Task 4 together with `mv_add_version_min`, which already has no caller.
 4. **Report lines are indented six spaces**, like every other statement's follow-up (`me_log_*`). The spec's example indentation is schematic.
@@ -68,12 +68,9 @@ The test suites compile `tests/mkminos.c`, `tests/mkchained.c` and `tests/mkswif
 12. **The `add_version_min` wrapper prints "LC_VERSION_MIN_MACOSX already present; nothing to do." itself**, when the run changed no byte (`MW_CHANGED` is 0). After `minos if-absent 10.9`, that happens exactly when the input held one `LC_VERSION_MIN_MACOSX` and no `LC_BUILD_VERSION`. The core stays silent on stdout, so `target` runs print nothing new there.
 13. **`compat/retag_swift_classes.sh` is not changed.** Its exit-1 arm is a silent skip, so a chained Swift binary now gives exit 0, `total: 0` and an untouched file, which is exactly what the C tool gave (it read the chain links as addresses and found nothing). Task 1 pins that.
 14. **`patch_macho` inherits the kept declaration**, because it is `fixups set classic`, and the real sdk is carried everywhere, the install.sh pipeline included; nothing special-cases the wrapper path. The owner ruled this, and `docs/minimum-os-version.md` ("Every sdk check in 10.9.5's own code") measured it: on 10.9 every sdk ≥ 10.9 behaves identically. The new row in `compat/README.md`'s `patch_macho` table records the byte difference and cites that section. Nothing in this plan exists to keep sdk 10.9: the hand-written `version-min set` sdk-10.9 assertion is dropped in Task 3.
-15. **The published-edit-script test keeps the edit script as a literal in `tests/cli_test.sh`** and does not parse README.md, which the owner edits by hand. Task 6 checks the README lines against that literal with `git grep`. The thin fixture is a chained Swift image in `__DATA_CONST`, so all four lines apply; the fat one adds a plain chained slice, where `segment rename` and `swift-abi` are no-ops.
+15. **The published-edit-script test keeps the edit script as a literal in `tests/cli_test.sh`** and does not parse README.md, which the owner edits by hand. Task 5 checks the README lines against that literal with `git grep`. The thin fixture is a chained Swift image in `__DATA_CONST`, so all four lines apply; the fat one adds a plain chained slice, where `segment rename` and `swift-abi` are no-ops.
 16. **Fixtures come from committed sources.** `tests/mkchained.c` gains `make-swift` (Task 1), `make-swiftdc` and `make-tight` (Task 3), and a `tags` reader (Task 1). `tests/mkminos.c` gains `add-bv` (Task 2). Nothing reads the scratchpad.
-17. **The Claude Code edit script is two files**, because an edit script has no conditionals: `edit-scripts/claude-code.edits` (a CPU with AVX2) and `edit-scripts/claude-code-no-avx2.edits` (the variant that links the AVX emulator). Each is the spec's list, in its order, with the nine `dylib replace` pairs `/usr/local/bin/claude` passes to `change_dylib`, in that wrapper's order. Old == new pairs are kept: they are harmless, as the wrapper says, and a probe confirmed a same-path `dylib replace` exits 0.
-18. **The no-AVX2 variant spells the wrapper's `$MF`/`$MFL` paths relative to the binary:** `@loader_path/../../claude-mavericks/…` and `@loader_path/../../claude-mavericks-local/libavxemu.dylib`. A committed script cannot expand `$HOME`. The binary lives at `~/.local/share/claude/versions/<ver>`, so these name the same files dyld would find. The AVX2 variant's three migration pairs (old = `$MF/…`) use the same spelling, so a binary built by either edit script converges on the other. Matching the wrapper's literal absolute spellings is install.sh's concern, which the spec leaves to the owner. The owner should know this spelling differs from today's absolute one.
-19. **The edit scripts' ctest check runs each file for real, not a parse-only mode:** the CLI has no `--dry-run`. `build_main`'s fixture links `/usr/lib/libSystem.B.dylib`, so one `dylib replace` really matches; `allow-unmatched` covers the rest, and `fixups set classic` passes an already-classic image through.
-20. **The check against the real Claude Code binary is done once, by hand, before Drydock's first release** ("One-time check before Drydock's first release", after Task 6). It is not a ctest, a merge gate or a recurring release step. It runs the new binary from a sibling directory of `versions/`, so the `@loader_path/../` names resolve exactly as in `versions/`, and Claude Code's version housekeeping cannot reap it.
+17. **The check against the real Claude Code binary is done once, by hand, before Drydock's first release** ("One-time check before Drydock's first release", after Task 5). It is not a ctest, a merge gate or a recurring release step. It generates its one edit script in a scratch directory from `/usr/local/bin/claude`'s own variables (absolute paths, as today's patched binary has), choosing the wrapper's scheme the way the wrapper does. It runs the new binary from a sibling directory of `versions/`, so the `@loader_path/../` names resolve exactly as in `versions/`, and Claude Code's version housekeeping cannot reap it.
 
 ## For the item-6 comment sweep's held Tasks 7 and 8
 
@@ -101,9 +98,8 @@ Both held tasks start with `git diff --quiet d1cab99 -- FILE || echo CHANGED-STO
 | `compat/translate.sh`, `compat/add_version_min.sh`, `compat/README.md` | the wrapper's translation, its "already present" line, the divergence rows | 3, 4 |
 | `tests/mkchained.c` | `make-swift`, `make-swiftdc`, `make-tight`, `tags` | 1, 3 |
 | `tests/mkminos.c` | `add-bv` | 2 |
-| `tests/script_test.c`, `tests/edit_test.c`, `tests/cli_test.sh`, `tests/wrapper_test.sh`, `tests/translate_test.sh`, `tests/known-callers.sh`, `tests/README.md`, `tests/strip_version_min.c` | tests and their prose | 1-5 |
-| `edit-scripts/claude-code.edits`, `edit-scripts/claude-code-no-avx2.edits` | the Claude Code edit scripts | 5 |
-| `README.md` | the user-facing grammar, decision table, target's edit script | 6 |
+| `tests/script_test.c`, `tests/edit_test.c`, `tests/cli_test.sh`, `tests/wrapper_test.sh`, `tests/translate_test.sh`, `tests/known-callers.sh`, `tests/README.md`, `tests/strip_version_min.c` | tests and their prose | 1-4 |
+| `README.md` | the user-facing grammar, decision table, target's edit script | 5 |
 
 ---
 
@@ -2360,147 +2356,7 @@ EOF
 
 ---
 
-### Task 5: the Claude Code edit scripts
-
-**Files:**
-- Create: `edit-scripts/claude-code.edits`, `edit-scripts/claude-code-no-avx2.edits`
-- Test: `tests/cli_test.sh` (directly after Task 3's "fixups set classic keeps the declaration" block)
-
-**Interfaces:**
-- Consumes: `minos at-most` (Task 2) and `fixups set classic` keeping the declaration (Task 3). The paths are `/usr/local/bin/claude`'s, read there (read-only): its `mf_change_dylib` pairs, its `SW`/`IW`/`CW` for each scheme, and its `AW` and `-change @loader_path/../A.dylib` for the linked-emulator scheme.
-- Produces: two committed edit scripts, run as `drydock-macho-rewrite CLAUDE CLAUDE.new < edit-scripts/claude-code.edits`, where CLAUDE is the unpatched binary Anthropic ships.
-
-- [ ] **Step 1: Write the failing test**
-
-In `tests/cli_test.sh`, directly after the `"fixups/minos order ($fo_mode)"` loop's `done`:
-
-```sh
-
-# ============================================================================
-# edit-scripts/: the Claude Code edit scripts
-# ============================================================================
-# Each runs to the end on a plain executable: build_main links
-# /usr/lib/libSystem.B.dylib, so one dylib replace really matches, and
-# allow-unmatched covers the rest.
-ES_DIR=$(CDPATH= cd -- "$HERE/../edit-scripts" && pwd)
-for es in claude-code claude-code-no-avx2; do
-    [ "$(grep -c '^dylib replace ' "$ES_DIR/$es.edits" || true)" = 9 ] \
-        && ok "edit-scripts/$es.edits: the nine dylib replace pairs the wrapper's change_dylib makes" \
-        || bad "edit-scripts/$es.edits" "$(grep -c '^dylib replace ' "$ES_DIR/$es.edits" || true) dylib replace lines"
-    build_main "$T/es_$es"
-    rc=0; "$DRYDOCK_MACHO_REWRITE" "$T/es_$es" "$T/es_$es.out" <"$ES_DIR/$es.edits" \
-        >/dev/null 2>"$T/es.err" || rc=$?
-    [ "$rc" -eq 0 ] \
-        && ok "edit-scripts/$es.edits: parses, and runs to the end on a plain executable" \
-        || bad "edit-scripts/$es.edits" "rc $rc: $(cat "$T/es.err")"
-done
-"$DRYDOCK_MACHO_REWRITE" info "$T/es_claude-code.out" | grep -qF ' path=@loader_path/../S.dylib' \
-    && ok "edit-scripts/claude-code.edits: ... libSystem becomes the wrapper's S.dylib alias" \
-    || bad "edit-scripts/claude-code.edits" "$("$DRYDOCK_MACHO_REWRITE" info "$T/es_claude-code.out" | grep 'path=')"
-"$DRYDOCK_MACHO_REWRITE" info "$T/es_claude-code-no-avx2.out" \
-    | grep -qxF '  ordinal=1 path=@loader_path/../../claude-mavericks-local/libavxemu.dylib' \
-    && "$DRYDOCK_MACHO_REWRITE" info "$T/es_claude-code-no-avx2.out" \
-        | grep -qF ' path=@loader_path/../../claude-mavericks/libSystemWrapper.dylib' \
-    && ok "edit-scripts/claude-code-no-avx2.edits: ... the AVX emulator is ordinal 1, and libSystem is the wrapper" \
-    || bad "edit-scripts/claude-code-no-avx2.edits" "$("$DRYDOCK_MACHO_REWRITE" info "$T/es_claude-code-no-avx2.out" | grep 'path=')"
-```
-
-- [ ] **Step 2: Run it to make sure it fails**
-
-Run the build-and-check sequence, then `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh /private/tmp/build/schmonz/drydock-native 2>&1 | tail -5`. Expected: the suite stops at `ES_DIR=$(…)` under `set -e` (no `edit-scripts/` directory), and `ctest` reports cli_test failed. That is this step's failure.
-
-- [ ] **Step 3: Write the edit scripts**
-
-`edit-scripts/claude-code.edits`:
-
-```
-# Claude Code for OS X 10.9, on a CPU with AVX2:
-#   drydock-macho-rewrite CLAUDE CLAUDE.new < edit-scripts/claude-code.edits
-# CLAUDE is the unpatched binary. The @loader_path/../ names are the aliases
-# /usr/local/bin/claude makes beside versions/.
-allow-unmatched
-fixups set classic
-minos at-most 10.9
-load-command delete uuid
-load-command delete codesig
-dylib replace /usr/lib/libSystem.B.dylib @loader_path/../S.dylib
-dylib replace /usr/lib/libicucore.A.dylib @loader_path/../I.dylib
-dylib replace /usr/lib/libc++.1.dylib @loader_path/../c++.1.dylib
-dylib replace @loader_path/../S.dylib @loader_path/../S.dylib
-dylib replace @loader_path/../I.dylib @loader_path/../I.dylib
-dylib replace @loader_path/../c++.1.dylib @loader_path/../c++.1.dylib
-dylib replace @loader_path/../../claude-mavericks/libSystemWrapper.dylib @loader_path/../S.dylib
-dylib replace @loader_path/../../claude-mavericks/libicucoreWrapper.dylib @loader_path/../I.dylib
-dylib replace @loader_path/../../claude-mavericks/libc++.1.dylib @loader_path/../c++.1.dylib
-```
-
-`edit-scripts/claude-code-no-avx2.edits`:
-
-```
-# Claude Code for OS X 10.9, on a CPU without AVX2, with the AVX emulator
-# linked in:
-#   drydock-macho-rewrite CLAUDE CLAUDE.new < edit-scripts/claude-code-no-avx2.edits
-# CLAUDE is the unpatched binary, in ~/.local/share/claude/versions/.
-allow-unmatched
-fixups set classic
-minos at-most 10.9
-load-command delete uuid
-load-command delete codesig
-dylib replace /usr/lib/libSystem.B.dylib @loader_path/../../claude-mavericks/libSystemWrapper.dylib
-dylib replace /usr/lib/libicucore.A.dylib @loader_path/../../claude-mavericks/libicucoreWrapper.dylib
-dylib replace /usr/lib/libc++.1.dylib @loader_path/../../claude-mavericks/libc++.1.dylib
-dylib replace @loader_path/../S.dylib @loader_path/../../claude-mavericks/libSystemWrapper.dylib
-dylib replace @loader_path/../I.dylib @loader_path/../../claude-mavericks/libicucoreWrapper.dylib
-dylib replace @loader_path/../c++.1.dylib @loader_path/../../claude-mavericks/libc++.1.dylib
-dylib replace @loader_path/../../claude-mavericks/libSystemWrapper.dylib @loader_path/../../claude-mavericks/libSystemWrapper.dylib
-dylib replace @loader_path/../../claude-mavericks/libicucoreWrapper.dylib @loader_path/../../claude-mavericks/libicucoreWrapper.dylib
-dylib replace @loader_path/../../claude-mavericks/libc++.1.dylib @loader_path/../../claude-mavericks/libc++.1.dylib
-dylib replace @loader_path/../A.dylib @loader_path/../../claude-mavericks-local/libavxemu.dylib
-dylib insert @loader_path/../../claude-mavericks-local/libavxemu.dylib
-```
-
-Check the pairs against the wrapper before committing: `grep -n -- '-change ' /usr/local/bin/claude` must list the nine `mf_change_dylib` pairs plus `@loader_path/../A.dylib`, in the order above, with `$SW`/`$IW`/`$CW`/`$AW` standing for the targets used here.
-
-- [ ] **Step 4: Run the tests and make sure they pass**
-
-Run the build-and-check sequence, then the full test command. Expected: 22 tests, all pass, `chained_fixups` skips.
-
-- [ ] **Step 5: Mutation-prove it**
-
-1. Delete the `libicucore` line from `edit-scripts/claude-code.edits`. Expected: "the nine dylib replace pairs" fails for it.
-2. Change `dylib insert` to `dylib insrt` in the no-AVX2 file. Expected: "parses, and runs to the end" fails (exit 2).
-3. Delete the no-AVX2 file's `dylib insert` line. Expected: "the AVX emulator is ordinal 1" fails.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add edit-scripts/claude-code.edits edit-scripts/claude-code-no-avx2.edits tests/cli_test.sh
-git commit -F - <<'EOF'
-feat(edit-scripts): Claude Code in one drydock-macho-rewrite run
-
-edit-scripts/ holds edit scripts that users run. claude-code.edits does
-in one run what install.sh's patch_macho, add_version_min and
-change_dylib do today: fixups set classic, minos at-most 10.9, delete
-LC_UUID and LC_CODE_SIGNATURE, and the nine dylib replace pairs
-/usr/local/bin/claude passes to change_dylib. claude-code-no-avx2.edits
-is the variant for CPUs without AVX2, linking the AVX emulator first.
-
-A script cannot expand $HOME, so the no-AVX2 variant names
-~/.local/share/claude-mavericks{,-local} relative to the binary in
-~/.local/share/claude/versions/. The output differs from today's in bytes:
-it keeps the binary's real sdk, which on 10.9 behaves identically to 10.9
-(docs/minimum-os-version.md), and its load commands come in another order.
-
-cli_test runs both edit scripts to the end on a plain executable.
-
-Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF
-EOF
-```
-
----
-
-### Task 6: README
+### Task 5: README
 
 **The owner is editing README.md by hand.** Before you edit, run `git log --oneline -5 -- README.md` and `git diff HEAD -- README.md`. If the second prints anything, stop and ask. Find each passage below by its content, not its line number, and leave the words around it exactly as they are.
 
@@ -2659,9 +2515,9 @@ EOF
 
 ## One-time check before Drydock's first release
 
-Done once, by hand, by the owner, before Drydock's first release. It is not a ctest, not a merge gate, and not repeated at later releases. The owner records the result; if Claude Code misbehaves later, the sdk question is revisited with this as its baseline.
+Done once, by hand, by the owner, before Drydock's first release. It is not a ctest, not a merge gate, and not repeated at later releases; Drydock commits no Claude Code edit script, because the Mavergreen packages for avxemu and Claude Code will own theirs. The owner records the result; if Claude Code misbehaves later, the sdk question is revisited with this as its baseline.
 
-`ORIG` is an unpatched copy of the current Claude Code version: the file install.sh downloads before it patches it. The copy in `~/.local/share/claude/versions/` has already been patched in place by `/usr/local/bin/claude` and is today's pipeline output. The new binary goes in a sibling of `versions/`, so the `@loader_path/../` names resolve as they do there, and Claude Code's version housekeeping cannot reap it.
+`TODAY` is the binary `/usr/local/bin/claude` has already patched in place: today's pipeline output. `ORIG` is an unpatched copy of the same version, the file install.sh downloads before patching; only the owner has it. The new binary goes in a sibling of `versions/`, so `@loader_path/../` names resolve as they do there and Claude Code's version housekeeping cannot reap it. The edit script is generated here, in the scratch directory, with the wrapper's own `$MF`/`$MFL` paths and the scheme the wrapper picks: first compare the `-change` lines below with `grep -n -- '-change \|-insert\|AVXOPS=' /usr/local/bin/claude`.
 
 ```sh
 B=/private/tmp/build/schmonz/drydock-native
@@ -2670,12 +2526,38 @@ TODAY=~/.local/share/claude/versions/$V
 ORIG=/path/to/unpatched/claude-$V          # the owner supplies this copy
 S=~/.local/share/claude/drydock-check
 mkdir -p "$S"
-"$B/drydock-macho-rewrite" "$ORIG" "$S/claude" < edit-scripts/claude-code.edits
+
+MF=$HOME/.local/share/claude-mavericks
+MFL=$HOME/.local/share/claude-mavericks-local
+if ! sysctl -n machdep.cpu.leaf7_features | grep -qiw AVX2 \
+   && [ -f "$MFL/.ok" ] && [ -f "$MFL/libavxemu.dylib" ]; then
+    SW=$MF/libSystemWrapper.dylib IW=$MF/libicucoreWrapper.dylib CW=$MF/libc++.1.dylib
+    AW=$MFL/libavxemu.dylib
+else
+    SW=@loader_path/../S.dylib IW=@loader_path/../I.dylib CW=@loader_path/../c++.1.dylib
+    AW=
+fi
+{
+    printf '%s\n' 'allow-unmatched' 'fixups set classic' 'minos at-most 10.9' \
+        'load-command delete uuid' 'load-command delete codesig'
+    printf 'dylib replace %s %s\n' \
+        /usr/lib/libSystem.B.dylib "$SW"   /usr/lib/libicucore.A.dylib "$IW" \
+        /usr/lib/libc++.1.dylib "$CW" \
+        @loader_path/../S.dylib "$SW"      @loader_path/../I.dylib "$IW" \
+        @loader_path/../c++.1.dylib "$CW" \
+        "$MF/libSystemWrapper.dylib" "$SW" "$MF/libicucoreWrapper.dylib" "$IW" \
+        "$MF/libc++.1.dylib" "$CW"
+    [ -z "$AW" ] || printf 'dylib replace @loader_path/../A.dylib %s\ndylib insert %s\n' "$AW" "$AW"
+} >"$S/claude.edits"
+[ "$(grep -c '^dylib replace ' "$S/claude.edits")" -ge 9 ] || echo "WRONG: fewer than nine pairs"
+
+"$B/drydock-macho-rewrite" "$ORIG" "$S/claude" <"$S/claude.edits"
 export USE_BUILTIN_RIPGREP=0 DISABLE_INSTALLATION_CHECKS=1 JSC_numberOfGCMarkers=1
 for bin in "$TODAY" "$S/claude"; do
-    "$bin" --version            >"$S/$(basename "$bin").version" 2>&1
-    "$bin" --help               >"$S/$(basename "$bin").help"    2>&1
-    "$bin" -p 'Reply with exactly the word ok.' >"$S/$(basename "$bin").p" 2>&1
+    n=$(basename "$bin")
+    "$bin" --version >"$S/$n.version" 2>&1
+    "$bin" --help    >"$S/$n.help"    2>&1
+    "$bin" -p 'Reply with exactly the word ok.' >"$S/$n.p" 2>&1
 done
 diff "$S/$V.version" "$S/claude.version"
 diff "$S/$V.help"    "$S/claude.help"
@@ -2683,7 +2565,7 @@ cat "$S/$V.p" "$S/claude.p"
 rm -rf "$S"
 ```
 
-Expected: both `diff`s print nothing, and both `-p` runs answer `ok`. On a Mac without AVX2, repeat with `edit-scripts/claude-code-no-avx2.edits`.
+Expected: both `diff`s print nothing, and both `-p` runs answer `ok`.
 
 ---
 
@@ -2711,14 +2593,13 @@ Expected: both `diff`s print nothing, and both `-p` runs answer `ok`. On a Mac w
 | `target` detects after each derived statement; the Swift bug | 3 |
 | `target` expansion, order, `minos at-most` in position 2, never `load-command delete build-version`, no `minimum:` line, `ME_TARGET_MAX` 4 | 3 |
 | "nothing to do" only when nothing changes; the 10.12 reproduction | 3 |
-| the published edit script equals `target`, thin and fat | 3 (test), 6 (README) |
+| the published edit script equals `target`, thin and fat | 3 (test), 5 (README) |
 | `add_version_min` → `minos if-absent 10.9`; build-version-only gives one command; "already present" unchanged; `compat/README.md` row | 4 |
-| `edit-scripts/claude-code.edits`: the spec's lines, nine `dylib replace` pairs, the no-AVX2 variant; a ctest that runs it | 5 |
-| the one-time manual check against the real Claude Code binary | "One-time check before Drydock's first release" |
-| README decision table, three sentences, target's edit script, what `target` adds, verify's limit | 6 |
+| no committed Claude Code edit script; the one-time manual check, generating one on the spot | "One-time check before Drydock's first release" |
+| README decision table, three sentences, target's edit script, what `target` adds, verify's limit | 5 |
 | every mutation named fails its test | each task's mutation step |
 
-**Placeholder scan.** Every code step shows its code; every test step shows its assertions. Task 4's two `sed` blocks are the edits, not descriptions of them, and Step 7's `git grep` names exactly which hits may remain. Task 6 gives the replacement text and finds passages by content. The one-time check's `ORIG` is an input only the owner has (an unpatched Claude Code binary), named as such.
+**Placeholder scan.** Every code step shows its code; every test step shows its assertions. Task 4's two `sed` blocks are the edits, not descriptions of them, and Step 7's `git grep` names exactly which hits may remain. Task 5 gives the replacement text and finds passages by content. The one-time check's `ORIG` is an input only the owner has (an unpatched Claude Code binary), named as such.
 
 **Type consistency.** These names are the same everywhere they appear:
 - `ms_parse_version(const char *, uint32_t *, uint32_t *)`, called with `NULL` in `script.c` and `&mask` in `edit.c`
