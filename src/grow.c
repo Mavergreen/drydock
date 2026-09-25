@@ -1,6 +1,7 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
 #include "grow.h"
+#include "hdrref.h"
 
 /* mg_first_sect_off's mi_each_lc callback: track the lowest LC_SEGMENT_64
  * section file offset seen so far in ctx->first. Always returns 0 (never
@@ -47,6 +48,23 @@ static uint64_t mg_base_of(uint8_t *buf, size_t fsize) {
     return base;
 }
 
+/* The vm address of every disp32 mhr_scan reports, for mg_ensure_pad to warn
+ * of after it grows. */
+struct mg_refs { uint64_t *addr; size_t n, cap; int oom; };
+
+static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
+    struct mg_refs *r = (struct mg_refs *)ctx_;
+    if (r->n == r->cap) {
+        size_t cap = r->cap ? 2 * r->cap : 8;
+        uint64_t *a = (uint64_t *)realloc(r->addr, cap * sizeof *a);
+        if (!a) { r->oom = 1; return 1; }
+        r->addr = a;
+        r->cap = cap;
+    }
+    r->addr[r->n++] = c->addr;
+    return 0;
+}
+
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
                   const char *label) {
     uint32_t first = mg_first_sect_off(*pbuf, *pfsize);
@@ -77,29 +95,51 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
 
+    struct mg_refs refs = { NULL, 0, 0, 0 };
+    int64_t scanned = mhr_scan(*pbuf, *pfsize, base_before, mg_keep_ref, &refs);
+    if (refs.oom) {
+        fprintf(stderr, "ERROR: %s: out of memory listing code that addresses the image's "
+                        "own header\n", label);
+        free(refs.addr);
+        return -1;
+    }
+
     uint32_t grow_req = need_end - first;
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
         fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail), "
                         "and the header could not be grown (see above)\n",
                 label, new_lcs, pad_avail);
+        free(refs.addr);
         return -1;
     }
     first = mg_first_sect_off(*pbuf, *pfsize);
     if (first == UINT32_MAX) {
         fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
+        free(refs.addr);
         return -1;
     }
     if (first == MG_NO_SECTION_DATA) {
         fprintf(stderr, "ERROR: %s: header grow left no section data to bound the pad\n", label);
+        free(refs.addr);
         return -1;
     }
+    uint64_t base_after = mg_base_of(*pbuf, *pfsize);
     /* Held by test_ensure_pad_grows_and_announces in tests/grow_test.c. */
     fflush(stdout);
     fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); "
                     "image base %#llx -> %#llx\n",
             label, first - first_before, pad_avail, first - cur_lc_end,
-            (unsigned long long)base_before,
-            (unsigned long long)mg_base_of(*pbuf, *pfsize));
+            (unsigned long long)base_before, (unsigned long long)base_after);
+    for (size_t i = 0; i < refs.n; i++)
+        fprintf(stderr, "%s: warning: code at %#llx addresses the image's own header; after "
+                        "this grow it points %#llx bytes past it\n",
+                label, (unsigned long long)refs.addr[i],
+                (unsigned long long)(base_before - base_after));
+    if (scanned < 0)
+        fprintf(stderr, "%s: warning: an instruction section lies past the end of the image, "
+                        "so it was not scanned for code that addresses the image's own header\n",
+                label);
+    free(refs.addr);
     return 0;
 }
 
@@ -107,6 +147,7 @@ int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow) {
     if (size == 0) return -1;
     uint64_t d0; int n0 = mu_decode(blob, blob + size, &d0);
     if (n0 == 0) return -1;
+    if (d0 == 0) return 1;
     uint64_t nd = d0 + grow;
     if (mu_minlen(nd) > n0) return 0;          /* would widen -> caller refuses */
     return mu_encode_fixed(blob, nd, n0) ? 1 : 0;
@@ -228,6 +269,7 @@ static int mg_collect_cb(const struct load_command *lc, void *ctx_) {
             uint64_t d0;
             if (mu_decode(ctx->buf + d->dataoff, ctx->buf + d->dataoff + d->datasize, &d0) == 0)
                 return -1;
+            if (d0 == 0) return 0;
             if (ctx->n >= ctx->max) return -1;
             if (ctx->kinds) ctx->kinds[ctx->n] = MG_K_FUNC;   /* the first function's address */
             ctx->out[ctx->n++] = ctx->base + d0;
@@ -610,6 +652,7 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
         if (k == 0) return -1;
         p += k;
         if (!(flags & MG_EXPORT_REEXPORT)) {          /* re-exports carry no address */
+            int absolute = (flags & MG_EXPORT_KIND_MASK) == MG_EXPORT_KIND_ABSOLUTE;
             int rounds = (flags & MG_EXPORT_STUB_AND_RESOLVER) ? 2 : 1;
             for (int r = 0; r < rounds; r++) {
                 uint64_t a; int w = mu_decode(p, end, &a);
@@ -618,8 +661,8 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
                     if (out) {
                         if (*n >= max) return -1;
                         if (kinds) kinds[*n] = MG_K_ANY;  /* data exports are not functions */
-                        out[(*n)++] = base + a;
-                    } else {
+                        out[(*n)++] = absolute ? a : base + a;
+                    } else if (!absolute) {
                         if (mu_minlen(a + grow) > w) return 1;   /* would widen */
                         if (patch && !mu_encode_fixed(p, a + grow, w)) return 1;
                     }
@@ -1161,7 +1204,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             fprintf(stderr, "ERROR: malformed LC_FUNCTION_STARTS leading delta\n");
             return -1;
         }
-        if (mu_minlen(d0 + grow) > n0) {
+        if (d0 != 0 && mu_minlen(d0 + grow) > n0) {
             fprintf(stderr, "ERROR: grow of %u would widen the LC_FUNCTION_STARTS "
                             "leading delta (%llu -> %llu crosses a ULEB byte boundary); "
                             "in-place re-encode impossible and __LINKEDIT resize is not "
@@ -1193,7 +1236,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * after the buffer is mutated) can't do it: widening one entry cascades
      * into the byte width of every child-offset ULEB after it in the trie.
      * REBUILD it instead: decode the whole thing, add `grow` to every
-     * nonzero address, and re-serialize from scratch with everything
+     * nonzero offset from the base, and re-serialize from scratch with everything
      * minimally encoded (src/trie.c, mt_trie_rebuild) -- adapted from
      * Wowfunhappy's export-trie rebuilder in insert_dylib commit 6d3aa61
      * (public domain/CC0/WTFPL per his own statement, see

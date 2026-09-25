@@ -61,6 +61,7 @@
 
 
 #define MG_EXPORT_KIND_MASK        0x03
+#define MG_EXPORT_KIND_ABSOLUTE    0x02
 #define MG_EXPORT_REEXPORT         0x08
 #define MG_EXPORT_STUB_AND_RESOLVER 0x10
 
@@ -104,7 +105,12 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * input -- and returns 0 with *pbuf / *pfsize updated: every pointer the
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
- * available); image base 0xOLD -> 0xNEW".
+ * available); image base 0xOLD -> 0xNEW". A line follows for each instruction
+ * whose RIP-relative operand named the header before the grow (src/hdrref.h),
+ * which the grow leaves pointing G bytes past it: "LABEL: warning: code at
+ * 0xDISP32 addresses the image's own header; after this grow it points 0xG
+ * bytes past it"; and one if an instruction section could not
+ * be scanned.
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth failed. Also -1, with the
@@ -127,10 +133,11 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
 
 /* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering
  * the image base by `grow`: delta[0] += grow, keeping the leading delta's byte
- * width so blob size is unchanged and the trailing deltas are untouched.
- * Returns: 1 patched in place; 0 the widened delta needs more bytes than the
- * original leading encoding (caller must refuse — LINKEDIT resize unsupported);
- * -1 malformed blob (empty / bad leading ULEB). */
+ * width so blob size is unchanged and the trailing deltas are untouched. A
+ * leading 0 is the terminator of an empty list, which is left alone.
+ * Returns: 1 patched in place, or an empty list; 0 the widened delta needs
+ * more bytes than the original leading encoding (caller must refuse —
+ * LINKEDIT resize unsupported); -1 malformed blob (empty / bad leading ULEB). */
 int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow);
 
 
@@ -256,6 +263,10 @@ int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
  * the header moved down with the base, so 0 remains correct. It is therefore
  * neither bumped nor collected -- its resolved address is base+0, which SHOULD
  * change, and collecting it would make verify fail on a correct grow.
+ *
+ * An EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE entry holds the symbol's value, not an
+ * offset from the base, so it is never bumped. It is collected as that value,
+ * so verify still sees it move if something moves it.
  *
  * `seen` guards a shared subtree from being bumped twice -- the same hazard as
  * the __init_offsets double-apply. */
