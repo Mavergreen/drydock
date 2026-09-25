@@ -2256,6 +2256,35 @@ static void test_verify_watches_an_absolute_export(void) {
     free(buf);
 }
 
+/* ---- an empty function-starts list ----
+ * A leading ULEB of 0 is the terminator, so the list names no function; a
+ * codeless umbrella framework's is eight zero bytes. There is no leading
+ * delta to re-base, so the list is left alone, and it cannot widen. */
+static void test_reencode_leaves_an_empty_list_alone(void) {
+    static const uint8_t zero[8] = { 0 };
+    uint8_t blob[8] = { 0 };
+    int r = mg_reencode_funcstarts_base(blob, sizeof blob, 0x1000);
+    CHECK(r == 1, "an empty list: nothing to re-encode, so done (got %d)", r);
+    CHECK(memcmp(blob, zero, sizeof blob) == 0, "an empty list: its terminator stays a terminator");
+}
+
+static void test_grow_leaves_an_empty_function_starts_list_alone(void) {
+    static const uint8_t zero[5] = { 0 };
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_FUNCSTARTS);
+    memset(buf + FS_OFF, 0, sizeof zero);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "an empty function-starts list: the grow succeeds (got %d)", r);
+    if (r == 0) {
+        const struct linkedit_data_command *fs =
+            (const struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
+        CHECK(fs && fs->dataoff == FS_OFF + 0x1000 &&
+              memcmp(buf + fs->dataoff, zero, sizeof zero) == 0,
+              "an empty function-starts list: moved with the file, and still empty");
+    }
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2318,6 +2347,8 @@ int main(void) {
     test_ensure_pad_fits_despite_a_header_reference();
     test_grow_leaves_an_absolute_export_alone();
     test_verify_watches_an_absolute_export();
+    test_reencode_leaves_an_empty_list_alone();
+    test_grow_leaves_an_empty_function_starts_list_alone();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

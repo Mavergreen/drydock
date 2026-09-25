@@ -147,6 +147,7 @@ int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow) {
     if (size == 0) return -1;
     uint64_t d0; int n0 = mu_decode(blob, blob + size, &d0);
     if (n0 == 0) return -1;
+    if (d0 == 0) return 1;
     uint64_t nd = d0 + grow;
     if (mu_minlen(nd) > n0) return 0;          /* would widen -> caller refuses */
     return mu_encode_fixed(blob, nd, n0) ? 1 : 0;
@@ -268,6 +269,7 @@ static int mg_collect_cb(const struct load_command *lc, void *ctx_) {
             uint64_t d0;
             if (mu_decode(ctx->buf + d->dataoff, ctx->buf + d->dataoff + d->datasize, &d0) == 0)
                 return -1;
+            if (d0 == 0) return 0;
             if (ctx->n >= ctx->max) return -1;
             if (ctx->kinds) ctx->kinds[ctx->n] = MG_K_FUNC;   /* the first function's address */
             ctx->out[ctx->n++] = ctx->base + d0;
@@ -1202,7 +1204,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             fprintf(stderr, "ERROR: malformed LC_FUNCTION_STARTS leading delta\n");
             return -1;
         }
-        if (mu_minlen(d0 + grow) > n0) {
+        if (d0 != 0 && mu_minlen(d0 + grow) > n0) {
             fprintf(stderr, "ERROR: grow of %u would widen the LC_FUNCTION_STARTS "
                             "leading delta (%llu -> %llu crosses a ULEB byte boundary); "
                             "in-place re-encode impossible and __LINKEDIT resize is not "

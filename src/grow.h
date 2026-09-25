@@ -133,10 +133,11 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
 
 /* Re-encode the leading (base-relative) LC_FUNCTION_STARTS delta after lowering
  * the image base by `grow`: delta[0] += grow, keeping the leading delta's byte
- * width so blob size is unchanged and the trailing deltas are untouched.
- * Returns: 1 patched in place; 0 the widened delta needs more bytes than the
- * original leading encoding (caller must refuse — LINKEDIT resize unsupported);
- * -1 malformed blob (empty / bad leading ULEB). */
+ * width so blob size is unchanged and the trailing deltas are untouched. A
+ * leading 0 is the terminator of an empty list, which is left alone.
+ * Returns: 1 patched in place, or an empty list; 0 the widened delta needs
+ * more bytes than the original leading encoding (caller must refuse —
+ * LINKEDIT resize unsupported); -1 malformed blob (empty / bad leading ULEB). */
 int mg_reencode_funcstarts_base(uint8_t *blob, uint32_t size, uint32_t grow);
 
 
