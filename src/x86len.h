@@ -18,6 +18,11 @@ typedef struct {
     int disp;     /* offset of the displacement, or -1 */
     int displen;  /* 0, 1, 4 or 8 (a moffs) */
     int immlen;   /* bytes of immediate, relative branch offset included */
+    int adsize;   /* 1 if 0x67 (address-size override) was among its prefixes:
+                   * a RIP-relative-looking ModRM is then EIP-relative --
+                   * (next truncated to 32 bits) + disp32, not next + disp32 --
+                   * so a caller computing a 64-bit RIP-relative target must
+                   * not trust one. */
 } mx_insn;
 
 /* Decodes the instruction at code[0, avail). Returns 1 with *out filled, or

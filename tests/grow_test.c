@@ -2599,6 +2599,115 @@ static void test_confirm_reports_a_bad_section_before_a_good_one(void) {
     free(buf);
 }
 
+/* ---- fix round 1: three false confirmations the review reproduced ----
+ *
+ * (1) A data-in-code range that starts partway through the instruction
+ * holding the candidate's disp32 -- not at or before pc -- was accepted:
+ * only the range check at loop-top saw `pc`, never the span the decoded
+ * instruction actually covers. Two shapes: a range that is exactly the
+ * disp32 (4 bytes), and one starting a byte into the lea (6 bytes, from
+ * lea+1). Both must leave the candidate unconfirmed. */
+static void test_confirm_rejects_data_in_code_starting_mid_instruction(void) {
+    static const uint8_t at_disp32[] = { 0x04, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };      /* +4, 4 bytes */
+    static const uint8_t at_lea_plus_1[] = { 0x02, 0x10, 0, 0, 0x06, 0x00, 0x01, 0x00 };  /* +2, 6 bytes */
+    const uint8_t *dics[2] = { at_disp32, at_lea_plus_1 };
+    for (int i = 0; i < 2; i++) {
+        struct hr_code k = hr_push_lea();
+        mhr_cand bad = { 0, 0, 0 };
+        k.dic = dics[i]; k.ndic = 8;
+        int r = hr_confirm(&k, &bad);
+        CHECK(r == MHR_UNCONFIRMED, "confirm: a data-in-code range starting mid-instruction "
+              "(case %d) leaves it unconfirmed (got %d)", i, r);
+    }
+}
+
+/* (2) 0x67 (address-size override) makes a RIP-relative-looking ModRM
+ * actually EIP-relative: its target is (next truncated to 32 bits) + disp32,
+ * not next + disp32. A disp32 that names the base under 64-bit RIP-relative
+ * arithmetic must not confirm when 0x67 is among the instruction's
+ * prefixes. */
+static void test_confirm_rejects_an_eip_relative_operand(void) {
+    struct hr_code k = { { 0x55, 0x67, 0x48, 0x8d }, 9, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 4, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: an addr32 (0x67) lea is not RIP-relative (got %d)", r);
+}
+
+/* (3) A malformed ULEB128 after a real start, or a delta that wraps the
+ * cumulative address, must discard every start the list produced -- not
+ * just stop reading where it broke. mg_funcstarts_decode (src/grow.c)
+ * returns -1 on the same malformed bytes, refusing to trust a partially-read
+ * list; a wrapping delta is not monotonic, which a real LC_FUNCTION_STARTS
+ * list never is. */
+static void test_confirm_ignores_a_malformed_function_starts_list(void) {
+    static const uint8_t fs[] = { 0x80, 0x20, 0xff };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: a malformed ULEB tail discards every start (got %d)", r);
+}
+
+static void test_confirm_ignores_a_wrapping_function_starts_delta(void) {
+    static const uint8_t fs[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: a wrapping delta discards every start (got %d)", r);
+}
+
+/* (4, minor) An LC_DATA_IN_CODE payload past the image, or whose size is not
+ * a multiple of its 8-byte entry, must not be treated as "no data-in-code
+ * to step over" -- that lets literal data pass as code. Either makes the
+ * image MHR_UNSCANNABLE, mirroring how an instruction section past the
+ * image already does. */
+static void test_confirm_reports_data_in_code_past_the_image(void) {
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    static const uint8_t dic[8] = { 0 };
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, dic, sizeof dic);
+    l->datasize = HR_IMG_SIZE - l->dataoff + 8;   /* a multiple of 8, still 8 bytes past the image */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: data-in-code past the image (got %d)", r);
+    free(buf);
+}
+
+static void test_confirm_reports_data_in_code_not_a_multiple_of_8(void) {
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    static const uint8_t dic[8] = { 0 };
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, dic, sizeof dic);
+    l->datasize = 12;                                   /* not a multiple of 8 */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: data-in-code size not a multiple of 8 (got %d)", r);
+    free(buf);
+}
+
+/* (5, minor) An empty but present LC_FUNCTION_STARTS -- just its terminator
+ * -- is the same fact as no LC_FUNCTION_STARTS at all: no usable starts. */
+static void test_confirm_needs_function_starts_when_the_list_is_empty(void) {
+    static const uint8_t fs[] = { 0x00 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: an empty function-starts list is no starts (got %d)", r);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2682,6 +2791,13 @@ int main(void) {
     test_confirm_rejects_what_the_decoder_cannot_decode();
     test_confirm_reports_an_image_it_cannot_scan();
     test_confirm_reports_a_bad_section_before_a_good_one();
+    test_confirm_rejects_data_in_code_starting_mid_instruction();
+    test_confirm_rejects_an_eip_relative_operand();
+    test_confirm_ignores_a_malformed_function_starts_list();
+    test_confirm_ignores_a_wrapping_function_starts_delta();
+    test_confirm_reports_data_in_code_past_the_image();
+    test_confirm_reports_data_in_code_not_a_multiple_of_8();
+    test_confirm_needs_function_starts_when_the_list_is_empty();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

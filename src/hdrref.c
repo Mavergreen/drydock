@@ -108,17 +108,38 @@ static int mhr_by_from(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+/* mhr_map_read's failures, beyond 0 (ok): a malloc failure (mhr_confirm
+ * answers -1 for this, same as its other "memory runs out" cases), or an
+ * LC_DATA_IN_CODE payload too broken to trust the code around it -- past the
+ * image, or not a multiple of the 8-byte entry it must decode as. Silently
+ * treating either as "no data-in-code to step over" would sweep literal data
+ * as code, so mhr_confirm answers MHR_UNSCANNABLE instead. */
+#define MHR_MAP_ALLOC   (-1)
+#define MHR_MAP_BAD_DIC (-2)
+
 static int mhr_map_read(struct mhr_map *m, const mi_image *im, size_t fsize) {
     struct mhr_lcs l = { NULL, NULL };
     mi_each_lc(im, mhr_lcs_cb, &l);
-    uint32_t nfs = mhr_payload(l.fs, fsize), ndic = mhr_payload(l.dic, fsize) / 8;
+    if (l.dic && (l.dic->datasize % 8 || l.dic->datasize > fsize ||
+                  l.dic->dataoff > fsize - l.dic->datasize))
+        return MHR_MAP_BAD_DIC;
+    uint32_t nfs = mhr_payload(l.fs, fsize), ndic = l.dic ? l.dic->datasize / 8 : 0;
     m->starts = (uint64_t *)malloc(nfs * sizeof *m->starts + 1);
     m->dic = (struct mhr_range *)malloc(ndic * sizeof *m->dic + 1);
-    if (!m->starts || !m->dic) return -1;
+    if (!m->starts || !m->dic) return MHR_MAP_ALLOC;
     const uint8_t *p = m->buf + (nfs ? l.fs->dataoff : 0), *end = p + nfs;
     uint64_t a = m->base, delta;
-    for (int n; p < end && (n = mu_decode(p, end, &delta)) != 0 && delta != 0; p += n)
-        m->starts[m->nstarts++] = a += delta;
+    int malformed = 0;
+    for (int n; p < end; p += n) {
+        n = mu_decode(p, end, &delta);
+        if (n == 0) { malformed = 1; break; }
+        if (delta == 0) break;
+        uint64_t next = a + delta;
+        if (next <= a) { malformed = 1; break; }   /* wrapped: non-monotonic */
+        a = next;
+        m->starts[m->nstarts++] = a;
+    }
+    if (malformed) m->nstarts = 0;   /* a partially-read list is not trustworthy */
     for (p = m->buf + (ndic ? l.dic->dataoff : 0); m->ndic < ndic; p += 8) {
         uint32_t off;
         uint16_t len;
@@ -144,8 +165,13 @@ static int mhr_sweep(const struct mhr_map *m, const struct section_64 *s, uint64
         if (k < m->ndic && m->dic[k].from <= pc) { pc = m->dic[k].to; continue; }
         mx_insn in;
         if (!mx_decode(code + (pc - s->addr), (size_t)(end - pc), &in)) return 0;
+        /* A range starting inside [pc, pc+len) -- not at or before pc -- means
+         * this "instruction" is partly data: its bytes are not all code, so it
+         * cannot be the one that addresses c. */
+        if (k < m->ndic && m->dic[k].from < pc + (uint64_t)in.len) return 0;
         if (pc + (uint64_t)in.len > c->addr)
-            return in.modrm >= 0 && (code[pc - s->addr + (uint64_t)in.modrm] & 0xC7) == 0x05 &&
+            return in.modrm >= 0 && !in.adsize &&
+                   (code[pc - s->addr + (uint64_t)in.modrm] & 0xC7) == 0x05 &&
                    pc + (uint64_t)in.disp == c->addr &&
                    pc + (uint64_t)in.len == c->addr + 4 + (uint64_t)c->immlen;
         pc += (uint64_t)in.len;
@@ -176,8 +202,10 @@ int mhr_confirm(const uint8_t *buf, size_t fsize, mhr_cand *bad) {
     mi_image im;
     struct mhr_map m = { buf, 0, NULL, 0, NULL, 0 };
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &m.base) != 0) return -1;
-    int rc = -1;
-    if (mhr_map_read(&m, &im, fsize) == 0) {
+    int rc = -1, mr = mhr_map_read(&m, &im, fsize);
+    if (mr == MHR_MAP_BAD_DIC) {
+        rc = MHR_UNSCANNABLE;
+    } else if (mr == 0) {
         struct mhr_confirm_ctx x = { &m, NULL, MHR_CONFIRMED, bad };
         rc = mhr_walk(buf, fsize, m.base, mhr_confirm_cb, &x, &x.sect) < 0 ? MHR_UNSCANNABLE : x.status;
     }

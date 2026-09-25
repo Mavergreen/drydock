@@ -62,7 +62,7 @@ static int mx_group_ok(uint8_t op, uint8_t modrm) {
 }
 
 int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
-    mx_insn o = { 0, -1, -1, 0, 0 };
+    mx_insn o = { 0, -1, -1, 0, 0, 0 };
     int n = 0, opsize = 0, adsize = 0, rexw = 0;
     for (;; n++) {
         if (n >= 15 || (size_t)n >= avail) return 0;
@@ -119,6 +119,7 @@ int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
     n += o.immlen;
     if (n > 15 || (size_t)n > avail) return 0;
     o.len = n;
+    o.adsize = adsize;
     *out = o;
     return 1;
 }
