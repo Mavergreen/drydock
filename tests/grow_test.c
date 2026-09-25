@@ -2076,6 +2076,26 @@ static void test_scan_refuses_an_instruction_section_past_the_image(void) {
     free(buf);
 }
 
+/* A bad instruction section must not stop the scan of the ones after it: only
+ * __text (the first) is unreadable here, and __stubs (the second, past it)
+ * still carries a header reference that must reach the callback even though
+ * the overall verdict is -1. */
+static void test_scan_continues_after_a_bad_instruction_section(void) {
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    sc[0].size = HR_IMG_SIZE;   /* __text: 0x1000 + 0x2000 > 0x2000, runs past the image */
+    hr_plant(buf + 0x1400, HR_BASE + 0x1400, 0x30, 0x05, 0, HR_BASE);   /* __stubs: a real reference */
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    int64_t n = mhr_scan(buf, HR_IMG_SIZE, HR_BASE, hr_record, &s);
+    CHECK(n == -1, "image scan: a bad instruction section still fails overall (got %lld)",
+          (long long)n);
+    CHECK(s.n == 1 && s.c[0].addr == HR_BASE + 0x1431 && s.c[0].off == 0x1431,
+          "image scan: the later, good instruction section is still scanned and its "
+          "reference still reaches the callback (got n=%d)", s.n);
+    free(buf);
+}
+
 /* ---- a grow warns of code that addresses its own header ----
  * Lowering the base moves the header down by the grow while the code stays
  * put, so `lea __mh_execute_header(%rip)` then names a byte that far past
@@ -2152,6 +2172,26 @@ static void test_ensure_pad_warns_of_each_header_reference(void) {
           "two header references: one warning each, in order, after the announcement:\n%s", err);
     CHECK(count_of(err, ": warning: ") == 2, "two header references: %d warnings, want 2",
           count_of(err, ": warning: "));
+    free(err);
+    free(buf);
+}
+
+/* The distance printed is base_before - base_after, not a hardcoded page: every
+ * other case here moves the base by exactly one page, so a mutation that
+ * replaces that subtraction with the MG_PAGE constant passes unnoticed. Force
+ * a two-page grow (need_end one byte into the second page) to tell them apart. */
+static void test_ensure_pad_warns_across_a_two_page_grow(void) {
+    static const uint32_t one[] = { 0 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, one, 1);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 0x1001, &r);
+    CHECK(r == 0, "two-page grow: the grow proceeds (got %d)", r);
+    CHECK(strstr(err, "t: grew the header pad by 8192 bytes") != NULL,
+          "two-page grow: the grow is announced as 8192 bytes:\n%s", err);
+    CHECK(strstr(err, "t: warning: code at 0x100001803 addresses the image's own header; "
+                      "after this grow it points 0x2000 bytes past it (QUEUE item 29)\n") != NULL,
+          "two-page grow: the warning says 0x2000 bytes past it, not one page:\n%s", err);
     free(err);
     free(buf);
 }
@@ -2341,7 +2381,9 @@ int main(void) {
     test_scan_stops_when_asked();
     test_scan_reads_every_instruction_section_and_no_other();
     test_scan_refuses_an_instruction_section_past_the_image();
+    test_scan_continues_after_a_bad_instruction_section();
     test_ensure_pad_warns_of_each_header_reference();
+    test_ensure_pad_warns_across_a_two_page_grow();
     test_ensure_pad_does_not_warn_without_a_header_reference();
     test_ensure_pad_warns_of_code_it_cannot_scan();
     test_ensure_pad_fits_despite_a_header_reference();

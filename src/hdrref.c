@@ -49,7 +49,7 @@ static int mhr_seg_cb(const struct load_command *lc, void *ctx_) {
     for (uint32_t j = 0; j < seg->nsects; j++) {
         if (!(s[j].flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))) continue;
         if (s[j].offset == 0) continue;
-        if (s[j].size > c->fsize || s[j].offset > c->fsize - s[j].size) { c->bad = 1; return 1; }
+        if (s[j].size > c->fsize || s[j].offset > c->fsize - s[j].size) { c->bad = 1; continue; }
         c->n += mhr_code(c->buf + s[j].offset, s[j].size, s[j].addr, s[j].offset,
                          c->target, c->fn, c->ctx, &c->stopped);
         if (c->stopped) return 1;
