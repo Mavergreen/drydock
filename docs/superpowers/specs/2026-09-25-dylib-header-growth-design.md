@@ -9,7 +9,7 @@ This spec does two things, in four milestones:
 
 - **It fixes a bug in the executable grow** (QUEUE item 29). Code that reaches
   its own header by RIP-relative distance breaks silently when the header
-  moves. The fix is to refuse first (M0), then repair (M1).
+  moves. The fix is to warn first (M0), then repair (M1).
 - **It adds a second route for `MH_DYLIB` and `MH_BUNDLE`** (QUEUE item 31),
   so that `dylib insert`, `dylib append`, `dylib replace`, `rpath append`,
   `rpath insert`, `rpath replace`, `minos if-absent` and every later
@@ -177,7 +177,7 @@ The review's per-structure evidence for this table (every section kind, load
 command and export form it checked, with counts) is summarized in the
 Appendix.
 
-### 3. Code that addresses its own header (M0 refuses, M1 repairs)
+### 3. Code that addresses its own header (M0 warns, M1 repairs)
 
 **Finding them: a scan that cannot miss an instruction form.** In 64-bit
 mode every RIP-relative operand is a ModRM byte with `(b & 0xC7) == 0x05`,
@@ -191,17 +191,19 @@ It over-reports but never under-reports. On an 80-image sample it flagged 6
 images, against 5 found by a scan for `lea` alone.
 
 **M0 (the stop-gap, on the executable route, the only one that exists
-yet): any candidate refuses the grow.** The
-message names the first candidate's address and says why:
+yet): any candidate is announced, and the grow proceeds.** One line per
+candidate, on stderr, beside the grow's own announcement:
 
 ```
-ERROR: code at 0x1000028b2 addresses the image's own header; growing would move the header relative to it. Refusing.
+LABEL: warning: code at 0x1000028b2 addresses the image's own header; after this grow it points 0x1000 bytes past it (QUEUE item 29)
 ```
 
-This turns item 29's silent crash into an honest refusal. **But a fresh
-Claude Code download has 7 candidates** (Why), so refusing would stop Drydock
-growing the binary it was built for until M1 lands. Whether M0 refuses or
-only warns is with the owner, 2026-09-25.
+*Owner's decision, 2026-09-25:* warn rather than refuse. A fresh Claude
+Code download has 7 candidates, all `&__mh_execute_header` passed to
+`__cxa_atexit` as an identity key, which is why grown copies run. Refusing
+would stop Drydock growing the binary it was built for until M1 lands. The
+warning makes item 29 visible instead of silent. M1, next, repairs every
+candidate, and removes the warning with it.
 
 **M1 (the repair): confirm each candidate is an instruction, then patch it.**
 The candidate's containing function is found through `LC_FUNCTION_STARTS`.
@@ -307,9 +309,9 @@ anything is mutated:
 - `LC_ENCRYPTION_INFO[_64]` with `cryptid` ≠ 0;
 - a segment with `SG_PROTECTED_VERSION_1`;
 - `LC_UNIXTHREAD` or `LC_THREAD` in a dylib or bundle;
-- a header-reference candidate: any candidate in M0, which touches only the
-  executable route; from M1 on, only one the decoder cannot confirm. The
-  raise route arrives in M2, after the repair exists;
+- a header-reference candidate the decoder cannot confirm, from M1 on. (M0
+  warns on every candidate instead; the raise route arrives in M2, after
+  the repair exists);
 - the existing ULEB-widening refusal of the function-starts leading delta.
   **Except** that a leading delta of 0 means an empty list and is left
   alone. Seventeen codeless umbrella frameworks (Cocoa, Carbon, …) have
@@ -388,17 +390,20 @@ targets there, so the oracle is practical. It runs locally and SKIPs where
 
 Each milestone gets its own plan, written when the previous one lands.
 
-**M0: refuse header references when growing an executable** (item 29's
+**M0: warn about header references when growing an executable** (item 29's
 stop-gap). This covers:
 
 - the scan of Decision 3;
-- the refusal, on the existing route;
+- the warning, on the existing route;
 - the export-trie `KIND_ABSOLUTE` fix;
 - the leading-zero function-starts fix;
-- a regression test: the item 29 reproduction must now be refused, and the
-  `_dyld_get_image_header` control must still grow and run.
+- a regression test: the item 29 reproduction must now grow with a warning
+  naming its reference, and the `_dyld_get_image_header` control must grow
+  with no warning and run.
 
-M0 is small, touches only `src/grow.c` and tests, and ships before the rest.
+M0 is small, touches `src/grow.[ch]`, `src/trie.[ch]`, a new scan module
+and tests, and ships before the rest. The leading-zero fix covers
+`mg_collect` too, or verify fails the grow.
 
 **M1: repair header references.** This covers:
 
@@ -424,14 +429,14 @@ test below, and the documentation updates.
 | what | where | milestone |
 |---|---|---|
 | the scan finds every form (all four immediate lengths), and never misses a planted reference | `tests/grow_test.c` | M0 |
-| item 29's reproduction is refused, and its control grows and runs | `tests/grown_binary_runs_test.sh` | M0 |
+| item 29's reproduction grows with the warning; its control grows silently and runs | `tests/grown_binary_runs_test.sh` | M0 |
 | `KIND_ABSOLUTE` exports and a leading-zero function-starts list are left alone | `tests/grow_test.c` | M0 |
 | the decoder's instruction boundaries equal `otool -tV`'s on the corpus | new, local, SKIPs without `otool` or the corpus | M1 |
 | item 29's reproduction grows and runs, printing the same as the original | `tests/grown_binary_runs_test.sh` | M1 |
 | each row of Decision 2, on a hand-built dylib fixture carrying that structure; the mutation that skips its fix-up fails a named test | `tests/grow_test.c` | M2 |
 | the rule: a `__dso_handle` rebase, a `__mh_dylib_header` symbol and export offset 0 unchanged; content at base + F raised | `tests/grow_test.c` | M2 |
 | stabs: `N_ENSYM`, `N_OSO` unchanged on a `-g` fixture | `tests/grow_test.c` | M2 |
-| each refusal in Decision 6 leaves the buffer untouched | `tests/grow_test.c` | M0–M2 |
+| each refusal in Decision 6 leaves the buffer untouched | `tests/grow_test.c` | M1–M2 |
 | each of the six verification checks catches a planted error | `tests/grow_test.c` | M2 |
 | `dylib append`, `dylib insert`, `rpath replace` on a no-pad dylib fixture: success, announced, `verify` passes | `tests/cli_test.sh` | M2 |
 | Sparkle (no compressed dyld info): refused with Decision 6's reason | local end-to-end | M2 |
@@ -500,8 +505,9 @@ lowered copy of Mantle succeed and pass `drydock-macho-rewrite verify`.
 - **Reclaim only**: see Out of scope.
 - **Reclaim, then raise**: a policy layer and two paths to test, for no
   gain. The raise must be correct anyway.
-- **For header references, refuse forever**: M0 does this, as a stop-gap.
-  Left there, it would refuse about 40% of app frameworks, mostly C++ ones.
+- **For header references, refuse**: considered for M0 and declined, since
+  it would refuse a fresh Claude Code. As a permanent answer it would also
+  refuse about 40% of app frameworks, mostly C++ ones.
 - **For header references, patch without confirming**: a false-positive
   candidate would be corrupted. Confirmation by decoding is what makes
   patching safe.
