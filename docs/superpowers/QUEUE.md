@@ -1463,6 +1463,16 @@ dylib-growth spec.
 on stderr, each instruction that addresses the image's own header; a
 fresh Claude Code download grows with seven such warnings.
 
+**Data pointers to the header break the same way** (found 2026-09-25 while
+planning M1). A rebased pointer whose value is `_mh_execute_header` keeps the
+old base after a grow and misses the header by G: measured, a data pointer
+to `_mh_execute_header` misses it by 4096 after an M0 grow. 46 of 838
+executables on this host carry one; the Claude Code executable does not. No
+scan of code finds these; they are rebase targets, so the fix is to decode
+the rebase stream and subtract G from each value that names the header. That
+needs the complete rebase decoder objc-methods M2 builds (`src/rebase.[ch]`),
+so it follows M2. M1 moves the `__mh_execute_header` symbol itself.
+
 ## Item 30: `fixups set classic` output cannot be re-signed on 10.9
 
 **Found 2026-09-25** while planning objc-methods M2. 10.9's

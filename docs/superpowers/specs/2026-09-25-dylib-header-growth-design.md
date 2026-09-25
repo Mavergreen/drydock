@@ -104,13 +104,24 @@ structure that stores a distance from the base gains G in both routes, and
 - `LC_DATA_IN_CODE` (`mg_dice_walk`);
 - `S_INIT_FUNC_OFFSETS` (`mg_init_offsets_pass`).
 
-What differs is absolute vm addresses. The executable route leaves them
-alone; the dylib route adds G to each one that names content.
+What differs is absolute vm addresses, and in opposite halves:
+
+- **The dylib route** moves the content, so it adds G to every absolute
+  address that names content, and leaves header-namers alone.
+- **The executable route** moves the header, so content-namers stay put, and
+  every absolute address that names the header must *lose* G: the
+  `__mh_execute_header` symbol, and any rebased data pointer to the header.
+  Before M1 the executable route adjusted none of these. M1 moves the symbol;
+  data pointers to the header need the complete rebase decoder and are QUEUE
+  item 29's remaining half. 46 of 838 executables on this host have one; the
+  Claude Code executable has none.
 
 **The one rule.** Anything that names the header (address exactly base, or
-base-relative offset exactly 0) is unchanged. Anything that names content
-(base + F or above) moves with the content. Anything strictly between is
-refused.
+base-relative offset exactly 0) moves with the header. Anything that names
+content (base + F or above) moves with the content. Anything strictly
+between is refused. On the dylib route the header does not move, so
+header-namers are unchanged; on the executable route the content does not
+move, so content-namers are unchanged.
 
 The adversarial review measured every symbol, rebase value, export offset
 and RIP-relative target in all 1667 images: none falls strictly inside
@@ -125,6 +136,14 @@ to the header changes by G, in both routes. In the executable route the
 header moves down by G while code stays put. In the dylib route the code
 moves up by G while the header stays put. Decision 3 handles those
 distances.
+
+**Confirmation needs function boundaries and, ideally, data-in-code.**
+Decision 3's sweep starts at a function start and must not decode data as
+instructions. The 10.9 toolchain writes no `LC_DATA_IN_CODE` entries and
+puts switch jump tables inside `__text`, so a candidate that follows such a
+table within its own function cannot be confirmed, and the grow refuses.
+None of Claude Code's 7 is in that position. Expect it among 10.9 system
+dylibs in M2 and M3.
 
 ### 2. What changes on the raise route
 
@@ -440,7 +459,7 @@ test below, and the documentation updates.
 | each of the six verification checks catches a planted error | `tests/grow_test.c` | M2 |
 | `dylib append`, `dylib insert`, `rpath replace` on a no-pad dylib fixture: success, announced, `verify` passes | `tests/cli_test.sh` | M2 |
 | Sparkle (no compressed dyld info): refused with Decision 6's reason | local end-to-end | M2 |
-| the executable route is byte-for-byte unchanged on every existing grow fixture without header references | existing suites | M0–M2 |
+| the executable route is byte-for-byte unchanged on every existing grow fixture without header references, except, from M1, the `__mh_execute_header` symbol's value | existing suites | M0–M2 |
 | **real 10.9 system dylibs run by Apple's programs, and host-built fixture dylibs run by a driver** | new `tests/grown_dylib_runs_test.sh` | M3 |
 
 **Real dylibs, run (M3).** The test grows copies of dylibs to force a raise
