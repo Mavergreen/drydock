@@ -153,7 +153,9 @@ for why they would be rare -- and one decided on purpose:
     lowering the base breaks, one more line follows for each such
     instruction: "FILE: warning: code at 0x... addresses the image's own
     header; after this grow it points 0x1000 bytes past it (QUEUE item 29)"
-    (`tests/grown_binary_runs_test.sh`, "hdr"). The repo owner's
+    (`tests/grown_binary_runs_test.sh`, "hdr"). The scan that finds these can,
+    rarely, report bytes that only look like such an instruction; it
+    over-reports, never under-reports. The repo owner's
     ruling: the engine never writes its input, and the grow verifies itself,
     so an opt-in bought nothing. `tests/cli_test.sh`'s `add_version_min`
     case ("a short pad is grown, announced, where the original refused")
