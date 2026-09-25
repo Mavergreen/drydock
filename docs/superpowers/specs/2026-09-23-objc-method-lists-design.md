@@ -49,68 +49,86 @@ lists must be writable.**
 
 ## Decisions
 
-### 1. Where the new lists live: a new segment just before `__LINKEDIT`
+### 1. Where the new lists live: the end of the segment before `__LINKEDIT`
 
-The candidates, and why each loses or wins:
+*Revised 2026-09-25, after measuring real binaries. The first version of
+this decision inserted a new `__MLDATA` segment; "The road not taken"
+below says why it lost and what would bring it back.*
 
-- **`__LINKEDIT`**: read-only, and the runtime writes into method lists.
-  Rebases into `__LINKEDIT` are also nonsense to dyld. **Rejected.**
-- **In place**: 24-byte entries do not fit in 12-byte slots, and the relative
-  lists live in `__TEXT,__objc_methlist`, which is read-only. **Rejected.**
-- **Growing `__DATA`**: every segment after it would move in vm, and code
-  addresses `__DATA` RIP-relatively. When `__DATA` happens to be the last
-  segment before `__LINKEDIT`, growing it still means inserting an 80-byte
-  `section_64` mid-command, and placing file-backed bytes after any zerofill
-  section (`__bss`, `__common`), which a segment cannot hold. **Rejected.**
-- **The tail slack of an existing writable segment**: this works only when
-  the slack happens to be big enough. It is a fallback that would decide
-  per binary whether the feature works. **Rejected** as the mechanism.
-- **A new segment appended after `__LINKEDIT`**: `codesign_allocate`
-  requires `__LINKEDIT` to be the last segment in the file, and ad-hoc
-  re-signing is mandatory in every known port's flow (QUEUE item 13, "A
-  documentation gap"). **Rejected.**
-- **A new segment inserted immediately before `__LINKEDIT`, in load-command
-  order, vm order and file order: chosen.** It is the layout `ld` itself
-  would have produced. The new segment takes `__LINKEDIT`'s old `vmaddr`
-  and `fileoff`, and `__LINKEDIT` moves up by the new segment's page-rounded
-  size S, in both vm and file.
+**The evidence that decided it.** The only x86_64 images on this host with
+relative lists are three frameworks in `~/Downloads/OpenCode.app` (Mantle,
+ReactiveObjC, Squirrel; macOS 12.0 target, chained fixups). After
+`fixups set classic`, all three:
 
-Why the chosen layout is cheap:
+- are dylibs (`MH_DYLIB`), with **16, 24 and 16 bytes** of header pad, and
+  had exactly that before lowering too: current linkers leave almost none;
+- have four segments, `__TEXT`, `__DATA_CONST`, `__DATA`, `__LINKEDIT`, in
+  that order in load commands, vm and file;
+- have a writable `__DATA` whose `filesize` equals its `vmsize`, so its
+  `__bss` is already file-backed zeros and `__DATA` ends exactly where
+  `__LINKEDIT` begins, in vm and in file;
+- carry `LC_CODE_SIGNATURE`, and neither `LC_FUNCTION_STARTS` nor
+  `LC_SEGMENT_SPLIT_INFO`.
 
+**The mechanism.** Call the segment immediately before `__LINKEDIT`, in
+load-command order, D. The statement appends the converted lists past D's
+end:
+
+1. If D's `filesize` is less than its `vmsize` (a zerofill tail, common in
+   executables with a large `__bss` or `__common`), D's file backing is
+   first extended to its `vmsize` with Z zero bytes. The bytes were zero in
+   memory already, so nothing the program sees changes; the file grows by Z.
+2. D's `vmsize` and `filesize` grow by S, the page-rounded size of the
+   converted lists. The lists occupy D's old end, `D.vmaddr + old vmsize`,
+   onward.
+3. `__LINKEDIT` moves up by S in vm and by Z + S in file, and the new rebase
+   stream (R bytes) goes at its start, as below.
+
+Why this is cheap:
+
+- **No load command is added**, so header pad does not matter. A dylib,
+  which can never grow its header (see below), converts as readily as an
+  executable, and an executable never needs to grow through `__PAGEZERO`.
 - **No existing vm address changes except `__LINKEDIT`'s.** Nothing points
   into `__LINKEDIT` by vm address. dyld derives its base as
   `vmaddr + slide - fileoff`, and every load command reaches `__LINKEDIT`
   by **file offset**.
 - **Every `__LINKEDIT` file offset shifts uniformly.** `src/linkedit.h`'s
-  `ml_bump_all(im, insert, grow)` already does exactly this. It bumps
-  every field at or past `insert`, and its list is the one `mg_verify`
-  watches. This subsystem reuses it with `insert = __LINKEDIT's old
-  fileoff`.
-- **Section ordinals are untouched.** `__LINKEDIT` has no sections, so the
-  new section's 1-based ordinal is one past every existing one. No
-  `n_sect` moves.
-- **The only index that moves is `__LINKEDIT`'s own segment index**, which
-  goes up by one. No rebase or bind opcode may name `__LINKEDIT`. The
-  statement checks this in all four opcode streams and refuses if one does.
+  `ml_bump_all(im, insert, grow)` already does exactly this, over the list
+  `mg_verify` watches, with `insert = __LINKEDIT's old fileoff`.
+- **No segment index and no section ordinal changes.** Every rebase and bind
+  opcode keeps meaning what it meant, so no opcode stream needs checking for
+  a moved index.
+- **The lists are writable**, because D must be (the refusal below), and the
+  10.9 runtime writes into method lists.
 
-**Names.** The segment is `__MLDATA` (prior art: Celeste 64). Its one section
-is `__objc_const`, the section `ld` used for absolute method lists before
-relative ones existed. It is deliberately not `__objc_methlist`, so a
-converted image never looks like it still needs converting (Decision 6).
-The segment's protection is `initprot = maxprot = VM_PROT_READ |
-VM_PROT_WRITE`, and the section is `S_REGULAR` with `align = 3`.
+**The lists belong to no section.** D's section headers are untouched; the
+new bytes sit past its last section. dyld maps segments, not sections, and
+the runtime reaches a method list only through the pointer in its
+`class_ro_t`, `category_t` or `protocol_t`, so neither needs a section.
+Drydock's own `mg_plausible` checks function starts, not section membership.
+The costs are to readers: `otool` and similar tools will not attribute the
+bytes to any section, and nothing in the image names them as converted
+lists. Decision 6's idempotence does not need a name: a converted image's
+walk finds no relative lists.
 
-**How this meets the grow machinery.** The new segment's load command needs
-152 bytes of header pad (`segment_command_64` + one `section_64`). The pad
-comes from `mg_ensure_pad`, the same as for every other statement, so a short
-pad on a PIE executable grows through `__PAGEZERO` and is announced on stderr.
-A dylib with a short pad is refused, as it is for every other statement.
-Growth happens **before** the walk that finds the lists. Growth changes file
-offsets but no vm address, and doing it first means the walk sees final
-offsets. A later grow, from a later statement, sees an ordinary
-`LC_SEGMENT_64` with an `S_REGULAR` section. `mg_classify` accepts that, and
-`mg_grow_header` shifts it the same way it shifts every other segment.
-Milestone 2 tests that composition.
+**Refusals specific to this mechanism** (`EX_REFUSED`, nothing written):
+
+- D is not writable (`initprot` lacks `VM_PROT_WRITE`);
+- D does not end where `__LINKEDIT` begins, in vm or (after step 1) in file;
+- `__LINKEDIT` is not the last segment;
+- D's segment index is 16 or higher, since the rebase opcode's segment
+  index is a 4-bit immediate (Decision 2).
+
+None of these fired on the three real frameworks. If a real binary trips
+the first, that is the signal to revisit this decision, below.
+
+**How this meets the grow machinery.** The statement never grows the
+header. A **later** statement that grows it (on an executable) sees D as an
+ordinary `LC_SEGMENT_64` whose bytes run past its last section.
+`mg_grow_header` shifts every segment's file offset uniformly, so the tail
+moves with D. Milestone 2 tests that composition (`dylib append` on an
+executable with no pad, after the conversion).
 
 **Where the new rebase stream goes.** `REBASE_OPCODE_DONE` ends a stream, so
 new entries cannot be appended after the old stream. The stream is rewritten:
@@ -119,17 +137,68 @@ stream is placed at the **start** of the moved `__LINKEDIT`, in the same
 insertion. The file becomes:
 
 ```
-[ ... | __MLDATA: S bytes | __LINKEDIT: new rebase stream (R bytes, 8-aligned) | old __LINKEDIT ... ]
+[ ... | D: old bytes | Z zeros | converted lists, S bytes | __LINKEDIT: new rebase stream (R bytes, 8-aligned) | old __LINKEDIT ... ]
 ```
 
-The insertion is S + R bytes. `ml_bump_all` moves every offset by that
-amount, then `rebase_off`/`rebase_size` are pointed at the new stream. The old
-stream's bytes are zeroed where they now sit. `__LINKEDIT` still ends the file
-and the code signature, if there is one, still ends `__LINKEDIT`, so
-`codesign --force` can re-sign. This is the same room-making `import redirect`
-does, moved to the other end of `__LINKEDIT`. The start is used here because
-the insertion is already happening there, and the end would put the stream
-after the signature.
+The insertion at `__LINKEDIT`'s old file offset is Z + S + R bytes.
+`ml_bump_all` moves every offset by that amount, then
+`rebase_off`/`rebase_size` are pointed at the new stream. The old stream's
+bytes are zeroed where they now sit. `__LINKEDIT` still ends the file and the
+code signature, if there is one, still ends `__LINKEDIT`, so
+`codesign --force` can re-sign. This is the same room-making
+`import redirect` does, moved to the other end of `__LINKEDIT`.
+
+**The candidates that lost:**
+
+- **`__LINKEDIT`**: read-only, and the runtime writes into method lists.
+  Rebases into `__LINKEDIT` are also nonsense to dyld.
+- **In place**: 24-byte entries do not fit in 12-byte slots, and the relative
+  lists live in `__TEXT,__objc_methlist`, which is read-only.
+- **The tail slack of an existing writable segment, without growing it**:
+  works only when the slack happens to be big enough, so it would decide per
+  binary whether the feature works.
+- **Growing a segment that is not the last before `__LINKEDIT`**: every
+  segment after it would move in vm, and code addresses them RIP-relatively.
+- **A new segment appended after `__LINKEDIT`**: `codesign_allocate`
+  requires `__LINKEDIT` to be the last segment in the file, and ad-hoc
+  re-signing is mandatory in every known port's flow (QUEUE item 13, "A
+  documentation gap").
+- **A new segment inserted immediately before `__LINKEDIT`**: the road not
+  taken, below.
+
+**The road not taken: a new `__MLDATA` segment.** This was the first
+design, with a section `__objc_const`, placed between D and `__LINKEDIT`,
+following Celeste 64's port. It is the layout `ld` would produce, its bytes
+are labelled by a section, and a converted image names itself. It needs a
+new `LC_SEGMENT_64` plus one `section_64`, **152 bytes of header pad**, and
+that is what killed it: every real image measured has 16 to 24. An
+executable can get the room, because `mg_ensure_pad` grows its header by
+lowering the image base into `__PAGEZERO`, so no vm address moves
+(`src/grow.h`). **A dylib has no `__PAGEZERO`**, so `grow` refuses it
+(`only MH_EXECUTE can be grown`), and frameworks are exactly where Swift and
+Objective-C code arrives.
+
+What it would take to choose it after all:
+
+- **Dylib header growth.** That means the LIEF / `llvm-objcopy` route
+  `src/grow.h` deliberately declined: insert space after the load commands
+  and move every later byte up in vm, then rewrite everything that holds a
+  vm address or a delta from one — rebase, bind, lazy-bind, weak-bind and
+  export streams, symbol `n_value`s, `LC_FUNCTION_STARTS`, `__unwind_info`,
+  `__eh_frame`, `LC_DATA_IN_CODE`, the Objective-C metadata's own pointers,
+  and any absolute pointer in data. That is a subsystem larger than this
+  one, and its benefit would reach every statement that adds a load command
+  to a dylib, not only this one. If Drydock ever gains it, this decision can
+  be revisited on its merits.
+- **Or binaries with room.** An image linked with `-headerpad` (or
+  `-headerpad_max_install_names`) of 152 bytes or more could take a new
+  segment today. Supporting both mechanisms doubles the testing for no
+  runtime difference, so it is only worth it if the mechanism above fails
+  somewhere the new segment would not.
+- **What would force the question:** a real binary whose segment before
+  `__LINKEDIT` is read-only, or evidence that some consumer (10.9's dyld or
+  objc, `codesign`, a later Drydock statement) mishandles bytes past a
+  segment's last section. Neither has been seen.
 
 ### 2. Fixups: classic only, and after `fixups set classic`
 
@@ -139,10 +208,8 @@ after the signature.
 - On a chained image every pointer the walk follows (class list entries,
   `isa`, `data`, `baseMethods`, the selector references) is an encoded chain
   link, not an address. Converting there would mean threading new links
-  through a new segment's `dyld_chained_starts_in_segment`, which
+  through the extended segment's `dyld_chained_starts_in_segment`, which
   `fixups set classic` would then have to lower in any case.
-- `grow` already refuses chained images (`src/grow.h`, `mg_ensure_pad`), and
-  this statement may need to grow.
 - `target 10.9` already puts `fixups set classic` first (`src/edit.c`,
   `me_expand_10_9`), so the derived order is always right.
   A hand-written script in the wrong order gets a refusal that names the fix.
@@ -165,7 +232,7 @@ Opcode encoding stays within what dyld has read since 10.6:
 `SET_TYPE_IMM(POINTER)`, `SET_SEGMENT_AND_OFFSET_ULEB`,
 `DO_REBASE_ULEB_TIMES` for runs of consecutive pointers, and
 `DO_REBASE_IMM_TIMES`. The segment index is a 4-bit immediate, so an image
-whose new segment would be index 16 or higher is refused.
+whose segment D (Decision 1) is index 16 or higher is refused.
 
 ### 3. How selector references resolve
 
@@ -287,18 +354,22 @@ re-walk before handing the image back):
    (segment, offset) pairs it must equal the old set plus the new pointer
    slots, exactly, with no duplicates.
 3. **Layout.**
-   - Every segment other than `__LINKEDIT` and the new one has identical
-     load-command fields.
-   - Bytes below the insertion are identical except for the load-command
-     region and the repointed 8-byte slots.
-   - The old `__LINKEDIT` bytes reappear S + R later, identical except for
+   - The load commands are identical except D's `vmsize` and `filesize`,
+     `__LINKEDIT`'s `vmaddr`, `fileoff` and `filesize`, and the `ml_each_off`
+     fields. `ncmds` and `sizeofcmds` are unchanged.
+   - D grew by exactly S in vm and by Z + S in file; `__LINKEDIT` moved by
+     exactly S in vm.
+   - Bytes below the insertion are identical except for the repointed 8-byte
+     slots. The Z bytes are zero.
+   - The old `__LINKEDIT` bytes reappear Z + S + R later, identical except for
      the zeroed old rebase stream.
-   - Every `ml_each_off` field other than `rebase_off` moved by exactly S + R.
+   - Every `ml_each_off` field other than `rebase_off` moved by exactly
+     Z + S + R.
    - `__LINKEDIT` is the last segment and ends the file.
    - No two segments overlap in vm.
 4. **`mg_plausible`** runs through the existing gate. The row declares
-   `MREL_FILE_OFF | MREL_HEADER_PAD`, and `me_note_disturbed` adds
-   `MREL_BASE_REL` itself when a grow happened.
+   `MREL_FILE_OFF`; the statement adds no load command, so it never
+   disturbs the header pad.
 5. **On 10.9 itself:** milestone 3 runs a converted binary and checks its
    output.
 
@@ -324,13 +395,15 @@ how many?" on any classic image. **Landed: 439e1cc..9082c8f.**
 
   ```
     objc-methods set absolute
-        converted 4 relative method lists (5 methods) into __MLDATA,__objc_const: 1 class, 1 metaclass, 1 category, 1 protocol
-        added 13 rebases; __LINKEDIT 256 -> 344 bytes, moved up 4096
+        converted 4 relative method lists (5 methods) onto the end of __DATA: 1 class, 1 metaclass, 1 category, 1 protocol
+        added 13 rebases; __DATA grew 4096 bytes; __LINKEDIT 256 -> 344 bytes, moved up 4096
   ```
 
-- The fixture gains variants: no pad on a dylib, a code signature,
-  `LC_SEGMENT_SPLIT_INFO`, a segment after `__LINKEDIT`, a bind naming
-  `__LINKEDIT`'s index, a selref that is a bind, and an IMP that is not a
+- The fixture gains variants: a dylib with 16 bytes of header pad (which
+  must convert: it is the case Decision 1 exists for), D with a zerofill
+  tail (`filesize < vmsize`), D read-only, a gap between D and
+  `__LINKEDIT`, a segment after `__LINKEDIT`, a code signature,
+  `LC_SEGMENT_SPLIT_INFO`, a selref that is a bind, and an IMP that is not a
   function start. `mkrelmeth entries FILE` becomes the oracle: it resolves
   each fixed slot's list independently of `src/`.
 - Tests: `tests/rebase_test.c`, `tests/objc_meth_test.c`,
@@ -360,6 +433,11 @@ suites": a test can be unfalsifiable on the host it was written on.
 - `me_expand_10_9` gains the sixth detection (Decision 6) and
   `ME_TARGET_MAX` goes to 6.
 - New tests in `tests/cli_test.sh`'s target block and `tests/edit_test.c`.
+- **Decision 1's rationale outlives this spec.** Specs are deleted once
+  implemented, so M4 moves "why the end of the segment before `__LINKEDIT`",
+  its evidence, and "The road not taken" (what dylib header growth would
+  take, and what would force the question) into `docs/objc-methods.md`,
+  beside `docs/bind-stream-editing.md` and `docs/minimum-os-version.md`.
 - **The final task is the only README change in the whole subsystem**, and
   it changes only these lines:
   - the Statements block row;
@@ -403,9 +481,9 @@ on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
 - that in an app binary (as opposed to the shared cache) `name` is always a
   selector-reference offset and never direct. M2's first task checks this
   on the three frameworks above;
-- that real linker output meets Decision 1's preconditions: `__LINKEDIT`
-  last, fewer than 16 segments, and 152 bytes of header pad or a
-  `__PAGEZERO` to grow through. Also M2's first task, on the same three;
+- that 10.9's dyld and objc, and `codesign`, accept method lists placed past
+  the last section of `__DATA` (Decision 1). The fixtures prove Drydock's
+  side; M3's run on 10.9 proves the runtime's;
 - Swift `@objc` classes' `class_ro_t` in practice;
 - lists this walk does not reach: `__objc_catlist2`, Swift stub classes,
   and **runtime-instantiated generic Swift classes**, whose `class_ro_t`
@@ -469,14 +547,20 @@ conflicts.
    by their own code or their own bundled runtime, never by an OS component
    older than the format. Only Objective-C's lists are read by one (10.9's
    libobjc), so only they need this, and the name says so.
-2. **Names: `__MLDATA,__objc_const`**, as recommended.
-3. **`LC_SEGMENT_SPLIT_INFO`: keep it, offset bumped.** Real modern
-   frameworks are dylibs, and dylibs carry split info, so refusing would
-   reject the very images this exists for.
-4. **An IMP not in `LC_FUNCTION_STARTS`: refuse**, but M2's first task
-   runs the check against Mantle, ReactiveObjC and Squirrel (after
-   `fixups set classic`) and records the result. If real ld64 output fails
-   it, the rule is revisited before anything builds on it.
+2. **Names: none needed.** Answered `__MLDATA,__objc_const` first, then
+   made moot the same day when Decision 1 changed from a new segment to the
+   end of the segment before `__LINKEDIT`, because real dylibs have no header
+   pad for a new load command. Decision 1 records why, and what would bring
+   the new segment back.
+3. **`LC_SEGMENT_SPLIT_INFO`: keep it, offset bumped.** Split info
+   describes references between existing sections, and none move. None of
+   the three real frameworks carries it, but a dylib built for the shared
+   cache would, and refusing it would reject a dylib for no runtime reason.
+4. **An IMP not in `LC_FUNCTION_STARTS`: refuse.** None of the three real
+   frameworks carries `LC_FUNCTION_STARTS`, so on them the check does not
+   run and the section-attribute check (`S_ATTR_*_INSTRUCTIONS`) is the only
+   one. M2's first task still runs the conversion's resolution checks on
+   all three and records the result.
 5. **Dead relative lists in `__TEXT`: leave them.**
 6. **Real binaries:** the three OpenCode.app frameworks above are M2's
    real-world subjects, converted and re-walked by the statement's own
