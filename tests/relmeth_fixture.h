@@ -76,7 +76,8 @@ enum {
     RMF_SHAREDRO = 1u << 10, /* __objc_nlclslist names a second class, whose isa is the
                               * metaclass and whose data word names the class's ro */
     RMF_CATPAST  = 1u << 11, /* the catlist entry names RMF_DATA_TAIL */
-    RMF_PROTOPAST = 1u << 12 /* the protolist entry names RMF_DATA_TAIL */
+    RMF_PROTOPAST = 1u << 12, /* the protolist entry names RMF_DATA_TAIL */
+    RMF_METAOUT  = 1u << 13  /* the class's isa names the address just past the file */
 };
 
 static inline void rmf_name16(char *f, const char *s) {
@@ -265,7 +266,7 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         rmf_put64(b, RMF_PROTOCOL + 48, RMF_VA(RMF_LIST_C));
     }
     rmf_put32(b, RMF_PROTOCOL + 64, 80);
-    rmf_put64(b, RMF_CLASS, RMF_VA(RMF_META));
+    rmf_put64(b, RMF_CLASS, RMF_VA((v & RMF_METAOUT) ? RMF_SIZE : RMF_META));
     rmf_put64(b, RMF_CLASS + 32, RMF_VA(RMF_CLASS_RO) | ((v & RMF_SWIFT) ? 2 : 0));
     rmf_put64(b, RMF_META + 32, RMF_VA(RMF_META_RO) | ((v & RMF_SWIFT) ? 2 : 0));
     rmf_put64(b, RMF_CLASSLIST, RMF_VA(RMF_CLASS));

@@ -123,6 +123,7 @@ static void test_refusals(void) {
     test_refusal(RMF_OOB,      MML_MALFORMED, "runs past",          "list past its segment");
     test_refusal(RMF_CATPAST,  MML_MALFORMED, "category record",    "category past its segment");
     test_refusal(RMF_PROTOPAST, MML_MALFORMED, "protocol record",   "protocol past its segment");
+    test_refusal(RMF_METAOUT,  MML_MALFORMED, "the metaclass record", "metaclass outside the file");
 }
 
 static void test_category_and_protocol_lists(void) {

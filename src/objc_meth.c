@@ -149,8 +149,8 @@ static int mml_class(mml_ctx *c, uint64_t cls_va, int owner) {
     if (v <= 0) return c->err;
     if (mml_read64(c, cls_va + MML_CLASS_ISA, &isa) != 0 ||
         mml_read64(c, cls_va + MML_CLASS_DATA, &data) != 0)
-        return mml_fail(c, MML_MALFORMED, "the class record at 0x%llx lies outside the file",
-                        (unsigned long long)cls_va);
+        return mml_fail(c, MML_MALFORMED, "the %s record at 0x%llx lies outside the file",
+                        owner == MML_METACLASS ? "metaclass" : "class", (unsigned long long)cls_va);
     c->w->owners[owner]++;
     uint64_t ro = data & MML_DATA_MASK;
     if (ro && mml_list(c, ro + MML_RO_METHODS, owner) != 0) return c->err;
