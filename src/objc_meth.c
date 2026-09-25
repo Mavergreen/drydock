@@ -13,6 +13,11 @@
 #define MML_CLASS_ISA   0
 #define MML_CLASS_DATA 32
 #define MML_RO_METHODS 32
+#define MML_CAT_INSTANCE 16
+#define MML_CAT_CLASS    24
+#define MML_CAT_SIZE     32
+#define MML_PROTO_FIRST  24   /* instance, class, optional instance, optional class */
+#define MML_PROTO_SIZE   56
 
 typedef struct { uint64_t vmaddr, filesize, fileoff; } mml_seg;
 
@@ -28,6 +33,9 @@ typedef struct {
 static const struct { const char *name; int owner; } MML_LISTS[] = {
     { "__objc_classlist", MML_CLASS },
     { "__objc_nlclslist", MML_CLASS },
+    { "__objc_catlist",   MML_CATEGORY },
+    { "__objc_nlcatlist", MML_CATEGORY },
+    { "__objc_protolist", MML_PROTOCOL },
 };
 
 static int mml_fail(mml_ctx *c, int code, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
@@ -150,7 +158,36 @@ static int mml_class(mml_ctx *c, uint64_t cls_va, int owner) {
     return 0;
 }
 
+static int mml_category(mml_ctx *c, uint64_t va) {
+    int v;
+    if (!va) return 0;
+    v = mml_first_visit(c, va);
+    if (v <= 0) return c->err;
+    if (mml_off(c, va, MML_CAT_SIZE) < 0)
+        return mml_fail(c, MML_MALFORMED, "the category record at 0x%llx lies outside the file",
+                        (unsigned long long)va);
+    c->w->owners[MML_CATEGORY]++;
+    if (mml_list(c, va + MML_CAT_INSTANCE, MML_CATEGORY) != 0) return c->err;
+    return mml_list(c, va + MML_CAT_CLASS, MML_CATEGORY);
+}
+
+static int mml_protocol(mml_ctx *c, uint64_t va) {
+    int v;
+    if (!va) return 0;
+    v = mml_first_visit(c, va);
+    if (v <= 0) return c->err;
+    if (mml_off(c, va, MML_PROTO_SIZE) < 0)
+        return mml_fail(c, MML_MALFORMED, "the protocol record at 0x%llx lies outside the file",
+                        (unsigned long long)va);
+    c->w->owners[MML_PROTOCOL]++;
+    for (int k = 0; k < 4; k++)
+        if (mml_list(c, va + MML_PROTO_FIRST + 8 * k, MML_PROTOCOL) != 0) return c->err;
+    return 0;
+}
+
 static int mml_record(mml_ctx *c, uint64_t va, int owner) {
+    if (owner == MML_CATEGORY) return mml_category(c, va);
+    if (owner == MML_PROTOCOL) return mml_protocol(c, va);
     return mml_class(c, va, owner);
 }
 

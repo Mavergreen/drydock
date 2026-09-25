@@ -107,12 +107,54 @@ static void test_refusals(void) {
     test_refusal(RMF_OOB,      MML_MALFORMED, "runs past",          "list past its segment");
 }
 
+static void test_category_and_protocol_lists(void) {
+    mml_walk w;
+    int rc = walk(RMF_PLAIN, &w);
+    const mml_ref *c = nth_of(&w, MML_CATEGORY, 0), *p = nth_of(&w, MML_PROTOCOL, 0);
+    CHECK(rc == MML_OK, "plain: rc %d (%s)", rc, w.why);
+    CHECK(c && c->slot_off == RMF_CATEGORY + 16 && c->list_va == RMF_VA(RMF_LIST_C),
+          "plain: category instanceMethods not found");
+    CHECK(p && p->slot_off == RMF_PROTOCOL + 24 && p->list_va == RMF_VA(RMF_LIST_D),
+          "plain: protocol instanceMethods not found");
+    CHECK(w.owners[MML_CATEGORY] == 1, "categories walked: %u", w.owners[MML_CATEGORY]);
+    CHECK(w.owners[MML_PROTOCOL] == 1, "protocols walked: %u", w.owners[MML_PROTOCOL]);
+    CHECK(w.n == 4, "plain: %u slots, want 4", w.n);
+    CHECK(w.relative == 4 && w.absolute == 0, "plain: %u relative, %u absolute; want 4, 0",
+          w.relative, w.absolute);
+    mml_walk_free(&w);
+}
+
+static void test_a_shared_list_counts_once(void) {
+    mml_walk w;
+    int rc = walk(RMF_SHARED, &w);
+    const mml_ref *c = nth_of(&w, MML_CATEGORY, 0);
+    CHECK(rc == MML_OK, "shared: rc %d (%s)", rc, w.why);
+    CHECK(w.n == 4, "shared: %u slots, want 4 -- every slot is kept", w.n);
+    CHECK(c && c->list_va == RMF_VA(RMF_LIST_A), "shared: the category's slot does not name list A");
+    CHECK(w.relative == 3, "shared: %u relative lists, want 3", w.relative);
+    mml_walk_free(&w);
+}
+
+static void test_absolute_lists_are_counted_apart(void) {
+    mml_walk w;
+    int rc = walk(RMF_ABSCAT, &w);
+    const mml_ref *c = nth_of(&w, MML_CATEGORY, 0);
+    CHECK(rc == MML_OK, "abscat: rc %d (%s)", rc, w.why);
+    CHECK(c && c->header == RMF_ABS_HEADER && c->count == 1, "abscat: the absolute list was misread");
+    CHECK(w.relative == 3 && w.absolute == 1, "abscat: %u relative, %u absolute; want 3, 1",
+          w.relative, w.absolute);
+    mml_walk_free(&w);
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
     test_swift_tag_bits_do_not_hide_the_ro();
     test_a_class_listed_twice_is_walked_once();
     test_refusals();
+    test_category_and_protocol_lists();
+    test_a_shared_list_counts_once();
+    test_absolute_lists_are_counted_apart();
 
     if (fails) {
         printf("%d failure(s)\n", fails);
