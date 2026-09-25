@@ -380,11 +380,11 @@ static void info_image(mi_image *im, const char *label) {
         mml_walk w;
         int rc = mml_walk_image(im, &w);
         if (rc != MML_OK)
-            printf("method-lists: not walked: %s\n", w.why);
+            printf("objc-methods: not walked: %s\n", w.why);
         else if (w.relative + w.absolute == 0)
-            printf("method-lists: none\n");
+            printf("objc-methods: none\n");
         else
-            printf("method-lists: %u relative, %u absolute\n", w.relative, w.absolute);
+            printf("objc-methods: %u relative, %u absolute\n", w.relative, w.absolute);
         mml_walk_free(&w);
     }
 
