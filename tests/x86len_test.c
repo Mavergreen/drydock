@@ -8,6 +8,8 @@
  * images.
  */
 #include "x86len.h"
+#include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -46,6 +48,13 @@ static const struct xcase cases[] = {
     { "mov $imm32, %eax", 5, { 0xb8, D32 }, 5, -1, -1, 0, 4 },
     { "mov $imm32, %r8d (REX without W)", 6, { 0x41, 0xb8, D32 }, 6, -1, -1, 0, 4 },
     { "mov $imm16, %ax", 4, { 0x66, 0xb8, 0x01, 0x02 }, 4, -1, -1, 0, 2 },
+    { "cmp $imm32, %eax (3D)", 5, { 0x3d, D32 }, 5, -1, -1, 0, 4 },
+    { "push $imm32 (68)", 5, { 0x68, D32 }, 5, -1, -1, 0, 4 },
+    { "cmp $imm16, %ax (66 3D)", 4, { 0x66, 0x3d, 0x01, 0x02 }, 4, -1, -1, 0, 2 },
+    { "cmp $imm32, %rax (66 48 3D: REX.W outranks 66)", 7, { 0x66, 0x48, 0x3d, D32 }, 7, -1, -1, 0, 4 },
+    { "add $imm32, %rax (66 48 81: REX.W outranks 66)", 8, { 0x66, 0x48, 0x81, 0xc0, D32 }, 8, 3, -1, 0, 4 },
+    { "mov $imm32, %rax (66 48 C7: REX.W outranks 66)", 8, { 0x66, 0x48, 0xc7, 0xc0, D32 }, 8, 3, -1, 0, 4 },
+    { "mov x(%eip), %eax (67 and a ModRM)", 7, { 0x67, 0x8b, 0x05, D32 }, 7, 2, 3, 4, 0 },
     /* otool reads this as data16 and a 32-bit immediate; the CPU and LLVM do not. */
     { "a REX before a prefix counts for nothing", 5, { 0x48, 0x66, 0xb8, 0x01, 0x02 }, 5, -1, -1, 0, 2 },
     { "mov moffs64, %eax", 9, { 0xa1, D32, D32 }, 9, -1, 1, 8, 0 },
@@ -92,6 +101,12 @@ static const struct xcase cases[] = {
     { "into (CE)", 1, { 0xce }, 0, 0, 0, 0, 0 },
     { "int1 (F1)", 1, { 0xf1 }, 0, 0, 0, 0, 0 },
     { "ljmp ptr16:32 (EA)", 7, { 0xea, D32, 0x00, 0x00 }, 0, 0, 0, 0, 0 },
+    { "lcall ptr16:32 (9A)", 7, { 0x9a, D32, 0x00, 0x00 }, 0, 0, 0, 0, 0 },
+    { "mov %cr0 (0F 20: mod is ignored, not a RIP disp32)", 7, { 0x0f, 0x20, 0x05, D32 }, 0, 0, 0, 0, 0 },
+    { "extrq $2, $1 (66 0F 78: two imm8)", 6, { 0x66, 0x0f, 0x78, 0xc0, 0x01, 0x02 }, 0, 0, 0, 0, 0 },
+    { "xbegin rel16 (66 C7 F8)", 5, { 0x66, 0xc7, 0xf8, 0x01, 0x02 }, 0, 0, 0, 0, 0 },
+    { "sixteen prefixes", 16, { 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+                                0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66 }, 0, 0, 0, 0, 0 },
     { "0F 04", 2, { 0x0f, 0x04 }, 0, 0, 0, 0, 0 },
     { "FF /7", 2, { 0xff, 0xff }, 0, 0, 0, 0, 0 },
     { "FE /2", 2, { 0xfe, 0x10 }, 0, 0, 0, 0, 0 },
@@ -129,12 +144,19 @@ static const uint8_t *at_page_end(const uint8_t *b, int n) {
     return pages + pg - n;
 }
 
+static sigjmp_buf guard_hit;
+static void on_guard(int sig) { siglongjmp(guard_hit, sig); }
+
 static void test_each_case(void) {
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         const struct xcase *c = &cases[i];
         const uint8_t *b = at_page_end(c->b, c->n);
         CHECK(b != NULL, "setup: a guard page");
         if (!b) return;
+        if (sigsetjmp(guard_hit, 1)) {
+            CHECK(0, "%s: read past avail", c->what);
+            continue;
+        }
         mx_insn in = { 99, 99, 99, 99, 99 };
         int ok = mx_decode(b, (size_t)c->n, &in);
         if (c->len == 0) {
@@ -155,12 +177,33 @@ static void test_each_case(void) {
 static void test_ignores_what_follows(void) {
     uint8_t b[8] = { 0x48, 0x8d, 0x05, 0x11, 0x22, 0x33, 0x44, 0xff };
     mx_insn in;
-    CHECK(mx_decode(b, sizeof b, &in) == 1 && in.len == 7, "a lea followed by more bytes is 7 bytes");
+    CHECK(mx_decode(b, sizeof b, &in) == 1 && in.len == 7 && in.immlen == 0,
+          "a lea followed by more bytes is 7 bytes, with no immediate");
+}
+
+/* An instruction is at most 15 bytes, so a run of prefixes is refused at the
+ * fifteenth without a look at the sixteenth, however much `avail` allows. */
+static void test_prefix_run_stops_at_fifteen(void) {
+    static const uint8_t fifteen[15] = { 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+                                         0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66 };
+    const uint8_t *b = at_page_end(fifteen, 15);
+    CHECK(b != NULL, "setup: a guard page");
+    if (!b) return;
+    if (sigsetjmp(guard_hit, 1)) {
+        CHECK(0, "fifteen prefixes: read a sixteenth byte");
+        return;
+    }
+    mx_insn in;
+    CHECK(mx_decode(b, 64, &in) == 0, "fifteen prefixes: decoded as %d bytes", in.len);
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    signal(SIGBUS, on_guard);
+    signal(SIGSEGV, on_guard);
     test_each_case();
     test_ignores_what_follows();
+    test_prefix_run_stops_at_fifteen();
     if (fails) { printf("x86len_test: %d FAILURE(S)\n", fails); return 1; }
     printf("x86len_test: all cases pass\n");
     return 0;

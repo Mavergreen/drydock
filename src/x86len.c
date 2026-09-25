@@ -20,8 +20,8 @@ static const char mx_map0[] =
     "bb2-XXbz3-2--1x-" "mmmmxxx-mmmmmmmm" "1111111144x1----" "pxpp--gG------mm";
 
 static const char mx_map1[] =
-    "mmmmx-----x-xm-x" "mmmmmmmmmmmmmmmm" "mmmmxxxxmmmmmmmm" "------x-SxUxxxxx"
-    "mmmmmmmmmmmmmmmm" "mmmmmmmmmmmmmmmm" "mmmmmmmmmmmmmmmm" "bbbbmmm-mmxxmmmm"
+    "mmmmx-----x-xm-x" "mmmmmmmmmmmmmmmm" "xxxxxxxxmmmmmmmm" "------x-SxUxxxxx"
+    "mmmmmmmmmmmmmmmm" "mmmmmmmmmmmmmmmm" "mmmmmmmmmmmmmmmm" "bbbbmmm-xmxxmmmm"
     "4444444444444444" "mmmmmmmmmmmmmmmm" "---mbmxx---mbmmm" "mmmmmmmmmmbmmmmm"
     "mmbmbbbm--------" "mmmmmmmmmmmmmmmm" "mmmmmmmmmmmmmmmm" "mmmmmmmmmmmmmmmm";
 _Static_assert(sizeof mx_map0 == 257 && sizeof mx_map1 == 257, "sixteen rows of sixteen");
@@ -65,7 +65,7 @@ int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
     mx_insn o = { 0, -1, -1, 0, 0 };
     int n = 0, opsize = 0, adsize = 0, rexw = 0;
     for (;; n++) {
-        if ((size_t)n >= avail) return 0;
+        if (n >= 15 || (size_t)n >= avail) return 0;
         uint8_t b = code[n];
         if (b == 0x66) opsize = 1;
         else if (b == 0x67) adsize = 1;
@@ -73,7 +73,7 @@ int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
                  b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) ;
         else if ((b & 0xF0) == 0x40) { rexw = (b & 8) != 0; continue; }
         else break;
-        rexw = 0;                    /* a REX counts only just before the opcode */
+        rexw = 0;
     }
     uint8_t op = code[n++];
     char c = mx_map0[op];
@@ -94,12 +94,13 @@ int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
         map = 1;
         if (c == 'S' || c == 'U') { n++; c = c == 'S' ? 'm' : 'b'; }
     }
-    int immz = opsize ? 2 : 4;
+    int immz = opsize && !rexw ? 2 : 4;
     switch (c) {
     case 'm': case 'b': case 'z': case 'g': case 'G':
         n = mx_modrm(code, avail, n, &o);
         if (n < 0) return 0;
         if (map == 0 && !mx_group_ok(op, code[o.modrm])) return 0;
+        if (map == 0 && op == 0xC7 && code[o.modrm] == 0xF8 && opsize) return 0;
         if (c == 'b') o.immlen = 1;
         if (c == 'z') o.immlen = immz;
         if (c == 'g' && ((code[o.modrm] >> 3) & 7) == 0) o.immlen = 1;
