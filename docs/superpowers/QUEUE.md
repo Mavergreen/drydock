@@ -32,7 +32,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
-| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | `plans/2026-09-25-header-references-m0.md` (M0), `plans/2026-09-25-header-references-m1.md` (M1) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
+| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | — | — | **bug, found 2026-09-25**, reproduced; see below |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 
