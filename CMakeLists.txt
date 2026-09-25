@@ -213,6 +213,15 @@ target_compile_options(x86len_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(x86len_test PRIVATE drydockcore)
 add_test(NAME x86len_test COMMAND x86len_test)
 
+# The same decoder against 10.9's otool, over every function of a corpus of
+# 10.9's own images. Local only: SKIPs (77) where otool or the corpus is absent.
+add_executable(x86len_oracle tests/x86len_oracle.c)
+target_compile_options(x86len_oracle PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(x86len_oracle PRIVATE drydockcore)
+add_test(NAME x86len_oracle_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/x86len_oracle_test.sh" "$<TARGET_FILE_DIR:x86len_oracle>")
+set_tests_properties(x86len_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
+
 # Hermetic tests for src/script.c's tokenizer: hand-written script text and
 # the field vector it must produce, so no fixture file is needed -- same
 # reasoning as trie_test. The quoting cases are exactly the shapes
