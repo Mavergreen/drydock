@@ -15,6 +15,7 @@
  *   clang -O2 -Wno-unused-function -o /tmp/mgtest grow_test.c && /tmp/mgtest
  */
 #include "grow.h"
+#include "hdrref.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1880,6 +1881,201 @@ static void test_grow_diagnostics_name_no_program(void) {
     free(buf);
 }
 
+/* ---- the header-reference scan (src/hdrref.h) ----
+ * Code bytes are hand-assembled here; each planted operand's disp32 is
+ * computed from where it sits, so the test states only the target. Filler is
+ * 0x90, which no scan can mistake for a RIP-relative ModRM (0x90 & 0xC7 is
+ * 0x80). */
+#define HR_BASE 0x100000000ull
+#define HR_CODE 0x100001000ull   /* the vm address each test's code loads at */
+#define HR_FOFF 0x1000u          /* ... and its file offset */
+
+struct hr_seen { mhr_cand c[8]; int n; int stop_after; };
+static int hr_record(const mhr_cand *c, void *ctx) {
+    struct hr_seen *s = (struct hr_seen *)ctx;
+    if (s->n < 8) s->c[s->n] = *c;
+    s->n++;
+    return s->stop_after && s->n >= s->stop_after;
+}
+
+/* `modrm`, then a disp32 that makes the target `target` for an operand
+ * followed by `immlen` bytes of immediate, at code[at]; code loads at `va`. */
+static void hr_plant(uint8_t *code, uint64_t va, uint32_t at, uint8_t modrm, int immlen,
+                     uint64_t target) {
+    uint64_t next = va + at + 1 + 4 + (uint64_t)immlen;
+    int32_t disp = (int32_t)(int64_t)(target - next);
+    code[at] = modrm;
+    memcpy(code + at + 1, &disp, sizeof disp);
+}
+
+static void test_scan_finds_every_immediate_length(void) {
+    uint8_t code[64];
+    static const uint8_t modrm[4] = { 0x05, 0x0d, 0x3d, 0x25 };  /* reg field 0, 1, 7, 4 */
+    static const int immlen[4] = { 0, 1, 2, 4 };
+    memset(code, 0x90, sizeof code);
+    for (int k = 0; k < 4; k++) hr_plant(code, HR_CODE, 2 + 12 * k, modrm[k], immlen[k], HR_BASE);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    uint64_t n = mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, hr_record, &s);
+    CHECK(n == 4 && s.n == 4, "scan: four planted forms, %llu reported (%d visited)",
+          (unsigned long long)n, s.n);
+    for (int k = 0; k < 4 && k < s.n; k++) {
+        CHECK(s.c[k].addr == HR_CODE + 3 + 12 * k && s.c[k].off == HR_FOFF + 3 + 12 * k,
+              "scan: immediate length %d: disp32 at %#llx (file %#llx), want %#llx (file %#llx)",
+              immlen[k], (unsigned long long)s.c[k].addr, (unsigned long long)s.c[k].off,
+              (unsigned long long)(HR_CODE + 3 + 12 * k), (unsigned long long)(HR_FOFF + 3 + 12 * k));
+        CHECK(s.c[k].immlen == immlen[k], "scan: candidate %d has immediate length %d, want %d",
+              k, s.c[k].immlen, immlen[k]);
+    }
+}
+
+/* The target must be the base exactly: the review found that everything that
+ * names the header names exactly the base, and nothing names a byte past it. */
+static void test_scan_ignores_a_target_one_byte_past_the_base(void) {
+    uint8_t code[16];
+    memset(code, 0x90, sizeof code);
+    hr_plant(code, HR_CODE, 2, 0x05, 0, HR_BASE + 1);
+    uint64_t n = mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, NULL, NULL);
+    CHECK(n == 0, "scan: a target one byte past the base is a candidate (%llu)",
+          (unsigned long long)n);
+}
+
+/* Only mod 00 with r/m 101 is RIP-relative. r/m 100 means a SIB byte follows,
+ * and mod 01, 10 or 11 with r/m 101 means [rbp + disp] or a register. Each of
+ * these is followed by four bytes that, read as a RIP-relative disp32, would
+ * name the base. */
+static void test_scan_ignores_forms_that_are_not_rip_relative(void) {
+    static const uint8_t modrm[] = { 0x04, 0x0c, 0x45, 0x85, 0xc5 };
+    for (size_t k = 0; k < sizeof modrm; k++) {
+        uint8_t code[16];
+        memset(code, 0x90, sizeof code);
+        hr_plant(code, HR_CODE, 2, modrm[k], 0, HR_BASE);
+        uint64_t n = mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, NULL, NULL);
+        CHECK(n == 0, "scan: ModRM %#04x is not RIP-relative, yet %llu reported", modrm[k],
+              (unsigned long long)n);
+    }
+}
+
+/* A disp32 must lie wholly inside the section; an immediate need not. The
+ * byte past the section completes, if it is read, a disp32 naming the base. */
+static void test_scan_stops_at_the_section_end(void) {
+    uint8_t code[24];
+    memset(code, 0x90, sizeof code);
+    hr_plant(code, HR_CODE, 15, 0x05, 4, HR_BASE);   /* disp32 is bytes 16-19 of 20 */
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    uint64_t n = mhr_scan_code(code, 20, HR_CODE, HR_FOFF, HR_BASE, hr_record, &s);
+    CHECK(n == 1 && s.n == 1 && s.c[0].addr == HR_CODE + 16,
+          "scan: a disp32 ending exactly at the section's end: %llu reported",
+          (unsigned long long)n);
+
+    memset(code, 0x90, sizeof code);
+    hr_plant(code, HR_CODE, 16, 0x05, 0, HR_BASE);   /* disp32 is bytes 17-20 of 20 */
+    n = mhr_scan_code(code, 20, HR_CODE, HR_FOFF, HR_BASE, NULL, NULL);
+    CHECK(n == 0, "scan: a disp32 that runs one byte past the section: %llu reported",
+          (unsigned long long)n);
+}
+
+/* A byte inside another instruction can look like a ModRM. The scan reports
+ * it: it may over-report, never under-report. Here 0x05 is the first byte of
+ * `mov $imm32, %eax`'s immediate. */
+static void test_scan_reports_a_lookalike_inside_another_instruction(void) {
+    uint8_t code[16];
+    memset(code, 0x90, sizeof code);
+    code[2] = 0xb8;                                   /* mov $imm32, %eax */
+    hr_plant(code, HR_CODE, 3, 0x05, 0, HR_BASE);
+    uint64_t n = mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, NULL, NULL);
+    CHECK(n == 1, "scan: a lookalike inside an immediate: %llu reported, want 1",
+          (unsigned long long)n);
+}
+
+static void test_scan_stops_when_asked(void) {
+    uint8_t code[32];
+    memset(code, 0x90, sizeof code);
+    hr_plant(code, HR_CODE, 2, 0x05, 0, HR_BASE);
+    hr_plant(code, HR_CODE, 12, 0x05, 0, HR_BASE);
+    struct hr_seen s = { { { 0 } }, 0, 1 };
+    uint64_t n = mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, hr_record, &s);
+    CHECK(n == 1 && s.n == 1 && s.c[0].addr == HR_CODE + 3,
+          "scan: a callback that stops at the first: %llu reported, %d visited",
+          (unsigned long long)n, s.n);
+}
+
+/* A PIE image, `HR_IMG_SIZE` bytes, whose __TEXT holds three sections of
+ * 0x90: __text (both instruction attributes, as ld64 writes it), __stubs
+ * (S_ATTR_SOME_INSTRUCTIONS only) and __const (neither). */
+#define HR_IMG_SIZE 0x2000u
+static uint8_t *build_code_image(void) {
+    static const struct { const char *name; uint32_t flags; uint32_t off; } s[3] = {
+        { "__text",  S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS, 0x1000 },
+        { "__stubs", S_SYMBOL_STUBS | S_ATTR_SOME_INSTRUCTIONS,           0x1400 },
+        { "__const", S_REGULAR,                                           0x1800 },
+    };
+    uint8_t *buf = (uint8_t *)calloc(1, HR_IMG_SIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    h->ncmds = 1;
+    struct segment_command_64 *tx = (struct segment_command_64 *)(h + 1);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + 3 * sizeof(struct section_64);
+    memcpy(tx->segname, "__TEXT", 6);
+    tx->vmaddr = HR_BASE;
+    tx->vmsize = tx->filesize = HR_IMG_SIZE;
+    tx->nsects = 3;
+    h->sizeofcmds = tx->cmdsize;
+    struct section_64 *sc = (struct section_64 *)(tx + 1);
+    for (int k = 0; k < 3; k++) {
+        strncpy(sc[k].sectname, s[k].name, sizeof sc[k].sectname);
+        memcpy(sc[k].segname, "__TEXT", 6);
+        sc[k].addr = HR_BASE + s[k].off;
+        sc[k].size = 0x100;
+        sc[k].offset = s[k].off;
+        sc[k].flags = s[k].flags;
+        memset(buf + s[k].off, 0x90, 0x100);
+    }
+    return buf;
+}
+
+static void test_scan_reads_every_instruction_section_and_no_other(void) {
+    uint8_t *buf = build_code_image();
+    hr_plant(buf + 0x1000, HR_BASE + 0x1000, 0x20, 0x05, 0, HR_BASE);
+    hr_plant(buf + 0x1400, HR_BASE + 0x1400, 0x30, 0x05, 0, HR_BASE);
+    hr_plant(buf + 0x1800, HR_BASE + 0x1800, 0x40, 0x05, 0, HR_BASE);   /* data: not scanned */
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    int64_t n = mhr_scan(buf, HR_IMG_SIZE, HR_BASE, hr_record, &s);
+    CHECK(n == 2 && s.n == 2, "image scan: %lld candidates, want __text's and __stubs'", (long long)n);
+    if (s.n == 2) {
+        CHECK(s.c[0].addr == HR_BASE + 0x1021 && s.c[0].off == 0x1021,
+              "image scan: __text's at %#llx (file %#llx)",
+              (unsigned long long)s.c[0].addr, (unsigned long long)s.c[0].off);
+        CHECK(s.c[1].addr == HR_BASE + 0x1431 && s.c[1].off == 0x1431,
+              "image scan: __stubs' at %#llx (file %#llx)",
+              (unsigned long long)s.c[1].addr, (unsigned long long)s.c[1].off);
+    }
+    struct hr_seen first = { { { 0 } }, 0, 1 };
+    n = mhr_scan(buf, HR_IMG_SIZE, HR_BASE, hr_record, &first);
+    CHECK(n == 1 && first.n == 1, "image scan: a callback that stops at __text's went on "
+          "to %d", first.n);
+    free(buf);
+}
+
+/* An instruction section whose bytes the file does not hold cannot be
+ * scanned, so nothing can be said about it. */
+static void test_scan_refuses_an_instruction_section_past_the_image(void) {
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    sc[1].size = HR_IMG_SIZE;                         /* __stubs: 0x1400 + 0x2000 > 0x2000 */
+    CHECK(mhr_scan(buf, HR_IMG_SIZE, HR_BASE, NULL, NULL) == -1,
+          "image scan: an instruction section past the end of the image was scanned");
+    sc[1].offset = 0;                                 /* no file data, whatever its size */
+    sc[1].size = 2 * HR_IMG_SIZE;
+    CHECK(mhr_scan(buf, HR_IMG_SIZE, HR_BASE, NULL, NULL) == 0,
+          "image scan: an instruction section with no file data was not skipped");
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -1928,6 +2124,14 @@ int main(void) {
     test_grow_refuses_an_image_with_no_section_data();
     test_grow_refuses_a_section_past_the_image();
     test_grow_diagnostics_name_no_program();
+    test_scan_finds_every_immediate_length();
+    test_scan_ignores_a_target_one_byte_past_the_base();
+    test_scan_ignores_forms_that_are_not_rip_relative();
+    test_scan_stops_at_the_section_end();
+    test_scan_reports_a_lookalike_inside_another_instruction();
+    test_scan_stops_when_asked();
+    test_scan_reads_every_instruction_section_and_no_other();
+    test_scan_refuses_an_instruction_section_past_the_image();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
