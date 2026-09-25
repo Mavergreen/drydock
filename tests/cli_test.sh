@@ -3514,8 +3514,7 @@ mts "$T/swift_retagged" "swift-abi set legacy" >/dev/null 2>&1 \
     || bad "info swift-abi after retag" "still reports tagged records"
 
 # ---- info: the method-lists line ------------------------------------------
-# tests/mkrelmeth.c writes tests/relmeth_fixture.h's hand-built image; no
-# linker on a 10.9 host emits relative method lists.
+# tests/mkrelmeth.c writes tests/relmeth_fixture.h's hand-built image.
 "$CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
 for v in plain chained abscat oob; do "$T/mkrelmeth" make "$v" "$T/relmeth_$v"; done
 info_ml() { "$DRYDOCK_MACHO_REWRITE" info "$1" 2>/dev/null | grep '^method-lists: ' || true; }

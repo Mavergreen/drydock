@@ -265,7 +265,7 @@ target_link_libraries(relations_test PRIVATE drydockcore)
 add_test(NAME relations_test COMMAND relations_test)
 
 # Hermetic tests for src/objc_meth.c, against tests/relmeth_fixture.h's
-# hand-built image, since no 10.9 linker emits relative method lists.
+# hand-built image.
 add_executable(objc_meth_test tests/objc_meth_test.c)
 target_compile_options(objc_meth_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(objc_meth_test PRIVATE drydockcore)
