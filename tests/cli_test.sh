@@ -2649,6 +2649,10 @@ echo "$fat_sects" | awk '{exit !($1 > 0 && $1 == $2)}' \
     && ok "info fat: a swift-abi line per slice" \
     || bad "info fat" "wanted 2 swift-abi lines, got $(grep -c '^swift-abi: ' "$T/fat.out")"
 
+[ "$(grep -c '^objc-methods: ' "$T/fat.out")" -eq 2 ] \
+    && ok "info fat: an objc-methods line per slice" \
+    || bad "info fat" "wanted 2 objc-methods lines, got $(grep -c '^objc-methods: ' "$T/fat.out")"
+
 rc=0; "$DRYDOCK_MACHO_REWRITE" info --thin "$T/info_fat" >"$T/fatthin.out" 2>"$T/fatthin.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "info --thin: a fat container is refused (1)" \
     || bad "info --thin fat" "did not exit 1 (got $rc)"
@@ -3508,6 +3512,36 @@ mts "$T/swift_retagged" "swift-abi set legacy" >/dev/null 2>&1 \
     | grep -qxF 'swift-abi: no class records carry the stable-ABI tag' \
     && ok "info: the tag is gone after swift-abi set legacy" \
     || bad "info swift-abi after retag" "still reports tagged records"
+
+# ---- info: the objc-methods line ------------------------------------------
+# tests/mkrelmeth.c writes tests/relmeth_fixture.h's hand-built image.
+"$CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
+for v in plain chained abscat oob; do "$T/mkrelmeth" make "$v" "$T/relmeth_$v"; done
+info_ml() { "$DRYDOCK_MACHO_REWRITE" info "$1" 2>/dev/null | grep '^objc-methods: ' || true; }
+
+[ "$(info_ml "$T/signing_probe")" = "objc-methods: none" ] \
+    && ok "info: an image with no Objective-C says objc-methods: none" \
+    || bad "info objc-methods none" "got: '$(info_ml "$T/signing_probe")'"
+[ "$(info_ml "$T/swift_fixture")" = "objc-methods: none" ] \
+    && ok "info: class records naming no method list say none" \
+    || bad "info objc-methods swift" "got: '$(info_ml "$T/swift_fixture")'"
+[ "$(info_ml "$T/relmeth_plain")" = "objc-methods: 4 relative, 0 absolute" ] \
+    && ok "info: counts the relative lists of a class, metaclass, category and protocol" \
+    || bad "info objc-methods plain" "got: '$(info_ml "$T/relmeth_plain")'"
+[ "$(info_ml "$T/relmeth_abscat")" = "objc-methods: 3 relative, 1 absolute" ] \
+    && ok "info: counts absolute lists apart" \
+    || bad "info objc-methods abscat" "got: '$(info_ml "$T/relmeth_abscat")'"
+[ "$(info_ml "$T/relmeth_chained")" = "objc-methods: not walked: the image has chained fixups; fixups set classic first" ] \
+    && ok "info: a chained image says why it was not walked" \
+    || bad "info objc-methods chained" "got: '$(info_ml "$T/relmeth_chained")'"
+case "$(info_ml "$T/relmeth_oob")" in
+    "objc-methods: not walked: "*"runs past its segment") ok "info: an unreadable list is named" ;;
+    *) bad "info objc-methods oob" "got: '$(info_ml "$T/relmeth_oob")'" ;;
+esac
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/relmeth_oob" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] \
+    && ok "info: an unreadable method list is an answer, not a failure of info (0)" \
+    || bad "info objc-methods oob exit" "exited $rc"
 
 # ON A CHAINED IMAGE THE CLASS-RECORD POINTERS ARE CHAIN LINKS, which the
 # walk cannot follow: info says so, and swift-abi set legacy refuses rather
