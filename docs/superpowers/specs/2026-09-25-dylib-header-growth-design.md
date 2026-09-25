@@ -432,7 +432,23 @@ and tests, and ships before the rest. The leading-zero fix covers
 
 The item 29 reproduction now grows and runs.
 
-**M2: the raise route.** This covers:
+**M2: the raise route.** It also carries two items M1's final review
+handed on (2026-09-25):
+
+- **Enforce the one rule's strictly-inside refusal on both routes.** A RIP
+  target, rebase value or symbol strictly inside (base, base + F) must
+  refuse. M0 and M1 enforce only the exact-base case; `mhr_code` takes an
+  exact target. Give the scan a range (lo, hi) and report each candidate's
+  target. None of the 1,059 x86_64 executables on this host has such a
+  target, but a `movl __mh_execute_header+16(%rip)` grows silently wrong.
+- **Interfaces to generalise:** `mg_verify_refs` scans for "the old base",
+  which equals "new base + G" only on the executable route; on the raise
+  route the snapshot's base is the new base. Write it as new base + G. The
+  repair loop in `mg_grow_header` is inline and needs factoring;
+  `mhr_confirm` is hard-wired to the exact base; the snapshot carries no
+  delta or G (check 1).
+
+This covers:
 
 - Decisions 1, 2, 4, 5, 6, 7 and 8;
 - `mg_classify`'s route argument;
