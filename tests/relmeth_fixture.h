@@ -15,7 +15,7 @@
 #define LC_DYLD_CHAINED_FIXUPS 0x80000034
 #endif
 
-#define RMF_SIZE         0x2100u
+#define RMF_SIZE         0x2200u
 #define RMF_VMBASE       0x100000000ULL
 #define RMF_VA(off)      (RMF_VMBASE + (uint64_t)(off))
 
@@ -53,11 +53,13 @@
 
 #define RMF_DATA_TAIL    0x1ff0u   /* __DATA's last 16 file bytes */
 #define RMF_LINKEDIT     0x2000u
-#define RMF_LINKEDIT_SIZE 0x100u
+#define RMF_LINKEDIT_SIZE 0x200u
 #define RMF_REBASE       0x2000u
 #define RMF_SYMS         0x2080u
 #define RMF_STRS         0x20a0u
 #define RMF_CHAINED_BLOB 0x20c0u
+#define RMF_BIND_BLOB    0x2100u
+#define RMF_FSTARTS_BLOB 0x2120u
 
 enum {
     RMF_PLAIN    = 0,
@@ -77,7 +79,11 @@ enum {
                               * metaclass and whose data word names the class's ro */
     RMF_CATPAST  = 1u << 11, /* the catlist entry names RMF_DATA_TAIL */
     RMF_PROTOPAST = 1u << 12, /* the protolist entry names RMF_DATA_TAIL */
-    RMF_METAOUT  = 1u << 13  /* the class's isa names the address just past the file */
+    RMF_METAOUT  = 1u << 13, /* the class's isa names the address just past the file */
+    RMF_SELBIND  = 1u << 14, /* the second selector reference is bound, not rebased */
+    RMF_FSTARTS  = 1u << 15, /* LC_FUNCTION_STARTS names all four implementations */
+    RMF_FSBAD    = 1u << 16, /* LC_FUNCTION_STARTS leaves out list C's implementation */
+    RMF_NOSLOTRB = 1u << 17  /* the class ro's baseMethods slot carries no rebase */
 };
 
 static inline void rmf_name16(char *f, const char *s) {
@@ -148,8 +154,9 @@ static inline uint32_t rmf_rebase_slots(unsigned v, uint32_t *out) {
     out[n++] = RMF_PROTOLIST - RMF_DATA;
     if (v & RMF_ALLSLOTS)
         for (uint32_t i = 0; i < 2; i++) out[n++] = RMF_NLCATLIST + 8 * i - RMF_DATA;
-    for (uint32_t i = 0; i < 4; i++) out[n++] = RMF_SELREFS - RMF_DATA + 8 * i;
-    out[n++] = RMF_CLASS_RO + 32 - RMF_DATA;
+    for (uint32_t i = 0; i < 4; i++)
+        if (i != 1 || !(v & RMF_SELBIND)) out[n++] = RMF_SELREFS - RMF_DATA + 8 * i;
+    if (!(v & RMF_NOSLOTRB)) out[n++] = RMF_CLASS_RO + 32 - RMF_DATA;
     out[n++] = RMF_META_RO + 32 - RMF_DATA;
     if (v & RMF_ABSCAT)
         for (uint32_t i = 0; i < 3; i++) out[n++] = RMF_ABS_C + 8 + 8 * i - RMF_DATA;
@@ -182,6 +189,21 @@ static inline uint32_t rmf_rebases(uint8_t *b, unsigned v) {
     }
     b[at++] = REBASE_OPCODE_DONE;
     return at - RMF_REBASE;
+}
+
+/* Binds the second selector reference to _rmf_sel from ordinal 1. */
+static inline uint32_t rmf_binds(uint8_t *b) {
+    uint32_t at = RMF_BIND_BLOB;
+    b[at++] = BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1;
+    b[at++] = BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM;
+    memcpy(b + at, "_rmf_sel", 9);
+    at += 9;
+    b[at++] = BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER;
+    b[at++] = BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+    at += rmf_uleb(b + at, RMF_SELREFS + 8 - RMF_DATA);
+    b[at++] = BIND_OPCODE_DO_BIND;
+    b[at++] = BIND_OPCODE_DONE;
+    return at - RMF_BIND_BLOB;
 }
 
 /* Lays the image out in b[0, RMF_SIZE) and returns RMF_SIZE. */
@@ -230,8 +252,9 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
     rmf_put32(b, RMF_LIST_A, (v & RMF_BADENT) ? 0x80000010u
                            : (v & RMF_DIRECT) ? (RMF_REL_HEADER | 0x40000000u) : RMF_REL_HEADER);
     rmf_put32(b, RMF_LIST_A + 4, 2);
-    rmf_rel_entry(b, RMF_LIST_A + 8,  RMF_SELREFS + 0, RMF_TEXT + 0);
-    rmf_rel_entry(b, RMF_LIST_A + 20, RMF_SELREFS + 8, RMF_TEXT + 4);
+    /* beta before alpha: descending, so a conversion that sorts is caught */
+    rmf_rel_entry(b, RMF_LIST_A + 8,  RMF_SELREFS + 8, RMF_TEXT + 0);
+    rmf_rel_entry(b, RMF_LIST_A + 20, RMF_SELREFS + 0, RMF_TEXT + 4);
     rmf_put32(b, RMF_LIST_B, RMF_REL_HEADER);
     rmf_put32(b, RMF_LIST_B + 4, (v & RMF_OOB) ? 0x10000000u : 1);
     rmf_rel_entry(b, RMF_LIST_B + 8, RMF_SELREFS + 16, RMF_TEXT + 8);
@@ -287,6 +310,10 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         struct dyld_info_command *di = rmf_lc(b, &at, LC_DYLD_INFO_ONLY, sizeof *di);
         di->rebase_off = RMF_REBASE;
         di->rebase_size = (rmf_rebases(b, v) + 7) & ~7u;
+        if (v & RMF_SELBIND) {
+            di->bind_off = RMF_BIND_BLOB;
+            di->bind_size = (rmf_binds(b) + 7) & ~7u;
+        }
     }
     {
         struct symtab_command *st = rmf_lc(b, &at, LC_SYMTAB, sizeof *st);
@@ -303,6 +330,14 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         struct linkedit_data_command *cf = rmf_lc(b, &at, LC_DYLD_CHAINED_FIXUPS, sizeof *cf);
         cf->dataoff = RMF_CHAINED_BLOB;
         cf->datasize = 0x20;
+    }
+    if (v & (RMF_FSTARTS | RMF_FSBAD)) {
+        static const uint8_t all[] = { 0x80, 0x10, 4, 4, 4, 0 }, bad[] = { 0x80, 0x10, 4, 4, 0 };
+        struct linkedit_data_command *fs = rmf_lc(b, &at, LC_FUNCTION_STARTS, sizeof *fs);
+        fs->dataoff = RMF_FSTARTS_BLOB;
+        fs->datasize = 8;
+        if (v & RMF_FSBAD) memcpy(b + RMF_FSTARTS_BLOB, bad, sizeof bad);
+        else               memcpy(b + RMF_FSTARTS_BLOB, all, sizeof all);
     }
     return RMF_SIZE;
 }

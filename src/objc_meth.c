@@ -6,9 +6,10 @@
 #include <mach-o/loader.h>
 
 #include "objc_meth.h"
+#include "grow.h"
+#include "ordinals.h"
 #include "mach_compat.h"
 
-#define MML_MAX_SEGS   64
 #define MML_DATA_MASK  0x00007ffffffffff8ULL
 #define MML_CLASS_ISA   0
 #define MML_CLASS_DATA 32
@@ -273,4 +274,250 @@ void mml_walk_free(mml_walk *w) {
     free(w->refs);
     w->refs = NULL;
     w->n = w->cap = 0;
+}
+
+/* ---- resolving entries ---------------------------------------------------- */
+
+static int mml_rfail(char *why, size_t whysz, int code, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static int mml_rfail(char *why, size_t whysz, int code, const char *fmt, ...) {
+    va_list ap;
+    if (why && whysz) {
+        va_start(ap, fmt);
+        vsnprintf(why, whysz, fmt, ap);
+        va_end(ap);
+    }
+    return code;
+}
+
+typedef struct {
+    mml_resolver *r;
+    const struct dyld_info_command *di;
+    const struct linkedit_data_command *fs;
+    int err;
+} mml_open_ctx;
+
+static int mml_open_lc(const struct load_command *lc, void *ctx_) {
+    mml_open_ctx *c = ctx_;
+    mml_resolver *r = c->r;
+    if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
+        c->di = (const struct dyld_info_command *)lc;
+    } else if (lc->cmd == LC_FUNCTION_STARTS) {
+        c->fs = (const struct linkedit_data_command *)lc;
+    } else if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
+        const struct section_64 *s = (const struct section_64 *)(sc + 1);
+        if (r->nsegs == MML_MAX_SEGS) { c->err = MML_MALFORMED; return 1; }
+        r->segs[r->nsegs].vmaddr = sc->vmaddr;
+        r->segs[r->nsegs].vmsize = sc->vmsize;
+        r->segs[r->nsegs].fileoff = sc->fileoff;
+        r->segs[r->nsegs].filesize = sc->filesize;
+        r->nsegs++;
+        if (sc->nsects) {
+            mml_sect *p = realloc(r->sects, (r->nsects + sc->nsects) * sizeof *p);
+            if (!p) { c->err = MML_NOMEM; return 1; }
+            r->sects = p;
+            for (uint32_t k = 0; k < sc->nsects; k++, r->nsects++) {
+                p[r->nsects].addr = s[k].addr;
+                p[r->nsects].size = s[k].size;
+                p[r->nsects].offset = s[k].offset;
+                p[r->nsects].flags = s[k].flags;
+            }
+        }
+    }
+    return 0;
+}
+
+static void mml_note_bind(const mo_bind_state *st, void *ctx_) {
+    mml_open_ctx *c = ctx_;
+    uint64_t off = st->offset;
+    if (c->err || st->seg < 0 || st->seg > 255) return;
+    for (uint64_t k = 0; k < st->count && !c->err; k++, off += 8 + st->skip)
+        if (mrb_add(&c->r->binds, (uint8_t)st->seg, 0, off) != 0) c->err = MML_NOMEM;
+}
+
+static int mml_fits(uint64_t off, uint64_t len, size_t size) {
+    return off <= size && len <= size - off;
+}
+
+int mml_resolver_open(const mi_image *im, mml_resolver *r, char *why, size_t whysz) {
+    mml_open_ctx c;
+    int rc;
+    memset(r, 0, sizeof *r);
+    memset(&c, 0, sizeof c);
+    r->im = im;
+    r->nstarts = -1;
+    c.r = r;
+    mi_each_lc(im, mml_open_lc, &c);
+    if (c.err == MML_NOMEM) {
+        mml_resolver_close(r);
+        return mml_rfail(why, whysz, MML_NOMEM, "out of memory");
+    }
+    if (c.err) {
+        mml_resolver_close(r);
+        return mml_rfail(why, whysz, MML_MALFORMED, "more than %d segments", MML_MAX_SEGS);
+    }
+    if (c.di && c.di->rebase_size) {
+        if (!mml_fits(c.di->rebase_off, c.di->rebase_size, im->size)) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_MALFORMED, "the rebase stream lies outside the file");
+        }
+        rc = mrb_decode(im->buf + c.di->rebase_off, c.di->rebase_size, r->nsegs, &r->rebases,
+                        why, whysz);
+        if (rc != MRB_OK) {
+            mml_resolver_close(r);
+            return rc == MRB_NOMEM ? MML_NOMEM : MML_MALFORMED;
+        }
+    }
+    if (c.di && c.di->bind_size) {
+        if (!mml_fits(c.di->bind_off, c.di->bind_size, im->size) ||
+            mo_bind_observe(im->buf + c.di->bind_off, c.di->bind_size, "bind",
+                            mml_note_bind, &c) != 0) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_MALFORMED, "the bind stream does not decode");
+        }
+        if (c.err) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_NOMEM, "out of memory");
+        }
+    }
+    mrb_sort(&r->rebases);
+    mrb_sort(&r->binds);
+    if (c.fs && c.fs->datasize) {
+        uint64_t base;
+        int n;
+        if (!mml_fits(c.fs->dataoff, c.fs->datasize, im->size) || mi_image_base(im, &base) != 0) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_MALFORMED, "LC_FUNCTION_STARTS lies outside the file");
+        }
+        if (!(r->starts = malloc((size_t)c.fs->datasize * sizeof *r->starts))) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_NOMEM, "out of memory");
+        }
+        n = mg_funcstarts_decode(im->buf + c.fs->dataoff, c.fs->datasize, base, r->starts,
+                                 (int)c.fs->datasize);
+        if (n < 0) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_MALFORMED, "LC_FUNCTION_STARTS does not decode");
+        }
+        r->nstarts = n ? n : -1;
+    }
+    return MML_OK;
+}
+
+void mml_resolver_close(mml_resolver *r) {
+    free(r->sects);
+    free(r->starts);
+    mrb_free(&r->rebases);
+    mrb_free(&r->binds);
+    r->sects = NULL;
+    r->starts = NULL;
+    r->nsects = 0;
+}
+
+int mml_seg_of(const mml_resolver *r, uint64_t va, uint64_t len) {
+    for (int i = 0; i < r->nsegs; i++) {
+        uint64_t rel = va - r->segs[i].vmaddr;
+        if (va < r->segs[i].vmaddr || rel >= r->segs[i].filesize) continue;
+        if (len > r->segs[i].filesize - rel ||
+            !mml_fits(r->segs[i].fileoff + rel, len, r->im->size)) return -1;
+        return i;
+    }
+    return -1;
+}
+
+int mml_off_rebased(const mml_resolver *r, uint64_t off) {
+    for (int i = 0; i < r->nsegs; i++)
+        if (off >= r->segs[i].fileoff && off - r->segs[i].fileoff < r->segs[i].filesize)
+            return mrb_has(&r->rebases, (uint8_t)i, off - r->segs[i].fileoff);
+    return 0;
+}
+
+/* Like mrb_has, but only for a slot rebased as REBASE_TYPE_POINTER: a
+ * selector reference is loaded and dereferenced whole, so a rebase that
+ * dyld would write as a narrower fixup (REBASE_TYPE_TEXT_ABSOLUTE32, which
+ * mrb_decode now also accepts) at the same (seg, off) is not good enough --
+ * mrb_has alone can't tell the two apart. */
+static int mml_pointer_rebased(const mml_resolver *r, uint8_t seg, uint64_t off) {
+    const mrb_slot *v = r->rebases.v;
+    size_t n = r->rebases.n, lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (v[mid].seg < seg || (v[mid].seg == seg && v[mid].off < off)) lo = mid + 1;
+        else hi = mid;
+    }
+    for (; lo < n && v[lo].seg == seg && v[lo].off == off; lo++)
+        if (v[lo].type == REBASE_TYPE_POINTER) return 1;
+    return 0;
+}
+
+static const mml_sect *mml_sect_at(const mml_resolver *r, uint64_t va) {
+    for (uint32_t k = 0; k < r->nsects; k++)
+        if (va >= r->sects[k].addr && va - r->sects[k].addr < r->sects[k].size) return &r->sects[k];
+    return NULL;
+}
+
+static int mml_cstring(const mml_resolver *r, uint64_t va) {
+    const mml_sect *s = mml_sect_at(r, va);
+    if (!s || (s->flags & SECTION_TYPE) != S_CSTRING_LITERALS || !s->offset ||
+        !mml_fits(s->offset, s->size, r->im->size)) return 0;
+    return memchr(r->im->buf + s->offset + (va - s->addr), 0, s->size - (va - s->addr)) != NULL;
+}
+
+int mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entry *e,
+                 char *why, size_t whysz) {
+    const uint8_t *buf = r->im->buf;
+    if (!(ref->header & MML_RELATIVE)) {
+        const uint8_t *p = buf + ref->list_off + 8 + (uint64_t)MML_ABS_ENTSIZE * i;
+        memcpy(&e->name, p, 8);
+        memcpy(&e->types, p + 8, 8);
+        memcpy(&e->imp, p + 16, 8);
+        return MML_OK;
+    }
+    uint64_t va = ref->list_va + 8 + (uint64_t)MML_REL_ENTSIZE * i;
+    int32_t d[3];
+    memcpy(d, buf + ref->list_off + 8 + (uint64_t)MML_REL_ENTSIZE * i, sizeof d);
+    uint64_t slot = va + (uint64_t)(int64_t)d[0];
+    uint64_t types = va + 4 + (uint64_t)(int64_t)d[1];
+    uint64_t imp = d[2] ? va + 8 + (uint64_t)(int64_t)d[2] : 0;
+    const unsigned long long lva = (unsigned long long)ref->list_va;
+    int si;
+
+    if (slot & 7)
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
+                         "a selector reference at 0x%llx, which is not 8-byte aligned",
+                         i, lva, (unsigned long long)slot);
+    if ((si = mml_seg_of(r, slot, 8)) < 0)
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
+                         "a selector reference at 0x%llx, which lies outside the file",
+                         i, lva, (unsigned long long)slot);
+    uint64_t rel = slot - r->segs[si].vmaddr;
+    if (!mml_pointer_rebased(r, (uint8_t)si, rel))
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
+                         "the selector reference at 0x%llx, which %s", i, lva, (unsigned long long)slot,
+                         mrb_has(&r->binds, (uint8_t)si, rel)
+                             ? "is bound to another image, so its name is not in this one"
+                             : "carries no rebase");
+    memcpy(&e->name, buf + r->segs[si].fileoff + rel, 8);
+    if (!mml_cstring(r, e->name))
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx: the "
+                         "selector reference at 0x%llx holds 0x%llx, which is not a C string",
+                         i, lva, (unsigned long long)slot, (unsigned long long)e->name);
+    if (!mml_cstring(r, types))
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx: its "
+                         "types at 0x%llx are not a C string", i, lva, (unsigned long long)types);
+    if (imp) {
+        const mml_sect *s = mml_sect_at(r, imp);
+        if (!s || !(s->flags & (S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS)))
+            return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx: "
+                             "its implementation at 0x%llx is not in a section of instructions",
+                             i, lva, (unsigned long long)imp);
+        if (r->nstarts > 0 && !mg_addr_known(r->starts, r->nstarts, imp))
+            return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx: "
+                             "its implementation at 0x%llx is not one of the %d function starts "
+                             "in LC_FUNCTION_STARTS", i, lva, (unsigned long long)imp, r->nstarts);
+    }
+    e->types = types;
+    e->imp = imp;
+    return MML_OK;
 }

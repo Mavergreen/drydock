@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "image.h"
+#include "rebase.h"
 
 #define MML_RELATIVE    0x80000000u
 #define MML_FLAG_MASK   0xFFFF0003u
@@ -40,5 +41,50 @@ typedef struct {
  * w->refs NULL and every count zero. */
 int  mml_walk_image(const mi_image *im, mml_walk *w);
 void mml_walk_free(mml_walk *w);
+
+/* One method, as the 10.9 runtime reads an absolute entry: the selector's
+ * name string, the type string and the implementation (0 for none), each an
+ * unslid address in the image. */
+typedef struct { uint64_t name, types, imp; } mml_entry;
+
+#define MML_MAX_SEGS 64
+
+typedef struct { uint64_t addr, size; uint32_t offset, flags; } mml_sect;
+
+/* What resolving an entry consults, gathered once per image: the segments
+ * in load-command order, every section, the rebase stream's slots and the
+ * bind stream's (both sorted), and LC_FUNCTION_STARTS' addresses when the
+ * image lists any. */
+typedef struct {
+    const mi_image *im;
+    struct { uint64_t vmaddr, vmsize, fileoff, filesize; } segs[MML_MAX_SEGS];
+    int       nsegs;
+    mml_sect *sects;
+    uint32_t  nsects;
+    mrb_set   rebases, binds;
+    uint64_t *starts;
+    int       nstarts;       /* -1 when there is nothing to check an IMP against */
+} mml_resolver;
+
+/* MML_OK, or MML_MALFORMED / MML_NOMEM with why set and nothing to close.
+ * An image with no LC_DYLD_INFO[_ONLY] opens with empty rebase and bind sets. */
+int  mml_resolver_open(const mi_image *im, mml_resolver *r, char *why, size_t whysz);
+void mml_resolver_close(mml_resolver *r);
+
+/* Entry `i` of the list `ref` names. An absolute entry is read. A relative
+ * one is resolved and checked: its selector reference is 8-byte aligned,
+ * file-backed and rebased as a pointer, and holds the address of a string
+ * NUL-terminated within an S_CSTRING_LITERALS section; its types are such a
+ * string; its IMP is 0, or lies in a section of instructions and, when the
+ * image lists function starts, is one. MML_OK, or MML_MALFORMED with why
+ * set. */
+int  mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entry *e,
+                  char *why, size_t whysz);
+
+/* The segment whose file bytes hold [va, va + len), or -1. */
+int  mml_seg_of(const mml_resolver *r, uint64_t va, uint64_t len);
+
+/* 1 when the 8 bytes at file offset `off` carry a rebase, of any type. */
+int  mml_off_rebased(const mml_resolver *r, uint64_t off);
 
 #endif
