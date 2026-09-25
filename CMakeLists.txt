@@ -63,7 +63,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c)
 target_include_directories(drydockcore PUBLIC src)
 target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
@@ -204,6 +204,23 @@ add_executable(trie_test tests/trie_test.c)
 target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE drydockcore)
 add_test(NAME trie_test COMMAND trie_test)
+
+# Hermetic tests for src/x86len.c's instruction-length decoder: hand-assembled
+# instructions and where their operands lie. tests/x86len_oracle_test.sh
+# checks the same decoder against otool over real images.
+add_executable(x86len_test tests/x86len_test.c)
+target_compile_options(x86len_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(x86len_test PRIVATE drydockcore)
+add_test(NAME x86len_test COMMAND x86len_test)
+
+# The same decoder against 10.9's otool, over every function of a corpus of
+# 10.9's own images. Local only: SKIPs (77) where otool or the corpus is absent.
+add_executable(x86len_oracle tests/x86len_oracle.c)
+target_compile_options(x86len_oracle PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(x86len_oracle PRIVATE drydockcore)
+add_test(NAME x86len_oracle_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/x86len_oracle_test.sh" "$<TARGET_FILE_DIR:x86len_oracle>")
+set_tests_properties(x86len_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # Hermetic tests for src/script.c's tokenizer: hand-written script text and
 # the field vector it must produce, so no fixture file is needed -- same
