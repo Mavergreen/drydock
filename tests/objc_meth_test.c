@@ -90,6 +90,18 @@ static void test_a_class_listed_twice_is_walked_once(void) {
     mml_walk_free(&w);
 }
 
+static void test_a_slot_two_classes_share_is_recorded_once(void) {
+    mml_walk w;
+    int rc = walk(RMF_SHAREDRO, &w);
+    CHECK(rc == MML_OK, "sharedro: rc %d (%s)", rc, w.why);
+    CHECK(count_of(&w, MML_CLASS) == 1, "sharedro: %u class refs, want 1", count_of(&w, MML_CLASS));
+    CHECK(w.owners[MML_CLASS] == 2 && w.owners[MML_METACLASS] == 1,
+          "sharedro: %u classes, %u metaclasses walked; want 2, 1",
+          w.owners[MML_CLASS], w.owners[MML_METACLASS]);
+    CHECK(w.n == 4, "sharedro: %u slots, want 4", w.n);
+    mml_walk_free(&w);
+}
+
 static void test_refusal(unsigned variant, int want_rc, const char *want_why, const char *label) {
     mml_walk w;
     int rc = walk(variant, &w);
@@ -181,6 +193,7 @@ int main(void) {
     test_metaclass_is_reached_through_isa();
     test_swift_tag_bits_do_not_hide_the_ro();
     test_a_class_listed_twice_is_walked_once();
+    test_a_slot_two_classes_share_is_recorded_once();
     test_refusals();
     test_category_and_protocol_lists();
     test_a_shared_list_counts_once();
