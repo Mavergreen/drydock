@@ -2076,6 +2076,135 @@ static void test_scan_refuses_an_instruction_section_past_the_image(void) {
     free(buf);
 }
 
+/* ---- a grow warns of code that addresses its own header ----
+ * Lowering the base moves the header down by the grow while the code stays
+ * put, so `lea __mh_execute_header(%rip)` then names a byte that far past
+ * it, and nothing a grow re-bases or verifies records that distance. Until
+ * such code is repaired, the grow names each one after its announcement.
+ * __plain becomes code at the vm address its file offset maps to, filled
+ * with 0x90, with `lea base(%rip), %rax` (48 8d 05 disp32) at each of `at`. */
+#define HR_PLAIN_VA 0x100001800ull
+static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, int n) {
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    CHECK(pl != NULL, "setup: __plain present");
+    if (!pl) return;
+    pl->addr = HR_PLAIN_VA;
+    pl->flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+    memset(buf + pl->offset, 0x90, pl->size);
+    for (int k = 0; k < n; k++) {
+        buf[pl->offset + at[k]] = 0x48;
+        buf[pl->offset + at[k] + 1] = 0x8d;
+        hr_plant(buf + pl->offset, HR_PLAIN_VA, at[k] + 2, 0x05, 0, HR_BASE);
+    }
+}
+
+/* Everything mg_ensure_pad(..., need, "t") prints on stderr, as one string
+ * the caller frees. */
+static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, int *ret) {
+    const char *tmpdir = getenv("TMPDIR");
+    char path[512];
+    char *text = (char *)calloc(1, 65536);
+    if (!tmpdir) tmpdir = "/tmp";
+    snprintf(path, sizeof path, "%s/macho_grow_test_warn.%d", tmpdir, (int)getpid());
+    fflush(stderr);
+    int saved_fd = dup(fileno(stderr));
+    if (!freopen(path, "w", stderr)) {
+        CHECK(0, "could not capture stderr to %s", path);
+        *ret = mg_ensure_pad(pbuf, pfsize, need, "t");
+        return text;
+    }
+    *ret = mg_ensure_pad(pbuf, pfsize, need, "t");
+    fflush(stderr);
+    dup2(saved_fd, fileno(stderr));
+    close(saved_fd);
+    clearerr(stderr);
+    FILE *rf = fopen(path, "r");
+    if (rf) {
+        size_t got = fread(text, 1, 65535, rf);
+        text[got] = '\0';
+        fclose(rf);
+    }
+    unlink(path);
+    return text;
+}
+
+static int count_of(const char *hay, const char *needle) {
+    int n = 0;
+    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p++) n++;
+    return n;
+}
+
+#define HR_WARNING(addr) "t: warning: code at " addr " addresses the image's own header; " \
+                         "after this grow it points 0x1000 bytes past it (QUEUE item 29)\n"
+
+static void test_ensure_pad_warns_of_each_header_reference(void) {
+    static const uint32_t two[] = { 0, 8 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, two, 2);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    const char *grew = strstr(err, "t: grew the header pad by 4096 bytes");
+    const char *w1 = strstr(err, HR_WARNING("0x100001803"));
+    const char *w2 = strstr(err, HR_WARNING("0x10000180b"));
+    CHECK(r == 0, "two header references: the grow proceeds (got %d)", r);
+    CHECK(grew != NULL, "two header references: the grow is announced:\n%s", err);
+    CHECK(grew && w1 && w2 && grew < w1 && w1 < w2,
+          "two header references: one warning each, in order, after the announcement:\n%s", err);
+    CHECK(count_of(err, ": warning: ") == 2, "two header references: %d warnings, want 2",
+          count_of(err, ": warning: "));
+    free(err);
+    free(buf);
+}
+
+/* The control: the same section as code, with no reference, grows silently. */
+static void test_ensure_pad_does_not_warn_without_a_header_reference(void) {
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, NULL, 0);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    CHECK(r == 0 && strstr(err, "t: grew the header pad by ") != NULL,
+          "no header reference: the grow happens and is announced (got %d):\n%s", r, err);
+    CHECK(count_of(err, ": warning: ") == 0, "no header reference: no warning, yet:\n%s", err);
+    free(err);
+    free(buf);
+}
+
+/* Code the file does not hold cannot be scanned, and the grow says so. */
+static void test_ensure_pad_warns_of_code_it_cannot_scan(void) {
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, NULL, 0);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) pl->size = fsize;                  /* 6144 + 8192 runs past the image */
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    CHECK(r == 0, "code past the image: the grow proceeds (got %d)", r);
+    CHECK(strstr(err, "t: warning: an instruction section lies past the end of the image, so it "
+                      "was not scanned for code that addresses the image's own header\n") != NULL,
+          "code past the image: the grow says it was not scanned:\n%s", err);
+    free(err);
+    free(buf);
+}
+
+/* The scan runs only when the pad must grow: an edit that fits needs no
+ * grow, nothing moves the header, and nothing is printed. */
+static void test_ensure_pad_fits_despite_a_header_reference(void) {
+    static const uint32_t one[] = { 0 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, one, 1);
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off, &r);
+    CHECK(r == 0, "ensure_pad: a fit with a header reference succeeds (got %d)", r);
+    CHECK(err[0] == '\0', "ensure_pad: a fit prints nothing, yet:\n%s", err);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "ensure_pad: a fit leaves an image with a header reference alone");
+    free(err);
+    free(before);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2132,6 +2261,10 @@ int main(void) {
     test_scan_stops_when_asked();
     test_scan_reads_every_instruction_section_and_no_other();
     test_scan_refuses_an_instruction_section_past_the_image();
+    test_ensure_pad_warns_of_each_header_reference();
+    test_ensure_pad_does_not_warn_without_a_header_reference();
+    test_ensure_pad_warns_of_code_it_cannot_scan();
+    test_ensure_pad_fits_despite_a_header_reference();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

@@ -104,7 +104,12 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * input -- and returns 0 with *pbuf / *pfsize updated: every pointer the
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
- * available); image base 0xOLD -> 0xNEW".
+ * available); image base 0xOLD -> 0xNEW". A line follows for each instruction
+ * whose RIP-relative operand named the header before the grow (src/hdrref.h),
+ * which the grow leaves pointing G bytes past it: "LABEL: warning: code at
+ * 0xDISP32 addresses the image's own header; after this grow it points 0xG
+ * bytes past it (QUEUE item 29)"; and one if an instruction section could not
+ * be scanned.
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth failed. Also -1, with the

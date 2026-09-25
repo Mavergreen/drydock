@@ -1,6 +1,7 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
 #include "grow.h"
+#include "hdrref.h"
 
 /* mg_first_sect_off's mi_each_lc callback: track the lowest LC_SEGMENT_64
  * section file offset seen so far in ctx->first. Always returns 0 (never
@@ -47,6 +48,23 @@ static uint64_t mg_base_of(uint8_t *buf, size_t fsize) {
     return base;
 }
 
+/* The vm address of every disp32 mhr_scan reports, for mg_ensure_pad to warn
+ * of after it grows. */
+struct mg_refs { uint64_t *addr; size_t n, cap; int oom; };
+
+static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
+    struct mg_refs *r = (struct mg_refs *)ctx_;
+    if (r->n == r->cap) {
+        size_t cap = r->cap ? 2 * r->cap : 8;
+        uint64_t *a = (uint64_t *)realloc(r->addr, cap * sizeof *a);
+        if (!a) { r->oom = 1; return 1; }
+        r->addr = a;
+        r->cap = cap;
+    }
+    r->addr[r->n++] = c->addr;
+    return 0;
+}
+
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
                   const char *label) {
     uint32_t first = mg_first_sect_off(*pbuf, *pfsize);
@@ -77,29 +95,51 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
 
+    struct mg_refs refs = { NULL, 0, 0, 0 };
+    int64_t scanned = mhr_scan(*pbuf, *pfsize, base_before, mg_keep_ref, &refs);
+    if (refs.oom) {
+        fprintf(stderr, "ERROR: %s: out of memory listing code that addresses the image's "
+                        "own header\n", label);
+        free(refs.addr);
+        return -1;
+    }
+
     uint32_t grow_req = need_end - first;
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
         fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail), "
                         "and the header could not be grown (see above)\n",
                 label, new_lcs, pad_avail);
+        free(refs.addr);
         return -1;
     }
     first = mg_first_sect_off(*pbuf, *pfsize);
     if (first == UINT32_MAX) {
         fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
+        free(refs.addr);
         return -1;
     }
     if (first == MG_NO_SECTION_DATA) {
         fprintf(stderr, "ERROR: %s: header grow left no section data to bound the pad\n", label);
+        free(refs.addr);
         return -1;
     }
+    uint64_t base_after = mg_base_of(*pbuf, *pfsize);
     /* spec: tests/grow_test.c test_ensure_pad_grows_and_announces */
     fflush(stdout);
     fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); "
                     "image base %#llx -> %#llx\n",
             label, first - first_before, pad_avail, first - cur_lc_end,
-            (unsigned long long)base_before,
-            (unsigned long long)mg_base_of(*pbuf, *pfsize));
+            (unsigned long long)base_before, (unsigned long long)base_after);
+    for (size_t i = 0; i < refs.n; i++)
+        fprintf(stderr, "%s: warning: code at %#llx addresses the image's own header; after "
+                        "this grow it points %#llx bytes past it (QUEUE item 29)\n",
+                label, (unsigned long long)refs.addr[i],
+                (unsigned long long)(base_before - base_after));
+    if (scanned < 0)
+        fprintf(stderr, "%s: warning: an instruction section lies past the end of the image, "
+                        "so it was not scanned for code that addresses the image's own header\n",
+                label);
+    free(refs.addr);
     return 0;
 }
 

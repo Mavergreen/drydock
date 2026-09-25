@@ -6,9 +6,11 @@
 #
 #   sh tests/grown_binary_runs_test.sh <bindir>
 #
-# The subjects: a PIE executable linked here with -headerpad 0, and a system
+# The subjects: a PIE executable linked here with -headerpad 0; a system
 # executable when one qualifies (a 64-bit PIE MH_EXECUTE the grow accepts as
-# it is; a slice with chained fixups does not, and is reported as a SKIP).
+# it is; a slice with chained fixups does not, and is reported as a SKIP); and
+# two programs that find their own header: one RIP-relatively, whose grow must
+# warn about it, and one through dyld, which must grow silently and run.
 # Each gets enough distinct LC_RPATHs to outgrow its header pad, measured from
 # `drydock-macho-rewrite info` -- never a pad size this host's linker chose.
 # Fixtures are x86_64 with a 10.9 floor, which runs on 10.9 and under Rosetta.
@@ -142,6 +144,79 @@ else
         same system "$sin" "$T/sys.grown" '%s|%5d|%x\n' grown 42 255
     fi
 fi
+
+# ---- 3. code that addresses its own header ----------------------------------
+# hdr takes its own header's address RIP-relatively, as getsectiondata(
+# &_mh_execute_header, ...) does; the inline lea makes that instruction this
+# fixture's on every linker, whether or not it relaxes a GOT load, and hdr
+# prints where that lea's disp32 lies. A grow moves the header out from under
+# it, so the grow must name it in a warning. Whether the grown hdr runs is
+# not asserted: it does not yet. ctl asks dyld for its header instead, so it
+# must grow with no warning, and run.
+cat >"$T/hdr.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+#include <mach-o/loader.h>
+int payload = 42;
+int main(void) {
+    const struct mach_header_64 *h;
+    const char *end;
+    unsigned long size = 0;
+    __asm__("leaq __mh_execute_header(%%rip), %0\n1:\n\tleaq 1b(%%rip), %1" : "=r"(h), "=r"(end));
+    uint8_t *p = getsectiondata(h, "__DATA", "__data", &size);
+    printf("disp32 at %#lx\n", (unsigned long)(end - 4 - _dyld_get_image_vmaddr_slide(0)));
+    printf("header magic %#x, __data %s (%lu bytes)\n", h->magic, p ? "found" : "NOT FOUND", size);
+    return p ? 0 : 1;
+}
+EOF
+cat >"$T/ctl.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+#include <mach-o/loader.h>
+int payload = 42;
+int main(void) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(0);
+    unsigned long size = 0;
+    uint8_t *p = getsectiondata(h, "__DATA", "__data", &size);
+    printf("header magic %#x, __data %s (%lu bytes)\n", h->magic, p ? "found" : "NOT FOUND", size);
+    return p ? 0 : 1;
+}
+EOF
+for p in hdr ctl; do
+    "$CC" $FF -Wl,-headerpad,0 -o "$T/$p" "$T/$p.c" \
+        || { echo "grown_binary_runs_test: could not link $p" >&2; exit 1; }
+done
+
+"$T/hdr" >"$T/hdr.run" 2>&1
+grep -q '__data found' "$T/hdr.run" \
+    && ok "hdr: the fixture finds its own __data" || bad "hdr: fixture" "$(cat "$T/hdr.run")"
+disp=$(awk '/^disp32 at 0x/ { print $3; exit }' "$T/hdr.run")
+grow hdr "$T/hdr" "$T/hdr.grown"
+[ "$grc" -eq 0 ] && [ -e "$T/hdr.grown" ] && ok "hdr: the grow succeeds and writes its output" \
+    || bad "hdr: grow" "exit $grc: $(cat "$T/hdr.grow.err")"
+lowered hdr "$T/hdr" "$T/hdr.grown"
+n=$(grep -c ': warning: ' "$T/hdr.grow.err")
+[ "$n" -eq 1 ] && ok "hdr: ... with exactly one warning" || bad "hdr: warnings" "$n: $(cat "$T/hdr.grow.err")"
+grep -Fxq "$T/hdr: warning: code at $disp addresses the image's own header; after this grow it points 0x1000 bytes past it (QUEUE item 29)" \
+    "$T/hdr.grow.err" \
+    && ok "hdr: ... naming its lea's disp32 ($disp) and the grow" \
+    || bad "hdr: warning" "want disp32 '$disp': $(grep ': warning: ' "$T/hdr.grow.err")"
+
+grow ctl "$T/ctl" "$T/ctl.grown"
+[ "$grc" -eq 0 ] && [ -e "$T/ctl.grown" ] && ok "ctl: the grow succeeds and writes its output" \
+    || bad "ctl: grow" "exit $grc: $(cat "$T/ctl.grow.err")"
+lowered ctl "$T/ctl" "$T/ctl.grown"
+rc=0; grep -q ': warning: ' "$T/ctl.grow.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "ctl: ... with no warning (hdr's grep, above, finds one)" \
+    || bad "ctl: warning" "$(grep ': warning: ' "$T/ctl.grow.err")"
+same ctl "$T/ctl" "$T/ctl.grown"
+grep -q '__data found' "$T/ctl.out.out" \
+    && ok "ctl: ... and the grown binary finds its own __data" \
+    || bad "ctl: grown output" "$(cat "$T/ctl.out.out")"
 
 [ "$fail" -eq 0 ] || { echo "grown_binary_runs_test: $fail failure(s)"; exit 1; }
 echo "grown_binary_runs_test: all passed"
