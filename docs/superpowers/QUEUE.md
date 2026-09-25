@@ -375,7 +375,8 @@ landed. Gaps 1+2 and 5 each have a spec and a plan
 `specs/2026-09-23-section-retype-design.md`) that are not executed; each
 spec's own "Questions for the owner" is unanswered. Gap 6
 (`specs/2026-09-23-objc-method-lists-design.md`) is four milestones; M1, the
-read-only walk and `info`'s `method-lists:` line, landed 2026-09-25.
+read-only walk and `info`'s `objc-methods:` line, landed 2026-09-25. Its
+questions for the owner are answered in the spec.
 
 **Where their practice bears on our refusals:**
 

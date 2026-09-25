@@ -133,7 +133,7 @@ after the signature.
 
 ### 2. Fixups: classic only, and after `fixups set classic`
 
-`method-lists set absolute` **refuses an image with `LC_DYLD_CHAINED_FIXUPS`**
+`objc-methods set absolute` **refuses an image with `LC_DYLD_CHAINED_FIXUPS`**
 (`EX_REFUSED`), saying `fixups set classic first`. The reasons:
 
 - On a chained image every pointer the walk follows (class list entries,
@@ -231,16 +231,16 @@ One flush-left line per image, beside `swift-abi:`, always printed so its
 absence is never ambiguous:
 
 ```
-method-lists: 4 relative, 0 absolute
-method-lists: none
-method-lists: not walked: the image has chained fixups; fixups set classic first
-method-lists: not walked: the method list at 0x1000009a0 claims 268435456 entries, which runs past its segment
+objc-methods: 4 relative, 0 absolute
+objc-methods: none
+objc-methods: not walked: the image has chained fixups; fixups set classic first
+objc-methods: not walked: the method list at 0x1000009a0 claims 268435456 entries, which runs past its segment
 ```
 
 The counts are **distinct lists reachable by the walk in Decision 4**, which is
 exactly what the statement converts. `info` still exits 0 on a "not walked"
 line: it is a query, and the line is its answer. No existing consumer greps
-a flush-left `method-lists:`: the flush-left patterns in use are `^LC\[`,
+a flush-left `objc-methods:`: the flush-left patterns in use are `^LC\[`,
 `^header pad:`, `^swift-abi:` and `^slice `, and `^  ordinal=` is indented
 (`compat/insert_dylib.sh:91,101`, `tests/bake_mavericks_shim_test.sh`,
 `tests/grown_binary_runs_test.sh:54`, `tests/differential.sh:260`).
@@ -307,12 +307,12 @@ re-walk before handing the image back):
 Each one is its own plan, written when the previous one lands.
 
 **M1: see the lists (read-only).** `src/objc_meth.[ch]` holds the walk
-(Decision 4) with its refusals. `info` prints the `method-lists:` line.
+(Decision 4) with its refusals. `info` prints the `objc-methods:` line.
 `tests/relmeth_fixture.h` + `tests/mkrelmeth.c` build a synthetic fixture.
 Deliverable: `info` answers "does this binary have relative method lists, and
 how many?" on any classic image. **Landed: 439e1cc..9082c8f.**
 
-**M2: `method-lists set absolute`.**
+**M2: `objc-methods set absolute`.**
 
 - `src/rebase.[ch]` (`mrb_`): a complete classic rebase-opcode decoder,
   covering all nine opcodes. Nothing in the repo has one: `md_next_rebase`
@@ -323,7 +323,7 @@ how many?" on any classic image. **Landed: 439e1cc..9082c8f.**
   `me_apply`'s lowering and log lines:
 
   ```
-    method-lists set absolute
+    objc-methods set absolute
         converted 4 relative method lists (5 methods) into __MLDATA,__objc_const: 1 class, 1 metaclass, 1 category, 1 protocol
         added 13 rebases; __LINKEDIT 256 -> 344 bytes, moved up 4096
   ```
@@ -347,7 +347,7 @@ the result stays PIE-correct. `tests/relmeth_runs_test.sh`:
 
 - **positive control:** the relativized program does *not* print its expected
   output on 10.9;
-- after `method-lists set absolute`, it prints exactly the original's output
+- after `objc-methods set absolute`, it prints exactly the original's output
   and exits 0.
 
 On a host whose runtime reads relative lists (macOS 11+), the positive
@@ -366,7 +366,7 @@ suites": a test can be unfalsifiable on the host it was written on.
   - the "cannot miss" paragraph;
   - the `target` table row;
   - "each of `target 10.9`'s five detections" → six;
-  - the `method-lists:` line in the `info` example.
+  - the `objc-methods:` line in the `info` example.
 
 ## Fixtures: why synthetic, and what cannot be proved here
 
@@ -378,22 +378,47 @@ a file for the shell suites). Its layout, with every offset fixed, is in the
 plan's Task 1. M3 adds the only on-host proof against a real linker's output,
 by producing the relative form from a real binary.
 
-**Only a real modern binary can settle these, so they must be validated
-elsewhere:**
+**What real binaries on this host settled (2026-09-25).** `info` was run
+on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
 
-- that ld64 and ld-prime put relative lists in `__TEXT,__objc_methlist`,
-  and for which owners. Protocols in particular.
+- **x86_64 relative lists come with chained fixups.** Every x86_64 image
+  seen with `__objc_methlist` targets macOS 12.0 and has chained fixups
+  (OpenCode.app's Mantle, ReactiveObjC and Squirrel frameworks). The one
+  x86_64 slice targeting 11.x with classic fixups (TaskExplorer, minos
+  11.5, SDK 15.4) has only absolute lists, while its arm64 slice has only
+  relative ones. So on x86_64 this statement always runs on an image that
+  `fixups set classic` has just lowered, and its input rebase stream is
+  usually one Drydock wrote.
+- **The walk reads real ld64 output.** After `fixups set classic`, Mantle
+  counts 22 relative and 10 absolute lists, ReactiveObjC 137 and 6, and
+  Squirrel 20 and 7. Real images **mix both forms** in one image.
+- **Protocols carry relative lists** in real output (9 of TaskExplorer's
+  arm64 lists), so walking them is required, not defensive.
+- **No false refusals.** Every "not walked" line in the 510 was a chained
+  image. On Foundation the walk finds a strict superset of the lists
+  `otool -ov` prints; the extra 6 are lists of protocols nothing adopts.
+
+**Still to validate:**
+
 - that in an app binary (as opposed to the shared cache) `name` is always a
-  selector-reference offset and never direct;
+  selector-reference offset and never direct. M2's first task checks this
+  on the three frameworks above;
 - that real linker output meets Decision 1's preconditions: `__LINKEDIT`
   last, fewer than 16 segments, and 152 bytes of header pad or a
-  `__PAGEZERO` to grow through;
+  `__PAGEZERO` to grow through. Also M2's first task, on the same three;
 - Swift `@objc` classes' `class_ro_t` in practice;
-- whether any real binary has lists this walk does not reach
-  (`__objc_catlist2`, Swift stub classes);
-- the whole pipeline on a real macOS 11+ app, run on 10.9:
-  `target 10.9` + stub dylibs + ad-hoc re-sign. The *running* can happen on
-  this host if such a binary is carried here. The *building* cannot.
+- lists this walk does not reach: `__objc_catlist2`, Swift stub classes,
+  and **runtime-instantiated generic Swift classes**, whose `class_ro_t`
+  sits in Swift metadata patterns rather than in `__objc_classlist`. The
+  last is harmless with Mavergreen swift-runtime as it stands: its patch
+  0003 realizes such a class with an empty `class_rw_t`, so 10.9's objc
+  never reads the pattern's method list. If that runtime ever methodizes
+  them, a relative list there would reach objc4-532 unconverted;
+- the whole pipeline on a real macOS 12+ app, run on 10.9:
+  `target 10.9` + stub dylibs + ad-hoc re-sign. With Mavergreen
+  swift-runtime installed, a Swift app with an `NSObject` subclass is the
+  likeliest real customer. The *running* can happen on this host if such
+  a binary is carried here. The *building* cannot.
 
 ## Files shared with plans drafting in parallel
 
@@ -419,7 +444,7 @@ conflicts.
 | class and metaclass lists found; Swift tag bits masked; a class listed twice walked once | `tests/objc_meth_test.c` | M1 |
 | categories and protocols found; a shared list counted once; absolute lists counted apart | `tests/objc_meth_test.c` | M1 |
 | chained, direct-selector, bad entsize, list of lists, list past its segment: each refused with its reason | `tests/objc_meth_test.c` | M1 |
-| `info`'s `method-lists:` line, in all four shapes and once per fat slice | `tests/cli_test.sh` | M1 |
+| `info`'s `objc-methods:` line, in all four shapes and once per fat slice | `tests/cli_test.sh` | M1 |
 | every rebase opcode decoded; the encoder round-trips | `tests/rebase_test.c` | M2 |
 | conversion: oracle-equal entries in order, every new pointer rebased, `__LINKEDIT` moved intact, nothing written on refusal | `tests/objc_meth_test.c`, `tests/cli_test.sh` | M2 |
 | conversion then a grow (`dylib append` on no pad) still verifies | `tests/cli_test.sh` | M2 |
@@ -436,37 +461,27 @@ conflicts.
   `objc_image_info` flag bits and `__objc_catlist2`. Not investigated.
 - Removing the dead relative lists from `__TEXT`.
 
-## Questions for the owner
+## The owner's answers (2026-09-25)
 
-1. **Statement spelling.** `method-lists set absolute` mirrors
-   `fixups set classic` and `swift-abi set legacy`. The alternative is
-   `objc-methods set absolute`. *Recommend `method-lists set absolute`*: the
-   `info` line and the statement then share the word.
-2. **Segment and section names.** *Recommend `__MLDATA,__objc_const`*:
-   Celeste's segment name as prior art, and the section `ld` historically used
-   for absolute lists. A name ending in `__objc_methlist` would make a
-   converted image look unconverted to a section-name reading.
-3. **`LC_SEGMENT_SPLIT_INFO`.** Keep it, with its offset bumped, or refuse?
-   `grow` refuses it. Here only `__LINKEDIT`'s vm moves, and split info
-   describes references between existing sections, all of which keep their
-   ordinals. It only matters to shared-cache building. *Recommend keep*:
-   refusing would reject nearly every framework a modern Xcode builds.
-4. **An IMP that is not in `LC_FUNCTION_STARTS`: refuse, or warn?**
-   *Recommend refuse*: refusing matches `mg_plausible`'s use of that table,
-   and a wrong IMP only shows up as a crash later.
-5. **Dead relative lists in `__TEXT`: leave or zero?** *Recommend leave*.
-   Zeroing gains nothing on 10.9, and it would break anything this walk does
-   not reach that still points there, such as Swift stub-class categories.
-6. **Which real binaries validate M3/M4 elsewhere, and who builds them?**
-   *Recommend two small apps* built with a current Xcode, one targeting
-   macOS 11.0 (classic fixups plus relative lists) and one targeting 13.0
-   (chained plus relative), each with a Swift `@objc` class, a category and a
-   protocol with optional methods. Add TaskExplorer, the
-   `~/Downloads` worked example QUEUE cites, as the first real app. Carried
-   here, they can be run here.
-7. **Should `info` (and the chained branch of `target`'s detection) decode
-   chained pointers**, making the count exact before `fixups set classic`?
-   `md_cf_rebase_target` already does the arithmetic, but the per-segment
-   pointer format means parsing `dyld_chained_starts_in_image` a second time.
-   *Recommend not now*: Decision 6's section-name branch is safe, because the
-   statement makes the exact decision, and the chained-fixture work is large.
+1. **Statement spelling: `objc-methods set absolute`**, and the `info` line
+   is `objc-methods:` (renamed from `method-lists:` in `cff1919`). C++,
+   Swift, Rust and Go have methods too, but their dispatch tables are read
+   by their own code or their own bundled runtime, never by an OS component
+   older than the format. Only Objective-C's lists are read by one (10.9's
+   libobjc), so only they need this, and the name says so.
+2. **Names: `__MLDATA,__objc_const`**, as recommended.
+3. **`LC_SEGMENT_SPLIT_INFO`: keep it, offset bumped.** Real modern
+   frameworks are dylibs, and dylibs carry split info, so refusing would
+   reject the very images this exists for.
+4. **An IMP not in `LC_FUNCTION_STARTS`: refuse**, but M2's first task
+   runs the check against Mantle, ReactiveObjC and Squirrel (after
+   `fixups set classic`) and records the result. If real ld64 output fails
+   it, the rule is revisited before anything builds on it.
+5. **Dead relative lists in `__TEXT`: leave them.**
+6. **Real binaries:** the three OpenCode.app frameworks above are M2's
+   real-world subjects, converted and re-walked by the statement's own
+   verification. M3's run-on-10.9 proof keeps its planned relativized
+   program. A current-Xcode app stays on the validate-elsewhere list.
+7. **Chained decoding in `info`: not now.** On x86_64 the chained case is
+   the common one, but M4's section-name branch still decides correctly,
+   and `info` on an unlowered image says why it did not walk.
