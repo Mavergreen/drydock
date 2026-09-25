@@ -144,8 +144,11 @@ The insertion at `__LINKEDIT`'s old file offset is Z + S + R bytes.
 `ml_bump_all` moves every offset by that amount, then
 `rebase_off`/`rebase_size` are pointed at the new stream. The old stream's
 bytes are zeroed where they now sit. `__LINKEDIT` still ends the file and the
-code signature, if there is one, still ends `__LINKEDIT`, so
-`codesign --force` can re-sign. This is the same room-making
+code signature, if there is one, still ends `__LINKEDIT`, so this statement
+leaves the image as re-signable as it found it. On the real frameworks that
+is not re-signable with 10.9's `codesign_allocate`: `fixups set classic`,
+which must run first, leaves its streams out of the order that tool
+requires (QUEUE item 30). This is the same room-making
 `import redirect` does, moved to the other end of `__LINKEDIT`.
 
 **The candidates that lost:**
@@ -358,7 +361,9 @@ re-walk before handing the image back):
      `__LINKEDIT`'s `vmaddr`, `fileoff` and `filesize`, and the `ml_each_off`
      fields. `ncmds` and `sizeofcmds` are unchanged.
    - D grew by exactly S in vm and by Z + S in file; `__LINKEDIT` moved by
-     exactly S in vm.
+     exactly S in vm, and its `vmsize` grew to cover its new `filesize`
+     wherever the new rebase stream crossed a page (ReactiveObjC 0x15000 to
+     0x19000, Squirrel 0xd000 to 0xe000).
    - Bytes below the insertion are identical except for the repointed 8-byte
      slots. The Z bytes are zero.
    - The old `__LINKEDIT` bytes reappear Z + S + R later, identical except for
@@ -367,9 +372,12 @@ re-walk before handing the image back):
      Z + S + R.
    - `__LINKEDIT` is the last segment and ends the file.
    - No two segments overlap in vm.
-4. **`mg_plausible`** runs through the existing gate. The row declares
-   `MREL_FILE_OFF`; the statement adds no load command, so it never
-   disturbs the header pad.
+4. **`mg_plausible` does not run for this statement**, and correctly so. The
+   row declares `MREL_FILE_OFF`, and the gate runs `mg_plausible` only for
+   statements that disturb base-relative data. This one moves no code and
+   no base-relative structure: initializers and unwind entries, which
+   `mg_plausible` checks, are untouched. The statement adds no load command,
+   so it never disturbs the header pad.
 5. **On 10.9 itself:** milestone 3 runs a converted binary and checks its
    output.
 
@@ -396,7 +404,7 @@ how many?" on any classic image. **Landed: 439e1cc..9082c8f.**
   ```
     objc-methods set absolute
         converted 4 relative method lists (5 methods) onto the end of __DATA: 1 class, 1 metaclass, 1 category, 1 protocol
-        added 13 rebases; __DATA grew 4096 bytes; __LINKEDIT 256 -> 344 bytes, moved up 4096
+        added 14 rebases; __DATA grew 4096 bytes; __LINKEDIT 256 -> 344 bytes, moved up 4096
   ```
 
 - The fixture gains variants: a dylib with 16 bytes of header pad (which
@@ -452,8 +460,8 @@ The host `ld` (10.9) cannot emit relative method lists, and no modern
 toolchain runs here. `tests/relmeth_fixture.h` therefore lays one out by
 hand, in the style of `tests/mkswift.c` and `tests/mkchained.c`. It is shared
 by the hermetic test (built in memory) and by `tests/mkrelmeth.c` (written to
-a file for the shell suites). Its layout, with every offset fixed, is in the
-plan's Task 1. M3 adds the only on-host proof against a real linker's output,
+a file for the shell suites). Its layout, with every offset fixed, is in
+`tests/relmeth_fixture.h` itself. M3 adds the only on-host proof against a real linker's output,
 by producing the relative form from a real binary.
 
 **What real binaries on this host settled (2026-09-25).** `info` was run
@@ -506,7 +514,7 @@ on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
 | `tests/script_test.c` | M2: the disturbs table | the same three |
 | `src/edit.c` | M2: `me_apply` case; M4: `me_expand_10_9`, `ME_TARGET_MAX` | minos set / target (the same expansion) |
 | `cli/drydock-macho-rewrite.c` | M1: `info_image`'s new line | minos set, if it adds an `info` line |
-| `src/grow.c` | **not edited.** M2 calls `mg_ensure_pad` and never asserts its stderr wording | item 6's comment sweep (its stderr strings); section retype (`mg_classify`) |
+| `src/grow.c` | **not edited.** M2 never grows the header (Decision 1) | item 6's comment sweep (its stderr strings); section retype (`mg_classify`) |
 | `CMakeLists.txt` | M1–M3: one library source, test targets | all of them |
 | `tests/cli_test.sh` | M1–M4: appended blocks | all of them |
 | `README.md` | M4's final task only | each plan's final task |
