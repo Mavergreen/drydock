@@ -1,13 +1,24 @@
-# Growing a dylib's header
+# Growing a dylib's header, and code that addresses its own header
 
 Every statement that adds or lengthens a load command needs header pad, and
 `mg_ensure_pad` (`src/grow.h`) grows the pad when it is short. Today it can
 only grow a PIE executable: it lowers the image base into `__PAGEZERO`, and a
-dylib or bundle has none (`ERROR: only MH_EXECUTE can be grown`). This spec
-adds a second route for `MH_DYLIB` and `MH_BUNDLE`, so that `dylib insert`,
-`dylib append`, `dylib replace`, `rpath add`, `rpath replace`,
-`minos if-absent` and every later statement that needs pad work on
-frameworks with no change of their own.
+dylib or bundle has none (`ERROR: only MH_EXECUTE can be grown`).
+
+This spec does two things, in four milestones:
+
+- **It fixes a bug in the executable grow** (QUEUE item 29). Code that reaches
+  its own header by RIP-relative distance breaks silently when the header
+  moves. The fix is to refuse first (M0), then repair (M1).
+- **It adds a second route for `MH_DYLIB` and `MH_BUNDLE`** (QUEUE item 31),
+  so that `dylib insert`, `dylib append`, `dylib replace`, `rpath append`,
+  `rpath insert`, `rpath replace`, `minos if-absent` and every later
+  statement that needs pad work on frameworks with no change of their own
+  (M2, proven in M3).
+
+The design was reviewed adversarially before approval. The review covered
+1517 10.9 system images and 150 app images, and found the header-reference
+problem. That review's findings are folded in below.
 
 ## Why
 
@@ -20,30 +31,44 @@ for a realistic path needs 50 to 100.
 
 - `docs/macl-case-study.md` row 23: MACL injects its stub library "into the
   main binary and every framework". The case study credits `dylib insert`
-  with this. On a framework with 16 bytes of pad Drydock refuses today, so
-  that row overstates what Drydock does; row 9 (injecting a bundled CoreUI)
-  has the same shape.
+  with this, but on a framework with 16 bytes of pad Drydock refuses today.
+  Row 9, injecting a bundled CoreUI, has the same shape.
 - Mavergreen swift-runtime's README tells users to run
   `rpath replace /usr/lib/swift /usr/local/mavergreen/swift-runtime/lib/swift`.
-  The new path is 32 bytes longer, so on a framework carrying that rpath it
-  needs pad that is not there.
+  The new path is 32 bytes longer.
 - objc-methods (`specs/2026-09-23-objc-method-lists-design.md`, Decision 1)
-  had to abandon its first layout for the same reason. It does **not**
-  change back once this lands; that spec says why.
+  abandoned its first layout for the same reason. It does **not** change
+  back once this lands; that spec says why.
 
-**What the existing grow refuses.** `mg_classify` run over 321 real dylibs,
-each thinned to x86_64 (`lipo -thin`), 2026-09-25:
+**What the existing grow refuses.** `mg_classify` over 321 real dylibs,
+thinned to x86_64:
 
 | where | accepted | refused: `LC_SEGMENT_SPLIT_INFO` | refused: chained fixups |
 |---|---|---|---|
 | 10.9 system (`/usr/lib`, `/System/Library/Frameworks`) | 2 | 283 | 0 |
 | app frameworks (`/Applications`, `~/Downloads`) | 24 | 3 (Sparkle ×2, RegexKit) | 4 |
 
-Also measured on the same set: old-style relocation entries
-(`LC_DYSYMTAB` `nlocrel`/`nextrel` > 0) in 5 images, all built for 10.5 or
-earlier (Sparkle ×2, RegexKit, `libnetsnmp` ×2); no x86_64 image rebases or
-binds into `__TEXT` (two hits were 32-bit-only frameworks that thinning
-passed through).
+**The header-reference bug, reproduced.** A ten-line executable calls
+`getsectiondata(&_mh_execute_header, "__DATA", "__data", …)`. After
+`rpath append` of a 3000-byte path:
+
+- Drydock grows its header by 4096 and exits 0;
+- `verify` passes;
+- the binary segfaults (exit 139).
+
+The same program asking `_dyld_get_image_header(0)` instead, grown the same
+way, runs.
+
+The pattern (code that takes the header's address RIP-relatively) is in:
+
+- 19 of 302 executables on this host;
+- 53 of 1517 10.9 system images;
+- 63 of 150 app images.
+
+Among them: AppKit and CoreFoundation, which read their own sections that
+way; CFNetwork's `lazy_load_dylib`; libc++, which passes `&__dso_handle` to
+`__cxa_atexit`; and a 10.12-SDK iTunes bundle, which passes it to
+`os_log`. The Claude Code executable has none.
 
 ## Decisions
 
@@ -51,83 +76,162 @@ passed through).
 
 `mg_grow_header` chooses its route by file type:
 
-- `MH_EXECUTE` with `MH_PIE`: **lower** the image base, as today. Unchanged.
+- `MH_EXECUTE` with `MH_PIE`: **lower** the image base, as today.
 - `MH_DYLIB` or `MH_BUNDLE`: **raise** the contents, below.
 - Anything else: refused, as today.
 
-**The raise.** Let F be the first section's file offset (the end of the
-pad, `mg_first_sect_off`) and G the shortfall rounded up to a 4 KB page
-(`MG_PAGE`), so every section keeps its alignment. G zero bytes are inserted
-at file offset F. Every byte from F to the end of the file moves up by G in
-the file, and everything it holds moves up by G in vm. The header and the
-load commands stay at file offset 0 and at `__TEXT`'s `vmaddr`.
+**The raise.** Define:
 
-**Why most of the existing machinery is already right.** Measured from the
-image base, both routes move every section up by G: the executable route by
+- `__TEXT` is the segment with `fileoff` 0 and `filesize` > 0 (as
+  `mg_patch_cb` identifies it), and **base** is its `vmaddr`;
+- F is the first section's file offset (`mg_first_sect_off`);
+- G is the shortfall, rounded up to a 4 KB page (`MG_PAGE`).
+
+G zero bytes are inserted at file offset F. Everything from F to the end of
+the file moves up by G, in file and in vm. The header and load commands stay
+at file offset 0 and at base.
+
+**Why most existing machinery already applies.** Measured from the base,
+both routes move every section up by G. The executable route does it by
 moving the base down, the dylib route by moving the contents up. So every
 structure that stores a distance from the base gains G in both routes, and
-the walkers `grow` already has for them apply unchanged: `__unwind_info`
-(`mg_unwind_walk`), the export trie (`mg_trie_walk`), the leading
-`LC_FUNCTION_STARTS` delta (`mg_reencode_funcstarts_base`),
-`LC_DATA_IN_CODE` (`mg_dice_walk`) and `S_INIT_FUNC_OFFSETS`
-(`mg_init_offsets_pass`). What differs is absolute vm addresses: the
-executable route leaves them alone, and the dylib route must add G to each.
+`grow`'s existing walkers for those apply unchanged:
 
-**The one rule.** An address, absolute or base-relative, that names the
-header or load commands, meaning it is below the first section's old
-address, is unchanged. An address that names content at or above it gains
-G. The existing code already follows the first half for executables: export
-offset 0 is `__mh_execute_header` and stays 0 (`src/grow.h`, the export-trie
-note). For a dylib the header-namers are the `__mh_dylib_header` or
-`__mh_bundle_header` symbol and every `__dso_handle` pointer, which C++
-`atexit` and thread-local variables use.
+- `__unwind_info` (`mg_unwind_walk`);
+- the export trie (`mg_trie_walk`);
+- the leading `LC_FUNCTION_STARTS` delta;
+- `LC_DATA_IN_CODE` (`mg_dice_walk`);
+- `S_INIT_FUNC_OFFSETS` (`mg_init_offsets_pass`).
 
-### 2. What changes
+What differs is absolute vm addresses. The executable route leaves them
+alone; the dylib route adds G to each one that names content.
+
+**The one rule.** Anything that names the header (address exactly base, or
+base-relative offset exactly 0) is unchanged. Anything that names content
+(base + F or above) moves with the content. Anything strictly between is
+refused.
+
+The adversarial review measured every symbol, rebase value, export offset
+and RIP-relative target in all 1667 images: none falls strictly inside
+(base, base + F). Every reference to the header names exactly base. The rule
+also refuses:
+
+- any `__TEXT` section whose `addr − base` differs from its `offset`;
+- any section whose `addr` is below the first section's.
+
+**The header does not move with the content.** So a *distance* from content
+to the header changes by G, in both routes. In the executable route the
+header moves down by G while code stays put. In the dylib route the code
+moves up by G while the header stays put. Decision 3 handles those
+distances.
+
+### 2. What changes on the raise route
 
 | structure | change | by |
 |---|---|---|
-| each segment after `__TEXT`: `vmaddr`, `fileoff` | +G | new |
+| every segment except `__TEXT`: `vmaddr` | +G | new |
+| every segment: `fileoff`, when ≥ F (a zerofill-only segment keeps `fileoff` 0) | +G | new, matching `ml_bump` |
 | `__TEXT`: `vmsize`, `filesize` | +G | new |
 | each section: `addr` | +G (a zerofill section's `offset` stays 0) | new |
 | each section: `offset`, `reloff`; every `__LINKEDIT` offset | +G | existing, `mg_each_fileoff` |
-| the pointer value at every rebase target | +G if it names content (the rule) | new |
-| symbol `n_value`: `N_SECT` symbols, and stabs with `n_sect != NO_SECT` | +G if it names content | new |
+| the pointer value at every rebase target | +G if it names content; unchanged if exactly base | new |
+| symbol `n_value`: `N_SECT` symbols | +G if it names content | new |
+| stabs: `N_BNSYM`, named `N_FUN`, `N_STSYM`, `N_LCSYM`, `N_SLINE`, and `N_SO`/`N_SOL` with `n_sect != 0` | +G if it names content | new |
+| stabs: `N_ENSYM` (a size), `N_OSO` (a timestamp), unnamed `N_FUN`, `N_GSYM`, `N_OPT`, `N_OLEVEL`, `N_AST` | unchanged | — |
+| any other stab type | refused | — |
 | `LC_ROUTINES_64.init_address` | +G | new |
-| unwind info, export trie, function starts, data-in-code, `__init_offsets` | +G | existing walkers |
-| rebase and bind opcodes (segment index + offset within it) | none: segments move whole, and none may target `__TEXT` (Decision 4) | — |
-| RIP-relative code, `__eh_frame`, LSDA tables, Swift metadata, relative Objective-C method lists | none: relative distances within the image do not change | — |
-| `LC_SEGMENT_SPLIT_INFO` | the load command is deleted (Decision 3) | new |
+| unwind info, function starts, data-in-code, `__init_offsets` | +G | existing walkers |
+| export trie, regular and stub-and-resolver entries | +G | existing walker |
+| export trie, `EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE` entries | **unchanged**: an absolute value, not an offset | fix to the existing walkers (affects the executable route too; M0) |
+| RIP-relative displacements from content to the header | −G | Decision 3 (M1) |
+| `LC_UUID` | replaced, Decision 5 | new |
+| `LC_SEGMENT_SPLIT_INFO` | the load command is deleted, Decision 4 | new |
+| rebase and bind opcodes (segment index + offset within it) | none: segments move whole, and none may target `__TEXT` | — |
+| content-to-content RIP-relative code, `__eh_frame`, LSDA tables, `S_DTRACE_DOF` (offsets from the DOF section itself), Swift metadata, relative Objective-C method lists, TLV descriptors' `offset` | none: both ends move together | — |
 | `LC_CODE_SIGNATURE` | offset bumped; the signature is invalid, as after every edit | existing |
 
-**Why the list is complete.** A dylib always slides, so every absolute
-address in it must be adjusted at load time, and dyld adjusts only what a
-rebase, a bind or a load-command field names. So an absolute address can
-live only:
+**Why the list is complete.** A dylib always slides, so dyld must be told
+about every absolute address in it. So an absolute address can live only:
 
 - at a rebase target (handled);
-- at a bind target, whose file contents dyld overwrites (nothing to do; a
-  lazy pointer's initial stub-helper address is itself a rebase target);
-- in a symbol `n_value` or a load-command field (handled).
+- at a bind target, which dyld overwrites (nothing to do; a lazy pointer's
+  initial stub-helper address is itself a rebase target, and the review
+  found every weak-bind slot paired with a rebase or a bind);
+- in a symbol or a load-command field (handled).
 
-Any absolute address in `__TEXT` would need a text relocation, which
-Decision 4 refuses. Everything else stores a distance from the base (handled
-by the existing walkers) or from its own location (invariant). A load
-command or section type outside this accounting is refused by
-`mg_classify`'s allowlist, which already treats unknown as unsafe.
+An absolute address in `__TEXT` would need a text relocation, which
+Decision 6 refuses. Every other address is a distance:
 
-**The rebase decoder.** Adding G to every rebase target's value needs a
-complete classic rebase-opcode decoder. `md_next_rebase` reads only the two
-opcodes its own encoder emits. objc-methods M2 creates `src/rebase.[ch]`
-(`mrb_`) with a complete one. This subsystem consumes it; whichever plan
-executes first builds it, and the other depends on that plan's interface.
+- from the base (handled by the existing walkers);
+- between two pieces of content (invariant);
+- between content and the header (Decision 3).
 
-### 3. `LC_SEGMENT_SPLIT_INFO` is dropped, and the announcement says so
+The last kind **cannot be found from linker metadata**. Decision 3 finds
+them in code. They could also exist in data, as a constant
+`sym − __dso_handle` with no rebase: no scan can find those. None was found
+in the 1667 images, but none can be ruled out. That is the residual risk,
+named here so no reader mistakes the scan for a proof.
+
+The review's per-structure evidence for this table (every section kind, load
+command and export form it checked, with counts) is summarized in the
+Appendix.
+
+### 3. Code that addresses its own header (M0 refuses, M1 repairs)
+
+**Finding them: a scan that cannot miss an instruction form.** In 64-bit
+mode every RIP-relative operand is a ModRM byte with `(b & 0xC7) == 0x05`,
+then a disp32 with no SIB, then 0, 1, 2 or 4 bytes of immediate. The scan
+covers every section with `S_ATTR_PURE_INSTRUCTIONS` or
+`S_ATTR_SOME_INSTRUCTIONS`, at every byte position. For each immediate
+length in {0, 1, 2, 4}, a position is a **candidate** if its target is
+exactly base.
+
+It over-reports but never under-reports. On an 80-image sample it flagged 6
+images, against 5 found by a scan for `lea` alone.
+
+**M0 (the stop-gap, on the executable route, the only one that exists
+yet): any candidate refuses the grow.** The
+message names the first candidate's address and says why:
+
+```
+ERROR: code at 0x1000028b2 addresses the image's own header; growing would move the header relative to it. Refusing.
+```
+
+This turns item 29's silent crash into an honest refusal. The Claude Code
+executable has no candidates, so it is unaffected.
+
+**M1 (the repair): confirm each candidate is an instruction, then patch it.**
+The candidate's containing function is found through `LC_FUNCTION_STARTS`.
+From that function's start, an x86-64 instruction-length decoder sweeps
+linearly to the candidate, skipping `LC_DATA_IN_CODE` ranges.
+
+- If the sweep lands on an instruction whose ModRM and displacement are
+  exactly the candidate's, it is confirmed. The patch is
+  `disp32 −= G` in both routes, since in both the header ends up G bytes
+  closer to the code than before.
+- If the sweep does not land there, or the image has no
+  `LC_FUNCTION_STARTS` to anchor it, the candidate is unexplained and the
+  grow refuses.
+
+The decoder is a new, self-contained module. Its oracle is independent of
+it: on this host, the decoder's instruction boundaries must equal
+`otool -tV`'s over every function of a corpus of real 10.9 binaries. This
+is a test, not a runtime dependency.
+
+After M1, verification (Decision 7) re-runs the scan on the output. In
+both routes, a reference that was missed would now target the new base
+plus G, so:
+
+- no candidate may target new base + G;
+- every patched instruction must target the new base.
+
+### 4. `LC_SEGMENT_SPLIT_INFO` is dropped on the raise route
 
 Split info lists every cross-segment reference in a dylib, so that
 `update_dyld_shared_cache` can pack the dylib's `__TEXT` and `__DATA` into
-separate regions of the shared cache and patch the references to the new
-distance. Nothing reads it when a dylib loads from its own file, and 10.9's
-dyld never reads it. After a raise its recorded positions are stale:
+separate regions of the shared cache and patch those references. Nothing
+reads it when a dylib loads from its own file, and 10.9's dyld never reads
+it. After a raise its recorded positions are stale.
 
 | after a raise | loading from disk | a shared-cache build |
 |---|---|---|
@@ -137,153 +241,293 @@ dyld never reads it. After a raise its recorded positions are stale:
 | refused (today) | growth never happens | — |
 
 Dropping is the only choice whose result this subsystem's tests can fully
-check. It removes the 16-byte load command, which also adds 16 bytes of pad,
-and leaves the payload as dead bytes in `__LINKEDIT`. The input file keeps
-its split info, since Drydock never writes its input. Only a raise drops it:
-an executable grow still refuses split info, as today. Letting it drop too
-is a separate, later decision.
+check. It removes the 16-byte load command, which adds 16 bytes of pad, and
+leaves the payload as dead bytes in `__LINKEDIT`. The input keeps its split
+info, since Drydock never writes its input.
 
-**This breaks an invariant `src/rewrite.c` states.** Its comment before the
-counting pass says a grow does not change the SET of load commands, only
-offsets elsewhere. A raise that drops split info does change it. Both
-callers of `mg_ensure_pad` are already safe:
+**Mechanics:**
 
-- `mr_process_thin` rebuilds its new table from the grown image, so the
-  dropped command does not reappear.
-- `mv_` appends to the grown image.
+- The drop is its own step. `mi_each_lc` forbids editing `cmd`, `cmdsize`
+  or `ncmds` from a callback.
+- It happens on the working copy **before** `mg_snapshot_take`. Otherwise
+  `mg_verify` would count one fewer watched offset afterwards: `ml_each_off`
+  visits split info's `dataoff`.
+- `mg_classify` gains a route argument, since split info is accepted on one
+  route and refused on the other. It cannot move into
+  `ML_PLAIN_OFFSET_LCS`: `linkedit.h`'s duplicate-case guard forbids it.
+- The executable route still refuses split info, as today.
 
-But the comment becomes false, and an operation that names split info
-itself (for example an `lc delete` of it, if the grammar accepts one) would
-match in the counting pass and not in the rebuild. The plan must:
+**Nothing else can name split info today.** The `lc delete` vocabulary
+(`src/lc_kinds.c`'s `LC_STRIP_KINDS`) has no word for it. `src/rewrite.c`'s
+comment that a grow never changes the set of load commands becomes false;
+M2 corrects it and adds a test pinning that no statement can name split
+info. If the vocabulary ever grows to include it, that test fails first.
 
-- correct the comment;
-- find every operation that can name split info;
-- make the rebuild's result, not the counting pass, decide what is
-  reported for it.
+### 5. `LC_UUID` is replaced on the raise route
 
-### 4. Refusals
+The executable route moves no vm address, so an image's dSYM stays valid.
+A raise moves every content address by G. The old dSYM would then give wrong
+symbols for every frame, and lldb and `atos` would trust it because the UUID
+matches. A wrong answer is worse than a missing one, so **the raise replaces
+the UUID**:
 
-`EX_REFUSED` with the reason on stderr and nothing written, before anything
-is mutated:
+- It is derived deterministically, so the same input and G always give the
+  same output: the first 16 bytes of SHA-256 over the old UUID and G, with
+  the version nibble set to 4 and the variant bits to RFC 4122.
+- The announcement says so (Decision 8).
 
-- anything `mg_classify` refuses today, except `LC_SEGMENT_SPLIT_INFO` on
-  the raise route;
+The executable route keeps its UUID.
+
+*Controller's ruling, not the owner's; recorded so it can be reversed.* The
+alternative, keeping the UUID and warning in the announcement, is one line
+to switch to.
+
+### 6. Refusals
+
+`EX_REFUSED`, with the reason on stderr and nothing written, before
+anything is mutated:
+
+- anything `mg_classify` refuses today, except split info on the raise route;
 - chained fixups (`fixups set classic` first), as today;
 - a slice that is not x86_64, as today;
-- old-style relocation entries (`LC_DYSYMTAB` `nlocrel` or `nextrel`
-  non-zero): they hold absolute addresses by another mechanism, and only
-  binaries built for 10.5 or earlier carry them, which mostly run on 10.9
-  already;
+- **no `LC_DYLD_INFO[_ONLY]`** (raise route). Only compressed dyld info
+  guarantees that every absolute address is a rebase target. This also
+  covers every image with old-style relocation entries: all 24 such images
+  surveyed are classic, built for 10.5 or earlier;
+- a rebase whose type is not `REBASE_TYPE_POINTER` (the 32-bit types hold
+  32-bit values);
+- a rebase target past its segment's `filesize`: its value must be read from
+  the file;
 - a rebase or bind whose target lies in `__TEXT` (a text relocation);
-- a rebase target whose value names neither the header nor content, i.e.
-  lies outside every segment's vm range;
-- the existing ULEB-widening refusals (function starts' leading delta),
-  and the export trie's existing widen-append path, unchanged;
-- an image with no `__TEXT` segment at file offset 0, or whose `__TEXT` does
-  not come first in vm.
+- a rebase value, symbol, export offset or RIP-relative target strictly
+  inside (base, base + F), or a rebase value outside every segment;
+- `LC_ENCRYPTION_INFO[_64]` with `cryptid` ≠ 0;
+- a segment with `SG_PROTECTED_VERSION_1`;
+- `LC_UNIXTHREAD` or `LC_THREAD` in a dylib or bundle;
+- a header-reference candidate: any candidate in M0, which touches only the
+  executable route; from M1 on, only one the decoder cannot confirm. The
+  raise route arrives in M2, after the repair exists;
+- the existing ULEB-widening refusal of the function-starts leading delta.
+  **Except** that a leading delta of 0 means an empty list and is left
+  alone. Seventeen codeless umbrella frameworks (Cocoa, Carbon, …) have
+  that, and are refused today for the wrong reason;
+- the export trie's existing widen-append path, unchanged.
 
-### 5. Verification
+None of the refusals added here fired on the three motivating frameworks.
 
-The raise verifies itself and refuses, writing nothing, on any difference:
+### 7. Verification
 
-1. **Relation.** `mg_snapshot_take` / `mg_verify` gain a delta: 0 for the
+Every grow verifies itself and refuses, writing nothing, on any difference.
+Checks 1–3 derive their expectations from Decision 2's table, so they catch
+slips in the implementation but not a row missing from the table. Checks 4–6
+are independent of the table, and exist to catch exactly that.
+
+1. **Relation.** `mg_snapshot_take` / `mg_verify` gain a delta, 0 for the
    executable route and G for the raise. Every base-relative structure and
    every `mg_each_fileoff` offset must resolve at its old vm address plus the
-   delta, or unchanged if it named the header.
-2. **Absolute addresses.** Decode the old and new images' rebase targets,
-   symbols, segment and section addresses and `LC_ROUTINES_64`. Every one
-   must equal its old value plus G, or its old value when it named the
-   header. Rebase targets must be the same set, each at old segment offset.
+   delta, or at base if it named the header.
+2. **Absolute addresses** (raise). Decode old and new rebase targets,
+   symbols, segment and section addresses, and `LC_ROUTINES_64`. Each must
+   equal its old value plus G, or its old value if it named the header. The
+   rebase targets must be the same set, at the same segment offsets.
 3. **Bytes.** From F onward, the new file equals the old one moved up by G,
-   except at the fields Decision 2 names. Below F, the load commands are
-   compared command by command. Each one is byte-identical to its old
-   self, except:
-   - the fields Decision 2 names;
-   - the deleted split-info command, which is absent.
-   The G inserted bytes and the rest of the pad are zero. So nothing outside
-   the table can have changed.
-4. **`mg_plausible`**, as today: initializers and unwind entries land on
-   known function starts.
-5. **No two segments overlap in vm**, as today.
+   except at the fields Decision 2 names and the instructions Decision 3
+   patched. Below F, the load commands are compared command by command, and
+   each is byte-identical except for those fields, the replaced UUID, and
+   the deleted split info. The rest of the pad is zero.
+4. **Independent oracles.**
+   - Every `S_MOD_INIT_FUNC_POINTERS` / `S_MOD_TERM_FUNC_POINTERS` value and
+     `LC_ROUTINES_64.init_address` is a function start.
+   - Every `__la_symbol_ptr` value lies in `__stub_helper`.
+   - For every regular export, base + trie offset equals the `n_value` of
+     the same-named `N_SECT | N_EXT` symbol. Two structures, adjusted by two
+     different code paths, must agree.
+5. **The header-reference scan** (Decision 3), re-run on the output.
+6. **`mg_plausible`**, as today, and **no two segments overlap in vm**.
 
-### 6. What the user sees
+### 8. What the user sees
 
-Growth stays automatic and announced, as for executables. The dylib route's
-line, from `mg_ensure_pad`:
+Growth stays automatic and announced. The raise route's line:
 
 ```
-LABEL: grew the header pad by 4096 bytes (16 -> 4112 available); contents raised by 0x1000
-LABEL: grew the header pad by 4096 bytes (16 -> 4128 available); contents raised by 0x1000; dropped LC_SEGMENT_SPLIT_INFO
+LABEL: grew the header pad by 4096 bytes (16 -> 4112 available); contents raised by 0x1000; new UUID
+LABEL: grew the header pad by 4096 bytes (16 -> 4128 available); contents raised by 0x1000; new UUID; dropped LC_SEGMENT_SPLIT_INFO
+LABEL: grew the header pad by 4096 bytes (16 -> 4112 available); contents raised by 0x1000; new UUID; repaired 3 references to the header
 ```
 
-The executable route's line is unchanged. Tests match the stable prefix,
-`grew the header pad by`.
+The executable route keeps its line, plus the M1 clause when it patches:
+`image base 0x100000000 -> 0xfffff000; repaired 3 references to the header`.
+Tests match the stable prefix, `grew the header pad by`.
+
+`src/relations.h` gains a row for the raise: it moves every absolute
+content address and may remove a load command. Every statement re-parses
+afterward, so no new relation bit is expected. The plan confirms that.
+
+### 9. The rebase decoder is shared with objc-methods M2
+
+The raise needs every rebase target, with its type, in stream order.
+objc-methods M2's plan (`plans/2026-09-25-objc-methods-m2.md`, Task 2)
+creates `src/rebase.[ch]` with `mrb_slot {off, seg, type}` and an
+`mrb_decode` that bounds the segment index.
+
+That interface sees no segment geometry. So the raise itself refuses a type
+other than `REBASE_TYPE_POINTER`, and checks that offset + 8 ≤ the segment's
+`filesize` (Decision 6).
+
+Whichever plan executes first builds the module. This subsystem adds an
+oracle test to it: its output equals
+`/Library/Developer/CommandLineTools/usr/bin/dyldinfo -rebase` over the 10.9
+`/usr/lib` dylibs. The review's independent decoder handled 6.6 million
+targets there, so the oracle is practical. It runs locally and SKIPs where
+`dyldinfo` or the dylibs are absent.
+
+## Milestones
+
+Each milestone gets its own plan, written when the previous one lands.
+
+**M0: refuse header references when growing an executable** (item 29's
+stop-gap). This covers:
+
+- the scan of Decision 3;
+- the refusal, on the existing route;
+- the export-trie `KIND_ABSOLUTE` fix;
+- the leading-zero function-starts fix;
+- a regression test: the item 29 reproduction must now be refused, and the
+  `_dyld_get_image_header` control must still grow and run.
+
+M0 is small, touches only `src/grow.c` and tests, and ships before the rest.
+
+**M1: repair header references.** This covers:
+
+- the instruction-length decoder, with its `otool -tV` oracle;
+- confirmation and patching on the executable route;
+- scan-based verification (check 5).
+
+The item 29 reproduction now grows and runs.
+
+**M2: the raise route.** This covers:
+
+- Decisions 1, 2, 4, 5, 6, 7 and 8;
+- `mg_classify`'s route argument;
+- the shared rebase decoder (Decision 9).
+
+Header-reference repair from M1 applies to it unchanged.
+
+**M3: proof on real dylibs, and documentation.** This covers the real-run
+test below, and the documentation updates.
 
 ## Testing
 
-| what | where |
-|---|---|
-| each row of Decision 2, on a hand-built dylib fixture that carries that structure, with the mutation that skips its fix-up failing a named test | `tests/grow_test.c` |
-| the rule: a `__dso_handle` rebase, a `__mh_dylib_header` symbol and export offset 0 unchanged; content one byte past the header raised | `tests/grow_test.c` |
-| each refusal in Decision 4 leaves the buffer untouched | `tests/grow_test.c` |
-| verification catches a planted error in each of its five checks | `tests/grow_test.c` |
-| `dylib append`, `dylib insert`, `rpath replace` on a no-pad dylib fixture: success, announced, `verify` passes | `tests/cli_test.sh` |
-| the executable route is byte-for-byte unchanged on every existing grow fixture | existing suites, unchanged |
-| **real 10.9 system dylibs, run by Apple's own programs** (below) | new `tests/grown_dylib_runs_test.sh` |
+| what | where | milestone |
+|---|---|---|
+| the scan finds every form (all four immediate lengths), and never misses a planted reference | `tests/grow_test.c` | M0 |
+| item 29's reproduction is refused, and its control grows and runs | `tests/grown_binary_runs_test.sh` | M0 |
+| `KIND_ABSOLUTE` exports and a leading-zero function-starts list are left alone | `tests/grow_test.c` | M0 |
+| the decoder's instruction boundaries equal `otool -tV`'s on the corpus | new, local, SKIPs without `otool` or the corpus | M1 |
+| item 29's reproduction grows and runs, printing the same as the original | `tests/grown_binary_runs_test.sh` | M1 |
+| each row of Decision 2, on a hand-built dylib fixture carrying that structure; the mutation that skips its fix-up fails a named test | `tests/grow_test.c` | M2 |
+| the rule: a `__dso_handle` rebase, a `__mh_dylib_header` symbol and export offset 0 unchanged; content at base + F raised | `tests/grow_test.c` | M2 |
+| stabs: `N_ENSYM`, `N_OSO` unchanged on a `-g` fixture | `tests/grow_test.c` | M2 |
+| each refusal in Decision 6 leaves the buffer untouched | `tests/grow_test.c` | M0–M2 |
+| each of the six verification checks catches a planted error | `tests/grow_test.c` | M2 |
+| `dylib append`, `dylib insert`, `rpath replace` on a no-pad dylib fixture: success, announced, `verify` passes | `tests/cli_test.sh` | M2 |
+| Sparkle (no compressed dyld info): refused with Decision 6's reason | local end-to-end | M2 |
+| the executable route is byte-for-byte unchanged on every existing grow fixture without header references | existing suites | M0–M2 |
+| **real 10.9 system dylibs run by Apple's programs, and host-built fixture dylibs run by a driver** | new `tests/grown_dylib_runs_test.sh` | M3 |
 
-**Real dylibs, run.** The test grows copies of 10.9 system dylibs that force
-a grow (`dylib append` of a long path), then runs an Apple program against
-each copy through `DYLD_LIBRARY_PATH` or `DYLD_FRAMEWORK_PATH`, and compares
-its output with a run against the untouched original. Subjects are chosen so
-that between them they exercise:
+**Real dylibs, run (M3).** The test grows copies of dylibs to force a raise
+(`dylib append` of a long path), runs a program against each copy, and
+compares its output with a run against the original.
 
-- C++ exceptions thrown and caught across grown code (unwind info, LSDA);
-- Objective-C classes and categories;
-- static initializers;
-- `dlsym` through the export trie;
-- a thread-local variable.
+- **Apple's dylibs, Apple's programs, invoked by absolute path.** For
+  example, `/usr/lib/libxml2.2.dylib` (split info, 2544 bytes of pad) under
+  `/usr/bin/xmllint`, and `Foundation` under `/usr/bin/plutil`. The absolute
+  path matters: `xmllint` on `PATH` here is pkgsrc's, which loads its own
+  libxml2 and never touches the copy.
+- **Host-built fixture dylibs, run by a small driver.** These cover what no
+  10.9 system dylib has, or no Apple program exercises:
+  - a thread-local variable (0 of 1517 system images have one);
+  - `dlsym` through the export trie;
+  - `&__dso_handle` and `getsectiondata(&_mh_dylib_header, …)`, plus a data
+    pointer to `__dso_handle`, whose values must agree before and after;
+  - a C++ exception thrown across grown code;
+  - static initializers.
 
-The plan picks the subjects and the programs. Candidates: `libxml2` with
-`xmllint`, `libc++` with a small C++ program, `Foundation` with `plutil`.
+  Fixtures cover both F < G and F > G, since the failure mode of a missed
+  header reference differs between them.
+- **Positive control, every run.** `DYLD_PRINT_LIBRARIES` must name the grown
+  copy's scratch path, or the run fails. The review confirmed on this host
+  that dyld loads the scratch copy, not the shared cache's, for both
+  `DYLD_LIBRARY_PATH` and `DYLD_FRAMEWORK_PATH`.
+- **Signatures.** Every 10.9 system dylib is signed, and a grown copy's
+  signature is invalid. The review found that such a copy loads on 10.9 from
+  an unhardened process, so the run covers that deliberately.
+- **Where it runs.** The test SKIPs, printing the reason, when the host is
+  not 10.9 on x86_64: CI's `macos-26-arm64` runner can run neither. Per
+  memory "Check CI, not just local suites", that runner's result is a
+  separate gate.
 
-- **Positive control, every run:** dyld prefers the shared cache for any path
-  it contains, so a pass could come from the cached original.
-  `DYLD_PRINT_LIBRARIES` must name the grown copy's scratch path, or the run
-  fails.
-- The test SKIPs, printing the reason, when the host is not 10.9 on x86_64:
-  CI's `macos-26-arm64` runner has neither the 10.9 dylibs nor a way to run
-  them. This follows memory "Check CI, not just local suites": the
-  arm64-runner result is a separate gate from this one.
+**End to end, locally (M3):** `dylib append` and `rpath replace` on a
+lowered copy of Mantle succeed and pass `drydock-macho-rewrite verify`.
 
-**End to end, locally:** `dylib append` and `rpath replace` succeed on a copy
-of Sparkle (split info) and on a lowered copy of Mantle, and pass
-`drydock-macho-rewrite verify`. Both are refused today.
+## Documentation (M3)
 
-## Documentation
-
-The plan's final task updates:
-
-- `README.md`'s grow paragraph;
-- `compat/README.md` rows that say a dylib is refused (for example, the
-  `insert_dylib` row about a real dylib with no `__PAGEZERO`);
-- `docs/macl-case-study.md` rows 9 and 23, so they are true;
-- the swift-runtime note in `docs/superpowers/QUEUE.md`, if any.
-
-Why the raise works — the one rule, and why the list is complete — moves
-into `src/grow.h`'s top comment, which already explains the executable
-route, since this spec is deleted once implemented.
+- `README.md`'s grow paragraph.
+- `compat/README.md`'s rows saying a dylib is refused, for example the
+  `insert_dylib` row about a real dylib with no `__PAGEZERO`.
+- `docs/macl-case-study.md` rows 9 and 23, so they are true.
+- QUEUE items 29 and 31 marked done.
+- Why the routes work moves into `src/grow.h`'s top comment, which already
+  explains the executable route, because this spec is deleted once
+  implemented. That means the one rule, the completeness argument with its
+  residual risk, and the header-reference repair.
 
 ## Out of scope
 
-- Executables: their route is unchanged, including its split-info refusal.
-- 32-bit, arm64, chained fixups, old-style relocations: refused.
-- Re-basing split info (Decision 3).
+- 32-bit, arm64 and chained fixups: refused.
+- Re-basing split info (Decision 4). Dropping it on the executable route
+  too is a later decision.
 - Reclaiming pad by deleting other load commands (UUID, source version).
-  About 50 bytes, not enough for the motivating cases, and deleting the UUID
-  costs crash symbolication.
+  That frees about 50 bytes, which is not enough for the motivating cases,
+  and deleting the UUID costs crash symbolication.
+- Data constants measured from the header (Decision 2's residual risk).
 
 ## Approaches that lost
 
 - **Reclaim only**: see Out of scope.
-- **Reclaim, then raise**: a policy layer and two paths to test, for no gain,
-  because the raise must be correct anyway.
+- **Reclaim, then raise**: a policy layer and two paths to test, for no
+  gain. The raise must be correct anyway.
+- **For header references, refuse forever**: M0 does this, as a stop-gap.
+  Left there, it would refuse about 40% of app frameworks, mostly C++ ones.
+- **For header references, patch without confirming**: a false-positive
+  candidate would be corrupted. Confirmation by decoding is what makes
+  patching safe.
+
+## Appendix: coverage the review measured
+
+The review's survey (1517 system and 150 app images, every rebase and bind
+stream decoded, 6.6 million rebase targets read) checked these and found
+them correctly handled by the table above:
+
+- lazy, non-lazy and lazy-dylib pointers;
+- `__mod_init_func` and `__mod_term_func`;
+- `__interpose`, `__cfstring`, `__dyld`, `__objc_imageinfo`;
+- Objective-C lists and refs;
+- the TLV sections;
+- `S_INIT_FUNC_OFFSETS`;
+- stubs and stub helpers;
+- every unwind-info entry kind;
+- `__eh_frame` and LSDA;
+- DTrace DOF (3038 probe offsets, all relative to the DOF section);
+- export re-exports and resolvers;
+- `N_INDR`;
+- `LC_ROUTINES_64`, `LC_DYLIB_CODE_SIGN_DRS`, `LC_CODE_SIGNATURE`;
+- the indirect symbol table;
+- the `__IMAGE`, `__UNICODE`, `__RESTRICT` and `__LLVM` segments;
+- a `__TEXT` at nonzero `vmaddr`.
+
+It found no instance of:
+
+- text relocations or zerofill `__TEXT` sections;
+- section relocations, a module table or `LC_TWOLEVEL_HINTS`;
+- `LC_ENCRYPTION_INFO_64`, or `LC_UNIXTHREAD` in a dylib.
