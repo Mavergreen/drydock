@@ -56,6 +56,7 @@
 #include "script.h"
 #include "edit.h"
 #include "swift_retag.h"
+#include "objc_meth.h"
 #include "fat.h"
 #include "arch_names.h"
 
@@ -374,6 +375,18 @@ static void info_image(mi_image *im, const char *label) {
         printf("swift-abi: class records carry the stable-ABI tag\n");
     else
         printf("swift-abi: no class records carry the stable-ABI tag\n");
+
+    {
+        mml_walk w;
+        int rc = mml_walk_image(im, &w);
+        if (rc != MML_OK)
+            printf("method-lists: not walked: %s\n", w.why);
+        else if (w.relative + w.absolute == 0)
+            printf("method-lists: none\n");
+        else
+            printf("method-lists: %u relative, %u absolute\n", w.relative, w.absolute);
+        mml_walk_free(&w);
+    }
 
     uint32_t first_sect_off = mg_first_sect_off(im->buf, im->size);
     if (first_sect_off == MG_NO_SECTION_DATA) {
