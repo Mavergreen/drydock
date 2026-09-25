@@ -246,6 +246,8 @@ int mml_walk_image(const mi_image *im, mml_walk *w) {
         free(w->refs);
         w->refs = NULL;
         w->n = w->cap = 0;
+        w->relative = w->absolute = 0;
+        memset(w->owners, 0, sizeof w->owners);
     }
     return c.err;
 }

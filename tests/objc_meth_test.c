@@ -108,6 +108,10 @@ static void test_refusal(unsigned variant, int want_rc, const char *want_why, co
     CHECK(rc == want_rc, "%s: rc %d, want %d (%s)", label, rc, want_rc, w.why);
     CHECK(strstr(w.why, want_why) != NULL, "%s: why '%s' lacks '%s'", label, w.why, want_why);
     CHECK(w.refs == NULL && w.n == 0, "%s: a refusal left refs behind", label);
+    CHECK(w.relative == 0 && w.absolute == 0, "%s: a refusal left %u relative, %u absolute",
+          label, w.relative, w.absolute);
+    for (int k = 0; k < MML_NOWNERS; k++)
+        CHECK(w.owners[k] == 0, "%s: a refusal left owners[%d] = %u", label, k, w.owners[k]);
     mml_walk_free(&w);
 }
 

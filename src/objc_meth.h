@@ -36,8 +36,8 @@ typedef struct {
     char     why[160];
 } mml_walk;
 
-/* MML_OK, or MML_CHAINED / MML_MALFORMED / MML_NOMEM with w->why set and
- * w->refs NULL. */
+/* MML_OK, or MML_CHAINED / MML_MALFORMED / MML_NOMEM with w->why set,
+ * w->refs NULL and every count zero. */
 int  mml_walk_image(const mi_image *im, mml_walk *w);
 void mml_walk_free(mml_walk *w);
 
