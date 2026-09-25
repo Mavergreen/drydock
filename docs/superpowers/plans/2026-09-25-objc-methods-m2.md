@@ -6,21 +6,21 @@
 
 **Architecture:** Three layers, each its own reviewer gate. `src/rebase.[ch]` (`mrb_`) decodes all nine classic rebase opcodes and encodes sorted slots. `src/objc_meth.[ch]` (`mml_`, M1's walk) gains a resolver that turns a relative entry into (name string, types string, IMP) under the spec's Decision 3 checks. A new `src/objc_abs.[ch]` (`mma_`) holds the layout (Decision 1: D grows, `__LINKEDIT` moves up, no load command added), the conversion (Decisions 2–3), the verification (Decision 7) and `mma_convert`, which `src/edit.c`'s `me_apply` lowers the new `MS_TABLE_ROWS` row to.
 
-**Tech Stack:** C99 as the 10.9 clang (Apple LLVM 6.0) accepts it; CMake through shipyard; POSIX `sh` suites; the hand-built fixture `tests/relmeth_fixture.h`; for the two local real-binary tasks only, `python3` (`/opt/pkg/bin/python3` on this host).
+**Tech Stack:** C99 as the 10.9 clang (Apple LLVM 6.0) accepts it; CMake through shipyard (`/usr/local/mavergreen/bin`); POSIX `sh` suites; the hand-built fixture `tests/relmeth_fixture.h`; for the two local real-binary tasks only, `python3` (`/opt/pkg/bin/python3` on this host).
 
-**Spec:** `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md` (Decision 1 as revised in `1a4a3da`; "The owner's answers (2026-09-25)" is binding). M2 is its "M2" milestone bullets and the M2 rows of its Testing table. M3 and M4 are out of scope.
+**Spec:** `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md` (Decision 1 as revised in `1a4a3da`, and the five corrections of `3a7327f`; "The owner's answers (2026-09-25)" is binding). M2 is its "M2" milestone bullets and the M2 rows of its Testing table. M3 and M4 are out of scope.
 
 ## Global Constraints
 
-- **Build:** `/usr/local/bin/shipyard-cmake --build /private/tmp/build/schmonz/drydock-native -j`
-- **Test:** `unset DRYDOCK_MACHO_REWRITE; /usr/local/bin/shipyard-ctest --test-dir /private/tmp/build/schmonz/drydock-native`. Below, `B=/private/tmp/build/schmonz/drydock-native`; a single C test runs as `"$B/<name>"`, and the CLI suite as `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B"`, from the repo root.
-- **Rebuild check (clock skew here).** Before every build, `pre=$(shasum -a 256 "$B/<target>" 2>/dev/null)`; after it, compare. If the binary you changed did not change, `touch` the edited source and build again; if it still did not change, build with `--clean-first`. A test result against an unchanged binary is not a result.
-- **TDD and mutation proof** for every task: the test first, seen failing; then the code; then every row of the task's mutation table, each applied alone, rebuilt (rebuild check), and seen to fail the named test. Apply a mutation only to a saved copy's original: `M=$(mktemp -d); cp FILE "$M/"`, edit, rebuild, run, then `cp "$M/$(basename FILE)" FILE && cmp FILE "$M/$(basename FILE)"`, rebuild. A mutation that no test kills is a finding: add the test that kills it, in the same task.
+- **Build:** `/usr/local/mavergreen/bin/shipyard-cmake --build /private/tmp/build/schmonz/drydock-native -j`. That directory is already configured. Do not configure with `--preset` (broken until the owner installs a fixed shipyard); if it ever needs configuring again: `/usr/local/mavergreen/bin/shipyard-cmake -S . -B /private/tmp/build/schmonz/drydock-native -G Ninja -DCMAKE_TOOLCHAIN_FILE=/usr/local/mavergreen/shipyard/share/cmake/MavericksShipyard/MavericksToolchain.cmake -DMAVERICKS_EXPECTED_MODE=native -DCMAKE_OSX_DEPLOYMENT_TARGET=10.9 -DCMAKE_OSX_ARCHITECTURES=x86_64`.
+- **Test:** `unset DRYDOCK_MACHO_REWRITE; /usr/local/mavergreen/bin/shipyard-ctest --test-dir /private/tmp/build/schmonz/drydock-native`. Below, `B=/private/tmp/build/schmonz/drydock-native`; a single C test runs as `"$B/<name>"`, and the CLI suite as `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B"`, from the repo root. At `688ae2b` the suite has 25 tests; Task 2 makes it 27.
+- **Rebuild check (clock skew here; `touch` can fail to relink).** After editing `src/X.c`, delete `$B/CMakeFiles/drydockcore.dir/src/X.c.o`, `$B/libdrydockcore.a` and the binary you are about to run (a test's own source is `$B/CMakeFiles/<test>.dir/tests/<test>.c.o`; the CLI's is `$B/CMakeFiles/drydock-macho-rewrite.dir/cli/drydock-macho-rewrite.c.o`). After editing any header, delete every object: `find "$B/CMakeFiles" -name '*.o' -exec rm {} +`, and `$B/libdrydockcore.a`. Then build, and confirm with `shasum -a 256` that the binary you run changed. A test result against an unchanged binary is not a result.
+- **TDD and mutation proof** for every task: the test first, seen failing; then the code; then every row of the task's mutation table, each applied alone, rebuilt (rebuild check), and seen to fail the named test. Apply a mutation only to a saved copy's original: `M=$(mktemp -d -t objcm2); cp FILE "$M/"` (10.9's `mktemp -d` needs a template), edit, rebuild, run, then `cp "$M/$(basename FILE)" FILE && cmp FILE "$M/$(basename FILE)"`, rebuild. **Never `git stash` and never `git checkout --`**: restore only from the saved copy. A mutation that no test kills is a finding: add the test that kills it, in the same task.
 - **Comments are a last resort:** prefer a test, then the commit message, then a doc, then one inline sentence. No history narration, and no reference to a plan or spec from source (specs and plans are deleted once implemented).
 - **Exit codes:** `EX_REFUSED` = 1 (and `MR_REFUSED`), `EX_FAIL` = 2 (and `MR_FAIL`); a parse error is 2. The statement never writes its input, and nothing is written on a refusal.
 - **Every grep negative needs a positive control.** In shell suites, `rc=0; cmd || rc=$?`.
 - **char[16] names:** print with `%.16s`, compare with `strncmp(..., 16)`.
-- **Staging and pushing:** stage explicit paths only (never `git add -A`/`.`); commit on `main`; do not push. Every commit message ends with:
+- **Staging and pushing:** stage explicit paths only (never `git add -A`/`.`); never stage `CMakePresets.json` or `build/msc.sh` (an owner-pending change sits in the working tree); commit on `main`; do not push. Every commit message ends with:
   ```
   Co-Authored-By: <authoring model> <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU
@@ -33,7 +33,7 @@
 
 1. **A `__LINKEDIT` whose vmsize the rewritten rebase stream outgrows** (ReactiveObjC and Squirrel both do) → its vmsize grows to cover its file bytes, and verification accepts exactly that growth. Pinned by Task 4's `test_insert_grows_linkedit_vm_to_cover_its_file_bytes` and Task 6's `__LINKEDIT's geometry` refusals.
 2. **The statement run on an image it already converted** (a script that says it twice, or a later `target 10.9`) → "nothing to convert", and the output is byte-identical. Pinned by Task 5's `test_a_converted_image_has_nothing_to_convert`, Task 6's `test_convert_swaps_only_what_verifies` and Task 7's CLI assertion.
-3. **An input rebase stream ld64 wrote compactly** (`DO_REBASE_ADD_ADDR_ULEB` between slots, not Drydock's one pointer per opcode) → every old rebase survives into the new stream. Pinned by Task 5's `RMF_COMPACT` variant, run through the oracle test and Task 6's verify-everything test.
+3. **An input rebase stream ld64 wrote compactly** (`DO_REBASE_ADD_ADDR_ULEB` between slots, not Drydock's one pointer per opcode) → every old rebase survives into the new stream. Pinned by Task 2's `rebase_oracle_test` (the decoder against `dyldinfo` over 10.9's own ld64-written dylibs) and Task 5's `RMF_COMPACT` variant, run through the oracle test and Task 6's verify-everything test.
 4. **An image that is not x86_64** (the arm64 slice of a fat file) → refused with its reason, nothing written. Pinned by Task 5's `poke_arm64` refusal.
 5. **Bytes past `__LINKEDIT`'s end** (a padded slice) → refused before anything moves, rather than moved blind. Pinned by Task 4's "bytes past __LINKEDIT" layout refusal.
 
@@ -42,10 +42,11 @@
 Each is repeated, with its reason, in the task that makes it.
 
 - Task 1: the real-binary check is a documented local check, recorded in the spec, not a ctest.
+- Task 2: the decoder gets a local-only oracle test against 10.9's `dyldinfo -rebase` over `/usr/lib`'s x86_64 dylibs, which SKIPs where either is absent (the dylib-growth spec's Decision 9 asks for it).
 - Task 3: the resolver lives in `src/objc_meth.[ch]`; a selector reference with no rebase is refused either way, and the message says "bound to another image" when the bind stream binds it; an `LC_FUNCTION_STARTS` that lists no starts is treated as absent, as `mg_plausible` treats it.
 - Task 3–5: the fixture grows to 0x2200 bytes (`__LINKEDIT` 0x200) to hold its new blobs; list A's entries become beta, alpha, so a conversion that sorts is caught.
 - Task 4: layout, conversion and verification go in a new `src/objc_abs.[ch]` (`mma_`); their tests stay in `tests/objc_meth_test.c`, as the spec's Testing table says.
-- Task 4: `__LINKEDIT`'s vmsize grows to the page-rounded new filesize when that exceeds it; refuse when `__LINKEDIT` does not end the file; refuse when D, its zero fill made file bytes, does not end on a 4096-byte boundary.
+- Task 4: refuse when `__LINKEDIT` does not end the file; refuse when D, its zero fill made file bytes, does not end on a 4096-byte boundary.
 - Task 5: the old rebase stream is copied byte for byte up to its `DONE`, then the new opcodes, then `DONE`, zero-padded to 8.
 - Task 5: a list is counted under the record of the first slot (in walk order) that names it.
 - Task 6: verification compares each entry's three addresses, not string bytes; equal addresses and unchanged bytes below the insertion make the strings equal.
@@ -57,12 +58,13 @@ Each is repeated, with its reason, in the task that makes it.
 |---|---|---|---|
 | `src/rebase.h`, `src/rebase.c` | new | `mrb_`: decode all nine rebase opcodes into slots; sort, look up; encode sorted slots | 2 |
 | `tests/rebase_test.c` | new | hermetic opcode-by-opcode tests | 2 |
+| `tests/rebase_oracle.c`, `tests/rebase_oracle_test.sh` | new | the decoder against `dyldinfo -rebase` over 10.9's `/usr/lib`, local only | 2 |
 | `src/objc_meth.h`, `src/objc_meth.c` | modify | `mml_resolver`, `mml_entry_at`: Decision 3 | 3 |
 | `src/objc_abs.h`, `src/objc_abs.c` | new | `mma_`: layout (4), conversion (5), verification and `mma_convert` (6) | 4–6 |
 | `tests/relmeth_fixture.h` | modify | new variants (3, 4, 5) and the oracle `rmf_describe` (5) | 3–5 |
 | `tests/mkrelmeth.c` | modify | variant names (3, 4), `make A+B`, `entries FILE` (5) | 3–5 |
 | `tests/objc_meth_test.c` | modify | resolution, layout, insertion, conversion, verification tests | 3–6 |
-| `CMakeLists.txt` | modify | `src/rebase.c` + `rebase_test` (2); `src/objc_abs.c` (4) | 2, 4 |
+| `CMakeLists.txt` | modify | `src/rebase.c`, `rebase_test`, `rebase_oracle_test` (2); `src/objc_abs.c` (4) | 2, 4 |
 | `src/script.h`, `src/script.c` | modify | `MS_OBJC_METHODS`, the row, its value check | 7 |
 | `src/edit.c` | modify | `me_apply` case and `me_log_objc_methods` | 7 |
 | `tests/script_test.c` | modify | row count, disturbs, parse | 7 |
@@ -74,8 +76,8 @@ Each is repeated, with its reason, in the task that makes it.
 ### Task 1: Check the three real frameworks against Decision 3 before any code
 
 **Files:**
-- Create (scratch, not committed): `$W/objc_methods_probe.py`, where `W=$(mktemp -d)`
-- Modify: `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md` — the "**What real binaries on this host settled (2026-09-25).**" list (`:459`–`:477`, ending "extra 6 are lists of protocols nothing adopts.") and the first "**Still to validate:**" bullet (`:481`–`:483`, "that in an app binary (as opposed to the shared cache) `name` is always a selector-reference offset and never direct. M2's first task checks this on the three frameworks above;").
+- Create (scratch, not committed): `$W/objc_methods_probe.py`, where `W=$(mktemp -d -t objcm2)`
+- Modify: `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md` — the "**What real binaries on this host settled (2026-09-25).**" list (`:467`–`:485` at `688ae2b`, ending "extra 6 are lists of protocols nothing adopts.") and the first "**Still to validate:**" bullet (`:489`–`:491`, "that in an app binary (as opposed to the shared cache) `name` is always a selector-reference offset and never direct. M2's first task checks this on the three frameworks above;").
 
 **Interfaces:**
 - Consumes: the current `drydock-macho-rewrite` (`fixups set classic`, M1's `info`).
@@ -89,8 +91,8 @@ The probe is a second reading written apart from `src/`: Decision 3's checks on 
 
 ```bash
 B=/private/tmp/build/schmonz/drydock-native
-/usr/local/bin/shipyard-cmake --build "$B" -j
-W=$(mktemp -d); echo "$W"
+/usr/local/mavergreen/bin/shipyard-cmake --build "$B" -j
+W=$(mktemp -d -t objcm2); echo "$W"
 FW="$HOME/Downloads/OpenCode.app/Contents/Frameworks"
 for n in Mantle ReactiveObjC Squirrel; do
     f="$FW/$n.framework/Versions/A/$n"
@@ -326,7 +328,7 @@ rc=0; python3 "$W/objc_methods_probe.py" check "$W/ctl.norebase" "$W/ctl.trailin
 echo "rc=$rc"; grep -c 'carries no rebase' "$W/ctl.out"; grep -F '__LINKEDIT does not end the file' "$W/ctl.out"
 ```
 
-Expected: `rc=1`; a count well above 0 (121 when this was written: a `DONE` at the stream's first byte drops every rebase); and the line `  __LINKEDIT does not end the file`.
+Expected: `rc=1`; `20` (the probe prints at most 20 failure lines; `$W/ctl.out`'s first line ends `121 FAILURES`, because a `DONE` at the stream's first byte drops every rebase); and the line `  __LINKEDIT does not end the file`.
 
 | mutation (of the input) | the probe must report |
 |---|---|
@@ -392,8 +394,8 @@ Keep `$W` until Task 9, or re-create it then with Step 1 and Step 2.
 ### Task 2: A complete rebase-opcode decoder and an encoder (`src/rebase.[ch]`)
 
 **Files:**
-- Create: `src/rebase.h`, `src/rebase.c`, `tests/rebase_test.c`
-- Modify: `CMakeLists.txt:66` (the `add_library(drydockcore STATIC ... src/objc_meth.c)` line) and after `:273` (`set_tests_properties(objc_meth_test PROPERTIES ENVIRONMENT MallocScribble=1)`)
+- Create: `src/rebase.h`, `src/rebase.c`, `tests/rebase_test.c`, `tests/rebase_oracle.c`, `tests/rebase_oracle_test.sh`
+- Modify: `CMakeLists.txt` — the `add_library(drydockcore STATIC ...)` line (`:66` at `688ae2b`, ending `src/objc_meth.c src/hdrref.c src/x86len.c)`), and after `set_tests_properties(objc_meth_test PROPERTIES ENVIRONMENT MallocScribble=1)`
 
 **Interfaces:**
 - Consumes: `mu_decode`, `mu_minlen`, `mu_encode_fixed` (`src/uleb.h`).
@@ -405,6 +407,8 @@ Keep `$W` until Task 9, or re-create it then with Step 1 and Step 2.
   - `typedef struct { uint8_t *p; size_t n, cap; int oom; } mrb_buf;` `int mrb_encode(const mrb_slot *v, size_t n, mrb_buf *b);` `void mrb_put(mrb_buf *b, const uint8_t *src, size_t n);`
 
 `md_next_rebase` (`src/declassify.c:267`) reads only the two opcodes its own encoder emits; it is left alone, because `fixups set classic` verifies only its own streams with it.
+
+**Plan decision:** the decoder also gets `tests/rebase_oracle_test.sh`, which compares it, slot for slot and in stream order, with `/Library/Developer/CommandLineTools/usr/bin/dyldinfo -rebase` over every x86_64 dylib under 10.9's `/usr/lib`, and SKIPs (77) where `dyldinfo` or those dylibs are absent. Why: the dylib-growth spec (Decision 9) consumes this module and asks for exactly this oracle; it fits here at small cost (about 3 seconds for 131 dylibs and 86,828 rebases); and it proves the decoder on the compact opcode forms ld64 really writes, which the hand-assembled tests only imitate.
 
 - [ ] **Step 1: Write the failing test, `tests/rebase_test.c`**
 
@@ -583,27 +587,185 @@ int main(void) {
 }
 ```
 
-- [ ] **Step 2: Register it and the library source**
+- [ ] **Step 2: Write the oracle, `tests/rebase_oracle.c` and `tests/rebase_oracle_test.sh`**
 
-In `CMakeLists.txt:66`, change the end of the `add_library` line from `src/exports.c src/objc_meth.c)` to `src/exports.c src/objc_meth.c src/rebase.c)`. After `:273` (`set_tests_properties(objc_meth_test PROPERTIES ENVIRONMENT MallocScribble=1)`) add:
+```c
+/* tests/rebase_oracle.c -- src/rebase.h's decode of a thin 64-bit image's
+ * rebase stream, printed as `dyldinfo -rebase` prints its own, less the
+ * section column: one "SEGMENT ADDRESS TYPE" line per slot, in stream order.
+ *   rebase_oracle FILE */
+#include <stdio.h>
+#include <string.h>
+#include <mach-o/loader.h>
+
+#include "image.h"
+#include "rebase.h"
+
+typedef struct {
+    char name[64][17];
+    uint64_t vmaddr[64];
+    int n;
+    const struct dyld_info_command *di;
+} ro_lcs;
+
+static int ro_lc(const struct load_command *lc, void *ctx_) {
+    ro_lcs *c = ctx_;
+    if (lc->cmd == LC_SEGMENT_64 && c->n < 64) {
+        const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
+        snprintf(c->name[c->n], sizeof c->name[c->n], "%.16s", sc->segname);
+        c->vmaddr[c->n++] = sc->vmaddr;
+    } else if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
+        c->di = (const struct dyld_info_command *)lc;
+    }
+    return 0;
+}
+
+static const char *ro_type(uint8_t t) {
+    return t == REBASE_TYPE_POINTER ? "pointer" : t == REBASE_TYPE_TEXT_ABSOLUTE32 ? "text abs32"
+         : t == REBASE_TYPE_TEXT_PCREL32 ? "text rel32" : "??";
+}
+
+int main(int argc, char **argv) {
+    mi_image im;
+    ro_lcs c;
+    mrb_set set;
+    char why[160] = "";
+    if (argc != 2) { fprintf(stderr, "usage: rebase_oracle FILE\n"); return 2; }
+    if (mi_open(argv[1], &im) != 0) { fprintf(stderr, "rebase_oracle: %s: not a 64-bit Mach-O\n", argv[1]); return 2; }
+    memset(&c, 0, sizeof c);
+    mi_each_lc(&im, ro_lc, &c);
+    if (!c.di || !c.di->rebase_size) { mi_close(&im); return 0; }
+    if (c.di->rebase_off > im.size || c.di->rebase_size > im.size - c.di->rebase_off) {
+        fprintf(stderr, "rebase_oracle: %s: the rebase stream lies outside the file\n", argv[1]);
+        mi_close(&im);
+        return 1;
+    }
+    if (mrb_decode(im.buf + c.di->rebase_off, c.di->rebase_size, c.n, &set, why, sizeof why) != MRB_OK) {
+        printf("MALFORMED %s\n", why);
+        mi_close(&im);
+        return 1;
+    }
+    for (size_t i = 0; i < set.n; i++)
+        printf("%s 0x%08llX %s\n", c.name[set.v[i].seg],
+               (unsigned long long)(c.vmaddr[set.v[i].seg] + set.v[i].off), ro_type(set.v[i].type));
+    mrb_free(&set);
+    mi_close(&im);
+    return 0;
+}
+```
+
+```sh
+#!/bin/sh
+# tests/rebase_oracle_test.sh -- src/rebase.h's decode must be dyldinfo's,
+# slot for slot and in stream order, over every x86_64 dylib under 10.9's
+# /usr/lib.
+#
+#   sh tests/rebase_oracle_test.sh <bindir>
+#
+# Local only: it SKIPs, saying why, where dyldinfo or 10.9's dylibs are
+# absent; CI's macos-26 runner keeps its libraries in the shared cache.
+set -u
+
+BIN="${1:?usage: rebase_oracle_test.sh <bindir>}"
+ORACLE="$BIN/rebase_oracle"
+[ -x "$ORACLE" ] || { echo "rebase_oracle_test: $ORACLE not found or not executable" >&2; exit 1; }
+
+DYLDINFO=/Library/Developer/CommandLineTools/usr/bin/dyldinfo
+[ -x "$DYLDINFO" ] || { echo "SKIP: no $DYLDINFO here"; exit 77; }
+command -v lipo >/dev/null 2>&1 || { echo "SKIP: no lipo here"; exit 77; }
+[ -f /usr/lib/libSystem.B.dylib ] || { echo "SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own"; exit 77; }
+
+T=$(mktemp -d "${TMPDIR:-/tmp}/rebase-oracle.XXXXXX") || exit 1
+trap 'rm -rf "$T"' EXIT INT TERM
+
+# dyldinfo's rows are "SEGMENT SECTION ADDRESS TYPE"; the type may be two
+# words, and the section may be blank, so the address is found by its 0x.
+theirs() {
+    "$DYLDINFO" -arch x86_64 -rebase "$1" 2>/dev/null | awk 'NR > 2 {
+        for (i = 2; i <= NF && $i !~ /^0x/; i++) ;
+        t = ""; for (j = i + 1; j <= NF; j++) t = t (t == "" ? "" : " ") $j
+        print $1, $i, t }'
+}
+
+fail=0 files=0 slots=0
+find /usr/lib -name "*.dylib" -type f >"$T/corpus"
+while read -r f; do
+    [ -f "$f" ] || continue
+    lipo "$f" -verify_arch x86_64 2>/dev/null || continue
+    thin="$T/thin"
+    lipo "$f" -thin x86_64 -output "$thin" 2>/dev/null || cp "$f" "$thin"
+    theirs "$thin" >"$T/theirs"
+    rc=0; "$ORACLE" "$thin" >"$T/ours" || rc=$?
+    files=$((files + 1))
+    slots=$((slots + $(wc -l <"$T/ours")))
+    if [ "$rc" -ne 0 ] || ! cmp -s "$T/theirs" "$T/ours"; then
+        echo "FAIL $f: exit $rc; first difference:"
+        diff "$T/theirs" "$T/ours" | head -4
+        fail=$((fail + 1))
+    fi
+done <"$T/corpus"
+if [ "$files" -eq 0 ] || [ "$slots" -eq 0 ]; then
+    echo "FAIL: compared $files dylibs and $slots rebases; comparing nothing is a failure"
+    fail=$((fail + 1))
+else
+    echo "PASS $files dylibs, $slots rebases, each where and as dyldinfo has it"
+fi
+
+# The positive controls: with one of dyldinfo's rows gone, or two swapped, the
+# comparison fails.
+lib=/usr/lib/libz.1.dylib
+lipo "$lib" -thin x86_64 -output "$T/thin" 2>/dev/null || cp "$lib" "$T/thin"
+"$ORACLE" "$T/thin" >"$T/ours"
+theirs "$T/thin" | awk 'NR != 3' >"$T/theirs"
+if cmp -s "$T/theirs" "$T/ours"; then
+    echo "FAIL the positive control: with dyldinfo's third row gone, the comparison still matched"
+    fail=$((fail + 1))
+else
+    echo "PASS the positive control: a rebase dyldinfo does not have is a difference"
+fi
+theirs "$T/thin" | awk 'NR == 2 { held = $0; next } { print } NR == 3 { print held }' >"$T/theirs"
+if cmp -s "$T/theirs" "$T/ours"; then
+    echo "FAIL the positive control: with two of dyldinfo's rows swapped, the comparison still matched"
+    fail=$((fail + 1))
+else
+    echo "PASS the positive control: the same rebases in another order is a difference"
+fi
+
+[ "$fail" -eq 0 ] || { echo "rebase_oracle_test: $fail failure(s)"; exit 1; }
+echo "rebase_oracle_test: all passed"
+```
+
+- [ ] **Step 3: Register them and the library source**
+
+In `CMakeLists.txt`, find the `add_library(drydockcore STATIC ...)` line by its content and change its end from `src/hdrref.c src/x86len.c)` to `src/hdrref.c src/x86len.c src/rebase.c)`. After `set_tests_properties(objc_meth_test PROPERTIES ENVIRONMENT MallocScribble=1)` add:
 
 ```cmake
 
 # Hermetic tests for src/rebase.c, against rebase streams assembled byte by
-# byte.
+# byte. tests/rebase_oracle_test.sh checks the same decoder against dyldinfo.
 add_executable(rebase_test tests/rebase_test.c)
 target_compile_options(rebase_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(rebase_test PRIVATE drydockcore)
 add_test(NAME rebase_test COMMAND rebase_test)
 set_tests_properties(rebase_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
+# The same decoder against 10.9's dyldinfo, slot for slot, over every x86_64
+# dylib under /usr/lib. Local only: SKIPs (77) where dyldinfo or those dylibs
+# are absent.
+add_executable(rebase_oracle tests/rebase_oracle.c)
+target_compile_options(rebase_oracle PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(rebase_oracle PRIVATE drydockcore)
+add_test(NAME rebase_oracle_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/rebase_oracle_test.sh" "$<TARGET_FILE_DIR:rebase_oracle>")
+set_tests_properties(rebase_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
 ```
 
-- [ ] **Step 3: Run it to see it fail**
+- [ ] **Step 4: Run it to see it fail**
 
-Run: `/usr/local/bin/shipyard-cmake --build "$B" -j`
-Expected: the build fails: `src/rebase.c` does not exist (CMake) or `'rebase.h' file not found`.
+Run: `/usr/local/mavergreen/bin/shipyard-cmake --build "$B" -j`
+Expected: the build fails: CMake cannot find the source file `src/rebase.c`.
 
-- [ ] **Step 4: Write `src/rebase.h`**
+- [ ] **Step 5: Write `src/rebase.h`**
 
 ```c
 #ifndef DRYDOCK_REBASE_H
@@ -664,7 +826,7 @@ void mrb_put(mrb_buf *b, const uint8_t *src, size_t n);
 #endif
 ```
 
-- [ ] **Step 5: Write `src/rebase.c`**
+- [ ] **Step 6: Write `src/rebase.c`**
 
 ```c
 /* mrb_ -- see rebase.h. */
@@ -867,12 +1029,21 @@ int mrb_encode(const mrb_slot *v, size_t n, mrb_buf *b) {
 }
 ```
 
-- [ ] **Step 6: Build and run**
+- [ ] **Step 7: Build and run**
 
-Run: build (rebuild check on `$B/rebase_test`), then `"$B/rebase_test"`.
-Expected: `rebase_test: 0 failure(s)`. Then the whole suite (Test command): all pass.
+Run: build (rebuild check on `$B/rebase_test`), then `"$B/rebase_test"`, then `sh tests/rebase_oracle_test.sh "$B"`.
+Expected: `rebase_test: 0 failure(s)`; and, on this host:
 
-- [ ] **Step 7: Mutation proof** (file `src/rebase.c`; test binary `$B/rebase_test`)
+```
+PASS 131 dylibs, 86828 rebases, each where and as dyldinfo has it
+PASS the positive control: a rebase dyldinfo does not have is a difference
+PASS the positive control: the same rebases in another order is a difference
+rebase_oracle_test: all passed
+```
+
+Then the whole suite (Test command): 27 tests, all pass (`chained_fixups` SKIPs, as before).
+
+- [ ] **Step 8: Mutation proof** (file `src/rebase.c`; test binary `$B/rebase_test`, or `rebase_oracle_test` where named)
 
 | # | replace | with | must fail |
 |---|---|---|---|
@@ -885,17 +1056,23 @@ Expected: `rebase_test: 0 failure(s)`. Then the whole suite (Test command): all 
 | 7 | `dups += mrb_cmp(&s->v[i - 1], &s->v[i]) == 0;` | `dups += 0;` | `test_sort_counts_repeats_and_has_finds` |
 | 8 | `if (run <= REBASE_IMMEDIATE_MASK) {` | `if (run < REBASE_IMMEDIATE_MASK) {` | `test_encode_pins_its_opcodes` ("fifteen fit the immediate") |
 | 9 | `if (k && mrb_cmp(&v[k - 1], &v[k]) >= 0) return MRB_MALFORMED;` | (delete the line) | `test_encode_refuses_what_it_cannot_say` |
+| 10 | `off += skip + 8;` | `off += skip;` | `sh tests/rebase_oracle_test.sh "$B"` (rebuild `rebase_oracle`): `FAIL /usr/lib/...` lines |
+| 11 | `off += (uint64_t)imm * 8;` | `off += imm;` | `sh tests/rebase_oracle_test.sh "$B"`: `FAIL /usr/lib/...` lines |
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src/rebase.h src/rebase.c tests/rebase_test.c CMakeLists.txt
+git add src/rebase.h src/rebase.c tests/rebase_test.c tests/rebase_oracle.c tests/rebase_oracle_test.sh CMakeLists.txt
 git commit -m "feat(rebase): decode every classic rebase opcode, encode sorted slots
 
 md_next_rebase reads only the two opcodes fixups set classic emits. The
 method-list conversion reads streams ld64 wrote too, and must re-read its
 own output, so it needs all nine; and it needs an encoder for the slots
 it adds.
+
+rebase_oracle_test holds the decoder to dyldinfo, slot for slot and in
+stream order, over every x86_64 dylib under 10.9's /usr/lib. It is local
+only, and SKIPs where dyldinfo or those dylibs are absent.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -913,7 +1090,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Test: `tests/objc_meth_test.c` (before `:198` `int main(void) {`, and in `main` after `:208` `test_every_category_and_protocol_slot_is_read();`)
 
 **Interfaces:**
-- Consumes: `mrb_decode`, `mrb_add`, `mrb_sort`, `mrb_has`, `mrb_free`, `mrb_set` (Task 2); `mo_bind_observe`, `mo_bind_state` (`src/ordinals.h:305`); `mg_funcstarts_decode`, `mg_addr_known` (`src/grow.h:140`, `:321`); `mi_image_base` (`src/image.h:171`).
+- Consumes: `mrb_decode`, `mrb_add`, `mrb_sort`, `mrb_has`, `mrb_free`, `mrb_set` (Task 2); `mo_bind_observe`, `mo_bind_state` (`src/ordinals.h:305`); `mg_funcstarts_decode`, `mg_addr_known` (`src/grow.h:149`, `:345` at `688ae2b`); `mi_image_base` (`src/image.h:171`).
 - Produces (Tasks 5 and 6 call these), in `src/objc_meth.h`:
   - `#define MML_MAX_SEGS 64` (moved here from `src/objc_meth.c`)
   - `typedef struct { uint64_t name, types, imp; } mml_entry;`
@@ -1239,7 +1416,7 @@ and in `main`, after `test_every_category_and_protocol_slot_is_read();` (`:208`)
 - [ ] **Step 3: Run to see it fail**
 
 Run: build.
-Expected: `objc_meth_test` does not compile: `unknown type name 'mml_resolver'` (and `mml_entry`).
+Expected: `objc_meth_test` does not compile: `mml_entry`, `mml_resolver` and `mml_entry_at` are undeclared.
 
 - [ ] **Step 4: Declare the resolver in `src/objc_meth.h`**
 
@@ -1590,7 +1767,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Files:**
 - Create: `src/objc_abs.h`, `src/objc_abs.c`
-- Modify: `CMakeLists.txt:66` (the `add_library` line: `src/objc_meth.c src/rebase.c)` → `src/objc_meth.c src/rebase.c src/objc_abs.c)`)
+- Modify: `CMakeLists.txt` (the `add_library(drydockcore STATIC ...)` line, found by content: `src/x86len.c src/rebase.c)` → `src/x86len.c src/rebase.c src/objc_abs.c)`)
 - Modify: `tests/relmeth_fixture.h` (edits below), `tests/mkrelmeth.c` (`VARIANTS`)
 - Test: `tests/objc_meth_test.c` (includes at `:3`–`:9`; new tests before `int main(void) {`; registration after Task 3's)
 
@@ -1607,8 +1784,6 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Fixture variant bits added: `RMF_DYLIB` (1<<18), `RMF_ZEROTAIL` (1<<19), `RMF_DATARO` (1<<20), `RMF_GAP` (1<<21), `RMF_SEGAFTER` (1<<22), `RMF_CODESIG` (1<<23), `RMF_SPLIT` (1<<24), `RMF_PAD16` (1<<25); `RMF_PAD` (16), `RMF_SPLIT_BLOB` 0x2130, `RMF_CODESIG_BLOB` 0x2180, `RMF_CODESIG_SIZE` 0x80; `rmf_data_seg(v)` (1 for a dylib, else 2); `rmf_binds(b, v)` gains its `v`.
 
 **Plan decision:** layout, conversion and verification go in a new `src/objc_abs.[ch]` (`mma_`), while their tests stay in `tests/objc_meth_test.c`. Why: `objc_meth.c` only reads, and this writes, and together they would pass 1,200 lines; the spec's Testing table puts M2's conversion tests in `tests/objc_meth_test.c`, and one test binary per subsystem keeps the fixture in one place.
-
-**Plan decision:** `__LINKEDIT`'s vmsize becomes the page-rounded new filesize when that is larger. Why: the new rebase stream makes `__LINKEDIT`'s file bytes grow by R, and on ReactiveObjC and Squirrel that passes their vmsize (Decision 7's list of changed fields omits vmsize); `__LINKEDIT` is the last segment, so its growth in vm moves nothing.
 
 **Plan decision:** refuse when `__LINKEDIT` does not end the file, and when D, once its zero fill is in the file, does not end on a 4096-byte boundary. Why: bytes past `__LINKEDIT` would have to be moved without anyone saying what they are (`import redirect` refuses the same case), and a `__LINKEDIT` file offset that is not page-aligned cannot be mapped; neither holds on any real image seen.
 
@@ -2154,7 +2329,7 @@ int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
 #endif
 ```
 
-- [ ] **Step 5: Write `src/objc_abs.c` and add it to `CMakeLists.txt:66`**
+- [ ] **Step 5: Write `src/objc_abs.c` and add it to `CMakeLists.txt`'s `add_library` line**
 
 ```c
 /* mma_ -- see objc_abs.h. */
@@ -2815,7 +2990,7 @@ The figures pinned in `test_every_new_pointer_is_rebased` come from the plain fi
 - [ ] **Step 3: Run to see it fail**
 
 Run: build.
-Expected: `objc_meth_test` does not compile: `unknown type name 'mma_out'`.
+Expected: `objc_meth_test` does not compile: `mma_out` and `mma_build` are undeclared (clang's first error names `o`, a variable of that type).
 
 - [ ] **Step 4: Declare the conversion in `src/objc_abs.h`**
 
@@ -3020,7 +3195,7 @@ done:
 - [ ] **Step 6: Build and run**
 
 Run: build (rebuild check on `$B/objc_meth_test`), `"$B/objc_meth_test"`, then the whole suite.
-Expected: `objc_meth_test: 0 failure(s)`; all pass. Then look at the oracle once by hand: `M=$(mktemp -d); cc -O2 -o "$M/mkrelmeth" tests/mkrelmeth.c && "$M/mkrelmeth" make plain "$M/p" && "$M/mkrelmeth" entries "$M/p"`. Expected, exactly:
+Expected: `objc_meth_test: 0 failure(s)`; all pass. Then look at the oracle once by hand: `M=$(mktemp -d -t objcm2); cc -O2 -o "$M/mkrelmeth" tests/mkrelmeth.c && "$M/mkrelmeth" make plain "$M/p" && "$M/mkrelmeth" entries "$M/p"`. Expected, exactly:
 
 ```
 class rel 2: beta v16@0:8 0x100000800; alpha v16@0:8 0x100000804;
@@ -3078,7 +3253,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
   - `int mma_verify(const mi_image *in, const mma_out *o, char *why, size_t whysz);`
   - `int mma_convert(uint8_t **pbuf, size_t *psize, mma_report *rep);` → 0, `MR_REFUSED` or `MR_FAIL`, the reason on stderr prefixed `drydock-macho-rewrite: objc-methods set absolute: `.
 
-The verifier trusts nothing `mma_build` computed except `o->lay`, `o->s` and `o->r`: it re-walks both images, re-resolves every input entry through a fresh resolver, decodes both rebase streams, re-reads both images' load commands through `ml_each_off`, and compares bytes. It runs `mg_plausible` only through the existing gate in `me_run` (the row declares `MREL_FILE_OFF`, so for this statement alone the gate does not apply; see the reply's spec notes).
+The verifier trusts nothing `mma_build` computed except `o->lay`, `o->s` and `o->r`: it re-walks both images, re-resolves every input entry through a fresh resolver, decodes both rebase streams, re-reads both images' load commands through `ml_each_off`, and compares bytes. It does not run `mg_plausible`: as Decision 7.4 now says, the row declares `MREL_FILE_OFF`, the gate in `me_run` runs `mg_plausible` only for statements that disturb base-relative data, and this one disturbs none.
 
 **Plan decision:** entries are compared by their three addresses, not by their strings' bytes. Why: equal addresses plus the separate check that every byte below the insertion is unchanged (the strings live there) make the bytes equal; comparing the strings too was a check no mutation could kill independently.
 
@@ -3684,7 +3859,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 The row, the enum value, the value check and the `me_apply` case each go **after whatever is currently last**; the line numbers are HEAD `1a4a3da`'s. If a parallel plan has appended since, append after its entry and keep yours last.
 
-**Plan decision:** the log prints its figures with the report's comma grouping (`4,096`), adds a third line only when zero fill became file bytes, and says `nothing to convert` when there was nothing. Why: every other follow-up line in `src/edit.c` goes through `me_count`; the zero-fill line is the one fact the spec's two-line example has no room for; and Decision 6 names the no-op's words. The spec example's "added 13 rebases" does not fit its own four lists and five methods: with one IMP of 0 that is 14, which is what the plain fixture pins.
+**Plan decision:** the log prints its figures with the report's comma grouping (`4,096`), adds a third line only when zero fill became file bytes, and says `nothing to convert` when there was nothing. Why: every other follow-up line in `src/edit.c` goes through `me_count`; the zero-fill line is the one fact the spec's two-line example has no room for; and Decision 6 names the no-op's words. The spec's example prints `4096` without the comma; the plain fixture pins what `me_count` prints.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3959,7 +4134,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Consumes: Task 7's `om` helper and `$T/mkrelmeth` in `tests/cli_test.sh`; `dylib append` (which grows the header through `mg_ensure_pad` when the pad is short); `RMF_PAD16`, `RMF_FSTARTS` (Tasks 3–4); `mkrelmeth entries` (Task 5).
 - Produces: nothing new; it pins Decision 1's "How this meets the grow machinery".
 
-This is a characterization of code that already exists (`mg_grow_header` moves every segment after the header, so the lists move with D), so it is expected to pass the first time it runs. Its falsifiability is proved in Step 3 instead.
+This is a characterization of code that already exists (`mg_grow_header` memmoves everything past the header, so the lists move with D), so it is expected to pass the first time it runs. Since `688ae2b` that grow also scans for and repairs code that addresses its own header (`src/hdrref.c`); the fixture's `__text` is sixteen `ret`s, and the composition still passes. Its falsifiability is proved in Step 3 with corrupted inputs rather than a mutation: a `src/grow.c` mutation that stops moving `__DATA` makes `tests/cli_test.sh`'s earlier `edit` grow block abort the suite (exit 2, `FATAL -- aborted early`) before this block runs, so it cannot show that this block's assertions are live.
 
 - [ ] **Step 1: Write the test**
 
@@ -3996,13 +4171,32 @@ rc=0; printf 'dylib append /usr/lib/libz.1.dylib\n' \
 Run: `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B" 2>&1 | grep -E '^FAIL|then a grow'`
 Expected: three `PASS objc-methods then a grow: ...` lines and no `FAIL`.
 
-- [ ] **Step 3: Prove it can fail** (a temporary edit of `src/grow.c`, restored before the commit; `src/grow.c` is not committed)
+- [ ] **Step 3: Prove its assertions can fail**
 
-| # | file | replace | with | must fail |
-|---|---|---|---|---|
-| 1 | `src/grow.c` (`mg_patch_cb`) | `    } else if (seg->fileoff >= ctx->insert) {` | `    } else if (seg->fileoff >= ctx->insert && strncmp(seg->segname, "__DATA", 16) != 0) {` | `cli_test`: "objc-methods then a grow: dylib append grows ...", "... the lists moved with __DATA ...", "... verify passes" |
+Run the block's own steps by hand on two broken inputs:
 
-After restoring, `git status --short src/grow.c` must print nothing.
+```bash
+M=$(mktemp -d -t objcm2)
+cc -O2 -o "$M/mkrelmeth" tests/mkrelmeth.c
+"$M/mkrelmeth" make pad16+fstarts "$M/in"
+printf 'objc-methods set absolute\n' | "$B/drydock-macho-rewrite" "$M/in" "$M/conv" 2>/dev/null
+printf '\001' | dd of="$M/conv" bs=1 seek=$((0x2010)) conv=notrunc 2>/dev/null
+printf 'dylib append /usr/lib/libz.1.dylib\n' | "$B/drydock-macho-rewrite" "$M/conv" "$M/grown" >/dev/null 2>&1
+"$M/mkrelmeth" entries "$M/in" | sed 's/ rel / abs /' >"$M/want"
+"$M/mkrelmeth" entries "$M/grown" >"$M/got"
+cmp -s "$M/want" "$M/got" && echo "CONTROL FAILED: the oracle missed a corrupted entry" || echo "control ok: the oracle comparison fails"
+"$M/mkrelmeth" make plain "$M/plain"
+printf 'objc-methods set absolute\n' | "$B/drydock-macho-rewrite" "$M/plain" "$M/pconv" 2>/dev/null
+printf 'dylib append /usr/lib/libz.1.dylib\n' | "$B/drydock-macho-rewrite" "$M/pconv" "$M/pgrown" >/dev/null 2>"$M/p.err"
+grep -q "grew the header pad" "$M/p.err" && echo "CONTROL FAILED: a grow reported on an image with room" || echo "control ok: no grow, so the grow assertion would fail"
+```
+
+Expected: two `control ok` lines. The first byte written is the low byte of list A's first `types` pointer (the lists start at file offset 0x2000, the entry's `types` at 0x2010), so the oracle then reads `beta lpha` where it read `beta v16@0:8`; the plain fixture has 856 bytes of header pad, so `dylib append` does not grow it.
+
+| # | input change | must fail |
+|---|---|---|
+| 1 | a converted entry's `types` pointer off by one before the grow | the block's oracle comparison ("the lists moved with __DATA, and read as they did") |
+| 2 | an input with room in its header pad | the block's "dylib append grows the converted image's header" |
 
 - [ ] **Step 4: Commit**
 
@@ -4025,7 +4219,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ### Task 9: The real-world run on Mantle, ReactiveObjC and Squirrel
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md` — `:6` ("Milestone 1 has landed (439e1cc..9082c8f)."), the "**M2: `objc-methods set absolute`.**" block (`:386`–`:411`), and the "**What real binaries on this host settled (2026-09-25).**" list (Task 1's bullet is its last).
+- Modify: `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md` — `:6` ("Milestone 1 has landed (439e1cc..9082c8f)."), the "**M2: `objc-methods set absolute`.**" block (`:394`–`:419` at `688ae2b`, ending "`test_disturbs_matches_the_spec_table`."), and the "**What real binaries on this host settled (2026-09-25).**" list (Task 1's bullet is its last).
 
 **Interfaces:**
 - Consumes: the finished statement; Task 1's probe (`dump` mode) and lowering commands.
@@ -4087,7 +4281,7 @@ for f in "$W/Mantle.classic" "$W/Mantle.abs"; do
 done
 ```
 
-Expected on this host (10.9's `codesign_allocate`): both fail, `Mantle.classic` with `not in an order that can be processed (dyld_info out of place)` and `Mantle.abs` with `... (code signature data out of place)`. `fixups set classic` already appends the rebase and bind streams after the code signature; this statement does not make re-signing possible or impossible. Record whatever it says.
+Expected on this host (10.9's `codesign_allocate`): both fail, `Mantle.classic` with `not in an order that can be processed (dyld_info out of place)` and `Mantle.abs` with `... (code signature data out of place)`. Decision 1 already says why (QUEUE item 30): `fixups set classic` leaves its streams out of the order that tool requires, and this statement leaves the image as re-signable as it found it. Record whatever it says.
 
 - [ ] **Step 5: Record the results and the milestone in the spec**
 
@@ -4108,10 +4302,10 @@ Find the range: `first=$(git log --format=%h -1 --grep='every relative entry in 
   `__LINKEDIT`'s vmsize grew on ReactiveObjC (0x15000 to 0x19000) and
   Squirrel (0xd000 to 0xe000), because the rewritten rebase stream
   outgrew it. Nothing converted has run on 10.9 yet: that is M3.
-- **Re-signing needs more than this statement.** 10.9's `codesign --force
-  --sign -` refuses Mantle before the conversion ("dyld_info out of
-  place": `fixups set classic` appends its streams after the code
-  signature) and after it ("code signature data out of place").
+- **Re-signing is as Decision 1 says** (QUEUE item 30). 10.9's
+  `codesign --force --sign -` refuses Mantle before the conversion
+  ("dyld_info out of place") and after it ("code signature data out of
+  place").
 ```
 
 If Step 4 printed something else, write what it printed instead of the last bullet.
@@ -4140,12 +4334,12 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 | spec requirement | task |
 |---|---|
-| `src/rebase.[ch]` (`mrb_`), all nine opcodes, encoder for sorted slots | 2 |
+| `src/rebase.[ch]` (`mrb_`), all nine opcodes, encoder for sorted slots; the `dyldinfo` oracle the dylib-growth spec asks of it | 2 |
 | Decision 1: D grows, zero fill materialized, `__LINKEDIT` moves by S (vm) and Z+S (file), stream at its start, `ml_bump_all`, old stream zeroed, no load command, refusals (read-only, gap vm/file, `__LINKEDIT` not last, index ≥ 16) | 4 |
 | Decision 2: refuse chained, refuse no `LC_DYLD_INFO`, one rebase per new non-zero pointer, bound selref refused, repointed slots must already be rebased, opcode set | 3, 5, 2 |
 | Decision 3: selref checks, cstring checks, IMP section and function-start checks | 3 |
 | Decision 4: order preserved, shared list converted once and every slot repointed, absolute lists untouched, protocols walked | 5 (oracle, `RMF_SHARED`, `RMF_ABSCAT`, `RMF_ALLSLOTS`) |
-| Decision 7: re-walk, rebase set equality, layout and bytes, `mg_plausible` through the gate | 6 (the gate: see the reply) |
+| Decision 7: re-walk, rebase set equality, layout and bytes; `mg_plausible` does not run for this statement (7.4) | 6 |
 | The row, `me_apply` lowering, log lines | 7 |
 | Fixture variants: dylib with 16 bytes of pad, zerofill tail, D read-only, gap, segment after, code signature, split info, bound selref, IMP not a function start; `mkrelmeth entries` as the oracle | 3, 4, 5 |
 | Tests: `tests/rebase_test.c`, `tests/objc_meth_test.c`, `tests/cli_test.sh`, `test_disturbs_matches_the_spec_table` | 2–7 |
@@ -4154,6 +4348,6 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Placeholders:** none; `<authoring model>` in commit trailers is the Global Constraints' own wording, filled by whoever commits. The two spec hashes in Task 9 are computed by the commands given.
 
-**Type consistency:** `mml_entry`, `mml_resolver`, `mml_entry_at`, `mml_off_rebased`, `mml_seg_of` (Task 3) are used with those signatures in Tasks 5–6; `mma_seg`, `mma_layout`, `mma_segments`, `mma_layout_check`, `mma_insert`, `mma_fail`, `mma_find_info` (Task 4) in Tasks 5–6; `mma_report`, `mma_out`, `mma_build`, `mma_out_free`, `mma_firsts` (Task 5) in Tasks 6–7; `mma_verify`, `mma_convert` (Task 6) in Task 7. Every code block in this plan was compiled and run, task by task, against HEAD `1a4a3da` while the plan was written: each task's state builds and its tests pass, the whole suite (24 tests) passes at the end, and every mutation in every table was seen to fail its named test.
+**Type consistency:** `mml_entry`, `mml_resolver`, `mml_entry_at`, `mml_off_rebased`, `mml_seg_of` (Task 3) are used with those signatures in Tasks 5–6; `mma_seg`, `mma_layout`, `mma_segments`, `mma_layout_check`, `mma_insert`, `mma_fail`, `mma_find_info` (Task 4) in Tasks 5–6; `mma_report`, `mma_out`, `mma_build`, `mma_out_free`, `mma_firsts` (Task 5) in Tasks 6–7; `mma_verify`, `mma_convert` (Task 6) in Task 7. Every code block in this plan was replayed, task by task, on a fresh `git archive 688ae2b` built with `/usr/local/mavergreen/bin/shipyard-cmake` (Ninja, the explicit toolchain flags above): each task's red step failed as stated, its green step passed, the whole suite passed after each task (27 tests from Task 2 on, `chained_fixups` SKIPping), and each of the 74 mutation rows in Tasks 2–7 was rebuilt by the rebuild check (sha256 changed) and seen to fail its named test, and restored from its saved copy. Task 1's and Task 8's input controls and Tasks 1 and 9's real-framework figures were re-run at `688ae2b` and match what is written here. A clean rebuild of the final state has no compiler warnings.
 
 **Review Focus:** the five lines above each name the test that pins them, in its owning task.
