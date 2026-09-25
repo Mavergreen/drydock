@@ -63,7 +63,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c)
 target_include_directories(drydockcore PUBLIC src)
 target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
@@ -288,6 +288,24 @@ target_compile_options(objc_meth_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(objc_meth_test PRIVATE drydockcore)
 add_test(NAME objc_meth_test COMMAND objc_meth_test)
 set_tests_properties(objc_meth_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
+# Hermetic tests for src/rebase.c, against rebase streams assembled byte by
+# byte. tests/rebase_oracle_test.sh checks the same decoder against dyldinfo.
+add_executable(rebase_test tests/rebase_test.c)
+target_compile_options(rebase_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(rebase_test PRIVATE drydockcore)
+add_test(NAME rebase_test COMMAND rebase_test)
+set_tests_properties(rebase_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
+# The same decoder against 10.9's dyldinfo, slot for slot, over every x86_64
+# dylib under /usr/lib. Local only: SKIPs (77) where dyldinfo or those dylibs
+# are absent.
+add_executable(rebase_oracle tests/rebase_oracle.c)
+target_compile_options(rebase_oracle PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(rebase_oracle PRIVATE drydockcore)
+add_test(NAME rebase_oracle_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/rebase_oracle_test.sh" "$<TARGET_FILE_DIR:rebase_oracle>")
+set_tests_properties(rebase_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
 # directory under $TMPDIR: it never writes its input, it writes its output
