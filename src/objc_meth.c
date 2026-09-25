@@ -21,13 +21,15 @@
 
 typedef struct { uint64_t vmaddr, filesize, fileoff; } mml_seg;
 
+/* Open addressing; 0 marks an empty bucket, so the key 0 is kept apart. */
+typedef struct { uint64_t *keys; uint32_t cap, n; int has_zero; } mml_set;
+
 typedef struct {
     const mi_image *im;
     mml_walk *w;
     mml_seg segs[MML_MAX_SEGS];
     int nsegs, chained, err;
-    uint64_t *seen;
-    uint32_t nseen, capseen;
+    mml_set records, slots, lists;
 } mml_ctx;
 
 static const struct { const char *name; int owner; } MML_LISTS[] = {
@@ -71,25 +73,50 @@ static int mml_read64(const mml_ctx *c, uint64_t va, uint64_t *out) {
     return 0;
 }
 
-/* 1 the first time `va` is seen, 0 after that, -1 when out of memory. */
-static int mml_first_visit(mml_ctx *c, uint64_t va) {
-    for (uint32_t i = 0; i < c->nseen; i++)
-        if (c->seen[i] == va) return 0;
-    if (c->nseen == c->capseen) {
-        uint32_t cap = c->capseen ? c->capseen * 2 : 64;
-        uint64_t *p = realloc(c->seen, cap * sizeof *p);
-        if (!p) { mml_fail(c, MML_NOMEM, "out of memory"); return -1; }
-        c->seen = p;
-        c->capseen = cap;
+static uint32_t mml_bucket(uint64_t k, uint32_t cap) {
+    return (uint32_t)((k * 0x9e3779b97f4a7c15ULL) >> 32) & (cap - 1);
+}
+
+static int mml_set_grow(mml_set *s) {
+    uint32_t cap = s->cap ? s->cap * 2 : 64, j;
+    uint64_t *keys;
+    if (s->cap >= 0x80000000u || !(keys = calloc(cap, sizeof *keys))) return -1;
+    for (uint32_t i = 0; i < s->cap; i++) {
+        if (!s->keys[i]) continue;
+        for (j = mml_bucket(s->keys[i], cap); keys[j]; j = (j + 1) & (cap - 1)) {}
+        keys[j] = s->keys[i];
     }
-    c->seen[c->nseen++] = va;
-    return 1;
+    free(s->keys);
+    s->keys = keys;
+    s->cap = cap;
+    return 0;
+}
+
+/* 1 when `k` was in the set already; else adds it and returns 0, or -1 when
+ * out of memory. */
+static int mml_set_add(mml_set *s, uint64_t k) {
+    uint32_t i;
+    if (!k) { int had = s->has_zero; s->has_zero = 1; return had; }
+    if ((uint64_t)(s->n + 1) * 4 > (uint64_t)s->cap * 3 && mml_set_grow(s) != 0) return -1;
+    for (i = mml_bucket(k, s->cap); s->keys[i]; i = (i + 1) & (s->cap - 1))
+        if (s->keys[i] == k) return 1;
+    s->keys[i] = k;
+    s->n++;
+    return 0;
+}
+
+/* mml_set_add, failing the walk when out of memory. */
+static int mml_seen(mml_ctx *c, mml_set *s, uint64_t k) {
+    int r = mml_set_add(s, k);
+    if (r < 0) mml_fail(c, MML_NOMEM, "out of memory");
+    return r;
 }
 
 static int mml_list(mml_ctx *c, uint64_t slot_va, int owner) {
     mml_walk *w = c->w;
     uint64_t list_va;
-    uint32_t hdr, count, i;
+    uint32_t hdr, count;
+    int known;
     int64_t slot_off = mml_off(c, slot_va, 8), loff;
 
     if (slot_off < 0)
@@ -118,11 +145,8 @@ static int mml_list(mml_ctx *c, uint64_t slot_va, int owner) {
         return mml_fail(c, MML_MALFORMED, "the method list at 0x%llx claims %u entries, which runs "
                         "past its segment", (unsigned long long)list_va, count);
 
-    int fresh = 1;
-    for (i = 0; i < w->n; i++) {
-        if (w->refs[i].slot_off == (uint64_t)slot_off) return 0;
-        if (w->refs[i].list_va == list_va) fresh = 0;
-    }
+    if (mml_seen(c, &c->slots, (uint64_t)slot_off) != 0) return c->err;
+    if ((known = mml_seen(c, &c->lists, list_va)) < 0) return c->err;
     if (w->n == w->cap) {
         uint32_t cap = w->cap ? w->cap * 2 : 32;
         mml_ref *p = realloc(w->refs, cap * sizeof *p);
@@ -137,16 +161,13 @@ static int mml_list(mml_ctx *c, uint64_t slot_va, int owner) {
     w->refs[w->n].count = count;
     w->refs[w->n].owner = owner;
     w->n++;
-    if (fresh) { if (rel) w->relative++; else w->absolute++; }
+    if (!known) { if (rel) w->relative++; else w->absolute++; }
     return 0;
 }
 
 static int mml_class(mml_ctx *c, uint64_t cls_va, int owner) {
     uint64_t data, isa;
-    int v;
-    if (!cls_va) return 0;
-    v = mml_first_visit(c, cls_va);
-    if (v <= 0) return c->err;
+    if (!cls_va || mml_seen(c, &c->records, cls_va) != 0) return c->err;
     if (mml_read64(c, cls_va + MML_CLASS_ISA, &isa) != 0 ||
         mml_read64(c, cls_va + MML_CLASS_DATA, &data) != 0)
         return mml_fail(c, MML_MALFORMED, "the %s record at 0x%llx lies outside the file",
@@ -159,10 +180,7 @@ static int mml_class(mml_ctx *c, uint64_t cls_va, int owner) {
 }
 
 static int mml_category(mml_ctx *c, uint64_t va) {
-    int v;
-    if (!va) return 0;
-    v = mml_first_visit(c, va);
-    if (v <= 0) return c->err;
+    if (!va || mml_seen(c, &c->records, va) != 0) return c->err;
     if (mml_off(c, va, MML_CAT_SIZE) < 0)
         return mml_fail(c, MML_MALFORMED, "the category record at 0x%llx lies outside the file",
                         (unsigned long long)va);
@@ -172,10 +190,7 @@ static int mml_category(mml_ctx *c, uint64_t va) {
 }
 
 static int mml_protocol(mml_ctx *c, uint64_t va) {
-    int v;
-    if (!va) return 0;
-    v = mml_first_visit(c, va);
-    if (v <= 0) return c->err;
+    if (!va || mml_seen(c, &c->records, va) != 0) return c->err;
     if (mml_off(c, va, MML_PROTO_SIZE) < 0)
         return mml_fail(c, MML_MALFORMED, "the protocol record at 0x%llx lies outside the file",
                         (unsigned long long)va);
@@ -241,7 +256,9 @@ int mml_walk_image(const mi_image *im, mml_walk *w) {
     if (!c.err && c.chained)
         mml_fail(&c, MML_CHAINED, "the image has chained fixups; fixups set classic first");
     if (!c.err) mi_each_lc(im, mml_sect_lc, &c);
-    free(c.seen);
+    free(c.records.keys);
+    free(c.slots.keys);
+    free(c.lists.keys);
     if (c.err) {
         free(w->refs);
         w->refs = NULL;
