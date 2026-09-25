@@ -107,6 +107,9 @@ static const struct xcase cases[] = {
     { "xbegin rel16 (66 C7 F8)", 5, { 0x66, 0xc7, 0xf8, 0x01, 0x02 }, 0, 0, 0, 0, 0 },
     { "sixteen prefixes", 16, { 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
                                 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66 }, 0, 0, 0, 0, 0 },
+    { "fourteen prefixes, nop (kills a cap from 8..14)", 15,
+      { 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x90 }, 15, -1, -1, 0, 0 },
     { "0F 04", 2, { 0x0f, 0x04 }, 0, 0, 0, 0, 0 },
     { "FF /7", 2, { 0xff, 0xff }, 0, 0, 0, 0, 0 },
     { "FE /2", 2, { 0xfe, 0x10 }, 0, 0, 0, 0, 0 },
@@ -157,7 +160,7 @@ static void test_each_case(void) {
             CHECK(0, "%s: read past avail", c->what);
             continue;
         }
-        mx_insn in = { 99, 99, 99, 99, 99 };
+        mx_insn in = { 99, 99, 99, 99, 99, 99 };
         int ok = mx_decode(b, (size_t)c->n, &in);
         if (c->len == 0) {
             CHECK(!ok, "%s: decoded as %d bytes, want not decoded", c->what, in.len);

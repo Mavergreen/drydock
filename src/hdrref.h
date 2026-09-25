@@ -42,7 +42,9 @@ int64_t mhr_scan(const uint8_t *buf, size_t fsize, uint64_t target, mhr_fn fn, v
 
 /* mhr_confirm's answers. */
 #define MHR_CONFIRMED   0  /* every candidate is an instruction, or there is none */
-#define MHR_UNSCANNABLE 1  /* an instruction section lies past the end of the image */
+#define MHR_UNSCANNABLE 1  /* an instruction section lies past the end of the image, or so
+                             * does LC_DATA_IN_CODE's payload, or its size is not a multiple
+                             * of its 8-byte entry */
 #define MHR_NO_STARTS   2  /* a candidate, and no LC_FUNCTION_STARTS to decode it from */
 #define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm */
 

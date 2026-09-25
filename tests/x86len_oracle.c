@@ -25,11 +25,19 @@
  * to keep discovering jump tables by running into them from both sides.
  *
  * Prints one summary line, and up to ten lines each of MISMATCH (a boundary
- * disagreement) and REFUSED (an unlisted site where otool decodes and the
- * length decoder does not); exits 1 on either, when no instruction was
- * compared, or when an allow-listed site no longer occurs (see below), 2 on
- * bad input. Set X86LEN_ORACLE_NO_ALLOWLIST to any non-empty value to treat
- * every REFUSED site as unlisted, allow-list included.
+ * disagreement, including a decode that runs past its function's end) and
+ * REFUSED (an unlisted site where otool decodes and the length decoder does
+ * not); exits 1 on any of those, when no instruction was compared, or when
+ * an allow-listed site no longer occurs (see below), 2 on bad input. Set
+ * X86LEN_ORACLE_NO_ALLOWLIST to any non-empty value to treat every REFUSED
+ * site as unlisted, allow-list included.
+ *
+ * Two test-only knobs exercise paths the corpus does not reach on its own.
+ * X86LEN_ORACLE_EXTRA_ALLOW: an address, added to the allow-list for the
+ * current image, that this corpus never produces -- proves a stale
+ * allow-listed site fails by name. X86LEN_ORACLE_TEST_SHRINK: a byte count
+ * taken off the first compared function's end -- proves a decode that then
+ * runs past it is a MISMATCH.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,9 +100,9 @@ static const char *basename_of(const char *path) {
  * refuses it -- confirmed, each one, to be a jump table's raw data that
  * otool's own linear sweep (falling out of step after the switch it
  * follows) misreads as an opcode invalid in 64-bit mode, not code the
- * decoder needed to get right. A site the corpus stops producing prints a
- * note instead of matching silently: the corpus is fixed, so that means
- * this list has gone stale, not that anything got fixed. */
+ * decoder needed to get right. The list is exact: a site the corpus stops
+ * producing is a failure below, not a silent match -- the corpus is fixed,
+ * so that means this list has gone stale, not that anything got fixed. */
 struct allowed { const char *image; uint64_t addr; };
 static const struct allowed ALLOWED[] = {
     { "libsystem_c.dylib", 0x492b4 },  /* ce fe ff ff ...: INTO, invalid in 64-bit mode */
@@ -104,9 +112,16 @@ static const struct allowed ALLOWED[] = {
 #define NALLOWED (sizeof(ALLOWED) / sizeof(ALLOWED[0]))
 static int allowed_hit[NALLOWED];
 
+/* X86LEN_ORACLE_EXTRA_ALLOW: an address the test adds to the allow-list for
+ * the current image, on top of ALLOWED, to prove a site that never occurs
+ * is reported as such and fails the run (see main). */
+static uint64_t extra_allow_addr;
+static int has_extra_allow, extra_allow_hit;
+
 static int is_allowed(const char *image, uint64_t addr) {
     for (size_t i = 0; i < NALLOWED; i++)
         if (strcmp(ALLOWED[i].image, image) == 0 && ALLOWED[i].addr == addr) { allowed_hit[i] = 1; return 1; }
+    if (has_extra_allow && addr == extra_allow_addr) { extra_allow_hit = 1; return 1; }
     return 0;
 }
 
@@ -127,6 +142,14 @@ static int find_cb(const struct load_command *lc, void *ctx_) {
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "usage: otool -tv FILE | x86len_oracle FILE\n"); return 2; }
     int no_allowlist = getenv("X86LEN_ORACLE_NO_ALLOWLIST") && *getenv("X86LEN_ORACLE_NO_ALLOWLIST");
+    const char *extra_allow_env = getenv("X86LEN_ORACLE_EXTRA_ALLOW");
+    if (extra_allow_env && *extra_allow_env) {
+        has_extra_allow = 1;
+        extra_allow_addr = strtoull(extra_allow_env, NULL, 0);
+    }
+    uint64_t shrink = 0;
+    const char *shrink_env = getenv("X86LEN_ORACLE_TEST_SHRINK");
+    if (shrink_env && *shrink_env) shrink = strtoull(shrink_env, NULL, 0);
     const char *image = basename_of(argv[1]);
     mi_image im;
     uint64_t base;
@@ -158,10 +181,12 @@ int main(int argc, char **argv) {
 
     unsigned long compared = 0, insns = 0, out_of_step = 0, stopped_otool = 0, stopped_decoder = 0,
                   bad = 0, refused = 0;
+    int shrunk = 0;
     for (size_t i = 0; i < nstarts; i++) {
         uint64_t s = starts[i], e = i + 1 < nstarts ? starts[i + 1] : hi;
         size_t j = line_at(s);
         if (j == nlines || lines[j].addr != s) { out_of_step++; continue; }
+        if (shrink && !shrunk) { e -= shrink; shrunk = 1; }
         compared++;
         for (uint64_t pc = s; pc < e; ) {
             mx_insn in;
@@ -181,10 +206,12 @@ int main(int argc, char **argv) {
             }
             insns++;
             uint64_t next = pc + (uint64_t)in.len;
-            if (next < e && (j + 1 == nlines || lines[j + 1].addr != next)) {
+            int overrun = next > e;
+            if (overrun || (next < e && (j + 1 == nlines || lines[j + 1].addr != next))) {
                 if (bad++ < 10) {
                     printf("MISMATCH at %#llx: the decoder says %d bytes, otool %lld:",
                            (unsigned long long)pc, in.len,
+                           overrun ? (long long)(e - pc) :
                            j + 1 < nlines ? (long long)(lines[j + 1].addr - pc) : -1LL);
                     for (uint64_t b = pc; b < pc + 15 && b < hi; b++) printf(" %02x", code[b - lo]);
                     printf("\n");
@@ -194,15 +221,23 @@ int main(int argc, char **argv) {
             pc = next;
         }
     }
+    int stale = 0;
     for (size_t i = 0; i < NALLOWED; i++)
-        if (!no_allowlist && strcmp(ALLOWED[i].image, image) == 0 && !allowed_hit[i])
-            printf("x86len_oracle: note: allow-listed site %s %#llx did not occur\n",
+        if (!no_allowlist && strcmp(ALLOWED[i].image, image) == 0 && !allowed_hit[i]) {
+            printf("x86len_oracle: FAIL: allow-listed site %s %#llx did not occur\n",
                    ALLOWED[i].image, (unsigned long long)ALLOWED[i].addr);
+            stale = 1;
+        }
+    if (!no_allowlist && has_extra_allow && !extra_allow_hit) {
+        printf("x86len_oracle: FAIL: allow-listed site %s %#llx did not occur\n",
+               image, (unsigned long long)extra_allow_addr);
+        stale = 1;
+    }
     printf("x86len_oracle: %s: %lu of %zu functions compared, %lu instructions, %lu mismatches, "
            "%lu unlisted refusals (%lu out of step with otool at their start; %lu stopped where "
            "otool also has nothing; %lu stopped where otool decodes and the decoder refused, "
            "%lu of them allow-listed)\n",
            argv[1], compared, nstarts, insns, bad, refused, out_of_step, stopped_otool,
            stopped_decoder, stopped_decoder - refused);
-    return bad || refused || insns == 0;
+    return bad || refused || insns == 0 || stale;
 }

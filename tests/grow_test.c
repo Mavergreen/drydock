@@ -2134,7 +2134,7 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     char path[512];
     char *text = (char *)calloc(1, 65536);
     if (!tmpdir) tmpdir = "/tmp";
-    snprintf(path, sizeof path, "%s/macho_grow_test_warn.%d", tmpdir, (int)getpid());
+    snprintf(path, sizeof path, "%s/macho_grow_test_stderr.%d", tmpdir, (int)getpid());
     fflush(stderr);
     int saved_fd = dup(fileno(stderr));
     if (!freopen(path, "w", stderr)) {
@@ -2574,8 +2574,7 @@ static void test_confirm_ignores_function_starts_past_the_image(void) {
         mhr_cand bad = { 0, 0, 0 };
         memcpy(buf + HR_FOFF, k.b, k.n);
         hr_add_lc(buf, LC_FUNCTION_STARTS, at[i], HR_ONE_FUNCTION, 2);
-        ((struct linkedit_data_command *)(buf + sizeof(struct mach_header_64) +
-            sizeof(struct segment_command_64) + 3 * sizeof(struct section_64)))->datasize = size[i];
+        ((struct linkedit_data_command *)find_lc(buf, HR_IMG_SIZE, LC_FUNCTION_STARTS))->datasize = size[i];
         int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
         CHECK(r == MHR_NO_STARTS, "confirm: function starts at %#x, %#x bytes, past the image, "
               "are ignored (got %d)", at[i], size[i], r);
@@ -2713,14 +2712,14 @@ static void test_confirm_reports_a_bad_section_before_a_good_one(void) {
     free(buf);
 }
 
-/* ---- fix round 1: three false confirmations the review reproduced ----
+/* ---- data-in-code ranges that overlap a candidate instruction ----
  *
  * (1) A data-in-code range that starts partway through the instruction
- * holding the candidate's disp32 -- not at or before pc -- was accepted:
- * only the range check at loop-top saw `pc`, never the span the decoded
- * instruction actually covers. Two shapes: a range that is exactly the
- * disp32 (4 bytes), and one starting a byte into the lea (6 bytes, from
- * lea+1). Both must leave the candidate unconfirmed. */
+ * holding the candidate's disp32 -- not at or before pc -- must leave the
+ * candidate unconfirmed: the range check at loop-top sees only `pc`, not
+ * the span the decoded instruction actually covers. Two shapes: a range
+ * that is exactly the disp32 (4 bytes), and one starting a byte into the
+ * lea (6 bytes, from lea+1). */
 static void test_confirm_rejects_data_in_code_starting_mid_instruction(void) {
     static const uint8_t at_disp32[] = { 0x04, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };      /* +4, 4 bytes */
     static const uint8_t at_lea_plus_1[] = { 0x02, 0x10, 0, 0, 0x06, 0x00, 0x01, 0x00 };  /* +2, 6 bytes */
@@ -2772,9 +2771,9 @@ static void test_confirm_ignores_a_wrapping_function_starts_delta(void) {
     CHECK(r == MHR_NO_STARTS, "confirm: a wrapping delta discards every start (got %d)", r);
 }
 
-/* (4, minor) An LC_DATA_IN_CODE payload past the image, or whose size is not
- * a multiple of its 8-byte entry, must not be treated as "no data-in-code
- * to step over" -- that lets literal data pass as code. Either makes the
+/* An LC_DATA_IN_CODE payload past the image, or whose size is not a
+ * multiple of its 8-byte entry, must not be treated as "no data-in-code to
+ * step over" -- that lets literal data pass as code. Either makes the
  * image MHR_UNSCANNABLE, mirroring how an instruction section past the
  * image already does. */
 static void test_confirm_reports_data_in_code_past_the_image(void) {
@@ -2811,8 +2810,8 @@ static void test_confirm_reports_data_in_code_not_a_multiple_of_8(void) {
     free(buf);
 }
 
-/* (5, minor) An empty but present LC_FUNCTION_STARTS -- just its terminator
- * -- is the same fact as no LC_FUNCTION_STARTS at all: no usable starts. */
+/* An empty but present LC_FUNCTION_STARTS -- just its terminator -- is the
+ * same fact as no LC_FUNCTION_STARTS at all: no usable starts. */
 static void test_confirm_needs_function_starts_when_the_list_is_empty(void) {
     static const uint8_t fs[] = { 0x00 };
     struct hr_code k = hr_push_lea();

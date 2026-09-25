@@ -1447,11 +1447,9 @@ Code executable carries it too: 7 instances, all `lea __mh_execute_header(%rip)`
 passed to `___cxa_atexit`.** A first scan reported none because it ran on an
 installed copy that had already been grown, whose header had moved; scanned
 against the original base 0x100000000 the 7 appear. Being identity keys, they
-explain why grown Claude Code runs. Also found while planning M0: after a
-grow, the `__mh_execute_header` symbol still records the old base. Dylibs are
-worse:
-53 of 1517 10.9 system images and 63 of 150 app images, including AppKit,
-CoreFoundation and CFNetwork, which read their own sections through it.
+explain why grown Claude Code runs. Dylibs are worse: 53 of 1517 10.9 system
+images and 63 of 150 app images, including AppKit, CoreFoundation and
+CFNetwork, which read their own sections through it.
 
 **Fix.** Shared with item 31: find every candidate by a scan that cannot
 miss an instruction form (ModRM `(b & 0xC7) == 0x05`, disp32, then 0, 1, 2
@@ -1459,9 +1457,9 @@ or 4 bytes of immediate, landing exactly on the header), then either patch
 the displacement or refuse. The decision and its design live in the
 dylib-growth spec.
 
-**Stop-gap done** (M0): warned since `ef62652`; repair is M1. A grow now names,
-on stderr, each instruction that addresses the image's own header; a
-fresh Claude Code download grows with seven such warnings.
+**Stop-gap done** (M0): warned since `ef62652`, superseded by M1's repair
+below. A grow named, on stderr, each instruction that addressed the image's
+own header; a fresh Claude Code download grew with seven such warnings.
 
 **Done** (M1): repaired since `5d93921`. A grow decodes each candidate's function
 from its `LC_FUNCTION_STARTS` entry (`src/x86len.h`, checked against 10.9's
@@ -1472,21 +1470,20 @@ references to the header".
 
 **Not repaired** (found while planning M1): a data pointer to the header,
 `const void *p = &_mh_execute_header;`, is a rebase target whose value is
-the base, and after a grow it names a byte G past the header. 46 of 838
-x86_64 executables on this host have one (the Java launcher stubs among
-them); Claude Code has none among its 94,730 rebase targets. The spec's
-Decision 2 leaves absolute addresses alone on the executable route; this is
-the exception, and its repair needs the rebase decoder (spec Decision 9).
+the base; after a grow it misses the header by G (measured: 4096, after an
+M0 grow). 46 of 838 x86_64 executables on this host carry one (the Java
+launcher stubs among them); Claude Code has none among its 94,730 rebase
+targets. No scan of code finds these — they are rebase targets, not
+instructions — so the fix is to decode the rebase stream and subtract G from
+each value that names the header. That needs the complete rebase decoder
+objc-methods M2 builds (`src/rebase.[ch]`), so it follows M2; M1 moves the
+`__mh_execute_header` symbol itself.
 
-**Data pointers to the header break the same way** (found 2026-09-25 while
-planning M1). A rebased pointer whose value is `_mh_execute_header` keeps the
-old base after a grow and misses the header by G: measured, a data pointer
-to `_mh_execute_header` misses it by 4096 after an M0 grow. 46 of 838
-executables on this host carry one; the Claude Code executable does not. No
-scan of code finds these; they are rebase targets, so the fix is to decode
-the rebase stream and subtract G from each value that names the header. That
-needs the complete rebase decoder objc-methods M2 builds (`src/rebase.[ch]`),
-so it follows M2. M1 moves the `__mh_execute_header` symbol itself.
+**I1** (whole-branch final review, deferred to M2): the spec's one-rule
+refusal of any address strictly inside (base, base+F) is not enforced on
+either route yet — a `movl __mh_execute_header+16(%rip)` grows silently
+wrong. 0 such targets in 1,059 host executables (19.2M instructions); M2
+implements the refusal once, for both routes, via a range scan.
 
 ## Item 30: `fixups set classic` output cannot be re-signed on 10.9
 

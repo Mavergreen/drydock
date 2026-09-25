@@ -155,7 +155,6 @@ fi
 cat >"$T/hdr.c" <<'EOF'
 #include <stdio.h>
 #include <stdint.h>
-#include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
 #include <mach-o/loader.h>
 int payload = 42;
