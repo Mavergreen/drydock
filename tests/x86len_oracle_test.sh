@@ -72,5 +72,32 @@ else
     fail=$((fail + 1))
 fi
 
+# The fourth positive control: an allow-listed site that stops occurring is
+# a failure, not a note (X86LEN_ORACLE_EXTRA_ALLOW adds one that this corpus
+# never produces).
+thin="$T/libsystem_m.dylib"
+rc=0; otool -tv "$thin" | X86LEN_ORACLE_EXTRA_ALLOW=0xdeadbeefdeadbeef "$ORACLE" "$thin" >"$T/out" || rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'did not occur' "$T/out"; then
+    echo "PASS the positive control: a stale allow-listed site is a failure"
+else
+    echo "FAIL the positive control: with a bogus allow-listed site, the oracle said (exit $rc):"
+    cat "$T/out"
+    fail=$((fail + 1))
+fi
+
+# The fifth positive control: a decode that runs past its function's end is
+# a mismatch (X86LEN_ORACLE_TEST_SHRINK moves that end earlier by 3 bytes,
+# landing inside libsystem_m.dylib's first compared function's last
+# instruction; the corpus has no function boundary this actually happens
+# at today).
+rc=0; otool -tv "$thin" | X86LEN_ORACLE_TEST_SHRINK=3 "$ORACLE" "$thin" >"$T/out" || rc=$?
+if [ "$rc" -eq 1 ] && grep -q '^MISMATCH' "$T/out"; then
+    echo "PASS the positive control: a decode past its function's end is a mismatch"
+else
+    echo "FAIL the positive control: with the first function's end shrunk by 3, the oracle said (exit $rc):"
+    cat "$T/out"
+    fail=$((fail + 1))
+fi
+
 [ "$fail" -eq 0 ] || { echo "x86len_oracle_test: $fail failure(s)"; exit 1; }
 echo "x86len_oracle_test: all passed"

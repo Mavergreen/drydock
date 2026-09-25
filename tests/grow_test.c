@@ -16,6 +16,8 @@
  */
 #include "grow.h"
 #include "hdrref.h"
+#include <mach-o/nlist.h>
+#include <mach-o/stab.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -2096,16 +2098,19 @@ static void test_scan_continues_after_a_bad_instruction_section(void) {
     free(buf);
 }
 
-/* ---- a grow warns of code that addresses its own header ----
+/* ---- a grow repairs code that addresses its own header ----
  * Lowering the base moves the header down by the grow while the code stays
- * put, so `lea __mh_execute_header(%rip)` then names a byte that far past
- * it, and nothing a grow re-bases or verifies records that distance. Until
- * such code is repaired, the grow names each one after its announcement.
- * __plain becomes code at the vm address its file offset maps to, filled
- * with 0x90, with `lea base(%rip), %rax` (48 8d 05 disp32) at each of `at`. */
+ * put, so `lea __mh_execute_header(%rip)` would then name a byte that far
+ * past it. The grow confirms each such instruction and takes the grow off its
+ * disp32. __plain becomes code at the vm address its file offset maps to,
+ * filled with 0x90, with `lea base(%rip), %rax` (48 8d 05 disp32) at each of
+ * `at`; with MG_T_FUNCSTARTS, __plain's start is a function start too. */
 #define HR_PLAIN_VA 0x100001800ull
 static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, int n) {
+    static const uint8_t starts[7] = { 0x80, 0x20, 0x80, 0x10, 0x80, 0x10, 0x00 };
     struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    struct linkedit_data_command *fs =
+        (struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
     CHECK(pl != NULL, "setup: __plain present");
     if (!pl) return;
     pl->addr = HR_PLAIN_VA;
@@ -2116,6 +2121,10 @@ static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, in
         buf[pl->offset + at[k] + 1] = 0x8d;
         hr_plant(buf + pl->offset, HR_PLAIN_VA, at[k] + 2, 0x05, 0, HR_BASE);
     }
+    if (fs) {                                  /* base + 0x1000, 0x1800 (__plain), 0x2000 */
+        memcpy(buf + fs->dataoff, starts, sizeof starts);
+        fs->datasize = sizeof starts;
+    }
 }
 
 /* Everything mg_ensure_pad(..., need, "t") prints on stderr, as one string
@@ -2125,7 +2134,7 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     char path[512];
     char *text = (char *)calloc(1, 65536);
     if (!tmpdir) tmpdir = "/tmp";
-    snprintf(path, sizeof path, "%s/macho_grow_test_warn.%d", tmpdir, (int)getpid());
+    snprintf(path, sizeof path, "%s/macho_grow_test_stderr.%d", tmpdir, (int)getpid());
     fflush(stderr);
     int saved_fd = dup(fileno(stderr));
     if (!freopen(path, "w", stderr)) {
@@ -2148,79 +2157,251 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     return text;
 }
 
-static int count_of(const char *hay, const char *needle) {
-    int n = 0;
-    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p++) n++;
-    return n;
+/* How many candidates in `buf` address `target`. */
+static int64_t refs_to(const uint8_t *buf, size_t fsize, uint64_t target) {
+    return mhr_scan(buf, fsize, target, NULL, NULL);
 }
 
-#define HR_WARNING(addr) "t: warning: code at " addr " addresses the image's own header; " \
-                         "after this grow it points 0x1000 bytes past it\n"
-
-static void test_ensure_pad_warns_of_each_header_reference(void) {
+static void test_grow_repairs_header_references(void) {
     static const uint32_t two[] = { 0, 8 };
-    size_t fsize; uint32_t sect_off; int r;
-    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
     plant_header_refs(buf, fsize, two, 2);
-    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
-    const char *grew = strstr(err, "t: grew the header pad by 4096 bytes");
-    const char *w1 = strstr(err, HR_WARNING("0x100001803"));
-    const char *w2 = strstr(err, HR_WARNING("0x10000180b"));
-    CHECK(r == 0, "two header references: the grow proceeds (got %d)", r);
-    CHECK(grew != NULL, "two header references: the grow is announced:\n%s", err);
-    CHECK(grew && w1 && w2 && grew < w1 && w1 < w2,
-          "two header references: one warning each, in order, after the announcement:\n%s", err);
-    CHECK(count_of(err, ": warning: ") == 2, "two header references: %d warnings, want 2",
-          count_of(err, ": warning: "));
-    free(err);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "repair: a grow with two confirmed references succeeds (got %d)", r);
+    if (r == 0) {
+        int64_t n = mhr_scan(buf, fsize, HR_BASE - 0x1000, hr_record, &s);
+        CHECK(n == 2 && s.c[0].addr == HR_PLAIN_VA + 3 && s.c[1].addr == HR_PLAIN_VA + 11 &&
+              s.c[0].immlen == 0 && s.c[1].immlen == 0,
+              "repair: both leas address the new base, with no immediate (%lld)", (long long)n);
+        CHECK(refs_to(buf, fsize, HR_BASE) == 0, "repair: none addresses the old base");
+    }
     free(buf);
 }
 
-/* The distance printed is base_before - base_after, not a hardcoded page: every
- * other case here moves the base by exactly one page, so a mutation that
- * replaces that subtraction with the MG_PAGE constant passes unnoticed. Force
- * a two-page grow (need_end one byte into the second page) to tell them apart. */
-static void test_ensure_pad_warns_across_a_two_page_grow(void) {
+/* A grow refuses, and changes nothing, when it cannot account for a
+ * candidate; `needle` is the reason it must give. */
+static void check_grow_refuses_header_refs(const char *what, uint8_t *buf, size_t fsize,
+                                           const char *needle) {
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000, needle, &r);
+    CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
+    CHECK(said, "%s: the refusal says '%s'", what, needle);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "%s: nothing changed", what);
+    free(before);
+    free(buf);
+}
+
+/* mov $imm32, %eax whose immediate starts with 0x05: a candidate the sweep
+ * finds inside an instruction that is not RIP-relative. */
+static void test_grow_refuses_a_header_reference_it_cannot_confirm(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, NULL, 0);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) {
+        buf[pl->offset + 1] = 0xb8;
+        hr_plant(buf + pl->offset, HR_PLAIN_VA, 2, 0x05, 0, HR_BASE);
+    }
+    check_grow_refuses_header_refs("a lookalike", buf, fsize,
+        "ERROR: the bytes at 0x100001803 may be code that addresses the image's own header, "
+        "and decoding their function does not confirm it; refusing to grow");
+}
+
+static void test_grow_refuses_a_header_reference_without_function_starts(void) {
     static const uint32_t one[] = { 0 };
-    size_t fsize; uint32_t sect_off; int r;
+    size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
     plant_header_refs(buf, fsize, one, 1);
-    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 0x1001, &r);
-    CHECK(r == 0, "two-page grow: the grow proceeds (got %d)", r);
-    CHECK(strstr(err, "t: grew the header pad by 8192 bytes") != NULL,
-          "two-page grow: the grow is announced as 8192 bytes:\n%s", err);
-    CHECK(strstr(err, "t: warning: code at 0x100001803 addresses the image's own header; "
-                      "after this grow it points 0x2000 bytes past it\n") != NULL,
-          "two-page grow: the warning says 0x2000 bytes past it, not one page:\n%s", err);
+    check_grow_refuses_header_refs("no function starts", buf, fsize,
+        "ERROR: the bytes at 0x100001803 may be code that addresses the image's own header, "
+        "and with no LC_FUNCTION_STARTS there is no function to decode them from");
+}
+
+static void test_grow_refuses_code_it_cannot_scan(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, NULL, 0);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) pl->size = fsize;                  /* 6144 + 8192 runs past the image */
+    check_grow_refuses_header_refs("code past the image", buf, fsize,
+        "ERROR: an instruction section lies past the end of the image, so it cannot be "
+        "searched for code that addresses the image's own header; refusing to grow");
+}
+
+/* Verification's own check: undo a repair, or aim it one byte short, where
+ * with an imm8 after it the operand would reach the header after all. */
+static void give_header_refs(uint8_t *buf, size_t fsize, uint32_t grow) {
+    static const uint32_t two[] = { 0, 8 };
+    (void)grow;
+    plant_header_refs(buf, fsize, two, 2);
+}
+static void undo_header_ref(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    int32_t disp;
+    if (!pl) return;
+    memcpy(&disp, buf + pl->offset + 11, sizeof disp);
+    disp += (int32_t)grow;
+    memcpy(buf + pl->offset + 11, &disp, sizeof disp);
+}
+static void misaim_header_ref(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    (void)grow;
+    if (pl) buf[pl->offset + 3]--;             /* 0xf9: the low byte, far from a borrow */
+}
+
+static void test_verify_watches_header_references(void) {
+    check_verify_rejects_undone("an unrepaired reference to the header",
+                                MG_T_PLAINSECT | MG_T_FUNCSTARTS, give_header_refs, undo_header_ref);
+    check_verify_rejects_undone("a repaired reference one byte short of the header",
+                                MG_T_PLAINSECT | MG_T_FUNCSTARTS, give_header_refs, misaim_header_ref);
+}
+
+/* An image whose one reference to the header is a lea at `far`, where
+ * __plain moves, with a fourth function start naming it. */
+static uint8_t *build_far_ref(uint64_t far, size_t *fsize) {
+    static const uint32_t one[] = { 0 };
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, *fsize, one, 1);
+    struct section_64 *pl = find_section_struct(buf, *fsize, "__plain");
+    struct linkedit_data_command *fs =
+        (struct linkedit_data_command *)find_lc(buf, *fsize, LC_FUNCTION_STARTS);
+    if (!pl || !fs) { CHECK(0, "setup: __plain and function starts"); return buf; }
+    pl->addr = far;
+    hr_plant(buf + pl->offset, far, 2, 0x05, 0, HR_BASE);
+    uint8_t *p = buf + fs->dataoff + 6;             /* past 0x1000, 0x1800, 0x2000 */
+    uint64_t d = far - (HR_BASE + 0x2000);
+    do { uint8_t b = d & 0x7f; d >>= 7; *p++ = (uint8_t)(b | (d ? 0x80 : 0)); } while (d);
+    *p++ = 0;
+    fs->datasize = (uint32_t)(p - (buf + fs->dataoff));
+    return buf;
+}
+
+/* A grow of 0x1000 takes a disp32 of INT32_MIN + 0x1000 exactly to INT32_MIN,
+ * and one a byte further past it. */
+static void test_grow_refuses_a_reference_the_grow_would_put_out_of_reach(void) {
+    size_t fsize;
+    uint8_t *buf = build_far_ref(HR_BASE + 0x7fffeff9ull, &fsize);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "reach: a disp32 the grow takes exactly to INT32_MIN is repaired (got %d)", r);
+    CHECK(r != 0 || refs_to(buf, fsize, HR_BASE - 0x1000) == 1, "reach: it addresses the new base");
+    free(buf);
+    buf = build_far_ref(HR_BASE + 0x7fffeffaull, &fsize);
+    check_grow_refuses_header_refs("a reference a grow would put out of reach", buf, fsize,
+        "ERROR: the code at 0x17fffeffd addresses the image's own header with a disp32 of "
+        "-2147479553, and a grow of 4096 would take it past INT32_MIN; refusing to grow");
+}
+
+/* mg_verify's image must hold every section it names. Given one cut a byte
+ * short of __plain's end, the header-reference scan cannot read __plain, and
+ * verify says so rather than report code at 0. (No grow is needed: with no
+ * function starts, nothing else it reads lies past the cut.) */
+static const mg_snapshot *verify_snap;
+static int verify_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
+    (void)unused;
+    return mg_verify(*pbuf, *pfsize, verify_snap);
+}
+static void test_verify_says_when_it_cannot_search_the_image(void) {
+    static const uint32_t two[] = { 0, 8 };
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, two, 2);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "unsearchable: snapshot"); free(buf); return; }
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    size_t cut = pl ? pl->offset + pl->size - 1 : fsize;
+    char want[256];
+    snprintf(want, sizeof want, "ERROR: verify FAILED -- an instruction section lies past the end "
+             "of the %zu-byte image, so it cannot be searched for code that addresses the header; "
+             "refusing.", cut);
+    int r;
+    verify_snap = &snap;
+    int said = stderr_contains_during(verify_thunk, &buf, &cut, 0, want, &r);
+    CHECK(r == -1 && said, "unsearchable: verify refuses, saying '%s' (got %d)", want, r);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
+static void test_ensure_pad_repairs_each_header_reference(void) {
+    static const uint32_t two[] = { 0, 8 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+    uint32_t lc_end = (uint32_t)sizeof *h + h->sizeofcmds;
+    char line[256];
+    snprintf(line, sizeof line, "t: grew the header pad by 4096 bytes (%u -> %u available); "
+             "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n",
+             sect_off - lc_end, sect_off + 4096 - lc_end);
+    plant_header_refs(buf, fsize, two, 2);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    CHECK(r == 0, "two header references: the grow repairs them (got %d)", r);
+    CHECK(strcmp(err, line) == 0, "two header references: stderr is\n%s want\n%s", err, line);
+    CHECK(r != 0 || refs_to(buf, fsize, HR_BASE - 0x1000) == 2,
+          "two header references: both address the new base");
     free(err);
     free(buf);
 }
 
-/* The control: the same section as code, with no reference, grows silently. */
-static void test_ensure_pad_does_not_warn_without_a_header_reference(void) {
+static void test_ensure_pad_repairs_one_header_reference(void) {
+    static const uint32_t one[] = { 0 };
     size_t fsize; uint32_t sect_off; int r;
-    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, one, 1);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    CHECK(r == 0 && strstr(err, "0xfffff000; repaired 1 reference to the header\n") != NULL,
+          "one header reference: the announcement says 1 reference (got %d):\n%s", r, err);
+    free(err);
+    free(buf);
+}
+
+/* The repair takes off the grow, not a page: every other case here moves the
+ * base by exactly one page. need_end one byte into the second page forces a
+ * two-page grow. */
+static void test_ensure_pad_repairs_across_a_two_page_grow(void) {
+    static const uint32_t one[] = { 0 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, one, 1);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 0x1001, &r);
+    CHECK(r == 0, "two-page grow: the grow repairs its reference (got %d):\n%s", r, err);
+    CHECK(strstr(err, "t: grew the header pad by 8192 bytes") != NULL &&
+          strstr(err, "image base 0x100000000 -> 0xffffe000; repaired 1 reference to the "
+                      "header\n") != NULL,
+          "two-page grow: announced as 8192 bytes, with its repair:\n%s", err);
+    CHECK(r != 0 || refs_to(buf, fsize, HR_BASE - 0x2000) == 1,
+          "two-page grow: the lea addresses the base two pages down");
+    free(err);
+    free(buf);
+}
+
+/* The control: the same section as code, with no reference. */
+static void test_ensure_pad_announces_no_repair_without_a_header_reference(void) {
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
     plant_header_refs(buf, fsize, NULL, 0);
     char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
-    CHECK(r == 0 && strstr(err, "t: grew the header pad by ") != NULL,
-          "no header reference: the grow happens and is announced (got %d):\n%s", r, err);
-    CHECK(count_of(err, ": warning: ") == 0, "no header reference: no warning, yet:\n%s", err);
+    CHECK(r == 0 && strstr(err, "image base 0x100000000 -> 0xfffff000\n") != NULL,
+          "no header reference: the announcement ends at the base (got %d):\n%s", r, err);
     free(err);
     free(buf);
 }
 
-/* Code the file does not hold cannot be scanned, and the grow says so. */
-static void test_ensure_pad_warns_of_code_it_cannot_scan(void) {
+/* Code the file does not hold cannot be searched, so the grow refuses. */
+static void test_ensure_pad_refuses_code_it_cannot_scan(void) {
     size_t fsize; uint32_t sect_off; int r;
-    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
     plant_header_refs(buf, fsize, NULL, 0);
     struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
     if (pl) pl->size = fsize;                  /* 6144 + 8192 runs past the image */
     char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
-    CHECK(r == 0, "code past the image: the grow proceeds (got %d)", r);
-    CHECK(strstr(err, "t: warning: an instruction section lies past the end of the image, so it "
-                      "was not scanned for code that addresses the image's own header\n") != NULL,
-          "code past the image: the grow says it was not scanned:\n%s", err);
+    CHECK(r == -1 && strstr(err, "ERROR: an instruction section lies past the end of the "
+                                 "image, so it cannot be searched") != NULL,
+          "code past the image: the grow refuses (got %d):\n%s", r, err);
     free(err);
     free(buf);
 }
@@ -2325,6 +2506,564 @@ static void test_grow_leaves_an_empty_function_starts_list_alone(void) {
     free(buf);
 }
 
+/* ---- confirming a candidate (mhr_confirm) ----
+ * build_code_image's __text holds `code` from its first byte (vm HR_CODE,
+ * file HR_FOFF), with LC_FUNCTION_STARTS and LC_DATA_IN_CODE payloads, when
+ * given, at file offsets 0x1c00 and 0x1d00. A lea's disp32 is planted with
+ * hr_plant, so each case states only where its operand sits. */
+static const uint8_t HR_ONE_FUNCTION[] = { 0x80, 0x20, 0x00 };    /* base + 0x1000: __text */
+
+static void hr_add_lc(uint8_t *buf, uint32_t cmd, uint32_t at, const void *data, uint32_t n) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    l->cmd = cmd;
+    l->cmdsize = sizeof *l;
+    l->dataoff = at;
+    l->datasize = n;
+    memcpy(buf + at, data, n);
+    h->ncmds++;
+    h->sizeofcmds += l->cmdsize;
+}
+
+struct hr_code {
+    uint8_t b[32];
+    uint32_t n;              /* bytes of code, at __text's start */
+    const uint8_t *fs;       /* LC_FUNCTION_STARTS payload, or NULL for none */
+    uint32_t nfs;
+    const uint8_t *dic;      /* LC_DATA_IN_CODE payload, or NULL for none */
+    uint32_t ndic;
+};
+
+static int hr_confirm(const struct hr_code *k, mhr_cand *bad) {
+    uint8_t *buf = build_code_image();
+    memcpy(buf + HR_FOFF, k->b, k->n);
+    if (k->fs) hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, k->fs, k->nfs);
+    if (k->dic) hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, k->dic, k->ndic);
+    int r = mhr_confirm(buf, HR_IMG_SIZE, bad);
+    free(buf);
+    return r;
+}
+
+/* push %rbp; lea base(%rip), %rax: the disp32 is at HR_CODE + 4. */
+static struct hr_code hr_push_lea(void) {
+    struct hr_code k = { { 0x55, 0x48, 0x8d }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(k.b, HR_CODE, 3, 0x05, 0, HR_BASE);
+    return k;
+}
+
+static void test_confirm_a_lea_of_the_header(void) {
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: push; lea base(%%rip) is an instruction (got %d)", r);
+}
+
+/* cmpl $1, base(%rip): the operand is followed by an imm8. */
+static void test_confirm_an_operand_with_an_immediate(void) {
+    struct hr_code k = { { 0x55, 0x83 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x3d, 1, HR_BASE);
+    k.b[7] = 0x01;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: cmpl $1, base(%%rip) is an instruction (got %d)", r);
+}
+
+/* The scan counts `05 disp32` inside mov $imm32, %eax's immediate; the sweep
+ * finds the mov, which is not RIP-relative. */
+static void test_confirm_rejects_a_lookalike_inside_an_immediate(void) {
+    struct hr_code k = { { 0x55, 0xb8 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_CODE + 3 && bad.off == HR_FOFF + 3,
+          "confirm: a lookalike in an immediate is unconfirmed, at its disp32 (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+}
+
+/* mov abs32, %eax is 8b 04 25 disp32: its SIB byte, 0x25, looks like a
+ * RIP-relative ModRM to the scan, and the disp32 is where the scan says. */
+static void test_confirm_rejects_an_absolute_address_that_looks_rip_relative(void) {
+    struct hr_code k = { { 0x55, 0x8b, 0x04 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 3, 0x25, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: a SIB byte is not a RIP-relative ModRM (got %d)", r);
+}
+
+/* movl $imm32, x(%rip) is c7 05 disp32 imm32. Its first disp32 ends in 0x05,
+ * so the scan sees a second operand whose disp32 is the imm32: inside a
+ * RIP-relative instruction, but not its displacement. */
+static void test_confirm_rejects_a_lookalike_inside_a_rip_relative_instruction(void) {
+    struct hr_code k = { { 0x55, 0xc7, 0x05, 0x10, 0x00, 0x00 }, 11, HR_ONE_FUNCTION,
+                         sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 6, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_CODE + 7,
+          "confirm: an immediate after a real disp32 is not the operand (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+}
+
+/* cmpl $1, x(%rip) whose disp32 would name the base with no immediate: with
+ * its imm8, it names the byte after the base. */
+static void test_confirm_rejects_an_operand_whose_immediate_moves_its_target(void) {
+    struct hr_code k = { { 0x55, 0x83 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x3d, 0, HR_BASE);
+    k.b[7] = 0x01;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: an operand that names base + 1 is unconfirmed (got %d)", r);
+}
+
+/* Two leas and no LC_FUNCTION_STARTS: the first is the one reported. */
+static void test_confirm_needs_function_starts(void) {
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = NULL;
+    k.b[8] = 0x48; k.b[9] = 0x8d;
+    hr_plant(k.b, HR_CODE, 10, 0x05, 0, HR_BASE);
+    k.n = 15;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS && bad.addr == HR_CODE + 4,
+          "confirm: no LC_FUNCTION_STARTS, so nothing to decode from (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+}
+
+/* A function-starts payload that runs past the file is not read: one that
+ * starts inside it and ends past it, and one longer than the file. Either
+ * would name __text's start. */
+static void test_confirm_ignores_function_starts_past_the_image(void) {
+    static const uint32_t at[2] = { HR_IMG_SIZE - 2, 0x1c00 }, size[2] = { 4, 0x10000 };
+    for (int i = 0; i < 2; i++) {
+        uint8_t *buf = build_code_image();
+        struct hr_code k = hr_push_lea();
+        mhr_cand bad = { 0, 0, 0 };
+        memcpy(buf + HR_FOFF, k.b, k.n);
+        hr_add_lc(buf, LC_FUNCTION_STARTS, at[i], HR_ONE_FUNCTION, 2);
+        ((struct linkedit_data_command *)find_lc(buf, HR_IMG_SIZE, LC_FUNCTION_STARTS))->datasize = size[i];
+        int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+        CHECK(r == MHR_NO_STARTS, "confirm: function starts at %#x, %#x bytes, past the image, "
+              "are ignored (got %d)", at[i], size[i], r);
+        free(buf);
+    }
+}
+
+/* A 0 delta ends the list; what follows it names no function. Read as one,
+ * the 3 here would start a function inside the lea. */
+static void test_confirm_stops_at_the_function_starts_terminator(void) {
+    static const uint8_t fs[] = { 0x80, 0x20, 0x00, 0x03 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: nothing after the terminator is a function (got %d)", r);
+}
+
+/* The first LC_FUNCTION_STARTS and the first LC_DATA_IN_CODE count, as in
+ * src/grow.c. The second of each would make the lea unconfirmable. */
+static void test_confirm_reads_the_first_of_each_command(void) {
+    static const uint8_t late[] = { 0x90, 0x20, 0x00 };                          /* base + 0x1010 */
+    static const uint8_t elsewhere[] = { 0x20, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };   /* +0x20 */
+    static const uint8_t over_lea[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };    /* +1 */
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c10, late, sizeof late);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, elsewhere, sizeof elsewhere);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d10, over_lea, sizeof over_lea);
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: the first of each command counts (got %d)", r);
+    free(buf);
+}
+
+/* A function starts after the candidate, or in another section. */
+static void test_confirm_needs_a_function_in_the_candidates_section(void) {
+    static const uint8_t late[] = { 0x90, 0x20, 0x00 };      /* base + 0x1010 */
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = late; k.nfs = sizeof late;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: no function starts at or before it (got %d)", r);
+
+    uint8_t *buf = build_code_image();
+    uint8_t *stubs = buf + 0x1400;
+    stubs[0] = 0x48; stubs[1] = 0x8d;
+    hr_plant(stubs, HR_BASE + 0x1400, 2, 0x05, 0, HR_BASE);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_BASE + 0x1403,
+          "confirm: __stubs' lea has no function of its own (__text's is not it) (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+    free(buf);
+}
+
+/* push; six bytes of data (ff ff: FF /7, no instruction); lea. */
+static void test_confirm_steps_over_data_in_code(void) {
+    static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x06, 0x00, 0x01, 0x00 };   /* +1, 6 bytes */
+    struct hr_code k = { { 0x55, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x48, 0x8d }, 14,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, data, sizeof data };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 9, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: a lea after a data-in-code range (got %d)", r);
+    k.dic = NULL;
+    r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: the same bytes, with no range to step over (got %d)", r);
+}
+
+/* Two ranges, listed last first: push; data; nop; data; lea. */
+static void test_confirm_orders_data_in_code(void) {
+    static const uint8_t data[] = { 0x04, 0x10, 0, 0, 0x02, 0x00, 0x01, 0x00,
+                                    0x01, 0x10, 0, 0, 0x02, 0x00, 0x01, 0x00 };
+    struct hr_code k = { { 0x55, 0xff, 0xff, 0x90, 0xff, 0xff, 0x48, 0x8d }, 13,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, data, sizeof data };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 8, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: two data-in-code ranges, listed out of order (got %d)", r);
+}
+
+static void test_confirm_rejects_a_candidate_inside_data_in_code(void) {
+    static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };   /* +1, 7 bytes */
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.dic = data; k.ndic = sizeof data;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: a lea inside a data-in-code range (got %d)", r);
+}
+
+/* 62 opens an EVEX instruction, which the decoder does not decode, so the
+ * sweep stops there: it never reads on to the lea, four nops later. */
+static void test_confirm_rejects_what_the_decoder_cannot_decode(void) {
+    struct hr_code k = { { 0x55, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 12,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 7, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: EVEX before the lea (got %d)", r);
+}
+
+static void test_confirm_reports_an_image_it_cannot_scan(void) {
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    mhr_cand bad = { 0, 0, 0 };
+    sc[1].size = HR_IMG_SIZE;                          /* __stubs runs past the image */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: an instruction section past the image (got %d)", r);
+    free(buf);
+}
+
+/* Any instruction section past the file makes the image unscannable, even
+ * when every candidate the scan can still read is confirmed: the scan goes on
+ * past a bad section but answers -1. Here __text runs past the image, and
+ * __stubs holds a lea at a function start of its own. */
+static void test_confirm_reports_a_bad_section_before_a_good_one(void) {
+    static const uint8_t stubs_fn[] = { 0x80, 0x28, 0x00 };   /* base + 0x1400: __stubs */
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    mhr_cand bad = { 0, 0, 0 };
+    buf[0x1400] = 0x48; buf[0x1401] = 0x8d;
+    hr_plant(buf + 0x1400, HR_BASE + 0x1400, 2, 0x05, 0, HR_BASE);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, stubs_fn, sizeof stubs_fn);
+    sc[0].size = HR_IMG_SIZE;                          /* __text: 0x1000 + 0x2000 > 0x2000 */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: a bad __text before a good __stubs (got %d)", r);
+    sc[0].size = 0x100;
+    r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: with __text readable, __stubs' lea confirms (got %d)", r);
+    free(buf);
+}
+
+/* ---- data-in-code ranges that overlap a candidate instruction ----
+ *
+ * (1) A data-in-code range that starts partway through the instruction
+ * holding the candidate's disp32 -- not at or before pc -- must leave the
+ * candidate unconfirmed: the range check at loop-top sees only `pc`, not
+ * the span the decoded instruction actually covers. Two shapes: a range
+ * that is exactly the disp32 (4 bytes), and one starting a byte into the
+ * lea (6 bytes, from lea+1). */
+static void test_confirm_rejects_data_in_code_starting_mid_instruction(void) {
+    static const uint8_t at_disp32[] = { 0x04, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };      /* +4, 4 bytes */
+    static const uint8_t at_lea_plus_1[] = { 0x02, 0x10, 0, 0, 0x06, 0x00, 0x01, 0x00 };  /* +2, 6 bytes */
+    const uint8_t *dics[2] = { at_disp32, at_lea_plus_1 };
+    for (int i = 0; i < 2; i++) {
+        struct hr_code k = hr_push_lea();
+        mhr_cand bad = { 0, 0, 0 };
+        k.dic = dics[i]; k.ndic = 8;
+        int r = hr_confirm(&k, &bad);
+        CHECK(r == MHR_UNCONFIRMED, "confirm: a data-in-code range starting mid-instruction "
+              "(case %d) leaves it unconfirmed (got %d)", i, r);
+    }
+}
+
+/* (2) 0x67 (address-size override) makes a RIP-relative-looking ModRM
+ * actually EIP-relative: its target is (next truncated to 32 bits) + disp32,
+ * not next + disp32. A disp32 that names the base under 64-bit RIP-relative
+ * arithmetic must not confirm when 0x67 is among the instruction's
+ * prefixes. */
+static void test_confirm_rejects_an_eip_relative_operand(void) {
+    struct hr_code k = { { 0x55, 0x67, 0x48, 0x8d }, 9, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 4, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: an addr32 (0x67) lea is not RIP-relative (got %d)", r);
+}
+
+/* (3) A malformed ULEB128 after a real start, or a delta that wraps the
+ * cumulative address, must discard every start the list produced -- not
+ * just stop reading where it broke. mg_funcstarts_decode (src/grow.c)
+ * returns -1 on the same malformed bytes, refusing to trust a partially-read
+ * list; a wrapping delta is not monotonic, which a real LC_FUNCTION_STARTS
+ * list never is. */
+static void test_confirm_ignores_a_malformed_function_starts_list(void) {
+    static const uint8_t fs[] = { 0x80, 0x20, 0xff };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: a malformed ULEB tail discards every start (got %d)", r);
+}
+
+static void test_confirm_ignores_a_wrapping_function_starts_delta(void) {
+    static const uint8_t fs[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: a wrapping delta discards every start (got %d)", r);
+}
+
+/* An LC_DATA_IN_CODE payload past the image, or whose size is not a
+ * multiple of its 8-byte entry, must not be treated as "no data-in-code to
+ * step over" -- that lets literal data pass as code. Either makes the
+ * image MHR_UNSCANNABLE, mirroring how an instruction section past the
+ * image already does. */
+/* An empty LC_DATA_IN_CODE is nothing to step over, wherever it points, as
+ * mg_dice_walk already reads it. */
+static void test_confirm_ignores_empty_data_in_code_past_the_image(void) {
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, "", 0);
+    l->dataoff = HR_IMG_SIZE + 0x100;
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: empty data-in-code past the image (got %d)", r);
+    free(buf);
+}
+
+static void test_confirm_reports_data_in_code_past_the_image(void) {
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    static const uint8_t dic[8] = { 0 };
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, dic, sizeof dic);
+    l->datasize = HR_IMG_SIZE - l->dataoff + 8;   /* a multiple of 8, still 8 bytes past the image */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: data-in-code past the image (got %d)", r);
+    free(buf);
+}
+
+static void test_confirm_reports_data_in_code_not_a_multiple_of_8(void) {
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    static const uint8_t dic[8] = { 0 };
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, dic, sizeof dic);
+    l->datasize = 12;                                   /* not a multiple of 8 */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: data-in-code size not a multiple of 8 (got %d)", r);
+    free(buf);
+}
+
+/* An empty but present LC_FUNCTION_STARTS -- just its terminator -- is the
+ * same fact as no LC_FUNCTION_STARTS at all: no usable starts. */
+static void test_confirm_needs_function_starts_when_the_list_is_empty(void) {
+    static const uint8_t fs[] = { 0x00 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: an empty function-starts list is no starts (got %d)", r);
+}
+
+/* ---- symbols that name the header ----
+ * MG_T_SYMTAB's table (file 6656) gets four symbols. __mh_execute_header is
+ * an N_SECT symbol whose value is the base, so it follows the header down.
+ * The others keep their values: a symbol naming content, and a stab and an
+ * absolute symbol whose values happen to equal the base. N_BNSYM's type bits
+ * read as N_SECT under the N_TYPE mask; it is a stab all the same. */
+static const struct { uint8_t type; uint64_t value, want; } hsyms[4] = {
+    { N_SECT | N_EXT, 0x100000000ull, 0xfffff000ull },
+    { N_SECT,         0x100001000ull, 0x100001000ull },
+    { N_BNSYM,        0x100000000ull, 0x100000000ull },
+    { N_ABS | N_EXT,  0x100000000ull, 0x100000000ull },
+};
+
+static uint8_t *build_symbol_image(size_t *fsize, uint32_t nsyms, int opts) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_SYMTAB | opts);
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, *fsize, LC_SYMTAB);
+    struct nlist_64 *nl = (struct nlist_64 *)(buf + st->symoff);
+    for (int i = 0; i < 4; i++) {
+        nl[i].n_type = hsyms[i].type;
+        nl[i].n_sect = hsyms[i].type == N_ABS ? NO_SECT : 1;
+        nl[i].n_value = hsyms[i].value;
+    }
+    st->nsyms = nsyms;
+    return buf;
+}
+
+static void test_grow_moves_the_symbols_that_name_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "symbols: the grow succeeds (got %d)", r);
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    const struct nlist_64 *nl = (const struct nlist_64 *)(buf + st->symoff);
+    for (int i = 0; r == 0 && i < 4; i++)
+        CHECK(nl[i].n_value == hsyms[i].want, "symbols: type %#x, value %#llx, is %#llx after "
+              "the grow, want %#llx", hsyms[i].type, (unsigned long long)hsyms[i].value,
+              (unsigned long long)nl[i].n_value, (unsigned long long)hsyms[i].want);
+    free(buf);
+}
+
+/* Verification's own check on the symbols: one left naming where the header
+ * was, one moved that named content, and one retyped. */
+static void give_hsyms(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    struct nlist_64 *nl = (struct nlist_64 *)(buf + st->symoff);
+    (void)grow;
+    for (int i = 0; i < 4; i++) {
+        nl[i].n_type = hsyms[i].type;
+        nl[i].n_sect = hsyms[i].type == N_ABS ? NO_SECT : 1;
+        nl[i].n_value = hsyms[i].value;
+    }
+    st->nsyms = 4;
+}
+static struct nlist_64 *hsym(uint8_t *buf, size_t fsize, int i) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    return (struct nlist_64 *)(buf + st->symoff) + i;
+}
+static void unmove_hsym(uint8_t *buf, size_t fsize, uint32_t grow) { hsym(buf, fsize, 0)->n_value += grow; }
+static void move_content_sym(uint8_t *buf, size_t fsize, uint32_t grow) { hsym(buf, fsize, 1)->n_value -= grow; }
+static void retype_hsym(uint8_t *buf, size_t fsize, uint32_t grow) {
+    (void)grow;
+    hsym(buf, fsize, 0)->n_type = N_ABS | N_EXT;
+}
+static void drop_hsym(uint8_t *buf, size_t fsize, uint32_t grow) {
+    (void)grow;
+    ((struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB))->nsyms = 3;
+}
+
+static void test_verify_watches_the_symbols(void) {
+    check_verify_rejects_undone("a symbol left naming where the header was", MG_T_SYMTAB,
+                                give_hsyms, unmove_hsym);
+    check_verify_rejects_undone("a symbol naming content, moved with the header", MG_T_SYMTAB,
+                                give_hsyms, move_content_sym);
+    check_verify_rejects_undone("a symbol retyped", MG_T_SYMTAB, give_hsyms, retype_hsym);
+    check_verify_rejects_undone("a symbol dropped", MG_T_SYMTAB, give_hsyms, drop_hsym);
+}
+
+/* A symbol table past the image: no snapshot, and no verify. */
+static void test_snapshot_and_verify_refuse_a_symbol_table_past_the_image(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 1000, 0);   /* 6656 + 16000 > 8192 */
+    mg_snapshot snap;
+    CHECK(mg_snapshot_take(buf, fsize, &snap) == -1, "symbols: a snapshot of a table past the image");
+    free(buf);
+    buf = build_symbol_image(&fsize, 4, 0);
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "symbols: snapshot"); free(buf); return; }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "symbols: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    ((struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB))->nsyms = 1000;
+    int r;
+    verify_snap = &snap;
+    int said = stderr_contains_during(verify_thunk, &buf, &fsize, 0,
+        "ERROR: verify FAILED -- LC_SYMTAB's symbol table does not fit within the grown image; "
+        "refusing.", &r);
+    CHECK(r == -1 && said, "symbols: verify refuses a table past the grown image (got %d)", r);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
+/* A grow patches every LC_SYMTAB and verifies the first, so it refuses a
+ * second before changing anything. */
+static void test_grow_refuses_two_symbol_tables(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    memcpy((uint8_t *)(h + 1) + h->sizeofcmds, st, sizeof *st);
+    h->ncmds++;
+    h->sizeofcmds += sizeof *st;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+        "ERROR: the image has more than one LC_SYMTAB; refusing to grow", &r);
+    CHECK(r == -1 && said, "symbols: two symbol tables are refused (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "symbols: two tables: nothing changed");
+    free(before);
+    free(buf);
+}
+
+static void test_grow_refuses_a_symbol_table_past_the_image(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 1000, 0);   /* 6656 + 16000 > 8192 */
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+        "ERROR: LC_SYMTAB's symbol table (offset 6656, 1000 entries) does not fit within the "
+        "8192-byte image; refusing to grow", &r);
+    CHECK(r == -1 && said, "symbols: a table past the image is refused (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "symbols: nothing changed");
+    free(before);
+    free(buf);
+}
+
+/* A grow refused after the symbols are checked (here, for a malformed export
+ * trie: node A's child offset points past the trie) leaves them as they were. */
+static void test_grow_moves_no_symbol_when_it_refuses(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, MG_T_TRIE);
+    buf[TRIE_OFF + 4] = 200;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+                                      "export trie is malformed", &r);
+    CHECK(r == -1 && said, "symbols: a malformed trie is refused (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "symbols: a refused grow moves no symbol");
+    free(before);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2382,15 +3121,54 @@ int main(void) {
     test_scan_reads_every_instruction_section_and_no_other();
     test_scan_refuses_an_instruction_section_past_the_image();
     test_scan_continues_after_a_bad_instruction_section();
-    test_ensure_pad_warns_of_each_header_reference();
-    test_ensure_pad_warns_across_a_two_page_grow();
-    test_ensure_pad_does_not_warn_without_a_header_reference();
-    test_ensure_pad_warns_of_code_it_cannot_scan();
+    test_grow_repairs_header_references();
+    test_grow_refuses_a_header_reference_it_cannot_confirm();
+    test_grow_refuses_a_header_reference_without_function_starts();
+    test_grow_refuses_code_it_cannot_scan();
+    test_verify_watches_header_references();
+    test_grow_refuses_a_reference_the_grow_would_put_out_of_reach();
+    test_verify_says_when_it_cannot_search_the_image();
+    test_ensure_pad_repairs_each_header_reference();
+    test_ensure_pad_repairs_one_header_reference();
+    test_ensure_pad_repairs_across_a_two_page_grow();
+    test_ensure_pad_announces_no_repair_without_a_header_reference();
+    test_ensure_pad_refuses_code_it_cannot_scan();
     test_ensure_pad_fits_despite_a_header_reference();
     test_grow_leaves_an_absolute_export_alone();
     test_verify_watches_an_absolute_export();
     test_reencode_leaves_an_empty_list_alone();
     test_grow_leaves_an_empty_function_starts_list_alone();
+    test_confirm_a_lea_of_the_header();
+    test_confirm_an_operand_with_an_immediate();
+    test_confirm_rejects_a_lookalike_inside_an_immediate();
+    test_confirm_rejects_an_absolute_address_that_looks_rip_relative();
+    test_confirm_rejects_a_lookalike_inside_a_rip_relative_instruction();
+    test_confirm_rejects_an_operand_whose_immediate_moves_its_target();
+    test_confirm_needs_function_starts();
+    test_confirm_ignores_function_starts_past_the_image();
+    test_confirm_stops_at_the_function_starts_terminator();
+    test_confirm_reads_the_first_of_each_command();
+    test_confirm_needs_a_function_in_the_candidates_section();
+    test_confirm_steps_over_data_in_code();
+    test_confirm_orders_data_in_code();
+    test_confirm_rejects_a_candidate_inside_data_in_code();
+    test_confirm_rejects_what_the_decoder_cannot_decode();
+    test_confirm_reports_an_image_it_cannot_scan();
+    test_grow_moves_the_symbols_that_name_the_header();
+    test_verify_watches_the_symbols();
+    test_snapshot_and_verify_refuse_a_symbol_table_past_the_image();
+    test_grow_refuses_two_symbol_tables();
+    test_grow_refuses_a_symbol_table_past_the_image();
+    test_grow_moves_no_symbol_when_it_refuses();
+    test_confirm_reports_a_bad_section_before_a_good_one();
+    test_confirm_rejects_data_in_code_starting_mid_instruction();
+    test_confirm_rejects_an_eip_relative_operand();
+    test_confirm_ignores_a_malformed_function_starts_list();
+    test_confirm_ignores_a_wrapping_function_starts_delta();
+    test_confirm_ignores_empty_data_in_code_past_the_image();
+    test_confirm_reports_data_in_code_past_the_image();
+    test_confirm_reports_data_in_code_not_a_multiple_of_8();
+    test_confirm_needs_function_starts_when_the_list_is_empty();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
