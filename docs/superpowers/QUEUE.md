@@ -370,11 +370,12 @@ already landed: `dylib retype PATH KIND weak` (`README.md:69`) is the
 `LC_LOAD_WEAK_DYLIB` flip, and `drydock-macho-rewrite imports FILE`
 (`README.md:263`) is the machine-readable import list. Gap 4 became `minos
 at-most`/`minos if-absent` (`specs/2026-09-23-minos-at-most-design.md`),
-landed. Gaps 1+2, 5 and 6 each have a spec and a plan
+landed. Gaps 1+2 and 5 each have a spec and a plan
 (`specs/2026-09-23-bind-stream-edit-design.md`,
-`specs/2026-09-23-section-retype-design.md`,
-`specs/2026-09-23-objc-method-lists-design.md`) that are not executed; each
-spec's own "Questions for the owner" is unanswered.
+`specs/2026-09-23-section-retype-design.md`) that are not executed; each
+spec's own "Questions for the owner" is unanswered. Gap 6
+(`specs/2026-09-23-objc-method-lists-design.md`) is four milestones; M1, the
+read-only walk and `info`'s `method-lists:` line, landed 2026-09-25.
 
 **Where their practice bears on our refusals:**
 

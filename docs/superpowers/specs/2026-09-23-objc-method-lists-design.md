@@ -3,8 +3,7 @@
 Item 13 capability 6 (`docs/superpowers/QUEUE.md`, "## Item 13"). The queue
 calls it "not a statement, a subsystem". This spec designs the whole
 subsystem and splits it into four milestones. Each one ships working, tested
-software. `docs/superpowers/plans/2026-09-23-objc-method-lists.md` is the
-plan for milestone 1 alone.
+software. Milestone 1 has landed (439e1cc..9082c8f).
 
 ## Why
 
@@ -311,8 +310,7 @@ Each one is its own plan, written when the previous one lands.
 (Decision 4) with its refusals. `info` prints the `method-lists:` line.
 `tests/relmeth_fixture.h` + `tests/mkrelmeth.c` build a synthetic fixture.
 Deliverable: `info` answers "does this binary have relative method lists, and
-how many?" on any classic image. **Plan:
-`docs/superpowers/plans/2026-09-23-objc-method-lists.md`.**
+how many?" on any classic image. **Landed: 439e1cc..9082c8f.**
 
 **M2: `method-lists set absolute`.**
 
