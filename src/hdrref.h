@@ -40,4 +40,20 @@ uint64_t mhr_scan_code(const uint8_t *code, uint64_t size, uint64_t addr, uint64
  * `fsize`. */
 int64_t mhr_scan(const uint8_t *buf, size_t fsize, uint64_t target, mhr_fn fn, void *ctx);
 
+/* mhr_confirm's answers. */
+#define MHR_CONFIRMED   0  /* every candidate is an instruction, or there is none */
+#define MHR_UNSCANNABLE 1  /* an instruction section lies past the end of the image */
+#define MHR_NO_STARTS   2  /* a candidate, and no LC_FUNCTION_STARTS to decode it from */
+#define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm */
+
+/* Whether every candidate mhr_scan finds for the image's own base is an
+ * instruction that addresses it. A candidate's function is the last
+ * LC_FUNCTION_STARTS entry at or below it, in its own section. Decoding from
+ * there (src/x86len.h), stepping over LC_DATA_IN_CODE ranges, must reach an
+ * instruction whose RIP-relative disp32 is the candidate's and whose target
+ * is the base. Returns an MHR_ answer, with *bad set to the candidate
+ * MHR_NO_STARTS or MHR_UNCONFIRMED is about; or -1 if `buf` does not wrap,
+ * no segment maps the header, or memory runs out. */
+int mhr_confirm(const uint8_t *buf, size_t fsize, mhr_cand *bad);
+
 #endif /* DRYDOCK_HDRREF_H */

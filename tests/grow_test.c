@@ -2325,6 +2325,280 @@ static void test_grow_leaves_an_empty_function_starts_list_alone(void) {
     free(buf);
 }
 
+/* ---- confirming a candidate (mhr_confirm) ----
+ * build_code_image's __text holds `code` from its first byte (vm HR_CODE,
+ * file HR_FOFF), with LC_FUNCTION_STARTS and LC_DATA_IN_CODE payloads, when
+ * given, at file offsets 0x1c00 and 0x1d00. A lea's disp32 is planted with
+ * hr_plant, so each case states only where its operand sits. */
+static const uint8_t HR_ONE_FUNCTION[] = { 0x80, 0x20, 0x00 };    /* base + 0x1000: __text */
+
+static void hr_add_lc(uint8_t *buf, uint32_t cmd, uint32_t at, const void *data, uint32_t n) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    l->cmd = cmd;
+    l->cmdsize = sizeof *l;
+    l->dataoff = at;
+    l->datasize = n;
+    memcpy(buf + at, data, n);
+    h->ncmds++;
+    h->sizeofcmds += l->cmdsize;
+}
+
+struct hr_code {
+    uint8_t b[32];
+    uint32_t n;              /* bytes of code, at __text's start */
+    const uint8_t *fs;       /* LC_FUNCTION_STARTS payload, or NULL for none */
+    uint32_t nfs;
+    const uint8_t *dic;      /* LC_DATA_IN_CODE payload, or NULL for none */
+    uint32_t ndic;
+};
+
+static int hr_confirm(const struct hr_code *k, mhr_cand *bad) {
+    uint8_t *buf = build_code_image();
+    memcpy(buf + HR_FOFF, k->b, k->n);
+    if (k->fs) hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, k->fs, k->nfs);
+    if (k->dic) hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, k->dic, k->ndic);
+    int r = mhr_confirm(buf, HR_IMG_SIZE, bad);
+    free(buf);
+    return r;
+}
+
+/* push %rbp; lea base(%rip), %rax: the disp32 is at HR_CODE + 4. */
+static struct hr_code hr_push_lea(void) {
+    struct hr_code k = { { 0x55, 0x48, 0x8d }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(k.b, HR_CODE, 3, 0x05, 0, HR_BASE);
+    return k;
+}
+
+static void test_confirm_a_lea_of_the_header(void) {
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: push; lea base(%%rip) is an instruction (got %d)", r);
+}
+
+/* cmpl $1, base(%rip): the operand is followed by an imm8. */
+static void test_confirm_an_operand_with_an_immediate(void) {
+    struct hr_code k = { { 0x55, 0x83 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x3d, 1, HR_BASE);
+    k.b[7] = 0x01;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: cmpl $1, base(%%rip) is an instruction (got %d)", r);
+}
+
+/* The scan counts `05 disp32` inside mov $imm32, %eax's immediate; the sweep
+ * finds the mov, which is not RIP-relative. */
+static void test_confirm_rejects_a_lookalike_inside_an_immediate(void) {
+    struct hr_code k = { { 0x55, 0xb8 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_CODE + 3 && bad.off == HR_FOFF + 3,
+          "confirm: a lookalike in an immediate is unconfirmed, at its disp32 (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+}
+
+/* mov abs32, %eax is 8b 04 25 disp32: its SIB byte, 0x25, looks like a
+ * RIP-relative ModRM to the scan, and the disp32 is where the scan says. */
+static void test_confirm_rejects_an_absolute_address_that_looks_rip_relative(void) {
+    struct hr_code k = { { 0x55, 0x8b, 0x04 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 3, 0x25, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: a SIB byte is not a RIP-relative ModRM (got %d)", r);
+}
+
+/* movl $imm32, x(%rip) is c7 05 disp32 imm32. Its first disp32 ends in 0x05,
+ * so the scan sees a second operand whose disp32 is the imm32: inside a
+ * RIP-relative instruction, but not its displacement. */
+static void test_confirm_rejects_a_lookalike_inside_a_rip_relative_instruction(void) {
+    struct hr_code k = { { 0x55, 0xc7, 0x05, 0x10, 0x00, 0x00 }, 11, HR_ONE_FUNCTION,
+                         sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 6, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_CODE + 7,
+          "confirm: an immediate after a real disp32 is not the operand (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+}
+
+/* cmpl $1, x(%rip) whose disp32 would name the base with no immediate: with
+ * its imm8, it names the byte after the base. */
+static void test_confirm_rejects_an_operand_whose_immediate_moves_its_target(void) {
+    struct hr_code k = { { 0x55, 0x83 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x3d, 0, HR_BASE);
+    k.b[7] = 0x01;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: an operand that names base + 1 is unconfirmed (got %d)", r);
+}
+
+/* Two leas and no LC_FUNCTION_STARTS: the first is the one reported. */
+static void test_confirm_needs_function_starts(void) {
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = NULL;
+    k.b[8] = 0x48; k.b[9] = 0x8d;
+    hr_plant(k.b, HR_CODE, 10, 0x05, 0, HR_BASE);
+    k.n = 15;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS && bad.addr == HR_CODE + 4,
+          "confirm: no LC_FUNCTION_STARTS, so nothing to decode from (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+}
+
+/* A function-starts payload that runs past the file is not read: one that
+ * starts inside it and ends past it, and one longer than the file. Either
+ * would name __text's start. */
+static void test_confirm_ignores_function_starts_past_the_image(void) {
+    static const uint32_t at[2] = { HR_IMG_SIZE - 2, 0x1c00 }, size[2] = { 4, 0x10000 };
+    for (int i = 0; i < 2; i++) {
+        uint8_t *buf = build_code_image();
+        struct hr_code k = hr_push_lea();
+        mhr_cand bad = { 0, 0, 0 };
+        memcpy(buf + HR_FOFF, k.b, k.n);
+        hr_add_lc(buf, LC_FUNCTION_STARTS, at[i], HR_ONE_FUNCTION, 2);
+        ((struct linkedit_data_command *)(buf + sizeof(struct mach_header_64) +
+            sizeof(struct segment_command_64) + 3 * sizeof(struct section_64)))->datasize = size[i];
+        int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+        CHECK(r == MHR_NO_STARTS, "confirm: function starts at %#x, %#x bytes, past the image, "
+              "are ignored (got %d)", at[i], size[i], r);
+        free(buf);
+    }
+}
+
+/* A 0 delta ends the list; what follows it names no function. Read as one,
+ * the 3 here would start a function inside the lea. */
+static void test_confirm_stops_at_the_function_starts_terminator(void) {
+    static const uint8_t fs[] = { 0x80, 0x20, 0x00, 0x03 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: nothing after the terminator is a function (got %d)", r);
+}
+
+/* The first LC_FUNCTION_STARTS and the first LC_DATA_IN_CODE count, as in
+ * src/grow.c. The second of each would make the lea unconfirmable. */
+static void test_confirm_reads_the_first_of_each_command(void) {
+    static const uint8_t late[] = { 0x90, 0x20, 0x00 };                          /* base + 0x1010 */
+    static const uint8_t elsewhere[] = { 0x20, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };   /* +0x20 */
+    static const uint8_t over_lea[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };    /* +1 */
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c10, late, sizeof late);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, elsewhere, sizeof elsewhere);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d10, over_lea, sizeof over_lea);
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: the first of each command counts (got %d)", r);
+    free(buf);
+}
+
+/* A function starts after the candidate, or in another section. */
+static void test_confirm_needs_a_function_in_the_candidates_section(void) {
+    static const uint8_t late[] = { 0x90, 0x20, 0x00 };      /* base + 0x1010 */
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = late; k.nfs = sizeof late;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: no function starts at or before it (got %d)", r);
+
+    uint8_t *buf = build_code_image();
+    uint8_t *stubs = buf + 0x1400;
+    stubs[0] = 0x48; stubs[1] = 0x8d;
+    hr_plant(stubs, HR_BASE + 0x1400, 2, 0x05, 0, HR_BASE);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_BASE + 0x1403,
+          "confirm: __stubs' lea has no function of its own (__text's is not it) (got %d, %#llx)",
+          r, (unsigned long long)bad.addr);
+    free(buf);
+}
+
+/* push; six bytes of data (ff ff: FF /7, no instruction); lea. */
+static void test_confirm_steps_over_data_in_code(void) {
+    static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x06, 0x00, 0x01, 0x00 };   /* +1, 6 bytes */
+    struct hr_code k = { { 0x55, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x48, 0x8d }, 14,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, data, sizeof data };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 9, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: a lea after a data-in-code range (got %d)", r);
+    k.dic = NULL;
+    r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: the same bytes, with no range to step over (got %d)", r);
+}
+
+/* Two ranges, listed last first: push; data; nop; data; lea. */
+static void test_confirm_orders_data_in_code(void) {
+    static const uint8_t data[] = { 0x04, 0x10, 0, 0, 0x02, 0x00, 0x01, 0x00,
+                                    0x01, 0x10, 0, 0, 0x02, 0x00, 0x01, 0x00 };
+    struct hr_code k = { { 0x55, 0xff, 0xff, 0x90, 0xff, 0xff, 0x48, 0x8d }, 13,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, data, sizeof data };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 8, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: two data-in-code ranges, listed out of order (got %d)", r);
+}
+
+static void test_confirm_rejects_a_candidate_inside_data_in_code(void) {
+    static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };   /* +1, 7 bytes */
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.dic = data; k.ndic = sizeof data;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: a lea inside a data-in-code range (got %d)", r);
+}
+
+/* 62 opens an EVEX instruction, which the decoder does not decode, so the
+ * sweep stops there: it never reads on to the lea, four nops later. */
+static void test_confirm_rejects_what_the_decoder_cannot_decode(void) {
+    struct hr_code k = { { 0x55, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 12,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 7, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_UNCONFIRMED, "confirm: EVEX before the lea (got %d)", r);
+}
+
+static void test_confirm_reports_an_image_it_cannot_scan(void) {
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    mhr_cand bad = { 0, 0, 0 };
+    sc[1].size = HR_IMG_SIZE;                          /* __stubs runs past the image */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: an instruction section past the image (got %d)", r);
+    free(buf);
+}
+
+/* Any instruction section past the file makes the image unscannable, even
+ * when every candidate the scan can still read is confirmed: the scan goes on
+ * past a bad section but answers -1. Here __text runs past the image, and
+ * __stubs holds a lea at a function start of its own. */
+static void test_confirm_reports_a_bad_section_before_a_good_one(void) {
+    static const uint8_t stubs_fn[] = { 0x80, 0x28, 0x00 };   /* base + 0x1400: __stubs */
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    mhr_cand bad = { 0, 0, 0 };
+    buf[0x1400] = 0x48; buf[0x1401] = 0x8d;
+    hr_plant(buf + 0x1400, HR_BASE + 0x1400, 2, 0x05, 0, HR_BASE);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, stubs_fn, sizeof stubs_fn);
+    sc[0].size = HR_IMG_SIZE;                          /* __text: 0x1000 + 0x2000 > 0x2000 */
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_UNSCANNABLE, "confirm: a bad __text before a good __stubs (got %d)", r);
+    sc[0].size = 0x100;
+    r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: with __text readable, __stubs' lea confirms (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2391,6 +2665,23 @@ int main(void) {
     test_verify_watches_an_absolute_export();
     test_reencode_leaves_an_empty_list_alone();
     test_grow_leaves_an_empty_function_starts_list_alone();
+    test_confirm_a_lea_of_the_header();
+    test_confirm_an_operand_with_an_immediate();
+    test_confirm_rejects_a_lookalike_inside_an_immediate();
+    test_confirm_rejects_an_absolute_address_that_looks_rip_relative();
+    test_confirm_rejects_a_lookalike_inside_a_rip_relative_instruction();
+    test_confirm_rejects_an_operand_whose_immediate_moves_its_target();
+    test_confirm_needs_function_starts();
+    test_confirm_ignores_function_starts_past_the_image();
+    test_confirm_stops_at_the_function_starts_terminator();
+    test_confirm_reads_the_first_of_each_command();
+    test_confirm_needs_a_function_in_the_candidates_section();
+    test_confirm_steps_over_data_in_code();
+    test_confirm_orders_data_in_code();
+    test_confirm_rejects_a_candidate_inside_data_in_code();
+    test_confirm_rejects_what_the_decoder_cannot_decode();
+    test_confirm_reports_an_image_it_cannot_scan();
+    test_confirm_reports_a_bad_section_before_a_good_one();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
