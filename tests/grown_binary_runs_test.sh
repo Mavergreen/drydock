@@ -10,7 +10,7 @@
 # executable when one qualifies (a 64-bit PIE MH_EXECUTE the grow accepts as
 # it is; a slice with chained fixups does not, and is reported as a SKIP); and
 # two programs that find their own header: one RIP-relatively, whose grow must
-# warn about it, and one through dyld, which must grow silently and run.
+# repair that reference, and one through dyld, with nothing to repair.
 # Each gets enough distinct LC_RPATHs to outgrow its header pad, measured from
 # `drydock-macho-rewrite info` -- never a pad size this host's linker chose.
 # Fixtures are x86_64 with a 10.9 floor, which runs on 10.9 and under Rosetta.
@@ -148,11 +148,10 @@ fi
 # ---- 3. code that addresses its own header ----------------------------------
 # hdr takes its own header's address RIP-relatively, as getsectiondata(
 # &_mh_execute_header, ...) does; the inline lea makes that instruction this
-# fixture's on every linker, whether or not it relaxes a GOT load, and hdr
-# prints where that lea's disp32 lies. A grow moves the header out from under
-# it, so the grow must name it in a warning. Whether the grown hdr runs is
-# not asserted: it does not yet. ctl asks dyld for its header instead, so it
-# must grow with no warning, and run.
+# fixture's on every linker, whether or not it relaxes a GOT load. A grow
+# moves the header out from under it, so the grow must repair it, say so, and
+# leave a binary that runs as the original does. ctl asks dyld for its header
+# instead, so its grow has nothing to repair.
 cat >"$T/hdr.c" <<'EOF'
 #include <stdio.h>
 #include <stdint.h>
@@ -162,11 +161,9 @@ cat >"$T/hdr.c" <<'EOF'
 int payload = 42;
 int main(void) {
     const struct mach_header_64 *h;
-    const char *end;
     unsigned long size = 0;
-    __asm__("leaq __mh_execute_header(%%rip), %0\n1:\n\tleaq 1b(%%rip), %1" : "=r"(h), "=r"(end));
+    __asm__("leaq __mh_execute_header(%%rip), %0" : "=r"(h));
     uint8_t *p = getsectiondata(h, "__DATA", "__data", &size);
-    printf("disp32 at %#lx\n", (unsigned long)(end - 4 - _dyld_get_image_vmaddr_slide(0)));
     printf("header magic %#x, __data %s (%lu bytes)\n", h->magic, p ? "found" : "NOT FOUND", size);
     return p ? 0 : 1;
 }
@@ -194,25 +191,25 @@ done
 "$T/hdr" >"$T/hdr.run" 2>&1
 grep -q '__data found' "$T/hdr.run" \
     && ok "hdr: the fixture finds its own __data" || bad "hdr: fixture" "$(cat "$T/hdr.run")"
-disp=$(awk '/^disp32 at 0x/ { print $3; exit }' "$T/hdr.run")
 grow hdr "$T/hdr" "$T/hdr.grown"
 [ "$grc" -eq 0 ] && [ -e "$T/hdr.grown" ] && ok "hdr: the grow succeeds and writes its output" \
     || bad "hdr: grow" "exit $grc: $(cat "$T/hdr.grow.err")"
 lowered hdr "$T/hdr" "$T/hdr.grown"
-n=$(grep -c ': warning: ' "$T/hdr.grow.err")
-[ "$n" -eq 1 ] && ok "hdr: ... with exactly one warning" || bad "hdr: warnings" "$n: $(cat "$T/hdr.grow.err")"
-grep -Fxq "$T/hdr: warning: code at $disp addresses the image's own header; after this grow it points 0x1000 bytes past it (QUEUE item 29)" \
-    "$T/hdr.grow.err" \
-    && ok "hdr: ... naming its lea's disp32 ($disp) and the grow" \
-    || bad "hdr: warning" "want disp32 '$disp': $(grep ': warning: ' "$T/hdr.grow.err")"
+grep -q "^$T/hdr: grew the header pad by .*; repaired 1 reference to the header\$" "$T/hdr.grow.err" \
+    && ok "hdr: ... repairing its one reference to the header, and saying so" \
+    || bad "hdr: repaired" "$(cat "$T/hdr.grow.err")"
+same hdr "$T/hdr" "$T/hdr.grown"
+grep -q '__data found' "$T/hdr.out.out" \
+    && ok "hdr: ... and the grown binary finds its own __data" \
+    || bad "hdr: grown output" "$(cat "$T/hdr.out.out")"
 
 grow ctl "$T/ctl" "$T/ctl.grown"
 [ "$grc" -eq 0 ] && [ -e "$T/ctl.grown" ] && ok "ctl: the grow succeeds and writes its output" \
     || bad "ctl: grow" "exit $grc: $(cat "$T/ctl.grow.err")"
 lowered ctl "$T/ctl" "$T/ctl.grown"
-rc=0; grep -q ': warning: ' "$T/ctl.grow.err" || rc=$?
-[ "$rc" -eq 1 ] && ok "ctl: ... with no warning (hdr's grep, above, finds one)" \
-    || bad "ctl: warning" "$(grep ': warning: ' "$T/ctl.grow.err")"
+rc=0; grep -q 'repaired' "$T/ctl.grow.err" || rc=$?
+[ "$rc" -eq 1 ] && ok "ctl: ... with nothing to repair (hdr's grep, above, finds its repair)" \
+    || bad "ctl: repaired" "$(grep 'repaired' "$T/ctl.grow.err")"
 same ctl "$T/ctl" "$T/ctl.grown"
 grep -q '__data found' "$T/ctl.out.out" \
     && ok "ctl: ... and the grown binary finds its own __data" \

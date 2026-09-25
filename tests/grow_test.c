@@ -2096,16 +2096,19 @@ static void test_scan_continues_after_a_bad_instruction_section(void) {
     free(buf);
 }
 
-/* ---- a grow warns of code that addresses its own header ----
+/* ---- a grow repairs code that addresses its own header ----
  * Lowering the base moves the header down by the grow while the code stays
- * put, so `lea __mh_execute_header(%rip)` then names a byte that far past
- * it, and nothing a grow re-bases or verifies records that distance. Until
- * such code is repaired, the grow names each one after its announcement.
- * __plain becomes code at the vm address its file offset maps to, filled
- * with 0x90, with `lea base(%rip), %rax` (48 8d 05 disp32) at each of `at`. */
+ * put, so `lea __mh_execute_header(%rip)` would then name a byte that far
+ * past it. The grow confirms each such instruction and takes the grow off its
+ * disp32. __plain becomes code at the vm address its file offset maps to,
+ * filled with 0x90, with `lea base(%rip), %rax` (48 8d 05 disp32) at each of
+ * `at`; with MG_T_FUNCSTARTS, __plain's start is a function start too. */
 #define HR_PLAIN_VA 0x100001800ull
 static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, int n) {
+    static const uint8_t starts[7] = { 0x80, 0x20, 0x80, 0x10, 0x80, 0x10, 0x00 };
     struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    struct linkedit_data_command *fs =
+        (struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
     CHECK(pl != NULL, "setup: __plain present");
     if (!pl) return;
     pl->addr = HR_PLAIN_VA;
@@ -2115,6 +2118,10 @@ static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, in
         buf[pl->offset + at[k]] = 0x48;
         buf[pl->offset + at[k] + 1] = 0x8d;
         hr_plant(buf + pl->offset, HR_PLAIN_VA, at[k] + 2, 0x05, 0, HR_BASE);
+    }
+    if (fs) {                                  /* base + 0x1000, 0x1800 (__plain), 0x2000 */
+        memcpy(buf + fs->dataoff, starts, sizeof starts);
+        fs->datasize = sizeof starts;
     }
 }
 
@@ -2148,79 +2155,184 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     return text;
 }
 
-static int count_of(const char *hay, const char *needle) {
-    int n = 0;
-    for (const char *p = hay; (p = strstr(p, needle)) != NULL; p++) n++;
-    return n;
+/* How many candidates in `buf` address `target`. */
+static int64_t refs_to(const uint8_t *buf, size_t fsize, uint64_t target) {
+    return mhr_scan(buf, fsize, target, NULL, NULL);
 }
 
-#define HR_WARNING(addr) "t: warning: code at " addr " addresses the image's own header; " \
-                         "after this grow it points 0x1000 bytes past it (QUEUE item 29)\n"
-
-static void test_ensure_pad_warns_of_each_header_reference(void) {
+static void test_grow_repairs_header_references(void) {
     static const uint32_t two[] = { 0, 8 };
-    size_t fsize; uint32_t sect_off; int r;
-    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
     plant_header_refs(buf, fsize, two, 2);
-    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
-    const char *grew = strstr(err, "t: grew the header pad by 4096 bytes");
-    const char *w1 = strstr(err, HR_WARNING("0x100001803"));
-    const char *w2 = strstr(err, HR_WARNING("0x10000180b"));
-    CHECK(r == 0, "two header references: the grow proceeds (got %d)", r);
-    CHECK(grew != NULL, "two header references: the grow is announced:\n%s", err);
-    CHECK(grew && w1 && w2 && grew < w1 && w1 < w2,
-          "two header references: one warning each, in order, after the announcement:\n%s", err);
-    CHECK(count_of(err, ": warning: ") == 2, "two header references: %d warnings, want 2",
-          count_of(err, ": warning: "));
-    free(err);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "repair: a grow with two confirmed references succeeds (got %d)", r);
+    if (r == 0) {
+        int64_t n = mhr_scan(buf, fsize, HR_BASE - 0x1000, hr_record, &s);
+        CHECK(n == 2 && s.c[0].addr == HR_PLAIN_VA + 3 && s.c[1].addr == HR_PLAIN_VA + 11,
+              "repair: both leas address the new base (%lld)", (long long)n);
+        CHECK(refs_to(buf, fsize, HR_BASE) == 0, "repair: none addresses the old base");
+    }
     free(buf);
 }
 
-/* The distance printed is base_before - base_after, not a hardcoded page: every
- * other case here moves the base by exactly one page, so a mutation that
- * replaces that subtraction with the MG_PAGE constant passes unnoticed. Force
- * a two-page grow (need_end one byte into the second page) to tell them apart. */
-static void test_ensure_pad_warns_across_a_two_page_grow(void) {
+/* A grow refuses, and changes nothing, when it cannot account for a
+ * candidate; `needle` is the reason it must give. */
+static void check_grow_refuses_header_refs(const char *what, uint8_t *buf, size_t fsize,
+                                           const char *needle) {
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000, needle, &r);
+    CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
+    CHECK(said, "%s: the refusal says '%s'", what, needle);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "%s: nothing changed", what);
+    free(before);
+    free(buf);
+}
+
+/* mov $imm32, %eax whose immediate starts with 0x05: a candidate the sweep
+ * finds inside an instruction that is not RIP-relative. */
+static void test_grow_refuses_a_header_reference_it_cannot_confirm(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, NULL, 0);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) {
+        buf[pl->offset + 1] = 0xb8;
+        hr_plant(buf + pl->offset, HR_PLAIN_VA, 2, 0x05, 0, HR_BASE);
+    }
+    check_grow_refuses_header_refs("a lookalike", buf, fsize,
+        "ERROR: the bytes at 0x100001803 may be code that addresses the image's own header, "
+        "and decoding their function does not confirm it; refusing to grow");
+}
+
+static void test_grow_refuses_a_header_reference_without_function_starts(void) {
     static const uint32_t one[] = { 0 };
-    size_t fsize; uint32_t sect_off; int r;
+    size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
     plant_header_refs(buf, fsize, one, 1);
-    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 0x1001, &r);
-    CHECK(r == 0, "two-page grow: the grow proceeds (got %d)", r);
-    CHECK(strstr(err, "t: grew the header pad by 8192 bytes") != NULL,
-          "two-page grow: the grow is announced as 8192 bytes:\n%s", err);
-    CHECK(strstr(err, "t: warning: code at 0x100001803 addresses the image's own header; "
-                      "after this grow it points 0x2000 bytes past it (QUEUE item 29)\n") != NULL,
-          "two-page grow: the warning says 0x2000 bytes past it, not one page:\n%s", err);
+    check_grow_refuses_header_refs("no function starts", buf, fsize,
+        "ERROR: the bytes at 0x100001803 may be code that addresses the image's own header, "
+        "and with no LC_FUNCTION_STARTS there is no function to decode them from");
+}
+
+static void test_grow_refuses_code_it_cannot_scan(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, NULL, 0);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) pl->size = fsize;                  /* 6144 + 8192 runs past the image */
+    check_grow_refuses_header_refs("code past the image", buf, fsize,
+        "ERROR: an instruction section lies past the end of the image, so it cannot be "
+        "searched for code that addresses the image's own header; refusing to grow");
+}
+
+/* Verification's own check: undo a repair, or aim it one byte short, where
+ * with an imm8 after it the operand would reach the header after all. */
+static void give_header_refs(uint8_t *buf, size_t fsize, uint32_t grow) {
+    static const uint32_t two[] = { 0, 8 };
+    (void)grow;
+    plant_header_refs(buf, fsize, two, 2);
+}
+static void undo_header_ref(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    int32_t disp;
+    if (!pl) return;
+    memcpy(&disp, buf + pl->offset + 11, sizeof disp);
+    disp += (int32_t)grow;
+    memcpy(buf + pl->offset + 11, &disp, sizeof disp);
+}
+static void misaim_header_ref(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    (void)grow;
+    if (pl) buf[pl->offset + 3]--;             /* 0xf9: the low byte, far from a borrow */
+}
+
+static void test_verify_watches_header_references(void) {
+    check_verify_rejects_undone("an unrepaired reference to the header",
+                                MG_T_PLAINSECT | MG_T_FUNCSTARTS, give_header_refs, undo_header_ref);
+    check_verify_rejects_undone("a repaired reference one byte short of the header",
+                                MG_T_PLAINSECT | MG_T_FUNCSTARTS, give_header_refs, misaim_header_ref);
+}
+
+static void test_ensure_pad_repairs_each_header_reference(void) {
+    static const uint32_t two[] = { 0, 8 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+    uint32_t lc_end = (uint32_t)sizeof *h + h->sizeofcmds;
+    char line[256];
+    snprintf(line, sizeof line, "t: grew the header pad by 4096 bytes (%u -> %u available); "
+             "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n",
+             sect_off - lc_end, sect_off + 4096 - lc_end);
+    plant_header_refs(buf, fsize, two, 2);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    CHECK(r == 0, "two header references: the grow repairs them (got %d)", r);
+    CHECK(strcmp(err, line) == 0, "two header references: stderr is\n%s want\n%s", err, line);
+    CHECK(r != 0 || refs_to(buf, fsize, HR_BASE - 0x1000) == 2,
+          "two header references: both address the new base");
     free(err);
     free(buf);
 }
 
-/* The control: the same section as code, with no reference, grows silently. */
-static void test_ensure_pad_does_not_warn_without_a_header_reference(void) {
+static void test_ensure_pad_repairs_one_header_reference(void) {
+    static const uint32_t one[] = { 0 };
     size_t fsize; uint32_t sect_off; int r;
-    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, one, 1);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
+    CHECK(r == 0 && strstr(err, "0xfffff000; repaired 1 reference to the header\n") != NULL,
+          "one header reference: the announcement says 1 reference (got %d):\n%s", r, err);
+    free(err);
+    free(buf);
+}
+
+/* The repair takes off the grow, not a page: every other case here moves the
+ * base by exactly one page. need_end one byte into the second page forces a
+ * two-page grow. */
+static void test_ensure_pad_repairs_across_a_two_page_grow(void) {
+    static const uint32_t one[] = { 0 };
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, fsize, one, 1);
+    char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 0x1001, &r);
+    CHECK(r == 0, "two-page grow: the grow repairs its reference (got %d):\n%s", r, err);
+    CHECK(strstr(err, "t: grew the header pad by 8192 bytes") != NULL &&
+          strstr(err, "image base 0x100000000 -> 0xffffe000; repaired 1 reference to the "
+                      "header\n") != NULL,
+          "two-page grow: announced as 8192 bytes, with its repair:\n%s", err);
+    CHECK(r != 0 || refs_to(buf, fsize, HR_BASE - 0x2000) == 1,
+          "two-page grow: the lea addresses the base two pages down");
+    free(err);
+    free(buf);
+}
+
+/* The control: the same section as code, with no reference. */
+static void test_ensure_pad_announces_no_repair_without_a_header_reference(void) {
+    size_t fsize; uint32_t sect_off; int r;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
     plant_header_refs(buf, fsize, NULL, 0);
     char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
-    CHECK(r == 0 && strstr(err, "t: grew the header pad by ") != NULL,
-          "no header reference: the grow happens and is announced (got %d):\n%s", r, err);
-    CHECK(count_of(err, ": warning: ") == 0, "no header reference: no warning, yet:\n%s", err);
+    CHECK(r == 0 && strstr(err, "image base 0x100000000 -> 0xfffff000\n") != NULL,
+          "no header reference: the announcement ends at the base (got %d):\n%s", r, err);
     free(err);
     free(buf);
 }
 
-/* Code the file does not hold cannot be scanned, and the grow says so. */
-static void test_ensure_pad_warns_of_code_it_cannot_scan(void) {
+/* Code the file does not hold cannot be searched, so the grow refuses. */
+static void test_ensure_pad_refuses_code_it_cannot_scan(void) {
     size_t fsize; uint32_t sect_off; int r;
-    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
     plant_header_refs(buf, fsize, NULL, 0);
     struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
     if (pl) pl->size = fsize;                  /* 6144 + 8192 runs past the image */
     char *err = ensure_pad_stderr(&buf, &fsize, sect_off + 1, &r);
-    CHECK(r == 0, "code past the image: the grow proceeds (got %d)", r);
-    CHECK(strstr(err, "t: warning: an instruction section lies past the end of the image, so it "
-                      "was not scanned for code that addresses the image's own header\n") != NULL,
-          "code past the image: the grow says it was not scanned:\n%s", err);
+    CHECK(r == -1 && strstr(err, "ERROR: an instruction section lies past the end of the "
+                                 "image, so it cannot be searched") != NULL,
+          "code past the image: the grow refuses (got %d):\n%s", r, err);
     free(err);
     free(buf);
 }
@@ -2765,10 +2877,16 @@ int main(void) {
     test_scan_reads_every_instruction_section_and_no_other();
     test_scan_refuses_an_instruction_section_past_the_image();
     test_scan_continues_after_a_bad_instruction_section();
-    test_ensure_pad_warns_of_each_header_reference();
-    test_ensure_pad_warns_across_a_two_page_grow();
-    test_ensure_pad_does_not_warn_without_a_header_reference();
-    test_ensure_pad_warns_of_code_it_cannot_scan();
+    test_grow_repairs_header_references();
+    test_grow_refuses_a_header_reference_it_cannot_confirm();
+    test_grow_refuses_a_header_reference_without_function_starts();
+    test_grow_refuses_code_it_cannot_scan();
+    test_verify_watches_header_references();
+    test_ensure_pad_repairs_each_header_reference();
+    test_ensure_pad_repairs_one_header_reference();
+    test_ensure_pad_repairs_across_a_two_page_grow();
+    test_ensure_pad_announces_no_repair_without_a_header_reference();
+    test_ensure_pad_refuses_code_it_cannot_scan();
     test_ensure_pad_fits_despite_a_header_reference();
     test_grow_leaves_an_absolute_export_alone();
     test_verify_watches_an_absolute_export();

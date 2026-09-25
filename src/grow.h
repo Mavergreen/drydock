@@ -23,8 +23,10 @@
  * inserted bytes from __PAGEZERO and drop __TEXT's vmaddr by the same amount,
  * growing __TEXT's vm/file size. Net effect: every section and segment keeps
  * its ORIGINAL vm address, so no pointer, rebase, bind, n_value, or entry
- * address ever changes. The only fields that move are file offsets — which we
- * shift uniformly. (Borrowed from LIEF: the exhaustive list of offset fields.)
+ * address that names content changes. The fields that move are file offsets —
+ * which we shift uniformly (borrowed from LIEF: the exhaustive list of offset
+ * fields) — and code that reaches the header RIP-relatively (src/hdrref.h),
+ * since the header moved.
  *
  * Precondition: a MH_PIE executable with a __PAGEZERO at least `grow` bytes
  * large. (Always true for the Claude Code executable: 0x1_0000_0000 pagezero.)
@@ -53,6 +55,9 @@
 
 /* Load-command/section-type constants newer than the 10.9 SDK headers. */
 #include "mach_compat.h"
+
+/* Code that addresses its own image's header: found, confirmed, repaired. */
+#include "hdrref.h"
 
 /* The __LINKEDIT offset-bump table: ml_bump and ml_bump_all, covering
  * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
@@ -105,12 +110,9 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * input -- and returns 0 with *pbuf / *pfsize updated: every pointer the
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
- * available); image base 0xOLD -> 0xNEW". A line follows for each instruction
- * whose RIP-relative operand named the header before the grow (src/hdrref.h),
- * which the grow leaves pointing G bytes past it: "LABEL: warning: code at
- * 0xDISP32 addresses the image's own header; after this grow it points 0xG
- * bytes past it (QUEUE item 29)"; and one if an instruction section could not
- * be scanned.
+ * available); image base 0xOLD -> 0xNEW", ending "; repaired N references to
+ * the header" (or "1 reference") when the grow repaired code that addresses
+ * the image's own header (src/hdrref.h).
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth failed. Also -1, with the
@@ -175,7 +177,16 @@ int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth);
 #define MG_K_ANY  0
 #define MG_K_FUNC 1
 
-typedef struct { uint64_t *addr; uint32_t n; } mg_snapshot;
+/* What mg_verify compares a grown image against: the resolved addresses
+ * mg_collect finds, and the image base with every reference to it the
+ * header-reference scan (src/hdrref.h) finds. */
+typedef struct {
+    uint64_t *addr;
+    uint32_t n;
+    uint64_t base;
+    mhr_cand *refs;
+    uint32_t nrefs;
+} mg_snapshot;
 
 #define MG_SNAP_MAX 65536
 
@@ -205,8 +216,10 @@ void mg_snapshot_free(mg_snapshot *s);
 
 
 /* 0 if every base-relative structure and every mg_each_fileoff offset
- * resolves exactly where it did before the grow, and no two segments overlap
- * in memory; -1 (with a message naming the first failure) otherwise. */
+ * resolves exactly where it did before the grow, no two segments overlap in
+ * memory, no code addresses the base as it was, and every reference to the
+ * header the snapshot recorded addresses the base as it is; -1 (with a message
+ * naming the first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 
@@ -341,9 +354,12 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * refusal on a precondition, checked before anything moves, leaves the buffer
  * and size unchanged. Among those: an image that is not a PIE executable with
  * a large enough __PAGEZERO; one with no section data to insert the new space
- * at (mg_first_sect_off's MG_NO_SECTION_DATA); and one whose first section's
- * file offset lies past the end of the image. A failure partway through
- * growing can leave the buffer modified (see mg_ensure_pad).
+ * at (mg_first_sect_off's MG_NO_SECTION_DATA); one whose first section's
+ * file offset lies past the end of the image; and one with a candidate
+ * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
+ * for. Every confirmed reference is repaired: its disp32 loses the grow, so it
+ * still reaches the header. A failure partway through growing can leave the
+ * buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);
 

@@ -48,23 +48,6 @@ static uint64_t mg_base_of(uint8_t *buf, size_t fsize) {
     return base;
 }
 
-/* The vm address of every disp32 mhr_scan reports, for mg_ensure_pad to warn
- * of after it grows. */
-struct mg_refs { uint64_t *addr; size_t n, cap; int oom; };
-
-static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
-    struct mg_refs *r = (struct mg_refs *)ctx_;
-    if (r->n == r->cap) {
-        size_t cap = r->cap ? 2 * r->cap : 8;
-        uint64_t *a = (uint64_t *)realloc(r->addr, cap * sizeof *a);
-        if (!a) { r->oom = 1; return 1; }
-        r->addr = a;
-        r->cap = cap;
-    }
-    r->addr[r->n++] = c->addr;
-    return 0;
-}
-
 int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
                   const char *label) {
     uint32_t first = mg_first_sect_off(*pbuf, *pfsize);
@@ -94,52 +77,34 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t new_lcs    = need_end - (uint32_t)sizeof *hdr;
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
-
-    struct mg_refs refs = { NULL, 0, 0, 0 };
-    int64_t scanned = mhr_scan(*pbuf, *pfsize, base_before, mg_keep_ref, &refs);
-    if (refs.oom) {
-        fprintf(stderr, "ERROR: %s: out of memory listing code that addresses the image's "
-                        "own header\n", label);
-        free(refs.addr);
-        return -1;
-    }
+    int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
 
     uint32_t grow_req = need_end - first;
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
         fprintf(stderr, "ERROR: %s: new LCs (%u bytes) don't fit in header pad (%u avail), "
                         "and the header could not be grown (see above)\n",
                 label, new_lcs, pad_avail);
-        free(refs.addr);
         return -1;
     }
     first = mg_first_sect_off(*pbuf, *pfsize);
     if (first == UINT32_MAX) {
         fprintf(stderr, "ERROR: %s: header grow produced an image that fails validation\n", label);
-        free(refs.addr);
         return -1;
     }
     if (first == MG_NO_SECTION_DATA) {
         fprintf(stderr, "ERROR: %s: header grow left no section data to bound the pad\n", label);
-        free(refs.addr);
         return -1;
     }
-    uint64_t base_after = mg_base_of(*pbuf, *pfsize);
     /* spec: tests/grow_test.c test_ensure_pad_grows_and_announces */
     fflush(stdout);
     fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); "
-                    "image base %#llx -> %#llx\n",
+                    "image base %#llx -> %#llx",
             label, first - first_before, pad_avail, first - cur_lc_end,
-            (unsigned long long)base_before, (unsigned long long)base_after);
-    for (size_t i = 0; i < refs.n; i++)
-        fprintf(stderr, "%s: warning: code at %#llx addresses the image's own header; after "
-                        "this grow it points %#llx bytes past it (QUEUE item 29)\n",
-                label, (unsigned long long)refs.addr[i],
-                (unsigned long long)(base_before - base_after));
-    if (scanned < 0)
-        fprintf(stderr, "%s: warning: an instruction section lies past the end of the image, "
-                        "so it was not scanned for code that addresses the image's own header\n",
-                label);
-    free(refs.addr);
+            (unsigned long long)base_before, (unsigned long long)mg_base_of(*pbuf, *pfsize));
+    if (refs > 0)
+        fprintf(stderr, "; repaired %lld reference%s to the header", (long long)refs,
+                refs == 1 ? "" : "s");
+    fprintf(stderr, "\n");
     return 0;
 }
 
@@ -401,16 +366,35 @@ int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
     return 0;
 }
 
+/* mg_snapshot_take's mhr_scan callback: keep each reference to the header. */
+static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
+    mg_snapshot *s = (mg_snapshot *)ctx_;
+    mhr_cand *r = (mhr_cand *)realloc(s->refs, (s->nrefs + 1) * sizeof *r);
+    if (!r) return 1;
+    s->refs = r;
+    s->refs[s->nrefs++] = *c;
+    return 0;
+}
+
 int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
+    mi_image im;
+    s->refs = NULL;
+    s->nrefs = 0;
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!s->addr) return -1;
-    if (mg_collect(buf, fsize, s->addr, NULL, MG_SNAP_MAX, &s->n) != 0) {
-        free(s->addr); s->addr = NULL; s->n = 0; return -1;
+    if (mg_collect(buf, fsize, s->addr, NULL, MG_SNAP_MAX, &s->n) != 0 ||
+        mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &s->base) != 0 ||
+        mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs) {
+        mg_snapshot_free(s);
+        return -1;
     }
     return 0;
 }
 
-void mg_snapshot_free(mg_snapshot *s) { free(s->addr); s->addr = NULL; s->n = 0; }
+void mg_snapshot_free(mg_snapshot *s) {
+    free(s->addr); s->addr = NULL; s->n = 0;
+    free(s->refs); s->refs = NULL; s->nrefs = 0;
+}
 
 struct mg_overlap_ctx { const mi_image *im; const struct segment_command_64 *a, *hit; };
 
@@ -431,6 +415,42 @@ static int mg_overlap_outer_cb(const struct load_command *lc, void *ctx_) {
     c->a = (const struct segment_command_64 *)lc;
     if (c->a->vmsize == 0) return 0;
     return !mi_each_lc(c->im, mg_overlap_inner_cb, c);
+}
+
+static int mg_first_ref(const mhr_cand *c, void *ctx_) { *(mhr_cand *)ctx_ = *c; return 1; }
+
+struct mg_found { const mg_snapshot *s; uint8_t *seen; };
+static int mg_found_ref(const mhr_cand *c, void *ctx_) {
+    struct mg_found *f = (struct mg_found *)ctx_;
+    for (uint32_t i = 0; i < f->s->nrefs; i++)
+        if (f->s->refs[i].addr == c->addr && f->s->refs[i].immlen == c->immlen) f->seen[i] = 1;
+    return 0;
+}
+
+/* No code addresses where the header was, and every reference to it the
+ * snapshot recorded addresses where it is. */
+static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
+                          uint64_t base) {
+    mhr_cand stale = { 0, 0, 0 };
+    if (mhr_scan(buf, fsize, before->base, mg_first_ref, &stale) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- code at %#llx still addresses %#llx, where "
+                        "the header was before the grow; refusing.\n",
+                (unsigned long long)stale.addr, (unsigned long long)before->base);
+        return -1;
+    }
+    struct mg_found f = { before, (uint8_t *)calloc(before->nrefs + 1, 1) };
+    if (!f.seen) return -1;
+    mhr_scan(buf, fsize, base, mg_found_ref, &f);
+    for (uint32_t i = 0; i < before->nrefs; i++) {
+        if (f.seen[i]) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- the reference to the header at %#llx does "
+                        "not address it after the grow; refusing.\n",
+                (unsigned long long)before->refs[i].addr);
+        free(f.seen);
+        return -1;
+    }
+    free(f.seen);
+    return 0;
 }
 
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
@@ -473,7 +493,9 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
                         "memory after the grow; refusing.\n", oc.a->segname, oc.hit->segname);
         return -1;
     }
-    return 0;
+    uint64_t base;
+    if (mi_image_base(&im, &base) != 0) return -1;
+    return mg_verify_refs(buf, fsize, before, base);
 }
 
 int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {
@@ -1066,6 +1088,33 @@ static int mg_bump_cb(void *field, int width, uint64_t span, int flags, void *ct
     return 0;
 }
 
+/* 0 if every candidate mhr_scan finds for the image's base is an
+ * instruction mhr_confirm vouches for, which the grow then repairs; otherwise
+ * -1, having said why. */
+static int mg_header_refs_ok(const uint8_t *buf, size_t fsize) {
+    mhr_cand bad = { 0, 0, 0 };
+    int r = mhr_confirm(buf, fsize, &bad);
+    if (r == MHR_CONFIRMED) return 0;
+    if (r == MHR_UNSCANNABLE)
+        fprintf(stderr, "ERROR: an instruction section lies past the end of the image, so "
+                        "it cannot be searched for code that addresses the image's own "
+                        "header; refusing to grow\n");
+    else if (r == MHR_NO_STARTS)
+        fprintf(stderr, "ERROR: the bytes at %#llx may be code that addresses the image's "
+                        "own header, and with no LC_FUNCTION_STARTS there is no function to "
+                        "decode them from; refusing to grow rather than leave them pointing "
+                        "past it\n", (unsigned long long)bad.addr);
+    else if (r == MHR_UNCONFIRMED)
+        fprintf(stderr, "ERROR: the bytes at %#llx may be code that addresses the image's "
+                        "own header, and decoding their function does not confirm it; "
+                        "refusing to grow rather than patch them or leave them pointing "
+                        "past it\n", (unsigned long long)bad.addr);
+    else
+        fprintf(stderr, "ERROR: could not search the image for code that addresses its own "
+                        "header; refusing to grow\n");
+    return -1;
+}
+
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
@@ -1232,6 +1281,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         fprintf(stderr, "ERROR: malformed S_INIT_FUNC_OFFSETS section; refusing to grow\n");
         return -1;
     }
+    if (mg_header_refs_ok(buf, fsize) != 0) return -1;
     /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
      * after the buffer is mutated) can't do it: widening one entry cascades
      * into the byte width of every child-offset ULEB after it in the trie.
@@ -1487,6 +1537,16 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                         "passing the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
+    }
+
+    /* The header moved down by `grow` and the code did not: every reference
+     * to the header is `grow` farther from it. */
+    for (uint32_t i = 0; i < snap.nrefs; i++) {
+        uint8_t *d = buf + snap.refs[i].off + grow;
+        int32_t disp;
+        memcpy(&disp, d, sizeof disp);
+        disp = (int32_t)((int64_t)disp - (int64_t)grow);
+        memcpy(d, &disp, sizeof disp);
     }
 
     /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: the base
