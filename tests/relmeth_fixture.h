@@ -37,12 +37,14 @@
 #define RMF_NLCLSLIST    0x1008u
 #define RMF_CATLIST      0x1010u
 #define RMF_PROTOLIST    0x1020u
+#define RMF_NLCATLIST    0x1028u
 #define RMF_SELREFS      0x1040u
 #define RMF_CONST        0x1100u
 #define RMF_CLASS_RO     0x1100u
 #define RMF_META_RO      0x1180u
 #define RMF_ABS_C        0x1200u
 #define RMF_CATEGORY     0x1240u
+#define RMF_CATEGORY2    0x1260u
 #define RMF_PROTOCOL     0x1280u
 #define RMF_OBJC_DATA    0x1300u
 #define RMF_CLASS        0x1300u
@@ -65,7 +67,10 @@ enum {
     RMF_ABSCAT   = 1u << 5,  /* the category names an absolute list at RMF_ABS_C */
     RMF_NLCLS    = 1u << 6,  /* __objc_nlclslist names the class a second time */
     RMF_SWIFT    = 1u << 7,  /* both class data words carry the stable-ABI tag */
-    RMF_BADENT   = 1u << 8   /* list A is relative with a 16-byte entsize */
+    RMF_BADENT   = 1u << 8,  /* list A is relative with a 16-byte entsize */
+    RMF_ALLSLOTS = 1u << 9   /* the category's classMethods and the protocol's other three
+                              * slots name lists; __objc_nlcatlist names the category and a
+                              * second category that names list D */
 };
 
 static inline void rmf_name16(char *f, const char *s) {
@@ -134,6 +139,8 @@ static inline uint32_t rmf_rebase_slots(unsigned v, uint32_t *out) {
     if (v & RMF_NLCLS) out[n++] = RMF_NLCLSLIST - RMF_DATA;
     out[n++] = RMF_CATLIST - RMF_DATA;
     out[n++] = RMF_PROTOLIST - RMF_DATA;
+    if (v & RMF_ALLSLOTS)
+        for (uint32_t i = 0; i < 2; i++) out[n++] = RMF_NLCATLIST + 8 * i - RMF_DATA;
     for (uint32_t i = 0; i < 4; i++) out[n++] = RMF_SELREFS - RMF_DATA + 8 * i;
     out[n++] = RMF_CLASS_RO + 32 - RMF_DATA;
     out[n++] = RMF_META_RO + 32 - RMF_DATA;
@@ -141,7 +148,13 @@ static inline uint32_t rmf_rebase_slots(unsigned v, uint32_t *out) {
         for (uint32_t i = 0; i < 3; i++) out[n++] = RMF_ABS_C + 8 + 8 * i - RMF_DATA;
     out[n++] = RMF_CATEGORY + 8 - RMF_DATA;
     out[n++] = RMF_CATEGORY + 16 - RMF_DATA;
-    out[n++] = RMF_PROTOCOL + 24 - RMF_DATA;
+    if (v & RMF_ALLSLOTS) {
+        out[n++] = RMF_CATEGORY + 24 - RMF_DATA;
+        out[n++] = RMF_CATEGORY2 + 8 - RMF_DATA;
+        out[n++] = RMF_CATEGORY2 + 16 - RMF_DATA;
+    }
+    for (uint32_t i = 0; i < ((v & RMF_ALLSLOTS) ? 4u : 1u); i++)
+        out[n++] = RMF_PROTOCOL + 24 + 8 * i - RMF_DATA;
     out[n++] = RMF_CLASS - RMF_DATA;
     out[n++] = RMF_CLASS + 32 - RMF_DATA;
     out[n++] = RMF_META + 32 - RMF_DATA;
@@ -149,7 +162,7 @@ static inline uint32_t rmf_rebase_slots(unsigned v, uint32_t *out) {
 }
 
 static inline uint32_t rmf_rebases(uint8_t *b, unsigned v) {
-    uint32_t slots[24], n = rmf_rebase_slots(v, slots), at = RMF_REBASE;
+    uint32_t slots[32], n = rmf_rebase_slots(v, slots), at = RMF_REBASE;
     b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
     for (uint32_t i = 0; i < n; i++) {
         b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
@@ -180,11 +193,13 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
     rmf_sect(s, "__objc_methtype", RMF_METHTYPE, 0x10, S_CSTRING_LITERALS);
     rmf_sect(s, "__objc_methlist", RMF_METHLIST, RMF_METHLIST_END - RMF_METHLIST, S_REGULAR);
     s = rmf_seg(b, &at, "__DATA", RMF_VA(RMF_DATA), 0x1000, RMF_DATA, 0x1000,
-                (v & RMF_NLCLS) ? 7 : 6, VM_PROT_READ | VM_PROT_WRITE);
+                6 + !!(v & RMF_NLCLS) + !!(v & RMF_ALLSLOTS), VM_PROT_READ | VM_PROT_WRITE);
     rmf_sect(s, "__objc_classlist", RMF_CLASSLIST, 8, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
     if (v & RMF_NLCLS)
         rmf_sect(s, "__objc_nlclslist", RMF_NLCLSLIST, 8, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
     rmf_sect(s, "__objc_catlist", RMF_CATLIST, 8, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
+    if (v & RMF_ALLSLOTS)
+        rmf_sect(s, "__objc_nlcatlist", RMF_NLCATLIST, 16, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
     rmf_sect(s, "__objc_protolist", RMF_PROTOLIST, 8, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
     rmf_sect(s, "__objc_selrefs", RMF_SELREFS, 0x20, S_LITERAL_POINTERS | S_ATTR_NO_DEAD_STRIP);
     rmf_sect(s, "__objc_const", RMF_CONST, 0x200, S_REGULAR);
@@ -231,6 +246,14 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
     rmf_put64(b, RMF_CATEGORY + 8, RMF_VA(RMF_CLASS));
     rmf_put64(b, RMF_CATEGORY + 16, RMF_VA(cat_methods));
     rmf_put64(b, RMF_PROTOCOL + 24, RMF_VA(RMF_LIST_D));
+    if (v & RMF_ALLSLOTS) {
+        rmf_put64(b, RMF_CATEGORY + 24, RMF_VA(RMF_LIST_B));
+        rmf_put64(b, RMF_CATEGORY2 + 8, RMF_VA(RMF_CLASS));
+        rmf_put64(b, RMF_CATEGORY2 + 16, RMF_VA(RMF_LIST_D));
+        rmf_put64(b, RMF_PROTOCOL + 32, RMF_VA(RMF_LIST_A));
+        rmf_put64(b, RMF_PROTOCOL + 40, RMF_VA(RMF_LIST_B));
+        rmf_put64(b, RMF_PROTOCOL + 48, RMF_VA(RMF_LIST_C));
+    }
     rmf_put32(b, RMF_PROTOCOL + 64, 80);
     rmf_put64(b, RMF_CLASS, RMF_VA(RMF_META));
     rmf_put64(b, RMF_CLASS + 32, RMF_VA(RMF_CLASS_RO) | ((v & RMF_SWIFT) ? 2 : 0));
@@ -238,6 +261,10 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
     rmf_put64(b, RMF_CLASSLIST, RMF_VA(RMF_CLASS));
     if (v & RMF_NLCLS) rmf_put64(b, RMF_NLCLSLIST, RMF_VA(RMF_CLASS));
     rmf_put64(b, RMF_CATLIST, RMF_VA(RMF_CATEGORY));
+    if (v & RMF_ALLSLOTS) {
+        rmf_put64(b, RMF_NLCATLIST, RMF_VA(RMF_CATEGORY));
+        rmf_put64(b, RMF_NLCATLIST + 8, RMF_VA(RMF_CATEGORY2));
+    }
     rmf_put64(b, RMF_PROTOLIST, RMF_VA(RMF_PROTOCOL));
 
     {

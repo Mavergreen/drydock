@@ -9,7 +9,7 @@ static const struct { const char *name; unsigned bits; } VARIANTS[] = {
     { "plain", RMF_PLAIN },     { "chained", RMF_CHAINED }, { "direct", RMF_DIRECT },
     { "listlist", RMF_LISTLIST }, { "oob", RMF_OOB },       { "shared", RMF_SHARED },
     { "abscat", RMF_ABSCAT },   { "nlcls", RMF_NLCLS },     { "swift", RMF_SWIFT },
-    { "badent", RMF_BADENT },
+    { "badent", RMF_BADENT },   { "allslots", RMF_ALLSLOTS },
 };
 
 int main(int argc, char **argv) {

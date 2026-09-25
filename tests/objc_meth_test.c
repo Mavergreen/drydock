@@ -146,6 +146,36 @@ static void test_absolute_lists_are_counted_apart(void) {
     mml_walk_free(&w);
 }
 
+static void check_slot(const mml_walk *w, int owner, uint32_t nth, uint64_t slot_off,
+                       uint32_t list, const char *label) {
+    const mml_ref *r = nth_of(w, owner, nth);
+    CHECK(r != NULL, "allslots: no %s", label);
+    if (r)
+        CHECK(r->slot_off == slot_off && r->list_va == RMF_VA(list),
+              "allslots: %s at %#llx names %#llx; want %#llx naming %#llx", label,
+              (unsigned long long)r->slot_off, (unsigned long long)r->list_va,
+              (unsigned long long)slot_off, (unsigned long long)RMF_VA(list));
+}
+
+static void test_every_category_and_protocol_slot_is_read(void) {
+    mml_walk w;
+    int rc = walk(RMF_ALLSLOTS, &w);
+    CHECK(rc == MML_OK, "allslots: rc %d (%s)", rc, w.why);
+    check_slot(&w, MML_CATEGORY, 0, RMF_CATEGORY + 16,  RMF_LIST_C, "category instanceMethods");
+    check_slot(&w, MML_CATEGORY, 1, RMF_CATEGORY + 24,  RMF_LIST_B, "category classMethods");
+    check_slot(&w, MML_CATEGORY, 2, RMF_CATEGORY2 + 16, RMF_LIST_D, "nlcatlist-only category");
+    check_slot(&w, MML_PROTOCOL, 0, RMF_PROTOCOL + 24,  RMF_LIST_D, "protocol instanceMethods");
+    check_slot(&w, MML_PROTOCOL, 1, RMF_PROTOCOL + 32,  RMF_LIST_A, "protocol classMethods");
+    check_slot(&w, MML_PROTOCOL, 2, RMF_PROTOCOL + 40,  RMF_LIST_B, "protocol optionalInstanceMethods");
+    check_slot(&w, MML_PROTOCOL, 3, RMF_PROTOCOL + 48,  RMF_LIST_C, "protocol optionalClassMethods");
+    CHECK(w.owners[MML_CATEGORY] == 2, "allslots: categories walked %u, want 2 -- the one listed "
+          "twice once, and the one only __objc_nlcatlist names", w.owners[MML_CATEGORY]);
+    CHECK(w.n == 9, "allslots: %u slots, want 9", w.n);
+    CHECK(w.relative == 4 && w.absolute == 0, "allslots: %u relative, %u absolute; want 4, 0",
+          w.relative, w.absolute);
+    mml_walk_free(&w);
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -155,6 +185,7 @@ int main(void) {
     test_category_and_protocol_lists();
     test_a_shared_list_counts_once();
     test_absolute_lists_are_counted_apart();
+    test_every_category_and_protocol_slot_is_read();
 
     if (fails) {
         printf("%d failure(s)\n", fails);
