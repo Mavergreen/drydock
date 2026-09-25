@@ -32,7 +32,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
-| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | — | **bug, found 2026-09-25**, reproduced; see below |
+| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | `plans/2026-09-25-header-references-m0.md` (M0) | **stop-gap done**: warned since `ef62652`; repair is M1; see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | — | — | **bug, found 2026-09-25**, reproduced; see below |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 
@@ -1458,6 +1458,10 @@ miss an instruction form (ModRM `(b & 0xC7) == 0x05`, disp32, then 0, 1, 2
 or 4 bytes of immediate, landing exactly on the header), then either patch
 the displacement or refuse. The decision and its design live in the
 dylib-growth spec.
+
+**Stop-gap done** (M0): warned since `ef62652`; repair is M1. A grow now names,
+on stderr, each instruction that addresses the image's own header; a
+fresh Claude Code download grows with seven such warnings.
 
 ## Item 30: `fixups set classic` output cannot be re-signed on 10.9
 

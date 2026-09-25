@@ -148,7 +148,12 @@ for why they would be rare -- and one decided on purpose:
     `add_version_min` all said there was no room, exit 1, file untouched. On
     an x86_64 PIE executable the wrapper now lowers the image base to make
     room, announces it on stderr ("FILE: grew the header pad by N bytes
-    ..."), and exits 0; anything else is still refused. The repo owner's
+    ..."), and exits 0; anything else is still refused. When the
+    executable's code takes its own header's address RIP-relatively, which
+    lowering the base breaks, one more line follows for each such
+    instruction: "FILE: warning: code at 0x... addresses the image's own
+    header; after this grow it points 0x1000 bytes past it (QUEUE item 29)"
+    (`tests/grown_binary_runs_test.sh`, "hdr"). The repo owner's
     ruling: the engine never writes its input, and the grow verifies itself,
     so an opt-in bought nothing. `tests/cli_test.sh`'s `add_version_min`
     case ("a short pad is grown, announced, where the original refused")
