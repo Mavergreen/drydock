@@ -32,6 +32,9 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
+| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | — | **bug, found 2026-09-25**, reproduced; see below |
+| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | — | — | **bug, found 2026-09-25**, reproduced; see below |
+| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1419,4 +1422,53 @@ constant would overflow without any test failing. The citation rewrite
 needs chained fixups, `__DATA_CONST` with `__objc_` sections and Swift tags
 together; `tests/mkchained.c` is the natural place to build it. Once it exists,
 the sentence can go.
+
+## Item 29: executable grow breaks code that addresses its own header
+
+**Found 2026-09-25** by the adversarial review of the dylib-growth spec, and
+reproduced here. Growth lowers the image base, which moves the header down by
+G while the code stays put. So an instruction that reaches the header by
+RIP-relative distance (`leaq __mh_execute_header(%rip)`, and `&__dso_handle`
+in a dylib) lands G bytes past the header after the grow. No rebase, bind or
+load-command field records that distance, so neither the grow nor any of its
+checks (`mg_verify`, `mg_plausible`, `verify`) sees it.
+
+**Reproduction.** A ten-line program calls
+`getsectiondata(&_mh_execute_header, "__DATA", "__data", …)` and prints the
+result. After `rpath append` of a 3000-byte path, Drydock grows its header by
+4096, exits 0, and `verify` passes. The grown binary segfaults (exit 139).
+The same program asking `_dyld_get_image_header(0)` instead, grown the same
+way, runs correctly.
+
+**Reach.** 19 of 302 executables surveyed on this host carry the pattern,
+`/usr/bin/groff` among them (three instances, passed to `__cxa_atexit`,
+where it is only an identity key, so groff likely survives). A scan of the
+Claude Code executable (`~/.local/bin/claude`) found none. Dylibs are worse:
+53 of 1517 10.9 system images and 63 of 150 app images, including AppKit,
+CoreFoundation and CFNetwork, which read their own sections through it.
+
+**Fix.** Shared with item 31: find every candidate by a scan that cannot
+miss an instruction form (ModRM `(b & 0xC7) == 0x05`, disp32, then 0, 1, 2
+or 4 bytes of immediate, landing exactly on the header), then either patch
+the displacement or refuse. The decision and its design live in the
+dylib-growth spec.
+
+## Item 30: `fixups set classic` output cannot be re-signed on 10.9
+
+**Found 2026-09-25** while planning objc-methods M2. 10.9's
+`codesign_allocate` (Command Line Tools) refuses:
+
+- Mantle as shipped (`malformed object (unknown load command 4)`: it
+  predates the modern load commands);
+- Mantle after `fixups set classic`: `file not in an order that can be
+  processed (dyld_info out of place)`.
+
+The lowering appends its dyld-info streams where the 10.9 tool does not
+expect them. Ad-hoc re-signing is mandatory in known port flows (item 13, "A
+documentation gap"), so a lowered image may need signing on a newer host, or
+a lowering that places its streams in the order `codesign_allocate` wants
+(rebase, bind, weak bind, lazy bind, export, then the symbol table). Not yet
+investigated: whether 10.9 needs a valid signature on a dylib at all. An
+invalid signature loaded fine in the dylib-growth review's test, from an
+unhardened process.
 
