@@ -67,16 +67,40 @@ static void refused(const uint8_t *s, size_t n, const char *want, const char *la
 static void test_malformed_streams_are_refused(void) {
     static const uint8_t unknown[] = { 0x11, 0x22, 0x00, 0x90 };
     static const uint8_t noseg[]   = { 0x11, 0x51 };
-    static const uint8_t bigseg[]  = { 0x11, 0x25, 0x00, 0x51 };
+    static const uint8_t bigseg[]  = { 0x11, 0x24, 0x00, 0x51 };
     static const uint8_t runsoff[] = { 0x11, 0x22, 0x80 };
     static const uint8_t huge[]    = { 0x11, 0x22, 0x00, 0x60, 0x80, 0x80, 0x80, 0x10 };
     static const uint8_t partial[] = { 0x11, 0x22, 0x00, 0x51, 0x90 };
     refused(unknown, sizeof unknown, "unknown rebase opcode 0x90", "unknown opcode");
     refused(noseg, sizeof noseg, "before any segment", "a rebase before any segment");
-    refused(bigseg, sizeof bigseg, "names segment 5", "a segment the image lacks");
+    refused(bigseg, sizeof bigseg, "names segment 4", "a segment the image lacks");
     refused(runsoff, sizeof runsoff, "runs off", "a ULEB off the end");
     refused(huge, sizeof huge, "past 16777216 slots", "a count past the cap");
     refused(partial, sizeof partial, "unknown rebase opcode", "slots decoded before a refusal");
+}
+
+static void test_rebase_type_is_restricted(void) {
+    static const uint8_t no_type[] = { 0x22, 0x10, 0x51 };
+    refused(no_type, sizeof no_type, "type 0", "a rebase before any SET_TYPE_IMM");
+    for (unsigned t = 3; t <= 15; t++) {
+        uint8_t s[4];
+        char want[16];
+        s[0] = (uint8_t)(0x10 | t);
+        s[1] = 0x22; s[2] = 0x10; s[3] = 0x51;
+        snprintf(want, sizeof want, "type %u", t);
+        refused(s, sizeof s, want, "a disallowed rebase type");
+    }
+}
+
+static void test_slot_cap_boundary_is_exact(void) {
+    static const uint8_t at_cap[]   = { 0x11, 0x22, 0x00, 0x60, 0x80, 0x80, 0x80, 0x08 };
+    static const uint8_t over_cap[] = { 0x11, 0x22, 0x00, 0x60, 0x81, 0x80, 0x80, 0x08 };
+    mrb_set set;
+    int rc = mrb_decode(at_cap, sizeof at_cap, 4, &set, NULL, 0);
+    CHECK(rc == MRB_OK && set.n == MRB_MAX_SLOTS,
+          "slot cap: exactly the cap: rc %d, %zu slots, want %u", rc, set.n, MRB_MAX_SLOTS);
+    mrb_free(&set);
+    refused(over_cap, sizeof over_cap, "past 16777216 slots", "one slot past the cap");
 }
 
 static void test_sort_counts_repeats_and_has_finds(void) {
@@ -146,11 +170,13 @@ static void test_encode_refuses_what_it_cannot_say(void) {
     mrb_slot unsorted[] = { { 0x18, 2, 1 }, { 0x10, 2, 1 } };
     mrb_slot twice[]    = { { 0x10, 2, 1 }, { 0x10, 2, 1 } };
     mrb_slot seg16[]    = { { 0x10, 16, 1 } };
+    mrb_slot nonpointer[] = { { 0x10, 2, 2 } };
     mrb_buf b;
     memset(&b, 0, sizeof b);
     CHECK(mrb_encode(unsorted, 2, &b) == MRB_MALFORMED, "encode: unsorted slots accepted");
     CHECK(mrb_encode(twice, 2, &b) == MRB_MALFORMED, "encode: a repeated slot accepted");
     CHECK(mrb_encode(seg16, 1, &b) == MRB_MALFORMED, "encode: segment 16 accepted");
+    CHECK(mrb_encode(nonpointer, 1, &b) == MRB_MALFORMED, "encode: a non-pointer type accepted");
     CHECK(b.n == 0, "encode: a refusal wrote %zu bytes", b.n);
     free(b.p);
 }
@@ -159,6 +185,8 @@ int main(void) {
     test_every_opcode_decodes();
     test_a_stream_without_done_ends_at_its_size();
     test_malformed_streams_are_refused();
+    test_rebase_type_is_restricted();
+    test_slot_cap_boundary_is_exact();
     test_sort_counts_repeats_and_has_finds();
     test_encode_pins_its_opcodes();
     test_encode_round_trips();

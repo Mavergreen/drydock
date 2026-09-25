@@ -101,6 +101,10 @@ int mrb_decode(const uint8_t *p, size_t size, int nsegs, mrb_set *out,
         if (seg < 0)
             return mrb_fail(out, why, whysz, MRB_MALFORMED,
                             "the rebase at byte %zu comes before any segment is set", here);
+        if (type != REBASE_TYPE_POINTER && type != REBASE_TYPE_TEXT_ABSOLUTE32)
+            return mrb_fail(out, why, whysz, MRB_MALFORMED,
+                            "the rebase at byte %zu has rebase type %u, which dyld does not accept",
+                            here, type);
         if (count > MRB_MAX_SLOTS - out->n)
             return mrb_fail(out, why, whysz, MRB_MALFORMED,
                             "the rebase at byte %zu takes the stream past %u slots",
@@ -173,6 +177,7 @@ int mrb_encode(const mrb_slot *v, size_t n, mrb_buf *b) {
     size_t i = 0;
     for (size_t k = 0; k < n; k++) {
         if (v[k].seg > REBASE_IMMEDIATE_MASK) return MRB_MALFORMED;
+        if (v[k].type != REBASE_TYPE_POINTER) return MRB_MALFORMED;
         if (k && mrb_cmp(&v[k - 1], &v[k]) >= 0) return MRB_MALFORMED;
     }
     mrb_put(b, &op, 1);

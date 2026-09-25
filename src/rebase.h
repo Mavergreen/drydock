@@ -16,6 +16,9 @@
  * file into an allocation it cannot make. */
 #define MRB_MAX_SLOTS (1u << 24)
 
+/* off wraps modulo 2^64, exactly as dyld's own rebase arithmetic does, so a
+ * consumer must bound a slot as `filesize < 8 || off > filesize - 8`, never
+ * `off + 8 <= filesize`, which can itself overflow. */
 typedef struct { uint64_t off; uint8_t seg, type; } mrb_slot;
 
 typedef struct {
