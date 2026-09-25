@@ -203,6 +203,12 @@ grep -q '__data found' "$T/hdr.out.out" \
     && ok "hdr: ... and the grown binary finds its own __data" \
     || bad "hdr: grown output" "$(cat "$T/hdr.out.out")"
 
+sym=$(nm "$T/hdr.grown" | awk '$3 == "__mh_execute_header" { print $1; exit }')
+base=$(text_vmaddr "$T/hdr.grown")
+[ -n "$sym" ] && [ -n "$base" ] && [ $((0x$sym)) -eq $((base)) ] \
+    && ok "hdr: ... and its __mh_execute_header symbol names the header ($base)" \
+    || bad "hdr: symbol" "__mh_execute_header is '$sym', the header is at '$base'"
+
 grow ctl "$T/ctl" "$T/ctl.grown"
 [ "$grc" -eq 0 ] && [ -e "$T/ctl.grown" ] && ok "ctl: the grow succeeds and writes its output" \
     || bad "ctl: grow" "exit $grc: $(cat "$T/ctl.grow.err")"

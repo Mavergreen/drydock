@@ -16,6 +16,8 @@
  */
 #include "grow.h"
 #include "hdrref.h"
+#include <mach-o/nlist.h>
+#include <mach-o/stab.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -2820,6 +2822,82 @@ static void test_confirm_needs_function_starts_when_the_list_is_empty(void) {
     CHECK(r == MHR_NO_STARTS, "confirm: an empty function-starts list is no starts (got %d)", r);
 }
 
+/* ---- symbols that name the header ----
+ * MG_T_SYMTAB's table (file 6656) gets four symbols. __mh_execute_header is
+ * an N_SECT symbol whose value is the base, so it follows the header down.
+ * The others keep their values: a symbol naming content, and a stab and an
+ * absolute symbol whose values happen to equal the base. N_BNSYM's type bits
+ * read as N_SECT under the N_TYPE mask; it is a stab all the same. */
+static const struct { uint8_t type; uint64_t value, want; } hsyms[4] = {
+    { N_SECT | N_EXT, 0x100000000ull, 0xfffff000ull },
+    { N_SECT,         0x100001000ull, 0x100001000ull },
+    { N_BNSYM,        0x100000000ull, 0x100000000ull },
+    { N_ABS | N_EXT,  0x100000000ull, 0x100000000ull },
+};
+
+static uint8_t *build_symbol_image(size_t *fsize, uint32_t nsyms, int opts) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_SYMTAB | opts);
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, *fsize, LC_SYMTAB);
+    struct nlist_64 *nl = (struct nlist_64 *)(buf + st->symoff);
+    for (int i = 0; i < 4; i++) {
+        nl[i].n_type = hsyms[i].type;
+        nl[i].n_sect = hsyms[i].type == N_ABS ? NO_SECT : 1;
+        nl[i].n_value = hsyms[i].value;
+    }
+    st->nsyms = nsyms;
+    return buf;
+}
+
+static void test_grow_moves_the_symbols_that_name_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "symbols: the grow succeeds (got %d)", r);
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    const struct nlist_64 *nl = (const struct nlist_64 *)(buf + st->symoff);
+    for (int i = 0; r == 0 && i < 4; i++)
+        CHECK(nl[i].n_value == hsyms[i].want, "symbols: type %#x, value %#llx, is %#llx after "
+              "the grow, want %#llx", hsyms[i].type, (unsigned long long)hsyms[i].value,
+              (unsigned long long)nl[i].n_value, (unsigned long long)hsyms[i].want);
+    free(buf);
+}
+
+static void test_grow_refuses_a_symbol_table_past_the_image(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 1000, 0);   /* 6656 + 16000 > 8192 */
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+        "ERROR: LC_SYMTAB's symbol table (offset 6656, 1000 entries) does not fit within the "
+        "8192-byte image; refusing to grow", &r);
+    CHECK(r == -1 && said, "symbols: a table past the image is refused (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "symbols: nothing changed");
+    free(before);
+    free(buf);
+}
+
+/* A grow refused after the symbols are checked (here, for a malformed export
+ * trie: node A's child offset points past the trie) leaves them as they were. */
+static void test_grow_moves_no_symbol_when_it_refuses(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, MG_T_TRIE);
+    buf[TRIE_OFF + 4] = 200;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+                                      "export trie is malformed", &r);
+    CHECK(r == -1 && said, "symbols: a malformed trie is refused (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "symbols: a refused grow moves no symbol");
+    free(before);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2908,6 +2986,9 @@ int main(void) {
     test_confirm_rejects_a_candidate_inside_data_in_code();
     test_confirm_rejects_what_the_decoder_cannot_decode();
     test_confirm_reports_an_image_it_cannot_scan();
+    test_grow_moves_the_symbols_that_name_the_header();
+    test_grow_refuses_a_symbol_table_past_the_image();
+    test_grow_moves_no_symbol_when_it_refuses();
     test_confirm_reports_a_bad_section_before_a_good_one();
     test_confirm_rejects_data_in_code_starting_mid_instruction();
     test_confirm_rejects_an_eip_relative_operand();

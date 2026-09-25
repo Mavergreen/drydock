@@ -25,8 +25,8 @@
  * its ORIGINAL vm address, so no pointer, rebase, bind, n_value, or entry
  * address that names content changes. The fields that move are file offsets —
  * which we shift uniformly (borrowed from LIEF: the exhaustive list of offset
- * fields) — and code that reaches the header RIP-relatively (src/hdrref.h),
- * since the header moved.
+ * fields) — and what names the header, which moved: code that reaches it
+ * RIP-relatively (src/hdrref.h), and the value of a symbol that names it.
  *
  * Precondition: a MH_PIE executable with a __PAGEZERO at least `grow` bytes
  * large. (Always true for the Claude Code executable: 0x1_0000_0000 pagezero.)
@@ -357,8 +357,10 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * at (mg_first_sect_off's MG_NO_SECTION_DATA); one whose first section's
  * file offset lies past the end of the image; and one with a candidate
  * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
- * for. Every confirmed reference is repaired: its disp32 loses the grow, so it
- * still reaches the header. A failure partway through growing can leave the
+ * for; and one whose LC_SYMTAB symbol table does not fit in the image. Every
+ * confirmed reference is repaired: its disp32 loses the grow, so it still
+ * reaches the header. So does the value of each symbol that names the header
+ * (__mh_execute_header). A failure partway through growing can leave the
  * buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);

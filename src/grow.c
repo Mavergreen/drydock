@@ -1,5 +1,7 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
+#include <mach-o/nlist.h>
+
 #include "grow.h"
 #include "hdrref.h"
 
@@ -1115,6 +1117,40 @@ static int mg_header_refs_ok(const uint8_t *buf, size_t fsize) {
     return -1;
 }
 
+/* The symbols that name the header: each N_SECT symbol, not a stab, whose
+ * value is `base`. With `patch`, each loses `grow`, following the header
+ * down; without, this checks that the symbol table lies within the image,
+ * and says so on stderr when it does not. Returns 0, or -1. */
+struct mg_hsym_ctx { uint8_t *buf; size_t fsize; uint64_t base; uint32_t grow; int patch, bad; };
+
+static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_hsym_ctx *c = (struct mg_hsym_ctx *)ctx_;
+    if (lc->cmd != LC_SYMTAB) return 0;
+    const struct symtab_command *st = (const struct symtab_command *)lc;
+    if ((uint64_t)st->symoff + (uint64_t)st->nsyms * sizeof(struct nlist_64) > c->fsize) {
+        fprintf(stderr, "ERROR: LC_SYMTAB's symbol table (offset %u, %u entries) does not fit "
+                        "within the %zu-byte image; refusing to grow\n",
+                st->symoff, st->nsyms, c->fsize);
+        c->bad = 1;
+        return 1;
+    }
+    struct nlist_64 *nl = (struct nlist_64 *)(c->buf + st->symoff);
+    for (uint32_t i = 0; c->patch && i < st->nsyms; i++)
+        if (!(nl[i].n_type & N_STAB) && (nl[i].n_type & N_TYPE) == N_SECT &&
+            nl[i].n_value == c->base)
+            nl[i].n_value -= c->grow;
+    return 0;
+}
+
+static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint32_t grow,
+                             int patch) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) != 0) return -1;
+    struct mg_hsym_ctx c = { buf, fsize, base, grow, patch, 0 };
+    mi_each_lc(&im, mg_hsym_cb, &c);
+    return c.bad ? -1 : 0;
+}
+
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
@@ -1282,6 +1318,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
     if (mg_header_refs_ok(buf, fsize) != 0) return -1;
+    if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
     /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
      * after the buffer is mutated) can't do it: widening one entry cascades
      * into the byte width of every child-offset ULEB after it in the trie.
@@ -1547,6 +1584,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         memcpy(&disp, d, sizeof disp);
         disp = (int32_t)((int64_t)disp - (int64_t)grow);
         memcpy(d, &disp, sizeof disp);
+    }
+
+    if (mg_header_symbols(buf, final_size, snap.base, grow, 1) != 0) {
+        fprintf(stderr, "ERROR: internal error re-basing the symbols that name the header "
+                        "after passing the pre-check\n");
+        mg_snapshot_free(&snap);
+        return -1;
     }
 
     /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: the base
