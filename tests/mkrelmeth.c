@@ -10,7 +10,7 @@ static const struct { const char *name; unsigned bits; } VARIANTS[] = {
     { "listlist", RMF_LISTLIST }, { "oob", RMF_OOB },       { "shared", RMF_SHARED },
     { "abscat", RMF_ABSCAT },   { "nlcls", RMF_NLCLS },     { "swift", RMF_SWIFT },
     { "badent", RMF_BADENT },   { "allslots", RMF_ALLSLOTS },
-    { "sharedro", RMF_SHAREDRO },
+    { "sharedro", RMF_SHAREDRO }, { "catpast", RMF_CATPAST }, { "protopast", RMF_PROTOPAST },
 };
 
 int main(int argc, char **argv) {

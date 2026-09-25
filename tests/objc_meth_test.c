@@ -117,6 +117,8 @@ static void test_refusals(void) {
     test_refusal(RMF_BADENT,   MML_MALFORMED, "0x80000010",         "relative entsize 16");
     test_refusal(RMF_LISTLIST, MML_MALFORMED, "low bits",           "list of lists");
     test_refusal(RMF_OOB,      MML_MALFORMED, "runs past",          "list past its segment");
+    test_refusal(RMF_CATPAST,  MML_MALFORMED, "category record",    "category past its segment");
+    test_refusal(RMF_PROTOPAST, MML_MALFORMED, "protocol record",   "protocol past its segment");
 }
 
 static void test_category_and_protocol_lists(void) {

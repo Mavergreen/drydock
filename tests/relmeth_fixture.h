@@ -51,6 +51,7 @@
 #define RMF_META         0x1340u
 #define RMF_CLASS2       0x1380u
 
+#define RMF_DATA_TAIL    0x1ff0u   /* __DATA's last 16 file bytes */
 #define RMF_LINKEDIT     0x2000u
 #define RMF_LINKEDIT_SIZE 0x100u
 #define RMF_REBASE       0x2000u
@@ -72,8 +73,10 @@ enum {
     RMF_ALLSLOTS = 1u << 9,  /* the category's classMethods and the protocol's other three
                               * slots name lists; __objc_nlcatlist names the category and a
                               * second category that names list D */
-    RMF_SHAREDRO = 1u << 10  /* __objc_nlclslist names a second class, whose isa is the
+    RMF_SHAREDRO = 1u << 10, /* __objc_nlclslist names a second class, whose isa is the
                               * metaclass and whose data word names the class's ro */
+    RMF_CATPAST  = 1u << 11, /* the catlist entry names RMF_DATA_TAIL */
+    RMF_PROTOPAST = 1u << 12 /* the protolist entry names RMF_DATA_TAIL */
 };
 
 static inline void rmf_name16(char *f, const char *s) {
@@ -272,12 +275,12 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         rmf_put64(b, RMF_CLASS2, RMF_VA(RMF_META));
         rmf_put64(b, RMF_CLASS2 + 32, RMF_VA(RMF_CLASS_RO));
     }
-    rmf_put64(b, RMF_CATLIST, RMF_VA(RMF_CATEGORY));
+    rmf_put64(b, RMF_CATLIST, RMF_VA((v & RMF_CATPAST) ? RMF_DATA_TAIL : RMF_CATEGORY));
     if (v & RMF_ALLSLOTS) {
         rmf_put64(b, RMF_NLCATLIST, RMF_VA(RMF_CATEGORY));
         rmf_put64(b, RMF_NLCATLIST + 8, RMF_VA(RMF_CATEGORY2));
     }
-    rmf_put64(b, RMF_PROTOLIST, RMF_VA(RMF_PROTOCOL));
+    rmf_put64(b, RMF_PROTOLIST, RMF_VA((v & RMF_PROTOPAST) ? RMF_DATA_TAIL : RMF_PROTOCOL));
 
     {
         struct dyld_info_command *di = rmf_lc(b, &at, LC_DYLD_INFO_ONLY, sizeof *di);
