@@ -11,7 +11,8 @@ static const struct { const char *name; unsigned bits; } VARIANTS[] = {
     { "abscat", RMF_ABSCAT },   { "nlcls", RMF_NLCLS },     { "swift", RMF_SWIFT },
     { "badent", RMF_BADENT },   { "allslots", RMF_ALLSLOTS },
     { "sharedro", RMF_SHAREDRO }, { "catpast", RMF_CATPAST }, { "protopast", RMF_PROTOPAST },
-    { "metaout", RMF_METAOUT },
+    { "metaout", RMF_METAOUT }, { "selbind", RMF_SELBIND }, { "fstarts", RMF_FSTARTS },
+    { "fsbad", RMF_FSBAD },     { "noslotrb", RMF_NOSLOTRB },
 };
 
 int main(int argc, char **argv) {
