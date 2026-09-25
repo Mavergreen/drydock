@@ -58,5 +58,19 @@ else
     fail=$((fail + 1))
 fi
 
+# The third positive control: a decoder refusal on bytes otool decodes as
+# real code is a failure unless the exact site is allow-listed. libsystem_c
+# has exactly one such site; with the allow-list disabled, it must surface
+# as an unlisted REFUSED, not silently pass.
+thin="$T/libsystem_c.dylib"
+rc=0; otool -tv "$thin" | X86LEN_ORACLE_NO_ALLOWLIST=1 "$ORACLE" "$thin" >"$T/out" || rc=$?
+if [ "$rc" -eq 1 ] && grep -q '^REFUSED' "$T/out"; then
+    echo "PASS the positive control: an unlisted decoder refusal on real code is a failure"
+else
+    echo "FAIL the positive control: with the allow-list disabled, the oracle said (exit $rc):"
+    cat "$T/out"
+    fail=$((fail + 1))
+fi
+
 [ "$fail" -eq 0 ] || { echo "x86len_oracle_test: $fail failure(s)"; exit 1; }
 echo "x86len_oracle_test: all passed"
