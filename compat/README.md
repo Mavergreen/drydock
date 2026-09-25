@@ -150,12 +150,12 @@ for why they would be rare -- and one decided on purpose:
     room, announces it on stderr ("FILE: grew the header pad by N bytes
     ..."), and exits 0; anything else is still refused. When the
     executable's code takes its own header's address RIP-relatively, which
-    lowering the base breaks, one more line follows for each such
-    instruction: "FILE: warning: code at 0x... addresses the image's own
-    header; after this grow it points 0x1000 bytes past it (QUEUE item 29)"
+    lowering the base would break, the grow repairs each such instruction
+    and ends the line "; repaired N references to the header"
     (`tests/grown_binary_runs_test.sh`, "hdr"). The scan that finds these can,
-    rarely, report bytes that only look like such an instruction; it
-    over-reports, never under-reports. The repo owner's
+    rarely, report bytes that only look like such an instruction; the grow
+    confirms each by decoding its function, and refuses rather than patch
+    bytes it cannot confirm. The repo owner's
     ruling: the engine never writes its input, and the grow verifies itself,
     so an opt-in bought nothing. `tests/cli_test.sh`'s `add_version_min`
     case ("a short pad is grown, announced, where the original refused")

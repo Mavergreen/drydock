@@ -32,7 +32,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
-| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | `plans/2026-09-25-header-references-m0.md` (M0) | **stop-gap done**: warned since `ef62652`; repair is M1; see below |
+| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | `plans/2026-09-25-header-references-m0.md` (M0), `plans/2026-09-25-header-references-m1.md` (M1) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | — | — | **bug, found 2026-09-25**, reproduced; see below |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 
@@ -1462,6 +1462,21 @@ dylib-growth spec.
 **Stop-gap done** (M0): warned since `ef62652`; repair is M1. A grow now names,
 on stderr, each instruction that addresses the image's own header; a
 fresh Claude Code download grows with seven such warnings.
+
+**Done** (M1): repaired since `5d93921`. A grow decodes each candidate's function
+from its `LC_FUNCTION_STARTS` entry (`src/x86len.h`, checked against 10.9's
+`otool`), takes the grow off each confirmed disp32, moves the
+`__mh_execute_header` symbol with the header, and refuses a candidate it
+cannot confirm. A fresh Claude Code download grows with "repaired 7
+references to the header".
+
+**Not repaired** (found while planning M1): a data pointer to the header,
+`const void *p = &_mh_execute_header;`, is a rebase target whose value is
+the base, and after a grow it names a byte G past the header. 46 of 838
+x86_64 executables on this host have one (the Java launcher stubs among
+them); Claude Code has none among its 94,730 rebase targets. The spec's
+Decision 2 leaves absolute addresses alone on the executable route; this is
+the exception, and its repair needs the rebase decoder (spec Decision 9).
 
 **Data pointers to the header break the same way** (found 2026-09-25 while
 planning M1). A rebased pointer whose value is `_mh_execute_header` keeps the
