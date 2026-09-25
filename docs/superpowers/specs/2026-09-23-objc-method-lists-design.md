@@ -483,12 +483,21 @@ on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
 - **No false refusals.** Every "not walked" line in the 510 was a chained
   image. On Foundation the walk finds a strict superset of the lists
   `otool -ov` prints; the extra 6 are lists of protocols nothing adopts.
+- **Every relative entry resolves as Decision 3 requires** (M2's first
+  task). A probe written apart from `src/` ran Decision 3's checks and
+  Decision 1's refusals on the three frameworks after `fixups set
+  classic` (inputs `3b59fda2…`, `35e4e688…`, `03ef80b1…` by SHA-256):
+  89, 650 and 124 entries in 22, 137 and 20 relative lists. Every `name`
+  is an offset to an 8-byte-aligned, file-backed, rebased selector
+  reference holding a C string; every `types` is a C string; every IMP is
+  non-zero and in a section of instructions. None carries
+  `LC_FUNCTION_STARTS`, so the function-start check does not run on them.
+  D is `__DATA`, segment 2, writable, ending where `__LINKEDIT` begins in
+  vm and in file, and `__LINKEDIT` ends the file. The conversion adds 267,
+  1,950 and 372 rebases. So in these app-side images `name` is never direct.
 
 **Still to validate:**
 
-- that in an app binary (as opposed to the shared cache) `name` is always a
-  selector-reference offset and never direct. M2's first task checks this
-  on the three frameworks above;
 - that 10.9's dyld and objc, and `codesign`, accept method lists placed past
   the last section of `__DATA` (Decision 1). The fixtures prove Drydock's
   side; M3's run on 10.9 proves the runtime's;
