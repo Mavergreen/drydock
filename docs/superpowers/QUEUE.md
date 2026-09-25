@@ -1442,8 +1442,14 @@ way, runs correctly.
 
 **Reach.** 19 of 302 executables surveyed on this host carry the pattern,
 `/usr/bin/groff` among them (three instances, passed to `__cxa_atexit`,
-where it is only an identity key, so groff likely survives). A scan of the
-Claude Code executable (`~/.local/bin/claude`) found none. Dylibs are worse:
+where it is only an identity key, so groff likely survives). **The Claude
+Code executable carries it too: 7 instances, all `lea __mh_execute_header(%rip)`
+passed to `___cxa_atexit`.** A first scan reported none because it ran on an
+installed copy that had already been grown, whose header had moved; scanned
+against the original base 0x100000000 the 7 appear. Being identity keys, they
+explain why grown Claude Code runs. Also found while planning M0: after a
+grow, the `__mh_execute_header` symbol still records the old base. Dylibs are
+worse:
 53 of 1517 10.9 system images and 63 of 150 app images, including AppKit,
 CoreFoundation and CFNetwork, which read their own sections through it.
 

@@ -68,7 +68,8 @@ The pattern (code that takes the header's address RIP-relatively) is in:
 Among them: AppKit and CoreFoundation, which read their own sections that
 way; CFNetwork's `lazy_load_dylib`; libc++, which passes `&__dso_handle` to
 `__cxa_atexit`; and a 10.12-SDK iTunes bundle, which passes it to
-`os_log`. The Claude Code executable has none.
+`os_log`. The Claude Code executable has 7, all `&__mh_execute_header`
+passed to `__cxa_atexit`, where it is only an identity key.
 
 ## Decisions
 
@@ -197,8 +198,10 @@ message names the first candidate's address and says why:
 ERROR: code at 0x1000028b2 addresses the image's own header; growing would move the header relative to it. Refusing.
 ```
 
-This turns item 29's silent crash into an honest refusal. The Claude Code
-executable has no candidates, so it is unaffected.
+This turns item 29's silent crash into an honest refusal. **But a fresh
+Claude Code download has 7 candidates** (Why), so refusing would stop Drydock
+growing the binary it was built for until M1 lands. Whether M0 refuses or
+only warns is with the owner, 2026-09-25.
 
 **M1 (the repair): confirm each candidate is an instruction, then patch it.**
 The candidate's containing function is found through `LC_FUNCTION_STARTS`.
