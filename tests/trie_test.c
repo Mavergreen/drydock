@@ -387,6 +387,45 @@ static void test_rebuild_many_edges_none_dropped(void) {
     free(out);
 }
 
+/* ---- an absolute export holds a value, not an offset: never shifted ----
+ * root: two children "A"->8, "B"->13. A: flags at byte 9, value 0x1000
+ * (80 20) at bytes 10-11. B: flags 0, address 0x1000. After a 0x1000 shift B
+ * is 0x2000 (80 40), still two bytes, and A is unshifted when its kind is
+ * EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE (2) and shifted when it is
+ * THREAD_LOCAL (1). */
+static void check_rebuild_node_a_kind(uint8_t flags, uint8_t want_a_hi, const char *what) {
+    uint8_t in[] = {
+        0x00, 0x02, 'A', 0x00, 8, 'B', 0x00, 13,
+        0x03, 0x00, 0x80, 0x20, 0x00,
+        0x03, 0x00, 0x80, 0x20, 0x00,
+    };
+    uint8_t want[sizeof in];
+    uint8_t *out = NULL; uint32_t osz = 0;
+    in[9] = flags;
+    memcpy(want, in, sizeof in);
+    want[11] = want_a_hi;
+    want[16] = 0x40;
+    int r = mt_trie_rebuild(in, sizeof in, 0x1000, &out, &osz);
+    CHECK(r == 0, "%s: rebuild succeeds (got %d)", what, r);
+    if (r != 0) return;
+    CHECK(osz == sizeof want && memcmp(out, want, sizeof want) == 0,
+          "%s: node A's second address byte is %#x, want %#x", what,
+          osz > 11 ? out[11] : 0, want_a_hi);
+    free(out);
+}
+
+static void test_rebuild_absolute_export_untouched(void) {
+    check_rebuild_node_a_kind(0x02, 0x20, "absolute export");
+    check_rebuild_node_a_kind(0x01, 0x40, "thread-local export");
+    /* absolute with STUB_AND_RESOLVER (0x12): neither field shifts */
+    static const uint8_t sr[] = { 0x03, 0x12, 0x10, 0x20, 0x00 };
+    uint8_t *out = NULL; uint32_t osz = 0;
+    int r = mt_trie_rebuild(sr, sizeof sr, 0x30, &out, &osz);
+    CHECK(r == 0 && osz == sizeof sr && memcmp(out, sr, sizeof sr) == 0,
+          "absolute stub-and-resolver: both fields unshifted (got %d, %u bytes)", r, osz);
+    free(out);
+}
+
 int main(void) {
     test_rebuild_root_terminal_shifts_address();
     test_rebuild_widens_when_needed();
@@ -399,6 +438,7 @@ int main(void) {
     test_rebuild_shared_offset_refuses();
     test_rebuild_depth_cap_refuses();
     test_rebuild_many_edges_none_dropped();
+    test_rebuild_absolute_export_untouched();
 
     if (fails) { printf("%d FAIL(S)\n", fails); return 1; }
     printf("ALL PASS\n");

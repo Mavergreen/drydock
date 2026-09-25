@@ -34,7 +34,8 @@
 #define MT_TRIE_MAX_DEPTH 128
 
 /* Rebuild the export trie at trie[0..size). Every exported address (nonzero)
- * gains `shift`; address 0 is left as 0 — that is __mh_execute_header, which
+ * gains `shift`, except an EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE entry's, which is
+ * a value, not an offset; address 0 is left as 0 — that is __mh_execute_header, which
  * names the header itself, and the header moved down with the base too, so 0
  * remains correct (same rule mg_trie_node applies for the in-place path).
  *

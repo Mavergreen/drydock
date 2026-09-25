@@ -650,6 +650,7 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
         if (k == 0) return -1;
         p += k;
         if (!(flags & MG_EXPORT_REEXPORT)) {          /* re-exports carry no address */
+            int absolute = (flags & MG_EXPORT_KIND_MASK) == MG_EXPORT_KIND_ABSOLUTE;
             int rounds = (flags & MG_EXPORT_STUB_AND_RESOLVER) ? 2 : 1;
             for (int r = 0; r < rounds; r++) {
                 uint64_t a; int w = mu_decode(p, end, &a);
@@ -658,8 +659,8 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
                     if (out) {
                         if (*n >= max) return -1;
                         if (kinds) kinds[*n] = MG_K_ANY;  /* data exports are not functions */
-                        out[(*n)++] = base + a;
-                    } else {
+                        out[(*n)++] = absolute ? a : base + a;
+                    } else if (!absolute) {
                         if (mu_minlen(a + grow) > w) return 1;   /* would widen */
                         if (patch && !mu_encode_fixed(p, a + grow, w)) return 1;
                     }
@@ -1233,7 +1234,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * after the buffer is mutated) can't do it: widening one entry cascades
      * into the byte width of every child-offset ULEB after it in the trie.
      * REBUILD it instead: decode the whole thing, add `grow` to every
-     * nonzero address, and re-serialize from scratch with everything
+     * nonzero offset from the base, and re-serialize from scratch with everything
      * minimally encoded (src/trie.c, mt_trie_rebuild) -- adapted from
      * Wowfunhappy's export-trie rebuilder in insert_dylib commit 6d3aa61
      * (public domain/CC0/WTFPL per his own statement, see

@@ -2205,6 +2205,57 @@ static void test_ensure_pad_fits_despite_a_header_reference(void) {
     free(buf);
 }
 
+/* ---- an absolute export is a value, not an offset ----
+ * EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE (kind 2 under the 0x03 mask) stores the
+ * symbol's value itself, so lowering the base leaves it alone; a thread-local
+ * export (kind 1) is an offset from the base like a regular one. MG_T_TRIE's
+ * node A keeps its flags at trie byte 9 and its address, 0x1000, at bytes
+ * 10-11. */
+#define MG_TRIE_A_FLAGS 9
+#define MG_TRIE_A_ADDR  10
+static int grow_with_node_a_flags(uint8_t flags, uint64_t *a_out) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_TRIE);
+    uint32_t toff = 0, tsize = 0;
+    buf[TRIE_OFF + MG_TRIE_A_FLAGS] = flags;
+    *a_out = 0;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    if (r == 0 && mg_find_trie(buf, fsize, &toff, &tsize))
+        mu_decode(buf + toff + MG_TRIE_A_ADDR, buf + toff + tsize, a_out);
+    free(buf);
+    return r;
+}
+
+static void test_grow_leaves_an_absolute_export_alone(void) {
+    uint64_t a;
+    int r = grow_with_node_a_flags(0x02, &a);
+    CHECK(r == 0, "absolute export: the grow succeeds and verifies (got %d)", r);
+    CHECK(a == 0x1000, "absolute export: its value stays 0x1000 (got %#llx)", (unsigned long long)a);
+    r = grow_with_node_a_flags(0x01, &a);
+    CHECK(r == 0 && a == 0x2000, "thread-local export: an offset, so it gains grow "
+          "(got %d, %#llx)", r, (unsigned long long)a);
+}
+
+/* mg_collect records an absolute export as its value, so verify notices one
+ * that moved. */
+static void test_verify_watches_an_absolute_export(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_TRIE);
+    uint32_t toff = 0, tsize = 0;
+    mg_snapshot snap;
+    buf[TRIE_OFF + MG_TRIE_A_FLAGS] = 0x02;
+    CHECK(mg_snapshot_take(buf, fsize, &snap) == 0, "absolute export: snapshot taken");
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "absolute export: grow succeeded");
+        mg_snapshot_free(&snap); free(buf); return;
+    }
+    if (mg_find_trie(buf, fsize, &toff, &tsize))
+        mu_encode_fixed(buf + toff + MG_TRIE_A_ADDR, 0x2000, 2);
+    CHECK(mg_verify(buf, fsize, &snap) == -1, "verify REJECTS an absolute export that moved");
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -2265,6 +2316,8 @@ int main(void) {
     test_ensure_pad_does_not_warn_without_a_header_reference();
     test_ensure_pad_warns_of_code_it_cannot_scan();
     test_ensure_pad_fits_despite_a_header_reference();
+    test_grow_leaves_an_absolute_export_alone();
+    test_verify_watches_an_absolute_export();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MT_EXPORT_KIND_MASK         0x03
+#define MT_EXPORT_KIND_ABSOLUTE     0x02
 #define MT_EXPORT_REEXPORT          0x08
 #define MT_EXPORT_STUB_AND_RESOLVER 0x10
 
@@ -145,6 +147,7 @@ static int32_t mt_parse(struct mt_builder *b, uint32_t off, int depth) {
         p += k;
         b->nodes[idx].has_term = 1;
         b->nodes[idx].flags = flags;
+        uint64_t shift = (flags & MT_EXPORT_KIND_MASK) == MT_EXPORT_KIND_ABSOLUTE ? 0 : b->shift;
         if (flags & MT_EXPORT_REEXPORT) {
             uint64_t ord;
             k = mu_decode(p, tend, &ord);
@@ -167,14 +170,14 @@ static int32_t mt_parse(struct mt_builder *b, uint32_t off, int depth) {
             if (k == 0) { mt_fail(b, "malformed resolver-offset ULEB"); return -1; }
             p += k;
             b->nodes[idx].is_stub_resolver = 1;
-            b->nodes[idx].a1 = stub ? stub + b->shift : 0;
-            b->nodes[idx].a2 = resolver ? resolver + b->shift : 0;
+            b->nodes[idx].a1 = stub ? stub + shift : 0;
+            b->nodes[idx].a2 = resolver ? resolver + shift : 0;
         } else {
             uint64_t addr;
             k = mu_decode(p, tend, &addr);
             if (k == 0) { mt_fail(b, "malformed export-address ULEB"); return -1; }
             p += k;
-            b->nodes[idx].a1 = addr ? addr + b->shift : 0;
+            b->nodes[idx].a1 = addr ? addr + shift : 0;
         }
         p = tend;
     }

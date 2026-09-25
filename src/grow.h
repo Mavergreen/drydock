@@ -61,6 +61,7 @@
 
 
 #define MG_EXPORT_KIND_MASK        0x03
+#define MG_EXPORT_KIND_ABSOLUTE    0x02
 #define MG_EXPORT_REEXPORT         0x08
 #define MG_EXPORT_STUB_AND_RESOLVER 0x10
 
@@ -261,6 +262,10 @@ int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
  * the header moved down with the base, so 0 remains correct. It is therefore
  * neither bumped nor collected -- its resolved address is base+0, which SHOULD
  * change, and collecting it would make verify fail on a correct grow.
+ *
+ * An EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE entry holds the symbol's value, not an
+ * offset from the base, so it is never bumped. It is collected as that value,
+ * so verify still sees it move if something moves it.
  *
  * `seen` guards a shared subtree from being bumped twice -- the same hazard as
  * the __init_offsets double-apply. */
