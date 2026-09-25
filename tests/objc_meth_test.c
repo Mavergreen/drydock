@@ -278,6 +278,74 @@ static void poke_selref_outside(uint8_t *b) {
     rmf_put32(b, RMF_LIST_A + 8, (uint32_t)(int32_t)((int64_t)RMF_SIZE + 0x1000 - (int64_t)(RMF_LIST_A + 8)));
 }
 
+static struct dyld_info_command *poke_find_dyld_info(uint8_t *b) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    uint8_t *p = b + sizeof *h;
+    for (uint32_t k = 0; k < h->ncmds; k++) {
+        struct load_command *lc = (struct load_command *)p;
+        if (lc->cmd == LC_DYLD_INFO_ONLY || lc->cmd == LC_DYLD_INFO)
+            return (struct dyld_info_command *)lc;
+        p += lc->cmdsize;
+    }
+    return NULL;
+}
+
+/* Retypes every rebase in the stream (one SET_TYPE_IMM covers them all) as
+ * REBASE_TYPE_TEXT_ABSOLUTE32. */
+static void poke_rebase_abs32(uint8_t *b) {
+    b[RMF_REBASE] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_TEXT_ABSOLUTE32;
+}
+
+/* Replaces the whole rebase stream with two rebases of the same slot (list
+ * A entry 0's selref, RMF_SELREFS + 8): TEXT_ABSOLUTE32 first, POINTER
+ * second. */
+static void poke_rebase_dup_pointer(uint8_t *b) {
+    struct dyld_info_command *di = poke_find_dyld_info(b);
+    uint32_t at = RMF_REBASE, off = RMF_SELREFS + 8 - RMF_DATA;
+    b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_TEXT_ABSOLUTE32;
+    b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+    at += rmf_uleb(b + at, off);
+    b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
+    b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+    at += rmf_uleb(b + at, off);
+    b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    b[at++] = REBASE_OPCODE_DONE;
+    di->rebase_off = RMF_REBASE;
+    di->rebase_size = at - RMF_REBASE;
+}
+
+/* Replaces the whole rebase stream with a single POINTER rebase of
+ * RMF_SELREFS + 8 -- the slot RMF_SELBIND's bind stream also binds. */
+static void poke_rebase_add_selref1(uint8_t *b) {
+    struct dyld_info_command *di = poke_find_dyld_info(b);
+    uint32_t at = RMF_REBASE, off = RMF_SELREFS + 8 - RMF_DATA;
+    b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
+    b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+    at += rmf_uleb(b + at, off);
+    b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    b[at++] = REBASE_OPCODE_DONE;
+    di->rebase_off = RMF_REBASE;
+    di->rebase_size = at - RMF_REBASE;
+}
+
+/* list A entry 0's IMP delta, poked so that -- interpreted against a
+ * synthetic ref whose list_va is 0 -- it resolves to address 0 exactly. */
+static void poke_imp_zero(uint8_t *b) { rmf_put32(b, RMF_LIST_A + 16, (uint32_t)(int32_t)(-16)); }
+
+static void poke_text_fileoff(uint8_t *b) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    uint8_t *p = b + sizeof *h;
+    for (uint32_t k = 0; k < h->ncmds; k++) {
+        struct load_command *lc = (struct load_command *)p;
+        if (lc->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *sc = (struct segment_command_64 *)lc;
+            if (strncmp(sc->segname, "__TEXT", 16) == 0) { sc->fileoff = 1; return; }
+        }
+        p += lc->cmdsize;
+    }
+}
+
 static void refused_entry(unsigned variant, void (*poke)(uint8_t *), uint32_t list, uint32_t i,
                           const char *want, const char *label) {
     opened o;
@@ -302,6 +370,65 @@ static void test_entries_that_cannot_be_made_absolute_are_refused(void) {
     refused_entry(RMF_PLAIN, poke_types_open, RMF_LIST_A, 0, "types at", "types with no NUL in their section");
     refused_entry(RMF_PLAIN, poke_imp_data, RMF_LIST_A, 0, "not in a section of instructions", "an IMP into __objc_methname");
     refused_entry(RMF_FSBAD, NULL, RMF_LIST_C, 0, "not one of the 3 function starts", "an IMP that is not a function start");
+    refused_entry(RMF_PLAIN, poke_rebase_abs32, RMF_LIST_A, 0,
+                  "carries a TEXT_ABSOLUTE32 rebase, not a pointer rebase",
+                  "a selector reference rebased as TEXT_ABSOLUTE32");
+    refused_entry(RMF_SELBIND, poke_rebase_add_selref1, RMF_LIST_A, 0, "is bound to another image",
+                  "a selector reference both bound and pointer-rebased");
+    refused_entry(RMF_PLAIN, NULL, RMF_LIST_A, 2, "only 2 entries", "an index past the list's count");
+}
+
+static void test_a_selref_rebased_both_ways_still_resolves_as_pointer(void) {
+    opened o;
+    int rc = open_poked(RMF_PLAIN, poke_rebase_dup_pointer, &o);
+    CHECK(rc == MML_OK, "dup rebase: resolver rc %d (%s)", rc, o.why);
+    if (rc == MML_OK)
+        check_entry(&o, RMF_LIST_A, 0, 0x10, RMF_VA(RMF_TEXT + 0),
+                    "list A entry 0, rebased as TEXT_ABSOLUTE32 then as a pointer");
+    close_opened(&o);
+}
+
+static void test_an_imp_resolving_to_address_0_is_refused(void) {
+    opened o;
+    mml_ref ref;
+    mml_entry e;
+    char why[256] = "";
+    int rc = open_poked(RMF_PLAIN, poke_imp_zero, &o);
+    CHECK(rc == MML_OK, "imp zero: resolver rc %d (%s)", rc, o.why);
+    if (rc == MML_OK) {
+        memset(&ref, 0, sizeof ref);
+        ref.list_off = RMF_LIST_A;
+        ref.header = RMF_REL_HEADER;
+        ref.count = 2;
+        rc = mml_entry_at(&o.r, &ref, 0, &e, why, sizeof why);
+        CHECK(rc == MML_MALFORMED, "imp zero: rc %d, want MML_MALFORMED", rc);
+        CHECK(strstr(why, "resolves to address 0") != NULL,
+              "imp zero: why '%s' lacks 'resolves to address 0'", why);
+    }
+    close_opened(&o);
+}
+
+/* Bypasses open_poked/mml_walk_image: __TEXT maps __objc_methlist and
+ * friends, so a poke that leaves it unable to map file offset 0 would
+ * break the walk too, not just mi_image_base. mml_resolver_open needs no
+ * successful walk first. */
+static void test_an_unbased_image_names_its_own_refusal(void) {
+    mi_image im;
+    mml_resolver r;
+    char why[256] = "";
+    int rc;
+    rmf_build(fx, RMF_FSTARTS);
+    poke_text_fileoff(fx);
+    if (mi_wrap(fx, RMF_SIZE, &im) != 0) {
+        printf("FAIL: fixture variant fstarts (unbased) does not wrap\n");
+        fails++;
+        return;
+    }
+    rc = mml_resolver_open(&im, &r, why, sizeof why);
+    CHECK(rc == MML_MALFORMED, "unbased: rc %d, want MML_MALFORMED (%s)", rc, why);
+    CHECK(strstr(why, "no segment maps the image's header") != NULL,
+          "unbased: why '%s' lacks its own reason", why);
+    if (rc == MML_OK) mml_resolver_close(&r);
 }
 
 static void poke_unbind(uint8_t *b) { memset(b + RMF_BIND_BLOB, 0, 0x20); }
@@ -333,6 +460,9 @@ int main(void) {
     test_function_starts_admit_every_imp_they_name();
     test_entries_that_cannot_be_made_absolute_are_refused();
     test_selector_references_without_a_rebase_or_bind_are_named_so();
+    test_a_selref_rebased_both_ways_still_resolves_as_pointer();
+    test_an_imp_resolving_to_address_0_is_refused();
+    test_an_unbased_image_names_its_own_refusal();
 
     if (fails) {
         printf("%d failure(s)\n", fails);

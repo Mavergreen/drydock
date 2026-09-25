@@ -71,13 +71,16 @@ typedef struct {
 int  mml_resolver_open(const mi_image *im, mml_resolver *r, char *why, size_t whysz);
 void mml_resolver_close(mml_resolver *r);
 
-/* Entry `i` of the list `ref` names. An absolute entry is read. A relative
- * one is resolved and checked: its selector reference is 8-byte aligned,
- * file-backed and rebased as a pointer, and holds the address of a string
- * NUL-terminated within an S_CSTRING_LITERALS section; its types are such a
- * string; its IMP is 0, or lies in a section of instructions and, when the
- * image lists function starts, is one. MML_OK, or MML_MALFORMED with why
- * set. */
+/* Entry `i` of the list `ref` names; refused as MML_MALFORMED when `i` is
+ * not less than `ref->count`. An absolute entry is read. A relative one is
+ * resolved and checked: its selector reference is 8-byte aligned,
+ * file-backed and rebased as a pointer (bound is checked before rebased, so
+ * a selref both bound and rebased still refuses as bound), and holds the
+ * address of a string NUL-terminated within an S_CSTRING_LITERALS section;
+ * its types are such a string; its IMP is 0, or a nonzero address (never
+ * one that resolves to exactly 0) lying in a section of instructions and,
+ * when the image lists function starts, is one. MML_OK, or MML_MALFORMED
+ * with why set. */
 int  mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entry *e,
                   char *why, size_t whysz);
 

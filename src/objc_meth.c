@@ -386,9 +386,14 @@ int mml_resolver_open(const mi_image *im, mml_resolver *r, char *why, size_t why
     if (c.fs && c.fs->datasize) {
         uint64_t base;
         int n;
-        if (!mml_fits(c.fs->dataoff, c.fs->datasize, im->size) || mi_image_base(im, &base) != 0) {
+        if (!mml_fits(c.fs->dataoff, c.fs->datasize, im->size)) {
             mml_resolver_close(r);
             return mml_rfail(why, whysz, MML_MALFORMED, "LC_FUNCTION_STARTS lies outside the file");
+        }
+        if (mi_image_base(im, &base) != 0) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_MALFORMED,
+                             "no segment maps the image's header; LC_FUNCTION_STARTS needs the base address");
         }
         if (!(r->starts = malloc((size_t)c.fs->datasize * sizeof *r->starts))) {
             mml_resolver_close(r);
@@ -433,11 +438,8 @@ int mml_off_rebased(const mml_resolver *r, uint64_t off) {
     return 0;
 }
 
-/* Like mrb_has, but only for a slot rebased as REBASE_TYPE_POINTER: a
- * selector reference is loaded and dereferenced whole, so a rebase that
- * dyld would write as a narrower fixup (REBASE_TYPE_TEXT_ABSOLUTE32, which
- * mrb_decode now also accepts) at the same (seg, off) is not good enough --
- * mrb_has alone can't tell the two apart. */
+/* Like mrb_has, but true only when one of the (possibly several) rebases at
+ * (seg, off) is typed REBASE_TYPE_POINTER. */
 static int mml_pointer_rebased(const mml_resolver *r, uint8_t seg, uint64_t off) {
     const mrb_slot *v = r->rebases.v;
     size_t n = r->rebases.n, lo = 0, hi = n;
@@ -467,6 +469,9 @@ static int mml_cstring(const mml_resolver *r, uint64_t va) {
 int mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entry *e,
                  char *why, size_t whysz) {
     const uint8_t *buf = r->im->buf;
+    if (i >= ref->count)
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx has only "
+                         "%u entries", i, (unsigned long long)ref->list_va, ref->count);
     if (!(ref->header & MML_RELATIVE)) {
         const uint8_t *p = buf + ref->list_off + 8 + (uint64_t)MML_ABS_ENTSIZE * i;
         memcpy(&e->name, p, 8);
@@ -483,6 +488,9 @@ int mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entr
     const unsigned long long lva = (unsigned long long)ref->list_va;
     int si;
 
+    if (d[2] && !imp)
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx: its "
+                         "implementation resolves to address 0", i, lva);
     if (slot & 7)
         return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
                          "a selector reference at 0x%llx, which is not 8-byte aligned",
@@ -492,11 +500,15 @@ int mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entr
                          "a selector reference at 0x%llx, which lies outside the file",
                          i, lva, (unsigned long long)slot);
     uint64_t rel = slot - r->segs[si].vmaddr;
+    if (mrb_has(&r->binds, (uint8_t)si, rel))
+        return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
+                         "the selector reference at 0x%llx, which is bound to another image, so its "
+                         "name is not in this one", i, lva, (unsigned long long)slot);
     if (!mml_pointer_rebased(r, (uint8_t)si, rel))
         return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
                          "the selector reference at 0x%llx, which %s", i, lva, (unsigned long long)slot,
-                         mrb_has(&r->binds, (uint8_t)si, rel)
-                             ? "is bound to another image, so its name is not in this one"
+                         mrb_has(&r->rebases, (uint8_t)si, rel)
+                             ? "carries a TEXT_ABSOLUTE32 rebase, not a pointer rebase"
                              : "carries no rebase");
     memcpy(&e->name, buf + r->segs[si].fileoff + rel, 8);
     if (!mml_cstring(r, e->name))
