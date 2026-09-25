@@ -1,5 +1,15 @@
 # Bind-Stream Edit Implementation Plan
 
+> **Revised 2026-09-25 against c8d5c21.** `minos at-most`/`minos if-absent`
+> landed since this plan was written, adding two rows after `import
+> redirect`'s and moving the baseline row count from 17 to 18. Every place
+> that placed a new row, enum value or `me_apply` case "after redirect" now
+> says "append after whatever is currently last" instead, and every
+> hard-coded row count is now stated relative to what's in the tree, with
+> today's value given as an example. The find/replace steps for "17 rows" /
+> "Five ... rows" / "seventeen" wording in `src/script.c`/`src/script.h` are
+> removed: a comment-policy sweep already generalized that wording.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `import weaken SYMBOL LIB` (OR `BIND_SYMBOL_FLAGS_WEAK_IMPORT` into the selected binds of an existing `LC_DYLD_INFO[_ONLY]` stream) and `import flatten SYMBOL LIB` (re-point them at `BIND_SPECIAL_DYLIB_FLAT_LOOKUP`). Both are refuse-by-default, per slice, and verified after the rewrite.
@@ -26,7 +36,7 @@
 - **Stage explicit paths only.** Never `git add -A` or `git add .`.
 - Every commit message ends with exactly these two lines:
   `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`
-  `Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF`
+  `Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU`
 - **Local green is not CI green.** When the owner pushes, check `gh run list`. CI runs on `macos-26-arm64`, where the fixture is arm64 and dyld4 binds at launch. The runtime cases are written so that "before" and "after" run identically on both, and the executor does not rely on that without looking.
 
 ---
@@ -57,7 +67,7 @@
 An editor of the symbol opcode needs to know where it is. The walker records `at`, `ord_at` and `done_at`, but not this.
 
 **Files:**
-- Modify: `src/ordinals.h` (the `mo_bind_state` struct, around `:236-246` — the `const uint8_t *at, *ord_at, *done_at;` line)
+- Modify: `src/ordinals.h` (the `mo_bind_state` struct, `:249-260` at HEAD c8d5c21 — the `const uint8_t *at, *ord_at, *done_at;` line is at `:255`)
 - Modify: `src/ordinals.c:315-326` (`BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM`)
 - Test: `tests/relations_test.c`
 
@@ -156,7 +166,7 @@ SET_SYMBOL_TRAILING_FLAGS_IMM byte whose immediate holds the weak-import
 flag, which is what an editor of that flag writes.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -508,7 +518,7 @@ statements can share. Every message is unchanged: import_redirect_test
 greps them and passes as it was.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -517,16 +527,18 @@ Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
 
 **Files:**
 - Create: `src/weaken.h`, `src/weaken.c`, `tests/bind_edit_test.sh`
-- Modify: `src/script.h:42-43` (op enum), `src/script.c:131` (a row), `src/script.c:70-71`, `:96-97`, `:106` (count-bearing comments), `src/script.h:143`
-- Modify: `src/edit.c:37` (include), `:185` area (`me_log_weaken`, `me_import_verdict`), `:397-409` (`case MS_IMPORT`)
-- Modify: `CMakeLists.txt:66` and after `:388` (the suite)
+- Modify: `src/script.h:43-45` (op enum — append at the end of the list, whatever is currently last), `src/script.c` (`MS_TABLE_ROWS`, append after whatever row is currently last — at HEAD c8d5c21 that's the `minos if-absent` row, `:132`)
+- Modify: `src/edit.c:37` (include), `:191-217` (`me_log_redirect` — append `me_log_weaken` directly after it) and `:286` (end of `me_rewrite` — append `me_import_verdict` directly after it), `:410-422` (`case MS_IMPORT`)
+- Modify: `CMakeLists.txt:66` and after the `import_redirect_test` `add_test` (`:384-386` at HEAD)
 - Modify: `tests/mkbindstream.c` (`weakref`)
-- Test: `tests/script_test.c`, `tests/cli_test.sh:496-512`, `tests/bind_edit_test.sh`
+- Test: `tests/script_test.c`, `tests/cli_test.sh:494-529` (count check and capability advertisement assertions), `tests/bind_edit_test.sh`
 
 **Interfaces:**
 - Consumes: everything in `src/bindsel.h` (Task 2), and `mo_bind_state.sym_at` (Task 1).
 - Produces:
-  - `MS_WEAKEN`, appended to the op enum after `MS_REDIRECT`.
+  - `MS_WEAKEN`, appended to the op enum at the end of the list — after
+    whatever value is currently last. At HEAD c8d5c21 that's `MS_IF_ABSENT`
+    (`minos if-absent`), so `MS_WEAKEN` follows it, not `MS_REDIRECT`.
   - Row `R("import", MS_IMPORT, "weaken", MS_WEAKEN, 2, NULL, 0, 0, MREL_NONE)`.
   - `typedef struct { int from; long bind, lazy, nlist; } mwk_report;` (Task 4 appends `already, weak`, and Task 7 appends `flat`.)
   - `int mwk_weaken(uint8_t **pbuf, size_t *psize, const char *symbol, const char *from, mwk_report *rep);` returns 0 with `*rep` filled (`bind + lazy + nlist == 0` when nothing matched in this slice), or `MR_REFUSED`/`MR_FAIL`. On a refusal, `*pbuf` is the image as it was.
@@ -558,9 +570,9 @@ static void test_import_weaken(void) {
 }
 ```
 
-Register `test_import_weaken();` in `main` directly after `test_import_redirect();`. In `test_capabilities_table_round_trips`, change `n_rows == 17` and its message to `18`. Replace that function's leading comment's first two lines, `/* Walks ms_table_row directly and confirms MS_TABLE has 17 rows\n * (16 kind/op pairs, plus \`target 10.9\`, whose`, with `/* Walks ms_table_row directly and confirms MS_TABLE's row count\n * (one per kind/op pair, plus \`target 10.9\`, whose`. In the `--capabilities` sentence of the same comment, replace `(exactly 17, all unique)` with `(the same count, all unique)`.
+Register `test_import_weaken();` in `main` directly after `test_import_redirect();`. In `test_capabilities_table_round_trips`, read the current row count N from its `CHECK(n_rows == N, "the statement table has N rows...)` line (at HEAD c8d5c21, N is 18 — the `minos` rows already bumped it from the 17 this plan was written against) and change both the `N` and the message to `N+1` (19 at HEAD). This function's leading comment and the `--capabilities` sentence no longer mention a row count at all (a comment-policy sweep already generalized them) — nothing to edit there.
 
-At the end of `test_disturbs_matches_the_spec_table`, add:
+At the end of `test_disturbs_matches_the_spec_table` (after HEAD's own last checks, `ms_disturbs(MS_MINOS, MS_AT_MOST)` and `ms_disturbs(MS_MINOS, MS_IF_ABSENT)`), add:
 
 ```c
     CHECK(ms_disturbs(MS_IMPORT, MS_WEAKEN) == MREL_NONE,
@@ -568,18 +580,9 @@ At the end of `test_disturbs_matches_the_spec_table`, add:
           "and moves nothing");
 ```
 
-and change its leading comment's `-- seventeen.` to `.`. In `test_every_row_declares_its_disturbs`, change `-- five rows --` to `-- several rows --`.
+This function's leading comment, and `test_every_row_declares_its_disturbs`'s, are already count-agnostic at HEAD ("several rows", no "seventeen") — nothing to edit there either.
 
-In `tests/cli_test.sh`, change the two `-eq 17` to `-eq 18` and `exactly 17 unique statement lines` to `exactly 18 unique statement lines`. Replace the comment lines `:497-505`, from `by looping ms_table_row, not hand-copied.` through `lines, with none dropped, none extra, and none duplicated.`, with:
-
-```sh
-# by looping ms_table_row, not hand-copied. tests/script_test.c's
-# test_capabilities_table_round_trips walks ms_table_row directly and
-# confirms MS_TABLE's row count, each row round-tripping through ms_parse.
-# This assertion checks the other half from here, reusing the $caps already
-# captured above: that print_capabilities' loop emitted that many
-# "statement " lines, none dropped, none extra, none duplicated.
-```
+In `tests/cli_test.sh`, read the current count N from the two `-eq N` checks (`n_statements`/`n_unique`, HEAD c8d5c21: N=18) and the `"exactly N unique statement lines"` message, and bump each to `N+1` (19 at HEAD). The two-line comment directly above them ("`--capabilities' statement lines are generated from MS_TABLE; tests/script_test.c checks the table itself.`") is already count-agnostic at HEAD — a comment-policy sweep rewrote it — so there is nothing to replace there.
 
 After the `statement dylib retype 2` assertion, add:
 
@@ -596,22 +599,20 @@ Expected: `script_test.c` fails to compile, with `use of undeclared identifier '
 
 - [ ] **Step 3: Add the enum value and the row**
 
-In `src/script.h`, change the op enum's last line to:
+In `src/script.h`, append `MS_WEAKEN` to the end of the op enum, after whatever value is currently last. At HEAD c8d5c21 the enum's last line (`:45`) is `       MS_AT_MOST, MS_IF_ABSENT };`; change it to:
 
 ```c
-       MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT, MS_WEAKEN };
+       MS_AT_MOST, MS_IF_ABSENT, MS_WEAKEN };
 ```
 
-and change `-- five of the rows --` (`:143`) to `-- several rows --`.
-
-In `src/script.c`, make `MS_TABLE_ROWS`' last row:
+In `src/script.c`, append a new last row to `MS_TABLE_ROWS`, after whatever row is currently last (give that row's line a ` \` continuation). At HEAD c8d5c21 the last row is `minos if-absent` (`:132`):
 
 ```c
-  R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF) \
+  R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("import",       MS_IMPORT,       "weaken",   MS_WEAKEN,       2, NULL,        0,             0, MREL_NONE)
 ```
 
-Replace `17 rows: every "<kind> <op>" the\n * language accepts.` (`:70-71`) with `One row per "<kind> <op>" the\n * language accepts.`, `Five\n * rows really do disturb nothing` (`:96-97`) with `Several\n * rows really do disturb nothing`, and `which pins all seventeen with the` (`:106`) with `which pins every row with the`.
+The wording this step used to find-and-replace ("17 rows", "Five ... rows", "seventeen") is already gone from `src/script.h`/`src/script.c` at HEAD — a comment-policy sweep (`a6de0c6`/`694881d`/`d3b76b0`) generalized it to count-agnostic phrasing ("One row per ...", "several rows", "every row"). Nothing to do there.
 
 Run the build and `ctest ... -R '^(script_test|cli_test)$' --output-on-failure`.
 Expected: `script_test` PASS. `cli_test` PASS on the count and the capability line. The statement exists but cannot run yet.
@@ -1108,7 +1109,7 @@ static int me_import_verdict(const ms_script *s, const ms_stmt *st, me_verdict *
 }
 ```
 
-Replace `case MS_IMPORT: { ... }` (`:397-409`) with:
+Replace `case MS_IMPORT: { ... }` (`:410-422` at HEAD c8d5c21) with:
 
 ```c
     case MS_IMPORT: {
@@ -1160,7 +1161,7 @@ A program whose library lacks a regular or lazily bound symbol stops at
 launch before, and starts with the symbol NULL after.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -1372,7 +1373,7 @@ entry of the symbol names no library, so it is warned about and left as
 it was.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -1417,14 +1418,14 @@ static void test_import_flatten(void) {
 }
 ```
 
-In `test_capabilities_table_round_trips`, change `18` to `19` in both places. At the end of `test_disturbs_matches_the_spec_table`, add:
+In `test_capabilities_table_round_trips`, bump the row count Task 3 set by one more (both the `CHECK(n_rows == N` and its message) — Task 3 makes it 19 at HEAD c8d5c21, so Task 5 makes it 20. At the end of `test_disturbs_matches_the_spec_table`, add:
 
 ```c
     CHECK(ms_disturbs(MS_IMPORT, MS_FLATTEN) == MREL_FILE_OFF,
           "import flatten can move the bind stream within __LINKEDIT, as redirect can");
 ```
 
-In `tests/cli_test.sh`, change `18` to `19` in the three places Task 3 set it, and add after the weaken line:
+In `tests/cli_test.sh`, bump the count Task 3 set by one more, in the same three places (the two `-eq N` checks and the `"exactly N unique statement lines"` message) — Task 3 makes it 19 at HEAD, so Task 5 makes it 20 — and add after the weaken line:
 
 ```sh
 echo "$caps" | grep -qxF "statement import flatten 2" \
@@ -1657,7 +1658,7 @@ With a shim appended, a program whose library lacks the symbol calls the
 shim's, and against a library that has it, the library's.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -1824,7 +1825,7 @@ would change the type in effect in a program that never set one, and the
 verification after the rewrite rightly refuses it.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -1936,7 +1937,7 @@ symbol and says which order works. Weakened and then flattened, a symbol
 the shim defines calls the shim's, and one it does not is NULL.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
@@ -1946,7 +1947,7 @@ Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
 **Touch only the lines this feature adds.** Do not reflow, reword or "fix" any neighbouring line.
 
 **Files:**
-- Modify: `README.md` (Statements block, `:50-71`; the "can match nothing" list, `:94-97`; a new subsection before `### Queries`, `:208`)
+- Modify: `README.md` (Statements block, `:56-77` at HEAD c8d5c21, the `import        redirect  SYMBOL FROM-LIB TO-LIB` line is at `:74`; the "can match nothing" list, header `:119`, the `` - `import redirect` `` item at `:124`; a new subsection directly before `### Queries`, at `:259` at HEAD)
 
 **Interfaces:**
 - Consumes: the statements as built.
@@ -1954,7 +1955,7 @@ Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
 
 - [ ] **Step 1: Write the check first**
 
-Run `git grep -n 'import weaken\|import flatten' README.md`. It must print nothing. The positive control is `git grep -n 'import redirect' README.md`, which must print at least 2 lines.
+Run `git grep -n 'import weaken\|import flatten' README.md`. It must print nothing. The positive control is `git grep -nE 'import +redirect' README.md` (not a plain `-n 'import redirect'`, which finds only 1 line — the Statements block spells it `import        redirect` with multi-space alignment, which a single-space pattern misses). At HEAD c8d5c21, `git grep -nE 'import +redirect' README.md` prints exactly 2 lines: `README.md:74:import        redirect  SYMBOL FROM-LIB TO-LIB` and `` README.md:124:- `import redirect` (no bind of that symbol names that library) ``.
 
 - [ ] **Step 2: Edit**
 
@@ -2004,7 +2005,7 @@ git add README.md
 git commit -m "docs: add import weaken and import flatten to the README
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Q1j6Cb64TVevZhv65dEfvF"
+Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
 
 ---
