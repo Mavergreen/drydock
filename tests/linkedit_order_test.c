@@ -71,9 +71,24 @@ static void test_every_finding_is_kept(void) {
           "two faults: the refusal is the first, in the tool's order");
 }
 
+/* A __LINKEDIT whose file offset is not a multiple of 16 is noted. */
+static void test_the_fileoff_note(void) {
+    static uint8_t buf[LKF_CAP];
+    size_t n = lkf_make(buf, variant("canonical-unsigned"));
+    struct segment_command_64 *le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+    mlo_verdict v;
+    check(buf, n, &v);
+    CHECK(!has(&v, MLO_NOTE, "multiple of 16"), "fileoff 0x2000: no note");
+    le->fileoff = LKF_LE - 8;   /* a lie, but the note reads only this */
+    le->filesize += 8;
+    check(buf, n, &v);
+    CHECK(has(&v, MLO_NOTE, "multiple of 16"), "fileoff 0x1ff8: noted");
+}
+
 int main(void) {
     test_every_variant();
     test_every_finding_is_kept();
+    test_the_fileoff_note();
     if (fails == 0) printf("linkedit_order_test: all cases pass\n");
     return fails ? 1 : 0;
 }

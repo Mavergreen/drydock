@@ -366,6 +366,43 @@ static void lkf_no_id(uint8_t *b, size_t *n) {
     (void)n;
     lkf_patch(b, LKF_LC_ID, LC_RPATH);   /* same shape: an lc_str at 24 */
 }
+static void lkf_uuid_to_bv(uint8_t *b, size_t *n) { (void)n; lkf_patch(b, LKF_LC_ID, 0x32); }
+static void lkf_dic_to_note(uint8_t *b, size_t *n) { (void)n; lkf_patch(b, LKF_LC_DIC, 0x31); }
+static void lkf_dic_to_trie(uint8_t *b, size_t *n) { (void)n; lkf_patch(b, LKF_LC_DIC, 0x80000033); }
+static void lkf_dic_to_fvmfile(uint8_t *b, size_t *n) { (void)n; lkf_patch(b, LKF_LC_DIC, 0x9); }
+static void lkf_dic_to_prepage(uint8_t *b, size_t *n) { (void)n; lkf_patch(b, LKF_LC_DIC, 0xa); }
+static void lkf_dic_to_fstarts(uint8_t *b, size_t *n) {
+    (void)n;
+    lkf_patch(b, LKF_LC_DIC, LC_FUNCTION_STARTS);
+}
+static void lkf_id_offset(uint8_t *b, size_t *n) {
+    (void)n;
+    struct dylib_command *id = (struct dylib_command *)lkf_lc(b, LKF_LC_ID);
+    id->dylib.name.offset = id->cmdsize;
+}
+static void lkf_hints0(uint8_t *b, size_t *n) {
+    (void)n;
+    /* the empty data-in-code command becomes an empty LC_TWOLEVEL_HINTS */
+    struct twolevel_hints_command *h = (struct twolevel_hints_command *)lkf_lc(b, LKF_LC_DIC);
+    h->cmd = LC_TWOLEVEL_HINTS;
+    h->offset = 0;
+    h->nhints = 0;
+}
+static void lkf_no_room(uint8_t *b, size_t *n) {
+    (void)n;
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    struct section_64 *text = (struct section_64 *)(lkf_lc(b, LKF_LC_TEXT) + sizeof(struct segment_command_64));
+    text->offset = (uint32_t)sizeof *h + h->sizeofcmds + 8;
+    text->addr = text->offset;
+}
+static void lkf_strtab_past_end(uint8_t *b, size_t *n) {
+    (void)n;
+    lkf_st(b)->strsize += 0x1000;
+}
+static void lkf_fstarts0(uint8_t *b, size_t *n) {
+    (void)n;
+    lkf_led(b, LKF_LC_FSTARTS)->dataoff = 0;
+}
 
 typedef struct {
     const char *name, *layout;
@@ -438,6 +475,38 @@ static const lkf_variant lkf_variants[] = {
       "rebase bind weak lazy export fstarts dic drs symtab indirect @8 strtab", LKF_NOSIG, NULL, NULL, 0 },
     { "no-id-dylib", LKF_CANON, 0, lkf_no_id,
       "malformed file (no LC_ID_DYLIB load command in MH_DYLIB file)", 0 },
+    /* the load-command loop, symbol_string_at_end and header room */
+    { "build-version", LKF_CANON, 0, lkf_uuid_to_bv, "malformed object (unknown load command 3)", 0 },
+    { "note", LKF_CANON, 0, lkf_dic_to_note, "malformed object (unknown load command 8)", 0 },
+    { "exports-trie", LKF_CANON, 0, lkf_dic_to_trie, "malformed object (unknown load command 8)", 0 },
+    { "fvmfile", LKF_CANON, 0, lkf_dic_to_fvmfile, "malformed object (unknown load command 8)", 0 },
+    { "prepage", LKF_CANON, 0, lkf_dic_to_prepage, "malformed object (unknown load command 8)", 0 },
+    { "two-fstarts", LKF_CANON, 0, lkf_dic_to_fstarts,
+      "malformed object (more than one LC_FUNCTION_STARTS command)", 0 },
+    { "id-name-offset", LKF_CANON, 0, lkf_id_offset,
+      "truncated or malformed object (name.offset field of LC_ID_DYLIB command 3 extends past the "
+      "end of the file)", 0 },
+    { "hints-0", LKF_CANON, 0, lkf_hints0,
+      "malformed object (nhints in LC_TWOLEVEL_HINTS load command not the same as nundefsym in "
+      "LC_DYSYMTAB load command)", 0 },
+    { "no-room", "rebase bind weak lazy export fstarts dic drs symtab indirect strtab", LKF_NOSIG,
+      lkf_no_room, "because larger updated load commands do not fit", 0 },
+    { "fstarts-dataoff-0", "rebase bind weak lazy export +8 dic drs symtab indirect strtab @16 sig",
+      0, lkf_fstarts0, "malformed object (…overlaps…)", 0 },
+    { "strtab-past-end", LKF_CANON, 0, lkf_strtab_past_end,
+      "truncated or malformed object (…extends past the end of the file)", 0 },
+    { "no-dysymtab-strtab-first", "rebase bind weak lazy export fstarts dic drs strtab symtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, NULL,
+      "string table not at the end of the file (can't be processed)", 0 },
+    { "no-dysymtab-tail", "rebase bind weak lazy export fstarts dic drs symtab strtab @16 sig +16",
+      LKF_NODYSYMTAB | LKF_EXECUTE, NULL,
+      "code signature not at the end of the file (can't be processed)", 0 },
+    { "no-dysymtab-linkedit-short",
+      "rebase bind weak lazy export fstarts dic drs symtab strtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, lkf_linkedit_short, NULL, 0 },
+    { "no-dysymtab-odd-strtab-unsigned",
+      "rebase bind weak lazy export fstarts dic drs symtab strtab:35 @8",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
 };
 #define LKF_NVARIANTS (sizeof lkf_variants / sizeof lkf_variants[0])
 
