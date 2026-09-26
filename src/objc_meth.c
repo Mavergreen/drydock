@@ -444,25 +444,10 @@ int mml_off_rebased(const mml_resolver *r, uint64_t off) {
     return 0;
 }
 
-/* Like mrb_has, but true only when one of the (possibly several) rebases at
- * (seg, off) is typed REBASE_TYPE_POINTER. */
-static int mml_pointer_rebased(const mml_resolver *r, uint8_t seg, uint64_t off) {
-    const mrb_slot *v = r->rebases.v;
-    size_t n = r->rebases.n, lo = 0, hi = n;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (v[mid].seg < seg || (v[mid].seg == seg && v[mid].off < off)) lo = mid + 1;
-        else hi = mid;
-    }
-    for (; lo < n && v[lo].seg == seg && v[lo].off == off; lo++)
-        if (v[lo].type == REBASE_TYPE_POINTER) return 1;
-    return 0;
-}
-
 int mml_off_pointer_rebased(const mml_resolver *r, uint64_t off) {
     for (int i = 0; i < r->nsegs; i++)
         if (off >= r->segs[i].fileoff && off - r->segs[i].fileoff < r->segs[i].filesize)
-            return mml_pointer_rebased(r, (uint8_t)i, off - r->segs[i].fileoff);
+            return mrb_has_type(&r->rebases, (uint8_t)i, off - r->segs[i].fileoff, REBASE_TYPE_POINTER);
     return 0;
 }
 
@@ -517,7 +502,7 @@ int mml_entry_at(const mml_resolver *r, const mml_ref *ref, uint32_t i, mml_entr
         return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
                          "the selector reference at 0x%llx, which is bound to another image, so its "
                          "name is not in this one", i, lva, (unsigned long long)slot);
-    if (!mml_pointer_rebased(r, (uint8_t)si, rel))
+    if (!mrb_has_type(&r->rebases, (uint8_t)si, rel, REBASE_TYPE_POINTER))
         return mml_rfail(why, whysz, MML_MALFORMED, "entry %u of the method list at 0x%llx names "
                          "the selector reference at 0x%llx, which %s", i, lva, (unsigned long long)slot,
                          mrb_has(&r->rebases, (uint8_t)si, rel)

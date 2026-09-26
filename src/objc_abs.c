@@ -300,8 +300,10 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     memset(o, 0, sizeof *o);
     memset(&stream, 0, sizeof stream);
     memset(&old, 0, sizeof old);
-    if (im->hdr->cputype != CPU_TYPE_X86_64)
-        return mma_fail(why, whysz, MMA_REFUSED, "the image is not x86_64, the only architecture 10.9 runs");
+    if (im->hdr->cputype != CPU_TYPE_X86_64) {
+        o->rep.not_x86_64 = 1;
+        return MMA_NOTHING;
+    }
     rc = mml_walk_image(im, &w);
     if (rc != MML_OK)
         return mma_fail(why, whysz, rc == MML_NOMEM ? MMA_NOMEM : MMA_REFUSED, "%s", w.why);
@@ -809,7 +811,10 @@ int mma_convert(uint8_t **pbuf, size_t *psize, mma_report *rep) {
         return MR_REFUSED;
     }
     rc = mma_build(&im, &o, why, sizeof why);
-    if (rc == MMA_NOTHING) return 0;
+    if (rc == MMA_NOTHING) {
+        *rep = o.rep;
+        return 0;
+    }
     if (rc == MMA_OK) {
         rc = mma_verify(&im, &o, why, sizeof why);
         if (rc != MMA_OK) {

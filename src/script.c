@@ -129,7 +129,8 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
   R("target",       MS_TARGET,       "10.9",     MS_PROFILE_10_9, 0, NULL,        0,             0, MREL_NONE) \
   R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF) \
   R("minos",        MS_MINOS,        "at-most",  MS_AT_MOST,      1, NULL,        0,             0, MREL_HEADER_PAD) \
-  R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD)
+  R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD) \
+  R("objc-methods", MS_OBJC_METHODS, "set",      MS_SET,          1, NULL,        0,             0, MREL_FILE_OFF)
 
 static const struct { const char *kind; int k; const char *op; int o; int nargs;
                       const char *flag; unsigned modes; int ops_ord;
@@ -451,6 +452,10 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[3], fields[4]) == 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "import redirect: FROM-LIB and TO-LIB are both '%s'", fields[3]);
+            } else if (kind == MS_OBJC_METHODS && op == MS_SET &&
+                       strcmp(fields[2], "absolute") != 0) {
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "objc-methods set accepts only 'absolute' (got '%s')", fields[2]);
             }
 
             /* One target per script. Two would each expand against the image
