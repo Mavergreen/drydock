@@ -4,17 +4,19 @@
 
 **Goal:** Every file Drydock writes can be re-signed by 10.9's own `codesign`, and none is one that any `codesign` would re-sign corrupt: a run that changes `__LINKEDIT` packs it into the order 10.9's `codesign_allocate` requires, `info` says whether the file will re-sign, and an output the tool would silently corrupt is refused.
 
-**Architecture:** A new module, `src/linkedit_order.[ch]` (`mlo_`), holds a pure verifier, `mlo_check`. It mirrors cctools-862's load-command loop, `check_object`, `dyld_order`, `symbol_string_at_end` and header-room check rule for rule, keeps every finding, and simulates `codesign_allocate`'s writer to find a file it would accept and then corrupt. `mlo_file_verdict` turns that into one line for a whole (thin or fat) file, which `info` prints. `src/linkedit_pack.c` adds `mlo_pack`, which rewrites a slice's `__LINKEDIT` into ld64's order, and `mlo_changed`, which tells whether a run changed a piece. `src/edit.c` calls the pack once per slice after the last statement when the run changed a piece or the output would re-sign corrupt, and refuses a write that would still re-sign corrupt. A hand-built fixture, `tests/linkedit_fixture.h`, lays out one dylib in 48 ways; each variant's verdict is what 10.9's tool says of it, and `tests/codesign_order_test.sh` checks that against the real tool on 10.9.
+**Architecture:** A new module, `src/linkedit_order.[ch]` (`mlo_`), holds a pure verifier, `mlo_check`. It mirrors cctools-862's load-command loop, `check_object`, `dyld_order`, `symbol_string_at_end` and header-room check rule for rule, keeps every finding, and simulates `codesign_allocate`'s writer to find a file it would accept and then corrupt. `mlo_file_verdict` turns that into one line for a whole (thin or fat) file, which `info` prints. `src/linkedit_pack.c` adds `mlo_pack`, which rewrites a slice's `__LINKEDIT` into ld64's order, and `mlo_changed`, which tells whether a run changed a piece. `src/edit.c` calls the pack once per slice after the last statement when the run changed a piece or the output would re-sign corrupt, and refuses a write that would still re-sign corrupt. A hand-built fixture, `tests/linkedit_fixture.h`, lays out one dylib in 58 ways; each variant's verdict is what 10.9's tool says of it, and `tests/codesign_order_test.sh` checks that against the real tool on 10.9.
 
 **Tech Stack:** C as the 10.9 clang (Apple LLVM 6.0) accepts it; CMake through shipyard; POSIX `sh`; hand-built Mach-O fixtures, the same bytes on every host; 10.9's `codesign_allocate` (cctools-862) as the oracle, run locally.
 
-**Spec:** `docs/superpowers/specs/2026-09-26-classic-fixups-re-signable-design.md` (at `6250617`). Read its "Why" (the rules, the writer's assumption, fat files), its Decisions 1–9 and its "Tests and compat output this changes" table. Where this plan and the spec differ, the spec's "(plan)" notes are the reconciliation.
+**Spec:** `docs/superpowers/specs/2026-09-26-classic-fixups-re-signable-design.md` (at `c7b3886`). Read its "Why" (the rules, the writer's assumption, fat files), its Decisions 1–9, its "Tests and compat output this changes" table and its "What could not be verified here". Where this plan and the spec differ, the spec's "(plan)" and "(plan review)" notes are the reconciliation.
+
+*Revised 2026-09-26 after an independent review of `e7914ab`: `symbol_string_at_end`'s `__LINKEDIT` coverage check is gone (862 reads it only for 32-bit images); a new signature, not an existing one, is what the simulation checks; empty pieces other than linkedit data go to offset 0; the pass declines, rather than fails, whatever it cannot make survive; the oracle compares the set of moved pieces and covers what the CLI suites pack; `import_redirect_test` no longer assumes an x86_64 host; and eleven new tests kill the mutations the review found surviving.*
 
 ## Global Constraints
 
-- **Line numbers** are at `6250617`, `main` when this plan was written. Every edit quotes the text it anchors on, and that text is what to match; `src/edit.c`'s and `tests/cli_test.sh`'s line numbers drift from task to task.
+- **Line numbers** are at `c7b3886`, `main` when this plan was written. Every edit quotes the text it anchors on, and that text is what to match; `src/edit.c`'s and `tests/cli_test.sh`'s line numbers drift from task to task.
 - **Build:** `B=/private/tmp/build/schmonz/drydock-native`; `/usr/local/mavergreen/bin/shipyard-cmake --build "$B" -j`. Do not configure with `--preset`. **After editing `CMakeLists.txt`, re-run the configure step** before building (on this host a clock skew can let ninja miss the change): `/usr/local/mavergreen/bin/shipyard-cmake -S . -B "$B" -G Ninja -DCMAKE_TOOLCHAIN_FILE=/usr/local/mavergreen/shipyard/share/cmake/MavericksShipyard/MavericksToolchain.cmake -DMAVERICKS_EXPECTED_MODE=native -DCMAKE_OSX_DEPLOYMENT_TARGET=10.9 -DCMAKE_OSX_ARCHITECTURES=x86_64`.
-- **Test:** `unset DRYDOCK_MACHO_REWRITE; /usr/local/mavergreen/bin/shipyard-ctest --test-dir "$B"`, from the repo root. At `6250617` the suite has 27 tests (`chained_fixups` SKIPs). Task 1 makes it 28 (`linkedit_order_test`) and Task 5 makes it 29 (`codesign_order_test`, which SKIPs everywhere but 10.9). Single tests: `"$B/linkedit_order_test"` (run it from the repo root: it reads `tests/fixture.macho`), and `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B"`.
+- **Test:** `unset DRYDOCK_MACHO_REWRITE; /usr/local/mavergreen/bin/shipyard-ctest --test-dir "$B"`, from the repo root. At `c7b3886` the suite has 27 tests (`chained_fixups` SKIPs). Task 1 makes it 28 (`linkedit_order_test`) and Task 5 makes it 29 (`codesign_order_test`, which SKIPs everywhere but 10.9). Single tests: `"$B/linkedit_order_test"` (run it from the repo root: it reads `tests/fixture.macho`), and `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B"`.
 - **Rebuild check (clock skew here; `touch` can fail to relink).** "Build (rebuild check)" below means exactly:
   ```sh
   find "$B/CMakeFiles" -name '*.o' -exec rm {} +
@@ -42,7 +44,8 @@
 2. **An image already in order must come out byte-identical.** Every clang- or ld64-built input is in order; moving its bytes would break every byte-identity test and the compat wrappers' outputs. Pinned by Task 6's "unchanged" test (the canonical variants and `tests/fixture.macho`, which `tests/EXPECTED` depends on) and Task 7's "on an image already in order, nothing is said".
 3. **A run that touches only the header of a still-chained image must say nothing new** (N5 of the spec's review): pinned by Task 7's "an edit of a chained image says nothing new".
 4. **A slice nobody selected.** `codesign_allocate` checks every slice; Task 4's fat `info` tests and Task 8's refusal and report tests pin it.
-5. **Zero-size pieces.** A stale offset on an empty stream fails rule 1; an empty `LC_DATA_IN_CODE` at 0 must stay at 0. Pinned by Task 1's `stale-empty-rebase`, `dic-at-0` and `no-rebase-bind-late`, and Task 6's "places empty pieces".
+5. **Zero-size pieces.** A stale offset on an empty stream fails rule 1, and one past the end of a shrunk file fails the load-command loop; an empty `LC_DATA_IN_CODE` at 0 must stay at 0. Pinned by Task 1's `stale-empty-rebase`, `dic-at-0`, `drs-empty-stale`, `weak-lazy-empty-export` and `no-rebase-bind-late`, and Task 6's "places empty pieces" and "resizes and zeroes".
+6. **A host that is not 10.9.** CI links on `macos-26-arm64`, so a fixture the host compiles carries load commands 10.9's tool does not know. No new assertion reads `resign 10.9: ok` from a host-compiled file: `import_redirect_test`'s grow case asserts the re-packed line and no `resign corrupt:` (Task 7), and every `cli_test` block uses hand-built fixtures.
 
 ## Plan decisions at a glance
 
@@ -67,15 +70,15 @@ Each is repeated, with its reason, in the task that makes it.
 | `src/edit.c` | `me_pack`, `me_resign`, the thin run (7); the fat run (8) | 7, 8 |
 | `src/declassify.c` | the lowering pads its two streams to 8 | 9 |
 | `cli/drydock-macho-rewrite.c` | `info`'s `resign 10.9:` and `resign corrupt:` lines | 4 |
-| `tests/linkedit_fixture.h` | the hand-built dylib and its 48 variants | 1, 2, 3, 7 |
+| `tests/linkedit_fixture.h` | the hand-built dylib and its 58 variants | 1, 2, 3, 7 |
 | `tests/linkedit_order_test.c` | `mlo_check`, `mlo_file_verdict`, `mlo_pack`, `mlo_changed` on the variants | 1, 2, 3, 6, 7 |
 | `tests/mklinkedit.c` | writes a variant to a file; lists the variants; lists a file's pieces apart from `src/` | 4 |
-| `tests/codesign_order_test.sh` | the oracle: `info` against 10.9's `codesign_allocate`, byte for byte | 5 |
+| `tests/codesign_order_test.sh` | the oracle: `info` against 10.9's `codesign_allocate`, byte for byte; what the CLI suites pack (9) | 5, 9 |
 | `tests/cli_test.sh` | `info` (4); the thin run (7); the fat run (8); the lowering and objc-methods (9) | 4, 7–9 |
 | `tests/import_redirect_test.sh` | the grown bind stream is packed back | 7 |
 | `tests/mkchained.c`, `tests/relmeth_fixture.h`, `tests/mkrelmeth.c` | `make-signable`; the `dysymtab` variant | 9 |
 | `CMakeLists.txt` | the two sources, `linkedit_order_test`, `mklinkedit`, `codesign_order_test` | 1, 5, 6 |
-| `README.md`, `compat/README.md`, `compat/bake-mavericks-shim.sh`, `docs/codesign-order.md`, the objc-methods spec | the words | 10 |
+| `README.md`, `compat/README.md`, `compat/bake-mavericks-shim.sh`, `tests/bake_mavericks_shim_test.sh`, `docs/codesign-order.md`, the objc-methods spec | the words, and the bake summary's new wording pinned | 10 |
 | `docs/superpowers/QUEUE.md` | item 30 closed | 11 |
 
 `src/grow.c`, `src/grow.h`, `src/trie.c`, `tests/grow_test.c` and `tests/grown_binary_runs_test.sh` are **not edited**. See "The other plan", below.
@@ -84,14 +87,16 @@ Each is repeated, with its reason, in the task that makes it.
 
 That plan (`462fc5a`) edits `src/grow.[ch]`, `tests/grow_test.c`, `tests/grown_binary_runs_test.sh`, `compat/README.md:151-158`, `docs/superpowers/QUEUE.md:35` and `:1473-1488`, and the dylib-growth spec. This plan edits none of `src/grow.[ch]`, `src/trie.c` or the grow tests, so no line that plan cites in them moves. Its `compat/README.md` lines are above this plan's insertion (Task 10 inserts before `## \`insert_dylib\``, near line 702), and this plan's `QUEUE.md` edits (Task 11) are row 36 and item 30's section after line 1490, so `:35` and `:1473-1488` do not move either.
 
-**What does change for it:** after this plan, a CLI run that changes `__LINKEDIT` also packs it. Its Task 5 sweep deletes a signature on each signed input, so every such output is now packed, and its baseline figures (the 1,046/82 exit counts, "every other output is byte-identical", Claude Code "byte-identical to `88e846f`'s") were measured at `88e846f`. Re-measure its "before" at this plan's last commit rather than at `88e846f`.
+**What is now stale in it (hand-off; this plan does not edit it):** after this plan, a CLI run that changes `__LINKEDIT` also packs it, and a run whose output some `codesign_allocate` would re-sign corrupt is refused.
+- **Its Task 5 baselines.** Its sweep deletes a signature on each signed input, so every such output is now packed. Its figures (the 1,046/82 exit counts, "every other output is byte-identical") were measured at `88e846f`. Re-measure its "before" at this plan's last commit.
+- **Its preamble's Claude Code line**, "the output is byte-identical to `88e846f`'s", after `fixups set classic` and an `rpath append`: that run now also packs `__LINKEDIT`, so its output is no longer `88e846f`'s bytes. Re-measure it at this plan's last commit too.
 
 ## How this plan was checked
 
-- Every task's code was built first as a checkpoint in a scratch `git archive` of `43e3aec` (source identical to `6250617`): ten commits, one per code task, each built after deleting every object and reconfiguring, and each passing the whole ctest suite: 28 tests at Tasks 1–4, 29 from Task 5 on, `chained_fixups` skipped, `codesign_order_test` run (not skipped) from Task 5 on.
+- Every task's code was built first as a checkpoint in a scratch `git archive` of `43e3aec` (source identical to `c7b3886`): ten commits, one per code task, each built after deleting every object and reconfiguring, and each passing the whole ctest suite: 28 tests at Tasks 1–4, 29 from Task 5 on, `chained_fixups` skipped, `codesign_order_test` run (not skipped) from Task 5 on.
 - **Every edit block below was cut from those checkpoints by a script**, and a second script applied this plan's own `Create`/`replace … with` blocks, in order, to a fresh archive and compared the result with each checkpoint: identical at every task.
 - Every "Run it to see it fail" step was run as written, on the previous checkpoint plus that task's test edits; the expected output quoted is what it printed.
-- Every row of every mutation list (80 rows: 15, 13, 11, 4, 3, 19, 9, 4 and 2 in Tasks 1–9) was applied alone to that task's checkpoint, rebuilt with the rebuild check, confirmed to change the mutated object, run, and seen to fail the named test with the quoted text; then restored and confirmed byte-identical.
+- Every row of every mutation list (94 rows: 15, 14, 15, 4, 4, 26, 9, 4, 2 and 1 in Tasks 1–10) was applied alone to that task's checkpoint, rebuilt with the rebuild check, confirmed to change the mutated object, run, and seen to fail the named test with the quoted text; then restored and confirmed byte-identical.
 - The real binaries in Task 11 were run through the finished build on this host; the figures quoted there are that run's.
 
 ---
@@ -113,7 +118,7 @@ That plan (`462fc5a`) edits `src/grow.[ch]`, `tests/grow_test.c`, `tests/grown_b
 
 **Plan decisions.**
 
-- **One fixture, many layouts** (25 in this task, 38 after Task 2, 46 after Task 3, 48 after Task 7). `lkf_build` writes a dylib with every piece ld64 writes for one, then places them in the order a layout string names, with `+N` gaps and `@N` roundings. A variant is a layout, options, a poke, and **what 10.9's tool says of it**, measured with `codesign_allocate -i F -a x86_64 16384 -o OUT` while this plan was written. The unit test holds `mlo_check` to that; Task 5's oracle holds it to the tool again on 10.9.
+- **One fixture, many layouts** (28 in this task, 43 after Task 2, 56 after Task 3, 58 after Task 7). `lkf_build` writes a dylib with every piece ld64 writes for one, then places them in the order a layout string names, with `+N` gaps and `@N` roundings. A variant is a layout, options, a poke, and **what 10.9's tool says of it**, measured with `codesign_allocate -i F -a x86_64 16384 -o OUT` while this plan was written. The unit test holds `mlo_check` to that; Task 5's oracle holds it to the tool again on 10.9.
 - **Findings are the tool's own words**, so a refusal can be compared with the tool's stderr.
 - **Every rule is judged on its own.** The walk resyncs to where an out-of-place piece really is, so the pieces after it are judged against it, not against where it should have been. That is why "two faults" yields exactly three findings.
 - **This task mirrors `check_object` less the duplicates the load-command loop refuses first** (Task 2 adds that loop) and `dyld_order` rule for rule, including the start clause exactly as `checkout.c:350-366` writes it and the zero-`dataoff` exemption that still advances the offset.
@@ -154,6 +159,7 @@ Create `tests/linkedit_fixture.h` with:
 #define LKF_NOSIG      1u   /* no LC_CODE_SIGNATURE (leave "sig" out of the layout) */
 #define LKF_NODYSYMTAB 2u   /* no LC_DYSYMTAB (leave "indirect" out) */
 #define LKF_EXECUTE    4u   /* MH_EXECUTE, no LC_ID_DYLIB */
+#define LKF_STATIC    16u   /* no MH_DYLDLINK: checkout uses symbol_string_at_end */
 
 /* The load commands, in this order; LKF_LC_* are their indexes. */
 enum { LKF_LC_TEXT, LKF_LC_DATA, LKF_LC_LINKEDIT, LKF_LC_ID, LKF_LC_DYLD_INFO,
@@ -200,7 +206,7 @@ static uint8_t *lkf_header(uint8_t *buf, unsigned opts) {
     h->cputype = CPU_TYPE_X86_64;
     h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
     h->filetype = (opts & LKF_EXECUTE) ? MH_EXECUTE : MH_DYLIB;
-    h->flags = MH_DYLDLINK | MH_TWOLEVEL;
+    h->flags = (opts & LKF_STATIC) ? MH_TWOLEVEL : MH_DYLDLINK | MH_TWOLEVEL;
     uint8_t *lc = (uint8_t *)(h + 1);
 
     struct segment_command_64 *tx = (struct segment_command_64 *)lc;
@@ -481,6 +487,11 @@ static void lkf_linkedit_short(uint8_t *b, size_t *n) {
     (void)n;
     ((struct segment_command_64 *)lkf_lc(b, LKF_LC_LINKEDIT))->filesize -= 16;
 }
+static void lkf_drs_empty_stale(uint8_t *b, size_t *n) {
+    (void)n;
+    lkf_led(b, LKF_LC_DRS)->datasize = 0;
+    lkf_led(b, LKF_LC_DRS)->dataoff = LKF_LE + 0x40;
+}
 static void lkf_no_id(uint8_t *b, size_t *n) {
     (void)n;
     lkf_patch(b, LKF_LC_ID, LC_RPATH);   /* same shape: an lc_str at 24 */
@@ -549,6 +560,12 @@ static const lkf_variant lkf_variants[] = {
       "file not in an order that can be processed (externally defined symbols out of place)", 0 },
     { "linkedit-short", LKF_CANON, 0, lkf_linkedit_short,
       "the __LINKEDIT segment does not cover the end of the file (can't be processed)", 0 },
+    { "drs-empty-stale", LKF_CANON, 0, lkf_drs_empty_stale,
+      "file not in an order that can be processed (code signing DRs info out of place)", 0 },
+    { "weak-lazy-empty-export", "weak lazy export:0 " LKF_TAIL, 0, lkf_no_rebase_no_bind,
+      "file not in an order that can be processed (dyld_info out of place)", 0 },
+    { "strtab-at-rounding-unsigned",
+      "rebase bind weak lazy export fstarts dic drs symtab indirect @8 strtab", LKF_NOSIG, NULL, NULL, 0 },
     { "no-id-dylib", LKF_CANON, 0, lkf_no_id,
       "malformed file (no LC_ID_DYLIB load command in MH_DYLIB file)", 0 },
 };
@@ -1052,7 +1069,7 @@ where the dyld info starts, the order and contiguity of every __LINKEDIT
 piece, the one 8-rounding and the 16-rounding before the signature,
 __LINKEDIT ending the file, the symbol-index order, LC_ID_DYLIB. Each piece
 after one out of place is judged from where that one really is. The
-fixture is a hand-built dylib, here laid out 25 ways; each variant's
+fixture is a hand-built dylib, here laid out 28 ways; each variant's
 verdict is what the real tool says of it.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
@@ -1076,7 +1093,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - **The load-command loop's list of known commands is cctools-862's** (`check_Mach_O`'s 45 `case` labels; `LC_FVMFILE` and `LC_PREPAGE` have none), and "unknown load command N" is the loop index, as the tool prints it.
 - **Duplicates are refused where the loop meets the second**, with the loop's list (`LC_SYMTAB` … `LC_UUID`; the two version-min commands count as one kind). `check_object`'s own duplicates (`LC_DYLD_INFO`, `LC_ID_DYLIB`, `__LINKEDIT`) stay in Task 1's function.
 - **Range and overlap checks are coarse on purpose**: one finding each, worded `truncated or malformed object (…extends past the end of the file)` and `malformed object (…overlaps…)`. The tool's exact pair of names depends on its element list's insertion order; the oracle matches the parts around "…".
-- **`symbol_string_at_end` applies to an image without `LC_DYSYMTAB`, or one that is neither an `MH_DYLIB` nor `MH_DYLDLINK`**, exactly as `check_object` dispatches.
+- **`symbol_string_at_end` applies to an image without `LC_DYSYMTAB`, or one that is neither an `MH_DYLIB` nor `MH_DYLDLINK`**, exactly as `check_object` dispatches. **Its last check, that `__LINKEDIT` covers the tables, is not modelled:** `checkout.c:689-697` reads `seg_linkedit`, which only a 32-bit image sets. The variants `no-dysymtab-linkedit-short` and `no-dysymtab-odd-strtab-unsigned` are accepted by the tool; modelling the check would refuse them, and would hide Task 3's `no-dysymtab-linkedit-short-hole`, which the tool re-signs corrupt.
 - **Header room** is checked only without an `LC_CODE_SIGNATURE`, as `add_code_sig_load_command` is only called then; it is `newer` (spec Decision 5), and so is an unknown command.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1173,6 +1190,12 @@ with:
     { "no-dysymtab-tail", "rebase bind weak lazy export fstarts dic drs symtab strtab @16 sig +16",
       LKF_NODYSYMTAB | LKF_EXECUTE, NULL,
       "code signature not at the end of the file (can't be processed)", 0 },
+    { "no-dysymtab-linkedit-short",
+      "rebase bind weak lazy export fstarts dic drs symtab strtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, lkf_linkedit_short, NULL, 0 },
+    { "no-dysymtab-odd-strtab-unsigned",
+      "rebase bind weak lazy export fstarts dic drs symtab strtab:35 @8",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
 };
 ```
 
@@ -1377,7 +1400,8 @@ static void mlo_ofile_hints(const mlo_cmds *c, mlo_verdict *v) {
 }
 
 /* symbol_string_at_end (checkout.c:573-699), rule for rule. Returns the
- * indirect table's pad, which the writer counts. */
+ * indirect table's pad, which the writer counts. Its last check, that
+ * __LINKEDIT covers the tables, reads only a 32-bit image's segment. */
 static uint32_t mlo_string_at_end(const mlo_cmds *c, mlo_verdict *v, uint32_t *object_size) {
     const struct symtab_command *st = c->st;
     uint32_t pad = 0;
@@ -1414,9 +1438,6 @@ static uint32_t mlo_string_at_end(const mlo_cmds *c, mlo_verdict *v, uint32_t *o
         mlo_place(v, "symbol table and string table not at the end of the file "
                 "(can't be processed)");
     }
-    if (c->le && c->le->filesize != 0 && c->le->fileoff + c->le->filesize != *object_size)
-        mlo_place(v, "the __LINKEDIT segment does not cover the symbol and string "
-                "table (can't be processed)");
     return pad;
 }
 
@@ -1499,9 +1520,30 @@ Expected: `linkedit_order_test: all cases pass`. The whole suite: 28 tests pass.
 8. In `src/linkedit_order.c`, replace `        if (c->sig->dataoff + c->sig->datasize != end)` with `        if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-tail: refusal is`.
 9. In `src/linkedit_order.c`, replace `            mlo_place(v, "string table not at the end of the file (can't be processed)");` with `            (void)0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-strtab-first: refusal is`.
 10. In `src/linkedit_order.c`, replace `    if (c->sig) return;` with `    if (!c->sig) return;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-room: refusal is`.
-11. In `src/linkedit_order.c`, replace `    if (c->im->hdr->sizeofcmds + sizeof(struct linkedit_data_command) +` with `    if (c->im->hdr->sizeofcmds +`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-room: refusal is`.
-12. In `src/linkedit_order.c`, replace `    if (c->le && c->le->fileoff % 16 != 0)` with `    if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `fileoff 0x1ff8: noted`.
-13. In `src/linkedit_order.c`, replace `        mlo_string_at_end(&c, v, &object_size);` with `        (void)0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-strtab-first: refusal is`.
+11. In `src/linkedit_order.c`, replace this:
+
+   ```c
+       return pad;
+   }
+
+   /* add_code_sig_load_command
+   ```
+
+   with this:
+
+   ```c
+       if (c->le && c->le->filesize != 0 && c->le->fileoff + c->le->filesize != *object_size)
+           mlo_place(v, "the __LINKEDIT segment does not cover the symbol and string table");
+       return pad;
+   }
+
+   /* add_code_sig_load_command
+   ```
+
+   It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-linkedit-short: refusal is`.
+12. In `src/linkedit_order.c`, replace `    if (c->im->hdr->sizeofcmds + sizeof(struct linkedit_data_command) +` with `    if (c->im->hdr->sizeofcmds +`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-room: refusal is`.
+13. In `src/linkedit_order.c`, replace `    if (c->le && c->le->fileoff % 16 != 0)` with `    if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `fileoff 0x1ff8: noted`.
+14. In `src/linkedit_order.c`, replace `        mlo_string_at_end(&c, v, &object_size);` with `        (void)0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-strtab-first: refusal is`.
 
 - [ ] **Step 6: Commit**
 
@@ -1541,6 +1583,9 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - **Both writer branches**: with `LC_DYSYMTAB` every piece is written, the dyld info as one span; without it only the symbol and string tables. Symbols and strings count only when `nsyms != 0`, in one variable (`strsize`) used for both the sum and the write, so a mutation cannot hide in one of two copies.
 - **Only 862's writer.** An image still carrying a chained-fixups or exports-trie blob fails 862's order rules, so `corrupting` is never evaluated for it (spec N2).
 - **`corrupting` is evaluated only when every refusal is `newer`**: behind an unknown command it still counts, because a newer tool knows the command and makes the same sum.
+- **The signature.** An existing signature keeps its `dataoff`, which the order rules put after every piece, so it cannot land wrong. A signature the tool adds goes at `__LINKEDIT`'s end rounded up to 16, in a file whose size the tool computes from the sum; the new signature's own size cancels out. It is corrupting when it would run past that file (`no-dysymtab-unsigned-misaligned`) or overlap a piece (`no-dysymtab-unsigned-linkedit-short`). Both are measured: `codesign -v` fails on the first once signed.
+- **A static image is simulated too.** `bind-first-static` (no `MH_DYLDLINK`) is checked by `symbol_string_at_end`, which does not look at the dyld info, so the tool accepts it, and then copies the dyld info from the rebase stream's offset over the bind stream.
+- **Defensive branches no input reaches.** The simulation's "the writer would begin before the file" and "would copy past the end of the file" guard against `P` or a source range outside the image. Every piece has passed the load-command loop's range check before `corrupting` is evaluated (a range refusal is not `newer`), so neither fires on any image; they stay so that a later change to the loop cannot turn into an out-of-bounds read. No mutation row names them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1574,14 +1619,14 @@ typedef struct {
 In `tests/linkedit_fixture.h`, replace:
 
 ```c
-      "code signature not at the end of the file (can't be processed)", 0 },
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
 };
 ```
 
 with:
 
 ```c
-      "code signature not at the end of the file (can't be processed)", 0 },
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
     /* the writer */
     { "hole-16", "rebase +16 bind weak lazy export " LKF_TAIL, 0, NULL, NULL, 1 },
     { "hole-absorbed", "rebase +4 bind weak lazy export " LKF_TAIL, 0, NULL, NULL, 0 },
@@ -1598,6 +1643,19 @@ with:
       LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
     { "hole-16-note", "rebase +16 bind weak lazy export " LKF_TAIL, 0, lkf_dic_to_note,
       "malformed object (unknown load command 8)", 1 },
+    { "no-dysymtab-linkedit-short-hole",
+      "rebase bind weak lazy export fstarts dic drs +8 symtab strtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, lkf_linkedit_short, NULL, 1 },
+    { "no-dysymtab-unsigned-linkedit-short",
+      "rebase bind weak lazy export fstarts dic drs symtab strtab",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, lkf_linkedit_short, NULL, 1 },
+    { "bind-first-static", "bind rebase weak lazy export " LKF_TAIL, LKF_EXECUTE | LKF_STATIC, NULL,
+      NULL, 1 },
+    { "no-dysymtab-unsigned-misaligned", "rebase bind weak lazy export fstarts dic drs +8 symtab strtab",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 1 },
+    { "no-dysymtab-unsigned-drs8", "rebase bind weak lazy export fstarts dic drs:8 strtab symtab",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL,
+      "string table not at the end of the file (can't be processed)", 0 },
 };
 ```
 
@@ -1883,13 +1941,6 @@ static void mlo_simulate(const mlo_cmds *c, mlo_verdict *v, uint32_t object_size
         }
         at += len[k];
     }
-    uint32_t sig_at = mlo_rnd(at, 16);
-    if (c->sig && sig_at != c->sig->dataoff)
-        mlo_add(v, MLO_CORRUPTS, 0, "the writer would put the code signature at 0x%x, not 0x%x",
-                sig_at, c->sig->dataoff);
-    if (!c->sig && c->le && sig_at != mlo_rnd((uint32_t)(c->le->fileoff + c->le->filesize), 16))
-        mlo_add(v, MLO_CORRUPTS, 0, "the writer would put the new code signature at 0x%x, not 0x%x",
-                sig_at, mlo_rnd((uint32_t)(c->le->fileoff + c->le->filesize), 16));
     /* Every piece but the signature, which the re-sign replaces. */
     struct { const char *name; uint32_t off, size; } p[24];
     int np = 0;
@@ -1920,10 +1971,27 @@ static void mlo_simulate(const mlo_cmds *c, mlo_verdict *v, uint32_t object_size
     }
     if (c->hints) MLO_P("the two-level hints", c->hints->offset, c->hints->nhints * 4);
 #undef MLO_P
-    for (int k = 0; k < np; k++)
+    uint64_t maxend = 0;
+    for (int k = 0; k < np; k++) {
         if (!mlo_survives(in, P, w, nw, p[k].off, p[k].size))
             mlo_add(v, MLO_CORRUPTS, 0, "%s (0x%x, %u bytes) would not survive the re-sign",
                     p[k].name, p[k].off, p[k].size);
+        if ((uint64_t)p[k].off + p[k].size > maxend) maxend = (uint64_t)p[k].off + p[k].size;
+    }
+    /* An existing signature keeps its offset, which the order rules put
+     * after every piece. A new one goes at __LINKEDIT's end, rounded up to
+     * 16, in a file whose size the tool computes from the sum
+     * (codesign_allocate.c:588-633); the signature's own size cancels out. */
+    if (!c->sig && c->le) {
+        uint32_t le_end = (uint32_t)(c->le->fileoff + c->le->filesize), off = mlo_rnd(le_end, 16);
+        uint64_t out = (uint64_t)object_size - iss + (iss ? mlo_rnd((uint32_t)iss, 16) : off - le_end);
+        if (off > out)
+            mlo_add(v, MLO_CORRUPTS, 0, "the new code signature, at 0x%x, would run past the end "
+                    "of the file", off);
+        else if (off < maxend)
+            mlo_add(v, MLO_CORRUPTS, 0, "the new code signature, at 0x%x, would overlap a piece "
+                    "that ends at 0x%llx", off, (unsigned long long)maxend);
+    }
 }
 
 void mlo_check(const mi_image *im, mlo_verdict *v) {
@@ -2030,6 +2098,10 @@ Expected: `linkedit_order_test: all cases pass`. The whole suite: 28 tests pass.
 9. In `src/linkedit_order.c`, replace `            mlo_add(v, MLO_REFUSES, 1, "malformed object (unknown load command %u)", i);` with `            mlo_add(v, MLO_REFUSES, 0, "malformed object (unknown load command %u)", i);`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `an unknown command and a hole`.
 10. In `src/linkedit_order.c`, replace `            snprintf(label, sizeof label, "slice %s: ", name);` with `            snprintf(label, sizeof label, "%s: ", name);`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `fat: the other slice`.
 11. In `src/linkedit_order.c`, replace `    if (corrupt[0]) return 2;` with `    (void)0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `fat: a corrupting slice`.
+12. In `src/linkedit_order.c`, replace `    if (c.dy && (im->hdr->filetype == MH_DYLIB || (im->hdr->flags & MH_DYLDLINK)))` with `    if (c.dy)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `bind-first-static: refusal is`.
+13. In `src/linkedit_order.c`, replace `        if (off > out)` with `        if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-unsigned-misaligned: corrupting is 0`.
+14. In `src/linkedit_order.c`, replace `        else if (off < maxend)` with `        else if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-unsigned-linkedit-short: corrupting is 0`.
+15. In `src/linkedit_order.c`, replace `        iss += (uint64_t)dy->nmodtab * 56 + (uint64_t)dy->nindirectsyms * 4 + pad;` with `        iss += (uint64_t)dy->nmodtab * 56 + (uint64_t)dy->nindirectsyms * 4;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `strtab-at-rounding-unsigned: corrupting is 1`.
 
 - [ ] **Step 6: Commit**
 
@@ -2062,7 +2134,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Consumes: Task 3's `mlo_file_verdict`; in `tests/cli_test.sh`, `ok`, `bad`, `$CC`, `$HERE`, `$T`, `$BIN/makefat`, and `"$T/chained.in"` (the `mkchained make` image, built at `:672`).
 - Produces:
   - `info`'s last line for a thin file, or after a fat file's slices: `resign 10.9: ok`, or 10.9's refusal (`resign 10.9: slice x86_64h: malformed object (unknown load command 8)`), or `resign 10.9: not checked: slice i386 is not a 64-bit Mach-O`; and, when some slice is corrupting, `resign corrupt: …`. A fat header with no slices prints neither.
-  - `tests/mklinkedit.c`: `mklinkedit list` (NAME TAB corrupting TAB tool, one per variant), `mklinkedit make NAME OUT`, and `mklinkedit pieces FILE` (NAME OFFSET SIZE for each non-empty piece, read without `src/`).
+  - `tests/mklinkedit.c`: `mklinkedit list` (NAME TAB corrupting TAB tool, one per variant), `mklinkedit make NAME OUT`, and `mklinkedit pieces FILE` (NAME OFFSET SIZE for each non-empty piece — every table, stream and linkedit-data blob, the two-level hints, and `sig` for the signature — read without `src/`).
   - In `tests/cli_test.sh`: `resign FILE`, which prints the `resign 10.9:` verdict; the files `$T/lk_canonical`, `$T/lk_bind-first`, `$T/lk_note`, `$T/lk_hole-16`.
 
 - [ ] **Step 1: Write the failing tests and the fixture writer**
@@ -2074,8 +2146,9 @@ Create `tests/mklinkedit.c` with:
  * for tests/codesign_order_test.sh.
  *   mklinkedit list              every variant: NAME TAB corrupting TAB tool
  *   mklinkedit make NAME OUT
- *   mklinkedit pieces FILE       NAME OFFSET SIZE per non-empty piece, read
- *                                apart from src/ */
+ *   mklinkedit pieces FILE       NAME OFFSET SIZE per non-empty piece of a thin
+ *                                64-bit file, the signature included (as "sig"),
+ *                                read apart from src/ */
 #include <stdio.h>
 #include "linkedit_fixture.h"
 
@@ -2088,37 +2161,55 @@ static int pieces(const char *path) {
     struct mach_header_64 *h = (struct mach_header_64 *)b;
     if (n < sizeof *h || h->magic != MH_MAGIC_64) return 2;
     uint8_t *p = (uint8_t *)(h + 1);
+#define P(name, o, s) do { if (s) printf("%s %u %u\n", name, (unsigned)(o), (unsigned)(s)); } while (0)
     for (uint32_t i = 0; i < h->ncmds; i++, p += ((struct load_command *)p)->cmdsize) {
         struct load_command *lc = (struct load_command *)p;
         switch (lc->cmd) {
         case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY: {
             struct dyld_info_command *d = (struct dyld_info_command *)lc;
-            const char *nm[5] = { "rebase", "bind", "weak", "lazy", "export" };
-            uint32_t *o = &d->rebase_off;
-            for (int k = 0; k < 5; k++) if (o[2 * k + 1]) printf("%s %u %u\n", nm[k], o[2 * k], o[2 * k + 1]);
+            P("rebase", d->rebase_off, d->rebase_size);
+            P("bind", d->bind_off, d->bind_size);
+            P("weak", d->weak_bind_off, d->weak_bind_size);
+            P("lazy", d->lazy_bind_off, d->lazy_bind_size);
+            P("export", d->export_off, d->export_size);
             break;
         }
         case LC_SYMTAB: {
             struct symtab_command *s = (struct symtab_command *)lc;
-            if (s->nsyms) printf("symtab %u %u\n", s->symoff, s->nsyms * 16);
-            if (s->strsize) printf("strtab %u %u\n", s->stroff, s->strsize);
+            P("symtab", s->symoff, s->nsyms * 16);
+            P("strtab", s->stroff, s->strsize);
             break;
         }
         case LC_DYSYMTAB: {
             struct dysymtab_command *d = (struct dysymtab_command *)lc;
-            if (d->nindirectsyms) printf("indirect %u %u\n", d->indirectsymoff, d->nindirectsyms * 4);
-            if (d->nlocrel) printf("locrel %u %u\n", d->locreloff, d->nlocrel * 8);
-            if (d->nextrel) printf("extrel %u %u\n", d->extreloff, d->nextrel * 8);
+            P("toc", d->tocoff, d->ntoc * 8);
+            P("modtab", d->modtaboff, d->nmodtab * 56);
+            P("refs", d->extrefsymoff, d->nextrefsyms * 4);
+            P("indirect", d->indirectsymoff, d->nindirectsyms * 4);
+            P("extrel", d->extreloff, d->nextrel * 8);
+            P("locrel", d->locreloff, d->nlocrel * 8);
             break;
         }
-        case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE: case LC_DYLIB_CODE_SIGN_DRS:
-        case LC_SEGMENT_SPLIT_INFO: {
+        case LC_TWOLEVEL_HINTS: {
+            struct twolevel_hints_command *t = (struct twolevel_hints_command *)lc;
+            P("hints", t->offset, t->nhints * 4);
+            break;
+        }
+        case LC_SEGMENT_SPLIT_INFO: case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
+        case LC_DYLIB_CODE_SIGN_DRS: case 0x2e /* LC_LINKER_OPTIMIZATION_HINT */:
+        case LC_CODE_SIGNATURE: {
             struct linkedit_data_command *l = (struct linkedit_data_command *)lc;
-            if (l->datasize) printf("led-0x%x %u %u\n", lc->cmd, l->dataoff, l->datasize);
+            const char *nm = lc->cmd == LC_SEGMENT_SPLIT_INFO ? "split"
+                           : lc->cmd == LC_FUNCTION_STARTS ? "fstarts"
+                           : lc->cmd == LC_DATA_IN_CODE ? "dic"
+                           : lc->cmd == LC_DYLIB_CODE_SIGN_DRS ? "drs"
+                           : lc->cmd == LC_CODE_SIGNATURE ? "sig" : "loh";
+            P(nm, l->dataoff, l->datasize);
             break;
         }
         }
     }
+#undef P
     return 0;
 }
 
@@ -2233,7 +2324,7 @@ with:
 /* Whether 10.9's codesign_allocate can re-sign the whole file, and whether
  * any host's would re-sign it corrupt. */
 static void info_resign(const uint8_t *buf, size_t size) {
-    char refusal[256], corrupt[512];
+    char refusal[256], corrupt[4096];
     mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
     printf("resign 10.9: %s\n", refusal);
     if (corrupt[0]) printf("resign corrupt: %s\n", corrupt);
@@ -2326,13 +2417,13 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Consumes: Task 4's `info` lines and `mklinkedit list|make|pieces`; 10.9's `codesign_allocate` (via `xcrun -f`, else `PATH`).
 - Produces: the ctest entry `codesign_order_test`, which exits 77 (SKIP, with its reason) unless the tool carries the string `cctools-862`, and otherwise requires, for every variant and for each variant after `load-command delete codesig` (the pass runs on those once Task 7 lands):
   - the tool refuses ⇔ `resign 10.9:` is not `ok`, and every "…"-separated part of the verdict appears in the tool's stderr;
-  - the tool accepts ⇔ `resign 10.9: ok`, and some piece's bytes, at the offsets the input's load commands give, differ in the tool's output ⇔ `info` prints `resign corrupt:`;
-  - and at least 40 files, at least one refused and one written corrupt, so a vacuous pass is a failure.
+  - the tool accepts ⇔ `resign 10.9: ok`, and **the set of pieces** whose bytes, at the offsets the input's load commands give, differ in the tool's output (plus `sig` when the output's signature would run past it or over a piece) **equals the set `resign corrupt:` names**, each by its offset;
+  - and at least 80 files, at least one refused and one written corrupt, so a vacuous pass is a failure. Task 9 raises that to 100 and a fat file, when it adds what the CLI suites pack.
 
 **Plan decisions.**
 
 - **The oracle runs `codesign_allocate` alone** (`-i F -a x86_64 16384 -o OUT`): no signing, no keychain, and the same checks and writer `codesign` uses.
-- **Its equality is defined for both outcomes** (the spec's I2): a refused file is compared by message, an accepted one by bytes, which is the only way to see the silent corruption.
+- **Its equality is defined for both outcomes** (the spec's I2): a refused file is compared by message, an accepted one by bytes, which is the only way to see the silent corruption. Comparing the *set* of moved pieces, not just whether it is empty, is what catches a simulation that is right about a file but wrong about which pieces (the mutation list shows one).
 - **Local only, and a gate.** The Global Constraints make running it on 10.9 the close of each milestone. It adds about 3 s to the suite.
 
 - [ ] **Step 1: Write the oracle and its ctest entry**
@@ -2364,15 +2455,17 @@ Create `tests/codesign_order_test.sh` with:
 ```sh
 #!/bin/sh
 # tests/codesign_order_test.sh -- `info`'s resign lines (src/linkedit_order.h)
-# must be 10.9's own codesign_allocate's verdict, on every
+# must be 10.9's own codesign_allocate's verdict: on every
 # tests/linkedit_fixture.h variant and on each after the pass has packed it.
 #
 #   sh tests/codesign_order_test.sh <bindir>
 #
 # For a file the tool refuses, `resign 10.9:` must be its message ("…" stands
 # for words that name offsets or files). For one it accepts, `resign 10.9:`
-# must say ok, and `resign corrupt:` must appear exactly when some piece's
-# bytes, at the offset its load command gives, differ in what the tool wrote.
+# must say ok, and the pieces `resign corrupt:` names must be exactly the ones
+# the tool's output no longer holds at the offsets the load commands give,
+# with "sig" for a signature the output could not hold where its load command
+# says. A fat file is compared slice by slice.
 #
 # Local only: it SKIPs, saying why, unless the codesign_allocate here is
 # cctools-862's (10.9's Command Line Tools). Any other tool's verdicts
@@ -2382,7 +2475,7 @@ set -u
 BIN="${1:?usage: codesign_order_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
 MK="$BIN/mklinkedit"
-for x in "$DMR" "$MK"; do
+for x in "$DMR" "$MK" "$BIN/makefat"; do
     [ -x "$x" ] || { echo "codesign_order_test: $x not found or not executable" >&2; exit 1; }
 done
 CA=$(xcrun -f codesign_allocate 2>/dev/null) || CA=$(command -v codesign_allocate 2>/dev/null) || CA=
@@ -2393,7 +2486,7 @@ strings "$CA" | grep -qx 'cctools-862' ||
 T=$(mktemp -d "${TMPDIR:-/tmp}/codesign-order.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
 
-fail=0 files=0 refused=0 corrupt=0
+fail=0 files=0 refused=0 corrupt=0 fat=0
 
 # Does every "…"-separated part of $1 appear in file $2?
 matches() {
@@ -2403,12 +2496,51 @@ matches() {
     done
 }
 
+# moved IN OUT: the pieces of thin IN whose bytes OUT no longer holds at their
+# offsets, as sorted "0xOFF" words, and "sig" when OUT's signature runs past
+# OUT or over one of IN's pieces.
+moved() {
+    "$MK" pieces "$1" | grep -v '^sig ' >"$T/pieces"
+    osize=$(wc -c <"$2" | tr -d ' ')
+    {
+        while read -r name off size; do
+            dd if="$1" of="$T/a" bs=1 skip="$off" count="$size" 2>/dev/null
+            dd if="$2" of="$T/b" bs=1 skip="$off" count="$size" 2>/dev/null
+            cmp -s "$T/a" "$T/b" || printf '0x%x\n' "$off"
+        done <"$T/pieces"
+        "$MK" pieces "$2" | awk -v n="$osize" -v pf="$T/pieces" '
+            $1 == "sig" { so = $2; se = $2 + $3; s = 1 }
+            END {
+                if (!s) exit
+                if (se > n) { print "sig"; exit }
+                while ((getline l < pf) > 0) { split(l, f, " ")
+                    if (f[2] < se && so < f[2] + f[3]) { print "sig"; exit } } }'
+    } | sort -u | tr '\n' ' '
+}
+
+# said FILE: the pieces `info`'s resign corrupt line names, the same way.
+said() {
+    "$DMR" info "$1" 2>/dev/null | sed -n 's/^resign corrupt: //p' >"$T/said"
+    {
+        grep -o '(0x[0-9a-f]*,' "$T/said" | tr -d '(,'
+        grep -q 'code signature' "$T/said" && echo sig
+    } | sort -u | tr '\n' ' '
+}
+
+check_thin() {   # check_thin FILE OUT: the pieces, for a file the tool accepted
+    m=$(moved "$1" "$2"); w=$(said "$1")
+    [ -n "$m" ] && corrupt=$((corrupt + 1))
+    if [ "$m" != "$w" ]; then
+        echo "FAIL $1: the tool moved [$m]; resign corrupt names [$w]"
+        fail=$((fail + 1))
+    fi
+}
+
 check() {
     f=$1
+    [ -f "$f" ] || return 0
     files=$((files + 1))
-    "$DMR" info "$f" >"$T/info" 2>/dev/null
-    ours=$(sed -n 's/^resign 10\.9: //p' "$T/info")
-    said_corrupt=$(grep -c '^resign corrupt: ' "$T/info")
+    ours=$("$DMR" info "$f" 2>/dev/null | sed -n 's/^resign 10\.9: //p')
     rm -f "$T/out"
     rc=0; "$CA" -i "$f" -a x86_64 16384 -o "$T/out" 2>"$T/err" || rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -2424,50 +2556,56 @@ check() {
         fail=$((fail + 1))
         return
     fi
-    moved=
-    "$MK" pieces "$f" >"$T/pieces"
-    while read -r name off size; do
-        dd if="$f" of="$T/a" bs=1 skip="$off" count="$size" 2>/dev/null
-        dd if="$T/out" of="$T/b" bs=1 skip="$off" count="$size" 2>/dev/null
-        cmp -s "$T/a" "$T/b" || moved="$moved $name"
-    done <"$T/pieces"
-    if [ -n "$moved" ]; then corrupt=$((corrupt + 1)); fi
-    if { [ -n "$moved" ] && [ "$said_corrupt" -eq 0 ]; } || { [ -z "$moved" ] && [ "$said_corrupt" -ne 0 ]; }; then
-        echo "FAIL $f: the tool moved [$moved]; resign corrupt said $said_corrupt line(s)"
-        fail=$((fail + 1))
+    if [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')" = cafebabe ]; then
+        fat=$((fat + 1))
+        for a in $(lipo -info "$f" | sed 's/.*: //'); do
+            lipo -thin "$a" "$f" -output "$T/in.$a" && lipo -thin "$a" "$T/out" -output "$T/out.$a" &&
+                check_thin "$T/in.$a" "$T/out.$a"
+        done
+    else
+        check_thin "$f" "$T/out"
     fi
 }
 
+# ---- the fixture's variants, and each packed ---------------------------------
 "$MK" list | while IFS='	' read -r name c tool; do echo "$name"; done >"$T/names"
 while read -r name; do
     "$MK" make "$name" "$T/$name" || { echo "FAIL mklinkedit make $name"; fail=$((fail + 1)); continue; }
     check "$T/$name"
-    # and packed: deleting the signature changes a piece, so the pass runs
+    # deleting the signature changes a piece, so the pass runs
     rc=0; printf 'allow-unmatched\nload-command delete codesig\n' |
         "$DMR" "$T/$name" "$T/$name.packed" >/dev/null 2>&1 || rc=$?
     [ "$rc" -eq 0 ] && check "$T/$name.packed"
 done <"$T/names"
 
-if [ "$files" -lt 40 ] || [ "$refused" -eq 0 ] || [ "$corrupt" -eq 0 ]; then
-    echo "FAIL: the corpus is too thin to mean anything: $files files, $refused refused, $corrupt corrupting"
+if [ "$files" -lt 80 ] || [ "$refused" -eq 0 ] || [ "$corrupt" -eq 0 ]; then
+    echo "FAIL: the corpus is too thin to mean anything: $files files, $refused refused, $corrupt corrupting, $fat fat"
     fail=$((fail + 1))
 fi
-echo "codesign_order_test: $files files ($refused refused by the tool, $corrupt written corrupt), $fail failure(s)"
+echo "codesign_order_test: $files files ($refused refused by the tool, $corrupt written corrupt, $fat fat), $fail failure(s)"
 [ "$fail" -eq 0 ]
 ```
 
 - [ ] **Step 2: Run it**
 
 Run: re-run the configure step, build (rebuild check), then `sh tests/codesign_order_test.sh "$B"`.
-Expected, on 10.9: `codesign_order_test: 83 files (52 refused by the tool, 5 written corrupt), 0 failure(s)` (the numbers are at Task 9's end; at this task the pass does not yet run, so the `.packed` copies of signed variants are the unpacked file with the signature's command deleted and the tool refuses more of them). The whole suite: 29 tests pass. On any other host it prints `SKIP: … is not cctools-862's, whose verdicts this test pins` and ctest reports it skipped.
+Expected, on 10.9: `codesign_order_test: … 0 failure(s)`. At this task the pass does not yet run, so the `.packed` copies of signed variants are the unpacked file with the signature's command deleted, and the tool refuses more of them; Task 9's figures are quoted there. The whole suite: 29 tests pass. On any other host it prints `SKIP: … is not cctools-862's, whose verdicts this test pins` and ctest reports it skipped.
 
 This task has no "see it fail" of its own: the test passes the first time because `mlo_check` is already right. The mutation list is the evidence that it can fail: each row makes `mlo_check` disagree with the tool in one way the unit test alone would not name.
 
 - [ ] **Step 3: Mutation proof** (file `src/linkedit_order.c`; the test is the oracle)
 
 1. In `src/linkedit_order.c`, replace `        MLO_ORDER("code signature data out of place");` with `        MLO_ORDER("code signature misplaced");`. It must fail `sh tests/codesign_order_test.sh "$B"`, with a `FAIL` line containing `the tool says`.
-2. In `src/linkedit_order.c`, replace `        if (memcmp(in + w[k].src + (x - w[k].dest), in + x, stop - x) != 0) return 0;` with `        (void)0;`. It must fail `sh tests/codesign_order_test.sh "$B"`, with a `FAIL` line containing `resign corrupt said 0 line(s)`.
-3. In `src/linkedit_order.c`, replace `            if (di->export_off != offset && di->weak_bind_size != 0 && di->lazy_bind_size != 0)` with `            if (di->export_off != offset && di->weak_bind_size != 0 && di->lazy_bind_size != 0 && 0)`. It must fail `sh tests/codesign_order_test.sh "$B"`, with a `FAIL` line containing `resign 10.9 says [ok]`.
+2. In `src/linkedit_order.c`, replace `        if (memcmp(in + w[k].src + (x - w[k].dest), in + x, stop - x) != 0) return 0;` with `        (void)0;`. It must fail `sh tests/codesign_order_test.sh "$B"`, with a `FAIL` line containing `the tool moved`.
+3. In `src/linkedit_order.c`, replace this:
+
+   ```c
+           MLO_P("the string table", st->stroff, st->strsize);
+   ```
+
+   with nothing (delete it)
+   It must fail `sh tests/codesign_order_test.sh "$B"`, with a `FAIL` line containing `resign corrupt names`.
+4. In `src/linkedit_order.c`, replace `            if (di->export_off != offset && di->weak_bind_size != 0 && di->lazy_bind_size != 0)` with `            if (di->export_off != offset && di->weak_bind_size != 0 && di->lazy_bind_size != 0 && 0)`. It must fail `sh tests/codesign_order_test.sh "$B"`, with a `FAIL` line containing `resign 10.9 says [ok]`.
 
 - [ ] **Step 4: Commit**
 
@@ -2504,10 +2642,13 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Plan decisions.**
 
-- **The piece model is the spec's Decision 2**, with ld64's order and the two modern blobs in cctools-1035's slots. Each piece keeps its bytes and size; the pass concatenates. Three paddings only: the 8-rounding where the input had it, the 16-rounding before the signature, and (spec "(plan)") 16-alignment of the symbol table in a signed slice without `LC_DYSYMTAB`.
-- **A zero-size piece keeps an offset that already passes**, else goes where ld64 puts one: an empty dyld-info stream to 0, an empty split, function-starts, data-in-code or blob piece to the running offset unless it is at 0, DRs and hints to the running offset.
-- **The declines** are the spec's list plus the two "(plan)" ones: a 16-misaligned `__LINKEDIT` in a signed slice with `LC_DYSYMTAB`, and weak-bind, lazy-bind and export opcodes without rebase or bind.
-- **Postconditions**, any failure being `MLO_FAILED`: every piece's bytes at its new offset; no header byte changed but the piece offsets and `__LINKEDIT`'s `filesize` and `vmsize`; the pieces tile `__LINKEDIT` in order with no gap but the paddings; and `mlo_check` finds no order refusal (for an image with a modern blob, which 862's walk has no slot for, the tiling stands in) and no corruption. Built this way they never fire; they are there for the next change to this file.
+- **The piece model is the spec's Decision 2**, with ld64's order and the two modern blobs in cctools-1035's slots. Each piece keeps its bytes and size; the pass concatenates. Three paddings only: the 8-rounding where the input had it, the 16-rounding before the signature, and (spec "(plan)", "(plan review)") 16-alignment of the symbol table in a slice without `LC_DYSYMTAB`, signed or not: unsigned, the tool adds a signature at `__LINKEDIT`'s end rounded to 16 in a file sized from the rounded sum, so a misaligned symbol table puts it past the end (`no-dysymtab-unsigned-drs8` shows it).
+- **The declines** are the spec's list plus three "(plan)" ones: a 16-misaligned `__LINKEDIT` in a signed slice with `LC_DYSYMTAB`; weak-bind, lazy-bind and a non-empty export stream without rebase or bind opcodes (862 wants the export trie first and copies from the first stream's offset); and a string table without symbols. Each is a refusal (exit 1), never an internal error.
+- **A zero-size piece goes where ld64 puts one:** an empty linkedit-data piece at the running offset (or 0, where it was 0); an empty dyld-info stream and a table with no entries at 0. That leaves no stale offset past the end of a shrunk file for the load-command loop's range check, and an empty export stream at 0 is what lets `weak-lazy-empty-export` pack. None of the host's 1,167 x86_64 images has a non-zero offset on such a piece, so every one stays byte-identical.
+- **Postconditions**, any failure being `MLO_FAILED`: every piece's bytes at its new offset; no header byte changed but the piece offsets and `__LINKEDIT`'s `filesize` and `vmsize`; the pieces tile `__LINKEDIT` in order with no gap but the paddings; `mlo_check` finds no order refusal (for an image with a modern blob, which 862's walk has no slot for, the tiling stands in); and every other refusal it finds, the input had word for word.
+- **Why no test reaches the postconditions** (the review's X4, the header-byte check): they compare the pass's output with what the same function just built from the same piece list, so no input makes them fire; a test would need a second, wrong layout function. They are there for the next change to this file, and no mutation row names them. The same holds for `the packed image would pass 4GB` (a 4 GB input) and `__LINKEDIT's vmsize would overlap` (a segment mapped after `__LINKEDIT`, which the loop's order rules refuse first).
+- **What no layout can make survive is a decline, not a failure.** A packed image that `mlo_check` still calls corrupting is declined, naming the finding; the run is then refused (exit 1), as the spec's "(plan review)" asks. The two known cases get their own wording first: a string table without symbols (`nsyms-0`), and a signed `__LINKEDIT` that starts off 16 with `LC_DYSYMTAB`; the generic one is reached by an unsigned `__LINKEDIT` off 16.
+- **`mlo_pack` reads nothing before `mi_wrap` has validated the load commands**, and `mlo_changed` wraps both sides. When only one side is a readable image it answers "changed": the pass is then asked, and declines. That is right for the only way it can happen, a statement that leaves an image `mi_wrap` rejects, because the refusal then names the problem.
 - **`mlo_changed` compares pieces**, and, when it cannot list them (an unknown command that may carry an offset), `__LINKEDIT`'s extent and bytes, so a header-only edit of such an image is still "no change".
 
 - [ ] **Step 1: Write the failing tests**
@@ -2537,7 +2678,12 @@ static void test_the_pass_puts_each_variant_in_order(void) {
         "symtab-before-fstarts", "dic-stale", "gap-before-symtab", "strtab-first",
         "strtab-past-rounding", "sig-off-16", "sig-late", "tail-after-sig", "tail-after-strtab",
         "hole-16", "hole-16-unsigned", "stale-empty-rebase", "hole-absorbed", "export-last",
-        "no-dysymtab-hole", "no-dysymtab-drs8" };
+        "drs-empty-stale", "weak-lazy-empty-export", "bind-first-static", "no-dysymtab-hole",
+        "no-dysymtab-unsigned-misaligned", "no-dysymtab-unsigned-drs8", "no-dysymtab-drs8" };
+    /* These have no canonical twin: a piece is empty or missing, or there is
+     * no LC_DYSYMTAB. */
+    static const char *const unlike[] = { "stale-empty-rebase", "strtab-past-rounding",
+        "drs-empty-stale", "weak-lazy-empty-export" };
     for (size_t k = 0; k < sizeof fixable / sizeof fixable[0]; k++) {
         const lkf_variant *w = variant(fixable[k]);
         uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
@@ -2557,8 +2703,10 @@ static void test_the_pass_puts_each_variant_in_order(void) {
         size_t cn = lkf_build(canon, (w->opts & LKF_NOSIG) ?
                               "rebase bind weak lazy export fstarts dic drs symtab indirect strtab" :
                               LKF_CANON, w->opts);
-        if (strcmp(w->name, "stale-empty-rebase") != 0 && strcmp(w->name, "strtab-past-rounding") != 0 &&
-            !(w->opts & LKF_NODYSYMTAB))
+        int twin = !(w->opts & LKF_NODYSYMTAB);
+        for (size_t j = 0; j < sizeof unlike / sizeof unlike[0]; j++)
+            if (strcmp(w->name, unlike[j]) == 0) twin = 0;
+        if (twin)
             CHECK(n == cn && memcmp(buf, canon, n) == 0, "%s: the canonical bytes", w->name);
         free(before);
         free(buf);
@@ -2653,6 +2801,8 @@ static void test_the_pass_declines(void) {
         { "two-fstarts", "more than one of the function starts" },
         { "fstarts-dataoff-0", "the function starts lies outside __LINKEDIT" },
         { "no-rebase-no-bind", "which codesign_allocate cannot lay out" },
+        { "nsyms-0", "a string table but no symbols" },
+        { "no-dysymtab-linkedit-short-hole", "__LINKEDIT does not end the file" },
     };
     for (size_t k = 0; k < sizeof no / sizeof no[0]; k++) {
         uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
@@ -2677,8 +2827,11 @@ static void test_the_pass_declines(void) {
         { "a section in __LINKEDIT", "lies in __LINKEDIT" },
         { "a section with relocations", "has relocation entries" },
         { "__LINKEDIT's vmsize would overlap", "would overlap __DATA" },
+        { "a signed __LINKEDIT not 16-aligned", "is not a multiple of 16" },
+        { "load commands past their size", "not a readable 64-bit Mach-O" },
+        { "an unsigned __LINKEDIT not 16-aligned", "even in codesign_allocate's order" },
     };
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 9; k++) {
         uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
         size_t n = lkf_make(buf, variant("bind-first"));
         struct segment_command_64 *le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
@@ -2702,6 +2855,17 @@ static void test_the_pass_declines(void) {
             da->vmaddr = le->vmaddr + 0x1000;
             break;
         }
+        case 6:   /* a lie, but the pass reads only this */
+            le->fileoff -= 8;
+            le->filesize += 8;
+            break;
+        case 7: ((struct mach_header_64 *)buf)->sizeofcmds = 0x7fffffff; break;
+        case 8:   /* the same lie, where a signature the tool adds would land wrong */
+            n = lkf_make(buf, variant("canonical-unsigned"));
+            le->fileoff -= 8;
+            le->filesize += 8;
+            da->filesize -= 8;
+            break;
         }
         mlo_pack_report r;
         char why[256] = "";
@@ -2710,6 +2874,27 @@ static void test_the_pass_declines(void) {
               lay[k].what, rc, why);
         free(buf);
     }
+}
+
+/* __LINKEDIT's vmsize grows to cover a longer pack, rounded to the page;
+ * and an empty piece's offset, even one past the new end, becomes 0. */
+static void test_the_pass_resizes_and_zeroes(void) {
+    uint8_t *buf = (uint8_t *)malloc(LKF_CAP + 0x2000);
+    size_t n = lkf_build(buf, "bind rebase weak lazy export fstarts dic drs symtab indirect "
+                         "strtab:5000 @16 sig", 0);
+    struct segment_command_64 *le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+    le->vmsize = 0x1000;
+    lkf_dy(buf)->locreloff = 0x9000;   /* no entries, and past the end of the file */
+    mlo_pack_report r;
+    char why[256] = "";
+    int rc = pack(&buf, &n, &r, why);
+    le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+    CHECK(rc == MLO_PACKED && le->vmsize == 0x2000 && le->filesize > 0x1000,
+          "a longer pack: vmsize 0x%llx for filesize 0x%llx (got %d: %s)",
+          (unsigned long long)le->vmsize, (unsigned long long)le->filesize, rc, why);
+    CHECK(lkf_dy(buf)->locreloff == 0, "an empty table's stale offset becomes 0 (got 0x%x)",
+          lkf_dy(buf)->locreloff);
+    free(buf);
 }
 
 /* ---- the observed change ---- */
@@ -2733,6 +2918,12 @@ static void test_what_counts_as_a_change(void) {
     memcpy(b, a, na);
     ((struct segment_command_64 *)lkf_lc(b, LKF_LC_LINKEDIT))->filesize += 16;
     CHECK(mlo_changed(a, na, b, na + 16), "__LINKEDIT's filesize: a change");
+    /* A side that is not a readable image: the pass must be asked, and it
+     * declines; two such sides say nothing. */
+    memcpy(b, a, na);
+    ((struct mach_header_64 *)b)->sizeofcmds = 0x7fffffff;
+    CHECK(mlo_changed(a, na, b, na) && mlo_changed(b, na, a, na), "one side not an image: a change");
+    CHECK(!mlo_changed(b, na, b, na), "neither side an image: no change");
 }
 
 int main(void) {
@@ -2754,6 +2945,7 @@ with:
     test_the_pass_places_empty_pieces();
     test_the_pass_keeps_the_rounding();
     test_the_pass_declines();
+    test_the_pass_resizes_and_zeroes();
     test_what_counts_as_a_change();
     if (fails == 0) printf("linkedit_order_test: all cases pass\n");
 ```
@@ -3002,11 +3194,13 @@ static int mlo_had_pad(const mlo_pieces *ps) {
 
 /* Without an LC_DYSYMTAB, codesign_allocate's writer writes only the symbol
  * table, the string table and the signature, from where the sum of their
- * sizes, the first two rounded up to 16, says they start. With a signature
- * that is where they lie only if the symbol table is 16-aligned. */
+ * sizes, rounded up to 16, says they start; and a signature it adds goes at
+ * __LINKEDIT's end rounded up to 16, in a file whose size that same sum
+ * decides. Both agree with the layout only if the symbol table is
+ * 16-aligned. */
 static int mlo_sym_rnd(const mlo_pieces *ps) {
-    return !ps->p[MLO_P_INDIRECT].present && ps->p[MLO_P_SIG].present &&
-           ps->p[MLO_P_SYMTAB].present && ps->p[MLO_P_SYMTAB].size != 0;
+    return !ps->p[MLO_P_INDIRECT].present && ps->p[MLO_P_SYMTAB].present &&
+           ps->p[MLO_P_SYMTAB].size != 0;
 }
 
 /* Where each piece goes: new offsets for every present piece, and the new
@@ -3019,17 +3213,16 @@ static uint64_t mlo_layout(const mlo_pieces *ps, uint64_t start, uint32_t *to) {
         if (!q->present) continue;
         uint32_t off = *q->off;
         if (q->size == 0) {
-            /* A zero-size piece keeps an offset that already passes the
-             * rules; otherwise it goes where ld64 puts one. */
-            if (k <= MLO_P_EXPORT)
-                to[k] = (off == 0 || off == at) ? off : 0;
-            else if (k == MLO_P_SPLIT || k == MLO_P_FSTARTS || k == MLO_P_DIC ||
-                     k == MLO_P_CHAINED || k == MLO_P_TRIE)
+            /* An empty piece goes where ld64 puts one: a linkedit-data
+             * piece at the running offset (or 0, where it was 0), anything
+             * else at 0. */
+            if (k == MLO_P_SPLIT || k == MLO_P_FSTARTS || k == MLO_P_DIC ||
+                k == MLO_P_CHAINED || k == MLO_P_TRIE)
                 to[k] = (off == 0) ? 0 : (uint32_t)at;
             else if (k == MLO_P_DRS || k == MLO_P_LOH)
                 to[k] = (uint32_t)at;
             else
-                to[k] = off;
+                to[k] = 0;
             continue;
         }
         if (pad && !padded && (k == MLO_P_TOC || k == MLO_P_MODTAB || k == MLO_P_REFS ||
@@ -3069,7 +3262,12 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
     uint8_t *buf = *pbuf;
     size_t size = *psize;
     mlo_pieces ps;
+    mi_image in;
     memset(rep, 0, sizeof *rep);
+    if (mi_wrap(buf, size, &in) != 0) {
+        mlo_fail(why, whysz, "the image is not a readable 64-bit Mach-O");
+        return MLO_DECLINED;
+    }
     if (mlo_find(buf, size, &ps, why, whysz) != 0) return MLO_DECLINED;
     struct segment_command_64 *le = ps.le;
     if (!le) { mlo_fail(why, whysz, "the image has no __LINKEDIT"); return MLO_DECLINED; }
@@ -3113,6 +3311,13 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
         ps.p[MLO_P_WEAK].size && ps.p[MLO_P_LAZY].size && ps.p[MLO_P_EXPORT].size) {
         mlo_fail(why, whysz, "the image has weak-bind, lazy-bind and export opcodes but no rebase "
                  "or bind opcodes, which codesign_allocate cannot lay out");
+        return MLO_DECLINED;
+    }
+    /* The order rules put a string table last whenever it has bytes, but the
+     * writer counts and writes it only with symbols: no layout survives. */
+    if (ps.p[MLO_P_SYMTAB].present && !ps.p[MLO_P_SYMTAB].size && ps.p[MLO_P_STRTAB].size) {
+        mlo_fail(why, whysz, "the image has a string table but no symbols, which "
+                 "codesign_allocate's writer neither counts nor writes");
         return MLO_DECLINED;
     }
     uint64_t covered = 0;
@@ -3213,20 +3418,35 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
             mlo_fail(why, whysz, "internal error: the packed image does not wrap");
             rc = MLO_FAILED;
         } else {
+            mlo_verdict was;
+            mlo_check(&in, &was);
             mlo_check(&im, &v);
-            for (int k = 0; k < v.n; k++) {
-                /* The pass cures where the pieces lie, and nothing else. 862's
-                 * walk has no slot for a modern blob, so an image that keeps
-                 * one is held to the tiling above instead. */
-                if (v.f[k].kind != MLO_REFUSES || !v.f[k].order) continue;
+            for (int k = 0; k < v.n && rc == MLO_PACKED; k++) {
+                if (v.f[k].kind != MLO_REFUSES) continue;
+                if (!v.f[k].order) {
+                    /* What the pass does not cure, the input already had. */
+                    int had = 0;
+                    for (int j = 0; j < was.n; j++)
+                        if (was.f[j].kind == MLO_REFUSES && strcmp(was.f[j].text, v.f[k].text) == 0)
+                            had = 1;
+                    if (had) continue;
+                    mlo_fail(why, whysz, "internal error: the packed image is refused, and the input "
+                             "was not: %s", v.f[k].text);
+                    rc = MLO_FAILED;
+                    break;
+                }
+                /* 862's walk has no slot for a modern blob, so an image that
+                 * keeps one is held to the tiling above instead. */
                 if (ns.modern && strstr(v.f[k].text, "file not in an order")) continue;
                 mlo_fail(why, whysz, "internal error: the packed image is refused: %s", v.f[k].text);
                 rc = MLO_FAILED;
-                break;
             }
-            if (rc == MLO_PACKED && v.corrupting) {
-                mlo_fail(why, whysz, "internal error: the packed image would re-sign corrupt");
-                rc = MLO_FAILED;
+            /* What no layout can make survive (a __LINKEDIT that starts off
+             * 16, say) is the input's, so it is a decline, not a failure. */
+            for (int k = 0; rc == MLO_PACKED && v.corrupting && k < v.n; k++) {
+                if (v.f[k].kind != MLO_CORRUPTS) continue;
+                mlo_fail(why, whysz, "even in codesign_allocate's order, %s", v.f[k].text);
+                rc = MLO_DECLINED;
             }
         }
     }
@@ -3280,14 +3500,56 @@ Expected: `linkedit_order_test: all cases pass`. The whole suite: 29 tests pass.
 
 - [ ] **Step 5: Mutation proof** (file `src/linkedit_pack.c`)
 
-1. In `src/linkedit_pack.c`, replace `        if (k == MLO_P_SIG || (k == MLO_P_SYMTAB && mlo_sym_rnd(ps))) at = mlo_rnd64(at, 16);` with `        if (k == MLO_P_SYMTAB && mlo_sym_rnd(ps)) at = mlo_rnd64(at, 16);`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `packed (got -1`.
-2. In `src/linkedit_pack.c`, replace `        if (k == MLO_P_SIG || (k == MLO_P_SYMTAB && mlo_sym_rnd(ps))) at = mlo_rnd64(at, 16);` with `        if (k == MLO_P_SIG) at = mlo_rnd64(at, 16);`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-drs8: packed (got -1`.
-3. In `src/linkedit_pack.c`, replace `                to[k] = (off == 0 || off == at) ? off : 0;` with `                to[k] = off;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `stale-empty-rebase: packed (got 1`.
-4. In `src/linkedit_pack.c`, replace `                to[k] = (off == 0) ? 0 : (uint32_t)at;` with `                to[k] = off;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `dic-stale: packed (got 1`.
-5. In `src/linkedit_pack.c`, replace `                to[k] = (off == 0) ? 0 : (uint32_t)at;` with `                to[k] = (uint32_t)at;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `an empty data in code at 0 stays at 0`.
-6. In `src/linkedit_pack.c`, replace `        return *q->off != end && *q->off == mlo_rnd64(end, 8);` with `        return 0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `the string table stays at the 8-rounding`.
-7. In `src/linkedit_pack.c`, replace `            return mlo_fail(why, whysz, "load command %u (cmd 0x%x) may name a range of the "` with `            if (0) return mlo_fail(why, whysz, "load command %u (cmd 0x%x) may name a range of the "`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `note: declined`.
-8. In `src/linkedit_pack.c`, replace this:
+1. In `src/linkedit_pack.c`, replace `        if (k == MLO_P_SIG || (k == MLO_P_SYMTAB && mlo_sym_rnd(ps))) at = mlo_rnd64(at, 16);` with `        if (k == MLO_P_SYMTAB && mlo_sym_rnd(ps)) at = mlo_rnd64(at, 16);`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `canonical: unchanged (got -1`.
+2. In `src/linkedit_pack.c`, replace `        if (k == MLO_P_SIG || (k == MLO_P_SYMTAB && mlo_sym_rnd(ps))) at = mlo_rnd64(at, 16);` with `        if (k == MLO_P_SIG) at = mlo_rnd64(at, 16);`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-drs8: packed (got`.
+3. In `src/linkedit_pack.c`, replace this:
+
+   ```c
+               else
+                   to[k] = 0;
+   ```
+
+   with this:
+
+   ```c
+               else
+                   to[k] = off;
+   ```
+
+   It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `stale-empty-rebase: packed (got`.
+4. In `src/linkedit_pack.c`, replace this:
+
+   ```c
+               else if (k == MLO_P_DRS || k == MLO_P_LOH)
+                   to[k] = (uint32_t)at;
+   ```
+
+   with this:
+
+   ```c
+               else if (k == MLO_P_DRS || k == MLO_P_LOH)
+                   to[k] = off;
+   ```
+
+   It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `drs-empty-stale: packed (got`.
+5. In `src/linkedit_pack.c`, replace `    if (start % 16 != 0 && ps.p[MLO_P_SIG].present && ps.p[MLO_P_INDIRECT].present) {` with `    if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a signed __LINKEDIT not 16-aligned: declined`.
+6. In `src/linkedit_pack.c`, replace this:
+
+   ```c
+       ns.le->vmsize = vmsize;
+   ```
+
+   with nothing (delete it)
+   It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a longer pack: vmsize`.
+7. In `src/linkedit_pack.c`, replace `    if (ps.p[MLO_P_SYMTAB].present && !ps.p[MLO_P_SYMTAB].size && ps.p[MLO_P_STRTAB].size) {` with `    if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `nsyms-0: declined`.
+8. In `src/linkedit_pack.c`, replace `                rc = MLO_DECLINED;` with `                rc = MLO_FAILED;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `an unsigned __LINKEDIT not 16-aligned: declined`.
+9. In `src/linkedit_pack.c`, replace `    if (!la || !lb) return la != lb;` with `    if (!la || !lb) return 0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `one side not an image: a change`.
+10. In `src/linkedit_pack.c`, replace `    return !ps->p[MLO_P_INDIRECT].present && ps->p[MLO_P_SYMTAB].present &&` with `    return !ps->p[MLO_P_INDIRECT].present && ps->p[MLO_P_SIG].present && ps->p[MLO_P_SYMTAB].present &&`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-dysymtab-unsigned-drs8: packed (got`.
+11. In `src/linkedit_pack.c`, replace `                to[k] = (off == 0) ? 0 : (uint32_t)at;` with `                to[k] = off;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `dic-stale: packed (got 1`.
+12. In `src/linkedit_pack.c`, replace `                to[k] = (off == 0) ? 0 : (uint32_t)at;` with `                to[k] = (uint32_t)at;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `an empty data in code at 0 stays at 0`.
+13. In `src/linkedit_pack.c`, replace `        return *q->off != end && *q->off == mlo_rnd64(end, 8);` with `        return 0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `the string table stays at the 8-rounding`.
+14. In `src/linkedit_pack.c`, replace `            return mlo_fail(why, whysz, "load command %u (cmd 0x%x) may name a range of the "` with `            if (0) return mlo_fail(why, whysz, "load command %u (cmd 0x%x) may name a range of the "`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `note: declined`.
+15. In `src/linkedit_pack.c`, replace this:
 
    ```c
            if (ps->p[k0].present)
@@ -3296,9 +3558,9 @@ Expected: `linkedit_order_test: all cases pass`. The whole suite: 29 tests pass.
 
    with nothing (delete it)
    It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `two-fstarts: declined`.
-9. In `src/linkedit_pack.c`, replace `        if (*q->off < start || *q->off + q->size > end) {` with `        if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a piece outside __LINKEDIT: declined`.
-10. In `src/linkedit_pack.c`, replace `            if (*q->off < *r->off + r->size && *r->off < *q->off + q->size) {` with `            if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `overlapping pieces: declined`.
-11. In `src/linkedit_pack.c`, replace this:
+16. In `src/linkedit_pack.c`, replace `        if (*q->off < start || *q->off + q->size > end) {` with `        if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a piece outside __LINKEDIT: declined`.
+17. In `src/linkedit_pack.c`, replace `            if (*q->off < *r->off + r->size && *r->off < *q->off + q->size) {` with `            if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `overlapping pieces: declined`.
+18. In `src/linkedit_pack.c`, replace this:
 
    ```c
        if (end != size) {
@@ -3313,14 +3575,14 @@ Expected: `linkedit_order_test: all cases pass`. The whole suite: 29 tests pass.
    ```
 
    It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `__LINKEDIT not ending the file: declined`.
-12. In `src/linkedit_pack.c`, replace `                if (s->size != 0 && s->offset != 0 && s->offset + s->size > start) {` with `                if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a section in __LINKEDIT: declined`.
-13. In `src/linkedit_pack.c`, replace `                if (s->reloff != 0)` with `                if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a section with relocations: declined`.
-14. In `src/linkedit_pack.c`, replace `            if (sg->vmaddr < le->vmaddr + vmsize && le->vmaddr < sg->vmaddr + sg->vmsize) {` with `            if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `__LINKEDIT's vmsize would overlap: declined`.
-15. In `src/linkedit_pack.c`, replace `        ps.p[MLO_P_WEAK].size && ps.p[MLO_P_LAZY].size && ps.p[MLO_P_EXPORT].size) {` with `        ps.p[MLO_P_WEAK].size && ps.p[MLO_P_LAZY].size && ps.p[MLO_P_EXPORT].size && 0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-rebase-no-bind: declined`.
-16. In `src/linkedit_pack.c`, replace `    if (start + len == size && memcmp(nb, buf, size) == 0) rc = MLO_UNCHANGED;` with `    (void)0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `canonical: unchanged`.
-17. In `src/linkedit_pack.c`, replace `    rep->dropped = le->filesize > covered ? le->filesize - covered : 0;` with `    rep->dropped = 0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `the report:`.
-18. In `src/linkedit_pack.c`, replace `        if (x->size && memcmp(a + *x->off, b + *y->off, (size_t)x->size) != 0) return 1;` with nothing (delete it). It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a byte of the bind opcodes: a change`.
-19. In `src/linkedit_pack.c`, replace `    if (la->fileoff != lb->fileoff || la->filesize != lb->filesize) return 1;` with nothing (delete it). It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `__LINKEDIT's filesize: a change`.
+19. In `src/linkedit_pack.c`, replace `                if (s->size != 0 && s->offset != 0 && s->offset + s->size > start) {` with `                if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a section in __LINKEDIT: declined`.
+20. In `src/linkedit_pack.c`, replace `                if (s->reloff != 0)` with `                if (0)`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a section with relocations: declined`.
+21. In `src/linkedit_pack.c`, replace `            if (sg->vmaddr < le->vmaddr + vmsize && le->vmaddr < sg->vmaddr + sg->vmsize) {` with `            if (0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `__LINKEDIT's vmsize would overlap: declined`.
+22. In `src/linkedit_pack.c`, replace `        ps.p[MLO_P_WEAK].size && ps.p[MLO_P_LAZY].size && ps.p[MLO_P_EXPORT].size) {` with `        ps.p[MLO_P_WEAK].size && ps.p[MLO_P_LAZY].size && ps.p[MLO_P_EXPORT].size && 0) {`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `no-rebase-no-bind: declined`.
+23. In `src/linkedit_pack.c`, replace `    if (start + len == size && memcmp(nb, buf, size) == 0) rc = MLO_UNCHANGED;` with `    (void)0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `canonical: unchanged`.
+24. In `src/linkedit_pack.c`, replace `    rep->dropped = le->filesize > covered ? le->filesize - covered : 0;` with `    rep->dropped = 0;`. It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `the report:`.
+25. In `src/linkedit_pack.c`, replace `        if (x->size && memcmp(a + *x->off, b + *y->off, (size_t)x->size) != 0) return 1;` with nothing (delete it). It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `a byte of the bind opcodes: a change`.
+26. In `src/linkedit_pack.c`, replace `    if (la->fileoff != lb->fileoff || la->filesize != lb->filesize) return 1;` with nothing (delete it). It must fail `"$B/linkedit_order_test"` (from the repo root), with a `FAIL` line containing `__LINKEDIT's filesize: a change`.
 
 - [ ] **Step 6: Commit**
 
@@ -3329,8 +3591,8 @@ git add src/linkedit_pack.c src/linkedit_order.h CMakeLists.txt tests/linkedit_o
 git commit -m "feat(linkedit_pack): put a slice's __LINKEDIT in codesign_allocate's order
 
 mlo_pack rewrites __LINKEDIT in ld64's order: each piece keeps its bytes
-and size, a zero-size piece keeps an offset that already passes, bytes no
-piece covers are dropped, and nothing below __LINKEDIT moves. An image
+and size, a zero-size piece goes where ld64 puts one, bytes no piece covers
+are dropped, and nothing below __LINKEDIT moves. An image
 already in order is left alone. It declines, saying why, what it cannot
 account for, and checks its own result against mlo_check. mlo_changed
 tells whether a run changed a piece of __LINKEDIT.
@@ -3360,21 +3622,22 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - **Also on a corrupting output**, whatever changed: that is the repair of a hole an earlier Drydock wrote.
 - **Before `mg_plausible`'s gate**, and the refusal before the write, so nothing is written on a refusal.
 - **Labels are the input path**, like the run's other report lines.
-- **`import_redirect_test.sh`'s grow case** now asserts that the stream grew and was packed back, not that it moved to the end: after the pass it is in order again (the review's 303 → 296).
+- **`me_pack`'s `MR_FAIL` path** (the review's X16) is taken only on `MLO_FAILED`, a failed postcondition, which Task 6 explains no input reaches; `MLO_NOMEM` is reported the same way. It is kept so that such a failure is an internal error, exit 2, rather than a written file.
+- **`import_redirect_test.sh`'s grow case** now asserts that the stream grew and was packed back, not that it moved to the end: after the pass it is in order again (the review's 303 → 296). It asserts the re-packed line and **no** `resign corrupt:` line, not `resign 10.9: ok`: its fixture is linked by the host, and on CI's arm64 host that means an `LC_BUILD_VERSION` 10.9's tool does not know.
 
 - [ ] **Step 1: Write the failing tests**
 
 In `tests/linkedit_fixture.h`, replace:
 
 ```c
-#define LKF_EXECUTE    4u   /* MH_EXECUTE, no LC_ID_DYLIB */
+#define LKF_STATIC    16u   /* no MH_DYLDLINK: checkout uses symbol_string_at_end */
 
 ```
 
 with:
 
 ```c
-#define LKF_EXECUTE    4u   /* MH_EXECUTE, no LC_ID_DYLIB */
+#define LKF_STATIC    16u   /* no MH_DYLDLINK: checkout uses symbol_string_at_end */
 #define LKF_DEP        8u   /* an LC_LOAD_DYLIB, last, and the bind opcodes name it */
 
 ```
@@ -3443,14 +3706,14 @@ with:
 In `tests/linkedit_fixture.h`, replace:
 
 ```c
-      "malformed object (unknown load command 8)", 1 },
+      "string table not at the end of the file (can't be processed)", 0 },
 };
 ```
 
 with:
 
 ```c
-      "malformed object (unknown load command 8)", 1 },
+      "string table not at the end of the file (can't be processed)", 0 },
     /* an LC_LOAD_DYLIB the bind names */
     { "canonical-dep", LKF_CANON, LKF_DEP, NULL, NULL, 0 },
     { "bind-first-dep", "bind rebase weak lazy export " LKF_TAIL, LKF_DEP, NULL,
@@ -3461,17 +3724,18 @@ with:
 In `tests/linkedit_order_test.c`, replace:
 
 ```c
-        "hole-16", "hole-16-unsigned", "stale-empty-rebase", "hole-absorbed", "export-last",
-        "no-dysymtab-hole", "no-dysymtab-drs8" };
-    for (size_t k = 0; k < sizeof fixable / sizeof fixable[0]; k++) {
+        "drs-empty-stale", "weak-lazy-empty-export", "bind-first-static", "no-dysymtab-hole",
+        "no-dysymtab-unsigned-misaligned", "no-dysymtab-unsigned-drs8", "no-dysymtab-drs8" };
+    /* These have no canonical twin: a piece is empty or missing, or there is
 ```
 
 with:
 
 ```c
-        "hole-16", "hole-16-unsigned", "stale-empty-rebase", "hole-absorbed", "export-last",
-        "no-dysymtab-hole", "no-dysymtab-drs8", "bind-first-dep" };
-    for (size_t k = 0; k < sizeof fixable / sizeof fixable[0]; k++) {
+        "drs-empty-stale", "weak-lazy-empty-export", "bind-first-static", "no-dysymtab-hole",
+        "no-dysymtab-unsigned-misaligned", "no-dysymtab-unsigned-drs8", "no-dysymtab-drs8",
+        "bind-first-dep" };
+    /* These have no canonical twin: a piece is empty or missing, or there is
 ```
 
 In `tests/import_redirect_test.sh`, replace:
@@ -3489,11 +3753,14 @@ with:
 
 ```sh
     || bad "grow: announced" "$(cat "$T/run.err")"
+# Not `resign 10.9: ok`: this fixture is linked by the host, whose load
+# commands 10.9's tool may not know (an arm64 LC_BUILD_VERSION on CI).
+"$DMR" info "$T/grow.out" >"$T/grow.info"
 [ "$(field "$T/grow.out" bind 3)" -gt "$(field "$T/grow" bind 3)" ] &&
     grep -q "__LINKEDIT re-packed in codesign_allocate's order" "$T/run.err" &&
-    "$DMR" info "$T/grow.out" | grep -qx 'resign 10.9: ok' \
+    grep -q '^resign 10.9: ' "$T/grow.info" && ! grep -q '^resign corrupt:' "$T/grow.info" \
     && ok "grow: ... it grew, and the pass put it back in codesign_allocate's order" \
-    || bad "grow: packed" "$("$MKB" info "$T/grow.out"); $("$DMR" info "$T/grow.out" | grep '^resign')"
+    || bad "grow: packed" "$("$MKB" info "$T/grow.out"); $(grep '^resign' "$T/grow.info")"
 
 ```
 
@@ -3668,7 +3935,7 @@ static int me_pack(uint8_t **pbuf, size_t *psize, const uint8_t *orig, size_t os
  * can re-sign the file. Returns 0 or MR_REFUSED. */
 static int me_resign(const uint8_t *buf, size_t size, const char *path, const char *out,
                      const ms_script *s, int packed, FILE *log) {
-    char refusal[256], corrupt[512];
+    char refusal[256], corrupt[4096];
     int rc = mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
     if (rc == 2) {
         me_say(log, "drydock-macho-rewrite edit: refused: codesign_allocate would re-sign %s corrupt "
@@ -3954,7 +4221,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Files:**
 - Modify: `src/declassify.c` (after `    ob_byte(&bind, BIND_OPCODE_DONE);` at `:660`)
-- Modify: `tests/mkchained.c` (`make-signable`), `tests/relmeth_fixture.h` and `tests/mkrelmeth.c` (the `dysymtab` variant), `tests/cli_test.sh` (a block before its last three lines)
+- Modify: `tests/mkchained.c` (`make-signable`), `tests/relmeth_fixture.h` and `tests/mkrelmeth.c` (the `dysymtab` variant), `tests/cli_test.sh` (a block before its last three lines), `tests/codesign_order_test.sh` (what the CLI suites pack)
 
 **Interfaces:**
 - Consumes: Task 7's `lo`, `packed`, `resign`; `$T/mkchained` (built at `:671`), `$T/mkrelmeth` (built at `:3518`), `$T/mklinkedit`.
@@ -3964,8 +4231,104 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - **The padding is hygiene** (spec Decision 8): the zeros are `*_OPCODE_DONE`, the sizes include them as ld64's do, and the `!overflow` guard keeps a full buffer from looping forever. It changes the lowering's reported byte counts; no existing test pins those numbers.
 - **Neither fixture had what codesign_allocate requires** (`mkchained`: no `LC_ID_DYLIB` or symbol table; `mkrelmeth`: no `LC_DYSYMTAB`), so each gains a variant rather than changing what every other test reads.
+- **The oracle now covers what the CLI suites pack**, rebuilt hermetically on 10.9: `mkchained make-signable` lowered, `mkrelmeth codesig+dysymtab` converted, `import_redirect_test`'s grown bind stream (linked here with `-arch x86_64`), and a fat file of a canonical slice and a corrupting one after `load-command delete codesig`. Each input and output is checked; a fat file slice by slice.
 
 - [ ] **Step 1: Write the failing tests**
+
+In `tests/codesign_order_test.sh`, replace:
+
+```sh
+# must be 10.9's own codesign_allocate's verdict: on every
+# tests/linkedit_fixture.h variant and on each after the pass has packed it.
+#
+```
+
+with:
+
+```sh
+# must be 10.9's own codesign_allocate's verdict: on every
+# tests/linkedit_fixture.h variant and on each after the pass has packed it,
+# and on what the CLI suites pack -- the lowering, objc-methods, a grown bind
+# stream and a fat file.
+#
+```
+
+In `tests/codesign_order_test.sh`, replace:
+
+```sh
+BIN="${1:?usage: codesign_order_test.sh <bindir>}"
+DMR="$BIN/drydock-macho-rewrite"
+```
+
+with:
+
+```sh
+BIN="${1:?usage: codesign_order_test.sh <bindir>}"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DMR="$BIN/drydock-macho-rewrite"
+```
+
+In `tests/codesign_order_test.sh`, replace:
+
+```sh
+    { echo "SKIP: $CA is not cctools-862's, whose verdicts this test pins"; exit 77; }
+
+```
+
+with:
+
+```sh
+    { echo "SKIP: $CA is not cctools-862's, whose verdicts this test pins"; exit 77; }
+CC=${CC:-cc}
+
+```
+
+In `tests/codesign_order_test.sh`, replace:
+
+```sh
+
+if [ "$files" -lt 80 ] || [ "$refused" -eq 0 ] || [ "$corrupt" -eq 0 ]; then
+    echo "FAIL: the corpus is too thin to mean anything: $files files, $refused refused, $corrupt corrupting, $fat fat"
+```
+
+with:
+
+```sh
+
+# ---- what the CLI suites pack -------------------------------------------------
+run() {   # run IN OUT STATEMENT...
+    r_in=$1 r_out=$2; shift 2
+    rm -f "$r_out"
+    printf '%s\n' "$@" | "$DMR" "$r_in" "$r_out" >/dev/null 2>&1
+    check "$r_in"
+    check "$r_out"
+}
+"$CC" -O2 -I "$HERE/../src" -o "$T/mkchained" "$HERE/mkchained.c"
+"$T/mkchained" make-signable "$T/chained"
+run "$T/chained" "$T/chained.out" 'fixups set classic'
+"$CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
+"$T/mkrelmeth" make codesig+dysymtab "$T/relmeth"
+run "$T/relmeth" "$T/relmeth.out" 'objc-methods set absolute'
+# import_redirect_test.sh's grown bind stream
+"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+printf 'int a_data(void) { return 7; }\n' >"$T/a.c"
+printf 'int x(void) { return 1; }\n' >"$T/shim.c"
+printf 'int a_data(void);\nint (*p)(void) = a_data;\nint main(void) { return p(); }\n' >"$T/reg.c"
+FF="-arch x86_64 -mmacosx-version-min=10.9"
+"$CC" -dynamiclib $FF -install_name "$T/liba.dylib" -o "$T/liba.dylib" "$T/a.c"
+"$CC" -dynamiclib $FF -install_name "$T/libshim.dylib" -o "$T/libshim.dylib" "$T/shim.c"
+"$CC" $FF -Wl,-headerpad,0x400 -o "$T/reg" "$T/reg.c" "$T/liba.dylib"
+A=$("$DMR" info "$T/reg" | awk -v p="$T/liba.dylib" 'index($0, "  ordinal=") == 1 {
+    split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); if (a[2] == p) { print o; exit } }')
+"$T/mkbindstream" set "$T/reg" "$T/grow" bind "ord:$A" sym:_x type:1 seg:2:0 do sym:_y do done
+run "$T/grow" "$T/grow.out" "dylib append $T/libshim.dylib" "import redirect _x $T/liba.dylib $T/libshim.dylib"
+# a fat file: one slice in order, one that would re-sign corrupt
+"$BIN/makefat" "$T/fat" "$T/canonical" 0x1000007 3 12 "$T/hole-16" 0x1000007 8 12
+run "$T/fat" "$T/fat.out" 'load-command delete codesig'
+
+if [ "$files" -lt 100 ] || [ "$refused" -eq 0 ] || [ "$corrupt" -eq 0 ] || [ "$fat" -eq 0 ]; then
+    echo "FAIL: the corpus is too thin to mean anything: $files files, $refused refused, $corrupt corrupting, $fat fat"
+```
 
 In `tests/cli_test.sh`, replace:
 
@@ -4232,7 +4595,7 @@ with:
 - [ ] **Step 4: Run it to see it pass**
 
 Run: build (rebuild check), then `cli_test`, the whole suite, and `sh tests/codesign_order_test.sh "$B"`.
-Expected: `cli_test: 0 failure(s)`; 29 tests pass; `codesign_order_test: 83 files (52 refused by the tool, 5 written corrupt), 0 failure(s)`.
+Expected: `cli_test: 0 failure(s)`; 29 tests pass; `codesign_order_test: 122 files (63 refused by the tool, 10 written corrupt, 2 fat), 0 failure(s)`.
 
 - [ ] **Step 5: Mutation proof** (file `src/declassify.c`)
 
@@ -4242,14 +4605,15 @@ Expected: `cli_test: 0 failure(s)`; 29 tests pass; `codesign_order_test: 83 file
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/declassify.c tests/mkchained.c tests/relmeth_fixture.h tests/mkrelmeth.c tests/cli_test.sh
+git add src/declassify.c tests/mkchained.c tests/relmeth_fixture.h tests/mkrelmeth.c tests/cli_test.sh tests/codesign_order_test.sh
 git commit -m "feat(declassify): pad the lowered streams to 8, and prove the lowering re-signable
 
 The rebase and bind streams fixups set classic emits are now padded with
 DONE opcodes to a multiple of 8, as ld64 writes them. mkchained
 make-signable and mkrelmeth's dysymtab variant give the lowering and
 objc-methods set absolute an input codesign_allocate would sign, and the
-suite shows both come out in its order.
+suite shows both come out in its order. The 10.9 oracle now checks what
+the CLI suites pack, a fat file included.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -4261,11 +4625,46 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Files:**
 - Create: `docs/codesign-order.md`
-- Modify: `README.md` (before `### Directives`; the `info hello` example), `compat/README.md` (before `## \`insert_dylib\`: not one of the six`; the `bake-mavericks-shim` table), `compat/bake-mavericks-shim.sh:184`, `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md:149-156`
+- Modify: `README.md` (before `### Directives`; the `info hello` example), `compat/README.md` (before `## \`insert_dylib\`: not one of the six`; the `bake-mavericks-shim` table), `compat/bake-mavericks-shim.sh:184`, `tests/bake_mavericks_shim_test.sh` (after its summary check), `docs/superpowers/specs/2026-09-23-objc-method-lists-design.md:149-156`
 
-**Interfaces:** none. The owner's rulings (the spec's "The owner's answers"): the compat divergences are adopted and recorded, one row per affected wrapper; the `bake-mavericks-shim` "leaves the signature's bytes" row goes, since that difference no longer exists.
+**Interfaces:** none. The owner's rulings (the spec's "The owner's answers"): the compat divergences are adopted and recorded, one row per affected wrapper and per kind of run (a match, no match, an edit inside a piece); the `bake-mavericks-shim` "leaves the signature's bytes" row goes, since that difference no longer exists. The bake summary's new wording, `regular table grown`, gets a test: `tests/mkbindstream.c` gives the test program a bind stream with no slack, so the redirect must grow it.
 
-- [ ] **Step 1: Write the words**
+- [ ] **Step 1: Pin the bake summary's wording**
+
+In `tests/bake_mavericks_shim_test.sh`, replace:
+
+```sh
+    || bad "bake: summary" "$(cat "$T/b.out")"
+cp "$T/prog" "$T/plain"
+```
+
+with:
+
+```sh
+    || bad "bake: summary" "$(cat "$T/b.out")"
+grep -q 'bind data: regular table in place' "$T/b.out" \
+    && ok "bake: ... a regular table rewritten where it lies says so" \
+    || bad "bake: in place" "$(cat "$T/b.out")"
+# The same program with a bind stream that has no room to grow in place:
+# _getppid shares libSystem's ordinal opcode with _malloc, which stays.
+"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+LS=$("$DMR" info "$T/prog" | awk 'index($0, "  ordinal=") == 1 && /libSystem/ {
+    split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); print o; exit }')
+"$T/mkbindstream" set "$T/prog" "$T/bgrow" bind "ord:$LS" sym:_getppid type:1 seg:2:0 do sym:_malloc do done
+chmod 755 "$T/bgrow"
+bake bgrow --shim "$SHIM"
+[ "$brc" -eq 0 ] && grep -q 'bind data: regular table grown' "$T/b.out" \
+    && ok "bake: a regular table that had to grow is reported as grown" \
+    || bad "bake: grown" "exit $brc: $(cat "$T/b.out" "$T/b.err")"
+cp "$T/prog" "$T/plain"
+```
+
+- [ ] **Step 2: Run it to see it fail**
+
+Run: `unset DRYDOCK_MACHO_REWRITE; sh tests/bake_mavericks_shim_test.sh "$B"`.
+Expected: exit 1, `bake_mavericks_shim_test: 1 failure(s)`. The one `FAIL` line is `FAIL bake: grown: exit 0: shim exports 4 symbols (…/libshim.dylib)`, and the run's output after it says `bind data: regular table relocated to the end of __LINKEDIT`; the new in-place check, `PASS bake: ... a regular table rewritten where it lies says so`, passes.
+
+- [ ] **Step 3: Write the words**
 
 In `README.md`, replace:
 
@@ -4354,6 +4753,8 @@ bytes each of these wrappers writes, never what dyld loads:
 | `change_dylib -strip-lc code-sign-drs` | the load command removed, its bytes left between function starts and the symbol table | the bytes dropped | `tests/cli_test.sh`, "order: load-command delete code-sign-drs drops the DRs' bytes" |
 | `insert_dylib --strip-codesig` | as `change_dylib -strip-lc codesig` | as `change_dylib -strip-lc codesig` | the same |
 | any wrapper whose run matched nothing (`allow-unmatched`), on an input `codesign_allocate` would re-sign corrupt | the input, unchanged | the input repaired, in order; one that cannot be repaired is refused | `tests/cli_test.sh`, "order: a hole codesign_allocate would corrupt is repaired by any edit" |
+| any wrapper whose run matched something, on an input `codesign_allocate` would re-sign corrupt | the edit made, and the rest of `__LINKEDIT` left as it was: still re-signed corrupt | the edit made, and `__LINKEDIT` repaired in order; one that cannot be repaired is refused | the same test, whose `rpath append` matches |
+| an edit inside a piece, on an input whose `__LINKEDIT` is out of order: `change_dylib -insert`/`-delete` or `insert_dylib` renumbering ordinals, `bake-mavericks-shim` redirecting binds in place | the piece edited where it lies, the order left as it was | the image packed in order | `tests/cli_test.sh`, "order: dylib insert's renumbering is a change, and the image is packed" |
 
 Each wrapper's stderr, where `drydock-macho-rewrite`'s report goes, gains the
 line `FILE: __LINKEDIT re-packed in codesign_allocate's order: …` whenever the
@@ -4573,12 +4974,12 @@ does, moved to the other end of `__LINKEDIT`.
 
 ```
 
-- [ ] **Step 2: Check them**
+- [ ] **Step 4: Check them**
 
-Run:
+Run: build (the wrapper is staged into `$B` by the build), then
 
 ```sh
-unset DRYDOCK_MACHO_REWRITE; sh tests/bake_mavericks_shim_test.sh "$B" | tail -1   # expect 0 failure(s): the summary text changed
+unset DRYDOCK_MACHO_REWRITE; sh tests/bake_mavericks_shim_test.sh "$B" | tail -1   # expect 0 failure(s): "regular table grown" passes
 git grep -n "relocated to the end of __LINKEDIT" -- compat README.md                # expect nothing
 git grep -c "regular table in place" -- compat/README.md                           # positive control: expect 1
 git grep -n "leaves the signature's bytes" -- compat/README.md                     # expect nothing
@@ -4588,16 +4989,21 @@ git grep -n "superpowers" -- docs/codesign-order.md README.md                   
 
 Then the whole suite: 29 tests pass.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Mutation proof** (file `compat/bake-mavericks-shim.sh`; rebuild to restage it)
+
+1. In `compat/bake-mavericks-shim.sh`, replace `    bk_place='regular table grown'` with `    bk_place='regular table relocated to the end of __LINKEDIT'`. It must fail `sh tests/bake_mavericks_shim_test.sh "$B"` (after rebuilding), with a `FAIL` line containing `bake: grown`.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add README.md compat/README.md compat/bake-mavericks-shim.sh docs/codesign-order.md docs/superpowers/specs/2026-09-23-objc-method-lists-design.md
+git add README.md compat/README.md compat/bake-mavericks-shim.sh tests/bake_mavericks_shim_test.sh docs/codesign-order.md docs/superpowers/specs/2026-09-23-objc-method-lists-design.md
 git commit -m "docs: re-signing on 10.9, the compat divergences it adopts, and why
 
 README: sign last; info's resign line; load-command delete codesig drops
 the bytes; lipo -thin for a fat file with a slice 10.9 cannot re-sign.
 compat/README: the adopted divergence four wrappers share, and the
-bake-mavericks-shim rows the pass made untrue. docs/codesign-order.md keeps
+bake-mavericks-shim rows the pass made untrue, and a test that pins the
+bake summary's new wording. docs/codesign-order.md keeps
 what 10.9's codesign_allocate requires and why, once the spec is gone.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
