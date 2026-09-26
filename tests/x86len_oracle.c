@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
 
     uint64_t lo = f.text->addr, hi = f.text->addr + f.text->size;
     const uint8_t *code = im.buf + f.text->offset;
-    uint64_t *starts = (uint64_t *)malloc((f.fs->datasize + 1) * sizeof *starts);
+    uint64_t *starts = (uint64_t *)malloc(((size_t)f.fs->datasize + 1) * sizeof *starts);
     if (!starts) { fprintf(stderr, "x86len_oracle: out of memory\n"); return 2; }
     size_t nstarts = 0;
     const uint8_t *p = im.buf + f.fs->dataoff, *pe = p + f.fs->datasize;

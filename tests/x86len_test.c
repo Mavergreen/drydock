@@ -149,6 +149,19 @@ static const uint8_t *at_page_end(const uint8_t *b, int n) {
 
 static sigjmp_buf guard_hit;
 static void on_guard(int sig) { siglongjmp(guard_hit, sig); }
+static struct sigaction was_bus, was_segv;
+static void arm(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_guard;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGBUS, &sa, &was_bus);
+    sigaction(SIGSEGV, &sa, &was_segv);
+}
+static void disarm(void) {
+    sigaction(SIGBUS, &was_bus, NULL);
+    sigaction(SIGSEGV, &was_segv, NULL);
+}
 
 static void test_each_case(void) {
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -157,11 +170,14 @@ static void test_each_case(void) {
         CHECK(b != NULL, "setup: a guard page");
         if (!b) return;
         if (sigsetjmp(guard_hit, 1)) {
+            disarm();
             CHECK(0, "%s: read past avail", c->what);
             continue;
         }
         mx_insn in = { 99, 99, 99, 99, 99, 99 };
+        arm();
         int ok = mx_decode(b, (size_t)c->n, &in);
+        disarm();
         if (c->len == 0) {
             CHECK(!ok, "%s: decoded as %d bytes, want not decoded", c->what, in.len);
             continue;
@@ -193,20 +209,33 @@ static void test_prefix_run_stops_at_fifteen(void) {
     CHECK(b != NULL, "setup: a guard page");
     if (!b) return;
     if (sigsetjmp(guard_hit, 1)) {
+        disarm();
         CHECK(0, "fifteen prefixes: read a sixteenth byte");
         return;
     }
     mx_insn in;
-    CHECK(mx_decode(b, 64, &in) == 0, "fifteen prefixes: decoded as %d bytes", in.len);
+    arm();
+    int ok = mx_decode(b, 64, &in);
+    disarm();
+    CHECK(ok == 0, "fifteen prefixes: decoded as %d bytes", in.len);
+}
+
+/* The guard page's handlers are installed only around each decode: a fault
+ * anywhere else would siglongjmp into a frame that has returned. */
+static void test_the_guard_is_disarmed_between_decodes(void) {
+    struct sigaction bus, segv;
+    sigaction(SIGBUS, NULL, &bus);
+    sigaction(SIGSEGV, NULL, &segv);
+    CHECK(bus.sa_handler == SIG_DFL && segv.sa_handler == SIG_DFL,
+          "the guard's handlers outlive the decodes they guard");
 }
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    signal(SIGBUS, on_guard);
-    signal(SIGSEGV, on_guard);
     test_each_case();
     test_ignores_what_follows();
     test_prefix_run_stops_at_fifteen();
+    test_the_guard_is_disarmed_between_decodes();
     if (fails) { printf("x86len_test: %d FAILURE(S)\n", fails); return 1; }
     printf("x86len_test: all cases pass\n");
     return 0;
