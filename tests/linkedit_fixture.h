@@ -403,6 +403,15 @@ static void lkf_fstarts0(uint8_t *b, size_t *n) {
     (void)n;
     lkf_led(b, LKF_LC_FSTARTS)->dataoff = 0;
 }
+static void lkf_nsyms0(uint8_t *b, size_t *n) {
+    (void)n;
+    struct dysymtab_command *dy = lkf_dy(b);
+    lkf_st(b)->nsyms = 0;
+    dy->nlocalsym = dy->nextdefsym = dy->nundefsym = 0;
+    dy->ilocalsym = dy->iextdefsym = dy->iundefsym = 0;
+    uint32_t *ind = (uint32_t *)(b + dy->indirectsymoff);
+    ind[0] = INDIRECT_SYMBOL_LOCAL;
+}
 
 typedef struct {
     const char *name, *layout;
@@ -507,6 +516,35 @@ static const lkf_variant lkf_variants[] = {
     { "no-dysymtab-odd-strtab-unsigned",
       "rebase bind weak lazy export fstarts dic drs symtab strtab:35 @8",
       LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
+    /* the writer */
+    { "hole-16", "rebase +16 bind weak lazy export " LKF_TAIL, 0, NULL, NULL, 1 },
+    { "hole-absorbed", "rebase +4 bind weak lazy export " LKF_TAIL, 0, NULL, NULL, 0 },
+    { "hole-16-unsigned",
+      "rebase +16 bind weak lazy export fstarts dic drs symtab indirect strtab", LKF_NOSIG, NULL,
+      NULL, 1 },
+    { "nsyms-0", "rebase bind weak lazy export fstarts dic drs indirect strtab @16 sig", 0,
+      lkf_nsyms0, NULL, 1 },
+    { "nsyms-0-short-strtab", "rebase bind weak lazy export fstarts dic drs indirect strtab:4 @16 sig",
+      0, lkf_nsyms0, NULL, 1 },
+    { "no-dysymtab-drs8", "rebase bind weak lazy export +16 fstarts dic drs:8 symtab strtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 1 },
+    { "no-dysymtab-hole", "rebase bind weak lazy export +16 fstarts dic drs symtab strtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 0 },
+    { "hole-16-note", "rebase +16 bind weak lazy export " LKF_TAIL, 0, lkf_dic_to_note,
+      "malformed object (unknown load command 8)", 1 },
+    { "no-dysymtab-linkedit-short-hole",
+      "rebase bind weak lazy export fstarts dic drs +8 symtab strtab @16 sig",
+      LKF_NODYSYMTAB | LKF_EXECUTE, lkf_linkedit_short, NULL, 1 },
+    { "no-dysymtab-unsigned-linkedit-short",
+      "rebase bind weak lazy export fstarts dic drs symtab strtab",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, lkf_linkedit_short, NULL, 1 },
+    { "bind-first-static", "bind rebase weak lazy export " LKF_TAIL, LKF_EXECUTE | LKF_STATIC, NULL,
+      NULL, 1 },
+    { "no-dysymtab-unsigned-misaligned", "rebase bind weak lazy export fstarts dic drs +8 symtab strtab",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL, NULL, 1 },
+    { "no-dysymtab-unsigned-drs8", "rebase bind weak lazy export fstarts dic drs:8 strtab symtab",
+      LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL,
+      "string table not at the end of the file (can't be processed)", 0 },
 };
 #define LKF_NVARIANTS (sizeof lkf_variants / sizeof lkf_variants[0])
 

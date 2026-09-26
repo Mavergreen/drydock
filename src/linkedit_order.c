@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "arch_names.h"
+#include "fat.h"
 #include "mach_compat.h"
 
 /* The load commands the checks read, found in one walk. */
@@ -451,6 +453,162 @@ static void mlo_room(const mlo_cmds *c, mlo_verdict *v) {
                 "codesign_allocate would round its filesize, not its end");
 }
 
+/* The writer (setup_code_signature, codesign_allocate.c:302-503;
+ * copy_new_symbol_info, writeout.c:735-840). It copies the file verbatim up
+ * to P = object_size - input_sym_info_size, writes the pieces it knows one
+ * after another from P, each from where its load command says it is, and
+ * then the signature at the next multiple of 16. It updates no offset, so
+ * the re-sign is correct only if every piece's bytes are still where its load
+ * command says. This is that comparison, done on the input's own bytes. */
+typedef struct { uint32_t dest, src, size; } mlo_write;
+
+/* Would the output hold input[off, off+size)'s bytes at the same place? */
+static int mlo_survives(const uint8_t *in, uint32_t P, const mlo_write *w, int nw,
+                        uint32_t off, uint32_t size) {
+    uint32_t x = off, end = off + size;
+    while (x < end) {
+        if (x < P) { x = end < P ? end : P; continue; }
+        int k;
+        for (k = 0; k < nw; k++)
+            if (w[k].size && x >= w[k].dest && x < w[k].dest + w[k].size) break;
+        if (k == nw) return 0;   /* nothing the writer puts there */
+        uint32_t stop = w[k].dest + w[k].size < end ? w[k].dest + w[k].size : end;
+        if (memcmp(in + w[k].src + (x - w[k].dest), in + x, stop - x) != 0) return 0;
+        x = stop;
+    }
+    return 1;
+}
+
+static void mlo_simulate(const mlo_cmds *c, mlo_verdict *v, uint32_t object_size, uint32_t pad) {
+    const struct symtab_command *st = c->st;
+    const struct dysymtab_command *dy = c->dy;
+    const struct dyld_info_command *di = c->di;
+    const uint8_t *in = c->im->buf;
+    /* The symbol and string tables count only when there are symbols. */
+    uint32_t nsyms = st ? st->nsyms : 0;
+    uint32_t strsize = nsyms ? st->strsize : 0;
+    uint64_t iss = (uint64_t)nsyms * 16 + strsize;
+    mlo_write w[24];
+    int nw = 0;
+    /* What the writer writes, in its order: (source offset, size); a source
+     * of UINT32_MAX is padding. */
+    uint32_t src[24], len[24];
+    int n = 0;
+#define MLO_W(o, s) do { src[n] = (o); len[n] = (s); n++; } while (0)
+    if (dy) {
+        if (di) {
+            uint32_t start = 0, end = 0;
+            if (di->rebase_off)         start = di->rebase_off;
+            else if (di->bind_off)      start = di->bind_off;
+            else if (di->weak_bind_off) start = di->weak_bind_off;
+            else if (di->lazy_bind_off) start = di->lazy_bind_off;
+            else if (di->export_off)    start = di->export_off;
+            if (di->export_size)         end = di->export_off + di->export_size;
+            else if (di->lazy_bind_size) end = di->lazy_bind_off + di->lazy_bind_size;
+            else if (di->weak_bind_size) end = di->weak_bind_off + di->weak_bind_size;
+            else if (di->bind_size)      end = di->bind_off + di->bind_size;
+            else if (di->rebase_size)    end = di->rebase_off + di->rebase_size;
+            iss += (uint64_t)di->rebase_size + di->bind_size + di->weak_bind_size +
+                   di->lazy_bind_size + di->export_size;
+            MLO_W(start, end - start);
+        }
+        iss += (uint64_t)dy->nlocrel * 8 + (uint64_t)dy->nextrel * 8 + (uint64_t)dy->ntoc * 8 +
+               (uint64_t)dy->nextrefsyms * 4;
+        MLO_W(dy->locreloff, dy->nlocrel * 8);
+        const struct linkedit_data_command *led[5] = { c->split, c->fstarts, c->dic, c->drs, c->loh };
+        for (int k = 0; k < 5; k++) {
+            if (!led[k]) continue;
+            iss += led[k]->datasize;
+            MLO_W(led[k]->dataoff, led[k]->datasize);
+        }
+        iss += (uint64_t)dy->nmodtab * 56 + (uint64_t)dy->nindirectsyms * 4 + pad;
+        MLO_W(st ? st->symoff : 0, nsyms * 16);
+        if (c->hints) {
+            iss += (uint64_t)c->hints->nhints * 4;
+            MLO_W(c->hints->offset, c->hints->nhints * 4);
+        }
+        MLO_W(dy->extreloff, dy->nextrel * 8);
+        MLO_W(dy->indirectsymoff, dy->nindirectsyms * 4);
+        MLO_W(UINT32_MAX, pad);
+        MLO_W(dy->tocoff, dy->ntoc * 8);
+        MLO_W(dy->modtaboff, dy->nmodtab * 56);
+        MLO_W(dy->extrefsymoff, dy->nextrefsyms * 4);
+        MLO_W(st ? st->stroff : 0, strsize);
+    } else {
+        MLO_W(st ? st->symoff : 0, nsyms * 16);
+        MLO_W(st ? st->stroff : 0, strsize);
+    }
+#undef MLO_W
+    if (c->sig) iss = mlo_rnd((uint32_t)iss, 16) + (uint64_t)c->sig->datasize;
+    if (iss > object_size) {
+        mlo_add(v, MLO_CORRUPTS, 0, "the writer would begin %llu bytes before the file",
+                (unsigned long long)(iss - object_size));
+        return;
+    }
+    uint32_t P = object_size - (uint32_t)iss, at = P;
+    for (int k = 0; k < n; k++) {
+        if (src[k] != UINT32_MAX && len[k]) {
+            if ((uint64_t)src[k] + len[k] > c->im->size) {
+                mlo_add(v, MLO_CORRUPTS, 0, "the writer would copy past the end of the file");
+                return;
+            }
+            w[nw].dest = at; w[nw].src = src[k]; w[nw].size = len[k]; nw++;
+        }
+        at += len[k];
+    }
+    /* Every piece but the signature, which the re-sign replaces. */
+    struct { const char *name; uint32_t off, size; } p[24];
+    int np = 0;
+#define MLO_P(nm, o, s) do { if ((s) != 0) { p[np].name = (nm); p[np].off = (o); p[np].size = (s); np++; } } while (0)
+    if (di) {
+        MLO_P("the rebase opcodes", di->rebase_off, di->rebase_size);
+        MLO_P("the bind opcodes", di->bind_off, di->bind_size);
+        MLO_P("the weak-bind opcodes", di->weak_bind_off, di->weak_bind_size);
+        MLO_P("the lazy-bind opcodes", di->lazy_bind_off, di->lazy_bind_size);
+        MLO_P("the export trie", di->export_off, di->export_size);
+    }
+    if (c->split)   MLO_P("the split info", c->split->dataoff, c->split->datasize);
+    if (c->fstarts) MLO_P("the function starts", c->fstarts->dataoff, c->fstarts->datasize);
+    if (c->dic)     MLO_P("the data in code", c->dic->dataoff, c->dic->datasize);
+    if (c->drs)     MLO_P("the code-signing DRs", c->drs->dataoff, c->drs->datasize);
+    if (c->loh)     MLO_P("the linker hints", c->loh->dataoff, c->loh->datasize);
+    if (st) {
+        MLO_P("the symbol table", st->symoff, st->nsyms * 16);
+        MLO_P("the string table", st->stroff, st->strsize);
+    }
+    if (dy) {
+        MLO_P("the local relocations", dy->locreloff, dy->nlocrel * 8);
+        MLO_P("the external relocations", dy->extreloff, dy->nextrel * 8);
+        MLO_P("the indirect symbol table", dy->indirectsymoff, dy->nindirectsyms * 4);
+        MLO_P("the table of contents", dy->tocoff, dy->ntoc * 8);
+        MLO_P("the module table", dy->modtaboff, dy->nmodtab * 56);
+        MLO_P("the reference table", dy->extrefsymoff, dy->nextrefsyms * 4);
+    }
+    if (c->hints) MLO_P("the two-level hints", c->hints->offset, c->hints->nhints * 4);
+#undef MLO_P
+    uint64_t maxend = 0;
+    for (int k = 0; k < np; k++) {
+        if (!mlo_survives(in, P, w, nw, p[k].off, p[k].size))
+            mlo_add(v, MLO_CORRUPTS, 0, "%s (0x%x, %u bytes) would not survive the re-sign",
+                    p[k].name, p[k].off, p[k].size);
+        if ((uint64_t)p[k].off + p[k].size > maxend) maxend = (uint64_t)p[k].off + p[k].size;
+    }
+    /* An existing signature keeps its offset, which the order rules put
+     * after every piece. A new one goes at __LINKEDIT's end, rounded up to
+     * 16, in a file whose size the tool computes from the sum
+     * (codesign_allocate.c:588-633); the signature's own size cancels out. */
+    if (!c->sig && c->le) {
+        uint32_t le_end = (uint32_t)(c->le->fileoff + c->le->filesize), off = mlo_rnd(le_end, 16);
+        uint64_t out = (uint64_t)object_size - iss + (iss ? mlo_rnd((uint32_t)iss, 16) : off - le_end);
+        if (off > out)
+            mlo_add(v, MLO_CORRUPTS, 0, "the new code signature, at 0x%x, would run past the end "
+                    "of the file", off);
+        else if (off < maxend)
+            mlo_add(v, MLO_CORRUPTS, 0, "the new code signature, at 0x%x, would overlap a piece "
+                    "that ends at 0x%llx", off, (unsigned long long)maxend);
+    }
+}
+
 void mlo_check(const mi_image *im, mlo_verdict *v) {
     mlo_cmds c;
     memset(v, 0, sizeof *v);
@@ -462,10 +620,67 @@ void mlo_check(const mi_image *im, mlo_verdict *v) {
     mlo_ofile_ranges(&c, v);
     mlo_ofile_hints(&c, v);
     mlo_check_object(&c, v);
-    uint32_t object_size = (uint32_t)im->size;
+    uint32_t object_size = (uint32_t)im->size, pad = 0;
     if (c.dy && (im->hdr->filetype == MH_DYLIB || (im->hdr->flags & MH_DYLDLINK)))
-        mlo_dyld_order(&c, v);
+        pad = mlo_dyld_order(&c, v);
     else
-        mlo_string_at_end(&c, v, &object_size);
+        pad = mlo_string_at_end(&c, v, &object_size);
     mlo_room(&c, v);
+    int blocking = 0;
+    for (int k = 0; k < v->n; k++)
+        if (v->f[k].kind == MLO_REFUSES && !v->f[k].newer) blocking = 1;
+    if (blocking) return;
+    int before = v->n;
+    mlo_simulate(&c, v, object_size, pad);
+    v->corrupting = v->n > before || v->dropped;
+}
+
+/* The verdict on one slice, into the whole file's. `label` is "" for a
+ * thin file, else "slice NAME: ". */
+static int mlo_slice_verdict(const uint8_t *buf, size_t size, const char *label, char *refusal,
+                             size_t rsz, char *corrupt, size_t csz, int *worst) {
+    mi_image im;
+    if (mi_wrap((uint8_t *)buf, size, &im) != 0) return -1;
+    mlo_verdict v;
+    mlo_check(&im, &v);
+    if (v.refusal >= 0 && *worst < 1) {
+        snprintf(refusal, rsz, "%s%s", label, v.f[v.refusal].text);
+        *worst = 1;
+    }
+    if (v.corrupting && !corrupt[0]) {
+        size_t at = (size_t)snprintf(corrupt, csz, "%s", label);
+        for (int k = 0; k < v.n && at < csz; k++)
+            if (v.f[k].kind == MLO_CORRUPTS)
+                at += (size_t)snprintf(corrupt + at, csz - at, "%s%s", at > strlen(label) ? "; " : "",
+                                       v.f[k].text);
+    }
+    return 0;
+}
+
+int mlo_file_verdict(const uint8_t *buf, size_t size, char *refusal, size_t rsz,
+                     char *corrupt, size_t csz) {
+    int worst = 0;
+    snprintf(refusal, rsz, "ok");
+    corrupt[0] = 0;
+    uint32_t narch;
+    int swapped;
+    if (size >= 4 && (buf[0] == 0xca || buf[0] == 0xbe) && mfat_parse(buf, size, &narch, &swapped) == 0) {
+        char unchecked[64] = "";
+        for (uint32_t i = 0; i < narch; i++) {
+            mfat_arch a;
+            char name[32], label[48];
+            mfat_get(buf, swapped, i, &a);
+            ma_describe(a.cputype, a.cpusubtype, name);
+            snprintf(label, sizeof label, "slice %s: ", name);
+            if (mlo_slice_verdict(buf + a.offset, a.size, label, refusal, rsz, corrupt, csz,
+                                  &worst) != 0 && !unchecked[0])
+                snprintf(unchecked, sizeof unchecked, "not checked: slice %s is not a 64-bit Mach-O",
+                         name);
+        }
+        if (worst == 0 && unchecked[0]) snprintf(refusal, rsz, "%s", unchecked);
+    } else if (mlo_slice_verdict(buf, size, "", refusal, rsz, corrupt, csz, &worst) != 0) {
+        return -1;
+    }
+    if (corrupt[0]) return 2;
+    return worst;
 }

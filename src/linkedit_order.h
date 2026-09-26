@@ -49,4 +49,15 @@ typedef struct {
 /* Checks `im`, a 64-bit slice, into *v. */
 void mlo_check(const mi_image *im, mlo_verdict *v);
 
+/* One line for a whole file, thin or fat: every slice is checked, as
+ * codesign_allocate checks every slice whatever it signs. `refusal` gets
+ * "ok", the first slice's refusal ("slice x86_64h: " before it in a fat
+ * file), or "not checked: …" for a slice mlo_check does not model; `corrupt`
+ * gets "" or the pieces a corrupting slice's writer would move. Returns 0 when
+ * the file would re-sign correctly on 10.9, 1 when 10.9 refuses it, 2 when
+ * some slice is corrupting, -1 when `buf` is neither a 64-bit Mach-O nor a
+ * fat container of them. */
+int mlo_file_verdict(const uint8_t *buf, size_t size, char *refusal, size_t rsz,
+                     char *corrupt, size_t csz);
+
 #endif /* DRYDOCK_LINKEDIT_ORDER_H */
