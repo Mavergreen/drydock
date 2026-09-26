@@ -699,6 +699,28 @@ by" names assertions in `tests/wrapper_test.sh`.
 | exits 2 or anything else, including a writable argument in a read-only directory (`mkstemp: Permission denied`) | shows its stderr, counts an error, goes on | "retag_swift_classes: a writable file in a read-only directory is an error, untouched, and the loop goes on", "retag_swift_classes: a writable FILE in a read-only directory fails (1), untouched, no temp left" |
 | the wrapper refuses it before running: absent, unwritable, or hard-linked | says so, counts an error, goes on. An absent argument is reported as `open: No such file or directory`, where the C tool said `<path>: No such file or directory` (`tests/compat-matrix.tsv`'s absent-path rows), so only the exit code matches | "retag_swift_classes: an absent path exits 1 and still prints the total", "retag_swift_classes: good/hardlinked/good -- exit 1, the two good lines, and the reduced total", "retag_swift_classes: ... and says why the hard-linked one was skipped", "retag_swift_classes: good/unwritable/good -- exit 1, the two good lines, and the reduced total", "retag_swift_classes: no temp file left behind after a mid-loop refusal" |
 
+## Output 10.9 can re-sign: an adopted divergence four wrappers share
+
+The repo owner ruled this adopted (2026-09-26). A run that changes anything in
+`__LINKEDIT` now also puts `__LINKEDIT` in the order 10.9's `codesign_allocate`
+requires, and drops the bytes nothing points at, so 10.9's own `codesign` can
+re-sign the result. The original tools wrote files it refuses. This changes the
+bytes each of these wrappers writes, never what dyld loads:
+
+| wrapper | what the original wrote | what it writes now | held by |
+|---|---|---|---|
+| `patch_macho` | the rebase and bind streams appended past the code signature, the chained-fixups blob left in place | every piece in order, the stale signature last, the blob dropped | `tests/cli_test.sh`, "order: fixups set classic leaves __LINKEDIT as codesign_allocate wants it" |
+| `change_dylib -strip-lc codesig` | the load command removed, the signature's bytes left in `__LINKEDIT` | the bytes dropped too | `tests/cli_test.sh`, "order: load-command delete codesig drops the signature's bytes" |
+| `change_dylib -strip-lc code-sign-drs` | the load command removed, its bytes left between function starts and the symbol table | the bytes dropped | `tests/cli_test.sh`, "order: load-command delete code-sign-drs drops the DRs' bytes" |
+| `insert_dylib --strip-codesig` | as `change_dylib -strip-lc codesig` | as `change_dylib -strip-lc codesig` | the same |
+| any wrapper whose run matched nothing (`allow-unmatched`), on an input `codesign_allocate` would re-sign corrupt | the input, unchanged | the input repaired, in order; one that cannot be repaired is refused | `tests/cli_test.sh`, "order: a hole codesign_allocate would corrupt is repaired by any edit" |
+| any wrapper whose run matched something, on an input `codesign_allocate` would re-sign corrupt | the edit made, and the rest of `__LINKEDIT` left as it was: still re-signed corrupt | the edit made, and `__LINKEDIT` repaired in order; one that cannot be repaired is refused | the same test, whose `rpath append` matches |
+| an edit inside a piece, on an input whose `__LINKEDIT` is out of order: `change_dylib -insert`/`-delete` or `insert_dylib` renumbering ordinals, `bake-mavericks-shim` redirecting binds in place | the piece edited where it lies, the order left as it was | the image packed in order | `tests/cli_test.sh`, "order: dylib insert's renumbering is a change, and the image is packed" |
+
+Each wrapper's stderr, where `drydock-macho-rewrite`'s report goes, gains the
+line `FILE: __LINKEDIT re-packed in codesign_allocate's order: …` whenever the
+pass changed the file. Stdout is unchanged.
+
 ## `insert_dylib`: not one of the six, and the differences it has from the fork
 
 `insert_dylib.sh` wraps a grammar this repo never shipped:
@@ -814,11 +836,10 @@ too. `OUTPUT` is left mode 755, as the Python leaves it, and may name `INPUT`.
 | **ordinals above 15** work: a bind-stream opcode is re-encoded as `SET_DYLIB_ORDINAL_ULEB`, and a lazy one wherever its opcode is wide enough. The Python dies whenever the shim's ordinal is above 15 and a regular bind moves. A lazy bind whose opcode is one byte still cannot name an ordinal above 15 on either side, because no lazy program may grow | `tests/import_redirect_test.sh`, the "ordinal>15" block, whose last assertion is that refusal |
 | the **symbol table**'s undefined entries are redirected with the binds, so `nm -m` and a later `dylib delete` agree with dyld; the Python leaves them naming the old library | `tests/import_redirect_test.sh`, "regular: ... the symbol table's undefined _a_data" |
 | the result is **verified before it is written**: both streams are read back and every bind compared with what it was. The Python writes what it computed | `tests/import_redirect_test.sh`, "verification" |
-| the bind stream is rewritten **opcode for opcode**, in place when that fits; the Python re-emits the whole stream in its own encoding. When the stream has to grow, both put it at the end of `__LINKEDIT` | compared bind by bind with `dyldinfo` in the differential below |
+| the bind stream is rewritten **opcode for opcode**, in place when that fits; the Python re-emits the whole stream in its own encoding. When the stream has to grow, the Python puts it at the end of `__LINKEDIT`; this puts it back in `codesign_allocate`'s order | compared bind by bind with `dyldinfo` in the differential below |
 | the shim's exports come from its **export trie** (`drydock-macho-rewrite exports`), not from `nm -gU`'s text | `tests/import_redirect_test.sh`, "exports" |
-| `load-command delete codesig` removes the load command and **leaves the signature's bytes** in `__LINKEDIT`; the Python truncates them and shrinks `__LINKEDIT` | `tests/bake_mavericks_shim_test.sh`, "signed" (the command is gone; the bytes are not asserted either way) |
 | the appended `LC_LOAD_DYLIB` records **version 0.0.0**, as every `dylib append` does, so any build of the shim satisfies it; the Python records 1.0.0, and dyld refuses a shim built without `-compatibility_version 1.0` | the differential below, which had to build its shim with that flag for the Python's output to load |
-| the summary's `bind data:` names **where** each table went (`regular table in place`, `regular table relocated to the end of __LINKEDIT`, `lazy table rewritten in place`) without the Python's byte counts; `drydock-macho-rewrite`'s own report on stderr has the sizes | `tests/bake_mavericks_shim_test.sh`, "the Python's summary lines" |
+| the summary's `bind data:` names **where** each table went (`regular table in place`, `regular table grown`, `lazy table rewritten in place`) without the Python's byte counts; `drydock-macho-rewrite`'s own report on stderr has the sizes | `tests/bake_mavericks_shim_test.sh`, "the Python's summary lines" |
 | stderr also carries `drydock-macho-rewrite`'s report of the edit, and a weak bind of a redirected symbol is warned about twice: the Python's list, then the engine's line for that symbol | `tests/bake_mavericks_shim_test.sh`, "weak" |
 | with **no room in the header** for the shim's load command, the Python dies with `no room in the Mach-O header to add a load command`, exit 1; this grows the header on an x86_64 PIE executable, announced on stderr, and the baked result runs. What cannot grow is refused in `dylib append`'s words, exit 1, nothing written | `tests/bake_mavericks_shim_test.sh`, "grow: no header room for the shim" and "... the grown, baked binary calls the shim's functions" |
 | exit codes are `drydock-macho-rewrite`'s 0/1/2, **forwarded**; the Python exits 1 for everything but a usage error, which is 2 on both sides | as for `insert_dylib`, above |

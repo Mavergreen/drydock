@@ -103,6 +103,38 @@ the front of the image as the statement before it left it: the lines
 `dylib insert A` then `dylib insert B` leave B at ordinal 1 and A at ordinal 2.
 `rpath insert` works the same way, so dyld searches B before A.
 
+### Re-signing
+
+Every edit invalidates a code signature, and known port flows re-sign ad hoc
+afterwards (`codesign --force --sign -`). Sign last, after the last
+`drydock-macho-rewrite` run. 10.9's own `codesign` can re-sign what Drydock
+writes, because a run that changes anything in `__LINKEDIT` also puts
+`__LINKEDIT` back in the order 10.9's `codesign_allocate` requires. The
+report says so:
+
+```
+Mantle: __LINKEDIT re-packed in codesign_allocate's order: 40,992 -> 38,176 bytes, 2,828 unreferenced bytes dropped
+```
+
+`info`'s last line says whether 10.9's `codesign_allocate` would re-sign the
+file as it stands:
+
+```
+resign 10.9: ok
+resign 10.9: malformed object (unknown load command 4)
+resign 10.9: slice x86_64h: malformed object (unknown load command 4)
+```
+
+A file that `codesign_allocate` would accept but re-sign **corrupt**, with
+its fixup opcodes or symbol table overwritten under a signature that
+`codesign -v` still accepts, gets a second line, `resign corrupt: …`. No run
+writes such a file: one it cannot repair is refused.
+
+`load-command delete codesig` removes the signature's bytes, not only its
+load command. A universal binary is checked slice by slice, and one slice 10.9
+cannot re-sign stops the whole file; on 10.9, which runs only the x86_64
+slice, `lipo -thin x86_64` first.
+
 ### Directives
 
 ```
@@ -307,6 +339,7 @@ LC[11] LC_LOAD_DYLIB cmdsize=56
 swift-abi: no class records carry the stable-ABI tag
 header pad: 3112 bytes available (LC end=856, first sect=3968)
 slice i386: 32-bit; passed through unchanged
+resign 10.9: not checked: slice i386 is not a 64-bit Mach-O
 ```
 
 On a thin file there is no slice header: the first line names the path.

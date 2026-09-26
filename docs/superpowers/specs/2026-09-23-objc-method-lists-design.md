@@ -147,13 +147,12 @@ term that can move it off that alignment.
 The insertion at `__LINKEDIT`'s old file offset is Z + S + R bytes.
 `ml_bump_all` moves every offset by that amount, then
 `rebase_off`/`rebase_size` are pointed at the new stream. The old stream's
-bytes are zeroed where they now sit. `__LINKEDIT` still ends the file and the
-code signature, if there is one, still ends `__LINKEDIT`, so this statement
-leaves the image as re-signable as it found it. On the real frameworks that
-is not re-signable with 10.9's `codesign_allocate`: `fixups set classic`,
-which must run first, leaves its streams out of the order that tool
-requires (QUEUE item 30). This is the same room-making
-`import redirect` does, moved to the other end of `__LINKEDIT`.
+bytes are zeroed where they now sit. That zeroed hole inside the dyld info
+is one `codesign_allocate` accepts and then re-signs corrupt
+(`docs/codesign-order.md`), so the run's closing pass drops it and puts
+`__LINKEDIT` back in that tool's order; the statement itself leaves the
+layout as described here. This is the same room-making `import redirect`
+does, moved to the other end of `__LINKEDIT`.
 
 **The candidates that lost:**
 
