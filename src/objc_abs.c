@@ -173,6 +173,11 @@ int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
                         "bytes at 0x%llx in a 0x%llx-byte image", (unsigned long long)lay->z,
                         (unsigned long long)s, (unsigned long long)lay->insert,
                         (unsigned long long)im->size);
+    if (lay->insert < sizeof(struct mach_header_64) + im->hdr->sizeofcmds)
+        return mma_fail(why, whysz, MMA_REFUSED, "internal error: the insertion point 0x%llx lies "
+                        "inside the header or load commands, which end at 0x%llx",
+                        (unsigned long long)lay->insert,
+                        (unsigned long long)(sizeof(struct mach_header_64) + im->hdr->sizeofcmds));
     grow = lay->z + s + r;
     mi_each_lc(im, mma_find_info, &odi);
     mi_each_lc(im, mma_scan_lc, &sc);
@@ -211,6 +216,12 @@ int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
     if (ml_bump_all(&nim, (uint32_t)at, (uint32_t)grow) != 0) {
         free(nb);
         return mma_fail(why, whysz, MMA_REFUSED, "a __LINKEDIT file offset would pass 4GB");
+    }
+    if (!c.di || (c.di->rebase_size && (c.di->rebase_off > nim.size ||
+                                         c.di->rebase_size > nim.size - c.di->rebase_off))) {
+        free(nb);
+        return mma_fail(why, whysz, MMA_REFUSED, "internal error: the moved rebase stream is not "
+                        "in the new image");
     }
     if (c.di->rebase_size) memset(nb + c.di->rebase_off, 0, c.di->rebase_size);
     c.di->rebase_off = (uint32_t)(at + lay->z + s);

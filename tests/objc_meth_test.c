@@ -720,6 +720,19 @@ static void test_layout_refuses_ends_that_wrap(void) {
     refused_segs(s, 3, 0x2200, "zero fill", "4GB of zero fill");
 }
 
+static void test_layout_takes_zero_fill_up_to_4gb(void) {
+    mma_layout lay;
+    char why[256] = "";
+    mma_seg s[3];
+    int rc;
+    s[0] = seg_of("__TEXT", 0, 0x1000, 0, 0x1000);
+    s[1] = seg_of("__DATA", 0x1000, 0x1001 + (uint64_t)UINT32_MAX, 0x1000, 0x1001);
+    s[2] = seg_of("__LINKEDIT", 0x100002000ULL, 0x1000, 0x2001, 0x1ff);
+    rc = mma_layout_check(s, 3, 0x2200, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK && lay.z == UINT32_MAX, "0xffffffff bytes of zero fill: rc %d, z %#llx (%s)",
+          rc, (unsigned long long)lay.z, why);
+}
+
 static void test_layout_refuses_a_segment_above_linkedit(void) {
     mma_layout lay;
     char why[256] = "";
@@ -733,6 +746,12 @@ static void test_layout_refuses_a_segment_above_linkedit(void) {
     s[1] = seg_of("__LOW", 0x800, 0x800, 0, 0);
     rc = mma_layout_check(s, 4, 0x2200, &lay, why, sizeof why);
     CHECK(rc == MMA_OK, "a segment ending where D begins: rc %d (%s)", rc, why);
+    s[1] = seg_of("__END", 0x1800, 0x800, 0, 0);
+    rc = mma_layout_check(s, 4, 0x2200, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK, "a segment ending where __LINKEDIT begins: rc %d (%s)", rc, why);
+    s[1] = seg_of("__EMPTY", 0x2000, 0, 0, 0);
+    rc = mma_layout_check(s, 4, 0x2200, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK, "an empty segment where __LINKEDIT begins: rc %d (%s)", rc, why);
 }
 
 static void test_layout_names_why_there_is_no_room(void) {
@@ -774,6 +793,8 @@ static void poke_info2(uint8_t *b) {
 static void poke_no_info(uint8_t *b) { info_of(b)->cmd = 0x7e; }
 static void poke_rebase_low(uint8_t *b) { info_of(b)->rebase_off = RMF_TEXT; }
 static void poke_rebase_past(uint8_t *b) { info_of(b)->rebase_size = RMF_SIZE; }
+static void poke_rebase_to_eof(uint8_t *b) { info_of(b)->rebase_size = RMF_SIZE - RMF_REBASE; }
+static void poke_rebase_past_eof(uint8_t *b) { info_of(b)->rebase_size = RMF_SIZE - RMF_REBASE + 1; }
 
 static void refused_insert(void (*poke)(uint8_t *), const char *want, const char *label) {
     inserted o;
@@ -792,24 +813,31 @@ static void test_insert_refusals(void) {
     refused_insert(poke_rebase_low, "not in __LINKEDIT", "a rebase stream below __LINKEDIT");
 }
 
-/* mma_insert against a real layout with one field made hostile. */
-static void refused_direct(void (*spoil)(mma_layout *, uint64_t *, uint64_t *, uint32_t *),
-                           const char *want, const char *label) {
+typedef void (*spoiler)(mma_layout *, uint64_t *, uint64_t *, uint32_t *);
+
+/* mma_insert against the plain fixture's layout with one input made hostile. */
+static int direct(spoiler spoil, char *why, size_t whysz) {
     mi_image im;
     mma_layout lay;
     uint64_t s = MMA_PAGE, lists_len = sizeof LISTS;
     uint32_t r = sizeof STREAM;
     uint8_t *out = NULL;
     size_t outsz = 0;
-    char why[256] = "";
-    int rc = layout_of(RMF_PLAIN, NULL, RMF_SIZE, &lay, why, sizeof why);
-    CHECK(rc == MMA_OK, "%s: layout rc %d (%s)", label, rc, why);
-    if (rc != MMA_OK || mi_wrap(fx, RMF_SIZE, &im) != 0) return;
+    int rc = layout_of(RMF_PLAIN, NULL, RMF_SIZE, &lay, why, whysz);
+    if (rc != MMA_OK) return -98;
+    if (mi_wrap(fx, RMF_SIZE, &im) != 0) return -99;
     spoil(&lay, &s, &lists_len, &r);
-    rc = mma_insert(&im, &lay, LISTS, lists_len, s, STREAM, r, &out, &outsz, why, sizeof why);
-    CHECK(rc == MMA_REFUSED && !out, "%s: rc %d, want MMA_REFUSED", label, rc);
-    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+    rc = mma_insert(&im, &lay, LISTS, lists_len, s, STREAM, r, &out, &outsz, why, whysz);
+    if (rc != MMA_OK && out) rc = -97;
     free(out);
+    return rc;
+}
+
+static void refused_direct(spoiler spoil, const char *want, const char *label) {
+    char why[256] = "";
+    int rc = direct(spoil, why, sizeof why);
+    CHECK(rc == MMA_REFUSED, "%s: rc %d, want MMA_REFUSED (%s)", label, rc, why);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
 }
 static void spoil_z(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
     (void)s; (void)n; (void)r; l->z = (uint64_t)0 - 0x3000;
@@ -832,18 +860,70 @@ static void spoil_lists(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
 static void spoil_r(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
     (void)l; (void)s; (void)n; *r = 12;
 }
+static void spoil_z_max(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->z = UINT32_MAX;
+}
+static void spoil_z_over(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->z = (uint64_t)UINT32_MAX + 1;
+}
+static void spoil_s_over(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)n; (void)r; *s = (uint64_t)UINT32_MAX + 1;
+}
+static void spoil_insert_eof(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->insert = RMF_SIZE;
+}
+static void spoil_insert_past_eof(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->insert = RMF_SIZE + 1;
+}
+static uint64_t cmds_end(void) {
+    return sizeof(struct mach_header_64) + ((const struct mach_header_64 *)fx)->sizeofcmds;
+}
+static void spoil_insert_in_cmds(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->insert = 0x40;
+}
+static void spoil_insert_cmds_end_less_1(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->insert = cmds_end() - 1;
+}
+static void spoil_insert_cmds_end(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->insert = cmds_end();
+}
+static void spoil_zeroed(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; memset(l, 0, sizeof *l);
+}
+
+static void test_insert_boundaries(void) {
+    inserted o;
+    char why[256] = "";
+    int rc = insert_into(RMF_PLAIN, poke_rebase_to_eof, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "a rebase stream ending at the end of the file: rc %d (%s)", rc, why);
+    free(o.b);
+    refused_direct(spoil_insert_eof, "not in __LINKEDIT", "an insertion at the end of the file");
+    refused_direct(spoil_z_max, "the image would pass 4GB", "0xffffffff bytes of zero fill");
+    refused_direct(spoil_z_over, "0x100000000 zero-fill and", "0x100000000 bytes of zero fill");
+    refused_direct(spoil_s_over, "0x100000000 list bytes at", "a 0x100000000-byte list area");
+    rc = direct(spoil_insert_cmds_end, why, sizeof why);
+    CHECK(rc == MMA_OK, "an insertion where the load commands end: rc %d (%s)", rc, why);
+}
 
 /* Last in main: before the guards they test, each of these wrote past a buffer. */
 static void test_insert_refuses_what_would_overrun(void) {
     refused_insert(poke_vm_wrap, "in memory, does not end where", "an insert after D's vm end wraps");
     refused_insert(poke_rebase_past, "past the end of the file", "a rebase stream past the file");
-    refused_direct(spoil_z, "internal error", "4GB of zero fill");
-    refused_direct(spoil_s, "internal error", "a 4GB list area");
-    refused_direct(spoil_insert, "internal error", "an insertion past the file");
+    refused_insert(poke_rebase_past_eof, "past the end of the file", "a rebase stream a byte past the file");
+    refused_direct(spoil_z, "0xffffffffffffd000 zero-fill and", "4GB of zero fill");
+    refused_direct(spoil_s, "zero-fill and 0xfffffffffffff000 list bytes", "a 4GB list area");
+    refused_direct(spoil_insert, "list bytes at 0x3200 in a 0x2200-byte image", "an insertion past the file");
+    refused_direct(spoil_insert_past_eof, "list bytes at 0x2201 in a 0x2200-byte image",
+                   "an insertion a byte past the file");
     refused_direct(spoil_4gb, "the image would pass 4GB", "an image that would pass 4GB");
-    refused_direct(spoil_page, "internal error", "a list area not whole pages");
-    refused_direct(spoil_lists, "internal error", "lists longer than their area");
-    refused_direct(spoil_r, "internal error", "a stream not a multiple of 8");
+    refused_direct(spoil_page, "40 list bytes in 2048, 16 stream bytes", "a list area not whole pages");
+    refused_direct(spoil_lists, "4097 list bytes in 4096, 16 stream bytes", "lists longer than their area");
+    refused_direct(spoil_r, "40 list bytes in 4096, 12 stream bytes", "a stream not a multiple of 8");
+    refused_direct(spoil_insert_in_cmds, "inside the header or load commands",
+                   "an insertion inside the load commands");
+    refused_direct(spoil_insert_cmds_end_less_1, "inside the header or load commands",
+                   "an insertion a byte before the load commands end");
+    refused_direct(spoil_zeroed, "inside the header or load commands", "a zeroed layout");
 }
 
 int main(void) {
@@ -871,7 +951,9 @@ int main(void) {
     test_layout_refuses_ends_that_wrap();
     test_layout_refuses_a_segment_above_linkedit();
     test_layout_names_why_there_is_no_room();
+    test_layout_takes_zero_fill_up_to_4gb();
     test_insert_refusals();
+    test_insert_boundaries();
     test_a_selref_rebased_both_ways_still_resolves_as_pointer();
     test_an_imp_resolving_to_address_0_is_refused();
     test_an_unbased_image_names_its_own_refusal();
