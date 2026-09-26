@@ -33,7 +33,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
-| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | — | — | **bug, found 2026-09-25**, reproduced; see below |
+| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | `specs/2026-09-26-classic-fixups-re-signable-design.md` | `plans/2026-09-26-classic-fixups-re-signable.md` | **planned** 2026-09-26; see below |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
