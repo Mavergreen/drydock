@@ -46,18 +46,18 @@ struct mhr_ctx {
 };
 
 static int mhr_seg_cb(const struct load_command *lc, void *ctx_) {
-    struct mhr_ctx *c = (struct mhr_ctx *)ctx_;
+    struct mhr_ctx *w = (struct mhr_ctx *)ctx_;
     if (lc->cmd != LC_SEGMENT_64) return 0;
     const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
     const struct section_64 *s = (const struct section_64 *)(seg + 1);
     for (uint32_t j = 0; j < seg->nsects; j++) {
         if (!(s[j].flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))) continue;
         if (s[j].offset == 0) continue;
-        if (s[j].size > c->fsize || s[j].offset > c->fsize - s[j].size) { c->bad = 1; continue; }
-        if (c->sect) *c->sect = &s[j];
-        c->n += mhr_code(c->buf + s[j].offset, s[j].size, s[j].addr, s[j].offset,
-                         c->target, c->fn, c->ctx, &c->stopped);
-        if (c->stopped) return 1;
+        if (s[j].size > w->fsize || s[j].offset > w->fsize - s[j].size) { w->bad = 1; continue; }
+        if (w->sect) *w->sect = &s[j];
+        w->n += mhr_code(w->buf + s[j].offset, s[j].size, s[j].addr, s[j].offset,
+                         w->target, w->fn, w->ctx, &w->stopped);
+        if (w->stopped) return 1;
     }
     return 0;
 }
@@ -66,9 +66,9 @@ static int64_t mhr_walk(const uint8_t *buf, size_t fsize, uint64_t target, mhr_f
                         const struct section_64 **sect) {
     mi_image im;
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) return -1;
-    struct mhr_ctx c = { buf, fsize, target, fn, ctx, 0, 0, 0, sect };
-    mi_each_lc(&im, mhr_seg_cb, &c);
-    return c.bad ? -1 : (int64_t)c.n;
+    struct mhr_ctx w = { buf, fsize, target, fn, ctx, 0, 0, 0, sect };
+    mi_each_lc(&im, mhr_seg_cb, &w);
+    return w.bad ? -1 : (int64_t)w.n;
 }
 
 int64_t mhr_scan(const uint8_t *buf, size_t fsize, uint64_t target, mhr_fn fn, void *ctx) {
