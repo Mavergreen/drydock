@@ -45,6 +45,10 @@ size_t mrb_sort(mrb_set *s);
 /* 1 when a sorted `s` holds (seg, off), else 0. */
 int mrb_has(const mrb_set *s, uint8_t seg, uint64_t off);
 
+/* 1 when a sorted `s` holds (seg, off) with this `type` among the (possibly
+ * several) rebases there, else 0. */
+int mrb_has_type(const mrb_set *s, uint8_t seg, uint64_t off, uint8_t type);
+
 typedef struct { uint8_t *p; size_t n, cap; int oom; } mrb_buf;
 
 /* Appends to `b` the opcodes that rebase `v[0, n)` as pointers:

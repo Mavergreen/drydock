@@ -116,6 +116,24 @@ static void test_sort_counts_repeats_and_has_finds(void) {
     mrb_free(&set);
 }
 
+/* 1 is REBASE_TYPE_POINTER, 2 is REBASE_TYPE_TEXT_ABSOLUTE32; this file
+ * assembles rebase state byte by byte, without mach-o/loader.h. */
+static void test_has_type_finds_the_right_type_in_an_equal_range(void) {
+    mrb_set set;
+    memset(&set, 0, sizeof set);
+    CHECK(mrb_add(&set, 2, 1, 0x10) == 0, "has_type: add failed");
+    CHECK(mrb_add(&set, 2, 2, 0x10) == 0, "has_type: add failed");
+    CHECK(mrb_add(&set, 3, 1, 0x10) == 0, "has_type: add failed");
+    mrb_sort(&set);
+    CHECK(mrb_has_type(&set, 2, 0x10, 1), "has_type: misses the pointer rebase in an equal range");
+    CHECK(mrb_has_type(&set, 2, 0x10, 2), "has_type: misses the abs32 rebase in the same equal range");
+    CHECK(!mrb_has_type(&set, 2, 0x10, 3), "has_type: finds a type that is not there");
+    CHECK(mrb_has_type(&set, 3, 0x10, 1), "has_type: misses a single-type slot");
+    CHECK(!mrb_has_type(&set, 3, 0x10, 2), "has_type: finds a type absent from a single-type slot");
+    CHECK(!mrb_has_type(&set, 2, 0x18, 1), "has_type: finds an offset that is not there");
+    mrb_free(&set);
+}
+
 static void test_encode_pins_its_opcodes(void) {
     mrb_slot two[] = { { 0x10, 2, 1 }, { 0x18, 2, 1 } };
     mrb_slot fifteen[15], sixteen[16];
@@ -188,6 +206,7 @@ int main(void) {
     test_rebase_type_is_restricted();
     test_slot_cap_boundary_is_exact();
     test_sort_counts_repeats_and_has_finds();
+    test_has_type_finds_the_right_type_in_an_equal_range();
     test_encode_pins_its_opcodes();
     test_encode_round_trips();
     test_encode_refuses_what_it_cannot_say();

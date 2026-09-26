@@ -151,6 +151,19 @@ int mrb_has(const mrb_set *s, uint8_t seg, uint64_t off) {
     return s->n && bsearch(&key, s->v, s->n, sizeof *s->v, mrb_cmp) != NULL;
 }
 
+int mrb_has_type(const mrb_set *s, uint8_t seg, uint64_t off, uint8_t type) {
+    const mrb_slot *v = s->v;
+    size_t n = s->n, lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (v[mid].seg < seg || (v[mid].seg == seg && v[mid].off < off)) lo = mid + 1;
+        else hi = mid;
+    }
+    for (; lo < n && v[lo].seg == seg && v[lo].off == off; lo++)
+        if (v[lo].type == type) return 1;
+    return 0;
+}
+
 void mrb_put(mrb_buf *b, const uint8_t *src, size_t n) {
     if (b->oom || n == 0) return;
     if (b->n + n > b->cap) {
