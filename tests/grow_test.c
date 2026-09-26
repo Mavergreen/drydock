@@ -38,6 +38,11 @@ static void test_uleb_decode(void) {
     uint8_t f[] = {0x80,0x80,0x01};       n = mu_decode(f, f+3, &v); CHECK(n==3 && v==16384,  "uleb 80 80 01 -> 16384");
     /* runs off the end (continuation bit set, no more bytes) -> malformed */
     uint8_t g[] = {0x80};                 n = mu_decode(g, g+1, &v); CHECK(n==0,              "uleb truncated -> 0 (got n=%d)", n);
+    /* ten bytes carry 70 bits; a tenth byte past 1 names bits past 64 */
+    uint8_t h[] = {0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x01};
+    n = mu_decode(h, h+10, &v); CHECK(n==10 && v==UINT64_MAX, "uleb ff x9 01 -> 2^64-1 (got n=%d)", n);
+    uint8_t i[] = {0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x02};
+    n = mu_decode(i, i+10, &v); CHECK(n==0, "uleb 80 x9 02 overflows 64 bits -> 0 (got n=%d)", n);
 }
 
 static void test_uleb_minlen(void) {
@@ -2762,6 +2767,18 @@ static void test_confirm_ignores_a_malformed_function_starts_list(void) {
     CHECK(r == MHR_NO_STARTS, "confirm: a malformed ULEB tail discards every start (got %d)", r);
 }
 
+/* 80 x9 02 is 2^64 with its only set bit dropped: read as 0, it would end
+ * the list after __text's start and confirm the lea. */
+static void test_confirm_ignores_an_overlong_function_starts_terminator(void) {
+    static const uint8_t fs[] = { 0x80, 0x20,
+                                  0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02 };
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    k.fs = fs; k.nfs = sizeof fs;
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_NO_STARTS, "confirm: an overlong ULEB discards every start (got %d)", r);
+}
+
 static void test_confirm_ignores_a_wrapping_function_starts_delta(void) {
     static const uint8_t fs[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01 };
     struct hr_code k = hr_push_lea();
@@ -2992,6 +3009,7 @@ int main(void) {
     test_confirm_rejects_data_in_code_starting_mid_instruction();
     test_confirm_rejects_an_eip_relative_operand();
     test_confirm_ignores_a_malformed_function_starts_list();
+    test_confirm_ignores_an_overlong_function_starts_terminator();
     test_confirm_ignores_a_wrapping_function_starts_delta();
     test_confirm_reports_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_not_a_multiple_of_8();

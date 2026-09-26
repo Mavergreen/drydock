@@ -1,17 +1,14 @@
-/* ULEB128 decode / minlen / fixed-width encode.
- *
- * Moved verbatim from macho_grow.h (mg_uleb_decode, mg_uleb_minlen,
- * mg_uleb_encode_fixed); only the prefix changed. The bodies are deliberately
- * untouched -- tests/grow_test.c tests all three directly, so the safety
- * net predates the move, and any behaviour change here would be a regression
- * hidden inside a refactor. */
+/* ULEB128 decode / minlen / fixed-width encode: see uleb.h. tests/grow_test.c
+ * tests all three directly. */
 
 #include "uleb.h"
 
 int mu_decode(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t r = 0; int s = 0, n = 0;
     while (p + n < end && n < 10) {
-        uint8_t b = p[n]; r |= (uint64_t)(b & 0x7f) << s; n++;
+        uint8_t b = p[n];
+        if (n == 9 && (b & 0x7f) > 1) return 0;
+        r |= (uint64_t)(b & 0x7f) << s; n++;
         if (!(b & 0x80)) { *out = r; return n; }
         s += 7;
     }

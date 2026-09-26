@@ -117,7 +117,8 @@ int mrb_decode(const uint8_t *p, size_t size, int nsegs, mrb_set *out,
         continue;
 runs_off:
         return mrb_fail(out, why, whysz, MRB_MALFORMED,
-                        "the rebase opcode at byte %zu has a ULEB that runs off the stream", here);
+                        "the rebase opcode at byte %zu has a ULEB that runs off the stream or "
+                        "past 64 bits", here);
     }
     return MRB_OK;
 }
