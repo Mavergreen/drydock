@@ -1283,6 +1283,41 @@ static void poke_category_at(uint8_t *b, uint32_t va) {
 static void poke_slot_8_before_linkedit(uint8_t *b) { poke_category_at(b, 8); }
 static void poke_slot_7_before_linkedit(uint8_t *b) { poke_category_at(b, 9); }
 
+/* Appends one section to __TEXT (there is slack before RMF_TEXT for one
+ * more, shifting every later load command up by sizeof(section_64)), an
+ * empty C string at lay.list_va, D's vm end and where the converted lists
+ * begin. List C's entry keeps its normal name and IMP, but its types are
+ * retargeted there: after the move, that address would hold the new list's
+ * own header, not the string this reads today. The new section is its own,
+ * so no other entry's (unmoved) name/types/imp resolution is disturbed. */
+static void poke_types_dangles_at_list_va(uint8_t *b) {
+    mi_image im;
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    struct segment_command_64 *text;
+    struct section_64 *sec;
+    uint8_t *ins;
+    uint32_t shift = sizeof(struct section_64);
+    uint64_t list_va;
+    if (mi_wrap(b, RMF_SIZE, &im) != 0) return;
+    if (!(text = mi_find_segment(&im, "__TEXT"))) return;
+    ins = (uint8_t *)text + text->cmdsize;
+    memmove(ins + shift, ins, (size_t)((b + sizeof *h + h->sizeofcmds) - ins));
+    sec = (struct section_64 *)ins;
+    memset(sec, 0, shift);
+    rmf_name16(sec->sectname, "__fake");
+    rmf_name16(sec->segname, "__TEXT");
+    list_va = RMF_VA(RMF_DATA) + 0x1000;
+    sec->addr = list_va;
+    sec->size = 0x10;
+    sec->offset = RMF_FSTARTS_BLOB;   /* zero-filled for RMF_PLAIN: an empty C string */
+    sec->flags = S_CSTRING_LITERALS;
+    text->cmdsize += shift;
+    text->nsects += 1;
+    h->sizeofcmds += shift;
+    rmf_put32(b, RMF_LIST_C + 8 + 4,
+              (uint32_t)(int32_t)((int64_t)list_va - (int64_t)RMF_VA(RMF_LIST_C + 8 + 4)));
+}
+
 static void test_slots_the_conversion_cannot_rewrite_are_refused(void) {
     mma_out o;
     char why[256] = "";
@@ -1304,6 +1339,8 @@ static void test_slots_the_conversion_cannot_rewrite_are_refused(void) {
         CHECK(rc == MMA_OK, "a method-list slot ending where __LINKEDIT begins: rc %d (%s)", rc, why);
         if (rc == MMA_OK) mma_out_free(&o);
     }
+    refused_build(RMF_PLAIN, poke_types_dangles_at_list_va, "at or above where the conversion places "
+                  "the new method lists", "an entry whose types would dangle after the move");
 }
 
 /* ---- verification ------------------------------------------------------------ */

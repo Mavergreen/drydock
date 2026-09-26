@@ -385,6 +385,16 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
             uint64_t ea = at + 8 + (uint64_t)MML_ABS_ENTSIZE * e;
             uint64_t eoff = new_va[i] + 8 + (uint64_t)MML_ABS_ENTSIZE * e - segs[o->lay.d].vmaddr;
             if (mml_entry_at(&res, ref, e, &ent, why, whysz) != MML_OK) goto done;
+            if (ent.name >= o->lay.list_va || ent.types >= o->lay.list_va ||
+                (ent.imp && ent.imp >= o->lay.list_va)) {
+                mma_fail(why, whysz, MMA_REFUSED, "entry %u of the method list at 0x%llx names "
+                         "0x%llx, at or above where the conversion places the new method lists "
+                         "(0x%llx), and would dangle", e, (unsigned long long)ref->list_va,
+                         (unsigned long long)(ent.name >= o->lay.list_va ? ent.name :
+                                               ent.types >= o->lay.list_va ? ent.types : ent.imp),
+                         (unsigned long long)o->lay.list_va);
+                goto done;
+            }
             mma_put64(lists + ea, ent.name);
             mma_put64(lists + ea + 8, ent.types);
             mma_put64(lists + ea + 16, ent.imp);
