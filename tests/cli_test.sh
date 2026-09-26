@@ -5022,6 +5022,39 @@ om again
     && ok "objc-methods set absolute: a converted image has nothing to convert, and is written unchanged" \
     || bad "objc-methods again" "rc $om_rc: $(cat "$T/om.err")"
 
+# UNIVERSAL BINARIES -- OWNER'S RULING 2026-09-26 (option b): a non-x86_64
+# slice, thin or one slice of a fat file, is not refused: 10.9 runs only
+# x86_64, so it is left byte-identical and reported as nothing to convert for
+# that slice, the way other statements treat a slice they do not apply to.
+cp "$T/relmeth_plain" "$T/relmeth_arm64thin"
+printf '\x0c\x00\x00\x01' | dd of="$T/relmeth_arm64thin" bs=1 seek=4 count=4 conv=notrunc 2>/dev/null
+om_before=$(sha "$T/relmeth_arm64thin")
+om arm64thin
+[ "$om_rc" -eq 0 ] && [ "$(sha "$T/relmeth_arm64thin")" = "$om_before" ] \
+    && ok "objc-methods set absolute: a thin arm64 image is not refused" \
+    || bad "objc-methods arm64 thin" "rc $om_rc: $(cat "$T/om.err")"
+grep -qxF "      not x86_64, the only architecture 10.9 runs: nothing to convert" "$T/om.err" \
+    && ok "objc-methods set absolute: says why nothing was converted for a non-x86_64 image" \
+    || bad "objc-methods arm64 thin log" "$(cat "$T/om.err")"
+
+"$BIN/makefat" "$T/relmeth_fat" "$T/relmeth_plain" 0x1000007 3 12 "$T/relmeth_arm64thin" 0x100000c 0 12
+rc=0
+printf 'objc-methods set absolute\n' | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_fat" "$T/relmeth_fat.out" \
+    >/dev/null 2>"$T/om_fat.err" || rc=$?
+[ "$rc" -eq 0 ] && ok "objc-methods set absolute: a fat x86_64+arm64 file converts the x86_64 slice" \
+    || bad "objc-methods fat" "rc $rc: $(cat "$T/om_fat.err")"
+grep -q "slice arm64:" "$T/om_fat.err" \
+    && ok "objc-methods set absolute: the fat report accounts for the arm64 slice" \
+    || bad "objc-methods fat arm64 log" "$(cat "$T/om_fat.err")"
+"$BIN/fatcheck" dump "$T/relmeth_fat.out" 0 "$T/relmeth_fat_out0"
+"$BIN/fatcheck" dump "$T/relmeth_fat.out" 1 "$T/relmeth_fat_out1"
+"$DRYDOCK_MACHO_REWRITE" verify "$T/relmeth_fat_out0" >/dev/null 2>"$T/om_fat_v.err" \
+    && ok "objc-methods set absolute: the fat file's x86_64 slice verifies" \
+    || bad "objc-methods fat verify" "$(cat "$T/om_fat_v.err")"
+cmp -s "$T/relmeth_fat_out1" "$T/relmeth_arm64thin" \
+    && ok "objc-methods set absolute: the fat file's arm64 slice is byte-identical" \
+    || bad "objc-methods fat arm64" "the arm64 slice changed"
+
 rc=0; printf 'objc-methods set relative\n' | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_plain" "$T/om_rel.out" >/dev/null 2>"$T/om_rel.err" || rc=$?
 [ "$rc" -eq 2 ] && [ ! -e "$T/om_rel.out" ] && grep -qF "objc-methods set accepts only 'absolute' (got 'relative')" "$T/om_rel.err" \
     && ok "objc-methods set: any value but absolute is a parse error (2)" \

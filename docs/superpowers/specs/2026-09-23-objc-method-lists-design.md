@@ -564,8 +564,9 @@ conflicts.
 
 ## Out of scope
 
-- arm64 and arm64e slices. 10.9 is x86_64 only. The statement refuses
-  other CPU types, and `target` never derives it for them.
+- arm64 and arm64e slices. 10.9 is x86_64 only. The statement leaves other
+  CPU types unchanged, as nothing to convert (owner's ruling, 2026-09-26),
+  and `target` never derives it for them.
 - Converting on chained images (Decision 2), and walking them for `info`.
 - Relative-list forms seen only in the dyld shared cache.
 - Other modern Objective-C metadata 10.9 may reject, such as

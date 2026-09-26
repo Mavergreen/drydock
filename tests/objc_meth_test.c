@@ -1138,9 +1138,25 @@ static void verifies(void (*poke)(uint8_t *), const char *label) {
     mma_out_free(&o);
 }
 
+/* OWNER'S RULING 2026-09-06: option (b). A non-x86_64 image, thin or one
+ * slice of a fat file, is not refused: 10.9 runs only x86_64, so there is
+ * nothing for this statement to do to it, the way other statements treat a
+ * slice they do not apply to. */
+static void test_a_non_x86_64_image_is_nothing_to_convert(void) {
+    mma_out o;
+    uint8_t before[RMF_SIZE];
+    char why[256] = "";
+    int rc;
+    rmf_build(before, RMF_PLAIN);
+    poke_arm64(before);
+    rc = build(RMF_PLAIN, poke_arm64, &o, why, sizeof why);
+    CHECK(rc == MMA_NOTHING, "a thin arm64 image: rc %d, want MMA_NOTHING", rc);
+    CHECK(o.rep.not_x86_64, "a thin arm64 image: rep.not_x86_64 not set");
+    CHECK(memcmp(before, fx, RMF_SIZE) == 0, "a thin arm64 image: bytes changed");
+}
+
 static void test_conversion_refusals_write_nothing(void) {
     refused_build(RMF_CHAINED, NULL, "fixups set classic first", "chained fixups");
-    refused_build(RMF_PLAIN, poke_arm64, "not x86_64", "an arm64 image");
     refused_build(RMF_PLAIN, poke_no_info, "no LC_DYLD_INFO", "no rebase stream");
     refused_build(RMF_DATARO, NULL, "is not writable", "D read-only");
     refused_build(RMF_NOSLOTRB, NULL, "file offset 0x1120 carries no rebase", "a method-list slot with no rebase");
@@ -1642,6 +1658,7 @@ int main(void) {
     test_every_slot_is_repointed_and_absolute_ones_kept();
     test_linkedit_offsets_keep_their_alignment();
     test_a_converted_image_has_nothing_to_convert();
+    test_a_non_x86_64_image_is_nothing_to_convert();
     test_conversion_refusals_write_nothing();
     test_every_conversion_verifies();
     test_verification_refuses_every_difference();

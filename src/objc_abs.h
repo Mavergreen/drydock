@@ -72,6 +72,7 @@ typedef struct {
     char     dname[16];                 /* D's segname, not NUL-terminated at 16 */
     uint64_t grew, zerofill;            /* D grew by `grew` in vm, and `zerofill` more in file */
     uint64_t linkedit_before, linkedit_after;   /* __LINKEDIT's filesize */
+    int      not_x86_64;                /* lists==0 because the slice isn't x86_64, 10.9's only one */
 } mma_report;
 
 typedef struct {
@@ -91,12 +92,14 @@ int  mma_room(const mml_walk *w, const uint32_t *first, uint64_t list_va, uint64
               uint64_t *total, size_t *nslots, char *why, size_t whysz);
 
 /* Converts `im`, which is only read, into o->buf: MMA_OK; MMA_NOTHING when
- * the walk finds no relative list; MMA_REFUSED or MMA_NOMEM with why set.
- * Refuses an image that is not x86_64, has chained fixups, has no
- * LC_DYLD_INFO or more than one, has a rebase stream outside the file, fails
- * the walk or the layout, has a method-list slot or an absolute list in
- * __LINKEDIT, has a slot without a pointer rebase, needs lists past 4GB, or
- * has an entry mml_entry_at will not resolve. The new
+ * the walk finds no relative list, or the image is not x86_64 (10.9's only
+ * architecture: a non-x86_64 slice, thin or fat, is left byte-identical and
+ * o->rep.not_x86_64 is set, not refused); MMA_REFUSED or MMA_NOMEM with why
+ * set. Refuses an x86_64 image that has chained fixups, has no LC_DYLD_INFO
+ * or more than one, has a rebase stream outside the file, fails the walk or
+ * the layout, has a method-list slot or an absolute list in __LINKEDIT, has
+ * a slot without a pointer rebase, needs lists past 4GB, or has an entry
+ * mml_entry_at will not resolve. The new
  * lists keep their entries' order; each carries one rebase per pointer that
  * is not 0. */
 int  mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz);

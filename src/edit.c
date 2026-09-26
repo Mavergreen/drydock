@@ -246,7 +246,10 @@ static void me_log_objc_methods(FILE *log, const mma_report *r) {
     char c1[32], c2[32], c3[32], c4[32], c5[32];
     const char *sep = ": ";
     if (r->lists == 0) {
-        me_say(log, "      nothing to convert\n");
+        if (r->not_x86_64)
+            me_say(log, "      not x86_64, the only architecture 10.9 runs: nothing to convert\n");
+        else
+            me_say(log, "      nothing to convert\n");
         return;
     }
     me_say(log, "      converted %s relative method list%s (%s method%s) onto the end of %.16s",
