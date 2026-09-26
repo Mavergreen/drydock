@@ -137,8 +137,12 @@ stream is placed at the **start** of the moved `__LINKEDIT`, in the same
 insertion. The file becomes:
 
 ```
-[ ... | D: old bytes | Z zeros | converted lists, S bytes | __LINKEDIT: new rebase stream (R bytes, 8-aligned) | old __LINKEDIT ... ]
+[ ... | D: old bytes | Z zeros | converted lists, S bytes | __LINKEDIT: new rebase stream (R bytes, 16-aligned) | old __LINKEDIT ... ]
 ```
+
+R is padded to 16, not 8: `codesign_allocate` requires the code signature's
+`dataoff` 16-aligned, and Z and S are already whole pages, so R is the only
+term that can move it off that alignment.
 
 The insertion at `__LINKEDIT`'s old file offset is Z + S + R bytes.
 `ml_bump_all` moves every offset by that amount, then
@@ -508,9 +512,16 @@ on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
   Squirrel (0xd000 to 0xe000), because the rewritten rebase stream
   outgrew it. Nothing converted has run on 10.9 yet: that is M3.
 - **Re-signing is as Decision 1 says** (QUEUE item 30). 10.9's
-  `codesign --force --sign -` refuses Mantle before the conversion
-  ("dyld_info out of place") and after it ("code signature data out of
-  place").
+  `codesign --force --sign -` refuses Mantle, ReactiveObjC and Squirrel
+  alike, before the conversion ("dyld_info out of place") and after it. The
+  post-conversion "code signature data out of place" reported here earlier
+  was this milestone's own bug: the new rebase stream was padded to 8 bytes,
+  not 16, so a moved `LC_CODE_SIGNATURE` could land off the 16-byte
+  alignment `codesign_allocate` requires (fixed: the new rebase stream is
+  16-aligned). After that fix, none of the three still hits that error; all
+  three instead hit "link edit information does not fill the __LINKEDIT
+  segment" -- consistent with `fixups set classic`'s own layout, QUEUE item
+  30's pre-existing problem, since it is unaffected by the conversion.
 
 **Still to validate:**
 
