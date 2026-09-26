@@ -1125,6 +1125,19 @@ static void refused_build(unsigned variant, void (*poke)(uint8_t *), const char 
     CHECK(memcmp(before, fx, RMF_SIZE) == 0, "%s: the refusal wrote into its input", label);
 }
 
+static void verifies(void (*poke)(uint8_t *), const char *label) {
+    mma_out o;
+    mi_image in;
+    char why[512] = "";
+    int rc = build(RMF_PLAIN, poke, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "%s: build rc %d (%s)", label, rc, why);
+    if (rc != MMA_OK) return;
+    mi_wrap(fx, RMF_SIZE, &in);
+    rc = mma_verify(&in, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "%s: verify rc %d (%s)", label, rc, why);
+    mma_out_free(&o);
+}
+
 static void test_conversion_refusals_write_nothing(void) {
     refused_build(RMF_CHAINED, NULL, "fixups set classic first", "chained fixups");
     refused_build(RMF_PLAIN, poke_arm64, "not x86_64", "an arm64 image");
@@ -1235,6 +1248,41 @@ static void poke_abs_in_linkedit(uint8_t *b) {
     rmf_put64(b, RMF_CATEGORY + 16, RMF_VA(RMF_LINKEDIT_RO));
 }
 
+/* __PAGEZERO maps the 0x30 file bytes from 0x1fe0 at address 0, and the one
+ * category, at address `va` there, names list C from its instanceMethods
+ * slot at file offset 0x1ff0 + va: 8 bytes that end where __LINKEDIT begins
+ * when `va` is 8, and reach a byte into it when `va` is 9. Its classMethods
+ * slot, 8 bytes later, then lies at or past the insertion point itself, so
+ * only the build (not a full verify, which would also walk that slot's
+ * moved, overwritten bytes) is checked at the va=8 boundary. */
+static void poke_category_at(uint8_t *b, uint32_t va) {
+    mi_image im;
+    struct segment_command_64 *pz;
+    struct dyld_info_command *di = info_of(b);
+    uint32_t slots[32], n = rmf_rebase_slots(RMF_PLAIN, slots), at = RMF_REBASE + 16;
+    if (mi_wrap(b, RMF_SIZE, &im) != 0 || !(pz = mi_find_segment(&im, "__PAGEZERO"))) return;
+    pz->fileoff = 0x1fe0;
+    pz->filesize = 0x30;
+    memset(b + RMF_REBASE, 0, RMF_SYMS - RMF_REBASE);
+    b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
+    for (uint32_t i = 0; i < n; i++) {
+        b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+        at += rmf_uleb(b + at, slots[i]);
+        b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    }
+    b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 0;
+    at += rmf_uleb(b + at, va + 16);
+    b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    b[at++] = REBASE_OPCODE_DONE;
+    di->rebase_off = RMF_REBASE + 16;
+    di->rebase_size = at - di->rebase_off;
+    rmf_put64(b, 0x1fe0 + va + 8, RMF_VA(RMF_CLASS));
+    rmf_put64(b, 0x1fe0 + va + 16, RMF_VA(RMF_LIST_C));
+    rmf_put64(b, RMF_CATLIST, va);
+}
+static void poke_slot_8_before_linkedit(uint8_t *b) { poke_category_at(b, 8); }
+static void poke_slot_7_before_linkedit(uint8_t *b) { poke_category_at(b, 9); }
+
 static void test_slots_the_conversion_cannot_rewrite_are_refused(void) {
     mma_out o;
     char why[256] = "";
@@ -1247,6 +1295,15 @@ static void test_slots_the_conversion_cannot_rewrite_are_refused(void) {
                   "a method-list slot in __LINKEDIT");
     refused_build(RMF_ABSCAT, poke_abs_in_linkedit, "absolute method list at file offset 0x21a0 "
                   "lies in __LINKEDIT", "an absolute list in __LINKEDIT");
+    refused_build(RMF_PLAIN, poke_slot_7_before_linkedit, "file offset 0x1ff9 lies in __LINKEDIT",
+                  "a method-list slot reaching a byte into __LINKEDIT");
+    {
+        mma_out o;
+        char why[256] = "";
+        int rc = build(RMF_PLAIN, poke_slot_8_before_linkedit, &o, why, sizeof why);
+        CHECK(rc == MMA_OK, "a method-list slot ending where __LINKEDIT begins: rc %d (%s)", rc, why);
+        if (rc == MMA_OK) mma_out_free(&o);
+    }
 }
 
 /* ---- verification ------------------------------------------------------------ */
@@ -1409,19 +1466,6 @@ static void c_twice_moved(mma_out *o) {
           "twice moved: the old stream's last run is %02x %02x %02x %02x", run[0], run[1], run[2], run[3]);
     run[2] = 0x70;
     mrb_free(&was);
-}
-
-static void verifies(void (*poke)(uint8_t *), const char *label) {
-    mma_out o;
-    mi_image in;
-    char why[512] = "";
-    int rc = build(RMF_PLAIN, poke, &o, why, sizeof why);
-    CHECK(rc == MMA_OK, "%s: build rc %d (%s)", label, rc, why);
-    if (rc != MMA_OK) return;
-    mi_wrap(fx, RMF_SIZE, &in);
-    rc = mma_verify(&in, &o, why, sizeof why);
-    CHECK(rc == MMA_OK, "%s: verify rc %d (%s)", label, rc, why);
-    mma_out_free(&o);
 }
 
 static void test_a_slot_rebased_twice_verifies(void) {

@@ -342,7 +342,7 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     }
     rc = MMA_REFUSED;
     for (i = 0; i < w.n; i++) {
-        if (w.refs[i].slot_off >= o->lay.insert) {
+        if (w.refs[i].slot_off > o->lay.insert - 8) {
             mma_fail(why, whysz, MMA_REFUSED, "the method-list pointer at file offset 0x%llx lies "
                      "in __LINKEDIT, which the conversion moves", (unsigned long long)w.refs[i].slot_off);
             goto done;
