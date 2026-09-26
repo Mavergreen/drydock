@@ -20,6 +20,7 @@
 #include <mach-o/stab.h>
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -2571,6 +2572,188 @@ static void test_confirm_needs_function_starts(void) {
 /* A function-starts payload that runs past the file is not read: one that
  * starts inside it and ends past it, and one longer than the file. Either
  * would name __text's start. */
+/* ---- what confirming costs ----
+ * Each sweep decodes from its candidate's function start. Started afresh
+ * every time, many candidates in one long function cost the square of its
+ * length, and many functions after many LC_DATA_IN_CODE ranges cost their
+ * product: each case below then outlasts HR_SLOW, and resumed takes
+ * milliseconds. */
+#define HR_SLOW 10
+static const char *hr_slow_what;
+static void hr_too_slow(int sig) {
+    (void)sig;
+    if (write(STDOUT_FILENO, "FAIL: ", 6) < 0 || write(STDOUT_FILENO, hr_slow_what, strlen(hr_slow_what)) < 0 ||
+        write(STDOUT_FILENO, " took more than 10 s\n", 21) < 0) {}
+    _exit(1);
+}
+
+/* An image whose __text is `n` bytes of `code` at file and vm offset 0x1000,
+ * with `fs` and `dic` payloads after it. */
+static uint8_t *hr_big_image(const uint8_t *code, size_t n, const uint8_t *fs, size_t nfs,
+                             const uint8_t *dic, size_t ndic, size_t *fsize) {
+    size_t size = HR_FOFF + n + nfs + ndic;
+    uint8_t *buf = (uint8_t *)calloc(1, size);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    h->ncmds = 1;
+    struct segment_command_64 *tx = (struct segment_command_64 *)(h + 1);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + sizeof(struct section_64);
+    memcpy(tx->segname, "__TEXT", 6);
+    tx->vmaddr = HR_BASE;
+    tx->vmsize = tx->filesize = size;
+    tx->nsects = 1;
+    h->sizeofcmds = tx->cmdsize;
+    struct section_64 *sc = (struct section_64 *)(tx + 1);
+    strncpy(sc->sectname, "__text", sizeof sc->sectname);
+    memcpy(sc->segname, "__TEXT", 6);
+    sc->addr = HR_CODE;
+    sc->size = n;
+    sc->offset = HR_FOFF;
+    sc->flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+    memcpy(buf + HR_FOFF, code, n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, (uint32_t)(HR_FOFF + n), fs, (uint32_t)nfs);
+    if (dic) hr_add_lc(buf, LC_DATA_IN_CODE, (uint32_t)(HR_FOFF + n + nfs), dic, (uint32_t)ndic);
+    *fsize = size;
+    return buf;
+}
+
+/* `lea base(%rip), %rax` at code[at]. */
+static void hr_put_lea(uint8_t *code, uint32_t at) {
+    code[at] = 0x48;
+    code[at + 1] = 0x8d;
+    hr_plant(code, HR_CODE, at + 2, 0x05, 0, HR_BASE);
+}
+
+static void check_confirms_in_time(const char *what, const uint8_t *buf, size_t fsize) {
+    mhr_cand bad = { 0, 0, 0 };
+    hr_slow_what = what;
+    signal(SIGALRM, hr_too_slow);
+    alarm(HR_SLOW);
+    int r = mhr_confirm(buf, fsize, &bad);
+    alarm(0);
+    signal(SIGALRM, SIG_DFL);
+    CHECK(r == MHR_CONFIRMED, "%s: got %d, candidate %#llx", what, r, (unsigned long long)bad.addr);
+}
+
+/* One function of 149,796 leas, each a candidate. */
+static void test_confirm_resumes_within_a_function(void) {
+    const size_t n = 1u << 20, k = n / 7;
+    static const uint8_t fs[] = { 0x80, 0x20, 0x00 };
+    uint8_t *code = (uint8_t *)malloc(n);
+    size_t fsize;
+    memset(code, 0x90, n);
+    for (size_t i = 0; i < k; i++) hr_put_lea(code, (uint32_t)(7 * i));
+    uint8_t *buf = hr_big_image(code, n, fs, sizeof fs, NULL, 0, &fsize);
+    check_confirms_in_time("confirm: 149,796 candidates in one function", buf, fsize);
+    free(buf);
+    free(code);
+}
+
+/* 300,000 one-byte LC_DATA_IN_CODE ranges, then 300,000 one-lea functions. */
+static void test_confirm_resumes_across_data_in_code(void) {
+    const size_t m = 300000, k = 300000, n = m + 7 * k;
+    uint8_t *code = (uint8_t *)malloc(n), *fs = (uint8_t *)malloc(k + 4), *dic = (uint8_t *)malloc(8 * m);
+    size_t nfs = 0, fsize;
+    memset(code, 0x90, n);
+    for (size_t i = 0; i < k; i++) hr_put_lea(code, (uint32_t)(m + 7 * i));
+    uint64_t first = HR_FOFF + m;                  /* ULEB: the first function's distance from base */
+    do { uint8_t b = first & 0x7f; first >>= 7; fs[nfs++] = (uint8_t)(b | (first ? 0x80 : 0)); } while (first);
+    for (size_t i = 1; i < k; i++) fs[nfs++] = 7;
+    fs[nfs++] = 0;
+    for (size_t i = 0; i < m; i++) {
+        uint32_t off = (uint32_t)(HR_FOFF + i);
+        uint16_t len = 1, kind = 1;
+        memcpy(dic + 8 * i, &off, 4);
+        memcpy(dic + 8 * i + 4, &len, 2);
+        memcpy(dic + 8 * i + 6, &kind, 2);
+    }
+    uint8_t *buf = hr_big_image(code, n, fs, nfs, dic, 8 * m, &fsize);
+    check_confirms_in_time("confirm: 300,000 functions after 300,000 data-in-code ranges", buf, fsize);
+    free(buf);
+    free(dic);
+    free(fs);
+    free(code);
+}
+
+/* __text's bytes at `t`, __stubs' at `u`, each section at the vm address
+ * given, with `fs` and `dic` payloads; mhr_confirm's answer. */
+static int hr_confirm_two(uint64_t taddr, const uint8_t *t, size_t nt, uint64_t uaddr,
+                          const uint8_t *u, size_t nu, const uint8_t *fs, uint32_t nfs,
+                          const uint8_t *dic, uint32_t ndic, mhr_cand *bad) {
+    uint8_t *buf = build_code_image();
+    struct section_64 *sc = (struct section_64 *)((struct segment_command_64 *)
+                                                  ((struct mach_header_64 *)buf + 1) + 1);
+    sc[0].addr = taddr;
+    sc[1].addr = uaddr;
+    memcpy(buf + sc[0].offset, t, nt);
+    memcpy(buf + sc[1].offset, u, nu);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, fs, nfs);
+    if (dic) hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, dic, ndic);
+    int r = mhr_confirm(buf, HR_IMG_SIZE, bad);
+    free(buf);
+    return r;
+}
+
+/* Two functions, each a lea of the header, with a stray 0x68 between them.
+ * Swept on from the first, push $imm32 swallows the second's first bytes. */
+static void test_confirm_resumes_only_in_its_own_function(void) {
+    static const uint8_t fs[] = { 0x80, 0x20, 0x08, 0x00 };   /* base + 0x1000, 0x1008 */
+    struct hr_code k = { { 0x48, 0x8d }, 15, fs, sizeof fs, NULL, 0 };
+    mhr_cand bad = { 0, 0, 0 };
+    hr_plant(k.b, HR_CODE, 2, 0x05, 0, HR_BASE);
+    k.b[7] = 0x68;
+    k.b[8] = 0x48; k.b[9] = 0x8d;
+    hr_plant(k.b, HR_CODE, 10, 0x05, 0, HR_BASE);
+    int r = hr_confirm(&k, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: the second function sweeps from its own start "
+          "(got %d at %#llx)", r, (unsigned long long)bad.addr);
+}
+
+/* Two instruction sections at one vm address. __stubs' add $5, %al; lea
+ * confirms from their shared function start, but resumed where __text's
+ * sweep stopped, one byte in, it reads as add $imm32, %eax. */
+static void test_confirm_resumes_only_in_its_own_section(void) {
+    uint8_t t[16], u[16];
+    mhr_cand bad = { 0, 0, 0 };
+    memset(t, 0x90, sizeof t);
+    memset(u, 0x90, sizeof u);
+    t[0] = 0x55;
+    t[1] = 0x48; t[2] = 0x8d;
+    hr_plant(t, HR_CODE, 3, 0x05, 0, HR_BASE);
+    u[0] = 0x04; u[1] = 0x05;
+    u[2] = 0x48; u[3] = 0x8d;
+    hr_plant(u, HR_CODE, 4, 0x05, 0, HR_BASE);
+    int r = hr_confirm_two(HR_CODE, t, sizeof t, HR_CODE, u, sizeof u, HR_ONE_FUNCTION,
+                           sizeof HR_ONE_FUNCTION, NULL, 0, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: a second section at the same address sweeps afresh "
+          "(got %d at %#llx)", r, (unsigned long long)bad.addr);
+}
+
+/* __stubs, listed after __text but mapped below it, starts with 3 bytes of
+ * data. __text's sweep has passed them; __stubs' must still step over them,
+ * or push $imm32 swallows the lea's first two bytes. */
+static void test_confirm_carries_data_in_code_only_forward(void) {
+    static const uint8_t fs[] = { 0x80, 0x20, 0x80, 0x08, 0x00 };   /* base + 0x1000, 0x1400 */
+    static const uint8_t dic[] = { 0x00, 0x10, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00 };
+    uint8_t t[16], u[16];
+    mhr_cand bad = { 0, 0, 0 };
+    memset(t, 0x90, sizeof t);
+    memset(u, 0x90, sizeof u);
+    t[0] = 0x48; t[1] = 0x8d;
+    hr_plant(t, HR_BASE + 0x1400, 2, 0x05, 0, HR_BASE);
+    u[0] = 0x68;
+    u[3] = 0x48; u[4] = 0x8d;
+    hr_plant(u, HR_BASE + 0x1000, 5, 0x05, 0, HR_BASE);
+    int r = hr_confirm_two(HR_BASE + 0x1400, t, sizeof t, HR_BASE + 0x1000, u, sizeof u,
+                           fs, sizeof fs, dic, sizeof dic, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: a section below the last one swept still steps over "
+          "its data in code (got %d at %#llx)", r, (unsigned long long)bad.addr);
+}
+
 static void test_confirm_ignores_function_starts_past_the_image(void) {
     static const uint32_t at[2] = { HR_IMG_SIZE - 2, 0x1c00 }, size[2] = { 4, 0x10000 };
     for (int i = 0; i < 2; i++) {
@@ -3010,6 +3193,11 @@ int main(void) {
     test_confirm_rejects_an_eip_relative_operand();
     test_confirm_ignores_a_malformed_function_starts_list();
     test_confirm_ignores_an_overlong_function_starts_terminator();
+    test_confirm_resumes_within_a_function();
+    test_confirm_resumes_across_data_in_code();
+    test_confirm_resumes_only_in_its_own_function();
+    test_confirm_resumes_only_in_its_own_section();
+    test_confirm_carries_data_in_code_only_forward();
     test_confirm_ignores_a_wrapping_function_starts_delta();
     test_confirm_reports_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_not_a_multiple_of_8();

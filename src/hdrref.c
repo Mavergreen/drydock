@@ -152,14 +152,30 @@ static int mhr_map_read(struct mhr_map *m, const mi_image *im, size_t fsize) {
     return 0;
 }
 
-/* Decodes from `pc`, a function start in section `s`, to candidate `c`: 1 if
- * the instruction holding c's disp32 is RIP-relative through it, with the
+/* Where the last sweep stopped: at `pc`, in the function starting at `start`
+ * in section `s`, with dic[0, k) all ending at or before pc. Candidates come
+ * in address order within a section, so the next one in the same function
+ * takes up the same walk from there, and any later function can keep k. */
+struct mhr_resume {
+    const struct section_64 *s;
+    uint64_t start, pc;
+    size_t k;
+};
+
+/* Decodes from `start`, a function start in section `s`, to candidate `c`: 1
+ * if the instruction holding c's disp32 is RIP-relative through it, with the
  * immediate that makes its target c's. */
-static int mhr_sweep(const struct mhr_map *m, const struct section_64 *s, uint64_t pc,
-                     const mhr_cand *c) {
+static int mhr_sweep(const struct mhr_map *m, const struct section_64 *s, uint64_t start,
+                     const mhr_cand *c, struct mhr_resume *r) {
     const uint8_t *code = m->buf + s->offset;
-    uint64_t end = s->addr + s->size;
+    uint64_t end = s->addr + s->size, pc = start;
     size_t k = 0;
+    if (r->s == s && r->start == start) {
+        pc = r->pc;
+        k = r->k;
+    } else if (r->pc <= start) {
+        k = r->k;
+    }
     while (pc < c->addr) {
         while (k < m->ndic && m->dic[k].to <= pc) k++;
         if (k < m->ndic && m->dic[k].from <= pc) { pc = m->dic[k].to; continue; }
@@ -169,11 +185,16 @@ static int mhr_sweep(const struct mhr_map *m, const struct section_64 *s, uint64
          * this "instruction" is partly data: its bytes are not all code, so it
          * cannot be the one that addresses c. */
         if (k < m->ndic && m->dic[k].from < pc + (uint64_t)in.len) return 0;
-        if (pc + (uint64_t)in.len > c->addr)
+        if (pc + (uint64_t)in.len > c->addr) {
+            r->s = s;
+            r->start = start;
+            r->pc = pc;
+            r->k = k;
             return in.modrm >= 0 && !in.adsize &&
                    (code[pc - s->addr + (uint64_t)in.modrm] & 0xC7) == 0x05 &&
                    pc + (uint64_t)in.disp == c->addr &&
                    pc + (uint64_t)in.len == c->addr + 4 + (uint64_t)c->immlen;
+        }
         pc += (uint64_t)in.len;
     }
     return 0;
@@ -184,6 +205,7 @@ struct mhr_confirm_ctx {
     const struct section_64 *sect;
     int status;
     mhr_cand *bad;
+    struct mhr_resume r;
 };
 
 static int mhr_confirm_cb(const mhr_cand *c, void *ctx_) {
@@ -191,7 +213,7 @@ static int mhr_confirm_cb(const mhr_cand *c, void *ctx_) {
     const struct mhr_map *m = x->m;
     size_t lo = 0, hi = m->nstarts;               /* past the last start at or below c */
     while (lo < hi) { size_t mid = (lo + hi) / 2; if (m->starts[mid] <= c->addr) lo = mid + 1; else hi = mid; }
-    if (lo > 0 && m->starts[lo - 1] >= x->sect->addr && mhr_sweep(m, x->sect, m->starts[lo - 1], c))
+    if (lo > 0 && m->starts[lo - 1] >= x->sect->addr && mhr_sweep(m, x->sect, m->starts[lo - 1], c, &x->r))
         return 0;
     x->status = m->nstarts ? MHR_UNCONFIRMED : MHR_NO_STARTS;
     *x->bad = *c;
@@ -206,7 +228,7 @@ int mhr_confirm(const uint8_t *buf, size_t fsize, mhr_cand *bad) {
     if (mr == MHR_MAP_BAD_DIC) {
         rc = MHR_UNSCANNABLE;
     } else if (mr == 0) {
-        struct mhr_confirm_ctx x = { &m, NULL, MHR_CONFIRMED, bad };
+        struct mhr_confirm_ctx x = { &m, NULL, MHR_CONFIRMED, bad, { NULL, 0, 0, 0 } };
         rc = mhr_walk(buf, fsize, m.base, mhr_confirm_cb, &x, &x.sect) < 0 ? MHR_UNSCANNABLE : x.status;
     }
     free(m.starts);
