@@ -12,7 +12,10 @@ static const struct { const char *name; unsigned bits; } VARIANTS[] = {
     { "badent", RMF_BADENT },   { "allslots", RMF_ALLSLOTS },
     { "sharedro", RMF_SHAREDRO }, { "catpast", RMF_CATPAST }, { "protopast", RMF_PROTOPAST },
     { "metaout", RMF_METAOUT }, { "selbind", RMF_SELBIND }, { "fstarts", RMF_FSTARTS },
-    { "fsbad", RMF_FSBAD },     { "noslotrb", RMF_NOSLOTRB },
+    { "fsbad", RMF_FSBAD },     { "noslotrb", RMF_NOSLOTRB }, { "dylib", RMF_DYLIB },
+    { "zerotail", RMF_ZEROTAIL }, { "dataro", RMF_DATARO },  { "gap", RMF_GAP },
+    { "segafter", RMF_SEGAFTER }, { "codesig", RMF_CODESIG }, { "split", RMF_SPLIT },
+    { "pad16", RMF_PAD16 },
 };
 
 int main(int argc, char **argv) {
