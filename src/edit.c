@@ -35,6 +35,7 @@
 #include "swift_retag.h"
 #include "declassify.h"
 #include "redirect.h"
+#include "objc_abs.h"
 #include "atomic_write.h"
 #include "mach_compat.h"
 #include "fat.h"
@@ -237,6 +238,33 @@ static void me_log_declared(FILE *log, const mv_decl_report *r, const char *vers
     }
     if (r->catalyst) me_say(log, "; Mac Catalyst build-version removed");
     me_say(log, "\n");
+}
+
+static void me_log_objc_methods(FILE *log, const mma_report *r) {
+    static const char *const one[MML_NOWNERS] = { "class", "metaclass", "category", "protocol" };
+    static const char *const many[MML_NOWNERS] = { "classes", "metaclasses", "categories", "protocols" };
+    char c1[32], c2[32], c3[32], c4[32], c5[32];
+    const char *sep = ": ";
+    if (r->lists == 0) {
+        me_say(log, "      nothing to convert\n");
+        return;
+    }
+    me_say(log, "      converted %s relative method list%s (%s method%s) onto the end of %.16s",
+           me_count(c1, r->lists), r->lists == 1 ? "" : "s", me_count(c2, r->methods),
+           r->methods == 1 ? "" : "s", r->dname);
+    for (int k = 0; k < MML_NOWNERS; k++) {
+        if (!r->owners[k]) continue;
+        me_say(log, "%s%s %s", sep, me_count(c1, r->owners[k]), r->owners[k] == 1 ? one[k] : many[k]);
+        sep = ", ";
+    }
+    me_say(log, "\n");
+    me_say(log, "      added %s rebase%s; %.16s grew %s bytes; __LINKEDIT %s -> %s bytes, moved up %s\n",
+           me_count(c1, r->rebases), r->rebases == 1 ? "" : "s", r->dname, me_count(c2, (long)r->grew),
+           me_count(c3, (long)r->linkedit_before), me_count(c4, (long)r->linkedit_after),
+           me_count(c5, (long)r->grew));
+    if (r->zerofill)
+        me_say(log, "      %.16s's %s bytes of zero fill are file bytes now\n", r->dname,
+               me_count(c1, (long)r->zerofill));
 }
 
 /* The version-min and swift-abi cores take an mi_image; the buffer is the
@@ -479,6 +507,15 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         }
         me_say(log, "drydock-macho-rewrite edit: md_declassify_buf returned an unrecognized code %d\n", rc);
         return MR_FAIL;
+    }
+
+    case MS_OBJC_METHODS: {
+        mma_report r;
+        if (st->op != MS_SET) goto unknown;
+        int rc = mma_convert(pbuf, psize, &r);
+        if (rc != 0) return rc;
+        me_log_objc_methods(log, &r);
+        return 0;
     }
     }
 

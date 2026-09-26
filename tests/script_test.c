@@ -379,6 +379,7 @@ static void test_capabilities_table_round_trips(void) {
         else if (strcmp(kind, "minos") == 0) a = "10.9";
         else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
         else if (strcmp(kind, "fixups") == 0) a = "classic";
+        else if (strcmp(kind, "objc-methods") == 0) a = "absolute";
         else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
 
         if (nargs == 3)
@@ -407,7 +408,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 18, "the statement table has 18 rows (got %d)", n_rows);
+    CHECK(n_rows == 19, "the statement table has 19 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row. Each mask below was read out of
@@ -517,6 +518,32 @@ static void test_disturbs_matches_the_spec_table(void) {
           "minos at-most removes build-versions and may append a version-min: the pad");
     CHECK(ms_disturbs(MS_MINOS, MS_IF_ABSENT) == MREL_HEADER_PAD,
           "minos if-absent does the same, so it costs the same");
+
+    /* The conversion adds no load command and moves no vm address below
+     * __LINKEDIT, so neither the pad nor a base-relative value; it inserts
+     * bytes where __LINKEDIT began, which moves every __LINKEDIT offset. */
+    CHECK(ms_disturbs(MS_OBJC_METHODS, MS_SET) == MREL_FILE_OFF,
+          "objc-methods set absolute moves __LINKEDIT's offsets, and nothing else");
+}
+
+static void test_objc_methods_set_takes_only_absolute(void) {
+    ms_script s; char err[256] = {0};
+    const char *ok = "objc-methods set absolute\n";
+    CHECK(ms_parse(ok, strlen(ok), &s, err, sizeof err) == 0, "objc-methods set absolute rejected: %s", err);
+    CHECK(s.n == 1 && s.stmts[0].kind == MS_OBJC_METHODS && s.stmts[0].op == MS_SET &&
+          strcmp(s.stmts[0].a, "absolute") == 0, "objc-methods set absolute: wrong kind, op or operand");
+    ms_free(&s);
+
+    const char *rel = "objc-methods set relative\n";
+    err[0] = 0;
+    CHECK(ms_parse(rel, strlen(rel), &s, err, sizeof err) == -1 &&
+          strstr(err, "objc-methods set accepts only 'absolute' (got 'relative')") != NULL,
+          "objc-methods set relative: %s", err);
+
+    const char *bare = "objc-methods set\n";
+    err[0] = 0;
+    CHECK(ms_parse(bare, strlen(bare), &s, err, sizeof err) == -1 &&
+          strstr(err, "takes 1 argument (got 0)") != NULL, "objc-methods set with no value: %s", err);
 }
 
 static void test_import_redirect(void) {
@@ -842,6 +869,7 @@ int main(void) {
     test_import_redirect();
     test_minos_at_most_and_if_absent_take_a_version();
     test_retired_minimum_statements_are_unknown();
+    test_objc_methods_set_takes_only_absolute();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

@@ -495,8 +495,8 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 # tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 18 ] && [ "$n_unique" -eq 18 ] \
-    && ok "capabilities: exactly 18 unique statement lines" \
+[ "$n_statements" -eq 19 ] && [ "$n_unique" -eq 19 ] \
+    && ok "capabilities: exactly 19 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 if echo "$caps" | grep -qxF "statement minos at-most 1"; then
     if echo "$caps" | grep -qxF "statement minos set 1"; then
@@ -4939,6 +4939,93 @@ rc=0
     >/dev/null 2>"$T/fat_bad.err" || rc=$?
 [ "$rc" -eq 2 ] && ok "edit: an unknown arch name is a parse error (2)" \
     || bad "edit fat" "arch amd64: expected 2, got $rc: $(cat "$T/fat_bad.err")"
+
+# ---- objc-methods set absolute ------------------------------------------------
+# The fixtures are tests/relmeth_fixture.h's, written by mkrelmeth (built in
+# the info block above); `mkrelmeth entries` is the oracle, reading each
+# method-list slot without src/.
+om() {   # om VARIANT: run `objc-methods set absolute` on relmeth_VARIANT into .out
+    rm -f "$T/relmeth_$1.out"
+    om_rc=0
+    printf 'objc-methods set absolute\n' | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_$1" "$T/relmeth_$1.out" \
+        >"$T/om.out" 2>"$T/om.err" || om_rc=$?
+}
+for v in shared allslots zerotail dylib codesig+split fstarts dataro gap segafter selbind fsbad noslotrb; do
+    "$T/mkrelmeth" make "$v" "$T/relmeth_$v"
+done
+
+echo "$caps" | grep -qxF "statement objc-methods set 1" \
+    && ok "capabilities: objc-methods set is advertised" \
+    || bad "capabilities objc-methods" "no 'statement objc-methods set 1': $(echo "$caps" | grep '^statement objc')"
+
+om_before=$(sha "$T/relmeth_plain")
+om plain
+[ "$om_rc" -eq 0 ] && [ "$(sha "$T/relmeth_plain")" = "$om_before" ] \
+    && ok "objc-methods set absolute: converts, and leaves FILE as it was" \
+    || bad "objc-methods plain" "rc $om_rc: $(cat "$T/om.err")"
+grep -qxF "      converted 4 relative method lists (5 methods) onto the end of __DATA: 1 class, 1 metaclass, 1 category, 1 protocol" "$T/om.err" \
+    && grep -qxF "      added 14 rebases; __DATA grew 4,096 bytes; __LINKEDIT 512 -> 584 bytes, moved up 4,096" "$T/om.err" \
+    && ok "objc-methods set absolute: logs what it converted and what moved" \
+    || bad "objc-methods log" "$(cat "$T/om.err")"
+[ "$(info_ml "$T/relmeth_plain.out")" = "objc-methods: 0 relative, 4 absolute" ] \
+    && ok "objc-methods set absolute: info counts every list absolute afterwards" \
+    || bad "objc-methods info" "got: '$(info_ml "$T/relmeth_plain.out")'"
+"$T/mkrelmeth" entries "$T/relmeth_plain" | sed 's/ rel / abs /' >"$T/om.want"
+"$T/mkrelmeth" entries "$T/relmeth_plain.out" >"$T/om.got"
+[ -s "$T/om.want" ] && cmp -s "$T/om.want" "$T/om.got" \
+    && ok "objc-methods set absolute: the oracle reads the same methods, in the same order" \
+    || bad "objc-methods oracle" "$(diff "$T/om.want" "$T/om.got")"
+"$DRYDOCK_MACHO_REWRITE" verify "$T/relmeth_plain.out" >/dev/null 2>"$T/om_v.err" \
+    && ok "objc-methods set absolute: the output passes verify" \
+    || bad "objc-methods verify" "$(cat "$T/om_v.err")"
+
+for v in shared allslots zerotail dylib codesig+split fstarts; do
+    om "$v"
+    "$T/mkrelmeth" entries "$T/relmeth_$v" | sed 's/ rel / abs /' >"$T/om.want"
+    "$T/mkrelmeth" entries "$T/relmeth_$v.out" >"$T/om.got" 2>/dev/null || true
+    [ "$om_rc" -eq 0 ] && [ -s "$T/om.want" ] && cmp -s "$T/om.want" "$T/om.got" \
+        && ok "objc-methods set absolute: $v converts to what the oracle reads" \
+        || bad "objc-methods $v" "rc $om_rc: $(cat "$T/om.err"; diff "$T/om.want" "$T/om.got")"
+done
+om allslots
+grep -qxF "      converted 4 relative method lists (5 methods) onto the end of __DATA: 1 class, 1 metaclass, 2 categories" "$T/om.err" \
+    && ok "objc-methods set absolute: counts a list by the record of the first slot naming it" \
+    || bad "objc-methods allslots log" "$(cat "$T/om.err")"
+om zerotail
+grep -qxF "      __DATA's 4,096 bytes of zero fill are file bytes now" "$T/om.err" \
+    && ok "objc-methods set absolute: says when a zero-fill tail became file bytes" \
+    || bad "objc-methods zerotail log" "$(cat "$T/om.err")"
+om dylib
+"$DRYDOCK_MACHO_REWRITE" info "$T/relmeth_dylib.out" 2>/dev/null | grep -qxF "header pad: 16 bytes available (LC end=2032, first sect=2048)" \
+    && ok "objc-methods set absolute: a dylib with 16 bytes of pad converts, and keeps its 16" \
+    || bad "objc-methods dylib pad" "$("$DRYDOCK_MACHO_REWRITE" info "$T/relmeth_dylib.out" 2>&1 | grep '^header pad')"
+
+om_refused() {   # om_refused VARIANT WANT LABEL
+    om_was=$(sha "$T/relmeth_$1")
+    om "$1"
+    [ "$om_rc" -eq 1 ] && [ ! -e "$T/relmeth_$1.out" ] && [ "$(sha "$T/relmeth_$1")" = "$om_was" ] \
+        && grep -qF "$2" "$T/om.err" \
+        && ok "objc-methods set absolute: refuses $3 (1), writing nothing" \
+        || bad "objc-methods refuses $3" "rc $om_rc, want 1 and '$2': $(cat "$T/om.err")"
+}
+om_refused chained "the image has chained fixups; fixups set classic first" "a chained image"
+om_refused dataro "is not writable" "a read-only __DATA"
+om_refused gap "does not end where __LINKEDIT begins" "a gap before __LINKEDIT"
+om_refused segafter "__LINKEDIT is not the last segment" "a segment after __LINKEDIT"
+om_refused selbind "is bound to another image" "a bound selector reference"
+om_refused fsbad "is not one of the 3 function starts" "an IMP that is not a function start"
+om_refused noslotrb "carries no rebase" "a method-list slot with no rebase"
+
+cp "$T/relmeth_plain.out" "$T/relmeth_again"
+om again
+[ "$om_rc" -eq 0 ] && grep -qxF "      nothing to convert" "$T/om.err" && cmp -s "$T/relmeth_again" "$T/relmeth_again.out" \
+    && ok "objc-methods set absolute: a converted image has nothing to convert, and is written unchanged" \
+    || bad "objc-methods again" "rc $om_rc: $(cat "$T/om.err")"
+
+rc=0; printf 'objc-methods set relative\n' | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_plain" "$T/om_rel.out" >/dev/null 2>"$T/om_rel.err" || rc=$?
+[ "$rc" -eq 2 ] && [ ! -e "$T/om_rel.out" ] && grep -qF "objc-methods set accepts only 'absolute' (got 'relative')" "$T/om_rel.err" \
+    && ok "objc-methods set: any value but absolute is a parse error (2)" \
+    || bad "objc-methods set relative" "rc $rc: $(cat "$T/om_rel.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"
