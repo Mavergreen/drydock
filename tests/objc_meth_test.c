@@ -1451,6 +1451,37 @@ static void test_convert_swaps_only_what_verifies(void) {
     free(buf);
 }
 
+/* A bogus LC_DYLD_INFO_ONLY, its rebase stream far outside the file, ahead
+ * of the real one. */
+static void poke_info_bogus_first(uint8_t *b) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    uint8_t *p = (uint8_t *)info_of(b), *end = b + sizeof *h + h->sizeofcmds;
+    struct dyld_info_command d;
+    memmove(p + sizeof d, p, (size_t)(end - p));
+    memset(&d, 0, sizeof d);
+    d.cmd = LC_DYLD_INFO_ONLY;
+    d.cmdsize = sizeof d;
+    d.rebase_off = 0x7ffff000u;
+    d.rebase_size = 0x10000u;
+    memcpy(p, &d, sizeof d);
+    h->ncmds++;
+    h->sizeofcmds += sizeof d;
+}
+
+/* Last in main: before the guards they test, each of these read or wrote
+ * past a buffer. */
+static void test_build_refuses_what_would_overrun(void) {
+    mma_out o;
+    char why[256] = "";
+    int rc = build(RMF_PLAIN, poke_rebase_to_eof, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "a rebase stream ending at the end of the file: build rc %d (%s)", rc, why);
+    if (rc == MMA_OK) mma_out_free(&o);
+    refused_build(RMF_PLAIN, poke_info_bogus_first, "the image has 2 LC_DYLD_INFO commands",
+                  "a bogus LC_DYLD_INFO_ONLY before the real one");
+    refused_build(RMF_PLAIN, poke_rebase_past, "the rebase stream, 0x2200 bytes at 0x2000, runs past "
+                  "the end of the file", "a rebase stream past the file");
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -1495,6 +1526,7 @@ int main(void) {
     test_an_imp_resolving_to_address_0_is_refused();
     test_an_unbased_image_names_its_own_refusal();
     test_insert_refuses_what_would_overrun();
+    test_build_refuses_what_would_overrun();
 
     if (fails) {
         printf("%d failure(s)\n", fails);

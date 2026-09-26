@@ -284,6 +284,7 @@ void mma_out_free(mma_out *o) {
 
 int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     const struct dyld_info_command *di = NULL;
+    mma_scan_ctx scan = { 0, 0 };
     mma_seg segs[MML_MAX_SEGS];
     mml_walk w;
     mml_resolver res;
@@ -309,9 +310,20 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
         return MMA_NOTHING;
     }
     mi_each_lc(im, mma_find_info, &di);
+    mi_each_lc(im, mma_scan_lc, &scan);
     if (!di) {
         mml_walk_free(&w);
         return mma_fail(why, whysz, MMA_REFUSED, "no LC_DYLD_INFO: there is no rebase stream to extend");
+    }
+    if (scan.ninfo > 1) {
+        mml_walk_free(&w);
+        return mma_fail(why, whysz, MMA_REFUSED, "the image has %d LC_DYLD_INFO commands, and only "
+                        "one rebase stream can be replaced", scan.ninfo);
+    }
+    if (di->rebase_size && (di->rebase_off > im->size || di->rebase_size > im->size - di->rebase_off)) {
+        mml_walk_free(&w);
+        return mma_fail(why, whysz, MMA_REFUSED, "the rebase stream, 0x%x bytes at 0x%x, runs past "
+                        "the end of the file", di->rebase_size, di->rebase_off);
     }
     nsegs = mma_segments(im, segs, MML_MAX_SEGS);
     if ((rc = mma_layout_check(segs, nsegs, im->size, &o->lay, why, whysz)) != MMA_OK) {

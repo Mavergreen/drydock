@@ -92,9 +92,10 @@ int  mma_room(const mml_walk *w, const uint32_t *first, uint64_t list_va, uint64
 /* Converts `im`, which is only read, into o->buf: MMA_OK; MMA_NOTHING when
  * the walk finds no relative list; MMA_REFUSED or MMA_NOMEM with why set.
  * Refuses an image that is not x86_64, has chained fixups, has no
- * LC_DYLD_INFO, fails the walk or the layout, has a method-list slot or an
- * absolute list in __LINKEDIT, has a slot without a pointer rebase, needs
- * lists past 4GB, or has an entry mml_entry_at will not resolve. The new
+ * LC_DYLD_INFO or more than one, has a rebase stream outside the file, fails
+ * the walk or the layout, has a method-list slot or an absolute list in
+ * __LINKEDIT, has a slot without a pointer rebase, needs lists past 4GB, or
+ * has an entry mml_entry_at will not resolve. The new
  * lists keep their entries' order; each carries one rebase per pointer that
  * is not 0. */
 int  mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz);
