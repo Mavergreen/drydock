@@ -2636,15 +2636,10 @@ static void test_confirm_needs_function_starts(void) {
           r, (unsigned long long)bad.addr);
 }
 
-/* A function-starts payload that runs past the file is not read: one that
- * starts inside it and ends past it, and one longer than the file. Either
- * would name __text's start. */
 /* ---- what confirming costs ----
- * Each sweep decodes from its candidate's function start. Started afresh
- * every time, many candidates in one long function cost the square of its
- * length, and many functions after many LC_DATA_IN_CODE ranges cost their
- * product: each case below then outlasts HR_SLOW, and resumed takes
- * milliseconds. */
+ * Each case below must confirm within HR_SLOW seconds. A sweep that
+ * restarts at its function start for every candidate, or rescans
+ * LC_DATA_IN_CODE from its first range, does not. */
 #define HR_SLOW 10
 static const char *hr_slow_what;
 static void hr_too_slow(int sig) {
@@ -2849,6 +2844,9 @@ static void test_confirm_carries_data_in_code_only_from_where_it_was_passed(void
           (unsigned long long)bad.addr);
 }
 
+/* A function-starts payload that runs past the file is not read: one that
+ * starts inside it and ends past it, and one longer than the file. Either
+ * would name __text's start. */
 static void test_confirm_ignores_function_starts_past_the_image(void) {
     static const uint32_t at[2] = { HR_IMG_SIZE - 2, 0x1c00 }, size[2] = { 4, 0x10000 };
     for (int i = 0; i < 2; i++) {
@@ -3066,11 +3064,6 @@ static void test_confirm_ignores_a_wrapping_function_starts_delta(void) {
     CHECK(r == MHR_NO_STARTS, "confirm: a wrapping delta discards every start (got %d)", r);
 }
 
-/* An LC_DATA_IN_CODE payload past the image, or whose size is not a
- * multiple of its 8-byte entry, must not be treated as "no data-in-code to
- * step over" -- that lets literal data pass as code. Either makes the
- * image MHR_UNSCANNABLE, mirroring how an instruction section past the
- * image already does. */
 /* An empty LC_DATA_IN_CODE is nothing to step over, wherever it points, as
  * mg_dice_walk already reads it. */
 static void test_confirm_ignores_empty_data_in_code_past_the_image(void) {
@@ -3089,6 +3082,11 @@ static void test_confirm_ignores_empty_data_in_code_past_the_image(void) {
     free(buf);
 }
 
+/* An LC_DATA_IN_CODE payload past the image, or whose size is not a
+ * multiple of its 8-byte entry, must not be treated as "no data-in-code to
+ * step over" -- that lets literal data pass as code. Either makes the
+ * image MHR_UNSCANNABLE, mirroring how an instruction section past the
+ * image already does. */
 static void test_confirm_reports_data_in_code_past_the_image(void) {
     uint8_t *buf = build_code_image();
     struct hr_code k = hr_push_lea();
