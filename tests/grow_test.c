@@ -2821,6 +2821,27 @@ static void test_confirm_carries_data_in_code_only_forward(void) {
           "its data in code (got %d at %#llx)", r, (unsigned long long)bad.addr);
 }
 
+/* __text and __stubs share one vm address, one function start and one
+ * data-in-code range, [X, X+3). __text's sweep passes the range; __stubs'
+ * must still step over it, so the lea it hides there is data, not a
+ * reference. */
+static void test_confirm_carries_data_in_code_only_from_where_it_was_passed(void) {
+    static const uint8_t dic[] = { 0x00, 0x10, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00 };
+    uint8_t t[16], u[16];
+    mhr_cand bad = { 0, 0, 0 };
+    memset(t, 0x90, sizeof t);
+    memset(u, 0x90, sizeof u);
+    t[3] = 0x48; t[4] = 0x8d;
+    hr_plant(t, HR_CODE, 5, 0x05, 0, HR_BASE);
+    u[0] = 0x48; u[1] = 0x8d;
+    hr_plant(u, HR_CODE, 2, 0x05, 0, HR_BASE);
+    int r = hr_confirm_two(HR_CODE, t, sizeof t, HR_CODE, u, sizeof u, HR_ONE_FUNCTION,
+                           sizeof HR_ONE_FUNCTION, dic, sizeof dic, &bad);
+    CHECK(r == MHR_UNCONFIRMED && bad.addr == HR_CODE + 3, "confirm: a lea inside another "
+          "section's data in code is not confirmed (got %d at %#llx)", r,
+          (unsigned long long)bad.addr);
+}
+
 static void test_confirm_ignores_function_starts_past_the_image(void) {
     static const uint32_t at[2] = { HR_IMG_SIZE - 2, 0x1c00 }, size[2] = { 4, 0x10000 };
     for (int i = 0; i < 2; i++) {
@@ -3347,6 +3368,7 @@ int main(void) {
     test_confirm_resumes_only_in_its_own_function();
     test_confirm_resumes_only_in_its_own_section();
     test_confirm_carries_data_in_code_only_forward();
+    test_confirm_carries_data_in_code_only_from_where_it_was_passed();
     test_confirm_ignores_a_wrapping_function_starts_delta();
     test_confirm_ignores_empty_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_past_the_image();
