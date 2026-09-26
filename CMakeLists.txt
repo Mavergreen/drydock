@@ -283,6 +283,14 @@ add_test(NAME linkedit_order_test COMMAND linkedit_order_test
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(linkedit_order_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
+# 10.9's own codesign_allocate as the oracle for linkedit_order_test's
+# expectations. It SKIPs anywhere else, CI included.
+add_executable(mklinkedit tests/mklinkedit.c)
+target_compile_options(mklinkedit PRIVATE -O2 -Wall -Wextra -Wno-unused-function)
+add_test(NAME codesign_order_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/codesign_order_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+set_tests_properties(codesign_order_test PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(relations_test tests/relations_test.c)
 target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(relations_test PRIVATE drydockcore)
