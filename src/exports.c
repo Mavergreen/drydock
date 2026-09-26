@@ -94,13 +94,14 @@ static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
         const uint8_t *p = t + off;
         uint64_t tsize;
         int n = mu_decode(p, end, &tsize);
-        if (n == 0) MEXP_FAIL("a terminal size is truncated");
+        if (n == 0) MEXP_FAIL("a terminal size is truncated or past 64 bits");
         p += n;
         if (tsize > (uint64_t)(end - p)) MEXP_FAIL("a terminal runs past its end");
         const uint8_t *children = p + tsize;
         if (tsize) {
             uint64_t flags;
-            if (mu_decode(p, children, &flags) == 0) MEXP_FAIL("a symbol's flags are truncated");
+            if (mu_decode(p, children, &flags) == 0)
+                MEXP_FAIL("a symbol's flags are truncated or past 64 bits");
             const char *kind;
             if (flags & EXPORT_SYMBOL_FLAGS_REEXPORT) kind = "reexport";
             else if (flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) kind = "stub-resolver";
@@ -135,7 +136,7 @@ static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
             q++;
             uint64_t child;
             int m = mu_decode(q, end, &child);
-            if (m == 0) MEXP_FAIL("a child offset is truncated");
+            if (m == 0) MEXP_FAIL("a child offset is truncated or past 64 bits");
             q += m;
             f->next = q;
             f->child++;

@@ -71,12 +71,15 @@ static void test_malformed_streams_are_refused(void) {
     static const uint8_t runsoff[] = { 0x11, 0x22, 0x80 };
     static const uint8_t huge[]    = { 0x11, 0x22, 0x00, 0x60, 0x80, 0x80, 0x80, 0x10 };
     static const uint8_t partial[] = { 0x11, 0x22, 0x00, 0x51, 0x90 };
+    static const uint8_t past64[]  = { 0x11, 0x22, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+                                       0x80, 0x80, 0x02, 0x51 };
     refused(unknown, sizeof unknown, "unknown rebase opcode 0x90", "unknown opcode");
     refused(noseg, sizeof noseg, "before any segment", "a rebase before any segment");
     refused(bigseg, sizeof bigseg, "names segment 4", "a segment the image lacks");
     refused(runsoff, sizeof runsoff, "runs off", "a ULEB off the end");
     refused(huge, sizeof huge, "past 16777216 slots", "a count past the cap");
     refused(partial, sizeof partial, "unknown rebase opcode", "slots decoded before a refusal");
+    refused(past64, sizeof past64, "past 64 bits", "a ULEB whose value passes 64 bits");
 }
 
 static void test_rebase_type_is_restricted(void) {

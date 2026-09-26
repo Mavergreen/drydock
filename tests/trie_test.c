@@ -9,10 +9,13 @@
  *   src/uleb.c && /tmp/trietest
  */
 #include "trie.h"
+#include "exports.h"
 #include "../src/uleb.h"
+#include <mach-o/loader.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -426,6 +429,65 @@ static void test_rebuild_absolute_export_untouched(void) {
     free(out);
 }
 
+/* ---- exports' reading of a trie (src/exports.h) ----
+ * An x86_64 image whose LC_DYLD_INFO_ONLY names `trie` at 0x100: what
+ * mexp_report prints on stderr, into `err`, and its answer. */
+static void no_row(const mexp_row *row, void *ctx) { (void)row; (void)ctx; }
+static int exports_of(const uint8_t *trie, uint32_t n, char *err, size_t errsz) {
+    uint8_t buf[0x200];
+    char path[512];
+    const char *tmpdir = getenv("TMPDIR");
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->filetype = MH_DYLIB;
+    h->ncmds = 1;
+    h->sizeofcmds = sizeof(struct dyld_info_command);
+    struct dyld_info_command *di = (struct dyld_info_command *)(h + 1);
+    di->cmd = LC_DYLD_INFO_ONLY;
+    di->cmdsize = sizeof *di;
+    di->export_off = 0x100;
+    di->export_size = n;
+    memcpy(buf + 0x100, trie, n);
+    snprintf(path, sizeof path, "%s/trie_test_stderr.%d", tmpdir ? tmpdir : "/tmp", (int)getpid());
+    fflush(stderr);
+    int saved = dup(fileno(stderr));
+    if (!freopen(path, "w", stderr)) { CHECK(0, "could not capture stderr"); return -99; }
+    int rc = mexp_report(buf, sizeof buf, no_row, NULL);
+    fflush(stderr);
+    dup2(saved, fileno(stderr));
+    close(saved);
+    clearerr(stderr);
+    FILE *f = fopen(path, "r");
+    size_t got = f ? fread(err, 1, errsz - 1, f) : 0;
+    err[got] = '\0';
+    if (f) fclose(f);
+    unlink(path);
+    return rc;
+}
+
+/* 80 x9 02 is 2^64 with its one set bit dropped: a ULEB past 64 bits, in
+ * each of the three places a trie holds one. */
+static void test_exports_names_a_uleb_past_64_bits(void) {
+    static const uint8_t term[] = { 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02, 0x00 };
+    static const uint8_t flags[] = { 0x0b, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
+                                     0x00, 0x00 };
+    static const uint8_t child[] = { 0x00, 0x01, 'A', 0x00,
+                                     0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02 };
+    static const struct { const uint8_t *t; uint32_t n; const char *want; } c[] = {
+        { term, sizeof term, "malformed export trie: a terminal size is truncated or past 64 bits" },
+        { flags, sizeof flags, "malformed export trie: a symbol's flags are truncated or past 64 bits" },
+        { child, sizeof child, "malformed export trie: a child offset is truncated or past 64 bits" },
+    };
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        char err[1024];
+        int rc = exports_of(c[i].t, c[i].n, err, sizeof err);
+        CHECK(rc == MEXP_REFUSED && strstr(err, c[i].want), "exports: rc %d, stderr '%s', want '%s'",
+              rc, err, c[i].want);
+    }
+}
+
 int main(void) {
     test_rebuild_root_terminal_shifts_address();
     test_rebuild_widens_when_needed();
@@ -439,6 +501,7 @@ int main(void) {
     test_rebuild_depth_cap_refuses();
     test_rebuild_many_edges_none_dropped();
     test_rebuild_absolute_export_untouched();
+    test_exports_names_a_uleb_past_64_bits();
 
     if (fails) { printf("%d FAIL(S)\n", fails); return 1; }
     printf("ALL PASS\n");

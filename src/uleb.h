@@ -18,7 +18,7 @@
 #include <stdint.h>
 
 /* Decode one ULEB128 at p (< end). Returns bytes consumed, 0 if malformed
- * (continuation runs past end, or > 10 bytes). *out = value. */
+ * (continuation runs past end, > 10 bytes, or a value past 64 bits). *out = value. */
 int mu_decode(const uint8_t *p, const uint8_t *end, uint64_t *out);
 
 /* Minimal number of bytes to ULEB-encode v (>= 1). */
