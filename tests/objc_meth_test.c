@@ -7,9 +7,12 @@
 #include "rewrite.h"
 #include "relmeth_fixture.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <malloc/malloc.h>
 #include <mach-o/loader.h>
 
 static int fails = 0;
@@ -17,6 +20,19 @@ static int fails = 0;
     printf("FAIL: " msg "\n", ##__VA_ARGS__); fails++; } } while (0)
 
 static uint8_t fx[RMF_SIZE];
+
+/* Every allocation src/ makes in this binary comes here: after oom_after
+ * more succeed, the next fails (never, while oom_after is negative). */
+static long oom_after = -1;
+static int oom_failed;
+static int oom_now(void) {
+    if (oom_after < 0 || oom_after-- > 0) return 0;
+    oom_failed = 1;
+    return 1;
+}
+void *malloc(size_t n) { return oom_now() ? NULL : malloc_zone_malloc(malloc_default_zone(), n); }
+void *calloc(size_t k, size_t n) { return oom_now() ? NULL : malloc_zone_calloc(malloc_default_zone(), k, n); }
+void *realloc(void *p, size_t n) { return oom_now() ? NULL : malloc_zone_realloc(malloc_default_zone(), p, n); }
 
 static int walk(unsigned variant, mml_walk *w) {
     mi_image im;
@@ -1599,6 +1615,50 @@ static void test_convert_swaps_only_what_verifies(void) {
     free(buf);
 }
 
+/* Failing each of a conversion's allocations in turn, the k-th for k = 0, 1,
+ * ...: every one is MR_FAIL, out of memory, with the image as it was, until
+ * a conversion makes no allocation that fails and succeeds. */
+static void check_every_allocation_failure_is_out_of_memory(unsigned variant, const char *label) {
+    static uint8_t pristine[RMF_SIZE];
+    int quiet = open("/dev/null", O_WRONLY), saved = dup(STDERR_FILENO);
+    long k;
+    rmf_build(pristine, variant);
+    fflush(stderr);
+    dup2(quiet, STDERR_FILENO);
+    for (k = 0; k < 100000; k++) {
+        uint8_t *buf = malloc(RMF_SIZE);
+        size_t size = RMF_SIZE;
+        mma_report rep;
+        memcpy(buf, pristine, RMF_SIZE);
+        oom_failed = 0;
+        oom_after = k;
+        int rc = mma_convert(&buf, &size, &rep);
+        oom_after = -1;
+        if (!oom_failed) {
+            CHECK(rc == 0 && rep.lists > 0, "%s: with no allocation failing: rc %d, %u lists",
+                  label, rc, rep.lists);
+            free(buf);
+            break;
+        }
+        CHECK(rc == MR_FAIL, "%s: allocation %ld failing: rc %d, want MR_FAIL", label, k, rc);
+        CHECK(size == RMF_SIZE && memcmp(buf, pristine, RMF_SIZE) == 0,
+              "%s: allocation %ld failing: the image changed", label, k);
+        free(buf);
+    }
+    fflush(stderr);
+    dup2(saved, STDERR_FILENO);
+    close(saved);
+    close(quiet);
+    CHECK(k > 0 && k < 100000, "%s: %ld allocations", label, k);
+}
+
+static void test_every_allocation_failure_is_out_of_memory(void) {
+    check_every_allocation_failure_is_out_of_memory(RMF_PLAIN, "oom plain");
+    check_every_allocation_failure_is_out_of_memory(RMF_SHARED | RMF_ALLSLOTS, "oom shared, all slots");
+    check_every_allocation_failure_is_out_of_memory(RMF_ZEROTAIL | RMF_CODESIG | RMF_SPLIT,
+                                                    "oom zero fill, signature, split info");
+}
+
 /* A bogus LC_DYLD_INFO_ONLY, its rebase stream far outside the file, ahead
  * of the real one. */
 static void poke_info_bogus_first(uint8_t *b) {
@@ -1664,6 +1724,7 @@ int main(void) {
     test_verification_refuses_every_difference();
     test_a_slot_rebased_twice_verifies();
     test_convert_swaps_only_what_verifies();
+    test_every_allocation_failure_is_out_of_memory();
     test_new_rebases_name_ds_own_segment();
     test_slots_the_conversion_cannot_rewrite_are_refused();
     test_layout_refuses_ends_that_wrap();
