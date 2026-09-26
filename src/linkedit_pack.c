@@ -303,6 +303,21 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
                  "codesign_allocate's writer neither counts nor writes");
         return MLO_DECLINED;
     }
+    /* Outside MH_DYLDLINK, symbol_string_at_end counts an empty string table
+     * as no bytes but still expects the indirect table's end at the gap a
+     * rounded signature leaves for it; the pass's placement of an empty
+     * piece at offset 0 cannot reproduce that gap. No layout survives it. */
+    {
+        struct mach_header_64 *h0 = (struct mach_header_64 *)buf;
+        if (h0->filetype != MH_DYLIB && !(h0->flags & MH_DYLDLINK) &&
+            ps.p[MLO_P_SYMTAB].present && ps.p[MLO_P_SYMTAB].size &&
+            ps.p[MLO_P_STRTAB].present && !ps.p[MLO_P_STRTAB].size &&
+            ps.p[MLO_P_INDIRECT].present && ps.p[MLO_P_SIG].present) {
+            mlo_fail(why, whysz, "the image is signed and has LC_DYSYMTAB but an empty string "
+                     "table, outside MH_DYLDLINK, which no layout survives");
+            return MLO_DECLINED;
+        }
+    }
     uint64_t covered = 0;
     for (int k = 0; k < MLO_P_N; k++) {
         const mlo_piece *q = &ps.p[k];

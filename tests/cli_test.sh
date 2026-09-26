@@ -5182,6 +5182,28 @@ lo "$T/lk_hole-16-note" "$T/lk_note.out" 'rpath append /lk'
     && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
     && ok "order: one it cannot repair is refused (1), saying why, and OUT is not written" \
     || bad "order: hole refused" "rc $lo_rc: $(cat "$T/lo.err")"
+# Decisions 6-7: the report carries resign 10.9 whenever the run is refused,
+# not only when the pass packed.
+grep -qF "$T/lk_hole-16-note: resign 10.9: " "$T/lo.err" \
+    && ok "order: a refused run also says what 10.9's codesign_allocate says" \
+    || bad "order: refused resign 10.9 line" "$(cat "$T/lo.err")"
+
+# A thin file has one slice, so an `arch` directive that selected it is never
+# the reason a corrupting slice was not fixed: the fat-only remedy must not
+# appear.
+lo "$T/lk_hole-16-note" "$T/lk_note_arch.out" 'arch x86_64' 'rpath append /lk'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_note_arch.out" ] \
+    && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
+    && ! grep -q 'run the script without arch' "$T/lo.err" \
+    && ok "order: a thin refusal under arch gets no fat-only remedy" \
+    || bad "order: thin arch refused" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# An empty script still packs a corrupting input (any edit does, even none);
+# with nothing disturbed, the report must not claim nothing happened.
+lo "$T/lk_hole-16" "$T/lk_hole_empty.out"
+[ "$lo_rc" -eq 0 ] && packed && ! grep -q 'disturbed nothing' "$T/lo.err" \
+    && ok "order: an empty script that still packs says nothing false about disturbing nothing" \
+    || bad "order: empty script pack" "rc $lo_rc: $(cat "$T/lo.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"

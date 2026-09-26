@@ -556,14 +556,21 @@ static void me_note_disturbed(unsigned *disturbed, const ms_stmt *st,
 /* The gate did not apply, so the report says what the run DID disturb: with
  * the verify now conditional, "why was my file not verified?" is a question
  * the line itself has to answer. Names come from mrel_name, so a relation
- * cannot be renamed in one place and reported under the old name here. */
-static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed) {
+ * cannot be renamed in one place and reported under the old name here.
+ *
+ * `packed` is whether the __LINKEDIT pass changed the image: when it did,
+ * "disturbed nothing" would be false (the pack is not one of the relations
+ * this tracks, but it is still a change), so that claim is skipped -- the
+ * re-packed line already said what happened, and the pack itself is not
+ * something mg_plausible re-checks either way. */
+static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed, int packed) {
     char names[160];   /* every name src/relations.h has, joined, with slack */
     size_t used = 0;
     unsigned bit;
 
     if (disturbed == MREL_NONE) {
-        me_say(log, "%s: this run disturbed nothing, so there is nothing to re-check\n", what);
+        if (!packed)
+            me_say(log, "%s: this run disturbed nothing, so there is nothing to re-check\n", what);
         return;
     }
     names[0] = '\0';
@@ -795,16 +802,23 @@ static int me_pack(uint8_t **pbuf, size_t *psize, const uint8_t *orig, size_t os
 }
 
 /* Before the write: refuse a file some slice of which codesign_allocate
- * would re-sign corrupt, and, when the pass changed a slice, say whether 10.9
- * can re-sign the file. Returns 0 or MR_REFUSED. */
+ * would re-sign corrupt, and say whether 10.9 can re-sign the file whenever
+ * the pass changed a slice or the run is refused (Decisions 6-7). Returns 0
+ * or MR_REFUSED. */
 static int me_resign(const uint8_t *buf, size_t size, const char *path, const char *out,
                      const ms_script *s, int packed, FILE *log) {
     char refusal[256], corrupt[4096];
     int rc = mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
     if (rc == 2) {
+        /* The remedy is only for a corrupting slice `arch` did not select,
+         * which can only happen in a fat file: a thin buffer is the one
+         * slice the run already had to select to get here. */
+        uint32_t magic = size >= sizeof magic ? *(const uint32_t *)buf : 0;
+        int fat = magic == FAT_MAGIC || magic == FAT_CIGAM;
+        me_say(log, "%s: resign 10.9: %s\n", path, refusal);
         me_say(log, "drydock-macho-rewrite edit: refused: codesign_allocate would re-sign %s corrupt "
                     "(%s)%s; ", out, corrupt,
-               s->arch_mask ? "; run the script without arch, or on that slice" : "");
+               (s->arch_mask && fat) ? "; run the script without arch, or on that slice" : "");
         me_say_left(log, path, out);
         return MR_REFUSED;
     }
@@ -913,7 +927,7 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     } else {
         char what[64];
         snprintf(what, sizeof what, "slice %s", name);
-        me_say_not_rechecked(c->log, what, disturbed);
+        me_say_not_rechecked(c->log, what, disturbed, 0);
     }
     *changed = 1;
     return 0;
@@ -1205,7 +1219,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         }
         me_say(log, "%s: verified\n", path);
     } else {
-        me_say_not_rechecked(log, path, disturbed);
+        me_say_not_rechecked(log, path, disturbed, packed);
     }
 
     return me_write_once(buf, size, path, out, log);

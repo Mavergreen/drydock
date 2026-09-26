@@ -441,6 +441,44 @@ static void test_the_pass_declines_load_commands_in_linkedit(void) {
     free(buf);
 }
 
+/* A signed, static (non-MH_DYLDLINK) image with LC_DYSYMTAB and an empty
+ * string table: checkout.c's symbol_string_at_end counts the string table as
+ * no bytes but still expects the indirect table's end at the gap a rounded
+ * signature leaves for it, which the pass's placement of an empty piece at
+ * offset 0 cannot reproduce. No layout survives it, so the pass must decline
+ * (fuzz-found; it used to fail a postcondition instead). */
+static void test_the_pass_declines_empty_strtab_outside_dyldlink(void) {
+    /* Not corrupting as given: a decline must leave it alone, safe to write. */
+    uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+    size_t n = lkf_build(buf, "rebase bind weak lazy export +4 fstarts dic drs symtab +16 "
+                         "indirect:8 strtab:0 sig", LKF_EXECUTE | LKF_STATIC);
+    uint8_t *copy = (uint8_t *)malloc(n);
+    memcpy(copy, buf, n);
+    mlo_verdict v;
+    check(buf, n, &v);
+    CHECK(!v.corrupting, "empty-strtab static signed, not stale: not corrupting as given");
+    mlo_pack_report r;
+    char why[256] = "";
+    int rc = pack(&buf, &n, &r, why);
+    CHECK(rc == MLO_DECLINED && strstr(why, "string table") && memcmp(buf, copy, n) == 0,
+          "empty-strtab static signed, not stale: declined (got %d: %s)", rc, why);
+    free(copy);
+    free(buf);
+
+    /* Corrupting as given (a stale DRS size): still a decline, not a failed
+     * postcondition -- so the CLI can refuse it (exit 1), not error (exit 2). */
+    buf = (uint8_t *)malloc(LKF_CAP);
+    n = lkf_build(buf, "rebase bind weak lazy export +4 fstarts dic drs:12 symtab indirect "
+                  "strtab:0 sig", LKF_EXECUTE | LKF_STATIC);
+    check(buf, n, &v);
+    CHECK(v.corrupting, "empty-strtab static signed, stale drs: corrupting as given");
+    why[0] = 0;
+    rc = pack(&buf, &n, &r, why);
+    CHECK(rc == MLO_DECLINED && strstr(why, "string table"),
+          "empty-strtab static signed, stale drs: declined, not failed (got %d: %s)", rc, why);
+    free(buf);
+}
+
 /* __LINKEDIT's vmsize grows to cover a longer pack, rounded to the page;
  * and an empty piece's offset, even one past the new end, becomes 0. */
 static void test_the_pass_resizes_and_zeroes(void) {
@@ -518,6 +556,7 @@ int main(void) {
     test_the_pass_keeps_the_rounding();
     test_the_pass_declines();
     test_the_pass_declines_load_commands_in_linkedit();
+    test_the_pass_declines_empty_strtab_outside_dyldlink();
     test_the_pass_resizes_and_zeroes();
     test_what_counts_as_a_change();
     if (fails == 0) printf("linkedit_order_test: all cases pass\n");
