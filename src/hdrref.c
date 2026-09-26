@@ -120,8 +120,8 @@ static int mhr_by_from(const void *a, const void *b) {
 static int mhr_map_read(struct mhr_map *m, const mi_image *im, size_t fsize) {
     struct mhr_lcs l = { NULL, NULL };
     mi_each_lc(im, mhr_lcs_cb, &l);
-    if (l.dic && (l.dic->datasize % 8 || l.dic->datasize > fsize ||
-                  l.dic->dataoff > fsize - l.dic->datasize))
+    if (l.dic && l.dic->datasize && (l.dic->datasize % 8 || l.dic->datasize > fsize ||
+                                     l.dic->dataoff > fsize - l.dic->datasize))
         return MHR_MAP_BAD_DIC;
     uint32_t nfs = mhr_payload(l.fs, fsize), ndic = l.dic ? l.dic->datasize / 8 : 0;
     m->starts = (uint64_t *)malloc(nfs * sizeof *m->starts + 1);

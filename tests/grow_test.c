@@ -3043,6 +3043,24 @@ static void test_confirm_ignores_a_wrapping_function_starts_delta(void) {
  * step over" -- that lets literal data pass as code. Either makes the
  * image MHR_UNSCANNABLE, mirroring how an instruction section past the
  * image already does. */
+/* An empty LC_DATA_IN_CODE is nothing to step over, wherever it points, as
+ * mg_dice_walk already reads it. */
+static void test_confirm_ignores_empty_data_in_code_past_the_image(void) {
+    uint8_t *buf = build_code_image();
+    struct hr_code k = hr_push_lea();
+    mhr_cand bad = { 0, 0, 0 };
+    memcpy(buf + HR_FOFF, k.b, k.n);
+    hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct linkedit_data_command *l =
+        (struct linkedit_data_command *)(buf + sizeof *h + h->sizeofcmds);
+    hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, "", 0);
+    l->dataoff = HR_IMG_SIZE + 0x100;
+    int r = mhr_confirm(buf, HR_IMG_SIZE, &bad);
+    CHECK(r == MHR_CONFIRMED, "confirm: empty data-in-code past the image (got %d)", r);
+    free(buf);
+}
+
 static void test_confirm_reports_data_in_code_past_the_image(void) {
     uint8_t *buf = build_code_image();
     struct hr_code k = hr_push_lea();
@@ -3330,6 +3348,7 @@ int main(void) {
     test_confirm_resumes_only_in_its_own_section();
     test_confirm_carries_data_in_code_only_forward();
     test_confirm_ignores_a_wrapping_function_starts_delta();
+    test_confirm_ignores_empty_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_not_a_multiple_of_8();
     test_confirm_needs_function_starts_when_the_list_is_empty();
