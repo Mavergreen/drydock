@@ -130,13 +130,19 @@ The verifier mirrors each one (Decision 5):
    segment)`), there must be only one, and when its `filesize != 0` it must
    end the file (`the __LINKEDIT segment does not cover the end of the
    file`).
-7. **Counts** (`check_object`, `checkout.c:106–216`):
-   - at most one each of `LC_SYMTAB`, `LC_DYSYMTAB`, `LC_TWOLEVEL_HINTS`,
-     `LC_CODE_SIGNATURE`, `LC_SEGMENT_SPLIT_INFO`, `LC_FUNCTION_STARTS`,
+7. **Counts.** Two places refuse a second command of a kind, and the
+   first to see one wins:
+   - **the ofile loop**, at the index of the second: `LC_SYMTAB`,
+     `LC_DYSYMTAB`, `LC_ROUTINES`, `LC_ROUTINES_64`, `LC_TWOLEVEL_HINTS`,
+     `LC_SEGMENT_SPLIT_INFO`, `LC_CODE_SIGNATURE`, `LC_FUNCTION_STARTS`,
      `LC_DATA_IN_CODE`, `LC_DYLIB_CODE_SIGN_DRS`,
-     `LC_LINKER_OPTIMIZATION_HINT`, `LC_DYLD_INFO[_ONLY]`, `LC_ID_DYLIB`;
-   - an `MH_DYLIB` has an `LC_ID_DYLIB`, whose `name.offset` is below its
-     `cmdsize`.
+     `LC_LINKER_OPTIMIZATION_HINT`, `LC_VERSION_MIN_MACOSX` or
+     `_IPHONEOS` (one between them), `LC_PREBIND_CKSUM` and `LC_UUID`
+     (`ofile.c:3764–4417`, `malformed object (more than one … command)`);
+   - **`check_object`** (`checkout.c:106–206`), after the loop:
+     `LC_DYLD_INFO[_ONLY]`, `LC_ID_DYLIB` and `__LINKEDIT`
+     (`malformed file (more than one …)`). It also requires an `MH_DYLIB`
+     to have an `LC_ID_DYLIB` whose `name.offset` is below its `cmdsize`.
 8. **Two-level hints.** `ofile.c:6047` requires `nhints == nundefsym`
    whenever both commands are present, **even when `nhints` is 0**.
    `checkout.c:207–216` repeats the check for non-zero `nhints`.
@@ -165,29 +171,40 @@ checks that it does. SOURCED:
 
 - `setup_code_signature()` counts the input's symbolic data,
   `input_sym_info_size`, as a **sum**:
-  - the five stream sizes (`codesign_allocate.c:453–458`);
-  - every other piece's size, plus the odd-indirect pad;
-  - the symbol and string tables **only when `nsyms != 0`** (`:319`). The
+  - the symbol and string tables, **only when `nsyms != 0`** (`:319`). The
     order rules check the string table whenever `strsize != 0`
-    (`checkout.c:535`).
-- It copies the dyld-info block as one span, from its first byte to its
-  last (`:353–385`).
-- It copies each linkedit-data piece from `object_addr + dataoff` even when
-  `dataoff` is 0, as long as `datasize` is not (`:400–424`).
-- `writeout.c:700–712` copies the file verbatim up to `object_size −
-  input_sym_info_size`, then writes the pieces in the order of the table,
-  then the signature at the written size rounded up to 16
-  (`copy_new_symbol_info`, `writeout.c:735–840`).
+    (`checkout.c:535`);
+  - **only when there is an `LC_DYSYMTAB`** (`:387–503`): the five stream
+    sizes (`:453–458`), every other piece's size, and the odd-indirect pad.
+- The writer, `copy_new_symbol_info()` (`writeout.c:735–840`), has two
+  branches:
+  - **with `LC_DYSYMTAB`** it writes every piece in the order of the table.
+    It copies the dyld-info block as one span, from its first byte to its
+    last (`codesign_allocate.c:353–385`), and each linkedit-data piece from
+    `object_addr + dataoff` even when `dataoff` is 0, as long as
+    `datasize` is not (`:400–424`);
+  - **without it** it writes only the symbol table, the string table and
+    the signature.
+- `writeout.c:700–712` copies the file verbatim up to `P = object_size −
+  input_sym_info_size`, writes the pieces from `P`, then writes the
+  signature at the written size rounded up to 16.
+- So **a piece the writer writes must land on its own offset, and a piece
+  it does not write must end at or before `P`**, inside the verbatim copy.
+  The second case covers the string table when `nsyms == 0`, and every
+  piece but the symbol and string tables in an image without
+  `LC_DYSYMTAB`.
 - If the sum is not the span, everything after the block shifts by the
-  difference. The rounding before the signature can absorb a small
-  shift.
+  difference. The rounding before the signature can absorb a small shift.
+  MEASURED (review): in an image without `LC_DYSYMTAB`, a 16-byte hole
+  before function starts re-signs harmlessly, because that branch writes
+  no function starts.
 
 MEASURED, three outcomes, all with the order rules passing:
 
 | input | `codesign_allocate` | `codesign -v` | the streams afterwards |
 |---|---|---|---|
 | 8-byte hole between rebase and bind, **absorbed** by the 16-rounding (review's `gap8`) | exit 0 | passes | identical: harmless |
-| 8-byte hole between rebase and bind of a clang-built dylib | exit 0 | **fails** | `__LINKEDIT` runs 8 bytes past the end of the file, and dyld refuses it |
+| 8-byte hole between rebase and bind of a clang-built dylib, unsigned, so the tool adds the signature | exit 0 | **fails** | `__LINKEDIT` runs 8 bytes past the end of the file, and dyld refuses it |
 | Mantle in order, then `objc-methods set absolute` (its old rebase stream zeroed inside the block, 2,936 bytes) | exit 0 | **passes** | `dyldinfo -rebase -bind` lists 817 lines where the input had 1,253: **corrupt under a valid signature** |
 
 So **`codesign -v` passing is not evidence of a correct re-sign**, and a
@@ -363,11 +380,14 @@ the size it names:
   pieces in order. It adds only two kinds of padding:
   - the 8-rounding of rule 3, and only where the input already had it;
   - zeros up to the 16-byte boundary before the signature.
-- **A zero-size piece is placed by convention**, never left stale:
-  - an empty dyld-info stream gets offset 0 and size 0, as ld64 writes
-    it, so rule 1 keys on the first stream that exists;
-  - an empty split info, function starts, data in code, DRs or linker-hint
-    piece gets `dataoff` = the running offset, as ld64 writes it. The
+- **A zero-size piece keeps its offset when that offset already passes
+  the rules**, so an image in order stays byte-identical. An empty
+  dyld-info stream at 0, or a split-info, function-starts or data-in-code
+  piece at `dataoff` 0 (rule 2), stays there. Otherwise the piece is
+  placed as ld64 writes it, never left stale:
+  - an empty dyld-info stream gets offset 0, so rule 1 keys on the first
+    stream that exists;
+  - an empty linkedit-data piece gets `dataoff` = the running offset. The
     review's scan found an empty `LC_DATA_IN_CODE` at the running offset
     in 3,741 of the host's 3,953 images.
 - **Bytes nothing points at are dropped.** These are the chained-fixups
@@ -444,6 +464,11 @@ The pass runs on a slice the script edited when either of these holds:
    `filesize`. Examples:
    - a delete of the signature removes a piece, so the pass runs;
    - a grow moves every offset, so it runs;
+   - an in-place byte edit changes a piece's bytes, so it runs: a `dylib
+     insert`, `delete` or `replace` that renumbers ordinals rewrites
+     `SET_DYLIB_ORDINAL` opcodes and `n_desc`, and `import redirect`
+     rewrites binds in place. On an image already in order the pass is then
+     a byte-identical no-op and prints nothing;
    - `load-command delete uuid` changes no piece, so it does not;
    - neither does `fixups set classic` on an image that is already
      classic, which declares `MREL_FILE_OFF` but changes nothing;
@@ -489,13 +514,15 @@ derives two things from the findings:
 
 The rules:
 
-1. **The ofile loop**, in index order: the first command not in the list in
-   "Why", reported as `unknown load command N (LC_NAME)`. Also the
-   hints-versus-`nundefsym` check of rule 8, and the loop's range check
-   for every piece the verifier knows (each lies within the file). The
-   loop's command-size checks are `mi_wrap`'s already.
-2. **`check_object`**: the counts and the `LC_ID_DYLIB` requirement of rule
-   7, and the hints checks.
+1. **The ofile loop**, in index order, stopping where the tool stops: the
+   first command not in the list in "Why" (`unknown load command N
+   (LC_NAME)`) or the first second-of-a-kind the loop refuses (rule 7),
+   whichever has the lower index. After the loop: the
+   hints-versus-`nundefsym` check of rule 8, and the loop's range check for
+   every piece the verifier knows (each lies within the file). The loop's
+   command-size checks are `mi_wrap`'s already.
+2. **`check_object`**: its own duplicates and the `LC_ID_DYLIB`
+   requirement of rule 7, and the non-zero hints check.
 3. **`__LINKEDIT`**: present, single, and ending the slice when its
    `filesize != 0` (rule 6).
 4. **`dyld_order()`** for an `MH_DYLIB` or an `MH_DYLDLINK` image with
@@ -519,23 +546,33 @@ The rules:
    - places the signature at the rounded written size, or at
      `rnd(linkedit_end, 16)` when the tool adds one.
 
-   It passes only if **every piece's destination equals its current
-   offset** and the signature's destination equals its `dataoff`. This
-   covers, exactly:
+   It passes only if **every piece the writer writes lands on its current
+   offset**, **every piece it does not write ends at or before `P`**, and
+   the signature's destination equals its `dataoff`. This covers, exactly:
    - a hole the 16-rounding absorbs (passes) and one it does not (fails);
-   - a string table with `nsyms == 0`;
+   - a string table with `nsyms == 0` (passes when it ends at or before
+     `P`);
    - a split-info, function-starts or data-in-code piece with `dataoff ==
-     0` and non-zero `datasize`.
+     0` and non-zero `datasize` (fails in the `LC_DYSYMTAB` branch: it is
+     copied from offset 0);
+   - an image without `LC_DYSYMTAB`, where only the symbol and string
+     tables move, and a hole elsewhere is harmless (the review's `nd.in`).
 
-   For an image with the modern pieces, the simulation uses
-   `cctools-1035`'s writer order. That part is SOURCED only.
+   The simulation is 862's writer only. An image that still carries a
+   chained-fixups or exports-trie blob always fails 862's order rules (the
+   walk has no slot for it), so `corrupting` can never be set for it, and a
+   1035 writer model would never fire.
 
 Where it is used:
 
 - **As `mlo_pack`'s postcondition, on all findings.**
   - The output must not be `corrupting`.
   - Every order rule must pass. The only findings the pass may leave are
-    unknown commands, which it cannot remove, and header room.
+    unknown commands, which it cannot remove, and header room. An image
+    that still carries a chained-fixups or exports-trie blob cannot pass
+    862's walk, so for it the postcondition checks instead that the pieces
+    lie contiguous in Decision 2's order, with those blobs in 1035's
+    slots.
   - Each piece's bytes must be identical at its new offset.
   - Nothing below `__LINKEDIT` may change.
   - The load commands must differ only in piece offsets and `__LINKEDIT`'s
@@ -562,20 +599,26 @@ output, selected or not.
   written). This is the controller's ruling. Every host's `codesign_allocate`
   would re-sign such a file corrupt, so "sign it on a newer host" does not
   apply. By Decision 4 an edited slice reaches this only when the pass
-  declined, so the refusal names the decline's reason. An unselected slice
-  is never packed, so the refusal names the slice and the remedy: run the
-  script without `arch`, or on that slice.
+  declined, so the refusal names the decline's reason. That includes a
+  header-only edit (`dylib replace`, `load-command delete uuid`) of an
+  input that is already corrupting and that the pass cannot repair: it is
+  refused. An unselected slice is never packed, so the refusal names the
+  slice and the remedy: run the script without `arch`, or on that slice.
 - **Any other finding is reported, not refused**, and the file is written.
   That covers an unknown command left behind, a declined pass on a file
   that would not corrupt, an out-of-order slice nothing disturbed, and a
   lack of header room. Signing may happen on a newer host.
-- **The report** is one line per slice the pass touched: `__LINKEDIT
-  re-packed in codesign_allocate's order: A -> B bytes, M unreferenced bytes
-  dropped`. The pass does not re-state figures a statement already printed,
-  so a statement's own figures read as that statement's work and the pack's
-  line carries the final size. Then comes one line for any remaining finding
-  that would stop 10.9's tool, in `mlo_check`'s words.
-- A run that changes no piece prints nothing new.
+- **The report** is one line per slice whose bytes the pass changed:
+  `__LINKEDIT re-packed in codesign_allocate's order: A -> B bytes, M
+  unreferenced bytes dropped`. The pass does not re-state figures a
+  statement already printed, so a statement's own figures read as that
+  statement's work and the pack's line carries the final size.
+- **A remaining finding gets a line only when the pass changed that slice,
+  or the run is refused**: `resign 10.9: …`, in `mlo_check`'s words. A
+  written slice the pass did not change prints nothing new, whatever its
+  findings. So a `dylib replace` on a still-chained input (unknown load
+  command) prints what it printed before; `info` is where its verdict is
+  read.
 
 The claim this supports, and the only one: **no statement in this version
 of Drydock writes a file that `codesign_allocate` would re-sign corrupt.**
@@ -590,7 +633,8 @@ is a property of the file.
   (LC_DYLD_CHAINED_FIXUPS)`. Every slice is covered, including slices the
   run skipped and 32-bit slices. `mlo_check` does not model a 32-bit slice,
   so the verdict says `slice i386: not checked (32-bit)` rather than guess.
-- **The edit report** carries the same whole-file line when any slice fails.
+- **The edit report** carries the whole-file line only under Decision 6's
+  condition: when the pass changed a slice, or the run is refused.
 - **Port flows (README):** 10.9 runs only the x86_64 slice. When another
   slice cannot be made re-signable, for instance an arm64 slice with chained
   fixups, `lipo -thin x86_64` before signing on 10.9.
@@ -655,8 +699,9 @@ in the review, and (source), taken from the source. M1's oracle confirms the
 | bytes after the signature, or after the string table | `link edit information does not fill …` |
 | **hole in the block, not absorbable**: 16 bytes between rebase and bind, which no rounding can hide (source; an 8-byte hole the layout did not absorb was measured corrupt) | accepts, then writes a corrupt file (`corrupting`) |
 | hole in the block, absorbed: the `gap8` layout (review) | accepts, correct (not `corrupting`) |
-| `nsyms == 0` with a string table | per the simulation (new; the oracle settles it) |
-| function starts with `dataoff == 0`, `datasize != 0` | per the simulation (new; the oracle settles it) |
+| `nsyms == 0` with a string table ending at or before `P` (source) | accepts, correct: the writer does not write it |
+| function starts with `dataoff == 0`, `datasize != 0` (source) | accepts, then copies the header into the function starts (`corrupting`) |
+| no `LC_DYSYMTAB`, 16-byte hole before function starts (review, `nd.in`) | accepts, correct |
 | `LC_TWOLEVEL_HINTS` with `nhints == 0`, `nundefsym != 0` (source) | `nhints … not the same as nundefsym` |
 | no `LC_ID_DYLIB`; `LC_ID_DYLIB` with `name.offset >= cmdsize` (source) | `no LC_ID_DYLIB` / `name.offset … extends past` |
 | signature deleted and `sizeofcmds` filling the header (as `libgcc_s.10.5.dylib`) | `larger updated load commands do not fit` |
@@ -684,6 +729,9 @@ The tests that use the fixtures:
     ok` could not pass on any of them.
   - `load-command delete codesig` and `code-sign-drs` pack.
   - `delete uuid` does not pack.
+  - `dylib insert` on an out-of-order image packs (the ordinal renumbering
+    is an in-place byte edit), and on the canonical image is a silent no-op.
+  - A `dylib replace` on a still-chained image prints nothing new.
   - A trie-growing grow, and `import redirect`'s grow.
   - A corrupting output is refused: a run that leaves the unabsorbable hole
     with the pass made to decline, and an unselected fat slice carrying
@@ -816,6 +864,16 @@ closes.
 - **Two simulation cases**, `nsyms == 0` with a string table, and a
   zero-`dataoff` piece with data, are specified from source. The oracle
   settles them in M1.
+- **A signature added to an image whose `__LINKEDIT` `fileoff` is not a
+  multiple of 16.** `codesign_allocate.c:624–633` sets `filesize =
+  rnd(filesize, 16) + datasize`, rounding the size where `dataoff` rounds
+  the end. MEASURED (review): on `libgcc_s.10.5.dylib`'s stub (fileoff
+  0x298) given header room, the allocated file's `__LINKEDIT` ends 8 bytes
+  past the signature. Whether a signature over that verifies was not
+  checked. `mlo_check` reports it as a non-corrupting finding,
+  `__LINKEDIT fileoff not a multiple of 16`, when there is no
+  `LC_CODE_SIGNATURE`. The only image seen with it is refused for header
+  room first.
 - **`import redirect`'s grow path** is in the "writes today" table from its
   source. The review's `ir/grow` run measured the packed size.
 - **Whether a modern (sha256) stale signature ever registers on 10.9**:
@@ -847,8 +905,11 @@ closes.
 1. **Compat wrappers change bytes: accepted.** Each is recorded as a
    deliberate divergence in `compat/README.md`: `patch_macho`, `change_dylib
    -strip-lc codesig`/`code-sign-drs`, and `insert_dylib --strip-codesig`.
-   The `bake-mavericks-shim` divergence row at `:819` is deleted, because
-   that difference no longer exists.
+   So is one more: a wrapper run that matched nothing (`allow-unmatched`)
+   on an input that is already corrupting now rewrites that input in place,
+   repaired (Decision 4), where the original tool left it as it was. The
+   `bake-mavericks-shim` divergence row at `:819` is deleted, because that
+   difference no longer exists.
 2. **`target 10.9` does not strip signatures.**
 3. **Report, not refuse**, for an output 10.9 cannot re-sign, **except** one
    that would re-sign corrupt. That is refused (Decision 6), because no
