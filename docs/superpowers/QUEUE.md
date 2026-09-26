@@ -33,7 +33,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
-| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | `specs/2026-09-26-classic-fixups-re-signable-design.md` | `plans/2026-09-26-classic-fixups-re-signable.md` | **planned** 2026-09-26; see below |
+| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..da88d0e` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
@@ -1487,22 +1487,27 @@ either route yet — a `movl __mh_execute_header+16(%rip)` grows silently
 wrong. 0 such targets in 1,059 host executables (19.2M instructions); M2
 implements the refusal once, for both routes, via a range scan.
 
-## Item 30: `fixups set classic` output cannot be re-signed on 10.9
-
-**Found 2026-09-25** while planning objc-methods M2. 10.9's
-`codesign_allocate` (Command Line Tools) refuses:
-
-- Mantle as shipped (`malformed object (unknown load command 4)`: it
-  predates the modern load commands);
-- Mantle after `fixups set classic`: `file not in an order that can be
-  processed (dyld_info out of place)`.
-
-The lowering appends its dyld-info streams where the 10.9 tool does not
-expect them. Ad-hoc re-signing is mandatory in known port flows (item 13, "A
-documentation gap"), so a lowered image may need signing on a newer host, or
-a lowering that places its streams in the order `codesign_allocate` wants
-(rebase, bind, weak bind, lazy bind, export, then the symbol table). Not yet
-investigated: whether 10.9 needs a valid signature on a dylib at all. An
-invalid signature loaded fine in the dylib-growth review's test, from an
-unhardened process.
+Landed `549c57e..da88d0e`. 10.9's `codesign_allocate` requires `__LINKEDIT` in
+ld64's order, and silently re-signs corrupt a file whose pieces do not add up
+(`docs/codesign-order.md`); `info` says whether it can, as a `resign 10.9:`
+line. Task 11's real-world run took fresh copies of six OpenCode.app
+frameworks and two Ghidra 12.0.3 tools, lowered, converted or redirected, then
+signed with 10.9's own `codesign`: Mantle re-packs `__LINKEDIT` 44,032 ->
+38,272 bytes, signs, verifies, and keeps all 1,298 dyldinfo/`nm`/`otool -Iv`
+lines identical across the sign, with `objc-methods set absolute` converting
+32 absolute methods. ReactiveObjC re-packs 99,704 -> 80,192 bytes, signs,
+verifies, keeps 6,208 lines identical, and converts 143 absolute methods.
+Squirrel re-packs 54,992 -> 46,656 bytes, signs, verifies, keeps 1,987 lines
+identical, and converts 27 absolute methods. ShipIt re-packs 43,880 ->
+40,176 bytes, signs, and verifies with all 1,154 lines identical. `chrome_crashpad_handler`
+re-packs 75,632 -> 68,192 bytes, signs, and verifies with all 3,693 lines
+identical. `libGLESv2.dylib`, at 6.7 MB the largest, re-packs 315,928 ->
+310,368 bytes, signs, and verifies with all 25,848 lines identical. `lzfse`,
+grown by `dylib append` of a stub carrying `____chkstk_darwin` and redirected
+to it, re-packs 8,182 -> 7,310 bytes, signs, verifies, keeps 306 lines
+identical, and round-trips an encode/decode of a text file.
+`demangler_gnu_v2_41`, grown and redirected the same way, re-packs 14,704 ->
+14,120 bytes, signs, verifies, keeps 416 lines identical, and demangles
+`_ZN3foo3barEv` to `foo::bar()`. `sh tests/codesign_order_test.sh` on 10.9
+(M4's gate): 0 failures.
 
