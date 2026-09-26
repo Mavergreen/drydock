@@ -168,7 +168,8 @@ static void test_the_pass_puts_each_variant_in_order(void) {
         "strtab-past-rounding", "sig-off-16", "sig-late", "tail-after-sig", "tail-after-strtab",
         "hole-16", "hole-16-unsigned", "stale-empty-rebase", "hole-absorbed", "export-last",
         "drs-empty-stale", "weak-lazy-empty-export", "bind-first-static", "no-dysymtab-hole",
-        "no-dysymtab-unsigned-misaligned", "no-dysymtab-unsigned-drs8", "no-dysymtab-drs8" };
+        "no-dysymtab-unsigned-misaligned", "no-dysymtab-unsigned-drs8", "no-dysymtab-drs8",
+        "bind-first-dep" };
     /* These have no canonical twin: a piece is empty or missing, or there is
      * no LC_DYSYMTAB. */
     static const char *const unlike[] = { "stale-empty-rebase", "strtab-past-rounding",

@@ -30,6 +30,7 @@
 #define LKF_NODYSYMTAB 2u   /* no LC_DYSYMTAB (leave "indirect" out) */
 #define LKF_EXECUTE    4u   /* MH_EXECUTE, no LC_ID_DYLIB */
 #define LKF_STATIC    16u   /* no MH_DYLDLINK: checkout uses symbol_string_at_end */
+#define LKF_DEP        8u   /* an LC_LOAD_DYLIB, last, and the bind opcodes name it */
 
 /* The load commands, in this order; LKF_LC_* are their indexes. */
 enum { LKF_LC_TEXT, LKF_LC_DATA, LKF_LC_LINKEDIT, LKF_LC_ID, LKF_LC_DYLD_INFO,
@@ -59,6 +60,7 @@ static const char lkf_strings[] = "\0_l\0_e\0_u";   /* 10 bytes, padded */
 static const uint32_t lkf_sizes[LKF_NPIECES] = { 8, 16, 16, 16, 16, 8, 0, 16, 48, 12, 32, 64 };
 
 static uint32_t lkf_rnd(uint32_t x, uint32_t a) { return (x + a - 1) / a * a; }
+static struct dyld_info_command *lkf_di(uint8_t *b);
 
 static uint8_t *lkf_lc(uint8_t *buf, int index) {
     struct mach_header_64 *h = (struct mach_header_64 *)buf;
@@ -178,6 +180,15 @@ static uint8_t *lkf_header(uint8_t *buf, unsigned opts) {
         l->cmd = LC_CODE_SIGNATURE;
         l->cmdsize = sizeof *l;
         lc += l->cmdsize;
+        h->ncmds++;
+    }
+    if (opts & LKF_DEP) {
+        struct dylib_command *d = (struct dylib_command *)lc;
+        d->cmd = LC_LOAD_DYLIB;
+        d->cmdsize = sizeof *d + 32;
+        d->dylib.name.offset = sizeof *d;
+        strcpy((char *)(d + 1), "/usr/lib/libSystem.B.dylib");
+        lc += d->cmdsize;
         h->ncmds++;
     }
     h->sizeofcmds = (uint32_t)(lc - (uint8_t *)(h + 1));
@@ -300,6 +311,7 @@ static size_t lkf_build(uint8_t *buf, const char *layout, unsigned opts) {
     }
     if (at < LKF_LE) return 0;
     (void)canon_end;
+    if (opts & LKF_DEP) buf[lkf_di(buf)->bind_off] = 0x11;   /* SET_DYLIB_ORDINAL_IMM 1 */
     struct segment_command_64 *le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
     le->filesize = at - LKF_LE;
     if (le->filesize > le->vmsize) le->vmsize = lkf_rnd((uint32_t)le->filesize, 0x1000);
@@ -545,6 +557,10 @@ static const lkf_variant lkf_variants[] = {
     { "no-dysymtab-unsigned-drs8", "rebase bind weak lazy export fstarts dic drs:8 strtab symtab",
       LKF_NOSIG | LKF_NODYSYMTAB | LKF_EXECUTE, NULL,
       "string table not at the end of the file (can't be processed)", 0 },
+    /* an LC_LOAD_DYLIB the bind names */
+    { "canonical-dep", LKF_CANON, LKF_DEP, NULL, NULL, 0 },
+    { "bind-first-dep", "bind rebase weak lazy export " LKF_TAIL, LKF_DEP, NULL,
+      "file not in an order that can be processed (dyld_info out of place)", 0 },
 };
 #define LKF_NVARIANTS (sizeof lkf_variants / sizeof lkf_variants[0])
 

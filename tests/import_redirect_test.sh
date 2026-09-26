@@ -163,10 +163,14 @@ has_import "$T/grow.out" _x "$SHIM" bind && has_import "$T/grow.out" _y "$LIBA" 
 grep -q "bind stream grew from [0-9,]* to [0-9,]* bytes; it now lives at file offset 0x" "$T/run.err" \
     && ok "grow: ... and stderr announces how much it grew and where it now lives" \
     || bad "grow: announced" "$(cat "$T/run.err")"
-[ "$(field "$T/grow.out" bind 2)" != "$(field "$T/grow" bind 2)" ] &&
-    [ "$(field "$T/grow.out" linkedit 2)" -gt "$(field "$T/grow" linkedit 2)" ] \
-    && ok "grow: ... it moved, and __LINKEDIT grew to cover it" \
-    || bad "grow: moved" "$("$MKB" info "$T/grow.out")"
+# Not `resign 10.9: ok`: this fixture is linked by the host, whose load
+# commands 10.9's tool may not know (an arm64 LC_BUILD_VERSION on CI).
+"$DMR" info "$T/grow.out" >"$T/grow.info"
+[ "$(field "$T/grow.out" bind 3)" -gt "$(field "$T/grow" bind 3)" ] &&
+    grep -q "__LINKEDIT re-packed in codesign_allocate's order" "$T/run.err" &&
+    grep -q '^resign 10.9: ' "$T/grow.info" && ! grep -q '^resign corrupt:' "$T/grow.info" \
+    && ok "grow: ... it grew, and the pass put it back in codesign_allocate's order" \
+    || bad "grow: packed" "$("$MKB" info "$T/grow.out"); $(grep '^resign' "$T/grow.info")"
 
 # ============================================================================
 # ordinals above 15

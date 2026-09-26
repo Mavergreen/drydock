@@ -40,6 +40,7 @@
 #include "mach_compat.h"
 #include "fat.h"
 #include "arch_names.h"
+#include "linkedit_order.h"
 
 /* Every line this module writes, to the log or to stderr, goes through here.
  * The operations print their progress to stdout, which is fully buffered
@@ -756,6 +757,61 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
     return 0;
 }
 
+/* After a slice's last statement: when the run changed a piece of its
+ * __LINKEDIT, or the slice as left would re-sign corrupt, put __LINKEDIT in
+ * codesign_allocate's order. `orig` is the slice as read. Sets *packed when
+ * the bytes changed. Returns 0, or MR_FAIL with the reason said. */
+static int me_pack(uint8_t **pbuf, size_t *psize, const uint8_t *orig, size_t osize,
+                   const char *label, const char *path, const char *out, FILE *log,
+                   int *packed) {
+    mi_image im;
+    mlo_verdict v;
+    int corrupt = 0;
+    if (mi_wrap(*pbuf, *psize, &im) == 0) {
+        mlo_check(&im, &v);
+        corrupt = v.corrupting;
+    }
+    if (!corrupt && !mlo_changed(orig, osize, *pbuf, *psize)) return 0;
+    mlo_pack_report rep;
+    char why[256] = "", c1[32], c2[32], c3[32];
+    int rc = mlo_pack(pbuf, psize, &rep, why, sizeof why);
+    switch (rc) {
+    case MLO_PACKED:
+        me_say(log, "%s: __LINKEDIT re-packed in codesign_allocate's order: %s -> %s bytes, "
+                    "%s unreferenced bytes dropped\n", label, me_count(c1, (long)rep.before),
+               me_count(c2, (long)rep.after), me_count(c3, (long)rep.dropped));
+        *packed = 1;
+        return 0;
+    case MLO_UNCHANGED:
+        return 0;
+    case MLO_DECLINED:
+        me_say(log, "%s: __LINKEDIT not re-packed: %s\n", label, why);
+        return 0;
+    default:
+        me_say(log, "drydock-macho-rewrite edit: %s: %s; ", label, why);
+        me_say_left(log, path, out);
+        return MR_FAIL;
+    }
+}
+
+/* Before the write: refuse a file some slice of which codesign_allocate
+ * would re-sign corrupt, and, when the pass changed a slice, say whether 10.9
+ * can re-sign the file. Returns 0 or MR_REFUSED. */
+static int me_resign(const uint8_t *buf, size_t size, const char *path, const char *out,
+                     const ms_script *s, int packed, FILE *log) {
+    char refusal[256], corrupt[4096];
+    int rc = mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
+    if (rc == 2) {
+        me_say(log, "drydock-macho-rewrite edit: refused: codesign_allocate would re-sign %s corrupt "
+                    "(%s)%s; ", out, corrupt,
+               s->arch_mask ? "; run the script without arch, or on that slice" : "");
+        me_say_left(log, path, out);
+        return MR_REFUSED;
+    }
+    if (packed && rc == 1) me_say(log, "%s: resign 10.9: %s\n", path, refusal);
+    return 0;
+}
+
 /* Does the finished image still have anything for mg_plausible to check,
  * after a run that disturbed `disturbed`? The one question both of this
  * module's gate sites ask, so they cannot drift apart.
@@ -1108,9 +1164,22 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         return MR_FAIL;
     }
     unsigned disturbed = MREL_NONE;
+    size_t osize = size;
+    uint8_t *orig = (uint8_t *)malloc(osize ? osize : 1);
+    if (!orig) {
+        me_say(log, "drydock-macho-rewrite edit: out of memory; ");
+        me_say_left(log, path, out);
+        free(hits); free(renamed); free(buf);
+        return MR_FAIL;
+    }
+    memcpy(orig, buf, osize);
+    int packed = 0;
     int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL,
                            &disturbed);
     free(hits); free(renamed);
+    if (rc == 0) rc = me_pack(&buf, &size, orig, osize, path, path, out, log, &packed);
+    free(orig);
+    if (rc == 0) rc = me_resign(buf, size, path, out, s, packed, log);
     if (rc != 0) { free(buf); return rc; }
 
     /* Verify the finished image whenever anything it checks was disturbed, and

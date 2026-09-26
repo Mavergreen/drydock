@@ -5113,6 +5113,76 @@ done
     && ok "info: a fat file gets one resign line, the whole file's, slice by slice" \
     || bad "info resign fat" "[$(resign "$T/lk_fat_info")] [$(resign "$T/lk_fat_info2")]"
 
+# The pass, on a thin file. It runs when the run changed a piece of
+# __LINKEDIT, or the output would re-sign corrupt.
+lo() {   # lo IN OUT STATEMENT...: one run, its stderr in $T/lo.err
+    lo_in=$1 lo_out=$2; shift 2
+    rm -f "$lo_out"
+    lo_rc=0
+    printf '%s\n' "$@" | "$DRYDOCK_MACHO_REWRITE" "$lo_in" "$lo_out" >/dev/null 2>"$T/lo.err" || lo_rc=$?
+}
+packed() { grep -q "__LINKEDIT re-packed in codesign_allocate's order" "$T/lo.err"; }
+for v in canonical-dep bind-first-dep bind-first-exec hole-16-note build-version; do
+    "$T/mklinkedit" make "$v" "$T/lk_$v"
+done
+
+# Deleting the signature or the DRs drops their bytes; deleting a UUID
+# changes no piece, so nothing moves.
+lo "$T/lk_canonical" "$T/lk_nosig" 'load-command delete codesig'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_nosig")" = ok ] \
+    && [ "$(wc -c <"$T/lk_nosig" | tr -d ' ')" -eq 8380 ] \
+    && ok "order: load-command delete codesig drops the signature's bytes (8,448 -> 8,380)" \
+    || bad "order: delete codesig" "rc $lo_rc, $(wc -c <"$T/lk_nosig") bytes: $(cat "$T/lo.err")"
+lo "$T/lk_canonical" "$T/lk_nodrs" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_nodrs")" = ok ] \
+    && ok "order: load-command delete code-sign-drs drops the DRs' bytes" \
+    || bad "order: delete code-sign-drs" "rc $lo_rc, resign [$(resign "$T/lk_nodrs")]: $(cat "$T/lo.err")"
+lo "$T/lk_bind-first-exec" "$T/lk_nouuid" 'load-command delete uuid'
+[ "$lo_rc" -eq 0 ] && ! grep -q '__LINKEDIT\|resign' "$T/lo.err" \
+    && [ "$(resign "$T/lk_nouuid")" = "$(resign "$T/lk_bind-first-exec")" ] \
+    && grep -q 'this run disturbed sizeofcmds' "$T/lo.err" \
+    && ok "order: load-command delete uuid changes no piece, so nothing is re-packed or said" \
+    || bad "order: delete uuid" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# When the pass changed the file, the report also says what still stops
+# 10.9's tool.
+lo "$T/lk_build-version" "$T/lk_bv.out" 'load-command delete codesig'
+[ "$lo_rc" -eq 0 ] && packed \
+    && grep -q "resign 10.9: malformed object (unknown load command 3)" "$T/lo.err" \
+    && ok "order: after a pack, the report names what still stops 10.9's codesign_allocate" \
+    || bad "order: report after pack" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# An in-place byte edit is a change: dylib insert renumbers the bind's
+# ordinal. On an image in order the pass is a silent no-op.
+lo "$T/lk_bind-first-dep" "$T/lk_insert" 'dylib insert /usr/lib/libz.1.dylib'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_insert")" = ok ] \
+    && ok "order: dylib insert's renumbering is a change, and the image is packed" \
+    || bad "order: dylib insert" "rc $lo_rc, resign [$(resign "$T/lk_insert")]: $(cat "$T/lo.err")"
+lo "$T/lk_canonical-dep" "$T/lk_insert2" 'dylib insert /usr/lib/libz.1.dylib'
+[ "$lo_rc" -eq 0 ] && ! grep -q '__LINKEDIT\|resign' "$T/lo.err" && [ "$(resign "$T/lk_insert2")" = ok ] \
+    && ok "order: ... and on an image already in order, nothing is said" \
+    || bad "order: dylib insert, in order" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# A header-only edit of a still-chained image prints nothing new.
+lo "$T/chained.in" "$T/lk_chained_rpath" 'rpath append /lk'
+[ "$lo_rc" -eq 0 ] && ! grep -q '__LINKEDIT\|resign' "$T/lo.err" \
+    && [ "$(resign "$T/lk_chained_rpath")" = "malformed object (unknown load command 3)" ] \
+    && ok "order: an edit of a chained image says nothing new; info has the verdict" \
+    || bad "order: chained rpath" "rc $lo_rc, resign [$(resign "$T/lk_chained_rpath")]: $(cat "$T/lo.err")"
+
+# A corrupting input is repaired even by a header-only edit, and refused
+# when the pass cannot repair it.
+lo "$T/lk_hole-16" "$T/lk_hole.out" 'rpath append /lk'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_hole.out")" = ok ] \
+    && ok "order: a hole codesign_allocate would corrupt is repaired by any edit" \
+    || bad "order: hole repaired" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_hole-16-note" "$T/lk_note.out" 'rpath append /lk'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_note.out" ] \
+    && grep -q '__LINKEDIT not re-packed: load command 8 (cmd 0x31)' "$T/lo.err" \
+    && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
+    && ok "order: one it cannot repair is refused (1), saying why, and OUT is not written" \
+    || bad "order: hole refused" "rc $lo_rc: $(cat "$T/lo.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]
