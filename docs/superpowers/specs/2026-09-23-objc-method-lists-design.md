@@ -520,8 +520,12 @@ on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
   alignment `codesign_allocate` requires (fixed: the new rebase stream is
   16-aligned). After that fix, none of the three still hits that error; all
   three instead hit "link edit information does not fill the __LINKEDIT
-  segment" -- consistent with `fixups set classic`'s own layout, QUEUE item
-  30's pre-existing problem, since it is unaffected by the conversion.
+  segment". That is probably QUEUE item 30's layout problem too, since
+  `fixups set classic` appends its streams where `codesign_allocate` does not
+  expect them, but it is not proven: on the classic-only image
+  `codesign_allocate` stops at the earlier "dyld_info out of place" and never
+  reaches this check. Settling it needs item 30 fixed first, or a lowered
+  image signed on a newer host.
 
 **Still to validate:**
 
