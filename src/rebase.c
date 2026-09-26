@@ -38,6 +38,11 @@ int mrb_add(mrb_set *s, uint8_t seg, uint8_t type, uint64_t off) {
 
 int mrb_decode(const uint8_t *p, size_t size, int nsegs, mrb_set *out,
                char *why, size_t whysz) {
+    return mrb_decode_max(p, size, nsegs, MRB_MAX_SLOTS, out, why, whysz);
+}
+
+int mrb_decode_max(const uint8_t *p, size_t size, int nsegs, size_t max, mrb_set *out,
+                   char *why, size_t whysz) {
     const uint8_t *at = p, *end = p + size;
     uint64_t off = 0, count, skip, v;
     uint8_t type = 0;
@@ -105,10 +110,10 @@ int mrb_decode(const uint8_t *p, size_t size, int nsegs, mrb_set *out,
             return mrb_fail(out, why, whysz, MRB_MALFORMED,
                             "the rebase at byte %zu has rebase type %u, which dyld does not accept",
                             here, type);
-        if (count > MRB_MAX_SLOTS - out->n)
+        if (count > max - out->n)
             return mrb_fail(out, why, whysz, MRB_MALFORMED,
-                            "the rebase at byte %zu takes the stream past %u slots",
-                            here, MRB_MAX_SLOTS);
+                            "the rebase at byte %zu takes the stream past %zu slots",
+                            here, max);
         for (uint64_t i = 0; i < count; i++) {
             if (mrb_add(out, (uint8_t)seg, type, off) != 0)
                 return mrb_fail(out, why, whysz, MRB_NOMEM, "out of memory");

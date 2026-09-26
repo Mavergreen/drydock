@@ -95,14 +95,35 @@ static void test_rebase_type_is_restricted(void) {
     }
 }
 
+/* The cap's boundary, at a cap of 8 so that neither side allocates much:
+ * exactly the cap in one opcode or across two, then one more. */
 static void test_slot_cap_boundary_is_exact(void) {
-    static const uint8_t at_cap[]   = { 0x11, 0x22, 0x00, 0x60, 0x80, 0x80, 0x80, 0x08 };
+    static const uint8_t eight[]   = { 0x11, 0x22, 0x00, 0x58 };
+    static const uint8_t five_3[]  = { 0x11, 0x22, 0x00, 0x55, 0x53 };
+    static const uint8_t nine[]    = { 0x11, 0x22, 0x00, 0x59 };
+    static const uint8_t five_4[]  = { 0x11, 0x22, 0x00, 0x55, 0x54 };
+    const struct { const uint8_t *s; size_t n; int ok; const char *label; } c[] = {
+        { eight, sizeof eight, 1, "8 in one opcode" }, { five_3, sizeof five_3, 1, "5 then 3" },
+        { nine, sizeof nine, 0, "9 in one opcode" }, { five_4, sizeof five_4, 0, "5 then 4" },
+    };
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        mrb_set set;
+        char why[160] = "";
+        int rc = mrb_decode_max(c[i].s, c[i].n, 4, 8, &set, why, sizeof why);
+        if (c[i].ok)
+            CHECK(rc == MRB_OK && set.n == 8, "slot cap 8: %s: rc %d, %zu slots (%s)",
+                  c[i].label, rc, set.n, why);
+        else
+            CHECK(rc == MRB_MALFORMED && strstr(why, "past 8 slots") && set.v == NULL,
+                  "slot cap 8: %s: rc %d (%s), want refused", c[i].label, rc, why);
+        mrb_free(&set);
+    }
+}
+
+/* mrb_decode's own cap is MRB_MAX_SLOTS: one past it is refused, by name,
+ * before any slot is allocated. */
+static void test_decode_caps_at_max_slots(void) {
     static const uint8_t over_cap[] = { 0x11, 0x22, 0x00, 0x60, 0x81, 0x80, 0x80, 0x08 };
-    mrb_set set;
-    int rc = mrb_decode(at_cap, sizeof at_cap, 4, &set, NULL, 0);
-    CHECK(rc == MRB_OK && set.n == MRB_MAX_SLOTS,
-          "slot cap: exactly the cap: rc %d, %zu slots, want %u", rc, set.n, MRB_MAX_SLOTS);
-    mrb_free(&set);
     refused(over_cap, sizeof over_cap, "past 16777216 slots", "one slot past the cap");
 }
 
@@ -208,6 +229,7 @@ int main(void) {
     test_malformed_streams_are_refused();
     test_rebase_type_is_restricted();
     test_slot_cap_boundary_is_exact();
+    test_decode_caps_at_max_slots();
     test_sort_counts_repeats_and_has_finds();
     test_has_type_finds_the_right_type_in_an_equal_range();
     test_encode_pins_its_opcodes();

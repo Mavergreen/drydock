@@ -33,6 +33,10 @@ typedef struct {
  * MRB_MALFORMED with `why` set. On any non-OK return *out is empty. */
 int  mrb_decode(const uint8_t *p, size_t size, int nsegs, mrb_set *out,
                 char *why, size_t whysz);
+
+/* mrb_decode with a cap of `max` slots in place of MRB_MAX_SLOTS. */
+int  mrb_decode_max(const uint8_t *p, size_t size, int nsegs, size_t max, mrb_set *out,
+                    char *why, size_t whysz);
 void mrb_free(mrb_set *s);
 
 /* Appends one slot. 0, or -1 when out of memory. */
