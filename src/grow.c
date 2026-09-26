@@ -1213,11 +1213,16 @@ static int mg_header_refs_ok(const uint8_t *buf, size_t fsize, uint32_t grow) {
  * value is `base`. With `patch`, each loses `grow`, following the header
  * down; without, this checks that the symbol table lies within the image,
  * and says so on stderr when it does not. Returns 0, or -1. */
-struct mg_hsym_ctx { uint8_t *buf; size_t fsize; uint64_t base; uint32_t grow; int patch, bad; };
+struct mg_hsym_ctx { uint8_t *buf; size_t fsize; uint64_t base; uint32_t grow; int patch, bad, n; };
 
 static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
     struct mg_hsym_ctx *c = (struct mg_hsym_ctx *)ctx_;
     if (lc->cmd != LC_SYMTAB) return 0;
+    if (++c->n > 1) {
+        fprintf(stderr, "ERROR: the image has more than one LC_SYMTAB; refusing to grow\n");
+        c->bad = 1;
+        return 1;
+    }
     const struct symtab_command *st = (const struct symtab_command *)lc;
     if ((uint64_t)st->symoff + (uint64_t)st->nsyms * sizeof(struct nlist_64) > c->fsize) {
         fprintf(stderr, "ERROR: LC_SYMTAB's symbol table (offset %u, %u entries) does not fit "
@@ -1238,7 +1243,7 @@ static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint32_t
                              int patch) {
     mi_image im;
     if (mi_wrap(buf, fsize, &im) != 0) return -1;
-    struct mg_hsym_ctx c = { buf, fsize, base, grow, patch, 0 };
+    struct mg_hsym_ctx c = { buf, fsize, base, grow, patch, 0, 0 };
     mi_each_lc(&im, mg_hsym_cb, &c);
     return c.bad ? -1 : 0;
 }

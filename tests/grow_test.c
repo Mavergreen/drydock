@@ -3233,6 +3233,28 @@ static void test_snapshot_and_verify_refuse_a_symbol_table_past_the_image(void) 
     free(buf);
 }
 
+/* A grow patches every LC_SYMTAB and verifies the first, so it refuses a
+ * second before changing anything. */
+static void test_grow_refuses_two_symbol_tables(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    memcpy((uint8_t *)(h + 1) + h->sizeofcmds, st, sizeof *st);
+    h->ncmds++;
+    h->sizeofcmds += sizeof *st;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+        "ERROR: the image has more than one LC_SYMTAB; refusing to grow", &r);
+    CHECK(r == -1 && said, "symbols: two symbol tables are refused (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "symbols: two tables: nothing changed");
+    free(before);
+    free(buf);
+}
+
 static void test_grow_refuses_a_symbol_table_past_the_image(void) {
     size_t fsize;
     uint8_t *buf = build_symbol_image(&fsize, 1000, 0);   /* 6656 + 16000 > 8192 */
@@ -3361,6 +3383,7 @@ int main(void) {
     test_grow_moves_the_symbols_that_name_the_header();
     test_verify_watches_the_symbols();
     test_snapshot_and_verify_refuse_a_symbol_table_past_the_image();
+    test_grow_refuses_two_symbol_tables();
     test_grow_refuses_a_symbol_table_past_the_image();
     test_grow_moves_no_symbol_when_it_refuses();
     test_confirm_reports_a_bad_section_before_a_good_one();
