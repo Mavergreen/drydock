@@ -926,6 +926,150 @@ static void test_insert_refuses_what_would_overrun(void) {
     refused_direct(spoil_zeroed, "inside the header or load commands", "a zeroed layout");
 }
 
+/* ---- conversion ------------------------------------------------------------ */
+
+static char oracle_before[4096], oracle_after[4096];
+
+/* The oracle's reading of `b`, with every "rel" read as "abs". */
+static int oracle(const uint8_t *b, size_t n, char *out, int as_abs) {
+    int w = rmf_describe(b, n, out, 4096);
+    char *p;
+    if (w < 0) return -1;
+    while (as_abs && (p = strstr(out, " rel "))) memcpy(p, " abs ", 5);
+    return w;
+}
+
+static int build(unsigned variant, void (*poke)(uint8_t *), mma_out *o, char *why, size_t whysz) {
+    mi_image im;
+    rmf_build(fx, variant);
+    if (poke) poke(fx);
+    if (mi_wrap(fx, RMF_SIZE, &im) != 0) return -99;
+    return mma_build(&im, o, why, whysz);
+}
+
+static void check_converts_like_the_oracle(unsigned variant, uint32_t lists, uint32_t methods,
+                                           const char *label) {
+    mma_out o;
+    char why[256] = "";
+    int rc = build(variant, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "%s: rc %d (%s)", label, rc, why);
+    if (rc != MMA_OK) return;
+    CHECK(oracle(fx, RMF_SIZE, oracle_before, 1) > 0 && oracle(o.buf, o.size, oracle_after, 0) > 0,
+          "%s: the oracle cannot read an image", label);
+    CHECK(strcmp(oracle_before, oracle_after) == 0, "%s: the oracle reads\n%s\nwhere it read\n%s",
+          label, oracle_after, oracle_before);
+    CHECK(o.rep.lists == lists && o.rep.methods == methods, "%s: converted %u lists (%u methods), "
+          "want %u (%u)", label, o.rep.lists, o.rep.methods, lists, methods);
+    mma_out_free(&o);
+}
+
+static void test_conversion_matches_the_oracle_in_order(void) {
+    check_converts_like_the_oracle(RMF_PLAIN, 4, 5, "plain");
+    check_converts_like_the_oracle(RMF_ALLSLOTS, 4, 5, "every slot filled");
+    check_converts_like_the_oracle(RMF_SWIFT, 4, 5, "Swift-tagged class data");
+    check_converts_like_the_oracle(RMF_ZEROTAIL, 4, 5, "a zero-fill tail");
+    check_converts_like_the_oracle(RMF_DYLIB, 4, 5, "a dylib with 16 bytes of header pad");
+    check_converts_like_the_oracle(RMF_CODESIG | RMF_SPLIT, 4, 5, "a code signature and split info");
+    check_converts_like_the_oracle(RMF_FSTARTS, 4, 5, "function starts naming every IMP");
+    check_converts_like_the_oracle(RMF_SHARED, 3, 4, "a list two slots share");
+    check_converts_like_the_oracle(RMF_ABSCAT, 3, 4, "an absolute list beside relative ones");
+    check_converts_like_the_oracle(RMF_COMPACT | RMF_ALLSLOTS, 4, 5, "ld64's compact rebase opcodes");
+}
+
+static void test_every_new_pointer_is_rebased(void) {
+    mma_out o;
+    mrb_set was, now;
+    char why[256] = "";
+    int rc = build(RMF_PLAIN, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "rebases: rc %d (%s)", rc, why);
+    if (rc != MMA_OK) return;
+    lcs_of in = lcs(fx, RMF_SIZE), out = lcs(o.buf, o.size);
+    CHECK(mrb_decode(fx + in.di->rebase_off, in.di->rebase_size, 4, &was, NULL, 0) == MRB_OK &&
+          mrb_decode(o.buf + out.di->rebase_off, out.di->rebase_size, 4, &now, NULL, 0) == MRB_OK,
+          "rebases: a stream does not decode");
+    CHECK(mrb_sort(&now) == 0, "rebases: the new stream repeats a slot");
+    CHECK(now.n == was.n + 14 && o.rep.rebases == 14, "rebases: %zu, was %zu; reported %u added, want 14",
+          now.n, was.n, o.rep.rebases);
+    for (size_t k = 0; k < was.n; k++)
+        CHECK(mrb_has(&now, was.v[k].seg, was.v[k].off), "rebases: lost (%u, %#llx)",
+              was.v[k].seg, (unsigned long long)was.v[k].off);
+    /* List A at 0x2000 (D offset 0x1000): two entries, six pointers. List D,
+     * last, at 0x2078: one entry whose IMP is 0, so two. */
+    for (uint64_t off = 0x1008; off < 0x1038; off += 8)
+        CHECK(mrb_has(&now, 2, off), "rebases: list A's pointer at D+%#llx has none", (unsigned long long)off);
+    CHECK(mrb_has(&now, 2, 0x1080) && mrb_has(&now, 2, 0x1088) && !mrb_has(&now, 2, 0x1090),
+          "rebases: list D's name and types need one each, and its IMP of 0 none");
+    CHECK(o.rep.grew == MMA_PAGE && o.rep.zerofill == 0 && o.rep.linkedit_before == RMF_LINKEDIT_SIZE &&
+          o.rep.linkedit_after == RMF_LINKEDIT_SIZE + o.r && strncmp(o.rep.dname, "__DATA", 16) == 0,
+          "report: grew %#llx, zero fill %#llx, __LINKEDIT %llu -> %llu, D %.16s",
+          (unsigned long long)o.rep.grew, (unsigned long long)o.rep.zerofill,
+          (unsigned long long)o.rep.linkedit_before, (unsigned long long)o.rep.linkedit_after, o.rep.dname);
+    CHECK(o.rep.owners[MML_CLASS] == 1 && o.rep.owners[MML_METACLASS] == 1 &&
+          o.rep.owners[MML_CATEGORY] == 1 && o.rep.owners[MML_PROTOCOL] == 1,
+          "report: owners %u %u %u %u", o.rep.owners[0], o.rep.owners[1], o.rep.owners[2], o.rep.owners[3]);
+    mrb_free(&was);
+    mrb_free(&now);
+    mma_out_free(&o);
+}
+
+static uint64_t slot_value(const uint8_t *b, uint32_t off) { uint64_t v; memcpy(&v, b + off, 8); return v; }
+
+static void test_every_slot_is_repointed_and_absolute_ones_kept(void) {
+    mma_out o;
+    char why[256] = "";
+    int rc = build(RMF_SHARED, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "shared: rc %d (%s)", rc, why);
+    if (rc == MMA_OK) {
+        CHECK(slot_value(o.buf, RMF_CLASS_RO + 32) == RMF_VA(RMF_LINKEDIT) &&
+              slot_value(o.buf, RMF_CATEGORY + 16) == RMF_VA(RMF_LINKEDIT),
+              "shared: the class and category do not both name the one new list");
+        mma_out_free(&o);
+    }
+    rc = build(RMF_ABSCAT, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK && slot_value(o.buf, RMF_CATEGORY + 16) == RMF_VA(RMF_ABS_C),
+          "abscat: the absolute list's slot moved (rc %d, %s)", rc, why);
+    mma_out_free(&o);
+}
+
+static void test_a_converted_image_has_nothing_to_convert(void) {
+    mma_out o, again;
+    mi_image im;
+    char why[256] = "";
+    int rc = build(RMF_PLAIN, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "again: rc %d (%s)", rc, why);
+    if (rc != MMA_OK) return;
+    CHECK(mi_wrap(o.buf, o.size, &im) == 0 && mma_build(&im, &again, why, sizeof why) == MMA_NOTHING &&
+          again.buf == NULL, "again: a converted image converts a second time");
+    mma_out_free(&o);
+}
+
+static void poke_arm64(uint8_t *b)   { ((struct mach_header_64 *)b)->cputype = CPU_TYPE_ARM64; }
+
+static void refused_build(unsigned variant, void (*poke)(uint8_t *), const char *want, const char *label) {
+    mma_out o;
+    uint8_t before[RMF_SIZE];
+    char why[256] = "";
+    int rc;
+    rmf_build(before, variant);
+    if (poke) poke(before);
+    rc = build(variant, poke, &o, why, sizeof why);
+    CHECK(rc == MMA_REFUSED, "%s: rc %d, want MMA_REFUSED", label, rc);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+    CHECK(o.buf == NULL, "%s: a refusal handed back an image", label);
+    CHECK(memcmp(before, fx, RMF_SIZE) == 0, "%s: the refusal wrote into its input", label);
+}
+
+static void test_conversion_refusals_write_nothing(void) {
+    refused_build(RMF_CHAINED, NULL, "fixups set classic first", "chained fixups");
+    refused_build(RMF_PLAIN, poke_arm64, "not x86_64", "an arm64 image");
+    refused_build(RMF_PLAIN, poke_no_info, "no LC_DYLD_INFO", "no rebase stream");
+    refused_build(RMF_DATARO, NULL, "is not writable", "D read-only");
+    refused_build(RMF_NOSLOTRB, NULL, "file offset 0x1120 carries no rebase", "a method-list slot with no rebase");
+    refused_build(RMF_SELBIND, NULL, "is bound to another image", "a bound selector reference");
+    refused_build(RMF_FSBAD, NULL, "not one of the 3 function starts", "an IMP that is not a function start");
+    refused_build(RMF_OOB, NULL, "runs past its segment", "a list the walk cannot read");
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -948,6 +1092,11 @@ int main(void) {
     test_insert_makes_the_zero_fill_file_bytes();
     test_insert_grows_linkedit_vm_to_cover_its_file_bytes();
     test_insert_never_grows_the_header();
+    test_conversion_matches_the_oracle_in_order();
+    test_every_new_pointer_is_rebased();
+    test_every_slot_is_repointed_and_absolute_ones_kept();
+    test_a_converted_image_has_nothing_to_convert();
+    test_conversion_refusals_write_nothing();
     test_layout_refuses_ends_that_wrap();
     test_layout_refuses_a_segment_above_linkedit();
     test_layout_names_why_there_is_no_room();

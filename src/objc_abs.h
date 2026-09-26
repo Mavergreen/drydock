@@ -63,4 +63,32 @@ int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
                uint64_t lists_len, uint64_t s, const uint8_t *stream, uint32_t r,
                uint8_t **out, size_t *outsz, char *why, size_t whysz);
 
+/* What a conversion did, in the figures it had in hand while doing it. */
+typedef struct {
+    uint32_t lists, methods;            /* relative lists converted, and their entries */
+    uint32_t owners[MML_NOWNERS];       /* those lists, by the record of the first slot naming each */
+    uint32_t rebases;                   /* rebases added */
+    char     dname[16];                 /* D's segname, not NUL-terminated at 16 */
+    uint64_t grew, zerofill;            /* D grew by `grew` in vm, and `zerofill` more in file */
+    uint64_t linkedit_before, linkedit_after;   /* __LINKEDIT's filesize */
+} mma_report;
+
+typedef struct {
+    uint8_t   *buf;     /* the converted image, malloc'd; NULL unless MMA_OK */
+    size_t     size;
+    mma_layout lay;
+    uint64_t   s;       /* the converted lists' room, a whole number of pages */
+    uint32_t   r;       /* the new rebase stream's size, a multiple of 8 */
+    mma_report rep;
+} mma_out;
+
+/* Converts `im`, which is only read, into o->buf: MMA_OK; MMA_NOTHING when
+ * the walk finds no relative list; MMA_REFUSED or MMA_NOMEM with why set.
+ * Refuses an image that is not x86_64, has chained fixups, has no
+ * LC_DYLD_INFO, fails the walk or the layout, has a method-list slot with no
+ * rebase, or has an entry mml_entry_at will not resolve. The new lists keep
+ * their entries' order; each carries one rebase per pointer that is not 0. */
+int  mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz);
+void mma_out_free(mma_out *o);
+
 #endif

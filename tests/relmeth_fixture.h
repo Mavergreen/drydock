@@ -7,6 +7,7 @@
 #define RELMETH_FIXTURE_H
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
@@ -95,8 +96,10 @@ enum {
     RMF_SEGAFTER = 1u << 22, /* a segment __EXTRA follows __LINKEDIT */
     RMF_CODESIG  = 1u << 23, /* LC_CODE_SIGNATURE over the last RMF_CODESIG_SIZE bytes */
     RMF_SPLIT    = 1u << 24, /* LC_SEGMENT_SPLIT_INFO over 8 bytes at RMF_SPLIT_BLOB */
-    RMF_PAD16    = 1u << 25  /* an LC_RPATH fills the header to RMF_PAD bytes of pad;
+    RMF_PAD16    = 1u << 25, /* an LC_RPATH fills the header to RMF_PAD bytes of pad;
                               * ignored with RMF_DYLIB, which already does */
+    RMF_COMPACT  = 1u << 26  /* the rebase stream is ld64's compact form, one segment set and
+                              * DO_REBASE_ADD_ADDR_ULEB between slots */
 };
 
 /* __DATA's segment index, which rebase and bind opcodes name. */
@@ -198,6 +201,16 @@ static inline uint32_t rmf_rebase_slots(unsigned v, uint32_t *out) {
 static inline uint32_t rmf_rebases(uint8_t *b, unsigned v) {
     uint32_t slots[32], n = rmf_rebase_slots(v, slots), at = RMF_REBASE;
     b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
+    if (v & RMF_COMPACT) {
+        b[at++] = (uint8_t)(REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | rmf_data_seg(v));
+        at += rmf_uleb(b + at, slots[0]);
+        for (uint32_t i = 0; i + 1 < n; i++) {
+            b[at++] = REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB;
+            at += rmf_uleb(b + at, slots[i + 1] - slots[i] - 8);
+        }
+        b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+        n = 0;
+    }
     for (uint32_t i = 0; i < n; i++) {
         b[at++] = (uint8_t)(REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | rmf_data_seg(v));
         at += rmf_uleb(b + at, slots[i]);
@@ -387,6 +400,90 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
     if (v & RMF_DYLIB)  rmf_fill(b, &at, LC_ID_DYLIB, 24, "/rmf/librmf.dylib");
     if ((v & RMF_PAD16) && !(v & RMF_DYLIB)) rmf_fill(b, &at, LC_RPATH, 12, "/rmf/rpath");
     return RMF_SIZE;
+}
+
+/* ---- the oracle -----------------------------------------------------------
+ * Reads every method-list slot this fixture can fill, by its fixed address,
+ * and resolves the list it names without src/: a relative entry through its
+ * selector reference, an absolute one directly. One line per filled slot:
+ *   "<slot> <rel|abs> <count>: <name> <types> <imp>; ..."
+ * A conversion must leave every line as it was but for rel -> abs. */
+
+static inline int64_t rmf_file(const uint8_t *b, size_t n, uint64_t va, uint64_t len) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)b;
+    uint32_t at = sizeof *h;
+    if (n < sizeof *h || h->magic != MH_MAGIC_64) return -1;
+    for (uint32_t i = 0; i < h->ncmds && at + 8 <= n; i++) {
+        const struct load_command *lc = (const struct load_command *)(b + at);
+        if (lc->cmd == LC_SEGMENT_64 && at + sizeof(struct segment_command_64) <= n) {
+            const struct segment_command_64 *s = (const struct segment_command_64 *)lc;
+            if (va >= s->vmaddr && va - s->vmaddr + len <= s->filesize &&
+                s->fileoff + (va - s->vmaddr) + len <= n)
+                return (int64_t)(s->fileoff + (va - s->vmaddr));
+        }
+        at += lc->cmdsize;
+    }
+    return -1;
+}
+
+static inline const char *rmf_str(const uint8_t *b, size_t n, uint64_t va) {
+    int64_t o = rmf_file(b, n, va, 1);
+    if (o < 0 || !memchr(b + o, 0, n - (size_t)o)) return "?";
+    return (const char *)b + o;
+}
+
+static inline uint64_t rmf_get64(const uint8_t *b, size_t n, uint64_t va) {
+    uint64_t v = 0;
+    int64_t o = rmf_file(b, n, va, 8);
+    if (o >= 0) memcpy(&v, b + o, 8);
+    return v;
+}
+
+static inline int rmf_describe(const uint8_t *b, size_t n, char *out, size_t outsz) {
+    static const struct { const char *name; uint32_t off; } slots[] = {
+        { "class",                 RMF_CLASS_RO + 32 },  { "metaclass",       RMF_META_RO + 32 },
+        { "category.instance",     RMF_CATEGORY + 16 },  { "category.class",  RMF_CATEGORY + 24 },
+        { "category2.instance",    RMF_CATEGORY2 + 16 }, { "protocol.instance", RMF_PROTOCOL + 24 },
+        { "protocol.class",        RMF_PROTOCOL + 32 },  { "protocol.optinstance", RMF_PROTOCOL + 40 },
+        { "protocol.optclass",     RMF_PROTOCOL + 48 },
+    };
+    size_t used = 0;
+    if (outsz) out[0] = 0;
+#define RMF_OUT(...) do { int w_ = snprintf(out + used, outsz - used, __VA_ARGS__); \
+    if (w_ < 0 || (size_t)w_ >= outsz - used) return -1; used += (size_t)w_; } while (0)
+    for (size_t k = 0; k < sizeof slots / sizeof slots[0]; k++) {
+        uint64_t list = rmf_get64(b, n, RMF_VA(slots[k].off));
+        uint32_t hdr, count;
+        int64_t lo;
+        if (!list) continue;
+        if ((lo = rmf_file(b, n, list, 8)) < 0) return -1;
+        memcpy(&hdr, b + lo, 4);
+        memcpy(&count, b + lo + 4, 4);
+        RMF_OUT("%s %s %u:", slots[k].name, (hdr & 0x80000000u) ? "rel" : "abs", count);
+        for (uint32_t i = 0; i < count; i++) {
+            uint64_t name, types, imp;
+            if (hdr & 0x80000000u) {
+                uint64_t e = list + 8 + 12 * (uint64_t)i;
+                int32_t d[3];
+                int64_t eo = rmf_file(b, n, e, 12);
+                if (eo < 0) return -1;
+                memcpy(d, b + eo, 12);
+                name = rmf_get64(b, n, e + (uint64_t)(int64_t)d[0]);
+                types = e + 4 + (uint64_t)(int64_t)d[1];
+                imp = d[2] ? e + 8 + (uint64_t)(int64_t)d[2] : 0;
+            } else {
+                uint64_t e = list + 8 + 24 * (uint64_t)i;
+                name = rmf_get64(b, n, e);
+                types = rmf_get64(b, n, e + 8);
+                imp = rmf_get64(b, n, e + 16);
+            }
+            RMF_OUT(" %s %s 0x%llx;", rmf_str(b, n, name), rmf_str(b, n, types),
+                    (unsigned long long)imp);
+        }
+        RMF_OUT("\n");
+    }
+#undef RMF_OUT
+    return (int)used;
 }
 
 #endif
