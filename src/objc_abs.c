@@ -335,6 +335,11 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
                      "in __LINKEDIT, which the conversion moves", (unsigned long long)w.refs[i].slot_off);
             goto done;
         }
+        if (!(w.refs[i].header & MML_RELATIVE) && w.refs[i].list_off >= o->lay.insert) {
+            mma_fail(why, whysz, MMA_REFUSED, "the absolute method list at file offset 0x%llx lies "
+                     "in __LINKEDIT, which the conversion moves", (unsigned long long)w.refs[i].list_off);
+            goto done;
+        }
         if (!mml_off_rebased(&res, w.refs[i].slot_off)) {
             mma_fail(why, whysz, MMA_REFUSED, "the method-list pointer at file offset 0x%llx "
                      "carries no rebase", (unsigned long long)w.refs[i].slot_off);
@@ -487,6 +492,10 @@ static int mma_verify_walk(const mml_walk *wi, const mml_walk *wo, const mml_res
                                 (unsigned long long)a->list_va, (unsigned long long)b->list_va);
             continue;
         }
+        if (a->list_va != wi->refs[first[i]].list_va)
+            return mma_fail(why, whysz, MMA_REFUSED, "the slots at 0x%llx and 0x%llx named two lists "
+                            "and were given one", (unsigned long long)wi->refs[first[i]].slot_off,
+                            (unsigned long long)a->slot_off);
         if (b->list_va != wo->refs[first[i]].list_va)
             return mma_fail(why, whysz, MMA_REFUSED, "the slots at 0x%llx and 0x%llx named one list "
                             "and now name two", (unsigned long long)wi->refs[first[i]].slot_off,
@@ -517,50 +526,68 @@ static int mma_verify_walk(const mml_walk *wi, const mml_walk *wo, const mml_res
     return MMA_OK;
 }
 
-/* 1 when a sorted `s` holds (want->seg, want->off) rebased as want->type. */
-static int mma_has_typed(const mrb_set *s, const mrb_slot *want) {
-    size_t lo = 0, hi = s->n;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        const mrb_slot *m = &s->v[mid];
-        if (m->seg < want->seg || (m->seg == want->seg && m->off < want->off)) lo = mid + 1;
-        else hi = mid;
-    }
-    for (; lo < s->n && s->v[lo].seg == want->seg && s->v[lo].off == want->off; lo++)
-        if (s->v[lo].type == want->type) return 1;
-    return 0;
+static int mma_slot_cmp(const void *a_, const void *b_) {
+    const mrb_slot *a = a_, *b = b_;
+    if (a->seg != b->seg) return a->seg < b->seg ? -1 : 1;
+    if (a->off != b->off) return a->off < b->off ? -1 : 1;
+    return (a->type > b->type) - (a->type < b->type);
 }
 
+/* The output's rebases must be, as a multiset of (segment, offset, type),
+ * the input's plus `added`; and no input rebase may name bytes the
+ * conversion puts somewhere else: D past its old end, where the lists go, or
+ * __LINKEDIT, which the new stream moves up. */
 static int mma_verify_rebases(const mi_image *in, const mma_out *o, const mma_lcs *li,
                               const mma_lcs *lo, mrb_set *added, char *why, size_t whysz) {
+    uint64_t d_end = li->seg[o->lay.d]->vmsize;
     mrb_set was, now;
-    int rc = MMA_REFUSED;
-    size_t k;
+    int rc;
+    size_t k, j;
     memset(&was, 0, sizeof was);
     memset(&now, 0, sizeof now);
-    if (mrb_decode(in->buf + li->di->rebase_off, li->di->rebase_size, li->n, &was, why, whysz) != MRB_OK ||
-        mrb_decode(o->buf + lo->di->rebase_off, lo->di->rebase_size, lo->n, &now, why, whysz) != MRB_OK)
+    if ((rc = mrb_decode(in->buf + li->di->rebase_off, li->di->rebase_size, li->n, &was, why, whysz)) != MRB_OK ||
+        (rc = mrb_decode(o->buf + lo->di->rebase_off, lo->di->rebase_size, lo->n, &now, why, whysz)) != MRB_OK) {
+        rc = rc == MRB_NOMEM ? MMA_NOMEM : MMA_REFUSED;
         goto out;
-    mrb_sort(&was);
-    mrb_sort(added);
-    mrb_sort(&now);
+    }
+    rc = MMA_REFUSED;
+    for (k = 0; k < was.n; k++) {
+        if (was.v[k].seg == o->lay.d && was.v[k].off >= d_end) {
+            mma_fail(why, whysz, MMA_REFUSED, "the input rebases %.16s at offset 0x%llx, past its end "
+                     "at 0x%llx, where the lists go", li->seg[o->lay.d]->segname,
+                     (unsigned long long)was.v[k].off, (unsigned long long)d_end);
+            goto out;
+        }
+        if (was.v[k].seg == o->lay.l) {
+            mma_fail(why, whysz, MMA_REFUSED, "the input rebases __LINKEDIT at offset 0x%llx, whose "
+                     "bytes the new rebase stream moves", (unsigned long long)was.v[k].off);
+            goto out;
+        }
+    }
     if (now.n != was.n + added->n) {
         mma_fail(why, whysz, MMA_REFUSED, "the new rebase stream has %zu rebases; the old one had %zu "
                  "and %zu pointers are new", now.n, was.n, added->n);
         goto out;
     }
-    for (k = 0; k < was.n; k++)
-        if (!mma_has_typed(&now, &was.v[k])) {
+    for (k = 0; k < added->n; k++)
+        if (mrb_add(&was, added->v[k].seg, added->v[k].type, added->v[k].off) != 0) {
+            rc = mma_fail(why, whysz, MMA_NOMEM, "out of memory");
+            goto out;
+        }
+    if (was.n) qsort(was.v, was.n, sizeof *was.v, mma_slot_cmp);
+    if (now.n) qsort(now.v, now.n, sizeof *now.v, mma_slot_cmp);
+    for (k = 0, j = 0; k < was.n; ) {
+        int c = j < now.n ? mma_slot_cmp(&was.v[k], &now.v[j]) : -1;
+        if (c > 0) { j++; continue; }
+        if (c == 0) { k++; j++; continue; }
+        if (was.v[k].seg == o->lay.d && was.v[k].off >= d_end)
+            mma_fail(why, whysz, MMA_REFUSED, "the new pointer at segment %u offset 0x%llx has no "
+                     "rebase as a pointer", was.v[k].seg, (unsigned long long)was.v[k].off);
+        else
             mma_fail(why, whysz, MMA_REFUSED, "the old rebase of segment %u offset 0x%llx, type %u, "
                      "is gone", was.v[k].seg, (unsigned long long)was.v[k].off, was.v[k].type);
-            goto out;
-        }
-    for (k = 0; k < added->n; k++)
-        if (!mma_has_typed(&now, &added->v[k])) {
-            mma_fail(why, whysz, MMA_REFUSED, "the new pointer at segment %u offset 0x%llx has no rebase "
-                     "as a pointer", added->v[k].seg, (unsigned long long)added->v[k].off);
-            goto out;
-        }
+        goto out;
+    }
     rc = MMA_OK;
 out:
     mrb_free(&was);
@@ -591,8 +618,6 @@ static int mma_verify_lcs(const mi_image *in, const mma_out *o, const mma_lcs *l
     if (ln->vmaddr != l0->vmaddr + o->s || ln->fileoff != l0->fileoff + z + o->s ||
         ln->filesize != l0->filesize + o->r || ln->vmsize != (l0->vmsize > need ? l0->vmsize : need))
         return mma_fail(why, whysz, MMA_REFUSED, "__LINKEDIT's geometry is not what the layout says");
-    if (lo->n - 1 != o->lay.l || ln->fileoff + ln->filesize != o->size)
-        return mma_fail(why, whysz, MMA_REFUSED, "__LINKEDIT is not the last segment ending the file");
     for (int x = 0; x < lo->n; x++)
         for (int y = x + 1; y < lo->n; y++) {
             const struct segment_command_64 *p = lo->seg[x], *q = lo->seg[y];
@@ -711,16 +736,24 @@ int mma_verify(const mi_image *in, const mma_out *o, char *why, size_t whysz) {
         return mma_fail(why, whysz, MMA_REFUSED, "the output is not a readable 64-bit Mach-O");
     mi_each_lc(in, mma_lcs_lc, &li);
     mi_each_lc(&out, mma_lcs_lc, &lo);
+    if (o->size != in->size + o->lay.z + o->s + o->r)
+        return mma_fail(why, whysz, MMA_REFUSED, "the output is 0x%zx bytes; the layout makes it 0x%llx",
+                        o->size, (unsigned long long)(in->size + o->lay.z + o->s + o->r));
+    if (o->lay.d < 0 || o->lay.d >= li.n || o->lay.l != li.n - 1)
+        return mma_fail(why, whysz, MMA_REFUSED, "the layout names D as segment %d and __LINKEDIT as "
+                        "segment %d, of %d", o->lay.d, o->lay.l, li.n);
     if (!li.di || !lo.di)
         return mma_fail(why, whysz, MMA_REFUSED, "LC_DYLD_INFO is missing");
-    rc = MMA_REFUSED;
-    if (mml_walk_image(in, &wi) != MML_OK || mml_walk_image(&out, &wo) != MML_OK) {
-        mma_fail(why, whysz, MMA_REFUSED, "the walk fails: %s", wo.why[0] ? wo.why : wi.why);
+    if ((rc = mml_walk_image(in, &wi)) != MML_OK || (rc = mml_walk_image(&out, &wo)) != MML_OK) {
+        rc = mma_fail(why, whysz, rc == MML_NOMEM ? MMA_NOMEM : MMA_REFUSED, "the walk fails: %s",
+                      wo.why[0] ? wo.why : wi.why);
         goto out;
     }
-    if (mml_resolver_open(in, &ri, why, whysz) != MML_OK ||
-        mml_resolver_open(&out, &ro, why, whysz) != MML_OK)
+    if ((rc = mml_resolver_open(in, &ri, why, whysz)) != MML_OK ||
+        (rc = mml_resolver_open(&out, &ro, why, whysz)) != MML_OK) {
+        rc = rc == MML_NOMEM ? MMA_NOMEM : MMA_REFUSED;
         goto out;
+    }
     if (!(first = malloc((wi.n ? wi.n : 1) * sizeof *first)) || mma_firsts(&wi, first) != 0) {
         rc = mma_fail(why, whysz, MMA_NOMEM, "out of memory");
         goto out;

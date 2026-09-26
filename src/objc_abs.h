@@ -92,23 +92,26 @@ int  mma_room(const mml_walk *w, const uint32_t *first, uint64_t list_va, uint64
 /* Converts `im`, which is only read, into o->buf: MMA_OK; MMA_NOTHING when
  * the walk finds no relative list; MMA_REFUSED or MMA_NOMEM with why set.
  * Refuses an image that is not x86_64, has chained fixups, has no
- * LC_DYLD_INFO, fails the walk or the layout, has a method-list slot in
- * __LINKEDIT or without a pointer rebase, needs lists past 4GB, or has an
- * entry mml_entry_at will not resolve. The new lists keep their entries'
- * order; each carries one rebase per pointer that is not 0. */
+ * LC_DYLD_INFO, fails the walk or the layout, has a method-list slot or an
+ * absolute list in __LINKEDIT, has a slot without a pointer rebase, needs
+ * lists past 4GB, or has an entry mml_entry_at will not resolve. The new
+ * lists keep their entries' order; each carries one rebase per pointer that
+ * is not 0. */
 int  mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz);
 void mma_out_free(mma_out *o);
 
 /* Checks o->buf against `in`, the image it was built from, and against
- * nothing mma_build computed but o->lay, o->s and o->r: the output's walk
- * finds no relative list, the same slots, and in each converted list the
- * same entries in the same order; its rebases are the input's, each of its
- * type, plus exactly one POINTER rebase per new pointer that is not 0; its
+ * nothing mma_build computed but o->lay, o->s and o->r: the output is
+ * z + s + r bytes longer and the layout names its segments; the output's walk
+ * finds no relative list, the same slots grouped the same way, and in each
+ * converted list the same entries in the same order; its rebases are the
+ * input's, each of its type, plus exactly one POINTER rebase per new pointer
+ * that is not 0, and no input rebase names D past its end or __LINKEDIT; its
  * load commands differ only in D's and __LINKEDIT's geometry and the
  * __LINKEDIT offsets, each by exactly what the layout says; every byte
  * outside the new lists and stream is the input's, moved or not, but for the
- * repointed slots, the zero fill and the zeroed old rebase stream;
- * __LINKEDIT ends the file; no segments overlap.
+ * repointed slots, the zero fill and the zeroed old rebase stream; no
+ * segments overlap.
  * MMA_OK, or MMA_REFUSED / MMA_NOMEM with why set. */
 int  mma_verify(const mi_image *in, const mma_out *o, char *why, size_t whysz);
 
