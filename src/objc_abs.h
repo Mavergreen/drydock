@@ -99,4 +99,24 @@ int  mma_room(const mml_walk *w, const uint32_t *first, uint64_t list_va, uint64
 int  mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz);
 void mma_out_free(mma_out *o);
 
+/* Checks o->buf against `in`, the image it was built from, and against
+ * nothing mma_build computed but o->lay, o->s and o->r: the output's walk
+ * finds no relative list, the same slots, and in each converted list the
+ * same entries in the same order; its rebases are the input's, each of its
+ * type, plus exactly one POINTER rebase per new pointer that is not 0; its
+ * load commands differ only in D's and __LINKEDIT's geometry and the
+ * __LINKEDIT offsets, each by exactly what the layout says; every byte
+ * outside the new lists and stream is the input's, moved or not, but for the
+ * repointed slots, the zero fill and the zeroed old rebase stream;
+ * __LINKEDIT ends the file; no segments overlap.
+ * MMA_OK, or MMA_REFUSED / MMA_NOMEM with why set. */
+int  mma_verify(const mi_image *in, const mma_out *o, char *why, size_t whysz);
+
+/* The statement: mma_build, then mma_verify, then the image is replaced.
+ * 0 with *rep filled (rep->lists == 0 when there was nothing to convert), or
+ * MR_REFUSED / MR_FAIL (src/rewrite.h) with the reason on stderr. *pbuf and
+ * *psize name the image afterwards either way; on a non-zero return it is
+ * the image as it was. */
+int  mma_convert(uint8_t **pbuf, size_t *psize, mma_report *rep);
+
 #endif

@@ -4,6 +4,7 @@
 #include "objc_abs.h"
 #include "image.h"
 #include "mach_compat.h"
+#include "rewrite.h"
 #include "relmeth_fixture.h"
 
 #include <stdio.h>
@@ -1189,6 +1190,158 @@ static void test_slots_the_conversion_cannot_rewrite_are_refused(void) {
                   "a method-list slot in __LINKEDIT");
 }
 
+/* ---- verification ------------------------------------------------------------ */
+
+static void test_every_conversion_verifies(void) {
+    static const unsigned variants[] = {
+        RMF_PLAIN, RMF_ALLSLOTS, RMF_SHARED, RMF_ABSCAT, RMF_SWIFT, RMF_NLCLS, RMF_SHAREDRO,
+        RMF_ZEROTAIL, RMF_DYLIB, RMF_CODESIG | RMF_SPLIT, RMF_FSTARTS, RMF_PAD16,
+        RMF_COMPACT | RMF_ALLSLOTS,
+    };
+    for (size_t k = 0; k < sizeof variants / sizeof variants[0]; k++) {
+        mma_out o;
+        mi_image in;
+        char why[512] = "";
+        int rc = build(variants[k], NULL, &o, why, sizeof why);
+        CHECK(rc == MMA_OK, "variant %#x: build rc %d (%s)", variants[k], rc, why);
+        if (rc != MMA_OK) continue;
+        mi_wrap(fx, RMF_SIZE, &in);
+        rc = mma_verify(&in, &o, why, sizeof why);
+        CHECK(rc == MMA_OK, "variant %#x: verify rc %d (%s)", variants[k], rc, why);
+        mma_out_free(&o);
+    }
+}
+
+typedef void (*corrupt_fn)(mma_out *o);
+
+static uint64_t stream_at(const mma_out *o) { return o->lay.insert + o->lay.z + o->s; }
+
+static void c_name(mma_out *o)    { o->buf[o->lay.insert + o->lay.z + 8] ^= 0x10; }
+static void c_types(mma_out *o)   { o->buf[o->lay.insert + o->lay.z + 16] ^= 1; }
+static void c_imp(mma_out *o)     { o->buf[o->lay.insert + o->lay.z + 24] ^= 4; }
+static void c_relative(mma_out *o) { rmf_put64(o->buf, RMF_CLASS_RO + 32, RMF_VA(RMF_LIST_A)); }
+static void c_absolute(mma_out *o) { rmf_put64(o->buf, RMF_CATEGORY + 16, RMF_VA(RMF_LINKEDIT)); }
+static void c_split(mma_out *o)   {
+    /* the category names a byte-for-byte copy of list A, not list A */
+    memcpy(o->buf + o->lay.insert + 0x800, o->buf + o->lay.insert, 8 + 2 * 24);
+    rmf_put64(o->buf, RMF_CATEGORY + 16, RMF_VA(RMF_LINKEDIT + 0x800));
+}
+static void c_drop_rebase(mma_out *o) {
+    mrb_set set;
+    mrb_decode(o->buf + stream_at(o), o->r, 4, &set, NULL, 0);
+    o->buf[stream_at(o) + set.end - 1]--;
+    mrb_free(&set);
+}
+static void c_add_rebase(mma_out *o) {
+    mrb_set set;
+    mrb_decode(o->buf + stream_at(o), o->r, 4, &set, NULL, 0);
+    o->buf[stream_at(o) + set.end - 1]++;
+    mrb_free(&set);
+}
+static void c_move_rebase(mma_out *o) {
+    /* list D's run, SET_SEGMENT_AND_OFFSET_ULEB 2 0x1080 then two, starts at 0x1078 instead */
+    mrb_set set;
+    mrb_decode(o->buf + stream_at(o), o->r, 4, &set, NULL, 0);
+    o->buf[stream_at(o) + set.end - 3] = 0xf8;
+    o->buf[stream_at(o) + set.end - 2] = 0x20;
+    mrb_free(&set);
+}
+/* The input's stream opens with SET_TYPE_IMM POINTER, and the new pointers'
+ * run with another where the input's DONE was: each poke makes one of them
+ * TEXT_ABSOLUTE32, which would slide only a pointer's low half. */
+static void c_retype_old(mma_out *o) {
+    o->buf[stream_at(o)] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_TEXT_ABSOLUTE32;
+}
+static void c_retype_new(mma_out *o) {
+    mrb_set was;
+    lcs_of in = lcs(fx, RMF_SIZE);
+    mrb_decode(fx + in.di->rebase_off, in.di->rebase_size, 4, &was, NULL, 0);
+    o->buf[stream_at(o) + was.end] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_TEXT_ABSOLUTE32;
+    mrb_free(&was);
+}
+static void c_dvmsize(mma_out *o) { lcs_of c = lcs(o->buf, o->size); ((struct segment_command_64 *)(uintptr_t)c.d)->vmsize += MMA_PAGE; }
+static void c_lfilesize(mma_out *o) { lcs_of c = lcs(o->buf, o->size); ((struct segment_command_64 *)(uintptr_t)c.l)->filesize -= 8; }
+static void c_lvmaddr(mma_out *o) { lcs_of c = lcs(o->buf, o->size); ((struct segment_command_64 *)(uintptr_t)c.l)->vmaddr += MMA_PAGE; }
+static void c_truncate(mma_out *o) { o->size -= 8; }
+static void c_rebase_size(mma_out *o) { lcs_of c = lcs(o->buf, o->size); ((struct dyld_info_command *)(uintptr_t)c.di)->rebase_size += 8; }
+static void c_symoff(mma_out *o)  { lcs_of c = lcs(o->buf, o->size); ((struct symtab_command *)(uintptr_t)c.st)->symoff += 8; }
+static void c_nsyms(mma_out *o)   { lcs_of c = lcs(o->buf, o->size); ((struct symtab_command *)(uintptr_t)c.st)->nsyms += 1; }
+static void c_below(mma_out *o)   { o->buf[RMF_DATA_TAIL] ^= 0xff; }
+static void c_zerofill(mma_out *o) { o->buf[o->lay.insert] = 1; }
+static void c_past_lists(mma_out *o) { o->buf[o->lay.insert + o->lay.z + o->s - 1] = 1; }
+static void c_linkedit(mma_out *o) { o->buf[o->size - 1] ^= 0xff; }
+static void c_old_stream(mma_out *o) { o->buf[RMF_REBASE + o->lay.z + o->s + o->r] = 0x11; }
+
+static void refused_verify(unsigned variant, void (*poke)(uint8_t *), corrupt_fn corrupt,
+                           const char *want, const char *label) {
+    mma_out o;
+    mi_image in;
+    char why[512] = "";
+    int rc = build(variant, poke, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "%s: build rc %d (%s)", label, rc, why);
+    if (rc != MMA_OK) return;
+    if (corrupt) corrupt(&o);
+    mi_wrap(fx, RMF_SIZE, &in);
+    rc = mma_verify(&in, &o, why, sizeof why);
+    CHECK(rc == MMA_REFUSED, "%s: verify rc %d, want MMA_REFUSED", label, rc);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+    mma_out_free(&o);
+}
+
+static void poke_text_over_data(uint8_t *b) {
+    mi_image im;
+    struct segment_command_64 *t;
+    if (mi_wrap(b, RMF_SIZE, &im) == 0 && (t = mi_find_segment(&im, "__TEXT"))) t->vmsize = 0x2000;
+}
+
+static void test_verification_refuses_every_difference(void) {
+    refused_verify(RMF_PLAIN, NULL, c_name, "is not the entry it was", "an entry's name");
+    refused_verify(RMF_PLAIN, NULL, c_types, "is not the entry it was", "an entry's types");
+    refused_verify(RMF_PLAIN, NULL, c_imp, "is not the entry it was", "an entry's IMP");
+    refused_verify(RMF_PLAIN, NULL, c_relative, "relative method lists", "a slot back on its relative list");
+    refused_verify(RMF_ABSCAT, NULL, c_absolute, "named an absolute list", "an absolute list's slot moved");
+    refused_verify(RMF_SHARED, NULL, c_split, "now name two", "a shared list split in two");
+    refused_verify(RMF_PLAIN, NULL, c_drop_rebase, "rebases; the old one had", "a new pointer's rebase dropped");
+    refused_verify(RMF_PLAIN, NULL, c_move_rebase, "offset 0x1088 has no rebase", "a rebase on the wrong slot");
+    refused_verify(RMF_PLAIN, NULL, c_add_rebase, "rebases; the old one had", "a rebase for an IMP of 0");
+    refused_verify(RMF_PLAIN, NULL, c_retype_old, "old rebase of segment 2 offset 0x0, type 1, is gone", "an old rebase retyped");
+    refused_verify(RMF_PLAIN, NULL, c_retype_new, "offset 0x1008 has no rebase", "a new pointer rebased as 32 bits");
+    refused_verify(RMF_PLAIN, NULL, c_dvmsize, "vmsize/filesize", "D grown too far");
+    refused_verify(RMF_PLAIN, NULL, c_lfilesize, "__LINKEDIT's geometry", "__LINKEDIT's size");
+    refused_verify(RMF_PLAIN, NULL, c_lvmaddr, "__LINKEDIT's geometry", "__LINKEDIT's address");
+    refused_verify(RMF_PLAIN, NULL, c_truncate, "ending the file", "bytes past __LINKEDIT's end");
+    refused_verify(RMF_PLAIN, NULL, c_rebase_size, "rebase_off/size", "rebase_size past the stream");
+    refused_verify(RMF_PLAIN, NULL, c_symoff, "__LINKEDIT offset", "symoff moved by the wrong amount");
+    refused_verify(RMF_PLAIN, NULL, c_nsyms, "load-command byte", "a load-command field nothing edits");
+    refused_verify(RMF_PLAIN, NULL, c_below, "below the insertion", "a byte below the insertion");
+    refused_verify(RMF_ZEROTAIL, NULL, c_zerofill, "zero-fill byte", "a zero-fill byte");
+    refused_verify(RMF_PLAIN, NULL, c_past_lists, "past the lists", "a byte past the lists");
+    refused_verify(RMF_CODESIG, NULL, c_linkedit, "is not what it was", "a code-signature byte");
+    refused_verify(RMF_PLAIN, NULL, c_old_stream, "the old rebase stream, zeroed", "the old stream left in place");
+    refused_verify(RMF_PLAIN, poke_text_over_data, NULL, "overlap in memory", "segments that overlap");
+}
+
+static void test_convert_swaps_only_what_verifies(void) {
+    uint8_t *buf = malloc(RMF_SIZE), *was;
+    size_t size = RMF_SIZE;
+    mma_report rep;
+    rmf_build(buf, RMF_PLAIN);
+    was = buf;
+    CHECK(mma_convert(&buf, &size, &rep) == 0 && buf != was && size > RMF_SIZE && rep.lists == 4,
+          "convert plain: not replaced (%zu bytes, %u lists)", size, rep.lists);
+    was = buf;
+    CHECK(mma_convert(&buf, &size, &rep) == 0 && buf == was && rep.lists == 0,
+          "convert again: replaced, or %u lists", rep.lists);
+    free(buf);
+    buf = malloc(RMF_SIZE);
+    size = RMF_SIZE;
+    rmf_build(buf, RMF_DATARO);
+    was = buf;
+    CHECK(mma_convert(&buf, &size, &rep) == MR_REFUSED && buf == was && size == RMF_SIZE,
+          "convert dataro: not refused, or the image replaced");
+    free(buf);
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -1217,6 +1370,9 @@ int main(void) {
     test_every_slot_is_repointed_and_absolute_ones_kept();
     test_a_converted_image_has_nothing_to_convert();
     test_conversion_refusals_write_nothing();
+    test_every_conversion_verifies();
+    test_verification_refuses_every_difference();
+    test_convert_swaps_only_what_verifies();
     test_new_rebases_name_ds_own_segment();
     test_slots_the_conversion_cannot_rewrite_are_refused();
     test_layout_refuses_ends_that_wrap();
