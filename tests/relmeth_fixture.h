@@ -98,8 +98,9 @@ enum {
     RMF_SPLIT    = 1u << 24, /* LC_SEGMENT_SPLIT_INFO over 8 bytes at RMF_SPLIT_BLOB */
     RMF_PAD16    = 1u << 25, /* an LC_RPATH fills the header to RMF_PAD bytes of pad;
                               * ignored with RMF_DYLIB, which already does */
-    RMF_COMPACT  = 1u << 26  /* the rebase stream is ld64's compact form, one segment set and
+    RMF_COMPACT  = 1u << 26, /* the rebase stream is ld64's compact form, one segment set and
                               * DO_REBASE_ADD_ADDR_ULEB between slots */
+    RMF_DYSYMTAB = 1u << 27  /* an LC_DYSYMTAB naming the one symbol as defined external */
 };
 
 /* __DATA's segment index, which rebase and bind opcodes name. */
@@ -371,6 +372,11 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         sym->n_type = N_SECT | N_EXT;
         sym->n_sect = 1;
         sym->n_value = RMF_VA(RMF_TEXT);
+    }
+    if (v & RMF_DYSYMTAB) {
+        struct dysymtab_command *dy = rmf_lc(b, &at, LC_DYSYMTAB, sizeof *dy);
+        dy->iextdefsym = 0;
+        dy->nextdefsym = 1;
     }
     if (v & RMF_CHAINED) {
         struct linkedit_data_command *cf = rmf_lc(b, &at, LC_DYLD_CHAINED_FIXUPS, sizeof *cf);

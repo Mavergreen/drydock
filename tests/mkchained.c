@@ -73,6 +73,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <mach-o/loader.h>
+#include <mach-o/nlist.h>
 #include "mach_compat.h"
 
 #define TEXT_VMADDR  0x100000000ULL
@@ -96,7 +97,15 @@
 #define SW_RO    0x200   /* ... the class's read-only data; the metaclass's is +0x40 */
 
 enum { MK_PLAIN, MK_WEAK, MK_BIG, MK_NOSECT, MK_SECTPAST, MK_BADORD, MK_HIGH8, MK_LCFIRST,
-       MK_SWIFT, MK_SWIFTDC, MK_TIGHT, MK_TIGHT7 };
+       MK_SWIFT, MK_SWIFTDC, MK_TIGHT, MK_TIGHT7, MK_SIGNABLE };
+
+/* make-signable's extra __LINKEDIT, after the trie: one local symbol, its
+ * string, and a signature blob, which codesign_allocate needs to see an
+ * image it would sign (an LC_ID_DYLIB, a symbol table, an LC_DYSYMTAB). */
+#define SG_SYMS  (TRIE_SIZE)
+#define SG_STRS  (SG_SYMS + 16)
+#define SG_SIG   (SG_STRS + 16)
+#define SG_END   (SG_SIG + 64)
 
 /* segname/sectname are char[16] and need NOT be NUL-terminated; see
  * tests/README.md's host-portability section for why strcpy is wrong here. */
@@ -209,6 +218,37 @@ static int make(const char *path, int mode) {
     if (mode != MK_LCFIRST) p = put_strippable(p, fixups_off, trie_off);
 
     h->ncmds = 6;
+    if (mode == MK_SIGNABLE) {
+        struct dylib_command *id = (struct dylib_command *)p;
+        id->cmd = LC_ID_DYLIB;
+        id->cmdsize = sizeof *id + 16;
+        id->dylib.name.offset = sizeof *id;
+        memcpy(p + sizeof *id, "/mkchained", 11);
+        p += id->cmdsize;
+        struct symtab_command *st = (struct symtab_command *)p;
+        st->cmd = LC_SYMTAB;
+        st->cmdsize = sizeof *st;
+        st->symoff = (uint32_t)(trie_off + SG_SYMS);
+        st->nsyms = 1;
+        st->stroff = (uint32_t)(trie_off + SG_STRS);
+        st->strsize = 16;
+        p += st->cmdsize;
+        struct dysymtab_command *dy = (struct dysymtab_command *)p;
+        memset(dy, 0, sizeof *dy);
+        dy->cmd = LC_DYSYMTAB;
+        dy->cmdsize = sizeof *dy;
+        dy->nlocalsym = 1;
+        p += dy->cmdsize;
+        struct linkedit_data_command *sig = (struct linkedit_data_command *)p;
+        sig->cmd = LC_CODE_SIGNATURE;
+        sig->cmdsize = sizeof *sig;
+        sig->dataoff = (uint32_t)(trie_off + SG_SIG);
+        sig->datasize = 64;
+        p += sig->cmdsize;
+        h->ncmds += 4;
+        le->filesize = trie_off + SG_END - linkedit_off;
+        fsize = (size_t)(trie_off + SG_END);
+    }
     h->sizeofcmds = (uint32_t)(p - (buf + sizeof *h));
 
     /* The chain in __DATA. Every link uses pointer format 6
@@ -270,6 +310,16 @@ static int make(const char *path, int mode) {
     memcpy(fx + 0x80, SYMNAME, sizeof SYMNAME);
 
     memset(buf + trie_off, 0, TRIE_SIZE);
+    if (mode == MK_SIGNABLE) {
+        struct nlist_64 *sym = (struct nlist_64 *)(buf + trie_off + SG_SYMS);
+        sym->n_un.n_strx = 1;
+        sym->n_type = N_SECT;
+        sym->n_sect = 1;
+        sym->n_value = TEXT_VMADDR + SECT_OFF;
+        memcpy(buf + trie_off + SG_STRS, "\0_mkchained_l", 14);
+        static const uint8_t magic[8] = { 0xfa, 0xde, 0x0c, 0xc0, 0, 0, 0, 64 };
+        memcpy(buf + trie_off + SG_SIG, magic, sizeof magic);
+    }
 
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (fd < 0) { perror("create"); free(buf); return 2; }
@@ -366,8 +416,9 @@ static int tags(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7|check|tags FILE\n"); return 2; }
+    if (argc != 3) { fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7|make-signable|check|tags FILE\n"); return 2; }
     if (strcmp(argv[1], "make") == 0) return make(argv[2], MK_PLAIN);
+    if (strcmp(argv[1], "make-signable") == 0) return make(argv[2], MK_SIGNABLE);
     if (strcmp(argv[1], "make-weak") == 0) return make(argv[2], MK_WEAK);
     if (strcmp(argv[1], "make-big") == 0) return make(argv[2], MK_BIG);
     if (strcmp(argv[1], "make-nosect") == 0) return make(argv[2], MK_NOSECT);
@@ -381,6 +432,6 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "make-tight7") == 0) return make(argv[2], MK_TIGHT7);
     if (strcmp(argv[1], "tags") == 0) return tags(argv[2]);
     if (strcmp(argv[1], "check") == 0) return check(argv[2]);
-    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7|check|tags FILE\n");
+    fprintf(stderr, "usage: mkchained make|make-weak|make-big|make-nosect|make-sectpast|make-badord|make-high8|make-lcfirst|make-swift|make-swiftdc|make-tight|make-tight7|make-signable|check|tags FILE\n");
     return 2;
 }

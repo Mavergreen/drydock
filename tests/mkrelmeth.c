@@ -18,7 +18,7 @@ static const struct { const char *name; unsigned bits; } VARIANTS[] = {
     { "fsbad", RMF_FSBAD },     { "noslotrb", RMF_NOSLOTRB }, { "dylib", RMF_DYLIB },
     { "zerotail", RMF_ZEROTAIL }, { "dataro", RMF_DATARO },  { "gap", RMF_GAP },
     { "segafter", RMF_SEGAFTER }, { "codesig", RMF_CODESIG }, { "split", RMF_SPLIT },
-    { "pad16", RMF_PAD16 },     { "compact", RMF_COMPACT },
+    { "pad16", RMF_PAD16 },     { "compact", RMF_COMPACT }, { "dysymtab", RMF_DYSYMTAB },
 };
 
 static int bits_of(const char *spec, unsigned *out) {

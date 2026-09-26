@@ -5264,6 +5264,32 @@ lo "$T/lk_fat" "$T/lk_fat_empty.out" 'arch x86_64h'
     && ok "order: a fat slice that packs under an empty script does not also claim it disturbed nothing" \
     || bad "order: fat pack no disturb-nothing" "rc $lo_rc: $(cat "$T/lo.err")"
 
+# The lowering: its streams padded to 8, and the result in order.
+"$T/mkchained" make-signable "$T/lk_chained"
+lo "$T/lk_chained" "$T/lk_chained.out" 'fixups set classic'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_chained.out")" = ok ] \
+    && ! "$DRYDOCK_MACHO_REWRITE" info "$T/lk_chained.out" | grep -q '^resign corrupt' \
+    && ok "order: fixups set classic leaves __LINKEDIT as codesign_allocate wants it" \
+    || bad "order: lowering" "rc $lo_rc, resign [$(resign "$T/lk_chained.out")]: $(cat "$T/lo.err")"
+"$T/mkchained" check "$T/lk_chained.out" | grep -qx 'slot0=0x100001000' \
+    && "$T/mkchained" check "$T/lk_chained.out" | grep -qx 'slot1=0x0' \
+    && ok "order: ... and the lowered slots are what they were" \
+    || bad "order: lowering slots" "$("$T/mkchained" check "$T/lk_chained.out")"
+"$T/mklinkedit" pieces "$T/lk_chained.out" | awk '$1 == "rebase" || $1 == "bind" { n++; if ($3 % 8) odd = 1 }
+    END { exit !(n == 2 && !odd) }' \
+    && ok "order: ... and each emitted stream's size is a multiple of 8" \
+    || bad "order: stream padding" "$("$T/mklinkedit" pieces "$T/lk_chained.out")"
+
+# objc-methods, whose old rebase stream it zeroes inside the dyld info.
+"$T/mkrelmeth" make codesig+dysymtab "$T/lk_relmeth"
+lo "$T/lk_relmeth" "$T/lk_relmeth.out" 'objc-methods set absolute'
+"$T/mkrelmeth" entries "$T/lk_relmeth" | sed 's/ rel / abs /' >"$T/lk.want"
+"$T/mkrelmeth" entries "$T/lk_relmeth.out" >"$T/lk.got" 2>/dev/null || true
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_relmeth.out")" = ok ] \
+    && [ -s "$T/lk.want" ] && cmp -s "$T/lk.want" "$T/lk.got" \
+    && ok "order: objc-methods set absolute is packed, and its lists read as they did" \
+    || bad "order: objc-methods" "rc $lo_rc, resign [$(resign "$T/lk_relmeth.out")]: $(cat "$T/lo.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

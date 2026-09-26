@@ -1,7 +1,9 @@
 #!/bin/sh
 # tests/codesign_order_test.sh -- `info`'s resign lines (src/linkedit_order.h)
 # must be 10.9's own codesign_allocate's verdict: on every
-# tests/linkedit_fixture.h variant and on each after the pass has packed it.
+# tests/linkedit_fixture.h variant and on each after the pass has packed it,
+# and on what the CLI suites pack -- the lowering, objc-methods, a grown bind
+# stream and a fat file.
 #
 #   sh tests/codesign_order_test.sh <bindir>
 #
@@ -18,6 +20,7 @@
 set -u
 
 BIN="${1:?usage: codesign_order_test.sh <bindir>}"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DMR="$BIN/drydock-macho-rewrite"
 MK="$BIN/mklinkedit"
 for x in "$DMR" "$MK" "$BIN/makefat"; do
@@ -27,6 +30,7 @@ CA=$(xcrun -f codesign_allocate 2>/dev/null) || CA=$(command -v codesign_allocat
 [ -n "$CA" ] && [ -x "$CA" ] || { echo "SKIP: no codesign_allocate here"; exit 77; }
 strings "$CA" | grep -qx 'cctools-862' ||
     { echo "SKIP: $CA is not cctools-862's, whose verdicts this test pins"; exit 77; }
+CC=${CC:-cc}
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/codesign-order.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -123,7 +127,38 @@ while read -r name; do
     [ "$rc" -eq 0 ] && check "$T/$name.packed"
 done <"$T/names"
 
-if [ "$files" -lt 80 ] || [ "$refused" -eq 0 ] || [ "$corrupt" -eq 0 ]; then
+# ---- what the CLI suites pack -------------------------------------------------
+run() {   # run IN OUT STATEMENT...
+    r_in=$1 r_out=$2; shift 2
+    rm -f "$r_out"
+    printf '%s\n' "$@" | "$DMR" "$r_in" "$r_out" >/dev/null 2>&1
+    check "$r_in"
+    check "$r_out"
+}
+"$CC" -O2 -I "$HERE/../src" -o "$T/mkchained" "$HERE/mkchained.c"
+"$T/mkchained" make-signable "$T/chained"
+run "$T/chained" "$T/chained.out" 'fixups set classic'
+"$CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
+"$T/mkrelmeth" make codesig+dysymtab "$T/relmeth"
+run "$T/relmeth" "$T/relmeth.out" 'objc-methods set absolute'
+# import_redirect_test.sh's grown bind stream
+"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+printf 'int a_data(void) { return 7; }\n' >"$T/a.c"
+printf 'int x(void) { return 1; }\n' >"$T/shim.c"
+printf 'int a_data(void);\nint (*p)(void) = a_data;\nint main(void) { return p(); }\n' >"$T/reg.c"
+FF="-arch x86_64 -mmacosx-version-min=10.9"
+"$CC" -dynamiclib $FF -install_name "$T/liba.dylib" -o "$T/liba.dylib" "$T/a.c"
+"$CC" -dynamiclib $FF -install_name "$T/libshim.dylib" -o "$T/libshim.dylib" "$T/shim.c"
+"$CC" $FF -Wl,-headerpad,0x400 -o "$T/reg" "$T/reg.c" "$T/liba.dylib"
+A=$("$DMR" info "$T/reg" | awk -v p="$T/liba.dylib" 'index($0, "  ordinal=") == 1 {
+    split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); if (a[2] == p) { print o; exit } }')
+"$T/mkbindstream" set "$T/reg" "$T/grow" bind "ord:$A" sym:_x type:1 seg:2:0 do sym:_y do done
+run "$T/grow" "$T/grow.out" "dylib append $T/libshim.dylib" "import redirect _x $T/liba.dylib $T/libshim.dylib"
+# a fat file: one slice in order, one that would re-sign corrupt
+"$BIN/makefat" "$T/fat" "$T/canonical" 0x1000007 3 12 "$T/hole-16" 0x1000007 8 12
+run "$T/fat" "$T/fat.out" 'load-command delete codesig'
+
+if [ "$files" -lt 100 ] || [ "$refused" -eq 0 ] || [ "$corrupt" -eq 0 ] || [ "$fat" -eq 0 ]; then
     echo "FAIL: the corpus is too thin to mean anything: $files files, $refused refused, $corrupt corrupting, $fat fat"
     fail=$((fail + 1))
 fi
