@@ -14,7 +14,7 @@
 
 Measured 2026-09-26 at `88e846f` on this host (10.9, ld64-241.9). The corpus is every regular file with an x86_64 slice under `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` and `/usr/libexec`: 1,128 files, 1,059 of them `MH_EXECUTE`. That is the list the M1 sweeps used, and Task 5 Step 2 rebuilds it. A probe linked against `libdrydockcore.a` decoded every rebase and bind stream in them, plus the 1,376 paths of the earlier survey (symlinks included), which brings in `/usr/bin/java` and its siblings.
 
-- **Pointers that name the header: 46 executables.** They are the 42 Java launcher stubs in `JavaVM.framework/Versions/A/Commands` (`/usr/bin/java`, `jar`, `javac`, …, reached through symlinks, so not in the 1,128), `restoreui`, `MRT`, `cgpdftoraster` and `thnucups`. Each has exactly one, and every one comes from crt1: the `mh` field of `__DATA,__program_vars` (offset 0), or of the older `__DATA,__dyld` (offset 0x10, `thnucups`). libSystem hands that field to `_NSGetMachExecuteHeader`. Grown at `88e846f`, `/usr/bin/java -version` exits 139 (SIGSEGV). Grown with this plan it prints `java version "1.6.0_65"`.
+- **Pointers that name the header: 47 executables.** They are the 43 Java launcher stubs in `JavaVM.framework/Versions/A/Commands` (every file there: 42 reached through symlinks in `/usr/bin`, such as `java`, `jar` and `javac`, and `java_home` through `/usr/libexec`; symlinks, so not in the 1,128), `restoreui`, `MRT`, `cgpdftoraster` and `thnucups`. Each has exactly one, and every one comes from crt1: the `mh` field of `__DATA,__program_vars` (offset 0), or of the older `__DATA,__dyld` (offset 0x10, `thnucups`). libSystem hands that field to `_NSGetMachExecuteHeader`. Grown at `88e846f`, `/usr/bin/java -version` exits 139 (SIGSEGV). Grown with this plan it prints `java version "1.6.0_65"`.
 - **Nothing else this plan refuses occurs on this host:**
   - a rebase value strictly inside (base, base + F): 0;
   - a rebase type other than `REBASE_TYPE_POINTER`: 0;
@@ -24,7 +24,7 @@ Measured 2026-09-26 at `88e846f` on this host (10.9, ld64-241.9). The corpus is 
   - a second `LC_DYLD_INFO`: 0;
   - a bind in `__TEXT`: 0 of 129,363 binds.
 - **`&_mh_execute_header + 16` is one line of C away.** `const char *q = (const char *)&_mh_execute_header + 16;` links to a rebase whose value is base + 16. That is what the strictly-inside refusal exists for.
-- **Binds to the image's own header: none on this host, and they need nothing.** ld64-241.9 emits them only under `-Wl,-interposable`: `dyldinfo -bind` shows `this-image __mh_execute_header`, three for a program with two data pointers and one code reference. Default linking, `-flat_namespace`, `-export_dynamic` and a `weak_import` declaration all give rebases. dyld resolves such a bind through the export trie, whose `__mh_execute_header` entry is offset 0 and so names the moved header. A program printing whether its bound pointer equals `_dyld_get_image_header(0)` grows at `88e846f` and still says "names". Task 2 pins that.
+- **Binds to the image's own header: none on this host, and they need nothing.** ld64-241.9 emits them only under `-Wl,-interposable`: `dyldinfo -bind` shows `this-image __mh_execute_header`, three for a program with two data pointers and one code reference. Default linking, `-flat_namespace`, `-export_dynamic` and a `weak_import` declaration all give rebases. dyld resolves such a bind through the export trie, whose `__mh_execute_header` entry is offset 0 and so names the moved header. A program printing whether its bound pointer equals `_dyld_get_image_header(0)` grows at `88e846f` and still says "names". Task 2 pins that. With an addend (`(const char *)&_mh_execute_header + 16`, bound with addend 16), it is not refused, and after a grow it still names the header plus 16, because the bind follows the header. The same value as a rebase is refused (the one rule). Task 5 records the difference in QUEUE item 29.
 - **Classic relocations: 3 executables.** `dnsextd`, `mDNSResponder` and `mDNSResponderHelper` are PIE with no `LC_DYLD_INFO`. dyld slides their pointers from `LC_DYSYMTAB`'s local relocation entries (114, 547 and 190 of them, all `X86_64_RELOC_UNSIGNED`, 8 bytes, relative to the first writable segment). Each has one pointer whose value is the base, at `__DATA,__dyld+0x10`. At `88e846f` each grows, announces "repaired 1 reference to the header" (its code reference), and leaves that pointer a page past the header. One more (`thnucups`) has local relocations beside `LC_DYLD_INFO`. dyld reads only the rebase opcodes there, and so does this plan.
 - **Claude Code** (the pristine 2.1.282 snapshot, `fixups set classic` and then a 6000-byte `rpath append`): 0 pointers name the header, and the output is byte-identical to `88e846f`'s: "repaired 7 references to the header", `verify` OK, 1.41 s at `88e846f` against 1.38 s.
 
@@ -47,17 +47,19 @@ This plan does **(a)**: the data half of I1 (a rebase value exactly the base los
 - **refuse it** (as M1 does for an exact-base candidate): 119 executables that grow today, and **Claude Code**, stop growing, for 0 confirmed references;
 - **ignore it, and refuse only a confirmed one**: nothing measured changes. The grow pays another full scan of `__text`, and a sweep per candidate, for a refusal that has never fired.
 
-That is a product choice, so it is Question 1 below. No task here depends on its answer.
+That is a product choice. The controller has ruled (below) that it goes to dylib-growth M2. No task here depends on it.
 
-## Questions for the owner
+## Rulings
 
-1. **The code half of I1: what does an in-range candidate that cannot be confirmed mean?** *Recommended:* in M2, refuse only a confirmed instruction whose RIP-relative target lies strictly inside (base, base + F), and let an unconfirmable in-range candidate pass. Refusing those would stop Claude Code and 119 host executables growing, and 0 of their 1,089 candidates is real. An exact-base candidate keeps M1's stricter rule, because there every confirmed one is patched and a miss corrupts. The symbol half of I1 (a non-stab `N_SECT` symbol strictly inside) is exact like this plan's. There are 0 on this host. *Recommended:* it goes into M2 with the code half, since the raise route must classify every symbol anyway.
-2. **Refuse an executable whose pointers are in classic local relocations (Task 4)?** *Recommended: yes.* The cost is three executables that grow today (`dnsextd`, `mDNSResponder`, `mDNSResponderHelper`). Each of them has a pointer that the grow leaves a page past the header today, while its announcement says the header references were repaired. The alternative is to read `X86_64_RELOC_UNSIGNED` local relocations as a second source of pointers. That is a decoder, a base address (the first writable segment) and a verification of its own, for three daemons. Task 4 is self-contained. Dropping it leaves those three growing as they do today, wrongly, and changes nothing else in this plan.
-3. **One clause or two in the announcement?** This plan counts moved pointers into the existing "; repaired N references to the header" (spec Decision 8's wording, whose tests match only the stable prefix). *Recommended: one clause.* A pointer to the header is a reference to it. The Java stub's line then reads "…; repaired 1 reference to the header". The alternative is a separate "; moved N pointers to the header". That changes `mg_ensure_pad`'s last `fprintf` and Task 2's three announcement expectations.
+These were questions for the owner. The controller ruled on them on 2026-09-26, so no implementer needs to stop and ask.
+
+1. **The code half of I1 is deferred to dylib-growth M2**, together with the symbol half (a non-stab `N_SECT` symbol strictly inside (base, base + F): none on this host). M2 decides what an in-range candidate that cannot be confirmed means. The measurement above goes with it: refusing such candidates would stop Claude Code and 119 host executables growing, for 0 real references among 1,089 candidates. Refusing only confirmed ones changes nothing measured.
+2. **Task 4 stays.** An executable with no `LC_DYLD_INFO[_ONLY]` whose `LC_DYSYMTAB` lists local relocations is refused. It costs three executables that grow today (`dnsextd`, `mDNSResponder`, `mDNSResponderHelper`). Each of them has a pointer that the grow now leaves a page past the header, while its announcement says the header references were repaired. Reading `X86_64_RELOC_UNSIGNED` local relocations instead is not in this plan.
+3. **One announcement clause.** Moved pointers count toward the existing "; repaired N references to the header" (spec Decision 8's wording). A pointer to the header is a reference to it, and the Java stub's line reads "…; repaired 1 reference to the header".
 
 ## Global Constraints
 
-- **Line numbers** are at `88e846f`, `main` when this plan was written. Every edit also quotes the text it anchors on, and that text is what to match. `src/grow.c`'s and `tests/grow_test.c`'s line numbers drift from task to task.
+- **Line numbers** are at `43e3aec`, `main` when this plan was revised; every file this plan touches is as it was at `88e846f`. Every edit also quotes the text it anchors on, and that text is what to match. `src/grow.c`'s and `tests/grow_test.c`'s line numbers drift from task to task.
 - **Build:** `B=/private/tmp/build/schmonz/drydock-native`; `/usr/local/mavergreen/bin/shipyard-cmake --build "$B" -j`. That directory is already configured. Do not configure with `--preset`. If it ever needs configuring again: `/usr/local/mavergreen/bin/shipyard-cmake -S . -B "$B" -G Ninja -DCMAKE_TOOLCHAIN_FILE=/usr/local/mavergreen/shipyard/share/cmake/MavericksShipyard/MavericksToolchain.cmake -DMAVERICKS_EXPECTED_MODE=native -DCMAKE_OSX_DEPLOYMENT_TARGET=10.9 -DCMAKE_OSX_ARCHITECTURES=x86_64`.
 - **Test:** `unset DRYDOCK_MACHO_REWRITE; /usr/local/mavergreen/bin/shipyard-ctest --test-dir "$B"`. At `88e846f` the suite has 27 tests (`chained_fixups` SKIPs). A single C test runs as `"$B/grow_test"`, and the shell test as `unset DRYDOCK_MACHO_REWRITE; sh tests/grown_binary_runs_test.sh "$B"`, from the repo root.
 - **Rebuild check (clock skew here; `touch` can fail to relink).** Every build in this plan edits `src/grow.h` or `tests/grow_test.c`, so before every build delete every object and the binaries you are about to run:
@@ -97,11 +99,11 @@ Each is repeated, with its reason, in the task that makes it.
 - Task 1: the reader lives in `src/grow.[ch]` (`mg_rebases_read`), not `src/rebase.[ch]`. `rebase.h` is deliberately free of segment geometry (spec Decision 9), and what to refuse is the grow's policy. It keeps stream order, which verification compares index by index, and it checks for a slot named twice on a sorted copy.
 - Task 1: it refuses exactly Decision 6's rebase list (type, segment that maps the header, past `filesize`), plus a stream past the file, one that does not decode, two `LC_DYLD_INFO`s and a slot named twice. None occurs on this host.
 - Task 2: `mg_header_pointers` does count, move and the strictly-inside refusal in one walker, like `mg_header_symbols` and `mg_init_offsets_pass`. `mg_grow_header` calls it before mutating, with a grow of 0, and after, with the grow. The inside refusal uses (base, base + F), F being `mg_first_sect_off`, exactly the spec's one rule.
-- Task 2: moved pointers join code references in the one "repaired N references" clause (Question 3).
+- Task 2: moved pointers join code references in the one "repaired N references" clause (Ruling 3).
 - Task 2: a bind to the header needs nothing. A test pins that, and no code is added.
 - Task 3: check 2 of Decision 7, with a delta of 0. The snapshot keeps every target (its vm address and value), and `mg_verify` re-reads the grown image and compares index by index: same count, same vm address, same value, except that a value that was the old base must now be the new base. It neither calls nor shares `mg_header_pointers`.
-- Task 4: an executable with local relocations and no rebase opcodes is refused (Question 2).
-- Task 5: the corpus sweep, the Java stub, QUEUE item 29 and the spec. The code half of I1 goes to M2 (Question 1).
+- Task 4: an executable with no `LC_DYLD_INFO[_ONLY]` and with local relocations is refused (Ruling 2).
+- Task 5: the corpus sweep, the Java stub, QUEUE item 29 and the spec. The code half of I1 goes to M2 (Ruling 1).
 
 ## File structure
 
@@ -117,13 +119,23 @@ Each is repeated, with its reason, in the task that makes it.
 
 ## How this plan was checked
 
-Every code block below was applied, task by task, to a `git archive` of `88e846f` in a scratch directory, with its own build configured by the command above. At each task:
+Every code block below was applied, task by task, to a `git archive` of `88e846f` in a scratch directory, with its own build configured by the command above. (`src`, `tests`, `CMakeLists.txt`, `compat`, `QUEUE.md` and the dylib-growth spec are unchanged from `88e846f` to `43e3aec`, the `main` this revision was written on.) A script applied the plan's own edit instructions to the pristine files and reproduced each task's checked files. At each task:
 
 - the named tests failed exactly as each "Run it to see it fail" step says, and then passed;
 - the whole ctest suite passed at the end (27 tests, `chained_fixups` skipped, as on `main`);
-- every row of every mutation table (38 rows, 4 of which also name `tests/grown_binary_runs_test.sh`) was applied alone to that task's finished files, rebuilt after deleting every object, and failed the test its row names.
+- every row of every mutation table (41 rows, 4 of which also name `tests/grown_binary_runs_test.sh`) was applied alone to that task's finished files, rebuilt after deleting every object, and failed the test its row names.
 
 The sweep numbers in Task 5 are from that build against a build of `88e846f`.
+
+**Revision after an independent review.** An independent review of the first version reproduced all of the above. It then found:
+
+- that Task 3's verification shared the reader, so a reader that misplaced a slot passed it. The fix is a `mg_fileoff_vm` check, with row 9 of Task 3's table.
+- that two clauses of Task 1's past-the-end guard survived deletion. The fix is two fixture rows and Task 1's rows 8 and 9.
+- 43 Java stubs, not 42 (`java_home` is one);
+- that a bind with an addend is left alone correctly;
+- the smaller wording points folded in here.
+
+The controller's rulings replace the owner's questions. Every checkpoint was rebuilt and every row re-run after the revision.
 
 ---
 ### Task 1: Read every rebase target, and refuse a grow that cannot
@@ -341,6 +353,8 @@ static void pt_zerofill(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 16; }
 static void pt_straddle(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 20; }
 static void pt_all_zerofill(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 0; }
 static void pt_past_image(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE - 16; }
+static void pt_all_past_image(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE + 0x1000; }
+static void pt_short_of_a_slot(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE - 4; }
 static void pt_ops_past_image(uint8_t *buf) {
     ((struct dyld_info_command *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY))->rebase_size = 1000;
 }
@@ -374,6 +388,10 @@ static const struct { const char *what; pt_poke poke; const char *why; } pt_unre
       "value is not in the file" },
     { "a rebase past the end of the image", pt_past_image,
       "the rebase at __DATA+0x10 lies past the end of the 12544-byte image" },
+    { "a segment whose file data starts past the image", pt_all_past_image,
+      "the rebase at __DATA+0 lies past the end of the 12544-byte image" },
+    { "a segment whose file data starts 4 bytes before the image ends", pt_short_of_a_slot,
+      "the rebase at __DATA+0 lies past the end of the 12544-byte image" },
     { "rebase opcodes past the end of the image", pt_ops_past_image,
       "the rebase opcodes (1000 bytes at offset 12288) run past the end of the 12544-byte image" },
     { "two LC_DYLD_INFO commands", pt_two_dyld_info, "the image has 2 LC_DYLD_INFO commands" },
@@ -645,13 +663,15 @@ Expected: `macho_grow_test: all cases pass`. Then the whole suite: 27 tests, all
 | 5 | `        if (seg->filesize < 8 \|\| t->off > seg->filesize - 8)` | `        if (t->off > seg->filesize - 8)` | the same test ("a rebase in a segment with no file data is refused") |
 | 6 | the same line | `        if (seg->filesize < 8 \|\| t->off >= seg->filesize - 8)` | `test_rebases_read_a_target_ending_at_the_segments_file_data` |
 | 7 | `        if (seg->fileoff > fsize \|\| fsize - seg->fileoff < 8 \|\| t->off > fsize - seg->fileoff - 8)` | `        if (0)` | `test_rebases_read_refuses_what_it_cannot_read` ("a rebase past the end of the image is refused") |
-| 8 | `        r->v[i].at = seg->fileoff + t->off;` | `        r->v[i].at = t->off;` | `test_rebases_read_every_target` ("target 0 is at file") |
-| 9 | `        r->v[i].vm = seg->vmaddr + t->off;` | `        r->v[i].vm = seg->fileoff + t->off;` | `test_rebases_read_every_target` |
-| 10 | `        if (o.v[i].seg != o.v[i - 1].seg \|\| o.v[i].off != o.v[i - 1].off) continue;` | `        continue;` | `test_rebases_read_refuses_what_it_cannot_read` ("a slot rebased twice is refused") |
-| 11 | the same line | `        if (o.v[i].seg != o.v[i - 1].seg) continue;` | `test_rebases_read_every_target` ("all 4 read") |
-| 12 | `        if (mg_rebases_read(buf, fsize, &rb, why, sizeof why) != 0) {` (in `mg_grow_header`) | `        if (mg_rebases_read(buf, fsize, &rb, why, sizeof why) != 0 && 0) {` | `test_grow_refuses_rebases_it_cannot_read` ("a rebase that is not a pointer is refused, saying so") |
+| 8 | the same line | `        if (fsize - seg->fileoff < 8 \|\| t->off > fsize - seg->fileoff - 8)` | the same test ("a segment whose file data starts past the image is refused") |
+| 9 | the same line | `        if (seg->fileoff > fsize \|\| t->off > fsize - seg->fileoff - 8)` | the same test ("a segment whose file data starts 4 bytes before the image ends is refused") |
+| 10 | `        r->v[i].at = seg->fileoff + t->off;` | `        r->v[i].at = t->off;` | `test_rebases_read_every_target` ("target 0 is at file") |
+| 11 | `        r->v[i].vm = seg->vmaddr + t->off;` | `        r->v[i].vm = seg->fileoff + t->off;` | `test_rebases_read_every_target` |
+| 12 | `        if (o.v[i].seg != o.v[i - 1].seg \|\| o.v[i].off != o.v[i - 1].off) continue;` | `        continue;` | `test_rebases_read_refuses_what_it_cannot_read` ("a slot rebased twice is refused") |
+| 13 | the same line | `        if (o.v[i].seg != o.v[i - 1].seg) continue;` | `test_rebases_read_every_target` ("all 4 read") |
+| 14 | `        if (mg_rebases_read(buf, fsize, &rb, why, sizeof why) != 0) {` (in `mg_grow_header`) | `        if (mg_rebases_read(buf, fsize, &rb, why, sizeof why) != 0 && 0) {` | `test_grow_refuses_rebases_it_cannot_read` ("a rebase that is not a pointer is refused, saying so") |
 
-(Row 12 keeps the call: removing it would free an uninitialized `rb`, which aborts rather than fails.)
+(Rows 8 and 9 are why the table has its two "starts past the image" and "starts 4 bytes before the image ends" rows: each clause of the past-the-end guard needs a fixture that only it refuses. Row 14 keeps the call: removing it would free an uninitialized `rb`, which aborts rather than fails.)
 
 - [ ] **Step 7: Commit**
 
@@ -690,7 +710,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - **One walker.** `mg_header_pointers` counts, moves and refuses, as `mg_header_symbols` and `mg_init_offsets_pass` do. With `grow` 0 it only counts, since taking 0 off changes nothing; the count test pins that.
 - **Where the grow calls it.** `mg_grow_header` calls it twice. The first call is Task 1's audit, now with the image base and `insert` (F), and refuses before anything moves. The second comes after the symbols move, on the grown buffer, with the snapshot's (old) base and the grow.
 - **Strictly inside.** The refusal is the spec's one rule: base < value < base + F. Base itself moves; base + F and above are content and stay; below base is not the image and stays.
-- **The announcement.** `mg_ensure_pad` counts the pointers into its clause, as M1 counts code references (Question 3).
+- **The announcement.** `mg_ensure_pad` counts the pointers into its clause, as M1 counts code references (Ruling 3).
 - **Binds.** A bind to the image's own `__mh_execute_header` needs no code: dyld resolves it through the export trie, which already names the moved header. The shell test's `self` pins that on this host's linker.
 - **The end-to-end fixtures.** `ptr` stands for a Java stub's `__program_vars` pointer; `inside` is the one-line way to get a strictly-inside value.
 
@@ -886,7 +906,14 @@ grep -q 'data pointer names the header' "$T/self.out.out" \
 - [ ] **Step 3: Run them to see them fail**
 
 Run: build (rebuild check).
-Expected: `grow_test` does not link: `Undefined symbols for architecture x86_64: "_mg_header_pointers"`, after `warning: implicit declaration of function 'mg_header_pointers'`. `drydock-macho-rewrite` still builds.
+Expected: `grow_test` does not link: `Undefined symbols for architecture x86_64: "_mg_header_pointers"`, after `warning: implicit declaration of function 'mg_header_pointers'`.
+
+The failed link can stop the build before it relinks the CLI, so build that target on its own, and check that its sum changed:
+
+```sh
+/usr/local/mavergreen/bin/shipyard-cmake --build "$B" --target drydock-macho-rewrite
+shasum -a 256 "$B/drydock-macho-rewrite"
+```
 
 Run: `unset DRYDOCK_MACHO_REWRITE; sh tests/grown_binary_runs_test.sh "$B"`
 Expected: exit 1, `grown_binary_runs_test: 6 failure(s)`:
@@ -1129,7 +1156,11 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Consumes: Task 1's `mg_rebases_read`, `mg_rebases_free`, `mg_rebases`, `build_pointer_image`, `pt_type`, `PT_*`; `verify_thunk` and `verify_snap` (`tests/grow_test.c:2310`); `find_lc`, `seg_named`.
 - Produces: `mg_snapshot` gains `mg_rebases rb;`, which `mg_snapshot_take` fills and `mg_snapshot_free` frees; `mg_verify` refuses a grown image whose rebase targets differ from the snapshot's.
 
-**Plan decisions.** This is spec Decision 7's check 2 for the executable route, where the delta is 0. It is independent of the repair: it re-reads the grown image with `mg_rebases_read` and compares index by index against the snapshot, never calling `mg_header_pointers`. Every target must be at the same vm address and hold the same value, except that one which held the old base must hold the new base. A slot that moves but holds the same value is caught by its vm address (a test pins that). The count catches a slot dropped or added. Type needs no comparison, since the reader refuses every type but one.
+**Plan decisions.** This is spec Decision 7's check 2 for the executable route, where the delta is 0.
+
+- **What it compares.** It re-reads the grown image with `mg_rebases_read` and compares index by index against the snapshot, never calling `mg_header_pointers`. Every target must be at the same vm address and hold the same value, except that one which held the old base must hold the new base. A slot that moves but holds the same value is caught by its vm address (a test pins that). The count catches a slot dropped or added. Type needs no comparison, since the reader refuses every type but one.
+- **How far it is independent.** It is independent of the repair, but not of the reader. The snapshot, the repair and this check all read through `mg_rebases_read`, so a reader that computed the wrong file offset for a slot would read, move and verify the same wrong bytes, and verification would pass. An independent review reproduced that with `r->v[i].at = seg->fileoff + t->off + 8`.
+- **Closing that gap.** So each target's file offset is also mapped back to a vm address through `mg_fileoff_vm`, the mapping `mg_collect` uses. It shares no code with the reader's `seg->fileoff + off`, and it must give the reader's vm address. Row 9 of the mutation table is that reader bug: with the check, the grow refuses, and without it the grow succeeds and writes the wrong pointer. The mapping from segment index to segment, and `mrb_decode`, are still shared. `tests/rebase_oracle_test.sh` holds `mrb_decode` against `dyldinfo`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1348,11 +1379,12 @@ with:
 Immediately before `int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {`, insert:
 
 ```c
-/* The rebase targets are the same slots, in the same order, and each holds
- * what it held, unless that named the header: that one names it where it is
- * now. */
-static int mg_verify_pointers(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
-                              uint64_t base) {
+/* The rebase targets are the same slots, in the same order, each read from
+ * the file offset that loads at its address (mg_fileoff_vm, which does not
+ * share mg_rebases_read's mapping), and each holds what it held, unless that
+ * named the header: that one names it where it is now. */
+static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsize,
+                              const mg_snapshot *before, uint64_t base) {
     mg_rebases now;
     char why[256];
     int rc = 0;
@@ -1369,7 +1401,14 @@ static int mg_verify_pointers(const uint8_t *buf, size_t fsize, const mg_snapsho
     for (size_t i = 0; rc == 0 && i < now.s.n; i++) {
         const mg_rbval *was = &before->rb.v[i], *is = &now.v[i];
         uint64_t want = was->value == before->base ? base : was->value;
-        if (is->vm != was->vm) {
+        uint64_t loads = mg_fileoff_vm(im, is->at);
+        if (loads != is->vm) {
+            fprintf(stderr, "ERROR: verify FAILED -- rebase %zu is read from file offset %#llx, "
+                            "which loads at %#llx, not %#llx; refusing.\n", i,
+                    (unsigned long long)is->at, (unsigned long long)loads,
+                    (unsigned long long)is->vm);
+            rc = -1;
+        } else if (is->vm != was->vm) {
             fprintf(stderr, "ERROR: verify FAILED -- rebase %zu is at %#llx after the grow, and "
                             "was at %#llx before; refusing.\n", i, (unsigned long long)is->vm,
                     (unsigned long long)was->vm);
@@ -1398,7 +1437,7 @@ with:
 
 ```c
     if (mg_verify_symbols(&im, fsize, before, base) != 0) return -1;
-    if (mg_verify_pointers(buf, fsize, before, base) != 0) return -1;
+    if (mg_verify_pointers(&im, buf, fsize, before, base) != 0) return -1;
     return mg_verify_refs(buf, fsize, before, base);
 ```
 
@@ -1411,14 +1450,17 @@ Expected: `macho_grow_test: all cases pass`; `grown_binary_runs_test: all passed
 
 | # | replace | with | must fail |
 |---|---|---|---|
-| 1 | `    if (mg_verify_pointers(buf, fsize, before, base) != 0) return -1;` | (delete it) | `test_verify_watches_the_pointers` ("verify REJECTS a pointer left naming where the header was") |
+| 1 | `    if (mg_verify_pointers(&im, buf, fsize, before, base) != 0) return -1;` | (delete it) | `test_verify_watches_the_pointers` ("verify REJECTS a pointer left naming where the header was") |
 | 2 | `        uint64_t want = was->value == before->base ? base : was->value;` | `        uint64_t want = was->value;` | `test_grow_moves_the_pointers_that_name_the_header` ("pointers: the grow succeeds": verification now refuses the correct grow) |
 | 3 | `    if (now.s.n != before->rb.s.n) {` | `    if (0) {` | `test_verify_watches_the_pointers` ("verify REJECTS a rebase dropped") |
-| 4 | `        if (is->vm != was->vm) {` | `        if (0) {` | the same test ("verify REJECTS a rebase moved to a slot holding the same value") |
+| 4 | `        } else if (is->vm != was->vm) {` | `        } else if (0) {` | the same test ("verify REJECTS a rebase moved to a slot holding the same value") |
 | 5 | `        } else if (is->value != want) {` | `        } else if (0) {` | the same test ("verify REJECTS a pointer left naming where the header was") |
 | 6 | `        mg_rebases_read(buf, fsize, &s->rb, why, sizeof why) != 0) {` | `        0) {` | `test_snapshot_refuses_rebases_it_cannot_read`; and `test_grow_moves_the_pointers_that_name_the_header` ("pointers: the grow succeeds") |
 | 7 | `    if (mg_rebases_read(buf, fsize, &now, why, sizeof why) != 0) {` | `    if ((mg_rebases_read(buf, fsize, &now, why, sizeof why), 0)) {` | `test_verify_watches_the_pointers` ("verify REJECTS rebases it cannot read") |
 | 8 | `        if (mg_header_pointers(buf, final_size, snap.base, insert, grow, why, sizeof why) < 0) {` | the same with `insert, 0, why` | `test_grow_moves_the_pointers_that_name_the_header` ("pointers: the grow succeeds": verification catches the repair that did not happen) |
+| 9 | `        r->v[i].at = seg->fileoff + t->off;` (the reader) | `        r->v[i].at = seg->fileoff + t->off + 8;` | `test_grow_moves_the_pointers_that_name_the_header` ("pointers: the grow succeeds (got -1)": the new `mg_fileoff_vm` check refuses the grow) |
+
+Row 9 is the check's own proof, because deleting `if (loads != is->vm)` on its own is an equivalent mutation: a correct reader always agrees with `mg_fileoff_vm`. So also apply row 9 with that line changed to `if (0)`. Then the grow succeeds and `FAIL: pointers: pointer 0 holds 0x100000000 after the grow, want 0xfffff000` appears instead: without the check, the grow writes the wrong slot. (`test_rebases_read_every_target` also kills row 9, from Task 1's side.)
 
 - [ ] **Step 7: Commit**
 
@@ -1431,7 +1473,11 @@ re-reads the grown image and compares them slot by slot: the same slots
 at the same addresses, each holding what it held, except that one which
 held the old base must hold the new one. It does not share the code that
 moved them, so it catches a pointer left behind, moved twice or moved
-when it named content, and a rebase dropped or shifted.
+when it named content, and a rebase dropped or shifted. It does share
+the reader, so each target's file offset is also mapped back through
+mg_fileoff_vm, which must give the reader's address: a reader that
+misplaced a slot would otherwise read, move and verify the same wrong
+bytes.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -1441,7 +1487,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 ### Task 4: Refuse an executable whose pointers are in local relocations
 
-*(Question 2. If the owner declines it, skip this task. Nothing else depends on it.)*
+*(Ruling 2.)*
 
 **Files:**
 - Modify: `src/grow.c` (Task 1's `struct mg_rb_lcs`, `mg_rb_lcs_cb`, and `mg_rebases_read`)
@@ -1452,7 +1498,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - Consumes: Task 1's reader and fixture.
 - Produces: `mg_rebases_read` also refuses an image with no `LC_DYLD_INFO[_ONLY]` whose `LC_DYSYMTAB` lists local relocation entries. `build_pointer_image` gains `PT_LOCREL` and `PT_NOINFO`.
 
-**Plan decisions.** Without rebase opcodes, dyld slides an executable's pointers from `LC_DYSYMTAB`'s local relocation entries (`ImageLoaderMachOClassic`). The grow does not read those, so it cannot find a pointer that names the header among them. Three executables here are such images, and each has such a pointer. With rebase opcodes present, dyld reads only the opcodes (`ImageLoaderMachOCompressed`), and so does the reader: `thnucups` has both. External relocations bind through the symbol table, whose `__mh_execute_header` M1 already moves, so they need nothing.
+**Plan decisions.** The rule is exactly what the code checks: an executable with no `LC_DYLD_INFO[_ONLY]` whose `LC_DYSYMTAB` lists local relocation entries is refused. Such an image loads as `ImageLoaderMachOClassic`, and dyld slides its pointers from those entries. The grow does not read them, so it cannot find a pointer that names the header among them. Three executables here are such images, and each has such a pointer. With an `LC_DYLD_INFO[_ONLY]`, even one with no rebase opcodes, dyld loads the image as `ImageLoaderMachOCompressed` and ignores the entries, and so does the reader: `thnucups` has both. External relocations bind through the symbol table, whose `__mh_execute_header` M1 already moves, so they need nothing.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1680,12 +1726,13 @@ Expected: `macho_grow_test: all cases pass`. Then the whole suite: all pass.
 git add src/grow.h src/grow.c tests/grow_test.c
 git commit -m "fix(grow): refuse an executable whose pointers are local relocations
 
-With no rebase opcodes, dyld slides an executable's pointers from
-LC_DYSYMTAB's local relocation entries, which a grow does not read, so it
-cannot move one that names the header. dnsextd, mDNSResponder and
+A grow now refuses any executable that has no LC_DYLD_INFO[_ONLY] and whose
+LC_DYSYMTAB lists local relocation entries. dyld slides such an image's
+pointers from those entries, which a grow does not read, so it cannot
+move one that names the header. dnsextd, mDNSResponder and
 mDNSResponderHelper each have such a pointer, in crt1's __dyld section;
 they grew before with it left a page past the header, and now refuse.
-Beside rebase opcodes, the entries are ignored, as dyld ignores them.
+Beside an LC_DYLD_INFO the entries are ignored, as dyld ignores them.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -1769,8 +1816,7 @@ Expected, as measured writing this plan (fat files are thinned to x86_64 first):
   | `/usr/sbin/mDNSResponder` | 0 -> 1 | Task 4 (547 entries) |
   | `/usr/sbin/mDNSResponderHelper` | 0 -> 1 | Task 4 (190 entries) |
 
-  (Without Task 4, only the first three differ, and `after` is `1046 0   82 1`.)
-- **The header-reference executables still repair.** The 43 with code that addresses the header are the 42 whose `before` line has `repaired`, plus `thnucups`, which is refused in both for having no `LC_FUNCTION_STARTS`. Of the 42, 39 still grow and repair, and the three Task 4 refuses are the rest (all 42 without Task 4). Check:
+- **The header-reference executables still repair.** The 43 with code that addresses the header are the 42 whose `before` line has `repaired`, plus `thnucups`, which is refused in both for having no `LC_FUNCTION_STARTS`. Of the 42, 39 still grow and repair, and the three Task 4 refuses are the rest. Check:
 
   ```sh
   grep -c 'repaired' "$W/before/results.tsv" "$W/after/results.tsv"
@@ -1837,7 +1883,10 @@ with:
     (`tests/grown_binary_runs_test.sh`, "hdr" and "ptr"). The scan that
     finds the instructions can, rarely, report bytes that only look like
     one; the grow confirms each by decoding its function, and refuses
-    rather than patch bytes it cannot confirm. The repo owner's
+    rather than patch bytes it cannot confirm. It also refuses an
+    executable with no LC_DYLD_INFO whose LC_DYSYMTAB lists local
+    relocations, since it cannot find such a pointer among those
+    (`mDNSResponder` is one). The repo owner's
 ```
 
 - [ ] **Step 5: `docs/superpowers/QUEUE.md`**
@@ -1861,20 +1910,29 @@ Replace item 29's "Not repaired" and "I1" paragraphs (`:1473-1488`, from `**Not 
 `const void *p = &_mh_execute_header;`, is a rebase target whose value is
 the base. On 10.9 they come from crt1: the `mh` field of
 `__DATA,__program_vars`, or of the older `__DATA,__dyld`, which libSystem
-hands to `_NSGetMachExecuteHeader`. 46 executables here have one: the 42
-Java launcher stubs, `restoreui`, `MRT`, `cgpdftoraster` and `thnucups`.
+hands to `_NSGetMachExecuteHeader`. 47 executables here have one: the 43
+Java launcher stubs (`/usr/bin/java` and 41 more, and
+`/usr/libexec/java_home`), `restoreui`, `MRT`, `cgpdftoraster` and
+`thnucups`.
 Grown before, `/usr/bin/java -version` died of SIGSEGV; now it runs. A grow
 reads every rebase target (`mg_rebases_read`, `src/grow.h`), moves each
 that names the header down with it, counts them among the "references to
 the header" it repaired, and verifies them slot by slot. It refuses what it
 cannot vouch for: a rebase that is not a pointer, lies in the segment that
 maps the header, in zero-fill or past the file, or is named twice (none
-here); and, having no rebase opcodes to read, an executable whose
-`LC_DYSYMTAB` lists local relocations. `dnsextd`, `mDNSResponder` and
+here); and any executable that has no `LC_DYLD_INFO[_ONLY]` and whose
+`LC_DYSYMTAB` lists local relocations, since dyld then slides its pointers
+from those, which the grow does not read. `dnsextd`, `mDNSResponder` and
 `mDNSResponderHelper` are such, each with a `__dyld` pointer the grow used
 to leave a page past the header, and now refuse. A bind to the image's own
 `__mh_execute_header` (ld64's `-interposable`) needs nothing: dyld resolves
-it through the export trie.
+it through the export trie, which names the header where it now is. That
+holds for a bind with an addend too: `&_mh_execute_header + 16` bound this
+way is not refused, and after a grow it names the header plus 16, because
+the bind follows the header (measured). The same value as a rebase is
+refused (I1, below). Still open, and dylib-growth M2's: a bind whose slot
+lies in `__TEXT` is not yet refused on the executable route (none here), and
+a grow would move that slot's contents out from under it.
 
 **I1**, the one rule's strictly-inside refusal: its **data half is done**
 since `$C`. A rebase value strictly inside (base, base + F), such as
@@ -1886,8 +1944,8 @@ finds 1,060 candidates in 120 of this host's 1,059 x86_64 executables, and
 29 in Claude Code, and decoding confirms none as an instruction. The same
 decoding confirms 151 of the 152 exact-base candidates. Refusing every
 candidate it cannot confirm would stop 119 of those executables growing, and
-Claude Code; refusing only confirmed ones changes nothing measured. Which is
-the owner's call; it moves to dylib-growth M2, with the symbol half (a
+Claude Code; refusing only confirmed ones changes nothing measured. It is
+deferred to dylib-growth M2, which decides that, with the symbol half (a
 symbol strictly inside: none here).
 ```
 
@@ -1911,7 +1969,7 @@ with:
   `__mh_execute_header` symbol, and any rebased data pointer to the header.
   Before M1 the executable route adjusted none of these. M1 moves the symbol;
   QUEUE item 29's data-pointer work moves the pointers (`mg_header_pointers`,
-  `src/grow.h`) and refuses one strictly inside (base, base + F). 46
+  `src/grow.h`) and refuses one strictly inside (base, base + F). 47
   executables on this host have one, all from crt1's `__program_vars` or
   `__dyld`; the Claude Code executable has none.
 ```
@@ -1978,6 +2036,9 @@ with:
   executables and 29 in Claude Code, none confirmed, so refusing them would
   stop 119 of those and Claude Code growing. A
   `movl __mh_execute_header+16(%rip)` still grows silently wrong.
+- **Refuse a bind in `__TEXT` on both routes** (Decision 6). The executable
+  route already refuses a rebase there (`mg_rebases_read`) but not a bind,
+  whose slot the grow would move out from under it. None on this host.
 ```
 
 If a passage has changed since this plan was written, make the equivalent edit and say so in the commit message.
@@ -2017,7 +2078,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU
 EOF
 ```
 
-(The heredoc is unquoted so `$C` expands; check `git log -1` shows the hash, not `$C`. If Task 4 was skipped, drop its clause from the message and from QUEUE's paragraph.)
+(The heredoc is unquoted so `$C` expands; check `git log -1` shows the hash, not `$C`.)
 
 ---
 
@@ -2030,6 +2091,7 @@ EOF
 | Decision 1: a rebased data pointer to the header loses G on the executable route | 2 |
 | Decision 1's one rule, rebase-value half: strictly inside (base, base + F) refuses | 2 |
 | Decision 6: refuse a rebase type other than pointer, a target past `filesize`, a rebase in `__TEXT` | 1 |
+| Decision 6: refuse a bind in `__TEXT` | **not here**: dylib-growth M2's, as Task 5 records (0 of 129,363 binds on this host) |
 | Decision 6: refusals leave the buffer untouched | 1, 2, 4 |
 | Decision 7 check 2, executable route (delta 0): same targets, same offsets, each value unchanged or, if it named the header, the new base | 3 |
 | Decision 8: the announcement | 2 |
@@ -2037,7 +2099,7 @@ EOF
 | Item 29: the Java stub grows and runs; the sweep; the queue and spec updated | 5 |
 | Task-brief questions: zero-fill and past-`filesize` slots (refused, 0 here); `TEXT_ABSOLUTE32` (refused, 0 here); self-binds (none here, need nothing, pinned) | 1, 2 |
 
-The code and symbol halves of I1 are not here, by decision (a).
+The code and symbol halves of I1 are not here, by decision (a) and Ruling 1. Nor is refusing a bind in `__TEXT` on the executable route, which Task 5 hands to dylib-growth M2 in QUEUE item 29 and in the spec's M2 bullet.
 
 **2. Placeholder scan.** No "TBD" or "similar to Task N". Every step has its code. `$C`, `$P` and `$W` are computed by Task 5's own commands. `<authoring model>` is the trailer's own wording.
 
@@ -2045,4 +2107,4 @@ The code and symbol halves of I1 are not here, by decision (a).
 
 **4. Review Focus.** Five inputs the spec implies and no requirement names: unreadable or oddly slid pointers, the rule's edges, a slot rebased twice, a self-bind, and local relocations. Each has its test in the owning task.
 
-**What the spec leaves open, decided here:** where the reader lives (Task 1); what a zero-fill or twice-named slot means (Task 1); one clause or two (Task 2, Question 3); binds (Task 2); classic relocations (Task 4, Question 2); the code half of I1 (Question 1, to M2).
+**What the spec leaves open, decided here:** where the reader lives (Task 1); what a zero-fill or twice-named slot means (Task 1); one clause or two (Task 2, Ruling 3); binds, with and without an addend (Task 2, Task 5); classic relocations (Task 4, Ruling 2); the code half of I1 (Ruling 1, to M2).
