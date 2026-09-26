@@ -90,4 +90,7 @@ int  mml_seg_of(const mml_resolver *r, uint64_t va, uint64_t len);
 /* 1 when the 8 bytes at file offset `off` carry a rebase, of any type. */
 int  mml_off_rebased(const mml_resolver *r, uint64_t off);
 
+/* 1 when one of those rebases is REBASE_TYPE_POINTER, which slides all 8. */
+int  mml_off_pointer_rebased(const mml_resolver *r, uint64_t off);
+
 #endif

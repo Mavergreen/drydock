@@ -453,6 +453,13 @@ static int mml_pointer_rebased(const mml_resolver *r, uint8_t seg, uint64_t off)
     return 0;
 }
 
+int mml_off_pointer_rebased(const mml_resolver *r, uint64_t off) {
+    for (int i = 0; i < r->nsegs; i++)
+        if (off >= r->segs[i].fileoff && off - r->segs[i].fileoff < r->segs[i].filesize)
+            return mml_pointer_rebased(r, (uint8_t)i, off - r->segs[i].fileoff);
+    return 0;
+}
+
 static const mml_sect *mml_sect_at(const mml_resolver *r, uint64_t va) {
     for (uint32_t k = 0; k < r->nsects; k++)
         if (va >= r->sects[k].addr && va - r->sects[k].addr < r->sects[k].size) return &r->sects[k];

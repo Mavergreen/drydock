@@ -947,6 +947,19 @@ static int build(unsigned variant, void (*poke)(uint8_t *), mma_out *o, char *wh
     return mma_build(&im, o, why, whysz);
 }
 
+/* Flags 3 on an absolute list tell the 10.9 runtime it is already fixed up,
+ * so it would skip uniquing the selectors: every list must read 0x18. */
+static void check_headers_are_plain_absolute(const mma_out *o, const char *label) {
+    mi_image im;
+    mml_walk w;
+    CHECK(mi_wrap(o->buf, o->size, &im) == 0 && mml_walk_image(&im, &w) == MML_OK,
+          "%s: the converted image does not walk", label);
+    for (uint32_t i = 0; i < w.n; i++)
+        CHECK(w.refs[i].header == MML_ABS_ENTSIZE, "%s: the list at %#llx has header %#x, want 0x18",
+              label, (unsigned long long)w.refs[i].list_va, w.refs[i].header);
+    mml_walk_free(&w);
+}
+
 static void check_converts_like_the_oracle(unsigned variant, uint32_t lists, uint32_t methods,
                                            const char *label) {
     mma_out o;
@@ -960,6 +973,7 @@ static void check_converts_like_the_oracle(unsigned variant, uint32_t lists, uin
           label, oracle_after, oracle_before);
     CHECK(o.rep.lists == lists && o.rep.methods == methods, "%s: converted %u lists (%u methods), "
           "want %u (%u)", label, o.rep.lists, o.rep.methods, lists, methods);
+    check_headers_are_plain_absolute(&o, label);
     mma_out_free(&o);
 }
 
@@ -1070,6 +1084,111 @@ static void test_conversion_refusals_write_nothing(void) {
     refused_build(RMF_OOB, NULL, "runs past its segment", "a list the walk cannot read");
 }
 
+static void test_lists_past_4gb_are_refused_before_any_allocation(void) {
+    mml_ref refs[3];
+    mml_walk w;
+    uint32_t first[3] = { 0, 1, 0 };
+    uint64_t new_va[3] = { 0 }, total = 0;
+    size_t nslots = 0;
+    char why[256] = "";
+    int rc;
+    memset(&w, 0, sizeof w);
+    memset(refs, 0, sizeof refs);
+    w.refs = refs;
+    w.n = 3;
+    /* 8 + 24 * 178956970 is 2^32 - 8, the most 32 bits hold; ref 1 is an
+     * absolute list and ref 2 names ref 0's list again, so neither counts. */
+    refs[0].header = RMF_REL_HEADER; refs[0].list_va = 0x1000; refs[0].count = 178956970;
+    refs[1].header = RMF_ABS_HEADER; refs[1].list_va = 0x2000; refs[1].count = 0xffffffffu;
+    refs[2] = refs[0];
+    rc = mma_room(&w, first, RMF_VA(RMF_LINKEDIT), new_va, &total, &nslots, why, sizeof why);
+    CHECK(rc == MMA_OK && total == 0xfffffff8u && nslots == 3u * 178956970u &&
+          new_va[0] == RMF_VA(RMF_LINKEDIT), "room at 2^32 - 8: rc %d, total %#llx, %zu slots (%s)",
+          rc, (unsigned long long)total, nslots, why);
+    refs[0].count++;
+    rc = mma_room(&w, first, RMF_VA(RMF_LINKEDIT), new_va, &total, &nslots, why, sizeof why);
+    CHECK(rc == MMA_REFUSED && strstr(why, "pass 4GB") != NULL, "room at 2^32 + 16: rc %d, why '%s'",
+          rc, why);
+    /* two lists whose 3 * entries is 0x240000000, 0x40000000 in 32 bits */
+    refs[0].count = 0x60000000u;
+    refs[1] = refs[0];
+    refs[1].list_va = 0x2000;
+    first[2] = 2;
+    refs[2].header = RMF_ABS_HEADER;
+    why[0] = 0;
+    rc = mma_room(&w, first, RMF_VA(RMF_LINKEDIT), new_va, &total, &nslots, why, sizeof why);
+    CHECK(rc == MMA_REFUSED && strstr(why, "pass 4GB") != NULL, "room whose slots wrap: rc %d, why '%s'",
+          rc, why);
+}
+
+static void test_new_rebases_name_ds_own_segment(void) {
+    mma_out o;
+    mrb_set now;
+    char why[256] = "";
+    int rc = build(RMF_DYLIB, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "dylib rebases: rc %d (%s)", rc, why);
+    if (rc != MMA_OK) return;
+    lcs_of out = lcs(o.buf, o.size);
+    CHECK(mrb_decode(o.buf + out.di->rebase_off, out.di->rebase_size, out.nsegs, &now, NULL, 0) == MRB_OK,
+          "dylib rebases: the stream does not decode");
+    mrb_sort(&now);
+    for (uint64_t off = 0x1008; off < 0x1038; off += 8)
+        CHECK(mrb_has(&now, 1, off) && !mrb_has(&now, 2, off),
+              "dylib rebases: list A's pointer at D+%#llx is not rebased in segment 1, __DATA",
+              (unsigned long long)off);
+    mrb_free(&now);
+    mma_out_free(&o);
+}
+
+/* Rewrites the plain fixture's rebase stream to rebase each of its slots in
+ * turn, the one at __DATA offset `abs32` (when nonzero) as TEXT_ABSOLUTE32,
+ * then __LINKEDIT offset `linkedit` (when nonzero) as a pointer. */
+static void restream(uint8_t *b, uint32_t abs32, uint32_t linkedit) {
+    struct dyld_info_command *di = info_of(b);
+    uint32_t slots[32], n = rmf_rebase_slots(RMF_PLAIN, slots), at = RMF_REBASE;
+    for (uint32_t i = 0; i < n; i++) {
+        b[at++] = REBASE_OPCODE_SET_TYPE_IMM |
+                  ((abs32 && slots[i] == abs32) ? REBASE_TYPE_TEXT_ABSOLUTE32 : REBASE_TYPE_POINTER);
+        b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+        at += rmf_uleb(b + at, slots[i]);
+        b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    }
+    if (linkedit) {
+        b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
+        b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 3;
+        at += rmf_uleb(b + at, linkedit);
+        b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
+    }
+    b[at++] = REBASE_OPCODE_DONE;
+    memset(b + at, 0, RMF_SYMS - at);
+    di->rebase_size = (at - RMF_REBASE + 7) & ~7u;
+}
+
+#define RMF_LINKEDIT_RO 0x21a0u
+
+static void poke_slot_abs32(uint8_t *b) { restream(b, RMF_CLASS_RO + 32 - RMF_DATA, 0); }
+static void poke_restream(uint8_t *b)   { restream(b, 0, 0); }
+
+/* The class's data word names a copy of its ro in __LINKEDIT, whose
+ * baseMethods slot is rebased as a pointer. */
+static void poke_ro_in_linkedit(uint8_t *b) {
+    memcpy(b + RMF_LINKEDIT_RO, b + RMF_CLASS_RO, 0x48);
+    rmf_put64(b, RMF_CLASS + 32, RMF_VA(RMF_LINKEDIT_RO));
+    restream(b, 0, RMF_LINKEDIT_RO + 32 - RMF_LINKEDIT);
+}
+
+static void test_slots_the_conversion_cannot_rewrite_are_refused(void) {
+    mma_out o;
+    char why[256] = "";
+    int rc = build(RMF_PLAIN, poke_restream, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "restreamed: rc %d (%s)", rc, why);
+    mma_out_free(&o);
+    refused_build(RMF_PLAIN, poke_slot_abs32, "file offset 0x1120 is rebased as TEXT_ABSOLUTE32",
+                  "a method-list slot rebased as 32 bits");
+    refused_build(RMF_PLAIN, poke_ro_in_linkedit, "file offset 0x21c0 lies in __LINKEDIT",
+                  "a method-list slot in __LINKEDIT");
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -1092,11 +1211,14 @@ int main(void) {
     test_insert_makes_the_zero_fill_file_bytes();
     test_insert_grows_linkedit_vm_to_cover_its_file_bytes();
     test_insert_never_grows_the_header();
+    test_lists_past_4gb_are_refused_before_any_allocation();
     test_conversion_matches_the_oracle_in_order();
     test_every_new_pointer_is_rebased();
     test_every_slot_is_repointed_and_absolute_ones_kept();
     test_a_converted_image_has_nothing_to_convert();
     test_conversion_refusals_write_nothing();
+    test_new_rebases_name_ds_own_segment();
+    test_slots_the_conversion_cannot_rewrite_are_refused();
     test_layout_refuses_ends_that_wrap();
     test_layout_refuses_a_segment_above_linkedit();
     test_layout_names_why_there_is_no_room();

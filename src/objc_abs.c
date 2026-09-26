@@ -258,6 +258,21 @@ static int mma_firsts(const mml_walk *w, uint32_t *first) {
 
 static void mma_put64(uint8_t *p, uint64_t v) { memcpy(p, &v, 8); }
 
+int mma_room(const mml_walk *w, const uint32_t *first, uint64_t list_va, uint64_t *new_va,
+             uint64_t *total, size_t *nslots, char *why, size_t whysz) {
+    *total = 0;
+    *nslots = 0;
+    for (uint32_t i = 0; i < w->n; i++) {
+        if (first[i] != i || !(w->refs[i].header & MML_RELATIVE)) continue;
+        new_va[i] = list_va + *total;
+        *total += 8 + (uint64_t)MML_ABS_ENTSIZE * w->refs[i].count;
+        if (*total > UINT32_MAX)
+            return mma_fail(why, whysz, MMA_REFUSED, "the absolute method lists would pass 4GB");
+        *nslots += 3 * (size_t)w->refs[i].count;
+    }
+    return MMA_OK;
+}
+
 void mma_out_free(mma_out *o) {
     free(o->buf);
     o->buf = NULL;
@@ -272,7 +287,8 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     mrb_set old;
     mrb_buf stream;
     mrb_slot *slots = NULL;
-    uint32_t *first = NULL, i, e, nslots = 0;
+    uint32_t *first = NULL, i, e;
+    size_t nslots = 0;
     uint64_t *new_va = NULL, total = 0, at;
     uint8_t *lists = NULL, zero[8] = { 0 };
     int nsegs, rc;
@@ -311,17 +327,25 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     }
     rc = MMA_REFUSED;
     for (i = 0; i < w.n; i++) {
+        if (w.refs[i].slot_off >= o->lay.insert) {
+            mma_fail(why, whysz, MMA_REFUSED, "the method-list pointer at file offset 0x%llx lies "
+                     "in __LINKEDIT, which the conversion moves", (unsigned long long)w.refs[i].slot_off);
+            goto done;
+        }
         if (!mml_off_rebased(&res, w.refs[i].slot_off)) {
             mma_fail(why, whysz, MMA_REFUSED, "the method-list pointer at file offset 0x%llx "
                      "carries no rebase", (unsigned long long)w.refs[i].slot_off);
             goto done;
         }
-        if (first[i] == i && (w.refs[i].header & MML_RELATIVE)) {
-            new_va[i] = o->lay.list_va + total;
-            total += 8 + (uint64_t)MML_ABS_ENTSIZE * w.refs[i].count;
-            nslots += 3 * w.refs[i].count;
+        if (!mml_off_pointer_rebased(&res, w.refs[i].slot_off)) {
+            mma_fail(why, whysz, MMA_REFUSED, "the method-list pointer at file offset 0x%llx is "
+                     "rebased as TEXT_ABSOLUTE32, which would slide only its low half",
+                     (unsigned long long)w.refs[i].slot_off);
+            goto done;
         }
     }
+    if ((rc = mma_room(&w, first, o->lay.list_va, new_va, &total, &nslots, why, whysz)) != MMA_OK)
+        goto done;
     o->s = (total + MMA_PAGE - 1) & ~(uint64_t)(MMA_PAGE - 1);
     rc = MMA_NOMEM;
     if (!(lists = calloc(1, total)) || !(slots = malloc((nslots ? nslots : 1) * sizeof *slots))) {
@@ -374,7 +398,7 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     if (rc != MMA_OK) goto done;
     for (i = 0; i < w.n; i++)
         if (w.refs[i].header & MML_RELATIVE) mma_put64(o->buf + w.refs[i].slot_off, new_va[first[i]]);
-    o->rep.rebases = nslots;
+    o->rep.rebases = (uint32_t)nslots;
     memcpy(o->rep.dname, o->lay.dname, 16);
     o->rep.grew = o->s;
     o->rep.zerofill = o->lay.z;
