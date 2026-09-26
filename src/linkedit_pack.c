@@ -185,7 +185,10 @@ static uint64_t mlo_layout(const mlo_pieces *ps, uint64_t start, uint32_t *to) {
         const mlo_piece *q = &ps->p[k];
         if (!q->present) continue;
         uint32_t off = *q->off;
-        if (q->size == 0) {
+        /* An empty signature is still checked by dyld_order at the
+         * 16-rounded running offset, so it falls through to the general
+         * placement below instead of this early, no-rounding case. */
+        if (q->size == 0 && k != MLO_P_SIG) {
             /* An empty piece goes where ld64 puts one: a linkedit-data
              * piece at the running offset (or 0, where it was 0), anything
              * else at 0. */
@@ -216,7 +219,7 @@ static int mlo_tiles(const mlo_pieces *ps, uint64_t start, uint64_t end, char *w
     uint64_t at = start;
     for (int k = 0; k < MLO_P_N; k++) {
         const mlo_piece *q = &ps->p[k];
-        if (!q->present || q->size == 0) continue;
+        if (!q->present || (q->size == 0 && k != MLO_P_SIG)) continue;
         uint64_t off = *q->off;
         if (off != at && !(off == mlo_rnd64(at, 8) && (k == MLO_P_TOC || k == MLO_P_MODTAB ||
                                                        k == MLO_P_REFS || k == MLO_P_STRTAB)) &&
@@ -245,6 +248,13 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
     struct segment_command_64 *le = ps.le;
     if (!le) { mlo_fail(why, whysz, "the image has no __LINKEDIT"); return MLO_DECLINED; }
     uint64_t start = le->fileoff, end = le->fileoff + le->filesize;
+    /* The packed image is allocated as start+len bytes, only the first
+     * `start` of them copied from the input; a load command past that point
+     * would read (and, copying pieces back, write) past that allocation. */
+    if (start < sizeof(struct mach_header_64) + ((struct mach_header_64 *)buf)->sizeofcmds) {
+        mlo_fail(why, whysz, "the load commands lie in __LINKEDIT");
+        return MLO_DECLINED;
+    }
     if (end != size) {
         mlo_fail(why, whysz, "__LINKEDIT does not end the file");
         return MLO_DECLINED;
