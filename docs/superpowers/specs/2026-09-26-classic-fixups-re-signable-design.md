@@ -7,8 +7,17 @@ documentation gap"). This spec measures what 10.9's tool requires, finds
 every Drydock statement that breaks it, and designs one fix for all of them.
 Nothing here is implemented yet.
 
+*Revised 2026-09-26 a third time, after the plan's review ("(plan
+review)" below): `symbol_string_at_end`'s coverage check reads only a
+32-bit image; a new signature, not an existing one, is what the writer can
+misplace; an empty piece other than linkedit data goes to offset 0; and
+the pass declines a string table without symbols. Refusal texts that
+cannot be matched exactly are listed under "What could not be verified
+here".*
+
 *Revised 2026-09-26 again while its plan was written: every rule below
 was implemented and held to 10.9's own tool on 48 hand-built variants
+(58 after the third revision)
 (`docs/superpowers/plans/2026-09-26-classic-fixups-re-signable.md`), and
 four claims changed. A piece with data at `dataoff` 0 never reaches the
 writer; a string table without symbols is always written corrupt; two more
@@ -89,7 +98,11 @@ offset from `__LINKEDIT`'s `fileoff`. Each piece that is present must start
 exactly there. Any other image goes to `symbol_string_at_end()`
 (`checkout.c:233–309`, 573–699), which requires only that the string table
 end the file (before any signature) and the symbol table directly precede it
-(or precede the indirect table that precedes it).
+(or precede the indirect table that precedes it). (plan review) Its last
+check, that `__LINKEDIT` covers the tables (`checkout.c:689–697`), reads
+`seg_linkedit`, the 32-bit segment, so it never applies to a 64-bit image.
+MEASURED: three no-`LC_DYSYMTAB` layouts whose `__LINKEDIT` stops short of
+the file are accepted by the tool, and one of them is re-signed corrupt.
 
 | # | piece | from | refusal when out of place |
 |---|---|---|---|
@@ -388,22 +401,27 @@ the size it names:
   pieces in order. It adds only three kinds of padding:
   - the 8-rounding of rule 3, and only where the input already had it;
   - zeros up to the 16-byte boundary before the signature;
-  - (plan) in a slice without `LC_DYSYMTAB` that has a signature, zeros up
-    to the 16-byte boundary before the symbol table. That branch of the
-    writer starts the symbol table at `P = signature − rnd16(symbols +
-    strings)`, which is where it lies only if it is 16-aligned. MEASURED:
-    `mkrelmeth codesig+split` after `objc-methods`, packed without it,
-    re-signs corrupt.
-- **A zero-size piece keeps its offset when that offset already passes
-  the rules**, so an image in order stays byte-identical. An empty
-  dyld-info stream at 0, or a split-info, function-starts or data-in-code
-  piece at `dataoff` 0 (rule 2), stays there. Otherwise the piece is
-  placed as ld64 writes it, never left stale:
-  - an empty dyld-info stream gets offset 0, so rule 1 keys on the first
-    stream that exists;
-  - an empty linkedit-data piece gets `dataoff` = the running offset. The
-    review's scan found an empty `LC_DATA_IN_CODE` at the running offset
-    in 3,741 of the host's 3,953 images.
+  - (plan) in a slice without `LC_DYSYMTAB`, zeros up to the 16-byte
+    boundary before the symbol table. That branch of the writer starts the
+    symbol table at `P = signature − rnd16(symbols + strings)`, which is
+    where it lies only if it is 16-aligned. MEASURED: `mkrelmeth
+    codesig+split` after `objc-methods`, packed without it, re-signs
+    corrupt. (plan review) The same holds with no signature, where the tool
+    adds one at `rnd16(linkedit_end)`: MEASURED, an unsigned `mkrelmeth`
+    fixture after `objc-methods`, packed without it, gets a signature past
+    the end of the file the tool writes, and `codesign -v` fails.
+- **A zero-size piece is placed as ld64 writes it**, never left stale:
+  - (plan review) an empty dyld-info stream, and a table with no entries
+    (symbols, strings, relocations, indirect symbols, hints, table of
+    contents, module or reference table), gets offset 0. Rule 1 then keys
+    on the first stream that exists, and no stale offset is left past the
+    end of a shrunk file for the load-command loop's range check. MEASURED:
+    none of the host's 1,167 x86_64 images has a non-zero offset on such
+    an empty piece, so this keeps every one byte-identical;
+  - an empty linkedit-data piece keeps `dataoff` 0 where it was 0 (rule 2),
+    and otherwise gets the running offset. The review's scan found an
+    empty `LC_DATA_IN_CODE` at the running offset in 3,741 of the host's
+    3,953 images.
 - **Bytes nothing points at are dropped.** These are the chained-fixups
   blob the lowering orphans; the old streams that `objc-methods`, `import
   redirect` and a grow leave zeroed; the blob of a deleted
@@ -437,13 +455,19 @@ it cannot account for every byte it would move:
   `LC_ATOM_INFO`, the function-variant commands, or any command
   `ml_each_off` does not cover that is not known to carry none;
 - growing `vmsize` would overlap the next segment;
+- (plan review) the slice has a string table but no symbols. The order
+  rules put it last, and the writer neither counts nor writes it, so no
+  layout survives; the run is then refused (exit 1), not failed;
 - (plan) the slice has a signature and an `LC_DYSYMTAB`, and `__LINKEDIT`'s
   `fileoff` is not a multiple of 16. The writer rounds the sum of the sizes
   where the order rounds the offset, so no layout would survive;
 - (plan) the dyld info has weak-bind, lazy-bind and export opcodes but no
   rebase or bind opcodes. Rule 1 then wants the export trie first, but the
   writer copies the block from the first stream by *field*, the weak-bind
-  opcodes, so no layout both passes and survives.
+  opcodes, so no layout both passes and survives. (plan review) An empty
+  export stream is not this case: it goes to offset 0, and the image packs;
+- (plan review) the packed image would still be `corrupting` for any other
+  reason. The cases above are named first; this one is the net under them.
 
 A decline is reported. Whether the run is then refused is Decision 6's
 rule, not the pass's.
@@ -564,12 +588,16 @@ The rules:
      the `LC_DYSYMTAB` branch or the other one;
    - copies the dyld-info block as its span, and a linkedit-data piece from
      `dataoff` even when that is 0;
-   - places the signature at the rounded written size, or at
-     `rnd(linkedit_end, 16)` when the tool adds one.
+   - (plan review) when the tool adds a signature, puts it at
+     `rnd(linkedit_end, 16)` in a file whose size it computes from the sum
+     (`codesign_allocate.c:588–633`). An existing signature keeps its
+     `dataoff`, which the order rules put after every piece, so it cannot
+     land wrong.
 
    It passes only if **every piece the writer writes lands on its current
-   offset**, **every piece it does not write ends at or before `P`**, and
-   the signature's destination equals its `dataoff`. This covers, exactly:
+   offset**, **every piece it does not write ends at or before `P`**, and a
+   new signature neither runs past the file the tool writes nor overlaps a
+   piece. This covers, exactly:
    - a hole the 16-rounding absorbs (passes) and one it does not (fails);
    - a string table with `nsyms == 0`. (plan) MEASURED: always corrupt.
      The order rules put it last, where the writer, which neither counts
@@ -596,7 +624,8 @@ Where it is used:
   - Every order rule must pass. (plan) The pass cures where the pieces lie
     and nothing else, so the refusals it may leave are the ones the input
     already had that are not about order: an unknown command, a duplicate,
-    a missing `LC_ID_DYLIB`, header room. An image
+    a missing `LC_ID_DYLIB`, header room. (plan review) Each must be one the
+    input had, word for word. An image
     that still carries a chained-fixups or exports-trie blob cannot pass
     862's walk, so for it the postcondition checks instead that the pieces
     lie contiguous in Decision 2's order, with those blobs in 1035's
@@ -606,7 +635,8 @@ Where it is used:
   - The load commands must differ only in piece offsets and `__LINKEDIT`'s
     `filesize` and `vmsize`.
 
-  Any other outcome is `MR_FAIL`, with nothing written. This closes the
+  (plan review) A `corrupting` output is a decline, naming the finding;
+  any other failure is `MR_FAIL`, with nothing written. This closes the
   first draft's hole, where "only an unknown command left" skipped the
   order checks.
 - **On every write** (Decision 6).
@@ -874,6 +904,28 @@ closes only after the 10.9 oracle has run.
 closes.
 
 ## What could not be verified here
+
+- **Refusal texts and their order, where they cannot be matched exactly**
+  (plan review). `mlo_check`'s verdicts decide `corrupting` exactly, and
+  its refusal texts match the tool's on every single-fault file tested,
+  but two differences remain by design:
+  - the load-command loop's range and overlap checks are one coarse finding
+    each (`truncated or malformed object (…extends past the end of the
+    file)`, `malformed object (…overlaps…)`), placed after the loop's
+    unknown and duplicate commands. The tool reports the first failing
+    element in load-command index order and names the pair that overlaps.
+    Example: a file with an unknown command at index 9 and a string table
+    past the end of the file (`LC_SYMTAB`, index 5) is refused by the tool
+    for the string table and by `mlo_check`, first, for the unknown
+    command. Both refuse, and neither is `corrupting`;
+  - header room: `add_code_sig_load_command` skips a section when
+    `(flags & S_ZEROFILL) == S_ZEROFILL`, a bitmask test that also skips
+    every section type with bit 0 set (`S_4BYTE_LITERALS`,
+    `S_NON_LAZY_SYMBOL_POINTERS`, `S_SYMBOL_STUBS`, …). `mlo_check`
+    compares the section type (`flags & SECTION_TYPE`) with `S_ZEROFILL`
+    and `S_THREAD_LOCAL_ZEROFILL`. On an image whose lowest section is of
+    such a type, the two can disagree about room. Header room never
+    affects `corrupting`.
 
 - **Any current `codesign_allocate`.** The slots for the chained blob and
   the trie, and the claim that the same sum corrupts there, are SOURCED
