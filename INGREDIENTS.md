@@ -23,6 +23,7 @@ repo's own recipe. A change there is a repackage you cut deliberately.
 unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-upstream deviation is:
 
 - scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as semver vX.Y.Z per the self-upstream rule (tag `v0.1.0` for `UPSTREAM_VERSION` `0.1.0`), and there is no -mavericks.N axis to carry.
+- rosetta:tests/grown_binary_runs_test.sh: builds x86_64/10.9 fixture programs (`-arch x86_64 -mmacosx-version-min=10.9`) and executes them directly — a linked fixture, the `hdr` and `ctl` programs that reach their own header, their header-grown copies, and a thinned `/usr/bin/printf` when it qualifies — to prove a header grow changes nothing about what a program does. On the macos-26 (arm64) release runner every one of those executions is translated by Rosetta, and there is no SKIP-if-absent guard, so Rosetta is a required dependency there. Reconsider when an x86_64 host (the 10.9 box, or an Intel runner) can run it in CI; at the latest, before macOS 28 removes Rosetta.
 
 ## Why there is no Renovate customManager for the own upstream
 
