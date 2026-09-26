@@ -4964,7 +4964,7 @@ om plain
     && ok "objc-methods set absolute: converts, and leaves FILE as it was" \
     || bad "objc-methods plain" "rc $om_rc: $(cat "$T/om.err")"
 grep -qxF "      converted 4 relative method lists (5 methods) onto the end of __DATA: 1 class, 1 metaclass, 1 category, 1 protocol" "$T/om.err" \
-    && grep -qxF "      added 14 rebases; __DATA grew 4,096 bytes; __LINKEDIT 512 -> 584 bytes, moved up 4,096" "$T/om.err" \
+    && grep -qxF "      added 14 rebases; __DATA grew 4,096 bytes; __LINKEDIT 512 -> 592 bytes, moved up 4,096" "$T/om.err" \
     && ok "objc-methods set absolute: logs what it converted and what moved" \
     || bad "objc-methods log" "$(cat "$T/om.err")"
 [ "$(info_ml "$T/relmeth_plain.out")" = "objc-methods: 0 relative, 4 absolute" ] \

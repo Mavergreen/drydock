@@ -168,7 +168,7 @@ int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
 
     *out = NULL;
     *outsz = 0;
-    if (s % MMA_PAGE || lists_len > s || r % 8)
+    if (s % MMA_PAGE || lists_len > s || r % 16)
         return mma_fail(why, whysz, MMA_REFUSED, "internal error: %llu list bytes in %llu, "
                         "%u stream bytes", (unsigned long long)lists_len, (unsigned long long)s, r);
     if (lay->z > UINT32_MAX || s > UINT32_MAX || lay->insert > im->size)
@@ -294,7 +294,7 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
     uint32_t *first = NULL, i, e;
     size_t nslots = 0;
     uint64_t *new_va = NULL, total = 0, at;
-    uint8_t *lists = NULL, zero[8] = { 0 };
+    uint8_t *lists = NULL, zero[16] = { 0 };
     int nsegs, rc;
 
     memset(o, 0, sizeof *o);
@@ -411,7 +411,7 @@ int mma_build(const mi_image *im, mma_out *o, char *why, size_t whysz) {
         mma_fail(why, whysz, rc, rc == MMA_NOMEM ? "out of memory" : "internal error: new rebases out of order");
         goto done;
     }
-    mrb_put(&stream, zero, 1 + (8 - (stream.n + 1) % 8) % 8);
+    mrb_put(&stream, zero, 1 + (16 - (stream.n + 1) % 16) % 16);
     if (stream.oom) { rc = mma_fail(why, whysz, MMA_NOMEM, "out of memory"); goto done; }
     o->r = (uint32_t)stream.n;
     rc = mma_insert(im, &o->lay, lists, total, o->s, stream.p, o->r, &o->buf, &o->size, why, whysz);

@@ -49,8 +49,9 @@ int mma_layout_check(const mma_seg *segs, int n, uint64_t file_size, mma_layout 
 
 /* A new image, in *out (malloc'd) of *outsz bytes: `im` with its zero fill
  * made file bytes, `lists_len` bytes of `lists` then zeros to `s` (a whole
- * number of pages) past D's end, and `r` bytes of `stream` (a multiple of 8)
- * at the start of __LINKEDIT, which moves up by s in vm and by z + s in file.
+ * number of pages) past D's end, and `r` bytes of `stream` (a multiple of
+ * 16, so every moved offset keeps its alignment) at the start of __LINKEDIT,
+ * which moves up by s in vm and by z + s in file.
  * D's vmsize grows by s and its filesize becomes its vmsize; __LINKEDIT's
  * filesize grows by r and its vmsize grows to cover it; every other file
  * offset at or past the insertion moves by z + s + r; rebase_off and
@@ -78,7 +79,7 @@ typedef struct {
     size_t     size;
     mma_layout lay;
     uint64_t   s;       /* the converted lists' room, a whole number of pages */
-    uint32_t   r;       /* the new rebase stream's size, a multiple of 8 */
+    uint32_t   r;       /* the new rebase stream's size, a multiple of 16 */
     mma_report rep;
 } mma_out;
 

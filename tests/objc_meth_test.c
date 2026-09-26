@@ -861,6 +861,9 @@ static void spoil_lists(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
 static void spoil_r(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
     (void)l; (void)s; (void)n; *r = 12;
 }
+static void spoil_r8(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)s; (void)n; *r = 8;
+}
 static void spoil_z_max(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
     (void)s; (void)n; (void)r; l->z = UINT32_MAX;
 }
@@ -920,6 +923,7 @@ static void test_insert_refuses_what_would_overrun(void) {
     refused_direct(spoil_page, "40 list bytes in 2048, 16 stream bytes", "a list area not whole pages");
     refused_direct(spoil_lists, "4097 list bytes in 4096, 16 stream bytes", "lists longer than their area");
     refused_direct(spoil_r, "40 list bytes in 4096, 12 stream bytes", "a stream not a multiple of 8");
+    refused_direct(spoil_r8, "40 list bytes in 4096, 8 stream bytes", "a stream not a multiple of 16");
     refused_direct(spoil_insert_in_cmds, "inside the header or load commands",
                    "an insertion inside the load commands");
     refused_direct(spoil_insert_cmds_end_less_1, "inside the header or load commands",
@@ -1028,6 +1032,24 @@ static void test_every_new_pointer_is_rebased(void) {
 }
 
 static uint64_t slot_value(const uint8_t *b, uint32_t off) { uint64_t v; memcpy(&v, b + off, 8); return v; }
+
+/* codesign_allocate refuses a signature that does not start 16-aligned; z and
+ * s are whole pages, so the stream's size decides. */
+static void test_linkedit_offsets_keep_their_alignment(void) {
+    mma_out o;
+    char why[256] = "";
+    int rc = build(RMF_CODESIG | RMF_SPLIT, NULL, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "alignment: rc %d (%s)", rc, why);
+    if (rc != MMA_OK) return;
+    lcs_of was = lcs(fx, RMF_SIZE), now = lcs(o.buf, o.size);
+    CHECK(o.r % 16 == 0, "alignment: the new stream is %u bytes, not a multiple of 16", o.r);
+    CHECK(now.cs->dataoff % 16 == was.cs->dataoff % 16 && now.sp->dataoff % 16 == was.sp->dataoff % 16 &&
+          now.st->symoff % 16 == was.st->symoff % 16 && now.st->stroff % 16 == was.st->stroff % 16,
+          "alignment: code signature at %#x (was %#x), split info %#x (%#x), symbols %#x (%#x), "
+          "strings %#x (%#x)", now.cs->dataoff, was.cs->dataoff, now.sp->dataoff, was.sp->dataoff,
+          now.st->symoff, was.st->symoff, now.st->stroff, was.st->stroff);
+    mma_out_free(&o);
+}
 
 static void test_every_slot_is_repointed_and_absolute_ones_kept(void) {
     mma_out o;
@@ -1508,6 +1530,7 @@ int main(void) {
     test_conversion_matches_the_oracle_in_order();
     test_every_new_pointer_is_rebased();
     test_every_slot_is_repointed_and_absolute_ones_kept();
+    test_linkedit_offsets_keep_their_alignment();
     test_a_converted_image_has_nothing_to_convert();
     test_conversion_refusals_write_nothing();
     test_every_conversion_verifies();
