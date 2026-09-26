@@ -5182,6 +5182,14 @@ lo "$T/lk_build-version" "$T/lk_bv.out" 'load-command delete codesig'
     && grep -q "resign 10.9: malformed object (unknown load command 3)" "$T/lo.err" \
     && ok "order: after a pack, the report names what still stops 10.9's codesign_allocate" \
     || bad "order: report after pack" "rc $lo_rc: $(cat "$T/lo.err")"
+# Symbol indexes out of order are the input's, not the pass's to cure: it
+# packs, writes, and reports them (exit 0).
+"$T/mklinkedit" make syms-misordered "$T/lk_syms"
+lo "$T/lk_syms" "$T/lk_syms.out" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && packed && [ -e "$T/lk_syms.out" ] \
+    && grep -q "resign 10.9: file not in an order that can be processed (externally defined symbols out of place)" "$T/lo.err" \
+    && ok "order: symbol indexes out of order are packed around, written and reported (0)" \
+    || bad "order: syms-misordered" "rc $lo_rc: $(cat "$T/lo.err")"
 
 # An in-place byte edit is a change: dylib insert renumbers the bind's
 # ordinal. On an image in order the pass is a silent no-op.

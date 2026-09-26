@@ -171,6 +171,24 @@ static int mlo_find(uint8_t *buf, size_t size, mlo_pieces *ps, char *why, size_t
 
 static uint64_t mlo_rnd64(uint64_t x, uint64_t a) { return (x + a - 1) / a * a; }
 
+/* Does codesign_allocate judge the image by symbol_string_at_end rather than
+ * dyld_order: no LC_DYSYMTAB, or neither MH_DYLDLINK nor MH_DYLIB? */
+static int mlo_at_end_rule(const mlo_pieces *ps, const uint8_t *buf) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
+    return !ps->p[MLO_P_INDIRECT].present ||
+           (!(h->flags & MH_DYLDLINK) && h->filetype != MH_DYLIB);
+}
+
+/* Whether the pieces' sizes alone can make symbol_string_at_end refuse every
+ * layout: a signed image it judges, with LC_DYSYMTAB and an empty string
+ * table. That rule then wants the indirect or symbol table to end at the
+ * signature, which sits at a multiple of 16. */
+static int mlo_sizes_decide(const mlo_pieces *ps, const uint8_t *buf) {
+    return mlo_at_end_rule(ps, buf) && ps->p[MLO_P_INDIRECT].present &&
+           ps->p[MLO_P_STRTAB].present && ps->p[MLO_P_STRTAB].size == 0 &&
+           ps->p[MLO_P_SIG].present;
+}
+
 /* Is the first present table after the indirect table at the 8-rounding? */
 static int mlo_had_pad(const mlo_pieces *ps) {
     if (ps->nind % 2 == 0) return 0;
@@ -322,6 +340,13 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
                  "codesign_allocate's writer neither counts nor writes");
         return MLO_DECLINED;
     }
+    /* symbol_string_at_end wants the symbol table straight before the
+     * indirect or string table, and the order puts the hints between. */
+    if (ps.p[MLO_P_HINTS].size && ps.p[MLO_P_SYMTAB].size && mlo_at_end_rule(&ps, buf)) {
+        mlo_fail(why, whysz, "the image has two-level hints and symbols, but no LC_DYSYMTAB or "
+                 "neither MH_DYLDLINK nor MH_DYLIB, which codesign_allocate cannot lay out");
+        return MLO_DECLINED;
+    }
     uint64_t covered = 0;
     for (int k = 0; k < MLO_P_N; k++) {
         const mlo_piece *q = &ps.p[k];
@@ -440,9 +465,9 @@ int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, siz
                 /* 862's walk has no slot for a modern blob, so an image that
                  * keeps one is held to the tiling above instead. */
                 if (ns.modern && strstr(v.f[k].text, "file not in an order")) continue;
-                /* No layout survives LC_DYSYMTAB with an empty string table outside MH_DYLDLINK: decline instead of failing. */
-                if (strstr(v.f[k].text, "indirect symbol table does not directly preceed the string table") ||
-                    strstr(v.f[k].text, "symbol table and string table not at the end of the file")) {
+                if (mlo_sizes_decide(&ps, buf) &&
+                    (strstr(v.f[k].text, "indirect symbol table does not directly preceed the string table") ||
+                     strstr(v.f[k].text, "symbol table and string table not at the end of the file"))) {
                     mlo_fail(why, whysz, "the packed image is refused: %s", v.f[k].text);
                     rc = MLO_DECLINED;
                     break;

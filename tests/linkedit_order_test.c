@@ -516,6 +516,42 @@ static void test_the_pass_declines(void) {
     }
 }
 
+/* Fuzz-found: two-level hints in an image symbol_string_at_end judges. ld64's
+ * order puts them straight after the symbol table, where that rule wants the
+ * indirect or string table. Without symbols, they are packed. */
+static void test_the_pass_declines_hints_the_rule_refuses(void) {
+    static const struct { const char *what, *layout; unsigned opts; int want; } c[] = {
+        { "no LC_DYSYMTAB", "+32 rebase bind weak lazy export fstarts dic drs symtab strtab @16 sig",
+          LKF_NODYSYMTAB, MLO_DECLINED },
+        { "static", "+32 rebase bind weak lazy export fstarts dic drs symtab indirect strtab @16 sig",
+          LKF_EXECUTE | LKF_STATIC, MLO_DECLINED },
+        { "no LC_DYSYMTAB, no symbols", "+32 rebase bind weak lazy export fstarts dic drs @16 sig",
+          LKF_NODYSYMTAB, MLO_PACKED },
+    };
+    for (size_t k = 0; k < sizeof c / sizeof c[0]; k++) {
+        uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+        size_t n = lkf_build(buf, c[k].layout, c[k].opts);
+        if (c[k].want == MLO_PACKED) lkf_st(buf)->nsyms = lkf_st(buf)->strsize = 0;
+        /* the hints take the LC_DYSYMTAB's place, or an LC_UUID's */
+        int at = (c[k].opts & LKF_NODYSYMTAB) ? LKF_LC_DYSYMTAB : LKF_LC_ID;
+        struct twolevel_hints_command *th = (struct twolevel_hints_command *)lkf_lc(buf, at);
+        th->cmd = LC_TWOLEVEL_HINTS;
+        th->offset = LKF_LE;
+        th->nhints = 8;
+        uint8_t *copy = (uint8_t *)malloc(n);
+        memcpy(copy, buf, n);
+        mlo_pack_report r;
+        char why[256] = "";
+        int rc = pack(&buf, &n, &r, why);
+        CHECK(rc == c[k].want && (rc != MLO_DECLINED || (strstr(why, "two-level hints and symbols") &&
+                                                         memcmp(buf, copy, n) == 0)),
+              "hints, %s: %s (got %d: %s)", c[k].what, c[k].want == MLO_PACKED ? "packed" : "declined",
+              rc, why);
+        free(copy);
+        free(buf);
+    }
+}
+
 /* __LINKEDIT's fileoff inside the load commands: the pass must not read or
  * write past the packed image it allocates for its layout. */
 static void test_the_pass_declines_load_commands_in_linkedit(void) {
@@ -553,8 +589,9 @@ static void test_the_pass_declines_load_commands_in_linkedit(void) {
     free(buf);
 }
 
-/* Fuzz-found: no layout survives a signed, static LC_DYSYMTAB image with an
- * empty string table, so the pass must decline it, not fail a postcondition. */
+/* Fuzz-found: a signed, static LC_DYSYMTAB image with an empty string table
+ * whose indirect table cannot end at a multiple of 16 has no layout 10.9
+ * accepts, so the pass must decline it, not fail a postcondition. */
 static void test_the_pass_declines_empty_strtab_outside_dyldlink(void) {
     uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
     size_t n = lkf_build(buf, "rebase bind weak lazy export +4 fstarts dic drs symtab +16 "
@@ -594,6 +631,30 @@ static void test_the_pass_declines_empty_strtab_outside_dyldlink(void) {
     CHECK(rc == MLO_DECLINED && strstr(why, "string table"),
           "empty-strtab static signed, zero indirect: declined (got %d: %s)", rc, why);
     free(buf);
+}
+
+/* Where the symbol indexes point is not where the pieces lie: the pass
+ * leaves it to the input, and packs. */
+static void test_the_pass_leaves_symbol_indexes_to_the_input(void) {
+    static const char *const want[3] = { "(local symbols out of place)",
+        "(externally defined symbols out of place)", "(undefined symbols out of place)" };
+    for (int k = 0; k < 3; k++) {
+        uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+        size_t n = lkf_build(buf, "rebase +16 bind weak lazy export " LKF_TAIL, 0);
+        struct dysymtab_command *dy = lkf_dy(buf);
+        if (k == 0) dy->ilocalsym = 1;
+        else if (k == 1) dy->iextdefsym = 2;
+        else dy->iundefsym = 1;
+        mlo_pack_report r;
+        char why[256] = "";
+        int rc = pack(&buf, &n, &r, why);
+        mlo_verdict v;
+        check(buf, n, &v);
+        CHECK(rc == MLO_PACKED && v.refusal >= 0 && strstr(v.f[v.refusal].text, want[k]) &&
+              !v.corrupting, "%s: packed, and still refused for it (got %d: %s; %s)", want[k], rc,
+              why, v.refusal >= 0 ? v.f[v.refusal].text : "no refusal");
+        free(buf);
+    }
 }
 
 /* __LINKEDIT's vmsize grows to cover a longer pack, rounded to the page;
@@ -674,7 +735,9 @@ int main(void) {
     test_the_pass_keeps_the_rounding();
     test_the_pass_declines();
     test_the_pass_declines_load_commands_in_linkedit();
+    test_the_pass_declines_hints_the_rule_refuses();
     test_the_pass_declines_empty_strtab_outside_dyldlink();
+    test_the_pass_leaves_symbol_indexes_to_the_input();
     test_the_pass_resizes_and_zeroes();
     test_what_counts_as_a_change();
     if (fails == 0) printf("linkedit_order_test: all cases pass\n");

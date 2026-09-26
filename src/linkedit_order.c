@@ -173,6 +173,7 @@ static uint32_t mlo_at(mlo_verdict *v, uint32_t offset, uint32_t off, uint32_t s
 }
 
 #define MLO_ORDER(what) mlo_place(v, "file not in an order that can be processed (%s)", what)
+#define MLO_INDEX(what) mlo_add(v, MLO_REFUSES, 0, "file not in an order that can be processed (%s)", what)
 
 /* dyld_order (checkout.c:313-560), rule for rule. */
 static uint32_t mlo_dyld_order(const mlo_cmds *c, mlo_verdict *v) {
@@ -225,15 +226,15 @@ static uint32_t mlo_dyld_order(const mlo_cmds *c, mlo_verdict *v) {
         offset = mlo_at(v, offset, st->symoff, st->nsyms * 16, "symbol table out of place");
     isym = 0;
     if (dy->nlocalsym != 0) {
-        if (dy->ilocalsym != isym) MLO_ORDER("local symbols out of place");
+        if (dy->ilocalsym != isym) MLO_INDEX("local symbols out of place");
         isym += dy->nlocalsym;
     }
     if (dy->nextdefsym != 0) {
-        if (dy->iextdefsym != isym) MLO_ORDER("externally defined symbols out of place");
+        if (dy->iextdefsym != isym) MLO_INDEX("externally defined symbols out of place");
         isym += dy->nextdefsym;
     }
     if (dy->nundefsym != 0) {
-        if (dy->iundefsym != isym) MLO_ORDER("undefined symbols out of place");
+        if (dy->iundefsym != isym) MLO_INDEX("undefined symbols out of place");
         isym += dy->nundefsym;
     }
     if (c->hints && c->hints->nhints != 0)
