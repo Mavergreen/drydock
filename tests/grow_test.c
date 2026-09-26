@@ -2720,8 +2720,9 @@ static void test_confirm_resumes_within_a_function(void) {
     free(code);
 }
 
-/* 300,000 one-byte LC_DATA_IN_CODE ranges, then 300,000 one-lea functions. */
-static void test_confirm_resumes_across_data_in_code(void) {
+/* 300,000 one-byte LC_DATA_IN_CODE ranges, then 300,000 one-lea functions,
+ * or with `one`, one function of 300,000 leas. */
+static void check_resumes_after_data_in_code(int one, const char *what) {
     const size_t m = 300000, k = 300000, n = m + 7 * k;
     uint8_t *code = (uint8_t *)malloc(n), *fs = (uint8_t *)malloc(k + 4), *dic = (uint8_t *)malloc(8 * m);
     size_t nfs = 0, fsize;
@@ -2729,7 +2730,7 @@ static void test_confirm_resumes_across_data_in_code(void) {
     for (size_t i = 0; i < k; i++) hr_put_lea(code, (uint32_t)(m + 7 * i));
     uint64_t first = HR_FOFF + m;                  /* ULEB: the first function's distance from base */
     do { uint8_t b = first & 0x7f; first >>= 7; fs[nfs++] = (uint8_t)(b | (first ? 0x80 : 0)); } while (first);
-    for (size_t i = 1; i < k; i++) fs[nfs++] = 7;
+    for (size_t i = 1; !one && i < k; i++) fs[nfs++] = 7;
     fs[nfs++] = 0;
     for (size_t i = 0; i < m; i++) {
         uint32_t off = (uint32_t)(HR_FOFF + i);
@@ -2739,11 +2740,17 @@ static void test_confirm_resumes_across_data_in_code(void) {
         memcpy(dic + 8 * i + 6, &kind, 2);
     }
     uint8_t *buf = hr_big_image(code, n, fs, nfs, dic, 8 * m, &fsize);
-    check_confirms_in_time("confirm: 300,000 functions after 300,000 data-in-code ranges", buf, fsize);
+    check_confirms_in_time(what, buf, fsize);
     free(buf);
     free(dic);
     free(fs);
     free(code);
+}
+
+static void test_confirm_resumes_across_data_in_code(void) {
+    check_resumes_after_data_in_code(0, "confirm: 300,000 functions after 300,000 data-in-code ranges");
+    check_resumes_after_data_in_code(1, "confirm: 300,000 candidates in one function after 300,000 "
+                                        "data-in-code ranges");
 }
 
 /* __text's bytes at `t`, __stubs' at `u`, each section at the vm address
