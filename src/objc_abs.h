@@ -35,14 +35,15 @@ typedef struct {
 } mma_layout;
 
 /* The image's LC_SEGMENT_64s in load-command order: their count, or -1 when
- * there are more than `max`. */
+ * there are more than `max`, which is MML_MAX_SEGS for mma_layout_check. */
 int mma_segments(const mi_image *im, mma_seg *segs, int max);
 
 /* Where the lists can go in an image of `file_size` bytes with these
  * segments, or MMA_REFUSED with why set: __LINKEDIT must be the last segment
  * and end the file; D must be segment 15 or lower, writable, end where
- * __LINKEDIT begins in vm and in file, and end on a page boundary once its
- * zero fill is in the file. */
+ * __LINKEDIT begins in vm and in file, have under 4GB of zero fill, and end
+ * on a page boundary once that zero fill is in the file; no other segment
+ * may reach above __LINKEDIT's start in vm. */
 int mma_layout_check(const mma_seg *segs, int n, uint64_t file_size, mma_layout *lay,
                      char *why, size_t whysz);
 
@@ -53,8 +54,11 @@ int mma_layout_check(const mma_seg *segs, int n, uint64_t file_size, mma_layout 
  * D's vmsize grows by s and its filesize becomes its vmsize; __LINKEDIT's
  * filesize grows by r and its vmsize grows to cover it; every other file
  * offset at or past the insertion moves by z + s + r; rebase_off and
- * rebase_size name the new stream and the old one is zeroed. `im` is only
- * read. MMA_OK, MMA_REFUSED or MMA_NOMEM, with why set. */
+ * rebase_size name the new stream and the old one is zeroed. Refused: more
+ * than one LC_DYLD_INFO[_ONLY], an LC_NOTE or LC_ATOM_INFO (offsets this does
+ * not move), a rebase stream outside __LINKEDIT or the file, and a result
+ * past 4GB. `im` is only read. MMA_OK, MMA_REFUSED or MMA_NOMEM, with why
+ * set. */
 int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
                uint64_t lists_len, uint64_t s, const uint8_t *stream, uint32_t r,
                uint8_t **out, size_t *outsz, char *why, size_t whysz);

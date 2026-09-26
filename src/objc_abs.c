@@ -52,6 +52,10 @@ int mma_layout_check(const mma_seg *segs, int n, uint64_t file_size, mma_layout 
                      char *why, size_t whysz) {
     int i;
     memset(lay, 0, sizeof *lay);
+    if (n < 0)
+        return mma_fail(why, whysz, MMA_REFUSED, "the image has more than %d segments", MML_MAX_SEGS);
+    if (n == 1 && mma_is_linkedit(&segs[0]))
+        return mma_fail(why, whysz, MMA_REFUSED, "there is no segment before __LINKEDIT to hold the lists");
     if (n < 2 || !mma_is_linkedit(&segs[n - 1])) {
         for (i = 0; i < n; i++)
             if (mma_is_linkedit(&segs[i]))
@@ -67,18 +71,30 @@ int mma_layout_check(const mma_seg *segs, int n, uint64_t file_size, mma_layout 
                         "writable, and the runtime writes into method lists", d->name);
     if (d->filesize > d->vmsize)
         return mma_fail(why, whysz, MMA_REFUSED, "%.16s has more file bytes than vm bytes", d->name);
-    if (d->vmaddr + d->vmsize != l->vmaddr)
-        return mma_fail(why, whysz, MMA_REFUSED, "%.16s ends at 0x%llx in memory, and __LINKEDIT "
-                        "begins at 0x%llx", d->name, (unsigned long long)(d->vmaddr + d->vmsize),
+    if (d->vmaddr > l->vmaddr || d->vmsize != l->vmaddr - d->vmaddr)
+        return mma_fail(why, whysz, MMA_REFUSED, "%.16s, 0x%llx bytes at 0x%llx in memory, does not "
+                        "end where __LINKEDIT begins, at 0x%llx", d->name,
+                        (unsigned long long)d->vmsize, (unsigned long long)d->vmaddr,
                         (unsigned long long)l->vmaddr);
-    if (d->fileoff + d->filesize != l->fileoff)
-        return mma_fail(why, whysz, MMA_REFUSED, "%.16s ends at file offset 0x%llx, and __LINKEDIT "
-                        "begins at 0x%llx", d->name, (unsigned long long)(d->fileoff + d->filesize),
+    for (i = 0; i < n - 2; i++)
+        if (segs[i].vmaddr > l->vmaddr || segs[i].vmsize > l->vmaddr - segs[i].vmaddr)
+            return mma_fail(why, whysz, MMA_REFUSED, "%.16s, 0x%llx bytes at 0x%llx in memory, lies "
+                            "above __LINKEDIT's start at 0x%llx, where __LINKEDIT would move",
+                            segs[i].name, (unsigned long long)segs[i].vmsize,
+                            (unsigned long long)segs[i].vmaddr, (unsigned long long)l->vmaddr);
+    if (d->fileoff > l->fileoff || d->filesize != l->fileoff - d->fileoff)
+        return mma_fail(why, whysz, MMA_REFUSED, "%.16s, 0x%llx bytes at file offset 0x%llx, does "
+                        "not end where __LINKEDIT begins, at 0x%llx", d->name,
+                        (unsigned long long)d->filesize, (unsigned long long)d->fileoff,
                         (unsigned long long)l->fileoff);
-    if (l->fileoff + l->filesize != file_size)
-        return mma_fail(why, whysz, MMA_REFUSED, "__LINKEDIT ends at file offset 0x%llx, and the "
-                        "image is 0x%llx bytes", (unsigned long long)(l->fileoff + l->filesize),
+    if (l->fileoff > file_size || l->filesize != file_size - l->fileoff)
+        return mma_fail(why, whysz, MMA_REFUSED, "__LINKEDIT, 0x%llx bytes at file offset 0x%llx, "
+                        "does not end the image: the image is 0x%llx bytes",
+                        (unsigned long long)l->filesize, (unsigned long long)l->fileoff,
                         (unsigned long long)file_size);
+    if (d->vmsize - d->filesize > UINT32_MAX)
+        return mma_fail(why, whysz, MMA_REFUSED, "%.16s has 0x%llx bytes of zero fill, too many to "
+                        "make file bytes", d->name, (unsigned long long)(d->vmsize - d->filesize));
     if ((d->vmaddr + d->vmsize) % MMA_PAGE || (l->fileoff + d->vmsize - d->filesize) % MMA_PAGE)
         return mma_fail(why, whysz, MMA_REFUSED, "%.16s does not end on a page boundary", d->name);
     lay->d = n - 2;
@@ -126,11 +142,23 @@ static int mma_find_info(const struct load_command *lc, void *ctx_) {
     return 1;
 }
 
+typedef struct { int ninfo; uint32_t unmoved; } mma_scan_ctx;
+
+/* Counts LC_DYLD_INFO[_ONLY]s and notes the first command whose file offset
+ * ml_bump_all leaves alone. */
+static int mma_scan_lc(const struct load_command *lc, void *ctx_) {
+    mma_scan_ctx *c = ctx_;
+    if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) c->ninfo++;
+    if ((lc->cmd == LC_NOTE || lc->cmd == LC_ATOM_INFO) && !c->unmoved) c->unmoved = lc->cmd;
+    return 0;
+}
+
 int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
                uint64_t lists_len, uint64_t s, const uint8_t *stream, uint32_t r,
                uint8_t **out, size_t *outsz, char *why, size_t whysz) {
     const struct dyld_info_command *odi = NULL;
-    uint64_t grow = lay->z + s + r, at;
+    mma_scan_ctx sc = { 0, 0 };
+    uint64_t grow, at;
     uint8_t *nb;
     mi_image nim;
     mma_edit_ctx c;
@@ -140,9 +168,26 @@ int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
     if (s % MMA_PAGE || lists_len > s || r % 8)
         return mma_fail(why, whysz, MMA_REFUSED, "internal error: %llu list bytes in %llu, "
                         "%u stream bytes", (unsigned long long)lists_len, (unsigned long long)s, r);
+    if (lay->z > UINT32_MAX || s > UINT32_MAX || lay->insert > im->size)
+        return mma_fail(why, whysz, MMA_REFUSED, "internal error: 0x%llx zero-fill and 0x%llx list "
+                        "bytes at 0x%llx in a 0x%llx-byte image", (unsigned long long)lay->z,
+                        (unsigned long long)s, (unsigned long long)lay->insert,
+                        (unsigned long long)im->size);
+    grow = lay->z + s + r;
     mi_each_lc(im, mma_find_info, &odi);
+    mi_each_lc(im, mma_scan_lc, &sc);
     if (!odi)
         return mma_fail(why, whysz, MMA_REFUSED, "no LC_DYLD_INFO: there is no rebase stream to extend");
+    if (sc.ninfo > 1)
+        return mma_fail(why, whysz, MMA_REFUSED, "the image has %d LC_DYLD_INFO commands, and only "
+                        "one rebase stream can be replaced", sc.ninfo);
+    if (sc.unmoved)
+        return mma_fail(why, whysz, MMA_REFUSED, "%s carries a file offset (%s) this tool does not "
+                        "verify or re-base", sc.unmoved == LC_NOTE ? "LC_NOTE" : "LC_ATOM_INFO",
+                        sc.unmoved == LC_NOTE ? "note_command.offset" : "dataoff");
+    if (odi->rebase_size && (odi->rebase_off > im->size || odi->rebase_size > im->size - odi->rebase_off))
+        return mma_fail(why, whysz, MMA_REFUSED, "the rebase stream, 0x%x bytes at 0x%x, runs past "
+                        "the end of the file", odi->rebase_size, odi->rebase_off);
     if (odi->rebase_size && odi->rebase_off < lay->insert)
         return mma_fail(why, whysz, MMA_REFUSED, "the rebase stream is not in __LINKEDIT");
     if (im->size + grow > UINT32_MAX)

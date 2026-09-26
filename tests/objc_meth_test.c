@@ -3,6 +3,7 @@
 #include "objc_meth.h"
 #include "objc_abs.h"
 #include "image.h"
+#include "mach_compat.h"
 #include "relmeth_fixture.h"
 
 #include <stdio.h>
@@ -543,7 +544,7 @@ static int insert_into(unsigned variant, void (*poke)(uint8_t *), inserted *o, c
                       why, whysz);
 }
 
-typedef struct { const struct segment_command_64 *d, *l; const struct dyld_info_command *di;
+typedef struct { const struct segment_command_64 *d, *l, *pz, *tx; const struct dyld_info_command *di;
                  const struct symtab_command *st; const struct linkedit_data_command *cs, *sp;
                  int nsegs; } lcs_of;
 
@@ -553,6 +554,8 @@ static int note_lc(const struct load_command *lc, void *ctx_) {
         const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
         if (strncmp(sc->segname, "__DATA", 16) == 0) c->d = sc;
         if (strncmp(sc->segname, "__LINKEDIT", 16) == 0) c->l = sc;
+        if (strncmp(sc->segname, "__PAGEZERO", 16) == 0) c->pz = sc;
+        if (strncmp(sc->segname, "__TEXT", 16) == 0) c->tx = sc;
         c->nsegs++;
     }
     if (lc->cmd == LC_DYLD_INFO_ONLY) c->di = (const struct dyld_info_command *)lc;
@@ -587,6 +590,9 @@ static void test_insert_moves_linkedit_up_behind_the_lists(void) {
           "insert: __LINKEDIT at %#llx/%#llx, %#llx/%#llx bytes", (unsigned long long)now.l->vmaddr,
           (unsigned long long)now.l->fileoff, (unsigned long long)now.l->vmsize,
           (unsigned long long)now.l->filesize);
+    CHECK(now.pz && now.tx && memcmp(now.pz, was.pz, was.pz->cmdsize) == 0 &&
+          memcmp(now.tx, was.tx, was.tx->cmdsize) == 0,
+          "insert: __PAGEZERO's or __TEXT's load command changed");
     CHECK(memcmp(o.b + sizeof(struct mach_header_64) + ((struct mach_header_64 *)in)->sizeofcmds,
                  in + sizeof(struct mach_header_64) + ((struct mach_header_64 *)in)->sizeofcmds,
                  RMF_LINKEDIT - sizeof(struct mach_header_64) - ((struct mach_header_64 *)in)->sizeofcmds) == 0,
@@ -668,6 +674,178 @@ static void test_insert_never_grows_the_header(void) {
     free(o.b);
 }
 
+/* ---- layout and insertion, hostile inputs ----------------------------------------- */
+
+static mma_seg seg_of(const char *name, uint64_t vm, uint64_t vmsize, uint64_t foff, uint64_t fsize) {
+    mma_seg s;
+    memset(&s, 0, sizeof s);
+    snprintf(s.name, sizeof s.name, "%s", name);
+    s.vmaddr = vm; s.vmsize = vmsize; s.fileoff = foff; s.filesize = fsize;
+    s.initprot = VM_PROT_READ | VM_PROT_WRITE;
+    return s;
+}
+
+static void refused_segs(const mma_seg *segs, int n, uint64_t file_size, const char *want,
+                         const char *label) {
+    mma_layout lay;
+    char why[256] = "";
+    int rc = mma_layout_check(segs, n, file_size, &lay, why, sizeof why);
+    CHECK(rc == MMA_REFUSED, "%s: rc %d, want MMA_REFUSED", label, rc);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+}
+
+/* D's end wraps past 2^64 onto __LINKEDIT's start. */
+static void poke_vm_wrap(uint8_t *b) {
+    mi_image im;
+    struct segment_command_64 *d, *l;
+    if (mi_wrap(b, RMF_SIZE, &im) != 0) return;
+    if (!(d = mi_find_segment(&im, "__DATA")) || !(l = mi_find_segment(&im, "__LINKEDIT"))) return;
+    d->vmsize = (uint64_t)0 - 0x2000;
+    l->vmaddr = d->vmaddr + d->vmsize;
+}
+
+static void test_layout_refuses_ends_that_wrap(void) {
+    const uint64_t top = (uint64_t)0 - 0x1000;
+    mma_seg s[3];
+    refused_layout(RMF_PLAIN, poke_vm_wrap, RMF_SIZE, "in memory, does not end where", "D's vm end wraps");
+    s[0] = seg_of("__TEXT", 0, 0x1000, 0, 0x1000);
+    s[1] = seg_of("__DATA", 0, top, 0x3000, top);
+    s[2] = seg_of("__LINKEDIT", top, 0x1000, 0x2000, 0x200);
+    refused_segs(s, 3, 0x2200, "file offset", "D's file end wraps");
+    s[1] = seg_of("__DATA", 0x1000, 0x1000, 0x2000, 0x1000);
+    s[2] = seg_of("__LINKEDIT", 0x2000, 0x1000, 0x3000, top);
+    refused_segs(s, 3, 0x2000, "the image is 0x2000 bytes", "__LINKEDIT's file end wraps");
+    s[1] = seg_of("__DATA", 0x1000, 0x100001000ULL, 0x1000, 0x1000);
+    s[2] = seg_of("__LINKEDIT", 0x100002000ULL, 0x1000, 0x2000, 0x200);
+    refused_segs(s, 3, 0x2200, "zero fill", "4GB of zero fill");
+}
+
+static void test_layout_refuses_a_segment_above_linkedit(void) {
+    mma_layout lay;
+    char why[256] = "";
+    mma_seg s[4];
+    int rc;
+    s[0] = seg_of("__TEXT", 0, 0x1000, 0, 0x1000);
+    s[1] = seg_of("__HIGH", 0x10000, 0x1000, 0, 0);
+    s[2] = seg_of("__DATA", 0x1000, 0x1000, 0x1000, 0x1000);
+    s[3] = seg_of("__LINKEDIT", 0x2000, 0x1000, 0x2000, 0x200);
+    refused_segs(s, 4, 0x2200, "above __LINKEDIT", "a segment above __LINKEDIT in vm");
+    s[1] = seg_of("__LOW", 0x800, 0x800, 0, 0);
+    rc = mma_layout_check(s, 4, 0x2200, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK, "a segment ending where D begins: rc %d (%s)", rc, why);
+}
+
+static void test_layout_names_why_there_is_no_room(void) {
+    mma_seg s[1];
+    s[0] = seg_of("__LINKEDIT", 0x2000, 0x1000, 0x2000, 0x200);
+    refused_segs(s, -1, 0x2200, "more than 64 segments", "too many segments");
+    refused_segs(s, 1, 0x2200, "no segment before __LINKEDIT", "__LINKEDIT alone");
+    refused_segs(s, 0, 0x2200, "has no __LINKEDIT", "no segments");
+}
+
+static void append_lc(uint8_t *b, const void *lc, uint32_t size) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    memcpy(b + sizeof *h + h->sizeofcmds, lc, size);
+    h->ncmds++;
+    h->sizeofcmds += size;
+}
+
+static struct dyld_info_command *info_of(uint8_t *b) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    uint8_t *p = b + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++, p += ((struct load_command *)p)->cmdsize)
+        if (((struct load_command *)p)->cmd == LC_DYLD_INFO_ONLY) return (struct dyld_info_command *)p;
+    return NULL;
+}
+
+static void poke_note(uint8_t *b) {
+    struct { uint32_t cmd, cmdsize; char owner[16]; uint64_t offset, size; } n =
+        { LC_NOTE, 40, "rmf", RMF_SYMS, 8 };
+    append_lc(b, &n, sizeof n);
+}
+static void poke_atom(uint8_t *b) {
+    struct linkedit_data_command a = { LC_ATOM_INFO, sizeof a, RMF_SYMS, 8 };
+    append_lc(b, &a, sizeof a);
+}
+static void poke_info2(uint8_t *b) {
+    struct dyld_info_command d = *info_of(b);
+    append_lc(b, &d, sizeof d);
+}
+static void poke_no_info(uint8_t *b) { info_of(b)->cmd = 0x7e; }
+static void poke_rebase_low(uint8_t *b) { info_of(b)->rebase_off = RMF_TEXT; }
+static void poke_rebase_past(uint8_t *b) { info_of(b)->rebase_size = RMF_SIZE; }
+
+static void refused_insert(void (*poke)(uint8_t *), const char *want, const char *label) {
+    inserted o;
+    char why[256] = "";
+    int rc = insert_into(RMF_PLAIN, poke, &o, why, sizeof why);
+    CHECK(rc == MMA_REFUSED, "%s: rc %d, want MMA_REFUSED", label, rc);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+    free(o.b);
+}
+
+static void test_insert_refusals(void) {
+    refused_insert(poke_note, "LC_NOTE carries a file offset", "an LC_NOTE");
+    refused_insert(poke_atom, "LC_ATOM_INFO carries a file offset", "an LC_ATOM_INFO");
+    refused_insert(poke_info2, "2 LC_DYLD_INFO", "two LC_DYLD_INFO_ONLY");
+    refused_insert(poke_no_info, "no LC_DYLD_INFO", "no LC_DYLD_INFO");
+    refused_insert(poke_rebase_low, "not in __LINKEDIT", "a rebase stream below __LINKEDIT");
+}
+
+/* mma_insert against a real layout with one field made hostile. */
+static void refused_direct(void (*spoil)(mma_layout *, uint64_t *, uint64_t *, uint32_t *),
+                           const char *want, const char *label) {
+    mi_image im;
+    mma_layout lay;
+    uint64_t s = MMA_PAGE, lists_len = sizeof LISTS;
+    uint32_t r = sizeof STREAM;
+    uint8_t *out = NULL;
+    size_t outsz = 0;
+    char why[256] = "";
+    int rc = layout_of(RMF_PLAIN, NULL, RMF_SIZE, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK, "%s: layout rc %d (%s)", label, rc, why);
+    if (rc != MMA_OK || mi_wrap(fx, RMF_SIZE, &im) != 0) return;
+    spoil(&lay, &s, &lists_len, &r);
+    rc = mma_insert(&im, &lay, LISTS, lists_len, s, STREAM, r, &out, &outsz, why, sizeof why);
+    CHECK(rc == MMA_REFUSED && !out, "%s: rc %d, want MMA_REFUSED", label, rc);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+    free(out);
+}
+static void spoil_z(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->z = (uint64_t)0 - 0x3000;
+}
+static void spoil_s(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)n; (void)r; *s = (uint64_t)0 - 0x1000;
+}
+static void spoil_insert(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)s; (void)n; (void)r; l->insert = RMF_SIZE + 0x1000;
+}
+static void spoil_4gb(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)n; (void)r; *s = 0xfffff000u;
+}
+static void spoil_page(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)n; (void)r; *s = 0x800;
+}
+static void spoil_lists(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)r; *n = *s + 1;
+}
+static void spoil_r(mma_layout *l, uint64_t *s, uint64_t *n, uint32_t *r) {
+    (void)l; (void)s; (void)n; *r = 12;
+}
+
+/* Last in main: before the guards they test, each of these wrote past a buffer. */
+static void test_insert_refuses_what_would_overrun(void) {
+    refused_insert(poke_vm_wrap, "in memory, does not end where", "an insert after D's vm end wraps");
+    refused_insert(poke_rebase_past, "past the end of the file", "a rebase stream past the file");
+    refused_direct(spoil_z, "internal error", "4GB of zero fill");
+    refused_direct(spoil_s, "internal error", "a 4GB list area");
+    refused_direct(spoil_insert, "internal error", "an insertion past the file");
+    refused_direct(spoil_4gb, "the image would pass 4GB", "an image that would pass 4GB");
+    refused_direct(spoil_page, "internal error", "a list area not whole pages");
+    refused_direct(spoil_lists, "internal error", "lists longer than their area");
+    refused_direct(spoil_r, "internal error", "a stream not a multiple of 8");
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -690,9 +868,14 @@ int main(void) {
     test_insert_makes_the_zero_fill_file_bytes();
     test_insert_grows_linkedit_vm_to_cover_its_file_bytes();
     test_insert_never_grows_the_header();
+    test_layout_refuses_ends_that_wrap();
+    test_layout_refuses_a_segment_above_linkedit();
+    test_layout_names_why_there_is_no_room();
+    test_insert_refusals();
     test_a_selref_rebased_both_ways_still_resolves_as_pointer();
     test_an_imp_resolving_to_address_0_is_refused();
     test_an_unbased_image_names_its_own_refusal();
+    test_insert_refuses_what_would_overrun();
 
     if (fails) {
         printf("%d failure(s)\n", fails);

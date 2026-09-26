@@ -95,7 +95,8 @@ enum {
     RMF_SEGAFTER = 1u << 22, /* a segment __EXTRA follows __LINKEDIT */
     RMF_CODESIG  = 1u << 23, /* LC_CODE_SIGNATURE over the last RMF_CODESIG_SIZE bytes */
     RMF_SPLIT    = 1u << 24, /* LC_SEGMENT_SPLIT_INFO over 8 bytes at RMF_SPLIT_BLOB */
-    RMF_PAD16    = 1u << 25  /* an LC_RPATH fills the header to RMF_PAD bytes of pad */
+    RMF_PAD16    = 1u << 25  /* an LC_RPATH fills the header to RMF_PAD bytes of pad;
+                              * ignored with RMF_DYLIB, which already does */
 };
 
 /* __DATA's segment index, which rebase and bind opcodes name. */
@@ -384,7 +385,7 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         for (uint32_t i = 0; i < RMF_CODESIG_SIZE; i++) b[RMF_CODESIG_BLOB + i] = (uint8_t)(0x80 + i);
     }
     if (v & RMF_DYLIB)  rmf_fill(b, &at, LC_ID_DYLIB, 24, "/rmf/librmf.dylib");
-    if (v & RMF_PAD16)  rmf_fill(b, &at, LC_RPATH, 12, "/rmf/rpath");
+    if ((v & RMF_PAD16) && !(v & RMF_DYLIB)) rmf_fill(b, &at, LC_RPATH, 12, "/rmf/rpath");
     return RMF_SIZE;
 }
 
