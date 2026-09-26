@@ -63,7 +63,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c)
 target_include_directories(drydockcore PUBLIC src)
 target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
@@ -276,6 +276,13 @@ add_test(NAME linkedit_test COMMAND linkedit_test)
 # Hermetic tests for src/relations.c: hand-built images, no fixture file, so
 # liveness never depends on what the host linker emits -- the dependence that
 # made cli_test's build-version fixtures pass here and fail on the cross runner.
+add_executable(linkedit_order_test tests/linkedit_order_test.c)
+target_compile_options(linkedit_order_test PRIVATE -O2 -Wall -Wextra -Wno-unused-function)
+target_link_libraries(linkedit_order_test PRIVATE drydockcore)
+add_test(NAME linkedit_order_test COMMAND linkedit_order_test
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(linkedit_order_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
 add_executable(relations_test tests/relations_test.c)
 target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(relations_test PRIVATE drydockcore)
