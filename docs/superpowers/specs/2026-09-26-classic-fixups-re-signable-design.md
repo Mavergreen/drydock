@@ -7,6 +7,14 @@ documentation gap"). This spec measures what 10.9's tool requires, finds
 every Drydock statement that breaks it, and designs one fix for all of them.
 Nothing here is implemented yet.
 
+*Revised 2026-09-26 again while its plan was written: every rule below
+was implemented and held to 10.9's own tool on 48 hand-built variants
+(`docs/superpowers/plans/2026-09-26-classic-fixups-re-signable.md`), and
+four claims changed. A piece with data at `dataoff` 0 never reaches the
+writer; a string table without symbols is always written corrupt; two more
+layouts make the pass decline; and a slice without `LC_DYSYMTAB` needs its
+symbol table 16-aligned. Each is marked "(plan)" below.*
+
 *Revised 2026-09-26 after an independent review. The review reproduced the
 evidence and made the verifier exact: it now mirrors the tool rule for rule,
 and simulates the tool's writer instead of approximating it. It also closed
@@ -377,9 +385,15 @@ the size it names:
 **What the pass writes:**
 
 - **Each piece keeps its bytes and its size.** The pass concatenates the
-  pieces in order. It adds only two kinds of padding:
+  pieces in order. It adds only three kinds of padding:
   - the 8-rounding of rule 3, and only where the input already had it;
-  - zeros up to the 16-byte boundary before the signature.
+  - zeros up to the 16-byte boundary before the signature;
+  - (plan) in a slice without `LC_DYSYMTAB` that has a signature, zeros up
+    to the 16-byte boundary before the symbol table. That branch of the
+    writer starts the symbol table at `P = signature − rnd16(symbols +
+    strings)`, which is where it lies only if it is 16-aligned. MEASURED:
+    `mkrelmeth codesig+split` after `objc-methods`, packed without it,
+    re-signs corrupt.
 - **A zero-size piece keeps its offset when that offset already passes
   the rules**, so an image in order stays byte-identical. An empty
   dyld-info stream at 0, or a split-info, function-starts or data-in-code
@@ -422,7 +436,14 @@ it cannot account for every byte it would move:
 - a load command carries a file offset the pass does not know: `LC_NOTE`,
   `LC_ATOM_INFO`, the function-variant commands, or any command
   `ml_each_off` does not cover that is not known to carry none;
-- growing `vmsize` would overlap the next segment.
+- growing `vmsize` would overlap the next segment;
+- (plan) the slice has a signature and an `LC_DYSYMTAB`, and `__LINKEDIT`'s
+  `fileoff` is not a multiple of 16. The writer rounds the sum of the sizes
+  where the order rounds the offset, so no layout would survive;
+- (plan) the dyld info has weak-bind, lazy-bind and export opcodes but no
+  rebase or bind opcodes. Rule 1 then wants the export trie first, but the
+  writer copies the block from the first stream by *field*, the weak-bind
+  opcodes, so no layout both passes and survives.
 
 A decline is reported. Whether the run is then refused is Decision 6's
 rule, not the pass's.
@@ -550,11 +571,16 @@ The rules:
    offset**, **every piece it does not write ends at or before `P`**, and
    the signature's destination equals its `dataoff`. This covers, exactly:
    - a hole the 16-rounding absorbs (passes) and one it does not (fails);
-   - a string table with `nsyms == 0` (passes when it ends at or before
-     `P`);
-   - a split-info, function-starts or data-in-code piece with `dataoff ==
-     0` and non-zero `datasize` (fails in the `LC_DYSYMTAB` branch: it is
-     copied from offset 0);
+   - a string table with `nsyms == 0`. (plan) MEASURED: always corrupt.
+     The order rules put it last, where the writer, which neither counts
+     nor writes it, lands something else or nothing, even when the
+     16-rounding keeps `P` where it was (`nsyms-0-short-strtab`);
+   - (plan) a split-info, function-starts or data-in-code piece with
+     `dataoff == 0` and non-zero `datasize` never reaches the writer. The
+     load-command loop refuses it first: it overlaps the Mach-O headers
+     (MEASURED, `fstarts-dataoff-0`). The simulation compares bytes where
+     the load commands say, so it would also call that case harmless: the
+     header copied into an unreferenced gap;
    - an image without `LC_DYSYMTAB`, where only the symbol and string
      tables move, and a hole elsewhere is harmless (the review's `nd.in`).
 
@@ -567,8 +593,10 @@ Where it is used:
 
 - **As `mlo_pack`'s postcondition, on all findings.**
   - The output must not be `corrupting`.
-  - Every order rule must pass. The only findings the pass may leave are
-    unknown commands, which it cannot remove, and header room. An image
+  - Every order rule must pass. (plan) The pass cures where the pieces lie
+    and nothing else, so the refusals it may leave are the ones the input
+    already had that are not about order: an unknown command, a duplicate,
+    a missing `LC_ID_DYLIB`, header room. An image
     that still carries a chained-fixups or exports-trie blob cannot pass
     862's walk, so for it the postcondition checks instead that the pieces
     lie contiguous in Decision 2's order, with those blobs in 1035's
@@ -632,7 +660,8 @@ is a property of the file.
   `resign 10.9: ok`, or `resign 10.9: slice x86_64h: unknown load command 4
   (LC_DYLD_CHAINED_FIXUPS)`. Every slice is covered, including slices the
   run skipped and 32-bit slices. `mlo_check` does not model a 32-bit slice,
-  so the verdict says `slice i386: not checked (32-bit)` rather than guess.
+  so the verdict says `not checked: slice i386 is not a 64-bit Mach-O`
+  rather than guess.
 - **The edit report** carries the whole-file line only under Decision 6's
   condition: when the pass changed a slice, or the run is refused.
 - **Port flows (README):** 10.9 runs only the x86_64 slice. When another
@@ -699,8 +728,8 @@ in the review, and (source), taken from the source. M1's oracle confirms the
 | bytes after the signature, or after the string table | `link edit information does not fill …` |
 | **hole in the block, not absorbable**: 16 bytes between rebase and bind, which no rounding can hide (source; an 8-byte hole the layout did not absorb was measured corrupt) | accepts, then writes a corrupt file (`corrupting`) |
 | hole in the block, absorbed: the `gap8` layout (review) | accepts, correct (not `corrupting`) |
-| `nsyms == 0` with a string table ending at or before `P` (source) | accepts, correct: the writer does not write it |
-| function starts with `dataoff == 0`, `datasize != 0` (source) | accepts, then copies the header into the function starts (`corrupting`) |
+| `nsyms == 0` with a string table (plan; two layouts) | accepts, then writes a corrupt file (`corrupting`) |
+| function starts with `dataoff == 0`, `datasize != 0` (plan) | `malformed object (… overlaps …)` |
 | no `LC_DYSYMTAB`, 16-byte hole before function starts (review, `nd.in`) | accepts, correct |
 | `LC_TWOLEVEL_HINTS` with `nhints == 0`, `nundefsym != 0` (source) | `nhints … not the same as nundefsym` |
 | no `LC_ID_DYLIB`; `LC_ID_DYLIB` with `name.offset >= cmdsize` (source) | `no LC_ID_DYLIB` / `name.offset … extends past` |
@@ -861,9 +890,6 @@ closes.
     way.
   - A per-tool known-command list in `mlo_check` is the extension to make
     when it matters.
-- **Two simulation cases**, `nsyms == 0` with a string table, and a
-  zero-`dataoff` piece with data, are specified from source. The oracle
-  settles them in M1.
 - **A signature added to an image whose `__LINKEDIT` `fileoff` is not a
   multiple of 16.** `codesign_allocate.c:624–633` sets `filesize =
   rnd(filesize, 16) + datasize`, rounding the size where `dataoff` rounds
