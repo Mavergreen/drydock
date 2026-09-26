@@ -390,8 +390,8 @@ afterward, so no new relation bit is expected. The plan confirms that.
 ### 9. The rebase decoder is shared with objc-methods M2
 
 The raise needs every rebase target, with its type, in stream order.
-objc-methods M2's plan (`plans/2026-09-25-objc-methods-m2.md`, Task 2)
-creates `src/rebase.[ch]` with `mrb_slot {off, seg, type}` and an
+objc-methods M2 landed `src/rebase.[ch]` (da5f03a..f818638, with
+`mrb_has_type` added in bfe68ef): `mrb_slot {off, seg, type}` and an
 `mrb_decode` that bounds the segment index.
 
 That interface sees no segment geometry. So the raise itself refuses a type
