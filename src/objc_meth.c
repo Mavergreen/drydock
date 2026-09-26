@@ -332,6 +332,7 @@ static void mml_note_bind(const mo_bind_state *st, void *ctx_) {
     mml_open_ctx *c = ctx_;
     uint64_t off = st->offset;
     if (c->err || st->seg < 0 || st->seg > 255) return;
+    if (st->count > MRB_MAX_SLOTS - c->r->binds.n) { c->err = MML_MALFORMED; return; }
     for (uint64_t k = 0; k < st->count && !c->err; k++, off += 8 + st->skip)
         if (mrb_add(&c->r->binds, (uint8_t)st->seg, 0, off) != 0) c->err = MML_NOMEM;
 }
@@ -375,6 +376,11 @@ int mml_resolver_open(const mi_image *im, mml_resolver *r, char *why, size_t why
                             mml_note_bind, &c) != 0) {
             mml_resolver_close(r);
             return mml_rfail(why, whysz, MML_MALFORMED, "the bind stream does not decode");
+        }
+        if (c.err == MML_MALFORMED) {
+            mml_resolver_close(r);
+            return mml_rfail(why, whysz, MML_MALFORMED, "the bind stream binds more than %u slots",
+                             MRB_MAX_SLOTS);
         }
         if (c.err) {
             mml_resolver_close(r);

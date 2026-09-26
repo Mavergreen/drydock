@@ -67,7 +67,8 @@ typedef struct {
 } mml_resolver;
 
 /* MML_OK, or MML_MALFORMED / MML_NOMEM with why set and nothing to close.
- * An image with no LC_DYLD_INFO[_ONLY] opens with empty rebase and bind sets. */
+ * An image with no LC_DYLD_INFO[_ONLY] opens with empty rebase and bind sets;
+ * a bind stream of more than MRB_MAX_SLOTS slots is MML_MALFORMED. */
 int  mml_resolver_open(const mi_image *im, mml_resolver *r, char *why, size_t whysz);
 void mml_resolver_close(mml_resolver *r);
 

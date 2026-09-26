@@ -437,6 +437,35 @@ static void test_an_unbased_image_names_its_own_refusal(void) {
 
 static void poke_unbind(uint8_t *b) { memset(b + RMF_BIND_BLOB, 0, 0x20); }
 
+/* The selbind fixture's one bind, then MRB_MAX_SLOTS more of the next
+ * slots, in 17 bytes. */
+static void poke_bind_past_cap(uint8_t *b) {
+    uint32_t at = RMF_BIND_BLOB;
+    b[at++] = BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1;
+    b[at++] = BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM;
+    memcpy(b + at, "_x", 3);
+    at += 3;
+    b[at++] = BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER;
+    b[at++] = BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+    at += rmf_uleb(b + at, RMF_SELREFS + 8 - RMF_DATA);
+    b[at++] = BIND_OPCODE_DO_BIND;
+    b[at++] = BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB;
+    at += rmf_uleb(b + at, MRB_MAX_SLOTS);
+    at += rmf_uleb(b + at, 0);
+    b[at++] = BIND_OPCODE_DONE;
+    poke_find_dyld_info(b)->bind_size = at - RMF_BIND_BLOB;
+}
+
+static void test_a_bind_stream_past_the_slot_cap_is_refused(void) {
+    opened o;
+    int rc = open_poked(RMF_SELBIND, poke_bind_past_cap, &o);
+    CHECK(rc == MML_MALFORMED, "bind cap: resolver rc %d, want MML_MALFORMED (%s)", rc, o.why);
+    CHECK(strstr(o.why, "the bind stream binds more than 16777216 slots") != NULL,
+          "bind cap: why '%s' lacks its reason", o.why);
+    if (rc == MML_OK) mml_resolver_close(&o.r);
+    mml_walk_free(&o.w);
+}
+
 static void test_selector_references_without_a_rebase_or_bind_are_named_so(void) {
     opened o;
     int rc = open_poked(RMF_NOSLOTRB, NULL, &o);
@@ -1548,6 +1577,7 @@ int main(void) {
     test_a_selref_rebased_both_ways_still_resolves_as_pointer();
     test_an_imp_resolving_to_address_0_is_refused();
     test_an_unbased_image_names_its_own_refusal();
+    test_a_bind_stream_past_the_slot_cap_is_refused();
     test_insert_refuses_what_would_overrun();
     test_build_refuses_what_would_overrun();
 
