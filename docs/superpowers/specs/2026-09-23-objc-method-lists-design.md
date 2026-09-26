@@ -3,7 +3,7 @@
 Item 13 capability 6 (`docs/superpowers/QUEUE.md`, "## Item 13"). The queue
 calls it "not a statement, a subsystem". This spec designs the whole
 subsystem and splits it into four milestones. Each one ships working, tested
-software. Milestone 1 has landed (439e1cc..9082c8f).
+software. Milestones 1 and 2 have landed (439e1cc..9082c8f, da5f03a..f818638).
 
 ## Why
 
@@ -418,6 +418,8 @@ how many?" on any classic image. **Landed: 439e1cc..9082c8f.**
   `tests/cli_test.sh`, and `tests/script_test.c`'s
   `test_disturbs_matches_the_spec_table`.
 
+**Landed: da5f03a..f818638.**
+
 **M3: prove it on 10.9.** A new mode, `mkrelmeth relativize IN OUT`, rewrites
 a real 10.9-linked Objective-C program's absolute lists into relative ones.
 The program is `tests/relmeth_prog.m`: a class, a class method, a category and
@@ -495,6 +497,20 @@ on 510 images in `/Applications`, `~/Downloads` and the system frameworks:
   D is `__DATA`, segment 2, writable, ending where `__LINKEDIT` begins in
   vm and in file, and `__LINKEDIT` ends the file. The conversion adds 267,
   1,950 and 372 rebases. So in these app-side images `name` is never direct.
+- **The statement converts all three** (M2's last task). `fixups set
+  classic` then `objc-methods set absolute`, in one script, on each
+  original framework: exit 0, the statement's own verification passed,
+  `info` then counts 0 relative and 32, 143 and 27 absolute lists,
+  `drydock-macho-rewrite verify` says OK, and a second reader written
+  apart from `src/` reads every slot's methods the same, in the same
+  order, before and after. `__DATA` grew 4,096, 20,480 and 4,096 bytes.
+  `__LINKEDIT`'s vmsize grew on ReactiveObjC (0x15000 to 0x19000) and
+  Squirrel (0xd000 to 0xe000), because the rewritten rebase stream
+  outgrew it. Nothing converted has run on 10.9 yet: that is M3.
+- **Re-signing is as Decision 1 says** (QUEUE item 30). 10.9's
+  `codesign --force --sign -` refuses Mantle before the conversion
+  ("dyld_info out of place") and after it ("code signature data out of
+  place").
 
 **Still to validate:**
 
