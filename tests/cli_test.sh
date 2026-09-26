@@ -5235,6 +5235,35 @@ lo "$T/lk_h0" "$T/lk_h0.out" 'rpath append /x'
     && ok "order: a corrupting, aligned empty-strtab image (h0) is still repaired" \
     || bad "order: h0 repaired" "rc $lo_rc: $(cat "$T/lo.err")"
 
+# Fat: every slice counts, selected or not.
+"$BIN/makefat" "$T/lk_fat" "$T/lk_canonical" 0x1000007 3 12 "$T/lk_hole-16" 0x1000007 8 12
+lo "$T/lk_fat" "$T/lk_fat.out" 'arch x86_64' 'load-command delete codesig'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_fat.out" ] \
+    && grep -q 'slice x86_64h: .*would not survive' "$T/lo.err" \
+    && grep -q 'run the script without arch, or on that slice' "$T/lo.err" \
+    && ok "order: an unselected slice that would re-sign corrupt refuses the run, naming it" \
+    || bad "order: fat corrupt slice" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_fat" "$T/lk_fat.all" 'load-command delete codesig'
+[ "$lo_rc" -eq 0 ] && grep -q "slice x86_64h: __LINKEDIT re-packed" "$T/lo.err" \
+    && [ "$(resign "$T/lk_fat.all")" = ok ] \
+    && ok "order: ... and without arch, each slice is packed and the file re-signs" \
+    || bad "order: fat packed" "rc $lo_rc, resign [$(resign "$T/lk_fat.all")]: $(cat "$T/lo.err")"
+"$BIN/makefat" "$T/lk_fat4" "$T/lk_bind-first-dep" 0x1000007 3 12 "$T/lk_note" 0x1000007 8 12
+lo "$T/lk_fat4" "$T/lk_fat4.out" 'arch x86_64' 'dylib insert /usr/lib/libz.1.dylib'
+[ "$lo_rc" -eq 0 ] && grep -q "slice x86_64: __LINKEDIT re-packed" "$T/lo.err" \
+    && grep -q "resign 10.9: slice x86_64h: malformed object (unknown load command 8)" "$T/lo.err" \
+    && ok "order: when a slice is packed, the report says what still stops 10.9, whole-file" \
+    || bad "order: fat report" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# An empty script (arch-restricted to the one slice that needs a repack) still
+# packs that slice; the per-slice report must not also claim the slice
+# disturbed nothing, which the pack itself makes false.
+lo "$T/lk_fat" "$T/lk_fat_empty.out" 'arch x86_64h'
+[ "$lo_rc" -eq 0 ] && grep -q "slice x86_64h: __LINKEDIT re-packed" "$T/lo.err" \
+    && ! grep -q 'disturbed nothing' "$T/lo.err" \
+    && ok "order: a fat slice that packs under an empty script does not also claim it disturbed nothing" \
+    || bad "order: fat pack no disturb-nothing" "rc $lo_rc: $(cat "$T/lo.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

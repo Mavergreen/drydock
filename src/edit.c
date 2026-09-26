@@ -879,6 +879,7 @@ typedef struct {
     uint32_t last;                   /* the last selected slice, in arch-table order */
     mr_hits *hits;
     int *renamed;
+    int packed;                      /* the pass changed some slice */
 } me_fat_ctx;
 
 static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
@@ -903,8 +904,24 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
      * slice that disturbed nothing skips its own verify whatever its
      * neighbours did. */
     unsigned disturbed = MREL_NONE;
+    size_t osize = *psize;
+    uint8_t *orig = (uint8_t *)malloc(osize ? osize : 1);
+    if (!orig) {
+        me_say(c->log, "drydock-macho-rewrite edit: out of memory; ");
+        me_say_left(c->log, c->path, c->out);
+        return MR_FAIL;
+    }
+    memcpy(orig, *pbuf, osize);
     int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
                            c->hits, c->renamed, index == c->last, name, &disturbed);
+    int packed = 0;
+    if (rc == 0) {
+        char label[48];
+        snprintf(label, sizeof label, "slice %s", name);
+        rc = me_pack(pbuf, psize, orig, osize, label, c->path, c->out, c->log, &packed);
+        if (packed) c->packed = 1;
+    }
+    free(orig);
     if (rc != 0) return rc;
     /* Each slice's own final verification, on the same derived terms as a thin
      * file's: whenever anything it checks was disturbed, and then never
@@ -919,7 +936,7 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     } else {
         char what[64];
         snprintf(what, sizeof what, "slice %s", name);
-        me_say_not_rechecked(c->log, what, disturbed, 0);
+        me_say_not_rechecked(c->log, what, disturbed, packed);
     }
     *changed = 1;
     return 0;
@@ -1064,7 +1081,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         return rc;
     }
 
-    me_fat_ctx ctx = { s, path, out, log, selected, last, hits, renamed };
+    me_fat_ctx ctx = { s, path, out, log, selected, last, hits, renamed, 0 };
     int modified = 0;
     rc = mfat_rewrite(&buf, &size, narch, swap, me_fat_slice, me_fat_placed, &ctx, &modified);
     /* me_fat_slice sets *changed for every selected slice, so *modified is
@@ -1087,6 +1104,10 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     if (mfat_parse(buf, size, &narch, &swap) != 0) {
         me_say(log, "drydock-macho-rewrite edit: the reassembled %s fails validation; ", path);
         me_say_left(log, path, out);
+        free(buf);
+        return MR_REFUSED;
+    }
+    if (me_resign(buf, size, path, out, s, ctx.packed, log) != 0) {
         free(buf);
         return MR_REFUSED;
     }
