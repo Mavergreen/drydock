@@ -5205,6 +5205,36 @@ lo "$T/lk_hole-16" "$T/lk_hole_empty.out"
     && ok "order: an empty script that still packs says nothing false about disturbing nothing" \
     || bad "order: empty script pack" "rc $lo_rc: $(cat "$T/lo.err")"
 
+# A signed, static LC_DYSYMTAB image with an empty string table: no layout
+# survives it, so the pass declines instead of failing a postcondition
+# (c1, c2). The same shape aligned so a layout DOES survive still packs
+# (c3, h0) -- the decline must key on the packed result, not the shape alone.
+"$T/mklinkedit" raw "rebase bind weak lazy export +4 fstarts dic drs symtab +16 indirect:8 strtab:0 sig" \
+    20 "$T/lk_c2"
+"$T/mklinkedit" raw "rebase bind weak lazy export +4 fstarts dic drs:12 symtab indirect strtab:0 sig" \
+    20 "$T/lk_c1"
+"$T/mklinkedit" raw "rebase bind weak lazy export fstarts dic drs symtab indirect strtab:0 @16 sig" \
+    20 "$T/lk_c3"
+"$T/mklinkedit" raw "rebase +16 bind weak lazy export fstarts dic drs symtab indirect strtab:0 @16 sig" \
+    20 "$T/lk_h0"
+lo "$T/lk_c2" "$T/lk_c2.out" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && [ -e "$T/lk_c2.out" ] && grep -q '__LINKEDIT not re-packed:' "$T/lo.err" \
+    && ok "order: an unpackable empty-strtab image (c2) declines and is still written" \
+    || bad "order: c2 declines" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_c1" "$T/lk_c1.out" 'rpath append /x'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_c1.out" ] && grep -q '__LINKEDIT not re-packed:' "$T/lo.err" \
+    && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
+    && ok "order: an unpackable, corrupting empty-strtab image (c1) is refused (1)" \
+    || bad "order: c1 refused" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_c3" "$T/lk_c3.out" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_c3.out")" = ok ] \
+    && ok "order: an aligned empty-strtab image (c3) still packs, not declines" \
+    || bad "order: c3 packs" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_h0" "$T/lk_h0.out" 'rpath append /x'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_h0.out")" = ok ] \
+    && ok "order: a corrupting, aligned empty-strtab image (h0) is still repaired" \
+    || bad "order: h0 repaired" "rc $lo_rc: $(cat "$T/lo.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

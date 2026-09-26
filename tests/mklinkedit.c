@@ -2,6 +2,8 @@
  * for tests/codesign_order_test.sh.
  *   mklinkedit list              every variant: NAME TAB corrupting TAB tool
  *   mklinkedit make NAME OUT
+ *   mklinkedit raw LAYOUT OPTS OUT   an unnamed lkf_build layout, for a CLI
+ *                                    regression pin not worth an oracle-swept variant
  *   mklinkedit pieces FILE       NAME OFFSET SIZE per non-empty piece of a thin
  *                                64-bit file, the signature included (as "sig"),
  *                                read apart from src/ */
@@ -89,6 +91,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "mklinkedit: no variant '%s'\n", argv[2]);
         return 2;
     }
-    fprintf(stderr, "usage: mklinkedit list | make NAME OUT | pieces FILE\n");
+    if (argc == 5 && strcmp(argv[1], "raw") == 0) {
+        size_t n = lkf_build(buf, argv[2], (unsigned)strtoul(argv[3], NULL, 0));
+        FILE *f = fopen(argv[4], "wb");
+        if (!n || !f || fwrite(buf, 1, n, f) != n) return 2;
+        return fclose(f) == 0 ? 0 : 2;
+    }
+    fprintf(stderr, "usage: mklinkedit list | make NAME OUT | raw LAYOUT OPTS OUT | pieces FILE\n");
     return 2;
 }

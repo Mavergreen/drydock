@@ -441,14 +441,9 @@ static void test_the_pass_declines_load_commands_in_linkedit(void) {
     free(buf);
 }
 
-/* A signed, static (non-MH_DYLDLINK) image with LC_DYSYMTAB and an empty
- * string table: checkout.c's symbol_string_at_end counts the string table as
- * no bytes but still expects the indirect table's end at the gap a rounded
- * signature leaves for it, which the pass's placement of an empty piece at
- * offset 0 cannot reproduce. No layout survives it, so the pass must decline
- * (fuzz-found; it used to fail a postcondition instead). */
+/* Fuzz-found: no layout survives a signed, static LC_DYSYMTAB image with an
+ * empty string table, so the pass must decline it, not fail a postcondition. */
 static void test_the_pass_declines_empty_strtab_outside_dyldlink(void) {
-    /* Not corrupting as given: a decline must leave it alone, safe to write. */
     uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
     size_t n = lkf_build(buf, "rebase bind weak lazy export +4 fstarts dic drs symtab +16 "
                          "indirect:8 strtab:0 sig", LKF_EXECUTE | LKF_STATIC);
@@ -465,8 +460,7 @@ static void test_the_pass_declines_empty_strtab_outside_dyldlink(void) {
     free(copy);
     free(buf);
 
-    /* Corrupting as given (a stale DRS size): still a decline, not a failed
-     * postcondition -- so the CLI can refuse it (exit 1), not error (exit 2). */
+    /* Corrupting as given (a stale DRS size): still a decline, not a failure. */
     buf = (uint8_t *)malloc(LKF_CAP);
     n = lkf_build(buf, "rebase bind weak lazy export +4 fstarts dic drs:12 symtab indirect "
                   "strtab:0 sig", LKF_EXECUTE | LKF_STATIC);
@@ -476,6 +470,17 @@ static void test_the_pass_declines_empty_strtab_outside_dyldlink(void) {
     rc = pack(&buf, &n, &r, why);
     CHECK(rc == MLO_DECLINED && strstr(why, "string table"),
           "empty-strtab static signed, stale drs: declined, not failed (got %d: %s)", rc, why);
+    free(buf);
+
+    /* A zero-count indirect table hits a different symbol_string_at_end
+     * message for the same defect; it must decline too. */
+    buf = (uint8_t *)malloc(LKF_CAP);
+    n = lkf_build(buf, "rebase bind +4 weak lazy export:12 fstarts:4 dic drs symtab @16 "
+                  "indirect:0 strtab:0 sig", LKF_EXECUTE | LKF_STATIC);
+    why[0] = 0;
+    rc = pack(&buf, &n, &r, why);
+    CHECK(rc == MLO_DECLINED && strstr(why, "string table"),
+          "empty-strtab static signed, zero indirect: declined (got %d: %s)", rc, why);
     free(buf);
 }
 

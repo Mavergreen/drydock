@@ -557,12 +557,7 @@ static void me_note_disturbed(unsigned *disturbed, const ms_stmt *st,
  * the verify now conditional, "why was my file not verified?" is a question
  * the line itself has to answer. Names come from mrel_name, so a relation
  * cannot be renamed in one place and reported under the old name here.
- *
- * `packed` is whether the __LINKEDIT pass changed the image: when it did,
- * "disturbed nothing" would be false (the pack is not one of the relations
- * this tracks, but it is still a change), so that claim is skipped -- the
- * re-packed line already said what happened, and the pack itself is not
- * something mg_plausible re-checks either way. */
+ * `packed` skips the "disturbed nothing" claim, which a pack would make false. */
 static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed, int packed) {
     char names[160];   /* every name src/relations.h has, joined, with slack */
     size_t used = 0;
@@ -803,16 +798,13 @@ static int me_pack(uint8_t **pbuf, size_t *psize, const uint8_t *orig, size_t os
 
 /* Before the write: refuse a file some slice of which codesign_allocate
  * would re-sign corrupt, and say whether 10.9 can re-sign the file whenever
- * the pass changed a slice or the run is refused (Decisions 6-7). Returns 0
- * or MR_REFUSED. */
+ * the pass changed a slice or the run is refused. Returns 0 or MR_REFUSED. */
 static int me_resign(const uint8_t *buf, size_t size, const char *path, const char *out,
                      const ms_script *s, int packed, FILE *log) {
     char refusal[256], corrupt[4096];
     int rc = mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
     if (rc == 2) {
-        /* The remedy is only for a corrupting slice `arch` did not select,
-         * which can only happen in a fat file: a thin buffer is the one
-         * slice the run already had to select to get here. */
+        /* Only a fat file can have a corrupting slice `arch` did not select. */
         uint32_t magic = size >= sizeof magic ? *(const uint32_t *)buf : 0;
         int fat = magic == FAT_MAGIC || magic == FAT_CIGAM;
         me_say(log, "%s: resign 10.9: %s\n", path, refusal);
