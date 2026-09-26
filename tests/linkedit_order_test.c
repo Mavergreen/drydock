@@ -153,6 +153,268 @@ static void test_the_file_verdict(void) {
     free(fat);
 }
 
+/* ---- the pass ---- */
+
+static int pack(uint8_t **buf, size_t *n, mlo_pack_report *r, char *why) {
+    return mlo_pack(buf, n, r, why, 256);
+}
+
+/* Every variant whose only faults are where its pieces lie comes out in
+ * order, re-signing correctly, every piece's bytes intact. */
+static void test_the_pass_puts_each_variant_in_order(void) {
+    static const char *const fixable[] = {
+        "bind-first", "gap-before-rebase", "export-inside", "gap-after-export",
+        "symtab-before-fstarts", "dic-stale", "gap-before-symtab", "strtab-first",
+        "strtab-past-rounding", "sig-off-16", "sig-late", "tail-after-sig", "tail-after-strtab",
+        "hole-16", "hole-16-unsigned", "stale-empty-rebase", "hole-absorbed", "export-last",
+        "drs-empty-stale", "weak-lazy-empty-export", "bind-first-static", "no-dysymtab-hole",
+        "no-dysymtab-unsigned-misaligned", "no-dysymtab-unsigned-drs8", "no-dysymtab-drs8" };
+    /* These have no canonical twin: a piece is empty or missing, or there is
+     * no LC_DYSYMTAB. */
+    static const char *const unlike[] = { "stale-empty-rebase", "strtab-past-rounding",
+        "drs-empty-stale", "weak-lazy-empty-export" };
+    for (size_t k = 0; k < sizeof fixable / sizeof fixable[0]; k++) {
+        const lkf_variant *w = variant(fixable[k]);
+        uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+        size_t n = lkf_make(buf, w);
+        uint8_t *before = (uint8_t *)malloc(n);
+        memcpy(before, buf, n);
+        mlo_pack_report r;
+        char why[256] = "";
+        int rc = pack(&buf, &n, &r, why);
+        CHECK(rc == MLO_PACKED, "%s: packed (got %d: %s)", w->name, rc, why);
+        mlo_verdict v;
+        check(buf, n, &v);
+        CHECK(v.refusal < 0 && !v.corrupting, "%s: in order after the pass (%s)", w->name,
+              v.refusal >= 0 ? v.f[v.refusal].text : "corrupting");
+        /* and in the canonical layout, byte for byte */
+        static uint8_t canon[LKF_CAP];
+        size_t cn = lkf_build(canon, (w->opts & LKF_NOSIG) ?
+                              "rebase bind weak lazy export fstarts dic drs symtab indirect strtab" :
+                              LKF_CANON, w->opts);
+        int twin = !(w->opts & LKF_NODYSYMTAB);
+        for (size_t j = 0; j < sizeof unlike / sizeof unlike[0]; j++)
+            if (strcmp(w->name, unlike[j]) == 0) twin = 0;
+        if (twin)
+            CHECK(n == cn && memcmp(buf, canon, n) == 0, "%s: the canonical bytes", w->name);
+        free(before);
+        free(buf);
+    }
+}
+
+static void test_the_pass_leaves_an_ordered_image_alone(void) {
+    static const char *const ordered[] = { "canonical", "canonical-unsigned", "strtab-at-rounding" };
+    for (size_t k = 0; k < sizeof ordered / sizeof ordered[0]; k++) {
+        uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+        size_t n = lkf_make(buf, variant(ordered[k]));
+        uint8_t *was = buf;
+        mlo_pack_report r;
+        char why[256] = "";
+        int rc = pack(&buf, &n, &r, why);
+        CHECK(rc == MLO_UNCHANGED && buf == was, "%s: unchanged (got %d: %s)", ordered[k], rc, why);
+        free(buf);
+    }
+    /* the repo's own fixture, which tests/EXPECTED's digest depends on */
+    mi_image im;
+    if (mi_open("tests/fixture.macho", &im) != 0) {
+        printf("FAIL: tests/fixture.macho does not open (run from the source directory)\n");
+        fails++;
+        return;
+    }
+    size_t n = im.size;
+    uint8_t *buf = mi_release(&im);
+    mlo_pack_report r;
+    char why[256] = "";
+    int rc = pack(&buf, &n, &r, why);
+    CHECK(rc == MLO_UNCHANGED, "tests/fixture.macho: unchanged (got %d: %s)", rc, why);
+    free(buf);
+}
+
+/* A zero-size piece keeps a zero offset, and a stale one is set where
+ * ld64 puts it. */
+static void test_the_pass_places_empty_pieces(void) {
+    uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+    size_t n = lkf_make(buf, variant("dic-stale"));
+    mlo_pack_report r;
+    char why[256];
+    pack(&buf, &n, &r, why);
+    struct linkedit_data_command *dic = lkf_led(buf, LKF_LC_DIC);
+    struct linkedit_data_command *drs = lkf_led(buf, LKF_LC_DRS);
+    CHECK(dic->dataoff == drs->dataoff, "an empty data in code at the running offset (0x%x, 0x%x)",
+          dic->dataoff, drs->dataoff);
+    free(buf);
+    buf = (uint8_t *)malloc(LKF_CAP);
+    n = lkf_build(buf, "bind rebase weak lazy export fstarts dic drs symtab indirect strtab @16 sig", 0);
+    lkf_led(buf, LKF_LC_DIC)->dataoff = 0;
+    pack(&buf, &n, &r, why);
+    CHECK(lkf_led(buf, LKF_LC_DIC)->dataoff == 0, "an empty data in code at 0 stays at 0");
+    free(buf);
+    buf = (uint8_t *)malloc(LKF_CAP);
+    n = lkf_make(buf, variant("stale-empty-rebase"));
+    pack(&buf, &n, &r, why);
+    CHECK(lkf_di(buf)->rebase_off == 0 && lkf_di(buf)->bind_off == LKF_LE,
+          "a stale empty rebase stream gets offset 0 (rebase 0x%x, bind 0x%x)",
+          lkf_di(buf)->rebase_off, lkf_di(buf)->bind_off);
+    free(buf);
+}
+
+/* The 8-rounding after an odd indirect table stays where the input had it,
+ * and the report counts what was dropped. */
+static void test_the_pass_keeps_the_rounding(void) {
+    uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+    size_t n = lkf_build(buf, "bind rebase weak lazy export fstarts dic drs symtab indirect @8 "
+                         "strtab @16 sig", 0);
+    mlo_pack_report r;
+    char why[256];
+    int rc = pack(&buf, &n, &r, why);
+    struct symtab_command *st = lkf_st(buf);
+    struct dysymtab_command *dy = lkf_dy(buf);
+    uint32_t ind_end = dy->indirectsymoff + dy->nindirectsyms * 4;
+    CHECK(rc == MLO_PACKED && st->stroff == ((ind_end + 7) & ~7u) && st->stroff != ind_end,
+          "the string table stays at the 8-rounding (0x%x after 0x%x)", st->stroff, ind_end);
+    free(buf);
+    buf = (uint8_t *)malloc(LKF_CAP);
+    n = lkf_make(buf, variant("hole-16"));
+    rc = pack(&buf, &n, &r, why);
+    CHECK(rc == MLO_PACKED && r.before == 0x110 && r.after == 0x100 && r.dropped == 0x14,
+          "the report: 0x%llx -> 0x%llx, 0x%llx dropped", (unsigned long long)r.before,
+          (unsigned long long)r.after, (unsigned long long)r.dropped);
+    free(buf);
+}
+
+/* Each thing the pass cannot account for, and the image left alone. */
+static void test_the_pass_declines(void) {
+    static const struct { const char *variant, *why; } no[] = {
+        { "note", "may name a range of the file the pass does not know" },
+        { "fvmfile", "may name a range of the file the pass does not know" },
+        { "two-fstarts", "more than one of the function starts" },
+        { "fstarts-dataoff-0", "the function starts lies outside __LINKEDIT" },
+        { "no-rebase-no-bind", "which codesign_allocate cannot lay out" },
+        { "nsyms-0", "a string table but no symbols" },
+        { "no-dysymtab-linkedit-short-hole", "__LINKEDIT does not end the file" },
+    };
+    for (size_t k = 0; k < sizeof no / sizeof no[0]; k++) {
+        uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+        size_t n = lkf_make(buf, variant(no[k].variant));
+        uint8_t *copy = (uint8_t *)malloc(n);
+        memcpy(copy, buf, n);
+        uint8_t *was = buf;
+        size_t n0 = n;
+        mlo_pack_report r;
+        char why[256] = "";
+        int rc = pack(&buf, &n, &r, why);
+        CHECK(rc == MLO_DECLINED && strstr(why, no[k].why) && buf == was && n == n0 &&
+              memcmp(buf, copy, n) == 0, "%s: declined (got %d: %s)", no[k].variant, rc, why);
+        free(copy);
+        free(buf);
+    }
+    /* and the layout checks, on an image made to fail each */
+    struct { const char *what, *why; } lay[] = {
+        { "a piece outside __LINKEDIT", "lies outside __LINKEDIT" },
+        { "overlapping pieces", "overlaps" },
+        { "__LINKEDIT not ending the file", "__LINKEDIT does not end the file" },
+        { "a section in __LINKEDIT", "lies in __LINKEDIT" },
+        { "a section with relocations", "has relocation entries" },
+        { "__LINKEDIT's vmsize would overlap", "would overlap __DATA" },
+        { "a signed __LINKEDIT not 16-aligned", "is not a multiple of 16" },
+        { "load commands past their size", "not a readable 64-bit Mach-O" },
+        { "an unsigned __LINKEDIT not 16-aligned", "even in codesign_allocate's order" },
+    };
+    for (int k = 0; k < 9; k++) {
+        uint8_t *buf = (uint8_t *)malloc(LKF_CAP);
+        size_t n = lkf_make(buf, variant("bind-first"));
+        struct segment_command_64 *le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+        struct segment_command_64 *da = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_DATA);
+        struct section_64 *data = (struct section_64 *)(da + 1);
+        switch (k) {
+        case 0: lkf_led(buf, LKF_LC_DRS)->dataoff = 0x1100; break;
+        case 1: lkf_led(buf, LKF_LC_DRS)->dataoff = lkf_st(buf)->symoff; break;
+        case 2: le->filesize -= 16; break;
+        case 3: data->offset = LKF_LE + 0x40; break;
+        case 4: data->reloff = LKF_LE; data->nreloc = 1; break;
+        case 5: {
+            /* a bigger pack than the page, and __DATA right after it in vm */
+            uint8_t *big = (uint8_t *)realloc(buf, LKF_CAP + 0x2000);
+            buf = big;
+            n = lkf_build(buf, "bind rebase weak lazy export fstarts dic drs symtab indirect "
+                          "strtab:5000 @16 sig", 0);
+            le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+            da = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_DATA);
+            le->vmsize = 0x1000;
+            da->vmaddr = le->vmaddr + 0x1000;
+            break;
+        }
+        case 6:   /* a lie, but the pass reads only this */
+            le->fileoff -= 8;
+            le->filesize += 8;
+            break;
+        case 7: ((struct mach_header_64 *)buf)->sizeofcmds = 0x7fffffff; break;
+        case 8:   /* the same lie, where a signature the tool adds would land wrong */
+            n = lkf_make(buf, variant("canonical-unsigned"));
+            le->fileoff -= 8;
+            le->filesize += 8;
+            da->filesize -= 8;
+            break;
+        }
+        mlo_pack_report r;
+        char why[256] = "";
+        int rc = pack(&buf, &n, &r, why);
+        CHECK(rc == MLO_DECLINED && strstr(why, lay[k].why), "%s: declined (got %d: %s)",
+              lay[k].what, rc, why);
+        free(buf);
+    }
+}
+
+/* __LINKEDIT's vmsize grows to cover a longer pack, rounded to the page;
+ * and an empty piece's offset, even one past the new end, becomes 0. */
+static void test_the_pass_resizes_and_zeroes(void) {
+    uint8_t *buf = (uint8_t *)malloc(LKF_CAP + 0x2000);
+    size_t n = lkf_build(buf, "bind rebase weak lazy export fstarts dic drs symtab indirect "
+                         "strtab:5000 @16 sig", 0);
+    struct segment_command_64 *le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+    le->vmsize = 0x1000;
+    lkf_dy(buf)->locreloff = 0x9000;   /* no entries, and past the end of the file */
+    mlo_pack_report r;
+    char why[256] = "";
+    int rc = pack(&buf, &n, &r, why);
+    le = (struct segment_command_64 *)lkf_lc(buf, LKF_LC_LINKEDIT);
+    CHECK(rc == MLO_PACKED && le->vmsize == 0x2000 && le->filesize > 0x1000,
+          "a longer pack: vmsize 0x%llx for filesize 0x%llx (got %d: %s)",
+          (unsigned long long)le->vmsize, (unsigned long long)le->filesize, rc, why);
+    CHECK(lkf_dy(buf)->locreloff == 0, "an empty table's stale offset becomes 0 (got 0x%x)",
+          lkf_dy(buf)->locreloff);
+    free(buf);
+}
+
+/* ---- the observed change ---- */
+
+static void test_what_counts_as_a_change(void) {
+    static uint8_t a[LKF_CAP], b[LKF_CAP];
+    size_t na = lkf_make(a, variant("canonical"));
+    memcpy(b, a, na);
+    CHECK(!mlo_changed(a, na, b, na), "the same image: no change");
+    ((struct dylib_command *)lkf_lc(b, LKF_LC_ID))->dylib.current_version = 0x10000;
+    CHECK(!mlo_changed(a, na, b, na), "a header-only edit: no change");
+    memcpy(b, a, na);
+    b[lkf_di(b)->bind_off] ^= 1;
+    CHECK(mlo_changed(a, na, b, na), "a byte of the bind opcodes: a change");
+    memcpy(b, a, na);
+    lkf_st(b)->stroff += 1;
+    CHECK(mlo_changed(a, na, b, na), "an offset: a change");
+    memcpy(b, a, na);
+    lkf_patch(b, LKF_LC_SIG, LC_UUID);
+    CHECK(mlo_changed(a, na, b, na), "a piece gone: a change");
+    memcpy(b, a, na);
+    ((struct segment_command_64 *)lkf_lc(b, LKF_LC_LINKEDIT))->filesize += 16;
+    CHECK(mlo_changed(a, na, b, na + 16), "__LINKEDIT's filesize: a change");
+    /* A side that is not a readable image: the pass must be asked, and it
+     * declines; two such sides say nothing. */
+    memcpy(b, a, na);
+    ((struct mach_header_64 *)b)->sizeofcmds = 0x7fffffff;
+    CHECK(mlo_changed(a, na, b, na) && mlo_changed(b, na, a, na), "one side not an image: a change");
+    CHECK(!mlo_changed(b, na, b, na), "neither side an image: no change");
+}
+
 int main(void) {
     test_every_variant();
     test_every_finding_is_kept();
@@ -160,6 +422,13 @@ int main(void) {
     test_corrupting_behind_an_unknown_command();
     test_the_simulation_follows_the_branches();
     test_the_file_verdict();
+    test_the_pass_puts_each_variant_in_order();
+    test_the_pass_leaves_an_ordered_image_alone();
+    test_the_pass_places_empty_pieces();
+    test_the_pass_keeps_the_rounding();
+    test_the_pass_declines();
+    test_the_pass_resizes_and_zeroes();
+    test_what_counts_as_a_change();
     if (fails == 0) printf("linkedit_order_test: all cases pass\n");
     return fails ? 1 : 0;
 }

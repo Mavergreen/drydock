@@ -60,4 +60,33 @@ void mlo_check(const mi_image *im, mlo_verdict *v);
 int mlo_file_verdict(const uint8_t *buf, size_t size, char *refusal, size_t rsz,
                      char *corrupt, size_t csz);
 
+/* mlo_pack's returns. */
+enum { MLO_PACKED = 0, MLO_UNCHANGED = 1, MLO_DECLINED = 2, MLO_FAILED = -1, MLO_NOMEM = -2 };
+
+typedef struct {
+    uint64_t before, after;   /* __LINKEDIT's filesize */
+    uint64_t dropped;         /* bytes of the old __LINKEDIT no piece covered */
+} mlo_pack_report;
+
+/* Rewrites the 64-bit slice buf[0..size) so its __LINKEDIT holds its pieces
+ * in ld64's order: the dyld-info streams, a chained-fixups and an
+ * exports-trie blob if any, local relocations, split info, function starts,
+ * data in code, code-signing DRs, linker hints, the symbol table, two-level
+ * hints, external relocations, the indirect table, the table of contents,
+ * module and reference tables, the string table, and the code signature at
+ * the next multiple of 16. Each piece keeps its bytes and its size; bytes no
+ * piece covers are dropped; nothing below __LINKEDIT moves.
+ *
+ * MLO_PACKED: *pbuf and *psize are the packed image, and the old buffer is
+ * freed. MLO_UNCHANGED: the image was already in that order, and is left
+ * alone. MLO_DECLINED: `why` says what the pass cannot account for, and the
+ * image is left alone. MLO_FAILED: a postcondition failed (`why`); the image
+ * is left alone. MLO_NOMEM: likewise, for an allocation. */
+int mlo_pack(uint8_t **pbuf, size_t *psize, mlo_pack_report *rep, char *why, size_t whysz);
+
+/* Whether a run changed a piece of a slice: its set of pieces, any piece's
+ * offset, size or bytes, or __LINKEDIT's fileoff or filesize. `a` is the
+ * slice as read, `b` as the statements left it. */
+int mlo_changed(const uint8_t *a, size_t asize, const uint8_t *b, size_t bsize);
+
 #endif /* DRYDOCK_LINKEDIT_ORDER_H */
