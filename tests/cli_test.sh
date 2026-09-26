@@ -5084,6 +5084,35 @@ rc=0; printf 'dylib append /usr/lib/libz.1.dylib\n' \
     && ok "objc-methods then a grow: verify passes" \
     || bad "objc-methods then grow: verify" "$(cat "$T/om_gv.err")"
 
+# ---- __LINKEDIT in codesign_allocate's order ---------------------------------
+# tests/linkedit_fixture.h's variants, written by mklinkedit. `resign 10.9:`
+# is src/linkedit_order.h's verdict, which tests/codesign_order_test.sh holds
+# to 10.9's own codesign_allocate.
+"$CC" -O2 -o "$T/mklinkedit" "$HERE/mklinkedit.c"
+resign() { "$DRYDOCK_MACHO_REWRITE" info "$1" 2>/dev/null | sed -n 's/^resign 10\.9: //p'; }
+for v in canonical bind-first note hole-16; do
+    "$T/mklinkedit" make "$v" "$T/lk_$v"
+done
+[ "$(resign "$T/lk_canonical")" = ok ] \
+    && [ "$(resign "$T/lk_bind-first")" = "file not in an order that can be processed (dyld_info out of place)" ] \
+    && ok "info: resign 10.9 says what 10.9's codesign_allocate would" \
+    || bad "info resign" "[$(resign "$T/lk_canonical")] [$(resign "$T/lk_bind-first")]"
+[ "$(resign "$T/chained.in")" = "malformed object (unknown load command 3)" ] \
+    && ok "info: ... naming an unknown load command by its index, as the tool does" \
+    || bad "info resign chained" "[$(resign "$T/chained.in")]"
+"$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole-16" | grep -q '^resign corrupt: .*would not survive the re-sign' \
+    && [ "$(resign "$T/lk_hole-16")" = ok ] \
+    && ! "$DRYDOCK_MACHO_REWRITE" info "$T/lk_canonical" | grep -q '^resign corrupt' \
+    && ok "info: a file the tool would accept and re-sign corrupt gets a resign corrupt line" \
+    || bad "info resign corrupt" "$("$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole-16" | grep '^resign')"
+"$BIN/makefat" "$T/lk_fat_info" "$T/lk_bind-first" 0x1000007 3 12 "$T/lk_note" 0x1000007 8 12
+"$BIN/makefat" "$T/lk_fat_info2" "$T/lk_canonical" 0x1000007 3 12 "$T/lk_note" 0x1000007 8 12
+[ "$(resign "$T/lk_fat_info")" = "slice x86_64: file not in an order that can be processed (dyld_info out of place)" ] \
+    && [ "$(resign "$T/lk_fat_info2")" = "slice x86_64h: malformed object (unknown load command 8)" ] \
+    && [ "$("$DRYDOCK_MACHO_REWRITE" info "$T/lk_fat_info2" | grep -c '^resign 10.9: ')" -eq 1 ] \
+    && ok "info: a fat file gets one resign line, the whole file's, slice by slice" \
+    || bad "info resign fat" "[$(resign "$T/lk_fat_info")] [$(resign "$T/lk_fat_info2")]"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]
