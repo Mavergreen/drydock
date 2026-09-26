@@ -53,8 +53,39 @@ static void mlo_place(mlo_verdict *v, const char *fmt, ...) {
     va_end(ap);
 }
 
+/* The commands whose fields the checks read: each one's name, the size of
+ * its struct, whether check_Mach_O wants exactly that size, and whether it
+ * refuses a second of the kind before it checks the size
+ * (ofile.c:3757-4528). A shorter one is refused and never read. */
+static const struct {
+    uint32_t cmd; const char *name; uint32_t size; int exact, second_first;
+} mlo_sized[] = {
+    { LC_SYMTAB, "LC_SYMTAB", sizeof(struct symtab_command), 1, 0 },
+    { LC_DYSYMTAB, "LC_DYSYMTAB", sizeof(struct dysymtab_command), 1, 0 },
+    { LC_TWOLEVEL_HINTS, "LC_TWOLEVEL_HINTS", sizeof(struct twolevel_hints_command), 1, 0 },
+    { LC_SEGMENT_SPLIT_INFO, "LC_SEGMENT_SPLIT_INFO", sizeof(struct linkedit_data_command), 1, 1 },
+    { LC_CODE_SIGNATURE, "LC_CODE_SIGNATURE", sizeof(struct linkedit_data_command), 1, 1 },
+    { LC_FUNCTION_STARTS, "LC_FUNCTION_STARTS", sizeof(struct linkedit_data_command), 1, 1 },
+    { LC_DATA_IN_CODE, "LC_DATA_IN_CODE", sizeof(struct linkedit_data_command), 1, 1 },
+    { LC_DYLIB_CODE_SIGN_DRS, "LC_DYLIB_CODE_SIGN_DRS", sizeof(struct linkedit_data_command), 1, 1 },
+    { LC_LINKER_OPTIMIZATION_HINT, "LC_LINKER_OPTIMIZATION_HINT",
+      sizeof(struct linkedit_data_command), 1, 1 },
+    { LC_DYLD_INFO, "LC_DYLD_INFO", sizeof(struct dyld_info_command), 1, 0 },
+    { LC_DYLD_INFO_ONLY, "LC_DYLD_INFO_ONLY", sizeof(struct dyld_info_command), 1, 0 },
+    { LC_ID_DYLIB, "LC_ID_DYLIB", sizeof(struct dylib_command), 0, 0 },
+};
+#define MLO_NSIZED (sizeof mlo_sized / sizeof mlo_sized[0])
+
+static int mlo_sized_at(uint32_t cmd) {
+    for (size_t k = 0; k < MLO_NSIZED; k++)
+        if (mlo_sized[k].cmd == cmd) return (int)k;
+    return -1;
+}
+
 static int mlo_collect(const struct load_command *lc, void *ctx_) {
     mlo_cmds *c = (mlo_cmds *)ctx_;
+    int z = mlo_sized_at(lc->cmd);
+    if (z >= 0 && lc->cmdsize < mlo_sized[z].size) return 0;
     switch (lc->cmd) {
     case LC_SEGMENT_64: {
         const struct segment_command_64 *s = (const struct segment_command_64 *)lc;
@@ -294,23 +325,38 @@ static void mlo_ofile_loop(const mi_image *im, mlo_verdict *v) {
     memset(seen, 0, sizeof seen);
     for (uint32_t i = 0; i < h->ncmds; i++) {
         const struct load_command *lc = (const struct load_command *)p;
+        p += lc->cmdsize;
         if (!mlo_known_cmd(lc->cmd)) {
             mlo_add(v, MLO_REFUSES, 1, "malformed object (unknown load command %u)", i);
+            continue;
+        }
+        const char *second = NULL;
+        for (size_t k = 0; k < MLO_NONCE; k++) {
+            if (mlo_once[k].cmd != lc->cmd) continue;
+            /* the version-min pair share one count */
+            size_t slot = (lc->cmd == LC_VERSION_MIN_IPHONEOS) ? k - 1 : k;
+            if (seen[slot]++) second = mlo_once[k].name;
+        }
+        int z = mlo_sized_at(lc->cmd);
+        if (second && z >= 0 && mlo_sized[z].second_first) {
+            mlo_add(v, MLO_REFUSES, 0, "malformed object (more than one %s command)", second);
+        } else if (z >= 0 && lc->cmdsize < mlo_sized[z].size) {
+            mlo_add(v, MLO_REFUSES, 0, "malformed object (%s cmdsize too small) in command %u",
+                    mlo_sized[z].name, i);
+        } else if (second) {
+            mlo_add(v, MLO_REFUSES, 0, "malformed object (more than one %s command)", second);
+        } else if (z >= 0 && mlo_sized[z].exact && lc->cmdsize != mlo_sized[z].size) {
+            if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY)
+                mlo_add(v, MLO_REFUSES, 0, "malformed object (LC_DYLD_INFOcommand %u has "
+                        "incorrect cmdsize)", i);
+            else
+                mlo_add(v, MLO_REFUSES, 0, "malformed object (%s command %u has incorrect cmdsize)",
+                        mlo_sized[z].name, i);
         } else if (lc->cmd == LC_ID_DYLIB &&
                    ((const struct dylib_command *)lc)->dylib.name.offset >= lc->cmdsize) {
             mlo_add(v, MLO_REFUSES, 0, "truncated or malformed object (name.offset field of "
                     "LC_ID_DYLIB command %u extends past the end of the file)", i);
-        } else {
-            for (size_t k = 0; k < MLO_NONCE; k++) {
-                if (mlo_once[k].cmd != lc->cmd) continue;
-                /* the version-min pair share one count */
-                size_t slot = (lc->cmd == LC_VERSION_MIN_IPHONEOS) ? k - 1 : k;
-                if (seen[slot]++)
-                    mlo_add(v, MLO_REFUSES, 0, "malformed object (more than one %s command)",
-                            mlo_once[k].name);
-            }
         }
-        p += lc->cmdsize;
     }
 }
 

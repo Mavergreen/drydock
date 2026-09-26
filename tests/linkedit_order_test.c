@@ -113,14 +113,16 @@ static void test_the_simulation_follows_the_branches(void) {
 
 /* The whole file: thin, and fat with a bad slice. */
 static void test_the_file_verdict(void) {
-    static uint8_t a[LKF_CAP], b[LKF_CAP];
+    static uint8_t a[LKF_CAP], b[LKF_CAP], c[LKF_CAP];
     char refusal[256], corrupt[512];
     size_t na = lkf_make(a, variant("canonical"));
     int rc = mlo_file_verdict(a, na, refusal, sizeof refusal, corrupt, sizeof corrupt);
     CHECK(rc == 0 && strcmp(refusal, "ok") == 0 && !corrupt[0], "thin canonical: ok (got %d, %s)",
           rc, refusal);
     size_t nb = lkf_make(b, variant("note"));
-    size_t off2 = 0x4000, total = off2 + nb;
+    size_t nc = lkf_make(c, variant("hole-16"));
+    /* room for the larger of the two second slices */
+    size_t off2 = 0x4000, total = off2 + (nb > nc ? nb : nc);
     uint8_t *fat = (uint8_t *)calloc(1, total);
     struct fat_header *fh = (struct fat_header *)fat;
     struct fat_arch *fa = (struct fat_arch *)(fh + 1);
@@ -139,18 +141,128 @@ static void test_the_file_verdict(void) {
     memcpy(fat + 0x1000, a, na);
     memcpy(fat + off2, b, nb);
     ((struct mach_header_64 *)(fat + off2))->cpusubtype = CPU_SUBTYPE_X86_64_H;
-    rc = mlo_file_verdict(fat, total, refusal, sizeof refusal, corrupt, sizeof corrupt);
+    rc = mlo_file_verdict(fat, off2 + nb, refusal, sizeof refusal, corrupt, sizeof corrupt);
     CHECK(rc == 1 && strcmp(refusal, "slice x86_64h: malformed object (unknown load command 8)") == 0,
           "fat: the other slice's refusal (got %d, %s)", rc, refusal);
     /* and a corrupting slice */
-    size_t nc = lkf_make(b, variant("hole-16"));
-    memcpy(fat + off2, b, nc);
+    memcpy(fat + off2, c, nc);
     fa[1].size = OSSwapHostToBigInt32((uint32_t)nc);
     ((struct mach_header_64 *)(fat + off2))->cpusubtype = CPU_SUBTYPE_X86_64_H;
     rc = mlo_file_verdict(fat, off2 + nc, refusal, sizeof refusal, corrupt, sizeof corrupt);
     CHECK(rc == 2 && strncmp(corrupt, "slice x86_64h: ", 15) == 0 && strstr(corrupt, "would not survive"),
           "fat: a corrupting slice (got %d, %s)", rc, corrupt);
     free(fat);
+}
+
+/* An image of exactly `n` bytes, so libgmalloc faults a read past its end:
+ * a header and commands of the given kinds and sizes, zero-filled. */
+static uint8_t *short_image(size_t *n, int ncmds, const uint32_t *cmd, const uint32_t *cmdsize) {
+    uint32_t total = 0;
+    for (int i = 0; i < ncmds; i++) total += cmdsize[i];
+    *n = sizeof(struct mach_header_64) + total;
+    uint8_t *b = (uint8_t *)calloc(1, *n);
+    uint8_t *p = (uint8_t *)(lkf_short_header(b, (uint32_t)ncmds, total) + 1);
+    for (int i = 0; i < ncmds; i++) {
+        ((struct load_command *)p)->cmd = cmd[i];
+        ((struct load_command *)p)->cmdsize = cmdsize[i];
+        p += cmdsize[i];
+    }
+    return b;
+}
+
+/* A command shorter than its kind is refused in the load-command loop's
+ * words and never read past; one of an exact kind that is longer, likewise;
+ * and the pass declines a short one. */
+static void test_a_command_of_the_wrong_size(void) {
+    static const struct { uint32_t cmd; const char *name; uint32_t size; int exact; } k[] = {
+        { LC_SYMTAB, "LC_SYMTAB", sizeof(struct symtab_command), 1 },
+        { LC_DYSYMTAB, "LC_DYSYMTAB", sizeof(struct dysymtab_command), 1 },
+        { LC_TWOLEVEL_HINTS, "LC_TWOLEVEL_HINTS", sizeof(struct twolevel_hints_command), 1 },
+        { LC_SEGMENT_SPLIT_INFO, "LC_SEGMENT_SPLIT_INFO", sizeof(struct linkedit_data_command), 1 },
+        { LC_CODE_SIGNATURE, "LC_CODE_SIGNATURE", sizeof(struct linkedit_data_command), 1 },
+        { LC_FUNCTION_STARTS, "LC_FUNCTION_STARTS", sizeof(struct linkedit_data_command), 1 },
+        { LC_DATA_IN_CODE, "LC_DATA_IN_CODE", sizeof(struct linkedit_data_command), 1 },
+        { LC_DYLIB_CODE_SIGN_DRS, "LC_DYLIB_CODE_SIGN_DRS", sizeof(struct linkedit_data_command), 1 },
+        { LC_LINKER_OPTIMIZATION_HINT, "LC_LINKER_OPTIMIZATION_HINT",
+          sizeof(struct linkedit_data_command), 1 },
+        { LC_DYLD_INFO, "LC_DYLD_INFO", sizeof(struct dyld_info_command), 1 },
+        { LC_DYLD_INFO_ONLY, "LC_DYLD_INFO_ONLY", sizeof(struct dyld_info_command), 1 },
+        { LC_ID_DYLIB, "LC_ID_DYLIB", sizeof(struct dylib_command), 0 },
+        /* 862 knows neither; only the pass reads them */
+        { LC_DYLD_CHAINED_FIXUPS, NULL, sizeof(struct linkedit_data_command), 0 },
+        { LC_DYLD_EXPORTS_TRIE, NULL, sizeof(struct linkedit_data_command), 0 },
+    };
+    for (size_t j = 0; j < sizeof k / sizeof k[0]; j++) {
+        for (int big = 0; big < 2; big++) {
+            if (big && !k[j].exact) continue;
+            uint32_t cs = big ? k[j].size + 8 : 8;
+            size_t n;
+            uint8_t *b = short_image(&n, 1, &k[j].cmd, &cs);
+            char want[200];
+            if (!k[j].name)
+                snprintf(want, sizeof want, "malformed object (unknown load command 0)");
+            else if (!big)
+                snprintf(want, sizeof want, "malformed object (%s cmdsize too small) in command 0",
+                         k[j].name);
+            else if (k[j].cmd == LC_DYLD_INFO || k[j].cmd == LC_DYLD_INFO_ONLY)
+                snprintf(want, sizeof want, "malformed object (LC_DYLD_INFOcommand 0 has incorrect cmdsize)");
+            else
+                snprintf(want, sizeof want, "malformed object (%s command 0 has incorrect cmdsize)",
+                         k[j].name);
+            mlo_verdict v;
+            check(b, n, &v);
+            CHECK(v.refusal == 0 && strcmp(v.f[0].text, want) == 0,
+                  "cmd 0x%x, cmdsize %u: refused as '%s' (got '%s')", k[j].cmd, cs, want,
+                  v.refusal >= 0 ? v.f[v.refusal].text : "(none)");
+            (void)mlo_changed(b, n, b, n);
+            if (!big && k[j].cmd != LC_ID_DYLIB) {   /* the pass reads nothing of an id */
+                mlo_pack_report r;
+                char why[256] = "";
+                int rc = mlo_pack(&b, &n, &r, why, sizeof why);
+                CHECK(rc == MLO_DECLINED && strstr(why, "shorter than"),
+                      "cmd 0x%x, cmdsize 8: the pass declines (got %d: %s)", k[j].cmd, rc, why);
+            }
+            free(b);
+        }
+    }
+    /* Which the loop says first, where a command is both short and a second:
+     * the size for LC_SYMTAB, the second for a linkedit-data kind. */
+    static const uint32_t two_st[2] = { LC_SYMTAB, LC_SYMTAB }, two_fs[2] = {
+        LC_FUNCTION_STARTS, LC_FUNCTION_STARTS };
+    const uint32_t st_sizes[2] = { sizeof(struct symtab_command), 8 };
+    const uint32_t fs_sizes[2] = { sizeof(struct linkedit_data_command), 8 };
+    size_t n;
+    uint8_t *b = short_image(&n, 2, two_st, st_sizes);
+    mlo_verdict v;
+    check(b, n, &v);
+    CHECK(v.refusal >= 0 && strcmp(v.f[v.refusal].text,
+                                   "malformed object (LC_SYMTAB cmdsize too small) in command 1") == 0,
+          "a second, short LC_SYMTAB: too small (got '%s')", v.refusal >= 0 ? v.f[v.refusal].text : "");
+    free(b);
+    b = short_image(&n, 2, two_fs, fs_sizes);
+    check(b, n, &v);
+    CHECK(v.refusal >= 0 && strcmp(v.f[v.refusal].text,
+                                   "malformed object (more than one LC_FUNCTION_STARTS command)") == 0,
+          "a second, short LC_FUNCTION_STARTS: more than one (got '%s')",
+          v.refusal >= 0 ? v.f[v.refusal].text : "");
+    free(b);
+    /* A short LC_DYSYMTAB with more of the file after it: what a whole one
+     * would read there is never judged, and the pass declines. */
+    n = LKF_SHORT_LAST;
+    b = (uint8_t *)malloc(n);
+    lkf_short_last(b);
+    check(b, n, &v);
+    CHECK(v.refusal == 0 && strcmp(v.f[0].text,
+                                   "malformed object (LC_DYSYMTAB cmdsize too small) in command 3") == 0 &&
+          !has(&v, MLO_REFUSES, "out of place"),
+          "short-last: refused as too small, and nothing past it judged (%d findings, first '%s')",
+          v.n, v.n ? v.f[0].text : "");
+    mlo_pack_report r;
+    char why[256] = "";
+    int rc = mlo_pack(&b, &n, &r, why, sizeof why);
+    CHECK(rc == MLO_DECLINED && strstr(why, "load command 3 (cmd 0xb) is 8 bytes, shorter than"),
+          "short-last: the pass declines (got %d: %s)", rc, why);
+    free(b);
 }
 
 /* ---- the pass ---- */
@@ -554,6 +666,7 @@ int main(void) {
     test_corrupting_behind_an_unknown_command();
     test_the_simulation_follows_the_branches();
     test_the_file_verdict();
+    test_a_command_of_the_wrong_size();
     test_the_pass_puts_each_variant_in_order();
     test_the_pass_leaves_an_ordered_image_alone();
     test_the_pass_places_empty_pieces();

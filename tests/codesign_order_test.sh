@@ -127,6 +127,15 @@ while read -r name; do
     [ "$rc" -eq 0 ] && check "$T/$name.packed"
 done <"$T/names"
 
+# ---- a load command of the wrong size, of each kind the verdict reads --------
+for c in 0x2:24 0xb:80 0x16:16 0x1e:16 0x1d:16 0x26:16 0x29:16 0x2b:16 0x2e:16 0x22:48 \
+         0x80000022:48 0xd:24; do
+    "$MK" lone "${c%%:*}" 8 "$T/short-${c%%:*}" && check "$T/short-${c%%:*}"
+    [ "${c%%:*}" = 0xd ] && continue   # an LC_ID_DYLIB may be longer than its struct
+    "$MK" lone "${c%%:*}" $((${c#*:} + 8)) "$T/long-${c%%:*}" && check "$T/long-${c%%:*}"
+done
+"$MK" short-last "$T/short-last" && check "$T/short-last"
+
 # ---- what the CLI suites pack -------------------------------------------------
 run() {   # run IN OUT STATEMENT...
     r_in=$1 r_out=$2; shift 2

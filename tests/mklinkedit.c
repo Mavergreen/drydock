@@ -6,9 +6,33 @@
  *                                    regression pin not worth an oracle-swept variant
  *   mklinkedit pieces FILE       NAME OFFSET SIZE per non-empty piece of a thin
  *                                64-bit file, the signature included (as "sig"),
- *                                read apart from src/ */
+ *                                read apart from src/
+ *   mklinkedit lone CMD SIZE OUT a dylib whose one load command, CMD, is SIZE
+ *                                bytes of zeros after its cmd and cmdsize
+ *   mklinkedit short-last OUT    lkf_short_last's image */
 #include <stdio.h>
 #include "linkedit_fixture.h"
+
+static int write_out(const char *path, const uint8_t *b, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(b, 1, n, f) != n) return 2;
+    return fclose(f) == 0 ? 0 : 2;
+}
+
+static int lone(uint32_t cmd, uint32_t size, const char *path) {
+    static uint8_t b[sizeof(struct mach_header_64) + 4096];
+    if (size < 8 || size > 4096) return 2;
+    memset(b, 0, sizeof b);
+    struct load_command *lc = (struct load_command *)(lkf_short_header(b, 1, size) + 1);
+    lc->cmd = cmd;
+    lc->cmdsize = size;
+    return write_out(path, b, sizeof(struct mach_header_64) + size);
+}
+
+static int short_last(const char *path) {
+    uint8_t b[LKF_SHORT_LAST];
+    return write_out(path, b, lkf_short_last(b));
+}
 
 static int pieces(const char *path) {
     static uint8_t b[1 << 24];
@@ -80,6 +104,9 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc == 3 && strcmp(argv[1], "pieces") == 0) return pieces(argv[2]);
+    if (argc == 5 && strcmp(argv[1], "lone") == 0)
+        return lone((uint32_t)strtoul(argv[2], NULL, 0), (uint32_t)strtoul(argv[3], NULL, 0), argv[4]);
+    if (argc == 3 && strcmp(argv[1], "short-last") == 0) return short_last(argv[2]);
     if (argc == 4 && strcmp(argv[1], "make") == 0) {
         for (size_t k = 0; k < LKF_NVARIANTS; k++) {
             if (strcmp(lkf_variants[k].name, argv[2]) != 0) continue;
@@ -97,6 +124,7 @@ int main(int argc, char **argv) {
         if (!n || !f || fwrite(buf, 1, n, f) != n) return 2;
         return fclose(f) == 0 ? 0 : 2;
     }
-    fprintf(stderr, "usage: mklinkedit list | make NAME OUT | raw LAYOUT OPTS OUT | pieces FILE\n");
+    fprintf(stderr, "usage: mklinkedit list | make NAME OUT | raw LAYOUT OPTS OUT | pieces FILE"
+                    " | lone CMD SIZE OUT | short-last OUT\n");
     return 2;
 }

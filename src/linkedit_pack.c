@@ -52,6 +52,22 @@ static void mlo_set(mlo_pieces *ps, int k, uint32_t *off, uint64_t size) {
     ps->p[k].present = 1;
 }
 
+/* The size of the struct the pass reads a command as, or 0 for one it reads
+ * nothing of (a segment's size is mi_wrap's to check). */
+static uint32_t mlo_read_size(uint32_t cmd) {
+    switch (cmd) {
+    case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY: return sizeof(struct dyld_info_command);
+    case LC_SYMTAB:         return sizeof(struct symtab_command);
+    case LC_DYSYMTAB:       return sizeof(struct dysymtab_command);
+    case LC_TWOLEVEL_HINTS: return sizeof(struct twolevel_hints_command);
+    case LC_SEGMENT_SPLIT_INFO: case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
+    case LC_DYLIB_CODE_SIGN_DRS: case LC_LINKER_OPTIMIZATION_HINT: case LC_CODE_SIGNATURE:
+    case LC_DYLD_CHAINED_FIXUPS: case LC_DYLD_EXPORTS_TRIE:
+        return sizeof(struct linkedit_data_command);
+    }
+    return 0;
+}
+
 /* Every piece of the image in buf, or -1 with `why`. A command that
  * carries a file offset the pass does not know is refused, and so is a
  * second of a kind: the pass could not account for every byte it moves. */
@@ -62,6 +78,9 @@ static int mlo_find(uint8_t *buf, size_t size, mlo_pieces *ps, char *why, size_t
     for (uint32_t i = 0; i < h->ncmds; i++, p += ((struct load_command *)p)->cmdsize) {
         struct load_command *lc = (struct load_command *)p;
         int k0 = -1;
+        if (lc->cmdsize < mlo_read_size(lc->cmd))
+            return mlo_fail(why, whysz, "load command %u (cmd 0x%x) is %u bytes, shorter than its "
+                            "kind's %u", i, lc->cmd, lc->cmdsize, mlo_read_size(lc->cmd));
         switch (lc->cmd) {
         case LC_SEGMENT_64: {
             struct segment_command_64 *sg = (struct segment_command_64 *)lc;

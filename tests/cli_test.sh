@@ -5113,6 +5113,37 @@ done
     && ok "info: a fat file gets one resign line, the whole file's, slice by slice" \
     || bad "info resign fat" "[$(resign "$T/lk_fat_info")] [$(resign "$T/lk_fat_info2")]"
 
+# A load command shorter than its kind: refused in 10.9's words, and never
+# read past. Under libgmalloc where this host has one, byte-exact, so a read
+# even one byte past a command at the end of the file faults.
+case $(DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib "$DRYDOCK_MACHO_REWRITE" --capabilities 2>&1 >/dev/null) in
+*GuardMalloc*) gm=/usr/lib/libgmalloc.dylib ;;
+*) gm=; skip "order: short load commands under libgmalloc" "libgmalloc does not load here" ;;
+esac
+gmrun() { if [ -n "$gm" ]; then MALLOC_STRICT_SIZE=1 DYLD_INSERT_LIBRARIES=$gm "$@"; else "$@"; fi; }
+short_bad=
+for k in 0x2:LC_SYMTAB 0xb:LC_DYSYMTAB 0x16:LC_TWOLEVEL_HINTS 0x1e:LC_SEGMENT_SPLIT_INFO \
+         0x1d:LC_CODE_SIGNATURE 0x26:LC_FUNCTION_STARTS 0x29:LC_DATA_IN_CODE \
+         0x2b:LC_DYLIB_CODE_SIGN_DRS 0x2e:LC_LINKER_OPTIMIZATION_HINT 0x22:LC_DYLD_INFO \
+         0x80000022:LC_DYLD_INFO_ONLY 0xd:LC_ID_DYLIB; do
+    "$T/mklinkedit" lone "${k%%:*}" 8 "$T/lk_short"
+    got=$(gmrun "$DRYDOCK_MACHO_REWRITE" info "$T/lk_short" 2>/dev/null | sed -n 's/^resign 10\.9: //p')
+    [ "$got" = "malformed object (${k#*:} cmdsize too small) in command 0" ] || short_bad="$short_bad [${k#*:}: $got]"
+done
+[ -z "$short_bad" ] \
+    && ok "info: an 8-byte command of each kind the verdict reads is refused as too small" \
+    || bad "info: short commands" "$short_bad"
+"$T/mklinkedit" short-last "$T/lk_short_last"
+rm -f "$T/lk_short_last.out"
+rc=0
+printf 'load-command delete uuid\n' | gmrun "$DRYDOCK_MACHO_REWRITE" "$T/lk_short_last" "$T/lk_short_last.out" \
+    >/dev/null 2>"$T/lo.err" || rc=$?
+[ "$rc" -eq 0 ] && grep -q "lk_short_last.out: written" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" \
+    && [ "$(resign "$T/lk_short_last.out")" = "malformed object (LC_DYSYMTAB cmdsize too small) in command 2" ] \
+    && ok "order: an edit of an image whose LC_DYSYMTAB is 8 bytes neither reads past it nor packs" \
+    || bad "order: short LC_DYSYMTAB" "rc $rc, resign [$(resign "$T/lk_short_last.out")]: $(grep -v GuardMalloc "$T/lo.err")"
+
 # The pass, on a thin file. It runs when the run changed a piece of
 # __LINKEDIT, or the output would re-sign corrupt.
 lo() {   # lo IN OUT STATEMENT...: one run, its stderr in $T/lo.err

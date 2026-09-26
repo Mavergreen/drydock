@@ -570,4 +570,63 @@ static size_t lkf_make(uint8_t *buf, const lkf_variant *v) {
     return n;
 }
 
+/* ---- short load commands ---- */
+
+static struct mach_header_64 *lkf_short_header(uint8_t *b, uint32_t ncmds, uint32_t sizeofcmds) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+    h->filetype = MH_DYLIB;
+    h->ncmds = ncmds;
+    h->sizeofcmds = sizeofcmds;
+    h->flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL;
+    return h;
+}
+
+/* A dylib with a UUID, __TEXT and __LINKEDIT whose last command is an 8-byte
+ * LC_DYSYMTAB. Read as a whole one, it would name 8 bytes of indirect symbols
+ * in __LINKEDIT. */
+#define LKF_SHORT_LAST 0x168u
+static size_t lkf_short_last(uint8_t *b) {
+    memset(b, 0, LKF_SHORT_LAST);
+    uint8_t *p = (uint8_t *)(lkf_short_header(b, 4, 0x100) + 1);
+    struct uuid_command *u = (struct uuid_command *)p;
+    u->cmd = LC_UUID;
+    u->cmdsize = sizeof *u;
+    memset(u->uuid, 0x11, sizeof u->uuid);
+    p += u->cmdsize;
+    struct segment_command_64 *tx = (struct segment_command_64 *)p;
+    struct section_64 *s = (struct section_64 *)(tx + 1);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + sizeof *s;
+    strcpy(tx->segname, "__TEXT");
+    tx->vmsize = 0x1000;
+    tx->maxprot = tx->initprot = VM_PROT_READ | VM_PROT_EXECUTE;
+    tx->nsects = 1;
+    strncpy(s->sectname, "__text", sizeof s->sectname);
+    strncpy(s->segname, "__TEXT", sizeof s->segname);
+    s->addr = 0x100;
+    s->offset = 0x120;
+    s->flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+    p += tx->cmdsize;
+    struct segment_command_64 *le = (struct segment_command_64 *)p;
+    le->cmd = LC_SEGMENT_64;
+    le->cmdsize = sizeof *le;
+    strcpy(le->segname, "__LINKEDIT");
+    le->vmaddr = 0x1000;
+    le->vmsize = 0x1000;
+    le->fileoff = 0x120;
+    le->filesize = 0x48;
+    le->maxprot = le->initprot = VM_PROT_READ;
+    p += le->cmdsize;
+    struct load_command *dy = (struct load_command *)p;
+    dy->cmd = LC_DYSYMTAB;
+    dy->cmdsize = 8;
+    struct dysymtab_command *whole = (struct dysymtab_command *)p;
+    whole->indirectsymoff = 0x158;
+    whole->nindirectsyms = 2;
+    return LKF_SHORT_LAST;
+}
+
 #endif /* LINKEDIT_FIXTURE_H */
