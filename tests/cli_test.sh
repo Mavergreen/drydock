@@ -5027,6 +5027,30 @@ rc=0; printf 'objc-methods set relative\n' | "$DRYDOCK_MACHO_REWRITE" "$T/relmet
     && ok "objc-methods set: any value but absolute is a parse error (2)" \
     || bad "objc-methods set relative" "rc $rc: $(cat "$T/om_rel.err")"
 
+# CONVERSION, THEN A HEADER GROW. The statement never touches the header, but
+# a later statement may grow it, and mg_grow_header moves every segment's file
+# bytes up by the grow: the lists past D's last section must move with D.
+# pad16+fstarts leaves 16 bytes of pad, so `dylib append` must grow, and
+# carries LC_FUNCTION_STARTS, so the run's own gate and `verify` have
+# something to check.
+"$T/mkrelmeth" make pad16+fstarts "$T/relmeth_grow"
+om grow
+rm -f "$T/relmeth_grow.grown"
+rc=0; printf 'dylib append /usr/lib/libz.1.dylib\n' \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_grow.out" "$T/relmeth_grow.grown" >/dev/null 2>"$T/om_grow.err" || rc=$?
+[ "$om_rc" -eq 0 ] && [ "$rc" -eq 0 ] && grep -q "grew the header pad by 4096 bytes" "$T/om_grow.err" \
+    && ok "objc-methods then a grow: dylib append grows the converted image's header" \
+    || bad "objc-methods then grow" "rc $om_rc/$rc: $(cat "$T/om.err" "$T/om_grow.err")"
+"$T/mkrelmeth" entries "$T/relmeth_grow" | sed 's/ rel / abs /' >"$T/om.want"
+"$T/mkrelmeth" entries "$T/relmeth_grow.grown" >"$T/om.got" 2>/dev/null || true
+[ -s "$T/om.want" ] && cmp -s "$T/om.want" "$T/om.got" \
+    && [ "$(info_ml "$T/relmeth_grow.grown")" = "objc-methods: 0 relative, 4 absolute" ] \
+    && ok "objc-methods then a grow: the lists moved with __DATA, and read as they did" \
+    || bad "objc-methods then grow: oracle" "$(diff "$T/om.want" "$T/om.got"; info_ml "$T/relmeth_grow.grown")"
+"$DRYDOCK_MACHO_REWRITE" verify "$T/relmeth_grow.grown" >/dev/null 2>"$T/om_gv.err" \
+    && ok "objc-methods then a grow: verify passes" \
+    || bad "objc-methods then grow: verify" "$(cat "$T/om_gv.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]
