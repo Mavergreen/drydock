@@ -2,7 +2,7 @@
  * metaclass, category and protocol name RELATIVE method lists, for
  * tests/objc_meth_test.c (in memory) and tests/mkrelmeth.c (to a file). No
  * linker on a 10.9 host emits relative method lists. File offsets equal vm
- * offsets from RMF_VMBASE throughout, so RMF_VA(off) is off's address. */
+ * offsets from RMF_VMBASE below __LINKEDIT, so RMF_VA(off) is off's address. */
 #ifndef RELMETH_FIXTURE_H
 #define RELMETH_FIXTURE_H
 
@@ -60,6 +60,10 @@
 #define RMF_CHAINED_BLOB 0x20c0u
 #define RMF_BIND_BLOB    0x2100u
 #define RMF_FSTARTS_BLOB 0x2120u
+#define RMF_SPLIT_BLOB   0x2130u
+#define RMF_CODESIG_BLOB 0x2180u
+#define RMF_CODESIG_SIZE 0x80u
+#define RMF_PAD          16u       /* the header pad RMF_DYLIB and RMF_PAD16 leave */
 
 enum {
     RMF_PLAIN    = 0,
@@ -83,8 +87,19 @@ enum {
     RMF_SELBIND  = 1u << 14, /* the second selector reference is bound, not rebased */
     RMF_FSTARTS  = 1u << 15, /* LC_FUNCTION_STARTS names all four implementations */
     RMF_FSBAD    = 1u << 16, /* LC_FUNCTION_STARTS leaves out list C's implementation */
-    RMF_NOSLOTRB = 1u << 17  /* the class ro's baseMethods slot carries no rebase */
+    RMF_NOSLOTRB = 1u << 17, /* the class ro's baseMethods slot carries no rebase */
+    RMF_DYLIB    = 1u << 18, /* an MH_DYLIB with no __PAGEZERO and RMF_PAD bytes of header pad */
+    RMF_ZEROTAIL = 1u << 19, /* __DATA's last 0x1000 of vm is a __bss with no file bytes */
+    RMF_DATARO   = 1u << 20, /* __DATA is read-only */
+    RMF_GAP      = 1u << 21, /* __LINKEDIT begins a page past __DATA's end in vm */
+    RMF_SEGAFTER = 1u << 22, /* a segment __EXTRA follows __LINKEDIT */
+    RMF_CODESIG  = 1u << 23, /* LC_CODE_SIGNATURE over the last RMF_CODESIG_SIZE bytes */
+    RMF_SPLIT    = 1u << 24, /* LC_SEGMENT_SPLIT_INFO over 8 bytes at RMF_SPLIT_BLOB */
+    RMF_PAD16    = 1u << 25  /* an LC_RPATH fills the header to RMF_PAD bytes of pad */
 };
+
+/* __DATA's segment index, which rebase and bind opcodes name. */
+static inline uint32_t rmf_data_seg(unsigned v) { return (v & RMF_DYLIB) ? 1 : 2; }
 
 static inline void rmf_name16(char *f, const char *s) {
     size_t n = strlen(s);
@@ -183,7 +198,7 @@ static inline uint32_t rmf_rebases(uint8_t *b, unsigned v) {
     uint32_t slots[32], n = rmf_rebase_slots(v, slots), at = RMF_REBASE;
     b[at++] = REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER;
     for (uint32_t i = 0; i < n; i++) {
-        b[at++] = REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+        b[at++] = (uint8_t)(REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | rmf_data_seg(v));
         at += rmf_uleb(b + at, slots[i]);
         b[at++] = REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1;
     }
@@ -192,41 +207,52 @@ static inline uint32_t rmf_rebases(uint8_t *b, unsigned v) {
 }
 
 /* Binds the second selector reference to _rmf_sel from ordinal 1. */
-static inline uint32_t rmf_binds(uint8_t *b) {
+static inline uint32_t rmf_binds(uint8_t *b, unsigned v) {
     uint32_t at = RMF_BIND_BLOB;
     b[at++] = BIND_OPCODE_SET_DYLIB_ORDINAL_IMM | 1;
     b[at++] = BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM;
     memcpy(b + at, "_rmf_sel", 9);
     at += 9;
     b[at++] = BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER;
-    b[at++] = BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | 2;
+    b[at++] = (uint8_t)(BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | rmf_data_seg(v));
     at += rmf_uleb(b + at, RMF_SELREFS + 8 - RMF_DATA);
     b[at++] = BIND_OPCODE_DO_BIND;
     b[at++] = BIND_OPCODE_DONE;
     return at - RMF_BIND_BLOB;
 }
 
+/* The last load command, sized so exactly RMF_PAD bytes of header pad remain. */
+static inline void rmf_fill(uint8_t *b, uint32_t *at, uint32_t cmd, uint32_t name_at,
+                            const char *name) {
+    struct load_command *lc = rmf_lc(b, at, cmd, RMF_TEXT - RMF_PAD - *at);
+    uint32_t off = name_at;
+    memcpy((uint8_t *)lc + 8, &off, 4);
+    memcpy((uint8_t *)lc + name_at, name, strlen(name) + 1);
+}
+
 /* Lays the image out in b[0, RMF_SIZE) and returns RMF_SIZE. */
 static inline size_t rmf_build(uint8_t *b, unsigned v) {
     struct mach_header_64 *h = (struct mach_header_64 *)b;
     struct segment_command_64 *s;
-    uint32_t at = sizeof *h, cat_methods;
+    uint32_t at = sizeof *h, cat_methods, data_vmsize = (v & RMF_ZEROTAIL) ? 0x2000 : 0x1000;
+    uint64_t linkedit_vm = RMF_VA(RMF_DATA) + data_vmsize + ((v & RMF_GAP) ? 0x1000 : 0);
 
     memset(b, 0, RMF_SIZE);
     h->magic = MH_MAGIC_64;
     h->cputype = CPU_TYPE_X86_64;
     h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
-    h->filetype = MH_EXECUTE;
-    h->flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE;
+    h->filetype = (v & RMF_DYLIB) ? MH_DYLIB : MH_EXECUTE;
+    h->flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | ((v & RMF_DYLIB) ? 0 : MH_PIE);
 
-    rmf_seg(b, &at, "__PAGEZERO", 0, RMF_VMBASE, 0, 0, 0, VM_PROT_NONE);
+    if (!(v & RMF_DYLIB)) rmf_seg(b, &at, "__PAGEZERO", 0, RMF_VMBASE, 0, 0, 0, VM_PROT_NONE);
     s = rmf_seg(b, &at, "__TEXT", RMF_VMBASE, 0x1000, 0, 0x1000, 4, VM_PROT_READ | VM_PROT_EXECUTE);
     rmf_sect(s, "__text", RMF_TEXT, 0x10, S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
     rmf_sect(s, "__objc_methname", RMF_METHNAME, 0x40, S_CSTRING_LITERALS);
     rmf_sect(s, "__objc_methtype", RMF_METHTYPE, 0x10, S_CSTRING_LITERALS);
     rmf_sect(s, "__objc_methlist", RMF_METHLIST, RMF_METHLIST_END - RMF_METHLIST, S_REGULAR);
-    s = rmf_seg(b, &at, "__DATA", RMF_VA(RMF_DATA), 0x1000, RMF_DATA, 0x1000,
-                6 + !!(v & (RMF_NLCLS | RMF_SHAREDRO)) + !!(v & RMF_ALLSLOTS), VM_PROT_READ | VM_PROT_WRITE);
+    s = rmf_seg(b, &at, "__DATA", RMF_VA(RMF_DATA), data_vmsize, RMF_DATA, 0x1000,
+                6 + !!(v & (RMF_NLCLS | RMF_SHAREDRO)) + !!(v & RMF_ALLSLOTS) + !!(v & RMF_ZEROTAIL),
+                (v & RMF_DATARO) ? VM_PROT_READ : VM_PROT_READ | VM_PROT_WRITE);
     rmf_sect(s, "__objc_classlist", RMF_CLASSLIST, 8, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
     if (v & (RMF_NLCLS | RMF_SHAREDRO))
         rmf_sect(s, "__objc_nlclslist", RMF_NLCLSLIST, 8, S_REGULAR | S_ATTR_NO_DEAD_STRIP);
@@ -237,8 +263,14 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
     rmf_sect(s, "__objc_selrefs", RMF_SELREFS, 0x20, S_LITERAL_POINTERS | S_ATTR_NO_DEAD_STRIP);
     rmf_sect(s, "__objc_const", RMF_CONST, 0x200, S_REGULAR);
     rmf_sect(s, "__objc_data", RMF_OBJC_DATA, (v & RMF_SHAREDRO) ? 0xc0 : 0x80, S_REGULAR);
-    rmf_seg(b, &at, "__LINKEDIT", RMF_VA(RMF_LINKEDIT), 0x1000, RMF_LINKEDIT,
+    if (v & RMF_ZEROTAIL) {
+        rmf_sect(s, "__bss", RMF_LINKEDIT, 0x1000, S_ZEROFILL);
+        ((struct section_64 *)(s + 1))[s->nsects - 1].offset = 0;
+    }
+    rmf_seg(b, &at, "__LINKEDIT", linkedit_vm, 0x1000, RMF_LINKEDIT,
             RMF_LINKEDIT_SIZE, 0, VM_PROT_READ);
+    if (v & RMF_SEGAFTER)
+        rmf_seg(b, &at, "__EXTRA", linkedit_vm + 0x1000, 0x1000, 0, 0, 0, VM_PROT_READ);
 
     memset(b + RMF_TEXT, 0xc3, 0x10);
     memcpy(b + RMF_METHNAME + 0x00, "alpha", 6);
@@ -312,7 +344,7 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         di->rebase_size = (rmf_rebases(b, v) + 7) & ~7u;
         if (v & RMF_SELBIND) {
             di->bind_off = RMF_BIND_BLOB;
-            di->bind_size = (rmf_binds(b) + 7) & ~7u;
+            di->bind_size = (rmf_binds(b, v) + 7) & ~7u;
         }
     }
     {
@@ -339,6 +371,20 @@ static inline size_t rmf_build(uint8_t *b, unsigned v) {
         if (v & RMF_FSBAD) memcpy(b + RMF_FSTARTS_BLOB, bad, sizeof bad);
         else               memcpy(b + RMF_FSTARTS_BLOB, all, sizeof all);
     }
+    if (v & RMF_SPLIT) {
+        struct linkedit_data_command *sp = rmf_lc(b, &at, LC_SEGMENT_SPLIT_INFO, sizeof *sp);
+        sp->dataoff = RMF_SPLIT_BLOB;
+        sp->datasize = 8;
+        memcpy(b + RMF_SPLIT_BLOB, "split!!", 8);
+    }
+    if (v & RMF_CODESIG) {
+        struct linkedit_data_command *cs = rmf_lc(b, &at, LC_CODE_SIGNATURE, sizeof *cs);
+        cs->dataoff = RMF_CODESIG_BLOB;
+        cs->datasize = RMF_CODESIG_SIZE;
+        for (uint32_t i = 0; i < RMF_CODESIG_SIZE; i++) b[RMF_CODESIG_BLOB + i] = (uint8_t)(0x80 + i);
+    }
+    if (v & RMF_DYLIB)  rmf_fill(b, &at, LC_ID_DYLIB, 24, "/rmf/librmf.dylib");
+    if (v & RMF_PAD16)  rmf_fill(b, &at, LC_RPATH, 12, "/rmf/rpath");
     return RMF_SIZE;
 }
 

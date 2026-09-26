@@ -1,12 +1,14 @@
 /* tests/objc_meth_test.c -- hermetic tests for src/objc_meth.c, against the
  * hand-built image in tests/relmeth_fixture.h. */
 #include "objc_meth.h"
+#include "objc_abs.h"
 #include "image.h"
 #include "relmeth_fixture.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mach-o/loader.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -444,6 +446,228 @@ static void test_selector_references_without_a_rebase_or_bind_are_named_so(void)
                   "a selector reference neither rebased nor bound");
 }
 
+/* ---- layout ------------------------------------------------------------------ */
+
+static int layout_of(unsigned variant, void (*poke)(uint8_t *), size_t size, mma_layout *lay,
+                     char *why, size_t whysz) {
+    mi_image im;
+    mma_seg segs[MML_MAX_SEGS];
+    rmf_build(fx, variant);
+    if (poke) poke(fx);
+    if (mi_wrap(fx, RMF_SIZE, &im) != 0) return -99;
+    return mma_layout_check(segs, mma_segments(&im, segs, MML_MAX_SEGS), size, lay, why, whysz);
+}
+
+static void test_layout_puts_the_lists_at_the_end_of_data(void) {
+    mma_layout lay;
+    char why[256] = "";
+    int rc = layout_of(RMF_PLAIN, NULL, RMF_SIZE, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK, "layout plain: rc %d (%s)", rc, why);
+    CHECK(lay.d == 2 && lay.l == 3 && strncmp(lay.dname, "__DATA", 16) == 0,
+          "layout plain: D %d (%.16s), L %d", lay.d, lay.dname, lay.l);
+    CHECK(lay.list_va == RMF_VA(RMF_LINKEDIT) && lay.insert == RMF_LINKEDIT && lay.z == 0,
+          "layout plain: lists at %#llx, insert %#llx, z %#llx", (unsigned long long)lay.list_va,
+          (unsigned long long)lay.insert, (unsigned long long)lay.z);
+    rc = layout_of(RMF_DYLIB, NULL, RMF_SIZE, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK && lay.d == 1 && lay.l == 2, "layout dylib: rc %d, D %d, L %d (%s)",
+          rc, lay.d, lay.l, why);
+    rc = layout_of(RMF_ZEROTAIL, NULL, RMF_SIZE, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK && lay.z == 0x1000 && lay.list_va == RMF_VA(RMF_DATA + 0x2000) &&
+          lay.insert == RMF_LINKEDIT, "layout zerotail: rc %d, z %#llx, lists at %#llx (%s)", rc,
+          (unsigned long long)lay.z, (unsigned long long)lay.list_va, why);
+}
+
+static void poke_linkedit_fileoff(uint8_t *b) {
+    mi_image im;
+    struct segment_command_64 *l;
+    if (mi_wrap(b, RMF_SIZE, &im) == 0 && (l = mi_find_segment(&im, "__LINKEDIT"))) l->fileoff += 8;
+}
+static void poke_data_unaligned(uint8_t *b) {
+    mi_image im;
+    struct segment_command_64 *d, *l;
+    if (mi_wrap(b, RMF_SIZE, &im) != 0) return;
+    if ((d = mi_find_segment(&im, "__DATA"))) { d->vmsize -= 8; d->filesize -= 8; }
+    if ((l = mi_find_segment(&im, "__LINKEDIT"))) { l->vmaddr -= 8; l->fileoff -= 8; l->filesize += 8; }
+}
+
+static void refused_layout(unsigned variant, void (*poke)(uint8_t *), size_t size,
+                           const char *want, const char *label) {
+    mma_layout lay;
+    char why[256] = "";
+    int rc = layout_of(variant, poke, size, &lay, why, sizeof why);
+    CHECK(rc == MMA_REFUSED, "%s: rc %d, want MMA_REFUSED", label, rc);
+    CHECK(strstr(why, want) != NULL, "%s: why '%s' lacks '%s'", label, why, want);
+}
+
+static void test_layout_refusals(void) {
+    mma_seg segs[18];
+    mma_layout lay;
+    char why[256] = "";
+    int rc;
+    refused_layout(RMF_DATARO, NULL, RMF_SIZE, "is not writable", "D read-only");
+    refused_layout(RMF_GAP, NULL, RMF_SIZE, "in memory", "a gap in vm before __LINKEDIT");
+    refused_layout(RMF_SEGAFTER, NULL, RMF_SIZE, "not the last segment", "a segment after __LINKEDIT");
+    refused_layout(RMF_PLAIN, poke_linkedit_fileoff, RMF_SIZE + 8, "file offset", "a gap in the file");
+    refused_layout(RMF_PLAIN, NULL, RMF_SIZE + 8, "the image is 0x2208 bytes", "bytes past __LINKEDIT");
+    refused_layout(RMF_PLAIN, poke_data_unaligned, RMF_SIZE, "page boundary", "D ends mid-page");
+    memset(segs, 0, sizeof segs);
+    for (int i = 0; i < 18; i++) {
+        snprintf(segs[i].name, sizeof segs[i].name, "__S%d", i);
+        segs[i].vmaddr = segs[i].fileoff = 0x1000 * (uint64_t)i;
+        segs[i].vmsize = segs[i].filesize = 0x1000;
+        segs[i].initprot = VM_PROT_READ | VM_PROT_WRITE;
+    }
+    memcpy(segs[17].name, "__LINKEDIT", 11);
+    rc = mma_layout_check(segs, 18, 0x12000, &lay, why, sizeof why);
+    CHECK(rc == MMA_REFUSED && strstr(why, "is segment 16") != NULL,
+          "D at segment 16: rc %d, why '%s'", rc, why);
+    rc = mma_layout_check(segs + 1, 17, 0x12000, &lay, why, sizeof why);
+    CHECK(rc == MMA_OK && lay.d == 15, "D at segment 15: rc %d, D %d (%s)", rc, lay.d, why);
+}
+
+/* ---- insertion ----------------------------------------------------------------- */
+
+typedef struct { uint8_t *b; size_t n; mma_layout lay; uint32_t r; } inserted;
+
+static const uint8_t LISTS[40] = "the lists, forty bytes of them, padded.";
+static const uint8_t STREAM[16] = { 0x11, 0x22, 0x08, 0x51, 0 };
+
+static int insert_into(unsigned variant, void (*poke)(uint8_t *), inserted *o, char *why, size_t whysz) {
+    mi_image im;
+    int rc;
+    memset(o, 0, sizeof *o);
+    if ((rc = layout_of(variant, poke, RMF_SIZE, &o->lay, why, whysz)) != MMA_OK) return rc;
+    if (mi_wrap(fx, RMF_SIZE, &im) != 0) return -99;
+    o->r = sizeof STREAM;
+    return mma_insert(&im, &o->lay, LISTS, sizeof LISTS, MMA_PAGE, STREAM, o->r, &o->b, &o->n,
+                      why, whysz);
+}
+
+typedef struct { const struct segment_command_64 *d, *l; const struct dyld_info_command *di;
+                 const struct symtab_command *st; const struct linkedit_data_command *cs, *sp;
+                 int nsegs; } lcs_of;
+
+static int note_lc(const struct load_command *lc, void *ctx_) {
+    lcs_of *c = ctx_;
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *sc = (const struct segment_command_64 *)lc;
+        if (strncmp(sc->segname, "__DATA", 16) == 0) c->d = sc;
+        if (strncmp(sc->segname, "__LINKEDIT", 16) == 0) c->l = sc;
+        c->nsegs++;
+    }
+    if (lc->cmd == LC_DYLD_INFO_ONLY) c->di = (const struct dyld_info_command *)lc;
+    if (lc->cmd == LC_SYMTAB) c->st = (const struct symtab_command *)lc;
+    if (lc->cmd == LC_CODE_SIGNATURE) c->cs = (const struct linkedit_data_command *)lc;
+    if (lc->cmd == LC_SEGMENT_SPLIT_INFO) c->sp = (const struct linkedit_data_command *)lc;
+    return 0;
+}
+
+static lcs_of lcs(uint8_t *b, size_t n) {
+    lcs_of c;
+    mi_image im;
+    memset(&c, 0, sizeof c);
+    if (mi_wrap(b, n, &im) == 0) mi_each_lc(&im, note_lc, &c);
+    return c;
+}
+
+static void test_insert_moves_linkedit_up_behind_the_lists(void) {
+    inserted o;
+    uint8_t in[RMF_SIZE];
+    char why[256] = "";
+    int rc = insert_into(RMF_CODESIG | RMF_SPLIT, NULL, &o, why, sizeof why);
+    uint64_t grow = MMA_PAGE + sizeof STREAM;
+    memcpy(in, fx, RMF_SIZE);
+    CHECK(rc == MMA_OK && o.n == RMF_SIZE + grow, "insert: rc %d, %zu bytes (%s)", rc, o.n, why);
+    if (rc != MMA_OK) return;
+    lcs_of was = lcs(in, RMF_SIZE), now = lcs(o.b, o.n);
+    CHECK(now.d->vmsize == 0x2000 && now.d->filesize == 0x2000, "insert: D is %#llx/%#llx",
+          (unsigned long long)now.d->vmsize, (unsigned long long)now.d->filesize);
+    CHECK(now.l->vmaddr == was.l->vmaddr + MMA_PAGE && now.l->fileoff == RMF_LINKEDIT + MMA_PAGE &&
+          now.l->filesize == RMF_LINKEDIT_SIZE + sizeof STREAM && now.l->vmsize == was.l->vmsize,
+          "insert: __LINKEDIT at %#llx/%#llx, %#llx/%#llx bytes", (unsigned long long)now.l->vmaddr,
+          (unsigned long long)now.l->fileoff, (unsigned long long)now.l->vmsize,
+          (unsigned long long)now.l->filesize);
+    CHECK(memcmp(o.b + sizeof(struct mach_header_64) + ((struct mach_header_64 *)in)->sizeofcmds,
+                 in + sizeof(struct mach_header_64) + ((struct mach_header_64 *)in)->sizeofcmds,
+                 RMF_LINKEDIT - sizeof(struct mach_header_64) - ((struct mach_header_64 *)in)->sizeofcmds) == 0,
+          "insert: a byte between the load commands and __LINKEDIT changed");
+    CHECK(memcmp(o.b + RMF_LINKEDIT, LISTS, sizeof LISTS) == 0, "insert: the lists are not at D's old end");
+    for (size_t i = RMF_LINKEDIT + sizeof LISTS; i < RMF_LINKEDIT + MMA_PAGE; i++)
+        if (o.b[i]) { CHECK(0, "insert: byte %#zx past the lists is %#x", i, o.b[i]); break; }
+    CHECK(memcmp(o.b + RMF_LINKEDIT + MMA_PAGE, STREAM, sizeof STREAM) == 0,
+          "insert: the stream does not start __LINKEDIT");
+    CHECK(now.di->rebase_off == RMF_LINKEDIT + MMA_PAGE && now.di->rebase_size == sizeof STREAM,
+          "insert: rebase_off %#x size %u", now.di->rebase_off, now.di->rebase_size);
+    for (uint32_t i = 0; i < was.di->rebase_size; i++)
+        if (o.b[RMF_REBASE + grow + i]) { CHECK(0, "insert: the old rebase stream is not zeroed"); break; }
+    CHECK(memcmp(o.b + RMF_REBASE + grow + was.di->rebase_size, in + RMF_REBASE + was.di->rebase_size,
+                 RMF_SIZE - RMF_REBASE - was.di->rebase_size) == 0,
+          "insert: the rest of the old __LINKEDIT did not move up intact");
+    CHECK(now.st->symoff == was.st->symoff + grow && now.st->stroff == was.st->stroff + grow &&
+          now.cs->dataoff == was.cs->dataoff + grow && now.sp->dataoff == was.sp->dataoff + grow,
+          "insert: an offset in __LINKEDIT did not move by %#llx", (unsigned long long)grow);
+    CHECK(memcmp(o.b + now.cs->dataoff, in + RMF_CODESIG_BLOB, RMF_CODESIG_SIZE) == 0 &&
+          memcmp(o.b + now.sp->dataoff, "split!!", 8) == 0,
+          "insert: the code signature or split info bytes are not where their offsets say");
+    free(o.b);
+}
+
+static void test_insert_makes_the_zero_fill_file_bytes(void) {
+    inserted o;
+    char why[256] = "";
+    int rc = insert_into(RMF_ZEROTAIL, NULL, &o, why, sizeof why);
+    uint64_t z = 0x1000, grow = z + MMA_PAGE + sizeof STREAM;
+    CHECK(rc == MMA_OK && o.n == RMF_SIZE + grow, "zerotail insert: rc %d, %zu bytes (%s)", rc, o.n, why);
+    if (rc != MMA_OK) return;
+    lcs_of now = lcs(o.b, o.n);
+    CHECK(now.d->vmsize == 0x3000 && now.d->filesize == 0x3000, "zerotail: D is %#llx/%#llx",
+          (unsigned long long)now.d->vmsize, (unsigned long long)now.d->filesize);
+    CHECK(now.l->fileoff == RMF_LINKEDIT + z + MMA_PAGE && now.l->vmaddr == RMF_VA(RMF_DATA + 0x3000),
+          "zerotail: __LINKEDIT at %#llx/%#llx", (unsigned long long)now.l->vmaddr,
+          (unsigned long long)now.l->fileoff);
+    for (size_t i = RMF_LINKEDIT; i < RMF_LINKEDIT + z; i++)
+        if (o.b[i]) { CHECK(0, "zerotail: zero-fill byte %#zx is %#x", i, o.b[i]); break; }
+    CHECK(memcmp(o.b + RMF_LINKEDIT + z, LISTS, sizeof LISTS) == 0, "zerotail: the lists are not past the zero fill");
+    CHECK(now.st->symoff == RMF_SYMS + grow, "zerotail: symoff %#x", now.st->symoff);
+    CHECK(now.di->rebase_off == RMF_LINKEDIT + z + MMA_PAGE, "zerotail: rebase_off %#x", now.di->rebase_off);
+    free(o.b);
+}
+
+static void poke_linkedit_snug(uint8_t *b) {
+    mi_image im;
+    struct segment_command_64 *l;
+    if (mi_wrap(b, RMF_SIZE, &im) == 0 && (l = mi_find_segment(&im, "__LINKEDIT"))) l->vmsize = l->filesize;
+}
+
+static void test_insert_grows_linkedit_vm_to_cover_its_file_bytes(void) {
+    inserted o;
+    char why[256] = "";
+    int rc = insert_into(RMF_PLAIN, poke_linkedit_snug, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "snug insert: rc %d (%s)", rc, why);
+    if (rc != MMA_OK) return;
+    lcs_of now = lcs(o.b, o.n);
+    CHECK(now.l->vmsize == MMA_PAGE, "snug: __LINKEDIT vmsize %#llx for %#llx file bytes, want 0x1000",
+          (unsigned long long)now.l->vmsize, (unsigned long long)now.l->filesize);
+    free(o.b);
+}
+
+static void test_insert_never_grows_the_header(void) {
+    inserted o;
+    char why[256] = "";
+    int rc = insert_into(RMF_DYLIB, NULL, &o, why, sizeof why);
+    const struct mach_header_64 *was = (const struct mach_header_64 *)fx;
+    CHECK(rc == MMA_OK, "dylib insert: rc %d (%s)", rc, why);
+    if (rc != MMA_OK) return;
+    const struct mach_header_64 *now = (const struct mach_header_64 *)o.b;
+    CHECK(now->ncmds == was->ncmds && now->sizeofcmds == was->sizeofcmds &&
+          sizeof *now + now->sizeofcmds + RMF_PAD == RMF_TEXT,
+          "dylib insert: %u commands in %u bytes, was %u in %u", now->ncmds, now->sizeofcmds,
+          was->ncmds, was->sizeofcmds);
+    CHECK(memcmp(o.b + RMF_TEXT, fx + RMF_TEXT, RMF_LINKEDIT - RMF_TEXT) == 0,
+          "dylib insert: a byte below __LINKEDIT changed");
+    free(o.b);
+}
+
 int main(void) {
     test_class_names_its_relative_list();
     test_metaclass_is_reached_through_isa();
@@ -460,6 +684,12 @@ int main(void) {
     test_function_starts_admit_every_imp_they_name();
     test_entries_that_cannot_be_made_absolute_are_refused();
     test_selector_references_without_a_rebase_or_bind_are_named_so();
+    test_layout_puts_the_lists_at_the_end_of_data();
+    test_layout_refusals();
+    test_insert_moves_linkedit_up_behind_the_lists();
+    test_insert_makes_the_zero_fill_file_bytes();
+    test_insert_grows_linkedit_vm_to_cover_its_file_bytes();
+    test_insert_never_grows_the_header();
     test_a_selref_rebased_both_ways_still_resolves_as_pointer();
     test_an_imp_resolving_to_address_0_is_refused();
     test_an_unbased_image_names_its_own_refusal();

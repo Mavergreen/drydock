@@ -1,0 +1,62 @@
+#ifndef DRYDOCK_OBJC_ABS_H
+#define DRYDOCK_OBJC_ABS_H
+/*
+ * mma_ -- `objc-methods set absolute`: every relative Objective-C method list
+ * objc_meth.h's walk reaches becomes an absolute list, appended past the end
+ * of D, the segment just before __LINKEDIT, and every slot that named it is
+ * repointed. D grows, __LINKEDIT moves up behind it, and no load command is
+ * added, so the header pad is never touched.
+ */
+#include <stddef.h>
+#include <stdint.h>
+
+#include "image.h"
+#include "objc_meth.h"
+
+#define MMA_OK        0
+#define MMA_NOTHING   1
+#define MMA_REFUSED (-1)
+#define MMA_NOMEM   (-2)
+
+#define MMA_PAGE 0x1000u
+
+typedef struct {
+    char     name[16];
+    uint64_t vmaddr, vmsize, fileoff, filesize;
+    uint32_t initprot;
+} mma_seg;
+
+typedef struct {
+    int      d, l;         /* segment indices of D and __LINKEDIT */
+    char     dname[16];    /* D's segname, not NUL-terminated at 16 */
+    uint64_t list_va;      /* D's vm end: the converted lists start here */
+    uint64_t insert;       /* __LINKEDIT's file offset: new bytes go in here */
+    uint64_t z;            /* D's zero fill, which becomes file bytes */
+} mma_layout;
+
+/* The image's LC_SEGMENT_64s in load-command order: their count, or -1 when
+ * there are more than `max`. */
+int mma_segments(const mi_image *im, mma_seg *segs, int max);
+
+/* Where the lists can go in an image of `file_size` bytes with these
+ * segments, or MMA_REFUSED with why set: __LINKEDIT must be the last segment
+ * and end the file; D must be segment 15 or lower, writable, end where
+ * __LINKEDIT begins in vm and in file, and end on a page boundary once its
+ * zero fill is in the file. */
+int mma_layout_check(const mma_seg *segs, int n, uint64_t file_size, mma_layout *lay,
+                     char *why, size_t whysz);
+
+/* A new image, in *out (malloc'd) of *outsz bytes: `im` with its zero fill
+ * made file bytes, `lists_len` bytes of `lists` then zeros to `s` (a whole
+ * number of pages) past D's end, and `r` bytes of `stream` (a multiple of 8)
+ * at the start of __LINKEDIT, which moves up by s in vm and by z + s in file.
+ * D's vmsize grows by s and its filesize becomes its vmsize; __LINKEDIT's
+ * filesize grows by r and its vmsize grows to cover it; every other file
+ * offset at or past the insertion moves by z + s + r; rebase_off and
+ * rebase_size name the new stream and the old one is zeroed. `im` is only
+ * read. MMA_OK, MMA_REFUSED or MMA_NOMEM, with why set. */
+int mma_insert(const mi_image *im, const mma_layout *lay, const uint8_t *lists,
+               uint64_t lists_len, uint64_t s, const uint8_t *stream, uint32_t r,
+               uint8_t **out, size_t *outsz, char *why, size_t whysz);
+
+#endif
