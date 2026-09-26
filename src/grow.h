@@ -178,14 +178,18 @@ int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth);
 #define MG_K_FUNC 1
 
 /* What mg_verify compares a grown image against: the resolved addresses
- * mg_collect finds, and the image base with every reference to it the
- * header-reference scan (src/hdrref.h) finds. */
+ * mg_collect finds, the image base with every reference to it the
+ * header-reference scan (src/hdrref.h) finds, and each symbol's type and
+ * value. */
 typedef struct {
     uint64_t *addr;
     uint32_t n;
     uint64_t base;
     mhr_cand *refs;
     uint32_t nrefs;
+    uint64_t *symval;
+    uint8_t *symtype;
+    uint32_t nsyms;
 } mg_snapshot;
 
 #define MG_SNAP_MAX 65536

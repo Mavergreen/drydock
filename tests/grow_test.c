@@ -2178,8 +2178,9 @@ static void test_grow_repairs_header_references(void) {
     CHECK(r == 0, "repair: a grow with two confirmed references succeeds (got %d)", r);
     if (r == 0) {
         int64_t n = mhr_scan(buf, fsize, HR_BASE - 0x1000, hr_record, &s);
-        CHECK(n == 2 && s.c[0].addr == HR_PLAIN_VA + 3 && s.c[1].addr == HR_PLAIN_VA + 11,
-              "repair: both leas address the new base (%lld)", (long long)n);
+        CHECK(n == 2 && s.c[0].addr == HR_PLAIN_VA + 3 && s.c[1].addr == HR_PLAIN_VA + 11 &&
+              s.c[0].immlen == 0 && s.c[1].immlen == 0,
+              "repair: both leas address the new base, with no immediate (%lld)", (long long)n);
         CHECK(refs_to(buf, fsize, HR_BASE) == 0, "repair: none addresses the old base");
     }
     free(buf);
@@ -2264,6 +2265,72 @@ static void test_verify_watches_header_references(void) {
                                 MG_T_PLAINSECT | MG_T_FUNCSTARTS, give_header_refs, undo_header_ref);
     check_verify_rejects_undone("a repaired reference one byte short of the header",
                                 MG_T_PLAINSECT | MG_T_FUNCSTARTS, give_header_refs, misaim_header_ref);
+}
+
+/* An image whose one reference to the header is a lea at `far`, where
+ * __plain moves, with a fourth function start naming it. */
+static uint8_t *build_far_ref(uint64_t far, size_t *fsize) {
+    static const uint32_t one[] = { 0 };
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_PLAINSECT | MG_T_FUNCSTARTS);
+    plant_header_refs(buf, *fsize, one, 1);
+    struct section_64 *pl = find_section_struct(buf, *fsize, "__plain");
+    struct linkedit_data_command *fs =
+        (struct linkedit_data_command *)find_lc(buf, *fsize, LC_FUNCTION_STARTS);
+    if (!pl || !fs) { CHECK(0, "setup: __plain and function starts"); return buf; }
+    pl->addr = far;
+    hr_plant(buf + pl->offset, far, 2, 0x05, 0, HR_BASE);
+    uint8_t *p = buf + fs->dataoff + 6;             /* past 0x1000, 0x1800, 0x2000 */
+    uint64_t d = far - (HR_BASE + 0x2000);
+    do { uint8_t b = d & 0x7f; d >>= 7; *p++ = (uint8_t)(b | (d ? 0x80 : 0)); } while (d);
+    *p++ = 0;
+    fs->datasize = (uint32_t)(p - (buf + fs->dataoff));
+    return buf;
+}
+
+/* A grow of 0x1000 takes a disp32 of INT32_MIN + 0x1000 exactly to INT32_MIN,
+ * and one a byte further past it. */
+static void test_grow_refuses_a_reference_the_grow_would_put_out_of_reach(void) {
+    size_t fsize;
+    uint8_t *buf = build_far_ref(HR_BASE + 0x7fffeff9ull, &fsize);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "reach: a disp32 the grow takes exactly to INT32_MIN is repaired (got %d)", r);
+    CHECK(r != 0 || refs_to(buf, fsize, HR_BASE - 0x1000) == 1, "reach: it addresses the new base");
+    free(buf);
+    buf = build_far_ref(HR_BASE + 0x7fffeffaull, &fsize);
+    check_grow_refuses_header_refs("a reference a grow would put out of reach", buf, fsize,
+        "ERROR: the code at 0x17fffeffd addresses the image's own header with a disp32 of "
+        "-2147479553, and a grow of 4096 would take it past INT32_MIN; refusing to grow");
+}
+
+/* mg_verify's image must hold every section it names. Given one cut a byte
+ * short of __plain's end, the header-reference scan cannot read __plain, and
+ * verify says so rather than report code at 0. (No grow is needed: with no
+ * function starts, nothing else it reads lies past the cut.) */
+static const mg_snapshot *verify_snap;
+static int verify_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
+    (void)unused;
+    return mg_verify(*pbuf, *pfsize, verify_snap);
+}
+static void test_verify_says_when_it_cannot_search_the_image(void) {
+    static const uint32_t two[] = { 0, 8 };
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_PLAINSECT);
+    plant_header_refs(buf, fsize, two, 2);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "unsearchable: snapshot"); free(buf); return; }
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    size_t cut = pl ? pl->offset + pl->size - 1 : fsize;
+    char want[256];
+    snprintf(want, sizeof want, "ERROR: verify FAILED -- an instruction section lies past the end "
+             "of the %zu-byte image, so it cannot be searched for code that addresses the header; "
+             "refusing.", cut);
+    int r;
+    verify_snap = &snap;
+    int said = stderr_contains_during(verify_thunk, &buf, &cut, 0, want, &r);
+    CHECK(r == -1 && said, "unsearchable: verify refuses, saying '%s' (got %d)", want, r);
+    mg_snapshot_free(&snap);
+    free(buf);
 }
 
 static void test_ensure_pad_repairs_each_header_reference(void) {
@@ -3062,6 +3129,66 @@ static void test_grow_moves_the_symbols_that_name_the_header(void) {
     free(buf);
 }
 
+/* Verification's own check on the symbols: one left naming where the header
+ * was, one moved that named content, and one retyped. */
+static void give_hsyms(uint8_t *buf, size_t fsize, uint32_t grow) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    struct nlist_64 *nl = (struct nlist_64 *)(buf + st->symoff);
+    (void)grow;
+    for (int i = 0; i < 4; i++) {
+        nl[i].n_type = hsyms[i].type;
+        nl[i].n_sect = hsyms[i].type == N_ABS ? NO_SECT : 1;
+        nl[i].n_value = hsyms[i].value;
+    }
+    st->nsyms = 4;
+}
+static struct nlist_64 *hsym(uint8_t *buf, size_t fsize, int i) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    return (struct nlist_64 *)(buf + st->symoff) + i;
+}
+static void unmove_hsym(uint8_t *buf, size_t fsize, uint32_t grow) { hsym(buf, fsize, 0)->n_value += grow; }
+static void move_content_sym(uint8_t *buf, size_t fsize, uint32_t grow) { hsym(buf, fsize, 1)->n_value -= grow; }
+static void retype_hsym(uint8_t *buf, size_t fsize, uint32_t grow) {
+    (void)grow;
+    hsym(buf, fsize, 0)->n_type = N_ABS | N_EXT;
+}
+static void drop_hsym(uint8_t *buf, size_t fsize, uint32_t grow) {
+    (void)grow;
+    ((struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB))->nsyms = 3;
+}
+
+static void test_verify_watches_the_symbols(void) {
+    check_verify_rejects_undone("a symbol left naming where the header was", MG_T_SYMTAB,
+                                give_hsyms, unmove_hsym);
+    check_verify_rejects_undone("a symbol naming content, moved with the header", MG_T_SYMTAB,
+                                give_hsyms, move_content_sym);
+    check_verify_rejects_undone("a symbol retyped", MG_T_SYMTAB, give_hsyms, retype_hsym);
+    check_verify_rejects_undone("a symbol dropped", MG_T_SYMTAB, give_hsyms, drop_hsym);
+}
+
+/* A symbol table past the image: no snapshot, and no verify. */
+static void test_snapshot_and_verify_refuse_a_symbol_table_past_the_image(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 1000, 0);   /* 6656 + 16000 > 8192 */
+    mg_snapshot snap;
+    CHECK(mg_snapshot_take(buf, fsize, &snap) == -1, "symbols: a snapshot of a table past the image");
+    free(buf);
+    buf = build_symbol_image(&fsize, 4, 0);
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "symbols: snapshot"); free(buf); return; }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "symbols: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    ((struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB))->nsyms = 1000;
+    int r;
+    verify_snap = &snap;
+    int said = stderr_contains_during(verify_thunk, &buf, &fsize, 0,
+        "ERROR: verify FAILED -- LC_SYMTAB's symbol table does not fit within the grown image; "
+        "refusing.", &r);
+    CHECK(r == -1 && said, "symbols: verify refuses a table past the grown image (got %d)", r);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
 static void test_grow_refuses_a_symbol_table_past_the_image(void) {
     size_t fsize;
     uint8_t *buf = build_symbol_image(&fsize, 1000, 0);   /* 6656 + 16000 > 8192 */
@@ -3159,6 +3286,8 @@ int main(void) {
     test_grow_refuses_a_header_reference_without_function_starts();
     test_grow_refuses_code_it_cannot_scan();
     test_verify_watches_header_references();
+    test_grow_refuses_a_reference_the_grow_would_put_out_of_reach();
+    test_verify_says_when_it_cannot_search_the_image();
     test_ensure_pad_repairs_each_header_reference();
     test_ensure_pad_repairs_one_header_reference();
     test_ensure_pad_repairs_across_a_two_page_grow();
@@ -3186,6 +3315,8 @@ int main(void) {
     test_confirm_rejects_what_the_decoder_cannot_decode();
     test_confirm_reports_an_image_it_cannot_scan();
     test_grow_moves_the_symbols_that_name_the_header();
+    test_verify_watches_the_symbols();
+    test_snapshot_and_verify_refuse_a_symbol_table_past_the_image();
     test_grow_refuses_a_symbol_table_past_the_image();
     test_grow_moves_no_symbol_when_it_refuses();
     test_confirm_reports_a_bad_section_before_a_good_one();

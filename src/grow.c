@@ -378,17 +378,48 @@ static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
     return 0;
 }
 
+/* The first LC_SYMTAB's table, or NULL with *nsyms 0 when there is none;
+ * -1 when it does not fit within the image. */
+struct mg_symtab_ctx { const struct symtab_command *st; };
+static int mg_symtab_cb(const struct load_command *lc, void *ctx_) {
+    if (lc->cmd != LC_SYMTAB) return 0;
+    ((struct mg_symtab_ctx *)ctx_)->st = (const struct symtab_command *)lc;
+    return 1;
+}
+static int mg_symtab(const mi_image *im, size_t fsize, const struct nlist_64 **nl, uint32_t *nsyms) {
+    struct mg_symtab_ctx c = { NULL };
+    mi_each_lc(im, mg_symtab_cb, &c);
+    *nl = NULL;
+    *nsyms = 0;
+    if (!c.st) return 0;
+    if ((uint64_t)c.st->symoff + (uint64_t)c.st->nsyms * sizeof(struct nlist_64) > fsize) return -1;
+    *nl = (const struct nlist_64 *)(im->buf + c.st->symoff);
+    *nsyms = c.st->nsyms;
+    return 0;
+}
+
 int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     mi_image im;
+    const struct nlist_64 *nl;
     s->refs = NULL;
     s->nrefs = 0;
+    s->symval = NULL;
+    s->symtype = NULL;
+    s->nsyms = 0;
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!s->addr) return -1;
     if (mg_collect(buf, fsize, s->addr, NULL, MG_SNAP_MAX, &s->n) != 0 ||
         mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &s->base) != 0 ||
-        mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs) {
+        mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs ||
+        mg_symtab(&im, fsize, &nl, &s->nsyms) != 0 ||
+        !(s->symval = (uint64_t *)malloc((s->nsyms + 1) * sizeof *s->symval)) ||
+        !(s->symtype = (uint8_t *)malloc(s->nsyms + 1))) {
         mg_snapshot_free(s);
         return -1;
+    }
+    for (uint32_t i = 0; i < s->nsyms; i++) {
+        s->symval[i] = nl[i].n_value;
+        s->symtype[i] = nl[i].n_type;
     }
     return 0;
 }
@@ -396,6 +427,8 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
 void mg_snapshot_free(mg_snapshot *s) {
     free(s->addr); s->addr = NULL; s->n = 0;
     free(s->refs); s->refs = NULL; s->nrefs = 0;
+    free(s->symval); s->symval = NULL;
+    free(s->symtype); s->symtype = NULL; s->nsyms = 0;
 }
 
 struct mg_overlap_ctx { const mi_image *im; const struct segment_command_64 *a, *hit; };
@@ -434,7 +467,14 @@ static int mg_found_ref(const mhr_cand *c, void *ctx_) {
 static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
                           uint64_t base) {
     mhr_cand stale = { 0, 0, 0 };
-    if (mhr_scan(buf, fsize, before->base, mg_first_ref, &stale) != 0) {
+    int64_t n = mhr_scan(buf, fsize, before->base, mg_first_ref, &stale);
+    if (n < 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- an instruction section lies past the end of "
+                        "the %zu-byte image, so it cannot be searched for code that addresses "
+                        "the header; refusing.\n", fsize);
+        return -1;
+    }
+    if (n != 0) {
         fprintf(stderr, "ERROR: verify FAILED -- code at %#llx still addresses %#llx, where "
                         "the header was before the grow; refusing.\n",
                 (unsigned long long)stale.addr, (unsigned long long)before->base);
@@ -452,6 +492,35 @@ static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *b
         return -1;
     }
     free(f.seen);
+    return 0;
+}
+
+/* Every symbol keeps its type, and its value unless it is an N_SECT symbol,
+ * not a stab, that named the header: that one names it where it is now. */
+static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot *before,
+                             uint64_t base) {
+    const struct nlist_64 *nl;
+    uint32_t nsyms;
+    if (mg_symtab(im, fsize, &nl, &nsyms) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- LC_SYMTAB's symbol table does not fit within "
+                        "the grown image; refusing.\n");
+        return -1;
+    }
+    if (nsyms != before->nsyms) {
+        fprintf(stderr, "ERROR: verify FAILED -- LC_SYMTAB holds %u symbols, %u before the "
+                        "grow; refusing.\n", nsyms, before->nsyms);
+        return -1;
+    }
+    for (uint32_t i = 0; i < nsyms; i++) {
+        uint8_t t = before->symtype[i];
+        uint64_t want = !(t & N_STAB) && (t & N_TYPE) == N_SECT && before->symval[i] == before->base
+                        ? base : before->symval[i];
+        if (nl[i].n_type == t && nl[i].n_value == want) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- symbol %u is type %#x, value %#llx after the "
+                        "grow, and must be type %#x, value %#llx; refusing.\n", i, nl[i].n_type,
+                (unsigned long long)nl[i].n_value, t, (unsigned long long)want);
+        return -1;
+    }
     return 0;
 }
 
@@ -497,6 +566,7 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     }
     uint64_t base;
     if (mi_image_base(&im, &base) != 0) return -1;
+    if (mg_verify_symbols(&im, fsize, before, base) != 0) return -1;
     return mg_verify_refs(buf, fsize, before, base);
 }
 
@@ -1090,13 +1160,35 @@ static int mg_bump_cb(void *field, int width, uint64_t span, int flags, void *ct
     return 0;
 }
 
+/* mg_header_refs_ok's mhr_scan callback: stop at the first reference whose
+ * disp32 cannot take the grow off without passing INT32_MIN. */
+struct mg_reach_ctx { const uint8_t *buf; uint32_t grow; int hit; mhr_cand far; int32_t disp; };
+static int mg_out_of_reach(const mhr_cand *c, void *ctx_) {
+    struct mg_reach_ctx *x = (struct mg_reach_ctx *)ctx_;
+    int32_t disp;
+    memcpy(&disp, x->buf + c->off, sizeof disp);
+    if ((int64_t)disp - (int64_t)x->grow >= INT32_MIN) return 0;
+    x->hit = 1;
+    x->far = *c;
+    x->disp = disp;
+    return 1;
+}
+
 /* 0 if every candidate mhr_scan finds for the image's base is an
- * instruction mhr_confirm vouches for, which the grow then repairs; otherwise
- * -1, having said why. */
-static int mg_header_refs_ok(const uint8_t *buf, size_t fsize) {
+ * instruction mhr_confirm vouches for, which the grow then repairs by taking
+ * `grow` off its disp32; otherwise -1, having said why. */
+static int mg_header_refs_ok(const uint8_t *buf, size_t fsize, uint32_t grow) {
     mhr_cand bad = { 0, 0, 0 };
     int r = mhr_confirm(buf, fsize, &bad);
-    if (r == MHR_CONFIRMED) return 0;
+    if (r == MHR_CONFIRMED) {
+        struct mg_reach_ctx x = { buf, grow, 0, { 0, 0, 0 }, 0 };
+        mhr_scan(buf, fsize, mg_base_of((uint8_t *)buf, fsize), mg_out_of_reach, &x);
+        if (!x.hit) return 0;
+        fprintf(stderr, "ERROR: the code at %#llx addresses the image's own header with a "
+                        "disp32 of %d, and a grow of %u would take it past INT32_MIN; "
+                        "refusing to grow\n", (unsigned long long)x.far.addr, x.disp, grow);
+        return -1;
+    }
     if (r == MHR_UNSCANNABLE)
         fprintf(stderr, "ERROR: an instruction section lies past the end of the image, so "
                         "it cannot be searched for code that addresses the image's own "
@@ -1317,7 +1409,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         fprintf(stderr, "ERROR: malformed S_INIT_FUNC_OFFSETS section; refusing to grow\n");
         return -1;
     }
-    if (mg_header_refs_ok(buf, fsize) != 0) return -1;
+    if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;
     if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
     /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
      * after the buffer is mutated) can't do it: widening one entry cascades
