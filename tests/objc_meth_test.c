@@ -1342,17 +1342,40 @@ static void poke_rebase_both_ways(uint8_t *b) {
     restream_plus(b, REBASE_TYPE_TEXT_ABSOLUTE32, RMF_SELREFS + 8 - RMF_DATA);
 }
 
-static void test_a_slot_rebased_both_ways_verifies(void) {
+/* __DATA+0, rebased twice as a pointer. */
+static void poke_rebase_twice(uint8_t *b) { restream_plus(b, REBASE_TYPE_POINTER, 0); }
+
+/* The copied old stream's last run, poke_rebase_twice's second rebase of
+ * __DATA+0, rebases __DATA+0x70 instead: the same number of rebases, and
+ * every one the input had still present at least once. */
+static void c_twice_moved(mma_out *o) {
+    mrb_set was;
+    lcs_of in = lcs(fx, RMF_SIZE);
+    uint8_t *run;
+    mrb_decode(fx + in.di->rebase_off, in.di->rebase_size, 4, &was, NULL, 0);
+    run = o->buf + stream_at(o) + was.end - 4;
+    CHECK(run[0] == 0x11 && run[1] == 0x22 && run[2] == 0 && run[3] == 0x51,
+          "twice moved: the old stream's last run is %02x %02x %02x %02x", run[0], run[1], run[2], run[3]);
+    run[2] = 0x70;
+    mrb_free(&was);
+}
+
+static void verifies(void (*poke)(uint8_t *), const char *label) {
     mma_out o;
     mi_image in;
     char why[512] = "";
-    int rc = build(RMF_PLAIN, poke_rebase_both_ways, &o, why, sizeof why);
-    CHECK(rc == MMA_OK, "both ways: build rc %d (%s)", rc, why);
+    int rc = build(RMF_PLAIN, poke, &o, why, sizeof why);
+    CHECK(rc == MMA_OK, "%s: build rc %d (%s)", label, rc, why);
     if (rc != MMA_OK) return;
     mi_wrap(fx, RMF_SIZE, &in);
     rc = mma_verify(&in, &o, why, sizeof why);
-    CHECK(rc == MMA_OK, "both ways: verify rc %d (%s)", rc, why);
+    CHECK(rc == MMA_OK, "%s: verify rc %d (%s)", label, rc, why);
     mma_out_free(&o);
+}
+
+static void test_a_slot_rebased_twice_verifies(void) {
+    verifies(poke_rebase_both_ways, "both ways");
+    verifies(poke_rebase_twice, "twice as a pointer");
 }
 
 /* The input rebases __LINKEDIT+0x100, whose bytes the new stream moves up. */
@@ -1369,6 +1392,8 @@ static void test_verification_refuses_every_difference(void) {
     refused_verify(RMF_PLAIN, NULL, c_move_rebase, "offset 0x1088 has no rebase", "a rebase on the wrong slot");
     refused_verify(RMF_PLAIN, NULL, c_add_rebase, "rebases; the old one had", "a rebase for an IMP of 0");
     refused_verify(RMF_PLAIN, NULL, c_retype_old, "old rebase of segment 2 offset 0x0, type 1, is gone", "an old rebase retyped");
+    refused_verify(RMF_PLAIN, poke_rebase_twice, c_twice_moved, "the old rebase of segment 2 offset 0x0, "
+                   "type 1, is gone", "one of two rebases of a slot moved");
     refused_verify(RMF_PLAIN, NULL, c_retype_new, "offset 0x1008 has no rebase", "a new pointer rebased as 32 bits");
     refused_verify(RMF_PLAIN, NULL, c_dvmsize, "vmsize/filesize", "D grown too far");
     refused_verify(RMF_PLAIN, NULL, c_lfilesize, "__LINKEDIT's geometry", "__LINKEDIT's size");
@@ -1456,7 +1481,7 @@ int main(void) {
     test_conversion_refusals_write_nothing();
     test_every_conversion_verifies();
     test_verification_refuses_every_difference();
-    test_a_slot_rebased_both_ways_verifies();
+    test_a_slot_rebased_twice_verifies();
     test_convert_swaps_only_what_verifies();
     test_new_rebases_name_ds_own_segment();
     test_slots_the_conversion_cannot_rewrite_are_refused();
