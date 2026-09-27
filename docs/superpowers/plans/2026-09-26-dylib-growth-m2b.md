@@ -4,7 +4,7 @@
 
 **Goal:** A dylib's or bundle's header pad grows: `mg_grow_header` raises everything after the load commands by the grow G, and every absolute address that names it, so that `dylib append`, `dylib insert`, `rpath replace` and every other statement that needs pad work on frameworks. Each raise verifies itself six ways, and the executable route is unchanged.
 
-**Architecture:** `mg_grow_header` picks its route by file type (spec Decision 1). The raise shares the lowering's pre-mutation audits, snapshot, insert and base-relative walkers, and differs where the spec's Decision 2 says: segment and section geometry and `LC_ROUTINES_64` (`mg_raise_cb`), rebased pointers (`mg_raise_pointers`), symbols and stabs (`mg_move_symbols`), `LC_UUID` (`mg_raised_uuid`) and `LC_SEGMENT_SPLIT_INFO` (`mg_drop_split_info`). `mg_verify` gains the raise's delta, and on the raise two more checks: the image byte for byte against the original (`mg_verify_bytes`) and three independent oracles (`mg_oracles`). All in `src/grow.[ch]`; a hand-built dylib fixture in `tests/grow_test.c` carries every structure.
+**Architecture:** `mg_grow_header` picks its route by file type (spec Decision 1). The raise shares the lowering's pre-mutation audits, snapshot, insert and base-relative walkers, and differs where the spec's Decision 2 says: segment and section geometry and `LC_ROUTINES_64` (`mg_raise_cb`), rebased pointers (`mg_raise_pointers` vouches for each before anything moves, and `mg_raise_rebased` moves them), symbols and stabs (`mg_move_symbols`), `LC_UUID` (`mg_raised_uuid`) and `LC_SEGMENT_SPLIT_INFO` (`mg_drop_split_info`). `mg_verify` gains the raise's delta, and on the raise two more checks: the image byte for byte against the original (`mg_verify_bytes`) and four oracles read by code of their own (`mg_oracles`). All in `src/grow.[ch]`; a hand-built dylib fixture in `tests/grow_test.c` carries every structure.
 
 **Tech Stack:** C as the 10.9 clang (Apple LLVM 6.0) accepts it, with CommonCrypto's `CC_SHA256` (libSystem); CMake through shipyard; POSIX `sh`; hand-built in-memory Mach-O fixtures in `tests/grow_test.c`; a dylib and a program compiled at test time in `tests/cli_test.sh`.
 
@@ -24,13 +24,16 @@ Decided 2026-09-26, while this plan was under review (the controller's, on the p
    - a symbol or stab whose value is below the base, like one naming the header, stays (ld64's closing `N_SO` holds 0);
    - the UUID is SHA-256 over the old UUID and then G as 8 bytes, little-endian, as an RFC 4122 version 4 UUID;
    - Decision 9's rebase oracle already exists (`tests/rebase_oracle_test.sh`), so M2 adds none;
-   - beyond Decision 6, a raise refuses a segment whose file data starts before F, an `LC_UUID`, `LC_ROUTINES_64` or encryption command too short to read, and a dylib or bundle that is not x86_64.
+   - beyond Decision 6, a raise refuses a segment whose file data starts before F, an `LC_UUID`, `LC_ROUTINES_64`, `LC_DYSYMTAB` or encryption command too short to read, and a dylib or bundle that is not x86_64;
+   - and, from the review of this plan (2026-09-27), what a raise cannot move and no system image has: beside `LC_DYLD_INFO`, a table of contents, module table, or external or local relocations in `LC_DYSYMTAB` (their addresses are not rebase opcodes); and a section aligned to more than a page (G is one page, so the raise would break its alignment). Task 9's sweeps show neither fires on this host's 1,180 dylibs and bundles or its 1,128 executables;
+   - code that names an address outside the image (below the base, or past its last segment) is **not** refused, though the raise moves the code G further from it. The review proposed it, on condition that it fire on no system image. Tried, it refused 19 of the 1,180 and one bundle of the executable corpus, each for a disp32 that decoding "confirms" 143 MiB or more outside the image (vImage's, for one, is a jump table after a `ret` that no data-in-code entry declares, decoded as `pushq 0x74ffffff(%rip)`), and a position-independent image names nothing outside itself RIP-relatively. So it would only ever refuse falsely;
+   - which segment maps a rebased pointer is decided once, before anything moves, and the raise then moves the values the snapshot read (the review found a second pass, against the moved layout, that refused a pointer into a segment past a gap).
 4. **No window of false docs.** `compat/README.md`'s rows that say a dylib is refused, and `tests/README.md`'s note that says so, change in Task 9, so they are true when this plan lands; M3 keeps the rest of the documentation.
 5. **CI is a post-push check** (Task 9's last step): Task 8's `cli_test` block builds with CI's clang and runs under Rosetta, which this host cannot.
 
 ## The measurements that decide this plan
 
-Measured 2026-09-26 on this host (10.9, ld64-241.9), with this plan's finished build, over every regular file under `/usr/lib` and `/System/Library/Frameworks` with an x86_64 slice whose file type is `MH_DYLIB` or `MH_BUNDLE`: 1,180 files, 399 dylibs and 781 bundles. Each was thinned, its signature deleted, and given `rpath append`s past its pad (Task 9's sweep).
+Measured 2026-09-26 on this host (10.9, ld64-241.9), with this plan's finished build (and again 2026-09-27, after the review's changes: every exit status, output checksum and message the same), over every regular file under `/usr/lib` and `/System/Library/Frameworks` with an x86_64 slice whose file type is `MH_DYLIB` or `MH_BUNDLE`: 1,180 files, 399 dylibs and 781 bundles. Each was thinned, its signature deleted, and given `rpath append`s past its pad (Task 9's sweep).
 
 | | before (M2a) | after |
 |---|---|---|
@@ -59,7 +62,13 @@ Measured 2026-09-26 on this host (10.9, ld64-241.9), with this plan's finished b
   shasum -a 256 "$B/grow_test" "$B/script_test" "$B/drydock-macho-rewrite" | tee "$B/.last-sha"
   ```
   Then confirm that the sums changed from `$pre` (a change to a test file changes only its own test's sum). A test result against an unchanged binary is not a result. Below, "build (rebuild check)" means exactly this.
-- **TDD and mutation proof** for every code task. Write the test first and see it fail as the step says; then write the code. Then apply every row of the task's mutation table, each alone, rebuild (rebuild check), and see it fail with the row's text. Mutate only a saved copy's original: `M=$(mktemp -d -t m2b); cp src/grow.c "$M/"` (10.9's `mktemp -d` needs a template). Edit, rebuild, run, then `cp "$M/grow.c" src/grow.c && cmp src/grow.c "$M/grow.c"`, and rebuild. **Never `git stash` and never `git checkout --`**: restore only from the saved copy. A mutation that no test kills is a finding: add the test that kills it, in the same task. Many rows are killed first by the raise refusing itself at verification ("raise: the grow succeeds (got -1)"): that is the verification catching the slip, and each such row's own assertion stands behind it.
+- **TDD and mutation proof** for every code task. Write the test first and see it fail as the step says; then write the code. Then apply every row of the task's mutation table, each alone, and see it fail with the row's text. For each row:
+  1. **Save every file the task's rows touch**, once per task: `M=$(mktemp -d -t m2b); cp src/grow.c tests/script_test.c "$M/"` (10.9's `mktemp -d` needs a template). This plan's rows touch only those two: `src/grow.c`, and Task 4's row 14 `tests/script_test.c`.
+  2. **Apply the row, and confirm it applied**: `! cmp -s src/grow.c "$M/grow.c"` (or `script_test.c`), and `grep -c -F` of a distinctive line of the row's new text giving 1 (a row that only deletes: of its old text, giving 0). The rebuild check's changed sums are no such confirmation: the binaries' debug map (`N_OSO`) holds each object's modification time, so every rebuild changes the sums, whether or not the edit landed.
+  3. **Rebuild (rebuild check), run, and see the row's text.**
+  4. **Restore every saved file**: `cp "$M/grow.c" src/grow.c && cmp src/grow.c "$M/grow.c"`, and the same for `tests/script_test.c`; then rebuild.
+
+  **Never `git stash` and never `git checkout --`**: restore only from the saved copies. A mutation that no test kills is a finding: add the test that kills it, in the same task. Many rows are killed first by the raise refusing itself at verification ("raise: the grow succeeds (got -1)"): that is the raise's own verification refusing its result, and each such row's own assertion stands behind it.
 - **Comments are a last resort:** prefer a test, then the commit message, then a doc, then one inline sentence. No history narration, and no reference to a plan or spec from source (both are deleted once implemented).
 - **Exit codes:** `EX_REFUSED` = 1 (`MR_REFUSED`), `EX_FAIL` = 2 (`MR_FAIL`). A statement never writes its input, and nothing is written on a refusal.
 - **Every refusal this plan adds happens before anything is mutated**, with its reason on stderr, ending `; refusing to grow`. The split-info drop (Task 4) mutates after every refusal and before the snapshot, as the spec's Decision 4 has it.
@@ -76,22 +85,23 @@ Measured 2026-09-26 on this host (10.9, ld64-241.9), with this plan's finished b
 ## Review Focus
 
 1. **A dylib linked above base 0.** Every 10.9 system dylib is linked at 0, but a `__TEXT` at a nonzero `vmaddr` exists (the spec's appendix), and base-relative and absolute arithmetic differ only there. The fixture is built at base 0x10000000 as well as 0 (`build_dylib_at`), and every Decision 2 row is checked at 0x10000000.
-2. **The edges of "content".** A pointer to base stays; to base + F, to a segment's start past a gap, and to a segment's end, is raised; one strictly inside the header, or outside every segment, refuses. A symbol below the base stays. Pinned by `test_raise_moves_pointers_to_the_edges_of_content`, `test_raise_refuses_what_it_cannot_move`, `test_raise_leaves_a_symbol_below_the_base`.
+2. **The edges of "content".** A pointer to base stays; to base + F, to a segment's start or a byte into it past a gap of one page or two, and to a segment's end, is raised; one strictly inside the header, or outside every segment, refuses. Which segment maps a pointer is decided before anything moves: a one-page raise opens a gap where `__ZERO + 8` was, and a gap of exactly G hid a second pass that tested the moved layout. A symbol below the base stays, and so does an export at offset 0. Pinned by `test_raise_moves_pointers_to_the_edges_of_content`, `test_raise_refuses_what_it_cannot_move`, `test_raise_leaves_a_symbol_below_the_base`, `test_raise_leaves_an_export_at_offset_0`.
 3. **An export trie that widens.** A raise adds G to offsets near 0, so a 2-byte ULEB can need 3 and the trie is rebuilt and appended past `__LINKEDIT`; the byte check must allow exactly that. Pinned by `test_raise_rebuilds_a_widening_export_trie` (two pages).
 4. **A segment at file offset 0 that maps no file** (a zero-fill `__ZERO`, like `__PAGEZERO` in shape) is content, not the header's segment. Pinned by `DY_ZEROSEG` in `test_grow_raises_past_what_it_can_vouch_for` and `test_raise_moves_the_segments_and_sections`.
 5. **Two split infos, adjacent.** Deleting one must not skip the command that slides into its place. Pinned by `test_raise_drops_every_split_info`.
+6. **What verification trusts.** Checks 1–3 and 5 read the image through the decoders the raise reads it through (`mg_rebases_read`, `mg_collect`'s walkers, `mg_symtab`, `mhr_scan`): an entry one of them misses is neither moved nor compared, and the grow passes. Their unit tests guard them, and `rebase_oracle_test` guards `mrb_decode` against `dyldinfo`. Check 4's oracles read with code of their own, and catch some such misses (Task 7's rows 20 and 21: an LSDA or personality the walker skips).
 
 ## Plan decisions at a glance
 
 Each is repeated, with its reason, in the task that makes it.
 
-- Task 1: the route is the file type; a dylib or bundle must be x86_64. The raise's refusals (Decision 6's, Decision 1's section rules, and three short commands) come first, in `mg_raise_ok`, and until Task 2 a dylib that passes them meets the old refusal, word for word, so every existing test of it stands.
-- Task 2: one `mg_grow_header`, with the raise in its own callback and walkers where Decision 2 differs from the lowering. "Names content" is "at base + F or past it"; a value exactly base is the header. `mg_verify` derives G from how far the first section moved, and the delta from the file type the snapshot kept, so its callers do not change.
+- Task 1: the route is the file type; a dylib or bundle must be x86_64. The raise's refusals (Decision 6's, Decision 1's section rules, four short commands, `LC_DYSYMTAB`'s tables and relocations, and a section aligned past a page) come first, in `mg_raise_ok`, and until Task 2 a dylib that passes them meets the old refusal, word for word, so every existing test of it stands.
+- Task 2: one `mg_grow_header`, with the raise in its own callback and walkers where Decision 2 differs from the lowering. "Names content" is "at base + F or past it"; a value exactly base is the header. Which segment maps each pointer is decided once, before anything moves. `mg_verify` derives G from how far the first section moved, and the delta from the file type the snapshot kept, so its callers do not change.
 - Task 3: the stab table exactly as Decision 2 has it, with an unknown stab refused, in one predicate (`mg_stab_address`) shared by the move and the snapshot.
 - Task 4: the drop is its own step, after every refusal and before the snapshot; `mg_classify` takes `raise`. `LC_LOAD_UPWARD_DYLIB` is accepted on both routes.
 - Task 5: the UUID is SHA-256 (CommonCrypto) over the old UUID and G as 8 little-endian bytes.
 - Task 6: check 3 compares the raised image with a copy of the original: the load commands against an expectation written independently of the patcher, and every byte from F on, less exactly what checks 1, 2 and 5 watch.
-- Task 7: check 4's three oracles; each is asked of the raised image only if it held of the original.
+- Task 7: check 4's four oracles (initializers, lazy pointers, exports, compact unwind), read by code of their own; each is asked of the raised image only if it held of the original.
 - Task 8: `dylib append`, `dylib insert` and `rpath replace` end to end, and a program running the raised dylib. `src/relations.h` gains the row, and no bit: a grow already sets `MREL_BASE_REL`.
 - Task 9: the real dylibs, the sweeps, and QUEUE item 31.
 
@@ -99,8 +109,8 @@ Each is repeated, with its reason, in the task that makes it.
 
 | file | responsibility | task |
 |---|---|---|
-| `src/grow.h` | the raise's contracts: `mg_raise_pointers` (2), `mg_snapshot`'s `kinds`, `first`, `raise` (2), `symaddr` (3), `old`, `oldsize` (6), `oracles` (7); `mg_classify`'s `raise` (4); `mg_raised_uuid` (5); `mg_oracles`, `MG_OR_*` (7); `mg_grow_header`, `mg_ensure_pad` and `mg_verify` contracts | 1–7 |
-| `src/grow.c` | `mg_raise_ok` (1); `mg_raise_cb`, `mg_raise_pointers`, `mg_move_symbols`, `mg_repair_refs`, the delta in `mg_verify` (2); `mg_stab_address`, `mg_sym_address` (3); `mg_drop_split_info`, `mg_has_cmd` (4); `mg_raised_uuid` (5); `mg_verify_bytes` (6); `mg_oracles` (7) | 1–7 |
+| `src/grow.h` | the raise's contracts: `mg_raise_pointers` (2), what verification trusts (7), `mg_snapshot`'s `kinds`, `first`, `raise` (2), `symaddr` (3), `old`, `oldsize` (6), `oracles` (7); `mg_classify`'s `raise` (4); `mg_raised_uuid` (5); `mg_oracles`, `MG_OR_*` (7); `mg_grow_header`, `mg_ensure_pad` and `mg_verify` contracts | 1–7 |
+| `src/grow.c` | `mg_raise_ok` (1); `mg_raise_cb`, `mg_raise_pointers`, `mg_raise_rebased`, `mg_move_symbols`, `mg_repair_refs`, the delta in `mg_verify` (2); `mg_stab_address`, `mg_sym_address` (3); `mg_drop_split_info`, `mg_has_cmd` (4); `mg_raised_uuid` (5); `mg_verify_bytes` (6); `mg_oracles` (7) | 1–7 |
 | `src/mach_compat.h` | `N_AST` | 3 |
 | `src/rewrite.c` | two comments that said a grow never changes the load commands | 4 |
 | `src/relations.h` | the raise's row | 8 |
@@ -118,7 +128,7 @@ Every code block below was cut from a checkpoint: M2a's checkpoints, then each t
 
 - the whole suite passed (29 tests, `chained_fixups` skipped), with no compiler warning, and `grow_test` passed under libgmalloc;
 - each "see it fail" step was run as written, by applying only that task's test edits to the checkpoint before it: the outputs quoted are what it printed;
-- every row of every mutation table (160 rows) was applied alone to that task's finished files, rebuilt after deleting every object and the binaries (with the sums compared), and failed with the row's text.
+- every row of every mutation table (188 rows) was applied alone to that task's finished files, by a script that first required the row's old text to occur exactly once and so confirmed the edit landed, rebuilt after deleting every object and the binaries (with the sums compared), and failed with the row's text; after each row the files were restored and compared.
 
 Task 9's numbers are from the finished build.
 
@@ -135,14 +145,15 @@ Task 9's numbers are from the finished build.
 - Produces:
   - `static int mg_raise_ok(const mi_image *im, uint64_t base, uint32_t first);` 0, or -1 having said why. Task 5 adds `LC_UUID` to it.
   - `mg_grow_header`'s local `int raise` (a dylib or bundle), which Tasks 2–7 read, and `uint64_t base` (from `mi_image_base`, which a base of 0 does not confuse, where `mi_text_base` did).
-  - In `tests/grow_test.c`, the fixture every later task uses: `build_dylib_at(uint64_t base, size_t *fsize, int opts)`, `build_dylib(size_t *fsize, int opts)` (base 0), `DY_F` (0x1000), `DY_FSIZE` (0x3300), `dy_ptrs`, the options `DY_UNWIND`, `DY_DIC`, `DY_ROUTINES`, `DY_SPLIT`, `DY_ZEROSEG`, and `dy_find`, `dy_section`, `dy_lc`, `dy_sect`.
+  - In `tests/grow_test.c`, the fixture every later task uses: `build_dylib_at(uint64_t base, size_t *fsize, int opts)`, `build_dylib(size_t *fsize, int opts)` (base 0), `DY_F` (0x1000), `DY_FSIZE` (0x3300), `dy_ptrs`, the options `DY_UNWIND` (compact unwind, and the `__gcc_except_tab` its LSDA names), `DY_DIC`, `DY_ROUTINES`, `DY_SPLIT`, `DY_ZEROSEG`, `DY_ZEROFAR`, and `dy_find`, `dy_section`, `dy_lc`, `dy_sect`.
 
 **Plan decisions.**
 
 - **The route.** `MH_EXECUTE` lowers (and must be PIE, as today); `MH_DYLIB` and `MH_BUNDLE` raise; anything else is refused, naming the three. A dylib or bundle that is not x86_64 is refused before anything else looks at it: the raise decodes its code (M1's decoder is x86-64), and the lowering's arm64 refusal speaks of lowering.
-- **The refusals, before anything moves** (`mg_raise_ok`): no `LC_DYLD_INFO[_ONLY]` (only rebase opcodes list every pointer a raise moves: spec Decision 6); a thread command; an encrypted image (`cryptid` ≠ 0) or a protected segment (a raise would move encrypted pages); any section below the first content (Decision 1); a `__TEXT` section whose address and file offset differ from the base by different amounts (Decision 1); a segment other than the header's whose file data starts before the first content (the insert would split it). And, because `mi_validate` vouches for only a command's first 8 bytes: an encryption command or `LC_ROUTINES_64` too short to read (item 32's class).
+- **The refusals, before anything moves** (`mg_raise_ok`): no `LC_DYLD_INFO[_ONLY]` (only rebase opcodes list every pointer a raise moves: spec Decision 6); a thread command; an encrypted image (`cryptid` ≠ 0) or a protected segment (a raise would move encrypted pages); any section below the first content (Decision 1); a `__TEXT` section whose address and file offset differ from the base by different amounts (Decision 1); a segment other than the header's whose file data starts before the first content (the insert would split it). And, because `mi_validate` vouches for only a command's first 8 bytes: an encryption command, `LC_ROUTINES_64` or `LC_DYSYMTAB` too short to read (item 32's class).
+- **What a raise cannot move, and no system image has.** `LC_DYSYMTAB`'s table of contents, module table, and external and local relocations name addresses that no rebase opcode lists, so a raise would leave them stale: beside `LC_DYLD_INFO`, any nonzero count refuses. Without `LC_DYLD_INFO`, Decision 6's refusal says so first (the old Sparkle carries both, and is refused for that), so `mg_raise_ok` judges the two together, after the walk. A section aligned to more than 2^12 bytes refuses: G is one page, and would break its alignment. Neither fires on this host's system images (Task 9); each costs one comparison.
 - **Until Task 2.** A dylib or bundle that passes every check meets the refusal every dylib meets today, word for word (`ERROR: only MH_EXECUTE can be grown (filetype=6)…`), so `tests/insert_dylib_test.sh` and the other tests that pin it stand, and `test_grow_raises_past_what_it_can_vouch_for` is this task's positive control: it proves such a dylib passes every new check. Task 2 removes the refusal.
-- **The fixture.** `build_dylib_at` is a small, well-formed x86_64 dylib, linkable in shape and ordinary in every way the raise does not care about, carrying one of each structure Decision 2 names; the layout is in its comment. `DY_ZEROSEG` adds a zero-fill segment at file offset 0 past a gap.
+- **The fixture.** `build_dylib_at` is a small, well-formed x86_64 dylib, linkable in shape and ordinary in every way the raise does not care about, carrying one of each structure Decision 2 names; the layout is in its comment. `DY_ZEROSEG` adds a zero-fill segment at file offset 0 past a one-page gap, and `DY_ZEROFAR` moves it past a two-page gap.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -196,6 +207,7 @@ insert:
  *   __TEXT      file [0, 0x2000)
  *     __text          0x1000: f1: lea base(%rip), %rax; ret.  f2 (0x1010): push; ret
  *     __stub_helper   0x1100: nops
+ *     __gcc_except_tab 0x1180 (DY_UNWIND): f2's LSDA
  *     __unwind_info   0x1800 (DY_UNWIND): f1 and f2, f2 with an LSDA
  *   __DATA      file [0x2000, 0x3000), vm to 0x4000
  *     __data          0x2000: dy_ptrs, three rebased pointers
@@ -207,7 +219,8 @@ insert:
  *     rebase 0x3000, bind 0x3010, export trie 0x3040 (_f1, _f2, _d),
  *     function starts 0x3080 (f1, f2), data in code 0x3090 (DY_DIC),
  *     symbols 0x30a0, strings 0x3200
- *   __ZERO      (DY_ZEROSEG) vm [0x6000, 0x7000), no file data */
+ *   __ZERO      (DY_ZEROSEG) vm [0x6000, 0x7000), no file data; with
+ *               DY_ZEROFAR, [0x7000, 0x8000), two pages past __LINKEDIT */
 #define DY_F      0x1000u
 #define DY_FSIZE  0x3300u
 #define DY_UNWIND 1
@@ -215,6 +228,7 @@ insert:
 #define DY_ROUTINES 4
 #define DY_SPLIT  8
 #define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
+#define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
 static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
 
 static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
@@ -259,7 +273,7 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     h->filetype = MH_DYLIB;
     h->flags = MH_DYLDLINK | MH_TWOLEVEL | MH_NOUNDEFS;
 
-    int ntext = (opts & DY_UNWIND) ? 3 : 2;
+    int ntext = (opts & DY_UNWIND) ? 4 : 2;
     struct segment_command_64 *tx = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
         sizeof *tx + ntext * sizeof(struct section_64));
     strcpy(tx->segname, "__TEXT");
@@ -272,7 +286,10 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
                 S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
     s = dy_sect(s, "__TEXT", "__stub_helper", base + 0x1100, 0x10, 0x1100,
                 S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
-    if (opts & DY_UNWIND) s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
+    if (opts & DY_UNWIND) {
+        s = dy_sect(s, "__TEXT", "__gcc_except_tab", base + 0x1180, 0x10, 0x1180, 0);
+        s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
+    }
 
     struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
         sizeof *da + 5 * sizeof(struct section_64));
@@ -303,11 +320,11 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
         struct segment_command_64 *z = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
             sizeof *z + sizeof(struct section_64));
         strcpy(z->segname, "__ZERO");
-        z->vmaddr = base + 0x6000;
+        z->vmaddr = base + ((opts & DY_ZEROFAR) ? 0x7000 : 0x6000);
         z->vmsize = 0x1000;
         z->maxprot = z->initprot = VM_PROT_READ | VM_PROT_WRITE;
         z->nsects = 1;
-        dy_sect((struct section_64 *)(z + 1), "__ZERO", "__zero", base + 0x6000, 0x1000, 0,
+        dy_sect((struct section_64 *)(z + 1), "__ZERO", "__zero", z->vmaddr, 0x1000, 0,
                 S_ZEROFILL);
     }
     struct dylib_command *id = (struct dylib_command *)dy_lc(&lc, h, LC_ID_DYLIB, 48);
@@ -378,7 +395,7 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
         uw[7] = 0x2040;                             /* personality: the __got slot */
         uw[8] = 0x1000; uw[9] = 0x48; uw[10] = 56;  /* f1; its page; LSDA from 56 */
         uw[11] = 0x1100; uw[12] = 0; uw[13] = 64;   /* the sentinel: the end of f2 */
-        uw[14] = 0x1010; uw[15] = 0x2028;           /* f2's LSDA, in __data */
+        uw[14] = 0x1010; uw[15] = 0x1180;           /* f2's LSDA, in __gcc_except_tab */
         uw[18] = 3; ((uint16_t *)(buf + 0x1800 + 0x48))[2] = 8;
         ((uint16_t *)(buf + 0x1800 + 0x48))[3] = 2;
         uw[20] = 0x00000000u | (1u << 24); uw[21] = 0x00000010u | (1u << 24);
@@ -439,6 +456,14 @@ static void dy_below(uint8_t *buf) {
     dy_section(buf, "__DATA", "__bss")->addr = seg_named(buf, DY_FSIZE, "__TEXT")->vmaddr + 0xfff;
 }
 static void dy_early(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->fileoff = 0xfff; }
+static void dy_short_dysymtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYSYMTAB; }
+static struct dysymtab_command *dy_dysymtab(uint8_t *buf) { return (struct dysymtab_command *)dy_find(buf, LC_DYSYMTAB); }
+static void dy_toc(uint8_t *buf) { dy_dysymtab(buf)->ntoc = 1; }
+static void dy_modtab(uint8_t *buf) { dy_dysymtab(buf)->nmodtab = 1; }
+static void dy_extrel(uint8_t *buf) { dy_dysymtab(buf)->nextrel = 1; }
+static void dy_locrel(uint8_t *buf) { dy_dysymtab(buf)->nlocrel = 1; }
+static void dy_no_info_locrel(uint8_t *buf) { dy_no_info(buf); dy_locrel(buf); }
+static void dy_overaligned(uint8_t *buf) { dy_section(buf, "__DATA", "__data")->align = 13; }
 static void dy_not_x86_64(uint8_t *buf) { ((struct mach_header_64 *)buf)->cputype = CPU_TYPE_POWERPC64; }
 static const struct { const char *what; dy_poke poke; const char *why; } dy_unraisable[] = {
     { "no LC_DYLD_INFO", dy_no_info,
@@ -467,6 +492,19 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
     { "a segment whose file data starts before the first content", dy_early,
       "ERROR: segment __DATA's file data starts at 4095, before the first content at 4096; "
       "refusing to grow" },
+    { "a short LC_DYSYMTAB", dy_short_dysymtab,
+      "ERROR: LC_DYSYMTAB is 16 bytes, too short to hold its tables' counts; refusing to grow" },
+    { "a table of contents", dy_toc,
+      "ERROR: LC_DYSYMTAB lists 1 table-of-contents entries, 0 modules, 0 external and 0 local "
+      "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
+    { "a module table", dy_modtab, "ERROR: LC_DYSYMTAB lists 0 table-of-contents entries, 1 modules" },
+    { "external relocations", dy_extrel, "0 modules, 1 external and 0 local relocations" },
+    { "local relocations", dy_locrel, "0 external and 1 local relocations" },
+    { "local relocations and no LC_DYLD_INFO", dy_no_info_locrel,
+      "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes" },
+    { "a section aligned past a page", dy_overaligned,
+      "ERROR: section __DATA,__data is aligned to 2^13 bytes, more than the page a raise moves it "
+      "by; refusing to grow" },
     { "a dylib that is not x86_64", dy_not_x86_64,
       "ERROR: only an x86_64 dylib or bundle can be grown (cputype=0x1000012): its code is "
       "decoded to find what addresses its header" },
@@ -503,6 +541,7 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
         ((struct mach_header_64 *)buf)->filetype = filetype[i];
         e->cmd = LC_ENCRYPTION_INFO_64;
         e->cryptoff = e->cryptsize = e->cryptid = 0;
+        dy_section(buf, "__DATA", "__data")->align = 12;
         snprintf(needle, sizeof needle, "ERROR: only MH_EXECUTE can be grown (filetype=%u)",
                  filetype[i]);
         check_grow_refuses_header_refs("a dylib or bundle a raise can vouch for", buf, fsize,
@@ -512,7 +551,7 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:4733`):
+In `tests/grow_test.c`, immediately after (`:4761`):
 
 ```c
     test_grow_accepts_binds_outside_the_header_segment();
@@ -528,7 +567,7 @@ insert:
 - [ ] **Step 2: Run them to see them fail**
 
 Run: build (rebuild check), then `"$B/grow_test"`.
-Expected: exit 1, and 16 `FAIL:` lines, every one a refusal that says today's words (`only MH_EXECUTE can be grown`) instead of the new: the four `ensure_pad on an object file …` and `… a dylib that is not x86_64 …` lines, then one "the refusal says" line for each of the eleven rows of `dy_unraisable` and the base-0x10000000 row. The last is:
+Expected: exit 1, and 23 `FAIL:` lines, every one a refusal that says today's words (`only MH_EXECUTE can be grown`) instead of the new: the four `ensure_pad on an object file …` and `… a dylib that is not x86_64 …` lines, then one "the refusal says" line for each of the eighteen rows of `dy_unraisable` and the base-0x10000000 row. The last is:
 
 ```
 FAIL: a section below the first content, above base 0: the refusal says 'ERROR: section __DATA,__bss lies at 0x10000fff, below the first content at 0x10001000; refusing to grow'
@@ -548,8 +587,9 @@ insert:
 
 ```c
 /* mg_raise_ok's mi_each_lc callback: says why, and stops, at the first load
- * command a raise cannot vouch for. */
-struct mg_raise_ctx { uint64_t base; uint32_t first; int di; };
+ * command a raise cannot vouch for; notes LC_DYLD_INFO and LC_DYSYMTAB's
+ * counts, which mg_raise_ok judges together. */
+struct mg_raise_ctx { uint64_t base; uint32_t first; int di; uint32_t toc, mod, ext, loc; };
 static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
     struct mg_raise_ctx *c = (struct mg_raise_ctx *)ctx_;
     switch (lc->cmd) {
@@ -571,6 +611,19 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         fprintf(stderr, "ERROR: the image is encrypted (cryptid %u), and a raise would move "
                         "its encrypted pages; refusing to grow\n", e->cryptid);
         return 1;
+    }
+    case LC_DYSYMTAB: {
+        const struct dysymtab_command *d = (const struct dysymtab_command *)lc;
+        if (lc->cmdsize < sizeof *d) {
+            fprintf(stderr, "ERROR: LC_DYSYMTAB is %u bytes, too short to hold its tables' "
+                            "counts; refusing to grow\n", lc->cmdsize);
+            return 1;
+        }
+        c->toc = d->ntoc;
+        c->mod = d->nmodtab;
+        c->ext = d->nextrel;
+        c->loc = d->nlocrel;
+        return 0;
     }
     case LC_ROUTINES_64:
         if (lc->cmdsize >= sizeof(struct routines_command_64)) return 0;
@@ -594,6 +647,12 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
             return 1;
         }
         for (uint32_t j = 0; j < seg->nsects; j++) {
+            if (s[j].align > 12) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s is aligned to 2^%u bytes, more than "
+                                "the page a raise moves it by; refusing to grow\n", s[j].segname,
+                        s[j].sectname, s[j].align);
+                return 1;
+            }
             if (s[j].addr < c->base + c->first) {
                 fprintf(stderr, "ERROR: section %.16s,%.16s lies at %#llx, below the first "
                                 "content at %#llx; refusing to grow\n", s[j].segname,
@@ -618,17 +677,23 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
  * `im`, whose image base is `base` and first content base + `first`; else
  * -1, having said why. */
 static int mg_raise_ok(const mi_image *im, uint64_t base, uint32_t first) {
-    struct mg_raise_ctx c = { base, first, 0 };
+    struct mg_raise_ctx c = { base, first, 0, 0, 0, 0, 0 };
     if (!mi_each_lc(im, mg_raise_ok_cb, &c)) return -1;
-    if (c.di) return 0;
-    fprintf(stderr, "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase "
-                    "opcodes list every pointer a raise moves; refusing to grow\n");
+    if (!c.di) {
+        fprintf(stderr, "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase "
+                        "opcodes list every pointer a raise moves; refusing to grow\n");
+        return -1;
+    }
+    if (!(c.toc | c.mod | c.ext | c.loc)) return 0;
+    fprintf(stderr, "ERROR: LC_DYSYMTAB lists %u table-of-contents entries, %u modules, %u "
+                    "external and %u local relocations beside LC_DYLD_INFO, whose addresses a "
+                    "raise does not move; refusing to grow\n", c.toc, c.mod, c.ext, c.loc);
     return -1;
 }
 
 ```
 
-In `src/grow.c`, replace (`:1725`):
+In `src/grow.c`, replace (`:1751`):
 
 ```c
     if (hdr->filetype != MH_EXECUTE) {
@@ -658,7 +723,7 @@ with:
     if (!raise && !(hdr->flags & MH_PIE)) {
 ```
 
-In `src/grow.c`, replace (`:1800`):
+In `src/grow.c`, replace (`:1826`):
 
 ```c
     if (!mi_text_base(&find_im)) {
@@ -716,7 +781,21 @@ Expected: `macho_grow_test: all cases pass`; green.
 | 20 | `            if (s[j].addr < c->base + c->first) {` | `            if (s[j].addr < c->first) {` | `FAIL: a section below the first content, above base 0: the refusal says` |
 | 21 | `            if (header && s[j].addr - c->base != s[j].offset) {` | `            if (s[j].addr - c->base != s[j].offset) {` | `FAIL: a dylib or bundle a raise can vouch for: the refusal says` |
 | 22 | `            if (header && s[j].addr - c->base != s[j].offset) {` | `            if (header && s[j].addr != s[j].offset) {` | `FAIL: a dylib or bundle a raise can vouch for: the refusal says` |
-| 23 | `    if (c.di) return 0;` | `    return 0;` | `FAIL: no LC_DYLD_INFO: the refusal says` |
+| 23 | `    if (!c.di) {` | `    if (0) {` | `FAIL: no LC_DYLD_INFO: the refusal says` |
+| 24 | `    case LC_DYSYMTAB: {` | `    case 0x7fffffff: {` | `FAIL: a table of contents: the refusal says` |
+| 25 | `        if (lc->cmdsize < sizeof *d) {`<br>`            fprintf(stderr, "ERROR: LC_DYSYMTAB is` | `        if (0) {`<br>`            fprintf(stderr, "ERROR: LC_DYSYMTAB is` | `FAIL: a short LC_DYSYMTAB: the refusal says` |
+| 26 | `    if (!(c.toc \| c.mod \| c.ext \| c.loc)) return 0;` | `    if (!(c.mod \| c.ext \| c.loc)) return 0;` | `FAIL: a table of contents: the refusal says` |
+| 27 | `    if (!(c.toc \| c.mod \| c.ext \| c.loc)) return 0;` | `    if (!(c.toc \| c.ext \| c.loc)) return 0;` | `FAIL: a module table: the refusal says` |
+| 28 | `    if (!(c.toc \| c.mod \| c.ext \| c.loc)) return 0;` | `    if (!(c.toc \| c.mod \| c.loc)) return 0;` | `FAIL: external relocations: the refusal says` |
+| 29 | `    if (!(c.toc \| c.mod \| c.ext \| c.loc)) return 0;` | `    if (!(c.toc \| c.mod \| c.ext)) return 0;` | `FAIL: local relocations: the refusal says` |
+| 30 | `    if (!(c.toc \| c.mod \| c.ext \| c.loc)) return 0;` | `    return 0;` | `FAIL: a table of contents: the refusal says` |
+| 31 | `        c->toc = d->ntoc;` | *(delete it)* | `FAIL: a table of contents: the refusal says` |
+| 32 | `        c->mod = d->nmodtab;` | *(delete it)* | `FAIL: a module table: the refusal says` |
+| 33 | `        c->ext = d->nextrel;` | *(delete it)* | `FAIL: external relocations: the refusal says` |
+| 34 | `        c->loc = d->nlocrel;` | *(delete it)* | `FAIL: local relocations: the refusal says` |
+| 35 | `    if (!c.di) {` | `    if (!c.di && !(c.toc \| c.mod \| c.ext \| c.loc)) {` | `FAIL: local relocations and no LC_DYLD_INFO: the refusal says` |
+| 36 | `            if (s[j].align > 12) {` | `            if (s[j].align > 13) {` | `FAIL: a section aligned past a page: the refusal says` |
+| 37 | `            if (s[j].align > 12) {` | `            if (s[j].align >= 12) {` | `FAIL: a dylib or bundle a raise can vouch for: the refusal says` |
 
 A row removing the `return -1` after `mg_raise_ok` survives here, because the old refusal follows it; it is Task 2's row 22.
 
@@ -730,8 +809,10 @@ A dylib or bundle will be raised, not lowered. Before anything moves, the
 raise refuses what it could not vouch for: no LC_DYLD_INFO, a thread
 command, encryption, a protected segment, a section below the first
 content, a __TEXT section whose address and offset disagree, a segment
-whose file data starts before the first content, and commands too short
-to read. One that passes still meets today's refusal, until the raise
+whose file data starts before the first content, commands too short to
+read, LC_DYSYMTAB's tables and relocations (whose addresses no rebase
+opcode lists), and a section aligned to more than the page it would
+move by. One that passes still meets today's refusal, until the raise
 itself lands. Any other file type is refused naming the three that grow.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
@@ -743,7 +824,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ### Task 2: Raise the contents, and verify the raise
 
 **Files** (each edit block below gives its line):
-- Modify: `src/grow.c` (`mg_ensure_pad`'s announcement; new `mg_segs_cb` and `mg_raise_pointers` before `/* mg_binds_ok's observer`; `mg_snapshot_take`; `mg_found_ref`, `mg_verify_refs`, `mg_verify_symbols`, `mg_verify_pointers`, `mg_verify`; new `mg_raise_cb` before `/* mg_each_fileoff's visitor for the grow`; `mg_hsym_cb` and `mg_header_symbols` (renamed `mg_move_symbols`); new `mg_repair_refs`; `mg_grow_header`)
+- Modify: `src/grow.c` (`mg_ensure_pad`'s announcement; new `mg_segs_cb` and `mg_raise_pointers` before `/* mg_binds_ok's observer`; `mg_snapshot_take`; `mg_found_ref`, `mg_verify_refs`, `mg_verify_symbols`, `mg_verify_pointers`, `mg_verify`; new `mg_raise_cb` before `/* mg_each_fileoff's visitor for the grow`; `mg_hsym_cb` and `mg_header_symbols` (renamed `mg_move_symbols`); new `mg_raise_rebased` and `mg_repair_refs`; `mg_grow_header`)
 - Modify: `src/grow.h` (the top comment's last paragraph; `mg_ensure_pad`'s contract; new `mg_raise_pointers`; `mg_snapshot`; `mg_verify`'s and `mg_grow_header`'s contracts)
 - Test: `tests/grow_test.c` (`test_verify_watches_the_pointers`'s "moved to a slot" row; Task 1's positive control, now a grow; new tests before `int main(void) {`; calls)
 - Test: `tests/insert_dylib_test.sh` (block 14's comment and its dylib case)
@@ -751,15 +832,18 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 **Interfaces:**
 - Consumes: Task 1's `raise`, `base`, `build_dylib_at`; M2a's `mg_inside_refs_ok`, `mg_exports_ok`, `mg_binds_ok`, `MG_K_ABS`; `mg_rebases_read`, `mg_collect`, `mg_trie_walk`, the unwind, dice and init-offsets walkers.
 - Produces:
-  - `int mg_raise_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first, uint32_t grow, char *why, size_t whysz);` 0, or -1 with `why`.
+  - `int mg_raise_pointers(const uint8_t *buf, size_t fsize, uint64_t base, uint64_t first, char *why, size_t whysz);` 0, or -1 with `why`: whether a raise can move every rebased pointer, decided before anything moves. It changes nothing.
   - `mg_snapshot` gains `uint8_t *kinds`, `uint32_t first`, `int raise`; `mg_verify(buf, fsize, before)` keeps its signature and derives G and the delta.
-  - `static int mg_move_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first, uint32_t grow, int raise, int patch);` (was `mg_header_symbols`); `static void mg_repair_refs(uint8_t *buf, const mg_snapshot *snap, uint32_t grow);`; `static int mg_raise_cb(...)`.
+  - `static int mg_move_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first, uint32_t grow, int raise, int patch);` (was `mg_header_symbols`); `static void mg_raise_rebased(uint8_t *buf, const mg_snapshot *snap, uint32_t grow);` (the move, from the snapshot's values); `static void mg_repair_refs(uint8_t *buf, const mg_snapshot *snap, uint32_t grow);`; `static int mg_raise_cb(...)`.
   - In the tests: `DY_RAISED_AT` (0x10000000), `DY_ALL`, `raised_dylib`, `dy_syms`, `check_verify_rejects_raise_with` (Task 3 uses it) and `check_verify_rejects_raise`.
 
 **Plan decisions.**
 
 - **Decision 2's table, row by row.** Every segment but the header's: `vmaddr` + G, and `fileoff` + G when its data lies at F or past it (a zero-fill segment keeps 0). The header's segment: `vmsize` and `filesize` + G. Every section's `addr` + G. `LC_ROUTINES_64.init_address` + G. File offsets, and the base-relative structures (unwind, trie, function starts, data in code, `__init_offsets`), by the lowering's own code: both routes add G to every distance from the base. A rebased pointer: + G if it names content; left if it names the header; refused if strictly inside or outside every segment. A symbol (`N_SECT`, not a stab): the same, and one below the base is left. Code that addresses the header: `disp32 −= G`, as on the lowering (factored into `mg_repair_refs`).
 - **"Names content"** is at base + F or past it. A segment's end counts as within it, so a pointer to `__LINKEDIT`'s end or `__DATA`'s moves.
+- **Decided once, before anything moves.** `mg_raise_pointers` checks each rebased pointer against the original's segments, and changes nothing; after the insert, `mg_raise_rebased` adds G to each value the snapshot read, in its slot G further on. A check after the segments moved would test old values against new ranges: a one-page raise opens a gap where `__ZERO + 8` was, and a segment two pages past the last would seem to map nothing. The edges test covers both, with `DY_ZEROFAR`.
+- **Code that names what lies outside the image is not refused** (Ruling 3): tried, it refused 20 real images, every one falsely.
+- **An export at offset 0** names the header, and stays: the trie walker adds G only to a nonzero offset, as on the lowering.
 - **Verification.** `mg_verify` reads G as how far the first section moved and takes the delta (G on a raise, 0 on a lowering) from the file type the snapshot kept. Check 1: each collected entry moves by the delta, except an absolute export (M2a's `MG_K_ABS`) and an unmapped offset. Check 2's pointer and symbol halves: header-namers name the new base, content-namers move by the delta, and each rebase slot moves by it. Check 5: no code names new base + G (on the lowering that is the old base, so its message changes and its behaviour does not), and each recorded reference, now `delta` further on, names the base. So the executable route's verification is what it was. Checks 2's load-command half, 3 and 4 are Tasks 6 and 7.
 - **Stabs** are refused on the raise until Task 3.
 - **The announcement** (Decision 8): "…; contents raised by 0x1000", and the pad after the grow is measured after it, so Task 4's dropped command counts. On the raise only code is "repaired": a pointer to the header is left where it is.
@@ -780,7 +864,7 @@ with:
         "0x100002000; refusing.");
 ```
 
-In `tests/grow_test.c`, replace (`:4568`):
+In `tests/grow_test.c`, replace (`:4595`):
 
 ```c
  * at base 0 or above it: such a dylib or bundle reaches the refusal every
@@ -797,6 +881,7 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
         ((struct mach_header_64 *)buf)->filetype = filetype[i];
         e->cmd = LC_ENCRYPTION_INFO_64;
         e->cryptoff = e->cryptsize = e->cryptid = 0;
+        dy_section(buf, "__DATA", "__data")->align = 12;
         snprintf(needle, sizeof needle, "ERROR: only MH_EXECUTE can be grown (filetype=%u)",
                  filetype[i]);
         check_grow_refuses_header_refs("a dylib or bundle a raise can vouch for", buf, fsize,
@@ -819,6 +904,7 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
         ((struct mach_header_64 *)buf)->filetype = filetype[i];
         e->cmd = LC_ENCRYPTION_INFO_64;
         e->cryptoff = e->cryptsize = e->cryptid = 0;
+        dy_section(buf, "__DATA", "__data")->align = 12;
         int r = mg_grow_header(&buf, &fsize, 0x1000);
         CHECK(r == 0 && fsize == DY_FSIZE + 0x1000, "raise: filetype %u at base %#llx grows "
               "(got %d, %zu bytes)", filetype[i], (unsigned long long)base[i], r, fsize);
@@ -939,7 +1025,7 @@ static void test_raise_moves_what_is_measured_from_the_base(void) {
           "raise: data in code starts at %#x, length and kind unchanged", UW32(buf, dc->dataoff, 0));
     CHECK(UW32(buf, 0x2800, 28) == 0x3040 && UW32(buf, 0x2800, 32) == 0x2000 &&
           UW32(buf, 0x2800, 44) == 0x2100 && UW32(buf, 0x2800, 56) == 0x2010 &&
-          UW32(buf, 0x2800, 60) == 0x3028 && UW32(buf, 0x2800, 80) == (1u << 24),
+          UW32(buf, 0x2800, 60) == 0x2180 && UW32(buf, 0x2800, 80) == (1u << 24),
           "raise: compact unwind's personality, functions, sentinel and LSDA are raised, its "
           "compressed entries are not");
     free(buf);
@@ -1033,15 +1119,22 @@ static void test_raise_leaves_an_absolute_export_alone(void) {
     free(buf);
 }
 
-/* A pointer to the first content, to the start of a segment past a gap
- * (__ZERO), or to the end of a segment names content. */
+/* A pointer to the first content, into a segment past a gap in memory
+ * (__ZERO, a page past __LINKEDIT, or two with DY_ZEROFAR), or to the end of
+ * a segment names content. Which segment maps it is decided before the raise
+ * moves any: afterward, __ZERO + 8 lies in the gap a one-page raise opens. */
 static void test_raise_moves_pointers_to_the_edges_of_content(void) {
-    static const struct { const char *what; uint64_t v; } p[3] = {
-        { "the first content", 0x1000 }, { "__ZERO's start", 0x6000 }, { "__LINKEDIT's end", 0x5000 },
+    static const struct { const char *what; uint64_t v; int opts; } p[6] = {
+        { "the first content", 0x1000, 0 },
+        { "__ZERO's start", 0x6000, 0 },
+        { "__ZERO + 8", 0x6008, 0 },
+        { "__LINKEDIT's end", 0x5000, 0 },
+        { "__ZERO's start, past a two-page gap", 0x7000, DY_ZEROFAR },
+        { "__ZERO + 8, past a two-page gap", 0x7008, DY_ZEROFAR },
     };
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 6; i++) {
         size_t fsize;
-        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ZEROSEG);
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ZEROSEG | p[i].opts);
         uint64_t v = DY_RAISED_AT + p[i].v;
         memcpy(buf + 0x2008, &v, sizeof v);
         int r = mg_grow_header(&buf, &fsize, 0x1000);
@@ -1050,6 +1143,22 @@ static void test_raise_moves_pointers_to_the_edges_of_content(void) {
               "(got %d, %#llx)", p[i].what, r, (unsigned long long)v);
         free(buf);
     }
+}
+
+/* An export at offset 0 names the header, and stays. */
+static void test_raise_leaves_an_export_at_offset_0(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a = 1;
+    buf[0x3040 + 28] = 0x80;                           /* _d: 0, in its two bytes */
+    buf[0x3040 + 29] = 0x00;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    mu_decode(buf + toff + 28, buf + toff + tsize, &a);
+    CHECK(r == 0 && a == 0, "raise: an export at offset 0 stays 0 (got %d, %#llx)", r,
+          (unsigned long long)a);
+    free(buf);
 }
 
 /* __LINKEDIT cut short of the string table: its offset maps nowhere, before
@@ -1134,7 +1243,7 @@ static void test_ensure_pad_announces_a_raise(void) {
     free(buf);
 ```
 
-In `tests/grow_test.c`, immediately after (`:5041`):
+In `tests/grow_test.c`, immediately after (`:5092`):
 
 ```c
     test_grow_raises_past_what_it_can_vouch_for();
@@ -1152,6 +1261,7 @@ insert:
     test_raise_refuses_what_it_cannot_move();
     test_raise_moves_pointers_to_the_edges_of_content();
     test_raise_keeps_an_offset_no_segment_maps();
+    test_raise_leaves_an_export_at_offset_0();
     test_raise_leaves_an_absolute_export_alone();
     test_raise_leaves_a_symbol_below_the_base();
     test_verify_watches_the_raise();
@@ -1194,7 +1304,7 @@ with:
 - [ ] **Step 2: Run them to see them fail**
 
 Run: build (rebuild check), then `"$B/grow_test"`.
-Expected: exit 1, and 30 `FAIL:` lines. The first is the reworded verify message:
+Expected: exit 1, and 34 `FAIL:` lines. The first is the reworded verify message:
 
 ```
 FAIL: verify REJECTS a rebase moved to a slot holding the same value, saying 'ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and must be at 0x100002000; refusing.' (got -1):
@@ -1269,18 +1379,17 @@ static int mg_segs_cb(const struct load_command *lc, void *ctx_) {
     return 0;
 }
 
-int mg_raise_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first, uint32_t grow,
+int mg_raise_pointers(const uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
                       char *why, size_t whysz) {
     mg_rebases rb;
     mi_image im;
     struct mg_segs segs;
     if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
     memset(&segs, 0, sizeof segs);
-    if (mi_wrap(buf, fsize, &im) == 0) mi_each_lc(&im, mg_segs_cb, &segs);
+    if (mi_wrap((uint8_t *)buf, fsize, &im) == 0) mi_each_lc(&im, mg_segs_cb, &segs);
     for (size_t i = 0; i < rb.s.n; i++) {
         uint64_t v = rb.v[i].value;
         int mapped = 0;
-        if (v == base) continue;
         if (v > base && v - base < first) {
             snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
                      "and its first content at %#llx, which a grow moves apart",
@@ -1296,8 +1405,6 @@ int mg_raise_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
             mg_rebases_free(&rb);
             return -1;
         }
-        v += grow;
-        memcpy(buf + rb.v[i].at, &v, sizeof v);
     }
     mg_rebases_free(&rb);
     return 0;
@@ -1305,7 +1412,7 @@ int mg_raise_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
 
 ```
 
-In `src/grow.c`, replace (`:674`):
+In `src/grow.c`, replace (`:671`):
 
 ```c
     s->refs = NULL;
@@ -1337,7 +1444,7 @@ with:
         mg_collect(buf, fsize, s->addr, s->kinds, MG_SNAP_MAX, &s->n) != 0 ||
 ```
 
-In `src/grow.c`, immediately after (`:704`):
+In `src/grow.c`, immediately after (`:701`):
 
 ```c
     free(s->addr); s->addr = NULL; s->n = 0;
@@ -1349,7 +1456,7 @@ insert:
     free(s->kinds); s->kinds = NULL;
 ```
 
-In `src/grow.c`, replace (`:735`):
+In `src/grow.c`, replace (`:732`):
 
 ```c
 struct mg_found { const mg_snapshot *s; uint8_t *seen; };
@@ -1452,7 +1559,7 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
                              uint64_t base, uint64_t delta) {
 ```
 
-In `src/grow.c`, replace (`:797`):
+In `src/grow.c`, replace (`:794`):
 
 ```c
         uint64_t want = !(t & N_STAB) && (t & N_TYPE) == N_SECT && before->symval[i] == before->base
@@ -1468,7 +1575,7 @@ with:
                  : want == before->base ? base : want;
 ```
 
-In `src/grow.c`, replace (`:815`):
+In `src/grow.c`, replace (`:812`):
 
 ```c
                               const mg_snapshot *before, uint64_t base) {
@@ -1480,7 +1587,7 @@ with:
                               const mg_snapshot *before, uint64_t base, uint64_t delta) {
 ```
 
-In `src/grow.c`, replace (`:831`):
+In `src/grow.c`, replace (`:828`):
 
 ```c
         uint64_t want = was->value == before->base ? base : was->value;
@@ -1514,7 +1621,7 @@ with:
                     (unsigned long long)(was->vm + delta));
 ```
 
-In `src/grow.c`, immediately after (`:855`):
+In `src/grow.c`, immediately after (`:852`):
 
 ```c
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
@@ -1527,7 +1634,7 @@ insert:
     uint64_t delta = before->raise ? grow : 0;
 ```
 
-In `src/grow.c`, replace (`:871`):
+In `src/grow.c`, replace (`:868`):
 
 ```c
         if (now[i] == before->addr[i]) continue;
@@ -1541,7 +1648,7 @@ with:
         if (now[i] == want) continue;
 ```
 
-In `src/grow.c`, replace (`:883`):
+In `src/grow.c`, replace (`:880`):
 
 ```c
                         "%#llx before the grow and %#llx after (moved %+lld bytes). The grow "
@@ -1559,7 +1666,7 @@ with:
                 (long long)moved, (unsigned long long)want);
 ```
 
-In `src/grow.c`, replace (`:901`):
+In `src/grow.c`, replace (`:898`):
 
 ```c
     if (mg_verify_symbols(&im, fsize, before, base) != 0) return -1;
@@ -1575,7 +1682,7 @@ with:
     return mg_verify_refs(buf, fsize, before, base, grow, delta);
 ```
 
-In `src/grow.c`, immediately before (`:1479`):
+In `src/grow.c`, immediately before (`:1476`):
 
 ```c
 /* mg_each_fileoff's visitor for the grow: move each file offset at or past
@@ -1611,7 +1718,7 @@ static int mg_raise_cb(const struct load_command *lc_in, void *ctx_) {
 
 ```
 
-In `src/grow.c`, replace (`:1641`):
+In `src/grow.c`, replace (`:1638`):
 
 ```c
 /* The symbols that name the header: each N_SECT symbol, not a stab, whose
@@ -1634,10 +1741,11 @@ with:
 /* The symbols a grow moves: each N_SECT symbol, not a stab. With `patch`,
  * on a lowering, one whose value is `base` loses `grow`, following the
  * header down; on a raise, one that names content, at base + `first` or
- * past it, gains `grow`, following the content up. Without `patch`, this checks that the symbol table lies within
- * the image, and says so on stderr when it does not; on a raise, it refuses a
- * stab. Either way, one that names a byte strictly between the header and its
- * first content, at base + `first`, is refused, saying so. Returns 0, or -1. */
+ * past it, gains `grow`, following the content up. Without `patch`, this
+ * checks that the symbol table lies within the image, and says so on stderr
+ * when it does not; on a raise, it refuses a stab. Either way, one that names
+ * a byte strictly between the header and its first content, at base +
+ * `first`, is refused, saying so. Returns 0, or -1. */
 struct mg_hsym_ctx {
     uint8_t *buf;
     size_t fsize;
@@ -1646,7 +1754,7 @@ struct mg_hsym_ctx {
     int raise, patch, bad, n;
 ```
 
-In `src/grow.c`, replace (`:1674`):
+In `src/grow.c`, replace (`:1672`):
 
 ```c
         if ((nl[i].n_type & N_STAB) || (nl[i].n_type & N_TYPE) != N_SECT) continue;
@@ -1710,7 +1818,7 @@ static int mg_move_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
     struct mg_hsym_ctx c = { buf, fsize, base, first, grow, raise, patch, 0, 0 };
 ```
 
-In `src/grow.c`, immediately before (`:1789`):
+In `src/grow.c`, immediately before (`:1813`):
 
 ```c
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
@@ -1719,6 +1827,19 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
 insert:
 
 ```c
+/* The pointers a raise moves, as the snapshot read them before anything
+ * moved (mg_raise_pointers vouched for each): every rebase target's value,
+ * unless it names the header, gains `grow`, in its slot, which the insert
+ * moved `grow` further into the file. */
+static void mg_raise_rebased(uint8_t *buf, const mg_snapshot *snap, uint32_t grow) {
+    for (size_t i = 0; i < snap->rb.s.n; i++) {
+        uint64_t v = snap->rb.v[i].value;
+        if (v == snap->base) continue;
+        v += grow;
+        memcpy(buf + snap->rb.v[i].at + grow, &v, sizeof v);
+    }
+}
+
 /* A grow puts the header and its code `grow` bytes closer together on
  * either route, so each reference the snapshot recorded, which the insert
  * moved `grow` further into the file, loses `grow`. */
@@ -1734,7 +1855,7 @@ static void mg_repair_refs(uint8_t *buf, const mg_snapshot *snap, uint32_t grow)
 
 ```
 
-In `src/grow.c`, replace (`:1814`):
+In `src/grow.c`, replace (`:1851`):
 
 ```c
      * load time. A non-PIE image, or a dylib/bundle (no __PAGEZERO), would
@@ -1750,7 +1871,7 @@ with:
      * loudly rather than silently corrupt.
 ```
 
-In `src/grow.c`, replace (`:1921`):
+In `src/grow.c`, replace (`:1958`):
 
 ```c
         fprintf(stderr, "ERROR: only MH_EXECUTE can be grown (filetype=%u): growing "
@@ -1764,7 +1885,7 @@ with:
 ```c
 ```
 
-In `src/grow.c`, replace (`:1979`):
+In `src/grow.c`, replace (`:2016`):
 
 ```c
     if (mg_header_symbols(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0) != 0) return -1;
@@ -1780,11 +1901,11 @@ with:
     if (mg_move_symbols(buf, fsize, base, insert, grow, raise, 0) != 0) return -1;
     {
         char why[256];
-        int64_t n = raise ? mg_raise_pointers(buf, fsize, base, insert, 0, why, sizeof why)
+        int64_t n = raise ? mg_raise_pointers(buf, fsize, base, insert, why, sizeof why)
                           : mg_header_pointers(buf, fsize, base, insert, grow, 0, why, sizeof why);
 ```
 
-In `src/grow.c`, replace (`:2083`):
+In `src/grow.c`, replace (`:2120`):
 
 ```c
         mi_each_lc(&patch_im, mg_patch_cb, &pctx);
@@ -1796,7 +1917,7 @@ with:
         mi_each_lc(&patch_im, raise ? mg_raise_cb : mg_patch_cb, &pctx);
 ```
 
-In `src/grow.c`, replace (`:2250`):
+In `src/grow.c`, replace (`:2287`):
 
 ```c
     /* The header moved down by `grow` and the code did not: every reference
@@ -1835,11 +1956,11 @@ with:
         return -1;
     }
 
-    {
+    if (raise) {
+        mg_raise_rebased(buf, &snap, grow);
+    } else {
         char why[256];
-        if ((raise ? mg_raise_pointers(buf, final_size, snap.base, insert, grow, why, sizeof why)
-                   : mg_header_pointers(buf, final_size, snap.base, insert, 0, grow, why,
-                                        sizeof why)) < 0) {
+        if (mg_header_pointers(buf, final_size, snap.base, insert, 0, grow, why, sizeof why) < 0) {
             fprintf(stderr, "ERROR: internal error moving the pointers after passing the "
                             "pre-check: %s\n", why);
 ```
@@ -1858,7 +1979,7 @@ with:
 ```c
  * A dylib or bundle, which has no __PAGEZERO, is raised instead: everything
  * past the header moves up by the grow, and so does every absolute address
- * that names it (mg_raise_pointers, and the symbols, sections and segments).
+ * that names it: each rebased pointer, symbol, section and segment.
 ```
 
 In `src/grow.h`, replace (`:118`):
@@ -1896,13 +2017,13 @@ typedef struct {
 with:
 
 ```c
-/* The pointers a raise moves: each rebase target whose value names content
- * gains `grow` (0 to check them), following the content up. One whose value
- * is `base` names the header, which a raise leaves where it is. One strictly
- * inside (base, base + first) is refused, and so is one that no segment maps
- * (its range's end included). Returns 0, or -1 with `why` set
- * (mg_rebases_read's reasons, or those two). */
-int mg_raise_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first, uint32_t grow,
+/* Whether a raise can move every pointer, before anything moves: each
+ * rebase target's value names the header (it is `base`, and stays) or
+ * content, which a raise moves up. One strictly inside (base, base + first)
+ * is refused, and so is one that no segment maps (its range's end
+ * included). Returns 0, or -1 with `why` set (mg_rebases_read's reasons, or
+ * those two). The raise then moves them from its snapshot, as read here. */
+int mg_raise_pointers(const uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
                       char *why, size_t whysz);
 
 /* What mg_verify compares a grown image against: the resolved addresses
@@ -1974,13 +2095,13 @@ Expected: `macho_grow_test: all cases pass`; green (`insert_dylib_test` among it
 | 1 | `    int raise = hdr->filetype == MH_DYLIB \|\| hdr->filetype == MH_BUNDLE;`<br>`    int64_t refs` | `    int raise = 0;`<br>`    int64_t refs` | `FAIL: ensure_pad on a dylib: announced as` |
 | 2 | `    int64_t ptrs = raise ? 0 : mg_header_pointers(` | `    int64_t ptrs = mg_header_pointers(` | `FAIL: ensure_pad on a dylib: announced as` |
 | 3 | `    if (raise)`<br>`        fprintf(stderr, "contents raised by %#x", first - first_before);` | `    if (!raise)`<br>`        fprintf(stderr, "contents raised by %#x", first - first_before);` | `FAIL: ensure_pad on a dylib: announced as` |
-| 4 | `        if (v == base) continue;`<br>`        if (v > base && v - base < first) {` | `        if (v > base && v - base < first) {` | `FAIL: raise: the grow succeeds (got -1)` |
+| 4 | `        if (v == snap->base) continue;`<br>`        v += grow;` | `        v += grow;` | `FAIL: raise: the grow succeeds (got -1)` |
 | 5 | `        if (v > base && v - base < first) {`<br>`            snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "`<br>`                     "and its first content at %#llx, which a grow moves apart",`<br>`                     (unsigned long long)rb.v[i].vm, (unsigned long long)v,`<br>`                     (unsigned long long)base, (unsigned long long)(base + first));`<br>`            mg_rebases_free(&rb);`<br>`            return -1;`<br>`        }`<br>`        for` | `        if (v > base && v - base <= first) {`<br>`            snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "`<br>`                     "and its first content at %#llx, which a grow moves apart",`<br>`                     (unsigned long long)rb.v[i].vm, (unsigned long long)v,`<br>`                     (unsigned long long)base, (unsigned long long)(base + first));`<br>`            mg_rebases_free(&rb);`<br>`            return -1;`<br>`        }`<br>`        for` | `FAIL: raise: a pointer to the first content is raised` |
 | 6 | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v <= segs.hi[k];` | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v < segs.hi[k];` | `FAIL: raise: a pointer to __LINKEDIT's end is raised` |
 | 7 | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v <= segs.hi[k];` | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v > segs.lo[k] && v <= segs.hi[k];` | `FAIL: raise: a pointer to __ZERO's start is raised` |
 | 8 | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v <= segs.hi[k];` | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v <= segs.hi[k];` | `FAIL: a pointer below every segment: mg_grow_header refuses` |
 | 9 | `        if (!mapped) {` | `        if (0) {` | `FAIL: a pointer past every segment: mg_grow_header refuses` |
-| 10 | `        v += grow;`<br>`        memcpy(buf + rb.v[i].at, &v, sizeof v);`<br>`    }`<br>`    mg_rebases_free(&rb);`<br>`    return 0;` | `        v += grow;`<br>`    }`<br>`    mg_rebases_free(&rb);`<br>`    return 0;` | `FAIL: raise: the grow succeeds (got -1)` |
+| 10 | `        v += grow;`<br>`        memcpy(buf + snap->rb.v[i].at + grow, &v, sizeof v);` | `        v += grow;`<br>`        (void)v;` | `FAIL: raise: the grow succeeds (got -1)` |
 | 11 | `        ((struct routines_command_64 *)lc_in)->init_address += ctx->grow;` | `        (void)0;` | `FAIL: raise: LC_ROUTINES_64's initializer is f2, raised` |
 | 12 | `    if (seg->fileoff == 0 && seg->filesize > 0) {`<br>`        seg->vmsize += ctx->grow;` | `    if (seg->fileoff == 0) {`<br>`        seg->vmsize += ctx->grow;` | `FAIL: raise: __ZERO is vm` |
 | 13 | `        seg->vmsize += ctx->grow;`<br>`        seg->filesize += ctx->grow;`<br>`    } else {` | `        seg->filesize += ctx->grow;`<br>`    } else {` | `FAIL: raise: the grow succeeds (got -1)` |
@@ -1993,11 +2114,11 @@ Expected: `macho_grow_test: all cases pass`; green (`insert_dylib_test` among it
 | 20 | `        if (c->patch && c->raise && v > c->base && v - c->base >= c->first)`<br>`            nl[i].n_value += c->grow;` | `        if (c->patch && c->raise && v != c->base)`<br>`            nl[i].n_value += c->grow;` | `FAIL: raise: a symbol below the base stays` |
 | 21 | `        if (c->patch && c->raise && v > c->base && v - c->base >= c->first)`<br>`            nl[i].n_value += c->grow;` | `        (void)0;` | `FAIL: raise: the grow succeeds (got -1)` |
 | 22 | `        if (mg_raise_ok(&find_im, base, insert) != 0) return -1;` | `        mg_raise_ok(&find_im, base, insert);` | `FAIL: no LC_DYLD_INFO: mg_grow_header refuses` |
-| 23 | `        int64_t n = raise ? mg_raise_pointers(buf, fsize, base, insert, 0, why, sizeof why)` | `        int64_t n = 0 ? mg_raise_pointers(buf, fsize, base, insert, 0, why, sizeof why)` | `FAIL: a pointer past every segment: mg_grow_header refuses` |
+| 23 | `        int64_t n = raise ? mg_raise_pointers(buf, fsize, base, insert, why, sizeof why)` | `        int64_t n = 0 ? mg_raise_pointers(buf, fsize, base, insert, why, sizeof why)` | `FAIL: a pointer past every segment: mg_grow_header refuses` |
 | 24 | `        mi_each_lc(&patch_im, raise ? mg_raise_cb : mg_patch_cb, &pctx);` | `        mi_each_lc(&patch_im, mg_patch_cb, &pctx);` | `FAIL: raise: the grow succeeds` |
 | 25 | `    mg_repair_refs(buf, &snap, grow);` | `    (void)mg_repair_refs;` | `FAIL: raise: the grow succeeds` |
 | 26 | `    if (mg_move_symbols(buf, final_size, snap.base, insert, grow, raise, 1) != 0) {` | `    if (mg_move_symbols(buf, final_size, snap.base, insert, grow, 0, 1) != 0) {` | `FAIL: raise: the grow succeeds` |
-| 27 | `        if ((raise ? mg_raise_pointers(buf, final_size, snap.base, insert, grow, why, sizeof why)` | `        if ((0 ? mg_raise_pointers(buf, final_size, snap.base, insert, grow, why, sizeof why)` | `FAIL: raise: the grow succeeds` |
+| 27 | `    if (raise) {`<br>`        mg_raise_rebased(buf, &snap, grow);` | `    if (0) {`<br>`        mg_raise_rebased(buf, &snap, grow);` | `FAIL: raise: the grow succeeds` |
 | 28 | `    s->raise = h->filetype == MH_DYLIB \|\| h->filetype == MH_BUNDLE;` | `    s->raise = h->filetype == MH_DYLIB;` | `FAIL: raise: filetype 8 at base 0 grows` |
 | 29 | `    s->first = mg_first_sect_off(buf, fsize);` | `    s->first = 0;` | `FAIL: raise: the grow succeeds (got -1)` |
 | 30 | `    uint64_t delta = before->raise ? grow : 0;` | `    uint64_t delta = grow;` | `FAIL: repair: a grow with two confirmed references succeeds` |
@@ -2011,8 +2132,12 @@ Expected: `macho_grow_test: all cases pass`; green (`insert_dylib_test` among it
 | 38 | `    uint64_t grow = (uint64_t)mg_first_sect_off(buf, fsize) - before->first;` | `    uint64_t grow = 0x1000;` | `FAIL: raise: the grow succeeds` |
 | 39 | `            want = want > before->base && want - before->base >= before->first ? want + delta` | `            want = want != before->base ? want + delta` | `FAIL: raise: a symbol below the base stays` |
 | 40 | `        if (c->patch && c->raise && v > c->base && v - c->base >= c->first)` | `        if (c->patch && c->raise && v - c->base >= c->first)` | `FAIL: raise: a symbol below the base stays` |
+| 41 | `        memcpy(buf + snap->rb.v[i].at + grow, &v, sizeof v);` | `        memcpy(buf + snap->rb.v[i].at, &v, sizeof v);` | `FAIL: raise: the grow succeeds (got -1)` |
+| 42 | `    if (raise) {`<br>`        mg_raise_rebased(buf, &snap, grow);` | `    if (raise) {`<br>`        char why2[256];`<br>`        if (mg_raise_pointers(buf, final_size, snap.base, insert, why2, sizeof why2) != 0) {`<br>`            mg_snapshot_free(&snap);`<br>`            return -1;`<br>`        }`<br>`        mg_raise_rebased(buf, &snap, grow);` | `FAIL: raise: a pointer to __ZERO + 8 is raised` |
+| 43 | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v <= segs.hi[k];` | `        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v <= segs.hi[k] + 0x1000;` | `FAIL: a pointer past every segment: mg_grow_header refuses` |
+| 44 | `                if (a != 0) {`<br>`                    if (out) {` | `                if (1) {`<br>`                    if (out) {` | `FAIL: raise: an export at offset 0 stays 0` |
 
-Rows that end "the grow succeeds (got -1)" are caught first by the raise's own verification, which then refuses; the row's own test stands behind it.
+Rows that end "the grow succeeds (got -1)" are caught first by the raise's own verification, which then refuses; the row's own test stands behind it. Row 42 puts back the second pass the review found (the pointers checked again after the segments moved): exactly the edges test's three cases past a gap fail, `__ZERO + 8` and both past a two-page gap.
 
 - [ ] **Step 7: Commit**
 
@@ -2024,7 +2149,8 @@ A dylib has no __PAGEZERO to lower its base into, so its header pad grows
 the other way: everything after the load commands moves up by the grow,
 and so does every absolute address that names it, in segments, sections,
 LC_ROUTINES_64, rebased pointers and symbols. What names the header stays;
-what names a byte strictly inside it, or no segment, refuses. Code that
+what names a byte strictly inside it, or no segment, refuses, and which
+segment maps a pointer is decided before anything moves. Code that
 addresses the header is repaired as on the executable route. mg_verify
 takes the raise's delta from the file type and how far the first section
 moved, so the executable route's checks are what they were. A dylib whose
@@ -2039,7 +2165,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ### Task 3: Move the stabs that hold addresses
 
 **Files** (each edit block below gives its line):
-- Modify: `src/grow.c` (`#include <mach-o/nlist.h>`; `mg_symtab` and the moved `mg_sym_name`, and new `mg_stab_address`, `mg_sym_address`,; `mg_snapshot_take`, `mg_snapshot_free`, `mg_verify_symbols`; `mg_hsym_cb`)
+- Modify: `src/grow.c` (`#include <mach-o/nlist.h>`; `mg_symtab` and the moved `mg_sym_name`, and new `mg_stab_address` and `mg_sym_address`; `mg_snapshot_take`, `mg_snapshot_free`, `mg_verify_symbols`; `mg_hsym_cb`)
 - Modify: `src/grow.h` (`mg_snapshot`'s `symaddr`)
 - Modify: `src/mach_compat.h` (`N_AST`, after `CPU_SUBTYPE_MASK`)
 - Test: `tests/grow_test.c` (the fixture's `DY_STABS`; Task 2's stab refusal row goes; new tests before `int main(void) {`; calls)
@@ -2057,10 +2183,10 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately after (`:4293`):
+In `tests/grow_test.c`, immediately after (`:4296`):
 
 ```c
-#define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
+#define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
 ```
 
 insert:
@@ -2069,7 +2195,7 @@ insert:
 #define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
 ```
 
-In `tests/grow_test.c`, replace (`:4317`):
+In `tests/grow_test.c`, replace (`:4320`):
 
 ```c
 }
@@ -2100,7 +2226,7 @@ static const struct { uint32_t strx; uint8_t type, sect; uint64_t at; int moves;
 static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
 ```
 
-In `tests/grow_test.c`, immediately after (`:4501`):
+In `tests/grow_test.c`, immediately after (`:4507`):
 
 ```c
     memcpy(buf + 0x3200, strs, sizeof strs);
@@ -2122,7 +2248,7 @@ insert:
     }
 ```
 
-In `tests/grow_test.c`, replace (`:4759`):
+In `tests/grow_test.c`, replace (`:4787`):
 
 ```c
  * be raised; nor can a debugging stab yet. */
@@ -2134,7 +2260,7 @@ with:
  * be raised. */
 ```
 
-In `tests/grow_test.c`, replace (`:4782`):
+In `tests/grow_test.c`, replace (`:4810`):
 
 ```c
     buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
@@ -2149,7 +2275,7 @@ with:
 ```c
 ```
 
-In `tests/grow_test.c`, replace (`:4849`):
+In `tests/grow_test.c`, replace (`:4900`):
 
 ```c
 static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
@@ -2166,7 +2292,7 @@ static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo 
     uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
 ```
 
-In `tests/grow_test.c`, replace (`:4867`):
+In `tests/grow_test.c`, replace (`:4918`):
 
 ```c
     free(buf);
@@ -2185,7 +2311,7 @@ static void check_verify_rejects_raise(const char *what, dy_undo undo, const cha
 static void dy_unraise_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3009] -= 0x10; }
 ```
 
-In `tests/grow_test.c`, replace (`:4917`):
+In `tests/grow_test.c`, replace (`:4968`):
 
 ```c
     free(err);
@@ -2269,7 +2395,7 @@ static void test_verify_watches_the_stabs(void) {
 int main(void) {
 ```
 
-In `tests/grow_test.c`, immediately after (`:5142`):
+In `tests/grow_test.c`, immediately after (`:5194`):
 
 ```c
     test_raise_leaves_a_symbol_below_the_base();
@@ -2287,7 +2413,7 @@ insert:
 - [ ] **Step 2: Run them to see them fail**
 
 Run: build (rebuild check).
-Expected: the build fails compiling `grow_test.c`: `tests/grow_test.c:4332:11: error: use of undeclared identifier 'N_AST'`.
+Expected: the build fails compiling `grow_test.c`: `tests/grow_test.c:4334:11: error: use of undeclared identifier 'N_AST'`.
 
 - [ ] **Step 3: The stab table**
 
@@ -2331,7 +2457,7 @@ insert:
 #include <mach-o/stab.h>
 ```
 
-In `src/grow.c`, replace (`:651`):
+In `src/grow.c`, replace (`:648`):
 
 ```c
 /* The first LC_SYMTAB's table, or NULL with *nsyms 0 when there is none;
@@ -2365,7 +2491,7 @@ static int mg_symtab(const mi_image *im, size_t fsize, const struct symtab_comma
     *st = c.st;
 ```
 
-In `src/grow.c`, replace (`:673`):
+In `src/grow.c`, replace (`:670`):
 
 ```c
 int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
@@ -2434,7 +2560,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->symaddr = NULL;
 ```
 
-In `src/grow.c`, replace (`:733`):
+In `src/grow.c`, replace (`:730`):
 
 ```c
         mg_symtab(&im, fsize, &nl, &s->nsyms) != 0 ||
@@ -2466,7 +2592,7 @@ with:
         s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
 ```
 
-In `src/grow.c`, immediately after (`:754`):
+In `src/grow.c`, immediately after (`:751`):
 
 ```c
     free(s->symtype); s->symtype = NULL; s->nsyms = 0;
@@ -2478,7 +2604,7 @@ insert:
     free(s->symaddr); s->symaddr = NULL;
 ```
 
-In `src/grow.c`, replace (`:825`):
+In `src/grow.c`, replace (`:822`):
 
 ```c
 /* Every symbol keeps its type, and its value unless it is an N_SECT symbol,
@@ -2506,7 +2632,7 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
     if (mg_symtab(im, fsize, &st, &nl, &nsyms) != 0) {
 ```
 
-In `src/grow.c`, replace (`:847`):
+In `src/grow.c`, replace (`:844`):
 
 ```c
         if (!(t & N_STAB) && (t & N_TYPE) == N_SECT)
@@ -2518,7 +2644,7 @@ with:
         if (before->symaddr[i])
 ```
 
-In `src/grow.c`, replace (`:1678`):
+In `src/grow.c`, replace (`:1675`):
 
 ```c
 /* The name of symbol `nl` in LC_SYMTAB `st`'s string table, as a length and
@@ -2536,23 +2662,27 @@ static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_com
 /* The symbols a grow moves: each N_SECT symbol, not a stab. With `patch`,
  * on a lowering, one whose value is `base` loses `grow`, following the
  * header down; on a raise, one that names content, at base + `first` or
- * past it, gains `grow`, following the content up. Without `patch`, this checks that the symbol table lies within
- * the image, and says so on stderr when it does not; on a raise, it refuses a
- * stab. Either way, one that names a byte strictly between the header and its
+ * past it, gains `grow`, following the content up. Without `patch`, this
+ * checks that the symbol table lies within the image, and says so on stderr
+ * when it does not; on a raise, it refuses a stab. Either way, one that names
+ * a byte strictly between the header and its first content, at base +
+ * `first`, is refused, saying so. Returns 0, or -1. */
 ```
 
 with:
 
 ```c
-/* The symbols a grow moves (mg_sym_address). With `patch`,
- * on a lowering, one whose value is `base` loses `grow`, following the
- * header down; on a raise, one that names content, at base + `first` or
- * past it, gains `grow`, following the content up. Without `patch`, this checks that the symbol table lies within
- * the image, and says so on stderr when it does not; on a raise, it refuses a
- * stab of a type it does not know. Either way, one that names a byte strictly between the header and its
+/* The symbols a grow moves (mg_sym_address). With `patch`, on a lowering,
+ * one whose value is `base` loses `grow`, following the header down; on a
+ * raise, one that names content, at base + `first` or past it, gains
+ * `grow`, following the content up. Without `patch`, this checks that the
+ * symbol table lies within the image, and says so on stderr when it does
+ * not; on a raise, it refuses a stab of a type it does not know. Either way,
+ * one that names a byte strictly between the header and its first content,
+ * at base + `first`, is refused, saying so. Returns 0, or -1. */
 ```
 
-In `src/grow.c`, replace (`:1712`):
+In `src/grow.c`, replace (`:1710`):
 
 ```c
         if (c->raise && (nl[i].n_type & N_STAB)) {
@@ -2635,7 +2765,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 **Files** (each edit block below gives its line):
 - Modify: `src/grow.c` (new `mg_find_cb` and `mg_has_cmd`; `mg_ensure_pad`'s announcement; `mg_classify_cb`, `mg_classify`; new `mg_drop_split_info` before `mg_repair_refs`; `mg_grow_header`'s classify call and the drop before the snapshot)
 - Modify: `src/grow.h` (`mg_ensure_pad`'s contract; `mg_classify`; `mg_grow_header`'s contract)
-- Modify: `src/rewrite.c` (the comments and )
+- Modify: `src/rewrite.c` (the two comments that said a grow never changes the load commands)
 - Test: `tests/grow_test.c` (new tests before `int main(void) {`; calls)
 - Test: `tests/script_test.c` (includes; a new test; its call)
 
@@ -2648,12 +2778,12 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 - **Why drop it** is Decision 4: after a raise its offsets are stale, and dropping it is the one choice this suite can fully check. The payload stays in `__LINKEDIT`, unreferenced; the edit pass's re-pack then drops it (Task 9 shows it).
 - **When:** its own step, after every refusal (so a refused image is untouched) and before the snapshot (so `mg_verify` does not watch its `dataoff`), as Decision 4's mechanics say. Every split info is deleted, and the command after each moves down whole; the freed bytes are zeroed.
 - **`mg_classify(buf, fsize, raise)`** accepts `LC_SEGMENT_SPLIT_INFO` on the raise only; the lowering refuses it, as before.
-- **`LC_LOAD_UPWARD_DYLIB`** names a dylib and nothing a grow moves, like `LC_LOAD_DYLIB`, and was never classified, so any image carrying one was refused ("Unknown means unsafe"). Measured, 13 of the 1,180 system dylibs and bundles carry one, AppKit and ten of libSystem's parts among them, and no host executable does. It is accepted on both routes.
+- **`LC_LOAD_UPWARD_DYLIB`** names a dylib and nothing a grow moves, like `LC_LOAD_DYLIB`, and was never classified, so any image carrying one was refused ("Unknown means unsafe"). Measured, 13 of the 1,180 system dylibs and bundles carry one (AppKit, HIToolbox, Metadata and ten of libSystem's parts), and no host executable does. It is accepted on both routes.
 - **No statement can name split info**, so `src/rewrite.c`'s rebuild after a grow still matches the operations its counting pass matched; `script_test` pins it, and the two comments that said a grow never changes the load commands say what it does.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately before (`:4985`):
+In `tests/grow_test.c`, immediately before (`:5036`):
 
 ```c
 int main(void) {
@@ -2711,7 +2841,8 @@ static void test_lowering_refuses_split_info(void) {
 }
 
 /* LC_LOAD_UPWARD_DYLIB names a dylib, as LC_LOAD_DYLIB does, and nothing a
- * grow moves; libSystem's parts and AppKit carry one. */
+ * grow moves; AppKit, HIToolbox, Metadata and ten of libSystem's parts carry
+ * one. */
 static void test_grow_takes_an_upward_dylib(void) {
     size_t fsize; uint32_t sect_off;
     uint8_t *buf = build_dylib(&fsize, 0);
@@ -2752,7 +2883,7 @@ static void test_ensure_pad_announces_dropped_split_info(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:5234`):
+In `tests/grow_test.c`, immediately after (`:5287`):
 
 ```c
     test_verify_watches_the_stabs();
@@ -2832,7 +2963,7 @@ FAIL: upward: a dylib with an upward dylib is raised (got -1)
 FAIL: upward: an executable with an upward dylib is lowered (got -1)
 ```
 
-(the last `ensure_pad` line goes on to show the refusal it got). `script_test` passes: it is a guard, and nothing names split info today; row 16 below is its positive control.
+(the last `ensure_pad` line goes on to show the refusal it got). `script_test` passes: it is a guard, and nothing names split info today; row 14 below is its positive control.
 
 - [ ] **Step 3: Drop split info, and give `mg_classify` its route**
 
@@ -2924,7 +3055,7 @@ insert:
     if (split) fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
 ```
 
-In `src/grow.c`, replace (`:1247`):
+In `src/grow.c`, replace (`:1244`):
 
 ```c
     (void)ctx_;
@@ -2937,7 +3068,7 @@ with:
     const char *why = NULL;
 ```
 
-In `src/grow.c`, immediately after (`:1272`):
+In `src/grow.c`, immediately after (`:1269`):
 
 ```c
         case LC_REEXPORT_DYLIB: case LC_LAZY_LOAD_DYLIB: case LC_PREBOUND_DYLIB:
@@ -2949,7 +3080,7 @@ insert:
         case LC_LOAD_UPWARD_DYLIB:
 ```
 
-In `src/grow.c`, immediately after (`:1284`):
+In `src/grow.c`, immediately after (`:1281`):
 
 ```c
         case LC_SEGMENT_SPLIT_INFO:
@@ -2961,7 +3092,7 @@ insert:
             if (*(const int *)ctx_) break;       /* a raise drops it */
 ```
 
-In `src/grow.c`, replace (`:1344`):
+In `src/grow.c`, replace (`:1341`):
 
 ```c
 int mg_classify(const uint8_t *buf, size_t fsize) {
@@ -2973,7 +3104,7 @@ with:
 int mg_classify(const uint8_t *buf, size_t fsize, int raise) {
 ```
 
-In `src/grow.c`, replace (`:1356`):
+In `src/grow.c`, replace (`:1353`):
 
 ```c
     return mi_each_lc(&im, mg_classify_cb, NULL) ? 0 : -1;
@@ -2985,7 +3116,7 @@ with:
     return mi_each_lc(&im, mg_classify_cb, &raise) ? 0 : -1;
 ```
 
-In `src/grow.c`, immediately before (`:1839`):
+In `src/grow.c`, immediately before (`:1876`):
 
 ```c
 /* A grow puts the header and its code `grow` bytes closer together on
@@ -3017,7 +3148,7 @@ static void mg_drop_split_info(uint8_t *buf) {
 
 ```
 
-In `src/grow.c`, replace (`:2033`):
+In `src/grow.c`, replace (`:2070`):
 
 ```c
     if (mg_classify(buf, fsize) != 0) return -1;
@@ -3029,7 +3160,7 @@ with:
     if (mg_classify(buf, fsize, raise) != 0) return -1;
 ```
 
-In `src/grow.c`, replace (`:2099`):
+In `src/grow.c`, replace (`:2136`):
 
 ```c
     }
@@ -3116,9 +3247,9 @@ cache build reads them, so the raise deletes the command: a cache build
 then skips the dylib, and loading it from its file is as before. The
 payload stays, unreferenced. mg_classify takes the route, and a lowering
 still refuses split info. LC_LOAD_UPWARD_DYLIB, which no grow had
-classified, is accepted: AppKit and ten of libSystem's parts carry one. No
-statement can name split info, so a rewrite's rebuild after a grow still
-matches what it counted.
+classified, is accepted: AppKit, HIToolbox, Metadata and ten of
+libSystem's parts carry one. No statement can name split info, so a
+rewrite's rebuild after a grow still matches what it counted.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -3146,7 +3277,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, replace (`:4912`):
+In `tests/grow_test.c`, replace (`:4963`):
 
 ```c
              "contents raised by 0x1000; repaired 1 reference to the header\n",
@@ -3158,7 +3289,7 @@ with:
              "contents raised by 0x1000; new UUID; repaired 1 reference to the header\n",
 ```
 
-In `tests/grow_test.c`, replace (`:5064`):
+In `tests/grow_test.c`, replace (`:5116`):
 
 ```c
              "contents raised by 0x1000; dropped LC_SEGMENT_SPLIT_INFO; repaired 1 reference to "
@@ -3252,7 +3383,7 @@ static void test_ensure_pad_announces_no_uuid_it_has_not(void) {
           "ensure_pad on a dylib with no UUID: says no new one (got %d):\n%s", r, err);
 ```
 
-In `tests/grow_test.c`, immediately after (`:5313`):
+In `tests/grow_test.c`, immediately after (`:5366`):
 
 ```c
     test_grow_takes_an_upward_dylib();
@@ -3274,7 +3405,7 @@ Run: build (rebuild check).
 Expected: the build fails linking `grow_test`:
 
 ```
-tests/grow_test.c:5087:5: warning: implicit declaration of function 'mg_raised_uuid' is invalid in C99 [-Wimplicit-function-declaration]
+tests/grow_test.c:5138:5: warning: implicit declaration of function 'mg_raised_uuid' is invalid in C99 [-Wimplicit-function-declaration]
 Undefined symbols for architecture x86_64:
   "_mg_raised_uuid", referenced from:
 ```
@@ -3361,7 +3492,7 @@ with:
         fprintf(stderr, "contents raised by %#x%s", first - first_before, uuid ? "; new UUID" : "");
 ```
 
-In `src/grow.c`, replace (`:1542`):
+In `src/grow.c`, replace (`:1539`):
 
 ```c
 /* mg_grow_header's mi_each_lc callback for a raise's geometry: every segment
@@ -3400,7 +3531,7 @@ static int mg_raise_cb(const struct load_command *lc_in, void *ctx_) {
     }
 ```
 
-In `src/grow.c`, immediately before (`:1802`):
+In `src/grow.c`, immediately before (`:1814`):
 
 ```c
     case LC_ROUTINES_64:
@@ -3474,7 +3605,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately after (`:4294`):
+In `tests/grow_test.c`, immediately after (`:4297`):
 
 ```c
 #define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
@@ -3486,32 +3617,37 @@ insert:
 #define DY_INITOFF 64    /* __TEXT,__init_offsets at 0x1120: f2 */
 ```
 
-In `tests/grow_test.c`, replace (`:4355`):
+In `tests/grow_test.c`, replace (`:4358`):
 
 ```c
-    int ntext = (opts & DY_UNWIND) ? 3 : 2;
+    int ntext = (opts & DY_UNWIND) ? 4 : 2;
 ```
 
 with:
 
 ```c
-    int ntext = 2 + !!(opts & DY_UNWIND) + !!(opts & DY_INITOFF);
+    int ntext = 2 + 2 * !!(opts & DY_UNWIND) + !!(opts & DY_INITOFF);
 ```
 
-In `tests/grow_test.c`, immediately after (`:4368`):
+In `tests/grow_test.c`, replace (`:4374`):
 
 ```c
-    if (opts & DY_UNWIND) s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
+    }
+
+    struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
 ```
 
-insert:
+with:
 
 ```c
+    }
     if (opts & DY_INITOFF)
         s = dy_sect(s, "__TEXT", "__init_offsets", base + 0x1120, 4, 0x1120, S_INIT_FUNC_OFFSETS);
+
+    struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
 ```
 
-In `tests/grow_test.c`, immediately after (`:4469`):
+In `tests/grow_test.c`, immediately after (`:4475`):
 
 ```c
     buf[0x1010] = 0x55; buf[0x1011] = 0xc3;
@@ -3523,7 +3659,7 @@ insert:
     if (opts & DY_INITOFF) { uint32_t f2 = 0x1010; memcpy(buf + 0x1120, &f2, sizeof f2); }
 ```
 
-In `tests/grow_test.c`, immediately before (`:5151`):
+In `tests/grow_test.c`, immediately before (`:5203`):
 
 ```c
 int main(void) {
@@ -3623,7 +3759,7 @@ static void test_raise_moves_the_initializer_offsets(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:5411`):
+In `tests/grow_test.c`, immediately after (`:5464`):
 
 ```c
     test_ensure_pad_announces_no_uuid_it_has_not();
@@ -3683,7 +3819,7 @@ with:
  * failure) otherwise. */
 ```
 
-In `src/grow.c`, immediately after (`:738`):
+In `src/grow.c`, immediately after (`:735`):
 
 ```c
     s->kinds = NULL;
@@ -3696,7 +3832,7 @@ insert:
     s->oldsize = 0;
 ```
 
-In `src/grow.c`, replace (`:759`):
+In `src/grow.c`, replace (`:756`):
 
 ```c
         s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
@@ -3721,7 +3857,7 @@ with:
 }
 ```
 
-In `src/grow.c`, immediately after (`:777`):
+In `src/grow.c`, immediately after (`:774`):
 
 ```c
     free(s->symaddr); s->symaddr = NULL;
@@ -3733,7 +3869,7 @@ insert:
     free(s->old); s->old = NULL; s->oldsize = 0;
 ```
 
-In `src/grow.c`, immediately before (`:927`):
+In `src/grow.c`, immediately before (`:924`):
 
 ```c
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
@@ -3886,7 +4022,7 @@ out:
 
 ```
 
-In `src/grow.c`, replace (`:1117`):
+In `src/grow.c`, replace (`:1114`):
 
 ```c
     return mg_verify_refs(buf, fsize, before, base, grow, delta);
@@ -3958,26 +4094,27 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 ---
 
-### Task 7: Check the raise against three independent oracles (check 4)
+### Task 7: Check the raise against four oracles (check 4), and say what verification trusts
 
 **Files** (each edit block below gives its line):
 - Modify: `src/grow.c` (`mg_snapshot_take`; `mg_verify`'s last lines; new `mg_or_*`, `mg_oracles` before `/* Check 3 of a raise`)
-- Modify: `src/grow.h` (`mg_snapshot`'s `oracles`; new `mg_oracles` and `MG_OR_*`; `mg_verify`'s contract)
+- Modify: `src/grow.h` (the top comment: what a grow's verification trusts; `mg_snapshot`'s `oracles`; new `mg_oracles` and `MG_OR_*`; `mg_verify`'s contract)
 - Test: `tests/grow_test.c` (new tests before `int main(void) {`; calls)
 
 **Interfaces:**
 - Consumes: `mg_funcstarts_decode`, `mg_find_trie`, `MT_TRIE_MAX_DEPTH`, `mu_decode`; Task 6's `mg_verify` tail.
-- Produces: `unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);`, `MG_OR_INITS`, `MG_OR_LAZY`, `MG_OR_EXPORTS`, `MG_OR_ALL`; `mg_snapshot.oracles`.
+- Produces: `unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);`, `MG_OR_INITS`, `MG_OR_LAZY`, `MG_OR_EXPORTS`, `MG_OR_UNWIND`, `MG_OR_ALL`; `mg_snapshot.oracles`.
 
 **Plan decisions.**
 
-- **The oracles are Decision 7's check 4:** every `S_MOD_INIT_FUNC_POINTERS` and `S_MOD_TERM_FUNC_POINTERS` value, and `LC_ROUTINES_64`'s initializer, is an `LC_FUNCTION_STARTS` start; every `__la_symbol_ptr` value lies in `__TEXT,__stub_helper`; every regular export, at the base plus its trie offset, is the address of the `N_SECT | N_EXT` symbol of its name. Each is read by code that shares nothing with the grow's: its own trie walk (collecting names), its own section reads, its own name lookup (sorted, then `bsearch`).
-- **Asked only of what held.** The snapshot records which oracles hold of the original; verification asks only those of the raised image. Measured, all three hold of 1,177 of the 1,180 system images (the other three are refused earlier), but an image that breaks one already is not refused for a break the raise did not make. An oracle with nothing to check (no function starts, no lazy pointers, no trie) holds.
-- **Why check 4 is tested through a tampered snapshot:** checks 1–3 and 5 catch every change a raise could plant in the file first. The test moves a lazy pointer outside `__stub_helper` in the raised image and tells the snapshot it held that value before, so only check 4 sees it.
+- **The oracles are Decision 7's check 4:** every `S_MOD_INIT_FUNC_POINTERS` and `S_MOD_TERM_FUNC_POINTERS` value, and `LC_ROUTINES_64`'s initializer, is an `LC_FUNCTION_STARTS` start; every `__la_symbol_ptr` value lies in `__TEXT,__stub_helper`; every regular export, at the base plus its trie offset, is the address of the `N_SECT | N_EXT` symbol of its name; every compact-unwind personality names a slot of `__got` or `__nl_symbol_ptr`, and every LSDA lies in `__TEXT,__gcc_except_tab`. Each is read by code of its own: its own trie walk (collecting names), its own section reads and name lookup (sorted, then `bsearch`), its own parse of `__unwind_info`'s header, personalities and LSDA table. It shares with the grow only `mi_wrap`'s view of the load commands, `mg_funcstarts_decode` and `mg_find_trie`.
+- **What verification trusts** (Review Focus 6), in `src/grow.h`'s top comment. Checks 1–3 and 5 derive what each field must hold from the route's rules, not from the code that moved it, but read the image through the decoders the grow reads it through: `mg_rebases_read`, `mg_collect`'s walkers, `mg_symtab` and `mhr_scan`. An entry one of those misses is neither moved nor compared, and the grow passes. What guards them is their unit tests in `tests/grow_test.c`, and for the rebase opcodes alone (`mrb_decode`), `rebase_oracle_test`'s comparison with `dyldinfo`. The oracles catch some such misses: row 20 below removes the unwind walker's visit to each LSDA, so the raise leaves every LSDA where it was: of the grow's own checks only the unwind oracle sees it (`verify FAILED -- the LSDA 0x10001180 lies outside __gcc_except_tab`), and of the tests the unwind tests; row 21 does the same to the personalities. Without this oracle, the unit tests alone would stand between such a slip and a shipped image.
+- **Asked only of what held.** The snapshot records which oracles hold of the original; verification asks only those of the raised image, so an image that breaks one already is not refused for a break the raise did not make. Measured over the 1,180 system images' originals: all four hold of 1,134. The lazy-pointer oracle does not hold of 45 (libc++, libc++abi, MapKit, OpenCL's compilers and matplotlib's and scipy's extensions among them: a lazy pointer that already names a function of the image's own), and the unwind oracle not of VideoToolbox, whose LSDAs lie in a second `__gcc_except_tab`, in `__DATA`. Each is asked the others. An oracle with nothing to check (no function starts, no lazy pointers, no trie, no compact unwind) holds.
+- **Why check 4 is tested through a tampered snapshot:** a change planted in the raised file, where the shared decoders read, is seen first by checks 1–3 and 5 (rows 20 and 21 show the other way in: a walker that skips an entry, which of the checks only check 4 then sees). The test moves a lazy pointer outside `__stub_helper` in the raised image and tells the snapshot it held that value before, so only check 4 sees it.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately before (`:5240`):
+In `tests/grow_test.c`, immediately before (`:5292`):
 
 ```c
 int main(void) {
@@ -4005,16 +4142,16 @@ static void test_oracles_judge_the_fixture(void) {
                  MG_OR_ALL, NULL);
     buf = build_dylib(&fsize, 0);
     dy_poke64(buf, 0x2030, 0x1011);
-    check_oracle("an initializer mid-function", buf, MG_OR_LAZY | MG_OR_EXPORTS,
+    check_oracle("an initializer mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
                  "the initializer 0x1011 is not a function start");
     buf = build_dylib(&fsize, DY_ROUTINES);
     ((struct routines_command_64 *)dy_find(buf, LC_ROUTINES_64))->init_address = 0x1012;
-    check_oracle("LC_ROUTINES_64 mid-function", buf, MG_OR_LAZY | MG_OR_EXPORTS,
+    check_oracle("LC_ROUTINES_64 mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
                  "the initializer 0x1012 is not a function start");
     buf = build_dylib(&fsize, 0);
     dy_section(buf, "__DATA", "__mod_init_func")->flags = S_MOD_TERM_FUNC_POINTERS;
     dy_poke64(buf, 0x2030, 0x1013);
-    check_oracle("a terminator mid-function", buf, MG_OR_LAZY | MG_OR_EXPORTS,
+    check_oracle("a terminator mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
                  "the initializer 0x1013 is not a function start");
     buf = build_dylib(&fsize, 0);
     dy_poke64(buf, 0x2030, 0x1011);
@@ -4022,23 +4159,43 @@ static void test_oracles_judge_the_fixture(void) {
     check_oracle("an initializer, and no function starts", buf, MG_OR_ALL, NULL);
     buf = build_dylib(&fsize, 0);
     dy_poke64(buf, 0x2038, 0x1110);
-    check_oracle("a lazy pointer at __stub_helper's end", buf, MG_OR_INITS | MG_OR_EXPORTS,
+    check_oracle("a lazy pointer at __stub_helper's end", buf, MG_OR_ALL & ~MG_OR_LAZY,
                  "the lazy pointer 0x1110 lies outside __stub_helper");
     buf = build_dylib(&fsize, 0);
     dy_poke64(buf, 0x2038, 0x10ff);
-    check_oracle("a lazy pointer before __stub_helper", buf, MG_OR_INITS | MG_OR_EXPORTS,
+    check_oracle("a lazy pointer before __stub_helper", buf, MG_OR_ALL & ~MG_OR_LAZY,
                  "the lazy pointer 0x10ff lies outside __stub_helper");
     buf = build_dylib(&fsize, 0);
     dy_poke64(buf, 0x2038, 0x110f);
     check_oracle("a lazy pointer at __stub_helper's last byte", buf, MG_OR_ALL, NULL);
     buf = build_dylib(&fsize, 0);
     buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001 */
-    check_oracle("an export off by one", buf, MG_OR_INITS | MG_OR_LAZY,
+    check_oracle("an export off by one", buf, MG_OR_ALL & ~MG_OR_EXPORTS,
                  "the export _f1 names 0x1001, and its symbol 0x1000");
     buf = build_dylib(&fsize, 0);
     buf[0x3040 + 18] = 0x81;
     dy_syms(buf, DY_FSIZE)[1].n_type = N_SECT;         /* _f1 is not external */
     check_oracle("an export with no external symbol", buf, MG_OR_ALL, NULL);
+
+    /* Compact unwind (DY_UNWIND): its personality at word 7, f2's LSDA at 15. */
+    static const struct { const char *what; int word; uint32_t v; const char *why; } uw[6] = {
+        { "an LSDA outside __gcc_except_tab", 15, 0x1010,
+          "the LSDA 0x1010 lies outside __gcc_except_tab" },
+        { "an LSDA at __gcc_except_tab's end", 15, 0x1190,
+          "the LSDA 0x1190 lies outside __gcc_except_tab" },
+        { "an LSDA at __gcc_except_tab's last byte", 15, 0x118f, NULL },
+        { "a personality in __data", 7, 0x2000,
+          "the personality 0x2000 names no __got or __nl_symbol_ptr slot" },
+        { "a personality mid-slot", 7, 0x2044,
+          "the personality 0x2044 names no __got or __nl_symbol_ptr slot" },
+        { "compact unwind of a version it does not read", 0, 2, "__unwind_info could not be read" },
+    };
+    for (int i = 0; i < 6; i++) {
+        buf = build_dylib(&fsize, DY_UNWIND);
+        ((uint32_t *)(buf + 0x1800))[uw[i].word] = uw[i].v;
+        check_oracle(uw[i].what, buf, uw[i].why ? MG_OR_ALL & ~MG_OR_UNWIND : MG_OR_ALL,
+                     uw[i].why);
+    }
 
     /* Two fail; `why` is the first of those asked about. */
     char why[256] = "";
@@ -4046,8 +4203,8 @@ static void test_oracles_judge_the_fixture(void) {
     dy_poke64(buf, 0x2030, 0x1011);
     dy_poke64(buf, 0x2038, 0x1110);
     unsigned holds = mg_oracles(buf, fsize, MG_OR_LAZY | MG_OR_EXPORTS, why, sizeof why);
-    CHECK(holds == MG_OR_EXPORTS && strcmp(why, "the lazy pointer 0x1110 lies outside "
-                                                "__stub_helper") == 0,
+    CHECK(holds == (MG_OR_EXPORTS | MG_OR_UNWIND) &&
+          strcmp(why, "the lazy pointer 0x1110 lies outside __stub_helper") == 0,
           "oracles: asked about the lazy pointers alone, says why they fail (%#x, '%s')", holds, why);
     free(buf);
 }
@@ -4085,7 +4242,7 @@ static void test_verify_watches_the_oracles(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:5511`):
+In `tests/grow_test.c`, immediately after (`:5584`):
 
 ```c
     test_raise_moves_a_relocation_offset_and_keeps_the_pad();
@@ -4101,11 +4258,37 @@ insert:
 - [ ] **Step 2: Run them to see them fail**
 
 Run: build (rebuild check).
-Expected: the build fails compiling `grow_test.c`: 19 `use of undeclared identifier` errors, for `MG_OR_ALL` (5), `MG_OR_EXPORTS` (6), `MG_OR_LAZY` (5) and `MG_OR_INITS` (3), then `fatal error: too many errors emitted, stopping now [-ferror-limit=]`.
+Expected: the build fails compiling `grow_test.c`: 19 `use of undeclared identifier` errors, for `MG_OR_ALL` (12), `MG_OR_INITS` (3), `MG_OR_LAZY` (2), `MG_OR_EXPORTS` (1) and `MG_OR_UNWIND` (1), then `fatal error: too many errors emitted, stopping now [-ferror-limit=]`.
 
 - [ ] **Step 3: The oracles**
 
-In `src/grow.h`, immediately after (`:244`):
+In `src/grow.h`, immediately after (`:36`):
+
+```c
+ * that names it: each rebased pointer, symbol, section and segment.
+```
+
+insert:
+
+```c
+ *
+ * What a grow's verification trusts. mg_verify derives what each field must
+ * hold from the route's rules, not from the code that moved it, but it reads
+ * the image through the decoders the grow itself reads it through:
+ * mg_rebases_read for the rebased pointers (checks 2 and 3), mg_collect's
+ * walkers of the export trie, compact unwind, data in code, function starts
+ * and initializer offsets (check 1), mg_symtab (check 2) and mhr_scan (check
+ * 5). An entry one of those misses is missed by the grow and its check
+ * alike, and the grow passes: a rebase the reader drops is neither moved nor
+ * compared. What guards those decoders is their tests in tests/grow_test.c
+ * and, for the rebase opcodes alone (mrb_decode, under mg_rebases_read),
+ * tests/rebase_oracle_test.sh's comparison with dyldinfo over 10.9's
+ * /usr/lib. mg_oracles (check 4) and mg_plausible read what they check with
+ * code of their own, and catch some such misses: an initializer, a lazy
+ * pointer, an export or an LSDA left where it was.
+```
+
+In `src/grow.h`, immediately after (`:259`):
 
 ```c
     size_t oldsize;
@@ -4117,7 +4300,7 @@ insert:
     unsigned oracles;    /* the mg_oracles that held of it */
 ```
 
-In `src/grow.h`, immediately before (`:282`):
+In `src/grow.h`, immediately before (`:297`):
 
 ```c
 /* The grow G is how far the first section moved; a raise moves every
@@ -4126,24 +4309,30 @@ In `src/grow.h`, immediately before (`:282`):
 insert:
 
 ```c
-/* Three things true of an image ld64 linked, whatever a grow moved, each
- * checked by code that shares nothing with the grow's (spec: check 4):
- * every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS value, and
- * LC_ROUTINES_64's initializer, is an LC_FUNCTION_STARTS start (vacuous
- * with no starts); every __la_symbol_ptr value lies in __TEXT,__stub_helper;
- * and every regular export, at the base plus its trie offset, is the address
- * of the N_SECT | N_EXT symbol of its name, where there is one. Returns the
+/* Four things true of an image ld64 linked, whatever a grow moved (spec:
+ * check 4): every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
+ * value, and LC_ROUTINES_64's initializer, is an LC_FUNCTION_STARTS start
+ * (vacuous with no starts); every __la_symbol_ptr value lies in
+ * __TEXT,__stub_helper; every regular export, at the base plus its trie
+ * offset, is the address of the N_SECT | N_EXT symbol of its name, where
+ * there is one; and every personality compact unwind names is a slot of a
+ * non-lazy pointer section (__got, __nl_symbol_ptr), and every LSDA lies in
+ * __TEXT,__gcc_except_tab. Each reads what it checks itself: the sections'
+ * values, the export trie's names, __unwind_info. It shares with the grow
+ * only mi_wrap's view of the load commands, mg_funcstarts_decode and
+ * mg_find_trie, and none of the walkers that move what it reads. Returns the
  * MG_OR_ bits of those that hold, and sets `why` for the first that does not
  * among `want`. */
 #define MG_OR_INITS   1u
 #define MG_OR_LAZY    2u
 #define MG_OR_EXPORTS 4u
-#define MG_OR_ALL     7u
+#define MG_OR_UNWIND  8u
+#define MG_OR_ALL     15u
 unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);
 
 ```
 
-In `src/grow.h`, replace (`:313`):
+In `src/grow.h`, replace (`:334`):
 
 ```c
  * unwind and S_INIT_FUNC_OFFSETS. -1 (with a message naming the first
@@ -4158,7 +4347,7 @@ with:
  * otherwise. */
 ```
 
-In `src/grow.c`, immediately after (`:740`):
+In `src/grow.c`, immediately after (`:737`):
 
 ```c
     s->oldsize = 0;
@@ -4170,7 +4359,7 @@ insert:
     s->oracles = 0;
 ```
 
-In `src/grow.c`, immediately after (`:768`):
+In `src/grow.c`, immediately after (`:765`):
 
 ```c
     s->oldsize = fsize;
@@ -4182,7 +4371,7 @@ insert:
     s->oracles = mg_oracles(buf, fsize, 0, why, sizeof why);
 ```
 
-In `src/grow.c`, immediately before (`:1014`):
+In `src/grow.c`, immediately before (`:1011`):
 
 ```c
 /* Check 3 of a raise (see mg_verify). */
@@ -4196,8 +4385,8 @@ struct mg_or_lcs {
     const struct linkedit_data_command *fs;
     const struct symtab_command *st;
     const struct routines_command_64 *rt;
-    const struct section_64 *helper;
-    int nlazy;
+    const struct section_64 *helper, *unwind, *except, *nl[8];
+    int nlazy, nnl;
 };
 static int mg_or_lcs_cb(const struct load_command *lc, void *ctx_) {
     struct mg_or_lcs *c = (struct mg_or_lcs *)ctx_;
@@ -4210,7 +4399,12 @@ static int mg_or_lcs_cb(const struct load_command *lc, void *ctx_) {
     for (uint32_t j = 0; j < seg->nsects; j++) {
         if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__stub_helper", 16))
             c->helper = &s[j];
+        if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__gcc_except_tab", 16))
+            c->except = &s[j];
+        if (!c->unwind && !strncmp(s[j].sectname, "__unwind_info", 16)) c->unwind = &s[j];
         if ((s[j].flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS) c->nlazy++;
+        if ((s[j].flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS && c->nnl < 8)
+            c->nl[c->nnl++] = &s[j];
     }
     return 0;
 }
@@ -4342,13 +4536,60 @@ static int mg_or_exports(const uint8_t *buf, size_t fsize, uint64_t base,
     return r;
 }
 
+/* Whether `a` is an 8-byte slot of a non-lazy pointer section. */
+static int mg_or_in_nl(const struct mg_or_lcs *c, uint64_t a) {
+    for (int k = 0; k < c->nnl; k++)
+        if (a >= c->nl[k]->addr && a - c->nl[k]->addr < c->nl[k]->size &&
+            (a - c->nl[k]->addr) % 8 == 0)
+            return 1;
+    return 0;
+}
+
+/* 0 when every personality compact unwind names is a slot of __got or
+ * __nl_symbol_ptr, and every LSDA it names lies in __TEXT,__gcc_except_tab;
+ * else 1, with `why` set; -1 when __unwind_info cannot be read. Read here,
+ * not through mg_unwind_walk. */
+static int mg_or_unwind(const uint8_t *buf, size_t fsize, uint64_t base,
+                        const struct mg_or_lcs *c, char *why, size_t whysz) {
+    const struct section_64 *u = c->unwind;
+    uint32_t h[7], lo, hi;
+    if (!u || !u->size) return 0;
+    if (u->offset > fsize || u->size > fsize - u->offset || u->size < sizeof h) return -1;
+    const uint8_t *p = buf + u->offset;
+    memcpy(h, p, sizeof h);
+    if (h[0] != 1 || (uint64_t)h[3] + 4ull * h[4] > u->size || h[6] < 1 ||
+        (uint64_t)h[5] + 12ull * h[6] > u->size)
+        return -1;
+    for (uint32_t k = 0; k < h[4]; k++) {
+        uint32_t pe;
+        memcpy(&pe, p + h[3] + 4 * k, sizeof pe);
+        if (mg_or_in_nl(c, base + pe)) continue;
+        snprintf(why, whysz, "the personality %#llx names no __got or __nl_symbol_ptr slot",
+                 (unsigned long long)(base + pe));
+        return 1;
+    }
+    memcpy(&lo, p + h[5] + 8, sizeof lo);
+    memcpy(&hi, p + h[5] + 12ull * (h[6] - 1) + 8, sizeof hi);
+    if (hi < lo || hi > u->size) return -1;
+    for (uint32_t e = lo; e + 8 <= hi; e += 8) {
+        uint32_t lsda;
+        memcpy(&lsda, p + e + 4, sizeof lsda);
+        uint64_t a = base + lsda;
+        if (c->except && a >= c->except->addr && a - c->except->addr < c->except->size) continue;
+        snprintf(why, whysz, "the LSDA %#llx lies outside __gcc_except_tab", (unsigned long long)a);
+        return 1;
+    }
+    return 0;
+}
+
 unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz) {
     mi_image im;
     struct mg_or_lcs c;
     uint64_t base;
     unsigned holds = 0;
-    char w[3][256] = { "LC_FUNCTION_STARTS could not be read", "",
-                       "the export trie or the symbols could not be read" };
+    char w[4][256] = { "LC_FUNCTION_STARTS could not be read", "",
+                       "the export trie or the symbols could not be read",
+                       "__unwind_info could not be read" };
     memset(&c, 0, sizeof c);
     snprintf(why, whysz, "the image could not be read");
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &base) != 0) return 0;
@@ -4385,7 +4626,8 @@ unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, 
                   (unsigned long long)r.bad);
 
     if (mg_or_exports(buf, fsize, base, c.st, w[2], sizeof w[2]) == 0) holds |= MG_OR_EXPORTS;
-    for (int i = 0; i < 3; i++)
+    if (mg_or_unwind(buf, fsize, base, &c, w[3], sizeof w[3]) == 0) holds |= MG_OR_UNWIND;
+    for (int i = 0; i < 4; i++)
         if (want & ~holds & (1u << i)) {
             snprintf(why, whysz, "%s", w[i]);
             break;
@@ -4395,7 +4637,7 @@ unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, 
 
 ```
 
-In `src/grow.c`, replace (`:1322`):
+In `src/grow.c`, replace (`:1372`):
 
 ```c
     return before->raise ? mg_verify_bytes(buf, fsize, before, grow) : 0;
@@ -4442,18 +4684,31 @@ Expected: `macho_grow_test: all cases pass`; green.
 | 16 | `    s->oracles = mg_oracles(buf, fsize, 0, why, sizeof why);` | `    s->oracles = MG_OR_ALL;` | `FAIL: oracles: a raise of an image one did not hold of succeeds` |
 | 17 | `    s->oracles = mg_oracles(buf, fsize, 0, why, sizeof why);` | `    s->oracles = 0;` | `FAIL: oracles: the snapshot says all hold` |
 | 18 | `        if (want & ~holds & (1u << i)) {` | `        if (~holds & (1u << i)) {` | `FAIL: oracles: asked about the lazy pointers alone, says why they fail` |
-| 19 | `        if (want & ~holds & (1u << i)) {` | `        if (want & (1u << i)) {` | `FAIL: oracles: a lazy pointer at __stub_helper's end: 0x5 hold, want 0x5; said 'LC_FUNCTION_STARTS could not be read'` |
+| 19 | `        if (want & ~holds & (1u << i)) {` | `        if (want & (1u << i)) {` | `FAIL: oracles: a lazy pointer at __stub_helper's end: 0xd hold, want 0xd; said 'LC_FUNCTION_STARTS could not be read'` |
+| 20 | `            UW_VISIT(e + 4, MG_K_ANY);     /* lsdaOffset -> __gcc_except_tab */` | *(delete it)* | `verify FAILED -- the LSDA 0x10001180 lies outside __gcc_except_tab` |
+| 21 | `        for (uint32_t k = 0; k < peCnt; k++) UW_VISIT(peOff + 4 * k, MG_K_ANY); /* GOT slot */` | *(delete it)* | `verify FAILED -- the personality` |
+| 22 | `    if (mg_or_unwind(buf, fsize, base, &c, w[3], sizeof w[3]) == 0) holds \|= MG_OR_UNWIND;` | `    (void)mg_or_unwind;` | `FAIL: oracles: the fixture` |
+| 23 | `        if (mg_or_in_nl(c, base + pe)) continue;` | `        if (1) continue;` | `FAIL: oracles: a personality in __data` |
+| 24 | `            (a - c->nl[k]->addr) % 8 == 0)` | `            1)` | `FAIL: oracles: a personality mid-slot` |
+| 25 | `        if ((s[j].flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS && c->nnl < 8)` | `        if (0)` | `FAIL: oracles: the fixture` |
+| 26 | `        if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__gcc_except_tab", 16))` | `        if (0)` | `FAIL: oracles: the fixture` |
+| 27 | `        if (c->except && a >= c->except->addr && a - c->except->addr < c->except->size) continue;` | `        if (1) continue;` | `FAIL: oracles: an LSDA outside __gcc_except_tab` |
+| 28 | `        if (c->except && a >= c->except->addr && a - c->except->addr < c->except->size) continue;` | `        if (c->except && a >= c->except->addr && a - c->except->addr <= c->except->size) continue;` | `FAIL: oracles: an LSDA at __gcc_except_tab's end` |
+| 29 | `    if (h[0] != 1 \|\| (uint64_t)h[3]` | `    if ((uint64_t)h[3]` | `FAIL: oracles: compact unwind of a version it does not read` |
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/grow.c src/grow.h tests/grow_test.c
-git commit -m "feat(grow): check a raise against three oracles that share nothing with it
+git commit -m "feat(grow): check a raise against four oracles read by code of their own
 
 Initializers name function starts, lazy pointers lie in __stub_helper,
-and each regular export names its symbol's address: true of what ld64
-links, whatever a grow moved, and read here by code of their own. A raise
-must keep each that held of the image it came from.
+each regular export names its symbol's address, and compact unwind's
+personalities name __got slots and its LSDAs lie in __gcc_except_tab:
+true of what ld64 links, whatever a grow moved, and read here by code of
+their own. A raise must keep each that held of the image it came from.
+The other checks read the image through the grow's own decoders, and
+src/grow.h now says so, and what guards them.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -4465,7 +4720,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Files** (each edit block below gives its line):
 - Modify: `src/relations.h` (the table)
-- Test: `tests/cli_test.sh` (the comments and ; a new block before `reached_end=1`)
+- Test: `tests/cli_test.sh` (the MR_ERROR block's two comments that said a dylib cannot grow; a new block before `reached_end=1`)
 
 **Interfaces:**
 - Consumes: everything above, through `drydock-macho-rewrite`; in `cli_test.sh`, `$CC`, `$FIXTURE_FLAGS`, `$T`, `ok`, `bad`.
@@ -4474,6 +4729,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 **Plan decisions.**
 
 - **Spec Testing table's row:** `dylib append`, `dylib insert` and `rpath replace` on a dylib whose pad is too short: success, announced, `verify` passes. The fixture is compiled here, as `cli_test`'s others are, with `$FIXTURE_FLAGS` (x86_64, 10.9); the path is 100 bytes longer than its measured pad. A program linked against it runs the dylib the `rpath replace` raised, and `DYLD_PRINT_LIBRARIES` shows that copy loaded (the positive control). Its rpath is `@loader_path/.`: 10.9's dyld expands `@loader_path` only with a slash after it.
+- **Signing** (the review's). A dylib its linker signed carries a signature the raise invalidates, so each script deletes `LC_CODE_SIGNATURE` first when `info` lists one, as Task 9's sweeps do; 10.9's ld64 does not sign, so here nothing is deleted. On a host that kills whatever was modified since it was signed (`$signing_enforced`, which `cli_test` establishes apart from this tool), the program's run and its `DYLD_PRINT_LIBRARIES` check are skipped, with one SKIP saying why: the raised dylib would be killed there for being unsigned, not for the raise.
 - **No relation bit** (spec Decision 8): a raise always moves the first section, so `src/edit.c`'s `me_note_disturbed` already sets `MREL_BASE_REL` and `MREL_FILE_OFF`, and every later statement reads the raised image afresh. A later `rpath append` into the grown pad is the test; `src/relations.h` gets the row and says why there is no bit.
 - **`cli_test`'s MR_ERROR block** said a dylib cannot grow; its refused dylib (`mkimplausible`'s) is refused for its chained fixups, and the comment now says so. Its assertions do not change.
 - **No "see it fail":** Tasks 2–7 made this behaviour; these are its end-to-end tests, and pass on arrival. Rows 1 and 2 are their proof that they can fail.
@@ -4524,7 +4780,9 @@ insert:
 # than the fixture has; each grows it, says so, and verifies. The driver
 # finds the raised dylib through its own rpath, and runs. (That rpath is
 # @loader_path/., not @loader_path: 10.9's dyld expands only the form with a
-# slash.)
+# slash.) A linker that signs the dylib leaves a signature the raise
+# invalidates, so each script deletes it first, as the sweeps do; and a host
+# that kills whatever was modified since it was signed skips the run.
 cat > "$T/raise.c" <<'EOF'
 int raise_fn(void) { return 7; }
 EOF
@@ -4540,12 +4798,16 @@ mkdir -p "$T/raise"
 raise_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/raise/libraise.dylib" \
     | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 raise_path="/nonexistent/$(printf 'r%.0s' $(seq 1 $((${raise_pad:-0} + 100))))"
+raise_sig=
+"$DRYDOCK_MACHO_REWRITE" info "$T/raise/libraise.dylib" | grep -q ' LC_CODE_SIGNATURE ' \
+    && raise_sig='load-command delete codesig'
+raise_script() { [ -z "$raise_sig" ] || echo "$raise_sig"; printf '%s\n' "$1"; }
 for raise_stmt in "dylib append $raise_path" "dylib insert $raise_path" \
                   "rpath replace /usr/lib/swift $raise_path"; do
     raise_what=${raise_stmt%% /*}
     rm -f "$T/raise_out"
     rc=0
-    printf '%s\n' "$raise_stmt" | "$DRYDOCK_MACHO_REWRITE" "$T/raise/libraise.dylib" \
+    raise_script "$raise_stmt" | "$DRYDOCK_MACHO_REWRITE" "$T/raise/libraise.dylib" \
         "$T/raise_out" >"$T/raise.out" 2>"$T/raise.err" || rc=$?
     [ "$rc" -eq 0 ] && grep -q "^$T/raise/libraise.dylib: grew the header pad by [0-9]* bytes ([0-9]* -> [0-9]* available); contents raised by 0x[0-9a-f]*; new UUID" "$T/raise.err" \
         && ok "raise: $raise_what, past a dylib's pad, grows it by raising its contents, announced" \
@@ -4556,11 +4818,16 @@ for raise_stmt in "dylib append $raise_path" "dylib insert $raise_path" \
         || bad "raise: $raise_what" "the output lacks the path or does not verify"
 done
 cp "$T/raise_out" "$T/raise/libraise.dylib"
-"$T/raise/driver" && ok "raise: a program loads the raised dylib and runs" \
-    || bad "raise: run" "the driver failed"
-DYLD_PRINT_LIBRARIES=1 "$T/raise/driver" 2>&1 | grep -q "raise/.*libraise\.dylib" \
-    && ok "raise: ... and the dylib it loaded is the raised copy" \
-    || bad "raise: run" "dyld did not say it loaded $T/raise's libraise.dylib"
+if [ "$signing_enforced" -eq 1 ]; then
+    skip "raise: a program loads the raised dylib and runs" \
+        "this host SIGKILLs any binary modified since it was signed (established independently of drydock-macho-rewrite by the host probe above); exercised for real on 10.9"
+else
+    "$T/raise/driver" && ok "raise: a program loads the raised dylib and runs" \
+        || bad "raise: run" "the driver failed"
+    DYLD_PRINT_LIBRARIES=1 "$T/raise/driver" 2>&1 | grep -q "raise/.*libraise\.dylib" \
+        && ok "raise: ... and the dylib it loaded is the raised copy" \
+        || bad "raise: run" "dyld did not say it loaded $T/raise's libraise.dylib"
+fi
 # A statement after the raise edits the raised image, re-read: the raise needs
 # no relation of its own (src/relations.h).
 rc=0
@@ -4596,7 +4863,7 @@ insert:
 - [ ] **Step 3: Run them**
 
 Run: build (rebuild check), then `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B" | grep -E 'raise|cli_test:'`, then the suite.
-Expected: nine `PASS raise: …` lines (three statements, two lines each; the run; the loaded copy; the later edit), `cli_test: 0 failure(s)`; green.
+Expected: nine `PASS raise: …` lines (three statements, two lines each; the run; the loaded copy; the later edit), `cli_test: 0 failure(s)`; green. (Where signing is enforced, seven, and a `SKIP raise: a program loads the raised dylib and runs`.)
 
 - [ ] **Step 4: Mutation proof** (file `src/grow.c`; test `sh tests/cli_test.sh "$B"`)
 
@@ -4612,9 +4879,10 @@ git add src/relations.h tests/cli_test.sh
 git commit -m "test(cli): grow a dylib's pad through dylib and rpath statements
 
 dylib append, dylib insert and rpath replace, each past a dylib's pad,
-raise it, say so, and verify; a program loads the raised dylib and runs;
-and a later statement edits the raised image. src/relations.h records
-the raise, which needs no relation bit of its own.
+raise it, say so, and verify; a program loads the raised dylib and runs
+(skipped where signing is enforced, and a signature the linker left is
+deleted first); and a later statement edits the raised image.
+src/relations.h records the raise, which needs no relation bit of its own.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
@@ -4709,9 +4977,12 @@ for k in 'IN: verified' 'new UUID' 'dropped LC_SEGMENT_SPLIT_INFO' 'repaired' 'r
   echo "$k: $(awk -F'\t' '$2 == 0' "$R" | grep -c "$k")"; done
 awk -F'\t' '$2 == 0' "$R" | grep -o 'repaired [0-9]*' | awk '{ s += $2 } END { print "references repaired:", s }'
 awk -F'\t' '$2 != 0 { print $1 }' "$R"
+P='LC_DYSYMTAB lists|aligned to 2\^'
+printf '%s\n' 'ERROR: section __DATA,__data is aligned to 2^13 bytes' | grep -c -E "$P"   # positive control: 1
+cat "$W/xa/results.tsv" "$R" | grep -c -E "$P"
 ```
 
-Expected: `1180`; `lb: 1180 1` (every one refused, `only MH_EXECUTE can be grown`); `la: 1177 0    3 1`; `IN: verified: 1177`, `new UUID: 1177`, `dropped LC_SEGMENT_SPLIT_INFO: 364`, `repaired: 37`, `re-packed: 1173`, `references repaired: 312`; and the three refused: `CFNetwork` and `/usr/lib/libxcselect.dylib` (`LC_LAZY_LOAD_DYLIB present …`, the rewriter's), and `MediaToolbox` (`the bytes at 0x2380d0 may be code that addresses the image's own header …`). The raised sweep takes about 80 s.
+Expected: `1180`; `lb: 1180 1` (every one refused, `only MH_EXECUTE can be grown`); `la: 1177 0    3 1`; `IN: verified: 1177`, `new UUID: 1177`, `dropped LC_SEGMENT_SPLIT_INFO: 364`, `repaired: 37`, `re-packed: 1173`, `references repaired: 312`; and the three refused: `CFNetwork` and `/usr/lib/libxcselect.dylib` (`LC_LAZY_LOAD_DYLIB present …`, the rewriter's), and `MediaToolbox` (`the bytes at 0x2380d0 may be code that addresses the image's own header …`). Then `1`, and `0`: Task 1's refusals of `LC_DYSYMTAB`'s tables and relocations and of a section aligned past a page fire on none of the 1,180, nor on the executable corpus. The raised sweep takes about 2 minutes.
 
 - [ ] **Step 4: Raised copies, run by Apple's programs**
 
@@ -4929,9 +5200,15 @@ among them), sections, segments and `LC_ROUTINES_64`. `LC_UUID` is replaced,
 since the old dSYM would describe the raised image wrongly, and
 `LC_SEGMENT_SPLIT_INFO`, which a raise leaves stale, is deleted. Each raise
 verifies itself six ways (the spec's Decision 7), among them a byte-for-byte
-comparison with the image it came from and three oracles that share no code
-with the grow. `LC_LOAD_UPWARD_DYLIB`, which no grow had classified, is
-accepted on both routes: AppKit and ten of libSystem's parts carry one.
+comparison with the image it came from, and four oracles (initializers, lazy
+pointers, exports, compact unwind) that read what they check with code of
+their own. The other checks read the image through the decoders the raise
+reads it through (`mg_rebases_read`, `mg_collect`'s walkers, `mg_symtab`,
+`mhr_scan`), so an entry one of those misses is missed by both: those
+decoders are guarded by their unit tests, and the rebase opcodes' by
+`rebase_oracle_test`'s comparison with `dyldinfo`. `LC_LOAD_UPWARD_DYLIB`, which no grow had
+classified, is accepted on both routes: AppKit, HIToolbox, Metadata and ten
+of libSystem's parts carry one.
 
 Measured 2026-09-26 over this host's 1,180 x86_64 dylibs and bundles under
 `/usr/lib` and `/System/Library/Frameworks` (399 dylibs, 781 bundles), with
@@ -4954,18 +5231,56 @@ that; newer ones grow. The executable route is unchanged: the M1 sweep's
 system dylib has: a thread-local variable, `dlsym` through the trie,
 `&__dso_handle` beside a data pointer to it, and both F < G and F > G), and
 the documentation: `docs/macl-case-study.md` rows 9 and 23, `src/grow.h`'s
-top comment, and items 29 and 31 marked done. (`compat/README.md`'s and
+top comment, the two limits the spec's M3 section names (repeated grows and
+the function-starts delta; a real reference after an undeclared jump table),
+and items 29 and 31 marked done. (`compat/README.md`'s and
 `tests/README.md`'s words that a dylib is refused changed with M2 itself.)
 
 ```
 
-In `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md`, immediately before (`:474`):
+In `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md`, replace (`:347`):
 
 ```markdown
-**M3: proof on real dylibs, and documentation.** This covers the real-run
+slips in the implementation but not a row missing from the table. Checks 4–6
+are independent of the table, and exist to catch exactly that.
+```
+
+with:
+
+```markdown
+slips in the code that applies it, but not a row missing from the table.
+Checks 4–6 are independent of the table, and exist to catch exactly that.
+None of them catches a slip in a decoder the grow and its checks share:
+checks 1–3 and 5 read the image through the same readers of rebases, the
+export trie, compact unwind, data in code, function starts and code
+(implemented as `mg_rebases_read`, `mg_collect`'s walkers, `mg_symtab` and
+`mhr_scan`), so an entry those miss is neither moved nor compared. Their unit tests
+guard them, and for the rebase opcodes the `dyldinfo` oracle (Decision 9).
+Check 4 reads what it checks with code of its own, and so catches some such
+misses.
+```
+
+In `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md`, immediately after (`:376`):
+
+```markdown
+   - Every `__la_symbol_ptr` value lies in `__stub_helper`.
 ```
 
 insert:
+
+```markdown
+   - Every compact-unwind personality names a `__got` or `__nl_symbol_ptr`
+     slot, and every LSDA lies in `__gcc_except_tab` (added by plan M2b).
+```
+
+In `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md`, replace (`:484`):
+
+```markdown
+**M3: proof on real dylibs, and documentation.** This covers the real-run
+test below, and the documentation updates.
+```
+
+with:
 
 ```markdown
 **Done** (`@A1@..@B9@`, plans M2a and M2b). What the plans settled that
@@ -4985,9 +5300,28 @@ this section left open, for M3's reader:
 - `compat/README.md`'s rows that said a dylib is refused change with M2, not
   M3, so no document says so while dylibs grow.
 - A raise's segment must have its file data at F or past it, and an
-  `LC_UUID`, `LC_ROUTINES_64` or encryption command too short to read is
-  refused.
+  `LC_UUID`, `LC_ROUTINES_64`, `LC_DYSYMTAB` or encryption command too
+  short to read is refused. So are what no system image has: beside
+  `LC_DYLD_INFO`, `LC_DYSYMTAB`'s table of contents, module table, and
+  external or local relocations, whose addresses no rebase opcode lists;
+  and a section aligned to more than a page.
+- Code that names an address outside the image is not refused. Tried, it
+  refused 20 system images, each for a jump table that decoding took for
+  code naming an address 143 MiB or more away; a position-independent
+  image names nothing outside itself RIP-relatively.
 
+**M3: proof on real dylibs, and documentation.** This covers the real-run
+test below, and the documentation updates. The documentation must also say,
+as M2's review found:
+
+- Grows add up. The function-starts leading delta gains G at each grow, and
+  a grow refuses once it would need a wider ULEB (Decision 6), so an image
+  grown more than once, on either route, can reach that refusal.
+- Under the owner's I1 ruling, decoding "refutes" a candidate that sits
+  after an undeclared jump table in `__text` (no `LC_DATA_IN_CODE` for it),
+  if the table's bytes happen to decode as instructions that end inside or
+  past the candidate. A real in-range reference there passes, and grows
+  silently wrong.
 ```
 
 Then replace the placeholders with Step 1's hashes, and this task's own commit's range end with `$B8` (the docs commit is not code):
@@ -5043,7 +5377,7 @@ gh run list --branch main --limit 3
 
 Expected: the newest run, on the pushed head, `completed success`.
 
-**Where M3 begins.** M3 is its own plan, written when this one lands. It is the spec's "Real dylibs, run (M3)" as a committed test, `tests/grown_dylib_runs_test.sh`: Apple's dylibs under Apple's programs, invoked by absolute path, with `DYLD_PRINT_LIBRARIES` as the positive control on every run, and host-built fixture dylibs for what no system dylib has (a thread-local variable, `dlsym` through the export trie, `&__dso_handle` and `getsectiondata(&_mh_dylib_header, …)` beside a data pointer to `__dso_handle`, a C++ exception across grown code, static initializers), with both F < G and F > G; SKIPped off 10.9 x86_64. And the rest of the documentation (Step 7 already made true every sentence that said a dylib is refused): `README.md`'s grow paragraph; `docs/macl-case-study.md` rows 9 and 23; `src/grow.h`'s top comment (the one rule, the completeness argument and its residual risk, the header-reference repair); QUEUE items 29 and 31 done; and the spec deleted. Step 4 above is this plan's evidence, not M3's test.
+**Where M3 begins.** M3 is its own plan, written when this one lands. It is the spec's "Real dylibs, run (M3)" as a committed test, `tests/grown_dylib_runs_test.sh`: Apple's dylibs under Apple's programs, invoked by absolute path, with `DYLD_PRINT_LIBRARIES` as the positive control on every run, and host-built fixture dylibs for what no system dylib has (a thread-local variable, `dlsym` through the export trie, `&__dso_handle` and `getsectiondata(&_mh_dylib_header, …)` beside a data pointer to `__dso_handle`, a C++ exception across grown code, static initializers), with both F < G and F > G; SKIPped off 10.9 x86_64. And the rest of the documentation (Step 7 already made true every sentence that said a dylib is refused): `README.md`'s grow paragraph; `docs/macl-case-study.md` rows 9 and 23; `src/grow.h`'s top comment (the one rule, the completeness argument and its residual risk, the header-reference repair); the two limits Step 8 adds to the spec's M3 section (grows add up to the function-starts leading-delta refusal, on either route; and under M2a's ruling decoding can refute a real reference after an undeclared jump table); QUEUE items 29 and 31 done; and the spec deleted. Step 4 above is this plan's evidence, not M3's test.
 
 ---
 
@@ -5059,7 +5393,7 @@ Expected: the newest run, on the pushed head, `completed success`.
 | Decision 2: an absolute export unchanged | M0; 2 verifies it (`test_raise_leaves_an_absolute_export_alone`) |
 | Decision 4: split info dropped, before the snapshot, `mg_classify`'s route, the `rewrite.c` comment and the test | 4 |
 | Decision 5: the UUID | 5 |
-| Decision 6: every refusal | 1 (route, `LC_DYLD_INFO`, thread, encryption, protected, geometry, short commands); M2a (rebase type and place, binds, strictly inside); 2 (outside every segment); 3 (unknown stab); 5 (short `LC_UUID`); M1 (unconfirmed candidate); function starts and the trie as before |
+| Decision 6: every refusal | 1 (route, `LC_DYLD_INFO`, thread, encryption, protected, geometry, short commands; and the review's: `LC_DYSYMTAB`'s tables and relocations beside `LC_DYLD_INFO`, a section aligned past a page); M2a (rebase type and place, binds, strictly inside); 2 (outside every segment); 3 (unknown stab); 5 (short `LC_UUID`); M1 (unconfirmed candidate); function starts and the trie as before |
 | Decision 7: checks 1, 2 (pointers, symbols), 5, 6 with the delta | 2 |
 | Decision 7: check 2's load-command half, check 3 | 6 |
 | Decision 7: check 4 | 7 |
@@ -5067,7 +5401,7 @@ Expected: the newest run, on the pushed head, `completed success`.
 | Decision 9: the rebase oracle | already in the tree (`rebase_oracle_test`) |
 | Interfaces to generalise: delta, new base + G, the repair loop | 2 |
 | Testing: each Decision 2 row on a fixture, with its mutation | 2, 3, 4, 5 |
-| Testing: the rule (`__dso_handle` pointer, `__mh_dylib_header`, export offset 0; content at base + F) | 2 |
+| Testing: the rule (`__dso_handle` pointer, `__mh_dylib_header`, export offset 0; content at base + F) | 2 (`test_raise_leaves_an_export_at_offset_0` for offset 0) |
 | Testing: stabs on a `-g` fixture (`N_ENSYM`, `N_OSO` unchanged) | 3 (`dy_stabs` is ld64's `-g` output, as measured) |
 | Testing: each refusal leaves the buffer untouched | 1–5 (`check_grow_refuses_header_refs`) |
 | Testing: each verification check catches a planted error | 2 (1, 2, 5), 6 (2, 3), 7 (4); 6 is M0's |
@@ -5078,6 +5412,6 @@ Expected: the newest run, on the pushed head, `completed success`.
 
 **2. Placeholder scan.** No "TBD" or "similar to Task N". `@A1@`, `@A5@`, `@B1@`, `@B2@`, `@B9@` are replaced by Task 9's own step. `<authoring model>` is the trailer's own wording.
 
-**3. Type and name consistency.** `mg_raise_ok` (Task 1) gains `LC_UUID` in Task 5. `mg_raise_pointers` returns `int` at its declaration, its definition and both calls. `mg_move_symbols(buf, fsize, base, first, grow, raise, patch)` is called with seven arguments at both sites. `mg_symtab(im, fsize, &st, &nl, &nsyms)` (Task 3) has five at both calls. `mg_classify(buf, fsize, raise)` (Task 4) has one call. `mg_raised_uuid` (Task 5) is what Task 6's expectation calls. `mg_snapshot`'s fields are each set in `mg_snapshot_take` and freed in `mg_snapshot_free`. The test helpers are each defined before first use.
+**3. Type and name consistency.** `mg_raise_ok` (Task 1) gains `LC_UUID` in Task 5. `mg_raise_pointers` returns `int` at its declaration, its definition and its one call, before anything moves; `mg_raise_rebased` is called once, after. `mg_move_symbols(buf, fsize, base, first, grow, raise, patch)` is called with seven arguments at both sites. `mg_symtab(im, fsize, &st, &nl, &nsyms)` (Task 3) has five at both calls. `mg_classify(buf, fsize, raise)` (Task 4) has one call. `mg_raised_uuid` (Task 5) is what Task 6's expectation calls. `mg_snapshot`'s fields are each set in `mg_snapshot_take` and freed in `mg_snapshot_free`. The test helpers are each defined before first use.
 
-**4. Review Focus.** Five inputs no requirement names: a base above 0, the edges of content, a widening trie, a zero-fill segment at file offset 0, and adjacent split infos. Each has its test.
+**4. Review Focus.** Five inputs no requirement names: a base above 0, the edges of content (past a gap of one page and of two), a widening trie, a zero-fill segment at file offset 0, and adjacent split infos. Each has its test. The sixth item, what verification trusts, is stated in `src/grow.h` (Task 7), the QUEUE and the spec (Task 9), and Task 7's rows 20 and 21 show an oracle catching a walker's miss.

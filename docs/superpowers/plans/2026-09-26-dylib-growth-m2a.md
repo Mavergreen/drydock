@@ -61,7 +61,13 @@ Plan M2b records the rulings on the raise route (`LC_LOAD_UPWARD_DYLIB`, which c
   shasum -a 256 "$B/grow_test" "$B/drydock-macho-rewrite" | tee "$B/.last-sha"
   ```
   Then confirm that the sums changed from `$pre`. A test result against an unchanged binary is not a result. Below, "build (rebuild check)" means exactly this.
-- **TDD and mutation proof** for every code task. Write the test first and see it fail as the step says; then write the code. Then apply every row of the task's mutation table, each alone, rebuild (rebuild check), and see it fail with the row's text. Mutate only a saved copy's original: `M=$(mktemp -d -t m2a); cp src/grow.c src/hdrref.c "$M/"` (10.9's `mktemp -d` needs a template). Edit, rebuild, run, then `cp "$M/grow.c" src/grow.c && cmp src/grow.c "$M/grow.c"` (and the same for `hdrref.c`), and rebuild. **Never `git stash` and never `git checkout --`**: restore only from the saved copy. A mutation that no test kills is a finding: add the test that kills it, in the same task.
+- **TDD and mutation proof** for every code task. Write the test first and see it fail as the step says; then write the code. Then apply every row of the task's mutation table, each alone, and see it fail with the row's text. For each row:
+  1. **Save every file the task's rows touch**, once per task: `M=$(mktemp -d -t m2a); cp src/grow.c src/hdrref.c "$M/"` (10.9's `mktemp -d` needs a template). M2a's rows touch only those two.
+  2. **Apply the row, and confirm it applied**: `! cmp -s src/grow.c "$M/grow.c"` (or `hdrref.c`), and `grep -c -F` of a distinctive line of the row's new text giving 1 (a row that only deletes: of its old text, giving 0). The rebuild check's changed sums are no such confirmation: the binaries' debug map (`N_OSO`) holds each object's modification time, so every rebuild changes the sums, whether or not the edit landed.
+  3. **Rebuild (rebuild check), run, and see the row's text.**
+  4. **Restore every saved file**: `for f in grow.c hdrref.c; do cp "$M/$f" "src/$f" && cmp "src/$f" "$M/$f"; done`, and rebuild.
+
+  **Never `git stash` and never `git checkout --`**: restore only from the saved copies. A mutation that no test kills is a finding: add the test that kills it, in the same task.
 - **Comments are a last resort:** prefer a test, then the commit message, then a doc, then one inline sentence. No history narration, and no reference to a plan or spec from source (both are deleted once implemented).
 - **Exit codes:** `EX_REFUSED` = 1 (`MR_REFUSED`), `EX_FAIL` = 2 (`MR_FAIL`). A statement never writes its input, and nothing is written on a refusal.
 - **Every refusal this plan adds happens before anything is mutated**, with its reason on stderr: `ERROR: <reason>; refusing to grow`.
@@ -111,7 +117,7 @@ Every code block below was cut from a checkpoint: a `git archive` of `5ca0612` i
 
 - the whole suite passed (29 tests, `chained_fixups` skipped), with no compiler warning, and `grow_test` passed under libgmalloc;
 - each "see it fail" step was run as written, by applying only that task's test edits to the checkpoint before it: the outputs quoted are what it printed;
-- every row of every mutation table (57 rows) was applied alone to that task's finished files, rebuilt after deleting every object and the binaries (with the sums compared), and failed with the row's text. Task 2's row 1 is the lost alternative's line: it fails the ruling's test.
+- every row of every mutation table (57 rows) was applied alone to that task's finished files, by a script that first required the row's old text to occur exactly once and so confirmed the edit landed, rebuilt after deleting every object and the binaries (with the sums compared), and failed with the row's text; after each row the files were restored and compared. Task 2's row 1 is the lost alternative's line: it fails the ruling's test.
 
 Task 5's sweep numbers are from those builds against a build of `5ca0612`.
 
@@ -914,7 +920,7 @@ with:
 host's executables). Its **code half is done**, in dylib-growth M2a: bytes
 in an instruction section that name a byte strictly inside (base, base + F),
 such as `movl __mh_execute_header+16(%rip)`, refuse the grow unless decoding
-refutes that they are code: the owner.s ruling, 2026-09-26. Measured
+refutes that they are code: the owner's ruling, 2026-09-26. Measured
 then, a scan for RIP-relative targets strictly inside (base, base + F) finds
 1,060 candidates in 120 of this host's 1,059 x86_64 executables, and 29 in
 Claude Code. Decoding confirms none. It refutes 1,057, among them the other
@@ -1683,7 +1689,7 @@ Expected: `1128`; `before: 1043 0   85 1` and `after: 1043 0   85 1` (1,043 grew
 
 ```sh
 CC=~/.local/share/claude-binary-snapshots/2.1.282.49763317.bin
-shasum -a 256 "$CC" | cut -c1-16                    # expect 5c34b00b0f3862b7
+shasum -a 256 "$CC" | cut -c1-16                    # expect 5c34b00b5c0f3862
 fill=$(printf '%06000d' 0)
 printf 'fixups set classic\nrpath append /nonexistent/%s\n' "$fill" > "$W/cc.edits"
 for s in before after; do
