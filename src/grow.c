@@ -1113,6 +1113,15 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
     return r;
 }
 
+/* mg_classify's LC_DYLD_CHAINED_FIXUPS reason, shared with mg_raise_ok_cb
+ * below (spec Decision 6): a raise moves the image base exactly as a
+ * lowering does, so chained fixups get the same refusal and the same
+ * remedy either route takes. */
+static const char mg_chained_fixups_why[] =
+    "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
+    "image base, which growing moves; convert them first (`fixups set "
+    "classic` in an edit script)";
+
 /* mg_classify's mi_each_lc callback: classify one load command (and, for
  * LC_SEGMENT_64, every one of its sections), refusing to stop the walk the
  * instant something unclassified turns up. Every `return -1` here is exactly
@@ -1164,9 +1173,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
                   "not re-based";
             break;
         case LC_DYLD_CHAINED_FIXUPS:
-            why = "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
-                  "image base, which growing moves; convert them first (`fixups set "
-                  "classic` in an edit script)";
+            why = mg_chained_fixups_why;
             break;
         /* LC_NOTE (note_command: a uint64_t offset/size pair, per publicly
          * documented ld64/dyld source) and LC_ATOM_INFO (reported elsewhere
@@ -1609,13 +1616,37 @@ static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t
 /* mg_raise_ok's mi_each_lc callback: says why, and stops, at the first load
  * command a raise cannot vouch for; notes LC_DYLD_INFO and LC_DYSYMTAB's
  * counts, which mg_raise_ok judges together. */
-struct mg_raise_ctx { uint64_t base; uint32_t first; int di; uint32_t toc, mod, ext, loc; };
+struct mg_raise_ctx {
+    uint64_t base; uint32_t first; const struct segment_command_64 *header_seg;
+    int di; uint32_t toc, mod, ext, loc;
+};
+
+/* mg_raise_ok's own hunt for the header segment: exactly mi_image_base's own
+ * search (the first LC_SEGMENT_64 with fileoff 0 and real file content), but
+ * keeping which segment it was, not just its vmaddr -- so mg_raise_ok_cb can
+ * ask "is this THAT segment" by identity, rather than re-deriving the same
+ * predicate for every segment, which a second segment also at fileoff 0
+ * would satisfy too. */
+static int mg_raise_header_seg_cb(const struct load_command *lc, void *ctx_) {
+    const struct segment_command_64 **out = (const struct segment_command_64 **)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    if (seg->fileoff != 0 || seg->filesize == 0) return 0;
+    *out = seg;
+    return 1;
+}
+
 static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
     struct mg_raise_ctx *c = (struct mg_raise_ctx *)ctx_;
     switch (lc->cmd) {
     case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY:
         c->di = 1;
         return 0;
+    case LC_DYLD_CHAINED_FIXUPS:
+        fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
+                        "instead by deleting load commands (uuid, codesig).\n",
+                mg_chained_fixups_why);
+        return 1;
     case LC_UNIXTHREAD: case LC_THREAD:
         fprintf(stderr, "ERROR: a dylib or bundle with a thread command (%#x), whose register "
                         "state a raise does not move; refusing to grow\n", lc->cmd);
@@ -1639,10 +1670,10 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
                             "counts; refusing to grow\n", lc->cmdsize);
             return 1;
         }
-        c->toc = d->ntoc;
-        c->mod = d->nmodtab;
-        c->ext = d->nextrel;
-        c->loc = d->nlocrel;
+        c->toc += d->ntoc;
+        c->mod += d->nmodtab;
+        c->ext += d->nextrel;
+        c->loc += d->nlocrel;
         return 0;
     }
     case LC_ROUTINES_64:
@@ -1653,7 +1684,7 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
     case LC_SEGMENT_64: {
         const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
         const struct section_64 *s = (const struct section_64 *)(seg + 1);
-        int header = seg->fileoff == 0 && seg->filesize > 0;
+        int header = seg == c->header_seg;
         if (seg->flags & SG_PROTECTED_VERSION_1) {
             fprintf(stderr, "ERROR: segment %.16s is protected (SG_PROTECTED_VERSION_1), and a "
                             "raise would move its encrypted pages; refusing to grow\n",
@@ -1697,7 +1728,9 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
  * `im`, whose image base is `base` and first content base + `first`; else
  * -1, having said why. */
 static int mg_raise_ok(const mi_image *im, uint64_t base, uint32_t first) {
-    struct mg_raise_ctx c = { base, first, 0, 0, 0, 0, 0 };
+    const struct segment_command_64 *header_seg = NULL;
+    mi_each_lc(im, mg_raise_header_seg_cb, &header_seg);
+    struct mg_raise_ctx c = { base, first, header_seg, 0, 0, 0, 0, 0 };
     if (!mi_each_lc(im, mg_raise_ok_cb, &c)) return -1;
     if (!c.di) {
         fprintf(stderr, "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase "

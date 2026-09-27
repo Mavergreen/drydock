@@ -4296,7 +4296,7 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
 }
 
 /* ---- a dylib to raise ----
- * build_dylib's MH_DYLIB, x86_64, linked at DY_BASE (0, as every 10.9 system
+ * build_dylib's MH_DYLIB, x86_64, linked at base 0 (as every 10.9 system
  * dylib is; `base` moves it). F, its first content, is file and vm offset
  * 0x1000. Segment indexes: __TEXT 0, __DATA 1, __LINKEDIT 2.
  *   __TEXT      file [0, 0x2000)
@@ -4560,6 +4560,10 @@ static void dy_locrel(uint8_t *buf) { dy_dysymtab(buf)->nlocrel = 1; }
 static void dy_no_info_locrel(uint8_t *buf) { dy_no_info(buf); dy_locrel(buf); }
 static void dy_overaligned(uint8_t *buf) { dy_section(buf, "__DATA", "__data")->align = 13; }
 static void dy_not_x86_64(uint8_t *buf) { ((struct mach_header_64 *)buf)->cputype = CPU_TYPE_POWERPC64; }
+static void dy_chained_fixups(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYLD_CHAINED_FIXUPS; }
+/* __LINKEDIT, at fileoff 0 too: a second segment mg_raise_header_seg_cb's
+ * identity check must NOT mistake for the header (__TEXT already is it). */
+static void dy_second_header_seg(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__LINKEDIT")->fileoff = 0; }
 static const struct { const char *what; dy_poke poke; const char *why; } dy_unraisable[] = {
     { "no LC_DYLD_INFO", dy_no_info,
       "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes list every "
@@ -4603,19 +4607,80 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
     { "a dylib that is not x86_64", dy_not_x86_64,
       "ERROR: only an x86_64 dylib or bundle can be grown (cputype=0x1000012): its code is "
       "decoded to find what addresses its header" },
+    { "LC_DYLD_CHAINED_FIXUPS", dy_chained_fixups,
+      "ERROR: LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the image base, which "
+      "growing moves; convert them first (`fixups set classic` in an edit script)." },
+    { "a second segment at fileoff 0", dy_second_header_seg,
+      "ERROR: segment __LINKEDIT's file data starts at 0, before the first content at 4096; "
+      "refusing to grow" },
 };
+
+/* Like check_grow_refuses_header_refs, but also insists stderr holds
+ * EXACTLY ONE ERROR: line. Every row here is followed, in an unfinished
+ * raise, by Task 1's placeholder refusal ("only MH_EXECUTE can be grown"),
+ * which also returns -1 -- so a check that only asked "did mg_grow_header
+ * refuse, and does stderr CONTAIN the right words" could not tell a real
+ * stop (mg_raise_ok_cb's `return 1`) from a check that printed its reason
+ * and let mi_each_lc keep walking (`return 0`): both leave r == -1 and both
+ * leave the needle in stderr, the second one alongside the placeholder's own
+ * ERROR: line. This form survives Task 2, when the placeholder goes and a
+ * genuine raise succeeds instead: then a row that fails to stop still prints
+ * its ERROR: line, but mg_grow_header no longer refuses behind it, and
+ * `r == -1` alone catches it. */
+static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsize,
+                                     const char *needle) {
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    char path[512];
+    snprintf(path, sizeof path, "%s/macho_grow_test_stderr.%d", tmpdir, (int)getpid());
+    fflush(stderr);
+    int saved_fd = dup(fileno(stderr));
+    int r;
+    if (!freopen(path, "w", stderr)) {
+        CHECK(0, "%s: could not capture stderr to %s", what, path);
+        r = mg_grow_header(&buf, &fsize, 0x1000);
+    } else {
+        r = mg_grow_header(&buf, &fsize, 0x1000);
+        fflush(stderr);
+        dup2(saved_fd, fileno(stderr));
+        close(saved_fd);
+        clearerr(stderr);
+    }
+    CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
+    int said = 0, errors = 0;
+    FILE *rf = fopen(path, "r");
+    if (rf) {
+        char line[1024];
+        while (fgets(line, sizeof line, rf)) {
+            if (strncmp(line, "ERROR:", 6) == 0) errors++;
+            if (needle[0] == '^' ? strncmp(line, needle + 1, strlen(needle + 1)) == 0
+                                 : strstr(line, needle) != NULL)
+                said = 1;
+        }
+        fclose(rf);
+    }
+    unlink(path);
+    CHECK(said, "%s: the refusal says '%s'", what, needle);
+    CHECK(errors == 1, "%s: stderr holds exactly one ERROR: line (got %d)", what, errors);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "%s: nothing changed", what);
+    free(before);
+    free(buf);
+}
 
 static void test_grow_refuses_what_it_cannot_raise(void) {
     for (size_t i = 0; i < sizeof dy_unraisable / sizeof dy_unraisable[0]; i++) {
         size_t fsize;
         uint8_t *buf = build_dylib(&fsize, 0);
         dy_unraisable[i].poke(buf);
-        check_grow_refuses_header_refs(dy_unraisable[i].what, buf, fsize, dy_unraisable[i].why);
+        check_grow_refuses_raise(dy_unraisable[i].what, buf, fsize, dy_unraisable[i].why);
     }
     size_t fsize;
     uint8_t *buf = build_dylib_at(0x10000000, &fsize, 0);
     dy_below(buf);
-    check_grow_refuses_header_refs("a section below the first content, above base 0", buf, fsize,
+    check_grow_refuses_raise("a section below the first content, above base 0", buf, fsize,
         "ERROR: section __DATA,__bss lies at 0x10000fff, below the first content at 0x10001000; "
         "refusing to grow");
 }
