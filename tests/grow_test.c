@@ -3835,8 +3835,8 @@ static void test_verify_watches_the_pointers(void) {
         "ERROR: verify FAILED -- the grown image rebases 5 pointers, 4 before the grow; refusing.");
     check_verify_rejects_pointer("a rebase moved to a slot holding the same value", pt_all_alike,
         pt_shift_one,
-        "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and was at 0x100002000 "
-        "before; refusing.");
+        "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and must be at "
+        "0x100002000; refusing.");
     check_verify_rejects_pointer("rebases it cannot read", NULL, pt_retype,
         "ERROR: verify FAILED -- the grown image's rebases cannot be read (the rebase at __DATA+0 "
         "is of type 2, not a pointer); refusing.");
@@ -4669,14 +4669,12 @@ static void test_grow_refuses_what_it_cannot_raise(void) {
 
 /* An unencrypted image's encryption command, an LC_ROUTINES_64 long enough
  * to read, and a zero-fill segment at file offset 0 are no reason to refuse,
- * at base 0 or above it: such a dylib or bundle reaches the refusal every
- * dylib and bundle meets until the raise is written. */
+ * at base 0 or above it. */
 static void test_grow_raises_past_what_it_can_vouch_for(void) {
     static const uint32_t filetype[3] = { MH_DYLIB, MH_BUNDLE, MH_DYLIB };
     static const uint64_t base[3] = { 0, 0, 0x10000000 };
     for (int i = 0; i < 3; i++) {
         size_t fsize;
-        char needle[64];
         uint8_t *buf = build_dylib_at(base[i], &fsize, DY_ROUTINES | DY_ZEROSEG);
         struct encryption_info_command_64 *e =
             (struct encryption_info_command_64 *)dy_find(buf, LC_UUID);
@@ -4684,11 +4682,342 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
         e->cmd = LC_ENCRYPTION_INFO_64;
         e->cryptoff = e->cryptsize = e->cryptid = 0;
         dy_section(buf, "__DATA", "__data")->align = 12;
-        snprintf(needle, sizeof needle, "ERROR: only MH_EXECUTE can be grown (filetype=%u)",
-                 filetype[i]);
-        check_grow_refuses_header_refs("a dylib or bundle a raise can vouch for", buf, fsize,
-                                       needle);
+        int r = mg_grow_header(&buf, &fsize, 0x1000);
+        CHECK(r == 0 && fsize == DY_FSIZE + 0x1000, "raise: filetype %u at base %#llx grows "
+              "(got %d, %zu bytes)", filetype[i], (unsigned long long)base[i], r, fsize);
+        free(buf);
     }
+}
+
+/* ---- what a raise moves (spec Decision 2) ----
+ * Each test raises build_dylib_at(DY_RAISED_AT, ...) by one page and reads
+ * the result back. */
+#define DY_RAISED_AT 0x10000000ull
+#define DY_ALL (DY_UNWIND | DY_DIC | DY_ROUTINES | DY_ZEROSEG)
+static uint8_t *raised_dylib(size_t *fsize, int opts, uint32_t grow_req) {
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, fsize, opts);
+    int r = mg_grow_header(&buf, fsize, grow_req);
+    CHECK(r == 0, "raise: the grow succeeds (got %d)", r);
+    if (r == 0) return buf;
+    free(buf);
+    return NULL;
+}
+static struct nlist_64 *dy_syms(uint8_t *buf, size_t fsize) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    return (struct nlist_64 *)(buf + st->symoff);
+}
+
+static void test_raise_moves_the_segments_and_sections(void) {
+    static const struct { const char *seg; uint64_t vmaddr, vmsize, fileoff, filesize; } segs[4] = {
+        { "__TEXT", 0, 0x3000, 0, 0x3000 },
+        { "__DATA", 0x3000, 0x2000, 0x3000, 0x1000 },
+        { "__LINKEDIT", 0x5000, 0x1000, 0x4000, DY_FSIZE - 0x3000 },
+        { "__ZERO", 0x7000, 0x1000, 0, 0 },
+    };
+    static const struct { const char *seg, *sect; uint64_t addr; uint32_t offset; } sects[4] = {
+        { "__TEXT", "__text", 0x2000, 0x2000 }, { "__TEXT", "__unwind_info", 0x2800, 0x2800 },
+        { "__DATA", "__la_symbol_ptr", 0x3038, 0x3038 }, { "__DATA", "__bss", 0x4000, 0 },
+    };
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    for (int i = 0; i < 4; i++) {
+        struct segment_command_64 *s = seg_named(buf, fsize, segs[i].seg);
+        CHECK(s && s->vmaddr == DY_RAISED_AT + segs[i].vmaddr && s->vmsize == segs[i].vmsize &&
+              s->fileoff == segs[i].fileoff && s->filesize == segs[i].filesize,
+              "raise: %s is vm %#llx+%#llx, file %#llx+%#llx after it", segs[i].seg,
+              s ? (unsigned long long)s->vmaddr : 0, s ? (unsigned long long)s->vmsize : 0,
+              s ? (unsigned long long)s->fileoff : 0, s ? (unsigned long long)s->filesize : 0);
+    }
+    for (int i = 0; i < 4; i++) {
+        mi_image im;
+        struct section_64 *s = mi_wrap(buf, fsize, &im) == 0 ?
+            mi_find_section(&im, sects[i].seg, sects[i].sect) : NULL;
+        CHECK(s && s->addr == DY_RAISED_AT + sects[i].addr && s->offset == sects[i].offset,
+              "raise: %s,%s is at %#llx, file %u after it", sects[i].seg, sects[i].sect,
+              s ? (unsigned long long)s->addr : 0, s ? s->offset : 0);
+    }
+    struct routines_command_64 *rt = (struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64);
+    CHECK(rt && rt->init_address == DY_RAISED_AT + 0x2010,
+          "raise: LC_ROUTINES_64's initializer is f2, raised (%#llx)",
+          rt ? (unsigned long long)rt->init_address : 0);
+    CHECK(buf[0x2010] == 0x55 && buf[0x2000] == 0x48, "raise: the code is in the file a page on");
+    free(buf);
+}
+
+/* A pointer to the header stays; every other one follows the content. */
+static void test_raise_moves_the_pointers_that_name_content(void) {
+    static const uint64_t want[5] = { 0, 0x2010, 0x3020, 0x2010, 0x2100 };
+    static const uint32_t at[5] = { 0x3000, 0x3008, 0x3010, 0x3030, 0x3038 };
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    for (int i = 0; i < 5; i++) {
+        uint64_t v;
+        memcpy(&v, buf + at[i], sizeof v);
+        CHECK(v == DY_RAISED_AT + want[i], "raise: the pointer at file %#x holds %#llx, want %#llx",
+              at[i], (unsigned long long)v, (unsigned long long)(DY_RAISED_AT + want[i]));
+    }
+    free(buf);
+}
+
+/* __mh_dylib_header names the header, and stays; the defined symbols
+ * follow the content; the undefined one is not an address. */
+static void test_raise_moves_the_symbols_that_name_content(void) {
+    static const uint64_t want[5] = { DY_RAISED_AT, DY_RAISED_AT + 0x2000, DY_RAISED_AT + 0x2010,
+                                      DY_RAISED_AT + 0x3020, 0 };
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    struct nlist_64 *nl = dy_syms(buf, fsize);
+    for (int i = 0; i < 5; i++)
+        CHECK(nl[i].n_value == want[i], "raise: symbol %d is %#llx, want %#llx", i,
+              (unsigned long long)nl[i].n_value, (unsigned long long)want[i]);
+    free(buf);
+}
+
+/* What is measured from the base gains the grow, as on the executable
+ * route: the export trie, the leading function start, data in code and
+ * compact unwind. */
+static void test_raise_moves_what_is_measured_from_the_base(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a[3] = { 0, 0, 0 }, d0 = 0;
+    static const uint32_t leaf[3] = { 16, 21, 26 };
+    static const uint64_t want[3] = { 0x2000, 0x2010, 0x3020 };
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    for (int i = 0; i < 3; i++) {
+        mu_decode(buf + toff + leaf[i] + 2, buf + toff + tsize, &a[i]);
+        CHECK(a[i] == want[i], "raise: export %d is %#llx, want %#llx", i,
+              (unsigned long long)a[i], (unsigned long long)want[i]);
+    }
+    struct linkedit_data_command *fs =
+        (struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
+    mu_decode(buf + fs->dataoff, buf + fs->dataoff + fs->datasize, &d0);
+    CHECK(d0 == 0x2000, "raise: the first function start is %#llx, want 0x2000", (unsigned long long)d0);
+    struct linkedit_data_command *dc = (struct linkedit_data_command *)find_lc(buf, fsize, LC_DATA_IN_CODE);
+    CHECK(UW32(buf, dc->dataoff, 0) == 0x2020 && UW32(buf, dc->dataoff, 4) == 0x10008,
+          "raise: data in code starts at %#x, length and kind unchanged", UW32(buf, dc->dataoff, 0));
+    CHECK(UW32(buf, 0x2800, 28) == 0x3040 && UW32(buf, 0x2800, 32) == 0x2000 &&
+          UW32(buf, 0x2800, 44) == 0x2100 && UW32(buf, 0x2800, 56) == 0x2010 &&
+          UW32(buf, 0x2800, 60) == 0x2180 && UW32(buf, 0x2800, 80) == (1u << 24),
+          "raise: compact unwind's personality, functions, sentinel and LSDA are raised, its "
+          "compressed entries are not");
+    free(buf);
+}
+
+/* f1's lea names the header, which stays, from code a page further on. */
+static void test_raise_repairs_code_that_addresses_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    int64_t n = mhr_scan(buf, fsize, DY_RAISED_AT, hr_record, &s);
+    CHECK(n == 1 && s.c[0].addr == DY_RAISED_AT + 0x2003 && s.c[0].immlen == 0,
+          "raise: f1's lea still addresses the header (%lld)", (long long)n);
+    free(buf);
+}
+
+/* Two pages: _d, 0x2020 + 0x2000, needs a wider ULEB, so the export trie is
+ * rebuilt at the end of __LINKEDIT. */
+static void test_raise_rebuilds_a_widening_export_trie(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1001);
+    if (!buf) return;
+    uint32_t toff = 0, tsize = 0;
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    CHECK(toff == DY_FSIZE + 0x2000 && fsize == DY_FSIZE + 0x2000 + tsize,
+          "raise: the rebuilt trie is at the end (%#x, %u bytes, file %zu)", toff, tsize, fsize);
+    free(buf);
+}
+
+/* A value strictly inside (base, base + F), or that no segment maps, cannot
+ * be raised; nor can a debugging stab yet. */
+static void test_raise_refuses_what_it_cannot_move(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint64_t v = DY_RAISED_AT + 16;
+    memcpy(buf + 0x2008, &v, sizeof v);
+    check_grow_refuses_header_refs("a pointer inside the header", buf, fsize,
+        "ERROR: the pointer at 0x10002008 names 0x10000010, between the header at 0x10000000 and "
+        "its first content at 0x10001000, which a grow moves apart; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    v = DY_RAISED_AT + 0x5001;
+    memcpy(buf + 0x2008, &v, sizeof v);
+    check_grow_refuses_header_refs("a pointer past every segment", buf, fsize,
+        "ERROR: the pointer at 0x10002008 names 0x10005001, which no segment maps; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    v = DY_RAISED_AT - 1;
+    memcpy(buf + 0x2008, &v, sizeof v);
+    check_grow_refuses_header_refs("a pointer below every segment", buf, fsize,
+        "ERROR: the pointer at 0x10002008 names 0xfffffff, which no segment maps");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    dy_syms(buf, fsize)[3].n_value = DY_RAISED_AT + 16;
+    check_grow_refuses_header_refs("a symbol inside the header", buf, fsize,
+        "ERROR: symbol 3, \"_d\", names 0x10000010, between the header at 0x10000000");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    dy_syms(buf, fsize)[4].n_type = N_FUN;
+    check_grow_refuses_header_refs("a stab", buf, fsize,
+        "ERROR: symbol 4, \"_x\", is a stab of type 0x24, which a raise does not know how to "
+        "move; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    hr_plant(buf + 0x1000, DY_RAISED_AT + 0x1000, 2, 0x05, 0, DY_RAISED_AT + 16);
+    check_grow_refuses_header_refs("code inside the header", buf, fsize,
+        "ERROR: the code at 0x10001003 names 0x10000010, between the header");
+}
+
+/* An N_SECT symbol below the base names nothing a raise moves. */
+static void test_raise_leaves_a_symbol_below_the_base(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    dy_syms(buf, fsize)[3].n_value = 0x10;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && dy_syms(buf, fsize)[3].n_value == 0x10,
+          "raise: a symbol below the base stays (got %d, %#llx)", r,
+          (unsigned long long)dy_syms(buf, fsize)[3].n_value);
+    free(buf);
+}
+
+/* _d, made absolute, is a value, 0x2020: the raise leaves it, and verify
+ * expects it left. */
+static void test_raise_leaves_an_absolute_export_alone(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a = 0;
+    buf[0x3040 + 27] = 0x02;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    mu_decode(buf + toff + 28, buf + toff + tsize, &a);
+    CHECK(r == 0 && a == 0x2020, "raise: an absolute export stays 0x2020 (got %d, %#llx)", r,
+          (unsigned long long)a);
+    free(buf);
+}
+
+/* A pointer to the first content, into a segment past a gap in memory
+ * (__ZERO, a page past __LINKEDIT, or two with DY_ZEROFAR), or to the end of
+ * a segment names content. Which segment maps it is decided before the raise
+ * moves any: afterward, __ZERO + 8 lies in the gap a one-page raise opens. */
+static void test_raise_moves_pointers_to_the_edges_of_content(void) {
+    static const struct { const char *what; uint64_t v; int opts; } p[6] = {
+        { "the first content", 0x1000, 0 },
+        { "__ZERO's start", 0x6000, 0 },
+        { "__ZERO + 8", 0x6008, 0 },
+        { "__LINKEDIT's end", 0x5000, 0 },
+        { "__ZERO's start, past a two-page gap", 0x7000, DY_ZEROFAR },
+        { "__ZERO + 8, past a two-page gap", 0x7008, DY_ZEROFAR },
+    };
+    for (int i = 0; i < 6; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ZEROSEG | p[i].opts);
+        uint64_t v = DY_RAISED_AT + p[i].v;
+        memcpy(buf + 0x2008, &v, sizeof v);
+        int r = mg_grow_header(&buf, &fsize, 0x1000);
+        memcpy(&v, buf + 0x3008, sizeof v);
+        CHECK(r == 0 && v == DY_RAISED_AT + p[i].v + 0x1000, "raise: a pointer to %s is raised "
+              "(got %d, %#llx)", p[i].what, r, (unsigned long long)v);
+        free(buf);
+    }
+}
+
+/* An export at offset 0 names the header, and stays. */
+static void test_raise_leaves_an_export_at_offset_0(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a = 1;
+    buf[0x3040 + 28] = 0x80;                           /* _d: 0, in its two bytes */
+    buf[0x3040 + 29] = 0x00;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    mu_decode(buf + toff + 28, buf + toff + tsize, &a);
+    CHECK(r == 0 && a == 0, "raise: an export at offset 0 stays 0 (got %d, %#llx)", r,
+          (unsigned long long)a);
+    free(buf);
+}
+
+/* __LINKEDIT cut short of the string table: its offset maps nowhere, before
+ * the raise and after it. */
+static void test_raise_keeps_an_offset_no_segment_maps(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    seg_named(buf, fsize, "__LINKEDIT")->filesize = 0xf0;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "raise: an offset no segment maps stays unmapped (got %d)", r);
+    free(buf);
+}
+
+/* Verification, on the raise: each check_verify_rejects_raise undoes one
+ * thing a correct raise did. */
+typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
+static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "%s: snapshot", what); free(buf); return; }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
+    }
+    CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the raise as made", what);
+    undo(buf, fsize);
+    int r;
+    verify_snap = &snap;
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, needle) != NULL, "verify REJECTS %s, saying '%s' (got %d):\n%s",
+          what, needle, r, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+static void dy_unraise_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3009] -= 0x10; }
+static void dy_raise_header_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3001] += 0x10; }
+static void dy_unraise_symbol(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[3].n_value -= 0x1000; }
+static void dy_raise_header_symbol(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[0].n_value += 0x1000; }
+static void dy_unraise_unwind(uint8_t *buf, size_t fsize) { (void)fsize; UW32(buf, 0x2800, 32) -= 0x1000; }
+static void dy_unrepair(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2004] += 0x10; }
+static void dy_unraise_linkedit(uint8_t *buf, size_t fsize) { seg_named(buf, fsize, "__LINKEDIT")->vmaddr -= 0x1000; }
+
+static void test_verify_watches_the_raise(void) {
+    check_verify_rejects_raise("a pointer to content left where it was", dy_unraise_pointer,
+        "ERROR: verify FAILED -- the pointer at 0x10003008 holds 0x10001010 after the grow, and "
+        "must hold 0x10002010; refusing.");
+    check_verify_rejects_raise("a pointer to the header raised", dy_raise_header_pointer,
+        "the pointer at 0x10003000 holds 0x10001000 after the grow, and must hold 0x10000000");
+    check_verify_rejects_raise("a symbol left where it was", dy_unraise_symbol,
+        "ERROR: verify FAILED -- symbol 3 is type 0xf, value 0x10002020 after the grow, and must "
+        "be type 0xf, value 0x10003020; refusing.");
+    check_verify_rejects_raise("the header's symbol raised", dy_raise_header_symbol,
+        "symbol 0 is type 0x1e, value 0x10001000 after the grow, and must be type 0x1e, value "
+        "0x10000000");
+    check_verify_rejects_raise("an unwind entry left where it was", dy_unraise_unwind,
+        "resolved to 0x10001000 before the grow and 0x10001000 after (moved +0 bytes), and must "
+        "resolve to 0x10002000");
+    check_verify_rejects_raise("code that addresses the header, unrepaired", dy_unrepair,
+        "ERROR: verify FAILED -- code at 0x10002003 addresses 0x10001000, as a reference to the "
+        "header the grow did not repair would; refusing.");
+    check_verify_rejects_raise("__LINKEDIT left where it was", dy_unraise_linkedit,
+        "and must resolve to 0x");
+}
+
+/* mg_ensure_pad says the contents were raised, and counts the code it
+ * repaired; a pointer to the header, left where it is, is not repaired. */
+static void test_ensure_pad_announces_a_raise(void) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) +
+                      ((struct mach_header_64 *)buf)->sizeofcmds;
+    char want[160];
+    snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
+             "contents raised by 0x1000; repaired 1 reference to the header\n",
+             DY_F - lc_end, DY_F + 0x1000 - lc_end);
+    char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
+    CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib: announced as '%s' (got %d):\n%s",
+          want, r, err);
+    free(err);
+    free(buf);
 }
 
 int main(void) {
@@ -4839,6 +5168,20 @@ int main(void) {
     test_grow_accepts_binds_outside_the_header_segment();
     test_grow_refuses_what_it_cannot_raise();
     test_grow_raises_past_what_it_can_vouch_for();
+    test_raise_moves_the_segments_and_sections();
+    test_raise_moves_the_pointers_that_name_content();
+    test_raise_moves_the_symbols_that_name_content();
+    test_raise_moves_what_is_measured_from_the_base();
+    test_raise_repairs_code_that_addresses_the_header();
+    test_raise_rebuilds_a_widening_export_trie();
+    test_raise_refuses_what_it_cannot_move();
+    test_raise_moves_pointers_to_the_edges_of_content();
+    test_raise_keeps_an_offset_no_segment_maps();
+    test_raise_leaves_an_export_at_offset_0();
+    test_raise_leaves_an_absolute_export_alone();
+    test_raise_leaves_a_symbol_below_the_base();
+    test_verify_watches_the_raise();
+    test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

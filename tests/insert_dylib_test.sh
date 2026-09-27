@@ -518,7 +518,8 @@ grep -q -- '--inplace' "$T/13.err" && grep -q 'mx_out' "$T/13.err" \
 # The fork asked "it doesn't seem like there is enough empty space" before its
 # own expansion. A 5000-character path outgrows a page, and so any pad a
 # small image has; on a PIE executable the header grows, announced, and on a
-# dylib -- which has no __PAGEZERO to lower the base into -- it is refused.
+# dylib, which has no __PAGEZERO to lower the base into, the contents are
+# raised, announced.
 # spec: compat/README.md's insert_dylib table, the prompt 3 row.
 nr_path="/$(printf 'n%.0s' $(seq 1 5000)).dylib"
 cp "$FIXTURE" "$T/nr"
@@ -537,9 +538,13 @@ if "$CC" -dynamiclib -mmacosx-version-min=10.9 -o "$T/nr.dylib" "$T/nr.c" 2>"$T/
     ( cd "$T" && "$BIN/insert_dylib" --all-yes "$nr_path" nr.dylib nr_dy_out ) \
         >"$T/14d.out" 2>"$T/14d.err"
     rc=$?
-    [ "$rc" -eq 1 ] && [ ! -e "$T/nr_dy_out" ] && grep -q 'only MH_EXECUTE can be grown' "$T/14d.err" \
-        && ok "no room: a dylib cannot grow, and is refused (exit 1, nothing written)" \
-        || bad "no room (dylib)" "exit $rc (want 1): $(cut -c1-300 "$T/14d.err")"
+    [ "$rc" -eq 0 ] && grep -q ': grew the header pad by .*; contents raised by 0x' "$T/14d.err" \
+        && ok "no room: a dylib's contents are raised, announced (exit 0)" \
+        || bad "no room (dylib)" "exit $rc (want 0, announced): $(cut -c1-300 "$T/14d.err")"
+    "$BIN/drydock-macho-rewrite" info "$T/nr_dy_out" 2>/dev/null | grep -qF "path=$nr_path" \
+        && "$BIN/drydock-macho-rewrite" verify "$T/nr_dy_out" >/dev/null 2>&1 \
+        && ok "no room: ... the dylib's output names the dylib and verifies" \
+        || bad "no room (dylib)" "the output lacks the dylib or does not verify"
 else
     bad "no room (dylib)" "could not link the fixture: $(cat "$T/nrcc.err")"
 fi
