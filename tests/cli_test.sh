@@ -2849,6 +2849,37 @@ grep -q 'implausible' "$T/imp_verify.err" \
     && ok "segment: the fixture really is one mg_plausible rejects" \
     || bad "segment: mg_plausible fixture" "drydock-macho-rewrite verify did not call it implausible: $(cat "$T/imp_verify.err")"
 
+# ---- and a chained-fixups dylib is refused for ITS OWN reason -------------
+#
+# This fixture carries LC_DYLD_CHAINED_FIXUPS and no LC_DYLD_INFO (its
+# header's own comment). Force mg_grow_header's raise route to actually run
+# on it by appending a dylib path too long for its header pad, and confirm
+# it is refused for chained fixups' own remedy, `fixups set classic` --
+# the same reason mg_classify gives for the same command when lowering an
+# executable -- and not for the missing LC_DYLD_INFO, which is what every
+# OTHER classic-linked dylib (one with no chained fixups either) is refused
+# for.
+imp_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/implausible" \
+    | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
+if [ -z "$imp_pad" ]; then
+    bad "grow: mg_raise_ok chained-fixups wording" \
+        "drydock-macho-rewrite info reported no header pad for the fixture"
+else
+    imp_long_len=$((imp_pad + 8))
+    imp_long="/$(printf 'a%.0s' $(seq 1 "$imp_long_len")).dylib"
+    cp "$T/implausible" "$T/imp_grow"
+    if mts "$T/imp_grow" "dylib append $imp_long" >"$T/imp_grow.out" 2>"$T/imp_grow.err"; then
+        bad "grow: mg_raise_ok chained-fixups wording" \
+            "dylib append succeeded; expected the raise to refuse for want of header pad"
+    else
+        grep -q 'LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the image base' \
+            "$T/imp_grow.err" \
+            && ok "grow: a chained-fixups dylib is refused for its own reason, not the missing LC_DYLD_INFO" \
+            || bad "grow: mg_raise_ok chained-fixups wording" \
+                   "expected the chained-fixups reason, got: $(cat "$T/imp_grow.err")"
+    fi
+fi
+
 # `fixups set classic` genuinely disturbs the relation the gate checks --
 # unlike `lc -delete`, which only frees header pad and repacks the command
 # region without moving any base-relative content (mr_build_lcs's own

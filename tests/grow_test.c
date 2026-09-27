@@ -1606,8 +1606,10 @@ static void test_ensure_pad_refuses_arm64(void) {
 }
 
 static void test_ensure_pad_refuses_what_cannot_grow(void) {
-    check_ensure_refuses_unchanged("a dylib", 0, MH_DYLIB, MH_PIE,
-                                   "cannot grow a dylib or bundle");
+    check_ensure_refuses_unchanged("an object file", 0, MH_OBJECT, 0,
+                                   "only MH_EXECUTE, MH_DYLIB and MH_BUNDLE can be grown");
+    check_ensure_refuses_unchanged("a dylib that is not x86_64", 0, MH_DYLIB, 0,
+                                   "only an x86_64 dylib or bundle can be grown");
     check_ensure_refuses_unchanged("a non-PIE executable", 0, MH_EXECUTE, 0,
                                    "not PIE");
     check_ensure_refuses_unchanged("an image with chained fixups", MG_T_CHAINED,
@@ -1852,8 +1854,12 @@ static int plausible_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
  * "ERROR: ", as src/rewrite.c's do. A needle starting '^' must start the
  * line. One message of each kind. */
 static void test_grow_diagnostics_name_no_program(void) {
-    check_ensure_refuses_unchanged("a dylib, by its prefix", 0, MH_DYLIB, MH_PIE,
-                                   "^ERROR: only MH_EXECUTE can be grown (filetype=6)");
+    check_ensure_refuses_unchanged("an object file, by its prefix", 0, MH_OBJECT, 0,
+                                   "^ERROR: only MH_EXECUTE, MH_DYLIB and MH_BUNDLE can be grown "
+                                   "(filetype=1)");
+    check_ensure_refuses_unchanged("a dylib that is not x86_64, by its prefix", 0, MH_DYLIB, 0,
+                                   "^ERROR: only an x86_64 dylib or bundle can be grown "
+                                   "(cputype=0)");
     check_ensure_refuses_unchanged("a non-PIE executable, by its prefix", 0, MH_EXECUTE, 0,
                                    "^ERROR: executable is not PIE (flags=0x");
     check_ensure_refuses_unchanged("an unclassified load command, by its prefix",
@@ -3906,8 +3912,8 @@ static void test_verify_watches_the_pointers(void) {
         "ERROR: verify FAILED -- the grown image rebases 5 pointers, 4 before the grow; refusing.");
     check_verify_rejects_pointer("a rebase moved to a slot holding the same value", pt_all_alike,
         pt_shift_one,
-        "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and was at 0x100002000 "
-        "before; refusing.");
+        "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and must be at "
+        "0x100002000; refusing.");
     check_verify_rejects_pointer("rebases it cannot read", NULL, pt_retype,
         "ERROR: verify FAILED -- the grown image's rebases cannot be read (the rebase at __DATA+0 "
         "is of type 2, not a pointer); refusing.");
@@ -4366,6 +4372,731 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
     free(buf);
 }
 
+/* ---- a dylib to raise ----
+ * build_dylib's MH_DYLIB, x86_64, linked at base 0 (as every 10.9 system
+ * dylib is; `base` moves it). F, its first content, is file and vm offset
+ * 0x1000. Segment indexes: __TEXT 0, __DATA 1, __LINKEDIT 2.
+ *   __TEXT      file [0, 0x2000)
+ *     __text          0x1000: f1: lea base(%rip), %rax; ret.  f2 (0x1010): push; ret
+ *     __stub_helper   0x1100: nops
+ *     __gcc_except_tab 0x1180 (DY_UNWIND): f2's LSDA
+ *     __unwind_info   0x1800 (DY_UNWIND): f1 and f2, f2 with an LSDA
+ *   __DATA      file [0x2000, 0x3000), vm to 0x4000
+ *     __data          0x2000: dy_ptrs, three rebased pointers
+ *     __mod_init_func 0x2030: f2
+ *     __la_symbol_ptr 0x2038: __stub_helper
+ *     __got           0x2040: bound to _x
+ *     __bss           0x3000, zero-fill
+ *   __LINKEDIT  file [0x3000, DY_FSIZE), vm 0x4000
+ *     rebase 0x3000, bind 0x3010, export trie 0x3040 (_f1, _f2, _d),
+ *     function starts 0x3080 (f1, f2), data in code 0x3090 (DY_DIC),
+ *     symbols 0x30a0, strings 0x3200
+ *   __ZERO      (DY_ZEROSEG) vm [0x6000, 0x7000), no file data; with
+ *               DY_ZEROFAR, [0x7000, 0x8000), two pages past __LINKEDIT */
+#define DY_F      0x1000u
+#define DY_FSIZE  0x3300u
+#define DY_UNWIND 1
+#define DY_DIC    2
+#define DY_ROUTINES 4
+#define DY_SPLIT  8
+#define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
+#define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
+static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
+
+static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
+                                  uint64_t addr, uint64_t size, uint32_t off, uint32_t flags) {
+    strncpy(s->segname, seg, sizeof s->segname);
+    strncpy(s->sectname, name, sizeof s->sectname);
+    s->addr = addr;
+    s->size = size;
+    s->offset = off;
+    s->flags = flags;
+    return s + 1;
+}
+
+static uint8_t *dy_lc(uint8_t **lc, struct mach_header_64 *h, uint32_t cmd, uint32_t size) {
+    struct load_command *l = (struct load_command *)*lc;
+    uint8_t *at = *lc;
+    l->cmd = cmd;
+    l->cmdsize = size;
+    *lc += size;
+    h->ncmds++;
+    h->sizeofcmds += size;
+    return at;
+}
+
+static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
+    static const uint8_t rebase[16] = { 0x11, 0x21, 0x00, 0x53, 0x21, 0x30, 0x52, 0x00 };
+    static const uint8_t bind[16] = { 0x11, 0x40, '_', 'x', 0, 0x51, 0x71, 0x40, 0x90, 0x00 };
+    static const uint8_t trie[31] = {
+        0x00, 0x03, '_', 'f', '1', 0, 16, '_', 'f', '2', 0, 21, '_', 'd', 0, 26,
+        0x03, 0x00, 0x80, 0x20, 0x00,      /* _f1: 0x1000 */
+        0x03, 0x00, 0x90, 0x20, 0x00,      /* _f2: 0x1010 */
+        0x03, 0x00, 0xa0, 0x40, 0x00 };    /* _d:  0x2020 */
+    static const uint8_t starts[8] = { 0x80, 0x20, 0x10, 0x00 };
+    static const uint8_t dic[8] = { 0x20, 0x10, 0, 0, 0x08, 0x00, 0x01, 0x00 };  /* 0x1020, 8 */
+    static const char strs[] = "\0__mh_dylib_header\0_f1\0_f2\0_d\0_x";
+    uint8_t *buf = (uint8_t *)calloc(1, DY_FSIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lc = (uint8_t *)(h + 1);
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+    h->filetype = MH_DYLIB;
+    h->flags = MH_DYLDLINK | MH_TWOLEVEL | MH_NOUNDEFS;
+
+    int ntext = (opts & DY_UNWIND) ? 4 : 2;
+    struct segment_command_64 *tx = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+        sizeof *tx + ntext * sizeof(struct section_64));
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = base;
+    tx->vmsize = tx->filesize = 0x2000;
+    tx->maxprot = tx->initprot = VM_PROT_READ | VM_PROT_EXECUTE;
+    tx->nsects = ntext;
+    struct section_64 *s = (struct section_64 *)(tx + 1);
+    s = dy_sect(s, "__TEXT", "__text", base + 0x1000, 0x100, 0x1000,
+                S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
+    s = dy_sect(s, "__TEXT", "__stub_helper", base + 0x1100, 0x10, 0x1100,
+                S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
+    if (opts & DY_UNWIND) {
+        s = dy_sect(s, "__TEXT", "__gcc_except_tab", base + 0x1180, 0x10, 0x1180, 0);
+        s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
+    }
+
+    struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+        sizeof *da + 5 * sizeof(struct section_64));
+    strcpy(da->segname, "__DATA");
+    da->vmaddr = base + 0x2000;
+    da->vmsize = 0x2000;
+    da->fileoff = 0x2000;
+    da->filesize = 0x1000;
+    da->maxprot = da->initprot = VM_PROT_READ | VM_PROT_WRITE;
+    da->nsects = 5;
+    s = (struct section_64 *)(da + 1);
+    s = dy_sect(s, "__DATA", "__data", base + 0x2000, 0x30, 0x2000, 0);
+    s = dy_sect(s, "__DATA", "__mod_init_func", base + 0x2030, 8, 0x2030, S_MOD_INIT_FUNC_POINTERS);
+    s = dy_sect(s, "__DATA", "__la_symbol_ptr", base + 0x2038, 8, 0x2038, S_LAZY_SYMBOL_POINTERS);
+    s = dy_sect(s, "__DATA", "__got", base + 0x2040, 8, 0x2040, S_NON_LAZY_SYMBOL_POINTERS);
+    s = dy_sect(s, "__DATA", "__bss", base + 0x3000, 0x100, 0, S_ZEROFILL);
+
+    struct segment_command_64 *le = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+        sizeof *le);
+    strcpy(le->segname, "__LINKEDIT");
+    le->vmaddr = base + 0x4000;
+    le->vmsize = 0x1000;
+    le->fileoff = 0x3000;
+    le->filesize = DY_FSIZE - 0x3000;
+    le->maxprot = le->initprot = VM_PROT_READ;
+
+    if (opts & DY_ZEROSEG) {
+        struct segment_command_64 *z = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+            sizeof *z + sizeof(struct section_64));
+        strcpy(z->segname, "__ZERO");
+        z->vmaddr = base + ((opts & DY_ZEROFAR) ? 0x7000 : 0x6000);
+        z->vmsize = 0x1000;
+        z->maxprot = z->initprot = VM_PROT_READ | VM_PROT_WRITE;
+        z->nsects = 1;
+        dy_sect((struct section_64 *)(z + 1), "__ZERO", "__zero", z->vmaddr, 0x1000, 0,
+                S_ZEROFILL);
+    }
+    struct dylib_command *id = (struct dylib_command *)dy_lc(&lc, h, LC_ID_DYLIB, 48);
+    id->dylib.name.offset = sizeof *id;
+    strcpy((char *)(id + 1), "@rpath/libdy.dylib");
+    struct dylib_command *sys = (struct dylib_command *)dy_lc(&lc, h, LC_LOAD_DYLIB, 56);
+    sys->dylib.name.offset = sizeof *sys;
+    strcpy((char *)(sys + 1), "/usr/lib/libSystem.B.dylib");
+
+    struct dyld_info_command *di = (struct dyld_info_command *)dy_lc(&lc, h, LC_DYLD_INFO_ONLY,
+                                                                    sizeof *di);
+    di->rebase_off = 0x3000;
+    di->rebase_size = 8;
+    di->bind_off = 0x3010;
+    di->bind_size = 16;
+    di->export_off = 0x3040;
+    di->export_size = sizeof trie;
+
+    struct symtab_command *st = (struct symtab_command *)dy_lc(&lc, h, LC_SYMTAB, sizeof *st);
+    st->symoff = 0x30a0;
+    st->nsyms = 5;
+    st->stroff = 0x3200;
+    st->strsize = sizeof strs;
+    struct dysymtab_command *ds = (struct dysymtab_command *)dy_lc(&lc, h, LC_DYSYMTAB, sizeof *ds);
+    ds->nlocalsym = 1;
+    ds->iextdefsym = 1;
+    ds->nextdefsym = 3;
+    ds->iundefsym = 4;
+    ds->nundefsym = 1;
+
+    struct uuid_command *u = (struct uuid_command *)dy_lc(&lc, h, LC_UUID, sizeof *u);
+    for (int i = 0; i < 16; i++) u->uuid[i] = (uint8_t)(0x10 + i);
+
+    struct linkedit_data_command *fs = (struct linkedit_data_command *)dy_lc(&lc, h,
+        LC_FUNCTION_STARTS, sizeof *fs);
+    fs->dataoff = 0x3080;
+    fs->datasize = sizeof starts;
+    if (opts & DY_DIC) {
+        struct linkedit_data_command *dc = (struct linkedit_data_command *)dy_lc(&lc, h,
+            LC_DATA_IN_CODE, sizeof *dc);
+        dc->dataoff = 0x3090;
+        dc->datasize = sizeof dic;
+        memcpy(buf + 0x3090, dic, sizeof dic);
+    }
+    if (opts & DY_SPLIT) {
+        struct linkedit_data_command *sp = (struct linkedit_data_command *)dy_lc(&lc, h,
+            LC_SEGMENT_SPLIT_INFO, sizeof *sp);
+        sp->dataoff = 0x3098;
+        sp->datasize = 8;
+        memset(buf + 0x3098, 0x5a, 8);
+    }
+    if (opts & DY_ROUTINES) {
+        struct routines_command_64 *rt = (struct routines_command_64 *)dy_lc(&lc, h,
+            LC_ROUTINES_64, sizeof *rt);
+        rt->init_address = base + 0x1010;
+    }
+
+    /* f1: lea base(%rip), %rax; ret.  f2: push %rbp; ret. */
+    memset(buf + 0x1000, 0x90, 0x110);
+    buf[0x1000] = 0x48; buf[0x1001] = 0x8d; buf[0x1002] = 0x05;
+    int32_t disp = (int32_t)(int64_t)(base - (base + 0x1007));
+    memcpy(buf + 0x1003, &disp, sizeof disp);
+    buf[0x1007] = 0xc3;
+    buf[0x1010] = 0x55; buf[0x1011] = 0xc3;
+    if (opts & DY_UNWIND) {
+        uint32_t *uw = (uint32_t *)(buf + 0x1800);
+        uw[0] = 1; uw[3] = 28; uw[4] = 1; uw[5] = 32; uw[6] = 2;
+        uw[7] = 0x2040;                             /* personality: the __got slot */
+        uw[8] = 0x1000; uw[9] = 0x48; uw[10] = 56;  /* f1; its page; LSDA from 56 */
+        uw[11] = 0x1100; uw[12] = 0; uw[13] = 64;   /* the sentinel: the end of f2 */
+        uw[14] = 0x1010; uw[15] = 0x1180;           /* f2's LSDA, in __gcc_except_tab */
+        uw[18] = 3; ((uint16_t *)(buf + 0x1800 + 0x48))[2] = 8;
+        ((uint16_t *)(buf + 0x1800 + 0x48))[3] = 2;
+        uw[20] = 0x00000000u | (1u << 24); uw[21] = 0x00000010u | (1u << 24);
+    }
+
+    uint64_t ptrs[3];
+    for (int i = 0; i < 3; i++) ptrs[i] = base + dy_ptrs[i];
+    memcpy(buf + 0x2000, ptrs, sizeof ptrs);
+    uint64_t init = base + 0x1010, lazy = base + 0x1100;
+    memcpy(buf + 0x2030, &init, 8);
+    memcpy(buf + 0x2038, &lazy, 8);
+
+    memcpy(buf + 0x3000, rebase, sizeof rebase);
+    memcpy(buf + 0x3010, bind, sizeof bind);
+    memcpy(buf + 0x3040, trie, sizeof trie);
+    memcpy(buf + 0x3080, starts, sizeof starts);
+    struct nlist_64 *nl = (struct nlist_64 *)(buf + 0x30a0);
+    static const struct { uint32_t strx; uint8_t type, sect; uint64_t value; } syms[5] = {
+        { 1, N_SECT | N_PEXT, 1, 0 }, { 19, N_SECT | N_EXT, 1, 0x1000 },
+        { 23, N_SECT | N_EXT, 1, 0x1010 }, { 27, N_SECT | N_EXT, 0, 0x2020 },
+        { 30, N_UNDF | N_EXT, 0, 0 } };
+    for (int i = 0; i < 5; i++) {
+        nl[i].n_un.n_strx = syms[i].strx;
+        nl[i].n_type = syms[i].type;
+        nl[i].n_sect = i == 3 ? (uint8_t)(ntext + 1) : syms[i].sect;
+        nl[i].n_value = syms[i].type == (N_UNDF | N_EXT) ? 0 : base + syms[i].value;
+    }
+    memcpy(buf + 0x3200, strs, sizeof strs);
+    *fsize = DY_FSIZE;
+    return buf;
+}
+
+static uint8_t *build_dylib(size_t *fsize, int opts) { return build_dylib_at(0, fsize, opts); }
+
+/* The dylib's `cmd` command, or NULL. */
+static uint8_t *dy_find(uint8_t *buf, uint32_t cmd) { return (uint8_t *)find_lc(buf, DY_FSIZE, cmd); }
+static struct section_64 *dy_section(uint8_t *buf, const char *seg, const char *name) {
+    mi_image im;
+    return mi_wrap(buf, DY_FSIZE, &im) == 0 ? mi_find_section(&im, seg, name) : NULL;
+}
+
+/* Each way a raise refuses before it changes anything: `poke` breaks
+ * build_dylib's image, and the refusal must say `why`. */
+typedef void (*dy_poke)(uint8_t *buf);
+static void dy_no_info(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_DYLD_INFO_ONLY))->cmd = LC_SOURCE_VERSION; }
+static void dy_unixthread(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_UUID))->cmd = LC_UNIXTHREAD; }
+static void dy_thread(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_UUID))->cmd = LC_THREAD; }
+static void dy_encrypted(uint8_t *buf) {
+    struct encryption_info_command_64 *e = (struct encryption_info_command_64 *)dy_find(buf, LC_UUID);
+    e->cmd = LC_ENCRYPTION_INFO_64;
+    e->cryptid = 1;
+}
+static void dy_short_crypt(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_ENCRYPTION_INFO; }
+static void dy_short_routines(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_ROUTINES_64; }
+static void dy_protected(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->flags |= SG_PROTECTED_VERSION_1; }
+static void dy_misplaced(uint8_t *buf) { dy_section(buf, "__TEXT", "__stub_helper")->addr += 0x10; }
+static void dy_below(uint8_t *buf) {
+    dy_section(buf, "__DATA", "__bss")->addr = seg_named(buf, DY_FSIZE, "__TEXT")->vmaddr + 0xfff;
+}
+static void dy_early(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->fileoff = 0xfff; }
+static void dy_short_dysymtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYSYMTAB; }
+static struct dysymtab_command *dy_dysymtab(uint8_t *buf) { return (struct dysymtab_command *)dy_find(buf, LC_DYSYMTAB); }
+static void dy_toc(uint8_t *buf) { dy_dysymtab(buf)->ntoc = 1; }
+static void dy_modtab(uint8_t *buf) { dy_dysymtab(buf)->nmodtab = 1; }
+static void dy_extrel(uint8_t *buf) { dy_dysymtab(buf)->nextrel = 1; }
+static void dy_locrel(uint8_t *buf) { dy_dysymtab(buf)->nlocrel = 1; }
+/* The real LC_DYSYMTAB's one local relocation, then an all-zero second
+ * LC_DYSYMTAB appended into the header's own pad (well short of DY_F): an
+ * assignment instead of an accumulation would let the second, all-zero
+ * command's read reset the first's count back to 0. */
+static void dy_second_dysymtab(uint8_t *buf) {
+    dy_dysymtab(buf)->nlocrel = 1;
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct load_command *l = (struct load_command *)(buf + sizeof *h + h->sizeofcmds);
+    l->cmd = LC_DYSYMTAB;
+    l->cmdsize = sizeof(struct dysymtab_command);
+    h->ncmds++;
+    h->sizeofcmds += (uint32_t)sizeof(struct dysymtab_command);
+}
+static void dy_no_info_locrel(uint8_t *buf) { dy_no_info(buf); dy_locrel(buf); }
+static void dy_overaligned(uint8_t *buf) { dy_section(buf, "__DATA", "__data")->align = 13; }
+static void dy_not_x86_64(uint8_t *buf) { ((struct mach_header_64 *)buf)->cputype = CPU_TYPE_POWERPC64; }
+static void dy_chained_fixups(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYLD_CHAINED_FIXUPS; }
+/* __LINKEDIT, at fileoff 0 too: a second segment mg_raise_header_seg_cb's
+ * identity check must NOT mistake for the header (__TEXT already is it). */
+static void dy_second_header_seg(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__LINKEDIT")->fileoff = 0; }
+static const struct { const char *what; dy_poke poke; const char *why; } dy_unraisable[] = {
+    { "no LC_DYLD_INFO", dy_no_info,
+      "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes list every "
+      "pointer a raise moves; refusing to grow" },
+    { "LC_UNIXTHREAD", dy_unixthread,
+      "ERROR: a dylib or bundle with a thread command (0x5), whose register state a raise does "
+      "not move; refusing to grow" },
+    { "LC_THREAD", dy_thread, "ERROR: a dylib or bundle with a thread command (0x4)" },
+    { "an encrypted image", dy_encrypted,
+      "ERROR: the image is encrypted (cryptid 1), and a raise would move its encrypted pages; "
+      "refusing to grow" },
+    { "a short encryption command", dy_short_crypt,
+      "ERROR: an encryption command is 16 bytes, too short to hold cryptid; refusing to grow" },
+    { "a short LC_ROUTINES_64", dy_short_routines,
+      "ERROR: LC_ROUTINES_64 is 16 bytes, too short to hold init_address; refusing to grow" },
+    { "a protected segment", dy_protected,
+      "ERROR: segment __DATA is protected (SG_PROTECTED_VERSION_1), and a raise would move its "
+      "encrypted pages; refusing to grow" },
+    { "a __TEXT section whose address and offset disagree", dy_misplaced,
+      "ERROR: section __TEXT,__stub_helper lies 0x1110 past the image base in memory and 0x1100 "
+      "in the file; refusing to grow" },
+    { "a section below the first content", dy_below,
+      "ERROR: section __DATA,__bss lies at 0xfff, below the first content at 0x1000; refusing "
+      "to grow" },
+    { "a segment whose file data starts before the first content", dy_early,
+      "ERROR: segment __DATA's file data starts at 4095, before the first content at 4096; "
+      "refusing to grow" },
+    { "a short LC_DYSYMTAB", dy_short_dysymtab,
+      "ERROR: LC_DYSYMTAB is 16 bytes, too short to hold its tables' counts; refusing to grow" },
+    { "a table of contents", dy_toc,
+      "ERROR: LC_DYSYMTAB lists 1 table-of-contents entries, 0 modules, 0 external and 0 local "
+      "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
+    { "a module table", dy_modtab, "ERROR: LC_DYSYMTAB lists 0 table-of-contents entries, 1 modules" },
+    { "external relocations", dy_extrel, "0 modules, 1 external and 0 local relocations" },
+    { "local relocations", dy_locrel, "0 external and 1 local relocations" },
+    { "local relocations and no LC_DYLD_INFO", dy_no_info_locrel,
+      "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes" },
+    { "a section aligned past a page", dy_overaligned,
+      "ERROR: section __DATA,__data is aligned to 2^13 bytes, more than the page a raise moves it "
+      "by; refusing to grow" },
+    { "a dylib that is not x86_64", dy_not_x86_64,
+      "ERROR: only an x86_64 dylib or bundle can be grown (cputype=0x1000012): its code is "
+      "decoded to find what addresses its header" },
+    { "LC_DYLD_CHAINED_FIXUPS", dy_chained_fixups,
+      "ERROR: LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the image base, which "
+      "growing moves; convert them first (`fixups set classic` in an edit script)." },
+    { "a second segment at fileoff 0", dy_second_header_seg,
+      "ERROR: segment __LINKEDIT's file data starts at 0, before the first content at 4096; "
+      "refusing to grow" },
+    { "a second, all-zero LC_DYSYMTAB", dy_second_dysymtab,
+      "ERROR: LC_DYSYMTAB lists 0 table-of-contents entries, 0 modules, 0 external and 1 local "
+      "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
+};
+
+/* Like check_grow_refuses_header_refs, but also insists stderr holds exactly
+ * one ERROR, catching a refusal that prints its reason without stopping the
+ * walk (mg_each_lc's callback returning 0 where it should return 1). */
+static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsize,
+                                     const char *needle) {
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    char *err = stderr_during(mg_grow_header, &buf, &fsize, 0x1000, &r);
+    int errors = 0;
+    for (const char *p = err; (p = strstr(p, "ERROR")) != NULL; p++) errors++;
+    CHECK(r == -1 && strstr(err, needle) != NULL,
+          "mg_grow_header REFUSES %s, saying '%s' (got %d):\n%s", what, needle, r, err);
+    CHECK(errors == 1, "%s: mg_grow_header prints one ERROR, not %d:\n%s", what, errors, err);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "%s: nothing changed", what);
+    free(err);
+    free(before);
+    free(buf);
+}
+
+static void test_grow_refuses_what_it_cannot_raise(void) {
+    for (size_t i = 0; i < sizeof dy_unraisable / sizeof dy_unraisable[0]; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib(&fsize, 0);
+        dy_unraisable[i].poke(buf);
+        check_grow_refuses_raise(dy_unraisable[i].what, buf, fsize, dy_unraisable[i].why);
+    }
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(0x10000000, &fsize, 0);
+    dy_below(buf);
+    check_grow_refuses_raise("a section below the first content, above base 0", buf, fsize,
+        "ERROR: section __DATA,__bss lies at 0x10000fff, below the first content at 0x10001000; "
+        "refusing to grow");
+}
+
+/* An unencrypted image's encryption command, an LC_ROUTINES_64 long enough
+ * to read, and a zero-fill segment at file offset 0 are no reason to refuse,
+ * at base 0 or above it. */
+static void test_grow_raises_past_what_it_can_vouch_for(void) {
+    static const uint32_t filetype[3] = { MH_DYLIB, MH_BUNDLE, MH_DYLIB };
+    static const uint64_t base[3] = { 0, 0, 0x10000000 };
+    for (int i = 0; i < 3; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib_at(base[i], &fsize, DY_ROUTINES | DY_ZEROSEG);
+        struct encryption_info_command_64 *e =
+            (struct encryption_info_command_64 *)dy_find(buf, LC_UUID);
+        ((struct mach_header_64 *)buf)->filetype = filetype[i];
+        e->cmd = LC_ENCRYPTION_INFO_64;
+        e->cryptoff = e->cryptsize = e->cryptid = 0;
+        dy_section(buf, "__DATA", "__data")->align = 12;
+        int r = mg_grow_header(&buf, &fsize, 0x1000);
+        CHECK(r == 0 && fsize == DY_FSIZE + 0x1000, "raise: filetype %u at base %#llx grows "
+              "(got %d, %zu bytes)", filetype[i], (unsigned long long)base[i], r, fsize);
+        free(buf);
+    }
+}
+
+/* ---- what a raise moves ----
+ * Each test raises build_dylib_at(DY_RAISED_AT, ...) by one page and reads
+ * the result back. */
+#define DY_RAISED_AT 0x10000000ull
+#define DY_ALL (DY_UNWIND | DY_DIC | DY_ROUTINES | DY_ZEROSEG)
+static uint8_t *raised_dylib(size_t *fsize, int opts, uint32_t grow_req) {
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, fsize, opts);
+    int r = mg_grow_header(&buf, fsize, grow_req);
+    CHECK(r == 0, "raise: the grow succeeds (got %d)", r);
+    if (r == 0) return buf;
+    free(buf);
+    return NULL;
+}
+static struct nlist_64 *dy_syms(uint8_t *buf, size_t fsize) {
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB);
+    return (struct nlist_64 *)(buf + st->symoff);
+}
+
+static void test_raise_moves_the_segments_and_sections(void) {
+    static const struct { const char *seg; uint64_t vmaddr, vmsize, fileoff, filesize; } segs[4] = {
+        { "__TEXT", 0, 0x3000, 0, 0x3000 },
+        { "__DATA", 0x3000, 0x2000, 0x3000, 0x1000 },
+        { "__LINKEDIT", 0x5000, 0x1000, 0x4000, DY_FSIZE - 0x3000 },
+        { "__ZERO", 0x7000, 0x1000, 0, 0 },
+    };
+    static const struct { const char *seg, *sect; uint64_t addr; uint32_t offset; } sects[4] = {
+        { "__TEXT", "__text", 0x2000, 0x2000 }, { "__TEXT", "__unwind_info", 0x2800, 0x2800 },
+        { "__DATA", "__la_symbol_ptr", 0x3038, 0x3038 }, { "__DATA", "__bss", 0x4000, 0 },
+    };
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    for (int i = 0; i < 4; i++) {
+        struct segment_command_64 *s = seg_named(buf, fsize, segs[i].seg);
+        CHECK(s && s->vmaddr == DY_RAISED_AT + segs[i].vmaddr && s->vmsize == segs[i].vmsize &&
+              s->fileoff == segs[i].fileoff && s->filesize == segs[i].filesize,
+              "raise: %s is vm %#llx+%#llx, file %#llx+%#llx after it", segs[i].seg,
+              s ? (unsigned long long)s->vmaddr : 0, s ? (unsigned long long)s->vmsize : 0,
+              s ? (unsigned long long)s->fileoff : 0, s ? (unsigned long long)s->filesize : 0);
+    }
+    for (int i = 0; i < 4; i++) {
+        mi_image im;
+        struct section_64 *s = mi_wrap(buf, fsize, &im) == 0 ?
+            mi_find_section(&im, sects[i].seg, sects[i].sect) : NULL;
+        CHECK(s && s->addr == DY_RAISED_AT + sects[i].addr && s->offset == sects[i].offset,
+              "raise: %s,%s is at %#llx, file %u after it", sects[i].seg, sects[i].sect,
+              s ? (unsigned long long)s->addr : 0, s ? s->offset : 0);
+    }
+    struct routines_command_64 *rt = (struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64);
+    CHECK(rt && rt->init_address == DY_RAISED_AT + 0x2010,
+          "raise: LC_ROUTINES_64's initializer is f2, raised (%#llx)",
+          rt ? (unsigned long long)rt->init_address : 0);
+    CHECK(buf[0x2010] == 0x55 && buf[0x2000] == 0x48, "raise: the code is in the file a page on");
+    free(buf);
+}
+
+/* A pointer to the header stays; every other one follows the content. */
+static void test_raise_moves_the_pointers_that_name_content(void) {
+    static const uint64_t want[5] = { 0, 0x2010, 0x3020, 0x2010, 0x2100 };
+    static const uint32_t at[5] = { 0x3000, 0x3008, 0x3010, 0x3030, 0x3038 };
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    for (int i = 0; i < 5; i++) {
+        uint64_t v;
+        memcpy(&v, buf + at[i], sizeof v);
+        CHECK(v == DY_RAISED_AT + want[i], "raise: the pointer at file %#x holds %#llx, want %#llx",
+              at[i], (unsigned long long)v, (unsigned long long)(DY_RAISED_AT + want[i]));
+    }
+    free(buf);
+}
+
+/* __mh_dylib_header names the header, and stays; the defined symbols
+ * follow the content; the undefined one is not an address. */
+static void test_raise_moves_the_symbols_that_name_content(void) {
+    static const uint64_t want[5] = { DY_RAISED_AT, DY_RAISED_AT + 0x2000, DY_RAISED_AT + 0x2010,
+                                      DY_RAISED_AT + 0x3020, 0 };
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    struct nlist_64 *nl = dy_syms(buf, fsize);
+    for (int i = 0; i < 5; i++)
+        CHECK(nl[i].n_value == want[i], "raise: symbol %d is %#llx, want %#llx", i,
+              (unsigned long long)nl[i].n_value, (unsigned long long)want[i]);
+    free(buf);
+}
+
+/* What is measured from the base gains the grow, as on the executable
+ * route: the export trie, the leading function start, data in code and
+ * compact unwind. */
+static void test_raise_moves_what_is_measured_from_the_base(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a[3] = { 0, 0, 0 }, d0 = 0;
+    static const uint32_t leaf[3] = { 16, 21, 26 };
+    static const uint64_t want[3] = { 0x2000, 0x2010, 0x3020 };
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    for (int i = 0; i < 3; i++) {
+        mu_decode(buf + toff + leaf[i] + 2, buf + toff + tsize, &a[i]);
+        CHECK(a[i] == want[i], "raise: export %d is %#llx, want %#llx", i,
+              (unsigned long long)a[i], (unsigned long long)want[i]);
+    }
+    struct linkedit_data_command *fs =
+        (struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
+    mu_decode(buf + fs->dataoff, buf + fs->dataoff + fs->datasize, &d0);
+    CHECK(d0 == 0x2000, "raise: the first function start is %#llx, want 0x2000", (unsigned long long)d0);
+    struct linkedit_data_command *dc = (struct linkedit_data_command *)find_lc(buf, fsize, LC_DATA_IN_CODE);
+    CHECK(UW32(buf, dc->dataoff, 0) == 0x2020 && UW32(buf, dc->dataoff, 4) == 0x10008,
+          "raise: data in code starts at %#x, length and kind unchanged", UW32(buf, dc->dataoff, 0));
+    CHECK(UW32(buf, 0x2800, 28) == 0x3040 && UW32(buf, 0x2800, 32) == 0x2000 &&
+          UW32(buf, 0x2800, 44) == 0x2100 && UW32(buf, 0x2800, 56) == 0x2010 &&
+          UW32(buf, 0x2800, 60) == 0x2180 && UW32(buf, 0x2800, 80) == (1u << 24),
+          "raise: compact unwind's personality, functions, sentinel and LSDA are raised, its "
+          "compressed entries are not");
+    free(buf);
+}
+
+/* f1's lea names the header, which stays, from code a page further on. */
+static void test_raise_repairs_code_that_addresses_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1000);
+    if (!buf) return;
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    int64_t n = mhr_scan(buf, fsize, DY_RAISED_AT, hr_record, &s);
+    CHECK(n == 1 && s.c[0].addr == DY_RAISED_AT + 0x2003 && s.c[0].immlen == 0,
+          "raise: f1's lea still addresses the header (%lld)", (long long)n);
+    free(buf);
+}
+
+/* Two pages: _d, 0x2020 + 0x2000, needs a wider ULEB, so the export trie is
+ * rebuilt at the end of __LINKEDIT. */
+static void test_raise_rebuilds_a_widening_export_trie(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL, 0x1001);
+    if (!buf) return;
+    uint32_t toff = 0, tsize = 0;
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    CHECK(toff == DY_FSIZE + 0x2000 && fsize == DY_FSIZE + 0x2000 + tsize,
+          "raise: the rebuilt trie is at the end (%#x, %u bytes, file %zu)", toff, tsize, fsize);
+    free(buf);
+}
+
+/* A value strictly inside (base, base + F), or that no segment maps, cannot
+ * be raised; nor can a debugging stab yet. */
+static void test_raise_refuses_what_it_cannot_move(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint64_t v = DY_RAISED_AT + 16;
+    memcpy(buf + 0x2008, &v, sizeof v);
+    check_grow_refuses_header_refs("a pointer inside the header", buf, fsize,
+        "ERROR: the pointer at 0x10002008 names 0x10000010, between the header at 0x10000000 and "
+        "its first content at 0x10001000, which a grow moves apart; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    v = DY_RAISED_AT + 0x5001;
+    memcpy(buf + 0x2008, &v, sizeof v);
+    check_grow_refuses_header_refs("a pointer past every segment", buf, fsize,
+        "ERROR: the pointer at 0x10002008 names 0x10005001, which no segment maps; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    v = DY_RAISED_AT - 1;
+    memcpy(buf + 0x2008, &v, sizeof v);
+    check_grow_refuses_header_refs("a pointer below every segment", buf, fsize,
+        "ERROR: the pointer at 0x10002008 names 0xfffffff, which no segment maps");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    dy_syms(buf, fsize)[3].n_value = DY_RAISED_AT + 16;
+    check_grow_refuses_header_refs("a symbol inside the header", buf, fsize,
+        "ERROR: symbol 3, \"_d\", names 0x10000010, between the header at 0x10000000");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    dy_syms(buf, fsize)[4].n_type = N_FUN;
+    check_grow_refuses_header_refs("a stab", buf, fsize,
+        "ERROR: symbol 4, \"_x\", is a stab of type 0x24, which a raise does not know how to "
+        "move; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    hr_plant(buf + 0x1000, DY_RAISED_AT + 0x1000, 2, 0x05, 0, DY_RAISED_AT + 16);
+    check_grow_refuses_header_refs("code inside the header", buf, fsize,
+        "ERROR: the code at 0x10001003 names 0x10000010, between the header");
+}
+
+/* An N_SECT symbol below the base names nothing a raise moves. */
+static void test_raise_leaves_a_symbol_below_the_base(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    dy_syms(buf, fsize)[3].n_value = 0x10;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && dy_syms(buf, fsize)[3].n_value == 0x10,
+          "raise: a symbol below the base stays (got %d, %#llx)", r,
+          (unsigned long long)dy_syms(buf, fsize)[3].n_value);
+    free(buf);
+}
+
+/* _d, made absolute, is a value, 0x2020: the raise leaves it, and verify
+ * expects it left. */
+static void test_raise_leaves_an_absolute_export_alone(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a = 0;
+    buf[0x3040 + 27] = 0x02;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    mu_decode(buf + toff + 28, buf + toff + tsize, &a);
+    CHECK(r == 0 && a == 0x2020, "raise: an absolute export stays 0x2020 (got %d, %#llx)", r,
+          (unsigned long long)a);
+    free(buf);
+}
+
+/* A pointer to the first content, into a segment past a gap in memory
+ * (__ZERO, a page past __LINKEDIT, or two with DY_ZEROFAR), or to the end of
+ * a segment names content. Which segment maps it is decided before the raise
+ * moves any: afterward, __ZERO + 8 lies in the gap a one-page raise opens. */
+static void test_raise_moves_pointers_to_the_edges_of_content(void) {
+    static const struct { const char *what; uint64_t v; int opts; } p[6] = {
+        { "the first content", 0x1000, 0 },
+        { "__ZERO's start", 0x6000, 0 },
+        { "__ZERO + 8", 0x6008, 0 },
+        { "__LINKEDIT's end", 0x5000, 0 },
+        { "__ZERO's start, past a two-page gap", 0x7000, DY_ZEROFAR },
+        { "__ZERO + 8, past a two-page gap", 0x7008, DY_ZEROFAR },
+    };
+    for (int i = 0; i < 6; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ZEROSEG | p[i].opts);
+        uint64_t v = DY_RAISED_AT + p[i].v;
+        memcpy(buf + 0x2008, &v, sizeof v);
+        int r = mg_grow_header(&buf, &fsize, 0x1000);
+        memcpy(&v, buf + 0x3008, sizeof v);
+        CHECK(r == 0 && v == DY_RAISED_AT + p[i].v + 0x1000, "raise: a pointer to %s is raised "
+              "(got %d, %#llx)", p[i].what, r, (unsigned long long)v);
+        free(buf);
+    }
+}
+
+/* An export at offset 0 names the header, and stays. */
+static void test_raise_leaves_an_export_at_offset_0(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    uint32_t toff = 0, tsize = 0;
+    uint64_t a = 1;
+    buf[0x3040 + 28] = 0x80;                           /* _d: 0, in its two bytes */
+    buf[0x3040 + 29] = 0x00;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mg_find_trie(buf, fsize, &toff, &tsize);
+    mu_decode(buf + toff + 28, buf + toff + tsize, &a);
+    CHECK(r == 0 && a == 0, "raise: an export at offset 0 stays 0 (got %d, %#llx)", r,
+          (unsigned long long)a);
+    free(buf);
+}
+
+/* __LINKEDIT cut short of the string table: its offset maps nowhere, before
+ * the raise and after it. */
+static void test_raise_keeps_an_offset_no_segment_maps(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    seg_named(buf, fsize, "__LINKEDIT")->filesize = 0xf0;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "raise: an offset no segment maps stays unmapped (got %d)", r);
+    free(buf);
+}
+
+/* Verification, on the raise: each check_verify_rejects_raise undoes one
+ * thing a correct raise did. */
+typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
+static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "%s: snapshot", what); free(buf); return; }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
+    }
+    CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the raise as made", what);
+    undo(buf, fsize);
+    int r;
+    verify_snap = &snap;
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, needle) != NULL, "verify REJECTS %s, saying '%s' (got %d):\n%s",
+          what, needle, r, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+static void dy_unraise_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3009] -= 0x10; }
+static void dy_raise_header_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3001] += 0x10; }
+static void dy_unraise_symbol(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[3].n_value -= 0x1000; }
+static void dy_raise_header_symbol(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[0].n_value += 0x1000; }
+static void dy_unraise_unwind(uint8_t *buf, size_t fsize) { (void)fsize; UW32(buf, 0x2800, 32) -= 0x1000; }
+static void dy_unrepair(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2004] += 0x10; }
+static void dy_unraise_linkedit(uint8_t *buf, size_t fsize) { seg_named(buf, fsize, "__LINKEDIT")->vmaddr -= 0x1000; }
+
+static void test_verify_watches_the_raise(void) {
+    check_verify_rejects_raise("a pointer to content left where it was", dy_unraise_pointer,
+        "ERROR: verify FAILED -- the pointer at 0x10003008 holds 0x10001010 after the grow, and "
+        "must hold 0x10002010; refusing.");
+    check_verify_rejects_raise("a pointer to the header raised", dy_raise_header_pointer,
+        "the pointer at 0x10003000 holds 0x10001000 after the grow, and must hold 0x10000000");
+    check_verify_rejects_raise("a symbol left where it was", dy_unraise_symbol,
+        "ERROR: verify FAILED -- symbol 3 is type 0xf, value 0x10002020 after the grow, and must "
+        "be type 0xf, value 0x10003020; refusing.");
+    check_verify_rejects_raise("the header's symbol raised", dy_raise_header_symbol,
+        "symbol 0 is type 0x1e, value 0x10001000 after the grow, and must be type 0x1e, value "
+        "0x10000000");
+    check_verify_rejects_raise("an unwind entry left where it was", dy_unraise_unwind,
+        "resolved to 0x10001000 before the grow and 0x10001000 after (moved +0 bytes), and must "
+        "resolve to 0x10002000");
+    check_verify_rejects_raise("code that addresses the header, unrepaired", dy_unrepair,
+        "ERROR: verify FAILED -- code at 0x10002003 addresses 0x10001000, as a reference to the "
+        "header the grow did not repair would; refusing.");
+    check_verify_rejects_raise("__LINKEDIT left where it was", dy_unraise_linkedit,
+        "and must resolve to 0x");
+}
+
+/* mg_ensure_pad says the contents were raised, and counts the code it
+ * repaired; a pointer to the header, left where it is, is not repaired. */
+static void test_ensure_pad_announces_a_raise(void) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) +
+                      ((struct mach_header_64 *)buf)->sizeofcmds;
+    char want[160];
+    snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
+             "contents raised by 0x1000; repaired 1 reference to the header\n",
+             DY_F - lc_end, DY_F + 0x1000 - lc_end);
+    char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
+    CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib: announced as '%s' (got %d):\n%s",
+          want, r, err);
+    free(err);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -4513,6 +5244,22 @@ int main(void) {
     test_grow_refuses_a_bind_in_the_segment_that_maps_the_header();
     test_grow_refuses_binds_it_cannot_read();
     test_grow_accepts_binds_outside_the_header_segment();
+    test_grow_refuses_what_it_cannot_raise();
+    test_grow_raises_past_what_it_can_vouch_for();
+    test_raise_moves_the_segments_and_sections();
+    test_raise_moves_the_pointers_that_name_content();
+    test_raise_moves_the_symbols_that_name_content();
+    test_raise_moves_what_is_measured_from_the_base();
+    test_raise_repairs_code_that_addresses_the_header();
+    test_raise_rebuilds_a_widening_export_trie();
+    test_raise_refuses_what_it_cannot_move();
+    test_raise_moves_pointers_to_the_edges_of_content();
+    test_raise_keeps_an_offset_no_segment_maps();
+    test_raise_leaves_an_export_at_offset_0();
+    test_raise_leaves_an_absolute_export_alone();
+    test_raise_leaves_a_symbol_below_the_base();
+    test_verify_watches_the_raise();
+    test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

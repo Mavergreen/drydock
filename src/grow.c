@@ -81,9 +81,11 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t new_lcs    = need_end - (uint32_t)sizeof *hdr;
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
+    int raise = hdr->filetype == MH_DYLIB || hdr->filetype == MH_BUNDLE;
     int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
     char why[256];
-    int64_t ptrs = mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, 0, why, sizeof why);
+    int64_t ptrs = raise ? 0 : mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, 0, why,
+                                                  sizeof why);
 
     uint32_t grow_req = need_end - first;
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
@@ -103,10 +105,14 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     }
     /* Held by test_ensure_pad_grows_and_announces in tests/grow_test.c. */
     fflush(stdout);
-    fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); "
-                    "image base %#llx -> %#llx",
-            label, first - first_before, pad_avail, first - cur_lc_end,
-            (unsigned long long)base_before, (unsigned long long)mg_base_of(*pbuf, *pfsize));
+    hdr = (const struct mach_header_64 *)*pbuf;
+    fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); ", label,
+            first - first_before, pad_avail, first - (uint32_t)sizeof *hdr - hdr->sizeofcmds);
+    if (raise)
+        fprintf(stderr, "contents raised by %#x", first - first_before);
+    else
+        fprintf(stderr, "image base %#llx -> %#llx", (unsigned long long)base_before,
+                (unsigned long long)mg_base_of(*pbuf, *pfsize));
     int64_t repaired = (refs > 0 ? refs : 0) + (ptrs > 0 ? ptrs : 0);
     if (repaired > 0)
         fprintf(stderr, "; repaired %lld reference%s to the header", (long long)repaired,
@@ -493,6 +499,23 @@ void mg_rebases_free(mg_rebases *r) {
     r->v = NULL;
 }
 
+/* Whether `v`, a pointer's value read at `vm`, lies strictly between the
+ * header and its first content, at base + `first`: a byte a grow moves
+ * apart from what it names. Sets `why` and returns 1 when it does, else 0;
+ * shared by mg_header_pointers and mg_raise_pointers, whose callers both
+ * free the read-in rebases and return -1 on a 1. */
+static int mg_ptr_inside_header(uint64_t v, uint64_t vm, uint64_t base, uint64_t first,
+                                char *why, size_t whysz) {
+    if (v > base && v - base < first) {
+        snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
+                 "and its first content at %#llx, which a grow moves apart",
+                 (unsigned long long)vm, (unsigned long long)v,
+                 (unsigned long long)base, (unsigned long long)(base + first));
+        return 1;
+    }
+    return 0;
+}
+
 int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
                            uint32_t below, uint32_t grow, char *why, size_t whysz) {
     mg_rebases rb;
@@ -500,11 +523,7 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
     if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
     for (size_t i = 0; i < rb.s.n; i++) {
         uint64_t v = rb.v[i].value;
-        if (v > base && v - base < first) {
-            snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
-                     "and its first content at %#llx, which a grow moves apart",
-                     (unsigned long long)rb.v[i].vm, (unsigned long long)v,
-                     (unsigned long long)base, (unsigned long long)(base + first));
+        if (mg_ptr_inside_header(v, rb.v[i].vm, base, first, why, whysz)) {
             mg_rebases_free(&rb);
             return -1;
         }
@@ -523,6 +542,49 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
     }
     mg_rebases_free(&rb);
     return n;
+}
+
+/* Each segment's vm range, [lo, hi], for the first 64 segments with any. */
+struct mg_segs { uint64_t lo[64], hi[64]; int n; };
+static int mg_segs_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_segs *s = (struct mg_segs *)ctx_;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    if (lc->cmd != LC_SEGMENT_64 || seg->vmsize == 0 || s->n == 64) return 0;
+    s->lo[s->n] = seg->vmaddr;
+    s->hi[s->n++] = seg->vmaddr + seg->vmsize;
+    return 0;
+}
+
+int mg_raise_pointers(const uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                      char *why, size_t whysz) {
+    mg_rebases rb;
+    mi_image im;
+    struct mg_segs segs;
+    if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
+    memset(&segs, 0, sizeof segs);
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        snprintf(why, whysz, "the image does not validate");
+        mg_rebases_free(&rb);
+        return -1;
+    }
+    mi_each_lc(&im, mg_segs_cb, &segs);
+    for (size_t i = 0; i < rb.s.n; i++) {
+        uint64_t v = rb.v[i].value;
+        int mapped = 0;
+        if (mg_ptr_inside_header(v, rb.v[i].vm, base, first, why, whysz)) {
+            mg_rebases_free(&rb);
+            return -1;
+        }
+        for (int k = 0; k < segs.n && !mapped; k++) mapped = v >= segs.lo[k] && v <= segs.hi[k];
+        if (!mapped) {
+            snprintf(why, whysz, "the pointer at %#llx names %#llx, which no segment maps",
+                     (unsigned long long)rb.v[i].vm, (unsigned long long)v);
+            mg_rebases_free(&rb);
+            return -1;
+        }
+    }
+    mg_rebases_free(&rb);
+    return 0;
 }
 
 /* mg_binds_ok's observer: the first bind that names no segment of the image,
@@ -620,15 +682,19 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     mi_image im;
     const struct nlist_64 *nl;
     char why[256];
+    const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
     s->refs = NULL;
     s->nrefs = 0;
     s->symval = NULL;
     s->symtype = NULL;
     s->nsyms = 0;
     memset(&s->rb, 0, sizeof s->rb);
+    s->kinds = NULL;
+    s->first = mg_first_sect_off(buf, fsize);
+    s->raise = h->filetype == MH_DYLIB || h->filetype == MH_BUNDLE;
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
-    if (!s->addr) return -1;
-    if (mg_collect(buf, fsize, s->addr, NULL, MG_SNAP_MAX, &s->n) != 0 ||
+    if (!s->addr || !(s->kinds = (uint8_t *)malloc(MG_SNAP_MAX)) ||
+        mg_collect(buf, fsize, s->addr, s->kinds, MG_SNAP_MAX, &s->n) != 0 ||
         mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &s->base) != 0 ||
         mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs ||
         mg_symtab(&im, fsize, &nl, &s->nsyms) != 0 ||
@@ -647,6 +713,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
 
 void mg_snapshot_free(mg_snapshot *s) {
     free(s->addr); s->addr = NULL; s->n = 0;
+    free(s->kinds); s->kinds = NULL;
     free(s->refs); s->refs = NULL; s->nrefs = 0;
     free(s->symval); s->symval = NULL;
     free(s->symtype); s->symtype = NULL; s->nsyms = 0;
@@ -676,20 +743,22 @@ static int mg_overlap_outer_cb(const struct load_command *lc, void *ctx_) {
 
 static int mg_first_ref(const mhr_cand *c, void *ctx_) { *(mhr_cand *)ctx_ = *c; return 1; }
 
-struct mg_found { const mg_snapshot *s; uint8_t *seen; };
+struct mg_found { const mg_snapshot *s; uint64_t delta; uint8_t *seen; };
 static int mg_found_ref(const mhr_cand *c, void *ctx_) {
     struct mg_found *f = (struct mg_found *)ctx_;
     for (uint32_t i = 0; i < f->s->nrefs; i++)
-        if (f->s->refs[i].addr == c->addr && f->s->refs[i].immlen == c->immlen) f->seen[i] = 1;
+        if (f->s->refs[i].addr + f->delta == c->addr && f->s->refs[i].immlen == c->immlen)
+            f->seen[i] = 1;
     return 0;
 }
 
-/* No code addresses where the header was, and every reference to it the
- * snapshot recorded addresses where it is. */
+/* No code addresses `grow` past the header, where an unrepaired reference
+ * to it would, and every reference the snapshot recorded, now `delta`
+ * further on, addresses it. */
 static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
-                          uint64_t base) {
-    mhr_cand stale = { 0, 0, 0 };
-    int64_t n = mhr_scan(buf, fsize, before->base, mg_first_ref, &stale);
+                          uint64_t base, uint64_t grow, uint64_t delta) {
+    mhr_cand stale = { 0, 0, 0, 0 };
+    int64_t n = mhr_scan(buf, fsize, base + grow, mg_first_ref, &stale);
     if (n < 0) {
         fprintf(stderr, "ERROR: verify FAILED -- an instruction section lies past the end of "
                         "the %zu-byte image, so it cannot be searched for code that addresses "
@@ -697,19 +766,19 @@ static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *b
         return -1;
     }
     if (n != 0) {
-        fprintf(stderr, "ERROR: verify FAILED -- code at %#llx still addresses %#llx, where "
-                        "the header was before the grow; refusing.\n",
-                (unsigned long long)stale.addr, (unsigned long long)before->base);
+        fprintf(stderr, "ERROR: verify FAILED -- code at %#llx addresses %#llx, as a reference "
+                        "to the header the grow did not repair would; refusing.\n",
+                (unsigned long long)stale.addr, (unsigned long long)(base + grow));
         return -1;
     }
-    struct mg_found f = { before, (uint8_t *)calloc(before->nrefs + 1, 1) };
+    struct mg_found f = { before, delta, (uint8_t *)calloc(before->nrefs + 1, 1) };
     if (!f.seen) return -1;
     mhr_scan(buf, fsize, base, mg_found_ref, &f);
     for (uint32_t i = 0; i < before->nrefs; i++) {
         if (f.seen[i]) continue;
         fprintf(stderr, "ERROR: verify FAILED -- the reference to the header at %#llx does "
                         "not address it after the grow; refusing.\n",
-                (unsigned long long)before->refs[i].addr);
+                (unsigned long long)(before->refs[i].addr + delta));
         free(f.seen);
         return -1;
     }
@@ -718,9 +787,10 @@ static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *b
 }
 
 /* Every symbol keeps its type, and its value unless it is an N_SECT symbol,
- * not a stab, that named the header: that one names it where it is now. */
+ * not a stab: one that named the header names it where it is now, and one
+ * that named content, at the first section or past it, has moved `delta`. */
 static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot *before,
-                             uint64_t base) {
+                             uint64_t base, uint64_t delta) {
     const struct nlist_64 *nl;
     uint32_t nsyms;
     if (mg_symtab(im, fsize, &nl, &nsyms) != 0) {
@@ -735,8 +805,10 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
     }
     for (uint32_t i = 0; i < nsyms; i++) {
         uint8_t t = before->symtype[i];
-        uint64_t want = !(t & N_STAB) && (t & N_TYPE) == N_SECT && before->symval[i] == before->base
-                        ? base : before->symval[i];
+        uint64_t want = before->symval[i];
+        if (!(t & N_STAB) && (t & N_TYPE) == N_SECT)
+            want = want > before->base && want - before->base >= before->first ? want + delta
+                 : want == before->base ? base : want;
         if (nl[i].n_type == t && nl[i].n_value == want) continue;
         fprintf(stderr, "ERROR: verify FAILED -- symbol %u is type %#x, value %#llx after the "
                         "grow, and must be type %#x, value %#llx; refusing.\n", i, nl[i].n_type,
@@ -751,7 +823,7 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
  * share mg_rebases_read's mapping), and each holds what it held, unless that
  * named the header: that one names it where it is now. */
 static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsize,
-                              const mg_snapshot *before, uint64_t base) {
+                              const mg_snapshot *before, uint64_t base, uint64_t delta) {
     mg_rebases now;
     char why[256];
     int rc = 0;
@@ -767,7 +839,7 @@ static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsi
     }
     for (size_t i = 0; rc == 0 && i < now.s.n; i++) {
         const mg_rbval *was = &before->rb.v[i], *is = &now.v[i];
-        uint64_t want = was->value == before->base ? base : was->value;
+        uint64_t want = was->value == before->base ? base : was->value + delta;
         uint64_t loads = mg_fileoff_vm(im, is->at);
         if (loads != is->vm) {
             fprintf(stderr, "ERROR: verify FAILED -- rebase %zu is read from file offset %#llx, "
@@ -775,10 +847,10 @@ static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsi
                     (unsigned long long)is->at, (unsigned long long)loads,
                     (unsigned long long)is->vm);
             rc = -1;
-        } else if (is->vm != was->vm) {
+        } else if (is->vm != was->vm + delta) {
             fprintf(stderr, "ERROR: verify FAILED -- rebase %zu is at %#llx after the grow, and "
-                            "was at %#llx before; refusing.\n", i, (unsigned long long)is->vm,
-                    (unsigned long long)was->vm);
+                            "must be at %#llx; refusing.\n", i, (unsigned long long)is->vm,
+                    (unsigned long long)(was->vm + delta));
             rc = -1;
         } else if (is->value != want) {
             fprintf(stderr, "ERROR: verify FAILED -- the pointer at %#llx holds %#llx after the "
@@ -792,6 +864,8 @@ static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsi
 }
 
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
+    uint64_t grow = (uint64_t)mg_first_sect_off(buf, fsize) - before->first;
+    uint64_t delta = before->raise ? grow : 0;
     uint64_t *now = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!now) return -1;
     uint32_t n = 0;
@@ -805,7 +879,9 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
         free(now); return -1;
     }
     for (uint32_t i = 0; i < n; i++) {
-        if (now[i] == before->addr[i]) continue;
+        uint64_t want = before->addr[i] == MG_UNMAPPED || before->kinds[i] == MG_K_ABS
+                        ? before->addr[i] : before->addr[i] + delta;
+        if (now[i] == want) continue;
         if (now[i] == MG_UNMAPPED || before->addr[i] == MG_UNMAPPED) {
             fprintf(stderr, "ERROR: verify FAILED -- entry %u is a file offset that "
                             "%s mapped before the grow and %s after; refusing.\n", i,
@@ -815,10 +891,10 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
         }
         int64_t moved = (int64_t)(now[i] - before->addr[i]);
         fprintf(stderr, "ERROR: verify FAILED -- entry %u resolved to "
-                        "%#llx before the grow and %#llx after (moved %+lld bytes). The grow "
-                        "must leave every resolved address unchanged; refusing.\n",
+                        "%#llx before the grow and %#llx after (moved %+lld bytes), and must "
+                        "resolve to %#llx; refusing.\n",
                 i, (unsigned long long)before->addr[i], (unsigned long long)now[i],
-                (long long)moved);
+                (long long)moved, (unsigned long long)want);
         free(now); return -1;
     }
     free(now);
@@ -833,9 +909,9 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     }
     uint64_t base;
     if (mi_image_base(&im, &base) != 0) return -1;
-    if (mg_verify_symbols(&im, fsize, before, base) != 0) return -1;
-    if (mg_verify_pointers(&im, buf, fsize, before, base) != 0) return -1;
-    return mg_verify_refs(buf, fsize, before, base);
+    if (mg_verify_symbols(&im, fsize, before, base, delta) != 0) return -1;
+    if (mg_verify_pointers(&im, buf, fsize, before, base, delta) != 0) return -1;
+    return mg_verify_refs(buf, fsize, before, base, grow, delta);
 }
 
 int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {
@@ -1113,6 +1189,24 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
     return r;
 }
 
+/* mg_classify's LC_DYLD_CHAINED_FIXUPS reason, shared with mg_raise_ok_cb
+ * below: growing an image, whether by lowering its base (an executable) or
+ * raising its content (a dylib or bundle) while leaving the base where it
+ * is, moves the addresses chained pointers encode -- and this tool does not
+ * know how to walk and patch that format, either way. Same refusal, same
+ * remedy, either route. */
+static const char mg_chained_fixups_why[] =
+    "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
+    "image base, which growing moves; convert them first (`fixups set "
+    "classic` in an edit script)";
+
+/* The refusal every "why" load command prints below, whichever of the two
+ * callers below hands it a reason. */
+static void mg_why_refused(const char *why) {
+    fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
+                    "instead by deleting load commands (uuid, codesig).\n", why);
+}
+
 /* mg_classify's mi_each_lc callback: classify one load command (and, for
  * LC_SEGMENT_64, every one of its sections), refusing to stop the walk the
  * instant something unclassified turns up. Every `return -1` here is exactly
@@ -1164,9 +1258,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
                   "not re-based";
             break;
         case LC_DYLD_CHAINED_FIXUPS:
-            why = "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
-                  "image base, which growing moves; convert them first (`fixups set "
-                  "classic` in an edit script)";
+            why = mg_chained_fixups_why;
             break;
         /* LC_NOTE (note_command: a uint64_t offset/size pair, per publicly
          * documented ld64/dyld source) and LC_ATOM_INFO (reported elsewhere
@@ -1194,8 +1286,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
             return -1;
         }
         if (why) {
-            fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
-                            "instead by deleting load commands (uuid, codesig).\n", why);
+            mg_why_refused(why);
             return -1;
         }
 
@@ -1411,6 +1502,31 @@ static int mg_patch_cb(const struct load_command *lc_in, void *ctx_) {
     return 0;
 }
 
+/* mg_grow_header's mi_each_lc callback for a raise's geometry: every segment
+ * but the one that maps the header moves up `grow` in memory, and in the
+ * file when its data lies past the insert; the header's segment grows by
+ * `grow`; every section's address, and LC_ROUTINES_64's initializer, moves
+ * up `grow`. */
+static int mg_raise_cb(const struct load_command *lc_in, void *ctx_) {
+    struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
+    if (lc_in->cmd == LC_ROUTINES_64) {
+        ((struct routines_command_64 *)lc_in)->init_address += ctx->grow;
+        return 0;
+    }
+    if (lc_in->cmd != LC_SEGMENT_64) return 0;
+    struct segment_command_64 *seg = (struct segment_command_64 *)lc_in;
+    struct section_64 *s = (struct section_64 *)(seg + 1);
+    if (seg->fileoff == 0 && seg->filesize > 0) {
+        seg->vmsize += ctx->grow;
+        seg->filesize += ctx->grow;
+    } else {
+        seg->vmaddr += ctx->grow;
+        if (seg->fileoff >= ctx->insert) seg->fileoff += ctx->grow;
+    }
+    for (uint32_t j = 0; j < seg->nsects; j++) s[j].addr += ctx->grow;
+    return 0;
+}
+
 /* mg_each_fileoff's visitor for the grow: move each file offset at or past
  * `insert` by `grow`, refusing rather than wrapping. entryoff is the one
  * 64-bit field, checked at its own width rather than truncated to ml_bump's. */
@@ -1548,18 +1664,20 @@ static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_com
     return nul ? (int)(nul - *name) : (int)(st->strsize - nl->n_un.n_strx);
 }
 
-/* The symbols that name the header: each N_SECT symbol, not a stab, whose
- * value is `base`. With `patch`, each loses `grow`, following the header
- * down; without, this checks that the symbol table lies within the image,
- * and says so on stderr when it does not. Either way, one that names a byte
- * strictly between the header and its first content, at base + `first`,
- * is refused, saying so. Returns 0, or -1. */
+/* The symbols a grow moves: each N_SECT symbol, not a stab. With `patch`,
+ * on a lowering, one whose value is `base` loses `grow`, following the
+ * header down; on a raise, one that names content, at base + `first` or
+ * past it, gains `grow`, following the content up. Without `patch`, this
+ * checks that the symbol table lies within the image, and says so on stderr
+ * when it does not; on a raise, it refuses a stab. Either way, one that names
+ * a byte strictly between the header and its first content, at base +
+ * `first`, is refused, saying so. Returns 0, or -1. */
 struct mg_hsym_ctx {
     uint8_t *buf;
     size_t fsize;
     uint64_t base, first;
     uint32_t grow;
-    int patch, bad, n;
+    int raise, patch, bad, n;
 };
 
 static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
@@ -1580,10 +1698,18 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
     }
     struct nlist_64 *nl = (struct nlist_64 *)(c->buf + st->symoff);
     for (uint32_t i = 0; i < st->nsyms; i++) {
+        const char *name;
+        if (c->raise && (nl[i].n_type & N_STAB)) {
+            int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
+            fprintf(stderr, "ERROR: symbol %u, \"%.*s\", is a stab of type %#x, which a raise "
+                            "does not know how to move; refusing to grow\n", i, len, name,
+                    nl[i].n_type);
+            c->bad = 1;
+            return 1;
+        }
         if ((nl[i].n_type & N_STAB) || (nl[i].n_type & N_TYPE) != N_SECT) continue;
         uint64_t v = nl[i].n_value;
         if (v > c->base && v - c->base < c->first) {
-            const char *name;
             int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
             fprintf(stderr, "ERROR: symbol %u, \"%.*s\", names %#llx, between the header at %#llx "
                             "and its first content at %#llx, which a grow moves apart; refusing "
@@ -1592,18 +1718,175 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
             c->bad = 1;
             return 1;
         }
-        if (c->patch && v == c->base) nl[i].n_value -= c->grow;
+        if (c->patch && !c->raise && v == c->base) nl[i].n_value -= c->grow;
+        if (c->patch && c->raise && v > c->base && v - c->base >= c->first)
+            nl[i].n_value += c->grow;
     }
     return 0;
 }
 
-static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
-                             uint32_t grow, int patch) {
+static int mg_move_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                           uint32_t grow, int raise, int patch) {
     mi_image im;
     if (mi_wrap(buf, fsize, &im) != 0) return -1;
-    struct mg_hsym_ctx c = { buf, fsize, base, first, grow, patch, 0, 0 };
+    struct mg_hsym_ctx c = { buf, fsize, base, first, grow, raise, patch, 0, 0 };
     mi_each_lc(&im, mg_hsym_cb, &c);
     return c.bad ? -1 : 0;
+}
+
+/* mg_raise_ok's mi_each_lc callback: says why, and stops, at the first load
+ * command a raise cannot vouch for; notes LC_DYLD_INFO and LC_DYSYMTAB's
+ * counts, which mg_raise_ok judges together. */
+struct mg_raise_ctx {
+    uint64_t base; uint32_t first; const struct segment_command_64 *header_seg;
+    int di; uint32_t toc, mod, ext, loc;
+};
+
+/* mg_raise_ok's own hunt for the header segment: exactly mi_image_base's own
+ * search (the first LC_SEGMENT_64 with fileoff 0 and real file content), but
+ * keeping which segment it was, not just its vmaddr -- so mg_raise_ok_cb can
+ * ask "is this THAT segment" by identity, rather than re-deriving the same
+ * predicate for every segment, which a second segment also at fileoff 0
+ * would satisfy too. */
+static int mg_raise_header_seg_cb(const struct load_command *lc, void *ctx_) {
+    const struct segment_command_64 **out = (const struct segment_command_64 **)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    if (seg->fileoff != 0 || seg->filesize == 0) return 0;
+    *out = seg;
+    return 1;
+}
+
+static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_raise_ctx *c = (struct mg_raise_ctx *)ctx_;
+    switch (lc->cmd) {
+    case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY:
+        c->di = 1;
+        return 0;
+    case LC_DYLD_CHAINED_FIXUPS:
+        mg_why_refused(mg_chained_fixups_why);
+        return 1;
+    case LC_UNIXTHREAD: case LC_THREAD:
+        fprintf(stderr, "ERROR: a dylib or bundle with a thread command (%#x), whose register "
+                        "state a raise does not move; refusing to grow\n", lc->cmd);
+        return 1;
+    case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64: {
+        const struct encryption_info_command *e = (const struct encryption_info_command *)lc;
+        if (lc->cmdsize < sizeof *e) {
+            fprintf(stderr, "ERROR: an encryption command is %u bytes, too short to hold "
+                            "cryptid; refusing to grow\n", lc->cmdsize);
+            return 1;
+        }
+        if (!e->cryptid) return 0;
+        fprintf(stderr, "ERROR: the image is encrypted (cryptid %u), and a raise would move "
+                        "its encrypted pages; refusing to grow\n", e->cryptid);
+        return 1;
+    }
+    case LC_DYSYMTAB: {
+        const struct dysymtab_command *d = (const struct dysymtab_command *)lc;
+        if (lc->cmdsize < sizeof *d) {
+            fprintf(stderr, "ERROR: LC_DYSYMTAB is %u bytes, too short to hold its tables' "
+                            "counts; refusing to grow\n", lc->cmdsize);
+            return 1;
+        }
+        c->toc += d->ntoc;
+        c->mod += d->nmodtab;
+        c->ext += d->nextrel;
+        c->loc += d->nlocrel;
+        return 0;
+    }
+    case LC_ROUTINES_64:
+        if (lc->cmdsize >= sizeof(struct routines_command_64)) return 0;
+        fprintf(stderr, "ERROR: LC_ROUTINES_64 is %u bytes, too short to hold init_address; "
+                        "refusing to grow\n", lc->cmdsize);
+        return 1;
+    case LC_SEGMENT_64: {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *s = (const struct section_64 *)(seg + 1);
+        int header = seg == c->header_seg;
+        if (seg->flags & SG_PROTECTED_VERSION_1) {
+            fprintf(stderr, "ERROR: segment %.16s is protected (SG_PROTECTED_VERSION_1), and a "
+                            "raise would move its encrypted pages; refusing to grow\n",
+                    seg->segname);
+            return 1;
+        }
+        if (!header && seg->filesize > 0 && seg->fileoff < c->first) {
+            fprintf(stderr, "ERROR: segment %.16s's file data starts at %llu, before the first "
+                            "content at %u; refusing to grow\n", seg->segname,
+                    (unsigned long long)seg->fileoff, c->first);
+            return 1;
+        }
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            if (s[j].align > 12) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s is aligned to 2^%u bytes, more than "
+                                "the page a raise moves it by; refusing to grow\n", s[j].segname,
+                        s[j].sectname, s[j].align);
+                return 1;
+            }
+            if (s[j].addr < c->base + c->first) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s lies at %#llx, below the first "
+                                "content at %#llx; refusing to grow\n", s[j].segname,
+                        s[j].sectname, (unsigned long long)s[j].addr,
+                        (unsigned long long)(c->base + c->first));
+                return 1;
+            }
+            if (header && s[j].addr - c->base != s[j].offset) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s lies %#llx past the image base in "
+                                "memory and %#x in the file; refusing to grow\n", s[j].segname,
+                        s[j].sectname, (unsigned long long)(s[j].addr - c->base), s[j].offset);
+                return 1;
+            }
+        }
+        return 0;
+    }
+    }
+    return 0;
+}
+
+/* 0 when a raise can vouch for every load command of the dylib or bundle
+ * `im`, whose image base is `base` and first content base + `first`; else
+ * -1, having said why. */
+static int mg_raise_ok(const mi_image *im, uint64_t base, uint32_t first) {
+    const struct segment_command_64 *header_seg = NULL;
+    mi_each_lc(im, mg_raise_header_seg_cb, &header_seg);
+    struct mg_raise_ctx c = { base, first, header_seg, 0, 0, 0, 0, 0 };
+    if (!mi_each_lc(im, mg_raise_ok_cb, &c)) return -1;
+    if (!c.di) {
+        fprintf(stderr, "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase "
+                        "opcodes list every pointer a raise moves; refusing to grow\n");
+        return -1;
+    }
+    if (!(c.toc | c.mod | c.ext | c.loc)) return 0;
+    fprintf(stderr, "ERROR: LC_DYSYMTAB lists %u table-of-contents entries, %u modules, %u "
+                    "external and %u local relocations beside LC_DYLD_INFO, whose addresses a "
+                    "raise does not move; refusing to grow\n", c.toc, c.mod, c.ext, c.loc);
+    return -1;
+}
+
+/* The pointers a raise moves, as the snapshot read them before anything
+ * moved (mg_raise_pointers vouched for each): every rebase target's value,
+ * unless it names the header, gains `grow`, in its slot, which the insert
+ * moved `grow` further into the file. */
+static void mg_raise_rebased(uint8_t *buf, const mg_snapshot *snap, uint32_t grow) {
+    for (size_t i = 0; i < snap->rb.s.n; i++) {
+        uint64_t v = snap->rb.v[i].value;
+        if (v == snap->base) continue;
+        v += grow;
+        memcpy(buf + snap->rb.v[i].at + grow, &v, sizeof v);
+    }
+}
+
+/* A grow puts the header and its code `grow` bytes closer together on
+ * either route, so each reference the snapshot recorded, which the insert
+ * moved `grow` further into the file, loses `grow`. */
+static void mg_repair_refs(uint8_t *buf, const mg_snapshot *snap, uint32_t grow) {
+    for (uint32_t i = 0; i < snap->nrefs; i++) {
+        uint8_t *d = buf + snap->refs[i].off + grow;
+        int32_t disp;
+        memcpy(&disp, d, sizeof disp);
+        disp = (int32_t)((int64_t)disp - (int64_t)grow);
+        memcpy(d, &disp, sizeof disp);
+    }
 }
 
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
@@ -1618,9 +1901,9 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
      * only sound for a PIE executable: it needs a __PAGEZERO to donate vm space
      * from, and it relies on the image being position-independent so that
      * lowering the base (every address shifts by the same amount) is a no-op at
-     * load time. A non-PIE image, or a dylib/bundle (no __PAGEZERO), would
-     * require fixing up absolute pointers — which this tool deliberately does
-     * not do. Refuse loudly rather than silently corrupt.
+     * load time. A dylib or bundle has no __PAGEZERO, so it is raised, and
+     * every absolute address that names its contents moves with them. Refuse
+     * loudly rather than silently corrupt.
      *
      * 32-bit stays refused here too, on purpose:
      * this function and everything it calls -- mg_first_sect_off, mg_collect
@@ -1643,13 +1926,19 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                         "above this check\n", hdr->magic);
         return -1;
     }
-    if (hdr->filetype != MH_EXECUTE) {
-        fprintf(stderr, "ERROR: only MH_EXECUTE can be grown (filetype=%u): growing "
-                        "lowers the image base into __PAGEZERO, and a dylib or bundle has "
-                        "none. This tool cannot grow a dylib or bundle.\n", hdr->filetype);
+    int raise = hdr->filetype == MH_DYLIB || hdr->filetype == MH_BUNDLE;
+    if (hdr->filetype != MH_EXECUTE && !raise) {
+        fprintf(stderr, "ERROR: only MH_EXECUTE, MH_DYLIB and MH_BUNDLE can be grown "
+                        "(filetype=%u)\n", hdr->filetype);
         return -1;
     }
-    if (!(hdr->flags & MH_PIE)) {
+    if (raise && hdr->cputype != CPU_TYPE_X86_64) {
+        fprintf(stderr, "ERROR: only an x86_64 dylib or bundle can be grown (cputype=%#x): "
+                        "its code is decoded to find what addresses its header\n",
+                hdr->cputype);
+        return -1;
+    }
+    if (!raise && !(hdr->flags & MH_PIE)) {
         fprintf(stderr, "ERROR: executable is not PIE (flags=0x%x); lowering the "
                         "image base would require fixing absolute relocations, which "
                         "this tool does not do\n", hdr->flags);
@@ -1712,11 +2001,14 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
     struct segment_command_64 *pagezero = mi_find_segment(&find_im, "__PAGEZERO");
-    if (!mi_text_base(&find_im)) {
+    uint64_t base;
+    if (mi_image_base(&find_im, &base) != 0) {
         fprintf(stderr, "ERROR: no __TEXT-like segment holds the header\n");
         return -1;
     }
-    if (!pagezero || pagezero->vmsize < grow) {
+    if (raise) {
+        if (mg_raise_ok(&find_im, base, insert) != 0) return -1;
+    } else if (!pagezero || pagezero->vmsize < grow) {
         fprintf(stderr, "ERROR: need a __PAGEZERO >= %u bytes to lower the image "
                         "base (image-base trick requires a PIE executable)\n", grow);
         return -1;
@@ -1774,11 +2066,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     }
     if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;
     if (mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert) != 0) return -1;
-    if (mg_header_symbols(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0) != 0) return -1;
+    if (mg_move_symbols(buf, fsize, base, insert, grow, raise, 0) != 0) return -1;
     {
         char why[256];
-        int64_t n = mg_header_pointers(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0,
-                                       why, sizeof why);
+        int64_t n = raise ? mg_raise_pointers(buf, fsize, base, insert, why, sizeof why)
+                          : mg_header_pointers(buf, fsize, base, insert, grow, 0, why, sizeof why);
         if (n < 0 || mg_binds_ok(buf, fsize, why, sizeof why) != 0) {
             fprintf(stderr, "ERROR: %s; refusing to grow\n", why);
             return -1;
@@ -1878,7 +2170,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             return -1;
         }
         struct mg_patch_ctx pctx = { insert, grow };
-        mi_each_lc(&patch_im, mg_patch_cb, &pctx);
+        mi_each_lc(&patch_im, raise ? mg_raise_cb : mg_patch_cb, &pctx);
         if (mg_each_fileoff(&patch_im, mg_bump_cb, &pctx) != 0) {
             free(mg_new_trie);
             mg_snapshot_free(&snap);
@@ -2045,28 +2337,22 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    /* The header moved down by `grow` and the code did not: every reference
-     * to the header is `grow` farther from it. */
-    for (uint32_t i = 0; i < snap.nrefs; i++) {
-        uint8_t *d = buf + snap.refs[i].off + grow;
-        int32_t disp;
-        memcpy(&disp, d, sizeof disp);
-        disp = (int32_t)((int64_t)disp - (int64_t)grow);
-        memcpy(d, &disp, sizeof disp);
-    }
+    mg_repair_refs(buf, &snap, grow);
 
-    if (mg_header_symbols(buf, final_size, snap.base, insert, grow, 1) != 0) {
-        fprintf(stderr, "ERROR: internal error re-basing the symbols that name the header "
-                        "after passing the pre-check\n");
+    if (mg_move_symbols(buf, final_size, snap.base, insert, grow, raise, 1) != 0) {
+        fprintf(stderr, "ERROR: internal error moving the symbols after passing the "
+                        "pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
     }
 
-    {
+    if (raise) {
+        mg_raise_rebased(buf, &snap, grow);
+    } else {
         char why[256];
         if (mg_header_pointers(buf, final_size, snap.base, insert, 0, grow, why, sizeof why) < 0) {
-            fprintf(stderr, "ERROR: internal error moving the pointers that name the header "
-                            "after passing the pre-check: %s\n", why);
+            fprintf(stderr, "ERROR: internal error moving the pointers after passing the "
+                            "pre-check: %s\n", why);
             mg_snapshot_free(&snap);
             return -1;
         }

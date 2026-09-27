@@ -31,8 +31,9 @@
  *
  * Precondition: a MH_PIE executable with a __PAGEZERO at least `grow` bytes
  * large. (Always true for the Claude Code executable: 0x1_0000_0000 pagezero.)
- * Dylibs without a __PAGEZERO can't lower the base; mg_grow_header reports that
- * and leaves the buffer untouched so the caller can fall back / error cleanly.
+ * A dylib or bundle, which has no __PAGEZERO, is raised instead: everything
+ * past the header moves up by the grow, and so does every absolute address
+ * that names it: each rebased pointer, symbol, section and segment.
  */
 #ifndef DRYDOCK_GROW_H
 #define DRYDOCK_GROW_H
@@ -114,10 +115,11 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * input -- and returns 0 with *pbuf / *pfsize updated: every pointer the
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
- * available); image base 0xOLD -> 0xNEW", ending "; repaired N references to
- * the header" (or "1 reference") when the grow repaired code that addresses
- * the image's own header (src/hdrref.h) or moved pointers to it
- * (mg_header_pointers), counting both.
+ * available); image base 0xOLD -> 0xNEW" for an executable, or "...;
+ * contents raised by 0xN" for a dylib or bundle, ending "; repaired N
+ * references to the header" (or "1 reference") when the grow repaired code
+ * that addresses the image's own header (src/hdrref.h) or, lowering, moved
+ * pointers to it (mg_header_pointers), counting both.
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth failed. Also -1, with the
@@ -215,14 +217,27 @@ void mg_rebases_free(mg_rebases *r);
 int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
                            uint32_t below, uint32_t grow, char *why, size_t whysz);
 
+/* Whether a raise can move every pointer, before anything moves: each
+ * rebase target's value names the header (it is `base`, and stays) or
+ * content, which a raise moves up. One strictly inside (base, base + first)
+ * is refused, and so is one that no segment maps (its range's end
+ * included). Returns 0, or -1 with `why` set (mg_rebases_read's reasons, or
+ * those two). The raise then moves them from its snapshot, as read here. */
+int mg_raise_pointers(const uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                      char *why, size_t whysz);
+
 /* What mg_verify compares a grown image against: the resolved addresses
- * mg_collect finds, the image base with every reference to it the
- * header-reference scan (src/hdrref.h) finds, each symbol's type and value,
- * and every rebase target with its value. */
+ * mg_collect finds and their kinds, the image base and first section offset
+ * with every reference to the header the header-reference scan (src/hdrref.h)
+ * finds, whether the image is raised (a dylib or bundle) or lowered, each
+ * symbol's type and value, and every rebase target with its value. */
 typedef struct {
     uint64_t *addr;
+    uint8_t *kinds;
     uint32_t n;
     uint64_t base;
+    uint32_t first;
+    int raise;
     mhr_cand *refs;
     uint32_t nrefs;
     uint64_t *symval;
@@ -258,13 +273,16 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s);
 void mg_snapshot_free(mg_snapshot *s);
 
 
-/* 0 if every base-relative structure and every mg_each_fileoff offset
- * resolves exactly where it did before the grow, no two segments overlap in
- * memory, no code addresses the base as it was, every reference to the
- * header the snapshot recorded addresses the base as it is, and the rebase
- * targets are the same slots, each holding what it held unless that named the
- * header, which now names the base as it is; -1 (with a message naming the
- * first failure) otherwise. */
+/* The grow G is how far the first section moved; a raise moves every
+ * content address by it, a lowering none. 0 if every base-relative structure
+ * and every mg_each_fileoff offset resolves where it did before the grow,
+ * moved by that (an absolute export not at all); no two segments overlap in
+ * memory; no code addresses the base as it is plus G, where an unrepaired
+ * reference to the header would; every reference to the header the snapshot
+ * recorded addresses the base as it is; each N_SECT symbol, not a stab, and
+ * each rebase target's value, names the base as it is if it named the
+ * header, and else what it named, moved; and the rebase targets are the same
+ * slots, moved. -1 (with a message naming the first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 
@@ -400,8 +418,10 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * Grow the header pad by at least `grow_req` bytes (rounded up to a page).
  * pbuf is realloc'd, pfsize updated. Returns 0 on success, -1 on refusal. A
  * refusal on a precondition, checked before anything moves, leaves the buffer
- * and size unchanged. Among those: an image that is not a PIE executable with
- * a large enough __PAGEZERO; one with no section data to insert the new space
+ * and size unchanged. Among those: an executable that is not PIE, or lacks a
+ * large enough __PAGEZERO; a dylib or bundle that is not x86_64, or that a
+ * raise cannot vouch for (mg_raise_ok); any other file type; one with no
+ * section data to insert the new space
  * at (mg_first_sect_off's MG_NO_SECTION_DATA); one whose first section's
  * file offset lies past the end of the image; and one with a candidate
  * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
