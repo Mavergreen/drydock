@@ -3315,7 +3315,7 @@ static const uint64_t pt_ptrs[4] = {
     PT_BASE,             /* the header */
     PT_DATAVM + 0x40,    /* content */
     PT_BASE + PT_F,      /* the first byte of content */
-    PT_BASE - 0x1000,    /* below the image */
+    PT_BASE - 0x3000,    /* below the image, beyond a two-page grow */
 };
 #define PT_N 4
 
@@ -3623,17 +3623,15 @@ static const uint64_t *pt_values(uint8_t *buf, size_t fsize) {
     return da ? (const uint64_t *)(buf + da->fileoff) : NULL;
 }
 
-static void check_pointers_after(const char *what, uint32_t grow_req, uint32_t grow, int also) {
+static void check_pointers_after(const char *what, uint32_t grow_req, uint32_t grow,
+                                 uint64_t slot3) {
     size_t fsize;
     uint8_t *buf = build_pointer_image(&fsize, 0);
     uint64_t want[PT_N];
     memcpy(want, pt_ptrs, sizeof want);
-    if (also) {                                  /* slot 3 names the header too */
-        ((uint64_t *)(buf + PT_DATA))[3] = PT_BASE;
-        want[3] = PT_BASE;
-    }
+    ((uint64_t *)(buf + PT_DATA))[3] = want[3] = slot3;
     want[0] -= grow;
-    if (also) want[3] -= grow;
+    if (slot3 == PT_BASE) want[3] -= grow;
     int r = mg_grow_header(&buf, &fsize, grow_req);
     CHECK(r == 0, "%s: the grow succeeds (got %d)", what, r);
     const uint64_t *v = r == 0 ? pt_values(buf, fsize) : NULL;
@@ -3644,16 +3642,19 @@ static void check_pointers_after(const char *what, uint32_t grow_req, uint32_t g
 }
 
 /* The header moves down by the grow; what names it follows, and what names
- * content, the first byte of content, or nothing in the image stays. */
+ * content, the first byte of content, or below the grown header stays. */
 static void test_grow_moves_the_pointers_that_name_the_header(void) {
-    check_pointers_after("pointers", 0x1000, 0x1000, 0);
-    check_pointers_after("two pointers to the header", 0x1000, 0x1000, 1);
-    check_pointers_after("pointers, two-page grow", 0x1001, 0x2000, 0);
+    check_pointers_after("pointers", 0x1000, 0x1000, pt_ptrs[3]);
+    check_pointers_after("two pointers to the header", 0x1000, 0x1000, PT_BASE);
+    check_pointers_after("pointers, two-page grow", 0x1001, 0x2000, pt_ptrs[3]);
+    check_pointers_after("a pointer just below the grown header", 0x1000, 0x1000,
+                         PT_BASE - 0x1001);
+    check_pointers_after("a pointer just below the header grown two pages", 0x1001, 0x2000,
+                         PT_BASE - 0x2001);
 }
 
-/* A value strictly inside (base, base + F) names a byte of the header or its
- * load commands, which the grow moves apart: refused, nothing changed. */
-static void check_grow_refuses_a_pointer_inside(uint64_t value, const char *needle) {
+/* Slot 1 holds `value`, and a grow of `grow_req` refuses it: nothing changed. */
+static void check_grow_refuses_a_pointer(uint64_t value, uint32_t grow_req, const char *needle) {
     size_t fsize;
     uint8_t *buf = build_pointer_image(&fsize, 0);
     ((uint64_t *)(buf + PT_DATA))[1] = value;
@@ -3661,21 +3662,35 @@ static void check_grow_refuses_a_pointer_inside(uint64_t value, const char *need
     uint8_t *before = (uint8_t *)malloc(fsize0);
     memcpy(before, buf, fsize0);
     int r;
-    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000, needle, &r);
-    CHECK(r == -1 && said, "inside: %#llx is refused, saying '%s' (got %d)",
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, grow_req, needle, &r);
+    CHECK(r == -1 && said, "pointer: %#llx is refused, saying '%s' (got %d)",
           (unsigned long long)value, needle, r);
     CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
-          "inside: %#llx: nothing changed", (unsigned long long)value);
+          "pointer: %#llx: nothing changed", (unsigned long long)value);
     free(before);
     free(buf);
 }
 
+/* A value strictly inside (base, base + F) names a byte of the header or its
+ * load commands, which the grow moves apart. */
 static void test_grow_refuses_a_pointer_inside_the_header(void) {
-    check_grow_refuses_a_pointer_inside(PT_BASE + 1,
+    check_grow_refuses_a_pointer(PT_BASE + 1, 0x1000,
         "ERROR: the pointer at 0x100002008 names 0x100000001, between the header at 0x100000000 "
         "and its first content at 0x100001000, which a grow moves apart; refusing to grow");
-    check_grow_refuses_a_pointer_inside(PT_BASE + PT_F - 1,
+    check_grow_refuses_a_pointer(PT_BASE + PT_F - 1, 0x1000,
         "ERROR: the pointer at 0x100002008 names 0x100000fff, between the header");
+}
+
+/* A value in [base - G, base) names nothing before a grow of G, and the grown
+ * header after it. */
+static void test_grow_refuses_a_pointer_below_the_header(void) {
+    check_grow_refuses_a_pointer(PT_BASE - 1, 0x1000,
+        "ERROR: the pointer at 0x100002008 names 0xffffffff, within the 0x1000 bytes below the "
+        "header at 0x100000000, where the grown header will lie; refusing to grow");
+    check_grow_refuses_a_pointer(PT_BASE - 0x1000, 0x1000,
+        "ERROR: the pointer at 0x100002008 names 0xfffff000, within the 0x1000 bytes below");
+    check_grow_refuses_a_pointer(PT_BASE - 0x2000, 0x1001,
+        "ERROR: the pointer at 0x100002008 names 0xffffe000, within the 0x2000 bytes below");
 }
 
 static void test_header_pointers_counts_without_moving(void) {
@@ -3685,7 +3700,7 @@ static void test_header_pointers_counts_without_moving(void) {
     uint8_t *before = (uint8_t *)malloc(fsize);
     memcpy(before, buf, fsize);
     char why[256] = "";
-    int64_t n = mg_header_pointers(buf, fsize, PT_BASE, PT_F, 0, why, sizeof why);
+    int64_t n = mg_header_pointers(buf, fsize, PT_BASE, PT_F, 0, 0, why, sizeof why);
     CHECK(n == 2, "count: two pointers name the header (got %lld: %s)", (long long)n, why);
     CHECK(memcmp(before, buf, fsize) == 0, "count: counting moves nothing");
     free(before);
@@ -3957,6 +3972,7 @@ int main(void) {
     test_grow_accepts_readable_rebases();
     test_grow_moves_the_pointers_that_name_the_header();
     test_grow_refuses_a_pointer_inside_the_header();
+    test_grow_refuses_a_pointer_below_the_header();
     test_header_pointers_counts_without_moving();
     test_ensure_pad_announces_the_pointers_it_moves();
     test_verify_watches_the_pointers();

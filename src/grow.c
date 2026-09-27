@@ -82,7 +82,7 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
     int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
     char why[256];
-    int64_t ptrs = mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, why, sizeof why);
+    int64_t ptrs = mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, 0, why, sizeof why);
 
     uint32_t grow_req = need_end - first;
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
@@ -485,7 +485,7 @@ void mg_rebases_free(mg_rebases *r) {
 }
 
 int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
-                           uint32_t grow, char *why, size_t whysz) {
+                           uint32_t below, uint32_t grow, char *why, size_t whysz) {
     mg_rebases rb;
     int64_t n = 0;
     if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
@@ -496,6 +496,14 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
                      "and its first content at %#llx, which a grow moves apart",
                      (unsigned long long)rb.v[i].vm, (unsigned long long)v,
                      (unsigned long long)base, (unsigned long long)(base + first));
+            mg_rebases_free(&rb);
+            return -1;
+        }
+        if (v < base && base - v <= below) {
+            snprintf(why, whysz, "the pointer at %#llx names %#llx, within the %#x bytes below "
+                     "the header at %#llx, where the grown header will lie",
+                     (unsigned long long)rb.v[i].vm, (unsigned long long)v, below,
+                     (unsigned long long)base);
             mg_rebases_free(&rb);
             return -1;
         }
@@ -1612,8 +1620,8 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
     {
         char why[256];
-        int64_t n = mg_header_pointers(buf, fsize, mg_base_of(buf, fsize), insert, 0, why,
-                                       sizeof why);
+        int64_t n = mg_header_pointers(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0,
+                                       why, sizeof why);
         if (n < 0) {
             fprintf(stderr, "ERROR: %s; refusing to grow\n", why);
             return -1;
@@ -1895,7 +1903,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
 
     {
         char why[256];
-        if (mg_header_pointers(buf, final_size, snap.base, insert, grow, why, sizeof why) < 0) {
+        if (mg_header_pointers(buf, final_size, snap.base, insert, 0, grow, why, sizeof why) < 0) {
             fprintf(stderr, "ERROR: internal error moving the pointers that name the header "
                             "after passing the pre-check: %s\n", why);
             mg_snapshot_free(&snap);

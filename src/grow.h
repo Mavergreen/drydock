@@ -205,10 +205,12 @@ void mg_rebases_free(mg_rebases *r);
  * `base`. Each loses `grow` (0 to count them), following the header down.
  * One whose value lies strictly inside (base, base + first), in the header
  * and its load commands, is refused: a grow moves those apart, so no value
- * names that byte both before and after. Returns how many name the header,
- * or -1 with `why` set (mg_rebases_read's reasons, or that one). */
+ * names that byte both before and after. So is one in [base - below, base),
+ * which names nothing now and the grown header after a grow of `below`.
+ * Returns how many name the header, or -1 with `why` set (mg_rebases_read's
+ * reasons, or those two). */
 int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
-                           uint32_t grow, char *why, size_t whysz);
+                           uint32_t below, uint32_t grow, char *why, size_t whysz);
 
 /* What mg_verify compares a grown image against: the resolved addresses
  * mg_collect finds, the image base with every reference to it the
