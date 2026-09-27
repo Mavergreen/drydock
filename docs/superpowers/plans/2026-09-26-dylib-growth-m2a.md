@@ -4,7 +4,7 @@
 
 **Goal:** A grow refuses, before it changes anything, an image whose code (confirmed by decoding), `N_SECT` symbol or export names a byte strictly between its header and its first content, or whose bind, weak bind or lazy bind lies in the segment that maps the header. These are the two items M1's final review handed to M2, done on the one route that exists, in the form the raise route (plan M2b) reuses unchanged.
 
-**Architecture:** `src/hdrref.[ch]` gains a range scan (`mhr_scan_range`) that reports each candidate's target, and `mhr_confirm_each`, which decodes every candidate in a range and gives each a verdict: confirmed, refuted, or not reached. `mhr_confirm` keeps its contract, built on it. `mg_grow_header` gains three pre-mutation checks in `src/grow.c`: code that names the inside of the header (Task 2, the one task that depends on the owner's I1 answer), symbols and exports that do (Task 3), and binds in the header's segment (Task 4).
+**Architecture:** `src/hdrref.[ch]` gains a range scan (`mhr_scan_range`) that reports each candidate's target, and `mhr_confirm_each`, which decodes every candidate in a range and gives each a verdict: confirmed, refuted, or not reached. `mhr_confirm` keeps its contract, built on it. `mg_grow_header` gains three pre-mutation checks in `src/grow.c`: code that names the inside of the header, as the owner ruled (Task 2), symbols and exports that do (Task 3), and binds in the header's segment (Task 4).
 
 **Tech Stack:** C as the 10.9 clang (Apple LLVM 6.0) accepts it; CMake through shipyard; POSIX `sh`; hand-built in-memory Mach-O fixtures in `tests/grow_test.c`.
 
@@ -14,7 +14,7 @@
 
 M2 is fourteen tasks, and they fall in two groups that a reviewer can accept or reject apart:
 
-- **M2a (this plan, 5 tasks)** finishes the executable route's share of the one rule. Every change is observable today on executables, the host sweep proves it changes nothing measured, and it carries the owner's open I1 decision in one small, isolated task. It ships on its own.
+- **M2a (this plan, 5 tasks)** finishes the executable route's share of the one rule. Every change is observable today on executables, the host sweep proves it changes nothing measured, and the owner's I1 ruling is one small task. It ships on its own.
 - **M2b (9 tasks)** adds the raise route for `MH_DYLIB` and `MH_BUNDLE`, and reuses M2a's range scan and bind check on it. It is large (fixture, geometry, stabs, split info, UUID, two new verification checks, the CLI, and the real-dylib proof), and it can be reviewed without re-reading M2a's decisions.
 
 ## The measurements that decide this plan
@@ -32,18 +32,20 @@ Measured 2026-09-26 on this host (10.9, ld64-241.9) at `5ca0612`, with a probe l
 
 The same probe over exactly the base finds 152 candidates in the executables and confirms 151, as M1 did: the zeros above are answers, not a broken probe. Every image with a candidate decoding cannot reach (`thnucups`, `MediaToolbox`, and the 33 application images) also has an exact-base candidate it cannot reach, and M1 refuses it already.
 
-**Why "refuted" matters.** Every exact-base reference, `lea __mh_execute_header(%rip)`, is also three candidates in the range: the same four bytes read with a 1-, 2- or 4-byte immediate name base + 1, + 2 and + 4. Decoding reaches the `lea`, sees it has no immediate, and refutes all three. Of Claude Code's 29, 21 are its 7 references read with other immediates, and all 29 are refuted. So "a candidate decoding cannot confirm" (the question's words) is two different sets: *refuted* (decoding reaches it and it is not that operand) and *not reached* (decoding cannot get there). Task 1 tells them apart; the owner's answer picks which set refuses.
+**Why "refuted" matters.** Every exact-base reference, `lea __mh_execute_header(%rip)`, is also three candidates in the range: the same four bytes read with a 1-, 2- or 4-byte immediate name base + 1, + 2 and + 4. Decoding reaches the `lea`, sees it has no immediate, and refutes all three. Of Claude Code's 29, 21 are its 7 references read with other immediates, and all 29 are refuted. So "a candidate decoding cannot confirm" is two different sets: *refuted* (decoding reaches it and it is not that operand) and *not reached* (decoding cannot get there). Task 1 tells them apart, and the owner's ruling (below) refuses the second and passes the first.
 
 **Nothing else this plan refuses occurs here.** No executable's `N_SECT` symbol or non-absolute export names a byte inside the header, and no bind, weak bind or lazy bind lies in the header's segment. Task 5's sweep: all 1,128 files give byte-identical output and identical messages before and after, and so does Claude Code (2.14 s before, 2.30 s after).
 
-## The owner's question: the code half of I1
+## Rulings
 
-A RIP-relative candidate whose target lies strictly inside (base, base + F), and which decoding cannot confirm as an instruction:
+Decided 2026-09-26, while this plan was under review. No implementer needs to stop and ask.
 
-- **(a) passes; only a confirmed one refuses.** *Recommended.* Changes nothing measured. What it gives up: code that decoding cannot reach (no function starts, an undecodable instruction before it, data in code) and that really does name the header's inside grows silently wrong, as it does today.
-- **(b) refuses.** As the spec words it ("cannot be confirmed"), this would include *refuted* candidates, and then refuse every image that has an exact-base reference M1 repairs (each one's other immediate lengths are refuted in-range candidates): the item 29 reproduction, Claude Code, and 119 host executables would stop growing, and M1's repair would be unreachable. The `(b)` this plan offers is the one that keeps M1: **refuse a candidate that is confirmed or not reached; pass one that decoding refutes.** Measured over all 2,891 images above, it refuses nothing that M1 does not refuse already. What it would cost is an image whose in-range lookalikes decoding cannot reach (an instruction the decoder does not know, such as AVX-512's EVEX, before them in their function, or no function starts) and which has no exact-base reference M1 refuses: none was found.
+1. **The code half of I1 (the owner's ruling): refuse a candidate that decoding confirms or cannot reach; pass one that decoding refutes.** A RIP-relative candidate whose target lies strictly inside (base, base + F) refuses the grow if decoding confirms it is that operand, or if decoding cannot reach it (no function starts, an instruction the decoder does not know before it, or an instruction that is partly data). One that decoding refutes (another instruction's bytes, data in code, where an instruction begins, or this operand with another immediate) passes. Measured over the 2,891 images above, this refuses nothing that M1 does not refuse already, Claude Code included, and it closes the hole of code that decoding cannot reach.
+   - *Considered and lost:* passing every candidate decoding does not confirm. It changes nothing measured either, but lets code that decoding cannot reach, and that does name the header's inside, grow silently wrong. And refusing every candidate decoding does not confirm, refuted ones included, as the spec first put it, would refuse every image M1 repairs (each exact-base reference's other immediate lengths are refuted in-range candidates): the item 29 reproduction, Claude Code and 119 host executables.
+2. **The executable route's encrypted and protected images** (found while planning M2b, whose raise refuses them): recorded as QUEUE item 33 by Task 5, stating only what was found, and not fixed here.
+3. **CI is a post-push check.** This plan changes only `grow_test`'s hand-built fixtures, which are the same bytes on every host; after the owner pushes, CI on `macos-26-arm64` is a separate gate (Task 5's last step).
 
-**Task 2 is the only task that depends on the answer.** It is written for (a), and gives (b) as a one-line difference in `src/grow.c`, one test function and two doc sentences, each verified. Every other task, and M2b, applies unchanged over either. Task 5's sweep expects the same output under both, measured under both.
+Plan M2b records the rulings on the raise route (`LC_LOAD_UPWARD_DYLIB`, which checks run on which route, the points the spec left open, and the docs that change with M2).
 
 ## Global Constraints
 
@@ -74,7 +76,7 @@ A RIP-relative candidate whose target lies strictly inside (base, base + F), and
 
 ## Review Focus
 
-1. **A candidate with several immediate lengths.** One disp32 can name several in-range targets, one per immediate length; an instruction confirms at most one of them. Decoding must refute the others, not leave them "unconfirmed", or (b) refuses every repaired image. Pinned by Task 1's `test_confirm_each_gives_each_candidate_its_verdict` ("a lea") and Task 2's `test_grow_repairs_header_references` staying green.
+1. **A candidate with several immediate lengths.** One disp32 can name several in-range targets, one per immediate length; an instruction confirms at most one of them. Decoding must refute the others, not leave them unreached, or Task 2 refuses every repaired image. Pinned by Task 1's `test_confirm_each_gives_each_candidate_its_verdict` ("a lea") and Task 2's `test_grow_repairs_header_references` staying green.
 2. **The rule's edges.** base + 1 and base + F − 1 refuse; base + F (the first content) does not; base itself is M1's. For code (Task 2), symbols and exports (Task 3). Pinned by `test_grow_refuses_code_that_names_the_inside_of_the_header`, `test_grow_leaves_code_that_names_the_first_content`, `test_grow_refuses_a_symbol_inside_the_header`, `test_grow_refuses_an_export_inside_the_header`.
 3. **What is not an address.** A stab, an `N_ABS` symbol and an absolute export may hold a value inside the header's range and are not refused. Pinned by `test_grow_leaves_other_symbols_that_name_the_inside_of_the_header` and `test_grow_leaves_an_absolute_export_inside_the_header`.
 4. **`__PAGEZERO` is not the header's segment.** It starts at file offset 0 but maps none of the file, so a bind there is not refused for lying in the header's segment. Pinned by `test_grow_accepts_binds_outside_the_header_segment`.
@@ -85,7 +87,7 @@ A RIP-relative candidate whose target lies strictly inside (base, base + F), and
 Each is repeated, with its reason, in the task that makes it.
 
 - Task 1: the scan takes an inclusive range, `[first, last]`, so an exact target is `[t, t]` and nothing overflows. `mhr_confirm_each` never stops on its own; its callback does. Its verdicts are `MHR_CONFIRMED`, `MHR_REFUTED` (new), `MHR_UNCONFIRMED` (here: decoding cannot reach it) and `MHR_NO_STARTS`. `mhr_confirm`'s contract is unchanged: refuted and not reached are both `MHR_UNCONFIRMED` to it.
-- Task 2: (a), with (b) given. The check runs after M1's exact-base check, so M1's messages keep their priority.
+- Task 2: the owner's ruling: a confirmed or not-reached candidate refuses, a refuted one passes. The check runs after M1's exact-base check, so M1's messages keep their priority.
 - Task 3: symbols are `N_SECT` and not stabs, as M1's symbol repair has them; stabs are M2b's. An export's kind comes from the trie walk (`MG_K_ABS`, new), so an absolute export's value is not read as an offset.
 - Task 4: every DO_BIND of the bind, weak-bind and lazy-bind streams, read with `mo_bind_observe` (`src/ordinals.h`), the decoder the renumberer and `imports` already share. Stream bounds and decode failures refuse too.
 - Task 5: the sweep and the docs. The shas go into QUEUE item 29 and the spec's M2 section.
@@ -98,7 +100,7 @@ Each is repeated, with its reason, in the task that makes it.
 | `src/grow.h` | `MG_K_ABS` (3); `mg_grow_header`'s contract (2, 3, 4) | 2–4 |
 | `src/grow.c` | `mg_inside_refs_ok` (2); `mg_exports_ok`, the symbol half in `mg_hsym_cb`, `mg_sym_name` (3); `mg_binds_ok` (4) | 2–4 |
 | `tests/grow_test.c` | the range scan and verdicts (1); code (2); symbols and exports (3); binds (4) | 1–4 |
-| `docs/superpowers/QUEUE.md` | item 29's I1 paragraph: the code half (2); the rest, and the table row (5) | 2, 5 |
+| `docs/superpowers/QUEUE.md` | item 29's I1 paragraph: the code half (2); the rest, the table row, and item 33 (5) | 2, 5 |
 | `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md` | M2's first two bullets marked done | 5 |
 
 `CMakeLists.txt` does not change.
@@ -109,8 +111,7 @@ Every code block below was cut from a checkpoint: a `git archive` of `5ca0612` i
 
 - the whole suite passed (29 tests, `chained_fixups` skipped), with no compiler warning, and `grow_test` passed under libgmalloc;
 - each "see it fail" step was run as written, by applying only that task's test edits to the checkpoint before it: the outputs quoted are what it printed;
-- every row of every mutation table (56 rows) was applied alone to that task's finished files, rebuilt after deleting every object and the binaries (with the sums compared), and failed with the row's text;
-- Task 2's (b) was applied as written over the (a) checkpoint, and over Tasks 3 and 4 on top of it: the suite passed, and (a)'s line, applied to (b), fails `test_grow_decides_what_decoding_does_not_confirm_inside_the_header`.
+- every row of every mutation table (57 rows) was applied alone to that task's finished files, rebuilt after deleting every object and the binaries (with the sums compared), and failed with the row's text. Task 2's row 1 is the lost alternative's line: it fails the ruling's test.
 
 Task 5's sweep numbers are from those builds against a build of `5ca0612`.
 
@@ -691,9 +692,9 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 ---
 
-### Task 2: Refuse code that names the inside of the header (the owner's I1 answer)
+### Task 2: Refuse code that names the inside of the header (the owner's I1 ruling)
 
-**This is the only task whose content depends on the owner's answer to the code half of I1.** It is written for **(a)**. Under **(b)**, make the four substitutions in "Under (b)" below, and nothing else: every other task, in this plan and in M2b, applies unchanged.
+This task carries Ruling 1: a candidate decoding confirms or cannot reach refuses; one it refutes passes.
 
 **Files** (each edit block below gives its line):
 - Modify: `src/grow.c` (new functions before `/* The symbols that name the header: each N_SECT symbol, not a stab, whose`; one call after `if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;`)
@@ -707,9 +708,10 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 **Plan decisions.**
 
-- **Where.** Right after M1's `mg_header_refs_ok`, before any other audit: an image whose exact-base references M1 refuses keeps M1's message.
+- **Which candidates refuse** (Ruling 1): `MHR_CONFIRMED`, `MHR_UNCONFIRMED` (not reached) and `MHR_NO_STARTS`; only `MHR_REFUTED` passes. So `mg_inside_cb` has one filter line, `if (verdict == MHR_REFUTED) return 0;`.
+- **Where.** Right after M1's `mg_header_refs_ok`, before any other audit: an image whose exact-base references M1 refuses keeps M1's message. Measured, every image with an in-range candidate decoding cannot reach also has an exact-base one M1 refuses, so this check has not yet been the first to refuse a real image.
 - **The range.** `[base + 1, base + F − 1]`, F being `insert` (`mg_first_sect_off`), as the one rule says.
-- **The message** names the candidate's disp32 address and its target, in the words of the data half's pointer refusal: `ERROR: the code at X names T, between the header at B and its first content at C, which a grow moves apart; refusing to grow`.
+- **The message** names the candidate's disp32 address and its target, in the words of the data half's pointer refusal: `ERROR: the code at X names T, between the header at B and its first content at C, which a grow moves apart; refusing to grow`. "The code at X" means the bytes of an instruction section, which is what a not-reached candidate is; the contract in `src/grow.h` says so.
 - **A failed search.** `mhr_confirm_each` returns something other than `MHR_CONFIRMED` only when memory runs out: `mg_header_refs_ok`, just before, has already refused every image whose instruction sections or data in code it cannot read. That branch refuses too (`could not search the image …`), and is not in the mutation table: no test can reach it.
 
 - [ ] **Step 1: Write the failing tests**
@@ -759,8 +761,8 @@ static void test_grow_leaves_code_that_names_the_first_content(void) {
 }
 
 /* Bytes in the header's range that decoding does not confirm as code: a
- * lookalike it refutes, a lea it cannot reach past an EVEX prefix, and one
- * with no LC_FUNCTION_STARTS to decode from. Each grows. */
+ * lookalike it refutes grows; a lea it cannot reach past an EVEX prefix,
+ * and one with no LC_FUNCTION_STARTS to decode from, refuse. */
 static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(void) {
     size_t fsize;
     uint8_t *buf = build_inside_ref(HR_BASE + 16, 0, MG_T_FUNCSTARTS, &fsize);
@@ -773,19 +775,18 @@ static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(v
     buf = build_inside_ref(HR_BASE + 16, 4, MG_T_FUNCSTARTS, &fsize);
     pl = find_section_struct(buf, fsize, "__plain");
     if (pl) buf[pl->offset] = 0x62;                         /* EVEX: not decoded */
-    r = mg_grow_header(&buf, &fsize, 0x1000);
-    CHECK(r == 0, "inside: a lea decoding cannot reach grows (got %d)", r);
-    free(buf);
+    check_grow_refuses_header_refs("a lea decoding cannot reach", buf, fsize,
+        "ERROR: the code at 0x100001807 names 0x100000010, between the header at 0x100000000 and "
+        "its first content at 0x100001000, which a grow moves apart; refusing to grow");
 
     buf = build_inside_ref(HR_BASE + 16, 0, 0, &fsize);
-    r = mg_grow_header(&buf, &fsize, 0x1000);
-    CHECK(r == 0, "inside: a lea with no function starts to decode from grows (got %d)", r);
-    free(buf);
+    check_grow_refuses_header_refs("a lea with no function starts to decode from", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000010, between the header");
 }
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:4249`):
+In `tests/grow_test.c`, immediately after (`:4248`):
 
 ```c
     test_confirm_each_reports_an_image_it_cannot_scan();
@@ -802,7 +803,7 @@ insert:
 - [ ] **Step 2: Run them to see them fail**
 
 Run: build (rebuild check), then `"$B/grow_test"`.
-Expected: exit 1, and exactly these six `FAIL:` lines (the grow does not refuse yet):
+Expected: exit 1, and exactly these 12 `FAIL:` lines (the grow does not refuse yet), three for each of the four images it must refuse:
 
 ```
 FAIL: code naming base + 1: mg_grow_header refuses (got 0)
@@ -811,11 +812,17 @@ FAIL: code naming base + 1: nothing changed
 FAIL: code naming base + F - 1: mg_grow_header refuses (got 0)
 FAIL: code naming base + F - 1: the refusal says 'ERROR: the code at 0x100001803 names 0x100000fff, between the header'
 FAIL: code naming base + F - 1: nothing changed
+FAIL: a lea decoding cannot reach: mg_grow_header refuses (got 0)
+FAIL: a lea decoding cannot reach: the refusal says 'ERROR: the code at 0x100001807 names 0x100000010, between the header at 0x100000000 and its first content at 0x100001000, which a grow moves apart; refusing to grow'
+FAIL: a lea decoding cannot reach: nothing changed
+FAIL: a lea with no function starts to decode from: mg_grow_header refuses (got 0)
+FAIL: a lea with no function starts to decode from: the refusal says 'ERROR: the code at 0x100001803 names 0x100000010, between the header'
+FAIL: a lea with no function starts to decode from: nothing changed
 ```
 
-(The other two new tests pass already: nothing refuses those images yet, and under (a) nothing will.)
+(`test_grow_leaves_code_that_names_the_first_content`, and the refuted lookalike's check, pass already.)
 
-- [ ] **Step 3: Refuse confirmed code inside the header**
+- [ ] **Step 3: Refuse code inside the header that decoding does not refute**
 
 In `src/grow.c`, immediately before (`:1420`):
 
@@ -831,7 +838,7 @@ insert:
 struct mg_inside_ctx { int hit; mhr_cand c; };
 static int mg_inside_cb(const mhr_cand *c, int verdict, void *ctx_) {
     struct mg_inside_ctx *x = (struct mg_inside_ctx *)ctx_;
-    if (verdict != MHR_CONFIRMED) return 0;
+    if (verdict == MHR_REFUTED) return 0;
     x->hit = 1;
     x->c = *c;
     return 1;
@@ -879,13 +886,13 @@ with:
 
 ```c
  * mg_header_pointers refuses.
- * So is one with code that decoding confirms names a byte strictly between
- * the header and its first content, which a grow moves apart
- * (mhr_confirm_each).
+ * So is one with bytes in an instruction section that name a byte strictly
+ * between the header and its first content, which a grow moves apart,
+ * unless decoding refutes that they are code (mhr_confirm_each).
  * Every confirmed reference is repaired: its
 ```
 
-- [ ] **Step 4: Record the answer in QUEUE item 29**
+- [ ] **Step 4: Record the ruling in QUEUE item 29**
 
 In `docs/superpowers/QUEUE.md`, replace (`:1511`):
 
@@ -904,18 +911,16 @@ ones changes nothing measured. It is deferred to dylib-growth M2, which
 with:
 
 ```markdown
-host's executables). Its **code half is done**, in dylib-growth M2a: code
-that decoding confirms names a byte strictly inside (base, base + F), such as
-`movl __mh_execute_header+16(%rip)`, refuses the grow. Bytes there that
-decoding does not confirm pass: the owner's answer (a), 2026-09-26. Measured
+host's executables). Its **code half is done**, in dylib-growth M2a: bytes
+in an instruction section that name a byte strictly inside (base, base + F),
+such as `movl __mh_execute_header+16(%rip)`, refuse the grow unless decoding
+refutes that they are code: the owner.s ruling, 2026-09-26. Measured
 then, a scan for RIP-relative targets strictly inside (base, base + F) finds
 1,060 candidates in 120 of this host's 1,059 x86_64 executables, and 29 in
 Claude Code. Decoding confirms none. It refutes 1,057, among them the other
 immediate lengths of every exact-base reference, and all 29 of Claude
 Code's. It cannot reach 3, all in `thnucups`, which has no
-`LC_FUNCTION_STARTS` and is refused already. So nothing measured changes. A
-candidate that decoding cannot reach, and that is code, still grows
-silently wrong.
+`LC_FUNCTION_STARTS` and is refused already. So nothing measured changes.
 It is deferred to dylib-growth M2, which
 ```
 
@@ -928,17 +933,18 @@ Expected: `macho_grow_test: all cases pass`; green.
 
 | # | replace | with | must fail |
 |---|---|---|---|
-| 1 | `    if (verdict != MHR_CONFIRMED) return 0;`<br>`    x->hit = 1;` | `    if (verdict == MHR_REFUTED) return 0;`<br>`    x->hit = 1;` | `FAIL: inside: a lea decoding cannot reach grows` |
-| 2 | `    if (verdict != MHR_CONFIRMED) return 0;`<br>`    x->hit = 1;` | `    x->hit = 1;` | `FAIL: inside: a lookalike decoding refutes grows` |
-| 3 | `    if (verdict != MHR_CONFIRMED) return 0;`<br>`    x->hit = 1;` | `    return 0;`<br>`    x->hit = 1;` | `FAIL: code naming base + 1: mg_grow_header refuses` |
-| 4 | `    x->c = *c;`<br>`    return 1;` | `    return 1;` | `FAIL: code naming base + 1: the refusal says` |
-| 5 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base + 2, base + first - 1, mg_inside_cb, &x);` | `FAIL: code naming base + 1: mg_grow_header refuses` |
-| 6 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base, base + first - 1, mg_inside_cb, &x);` | `FAIL: repair: a grow with two confirmed references succeeds` |
-| 7 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 2, mg_inside_cb, &x);` | `FAIL: code naming base + F - 1: mg_grow_header refuses` |
-| 8 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first, mg_inside_cb, &x);` | `FAIL: inside: code naming the first content grows` |
-| 9 | `    if (mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert) != 0) return -1;` | `    mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert);` | `FAIL: code naming base + 1: mg_grow_header refuses` |
+| 1 | `    if (verdict == MHR_REFUTED) return 0;`<br>`    x->hit = 1;` | `    if (verdict != MHR_CONFIRMED) return 0;`<br>`    x->hit = 1;` | `FAIL: a lea decoding cannot reach: mg_grow_header refuses (got 0)` |
+| 2 | `    if (verdict == MHR_REFUTED) return 0;`<br>`    x->hit = 1;` | `    if (verdict == MHR_REFUTED \|\| verdict == MHR_NO_STARTS) return 0;`<br>`    x->hit = 1;` | `FAIL: a lea with no function starts to decode from: mg_grow_header refuses (got 0)` |
+| 3 | `    if (verdict == MHR_REFUTED) return 0;`<br>`    x->hit = 1;` | `    x->hit = 1;` | `FAIL: inside: a lookalike decoding refutes grows` |
+| 4 | `    if (verdict == MHR_REFUTED) return 0;`<br>`    x->hit = 1;` | `    return 0;`<br>`    x->hit = 1;` | `FAIL: code naming base + 1: mg_grow_header refuses` |
+| 5 | `    x->c = *c;`<br>`    return 1;` | `    return 1;` | `FAIL: code naming base + 1: the refusal says` |
+| 6 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base + 2, base + first - 1, mg_inside_cb, &x);` | `FAIL: code naming base + 1: mg_grow_header refuses` |
+| 7 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base, base + first - 1, mg_inside_cb, &x);` | `FAIL: repair: a grow with two confirmed references succeeds` |
+| 8 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 2, mg_inside_cb, &x);` | `FAIL: code naming base + F - 1: mg_grow_header refuses` |
+| 9 | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);` | `    int r = mhr_confirm_each(buf, fsize, base + 1, base + first, mg_inside_cb, &x);` | `FAIL: inside: code naming the first content grows` |
+| 10 | `    if (mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert) != 0) return -1;` | `    mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert);` | `FAIL: code naming base + 1: mg_grow_header refuses` |
 
-Row 1 is (b): under (a), (b)'s line fails (a)'s test, and the reverse holds under (b). A mutation of `if (r == MHR_CONFIRMED && !x.hit) return 0;` to `if (!x.hit) return 0;` survives: it differs only when memory runs out (see the plan decisions).
+Row 1 is the alternative that lost (Ruling 1): passing everything decoding does not confirm. A mutation of `if (r == MHR_CONFIRMED && !x.hit) return 0;` to `if (!x.hit) return 0;` survives: it differs only when memory runs out (see the plan decisions).
 
 - [ ] **Step 7: Commit**
 
@@ -948,86 +954,15 @@ git commit -m "fix(grow): refuse code that names the inside of the header
 
 The one rule's code half. A grow moves the header's bytes apart from its
 first content, so an instruction that names one of them names nothing
-after the grow; decoding every RIP-relative candidate in (base, base + F)
-now refuses the grow at the first it confirms. A candidate decoding does
-not confirm passes, the owner's answer (a): measured, none among this
-host's executables or Claude Code is confirmed, and every one Claude Code
-has is refuted.
+after the grow. Every RIP-relative candidate in (base, base + F) that
+decoding confirms, or cannot reach, now refuses the grow; one that
+decoding refutes passes: the owner's ruling. Measured, no image among
+this host's executables and system dylibs, its applications, or Claude
+Code is refused by it that M1 did not refuse already.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 ```
-
-#### Under (b)
-
-Make these four substitutions to what Steps 1, 3 and 4 wrote, and nothing else; each was applied and checked as written.
-
-1. **The one line, `src/grow.c`.** In `mg_inside_cb`, the line `    if (verdict != MHR_CONFIRMED) return 0;` reads instead:
-
-   ```c
-       if (verdict == MHR_REFUTED) return 0;
-   ```
-
-2. **The test, `tests/grow_test.c`.** `test_grow_decides_what_decoding_does_not_confirm_inside_the_header` reads instead (same name, so `main` does not change):
-
-```c
-/* Bytes in the header's range that decoding does not confirm as code: a
- * lookalike it refutes grows; a lea it cannot reach past an EVEX prefix,
- * and one with no LC_FUNCTION_STARTS to decode from, refuse. */
-static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(void) {
-    size_t fsize;
-    uint8_t *buf = build_inside_ref(HR_BASE + 16, 0, MG_T_FUNCSTARTS, &fsize);
-    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
-    if (pl) buf[pl->offset + 1] = 0xb8;                     /* mov $imm32, %eax */
-    int r = mg_grow_header(&buf, &fsize, 0x1000);
-    CHECK(r == 0, "inside: a lookalike decoding refutes grows (got %d)", r);
-    free(buf);
-
-    buf = build_inside_ref(HR_BASE + 16, 4, MG_T_FUNCSTARTS, &fsize);
-    pl = find_section_struct(buf, fsize, "__plain");
-    if (pl) buf[pl->offset] = 0x62;                         /* EVEX: not decoded */
-    check_grow_refuses_header_refs("a lea decoding cannot reach", buf, fsize,
-        "ERROR: the code at 0x100001807 names 0x100000010, between the header at 0x100000000 and "
-        "its first content at 0x100001000, which a grow moves apart; refusing to grow");
-
-    buf = build_inside_ref(HR_BASE + 16, 0, 0, &fsize);
-    check_grow_refuses_header_refs("a lea with no function starts to decode from", buf, fsize,
-        "ERROR: the code at 0x100001803 names 0x100000010, between the header");
-}
-```
-
-3. **The contract, `src/grow.h`.** The three lines Step 3 added after ` * mg_header_pointers refuses.` read instead:
-
-   ```c
-    * So is one with bytes in an instruction section that name a byte strictly
-    * between the header and its first content, which a grow moves apart,
-    * unless decoding refutes that they are code (mhr_confirm_each).
-   ```
-
-4. **QUEUE item 29.** Step 4's paragraph reads instead:
-
-```markdown
-host's executables). Its **code half is done**, in dylib-growth M2a: bytes
-in an instruction section that name a byte strictly inside (base, base + F),
-such as `movl __mh_execute_header+16(%rip)`, refuse the grow unless decoding
-refutes that they are code: the owner's answer (b), 2026-09-26. Measured
-then, a scan for RIP-relative targets strictly inside (base, base + F) finds
-1,060 candidates in 120 of this host's 1,059 x86_64 executables, and 29 in
-Claude Code. Decoding confirms none. It refutes 1,057, among them the other
-immediate lengths of every exact-base reference, and all 29 of Claude
-Code's. It cannot reach 3, all in `thnucups`, which has no
-`LC_FUNCTION_STARTS` and is refused already. So nothing measured changes.
-```
-
-Step 2 then prints 12 `FAIL:` lines: the six above, and three for each of the two leas (b) refuses and (a) lets grow, beginning:
-
-```
-FAIL: a lea decoding cannot reach: mg_grow_header refuses (got 0)
-FAIL: a lea decoding cannot reach: the refusal says 'ERROR: the code at 0x100001807 names 0x100000010, between the header at 0x100000000 and its first content at 0x100001000, which a grow moves apart; refusing to grow'
-FAIL: a lea decoding cannot reach: nothing changed
-```
-
-and the same three for `a lea with no function starts to decode from`. The commit message's last two sentences become: "A candidate decoding refutes passes, and one it cannot reach refuses, the owner's answer (b): measured, none among this host's executables or Claude Code is confirmed, the only ones not reached are in thnucups, which is refused already, and every one Claude Code has is refuted."
 
 ---
 
@@ -1051,7 +986,7 @@ and the same three for `a lea with no function starts to decode from`. The commi
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately before (`:4115`):
+In `tests/grow_test.c`, immediately before (`:4114`):
 
 ```c
 int main(void) {
@@ -1140,7 +1075,7 @@ static void test_grow_leaves_an_absolute_export_inside_the_header(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:4330`):
+In `tests/grow_test.c`, immediately after (`:4329`):
 
 ```c
     test_grow_decides_what_decoding_does_not_confirm_inside_the_header();
@@ -1419,7 +1354,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately before (`:4193`):
+In `tests/grow_test.c`, immediately before (`:4192`):
 
 ```c
 int main(void) {
@@ -1500,7 +1435,7 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:4404`):
+In `tests/grow_test.c`, immediately after (`:4403`):
 
 ```c
     test_grow_leaves_an_absolute_export_inside_the_header();
@@ -1683,10 +1618,10 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 ---
 
-### Task 5: The sweep, QUEUE item 29 and the spec
+### Task 5: The sweep, QUEUE items 29 and 33, and the spec
 
 **Files** (each edit block below gives its line):
-- Modify: `docs/superpowers/QUEUE.md` (item 29's row; the bind sentences; the I1 paragraph's last sentence)
+- Modify: `docs/superpowers/QUEUE.md` (item 29's row; the bind sentences; the I1 paragraph's last sentence; item 33, new, per Ruling 2)
 - Modify: `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md` (M2's first bullet)
 
 **Interfaces:**
@@ -1742,7 +1677,7 @@ for s in before after; do echo "$s: $(cut -f2 "$W/$s/results.tsv" | sort | uniq 
 paste "$W/before/results.tsv" "$W/after/results.tsv" | awk -F'\t' '$2 != $6 || $3 != $7 || $4 != $8 { print }' | wc -l
 ```
 
-Expected: `1128`; `before: 1043 0   85 1` and `after: 1043 0   85 1` (1,043 grew, 85 were refused, all 69 files that are not `MH_EXECUTE` among the refused); and `0` lines differ: every output byte-identical, every message identical. The same holds with Task 2's (b) (measured). Keep `$W` for Step 3.
+Expected: `1128`; `before: 1043 0   85 1` and `after: 1043 0   85 1` (1,043 grew, 85 were refused, all 69 files that are not `MH_EXECUTE` among the refused); and `0` lines differ: every output byte-identical, every message identical (measured with Ruling 1's code, and with the alternative that lost). Keep `$W` for Step 3.
 
 - [ ] **Step 3: Claude Code**
 
@@ -1763,19 +1698,28 @@ Expected, for each: `… grew the header pad by 8192 bytes (64 -> 8256 available
 
 - [ ] **Step 4: `docs/superpowers/QUEUE.md` and the spec**
 
+Item 33 (Ruling 2) states only what was found. Its numbers are from probes run while planning: no file in the 1,128, and no executable under `/System/Library/CoreServices` or `/Applications`, has a nonzero `cryptid`; Finder, Dock, SystemUIServer and loginwindow have a protected `__TEXT`, and a grow of each (the sweep's way) refuses with `ERROR: __TEXT,__unwind_info is malformed, …`.
+
 In `docs/superpowers/QUEUE.md`, replace (`:35`):
 
 ```markdown
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; the code half of I1 is M2's, see below |
+| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
+| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
+| 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
 ```
 
 with:
 
 ```markdown
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; I1's other halves and binds in `__TEXT` since `@T2@..@T4@` (dylib-growth M2a), see below |
+| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
+| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
+| 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
+| 33 | The executable grow has no refusal of its own for encrypted or protected images | — | — | **to do**, found 2026-09-26 while planning dylib-growth M2; see below |
 ```
 
-In `docs/superpowers/QUEUE.md`, replace (`:1504`):
+In `docs/superpowers/QUEUE.md`, replace (`:1505`):
 
 ```markdown
 refused (I1, below). Still open, and dylib-growth M2's: a bind whose slot
@@ -1791,7 +1735,7 @@ segment that maps the header is refused too, since dylib-growth M2a (none
 here): a grow would move that slot's contents out from under it.
 ```
 
-In `docs/superpowers/QUEUE.md`, replace (`:1523`):
+In `docs/superpowers/QUEUE.md`, replace (`:1522`):
 
 ```markdown
 It is deferred to dylib-growth M2, which
@@ -1804,6 +1748,30 @@ with:
 Its symbol and export halves are done in M2a too: an `N_SECT` symbol, not a
 stab, or an export, not an absolute one, strictly inside (base, base + F)
 refuses the grow (none here).
+```
+
+In `docs/superpowers/QUEUE.md`, immediately after (`:1574`):
+
+```markdown
+`getpagesize()`, so a plain `ctest`, CI's included, fails on such a read.
+```
+
+insert:
+
+```markdown
+
+## Item 33: encrypted or protected executables
+
+**Found 2026-09-26** while planning dylib-growth M2, whose raise refuses an
+image with `LC_ENCRYPTION_INFO[_64]` whose `cryptid` is not 0, or with a
+segment flagged `SG_PROTECTED_VERSION_1`: a grow moves bytes the kernel
+decrypts by page. The executable route has no such refusal. On this host,
+none of the 1,128 x86_64 files of the M1 sweeps' corpus, and none of the
+executables under `/System/Library/CoreServices` and `/Applications`, has a
+nonzero `cryptid`. Four executables have a protected `__TEXT`: Finder, Dock,
+SystemUIServer and loginwindow. A grow refuses each of them, but only because
+their `__unwind_info` lies in the protected pages and does not parse
+(`ERROR: __TEXT,__unwind_info is malformed, …`), not for being protected.
 ```
 
 In `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md`, immediately before (`:443`):
@@ -1833,6 +1801,7 @@ git grep -c "$T4" -- docs/superpowers/QUEUE.md docs/superpowers/specs/2026-09-25
 ```sh
 git grep -n 'Still open, and dylib-growth' -- docs/superpowers/QUEUE.md | wc -l          # expect 0
 git grep -n 'Its \*\*code half is done\*\*' -- docs/superpowers/QUEUE.md | wc -l         # expect 1 (positive control)
+git grep -n '^## Item 33: encrypted or protected executables' -- docs/superpowers/QUEUE.md | wc -l   # expect 1
 rc=0; git grep -n -E 'superpowers|specs/|plans/' -- src tests CMakeLists.txt || rc=$?; echo "rc=$rc"   # expect rc=1
 git grep -c -E 'superpowers|specs/|plans/' -- docs/superpowers/QUEUE.md                  # positive control: > 0
 ```
@@ -1847,7 +1816,9 @@ docs: the one rule's code, symbol and export halves, and binds in __TEXT
 QUEUE item 29's I1 is done on the executable route, and so is refusing a
 bind in the segment that maps the header ($F..$T4). The sweep over this
 host's 1,128 x86_64 files is byte-identical, and so is Claude Code's grow.
-The spec's M2 section says so; its raise route is plan M2b.
+The spec's M2 section says so; its raise route is plan M2b. Item 33 records
+that the executable grow has no refusal of its own for an encrypted or
+protected image.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU
@@ -1855,6 +1826,16 @@ EOF
 ```
 
 (The heredoc is unquoted so `$F` and `$T4` expand; check `git log -1` shows the hashes.)
+
+- [ ] **Step 7: After the owner pushes: CI** (Ruling 3)
+
+CI runs on `macos-26-arm64`, from a cross build; it is a gate this host cannot run. After the owner pushes, check that the run for the pushed head is green, and treat a red one as this plan's to fix (memory: "Check CI, not just local suites"):
+
+```sh
+gh run list --branch main --limit 3
+```
+
+Expected: the newest run, on the pushed head, `completed success`.
 
 ---
 
@@ -1866,7 +1847,7 @@ EOF
 |---|---|
 | M2: "give the scan a range (lo, hi) and report each candidate's target" | 1 |
 | M2: "`mhr_confirm` is hard-wired to the exact base" | 1 (`mhr_confirm_each`) |
-| M2: a RIP target strictly inside (base, base + F) refuses: the owner's decision | 2, (a) and (b) |
+| M2: a RIP target strictly inside (base, base + F) refuses: the owner's decision | 2 (Ruling 1) |
 | M2 / Decision 6: a symbol strictly inside refuses | 3 |
 | Decision 6: an export offset strictly inside refuses | 3 |
 | M2 / Decision 6: a bind in `__TEXT` refuses, on both routes | 4 (and M2b runs it on the raise) |

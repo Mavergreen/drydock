@@ -12,7 +12,21 @@
 
 ## Why M2 is two plans
 
-M2 is fourteen tasks. M2a (5) finishes the one rule and the bind refusal on the executable route, where each is observable today, and carries the owner's I1 decision alone. This plan (9) is the raise route. It can be reviewed without M2a's decisions, and M2a can ship without it.
+M2 is fourteen tasks. M2a (5) finishes the one rule and the bind refusal on the executable route, where each is observable today, with the owner's I1 ruling in its Task 2. This plan (9) is the raise route. It can be reviewed without M2a's decisions, and M2a can ship without it.
+
+## Rulings
+
+Decided 2026-09-26, while this plan was under review (the controller's, on the planner's questions). No implementer needs to stop and ask. M2a records the owner's I1 ruling and the executable route's follow-up (QUEUE item 33).
+
+1. **`LC_LOAD_UPWARD_DYLIB` is accepted on both routes** (Task 4): it names a dylib and nothing a grow moves, as `LC_LOAD_DYLIB` does. 13 of the 1,180 system dylibs and bundles carry one, and no host executable.
+2. **Which checks run on which route.** Checks 2 (its load-command half), 3 and 4 run on the raise only (Tasks 6 and 7). The lowering keeps checks 1, 2's pointer and symbol halves, 5 and 6, as they were. Check 4 asks of the raised image only the oracles that held of the original.
+3. **What the spec left open, settled:**
+   - a symbol or stab whose value is below the base, like one naming the header, stays (ld64's closing `N_SO` holds 0);
+   - the UUID is SHA-256 over the old UUID and then G as 8 bytes, little-endian, as an RFC 4122 version 4 UUID;
+   - Decision 9's rebase oracle already exists (`tests/rebase_oracle_test.sh`), so M2 adds none;
+   - beyond Decision 6, a raise refuses a segment whose file data starts before F, an `LC_UUID`, `LC_ROUTINES_64` or encryption command too short to read, and a dylib or bundle that is not x86_64.
+4. **No window of false docs.** `compat/README.md`'s rows that say a dylib is refused, and `tests/README.md`'s note that says so, change in Task 9, so they are true when this plan lands; M3 keeps the rest of the documentation.
+5. **CI is a post-push check** (Task 9's last step): Task 8's `cli_test` block builds with CI's clang and runs under Rosetta, which this host cannot.
 
 ## The measurements that decide this plan
 
@@ -28,12 +42,12 @@ Measured 2026-09-26 on this host (10.9, ld64-241.9), with this plan's finished b
 - **Raised copies run.** libz, libxml2, libsqlite3, libcurl, libc++ (18 references to its header repaired), CoreFoundation (2) and Foundation, each raised, load under `/usr/bin/gzip`, `xmllint`, `sqlite3`, `curl`, a C++ program that throws across libc++, and `plutil`; `DYLD_PRINT_LIBRARIES` names the raised copy, and the output is the original's. `info` says `resign 10.9: ok` of each; a copy signed ad hoc with 10.9's `codesign` verifies and runs.
 - **The executable route is unchanged.** Over the M1 and M2a sweeps' 1,128 files, all 1,059 `MH_EXECUTE` give byte-identical output and messages; the corpus's other 69 (1 dylib and 68 bundles under `/usr/libexec`) now grow, raised and verified, where they were refused. Claude Code 2.1.282's grow is byte-identical.
 - **Sparkle.** An old Sparkle.framework (ppc, i386 and x86_64; ShiftIt's and Downie's) has no `LC_DYLD_INFO` and is refused for it (Decision 6); iTerm's, OBS's and XQuartz's grow.
-- **I1 on dylibs, for the owner's question:** 1,331 RIP-relative candidates strictly inside a header in 87 of the 1,180; decoding confirms none, refutes 1,310, and cannot reach 21, all in MediaToolbox, refused already. So M2a Task 2's answer changes nothing here either.
+- **I1 on dylibs:** 1,331 RIP-relative candidates strictly inside a header in 87 of the 1,180; decoding confirms none, refutes 1,310, and cannot reach 21, all in MediaToolbox, which M1 refuses already. So M2a Task 2's ruling refuses nothing here that M1 does not.
 
 ## Global Constraints
 
 - **Line numbers** are at M2a's last commit (`5ca0612` plus M2a). Each edit also quotes the text it anchors on, and that text is what to match: a (`:N`) is the line where the quoted text begins once the edits before it in the same task are made. `src/grow.c`'s and `tests/grow_test.c`'s numbers drift from task to task.
-- **The owner's I1 answer does not reach this plan.** No edit below anchors on text that M2a Task 2's (a) and (b) write differently (checked mechanically, and by applying this plan over both).
+- **M2a comes first.** This plan applies on M2a's last commit, with M2a Task 2 as the owner ruled.
 - **Build:** `B=/private/tmp/build/schmonz/drydock-native`; `/usr/local/mavergreen/bin/shipyard-cmake --build "$B" -j`. That directory is already configured. Do not configure with `--preset`. If it ever needs configuring again: `/usr/local/mavergreen/bin/shipyard-cmake -S . -B "$B" -G Ninja -DCMAKE_TOOLCHAIN_FILE=/usr/local/mavergreen/shipyard/share/cmake/MavericksShipyard/MavericksToolchain.cmake -DMAVERICKS_EXPECTED_MODE=native -DCMAKE_OSX_DEPLOYMENT_TARGET=10.9 -DCMAKE_OSX_ARCHITECTURES=x86_64`.
 - **Test:** `unset DRYDOCK_MACHO_REWRITE; /usr/local/mavergreen/bin/shipyard-ctest --test-dir "$B"`: 29 tests, `chained_fixups` SKIPs. A single C test runs as `"$B/grow_test"` or `"$B/script_test"`, and `cli_test` as `unset DRYDOCK_MACHO_REWRITE; sh tests/cli_test.sh "$B"` from the repo root. **Green at every task's end** means both the whole suite and `DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib "$B/grow_test"` ending `macho_grow_test: all cases pass`.
 - **Rebuild check (clock skew here; `touch` can fail to relink).** Before every build, delete every object and the binaries you are about to run:
@@ -100,7 +114,7 @@ Each is repeated, with its reason, in the task that makes it.
 
 ## How this plan was checked
 
-Every code block below was cut from a checkpoint: M2a's checkpoints, then each task of this plan applied and committed in turn, each built in its own directory configured by the command above. A script then parsed both plans' edit instructions (every "In `file`, replace / immediately before / immediately after" block), applied them to a fresh archive of `5ca0612` task by task, and compared the tree after each task with that task's checkpoint: identical, file for file. It did the same with M2a Task 2's (b) in place of (a): this plan applied without a conflict, and the suite passed. At each checkpoint:
+Every code block below was cut from a checkpoint: M2a's checkpoints, then each task of this plan applied and committed in turn, each built in its own directory configured by the command above. A script then parsed both plans' edit instructions (every "In `file`, replace / immediately before / immediately after" block), applied them to a fresh archive of `5ca0612` task by task, and compared the tree after each task with that task's checkpoint: identical, file for file. At each checkpoint:
 
 - the whole suite passed (29 tests, `chained_fixups` skipped), with no compiler warning, and `grow_test` passed under libgmalloc;
 - each "see it fail" step was run as written, by applying only that task's test edits to the checkpoint before it: the outputs quoted are what it printed;
@@ -166,7 +180,7 @@ with:
                                    "(cputype=0)");
 ```
 
-In `tests/grow_test.c`, immediately before (`:4269`):
+In `tests/grow_test.c`, immediately before (`:4268`):
 
 ```c
 int main(void) {
@@ -498,7 +512,7 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:4734`):
+In `tests/grow_test.c`, immediately after (`:4733`):
 
 ```c
     test_grow_accepts_binds_outside_the_header_segment();
@@ -766,7 +780,7 @@ with:
         "0x100002000; refusing.");
 ```
 
-In `tests/grow_test.c`, replace (`:4569`):
+In `tests/grow_test.c`, replace (`:4568`):
 
 ```c
  * at base 0 or above it: such a dylib or bundle reaches the refusal every
@@ -1120,7 +1134,7 @@ static void test_ensure_pad_announces_a_raise(void) {
     free(buf);
 ```
 
-In `tests/grow_test.c`, immediately after (`:5042`):
+In `tests/grow_test.c`, immediately after (`:5041`):
 
 ```c
     test_grow_raises_past_what_it_can_vouch_for();
@@ -2043,7 +2057,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately after (`:4294`):
+In `tests/grow_test.c`, immediately after (`:4293`):
 
 ```c
 #define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
@@ -2055,7 +2069,7 @@ insert:
 #define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
 ```
 
-In `tests/grow_test.c`, replace (`:4318`):
+In `tests/grow_test.c`, replace (`:4317`):
 
 ```c
 }
@@ -2086,7 +2100,7 @@ static const struct { uint32_t strx; uint8_t type, sect; uint64_t at; int moves;
 static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
 ```
 
-In `tests/grow_test.c`, immediately after (`:4502`):
+In `tests/grow_test.c`, immediately after (`:4501`):
 
 ```c
     memcpy(buf + 0x3200, strs, sizeof strs);
@@ -2108,7 +2122,7 @@ insert:
     }
 ```
 
-In `tests/grow_test.c`, replace (`:4760`):
+In `tests/grow_test.c`, replace (`:4759`):
 
 ```c
  * be raised; nor can a debugging stab yet. */
@@ -2120,7 +2134,7 @@ with:
  * be raised. */
 ```
 
-In `tests/grow_test.c`, replace (`:4783`):
+In `tests/grow_test.c`, replace (`:4782`):
 
 ```c
     buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
@@ -2135,7 +2149,7 @@ with:
 ```c
 ```
 
-In `tests/grow_test.c`, replace (`:4850`):
+In `tests/grow_test.c`, replace (`:4849`):
 
 ```c
 static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
@@ -2152,7 +2166,7 @@ static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo 
     uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
 ```
 
-In `tests/grow_test.c`, replace (`:4868`):
+In `tests/grow_test.c`, replace (`:4867`):
 
 ```c
     free(buf);
@@ -2171,7 +2185,7 @@ static void check_verify_rejects_raise(const char *what, dy_undo undo, const cha
 static void dy_unraise_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3009] -= 0x10; }
 ```
 
-In `tests/grow_test.c`, replace (`:4918`):
+In `tests/grow_test.c`, replace (`:4917`):
 
 ```c
     free(err);
@@ -2255,7 +2269,7 @@ static void test_verify_watches_the_stabs(void) {
 int main(void) {
 ```
 
-In `tests/grow_test.c`, immediately after (`:5143`):
+In `tests/grow_test.c`, immediately after (`:5142`):
 
 ```c
     test_raise_leaves_a_symbol_below_the_base();
@@ -2639,7 +2653,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately before (`:4986`):
+In `tests/grow_test.c`, immediately before (`:4985`):
 
 ```c
 int main(void) {
@@ -2738,7 +2752,7 @@ static void test_ensure_pad_announces_dropped_split_info(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:5235`):
+In `tests/grow_test.c`, immediately after (`:5234`):
 
 ```c
     test_verify_watches_the_stabs();
@@ -3132,7 +3146,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, replace (`:4913`):
+In `tests/grow_test.c`, replace (`:4912`):
 
 ```c
              "contents raised by 0x1000; repaired 1 reference to the header\n",
@@ -3144,7 +3158,7 @@ with:
              "contents raised by 0x1000; new UUID; repaired 1 reference to the header\n",
 ```
 
-In `tests/grow_test.c`, replace (`:5065`):
+In `tests/grow_test.c`, replace (`:5064`):
 
 ```c
              "contents raised by 0x1000; dropped LC_SEGMENT_SPLIT_INFO; repaired 1 reference to "
@@ -3238,7 +3252,7 @@ static void test_ensure_pad_announces_no_uuid_it_has_not(void) {
           "ensure_pad on a dylib with no UUID: says no new one (got %d):\n%s", r, err);
 ```
 
-In `tests/grow_test.c`, immediately after (`:5314`):
+In `tests/grow_test.c`, immediately after (`:5313`):
 
 ```c
     test_grow_takes_an_upward_dylib();
@@ -3460,7 +3474,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately after (`:4295`):
+In `tests/grow_test.c`, immediately after (`:4294`):
 
 ```c
 #define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
@@ -3472,7 +3486,7 @@ insert:
 #define DY_INITOFF 64    /* __TEXT,__init_offsets at 0x1120: f2 */
 ```
 
-In `tests/grow_test.c`, replace (`:4356`):
+In `tests/grow_test.c`, replace (`:4355`):
 
 ```c
     int ntext = (opts & DY_UNWIND) ? 3 : 2;
@@ -3484,7 +3498,7 @@ with:
     int ntext = 2 + !!(opts & DY_UNWIND) + !!(opts & DY_INITOFF);
 ```
 
-In `tests/grow_test.c`, immediately after (`:4369`):
+In `tests/grow_test.c`, immediately after (`:4368`):
 
 ```c
     if (opts & DY_UNWIND) s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
@@ -3497,7 +3511,7 @@ insert:
         s = dy_sect(s, "__TEXT", "__init_offsets", base + 0x1120, 4, 0x1120, S_INIT_FUNC_OFFSETS);
 ```
 
-In `tests/grow_test.c`, immediately after (`:4470`):
+In `tests/grow_test.c`, immediately after (`:4469`):
 
 ```c
     buf[0x1010] = 0x55; buf[0x1011] = 0xc3;
@@ -3509,7 +3523,7 @@ insert:
     if (opts & DY_INITOFF) { uint32_t f2 = 0x1010; memcpy(buf + 0x1120, &f2, sizeof f2); }
 ```
 
-In `tests/grow_test.c`, immediately before (`:5152`):
+In `tests/grow_test.c`, immediately before (`:5151`):
 
 ```c
 int main(void) {
@@ -3609,7 +3623,7 @@ static void test_raise_moves_the_initializer_offsets(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:5412`):
+In `tests/grow_test.c`, immediately after (`:5411`):
 
 ```c
     test_ensure_pad_announces_no_uuid_it_has_not();
@@ -3963,7 +3977,7 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/grow_test.c`, immediately before (`:5241`):
+In `tests/grow_test.c`, immediately before (`:5240`):
 
 ```c
 int main(void) {
@@ -4071,7 +4085,7 @@ static void test_verify_watches_the_oracles(void) {
 
 ```
 
-In `tests/grow_test.c`, immediately after (`:5512`):
+In `tests/grow_test.c`, immediately after (`:5511`):
 
 ```c
     test_raise_moves_a_relocation_offset_and_keeps_the_pad();
@@ -4608,11 +4622,13 @@ Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU"
 
 ---
 
-### Task 9: Real dylibs, the sweeps, QUEUE item 31 and the spec
+### Task 9: Real dylibs, the sweeps, the docs that say a dylib is refused, QUEUE item 31 and the spec
 
-Everything real here is a copy in a scratch directory. None of it is committed: M3 makes the run test (`tests/grown_dylib_runs_test.sh`) and writes the documentation.
+Everything real here is a copy in a scratch directory. None of it is committed: M3 makes the run test (`tests/grown_dylib_runs_test.sh`) and writes the rest of the documentation. What this task does commit, by Ruling 4, is every sentence that would otherwise go on saying a dylib is refused once this plan lands.
 
 **Files** (each edit block below gives its line):
+- Modify: `compat/README.md` (the "header pad too short … is grown" bullet; `fix_macho`'s divergence 6; `insert_dylib`'s prompt-3 row and its real-dylib row)
+- Modify: `tests/README.md` (the `insert-dylib-diff` note's item (2))
 - Modify: `docs/superpowers/QUEUE.md` (item 31's row; a new "Item 31" section before `## Item 32`)
 - Modify: `docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md` (after M2's last line)
 
@@ -4808,7 +4824,80 @@ cmp "$W/cc.before" "$W/cc.after" && echo "Claude Code: identical"
 
 Expected: ShiftIt's and Downie's (`ppc i386 x86_64`): `1	ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes list every pointer a raise moves; refusing to grow`, Decision 6's reason; iTerm's, OBS's and XQuartz's: `0	IN: grew the header pad by 4096 bytes …; contents raised by 0x1000; new UUID…` (XQuartz's repairs 3 references). Then `Claude Code: identical`. Skip an application this host lacks, and say so. Then `rm -rf "$W"`.
 
-- [ ] **Step 7: `docs/superpowers/QUEUE.md` and the spec**
+- [ ] **Step 7: The docs that say a dylib is refused** (Ruling 4)
+
+Each sentence below says a dylib cannot grow, or that this toolkit refuses one. The two about the `insert_dylib` differential of 2026-09-20 keep what that run found and say what the wrapper does now; the new behaviour is `tests/insert_dylib_test.sh`'s "no room: a dylib's contents are raised, announced" (Task 2).
+
+In `compat/README.md`, replace (`:151`):
+
+```markdown
+    ..."), and exits 0; anything else is still refused. When the
+```
+
+with:
+
+```markdown
+    ..."), and exits 0; an x86_64 dylib or bundle has no `__PAGEZERO`, so
+    everything after its load commands is raised instead ("...; contents
+    raised by 0x1000; new UUID"); anything else is still refused. When the
+```
+
+In `compat/README.md`, replace (`:477`):
+
+```markdown
+| 6 | **A header pad too short for the replacement is now GROWN**, on an x86_64 PIE executable: the image base is lowered to make room, announced on stderr, exit 0. `fix_macho` had no `-grow` and never enlarged a header. Adopted by the repo owner's ruling for every wrapper: the engine never writes its input and the grow verifies itself, so refusing bought nothing. A non-PIE executable or a dylib is still refused, exit 1, file untouched | `tests/wrapper_test.sh`, "a replacement the pad cannot hold grows the header, announced"; its `fix_macho` mid-script refusal clears `MH_PIE` on its copy so that it still refuses |
+```
+
+with:
+
+```markdown
+| 6 | **A header pad too short for the replacement is now GROWN**, on an x86_64 PIE executable: the image base is lowered to make room, announced on stderr, exit 0. `fix_macho` had no `-grow` and never enlarged a header. Adopted by the repo owner's ruling for every wrapper: the engine never writes its input and the grow verifies itself, so refusing bought nothing. An x86_64 dylib or bundle grows too, its contents raised rather than its base lowered. A non-PIE executable is still refused, exit 1, file untouched | `tests/wrapper_test.sh`, "a replacement the pad cannot hold grows the header, announced"; its `fix_macho` mid-script refusal clears `MH_PIE` on its copy so that it still refuses |
+```
+
+In `compat/README.md`, replace (`:779`):
+
+```markdown
+| the fork's prompt 3 ("it doesn't seem like there is enough empty space") is **not asked**: on an x86_64 PIE executable a short header pad is grown, announced on stderr, exit 0, where the fork asked before its own expansion. Anything that cannot grow — a dylib, a non-PIE executable — is refused in `dylib append`'s words, forwarded through the exit code above | `tests/insert_dylib_test.sh`, "no room: the header grows, announced" |
+| `--inplace` together with an explicit `new_binary_path` is **refused**, where the fork silently picks one and never reads the other (`--inplace` wins; `main.c`'s `if(!inplace_flag) { ... }` block that would consume `argv[3]` is skipped entirely when `--inplace` is set, so the named file is never even opened). Matching the fork here would mean silently ignoring an output path the caller wrote out by hand and overwriting their input instead — the data-loss shape this toolkit refuses rather than guesses through everywhere else, and there are no known callers of this tool to break by refusing. `compat/translate.sh`'s `mt_id_parse` refuses it unconditionally, before any prompt, so `--all-yes` does not make it succeed either | `tests/insert_dylib_test.sh`, "--inplace + new_binary_path" (three assertions: refuses exit 1 even with `--all-yes`, names both `--inplace` and the path, and leaves both the input and the named path untouched) |
+| on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `drydock-macho-rewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refuses cleanly instead — `ERROR: only MH_EXECUTE can be grown ...`, then `ERROR: ... don't fit in header pad (... avail), and the header could not be grown (see above)`, exit 1, input untouched. This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
+```
+
+with:
+
+```markdown
+| the fork's prompt 3 ("it doesn't seem like there is enough empty space") is **not asked**: on an x86_64 PIE executable a short header pad is grown, announced on stderr, exit 0, where the fork asked before its own expansion. An x86_64 dylib grows too, its contents raised, announced. Anything that cannot grow — a non-PIE executable, a dylib with no `LC_DYLD_INFO` — is refused in `dylib append`'s words, forwarded through the exit code above | `tests/insert_dylib_test.sh`, "no room: the header grows, announced" and "no room: a dylib's contents are raised, announced" |
+| `--inplace` together with an explicit `new_binary_path` is **refused**, where the fork silently picks one and never reads the other (`--inplace` wins; `main.c`'s `if(!inplace_flag) { ... }` block that would consume `argv[3]` is skipped entirely when `--inplace` is set, so the named file is never even opened). Matching the fork here would mean silently ignoring an output path the caller wrote out by hand and overwriting their input instead — the data-loss shape this toolkit refuses rather than guesses through everywhere else, and there are no known callers of this tool to break by refusing. `compat/translate.sh`'s `mt_id_parse` refuses it unconditionally, before any prompt, so `--all-yes` does not make it succeed either | `tests/insert_dylib_test.sh`, "--inplace + new_binary_path" (three assertions: refuses exit 1 even with `--all-yes`, names both `--inplace` and the path, and leaves both the input and the named path untouched) |
+| on a real dylib whose header pad is too small for the new load command and which carries no `__PAGEZERO` to shrink (true of every dylib — only executables have one), **the fork reports success and exits 0** while its own stderr admits `__PAGEZERO segment not found, cannot expand header.` The file it writes **fails this toolkit's own `drydock-macho-rewrite verify`** (`mg_plausible` refuses it): the fork's own header-expansion path did not actually expand anything, and nothing downstream of that checks. This wrapper refused cleanly then — `ERROR: only MH_EXECUTE can be grown ...`, exit 1, input untouched — and now grows such a dylib's header pad by raising its contents, announced, and its output verifies (`tests/insert_dylib_test.sh`, "no room: a dylib's contents are raised, announced"). This is not a case where this toolkit needs to catch up: the fork is wrong here, and the four checks named just above this table (plus `mg_verify`/`mg_plausible`) are exactly why this side catches it and the fork does not | `tests/insert-dylib-diff.sh`'s 2026-09-20 run (`tests/README.md`), reproduced on `/usr/lib/swift/libswiftDarwin.dylib`, a real thin (non-fat) system dylib, so the differential's Mach-O-validity check ran on the fork's own output rather than being skipped for being unreadable fat |
+```
+
+In `tests/README.md`, replace (`:81`):
+
+```markdown
+  `drydock-macho-rewrite verify`'s own plausibility check; this wrapper refuses
+  instead (`EX_REFUSED`; a dylib cannot grow, which today's wording says as
+  "only MH_EXECUTE can be grown"), leaving the input untouched. (3) On an unwritable `--inplace` target the fork's own
+```
+
+with:
+
+```markdown
+  `drydock-macho-rewrite verify`'s own plausibility check; this wrapper then
+  refused instead (`EX_REFUSED`, "only MH_EXECUTE can be grown"), leaving the
+  input untouched, and now grows the dylib's header pad by raising its
+  contents, verified. (3) On an unwritable `--inplace` target the fork's own
+```
+
+Then check nothing else says so:
+
+```sh
+P='dylib is still refused|a dylib cannot grow|a dylib, a non-PIE'
+git grep -n -E "$P" "$B1^" -- README.md compat docs/*.md tests/README.md | wc -l   # positive control: 3, before this plan
+rc=0; git grep -n -E "$P" -- README.md compat docs/*.md tests/README.md || rc=$?; echo "rc=$rc"   # expect rc=1
+```
+
+Expected: `3` (compat divergence 6, the prompt-3 row, and the test note); then `rc=1`. The quotation `ERROR: only MH_EXECUTE can be grown` stays once in each file, as what the wrapper said at the 2026-09-20 run.
+
+- [ ] **Step 8: `docs/superpowers/QUEUE.md` and the spec**
 
 In `docs/superpowers/QUEUE.md`, replace (`:37`):
 
@@ -4822,7 +4911,7 @@ with:
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | M2a `@A1@..@A5@`, M2b `@B1@..@B9@` (plans deleted once implemented) | **raised** since `@B2@`: a dylib's or bundle's header pad grows; M3, the committed run test and the documentation, remains, see below |
 ```
 
-In `docs/superpowers/QUEUE.md`, immediately before (`:1551`):
+In `docs/superpowers/QUEUE.md`, immediately before (`:1550`):
 
 ```markdown
 ## Item 32: a load command shorter than its struct
@@ -4864,9 +4953,9 @@ that; newer ones grow. The executable route is unchanged: the M1 sweep's
 (Apple's dylibs under Apple's programs, and host-built dylibs for what no
 system dylib has: a thread-local variable, `dlsym` through the trie,
 `&__dso_handle` beside a data pointer to it, and both F < G and F > G), and
-the documentation: `README.md`'s grow paragraph, `compat/README.md`'s rows
-that still say a dylib is refused, `docs/macl-case-study.md` rows 9 and 23,
-`src/grow.h`'s top comment, and items 29 and 31 marked done.
+the documentation: `docs/macl-case-study.md` rows 9 and 23, `src/grow.h`'s
+top comment, and items 29 and 31 marked done. (`compat/README.md`'s and
+`tests/README.md`'s words that a dylib is refused changed with M2 itself.)
 
 ```
 
@@ -4883,7 +4972,8 @@ insert:
 this section left open, for M3's reader:
 
 - Decoding gives each in-range candidate one of three verdicts: confirmed,
-  refuted, or not reached. The owner's I1 answer chose which refuse.
+  refuted, or not reached. The owner's I1 answer (2026-09-26): a confirmed or
+  not-reached candidate refuses the grow, and a refuted one passes.
 - Checks 2 (its load-command half), 3 and 4 run on the raise route only;
   the executable route keeps checks 1, 2's pointer and symbol halves, 5 and
   6. Check 4 asks of the raised image only the oracles that held of the
@@ -4892,6 +4982,8 @@ this section left open, for M3's reader:
 - The UUID is SHA-256 over the old UUID and then G as 8 bytes,
   little-endian.
 - `LC_LOAD_UPWARD_DYLIB` is accepted on both routes.
+- `compat/README.md`'s rows that said a dylib is refused change with M2, not
+  M3, so no document says so while dylibs grow.
 - A raise's segment must have its file data at F or past it, and an
   `LC_UUID`, `LC_ROUTINES_64` or encryption command too short to read is
   refused.
@@ -4907,7 +4999,7 @@ rc=0; git grep -n '@[AB][0-9]@' -- docs || rc=$?; echo "rc=$rc"          # expec
 git grep -c "$B8" -- docs/superpowers/QUEUE.md                             # positive control: 2
 ```
 
-- [ ] **Step 8: Check the tree**
+- [ ] **Step 9: Check the tree**
 
 ```sh
 git grep -n 'M2 done' -- docs/superpowers/QUEUE.md | wc -l                 # expect 1
@@ -4918,10 +5010,10 @@ unset DRYDOCK_MACHO_REWRITE; /usr/local/mavergreen/bin/shipyard-ctest --test-dir
 
 Expected: `1`; `rc=1`; a count; `100% tests passed out of 29`, `chained_fixups` skipped.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add docs/superpowers/QUEUE.md docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md
+git add compat/README.md tests/README.md docs/superpowers/QUEUE.md docs/superpowers/specs/2026-09-25-dylib-header-growth-design.md
 git commit -F- <<EOF
 docs: a dylib's header pad grows by raising its contents
 
@@ -4929,8 +5021,10 @@ QUEUE item 31's M2 is done ($A1..$B8): 1,177 of this host's 1,180 x86_64
 system dylibs and bundles grow, raised and verified, where none did;
 raised copies of libz, libxml2, libsqlite3, libcurl, libc++, CoreFoundation
 and Foundation run under Apple's programs as the originals do, and can be
-re-signed with 10.9's codesign. The executable route is unchanged. M3, the
-committed run test and the documentation, remains.
+re-signed with 10.9's codesign. The executable route is unchanged. The
+compat rows and the test note that said a dylib is refused say what it
+does now. M3, the committed run test and the rest of the documentation,
+remains.
 
 Co-Authored-By: <authoring model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012jhWLkqMJWtSif6MwCSCVU
@@ -4939,7 +5033,17 @@ EOF
 
 (The heredoc is unquoted so the hashes expand; check `git log -1`.)
 
-**Where M3 begins.** M3 is its own plan, written when this one lands. It is the spec's "Real dylibs, run (M3)" as a committed test, `tests/grown_dylib_runs_test.sh`: Apple's dylibs under Apple's programs, invoked by absolute path, with `DYLD_PRINT_LIBRARIES` as the positive control on every run, and host-built fixture dylibs for what no system dylib has (a thread-local variable, `dlsym` through the export trie, `&__dso_handle` and `getsectiondata(&_mh_dylib_header, …)` beside a data pointer to `__dso_handle`, a C++ exception across grown code, static initializers), with both F < G and F > G; SKIPped off 10.9 x86_64. And the documentation: `README.md`'s grow paragraph; `compat/README.md`'s rows that still say a dylib is refused (the `insert_dylib` row among them); `docs/macl-case-study.md` rows 9 and 23; `src/grow.h`'s top comment (the one rule, the completeness argument and its residual risk, the header-reference repair); QUEUE items 29 and 31 done; and the spec deleted. Step 4 above is this plan's evidence, not M3's test.
+- [ ] **Step 11: After the owner pushes: CI** (Ruling 5)
+
+CI runs on `macos-26-arm64` from a cross build, and Task 8's `cli_test` block compiles its dylib and driver with CI's clang and runs them under Rosetta: a gate this host cannot run. After the owner pushes, check the run for the pushed head, and treat a red one as this plan's to fix (memory: "Check CI, not just local suites"):
+
+```sh
+gh run list --branch main --limit 3
+```
+
+Expected: the newest run, on the pushed head, `completed success`.
+
+**Where M3 begins.** M3 is its own plan, written when this one lands. It is the spec's "Real dylibs, run (M3)" as a committed test, `tests/grown_dylib_runs_test.sh`: Apple's dylibs under Apple's programs, invoked by absolute path, with `DYLD_PRINT_LIBRARIES` as the positive control on every run, and host-built fixture dylibs for what no system dylib has (a thread-local variable, `dlsym` through the export trie, `&__dso_handle` and `getsectiondata(&_mh_dylib_header, …)` beside a data pointer to `__dso_handle`, a C++ exception across grown code, static initializers), with both F < G and F > G; SKIPped off 10.9 x86_64. And the rest of the documentation (Step 7 already made true every sentence that said a dylib is refused): `README.md`'s grow paragraph; `docs/macl-case-study.md` rows 9 and 23; `src/grow.h`'s top comment (the one rule, the completeness argument and its residual risk, the header-reference repair); QUEUE items 29 and 31 done; and the spec deleted. Step 4 above is this plan's evidence, not M3's test.
 
 ---
 
@@ -4970,6 +5074,7 @@ EOF
 | Testing: `dylib append`, `dylib insert`, `rpath replace` in `cli_test.sh` | 8 |
 | Testing: Sparkle refused with Decision 6's reason | 9 |
 | Testing: the executable route unchanged | every task's suite; 9's sweep |
+| Documentation (M3's), the part that would be false once dylibs grow | 9 (Ruling 4) |
 
 **2. Placeholder scan.** No "TBD" or "similar to Task N". `@A1@`, `@A5@`, `@B1@`, `@B2@`, `@B9@` are replaced by Task 9's own step. `<authoring model>` is the trailer's own wording.
 
