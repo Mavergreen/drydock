@@ -83,8 +83,14 @@ works like this:
 - it puts the signature at the next multiple of 16.
 
 `input_sym_info_size` is a **sum** of the pieces' sizes. It counts:
-- the five dyld-info streams, only with an `LC_DYSYMTAB`;
-- the symbol and string tables, only when there are symbols.
+- with an `LC_DYSYMTAB`, every other piece: the five dyld-info streams, the
+  relocations, split info, function starts, data in code, code-signing DRs,
+  linker hints, two-level hints, the indirect table and the pad that rounds
+  an odd-sized one to 8, and the table of contents, module and reference
+  tables;
+- without an `LC_DYSYMTAB`, none of those;
+- the symbol and string tables, with or without it, but only when there are
+  symbols.
 
 The dyld info is copied as one span, from its first byte to its last. So a
 hole inside it, or a string table without symbols, shifts every later piece
