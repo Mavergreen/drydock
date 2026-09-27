@@ -378,27 +378,35 @@ struct mg_rb_lcs {
     const struct segment_command_64 *seg[16];
     int nsegs, ndi;
     const struct dyld_info_command *di;
-    uint32_t short_di;   /* nonzero: an LC_DYLD_INFO[_ONLY] this small was found;
-                          * its rebase_off/rebase_size were never read */
+    const char *short_lc, *short_of;   /* a command too short for the fields read */
+    uint32_t short_size;
     uint32_t nlocrel;
 };
 
+static int mg_rb_short(struct mg_rb_lcs *c, const struct load_command *lc, const char *name,
+                       const char *of) {
+    c->short_lc = name;
+    c->short_of = of;
+    c->short_size = lc->cmdsize;
+    return 1;
+}
+
+/* mi_validate vouches for only a command's first 8 bytes. */
 static int mg_rb_lcs_cb(const struct load_command *lc, void *ctx_) {
     struct mg_rb_lcs *c = (struct mg_rb_lcs *)ctx_;
     if (lc->cmd == LC_SEGMENT_64 && c->nsegs < 16)
         c->seg[c->nsegs++] = (const struct segment_command_64 *)lc;
     if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
         c->ndi++;
-        /* mi_validate guarantees only sizeof(struct load_command) (8 bytes:
-         * cmd, cmdsize) for any command; a dyld_info_command's rebase_off and
-         * rebase_size live further in, at bytes it does not vouch for. Stop
-         * before this command's OTHER fields are read anywhere -- including
-         * by ndi's caller below -- rather than risk striding past whatever
-         * this short command's cmdsize actually left mapped. */
-        if (lc->cmdsize < sizeof(struct dyld_info_command)) { c->short_di = lc->cmdsize; return 1; }
+        if (lc->cmdsize < sizeof(struct dyld_info_command))
+            return mg_rb_short(c, lc, "LC_DYLD_INFO", "rebase_off/rebase_size");
         if (!c->di) c->di = (const struct dyld_info_command *)lc;
     }
-    if (lc->cmd == LC_DYSYMTAB) c->nlocrel += ((const struct dysymtab_command *)lc)->nlocrel;
+    if (lc->cmd == LC_DYSYMTAB) {
+        if (lc->cmdsize < sizeof(struct dysymtab_command))
+            return mg_rb_short(c, lc, "LC_DYSYMTAB", "nlocrel");
+        c->nlocrel += ((const struct dysymtab_command *)lc)->nlocrel;
+    }
     return 0;
 }
 
@@ -422,9 +430,9 @@ int mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, 
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0)
         return mg_rb_fail(r, why, whysz, "the image does not validate");
     mi_each_lc(&im, mg_rb_lcs_cb, &c);
-    if (c.short_di)
-        return mg_rb_fail(r, why, whysz, "the image's LC_DYLD_INFO command is %u bytes, too "
-                          "short to hold rebase_off/rebase_size", c.short_di);
+    if (c.short_lc)
+        return mg_rb_fail(r, why, whysz, "the image's %s command is %u bytes, too short to "
+                          "hold %s", c.short_lc, c.short_size, c.short_of);
     if (c.ndi > 1)
         return mg_rb_fail(r, why, whysz, "the image has %d LC_DYLD_INFO commands", c.ndi);
     if (!c.di && c.nlocrel)
@@ -1018,9 +1026,7 @@ int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size
     if (!mg_find_trie_lc(buf, fsize, &lc_off, &cmd)) return 0;
     if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
         const struct dyld_info_command *d = (const struct dyld_info_command *)(buf + lc_off);
-        /* Same hazard mg_rb_lcs_cb guards against: mi_validate vouches for
-         * only this command's first 8 bytes, and export_off/export_size lie
-         * further in. */
+        /* mi_validate vouches for only this command's first 8 bytes. */
         if (d->cmdsize < sizeof(struct dyld_info_command)) return 0;
         *off = d->export_off; *size = d->export_size;
     } else {

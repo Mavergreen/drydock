@@ -3506,14 +3506,19 @@ static void pt_two_dyld_info(uint8_t *buf) {
     h->ncmds++;
     h->sizeofcmds += sizeof(struct dyld_info_command);
 }
-/* mi_validate vouches for only a command's first 8 bytes (cmd, cmdsize); a
- * dyld_info_command's rebase_off/rebase_size lie further in. Shrinking
- * cmdsize to 8 (it is the fixture's last command, so no other command's
- * offset needs to move) leaves them unvouched-for. */
+/* The fixture's last command, cut to the 8 bytes mi_validate vouches for. */
 static void pt_short_di(uint8_t *buf) {
     struct dyld_info_command *di =
         (struct dyld_info_command *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY);
     di->cmdsize = sizeof(struct load_command);
+}
+static void pt_short_dysymtab(uint8_t *buf) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct load_command *lc = (struct load_command *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    lc->cmd = LC_DYSYMTAB;
+    lc->cmdsize = sizeof *lc;
+    h->ncmds++;
+    h->sizeofcmds += sizeof *lc;
 }
 static const struct { const char *what; pt_poke poke; const char *why; } pt_unreadable[] = {
     { "a rebase that is not a pointer", pt_type,
@@ -3544,6 +3549,8 @@ static const struct { const char *what; pt_poke poke; const char *why; } pt_unre
     { "a slot rebased twice", pt_twice, "the rebase opcodes name __DATA+0x10 more than once" },
     { "a short LC_DYLD_INFO command", pt_short_di,
       "the image's LC_DYLD_INFO command is 8 bytes, too short to hold rebase_off/rebase_size" },
+    { "a short LC_DYSYMTAB command", pt_short_dysymtab,
+      "the image's LC_DYSYMTAB command is 8 bytes, too short to hold nlocrel" },
 };
 
 static void test_rebases_read_refuses_what_it_cannot_read(void) {
@@ -3559,6 +3566,29 @@ static void test_rebases_read_refuses_what_it_cannot_read(void) {
         CHECK(rb.s.n == 0 && rb.s.v == NULL && rb.v == NULL,
               "rebases: %s leaves nothing behind", pt_unreadable[k].what);
         mg_rebases_free(&rb);
+        free(buf);
+    }
+}
+
+/* Cut where the short command ends, so that under libgmalloc reading any of
+ * its missing fields faults. */
+static void test_rebases_read_refuses_a_short_command_before_reading_it(void) {
+    static const pt_poke pokes[] = { pt_short_di, pt_short_dysymtab };
+    for (size_t k = 0; k < sizeof pokes / sizeof pokes[0]; k++) {
+        size_t fsize;
+        uint8_t *buf = build_pointer_image(&fsize, 0);
+        pokes[k](buf);
+        size_t end = sizeof(struct mach_header_64) + ((struct mach_header_64 *)buf)->sizeofcmds;
+        uint8_t *cut = (uint8_t *)malloc(end);
+        memcpy(cut, buf, end);
+        mg_rebases rb;
+        char why[256] = "";
+        int r = mg_rebases_read(cut, end, &rb, why, sizeof why);
+        CHECK(r == -1 && strstr(why, "too short to hold") != NULL,
+              "rebases: short command %zu, at the end of the image, is refused (got %d, '%s')",
+              k, r, why);
+        mg_rebases_free(&rb);
+        free(cut);
         free(buf);
     }
 }
@@ -3603,10 +3633,7 @@ static void test_rebases_read_refuses_a_malformed_image(void) {
     mg_rebases_free(&rb);
 }
 
-/* mg_find_trie hits the same too-short LC_DYLD_INFO_ONLY mg_rebases_read
- * refuses; unlike mg_rebases_read it has no `why` to refuse through, so it
- * reports the trie as absent rather than read past what mi_validate vouches
- * for. */
+/* With no `why` to refuse through, mg_find_trie reports no trie. */
 static void test_find_trie_refuses_a_short_dyld_info(void) {
     size_t fsize;
     uint8_t *buf = build_pointer_image(&fsize, 0);
@@ -3968,6 +3995,7 @@ int main(void) {
     test_rebases_read_a_target_ending_at_the_segments_file_data();
     test_rebases_read_none_without_rebase_opcodes();
     test_rebases_read_refuses_what_it_cannot_read();
+    test_rebases_read_refuses_a_short_command_before_reading_it();
     test_grow_refuses_rebases_it_cannot_read();
     test_grow_accepts_readable_rebases();
     test_grow_moves_the_pointers_that_name_the_header();

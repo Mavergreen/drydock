@@ -190,7 +190,9 @@ typedef struct { mrb_set s; mg_rbval *v; } mg_rebases;
 
 /* Reads every rebase target into *r: none when the image has no
  * LC_DYLD_INFO[_ONLY] or its rebase opcodes are empty. Returns 0; or -1, with
- * *r empty and `why` saying what, when the image has more than one
+ * *r empty and `why` saying what, when the image does not validate; when an
+ * LC_DYLD_INFO[_ONLY] is too short to hold rebase_off/rebase_size, or an
+ * LC_DYSYMTAB too short to hold nlocrel; when the image has more than one
  * LC_DYLD_INFO[_ONLY]; when it has none and LC_DYSYMTAB lists local
  * relocation entries, which dyld then reads in their place; when its rebase
  * opcodes lie past the end of the image or do not decode; or when a target
