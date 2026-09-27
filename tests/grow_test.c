@@ -4220,6 +4220,76 @@ static void test_grow_leaves_an_absolute_export_inside_the_header(void) {
     free(buf);
 }
 
+/* ---- a bind in the segment that maps the header ----
+ * build_pointer_image with one bind (0), weak bind (1) or lazy bind (2) at
+ * PT_LE + 16 * (1 + which): ordinal 1, "_s", a pointer, in segment `seg` at
+ * offset 0x10. */
+static uint8_t *build_bind_image(int which, uint8_t seg, size_t *fsize) {
+    uint8_t *buf = build_pointer_image(fsize, 0);
+    const uint8_t ops[10] = { 0x11, 0x40, '_', 's', 0, 0x51, (uint8_t)(0x70 | seg), 0x10, 0x90,
+                              0x00 };
+    struct dyld_info_command *di = (struct dyld_info_command *)find_lc(buf, *fsize, LC_DYLD_INFO_ONLY);
+    uint32_t at = PT_LE + 16 * (1 + which);
+    memcpy(buf + at, ops, sizeof ops);
+    if (which == 0) { di->bind_off = at; di->bind_size = sizeof ops; }
+    if (which == 1) { di->weak_bind_off = at; di->weak_bind_size = sizeof ops; }
+    if (which == 2) { di->lazy_bind_off = at; di->lazy_bind_size = sizeof ops; }
+    return buf;
+}
+
+static void test_grow_refuses_a_bind_in_the_segment_that_maps_the_header(void) {
+    static const char *const kind[3] = { "bind", "weak bind", "lazy bind" };
+    for (int i = 0; i < 3; i++) {
+        size_t fsize;
+        char what[64], needle[160];
+        uint8_t *buf = build_bind_image(i, 1, &fsize);
+        snprintf(what, sizeof what, "a %s in __TEXT", kind[i]);
+        snprintf(needle, sizeof needle, "ERROR: the %s at __TEXT+0x10 lies in the segment that maps "
+                 "the header; refusing to grow", kind[i]);
+        check_grow_refuses_header_refs(what, buf, fsize, needle);
+    }
+}
+
+static void test_grow_refuses_binds_it_cannot_read(void) {
+    size_t fsize;
+    uint8_t *buf = build_bind_image(2, 4, &fsize);
+    check_grow_refuses_header_refs("a lazy bind in segment 4", buf, fsize,
+        "ERROR: the lazy bind opcodes name segment 4, and there are 4; refusing to grow");
+    buf = build_bind_image(0, 1, &fsize);
+    buf[PT_LE + 16 + 9] = 0x7f;                        /* then segment 15, offset 0; DO_BIND */
+    buf[PT_LE + 16 + 10] = 0x00;
+    buf[PT_LE + 16 + 11] = 0x90;
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->bind_size = 13;
+    check_grow_refuses_header_refs("the first of two binds it cannot move", buf, fsize,
+        "ERROR: the bind at __TEXT+0x10 lies in the segment that maps the header; refusing to grow");
+    buf = build_bind_image(1, 2, &fsize);
+    buf[PT_LE + 32 + 8] = 0xe0;                        /* no such opcode */
+    check_grow_refuses_header_refs("weak bind opcodes that do not decode", buf, fsize,
+        "ERROR: the weak bind opcodes do not decode; refusing to grow");
+    buf = build_bind_image(0, 2, &fsize);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->bind_size = 1000;
+    check_grow_refuses_header_refs("bind opcodes past the image", buf, fsize,
+        "ERROR: the bind opcodes (1000 bytes at offset 12304) run past the end of the 12544-byte "
+        "image; refusing to grow");
+}
+
+/* __DATA, and __PAGEZERO, which starts at file offset 0 but maps none of
+ * the file, are not the segment that maps the header. */
+static void test_grow_accepts_binds_outside_the_header_segment(void) {
+    for (int i = 0; i < 3; i++) {
+        size_t fsize;
+        uint8_t *buf = build_bind_image(i, 2, &fsize);
+        int r = mg_grow_header(&buf, &fsize, 0x1000);
+        CHECK(r == 0, "binds: stream %d's bind in __DATA grows (got %d)", i, r);
+        free(buf);
+    }
+    size_t fsize;
+    uint8_t *buf = build_bind_image(0, 0, &fsize);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "binds: a bind in __PAGEZERO is not in the header's segment (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -4363,6 +4433,9 @@ int main(void) {
     test_grow_leaves_other_symbols_that_name_the_inside_of_the_header();
     test_grow_refuses_an_export_inside_the_header();
     test_grow_leaves_an_absolute_export_inside_the_header();
+    test_grow_refuses_a_bind_in_the_segment_that_maps_the_header();
+    test_grow_refuses_binds_it_cannot_read();
+    test_grow_accepts_binds_outside_the_header_segment();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

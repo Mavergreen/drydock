@@ -408,6 +408,9 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * for; one whose LC_SYMTAB symbol table does not fit in the image; and one
  * whose rebase targets mg_rebases_read cannot read, or one of which
  * mg_header_pointers refuses.
+ * So is one with a bind, weak bind or lazy bind in the segment that maps the
+ * header, whose contents a grow moves out from under it, or bind opcodes it
+ * cannot read.
  * So is one with an N_SECT symbol, not a stab, or an export, not an
  * absolute one, that names a byte strictly between the header and its first
  * content.

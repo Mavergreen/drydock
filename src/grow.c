@@ -5,6 +5,7 @@
 
 #include "grow.h"
 #include "hdrref.h"
+#include "ordinals.h"
 
 /* mg_first_sect_off's mi_each_lc callback: track the lowest LC_SEGMENT_64
  * section file offset seen so far in ctx->first. Always returns 0 (never
@@ -522,6 +523,67 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
     }
     mg_rebases_free(&rb);
     return n;
+}
+
+/* mg_binds_ok's observer: the first bind that names no segment of the image,
+ * or lies in the segment that maps the header. */
+struct mg_bind_ctx { const struct mg_rb_lcs *l; const char *kind; char *why; size_t whysz; int bad; };
+static void mg_bind_obs(const mo_bind_state *st, void *ctx_) {
+    struct mg_bind_ctx *c = (struct mg_bind_ctx *)ctx_;
+    if (c->bad) return;
+    if (st->seg >= c->l->nsegs) {
+        snprintf(c->why, c->whysz, "the %s opcodes name segment %d, and there are %d", c->kind,
+                 st->seg, c->l->nsegs);
+        c->bad = 1;
+        return;
+    }
+    const struct segment_command_64 *seg = c->l->seg[st->seg];
+    if (seg->fileoff != 0 || seg->filesize == 0) return;
+    snprintf(c->why, c->whysz, "the %s at %.16s+%#llx lies in the segment that maps the header",
+             c->kind, seg->segname, (unsigned long long)st->offset);
+    c->bad = 1;
+}
+
+/* 0, or -1 with `why` set when a bind, weak bind or lazy bind lies in the
+ * segment that maps the header, whose contents a grow moves out from under
+ * it, or when those opcodes cannot be read. */
+static int mg_binds_ok(const uint8_t *buf, size_t fsize, char *why, size_t whysz) {
+    mi_image im;
+    struct mg_rb_lcs c;
+    memset(&c, 0, sizeof c);
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        snprintf(why, whysz, "the image does not validate");
+        return -1;
+    }
+    mi_each_lc(&im, mg_rb_lcs_cb, &c);
+    if (c.short_lc) {
+        snprintf(why, whysz, "the image's %s command is %u bytes, too short to hold %s", c.short_lc,
+                 c.short_size, c.short_of);
+        return -1;
+    }
+    if (!c.di) return 0;
+    const struct { const char *kind; uint32_t off, size; } s[3] = {
+        { "bind", c.di->bind_off, c.di->bind_size },
+        { "weak bind", c.di->weak_bind_off, c.di->weak_bind_size },
+        { "lazy bind", c.di->lazy_bind_off, c.di->lazy_bind_size },
+    };
+    for (int i = 0; i < 3; i++) {
+        char what[32];
+        struct mg_bind_ctx x = { &c, s[i].kind, why, whysz, 0 };
+        if (!s[i].size) continue;
+        if (!mo_fits(s[i].off, s[i].size, fsize)) {
+            snprintf(why, whysz, "the %s opcodes (%u bytes at offset %u) run past the end of the "
+                     "%zu-byte image", s[i].kind, s[i].size, s[i].off, fsize);
+            return -1;
+        }
+        snprintf(what, sizeof what, "the %s opcodes", s[i].kind);
+        if (mo_bind_observe(buf + s[i].off, s[i].size, what, mg_bind_obs, &x) != 0) {
+            snprintf(why, whysz, "the %s opcodes do not decode", s[i].kind);
+            return -1;
+        }
+        if (x.bad) return -1;
+    }
+    return 0;
 }
 
 /* mg_snapshot_take's mhr_scan callback: keep each reference to the header. */
@@ -1717,7 +1779,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         char why[256];
         int64_t n = mg_header_pointers(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0,
                                        why, sizeof why);
-        if (n < 0) {
+        if (n < 0 || mg_binds_ok(buf, fsize, why, sizeof why) != 0) {
             fprintf(stderr, "ERROR: %s; refusing to grow\n", why);
             return -1;
         }
