@@ -2133,9 +2133,9 @@ static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, in
     }
 }
 
-/* Everything mg_ensure_pad(..., need, "t") prints on stderr, as one string
- * the caller frees. */
-static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, int *ret) {
+/* Everything `call` prints on stderr, as one string the caller frees. */
+static char *stderr_during(int (*call)(uint8_t **, size_t *, uint32_t), uint8_t **pbuf,
+                           size_t *pfsize, uint32_t grow, int *ret) {
     const char *tmpdir = getenv("TMPDIR");
     char path[512];
     char *text = (char *)calloc(1, 65536);
@@ -2145,10 +2145,10 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     int saved_fd = dup(fileno(stderr));
     if (!freopen(path, "w", stderr)) {
         CHECK(0, "could not capture stderr to %s", path);
-        *ret = mg_ensure_pad(pbuf, pfsize, need, "t");
+        *ret = call(pbuf, pfsize, grow);
         return text;
     }
-    *ret = mg_ensure_pad(pbuf, pfsize, need, "t");
+    *ret = call(pbuf, pfsize, grow);
     fflush(stderr);
     dup2(saved_fd, fileno(stderr));
     close(saved_fd);
@@ -2161,6 +2161,12 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     }
     unlink(path);
     return text;
+}
+
+/* Everything mg_ensure_pad(..., need, "t") prints on stderr. */
+static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, int *ret) {
+    g_ensure_need = need;
+    return stderr_during(ensure_thunk, pbuf, pfsize, 0, ret);
 }
 
 /* How many candidates in `buf` address `target`. */
@@ -3775,6 +3781,7 @@ static void pt_all_alike(uint8_t *buf, size_t fsize) {
     for (int i = 0; i < PT_N + 1; i++) pt_slots_now(buf, fsize)[i] = PT_DATAVM + 0x40;
 }
 static void pt_shift_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[2] = 0x08; }
+static void pt_add_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[3] = 0x55; }
 
 static void check_verify_rejects_pointer(const char *what, pt_tweak setup, pt_tweak undo,
                                          const char *needle) {
@@ -3790,10 +3797,14 @@ static void check_verify_rejects_pointer(const char *what, pt_tweak setup, pt_tw
     }
     CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the grow as made", what);
     undo(buf, fsize);
-    int r;
+    int r, errors = 0;
     verify_snap = &snap;
-    int said = stderr_contains_during(verify_thunk, &buf, &fsize, 0, needle, &r);
-    CHECK(r == -1 && said, "verify REJECTS %s, saying '%s' (got %d)", what, needle, r);
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    for (const char *p = err; (p = strstr(p, "ERROR")) != NULL; p++) errors++;
+    CHECK(r == -1 && strstr(err, needle) != NULL, "verify REJECTS %s, saying '%s' (got %d):\n%s",
+          what, needle, r, err);
+    CHECK(errors == 1, "%s: verify prints one ERROR, not %d:\n%s", what, errors, err);
+    free(err);
     mg_snapshot_free(&snap);
     free(buf);
 }
@@ -3809,6 +3820,8 @@ static void test_verify_watches_the_pointers(void) {
         "the pointer at 0x100002008 holds 0x100001040 after the grow, and must hold 0x100002040");
     check_verify_rejects_pointer("a rebase dropped", NULL, pt_drop_one,
         "ERROR: verify FAILED -- the grown image rebases 3 pointers, 4 before the grow; refusing.");
+    check_verify_rejects_pointer("a rebase added", NULL, pt_add_one,
+        "ERROR: verify FAILED -- the grown image rebases 5 pointers, 4 before the grow; refusing.");
     check_verify_rejects_pointer("a rebase moved to a slot holding the same value", pt_all_alike,
         pt_shift_one,
         "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and was at 0x100002000 "
@@ -3851,6 +3864,14 @@ static void test_rebases_read_refuses_local_relocations(void) {
     mg_rebases_free(&rb);
     free(buf);
 
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_size = 0;
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "local relocations beside empty rebase opcodes: nothing to read "
+          "(got %d, %zu: %s)", r, rb.s.n, why);
+    mg_rebases_free(&rb);
+    free(buf);
+
     buf = build_pointer_image(&fsize, PT_NOINFO);
     r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
     CHECK(r == 0 && rb.s.n == 0, "neither: nothing to read (got %d, %zu: %s)", r, rb.s.n, why);
@@ -3876,6 +3897,11 @@ static void test_grow_refuses_local_relocations(void) {
     buf = build_pointer_image(&fsize, PT_LOCREL);
     r = mg_grow_header(&buf, &fsize, 0x1000);
     CHECK(r == 0, "local relocations beside rebase opcodes: the grow succeeds (got %d)", r);
+    free(buf);
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_size = 0;
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "local relocations beside empty rebase opcodes: the grow succeeds (got %d)", r);
     free(buf);
 }
 
