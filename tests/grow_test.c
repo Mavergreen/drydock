@@ -3490,6 +3490,15 @@ static void pt_two_dyld_info(uint8_t *buf) {
     h->ncmds++;
     h->sizeofcmds += sizeof(struct dyld_info_command);
 }
+/* mi_validate vouches for only a command's first 8 bytes (cmd, cmdsize); a
+ * dyld_info_command's rebase_off/rebase_size lie further in. Shrinking
+ * cmdsize to 8 (it is the fixture's last command, so no other command's
+ * offset needs to move) leaves them unvouched-for. */
+static void pt_short_di(uint8_t *buf) {
+    struct dyld_info_command *di =
+        (struct dyld_info_command *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY);
+    di->cmdsize = sizeof(struct load_command);
+}
 static const struct { const char *what; pt_poke poke; const char *why; } pt_unreadable[] = {
     { "a rebase that is not a pointer", pt_type,
       "the rebase at __DATA+0 is of type 2, not a pointer" },
@@ -3517,6 +3526,8 @@ static const struct { const char *what; pt_poke poke; const char *why; } pt_unre
       "the rebase opcodes (1000 bytes at offset 12288) run past the end of the 12544-byte image" },
     { "two LC_DYLD_INFO commands", pt_two_dyld_info, "the image has 2 LC_DYLD_INFO commands" },
     { "a slot rebased twice", pt_twice, "the rebase opcodes name __DATA+0x10 more than once" },
+    { "a short LC_DYLD_INFO command", pt_short_di,
+      "the image's LC_DYLD_INFO command is 8 bytes, too short to hold rebase_off/rebase_size" },
 };
 
 static void test_rebases_read_refuses_what_it_cannot_read(void) {
@@ -3563,6 +3574,30 @@ static void test_grow_accepts_readable_rebases(void) {
     uint8_t *buf = build_pointer_image(&fsize, 0);
     int r = mg_grow_header(&buf, &fsize, 0x1000);
     CHECK(r == 0, "grow: the pointer fixture grows (got %d)", r);
+    free(buf);
+}
+
+static void test_rebases_read_refuses_a_malformed_image(void) {
+    uint8_t buf[16] = { 0 };   /* bad magic, and shorter than a header */
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, sizeof buf, &rb, why, sizeof why);
+    CHECK(r == -1 && strstr(why, "the image does not validate") != NULL,
+          "rebases: a malformed image is refused (got %d, '%s')", r, why);
+    mg_rebases_free(&rb);
+}
+
+/* mg_find_trie hits the same too-short LC_DYLD_INFO_ONLY mg_rebases_read
+ * refuses; unlike mg_rebases_read it has no `why` to refuse through, so it
+ * reports the trie as absent rather than read past what mi_validate vouches
+ * for. */
+static void test_find_trie_refuses_a_short_dyld_info(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    pt_short_di(buf);
+    uint32_t off, size;
+    int r = mg_find_trie(buf, fsize, &off, &size);
+    CHECK(r == 0, "find_trie: a short LC_DYLD_INFO command yields no trie (got %d)", r);
     free(buf);
 }
 
@@ -3684,6 +3719,8 @@ int main(void) {
     test_rebases_read_refuses_what_it_cannot_read();
     test_grow_refuses_rebases_it_cannot_read();
     test_grow_accepts_readable_rebases();
+    test_rebases_read_refuses_a_malformed_image();
+    test_find_trie_refuses_a_short_dyld_info();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

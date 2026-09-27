@@ -340,7 +340,10 @@ int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cm
 /* Locate the export trie's (off, size), whichever load command carries it --
  * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
  * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
- * no export-trie load command at all (not an error -- just nothing to walk). */
+ * no export-trie load command at all (not an error -- just nothing to walk),
+ * or if its LC_DYLD_INFO[_ONLY] is too short to hold export_off/export_size
+ * (mi_validate vouches for only its first 8 bytes; treated the same as
+ * absent, since neither can be walked). */
 int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size);
 
 
