@@ -796,6 +796,28 @@ static int me_pack(uint8_t **pbuf, size_t *psize, const uint8_t *orig, size_t os
     }
 }
 
+/* Would codesign_allocate re-sign corrupt a slice of fat `buf` that `arch`
+ * did not select? Only then can dropping `arch` repair it. */
+static int me_corrupt_unselected(const uint8_t *buf, size_t size, const ms_script *s) {
+    uint32_t narch;
+    int swap;
+    if (!s->arch_mask || size < 4 || (buf[0] != 0xca && buf[0] != 0xbe) ||
+        mfat_parse(buf, size, &narch, &swap) != 0)
+        return 0;
+    for (uint32_t j = 0; j < narch; j++) {
+        mfat_arch a;
+        mfat_get(buf, swap, j, &a);
+        int row = ma_index(a.cputype, a.cpusubtype);
+        if (row >= 0 && (s->arch_mask & (1u << row))) continue;
+        mi_image im;
+        mlo_verdict v;
+        if (mi_wrap((uint8_t *)buf + a.offset, a.size, &im) != 0) continue;
+        mlo_check(&im, &v);
+        if (v.corrupting) return 1;
+    }
+    return 0;
+}
+
 /* Before the write: refuse a file some slice of which codesign_allocate
  * would re-sign corrupt, and say whether 10.9 can re-sign the file whenever
  * the pass changed a slice or the run is refused. Returns 0 or MR_REFUSED. */
@@ -804,13 +826,11 @@ static int me_resign(const uint8_t *buf, size_t size, const char *path, const ch
     char refusal[256], corrupt[4096];
     int rc = mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
     if (rc == 2) {
-        /* Only a fat file can have a corrupting slice `arch` did not select. */
-        uint32_t magic = size >= sizeof magic ? *(const uint32_t *)buf : 0;
-        int fat = magic == FAT_MAGIC || magic == FAT_CIGAM;
         me_say(log, "%s: resign 10.9: %s\n", path, refusal);
         me_say(log, "drydock-macho-rewrite edit: refused: codesign_allocate would re-sign %s corrupt "
                     "(%s)%s; ", out, corrupt,
-               (s->arch_mask && fat) ? "; run the script without arch, or on that slice" : "");
+               me_corrupt_unselected(buf, size, s) ? "; run the script without arch, or on that slice"
+                                                   : "");
         me_say_left(log, path, out);
         return MR_REFUSED;
     }

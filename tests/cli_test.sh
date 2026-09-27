@@ -5282,6 +5282,15 @@ lo "$T/lk_fat" "$T/lk_fat.out" 'arch x86_64' 'load-command delete codesig'
     && grep -q 'run the script without arch, or on that slice' "$T/lo.err" \
     && ok "order: an unselected slice that would re-sign corrupt refuses the run, naming it" \
     || bad "order: fat corrupt slice" "rc $lo_rc: $(cat "$T/lo.err")"
+# ... but when `arch` selected the corrupting slice, and the pass could not
+# repair it, dropping `arch` would not help: no remedy.
+"$BIN/makefat" "$T/lk_fat_sel" "$T/lk_canonical" 0x1000007 3 12 "$T/lk_hole-16-note" 0x1000007 8 12
+lo "$T/lk_fat_sel" "$T/lk_fat_sel.out" 'arch x86_64h' 'rpath append /lk'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_fat_sel.out" ] \
+    && grep -q 'slice x86_64h: .*would not survive' "$T/lo.err" \
+    && ! grep -q 'run the script without arch' "$T/lo.err" \
+    && ok "order: a selected slice the pass cannot repair refuses the run, with no arch remedy" \
+    || bad "order: fat selected corrupt slice" "rc $lo_rc: $(cat "$T/lo.err")"
 lo "$T/lk_fat" "$T/lk_fat.all" 'load-command delete codesig'
 [ "$lo_rc" -eq 0 ] && grep -q "slice x86_64h: __LINKEDIT re-packed" "$T/lo.err" \
     && [ "$(resign "$T/lk_fat.all")" = ok ] \
