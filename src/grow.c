@@ -1479,8 +1479,8 @@ static int mg_header_refs_ok(const uint8_t *buf, size_t fsize, uint32_t grow) {
     return -1;
 }
 
-/* mg_inside_refs_ok's verdict callback: the first candidate decoding
- * confirms. */
+/* mg_inside_refs_ok's verdict callback: stops at the first candidate
+ * decoding does not refute -- confirmed, not reached, or no starts. */
 struct mg_inside_ctx { int hit; mhr_cand c; };
 static int mg_inside_cb(const mhr_cand *c, int verdict, void *ctx_) {
     struct mg_inside_ctx *x = (struct mg_inside_ctx *)ctx_;

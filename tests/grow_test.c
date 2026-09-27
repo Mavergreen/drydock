@@ -2208,7 +2208,7 @@ static void check_grow_refuses_header_refs(const char *what, uint8_t *buf, size_
     free(buf);
 }
 
-/* mov $imm32, %eax whose immediate starts with 0x05: a candidate the sweep
+/* movabs $imm64, %rax whose immediate starts with 0x05: a candidate the sweep
  * finds inside an instruction that is not RIP-relative. */
 static void test_grow_refuses_a_header_reference_it_cannot_confirm(void) {
     size_t fsize; uint32_t sect_off;
@@ -4046,10 +4046,9 @@ static void test_confirm_each_gives_each_candidate_its_verdict(void) {
     check_verdicts("with no LC_FUNCTION_STARTS", &k, HR_CODE + 4, nostarts);
 }
 
-/* Two leas share one function: a resumed sweep must carry its state (pc, k)
- * from the first lea's candidates to the second's, not re-decode from the
- * function's start each time -- an unreached candidate (past the EVEX byte
- * between them) stays unreached once the sweep resumes past it. */
+/* Two leas share one function, the second past an EVEX byte (0x62) between
+ * them: an unreached candidate after a confirmed one in the same function
+ * stays unreached. */
 static void test_confirm_each_resumes_the_sweep_across_candidates(void) {
     struct hr_code k = { { 0x55, 0x48, 0x8d, 0, 0, 0, 0, 0, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 20,
                          HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
@@ -4125,7 +4124,7 @@ static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(v
     size_t fsize;
     uint8_t *buf = build_inside_ref(HR_BASE + 16, 0, MG_T_FUNCSTARTS, &fsize);
     struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
-    if (pl) buf[pl->offset + 1] = 0xb8;                     /* mov $imm32, %eax */
+    if (pl) buf[pl->offset + 1] = 0xb8;                     /* movabs $imm64, %rax */
     int r = mg_grow_header(&buf, &fsize, 0x1000);
     CHECK(r == 0, "inside: a lookalike decoding refutes grows (got %d)", r);
     free(buf);

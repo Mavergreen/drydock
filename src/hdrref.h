@@ -53,14 +53,15 @@ int64_t mhr_scan_range(const uint8_t *buf, size_t fsize, uint64_t first, uint64_
                              * of its 8-byte entry */
 #define MHR_NO_STARTS   2  /* a candidate, and no LC_FUNCTION_STARTS to decode it from */
 #define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm; under
-                             * mhr_confirm_each, decoding cannot reach it */
+                             * mhr_confirm_each, decoding cannot reach it, or reaches an
+                             * addr32 (0x67) form of it */
 #define MHR_REFUTED     4  /* mhr_confirm_each only: decoding reaches the candidate and
                             * finds another instruction's bytes, data in code, or this
                             * operand with another immediate */
 
 /* Called once per candidate with MHR_CONFIRMED, MHR_REFUTED, MHR_NO_STARTS
- * or MHR_UNCONFIRMED, which here means that decoding cannot reach it.
- * Returning nonzero stops the walk. */
+ * or MHR_UNCONFIRMED, which here means that decoding cannot reach it, or
+ * reaches an addr32 (0x67) form of it. Returning nonzero stops the walk. */
 typedef int (*mhr_verdict_fn)(const mhr_cand *c, int verdict, void *ctx);
 
 /* Decodes, as mhr_confirm does, every candidate mhr_scan_range finds for
