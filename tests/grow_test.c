@@ -2547,11 +2547,16 @@ struct hr_code {
     uint32_t ndic;
 };
 
-static int hr_confirm(const struct hr_code *k, mhr_cand *bad) {
+static uint8_t *hr_code_image(const struct hr_code *k) {
     uint8_t *buf = build_code_image();
     memcpy(buf + HR_FOFF, k->b, k->n);
     if (k->fs) hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, k->fs, k->nfs);
     if (k->dic) hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, k->dic, k->ndic);
+    return buf;
+}
+
+static int hr_confirm(const struct hr_code *k, mhr_cand *bad) {
+    uint8_t *buf = hr_code_image(k);
     int r = mhr_confirm(buf, HR_IMG_SIZE, bad);
     free(buf);
     return r;
@@ -3905,6 +3910,148 @@ static void test_grow_refuses_local_relocations(void) {
     free(buf);
 }
 
+/* ---- a range of targets ----
+ * The one rule refuses what names a byte strictly between the header and
+ * its first content, so the scan also takes a range, [first, last], and
+ * says what each candidate names. */
+#define HR_FIRST (HR_BASE + 1)
+#define HR_LAST  (HR_BASE + 0xfff)
+
+static void test_scan_reports_each_candidates_target(void) {
+    uint8_t code[16];
+    memset(code, 0x90, sizeof code);
+    hr_plant(code, HR_CODE, 2, 0x3d, 2, HR_BASE);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, hr_record, &s);
+    CHECK(s.n == 1 && s.c[0].target == HR_BASE && s.c[0].immlen == 2,
+          "scan: the candidate names %#llx with a 2-byte immediate (%d found, %#llx, %d)",
+          (unsigned long long)HR_BASE, s.n, (unsigned long long)s.c[0].target, s.c[0].immlen);
+}
+
+/* One operand whose target is first - 2 without an immediate reaches the
+ * range only with a 2- or 4-byte one; one at last - 1 leaves it with a
+ * 2-byte one. */
+static void test_scan_range_takes_its_bounds_inclusively(void) {
+    uint8_t *buf = build_code_image();
+    hr_plant(buf + HR_FOFF, HR_CODE, 0x20, 0x05, 0, HR_FIRST - 2);
+    hr_plant(buf + HR_FOFF, HR_CODE, 0x40, 0x05, 0, HR_LAST - 1);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    int64_t n = mhr_scan_range(buf, HR_IMG_SIZE, HR_FIRST, HR_LAST, hr_record, &s);
+    static const struct { uint64_t addr; int immlen; uint64_t target; } want[4] = {
+        { HR_CODE + 0x21, 2, HR_FIRST },
+        { HR_CODE + 0x21, 4, HR_FIRST + 2 },
+        { HR_CODE + 0x41, 0, HR_LAST - 1 },
+        { HR_CODE + 0x41, 1, HR_LAST },
+    };
+    CHECK(n == 4 && s.n == 4, "range: %lld candidates, want 4", (long long)n);
+    for (int k = 0; k < 4 && k < s.n; k++)
+        CHECK(s.c[k].addr == want[k].addr && s.c[k].immlen == want[k].immlen &&
+              s.c[k].target == want[k].target,
+              "range: candidate %d is at %#llx, immediate %d, naming %#llx; want %#llx, %d, %#llx",
+              k, (unsigned long long)s.c[k].addr, s.c[k].immlen, (unsigned long long)s.c[k].target,
+              (unsigned long long)want[k].addr, want[k].immlen, (unsigned long long)want[k].target);
+    free(buf);
+}
+
+struct hr_verdicts { mhr_cand c[8]; int v[8]; int n; int stop_after; };
+static int hr_verdict(const mhr_cand *c, int verdict, void *ctx) {
+    struct hr_verdicts *s = (struct hr_verdicts *)ctx;
+    if (s->n < 8) { s->c[s->n] = *c; s->v[s->n] = verdict; }
+    s->n++;
+    return s->stop_after && s->n >= s->stop_after;
+}
+
+static int hr_confirm_each(const struct hr_code *k, struct hr_verdicts *s) {
+    uint8_t *buf = hr_code_image(k);
+    int r = mhr_confirm_each(buf, HR_IMG_SIZE, HR_FIRST, HR_LAST, hr_verdict, s);
+    free(buf);
+    return r;
+}
+
+/* push; lea base+16(%rip), %rax. Its disp32 names base + 16 with no
+ * immediate, which decoding confirms, and base + 17, + 18 and + 20 with one,
+ * which decoding refutes: the lea has none. */
+static struct hr_code hr_push_lea_inside(void) {
+    struct hr_code k = hr_push_lea();
+    hr_plant(k.b, HR_CODE, 3, 0x05, 0, HR_BASE + 16);
+    return k;
+}
+
+/* Each case's four candidates share a disp32, at `at`, and name base + 16,
+ * + 17, + 18 and + 20; `v` is each one's verdict. */
+static void check_verdicts(const char *what, const struct hr_code *k, uint64_t at, const int v[4]) {
+    static const int immlen[4] = { 0, 1, 2, 4 };
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 0 };
+    int r = hr_confirm_each(k, &s);
+    CHECK(r == MHR_CONFIRMED && s.n == 4, "verdicts: %s: 4 candidates (got %d, %d)", what, r, s.n);
+    for (int i = 0; i < 4 && i < s.n; i++)
+        CHECK(s.c[i].addr == at && s.c[i].immlen == immlen[i] && s.v[i] == v[i],
+              "verdicts: %s: with a %d-byte immediate, verdict %d, want %d (at %#llx)", what,
+              immlen[i], s.v[i], v[i], (unsigned long long)s.c[i].addr);
+}
+
+static void test_confirm_each_gives_each_candidate_its_verdict(void) {
+    static const int lea[4] = { MHR_CONFIRMED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED };
+    static const int refuted[4] = { MHR_REFUTED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED };
+    static const int unreached[4] = { MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED,
+                                      MHR_UNCONFIRMED };
+    static const int nostarts[4] = { MHR_NO_STARTS, MHR_NO_STARTS, MHR_NO_STARTS, MHR_NO_STARTS };
+    static const uint8_t late[] = { 0x90, 0x20, 0x00 };                            /* base + 0x1010 */
+    static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };   /* +1, 7 bytes */
+    static const uint8_t disp[] = { 0x04, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };   /* +4, 4 bytes */
+    struct hr_code k = hr_push_lea_inside();
+    check_verdicts("a lea", &k, HR_CODE + 4, lea);
+
+    struct hr_code mov = { { 0x55, 0xb8 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(mov.b, HR_CODE, 2, 0x05, 0, HR_BASE + 16);                /* mov $imm32, %eax */
+    check_verdicts("inside mov's immediate", &mov, HR_CODE + 3, refuted);
+
+    struct hr_code next = { { 0x55, 0xb8, 0x00, 0x00, 0x00 }, 11, HR_ONE_FUNCTION,
+                            sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(next.b, HR_CODE, 5, 0x05, 0, HR_BASE + 16);               /* the imm32's last byte */
+    check_verdicts("where the next instruction begins", &next, HR_CODE + 6, refuted);
+
+    k = hr_push_lea_inside();
+    k.dic = data; k.ndic = sizeof data;
+    check_verdicts("in data in code", &k, HR_CODE + 4, refuted);
+
+    k = hr_push_lea_inside();
+    k.dic = disp; k.ndic = sizeof disp;
+    check_verdicts("in an instruction that is partly data", &k, HR_CODE + 4, unreached);
+
+    struct hr_code evex = { { 0x55, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 12, HR_ONE_FUNCTION,
+                            sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(evex.b, HR_CODE, 7, 0x05, 0, HR_BASE + 16);
+    check_verdicts("past what the decoder cannot decode", &evex, HR_CODE + 8, unreached);
+
+    k = hr_push_lea_inside();
+    k.fs = late; k.nfs = sizeof late;
+    check_verdicts("with no function start at or before it", &k, HR_CODE + 4, unreached);
+
+    k = hr_push_lea_inside();
+    k.fs = NULL;
+    check_verdicts("with no LC_FUNCTION_STARTS", &k, HR_CODE + 4, nostarts);
+}
+
+static void test_confirm_each_stops_when_asked(void) {
+    struct hr_code k = hr_push_lea_inside();
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 2 };
+    int r = hr_confirm_each(&k, &s);
+    CHECK(r == MHR_CONFIRMED && s.n == 2, "confirm each: stopped after 2 (got %d, %d)", r, s.n);
+}
+
+static void test_confirm_each_reports_an_image_it_cannot_scan(void) {
+    struct hr_code k = hr_push_lea_inside();
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 0 };
+    uint8_t *buf = hr_code_image(&k);
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    sc[1].size = HR_IMG_SIZE;                          /* __stubs runs past the image */
+    int r = mhr_confirm_each(buf, HR_IMG_SIZE, HR_FIRST, HR_LAST, hr_verdict, &s);
+    CHECK(r == MHR_UNSCANNABLE, "confirm each: an instruction section past the image (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -4035,6 +4182,11 @@ int main(void) {
     test_grow_refuses_local_relocations();
     test_rebases_read_refuses_a_malformed_image();
     test_find_trie_refuses_a_short_dyld_info();
+    test_scan_reports_each_candidates_target();
+    test_scan_range_takes_its_bounds_inclusively();
+    test_confirm_each_gives_each_candidate_its_verdict();
+    test_confirm_each_stops_when_asked();
+    test_confirm_each_reports_an_image_it_cannot_scan();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
