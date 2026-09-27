@@ -33,8 +33,9 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
-| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..da88d0e` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
+| 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
+| 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1487,7 +1488,7 @@ either route yet — a `movl __mh_execute_header+16(%rip)` grows silently
 wrong. 0 such targets in 1,059 host executables (19.2M instructions); M2
 implements the refusal once, for both routes, via a range scan.
 
-Landed `549c57e..da88d0e`. 10.9's `codesign_allocate` requires `__LINKEDIT` in
+Landed `549c57e..8a79c86`. 10.9's `codesign_allocate` requires `__LINKEDIT` in
 ld64's order, and silently re-signs corrupt a file whose pieces do not add up
 (`docs/codesign-order.md`); `info` says whether it can, as a `resign 10.9:`
 line. Task 11's real-world run took fresh copies of six OpenCode.app
@@ -1511,3 +1512,12 @@ identical, and round-trips an encode/decode of a text file.
 `_ZN3foo3barEv` to `foo::bar()`. `sh tests/codesign_order_test.sh` on 10.9
 (M4's gate): 0 failures.
 
+## Item 32: a load command shorter than its struct
+
+**Found 2026-09-26** by item 30's final review. Under libgmalloc, `info` on a
+40-byte file whose only command is an 8-byte `LC_LOAD_DYLIB`,
+`LC_LOAD_WEAK_DYLIB`, `LC_RPATH`, `LC_REEXPORT_DYLIB`, `LC_LOAD_UPWARD_DYLIB`
+or `LC_VERSION_MIN_MACOSX` exits 139, at `c1c7ccc` as at HEAD: `info_image`
+casts before checking `cmdsize`, and `ml_each_off` has the same gap. Item 30
+fixed its own readers (`mlo_collect`, `mlo_find`); the general fix is a
+per-kind minimum `cmdsize` in `mi_validate`, which would cover every reader.
