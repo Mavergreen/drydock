@@ -1483,13 +1483,19 @@ Grown before, `/usr/bin/java -version` died of SIGSEGV; now it runs. A grow
 reads every rebase target (`mg_rebases_read`, `src/grow.h`), moves each
 that names the header down with it, counts them among the "references to
 the header" it repaired, and verifies them slot by slot. It refuses what it
-cannot vouch for: a rebase that is not a pointer, lies in the segment that
-maps the header, in zero-fill or past the file, or is named twice (none
-here); and any executable that has no `LC_DYLD_INFO[_ONLY]` and whose
-`LC_DYSYMTAB` lists local relocations, since dyld then slides its pointers
-from those, which the grow does not read. `dnsextd`, `mDNSResponder` and
-`mDNSResponderHelper` are such, each with a `__dyld` pointer the grow used
-to leave a page past the header, and now refuse. A bind to the image's own
+cannot vouch for, before it changes anything. None of these occurs here: an
+`LC_DYLD_INFO[_ONLY]` too short to hold `rebase_off`/`rebase_size`, or (since
+`ee3bf23`) an `LC_DYSYMTAB` too short to hold `nlocrel`; a rebase that is not
+a pointer, lies in the segment that maps the header, in zero-fill or past the
+file, or is named twice; a value strictly inside the header (I1, below); and
+(since `683f4ca`) a value in [base − G, base), the G bytes below the header
+that the grown header takes, which the grow would otherwise turn silently
+into a pointer into the header. It refuses, too, any executable that has no
+`LC_DYLD_INFO[_ONLY]` and whose `LC_DYSYMTAB` lists local relocations, since
+dyld then slides its pointers from those, which the grow does not read.
+`dnsextd`, `mDNSResponder` and `mDNSResponderHelper` are such, each with a
+`__dyld` pointer the grow used to leave a page past the header, and now
+refuse. A bind to the image's own
 `__mh_execute_header` (ld64's `-interposable`) needs nothing: dyld resolves
 it through the export trie, which names the header where it now is. That
 holds for a bind with an addend too: `&_mh_execute_header + 16` bound this
@@ -1501,17 +1507,17 @@ a grow would move that slot's contents out from under it.
 
 **I1**, the one rule's strictly-inside refusal: its **data half is done**
 since `f5b186a`. A rebase value strictly inside (base, base + F), such as
-`(const char *)&_mh_execute_header + 16`, refuses the grow (none among
-this host's executables). Its **code half is not**: a
+`(const char *)&_mh_execute_header + 16`, refuses the grow (none among this
+host's executables). Its **code half is not**: a
 `movl __mh_execute_header+16(%rip)` still grows silently wrong. Measured
-2026-09-26, a scan for RIP-relative targets strictly inside (base, base + F)
-finds 1,060 candidates in 120 of this host's 1,059 x86_64 executables, and
-29 in Claude Code, and decoding confirms none as an instruction. The same
-decoding confirms 151 of the 152 exact-base candidates. Refusing every
-candidate it cannot confirm would stop 119 of those executables growing, and
-Claude Code; refusing only confirmed ones changes nothing measured. It is
-deferred to dylib-growth M2, which decides that, with the symbol half (a
-symbol strictly inside: none here).
+2026-09-26 while planning the data half, a scan for RIP-relative targets
+strictly inside (base, base + F) finds 1,060 candidates in 120 of this
+host's 1,059 x86_64 executables, and 29 in Claude Code, and decoding
+confirms none as an instruction. The same decoding confirms 151 of the 152
+exact-base candidates. Refusing every candidate it cannot confirm would stop
+119 of those executables growing, and Claude Code; refusing only confirmed
+ones changes nothing measured. It is deferred to dylib-growth M2, which
+decides that, with the symbol half (a symbol strictly inside: none here).
 
 Landed `549c57e..8a79c86`. 10.9's `codesign_allocate` requires `__LINKEDIT` in
 ld64's order, and silently re-signs corrupt a file whose pieces do not add up
@@ -1546,3 +1552,14 @@ or `LC_VERSION_MIN_MACOSX` exits 139, at `c1c7ccc` as at HEAD: `info_image`
 casts before checking `cmdsize`, and `ml_each_off` has the same gap. Item 30
 fixed its own readers (`mlo_collect`, `mlo_find`); the general fix is a
 per-kind minimum `cmdsize` in `mi_validate`, which would cover every reader.
+
+A grow has the same gap in readers older than item 29's data half, found by
+its final review and measured again 2026-09-26. Under libgmalloc, with the
+file ending 4 bytes past an 8-byte command, each of these makes a grow exit
+139: `mg_find_trie` reading an `LC_DYLD_EXPORTS_TRIE`'s
+`dataoff`/`datasize` (from `mg_trie_walk`), `mg_fs_find_cb` reading an
+`LC_FUNCTION_STARTS`'s, and `mg_dice_walk` walking an `LC_DATA_IN_CODE`'s.
+The data half floored only the commands it reads: a short
+`LC_DYLD_INFO[_ONLY]` (`d431204`, in `mg_find_trie` too) and a short
+`LC_DYSYMTAB` (`ee3bf23`) are refused, before anything else in a grow reads
+them. Only a floor in `mi_validate` closes the whole class.

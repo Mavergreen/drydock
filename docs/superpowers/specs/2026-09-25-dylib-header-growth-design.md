@@ -446,10 +446,11 @@ handed on (2026-09-25):
   (`mg_header_pointers`), and the raise reuses that. `mhr_code` takes an
   exact target: give the scan a range (lo, hi) and report each candidate's
   target. What an in-range candidate that cannot be confirmed means is the
-  owner's decision (QUEUE item 29, I1): measured, 1,060 in 120 of 1,059 host
-  executables and 29 in Claude Code, none confirmed, so refusing them would
-  stop 119 of those and Claude Code growing. A
-  `movl __mh_execute_header+16(%rip)` still grows silently wrong.
+  owner's decision (QUEUE item 29, I1): measured while planning the data
+  half (2026-09-26), 1,060 in 120 of 1,059 host executables and 29 in Claude
+  Code, none confirmed, so refusing them would stop 119 of those and Claude
+  Code growing. A `movl __mh_execute_header+16(%rip)` still grows silently
+  wrong.
 - **Refuse a bind in `__TEXT` on both routes** (Decision 6). The executable
   route already refuses a rebase there (`mg_rebases_read`) but not a bind,
   whose slot the grow would move out from under it. None on this host.

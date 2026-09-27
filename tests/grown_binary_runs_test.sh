@@ -8,9 +8,12 @@
 #
 # The subjects: a PIE executable linked here with -headerpad 0; a system
 # executable when one qualifies (a 64-bit PIE MH_EXECUTE the grow accepts as
-# it is; a slice with chained fixups does not, and is reported as a SKIP); and
+# it is; a slice with chained fixups does not, and is reported as a SKIP);
 # two programs that find their own header: one RIP-relatively, whose grow must
-# repair that reference, and one through dyld, with nothing to repair.
+# repair that reference, and one through dyld, with nothing to repair; and
+# three that keep its address in data: ptr, whose pointer the grow must move,
+# inside, which points into the header and must be refused, and self, which
+# binds to its own __mh_execute_header and needs nothing.
 # Each gets enough distinct LC_RPATHs to outgrow its header pad, measured from
 # `drydock-macho-rewrite info` -- never a pad size this host's linker chose.
 # Fixtures are x86_64 with a 10.9 floor, which runs on 10.9 and under Rosetta.
