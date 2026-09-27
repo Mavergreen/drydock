@@ -52,7 +52,8 @@ int64_t mhr_scan_range(const uint8_t *buf, size_t fsize, uint64_t first, uint64_
                              * does LC_DATA_IN_CODE's payload, or its size is not a multiple
                              * of its 8-byte entry */
 #define MHR_NO_STARTS   2  /* a candidate, and no LC_FUNCTION_STARTS to decode it from */
-#define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm */
+#define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm; under
+                             * mhr_confirm_each, decoding cannot reach it */
 #define MHR_REFUTED     4  /* mhr_confirm_each only: decoding reaches the candidate and
                             * finds another instruction's bytes, data in code, or this
                             * operand with another immediate */

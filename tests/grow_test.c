@@ -3996,6 +3996,7 @@ static void test_confirm_each_gives_each_candidate_its_verdict(void) {
     static const int unreached[4] = { MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED,
                                       MHR_UNCONFIRMED };
     static const int nostarts[4] = { MHR_NO_STARTS, MHR_NO_STARTS, MHR_NO_STARTS, MHR_NO_STARTS };
+    static const int addr32v[4] = { MHR_UNCONFIRMED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED };
     static const uint8_t late[] = { 0x90, 0x20, 0x00 };                            /* base + 0x1010 */
     static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };   /* +1, 7 bytes */
     static const uint8_t disp[] = { 0x04, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };   /* +4, 4 bytes */
@@ -4024,6 +4025,18 @@ static void test_confirm_each_gives_each_candidate_its_verdict(void) {
     hr_plant(evex.b, HR_CODE, 7, 0x05, 0, HR_BASE + 16);
     check_verdicts("past what the decoder cannot decode", &evex, HR_CODE + 8, unreached);
 
+    /* 0x67 (address-size override) makes a RIP-relative-looking ModRM
+     * actually EIP-relative (src/x86len.h's adsize comment): the immediate
+     * length that matches the lea (0, as it has none) is untrusted, not
+     * refuted; the other three lengths don't match this instruction at all,
+     * so decoding refutes them same as any other lea (the "a lea" case,
+     * above). Same bytes as test_confirm_rejects_an_eip_relative_operand,
+     * retargeted to base + 16. */
+    struct hr_code addr32 = { { 0x55, 0x67, 0x48, 0x8d }, 9, HR_ONE_FUNCTION,
+                              sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(addr32.b, HR_CODE, 4, 0x05, 0, HR_BASE + 16);
+    check_verdicts("an addr32 operand", &addr32, HR_CODE + 5, addr32v);
+
     k = hr_push_lea_inside();
     k.fs = late; k.nfs = sizeof late;
     check_verdicts("with no function start at or before it", &k, HR_CODE + 4, unreached);
@@ -4031,6 +4044,24 @@ static void test_confirm_each_gives_each_candidate_its_verdict(void) {
     k = hr_push_lea_inside();
     k.fs = NULL;
     check_verdicts("with no LC_FUNCTION_STARTS", &k, HR_CODE + 4, nostarts);
+}
+
+/* Two leas share one function: a resumed sweep must carry its state (pc, k)
+ * from the first lea's candidates to the second's, not re-decode from the
+ * function's start each time -- an unreached candidate (past the EVEX byte
+ * between them) stays unreached once the sweep resumes past it. */
+static void test_confirm_each_resumes_the_sweep_across_candidates(void) {
+    struct hr_code k = { { 0x55, 0x48, 0x8d, 0, 0, 0, 0, 0, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 20,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(k.b, HR_CODE, 3, 0x05, 0, HR_BASE + 16);
+    hr_plant(k.b, HR_CODE, 14, 0x05, 0, HR_BASE + 32);
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 0 };
+    int r = hr_confirm_each(&k, &s);
+    static const int want[8] = { MHR_CONFIRMED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED,
+                                 MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED };
+    CHECK(r == MHR_CONFIRMED && s.n == 8, "resume: 8 candidates (got %d, %d)", r, s.n);
+    for (int i = 0; i < 8 && i < s.n; i++)
+        CHECK(s.v[i] == want[i], "resume: candidate %d has verdict %d, want %d", i, s.v[i], want[i]);
 }
 
 static void test_confirm_each_stops_when_asked(void) {
@@ -4185,6 +4216,7 @@ int main(void) {
     test_scan_reports_each_candidates_target();
     test_scan_range_takes_its_bounds_inclusively();
     test_confirm_each_gives_each_candidate_its_verdict();
+    test_confirm_each_resumes_the_sweep_across_candidates();
     test_confirm_each_stops_when_asked();
     test_confirm_each_reports_an_image_it_cannot_scan();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

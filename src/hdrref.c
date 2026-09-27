@@ -171,7 +171,9 @@ struct mhr_resume {
 /* Decodes from `start`, a function start in section `s`, to candidate `c`: 1
  * if the instruction holding c's disp32 is RIP-relative through it, with the
  * immediate that makes its target c's; 0 if it is not, or c's bytes are data
- * in code or begin an instruction; -1 if decoding cannot reach c. */
+ * in code or begin an instruction; -1 if decoding cannot reach c, or the
+ * instruction matches but for an addr32 (0x67) prefix, whose target a
+ * caller must not trust as RIP-relative (src/x86len.h). */
 static int mhr_sweep(const struct mhr_map *m, const struct section_64 *s, uint64_t start,
                      const mhr_cand *c, struct mhr_resume *r) {
     const uint8_t *code = m->buf + s->offset;
@@ -197,10 +199,12 @@ static int mhr_sweep(const struct mhr_map *m, const struct section_64 *s, uint64
             r->start = start;
             r->pc = pc;
             r->k = k;
-            return in.modrm >= 0 && !in.adsize &&
-                   (code[pc - s->addr + (uint64_t)in.modrm] & 0xC7) == 0x05 &&
-                   pc + (uint64_t)in.disp == c->addr &&
-                   pc + (uint64_t)in.len == c->addr + 4 + (uint64_t)c->immlen;
+            int match = in.modrm >= 0 &&
+                        (code[pc - s->addr + (uint64_t)in.modrm] & 0xC7) == 0x05 &&
+                        pc + (uint64_t)in.disp == c->addr &&
+                        pc + (uint64_t)in.len == c->addr + 4 + (uint64_t)c->immlen;
+            if (!match) return 0;
+            return in.adsize ? -1 : 1;      /* addr32: untrusted, not refuted */
         }
         pc += (uint64_t)in.len;
     }
