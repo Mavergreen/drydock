@@ -131,6 +131,20 @@ grep -qxF "shim exports 4 symbols ($SHIM)" "$T/b.out" &&
     grep -qxF "wrote self-contained binary: prog.selfcontained" "$T/b.out" \
     && ok "bake: the Python's summary lines, with this fixture's facts" \
     || bad "bake: summary" "$(cat "$T/b.out")"
+grep -q 'bind data: regular table in place' "$T/b.out" \
+    && ok "bake: ... a regular table rewritten where it lies says so" \
+    || bad "bake: in place" "$(cat "$T/b.out")"
+# The same program with a bind stream that has no room to grow in place:
+# _getppid shares libSystem's ordinal opcode with _malloc, which stays.
+"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+LS=$("$DMR" info "$T/prog" | awk 'index($0, "  ordinal=") == 1 && /libSystem/ {
+    split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); print o; exit }')
+"$T/mkbindstream" set "$T/prog" "$T/bgrow" bind "ord:$LS" sym:_getppid type:1 seg:2:0 do sym:_malloc do done
+chmod 755 "$T/bgrow"
+bake bgrow --shim "$SHIM"
+[ "$brc" -eq 0 ] && grep -q 'bind data: regular table grown' "$T/b.out" \
+    && ok "bake: a regular table that had to grow is reported as grown" \
+    || bad "bake: grown" "exit $brc: $(cat "$T/b.out" "$T/b.err")"
 cp "$T/prog" "$T/plain"
 chmod 644 "$T/plain"
 bake plain --shim "$SHIM"

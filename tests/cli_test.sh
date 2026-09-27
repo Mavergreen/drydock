@@ -5084,6 +5084,282 @@ rc=0; printf 'dylib append /usr/lib/libz.1.dylib\n' \
     && ok "objc-methods then a grow: verify passes" \
     || bad "objc-methods then grow: verify" "$(cat "$T/om_gv.err")"
 
+# ---- __LINKEDIT in codesign_allocate's order ---------------------------------
+# tests/linkedit_fixture.h's variants, written by mklinkedit. `resign 10.9:`
+# is src/linkedit_order.h's verdict, which tests/codesign_order_test.sh holds
+# to 10.9's own codesign_allocate.
+"$CC" -O2 -o "$T/mklinkedit" "$HERE/mklinkedit.c"
+resign() { "$DRYDOCK_MACHO_REWRITE" info "$1" 2>/dev/null | sed -n 's/^resign 10\.9: //p'; }
+for v in canonical bind-first note hole-16; do
+    "$T/mklinkedit" make "$v" "$T/lk_$v"
+done
+[ "$(resign "$T/lk_canonical")" = ok ] \
+    && [ "$(resign "$T/lk_bind-first")" = "file not in an order that can be processed (dyld_info out of place)" ] \
+    && ok "info: resign 10.9 says what 10.9's codesign_allocate would" \
+    || bad "info resign" "[$(resign "$T/lk_canonical")] [$(resign "$T/lk_bind-first")]"
+[ "$(resign "$T/chained.in")" = "malformed object (unknown load command 3)" ] \
+    && ok "info: ... naming an unknown load command by its index, as the tool does" \
+    || bad "info resign chained" "[$(resign "$T/chained.in")]"
+"$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole-16" | grep -q '^resign corrupt: .*would not survive the re-sign' \
+    && [ "$(resign "$T/lk_hole-16")" = ok ] \
+    && ! "$DRYDOCK_MACHO_REWRITE" info "$T/lk_canonical" | grep -q '^resign corrupt' \
+    && ok "info: a file the tool would accept and re-sign corrupt gets a resign corrupt line" \
+    || bad "info resign corrupt" "$("$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole-16" | grep '^resign')"
+"$BIN/makefat" "$T/lk_fat_info" "$T/lk_bind-first" 0x1000007 3 12 "$T/lk_note" 0x1000007 8 12
+"$BIN/makefat" "$T/lk_fat_info2" "$T/lk_canonical" 0x1000007 3 12 "$T/lk_note" 0x1000007 8 12
+[ "$(resign "$T/lk_fat_info")" = "slice x86_64: file not in an order that can be processed (dyld_info out of place)" ] \
+    && [ "$(resign "$T/lk_fat_info2")" = "slice x86_64h: malformed object (unknown load command 8)" ] \
+    && [ "$("$DRYDOCK_MACHO_REWRITE" info "$T/lk_fat_info2" | grep -c '^resign 10.9: ')" -eq 1 ] \
+    && ok "info: a fat file gets one resign line, the whole file's, slice by slice" \
+    || bad "info resign fat" "[$(resign "$T/lk_fat_info")] [$(resign "$T/lk_fat_info2")]"
+
+# A load command shorter than its kind: refused in 10.9's words, and never
+# read past. Under libgmalloc where this host has one, byte-exact, so a read
+# even one byte past a command at the end of the file faults.
+case $(DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib "$DRYDOCK_MACHO_REWRITE" --capabilities 2>&1 >/dev/null) in
+*GuardMalloc*) gm=/usr/lib/libgmalloc.dylib ;;
+*) gm=; skip "order: short load commands under libgmalloc" "libgmalloc does not load here" ;;
+esac
+gmrun() { if [ -n "$gm" ]; then MALLOC_STRICT_SIZE=1 DYLD_INSERT_LIBRARIES=$gm "$@"; else "$@"; fi; }
+short_bad=
+for k in 0x2:LC_SYMTAB 0xb:LC_DYSYMTAB 0x16:LC_TWOLEVEL_HINTS 0x1e:LC_SEGMENT_SPLIT_INFO \
+         0x1d:LC_CODE_SIGNATURE 0x26:LC_FUNCTION_STARTS 0x29:LC_DATA_IN_CODE \
+         0x2b:LC_DYLIB_CODE_SIGN_DRS 0x2e:LC_LINKER_OPTIMIZATION_HINT 0x22:LC_DYLD_INFO \
+         0x80000022:LC_DYLD_INFO_ONLY 0xd:LC_ID_DYLIB; do
+    "$T/mklinkedit" lone "${k%%:*}" 8 "$T/lk_short"
+    got=$(gmrun "$DRYDOCK_MACHO_REWRITE" info "$T/lk_short" 2>/dev/null | sed -n 's/^resign 10\.9: //p')
+    [ "$got" = "malformed object (${k#*:} cmdsize too small) in command 0" ] || short_bad="$short_bad [${k#*:}: $got]"
+done
+[ -z "$short_bad" ] \
+    && ok "info: an 8-byte command of each kind the verdict reads is refused as too small" \
+    || bad "info: short commands" "$short_bad"
+"$T/mklinkedit" short-last "$T/lk_short_last"
+rm -f "$T/lk_short_last.out"
+rc=0
+printf 'load-command delete uuid\n' | gmrun "$DRYDOCK_MACHO_REWRITE" "$T/lk_short_last" "$T/lk_short_last.out" \
+    >/dev/null 2>"$T/lo.err" || rc=$?
+[ "$rc" -eq 0 ] && grep -q "lk_short_last.out: written" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" \
+    && [ "$(resign "$T/lk_short_last.out")" = "malformed object (LC_DYSYMTAB cmdsize too small) in command 2" ] \
+    && ok "order: an edit of an image whose LC_DYSYMTAB is 8 bytes neither reads past it nor packs" \
+    || bad "order: short LC_DYSYMTAB" "rc $rc, resign [$(resign "$T/lk_short_last.out")]: $(grep -v GuardMalloc "$T/lo.err")"
+
+# The pass, on a thin file. It runs when the run changed a piece of
+# __LINKEDIT, or the output would re-sign corrupt.
+lo() {   # lo IN OUT STATEMENT...: one run, its stderr in $T/lo.err
+    lo_in=$1 lo_out=$2; shift 2
+    rm -f "$lo_out"
+    lo_rc=0
+    printf '%s\n' "$@" | "$DRYDOCK_MACHO_REWRITE" "$lo_in" "$lo_out" >/dev/null 2>"$T/lo.err" || lo_rc=$?
+}
+packed() { grep -q "__LINKEDIT re-packed in codesign_allocate's order" "$T/lo.err"; }
+for v in canonical-dep bind-first-dep bind-first-exec hole-16-note build-version; do
+    "$T/mklinkedit" make "$v" "$T/lk_$v"
+done
+
+# Deleting the signature or the DRs drops their bytes; deleting a UUID
+# changes no piece, so nothing moves.
+lo "$T/lk_canonical" "$T/lk_nosig" 'load-command delete codesig'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_nosig")" = ok ] \
+    && [ "$(wc -c <"$T/lk_nosig" | tr -d ' ')" -eq 8380 ] \
+    && ok "order: load-command delete codesig drops the signature's bytes (8,448 -> 8,380)" \
+    || bad "order: delete codesig" "rc $lo_rc, $(wc -c <"$T/lk_nosig") bytes: $(cat "$T/lo.err")"
+lo "$T/lk_canonical" "$T/lk_nodrs" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_nodrs")" = ok ] \
+    && ok "order: load-command delete code-sign-drs drops the DRs' bytes" \
+    || bad "order: delete code-sign-drs" "rc $lo_rc, resign [$(resign "$T/lk_nodrs")]: $(cat "$T/lo.err")"
+lo "$T/lk_bind-first-exec" "$T/lk_nouuid" 'load-command delete uuid'
+[ "$lo_rc" -eq 0 ] && grep -qF "$lo_out: written (" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" && ! grep -q 'resign' "$T/lo.err" \
+    && [ "$(resign "$T/lk_nouuid")" = "$(resign "$T/lk_bind-first-exec")" ] \
+    && grep -q 'this run disturbed sizeofcmds' "$T/lo.err" \
+    && ok "order: load-command delete uuid changes no piece, so nothing is re-packed or said" \
+    || bad "order: delete uuid" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# When the pass changed the file, the report also says what still stops
+# 10.9's tool.
+lo "$T/lk_build-version" "$T/lk_bv.out" 'load-command delete codesig'
+[ "$lo_rc" -eq 0 ] && packed \
+    && grep -q "resign 10.9: malformed object (unknown load command 3)" "$T/lo.err" \
+    && ok "order: after a pack, the report names what still stops 10.9's codesign_allocate" \
+    || bad "order: report after pack" "rc $lo_rc: $(cat "$T/lo.err")"
+# Symbol indexes out of order are the input's, not the pass's to cure: it
+# packs, writes, and reports them (exit 0).
+"$T/mklinkedit" make syms-misordered "$T/lk_syms"
+lo "$T/lk_syms" "$T/lk_syms.out" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && packed && [ -e "$T/lk_syms.out" ] \
+    && grep -q "resign 10.9: file not in an order that can be processed (externally defined symbols out of place)" "$T/lo.err" \
+    && ok "order: symbol indexes out of order are packed around, written and reported (0)" \
+    || bad "order: syms-misordered" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# An in-place byte edit is a change: dylib insert renumbers the bind's
+# ordinal. On an image in order the pass is a silent no-op.
+lo "$T/lk_bind-first-dep" "$T/lk_insert" 'dylib insert /usr/lib/libz.1.dylib'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_insert")" = ok ] \
+    && ok "order: dylib insert's renumbering is a change, and the image is packed" \
+    || bad "order: dylib insert" "rc $lo_rc, resign [$(resign "$T/lk_insert")]: $(cat "$T/lo.err")"
+lo "$T/lk_canonical-dep" "$T/lk_insert2" 'dylib insert /usr/lib/libz.1.dylib'
+[ "$lo_rc" -eq 0 ] && grep -qF "$lo_out: written (" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" && ! grep -q 'resign' "$T/lo.err" && [ "$(resign "$T/lk_insert2")" = ok ] \
+    && ok "order: ... and on an image already in order, nothing is said" \
+    || bad "order: dylib insert, in order" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# A header-only edit of a still-chained image prints nothing new.
+lo "$T/chained.in" "$T/lk_chained_rpath" 'rpath append /lk'
+[ "$lo_rc" -eq 0 ] && grep -qF "$lo_out: written (" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" && ! grep -q 'resign' "$T/lo.err" \
+    && [ "$(resign "$T/lk_chained_rpath")" = "malformed object (unknown load command 3)" ] \
+    && ok "order: an edit of a chained image says nothing new; info has the verdict" \
+    || bad "order: chained rpath" "rc $lo_rc, resign [$(resign "$T/lk_chained_rpath")]: $(cat "$T/lo.err")"
+
+# A corrupting input is repaired even by a header-only edit, and refused
+# when the pass cannot repair it.
+lo "$T/lk_hole-16" "$T/lk_hole.out" 'rpath append /lk'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_hole.out")" = ok ] \
+    && ok "order: a hole codesign_allocate would corrupt is repaired by any edit" \
+    || bad "order: hole repaired" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_hole-16" "$T/lk_hole_unmatched.out" 'allow-unmatched' 'rpath delete /nowhere'
+[ "$lo_rc" -eq 0 ] && grep -q 'rpath /nowhere matched nothing' "$T/lo.err" && packed \
+    && [ "$(resign "$T/lk_hole_unmatched.out")" = ok ] \
+    && "$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole_unmatched.out" | grep -q '^resign 10.9: ok$' \
+    && ! "$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole_unmatched.out" | grep -q '^resign corrupt' \
+    && ok "order: a hole codesign_allocate would corrupt is repaired even by a run that matched nothing (allow-unmatched)" \
+    || bad "order: hole repaired, unmatched" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_hole-16-note" "$T/lk_note.out" 'rpath append /lk'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_note.out" ] \
+    && grep -q '__LINKEDIT not re-packed: load command 8 (cmd 0x31)' "$T/lo.err" \
+    && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
+    && ok "order: one it cannot repair is refused (1), saying why, and OUT is not written" \
+    || bad "order: hole refused" "rc $lo_rc: $(cat "$T/lo.err")"
+# The report carries resign 10.9 whenever the run is refused,
+# not only when the pass packed.
+grep -qF "$T/lk_hole-16-note: resign 10.9: " "$T/lo.err" \
+    && ok "order: a refused run also says what 10.9's codesign_allocate says" \
+    || bad "order: refused resign 10.9 line" "$(cat "$T/lo.err")"
+
+# A thin file has one slice, so an `arch` directive that selected it is never
+# the reason a corrupting slice was not fixed: the fat-only remedy must not
+# appear.
+lo "$T/lk_hole-16-note" "$T/lk_note_arch.out" 'arch x86_64' 'rpath append /lk'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_note_arch.out" ] \
+    && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
+    && ! grep -q 'run the script without arch' "$T/lo.err" \
+    && ok "order: a thin refusal under arch gets no fat-only remedy" \
+    || bad "order: thin arch refused" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# An empty script still packs a corrupting input (any edit does, even none);
+# with nothing disturbed, the report must not claim nothing happened.
+lo "$T/lk_hole-16" "$T/lk_hole_empty.out"
+[ "$lo_rc" -eq 0 ] && packed && ! grep -q 'disturbed nothing' "$T/lo.err" \
+    && ok "order: an empty script that still packs says nothing false about disturbing nothing" \
+    || bad "order: empty script pack" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# A signed, static LC_DYSYMTAB image with an empty string table: no layout
+# survives it, so the pass declines instead of failing a postcondition
+# (c1, c2). The same shape aligned so a layout DOES survive still packs
+# (c3, h0) -- the decline must key on the packed result, not the shape alone.
+"$T/mklinkedit" raw "rebase bind weak lazy export +4 fstarts dic drs symtab +16 indirect:8 strtab:0 sig" \
+    20 "$T/lk_c2"
+"$T/mklinkedit" raw "rebase bind weak lazy export +4 fstarts dic drs:12 symtab indirect strtab:0 sig" \
+    20 "$T/lk_c1"
+"$T/mklinkedit" raw "rebase bind weak lazy export fstarts dic drs symtab indirect strtab:0 @16 sig" \
+    20 "$T/lk_c3"
+"$T/mklinkedit" raw "rebase +16 bind weak lazy export fstarts dic drs symtab indirect strtab:0 @16 sig" \
+    20 "$T/lk_h0"
+lo "$T/lk_c2" "$T/lk_c2.out" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && [ -e "$T/lk_c2.out" ] && grep -q '__LINKEDIT not re-packed:' "$T/lo.err" \
+    && ok "order: an unpackable empty-strtab image (c2) declines and is still written" \
+    || bad "order: c2 declines" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_c1" "$T/lk_c1.out" 'rpath append /x'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_c1.out" ] && grep -q '__LINKEDIT not re-packed:' "$T/lo.err" \
+    && grep -q 'refused: codesign_allocate would re-sign .* corrupt' "$T/lo.err" \
+    && ok "order: an unpackable, corrupting empty-strtab image (c1) is refused (1)" \
+    || bad "order: c1 refused" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_c3" "$T/lk_c3.out" 'load-command delete code-sign-drs'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_c3.out")" = ok ] \
+    && ok "order: an aligned empty-strtab image (c3) still packs, not declines" \
+    || bad "order: c3 packs" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_h0" "$T/lk_h0.out" 'rpath append /x'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_h0.out")" = ok ] \
+    && ok "order: a corrupting, aligned empty-strtab image (h0) is still repaired" \
+    || bad "order: h0 repaired" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# Fat: every slice counts, selected or not.
+"$BIN/makefat" "$T/lk_fat" "$T/lk_canonical" 0x1000007 3 12 "$T/lk_hole-16" 0x1000007 8 12
+lo "$T/lk_fat" "$T/lk_fat.out" 'arch x86_64' 'load-command delete codesig'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_fat.out" ] \
+    && grep -q 'slice x86_64h: .*would not survive' "$T/lo.err" \
+    && grep -q 'run the script without arch, or on that slice' "$T/lo.err" \
+    && ok "order: an unselected slice that would re-sign corrupt refuses the run, naming it" \
+    || bad "order: fat corrupt slice" "rc $lo_rc: $(cat "$T/lo.err")"
+# ... but when `arch` selected the corrupting slice, and the pass could not
+# repair it, dropping `arch` would not help: no remedy.
+"$BIN/makefat" "$T/lk_fat_sel" "$T/lk_canonical" 0x1000007 3 12 "$T/lk_hole-16-note" 0x1000007 8 12
+lo "$T/lk_fat_sel" "$T/lk_fat_sel.out" 'arch x86_64h' 'rpath append /lk'
+[ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_fat_sel.out" ] \
+    && grep -q 'slice x86_64h: .*would not survive' "$T/lo.err" \
+    && ! grep -q 'run the script without arch' "$T/lo.err" \
+    && ok "order: a selected slice the pass cannot repair refuses the run, with no arch remedy" \
+    || bad "order: fat selected corrupt slice" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_fat" "$T/lk_fat.all" 'load-command delete codesig'
+[ "$lo_rc" -eq 0 ] && grep -q "slice x86_64h: __LINKEDIT re-packed" "$T/lo.err" \
+    && [ "$(resign "$T/lk_fat.all")" = ok ] \
+    && ok "order: ... and without arch, each slice is packed and the file re-signs" \
+    || bad "order: fat packed" "rc $lo_rc, resign [$(resign "$T/lk_fat.all")]: $(cat "$T/lo.err")"
+"$BIN/makefat" "$T/lk_fat4" "$T/lk_bind-first-dep" 0x1000007 3 12 "$T/lk_note" 0x1000007 8 12
+lo "$T/lk_fat4" "$T/lk_fat4.out" 'arch x86_64' 'dylib insert /usr/lib/libz.1.dylib'
+[ "$lo_rc" -eq 0 ] && grep -q "slice x86_64: __LINKEDIT re-packed" "$T/lo.err" \
+    && grep -q "resign 10.9: slice x86_64h: malformed object (unknown load command 8)" "$T/lo.err" \
+    && ok "order: when a slice is packed, the report says what still stops 10.9, whole-file" \
+    || bad "order: fat report" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# An empty script (arch-restricted to the one slice that needs a repack) still
+# packs that slice; the per-slice report must not also claim the slice
+# disturbed nothing, which the pack itself makes false.
+lo "$T/lk_fat" "$T/lk_fat_empty.out" 'arch x86_64h'
+[ "$lo_rc" -eq 0 ] && grep -q "slice x86_64h: __LINKEDIT re-packed" "$T/lo.err" \
+    && ! grep -q 'disturbed nothing' "$T/lo.err" \
+    && ok "order: a fat slice that packs under an empty script does not also claim it disturbed nothing" \
+    || bad "order: fat pack no disturb-nothing" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# A header grow whose rebuilt export trie no longer fits its 16 bytes: the
+# grow appends the 17-byte trie past the signature, and the pass puts it back
+# at __LINKEDIT's start (0x5000, once the header has grown by 0x1000).
+"$T/mklinkedit" grow-trie "$T/lk_grow_trie"
+lo "$T/lk_grow_trie" "$T/lk_grow_trie.out" "rpath append /$(printf '%500s' '' | tr ' ' x)"
+[ "$lo_rc" -eq 0 ] && grep -q 'grew the header pad by 4096 bytes' "$T/lo.err" && packed \
+    && [ "$(resign "$T/lk_grow_trie.out")" = ok ] \
+    && "$T/mklinkedit" pieces "$T/lk_grow_trie.out" | grep -qx 'export 20480 17' \
+    && [ "$("$DRYDOCK_MACHO_REWRITE" exports "$T/lk_grow_trie.out")" = "$("$DRYDOCK_MACHO_REWRITE" exports "$T/lk_grow_trie")" ] \
+    && ok "order: a header grow that rebuilds a larger export trie is packed back in order" \
+    || bad "order: trie-growing grow" "rc $lo_rc, resign [$(resign "$T/lk_grow_trie.out")], $("$T/mklinkedit" pieces "$T/lk_grow_trie.out" | tr '\n' ' '): $(cut -c1-200 "$T/lo.err")"
+
+# The lowering: its streams padded to 8, and the result in order.
+"$T/mkchained" make-signable "$T/lk_chained"
+lo "$T/lk_chained" "$T/lk_chained.out" 'fixups set classic'
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_chained.out")" = ok ] \
+    && ! "$DRYDOCK_MACHO_REWRITE" info "$T/lk_chained.out" | grep -q '^resign corrupt' \
+    && ok "order: fixups set classic leaves __LINKEDIT as codesign_allocate wants it" \
+    || bad "order: lowering" "rc $lo_rc, resign [$(resign "$T/lk_chained.out")]: $(cat "$T/lo.err")"
+"$T/mkchained" check "$T/lk_chained.out" | grep -qx 'slot0=0x100001000' \
+    && "$T/mkchained" check "$T/lk_chained.out" | grep -qx 'slot1=0x0' \
+    && ok "order: ... and the lowered slots are what they were" \
+    || bad "order: lowering slots" "$("$T/mkchained" check "$T/lk_chained.out")"
+"$T/mklinkedit" pieces "$T/lk_chained.out" | awk '$1 == "rebase" || $1 == "bind" { n++; if ($3 % 8) odd = 1 }
+    END { exit !(n == 2 && !odd) }' \
+    && ok "order: ... and each emitted stream's size is a multiple of 8" \
+    || bad "order: stream padding" "$("$T/mklinkedit" pieces "$T/lk_chained.out")"
+
+# objc-methods, whose old rebase stream it zeroes inside the dyld info.
+"$T/mkrelmeth" make codesig+dysymtab "$T/lk_relmeth"
+lo "$T/lk_relmeth" "$T/lk_relmeth.out" 'objc-methods set absolute'
+"$T/mkrelmeth" entries "$T/lk_relmeth" | sed 's/ rel / abs /' >"$T/lk.want"
+"$T/mkrelmeth" entries "$T/lk_relmeth.out" >"$T/lk.got" 2>/dev/null || true
+[ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_relmeth.out")" = ok ] \
+    && [ -s "$T/lk.want" ] && cmp -s "$T/lk.want" "$T/lk.got" \
+    && ok "order: objc-methods set absolute is packed, and its lists read as they did" \
+    || bad "order: objc-methods" "rc $lo_rc, resign [$(resign "$T/lk_relmeth.out")]: $(cat "$T/lo.err")"
+
 reached_end=1
 echo "cli_test: $fails failure(s)"
 [ "$fails" -eq 0 ]

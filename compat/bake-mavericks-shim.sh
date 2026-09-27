@@ -181,7 +181,7 @@ printf 'shim linked as ordinal %s %s\n' "$bk_ord" "$bk_added"
 
 bk_place=''
 grep -q '^      bind stream grew from' "$MW_T/err" &&
-    bk_place='regular table relocated to the end of __LINKEDIT'
+    bk_place='regular table grown'
 grep -q '^      bind stream rewritten in place' "$MW_T/err" && [ -z "$bk_place" ] &&
     bk_place='regular table in place'
 if grep -q '^      redirected .* lazy [1-9]' "$MW_T/err"; then

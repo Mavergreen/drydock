@@ -658,6 +658,10 @@ int md_declassify_buf(uint8_t *buf, size_t fsize, size_t cap, size_t *out_len,
 
     ob_byte(&rebase, REBASE_OPCODE_DONE);
     ob_byte(&bind, BIND_OPCODE_DONE);
+    /* Each stream's size is a multiple of 8, as ld64 writes it, so the
+     * pieces after it stay 8-aligned. The padding is more DONE opcodes. */
+    while (rebase.len % 8 && !rebase.overflow) ob_byte(&rebase, REBASE_OPCODE_DONE);
+    while (bind.len % 8 && !bind.overflow) ob_byte(&bind, BIND_OPCODE_DONE);
     printf("Processed %d rebases, %d binds\n", total_rebases, total_binds);
 
     /* The deferred refusal ob_byte's bound sets up. Refusing rather than

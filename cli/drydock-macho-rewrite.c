@@ -59,6 +59,7 @@
 #include "objc_meth.h"
 #include "fat.h"
 #include "arch_names.h"
+#include "linkedit_order.h"
 
 /* Exit codes: 0 ok; EX_REFUSED (1) when drydock-macho-rewrite examined FILE
  * and declined on purpose; EX_FAIL (2) when something went wrong running it.
@@ -407,6 +408,15 @@ static void info_image(mi_image *im, const char *label) {
     }
 }
 
+/* Whether 10.9's codesign_allocate can re-sign the whole file, and whether
+ * any host's would re-sign it corrupt. */
+static void info_resign(const uint8_t *buf, size_t size) {
+    char refusal[256], corrupt[4096];
+    mlo_file_verdict(buf, size, refusal, sizeof refusal, corrupt, sizeof corrupt);
+    printf("resign 10.9: %s\n", refusal);
+    if (corrupt[0]) printf("resign corrupt: %s\n", corrupt);
+}
+
 static int cmd_info(const char *path, int thin_only) {
     mi_image im;
     int mo_rc = mi_open(path, &im);
@@ -416,6 +426,7 @@ static int cmd_info(const char *path, int thin_only) {
     }
     if (mo_rc == 0) {
         info_image(&im, path);
+        info_resign(im.buf, im.size);
         mi_close(&im);
         return 0;
     }
@@ -467,6 +478,7 @@ static int cmd_info(const char *path, int thin_only) {
             info_image(&sl, label);
             mi_close(&sl);   /* mi_wrap's image is unowned (owned=0); frees nothing */
         }
+        if (narch) info_resign(buf, size);
         free(buf);
         return 0;
     }
