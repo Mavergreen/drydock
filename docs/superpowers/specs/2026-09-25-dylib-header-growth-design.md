@@ -112,9 +112,10 @@ What differs is absolute vm addresses, and in opposite halves:
   every absolute address that names the header must *lose* G: the
   `__mh_execute_header` symbol, and any rebased data pointer to the header.
   Before M1 the executable route adjusted none of these. M1 moves the symbol;
-  data pointers to the header need the complete rebase decoder and are QUEUE
-  item 29's remaining half. 46 of 838 executables on this host have one; the
-  Claude Code executable has none.
+  QUEUE item 29's data-pointer work moves the pointers (`mg_header_pointers`,
+  `src/grow.h`) and refuses one strictly inside (base, base + F). 47
+  executables on this host have one, all from crt1's `__program_vars` or
+  `__dyld`; the Claude Code executable has none.
 
 **The one rule.** Anything that names the header (address exactly base, or
 base-relative offset exactly 0) moves with the header. Anything that names
@@ -353,7 +354,9 @@ are independent of the table, and exist to catch exactly that.
 2. **Absolute addresses** (raise). Decode old and new rebase targets,
    symbols, segment and section addresses, and `LC_ROUTINES_64`. Each must
    equal its old value plus G, or its old value if it named the header. The
-   rebase targets must be the same set, at the same segment offsets.
+   rebase targets must be the same set, at the same segment offsets. On the
+   executable route the rebase half already runs, with a delta of 0 and the
+   header's move of −G (`mg_verify_pointers`).
 3. **Bytes.** From F onward, the new file equals the old one moved up by G,
    except at the fields Decision 2 names and the instructions Decision 3
    patched. Below F, the load commands are compared command by command, and
@@ -394,9 +397,11 @@ objc-methods M2 landed `src/rebase.[ch]` (da5f03a..f818638, with
 `mrb_has_type` added in bfe68ef): `mrb_slot {off, seg, type}` and an
 `mrb_decode` that bounds the segment index.
 
-That interface sees no segment geometry. So the raise itself refuses a type
-other than `REBASE_TYPE_POINTER`, and checks that offset + 8 ≤ the segment's
-`filesize` (Decision 6).
+That interface sees no segment geometry. `mg_rebases_read` (`src/grow.h`),
+built for the executable route's data pointers, adds it: it refuses a type
+other than `REBASE_TYPE_POINTER`, a target in the segment that maps the
+header, and one not wholly within its segment's `filesize` (Decision 6), and
+reads each target's value. The raise reuses it.
 
 Whichever plan executes first builds the module. This subsystem adds an
 oracle test to it: its output equals
@@ -436,11 +441,18 @@ The item 29 reproduction now grows and runs.
 handed on (2026-09-25):
 
 - **Enforce the one rule's strictly-inside refusal on both routes.** A RIP
-  target, rebase value or symbol strictly inside (base, base + F) must
-  refuse. M0 and M1 enforce only the exact-base case; `mhr_code` takes an
-  exact target. Give the scan a range (lo, hi) and report each candidate's
-  target. None of the 1,059 x86_64 executables on this host has such a
-  target, but a `movl __mh_execute_header+16(%rip)` grows silently wrong.
+  target or symbol strictly inside (base, base + F) must refuse; a rebase
+  value strictly inside already does, on the executable route
+  (`mg_header_pointers`), and the raise reuses that. `mhr_code` takes an
+  exact target: give the scan a range (lo, hi) and report each candidate's
+  target. What an in-range candidate that cannot be confirmed means is the
+  owner's decision (QUEUE item 29, I1): measured, 1,060 in 120 of 1,059 host
+  executables and 29 in Claude Code, none confirmed, so refusing them would
+  stop 119 of those and Claude Code growing. A
+  `movl __mh_execute_header+16(%rip)` still grows silently wrong.
+- **Refuse a bind in `__TEXT` on both routes** (Decision 6). The executable
+  route already refuses a rebase there (`mg_rebases_read`) but not a bind,
+  whose slot the grow would move out from under it. None on this host.
 - **Interfaces to generalise:** `mg_verify_refs` scans for "the old base",
   which equals "new base + G" only on the executable route; on the raise
   route the snapshot's base is the new base. Write it as new base + G. The

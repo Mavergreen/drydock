@@ -32,7 +32,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
-| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: repaired since `5d93921`; a data pointer to the header is not, see below |
+| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; the code half of I1 is M2's, see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 | 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
@@ -1471,22 +1471,47 @@ from its `LC_FUNCTION_STARTS` entry (`src/x86len.h`, checked against 10.9's
 cannot confirm. A fresh Claude Code download grows with "repaired 7
 references to the header".
 
-**Not repaired** (found while planning M1): a data pointer to the header,
+**Data pointers: done** since `f5b186a`. A data pointer to the header,
 `const void *p = &_mh_execute_header;`, is a rebase target whose value is
-the base; after a grow it misses the header by G (measured: 4096, after an
-M0 grow). 46 of 838 x86_64 executables on this host carry one (the Java
-launcher stubs among them); Claude Code has none among its 94,730 rebase
-targets. No scan of code finds these — they are rebase targets, not
-instructions — so the fix is to decode the rebase stream and subtract G from
-each value that names the header. That needs the complete rebase decoder
-objc-methods M2 builds (`src/rebase.[ch]`), so it follows M2; M1 moves the
-`__mh_execute_header` symbol itself.
+the base. On 10.9 they come from crt1: the `mh` field of
+`__DATA,__program_vars`, or of the older `__DATA,__dyld`, which libSystem
+hands to `_NSGetMachExecuteHeader`. 47 executables here have one: the 43
+Java launcher stubs (`/usr/bin/java` and 41 more, and
+`/usr/libexec/java_home`), `restoreui`, `MRT`, `cgpdftoraster` and
+`thnucups`.
+Grown before, `/usr/bin/java -version` died of SIGSEGV; now it runs. A grow
+reads every rebase target (`mg_rebases_read`, `src/grow.h`), moves each
+that names the header down with it, counts them among the "references to
+the header" it repaired, and verifies them slot by slot. It refuses what it
+cannot vouch for: a rebase that is not a pointer, lies in the segment that
+maps the header, in zero-fill or past the file, or is named twice (none
+here); and any executable that has no `LC_DYLD_INFO[_ONLY]` and whose
+`LC_DYSYMTAB` lists local relocations, since dyld then slides its pointers
+from those, which the grow does not read. `dnsextd`, `mDNSResponder` and
+`mDNSResponderHelper` are such, each with a `__dyld` pointer the grow used
+to leave a page past the header, and now refuse. A bind to the image's own
+`__mh_execute_header` (ld64's `-interposable`) needs nothing: dyld resolves
+it through the export trie, which names the header where it now is. That
+holds for a bind with an addend too: `&_mh_execute_header + 16` bound this
+way is not refused, and after a grow it names the header plus 16, because
+the bind follows the header (measured). The same value as a rebase is
+refused (I1, below). Still open, and dylib-growth M2's: a bind whose slot
+lies in `__TEXT` is not yet refused on the executable route (none here), and
+a grow would move that slot's contents out from under it.
 
-**I1** (whole-branch final review, deferred to M2): the spec's one-rule
-refusal of any address strictly inside (base, base+F) is not enforced on
-either route yet — a `movl __mh_execute_header+16(%rip)` grows silently
-wrong. 0 such targets in 1,059 host executables (19.2M instructions); M2
-implements the refusal once, for both routes, via a range scan.
+**I1**, the one rule's strictly-inside refusal: its **data half is done**
+since `f5b186a`. A rebase value strictly inside (base, base + F), such as
+`(const char *)&_mh_execute_header + 16`, refuses the grow (none among
+this host's executables). Its **code half is not**: a
+`movl __mh_execute_header+16(%rip)` still grows silently wrong. Measured
+2026-09-26, a scan for RIP-relative targets strictly inside (base, base + F)
+finds 1,060 candidates in 120 of this host's 1,059 x86_64 executables, and
+29 in Claude Code, and decoding confirms none as an instruction. The same
+decoding confirms 151 of the 152 exact-base candidates. Refusing every
+candidate it cannot confirm would stop 119 of those executables growing, and
+Claude Code; refusing only confirmed ones changes nothing measured. It is
+deferred to dylib-growth M2, which decides that, with the symbol half (a
+symbol strictly inside: none here).
 
 Landed `549c57e..8a79c86`. 10.9's `codesign_allocate` requires `__LINKEDIT` in
 ld64's order, and silently re-signs corrupt a file whose pieces do not add up
