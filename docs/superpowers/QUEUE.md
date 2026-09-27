@@ -1563,3 +1563,8 @@ The data half floored only the commands it reads: a short
 `LC_DYLD_INFO[_ONLY]` (`d431204`, in `mg_find_trie` too) and a short
 `LC_DYSYMTAB` (`ee3bf23`) are refused, before anything else in a grow reads
 them. Only a floor in `mi_validate` closes the whole class.
+
+The tests that pin those two floors catch a read before the refusal only
+under libgmalloc, which CI does not load. When `mi_validate` gains its floor,
+its test should place the cut image against a `PROT_NONE` guard page sized by
+`getpagesize()`, so a plain `ctest`, CI's included, fails on such a read.
