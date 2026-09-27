@@ -440,6 +440,8 @@ The item 29 reproduction now grows and runs.
 **M2: the raise route.** It also carries two items M1's final review
 handed on (2026-09-25):
 
+- **Done in M2a** (`6d08bdc..ca53e71`), with the next bullet, on the one route
+  that exists; the raise reuses both.
 - **Enforce the one rule's strictly-inside refusal on both routes.** A RIP
   target or symbol strictly inside (base, base + F) must refuse; a rebase
   value strictly inside already does, on the executable route

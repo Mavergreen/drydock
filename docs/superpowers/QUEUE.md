@@ -32,10 +32,11 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 26 | Decode `dyld_chained_ptr_64_rebase` at its real widths | — | — | **done** 2026-09-21, found by item 5's fix; see below |
 | 27 | drydock slice 1: missing symbols, end to end | `specs/2026-09-21-drydock-missing-symbols-design.md` | — | **designed** 2026-09-21 with the repo owner; two plans (recognising, then repairing) not yet written. Draws on items 18, 21, 23, 24 |
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
-| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; the code half of I1 is M2's, see below |
+| 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; I1's other halves and binds in `__TEXT` since `6d08bdc..ca53e71` (dylib-growth M2a), see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
 | 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
 | 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
+| 33 | The executable grow has no refusal of its own for encrypted or protected images | — | — | **to do**, found 2026-09-26 while planning dylib-growth M2; see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1501,9 +1502,9 @@ it through the export trie, which names the header where it now is. That
 holds for a bind with an addend too: `&_mh_execute_header + 16` bound this
 way is not refused, and after a grow it names the header plus 16, because
 the bind follows the header (measured). The same value as a rebase is
-refused (I1, below). Still open, and dylib-growth M2's: a bind whose slot
-lies in `__TEXT` is not yet refused on the executable route (none here), and
-a grow would move that slot's contents out from under it.
+refused (I1, below). A bind, weak bind or lazy bind whose slot lies in the
+segment that maps the header is refused too, since dylib-growth M2a (none
+here): a grow would move that slot's contents out from under it.
 
 **I1**, the one rule's strictly-inside refusal: its **data half is done**
 since `f5b186a`. A rebase value strictly inside (base, base + F), such as
@@ -1511,15 +1512,19 @@ since `f5b186a`. A rebase value strictly inside (base, base + F), such as
 host's executables). Its **code half is done**, in dylib-growth M2a: bytes
 in an instruction section that name a byte strictly inside (base, base + F),
 such as `movl __mh_execute_header+16(%rip)`, refuse the grow unless decoding
-refutes that they are code: the owner's ruling, 2026-09-26. Measured
-then, a scan for RIP-relative targets strictly inside (base, base + F) finds
-1,060 candidates in 120 of this host's 1,059 x86_64 executables, and 29 in
-Claude Code. Decoding confirms none. It refutes 1,057, among them the other
-immediate lengths of every exact-base reference, and all 29 of Claude
-Code's. It cannot reach 3, all in `thnucups`, which has no
-`LC_FUNCTION_STARTS` and is refused already. So nothing measured changes.
-It is deferred to dylib-growth M2, which
-decides that, with the symbol half (a symbol strictly inside: none here).
+refutes that they are code: the owner's ruling, 2026-09-26. Measured then,
+and reconfirmed at `ca53e71`, a scan for RIP-relative targets strictly
+inside (base, base + F) finds 1,060 candidates in 120 of this host's 1,059
+x86_64 executables, and separately 29 in Claude Code (its own corpus, not
+among the host's 1,060). Decoding confirms none as real code. Of the
+host's 1,060, it refutes 1,057, among them the other immediate lengths of
+every exact-base reference; the remaining 3, all in `thnucups`, get the
+verdict NO_STARTS, since it has no `LC_FUNCTION_STARTS` and is refused
+already. Claude Code's 29 are refuted too, all of them. So nothing
+measured changes.
+Its symbol and export halves are done in M2a too: an `N_SECT` symbol, not a
+stab, or an export, not an absolute one, strictly inside (base, base + F)
+refuses the grow (none here).
 
 Landed `549c57e..8a79c86`. 10.9's `codesign_allocate` requires `__LINKEDIT` in
 ld64's order, and silently re-signs corrupt a file whose pieces do not add up
@@ -1570,3 +1575,16 @@ The tests that pin those two floors catch a read before the refusal only
 under libgmalloc, which CI does not load. When `mi_validate` gains its floor,
 its test should place the cut image against a `PROT_NONE` guard page sized by
 `getpagesize()`, so a plain `ctest`, CI's included, fails on such a read.
+
+## Item 33: encrypted or protected executables
+
+**Found 2026-09-26** while planning dylib-growth M2, whose raise refuses an
+image with `LC_ENCRYPTION_INFO[_64]` whose `cryptid` is not 0, or with a
+segment flagged `SG_PROTECTED_VERSION_1`: a grow moves bytes the kernel
+decrypts by page. The executable route has no such refusal. On this host,
+none of the 1,128 x86_64 files of the M1 sweeps' corpus, and none of the
+executables under `/System/Library/CoreServices` and `/Applications`, has a
+nonzero `cryptid`. Four executables have a protected `__TEXT`: Finder, Dock,
+SystemUIServer and loginwindow. A grow refuses each of them, but only because
+their `__unwind_info` lies in the protected pages and does not parse
+(`ERROR: __TEXT,__unwind_info is malformed, …`), not for being protected.
