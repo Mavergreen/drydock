@@ -5,6 +5,7 @@
 
 #include "grow.h"
 #include "hdrref.h"
+#include "ordinals.h"
 
 /* mg_first_sect_off's mi_each_lc callback: track the lowest LC_SEGMENT_64
  * section file offset seen so far in ctx->first. Always returns 0 (never
@@ -524,6 +525,67 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
     return n;
 }
 
+/* mg_binds_ok's observer: the first bind that names no segment of the image,
+ * or lies in the segment that maps the header. */
+struct mg_bind_ctx { const struct mg_rb_lcs *l; const char *kind; char *why; size_t whysz; int bad; };
+static void mg_bind_obs(const mo_bind_state *st, void *ctx_) {
+    struct mg_bind_ctx *c = (struct mg_bind_ctx *)ctx_;
+    if (c->bad) return;
+    if (st->seg >= c->l->nsegs) {
+        snprintf(c->why, c->whysz, "the %s opcodes name segment %d, and there are %d", c->kind,
+                 st->seg, c->l->nsegs);
+        c->bad = 1;
+        return;
+    }
+    const struct segment_command_64 *seg = c->l->seg[st->seg];
+    if (seg->fileoff != 0 || seg->filesize == 0) return;
+    snprintf(c->why, c->whysz, "the %s at %.16s+%#llx lies in the segment that maps the header",
+             c->kind, seg->segname, (unsigned long long)st->offset);
+    c->bad = 1;
+}
+
+/* 0, or -1 with `why` set when a bind, weak bind or lazy bind lies in the
+ * segment that maps the header, whose contents a grow moves out from under
+ * it, or when those opcodes cannot be read. */
+static int mg_binds_ok(const uint8_t *buf, size_t fsize, char *why, size_t whysz) {
+    mi_image im;
+    struct mg_rb_lcs c;
+    memset(&c, 0, sizeof c);
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        snprintf(why, whysz, "the image does not validate");
+        return -1;
+    }
+    mi_each_lc(&im, mg_rb_lcs_cb, &c);
+    if (c.short_lc) {
+        snprintf(why, whysz, "the image's %s command is %u bytes, too short to hold %s", c.short_lc,
+                 c.short_size, c.short_of);
+        return -1;
+    }
+    if (!c.di) return 0;
+    const struct { const char *kind; uint32_t off, size; } s[3] = {
+        { "bind", c.di->bind_off, c.di->bind_size },
+        { "weak bind", c.di->weak_bind_off, c.di->weak_bind_size },
+        { "lazy bind", c.di->lazy_bind_off, c.di->lazy_bind_size },
+    };
+    for (int i = 0; i < 3; i++) {
+        char what[32];
+        struct mg_bind_ctx x = { &c, s[i].kind, why, whysz, 0 };
+        if (!s[i].size) continue;
+        if (!mo_fits(s[i].off, s[i].size, fsize)) {
+            snprintf(why, whysz, "the %s opcodes (%u bytes at offset %u) run past the end of the "
+                     "%zu-byte image", s[i].kind, s[i].size, s[i].off, fsize);
+            return -1;
+        }
+        snprintf(what, sizeof what, "the %s opcodes", s[i].kind);
+        if (mo_bind_observe(buf + s[i].off, s[i].size, what, mg_bind_obs, &x) != 0) {
+            snprintf(why, whysz, "the %s opcodes do not decode", s[i].kind);
+            return -1;
+        }
+        if (x.bad) return -1;
+    }
+    return 0;
+}
+
 /* mg_snapshot_take's mhr_scan callback: keep each reference to the header. */
 static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
     mg_snapshot *s = (mg_snapshot *)ctx_;
@@ -960,7 +1022,7 @@ int mg_trie_node(uint8_t *trie, uint32_t size, uint32_t off, int depth,
                 if (a != 0) {
                     if (out) {
                         if (*n >= max) return -1;
-                        if (kinds) kinds[*n] = MG_K_ANY;  /* data exports are not functions */
+                        if (kinds) kinds[*n] = absolute ? MG_K_ABS : MG_K_ANY;
                         out[(*n)++] = absolute ? a : base + a;
                     } else if (!absolute) {
                         if (mu_minlen(a + grow) > w) return 1;   /* would widen */
@@ -1417,11 +1479,88 @@ static int mg_header_refs_ok(const uint8_t *buf, size_t fsize, uint32_t grow) {
     return -1;
 }
 
+/* mg_inside_refs_ok's verdict callback: stops at the first candidate
+ * decoding does not refute -- confirmed, not reached, or no starts. */
+struct mg_inside_ctx { int hit; mhr_cand c; };
+static int mg_inside_cb(const mhr_cand *c, int verdict, void *ctx_) {
+    struct mg_inside_ctx *x = (struct mg_inside_ctx *)ctx_;
+    if (verdict == MHR_REFUTED) return 0;
+    x->hit = 1;
+    x->c = *c;
+    return 1;
+}
+
+/* 0 unless code names a byte strictly between the header at `base` and its
+ * first content at base + `first`, which a grow moves apart; then -1,
+ * having said so. */
+static int mg_inside_refs_ok(const uint8_t *buf, size_t fsize, uint64_t base, uint32_t first) {
+    struct mg_inside_ctx x = { 0, { 0, 0, 0, 0 } };
+    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);
+    if (r == MHR_CONFIRMED && !x.hit) return 0;
+    if (x.hit)
+        fprintf(stderr, "ERROR: the code at %#llx names %#llx, between the header at %#llx and "
+                        "its first content at %#llx, which a grow moves apart; refusing to grow\n",
+                (unsigned long long)x.c.addr, (unsigned long long)x.c.target,
+                (unsigned long long)base, (unsigned long long)(base + first));
+    else
+        fprintf(stderr, "ERROR: could not search the image for code that names the inside of "
+                        "its header; refusing to grow\n");
+    return -1;
+}
+
+/* 0 unless an export, other than an absolute one, names a byte strictly
+ * between the header at `base` and its first content at base + `first`;
+ * then -1, having said so. */
+static int mg_exports_ok(uint8_t *buf, size_t fsize, uint64_t base, uint32_t first) {
+    uint64_t *a = (uint64_t *)malloc(MG_SNAP_MAX * sizeof *a);
+    uint8_t *k = (uint8_t *)malloc(MG_SNAP_MAX);
+    uint32_t n = 0;
+    int rc = -1;
+    if (!a || !k || mg_trie_walk(buf, fsize, 0, 0, base, a, k, &n, MG_SNAP_MAX) != 0) {
+        fprintf(stderr, "ERROR: could not read the export trie's addresses; refusing to grow\n");
+        n = 0;
+    } else {
+        rc = 0;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (k[i] == MG_K_ABS || a[i] - base >= first) continue;
+        fprintf(stderr, "ERROR: an export names %#llx, between the header at %#llx and its first "
+                        "content at %#llx, which a grow moves apart; refusing to grow\n",
+                (unsigned long long)a[i], (unsigned long long)base,
+                (unsigned long long)(base + first));
+        rc = -1;
+        break;
+    }
+    free(a);
+    free(k);
+    return rc;
+}
+
+/* The name of symbol `nl` in LC_SYMTAB `st`'s string table, as a length and
+ * a pointer; empty when it lies outside the table or the image. */
+static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
+                       const struct nlist_64 *nl, const char **name) {
+    *name = "";
+    if (st->strsize > fsize || st->stroff > fsize - st->strsize || nl->n_un.n_strx >= st->strsize)
+        return 0;
+    *name = (const char *)buf + st->stroff + nl->n_un.n_strx;
+    const char *nul = (const char *)memchr(*name, 0, st->strsize - nl->n_un.n_strx);
+    return nul ? (int)(nul - *name) : (int)(st->strsize - nl->n_un.n_strx);
+}
+
 /* The symbols that name the header: each N_SECT symbol, not a stab, whose
  * value is `base`. With `patch`, each loses `grow`, following the header
  * down; without, this checks that the symbol table lies within the image,
- * and says so on stderr when it does not. Returns 0, or -1. */
-struct mg_hsym_ctx { uint8_t *buf; size_t fsize; uint64_t base; uint32_t grow; int patch, bad, n; };
+ * and says so on stderr when it does not. Either way, one that names a byte
+ * strictly between the header and its first content, at base + `first`,
+ * is refused, saying so. Returns 0, or -1. */
+struct mg_hsym_ctx {
+    uint8_t *buf;
+    size_t fsize;
+    uint64_t base, first;
+    uint32_t grow;
+    int patch, bad, n;
+};
 
 static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
     struct mg_hsym_ctx *c = (struct mg_hsym_ctx *)ctx_;
@@ -1440,18 +1579,29 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
         return 1;
     }
     struct nlist_64 *nl = (struct nlist_64 *)(c->buf + st->symoff);
-    for (uint32_t i = 0; c->patch && i < st->nsyms; i++)
-        if (!(nl[i].n_type & N_STAB) && (nl[i].n_type & N_TYPE) == N_SECT &&
-            nl[i].n_value == c->base)
-            nl[i].n_value -= c->grow;
+    for (uint32_t i = 0; i < st->nsyms; i++) {
+        if ((nl[i].n_type & N_STAB) || (nl[i].n_type & N_TYPE) != N_SECT) continue;
+        uint64_t v = nl[i].n_value;
+        if (v > c->base && v - c->base < c->first) {
+            const char *name;
+            int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
+            fprintf(stderr, "ERROR: symbol %u, \"%.*s\", names %#llx, between the header at %#llx "
+                            "and its first content at %#llx, which a grow moves apart; refusing "
+                            "to grow\n", i, len, name, (unsigned long long)v,
+                    (unsigned long long)c->base, (unsigned long long)(c->base + c->first));
+            c->bad = 1;
+            return 1;
+        }
+        if (c->patch && v == c->base) nl[i].n_value -= c->grow;
+    }
     return 0;
 }
 
-static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint32_t grow,
-                             int patch) {
+static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                             uint32_t grow, int patch) {
     mi_image im;
     if (mi_wrap(buf, fsize, &im) != 0) return -1;
-    struct mg_hsym_ctx c = { buf, fsize, base, grow, patch, 0, 0 };
+    struct mg_hsym_ctx c = { buf, fsize, base, first, grow, patch, 0, 0 };
     mi_each_lc(&im, mg_hsym_cb, &c);
     return c.bad ? -1 : 0;
 }
@@ -1623,12 +1773,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
     if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;
-    if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
+    if (mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert) != 0) return -1;
+    if (mg_header_symbols(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0) != 0) return -1;
     {
         char why[256];
         int64_t n = mg_header_pointers(buf, fsize, mg_base_of(buf, fsize), insert, grow, 0,
                                        why, sizeof why);
-        if (n < 0) {
+        if (n < 0 || mg_binds_ok(buf, fsize, why, sizeof why) != 0) {
             fprintf(stderr, "ERROR: %s; refusing to grow\n", why);
             return -1;
         }
@@ -1668,6 +1819,10 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
             }
             mg_trie_needs_rebuild = 1;
         }
+    }
+    if (mg_exports_ok(buf, fsize, mg_base_of(buf, fsize), insert) != 0) {
+        free(mg_new_trie);
+        return -1;
     }
 
     /* Phase 4 prep: snapshot every base-relative resolved address BEFORE touching
@@ -1900,7 +2055,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         memcpy(d, &disp, sizeof disp);
     }
 
-    if (mg_header_symbols(buf, final_size, snap.base, grow, 1) != 0) {
+    if (mg_header_symbols(buf, final_size, snap.base, insert, grow, 1) != 0) {
         fprintf(stderr, "ERROR: internal error re-basing the symbols that name the header "
                         "after passing the pre-check\n");
         mg_snapshot_free(&snap);

@@ -2208,7 +2208,7 @@ static void check_grow_refuses_header_refs(const char *what, uint8_t *buf, size_
     free(buf);
 }
 
-/* mov $imm32, %eax whose immediate starts with 0x05: a candidate the sweep
+/* movabs $imm64, %rax whose immediate starts with 0x05: a candidate the sweep
  * finds inside an instruction that is not RIP-relative. */
 static void test_grow_refuses_a_header_reference_it_cannot_confirm(void) {
     size_t fsize; uint32_t sect_off;
@@ -2547,11 +2547,16 @@ struct hr_code {
     uint32_t ndic;
 };
 
-static int hr_confirm(const struct hr_code *k, mhr_cand *bad) {
+static uint8_t *hr_code_image(const struct hr_code *k) {
     uint8_t *buf = build_code_image();
     memcpy(buf + HR_FOFF, k->b, k->n);
     if (k->fs) hr_add_lc(buf, LC_FUNCTION_STARTS, 0x1c00, k->fs, k->nfs);
     if (k->dic) hr_add_lc(buf, LC_DATA_IN_CODE, 0x1d00, k->dic, k->ndic);
+    return buf;
+}
+
+static int hr_confirm(const struct hr_code *k, mhr_cand *bad) {
+    uint8_t *buf = hr_code_image(k);
     int r = mhr_confirm(buf, HR_IMG_SIZE, bad);
     free(buf);
     return r;
@@ -2694,6 +2699,83 @@ static void hr_put_lea(uint8_t *code, uint32_t at) {
     code[at] = 0x48;
     code[at + 1] = 0x8d;
     hr_plant(code, HR_CODE, at + 2, 0x05, 0, HR_BASE);
+}
+
+/* One function of 0x3feff8 bytes from HR_CODE, nops but for, at code offset
+ * HR_TABLE + 1, `83 3d disp32 imm8` (cmpl $imm8, x(%rip)) naming the base, no
+ * LC_DATA_IN_CODE, and two words that may read as a jump table's entries:
+ * `before`, as the immediate of `05 imm32` (addl) ending at HR_TABLE, and
+ * `after`, at HR_TABLE + 8. Each is placed only if not 0x90909090. The disp32
+ * straddles the aligned words at HR_TABLE (90 83 3d 00: +0x3d8390) and
+ * HR_TABLE + 4 (00 fe ff imm8: -0x200 with imm8 0xff), each then the offset,
+ * from where it lies, to a byte of the function. With `split` 1, a second
+ * function starts at HR_TABLE; with 2, at HR_TABLE + 8. */
+#define HR_TABLE 0x1eff8u
+static uint8_t *hr_table_image(uint8_t imm8, uint32_t before, uint32_t after, int split,
+                               size_t *fsize) {
+    static const uint8_t at[2][6] = { { 0x80, 0x20, 0xf8, 0xdf, 0x07, 0x00 },  /* + HR_TABLE */
+                                      { 0x80, 0x20, 0x80, 0xe0, 0x07, 0x00 } }; /* + HR_TABLE + 8 */
+    size_t n = HR_TABLE + 0x3e0000;
+    uint8_t *code = (uint8_t *)malloc(n);
+    memset(code, 0x90, n);
+    code[n - 1] = 0xc3;
+    if (before != 0x90909090u) {
+        code[HR_TABLE - 5] = 0x05;
+        memcpy(code + HR_TABLE - 4, &before, sizeof before);
+    }
+    code[HR_TABLE + 1] = 0x83;
+    hr_plant(code, HR_CODE, HR_TABLE + 2, 0x3d, 1, HR_BASE);
+    code[HR_TABLE + 7] = imm8;
+    if (after != 0x90909090u) memcpy(code + HR_TABLE + 8, &after, sizeof after);
+    uint8_t *buf = split ? hr_big_image(code, n, at[split - 1], sizeof at[0], NULL, 0, fsize)
+                         : hr_big_image(code, n, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0,
+                                        fsize);
+    free(code);
+    return buf;
+}
+
+/* How many verdicts mhr_confirm_each gave, and the last. */
+struct hr_one { int n, verdict; };
+static int hr_one_verdict(const mhr_cand *c, int verdict, void *ctx) {
+    (void)c;
+    ((struct hr_one *)ctx)->n++;
+    ((struct hr_one *)ctx)->verdict = verdict;
+    return 0;
+}
+
+/* Decoding confirms the operand where its bytes are code, and not where they
+ * lie in what reads as a jump table, whose entries a grow would patch as a
+ * displacement: three aligned words in a row, the disp32's among them, each
+ * an entry of its own function. */
+static void test_confirm_refuses_an_operand_inside_a_jump_table(void) {
+    static const struct { const char *what; uint8_t imm8; uint32_t before, after; int split, want; }
+    k[6] = {
+        { "cmpl $0, base(%rip) before f0 ff ff ff", 0, 0x90909090u, 0xfffffff0u, 0, MHR_CONFIRMED },
+        { "cmpl $-1, its two words a table's entries, and one after", 0xff, 0x90909090u,
+          0xfffffff0u, 0, MHR_UNCONFIRMED },
+        { "cmpl $-1, its two words a table's entries, and one before", 0xff, 0xfffffff0u,
+          0x90909090u, 0, MHR_UNCONFIRMED },
+        { "cmpl $-1, its two words a table's entries, and no other", 0xff, 0x90909090u,
+          0x90909090u, 0, MHR_CONFIRMED },
+        { "cmpl $-1, the entry before it in the function before", 0xff, 0x10u, 0x90909090u, 1,
+          MHR_CONFIRMED },
+        { "cmpl $-1, the entry after it in the function after", 0xff, 0x90909090u, 0xfffffff0u, 2,
+          MHR_CONFIRMED },
+    };
+    for (int i = 0; i < 6; i++) {
+        size_t fsize;
+        mhr_cand bad = { 0, 0, 0, 0 };
+        uint8_t *buf = hr_table_image(k[i].imm8, k[i].before, k[i].after, k[i].split, &fsize);
+        int r = mhr_confirm(buf, fsize, &bad);
+        CHECK(r == k[i].want && (r == MHR_CONFIRMED || bad.addr == HR_CODE + HR_TABLE + 3),
+              "confirm: %s: got %d, want %d (%#llx)", k[i].what, r, k[i].want,
+              (unsigned long long)bad.addr);
+        struct hr_one v = { 0, -1 };
+        mhr_confirm_each(buf, fsize, HR_BASE, HR_BASE, hr_one_verdict, &v);
+        CHECK(v.n == 1 && v.verdict == k[i].want, "confirm_each: %s: %d verdicts, the last %d, "
+              "want one, %d", k[i].what, v.n, v.verdict, k[i].want);
+        free(buf);
+    }
 }
 
 static void check_confirms_in_time(const char *what, const uint8_t *buf, size_t fsize) {
@@ -3905,6 +3987,385 @@ static void test_grow_refuses_local_relocations(void) {
     free(buf);
 }
 
+/* ---- a range of targets ----
+ * The one rule refuses what names a byte strictly between the header and
+ * its first content, so the scan also takes a range, [first, last], and
+ * says what each candidate names. */
+#define HR_FIRST (HR_BASE + 1)
+#define HR_LAST  (HR_BASE + 0xfff)
+
+static void test_scan_reports_each_candidates_target(void) {
+    uint8_t code[16];
+    memset(code, 0x90, sizeof code);
+    hr_plant(code, HR_CODE, 2, 0x3d, 2, HR_BASE);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    mhr_scan_code(code, sizeof code, HR_CODE, HR_FOFF, HR_BASE, hr_record, &s);
+    CHECK(s.n == 1 && s.c[0].target == HR_BASE && s.c[0].immlen == 2,
+          "scan: the candidate names %#llx with a 2-byte immediate (%d found, %#llx, %d)",
+          (unsigned long long)HR_BASE, s.n, (unsigned long long)s.c[0].target, s.c[0].immlen);
+}
+
+/* One operand whose target is first - 2 without an immediate reaches the
+ * range only with a 2- or 4-byte one; one at last - 1 leaves it with a
+ * 2-byte one. */
+static void test_scan_range_takes_its_bounds_inclusively(void) {
+    uint8_t *buf = build_code_image();
+    hr_plant(buf + HR_FOFF, HR_CODE, 0x20, 0x05, 0, HR_FIRST - 2);
+    hr_plant(buf + HR_FOFF, HR_CODE, 0x40, 0x05, 0, HR_LAST - 1);
+    struct hr_seen s = { { { 0 } }, 0, 0 };
+    int64_t n = mhr_scan_range(buf, HR_IMG_SIZE, HR_FIRST, HR_LAST, hr_record, &s);
+    static const struct { uint64_t addr; int immlen; uint64_t target; } want[4] = {
+        { HR_CODE + 0x21, 2, HR_FIRST },
+        { HR_CODE + 0x21, 4, HR_FIRST + 2 },
+        { HR_CODE + 0x41, 0, HR_LAST - 1 },
+        { HR_CODE + 0x41, 1, HR_LAST },
+    };
+    CHECK(n == 4 && s.n == 4, "range: %lld candidates, want 4", (long long)n);
+    for (int k = 0; k < 4 && k < s.n; k++)
+        CHECK(s.c[k].addr == want[k].addr && s.c[k].immlen == want[k].immlen &&
+              s.c[k].target == want[k].target,
+              "range: candidate %d is at %#llx, immediate %d, naming %#llx; want %#llx, %d, %#llx",
+              k, (unsigned long long)s.c[k].addr, s.c[k].immlen, (unsigned long long)s.c[k].target,
+              (unsigned long long)want[k].addr, want[k].immlen, (unsigned long long)want[k].target);
+    free(buf);
+}
+
+struct hr_verdicts { mhr_cand c[8]; int v[8]; int n; int stop_after; };
+static int hr_verdict(const mhr_cand *c, int verdict, void *ctx) {
+    struct hr_verdicts *s = (struct hr_verdicts *)ctx;
+    if (s->n < 8) { s->c[s->n] = *c; s->v[s->n] = verdict; }
+    s->n++;
+    return s->stop_after && s->n >= s->stop_after;
+}
+
+static int hr_confirm_each(const struct hr_code *k, struct hr_verdicts *s) {
+    uint8_t *buf = hr_code_image(k);
+    int r = mhr_confirm_each(buf, HR_IMG_SIZE, HR_FIRST, HR_LAST, hr_verdict, s);
+    free(buf);
+    return r;
+}
+
+/* push; lea base+16(%rip), %rax. Its disp32 names base + 16 with no
+ * immediate, which decoding confirms, and base + 17, + 18 and + 20 with one,
+ * which decoding refutes: the lea has none. */
+static struct hr_code hr_push_lea_inside(void) {
+    struct hr_code k = hr_push_lea();
+    hr_plant(k.b, HR_CODE, 3, 0x05, 0, HR_BASE + 16);
+    return k;
+}
+
+/* Each case's four candidates share a disp32, at `at`, and name base + 16,
+ * + 17, + 18 and + 20; `v` is each one's verdict. */
+static void check_verdicts(const char *what, const struct hr_code *k, uint64_t at, const int v[4]) {
+    static const int immlen[4] = { 0, 1, 2, 4 };
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 0 };
+    int r = hr_confirm_each(k, &s);
+    CHECK(r == MHR_CONFIRMED && s.n == 4, "verdicts: %s: 4 candidates (got %d, %d)", what, r, s.n);
+    for (int i = 0; i < 4 && i < s.n; i++)
+        CHECK(s.c[i].addr == at && s.c[i].immlen == immlen[i] && s.v[i] == v[i],
+              "verdicts: %s: with a %d-byte immediate, verdict %d, want %d (at %#llx)", what,
+              immlen[i], s.v[i], v[i], (unsigned long long)s.c[i].addr);
+}
+
+static void test_confirm_each_gives_each_candidate_its_verdict(void) {
+    static const int lea[4] = { MHR_CONFIRMED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED };
+    static const int refuted[4] = { MHR_REFUTED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED };
+    static const int unreached[4] = { MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED,
+                                      MHR_UNCONFIRMED };
+    static const int nostarts[4] = { MHR_NO_STARTS, MHR_NO_STARTS, MHR_NO_STARTS, MHR_NO_STARTS };
+    static const int addr32v[4] = { MHR_UNCONFIRMED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED };
+    static const uint8_t late[] = { 0x90, 0x20, 0x00 };                            /* base + 0x1010 */
+    static const uint8_t data[] = { 0x01, 0x10, 0, 0, 0x07, 0x00, 0x01, 0x00 };   /* +1, 7 bytes */
+    static const uint8_t disp[] = { 0x04, 0x10, 0, 0, 0x04, 0x00, 0x01, 0x00 };   /* +4, 4 bytes */
+    struct hr_code k = hr_push_lea_inside();
+    check_verdicts("a lea", &k, HR_CODE + 4, lea);
+
+    struct hr_code mov = { { 0x55, 0xb8 }, 8, HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(mov.b, HR_CODE, 2, 0x05, 0, HR_BASE + 16);                /* mov $imm32, %eax */
+    check_verdicts("inside mov's immediate", &mov, HR_CODE + 3, refuted);
+
+    struct hr_code next = { { 0x55, 0xb8, 0x00, 0x00, 0x00 }, 11, HR_ONE_FUNCTION,
+                            sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(next.b, HR_CODE, 5, 0x05, 0, HR_BASE + 16);               /* the imm32's last byte */
+    check_verdicts("where the next instruction begins", &next, HR_CODE + 6, refuted);
+
+    k = hr_push_lea_inside();
+    k.dic = data; k.ndic = sizeof data;
+    check_verdicts("in data in code", &k, HR_CODE + 4, refuted);
+
+    k = hr_push_lea_inside();
+    k.dic = disp; k.ndic = sizeof disp;
+    check_verdicts("in an instruction that is partly data", &k, HR_CODE + 4, unreached);
+
+    struct hr_code evex = { { 0x55, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 12, HR_ONE_FUNCTION,
+                            sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(evex.b, HR_CODE, 7, 0x05, 0, HR_BASE + 16);
+    check_verdicts("past what the decoder cannot decode", &evex, HR_CODE + 8, unreached);
+
+    /* 0x67 (address-size override) makes a RIP-relative-looking ModRM
+     * actually EIP-relative (src/x86len.h's adsize comment): the immediate
+     * length that matches the lea (0, as it has none) is untrusted, not
+     * refuted; the other three lengths don't match this instruction at all,
+     * so decoding refutes them same as any other lea (the "a lea" case,
+     * above). Same bytes as test_confirm_rejects_an_eip_relative_operand,
+     * retargeted to base + 16. */
+    struct hr_code addr32 = { { 0x55, 0x67, 0x48, 0x8d }, 9, HR_ONE_FUNCTION,
+                              sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(addr32.b, HR_CODE, 4, 0x05, 0, HR_BASE + 16);
+    check_verdicts("an addr32 operand", &addr32, HR_CODE + 5, addr32v);
+
+    k = hr_push_lea_inside();
+    k.fs = late; k.nfs = sizeof late;
+    check_verdicts("with no function start at or before it", &k, HR_CODE + 4, unreached);
+
+    k = hr_push_lea_inside();
+    k.fs = NULL;
+    check_verdicts("with no LC_FUNCTION_STARTS", &k, HR_CODE + 4, nostarts);
+}
+
+/* Two leas share one function, the second past an EVEX byte (0x62) between
+ * them: an unreached candidate after a confirmed one in the same function
+ * stays unreached. */
+static void test_confirm_each_resumes_the_sweep_across_candidates(void) {
+    struct hr_code k = { { 0x55, 0x48, 0x8d, 0, 0, 0, 0, 0, 0x62, 0x90, 0x90, 0x90, 0x48, 0x8d }, 20,
+                         HR_ONE_FUNCTION, sizeof HR_ONE_FUNCTION, NULL, 0 };
+    hr_plant(k.b, HR_CODE, 3, 0x05, 0, HR_BASE + 16);
+    hr_plant(k.b, HR_CODE, 14, 0x05, 0, HR_BASE + 32);
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 0 };
+    int r = hr_confirm_each(&k, &s);
+    static const int want[8] = { MHR_CONFIRMED, MHR_REFUTED, MHR_REFUTED, MHR_REFUTED,
+                                 MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED, MHR_UNCONFIRMED };
+    CHECK(r == MHR_CONFIRMED && s.n == 8, "resume: 8 candidates (got %d, %d)", r, s.n);
+    for (int i = 0; i < 8 && i < s.n; i++)
+        CHECK(s.v[i] == want[i], "resume: candidate %d has verdict %d, want %d", i, s.v[i], want[i]);
+}
+
+static void test_confirm_each_stops_when_asked(void) {
+    struct hr_code k = hr_push_lea_inside();
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 2 };
+    int r = hr_confirm_each(&k, &s);
+    CHECK(r == MHR_CONFIRMED && s.n == 2, "confirm each: stopped after 2 (got %d, %d)", r, s.n);
+}
+
+static void test_confirm_each_reports_an_image_it_cannot_scan(void) {
+    struct hr_code k = hr_push_lea_inside();
+    struct hr_verdicts s = { { { 0 } }, { 0 }, 0, 0 };
+    uint8_t *buf = hr_code_image(&k);
+    struct section_64 *sc =
+        (struct section_64 *)(buf + sizeof(struct mach_header_64) + sizeof(struct segment_command_64));
+    sc[1].size = HR_IMG_SIZE;                          /* __stubs runs past the image */
+    int r = mhr_confirm_each(buf, HR_IMG_SIZE, HR_FIRST, HR_LAST, hr_verdict, &s);
+    CHECK(r == MHR_UNSCANNABLE, "confirm each: an instruction section past the image (got %d)", r);
+    free(buf);
+}
+
+/* ---- the one rule's code half ----
+ * __plain holds one lea (plant_header_refs), at __plain + `at`, whose
+ * disp32 names `target`; with MG_T_FUNCSTARTS in `opts`, __plain is a
+ * function. */
+static uint8_t *build_inside_ref(uint64_t target, uint32_t at, int opts, size_t *fsize) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_PLAINSECT | opts);
+    plant_header_refs(buf, *fsize, &at, 1);
+    struct section_64 *pl = find_section_struct(buf, *fsize, "__plain");
+    if (pl) hr_plant(buf + pl->offset, HR_PLAIN_VA, at + 2, 0x05, 0, target);
+    return buf;
+}
+
+/* A grow moves the header's bytes away from its first content, so code that
+ * names one of them names nothing after it. */
+static void test_grow_refuses_code_that_names_the_inside_of_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_inside_ref(HR_BASE + 1, 0, MG_T_FUNCSTARTS, &fsize);
+    check_grow_refuses_header_refs("code naming base + 1", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000001, between the header at 0x100000000 and "
+        "its first content at 0x100001000, which a grow moves apart; refusing to grow");
+    buf = build_inside_ref(HR_BASE + 0xfff, 0, MG_T_FUNCSTARTS, &fsize);
+    check_grow_refuses_header_refs("code naming base + F - 1", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000fff, between the header");
+}
+
+static void test_grow_leaves_code_that_names_the_first_content(void) {
+    size_t fsize;
+    uint8_t *buf = build_inside_ref(HR_BASE + 0x1000, 0, MG_T_FUNCSTARTS, &fsize);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && refs_to(buf, fsize, HR_BASE + 0x1000) == 1,
+          "inside: code naming the first content grows, and still names it (got %d)", r);
+    free(buf);
+}
+
+/* Bytes in the header's range that decoding does not confirm as code: a
+ * lookalike it refutes grows; a lea it cannot reach past an EVEX prefix,
+ * and one with no LC_FUNCTION_STARTS to decode from, refuse. */
+static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_inside_ref(HR_BASE + 16, 0, MG_T_FUNCSTARTS, &fsize);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) buf[pl->offset + 1] = 0xb8;                     /* movabs $imm64, %rax */
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "inside: a lookalike decoding refutes grows (got %d)", r);
+    free(buf);
+
+    buf = build_inside_ref(HR_BASE + 16, 4, MG_T_FUNCSTARTS, &fsize);
+    pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) buf[pl->offset] = 0x62;                         /* EVEX: not decoded */
+    check_grow_refuses_header_refs("a lea decoding cannot reach", buf, fsize,
+        "ERROR: the code at 0x100001807 names 0x100000010, between the header at 0x100000000 and "
+        "its first content at 0x100001000, which a grow moves apart; refusing to grow");
+
+    buf = build_inside_ref(HR_BASE + 16, 0, 0, &fsize);
+    check_grow_refuses_header_refs("a lea with no function starts to decode from", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000010, between the header");
+}
+
+/* ---- the one rule's symbol and export halves ---- */
+/* MG_T_SYMTAB's string table is the 8 bytes at 6720, or at `stroff`; the
+ * byte after it is not part of it. */
+static void check_grow_refuses_symbol(uint64_t value, uint32_t strx, uint32_t stroff,
+                                      const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    memcpy(buf + 6720, "\0_in\0\0xyz", 9);
+    buf[fsize - 3] = 'q';
+    ((struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB))->stroff = stroff;
+    hsym(buf, fsize, 1)->n_value = value;
+    hsym(buf, fsize, 1)->n_un.n_strx = strx;
+    check_grow_refuses_header_refs("a symbol inside the header", buf, fsize, needle);
+}
+
+static void test_grow_refuses_a_symbol_inside_the_header(void) {
+    check_grow_refuses_symbol(HR_BASE + 1, 1, 6720,
+        "ERROR: symbol 1, \"_in\", names 0x100000001, between the header at 0x100000000 and its "
+        "first content at 0x100001000, which a grow moves apart; refusing to grow");
+    check_grow_refuses_symbol(HR_BASE + 0xfff, 1, 6720, "ERROR: symbol 1, \"_in\", names 0x100000fff");
+    check_grow_refuses_symbol(HR_BASE + 16, 8, 6720, "ERROR: symbol 1, \"\", names 0x100000010");
+    check_grow_refuses_symbol(HR_BASE + 16, 6, 6720, "ERROR: symbol 1, \"xy\", names 0x100000010");
+    check_grow_refuses_symbol(HR_BASE + 16, 1, 8192 - 4, "ERROR: symbol 1, \"\", names 0x100000010");
+}
+
+/* A stab or an absolute symbol there is not an address a grow moves, and
+ * one at the first content names content. */
+static void test_grow_leaves_other_symbols_that_name_the_inside_of_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    hsym(buf, fsize, 1)->n_value = HR_BASE + 0x1000;
+    hsym(buf, fsize, 2)->n_value = HR_BASE + 16;       /* N_BNSYM */
+    hsym(buf, fsize, 3)->n_value = HR_BASE + 16;       /* N_ABS */
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && hsym(buf, fsize, 1)->n_value == HR_BASE + 0x1000 &&
+          hsym(buf, fsize, 2)->n_value == HR_BASE + 16 && hsym(buf, fsize, 3)->n_value == HR_BASE + 16,
+          "symbols: a stab and an absolute symbol inside the header, and one at its first "
+          "content, grow unchanged (got %d)", r);
+    free(buf);
+}
+
+/* MG_T_TRIE's node A, its address `a` in its two bytes, and `flags`. */
+static uint8_t *build_export_at(uint64_t a, uint8_t flags, size_t *fsize) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_TRIE);
+    buf[TRIE_OFF + MG_TRIE_A_FLAGS] = flags;
+    mu_encode_fixed(buf + TRIE_OFF + MG_TRIE_A_ADDR, a, 2);
+    return buf;
+}
+
+static void test_grow_refuses_an_export_inside_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_export_at(1, 0, &fsize);
+    check_grow_refuses_header_refs("an export at offset 1", buf, fsize,
+        "ERROR: an export names 0x100000001, between the header at 0x100000000 and its first "
+        "content at 0x100001000, which a grow moves apart; refusing to grow");
+    buf = build_export_at(0xfff, 0, &fsize);
+    check_grow_refuses_header_refs("an export at offset F - 1", buf, fsize,
+        "ERROR: an export names 0x100000fff, between the header");
+}
+
+/* MG_T_TRIE's trie, with node A absolute and valued base + 16: a value, so
+ * the grow leaves it alone. */
+static void test_grow_leaves_an_absolute_export_inside_the_header(void) {
+    static const uint8_t trie[20] = {
+        0x00, 0x02, 'A', 0x00, 8, 'B', 0x00, 16,
+        0x06, 0x02, 0x90, 0x80, 0x80, 0x80, 0x10, 0x00,     /* A: absolute, 0x100000010 */
+        0x02, 0x00, 0x00, 0x00                              /* B: 0 */
+    };
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_TRIE);
+    memcpy(buf + TRIE_OFF, trie, sizeof trie);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->export_size = sizeof trie;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "an absolute export valued base + 16 grows (got %d)", r);
+    free(buf);
+}
+
+/* ---- a bind in the segment that maps the header ----
+ * build_pointer_image with one bind (0), weak bind (1) or lazy bind (2) at
+ * PT_LE + 16 * (1 + which): ordinal 1, "_s", a pointer, in segment `seg` at
+ * offset 0x10. */
+static uint8_t *build_bind_image(int which, uint8_t seg, size_t *fsize) {
+    uint8_t *buf = build_pointer_image(fsize, 0);
+    const uint8_t ops[10] = { 0x11, 0x40, '_', 's', 0, 0x51, (uint8_t)(0x70 | seg), 0x10, 0x90,
+                              0x00 };
+    struct dyld_info_command *di = (struct dyld_info_command *)find_lc(buf, *fsize, LC_DYLD_INFO_ONLY);
+    uint32_t at = PT_LE + 16 * (1 + which);
+    memcpy(buf + at, ops, sizeof ops);
+    if (which == 0) { di->bind_off = at; di->bind_size = sizeof ops; }
+    if (which == 1) { di->weak_bind_off = at; di->weak_bind_size = sizeof ops; }
+    if (which == 2) { di->lazy_bind_off = at; di->lazy_bind_size = sizeof ops; }
+    return buf;
+}
+
+static void test_grow_refuses_a_bind_in_the_segment_that_maps_the_header(void) {
+    static const char *const kind[3] = { "bind", "weak bind", "lazy bind" };
+    for (int i = 0; i < 3; i++) {
+        size_t fsize;
+        char what[64], needle[160];
+        uint8_t *buf = build_bind_image(i, 1, &fsize);
+        snprintf(what, sizeof what, "a %s in __TEXT", kind[i]);
+        snprintf(needle, sizeof needle, "ERROR: the %s at __TEXT+0x10 lies in the segment that maps "
+                 "the header; refusing to grow", kind[i]);
+        check_grow_refuses_header_refs(what, buf, fsize, needle);
+    }
+}
+
+static void test_grow_refuses_binds_it_cannot_read(void) {
+    size_t fsize;
+    uint8_t *buf = build_bind_image(2, 4, &fsize);
+    check_grow_refuses_header_refs("a lazy bind in segment 4", buf, fsize,
+        "ERROR: the lazy bind opcodes name segment 4, and there are 4; refusing to grow");
+    buf = build_bind_image(0, 1, &fsize);
+    buf[PT_LE + 16 + 9] = 0x7f;                        /* then segment 15, offset 0; DO_BIND */
+    buf[PT_LE + 16 + 10] = 0x00;
+    buf[PT_LE + 16 + 11] = 0x90;
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->bind_size = 13;
+    check_grow_refuses_header_refs("the first of two binds it cannot move", buf, fsize,
+        "ERROR: the bind at __TEXT+0x10 lies in the segment that maps the header; refusing to grow");
+    buf = build_bind_image(1, 2, &fsize);
+    buf[PT_LE + 32 + 8] = 0xe0;                        /* no such opcode */
+    check_grow_refuses_header_refs("weak bind opcodes that do not decode", buf, fsize,
+        "ERROR: the weak bind opcodes do not decode; refusing to grow");
+    buf = build_bind_image(0, 2, &fsize);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->bind_size = 1000;
+    check_grow_refuses_header_refs("bind opcodes past the image", buf, fsize,
+        "ERROR: the bind opcodes (1000 bytes at offset 12304) run past the end of the 12544-byte "
+        "image; refusing to grow");
+}
+
+/* __DATA, and __PAGEZERO, which starts at file offset 0 but maps none of
+ * the file, are not the segment that maps the header. */
+static void test_grow_accepts_binds_outside_the_header_segment(void) {
+    for (int i = 0; i < 3; i++) {
+        size_t fsize;
+        uint8_t *buf = build_bind_image(i, 2, &fsize);
+        int r = mg_grow_header(&buf, &fsize, 0x1000);
+        CHECK(r == 0, "binds: stream %d's bind in __DATA grows (got %d)", i, r);
+        free(buf);
+    }
+    size_t fsize;
+    uint8_t *buf = build_bind_image(0, 0, &fsize);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "binds: a bind in __PAGEZERO is not in the header's segment (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -3986,6 +4447,7 @@ int main(void) {
     test_confirm_rejects_a_lookalike_inside_a_rip_relative_instruction();
     test_confirm_rejects_an_operand_whose_immediate_moves_its_target();
     test_confirm_needs_function_starts();
+    test_confirm_refuses_an_operand_inside_a_jump_table();
     test_confirm_ignores_function_starts_past_the_image();
     test_confirm_stops_at_the_function_starts_terminator();
     test_confirm_reads_the_first_of_each_command();
@@ -4035,6 +4497,22 @@ int main(void) {
     test_grow_refuses_local_relocations();
     test_rebases_read_refuses_a_malformed_image();
     test_find_trie_refuses_a_short_dyld_info();
+    test_scan_reports_each_candidates_target();
+    test_scan_range_takes_its_bounds_inclusively();
+    test_confirm_each_gives_each_candidate_its_verdict();
+    test_confirm_each_resumes_the_sweep_across_candidates();
+    test_confirm_each_stops_when_asked();
+    test_confirm_each_reports_an_image_it_cannot_scan();
+    test_grow_refuses_code_that_names_the_inside_of_the_header();
+    test_grow_leaves_code_that_names_the_first_content();
+    test_grow_decides_what_decoding_does_not_confirm_inside_the_header();
+    test_grow_refuses_a_symbol_inside_the_header();
+    test_grow_leaves_other_symbols_that_name_the_inside_of_the_header();
+    test_grow_refuses_an_export_inside_the_header();
+    test_grow_leaves_an_absolute_export_inside_the_header();
+    test_grow_refuses_a_bind_in_the_segment_that_maps_the_header();
+    test_grow_refuses_binds_it_cannot_read();
+    test_grow_accepts_binds_outside_the_header_segment();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

@@ -19,7 +19,8 @@
 typedef struct {
     uint64_t addr;    /* vm address of the disp32 */
     uint64_t off;     /* file offset of the disp32 */
-    int      immlen;  /* 0, 1, 2 or 4: the immediate length that makes the target exact */
+    int      immlen;  /* 0, 1, 2 or 4: the immediate length that gives `target` */
+    uint64_t target;  /* the address the operand names, with that immediate */
 } mhr_cand;
 
 /* Called once per candidate, in address order within a section and in
@@ -40,22 +41,50 @@ uint64_t mhr_scan_code(const uint8_t *code, uint64_t size, uint64_t addr, uint64
  * `fsize`. */
 int64_t mhr_scan(const uint8_t *buf, size_t fsize, uint64_t target, mhr_fn fn, void *ctx);
 
+/* mhr_scan for every candidate whose target lies in [first, last]: one per
+ * immediate length that puts it there. */
+int64_t mhr_scan_range(const uint8_t *buf, size_t fsize, uint64_t first, uint64_t last,
+                       mhr_fn fn, void *ctx);
+
 /* mhr_confirm's answers. */
 #define MHR_CONFIRMED   0  /* every candidate is an instruction, or there is none */
 #define MHR_UNSCANNABLE 1  /* an instruction section lies past the end of the image, or so
                              * does LC_DATA_IN_CODE's payload, or its size is not a multiple
                              * of its 8-byte entry */
 #define MHR_NO_STARTS   2  /* a candidate, and no LC_FUNCTION_STARTS to decode it from */
-#define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm */
+#define MHR_UNCONFIRMED 3  /* a candidate that decoding its function does not confirm; under
+                             * mhr_confirm_each, decoding cannot reach it, or reaches an
+                             * addr32 (0x67) form of it, or finds it inside what reads as a
+                             * jump table */
+#define MHR_REFUTED     4  /* mhr_confirm_each only: decoding reaches the candidate and
+                            * finds another instruction's bytes, data in code, or this
+                            * operand with another immediate */
+
+/* Called once per candidate with MHR_CONFIRMED, MHR_REFUTED, MHR_NO_STARTS
+ * or MHR_UNCONFIRMED, which here means that decoding cannot reach it, or
+ * reaches an addr32 (0x67) form of it, or finds it inside what reads as a
+ * jump table. Returning nonzero stops the walk. */
+typedef int (*mhr_verdict_fn)(const mhr_cand *c, int verdict, void *ctx);
+
+/* Decodes, as mhr_confirm does, every candidate mhr_scan_range finds for
+ * [first, last], and passes each to `fn` with its verdict. Returns
+ * MHR_CONFIRMED when every candidate was passed to `fn`, or `fn` stopped the
+ * walk; MHR_UNSCANNABLE as mhr_confirm does; or -1 as mhr_confirm does. */
+int mhr_confirm_each(const uint8_t *buf, size_t fsize, uint64_t first, uint64_t last,
+                     mhr_verdict_fn fn, void *ctx);
 
 /* Whether every candidate mhr_scan finds for the image's own base is an
  * instruction that addresses it. A candidate's function is the last
  * LC_FUNCTION_STARTS entry at or below it, in its own section. Decoding from
  * there (src/x86len.h), stepping over LC_DATA_IN_CODE ranges, must reach an
  * instruction whose RIP-relative disp32 is the candidate's and whose target
- * is the base. Returns an MHR_ answer, with *bad set to the candidate
- * MHR_NO_STARTS or MHR_UNCONFIRMED is about; or -1 if `buf` does not wrap,
- * no segment maps the header, or memory runs out. */
+ * is the base. And it must not lie in what reads as a jump table that no
+ * LC_DATA_IN_CODE entry declares: three aligned 32-bit words in a row, the
+ * disp32's among them, each inside the function and each the offset, from
+ * where it lies, to a byte of the function. Returns an
+ * MHR_ answer, with *bad set to the candidate MHR_NO_STARTS or
+ * MHR_UNCONFIRMED is about; or -1 if `buf` does not wrap, no segment maps the
+ * header, or memory runs out. */
 int mhr_confirm(const uint8_t *buf, size_t fsize, mhr_cand *bad);
 
 #endif /* DRYDOCK_HDRREF_H */
