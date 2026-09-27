@@ -3698,6 +3698,77 @@ static void test_ensure_pad_announces_the_pointers_it_moves(void) {
         "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n");
 }
 
+/* Verification's own check on the pointers: a snapshot of the fixture, a
+ * grow, then `undo` breaks what the grow made, and verify must say `needle`.
+ * `setup`, if any, changes the fixture before the snapshot. */
+typedef void (*pt_tweak)(uint8_t *buf, size_t fsize);
+static uint8_t *pt_ops_now(uint8_t *buf, size_t fsize) {
+    return buf + ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_off;
+}
+static uint64_t *pt_slots_now(uint8_t *buf, size_t fsize) {
+    return (uint64_t *)(buf + seg_named(buf, fsize, "__DATA")->fileoff);
+}
+static void pt_unmove(uint8_t *buf, size_t fsize) { pt_slots_now(buf, fsize)[0] += 0x1000; }
+static void pt_move_again(uint8_t *buf, size_t fsize) { pt_slots_now(buf, fsize)[0] -= 0x1000; }
+static void pt_move_content(uint8_t *buf, size_t fsize) { pt_slots_now(buf, fsize)[1] -= 0x1000; }
+static void pt_drop_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[3] = 0x53; }
+static void pt_retype(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[0] = 0x12; }
+static void pt_all_alike(uint8_t *buf, size_t fsize) {
+    for (int i = 0; i < PT_N + 1; i++) pt_slots_now(buf, fsize)[i] = PT_DATAVM + 0x40;
+}
+static void pt_shift_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[2] = 0x08; }
+
+static void check_verify_rejects_pointer(const char *what, pt_tweak setup, pt_tweak undo,
+                                         const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    if (setup) setup(buf, fsize);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) {
+        CHECK(0, "%s: snapshot", what); free(buf); return;
+    }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
+    }
+    CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the grow as made", what);
+    undo(buf, fsize);
+    int r;
+    verify_snap = &snap;
+    int said = stderr_contains_during(verify_thunk, &buf, &fsize, 0, needle, &r);
+    CHECK(r == -1 && said, "verify REJECTS %s, saying '%s' (got %d)", what, needle, r);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
+static void test_verify_watches_the_pointers(void) {
+    check_verify_rejects_pointer("a pointer left naming where the header was", NULL, pt_unmove,
+        "ERROR: verify FAILED -- the pointer at 0x100002000 holds 0x100000000 after the grow, and "
+        "must hold 0xfffff000; refusing.");
+    check_verify_rejects_pointer("a pointer to the header moved twice", NULL, pt_move_again,
+        "the pointer at 0x100002000 holds 0xffffe000 after the grow, and must hold 0xfffff000");
+    check_verify_rejects_pointer("a pointer to content moved with the header", NULL,
+        pt_move_content,
+        "the pointer at 0x100002008 holds 0x100001040 after the grow, and must hold 0x100002040");
+    check_verify_rejects_pointer("a rebase dropped", NULL, pt_drop_one,
+        "ERROR: verify FAILED -- the grown image rebases 3 pointers, 4 before the grow; refusing.");
+    check_verify_rejects_pointer("a rebase moved to a slot holding the same value", pt_all_alike,
+        pt_shift_one,
+        "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and was at 0x100002000 "
+        "before; refusing.");
+    check_verify_rejects_pointer("rebases it cannot read", NULL, pt_retype,
+        "ERROR: verify FAILED -- the grown image's rebases cannot be read (the rebase at __DATA+0 "
+        "is of type 2, not a pointer); refusing.");
+}
+
+static void test_snapshot_refuses_rebases_it_cannot_read(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    pt_type(buf);
+    mg_snapshot snap;
+    CHECK(mg_snapshot_take(buf, fsize, &snap) == -1, "snapshot: rebases it cannot read");
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -3820,6 +3891,8 @@ int main(void) {
     test_grow_refuses_a_pointer_inside_the_header();
     test_header_pointers_counts_without_moving();
     test_ensure_pad_announces_the_pointers_it_moves();
+    test_verify_watches_the_pointers();
+    test_snapshot_refuses_rebases_it_cannot_read();
     test_rebases_read_refuses_a_malformed_image();
     test_find_trie_refuses_a_short_dyld_info();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

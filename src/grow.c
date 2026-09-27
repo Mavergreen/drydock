@@ -535,11 +535,13 @@ static int mg_symtab(const mi_image *im, size_t fsize, const struct nlist_64 **n
 int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     mi_image im;
     const struct nlist_64 *nl;
+    char why[256];
     s->refs = NULL;
     s->nrefs = 0;
     s->symval = NULL;
     s->symtype = NULL;
     s->nsyms = 0;
+    memset(&s->rb, 0, sizeof s->rb);
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!s->addr) return -1;
     if (mg_collect(buf, fsize, s->addr, NULL, MG_SNAP_MAX, &s->n) != 0 ||
@@ -547,7 +549,8 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
         mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs ||
         mg_symtab(&im, fsize, &nl, &s->nsyms) != 0 ||
         !(s->symval = (uint64_t *)malloc((s->nsyms + 1) * sizeof *s->symval)) ||
-        !(s->symtype = (uint8_t *)malloc(s->nsyms + 1))) {
+        !(s->symtype = (uint8_t *)malloc(s->nsyms + 1)) ||
+        mg_rebases_read(buf, fsize, &s->rb, why, sizeof why) != 0) {
         mg_snapshot_free(s);
         return -1;
     }
@@ -563,6 +566,7 @@ void mg_snapshot_free(mg_snapshot *s) {
     free(s->refs); s->refs = NULL; s->nrefs = 0;
     free(s->symval); s->symval = NULL;
     free(s->symtype); s->symtype = NULL; s->nsyms = 0;
+    mg_rebases_free(&s->rb);
 }
 
 struct mg_overlap_ctx { const mi_image *im; const struct segment_command_64 *a, *hit; };
@@ -658,6 +662,51 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
     return 0;
 }
 
+/* The rebase targets are the same slots, in the same order, each read from
+ * the file offset that loads at its address (mg_fileoff_vm, which does not
+ * share mg_rebases_read's mapping), and each holds what it held, unless that
+ * named the header: that one names it where it is now. */
+static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsize,
+                              const mg_snapshot *before, uint64_t base) {
+    mg_rebases now;
+    char why[256];
+    int rc = 0;
+    if (mg_rebases_read(buf, fsize, &now, why, sizeof why) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- the grown image's rebases cannot be read (%s); "
+                        "refusing.\n", why);
+        return -1;
+    }
+    if (now.s.n != before->rb.s.n) {
+        fprintf(stderr, "ERROR: verify FAILED -- the grown image rebases %zu pointers, %zu before "
+                        "the grow; refusing.\n", now.s.n, before->rb.s.n);
+        rc = -1;
+    }
+    for (size_t i = 0; rc == 0 && i < now.s.n; i++) {
+        const mg_rbval *was = &before->rb.v[i], *is = &now.v[i];
+        uint64_t want = was->value == before->base ? base : was->value;
+        uint64_t loads = mg_fileoff_vm(im, is->at);
+        if (loads != is->vm) {
+            fprintf(stderr, "ERROR: verify FAILED -- rebase %zu is read from file offset %#llx, "
+                            "which loads at %#llx, not %#llx; refusing.\n", i,
+                    (unsigned long long)is->at, (unsigned long long)loads,
+                    (unsigned long long)is->vm);
+            rc = -1;
+        } else if (is->vm != was->vm) {
+            fprintf(stderr, "ERROR: verify FAILED -- rebase %zu is at %#llx after the grow, and "
+                            "was at %#llx before; refusing.\n", i, (unsigned long long)is->vm,
+                    (unsigned long long)was->vm);
+            rc = -1;
+        } else if (is->value != want) {
+            fprintf(stderr, "ERROR: verify FAILED -- the pointer at %#llx holds %#llx after the "
+                            "grow, and must hold %#llx; refusing.\n", (unsigned long long)is->vm,
+                    (unsigned long long)is->value, (unsigned long long)want);
+            rc = -1;
+        }
+    }
+    mg_rebases_free(&now);
+    return rc;
+}
+
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     uint64_t *now = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
     if (!now) return -1;
@@ -701,6 +750,7 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     uint64_t base;
     if (mi_image_base(&im, &base) != 0) return -1;
     if (mg_verify_symbols(&im, fsize, before, base) != 0) return -1;
+    if (mg_verify_pointers(&im, buf, fsize, before, base) != 0) return -1;
     return mg_verify_refs(buf, fsize, before, base);
 }
 

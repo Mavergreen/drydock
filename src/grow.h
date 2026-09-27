@@ -210,8 +210,8 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
 
 /* What mg_verify compares a grown image against: the resolved addresses
  * mg_collect finds, the image base with every reference to it the
- * header-reference scan (src/hdrref.h) finds, and each symbol's type and
- * value. */
+ * header-reference scan (src/hdrref.h) finds, each symbol's type and value,
+ * and every rebase target with its value. */
 typedef struct {
     uint64_t *addr;
     uint32_t n;
@@ -221,6 +221,7 @@ typedef struct {
     uint64_t *symval;
     uint8_t *symtype;
     uint32_t nsyms;
+    mg_rebases rb;
 } mg_snapshot;
 
 #define MG_SNAP_MAX 65536
@@ -252,9 +253,11 @@ void mg_snapshot_free(mg_snapshot *s);
 
 /* 0 if every base-relative structure and every mg_each_fileoff offset
  * resolves exactly where it did before the grow, no two segments overlap in
- * memory, no code addresses the base as it was, and every reference to the
- * header the snapshot recorded addresses the base as it is; -1 (with a message
- * naming the first failure) otherwise. */
+ * memory, no code addresses the base as it was, every reference to the
+ * header the snapshot recorded addresses the base as it is, and the rebase
+ * targets are the same slots, each holding what it held unless that named the
+ * header, which now names the base as it is; -1 (with a message naming the
+ * first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 
