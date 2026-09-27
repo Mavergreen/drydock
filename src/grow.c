@@ -1,6 +1,7 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
 #include <mach-o/nlist.h>
+#include <stdarg.h>
 
 #include "grow.h"
 #include "hdrref.h"
@@ -366,6 +367,100 @@ int mg_collect(const uint8_t *buf, size_t fsize, uint64_t *out, uint8_t *kinds,
     n = rctx.n;
     *n_out = n;
     return 0;
+}
+
+/* The segments a rebase can name (its segment index is four bits) and the
+ * image's LC_DYLD_INFO[_ONLY]s. */
+struct mg_rb_lcs {
+    const struct segment_command_64 *seg[16];
+    int nsegs, ndi;
+    const struct dyld_info_command *di;
+};
+
+static int mg_rb_lcs_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_rb_lcs *c = (struct mg_rb_lcs *)ctx_;
+    if (lc->cmd == LC_SEGMENT_64 && c->nsegs < 16)
+        c->seg[c->nsegs++] = (const struct segment_command_64 *)lc;
+    if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
+        c->ndi++;
+        if (!c->di) c->di = (const struct dyld_info_command *)lc;
+    }
+    return 0;
+}
+
+static int mg_rb_fail(mg_rebases *r, char *why, size_t whysz, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static int mg_rb_fail(mg_rebases *r, char *why, size_t whysz, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, whysz, fmt, ap);
+    va_end(ap);
+    mg_rebases_free(r);
+    return -1;
+}
+
+int mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, size_t whysz) {
+    mi_image im;
+    struct mg_rb_lcs c;
+    char dwhy[160];
+    memset(r, 0, sizeof *r);
+    memset(&c, 0, sizeof c);
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0)
+        return mg_rb_fail(r, why, whysz, "the image does not validate");
+    mi_each_lc(&im, mg_rb_lcs_cb, &c);
+    if (c.ndi > 1)
+        return mg_rb_fail(r, why, whysz, "the image has %d LC_DYLD_INFO commands", c.ndi);
+    if (!c.di || !c.di->rebase_size) return 0;
+    if (c.di->rebase_size > fsize || c.di->rebase_off > fsize - c.di->rebase_size)
+        return mg_rb_fail(r, why, whysz, "the rebase opcodes (%u bytes at offset %u) run past "
+                          "the end of the %zu-byte image", c.di->rebase_size, c.di->rebase_off,
+                          fsize);
+    int rc = mrb_decode(buf + c.di->rebase_off, c.di->rebase_size, c.nsegs, &r->s, dwhy,
+                        sizeof dwhy);
+    if (rc != MRB_OK)
+        return mg_rb_fail(r, why, whysz, "%s", rc == MRB_NOMEM ? "out of memory" : dwhy);
+    r->v = (mg_rbval *)malloc(r->s.n * sizeof *r->v + 1);
+    if (!r->v) return mg_rb_fail(r, why, whysz, "out of memory");
+    for (size_t i = 0; i < r->s.n; i++) {
+        const mrb_slot *t = &r->s.v[i];
+        const struct segment_command_64 *seg = c.seg[t->seg];
+        if (t->type != REBASE_TYPE_POINTER)
+            return mg_rb_fail(r, why, whysz, "the rebase at %.16s+%#llx is of type %u, not a "
+                              "pointer", seg->segname, (unsigned long long)t->off, t->type);
+        if (seg->fileoff == 0 && seg->filesize > 0)
+            return mg_rb_fail(r, why, whysz, "the rebase at %.16s+%#llx lies in the segment that "
+                              "maps the header", seg->segname, (unsigned long long)t->off);
+        if (seg->filesize < 8 || t->off > seg->filesize - 8)
+            return mg_rb_fail(r, why, whysz, "the rebase at %.16s+%#llx lies past the %llu bytes "
+                              "of that segment the file holds, so its value is not in the file",
+                              seg->segname, (unsigned long long)t->off,
+                              (unsigned long long)seg->filesize);
+        if (seg->fileoff > fsize || fsize - seg->fileoff < 8 || t->off > fsize - seg->fileoff - 8)
+            return mg_rb_fail(r, why, whysz, "the rebase at %.16s+%#llx lies past the end of the "
+                              "%zu-byte image", seg->segname, (unsigned long long)t->off, fsize);
+        r->v[i].at = seg->fileoff + t->off;
+        r->v[i].vm = seg->vmaddr + t->off;
+        memcpy(&r->v[i].value, buf + r->v[i].at, sizeof r->v[i].value);
+    }
+    mrb_set o = { (mrb_slot *)malloc(r->s.n * sizeof *r->s.v + 1), r->s.n, r->s.n, 0 };
+    if (!o.v) return mg_rb_fail(r, why, whysz, "out of memory");
+    memcpy(o.v, r->s.v, r->s.n * sizeof *o.v);
+    mrb_sort(&o);
+    for (size_t i = 1; i < o.n; i++) {
+        if (o.v[i].seg != o.v[i - 1].seg || o.v[i].off != o.v[i - 1].off) continue;
+        snprintf(dwhy, sizeof dwhy, "%.16s+%#llx", c.seg[o.v[i].seg]->segname,
+                 (unsigned long long)o.v[i].off);
+        mrb_free(&o);
+        return mg_rb_fail(r, why, whysz, "the rebase opcodes name %s more than once", dwhy);
+    }
+    mrb_free(&o);
+    return 0;
+}
+
+void mg_rebases_free(mg_rebases *r) {
+    mrb_free(&r->s);
+    free(r->v);
+    r->v = NULL;
 }
 
 /* mg_snapshot_take's mhr_scan callback: keep each reference to the header. */
@@ -1416,6 +1511,15 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     }
     if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;
     if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
+    {
+        mg_rebases rb;
+        char why[256];
+        if (mg_rebases_read(buf, fsize, &rb, why, sizeof why) != 0) {
+            fprintf(stderr, "ERROR: %s; refusing to grow\n", why);
+            return -1;
+        }
+        mg_rebases_free(&rb);
+    }
     /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
      * after the buffer is mutated) can't do it: widening one entry cascades
      * into the byte width of every child-offset ULEB after it in the trie.

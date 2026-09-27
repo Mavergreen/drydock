@@ -59,6 +59,9 @@
 /* Code that addresses its own image's header: found, confirmed, repaired. */
 #include "hdrref.h"
 
+/* The rebase opcodes, decoded. */
+#include "rebase.h"
+
 /* The __LINKEDIT offset-bump table: ml_bump and ml_bump_all, covering
  * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
  * family. See src/linkedit.h for the exact field list. */
@@ -176,6 +179,23 @@ int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth);
  * LC_FUNCTION_STARTS. */
 #define MG_K_ANY  0
 #define MG_K_FUNC 1
+
+/* Every rebase target of an image, in the order its rebase opcodes name
+ * them (src/rebase.h): each slot, where its 8 bytes lie in the file (`at`)
+ * and in memory (`vm`), and the value the file holds there. */
+typedef struct { uint64_t at, vm, value; } mg_rbval;
+typedef struct { mrb_set s; mg_rbval *v; } mg_rebases;
+
+/* Reads every rebase target into *r: none when the image has no
+ * LC_DYLD_INFO[_ONLY] or its rebase opcodes are empty. Returns 0; or -1, with
+ * *r empty and `why` saying what, when the image has more than one
+ * LC_DYLD_INFO[_ONLY], when its rebase opcodes lie past the end of the image
+ * or do not decode, or when a target is not a plain pointer
+ * (REBASE_TYPE_POINTER), lies in the segment that maps the header, does not
+ * lie wholly within its segment's file data, or is named more than once.
+ * Free *r with mg_rebases_free, which is safe on an empty one. */
+int  mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, size_t whysz);
+void mg_rebases_free(mg_rebases *r);
 
 /* What mg_verify compares a grown image against: the resolved addresses
  * mg_collect finds, the image base with every reference to it the
@@ -361,9 +381,10 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * at (mg_first_sect_off's MG_NO_SECTION_DATA); one whose first section's
  * file offset lies past the end of the image; and one with a candidate
  * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
- * for; and one whose LC_SYMTAB symbol table does not fit in the image. Every
- * confirmed reference is repaired: its disp32 loses the grow, so it still
- * reaches the header. So does the value of each symbol that names the header
+ * for; one whose LC_SYMTAB symbol table does not fit in the image; and one
+ * whose rebase targets mg_rebases_read cannot read. Every confirmed
+ * reference is repaired: its disp32 loses the grow, so it still reaches the
+ * header. So does the value of each symbol that names the header
  * (__mh_execute_header). A failure partway through growing can leave the
  * buffer modified (see mg_ensure_pad).
  */

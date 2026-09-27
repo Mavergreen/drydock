@@ -3290,6 +3290,282 @@ static void test_grow_moves_no_symbol_when_it_refuses(void) {
     free(buf);
 }
 
+/* ---- pointers that name the header ----
+ * A PIE executable whose __DATA holds pointers, with the rebase opcodes that
+ * name them:
+ *   __TEXT      file [0, 8192), vm 0x100000000; __text at file 4096 (F)
+ *   __DATA      file [8192, 12288), vm [0x100002000, 0x100004000), the
+ *               second half zero-fill; pt_ptrs at its start
+ *   __LINKEDIT  file [12288, 12544), vm 0x100004000; the rebase opcodes at
+ *               its start (PT_OPS), and with PT_CODE a function-starts list
+ * Segment indexes: __PAGEZERO 0, __TEXT 1, __DATA 2, __LINKEDIT 3. With
+ * PT_CODE, __text starts with `lea base(%rip), %rax` and is a function. */
+#define PT_BASE   0x100000000ull
+#define PT_F      4096u
+#define PT_DATA   8192u
+#define PT_DATAVM 0x100002000ull
+#define PT_LE     12288u
+#define PT_FSIZE  12544u
+#define PT_OPS    PT_LE
+#define PT_FS     (PT_LE + 64)
+#define PT_CODE   1
+static const uint64_t pt_ptrs[4] = {
+    PT_BASE,             /* the header */
+    PT_DATAVM + 0x40,    /* content */
+    PT_BASE + PT_F,      /* the first byte of content */
+    PT_BASE - 0x1000,    /* below the image */
+};
+#define PT_N 4
+
+static uint8_t *build_pointer_image(size_t *fsize, int opts) {
+    uint8_t *buf = (uint8_t *)calloc(1, PT_FSIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    uint8_t *lc = (uint8_t *)(h + 1);
+
+    struct segment_command_64 *pz = (struct segment_command_64 *)lc;
+    pz->cmd = LC_SEGMENT_64;
+    pz->cmdsize = sizeof *pz;
+    strcpy(pz->segname, "__PAGEZERO");
+    pz->vmsize = PT_BASE;
+    lc += pz->cmdsize;
+
+    struct segment_command_64 *tx = (struct segment_command_64 *)lc;
+    struct section_64 *text = (struct section_64 *)(tx + 1);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + sizeof *text;
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = PT_BASE;
+    tx->vmsize = tx->filesize = PT_DATA;
+    tx->nsects = 1;
+    strncpy(text->sectname, "__text", sizeof text->sectname);
+    strncpy(text->segname, "__TEXT", sizeof text->segname);
+    text->addr = PT_BASE + PT_F;
+    text->size = 16;
+    text->offset = PT_F;
+    text->flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+    lc += tx->cmdsize;
+
+    struct segment_command_64 *da = (struct segment_command_64 *)lc;
+    struct section_64 *data = (struct section_64 *)(da + 1);
+    da->cmd = LC_SEGMENT_64;
+    da->cmdsize = sizeof *da + sizeof *data;
+    strcpy(da->segname, "__DATA");
+    da->vmaddr = PT_DATAVM;
+    da->vmsize = 0x2000;
+    da->fileoff = PT_DATA;
+    da->filesize = PT_LE - PT_DATA;
+    da->nsects = 1;
+    strncpy(data->sectname, "__data", sizeof data->sectname);
+    strncpy(data->segname, "__DATA", sizeof data->segname);
+    data->addr = PT_DATAVM;
+    data->size = sizeof pt_ptrs;
+    data->offset = PT_DATA;
+    lc += da->cmdsize;
+
+    struct segment_command_64 *le = (struct segment_command_64 *)lc;
+    le->cmd = LC_SEGMENT_64;
+    le->cmdsize = sizeof *le;
+    strcpy(le->segname, "__LINKEDIT");
+    le->vmaddr = PT_DATAVM + 0x2000;
+    le->vmsize = 0x1000;
+    le->fileoff = PT_LE;
+    le->filesize = PT_FSIZE - PT_LE;
+    lc += le->cmdsize;
+
+    struct dyld_info_command *di = (struct dyld_info_command *)lc;
+    di->cmd = LC_DYLD_INFO_ONLY;
+    di->cmdsize = sizeof *di;
+    di->rebase_off = PT_OPS;
+    di->rebase_size = 8;
+    lc += di->cmdsize;
+    h->ncmds = 5;
+
+    /* SET_TYPE_IMM pointer; SET_SEGMENT_AND_OFFSET_ULEB 2, 0;
+     * DO_REBASE_IMM_TIMES 4; DONE */
+    static const uint8_t ops[8] = { 0x11, 0x22, 0x00, 0x54, 0x00, 0, 0, 0 };
+    memcpy(buf + PT_OPS, ops, sizeof ops);
+    memcpy(buf + PT_DATA, pt_ptrs, sizeof pt_ptrs);
+
+    if (opts & PT_CODE) {
+        struct linkedit_data_command *fs = (struct linkedit_data_command *)lc;
+        static const uint8_t starts[8] = { 0x80, 0x20, 0x00 };   /* base + 4096: __text */
+        fs->cmd = LC_FUNCTION_STARTS;
+        fs->cmdsize = sizeof *fs;
+        fs->dataoff = PT_FS;
+        fs->datasize = sizeof starts;
+        memcpy(buf + PT_FS, starts, sizeof starts);
+        lc += fs->cmdsize;
+        h->ncmds++;
+        int32_t disp = (int32_t)(PT_BASE - (PT_BASE + PT_F + 7));
+        buf[PT_F] = 0x48;
+        buf[PT_F + 1] = 0x8d;
+        buf[PT_F + 2] = 0x05;
+        memcpy(buf + PT_F + 3, &disp, sizeof disp);
+    }
+    h->sizeofcmds = (uint32_t)(lc - (uint8_t *)(h + 1));
+    *fsize = PT_FSIZE;
+    return buf;
+}
+
+static struct segment_command_64 *pt_seg(uint8_t *buf, const char *name) {
+    return seg_named(buf, PT_FSIZE, name);
+}
+
+static void test_rebases_read_every_target(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == PT_N, "rebases: all %d read (got %d, %zu: %s)", PT_N, r, rb.s.n, why);
+    for (size_t i = 0; r == 0 && i < rb.s.n && i < PT_N; i++)
+        CHECK(rb.v[i].at == PT_DATA + 8 * i && rb.v[i].vm == PT_DATAVM + 8 * i &&
+              rb.v[i].value == pt_ptrs[i],
+              "rebases: target %zu is at file %#llx, vm %#llx, holding %#llx; want %#llx, %#llx, "
+              "%#llx", i, (unsigned long long)rb.v[i].at, (unsigned long long)rb.v[i].vm,
+              (unsigned long long)rb.v[i].value, (unsigned long long)(PT_DATA + 8 * i),
+              (unsigned long long)(PT_DATAVM + 8 * i), (unsigned long long)pt_ptrs[i]);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+/* A slot ending exactly at its segment's file data is still in the file. */
+static void test_rebases_read_a_target_ending_at_the_segments_file_data(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    pt_seg(buf, "__DATA")->filesize = 8 * PT_N;
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == PT_N, "rebases: the last slot ends at the file data (got %d: %s)",
+          r, why);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+static void test_rebases_read_none_without_rebase_opcodes(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, 0);   /* no LC_DYLD_INFO at all */
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "rebases: none without LC_DYLD_INFO (got %d, %zu)", r, rb.s.n);
+    mg_rebases_free(&rb);
+    free(buf);
+    buf = build_pointer_image(&fsize, 0);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_size = 0;
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "rebases: none with empty rebase opcodes (got %d, %zu)", r, rb.s.n);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+/* Each way the rebase targets cannot be read. `poke` breaks the fixture. */
+typedef void (*pt_poke)(uint8_t *buf);
+static void pt_type(uint8_t *buf) { buf[PT_OPS] = 0x12; }             /* TEXT_ABSOLUTE32 */
+static void pt_in_text(uint8_t *buf) { buf[PT_OPS + 1] = 0x21; }      /* __TEXT */
+static void pt_no_segment(uint8_t *buf) { buf[PT_OPS + 1] = 0x2f; }   /* segment 15 */
+static void pt_unknown_op(uint8_t *buf) { buf[PT_OPS + 3] = 0x90; }
+static void pt_zerofill(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 16; }
+static void pt_straddle(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 20; }
+static void pt_all_zerofill(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 0; }
+static void pt_past_image(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE - 16; }
+static void pt_all_past_image(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE + 0x1000; }
+static void pt_short_of_a_slot(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE - 4; }
+static void pt_ops_past_image(uint8_t *buf) {
+    ((struct dyld_info_command *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY))->rebase_size = 1000;
+}
+static void pt_twice(uint8_t *buf) {        /* then SET_SEGMENT_AND_OFFSET_ULEB 2, 16; DO 1 */
+    static const uint8_t again[4] = { 0x22, 0x10, 0x51, 0x00 };
+    memcpy(buf + PT_OPS + 4, again, sizeof again);
+}
+static void pt_two_dyld_info(uint8_t *buf) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *di = (uint8_t *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY);
+    memcpy((uint8_t *)(h + 1) + h->sizeofcmds, di, sizeof(struct dyld_info_command));
+    h->ncmds++;
+    h->sizeofcmds += sizeof(struct dyld_info_command);
+}
+static const struct { const char *what; pt_poke poke; const char *why; } pt_unreadable[] = {
+    { "a rebase that is not a pointer", pt_type,
+      "the rebase at __DATA+0 is of type 2, not a pointer" },
+    { "a rebase in the segment that maps the header", pt_in_text,
+      "the rebase at __TEXT+0 lies in the segment that maps the header" },
+    { "a rebase naming a segment the image lacks", pt_no_segment,
+      "names segment 15, and there are 4" },
+    { "an unknown rebase opcode", pt_unknown_op, "unknown rebase opcode 0x90 at byte 3" },
+    { "a rebase in zero-fill", pt_zerofill,
+      "the rebase at __DATA+0x10 lies past the 16 bytes of that segment the file holds, so its "
+      "value is not in the file" },
+    { "a rebase straddling the end of its file data", pt_straddle,
+      "the rebase at __DATA+0x10 lies past the 20 bytes of that segment the file holds, so its "
+      "value is not in the file" },
+    { "a rebase in a segment with no file data", pt_all_zerofill,
+      "the rebase at __DATA+0 lies past the 0 bytes of that segment the file holds, so its "
+      "value is not in the file" },
+    { "a rebase past the end of the image", pt_past_image,
+      "the rebase at __DATA+0x10 lies past the end of the 12544-byte image" },
+    { "a segment whose file data starts past the image", pt_all_past_image,
+      "the rebase at __DATA+0 lies past the end of the 12544-byte image" },
+    { "a segment whose file data starts 4 bytes before the image ends", pt_short_of_a_slot,
+      "the rebase at __DATA+0 lies past the end of the 12544-byte image" },
+    { "rebase opcodes past the end of the image", pt_ops_past_image,
+      "the rebase opcodes (1000 bytes at offset 12288) run past the end of the 12544-byte image" },
+    { "two LC_DYLD_INFO commands", pt_two_dyld_info, "the image has 2 LC_DYLD_INFO commands" },
+    { "a slot rebased twice", pt_twice, "the rebase opcodes name __DATA+0x10 more than once" },
+};
+
+static void test_rebases_read_refuses_what_it_cannot_read(void) {
+    for (size_t k = 0; k < sizeof pt_unreadable / sizeof pt_unreadable[0]; k++) {
+        size_t fsize;
+        uint8_t *buf = build_pointer_image(&fsize, 0);
+        pt_unreadable[k].poke(buf);
+        mg_rebases rb;
+        char why[256] = "";
+        int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+        CHECK(r == -1 && strstr(why, pt_unreadable[k].why) != NULL,
+              "rebases: %s is refused (got %d, '%s')", pt_unreadable[k].what, r, why);
+        CHECK(rb.s.n == 0 && rb.s.v == NULL && rb.v == NULL,
+              "rebases: %s leaves nothing behind", pt_unreadable[k].what);
+        mg_rebases_free(&rb);
+        free(buf);
+    }
+}
+
+/* And a grow refuses each, before it changes anything. */
+static void test_grow_refuses_rebases_it_cannot_read(void) {
+    for (size_t k = 0; k < sizeof pt_unreadable / sizeof pt_unreadable[0]; k++) {
+        size_t fsize;
+        uint8_t *buf = build_pointer_image(&fsize, 0);
+        pt_unreadable[k].poke(buf);
+        size_t fsize0 = fsize;
+        uint8_t *before = (uint8_t *)malloc(fsize0);
+        memcpy(before, buf, fsize0);
+        char want[320];
+        int r;
+        snprintf(want, sizeof want, "%s; refusing to grow", pt_unreadable[k].why);
+        int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000, want, &r);
+        CHECK(r == -1 && said, "grow: %s is refused, saying so (got %d)", pt_unreadable[k].what, r);
+        CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+              "grow: %s: nothing changed", pt_unreadable[k].what);
+        free(before);
+        free(buf);
+    }
+}
+
+/* The control: the fixture as built grows. */
+static void test_grow_accepts_readable_rebases(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "grow: the pointer fixture grows (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -3402,6 +3678,12 @@ int main(void) {
     test_confirm_reports_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_not_a_multiple_of_8();
     test_confirm_needs_function_starts_when_the_list_is_empty();
+    test_rebases_read_every_target();
+    test_rebases_read_a_target_ending_at_the_segments_file_data();
+    test_rebases_read_none_without_rebase_opcodes();
+    test_rebases_read_refuses_what_it_cannot_read();
+    test_grow_refuses_rebases_it_cannot_read();
+    test_grow_accepts_readable_rebases();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
