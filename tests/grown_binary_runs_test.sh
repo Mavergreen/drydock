@@ -8,9 +8,12 @@
 #
 # The subjects: a PIE executable linked here with -headerpad 0; a system
 # executable when one qualifies (a 64-bit PIE MH_EXECUTE the grow accepts as
-# it is; a slice with chained fixups does not, and is reported as a SKIP); and
+# it is; a slice with chained fixups does not, and is reported as a SKIP);
 # two programs that find their own header: one RIP-relatively, whose grow must
-# repair that reference, and one through dyld, with nothing to repair.
+# repair that reference, and one through dyld, with nothing to repair; and
+# three that keep its address in data: ptr, whose pointer the grow must move,
+# inside, which points into the header and must be refused, and self, which
+# binds to its own __mh_execute_header and needs nothing.
 # Each gets enough distinct LC_RPATHs to outgrow its header pad, measured from
 # `drydock-macho-rewrite info` -- never a pad size this host's linker chose.
 # Fixtures are x86_64 with a 10.9 floor, which runs on 10.9 and under Rosetta.
@@ -219,6 +222,77 @@ same ctl "$T/ctl" "$T/ctl.grown"
 grep -q '__data found' "$T/ctl.out.out" \
     && ok "ctl: ... and the grown binary finds its own __data" \
     || bad "ctl: grown output" "$(cat "$T/ctl.out.out")"
+
+# ---- 4. data that points at its own header ----------------------------------
+# ptr keeps its own header's address in data, as crt1's __program_vars does in
+# every Java launcher stub on 10.9: a rebased pointer whose value is the base.
+# The grow must move it with the header, say so, and leave a binary that runs
+# as the original does. inside points 16 bytes into its header, which a grow
+# moves away from what follows it, so its grow refuses and writes nothing.
+# self takes the same address through -interposable, which this host's ld64
+# makes a bind to its own __mh_execute_header; dyld resolves that through the
+# export trie, which a grow keeps naming the header, so it runs too.
+cat >"$T/ptr.c" <<'EOF'
+#include <stdio.h>
+#include <mach-o/dyld.h>
+#include <mach-o/ldsyms.h>
+const void *hp = &_mh_execute_header;
+int main(void) {
+    const void *h = _dyld_get_image_header(0);
+    printf("data pointer %s the header\n", hp == h ? "names" : "MISSES");
+    return hp == h ? 0 : 1;
+}
+EOF
+cat >"$T/inside.c" <<'EOF'
+#include <stdio.h>
+#include <mach-o/ldsyms.h>
+const char *in = (const char *)&_mh_execute_header + 16;
+int main(void) { printf("%p\n", (const void *)in); return 0; }
+EOF
+{ "$CC" $FF -Wl,-headerpad,0 -o "$T/ptr" "$T/ptr.c" &&
+  "$CC" $FF -Wl,-headerpad,0 -o "$T/inside" "$T/inside.c" &&
+  "$CC" $FF -Wl,-headerpad,0 -Wl,-interposable -o "$T/self" "$T/ptr.c"; } \
+    || { echo "grown_binary_runs_test: could not link ptr, inside or self" >&2; exit 1; }
+
+"$T/ptr" >"$T/ptr.run" 2>&1
+grep -q 'data pointer names the header' "$T/ptr.run" \
+    && ok "ptr: the fixture's data pointer names its header" || bad "ptr: fixture" "$(cat "$T/ptr.run")"
+grow ptr "$T/ptr" "$T/ptr.grown"
+[ "$grc" -eq 0 ] && [ -e "$T/ptr.grown" ] && ok "ptr: the grow succeeds and writes its output" \
+    || bad "ptr: grow" "exit $grc: $(cat "$T/ptr.grow.err")"
+lowered ptr "$T/ptr" "$T/ptr.grown"
+grep -q "^$T/ptr: grew the header pad by .*; repaired 1 reference to the header\$" "$T/ptr.grow.err" \
+    && ok "ptr: ... moving its one pointer to the header, and saying so" \
+    || bad "ptr: repaired" "$(cat "$T/ptr.grow.err")"
+same ptr "$T/ptr" "$T/ptr.grown"
+grep -q 'data pointer names the header' "$T/ptr.out.out" \
+    && ok "ptr: ... and the grown binary's data pointer names its header" \
+    || bad "ptr: grown output" "$(cat "$T/ptr.out.out")"
+
+grow inside "$T/inside" "$T/inside.grown"
+[ "$grc" -eq 1 ] && [ ! -e "$T/inside.grown" ] \
+    && ok "inside: a pointer into the header refuses the grow, and nothing is written" \
+    || bad "inside: grow" "exit $grc: $(cat "$T/inside.grow.err")"
+grep -q 'between the header at .* and its first content at .*, which a grow moves apart; refusing to grow$' \
+    "$T/inside.grow.err" \
+    && ok "inside: ... saying why" || bad "inside: why" "$(cat "$T/inside.grow.err")"
+
+DYLDINFO=/Library/Developer/CommandLineTools/usr/bin/dyldinfo
+if [ -x "$DYLDINFO" ]; then
+    "$DYLDINFO" -bind "$T/self" | grep -q 'this-image *__mh_execute_header$' \
+        && ok "self: the fixture binds its own __mh_execute_header" \
+        || bad "self: fixture" "$("$DYLDINFO" -bind "$T/self")"
+else
+    skip "self: the fixture's bind" "no $DYLDINFO to read it with"
+fi
+grow self "$T/self" "$T/self.grown"
+[ "$grc" -eq 0 ] && [ -e "$T/self.grown" ] && ok "self: the grow succeeds and writes its output" \
+    || bad "self: grow" "exit $grc: $(cat "$T/self.grow.err")"
+lowered self "$T/self" "$T/self.grown"
+same self "$T/self" "$T/self.grown"
+grep -q 'data pointer names the header' "$T/self.out.out" \
+    && ok "self: ... and the grown binary's bound pointer names its header" \
+    || bad "self: grown output" "$(cat "$T/self.out.out")"
 
 [ "$fail" -eq 0 ] || { echo "grown_binary_runs_test: $fail failure(s)"; exit 1; }
 echo "grown_binary_runs_test: all passed"

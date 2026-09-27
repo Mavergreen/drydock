@@ -149,13 +149,17 @@ for why they would be rare -- and one decided on purpose:
     an x86_64 PIE executable the wrapper now lowers the image base to make
     room, announces it on stderr ("FILE: grew the header pad by N bytes
     ..."), and exits 0; anything else is still refused. When the
-    executable's code takes its own header's address RIP-relatively, which
+    executable takes its own header's address, in code RIP-relatively or
+    in a data pointer (every Java launcher stub on 10.9 has one), which
     lowering the base would break, the grow repairs each such instruction
-    and ends the line "; repaired N references to the header"
-    (`tests/grown_binary_runs_test.sh`, "hdr"). The scan that finds these can,
-    rarely, report bytes that only look like such an instruction; the grow
-    confirms each by decoding its function, and refuses rather than patch
-    bytes it cannot confirm. The repo owner's
+    or pointer and ends the line "; repaired N references to the header"
+    (`tests/grown_binary_runs_test.sh`, "hdr" and "ptr"). The scan that
+    finds the instructions can, rarely, report bytes that only look like
+    one; the grow confirms each by decoding its function, and refuses
+    rather than patch bytes it cannot confirm. It also refuses an
+    executable with no LC_DYLD_INFO whose LC_DYSYMTAB lists local
+    relocations, since it cannot find such a pointer among those
+    (`mDNSResponder` is one). The repo owner's
     ruling: the engine never writes its input, and the grow verifies itself,
     so an opt-in bought nothing. `tests/cli_test.sh`'s `add_version_min`
     case ("a short pad is grown, announced, where the original refused")

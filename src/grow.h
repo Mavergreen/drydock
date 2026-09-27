@@ -26,7 +26,8 @@
  * address that names content changes. The fields that move are file offsets —
  * which we shift uniformly (borrowed from LIEF: the exhaustive list of offset
  * fields) — and what names the header, which moved: code that reaches it
- * RIP-relatively (src/hdrref.h), and the value of a symbol that names it.
+ * RIP-relatively (src/hdrref.h), the value of a symbol that names it, and a
+ * rebased pointer to it.
  *
  * Precondition: a MH_PIE executable with a __PAGEZERO at least `grow` bytes
  * large. (Always true for the Claude Code executable: 0x1_0000_0000 pagezero.)
@@ -58,6 +59,9 @@
 
 /* Code that addresses its own image's header: found, confirmed, repaired. */
 #include "hdrref.h"
+
+/* The rebase opcodes, decoded. */
+#include "rebase.h"
 
 /* The __LINKEDIT offset-bump table: ml_bump and ml_bump_all, covering
  * LC_SYMTAB/LC_DYSYMTAB/LC_DYLD_INFO[_ONLY] and the linkedit_data_command
@@ -112,7 +116,8 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
  * available); image base 0xOLD -> 0xNEW", ending "; repaired N references to
  * the header" (or "1 reference") when the grow repaired code that addresses
- * the image's own header (src/hdrref.h).
+ * the image's own header (src/hdrref.h) or moved pointers to it
+ * (mg_header_pointers), counting both.
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth failed. Also -1, with the
@@ -177,10 +182,42 @@ int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth);
 #define MG_K_ANY  0
 #define MG_K_FUNC 1
 
+/* Every rebase target of an image, in the order its rebase opcodes name
+ * them (src/rebase.h): each slot, where its 8 bytes lie in the file (`at`)
+ * and in memory (`vm`), and the value the file holds there. */
+typedef struct { uint64_t at, vm, value; } mg_rbval;
+typedef struct { mrb_set s; mg_rbval *v; } mg_rebases;
+
+/* Reads every rebase target into *r: none when the image has no
+ * LC_DYLD_INFO[_ONLY] or its rebase opcodes are empty. Returns 0; or -1, with
+ * *r empty and `why` saying what, when the image does not validate; when an
+ * LC_DYLD_INFO[_ONLY] is too short to hold rebase_off/rebase_size, or an
+ * LC_DYSYMTAB too short to hold nlocrel; when the image has more than one
+ * LC_DYLD_INFO[_ONLY]; when it has none and LC_DYSYMTAB lists local
+ * relocation entries, which dyld then reads in their place; when its rebase
+ * opcodes lie past the end of the image or do not decode; or when a target
+ * is not a plain pointer (REBASE_TYPE_POINTER), lies in the segment that maps
+ * the header, does not lie wholly within its segment's file data, or is named
+ * more than once. Free *r with mg_rebases_free, which is safe on an empty
+ * one. */
+int  mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, size_t whysz);
+void mg_rebases_free(mg_rebases *r);
+
+/* The pointers that name the header: each rebase target whose value is
+ * `base`. Each loses `grow` (0 to count them), following the header down.
+ * One whose value lies strictly inside (base, base + first), in the header
+ * and its load commands, is refused: a grow moves those apart, so no value
+ * names that byte both before and after. So is one in [base - below, base),
+ * which names nothing now and the grown header after a grow of `below`.
+ * Returns how many name the header, or -1 with `why` set (mg_rebases_read's
+ * reasons, or those two). */
+int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                           uint32_t below, uint32_t grow, char *why, size_t whysz);
+
 /* What mg_verify compares a grown image against: the resolved addresses
  * mg_collect finds, the image base with every reference to it the
- * header-reference scan (src/hdrref.h) finds, and each symbol's type and
- * value. */
+ * header-reference scan (src/hdrref.h) finds, each symbol's type and value,
+ * and every rebase target with its value. */
 typedef struct {
     uint64_t *addr;
     uint32_t n;
@@ -190,6 +227,7 @@ typedef struct {
     uint64_t *symval;
     uint8_t *symtype;
     uint32_t nsyms;
+    mg_rebases rb;
 } mg_snapshot;
 
 #define MG_SNAP_MAX 65536
@@ -221,9 +259,11 @@ void mg_snapshot_free(mg_snapshot *s);
 
 /* 0 if every base-relative structure and every mg_each_fileoff offset
  * resolves exactly where it did before the grow, no two segments overlap in
- * memory, no code addresses the base as it was, and every reference to the
- * header the snapshot recorded addresses the base as it is; -1 (with a message
- * naming the first failure) otherwise. */
+ * memory, no code addresses the base as it was, every reference to the
+ * header the snapshot recorded addresses the base as it is, and the rebase
+ * targets are the same slots, each holding what it held unless that named the
+ * header, which now names the base as it is; -1 (with a message naming the
+ * first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 
@@ -320,7 +360,10 @@ int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cm
 /* Locate the export trie's (off, size), whichever load command carries it --
  * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
  * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
- * no export-trie load command at all (not an error -- just nothing to walk). */
+ * no export-trie load command at all (not an error -- just nothing to walk),
+ * or if its LC_DYLD_INFO[_ONLY] is too short to hold export_off/export_size
+ * (mi_validate vouches for only its first 8 bytes; treated the same as
+ * absent, since neither can be walked). */
 int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size);
 
 
@@ -361,10 +404,12 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * at (mg_first_sect_off's MG_NO_SECTION_DATA); one whose first section's
  * file offset lies past the end of the image; and one with a candidate
  * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
- * for; and one whose LC_SYMTAB symbol table does not fit in the image. Every
- * confirmed reference is repaired: its disp32 loses the grow, so it still
- * reaches the header. So does the value of each symbol that names the header
- * (__mh_execute_header). A failure partway through growing can leave the
+ * for; one whose LC_SYMTAB symbol table does not fit in the image; and one
+ * whose rebase targets mg_rebases_read cannot read, or one of which
+ * mg_header_pointers refuses. Every confirmed reference is repaired: its
+ * disp32 loses the grow, so it still reaches the header. So does the value
+ * of each symbol that names the header (__mh_execute_header), and of each
+ * rebased pointer that does. A failure partway through growing can leave the
  * buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);

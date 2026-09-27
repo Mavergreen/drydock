@@ -2133,9 +2133,9 @@ static void plant_header_refs(uint8_t *buf, size_t fsize, const uint32_t *at, in
     }
 }
 
-/* Everything mg_ensure_pad(..., need, "t") prints on stderr, as one string
- * the caller frees. */
-static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, int *ret) {
+/* Everything `call` prints on stderr, as one string the caller frees. */
+static char *stderr_during(int (*call)(uint8_t **, size_t *, uint32_t), uint8_t **pbuf,
+                           size_t *pfsize, uint32_t grow, int *ret) {
     const char *tmpdir = getenv("TMPDIR");
     char path[512];
     char *text = (char *)calloc(1, 65536);
@@ -2145,10 +2145,10 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     int saved_fd = dup(fileno(stderr));
     if (!freopen(path, "w", stderr)) {
         CHECK(0, "could not capture stderr to %s", path);
-        *ret = mg_ensure_pad(pbuf, pfsize, need, "t");
+        *ret = call(pbuf, pfsize, grow);
         return text;
     }
-    *ret = mg_ensure_pad(pbuf, pfsize, need, "t");
+    *ret = call(pbuf, pfsize, grow);
     fflush(stderr);
     dup2(saved_fd, fileno(stderr));
     close(saved_fd);
@@ -2161,6 +2161,12 @@ static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, in
     }
     unlink(path);
     return text;
+}
+
+/* Everything mg_ensure_pad(..., need, "t") prints on stderr. */
+static char *ensure_pad_stderr(uint8_t **pbuf, size_t *pfsize, uint32_t need, int *ret) {
+    g_ensure_need = need;
+    return stderr_during(ensure_thunk, pbuf, pfsize, 0, ret);
 }
 
 /* How many candidates in `buf` address `target`. */
@@ -3290,6 +3296,615 @@ static void test_grow_moves_no_symbol_when_it_refuses(void) {
     free(buf);
 }
 
+/* ---- pointers that name the header ----
+ * A PIE executable whose __DATA holds pointers, with the rebase opcodes that
+ * name them:
+ *   __TEXT      file [0, 8192), vm 0x100000000; __text at file 4096 (F)
+ *   __DATA      file [8192, 12288), vm [0x100002000, 0x100004000), the
+ *               second half zero-fill; pt_ptrs at its start
+ *   __LINKEDIT  file [12288, 12544), vm 0x100004000; the rebase opcodes at
+ *               its start (PT_OPS), and with PT_CODE a function-starts list
+ * Segment indexes: __PAGEZERO 0, __TEXT 1, __DATA 2, __LINKEDIT 3. With
+ * PT_CODE, __text starts with `lea base(%rip), %rax` and is a function. */
+#define PT_BASE   0x100000000ull
+#define PT_F      4096u
+#define PT_DATA   8192u
+#define PT_DATAVM 0x100002000ull
+#define PT_LE     12288u
+#define PT_FSIZE  12544u
+#define PT_OPS    PT_LE
+#define PT_FS     (PT_LE + 64)
+#define PT_CODE   1
+#define PT_LOCREL 2   /* an LC_DYSYMTAB listing one local relocation entry */
+#define PT_NOINFO 4   /* no LC_DYLD_INFO_ONLY: dyld reads LC_DYSYMTAB's entries instead */
+static const uint64_t pt_ptrs[4] = {
+    PT_BASE,             /* the header */
+    PT_DATAVM + 0x40,    /* content */
+    PT_BASE + PT_F,      /* the first byte of content */
+    PT_BASE - 0x3000,    /* below the image, beyond a two-page grow */
+};
+#define PT_N 4
+
+static uint8_t *build_pointer_image(size_t *fsize, int opts) {
+    uint8_t *buf = (uint8_t *)calloc(1, PT_FSIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->filetype = MH_EXECUTE;
+    h->flags = MH_PIE;
+    uint8_t *lc = (uint8_t *)(h + 1);
+
+    struct segment_command_64 *pz = (struct segment_command_64 *)lc;
+    pz->cmd = LC_SEGMENT_64;
+    pz->cmdsize = sizeof *pz;
+    strcpy(pz->segname, "__PAGEZERO");
+    pz->vmsize = PT_BASE;
+    lc += pz->cmdsize;
+
+    struct segment_command_64 *tx = (struct segment_command_64 *)lc;
+    struct section_64 *text = (struct section_64 *)(tx + 1);
+    tx->cmd = LC_SEGMENT_64;
+    tx->cmdsize = sizeof *tx + sizeof *text;
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = PT_BASE;
+    tx->vmsize = tx->filesize = PT_DATA;
+    tx->nsects = 1;
+    strncpy(text->sectname, "__text", sizeof text->sectname);
+    strncpy(text->segname, "__TEXT", sizeof text->segname);
+    text->addr = PT_BASE + PT_F;
+    text->size = 16;
+    text->offset = PT_F;
+    text->flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+    lc += tx->cmdsize;
+
+    struct segment_command_64 *da = (struct segment_command_64 *)lc;
+    struct section_64 *data = (struct section_64 *)(da + 1);
+    da->cmd = LC_SEGMENT_64;
+    da->cmdsize = sizeof *da + sizeof *data;
+    strcpy(da->segname, "__DATA");
+    da->vmaddr = PT_DATAVM;
+    da->vmsize = 0x2000;
+    da->fileoff = PT_DATA;
+    da->filesize = PT_LE - PT_DATA;
+    da->nsects = 1;
+    strncpy(data->sectname, "__data", sizeof data->sectname);
+    strncpy(data->segname, "__DATA", sizeof data->segname);
+    data->addr = PT_DATAVM;
+    data->size = sizeof pt_ptrs;
+    data->offset = PT_DATA;
+    lc += da->cmdsize;
+
+    struct segment_command_64 *le = (struct segment_command_64 *)lc;
+    le->cmd = LC_SEGMENT_64;
+    le->cmdsize = sizeof *le;
+    strcpy(le->segname, "__LINKEDIT");
+    le->vmaddr = PT_DATAVM + 0x2000;
+    le->vmsize = 0x1000;
+    le->fileoff = PT_LE;
+    le->filesize = PT_FSIZE - PT_LE;
+    lc += le->cmdsize;
+
+    h->ncmds = 4;
+    if (!(opts & PT_NOINFO)) {
+        struct dyld_info_command *di = (struct dyld_info_command *)lc;
+        di->cmd = LC_DYLD_INFO_ONLY;
+        di->cmdsize = sizeof *di;
+        di->rebase_off = PT_OPS;
+        di->rebase_size = 8;
+        lc += di->cmdsize;
+        h->ncmds++;
+    }
+    if (opts & PT_LOCREL) {
+        struct dysymtab_command *ds = (struct dysymtab_command *)lc;
+        ds->cmd = LC_DYSYMTAB;
+        ds->cmdsize = sizeof *ds;
+        ds->locreloff = PT_LE + 128;   /* X86_64_RELOC_UNSIGNED, 8 bytes, at __DATA+0, section 2 */
+        ds->nlocrel = 1;
+        lc += ds->cmdsize;
+        h->ncmds++;
+        static const uint8_t reloc[8] = { 0, 0, 0, 0, 0x02, 0, 0, 0x06 };
+        memcpy(buf + PT_LE + 128, reloc, sizeof reloc);
+    }
+
+    /* SET_TYPE_IMM pointer; SET_SEGMENT_AND_OFFSET_ULEB 2, 0;
+     * DO_REBASE_IMM_TIMES 4; DONE */
+    static const uint8_t ops[8] = { 0x11, 0x22, 0x00, 0x54, 0x00, 0, 0, 0 };
+    memcpy(buf + PT_OPS, ops, sizeof ops);
+    memcpy(buf + PT_DATA, pt_ptrs, sizeof pt_ptrs);
+
+    if (opts & PT_CODE) {
+        struct linkedit_data_command *fs = (struct linkedit_data_command *)lc;
+        static const uint8_t starts[8] = { 0x80, 0x20, 0x00 };   /* base + 4096: __text */
+        fs->cmd = LC_FUNCTION_STARTS;
+        fs->cmdsize = sizeof *fs;
+        fs->dataoff = PT_FS;
+        fs->datasize = sizeof starts;
+        memcpy(buf + PT_FS, starts, sizeof starts);
+        lc += fs->cmdsize;
+        h->ncmds++;
+        int32_t disp = (int32_t)(PT_BASE - (PT_BASE + PT_F + 7));
+        buf[PT_F] = 0x48;
+        buf[PT_F + 1] = 0x8d;
+        buf[PT_F + 2] = 0x05;
+        memcpy(buf + PT_F + 3, &disp, sizeof disp);
+    }
+    h->sizeofcmds = (uint32_t)(lc - (uint8_t *)(h + 1));
+    *fsize = PT_FSIZE;
+    return buf;
+}
+
+static struct segment_command_64 *pt_seg(uint8_t *buf, const char *name) {
+    return seg_named(buf, PT_FSIZE, name);
+}
+
+static void test_rebases_read_every_target(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == PT_N, "rebases: all %d read (got %d, %zu: %s)", PT_N, r, rb.s.n, why);
+    for (size_t i = 0; r == 0 && i < rb.s.n && i < PT_N; i++)
+        CHECK(rb.v[i].at == PT_DATA + 8 * i && rb.v[i].vm == PT_DATAVM + 8 * i &&
+              rb.v[i].value == pt_ptrs[i],
+              "rebases: target %zu is at file %#llx, vm %#llx, holding %#llx; want %#llx, %#llx, "
+              "%#llx", i, (unsigned long long)rb.v[i].at, (unsigned long long)rb.v[i].vm,
+              (unsigned long long)rb.v[i].value, (unsigned long long)(PT_DATA + 8 * i),
+              (unsigned long long)(PT_DATAVM + 8 * i), (unsigned long long)pt_ptrs[i]);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+/* A slot ending exactly at its segment's file data is still in the file. */
+static void test_rebases_read_a_target_ending_at_the_segments_file_data(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    pt_seg(buf, "__DATA")->filesize = 8 * PT_N;
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == PT_N, "rebases: the last slot ends at the file data (got %d: %s)",
+          r, why);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+static void test_rebases_read_none_without_rebase_opcodes(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, 0);   /* no LC_DYLD_INFO at all */
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "rebases: none without LC_DYLD_INFO (got %d, %zu)", r, rb.s.n);
+    mg_rebases_free(&rb);
+    free(buf);
+    buf = build_pointer_image(&fsize, 0);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_size = 0;
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "rebases: none with empty rebase opcodes (got %d, %zu)", r, rb.s.n);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+/* Each way the rebase targets cannot be read. `poke` breaks the fixture. */
+typedef void (*pt_poke)(uint8_t *buf);
+static void pt_type(uint8_t *buf) { buf[PT_OPS] = 0x12; }             /* TEXT_ABSOLUTE32 */
+static void pt_in_text(uint8_t *buf) { buf[PT_OPS + 1] = 0x21; }      /* __TEXT */
+static void pt_no_segment(uint8_t *buf) { buf[PT_OPS + 1] = 0x2f; }   /* segment 15 */
+static void pt_unknown_op(uint8_t *buf) { buf[PT_OPS + 3] = 0x90; }
+static void pt_zerofill(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 16; }
+static void pt_straddle(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 20; }
+static void pt_all_zerofill(uint8_t *buf) { pt_seg(buf, "__DATA")->filesize = 0; }
+static void pt_past_image(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE - 16; }
+static void pt_all_past_image(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE + 0x1000; }
+static void pt_short_of_a_slot(uint8_t *buf) { pt_seg(buf, "__DATA")->fileoff = PT_FSIZE - 4; }
+static void pt_ops_past_image(uint8_t *buf) {
+    ((struct dyld_info_command *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY))->rebase_size = 1000;
+}
+static void pt_twice(uint8_t *buf) {        /* then SET_SEGMENT_AND_OFFSET_ULEB 2, 16; DO 1 */
+    static const uint8_t again[4] = { 0x22, 0x10, 0x51, 0x00 };
+    memcpy(buf + PT_OPS + 4, again, sizeof again);
+}
+static void pt_two_dyld_info(uint8_t *buf) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *di = (uint8_t *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY);
+    memcpy((uint8_t *)(h + 1) + h->sizeofcmds, di, sizeof(struct dyld_info_command));
+    h->ncmds++;
+    h->sizeofcmds += sizeof(struct dyld_info_command);
+}
+/* The fixture's last command, cut to the 8 bytes mi_validate vouches for. */
+static void pt_short_di(uint8_t *buf) {
+    struct dyld_info_command *di =
+        (struct dyld_info_command *)find_lc(buf, PT_FSIZE, LC_DYLD_INFO_ONLY);
+    di->cmdsize = sizeof(struct load_command);
+}
+static void pt_short_dysymtab(uint8_t *buf) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct load_command *lc = (struct load_command *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    lc->cmd = LC_DYSYMTAB;
+    lc->cmdsize = sizeof *lc;
+    h->ncmds++;
+    h->sizeofcmds += sizeof *lc;
+}
+static const struct { const char *what; pt_poke poke; const char *why; } pt_unreadable[] = {
+    { "a rebase that is not a pointer", pt_type,
+      "the rebase at __DATA+0 is of type 2, not a pointer" },
+    { "a rebase in the segment that maps the header", pt_in_text,
+      "the rebase at __TEXT+0 lies in the segment that maps the header" },
+    { "a rebase naming a segment the image lacks", pt_no_segment,
+      "names segment 15, and there are 4" },
+    { "an unknown rebase opcode", pt_unknown_op, "unknown rebase opcode 0x90 at byte 3" },
+    { "a rebase in zero-fill", pt_zerofill,
+      "the rebase at __DATA+0x10 lies past the 16 bytes of that segment the file holds, so its "
+      "value is not in the file" },
+    { "a rebase straddling the end of its file data", pt_straddle,
+      "the rebase at __DATA+0x10 lies past the 20 bytes of that segment the file holds, so its "
+      "value is not in the file" },
+    { "a rebase in a segment with no file data", pt_all_zerofill,
+      "the rebase at __DATA+0 lies past the 0 bytes of that segment the file holds, so its "
+      "value is not in the file" },
+    { "a rebase past the end of the image", pt_past_image,
+      "the rebase at __DATA+0x10 lies past the end of the 12544-byte image" },
+    { "a segment whose file data starts past the image", pt_all_past_image,
+      "the rebase at __DATA+0 lies past the end of the 12544-byte image" },
+    { "a segment whose file data starts 4 bytes before the image ends", pt_short_of_a_slot,
+      "the rebase at __DATA+0 lies past the end of the 12544-byte image" },
+    { "rebase opcodes past the end of the image", pt_ops_past_image,
+      "the rebase opcodes (1000 bytes at offset 12288) run past the end of the 12544-byte image" },
+    { "two LC_DYLD_INFO commands", pt_two_dyld_info, "the image has 2 LC_DYLD_INFO commands" },
+    { "a slot rebased twice", pt_twice, "the rebase opcodes name __DATA+0x10 more than once" },
+    { "a short LC_DYLD_INFO command", pt_short_di,
+      "the image's LC_DYLD_INFO command is 8 bytes, too short to hold rebase_off/rebase_size" },
+    { "a short LC_DYSYMTAB command", pt_short_dysymtab,
+      "the image's LC_DYSYMTAB command is 8 bytes, too short to hold nlocrel" },
+};
+
+static void test_rebases_read_refuses_what_it_cannot_read(void) {
+    for (size_t k = 0; k < sizeof pt_unreadable / sizeof pt_unreadable[0]; k++) {
+        size_t fsize;
+        uint8_t *buf = build_pointer_image(&fsize, 0);
+        pt_unreadable[k].poke(buf);
+        mg_rebases rb;
+        char why[256] = "";
+        int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+        CHECK(r == -1 && strstr(why, pt_unreadable[k].why) != NULL,
+              "rebases: %s is refused (got %d, '%s')", pt_unreadable[k].what, r, why);
+        CHECK(rb.s.n == 0 && rb.s.v == NULL && rb.v == NULL,
+              "rebases: %s leaves nothing behind", pt_unreadable[k].what);
+        mg_rebases_free(&rb);
+        free(buf);
+    }
+}
+
+/* Cut where the short command ends, so that under libgmalloc reading any of
+ * its missing fields faults. */
+static void test_rebases_read_refuses_a_short_command_before_reading_it(void) {
+    static const pt_poke pokes[] = { pt_short_di, pt_short_dysymtab };
+    for (size_t k = 0; k < sizeof pokes / sizeof pokes[0]; k++) {
+        size_t fsize;
+        uint8_t *buf = build_pointer_image(&fsize, 0);
+        pokes[k](buf);
+        size_t end = sizeof(struct mach_header_64) + ((struct mach_header_64 *)buf)->sizeofcmds;
+        uint8_t *cut = (uint8_t *)malloc(end);
+        memcpy(cut, buf, end);
+        mg_rebases rb;
+        char why[256] = "";
+        int r = mg_rebases_read(cut, end, &rb, why, sizeof why);
+        CHECK(r == -1 && strstr(why, "too short to hold") != NULL,
+              "rebases: short command %zu, at the end of the image, is refused (got %d, '%s')",
+              k, r, why);
+        mg_rebases_free(&rb);
+        free(cut);
+        free(buf);
+    }
+}
+
+/* And a grow refuses each, before it changes anything. */
+static void test_grow_refuses_rebases_it_cannot_read(void) {
+    for (size_t k = 0; k < sizeof pt_unreadable / sizeof pt_unreadable[0]; k++) {
+        size_t fsize;
+        uint8_t *buf = build_pointer_image(&fsize, 0);
+        pt_unreadable[k].poke(buf);
+        size_t fsize0 = fsize;
+        uint8_t *before = (uint8_t *)malloc(fsize0);
+        memcpy(before, buf, fsize0);
+        char want[320];
+        int r;
+        snprintf(want, sizeof want, "%s; refusing to grow", pt_unreadable[k].why);
+        int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000, want, &r);
+        CHECK(r == -1 && said, "grow: %s is refused, saying so (got %d)", pt_unreadable[k].what, r);
+        CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+              "grow: %s: nothing changed", pt_unreadable[k].what);
+        free(before);
+        free(buf);
+    }
+}
+
+/* The control: the fixture as built grows. */
+static void test_grow_accepts_readable_rebases(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "grow: the pointer fixture grows (got %d)", r);
+    free(buf);
+}
+
+static void test_rebases_read_refuses_a_malformed_image(void) {
+    uint8_t buf[16] = { 0 };   /* bad magic, and shorter than a header */
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, sizeof buf, &rb, why, sizeof why);
+    CHECK(r == -1 && strstr(why, "the image does not validate") != NULL,
+          "rebases: a malformed image is refused (got %d, '%s')", r, why);
+    mg_rebases_free(&rb);
+}
+
+/* With no `why` to refuse through, mg_find_trie reports no trie. */
+static void test_find_trie_refuses_a_short_dyld_info(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    pt_short_di(buf);
+    uint32_t off, size;
+    int r = mg_find_trie(buf, fsize, &off, &size);
+    CHECK(r == 0, "find_trie: a short LC_DYLD_INFO command yields no trie (got %d)", r);
+    free(buf);
+}
+
+/* The pointer values in __DATA after a grow, wherever the file now holds them. */
+static const uint64_t *pt_values(uint8_t *buf, size_t fsize) {
+    struct segment_command_64 *da = seg_named(buf, fsize, "__DATA");
+    return da ? (const uint64_t *)(buf + da->fileoff) : NULL;
+}
+
+static void check_pointers_after(const char *what, uint32_t grow_req, uint32_t grow,
+                                 uint64_t slot3) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    uint64_t want[PT_N];
+    memcpy(want, pt_ptrs, sizeof want);
+    ((uint64_t *)(buf + PT_DATA))[3] = want[3] = slot3;
+    want[0] -= grow;
+    if (slot3 == PT_BASE) want[3] -= grow;
+    int r = mg_grow_header(&buf, &fsize, grow_req);
+    CHECK(r == 0, "%s: the grow succeeds (got %d)", what, r);
+    const uint64_t *v = r == 0 ? pt_values(buf, fsize) : NULL;
+    for (int i = 0; v && i < PT_N; i++)
+        CHECK(v[i] == want[i], "%s: pointer %d holds %#llx after the grow, want %#llx", what, i,
+              (unsigned long long)v[i], (unsigned long long)want[i]);
+    free(buf);
+}
+
+/* The header moves down by the grow; what names it follows, and what names
+ * content, the first byte of content, or below the grown header stays. */
+static void test_grow_moves_the_pointers_that_name_the_header(void) {
+    check_pointers_after("pointers", 0x1000, 0x1000, pt_ptrs[3]);
+    check_pointers_after("two pointers to the header", 0x1000, 0x1000, PT_BASE);
+    check_pointers_after("pointers, two-page grow", 0x1001, 0x2000, pt_ptrs[3]);
+    check_pointers_after("a pointer just below the grown header", 0x1000, 0x1000,
+                         PT_BASE - 0x1001);
+    check_pointers_after("a pointer just below the header grown two pages", 0x1001, 0x2000,
+                         PT_BASE - 0x2001);
+}
+
+/* Slot 1 holds `value`, and a grow of `grow_req` refuses it: nothing changed. */
+static void check_grow_refuses_a_pointer(uint64_t value, uint32_t grow_req, const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    ((uint64_t *)(buf + PT_DATA))[1] = value;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, grow_req, needle, &r);
+    CHECK(r == -1 && said, "pointer: %#llx is refused, saying '%s' (got %d)",
+          (unsigned long long)value, needle, r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "pointer: %#llx: nothing changed", (unsigned long long)value);
+    free(before);
+    free(buf);
+}
+
+/* A value strictly inside (base, base + F) names a byte of the header or its
+ * load commands, which the grow moves apart. */
+static void test_grow_refuses_a_pointer_inside_the_header(void) {
+    check_grow_refuses_a_pointer(PT_BASE + 1, 0x1000,
+        "ERROR: the pointer at 0x100002008 names 0x100000001, between the header at 0x100000000 "
+        "and its first content at 0x100001000, which a grow moves apart; refusing to grow");
+    check_grow_refuses_a_pointer(PT_BASE + PT_F - 1, 0x1000,
+        "ERROR: the pointer at 0x100002008 names 0x100000fff, between the header");
+}
+
+/* A value in [base - G, base) names nothing before a grow of G, and the grown
+ * header after it. */
+static void test_grow_refuses_a_pointer_below_the_header(void) {
+    check_grow_refuses_a_pointer(PT_BASE - 1, 0x1000,
+        "ERROR: the pointer at 0x100002008 names 0xffffffff, within the 0x1000 bytes below the "
+        "header at 0x100000000, where the grown header will lie; refusing to grow");
+    check_grow_refuses_a_pointer(PT_BASE - 0x1000, 0x1000,
+        "ERROR: the pointer at 0x100002008 names 0xfffff000, within the 0x1000 bytes below");
+    check_grow_refuses_a_pointer(PT_BASE - 0x2000, 0x1001,
+        "ERROR: the pointer at 0x100002008 names 0xffffe000, within the 0x2000 bytes below");
+}
+
+static void test_header_pointers_counts_without_moving(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    ((uint64_t *)(buf + PT_DATA))[3] = PT_BASE;
+    uint8_t *before = (uint8_t *)malloc(fsize);
+    memcpy(before, buf, fsize);
+    char why[256] = "";
+    int64_t n = mg_header_pointers(buf, fsize, PT_BASE, PT_F, 0, 0, why, sizeof why);
+    CHECK(n == 2, "count: two pointers name the header (got %lld: %s)", (long long)n, why);
+    CHECK(memcmp(before, buf, fsize) == 0, "count: counting moves nothing");
+    free(before);
+    free(buf);
+}
+
+/* mg_ensure_pad announces the pointers it moved, with the code it repaired. */
+static void check_ensure_pad_announces(const char *what, int opts, int also, const char *tail) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_pointer_image(&fsize, opts);
+    if (also) ((uint64_t *)(buf + PT_DATA))[3] = PT_BASE;
+    char *err = ensure_pad_stderr(&buf, &fsize, PT_F + 1, &r);
+    CHECK(r == 0 && strstr(err, tail) != NULL, "%s: announced as '...%s' (got %d):\n%s", what,
+          tail, r, err);
+    free(err);
+    free(buf);
+}
+
+static void test_ensure_pad_announces_the_pointers_it_moves(void) {
+    check_ensure_pad_announces("one pointer", 0, 0,
+        "image base 0x100000000 -> 0xfffff000; repaired 1 reference to the header\n");
+    check_ensure_pad_announces("two pointers", 0, 1,
+        "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n");
+    check_ensure_pad_announces("a pointer and an instruction", PT_CODE, 0,
+        "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n");
+}
+
+/* Verification's own check on the pointers: a snapshot of the fixture, a
+ * grow, then `undo` breaks what the grow made, and verify must say `needle`.
+ * `setup`, if any, changes the fixture before the snapshot. */
+typedef void (*pt_tweak)(uint8_t *buf, size_t fsize);
+static uint8_t *pt_ops_now(uint8_t *buf, size_t fsize) {
+    return buf + ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_off;
+}
+static uint64_t *pt_slots_now(uint8_t *buf, size_t fsize) {
+    return (uint64_t *)(buf + seg_named(buf, fsize, "__DATA")->fileoff);
+}
+static void pt_unmove(uint8_t *buf, size_t fsize) { pt_slots_now(buf, fsize)[0] += 0x1000; }
+static void pt_move_again(uint8_t *buf, size_t fsize) { pt_slots_now(buf, fsize)[0] -= 0x1000; }
+static void pt_move_content(uint8_t *buf, size_t fsize) { pt_slots_now(buf, fsize)[1] -= 0x1000; }
+static void pt_drop_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[3] = 0x53; }
+static void pt_retype(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[0] = 0x12; }
+static void pt_all_alike(uint8_t *buf, size_t fsize) {
+    for (int i = 0; i < PT_N + 1; i++) pt_slots_now(buf, fsize)[i] = PT_DATAVM + 0x40;
+}
+static void pt_shift_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[2] = 0x08; }
+static void pt_add_one(uint8_t *buf, size_t fsize) { pt_ops_now(buf, fsize)[3] = 0x55; }
+
+static void check_verify_rejects_pointer(const char *what, pt_tweak setup, pt_tweak undo,
+                                         const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    if (setup) setup(buf, fsize);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) {
+        CHECK(0, "%s: snapshot", what); free(buf); return;
+    }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
+    }
+    CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the grow as made", what);
+    undo(buf, fsize);
+    int r, errors = 0;
+    verify_snap = &snap;
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    for (const char *p = err; (p = strstr(p, "ERROR")) != NULL; p++) errors++;
+    CHECK(r == -1 && strstr(err, needle) != NULL, "verify REJECTS %s, saying '%s' (got %d):\n%s",
+          what, needle, r, err);
+    CHECK(errors == 1, "%s: verify prints one ERROR, not %d:\n%s", what, errors, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+}
+
+static void test_verify_watches_the_pointers(void) {
+    check_verify_rejects_pointer("a pointer left naming where the header was", NULL, pt_unmove,
+        "ERROR: verify FAILED -- the pointer at 0x100002000 holds 0x100000000 after the grow, and "
+        "must hold 0xfffff000; refusing.");
+    check_verify_rejects_pointer("a pointer to the header moved twice", NULL, pt_move_again,
+        "the pointer at 0x100002000 holds 0xffffe000 after the grow, and must hold 0xfffff000");
+    check_verify_rejects_pointer("a pointer to content moved with the header", NULL,
+        pt_move_content,
+        "the pointer at 0x100002008 holds 0x100001040 after the grow, and must hold 0x100002040");
+    check_verify_rejects_pointer("a rebase dropped", NULL, pt_drop_one,
+        "ERROR: verify FAILED -- the grown image rebases 3 pointers, 4 before the grow; refusing.");
+    check_verify_rejects_pointer("a rebase added", NULL, pt_add_one,
+        "ERROR: verify FAILED -- the grown image rebases 5 pointers, 4 before the grow; refusing.");
+    check_verify_rejects_pointer("a rebase moved to a slot holding the same value", pt_all_alike,
+        pt_shift_one,
+        "ERROR: verify FAILED -- rebase 0 is at 0x100002008 after the grow, and was at 0x100002000 "
+        "before; refusing.");
+    check_verify_rejects_pointer("rebases it cannot read", NULL, pt_retype,
+        "ERROR: verify FAILED -- the grown image's rebases cannot be read (the rebase at __DATA+0 "
+        "is of type 2, not a pointer); refusing.");
+}
+
+static void test_snapshot_refuses_rebases_it_cannot_read(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    pt_type(buf);
+    mg_snapshot snap;
+    CHECK(mg_snapshot_take(buf, fsize, &snap) == -1, "snapshot: rebases it cannot read");
+    free(buf);
+}
+
+/* An image with no rebase opcodes lists its pointers, if any, in LC_DYSYMTAB's
+ * local relocation entries, and dyld then slides the pointers they name. A
+ * grow does not read those, so it cannot move one that names the header:
+ * refused. With rebase opcodes, dyld reads only those, and so does the grow. */
+static void test_rebases_read_refuses_local_relocations(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, PT_NOINFO | PT_LOCREL);
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == -1 && strcmp(why, "the image lists its pointers in LC_DYSYMTAB's local "
+                                 "relocation entries (1), not in rebase opcodes, and a grow does "
+                                 "not read those") == 0,
+          "local relocations: refused (got %d, '%s')", r, why);
+    mg_rebases_free(&rb);
+    free(buf);
+
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == PT_N, "local relocations beside rebase opcodes: the opcodes are "
+          "read (got %d, %zu: %s)", r, rb.s.n, why);
+    mg_rebases_free(&rb);
+    free(buf);
+
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_size = 0;
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "local relocations beside empty rebase opcodes: nothing to read "
+          "(got %d, %zu: %s)", r, rb.s.n, why);
+    mg_rebases_free(&rb);
+    free(buf);
+
+    buf = build_pointer_image(&fsize, PT_NOINFO);
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "neither: nothing to read (got %d, %zu: %s)", r, rb.s.n, why);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+static void test_grow_refuses_local_relocations(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, PT_NOINFO | PT_LOCREL);
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+        "ERROR: the image lists its pointers in LC_DYSYMTAB's local relocation entries (1), not "
+        "in rebase opcodes, and a grow does not read those; refusing to grow", &r);
+    CHECK(r == -1 && said, "local relocations: the grow refuses, saying why (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "local relocations: nothing changed");
+    free(before);
+    free(buf);
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "local relocations beside rebase opcodes: the grow succeeds (got %d)", r);
+    free(buf);
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->rebase_size = 0;
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "local relocations beside empty rebase opcodes: the grow succeeds (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -3402,6 +4017,24 @@ int main(void) {
     test_confirm_reports_data_in_code_past_the_image();
     test_confirm_reports_data_in_code_not_a_multiple_of_8();
     test_confirm_needs_function_starts_when_the_list_is_empty();
+    test_rebases_read_every_target();
+    test_rebases_read_a_target_ending_at_the_segments_file_data();
+    test_rebases_read_none_without_rebase_opcodes();
+    test_rebases_read_refuses_what_it_cannot_read();
+    test_rebases_read_refuses_a_short_command_before_reading_it();
+    test_grow_refuses_rebases_it_cannot_read();
+    test_grow_accepts_readable_rebases();
+    test_grow_moves_the_pointers_that_name_the_header();
+    test_grow_refuses_a_pointer_inside_the_header();
+    test_grow_refuses_a_pointer_below_the_header();
+    test_header_pointers_counts_without_moving();
+    test_ensure_pad_announces_the_pointers_it_moves();
+    test_verify_watches_the_pointers();
+    test_snapshot_refuses_rebases_it_cannot_read();
+    test_rebases_read_refuses_local_relocations();
+    test_grow_refuses_local_relocations();
+    test_rebases_read_refuses_a_malformed_image();
+    test_find_trie_refuses_a_short_dyld_info();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
