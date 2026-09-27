@@ -4557,6 +4557,19 @@ static void dy_toc(uint8_t *buf) { dy_dysymtab(buf)->ntoc = 1; }
 static void dy_modtab(uint8_t *buf) { dy_dysymtab(buf)->nmodtab = 1; }
 static void dy_extrel(uint8_t *buf) { dy_dysymtab(buf)->nextrel = 1; }
 static void dy_locrel(uint8_t *buf) { dy_dysymtab(buf)->nlocrel = 1; }
+/* The real LC_DYSYMTAB's one local relocation, then an all-zero second
+ * LC_DYSYMTAB appended into the header's own pad (well short of DY_F): an
+ * assignment instead of an accumulation would let the second, all-zero
+ * command's read reset the first's count back to 0. */
+static void dy_second_dysymtab(uint8_t *buf) {
+    dy_dysymtab(buf)->nlocrel = 1;
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct load_command *l = (struct load_command *)(buf + sizeof *h + h->sizeofcmds);
+    l->cmd = LC_DYSYMTAB;
+    l->cmdsize = sizeof(struct dysymtab_command);
+    h->ncmds++;
+    h->sizeofcmds += (uint32_t)sizeof(struct dysymtab_command);
+}
 static void dy_no_info_locrel(uint8_t *buf) { dy_no_info(buf); dy_locrel(buf); }
 static void dy_overaligned(uint8_t *buf) { dy_section(buf, "__DATA", "__data")->align = 13; }
 static void dy_not_x86_64(uint8_t *buf) { ((struct mach_header_64 *)buf)->cputype = CPU_TYPE_POWERPC64; }
@@ -4613,59 +4626,28 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
     { "a second segment at fileoff 0", dy_second_header_seg,
       "ERROR: segment __LINKEDIT's file data starts at 0, before the first content at 4096; "
       "refusing to grow" },
+    { "a second, all-zero LC_DYSYMTAB", dy_second_dysymtab,
+      "ERROR: LC_DYSYMTAB lists 0 table-of-contents entries, 0 modules, 0 external and 1 local "
+      "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
 };
 
-/* Like check_grow_refuses_header_refs, but also insists stderr holds
- * EXACTLY ONE ERROR: line. Every row here is followed, in an unfinished
- * raise, by Task 1's placeholder refusal ("only MH_EXECUTE can be grown"),
- * which also returns -1 -- so a check that only asked "did mg_grow_header
- * refuse, and does stderr CONTAIN the right words" could not tell a real
- * stop (mg_raise_ok_cb's `return 1`) from a check that printed its reason
- * and let mi_each_lc keep walking (`return 0`): both leave r == -1 and both
- * leave the needle in stderr, the second one alongside the placeholder's own
- * ERROR: line. This form survives Task 2, when the placeholder goes and a
- * genuine raise succeeds instead: then a row that fails to stop still prints
- * its ERROR: line, but mg_grow_header no longer refuses behind it, and
- * `r == -1` alone catches it. */
+/* Like check_grow_refuses_header_refs, but also insists stderr holds exactly
+ * one ERROR, catching a refusal that prints its reason without stopping the
+ * walk (mg_each_lc's callback returning 0 where it should return 1). */
 static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsize,
                                      const char *needle) {
     size_t fsize0 = fsize;
     uint8_t *before = (uint8_t *)malloc(fsize0);
     memcpy(before, buf, fsize0);
-    const char *tmpdir = getenv("TMPDIR");
-    if (!tmpdir) tmpdir = "/tmp";
-    char path[512];
-    snprintf(path, sizeof path, "%s/macho_grow_test_stderr.%d", tmpdir, (int)getpid());
-    fflush(stderr);
-    int saved_fd = dup(fileno(stderr));
     int r;
-    if (!freopen(path, "w", stderr)) {
-        CHECK(0, "%s: could not capture stderr to %s", what, path);
-        r = mg_grow_header(&buf, &fsize, 0x1000);
-    } else {
-        r = mg_grow_header(&buf, &fsize, 0x1000);
-        fflush(stderr);
-        dup2(saved_fd, fileno(stderr));
-        close(saved_fd);
-        clearerr(stderr);
-    }
-    CHECK(r == -1, "%s: mg_grow_header refuses (got %d)", what, r);
-    int said = 0, errors = 0;
-    FILE *rf = fopen(path, "r");
-    if (rf) {
-        char line[1024];
-        while (fgets(line, sizeof line, rf)) {
-            if (strncmp(line, "ERROR:", 6) == 0) errors++;
-            if (needle[0] == '^' ? strncmp(line, needle + 1, strlen(needle + 1)) == 0
-                                 : strstr(line, needle) != NULL)
-                said = 1;
-        }
-        fclose(rf);
-    }
-    unlink(path);
-    CHECK(said, "%s: the refusal says '%s'", what, needle);
-    CHECK(errors == 1, "%s: stderr holds exactly one ERROR: line (got %d)", what, errors);
+    char *err = stderr_during(mg_grow_header, &buf, &fsize, 0x1000, &r);
+    int errors = 0;
+    for (const char *p = err; (p = strstr(p, "ERROR")) != NULL; p++) errors++;
+    CHECK(r == -1 && strstr(err, needle) != NULL,
+          "mg_grow_header REFUSES %s, saying '%s' (got %d):\n%s", what, needle, r, err);
+    CHECK(errors == 1, "%s: mg_grow_header prints one ERROR, not %d:\n%s", what, errors, err);
     CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0, "%s: nothing changed", what);
+    free(err);
     free(before);
     free(buf);
 }

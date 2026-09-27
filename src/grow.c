@@ -1114,13 +1114,22 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
 }
 
 /* mg_classify's LC_DYLD_CHAINED_FIXUPS reason, shared with mg_raise_ok_cb
- * below (spec Decision 6): a raise moves the image base exactly as a
- * lowering does, so chained fixups get the same refusal and the same
- * remedy either route takes. */
+ * below: growing an image, whether by lowering its base (an executable) or
+ * raising its content (a dylib or bundle) while leaving the base where it
+ * is, moves the addresses chained pointers encode -- and this tool does not
+ * know how to walk and patch that format, either way. Same refusal, same
+ * remedy, either route. */
 static const char mg_chained_fixups_why[] =
     "LC_DYLD_CHAINED_FIXUPS: chained pointers encode offsets from the "
     "image base, which growing moves; convert them first (`fixups set "
     "classic` in an edit script)";
+
+/* The refusal every "why" load command prints below, whichever of the two
+ * callers below hands it a reason. */
+static void mg_why_refused(const char *why) {
+    fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
+                    "instead by deleting load commands (uuid, codesig).\n", why);
+}
 
 /* mg_classify's mi_each_lc callback: classify one load command (and, for
  * LC_SEGMENT_64, every one of its sections), refusing to stop the walk the
@@ -1201,8 +1210,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
             return -1;
         }
         if (why) {
-            fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
-                            "instead by deleting load commands (uuid, codesig).\n", why);
+            mg_why_refused(why);
             return -1;
         }
 
@@ -1643,9 +1651,7 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         c->di = 1;
         return 0;
     case LC_DYLD_CHAINED_FIXUPS:
-        fprintf(stderr, "ERROR: %s. Refusing to grow. Reclaim header bytes "
-                        "instead by deleting load commands (uuid, codesig).\n",
-                mg_chained_fixups_why);
+        mg_why_refused(mg_chained_fixups_why);
         return 1;
     case LC_UNIXTHREAD: case LC_THREAD:
         fprintf(stderr, "ERROR: a dylib or bundle with a thread command (%#x), whose register "

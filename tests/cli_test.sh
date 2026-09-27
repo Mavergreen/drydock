@@ -2853,12 +2853,12 @@ grep -q 'implausible' "$T/imp_verify.err" \
 #
 # This fixture carries LC_DYLD_CHAINED_FIXUPS and no LC_DYLD_INFO (its
 # header's own comment). Force mg_grow_header's raise route to actually run
-# on it by appending a dylib path too long for its header pad: the walk used
-# to fall through the chained-fixups command unclassified and blame the
-# missing LC_DYLD_INFO instead (mg_raise_ok's own refusal for a plain-old
-# classic-linked dylib), which is the wrong reason -- spec Decision 6 names
-# chained fixups' own remedy, `fixups set classic`, same as mg_classify's
-# refusal for the very same command when lowering an executable.
+# on it by appending a dylib path too long for its header pad, and confirm
+# it is refused for chained fixups' own remedy, `fixups set classic` --
+# the same reason mg_classify gives for the same command when lowering an
+# executable -- and not for the missing LC_DYLD_INFO, which is what every
+# OTHER classic-linked dylib (one with no chained fixups either) is refused
+# for.
 imp_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/implausible" \
     | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
 if [ -z "$imp_pad" ]; then
