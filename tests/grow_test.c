@@ -1606,8 +1606,10 @@ static void test_ensure_pad_refuses_arm64(void) {
 }
 
 static void test_ensure_pad_refuses_what_cannot_grow(void) {
-    check_ensure_refuses_unchanged("a dylib", 0, MH_DYLIB, MH_PIE,
-                                   "cannot grow a dylib or bundle");
+    check_ensure_refuses_unchanged("an object file", 0, MH_OBJECT, 0,
+                                   "only MH_EXECUTE, MH_DYLIB and MH_BUNDLE can be grown");
+    check_ensure_refuses_unchanged("a dylib that is not x86_64", 0, MH_DYLIB, 0,
+                                   "only an x86_64 dylib or bundle can be grown");
     check_ensure_refuses_unchanged("a non-PIE executable", 0, MH_EXECUTE, 0,
                                    "not PIE");
     check_ensure_refuses_unchanged("an image with chained fixups", MG_T_CHAINED,
@@ -1852,8 +1854,12 @@ static int plausible_thunk(uint8_t **pbuf, size_t *pfsize, uint32_t unused) {
  * "ERROR: ", as src/rewrite.c's do. A needle starting '^' must start the
  * line. One message of each kind. */
 static void test_grow_diagnostics_name_no_program(void) {
-    check_ensure_refuses_unchanged("a dylib, by its prefix", 0, MH_DYLIB, MH_PIE,
-                                   "^ERROR: only MH_EXECUTE can be grown (filetype=6)");
+    check_ensure_refuses_unchanged("an object file, by its prefix", 0, MH_OBJECT, 0,
+                                   "^ERROR: only MH_EXECUTE, MH_DYLIB and MH_BUNDLE can be grown "
+                                   "(filetype=1)");
+    check_ensure_refuses_unchanged("a dylib that is not x86_64, by its prefix", 0, MH_DYLIB, 0,
+                                   "^ERROR: only an x86_64 dylib or bundle can be grown "
+                                   "(cputype=0)");
     check_ensure_refuses_unchanged("a non-PIE executable, by its prefix", 0, MH_EXECUTE, 0,
                                    "^ERROR: executable is not PIE (flags=0x");
     check_ensure_refuses_unchanged("an unclassified load command, by its prefix",
@@ -4289,6 +4295,355 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
     free(buf);
 }
 
+/* ---- a dylib to raise ----
+ * build_dylib's MH_DYLIB, x86_64, linked at DY_BASE (0, as every 10.9 system
+ * dylib is; `base` moves it). F, its first content, is file and vm offset
+ * 0x1000. Segment indexes: __TEXT 0, __DATA 1, __LINKEDIT 2.
+ *   __TEXT      file [0, 0x2000)
+ *     __text          0x1000: f1: lea base(%rip), %rax; ret.  f2 (0x1010): push; ret
+ *     __stub_helper   0x1100: nops
+ *     __gcc_except_tab 0x1180 (DY_UNWIND): f2's LSDA
+ *     __unwind_info   0x1800 (DY_UNWIND): f1 and f2, f2 with an LSDA
+ *   __DATA      file [0x2000, 0x3000), vm to 0x4000
+ *     __data          0x2000: dy_ptrs, three rebased pointers
+ *     __mod_init_func 0x2030: f2
+ *     __la_symbol_ptr 0x2038: __stub_helper
+ *     __got           0x2040: bound to _x
+ *     __bss           0x3000, zero-fill
+ *   __LINKEDIT  file [0x3000, DY_FSIZE), vm 0x4000
+ *     rebase 0x3000, bind 0x3010, export trie 0x3040 (_f1, _f2, _d),
+ *     function starts 0x3080 (f1, f2), data in code 0x3090 (DY_DIC),
+ *     symbols 0x30a0, strings 0x3200
+ *   __ZERO      (DY_ZEROSEG) vm [0x6000, 0x7000), no file data; with
+ *               DY_ZEROFAR, [0x7000, 0x8000), two pages past __LINKEDIT */
+#define DY_F      0x1000u
+#define DY_FSIZE  0x3300u
+#define DY_UNWIND 1
+#define DY_DIC    2
+#define DY_ROUTINES 4
+#define DY_SPLIT  8
+#define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
+#define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
+static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
+
+static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
+                                  uint64_t addr, uint64_t size, uint32_t off, uint32_t flags) {
+    strncpy(s->segname, seg, sizeof s->segname);
+    strncpy(s->sectname, name, sizeof s->sectname);
+    s->addr = addr;
+    s->size = size;
+    s->offset = off;
+    s->flags = flags;
+    return s + 1;
+}
+
+static uint8_t *dy_lc(uint8_t **lc, struct mach_header_64 *h, uint32_t cmd, uint32_t size) {
+    struct load_command *l = (struct load_command *)*lc;
+    uint8_t *at = *lc;
+    l->cmd = cmd;
+    l->cmdsize = size;
+    *lc += size;
+    h->ncmds++;
+    h->sizeofcmds += size;
+    return at;
+}
+
+static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
+    static const uint8_t rebase[16] = { 0x11, 0x21, 0x00, 0x53, 0x21, 0x30, 0x52, 0x00 };
+    static const uint8_t bind[16] = { 0x11, 0x40, '_', 'x', 0, 0x51, 0x71, 0x40, 0x90, 0x00 };
+    static const uint8_t trie[31] = {
+        0x00, 0x03, '_', 'f', '1', 0, 16, '_', 'f', '2', 0, 21, '_', 'd', 0, 26,
+        0x03, 0x00, 0x80, 0x20, 0x00,      /* _f1: 0x1000 */
+        0x03, 0x00, 0x90, 0x20, 0x00,      /* _f2: 0x1010 */
+        0x03, 0x00, 0xa0, 0x40, 0x00 };    /* _d:  0x2020 */
+    static const uint8_t starts[8] = { 0x80, 0x20, 0x10, 0x00 };
+    static const uint8_t dic[8] = { 0x20, 0x10, 0, 0, 0x08, 0x00, 0x01, 0x00 };  /* 0x1020, 8 */
+    static const char strs[] = "\0__mh_dylib_header\0_f1\0_f2\0_d\0_x";
+    uint8_t *buf = (uint8_t *)calloc(1, DY_FSIZE);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lc = (uint8_t *)(h + 1);
+    h->magic = MH_MAGIC_64;
+    h->cputype = CPU_TYPE_X86_64;
+    h->cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+    h->filetype = MH_DYLIB;
+    h->flags = MH_DYLDLINK | MH_TWOLEVEL | MH_NOUNDEFS;
+
+    int ntext = (opts & DY_UNWIND) ? 4 : 2;
+    struct segment_command_64 *tx = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+        sizeof *tx + ntext * sizeof(struct section_64));
+    strcpy(tx->segname, "__TEXT");
+    tx->vmaddr = base;
+    tx->vmsize = tx->filesize = 0x2000;
+    tx->maxprot = tx->initprot = VM_PROT_READ | VM_PROT_EXECUTE;
+    tx->nsects = ntext;
+    struct section_64 *s = (struct section_64 *)(tx + 1);
+    s = dy_sect(s, "__TEXT", "__text", base + 0x1000, 0x100, 0x1000,
+                S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
+    s = dy_sect(s, "__TEXT", "__stub_helper", base + 0x1100, 0x10, 0x1100,
+                S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS);
+    if (opts & DY_UNWIND) {
+        s = dy_sect(s, "__TEXT", "__gcc_except_tab", base + 0x1180, 0x10, 0x1180, 0);
+        s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
+    }
+
+    struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+        sizeof *da + 5 * sizeof(struct section_64));
+    strcpy(da->segname, "__DATA");
+    da->vmaddr = base + 0x2000;
+    da->vmsize = 0x2000;
+    da->fileoff = 0x2000;
+    da->filesize = 0x1000;
+    da->maxprot = da->initprot = VM_PROT_READ | VM_PROT_WRITE;
+    da->nsects = 5;
+    s = (struct section_64 *)(da + 1);
+    s = dy_sect(s, "__DATA", "__data", base + 0x2000, 0x30, 0x2000, 0);
+    s = dy_sect(s, "__DATA", "__mod_init_func", base + 0x2030, 8, 0x2030, S_MOD_INIT_FUNC_POINTERS);
+    s = dy_sect(s, "__DATA", "__la_symbol_ptr", base + 0x2038, 8, 0x2038, S_LAZY_SYMBOL_POINTERS);
+    s = dy_sect(s, "__DATA", "__got", base + 0x2040, 8, 0x2040, S_NON_LAZY_SYMBOL_POINTERS);
+    s = dy_sect(s, "__DATA", "__bss", base + 0x3000, 0x100, 0, S_ZEROFILL);
+
+    struct segment_command_64 *le = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+        sizeof *le);
+    strcpy(le->segname, "__LINKEDIT");
+    le->vmaddr = base + 0x4000;
+    le->vmsize = 0x1000;
+    le->fileoff = 0x3000;
+    le->filesize = DY_FSIZE - 0x3000;
+    le->maxprot = le->initprot = VM_PROT_READ;
+
+    if (opts & DY_ZEROSEG) {
+        struct segment_command_64 *z = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
+            sizeof *z + sizeof(struct section_64));
+        strcpy(z->segname, "__ZERO");
+        z->vmaddr = base + ((opts & DY_ZEROFAR) ? 0x7000 : 0x6000);
+        z->vmsize = 0x1000;
+        z->maxprot = z->initprot = VM_PROT_READ | VM_PROT_WRITE;
+        z->nsects = 1;
+        dy_sect((struct section_64 *)(z + 1), "__ZERO", "__zero", z->vmaddr, 0x1000, 0,
+                S_ZEROFILL);
+    }
+    struct dylib_command *id = (struct dylib_command *)dy_lc(&lc, h, LC_ID_DYLIB, 48);
+    id->dylib.name.offset = sizeof *id;
+    strcpy((char *)(id + 1), "@rpath/libdy.dylib");
+    struct dylib_command *sys = (struct dylib_command *)dy_lc(&lc, h, LC_LOAD_DYLIB, 56);
+    sys->dylib.name.offset = sizeof *sys;
+    strcpy((char *)(sys + 1), "/usr/lib/libSystem.B.dylib");
+
+    struct dyld_info_command *di = (struct dyld_info_command *)dy_lc(&lc, h, LC_DYLD_INFO_ONLY,
+                                                                    sizeof *di);
+    di->rebase_off = 0x3000;
+    di->rebase_size = 8;
+    di->bind_off = 0x3010;
+    di->bind_size = 16;
+    di->export_off = 0x3040;
+    di->export_size = sizeof trie;
+
+    struct symtab_command *st = (struct symtab_command *)dy_lc(&lc, h, LC_SYMTAB, sizeof *st);
+    st->symoff = 0x30a0;
+    st->nsyms = 5;
+    st->stroff = 0x3200;
+    st->strsize = sizeof strs;
+    struct dysymtab_command *ds = (struct dysymtab_command *)dy_lc(&lc, h, LC_DYSYMTAB, sizeof *ds);
+    ds->nlocalsym = 1;
+    ds->iextdefsym = 1;
+    ds->nextdefsym = 3;
+    ds->iundefsym = 4;
+    ds->nundefsym = 1;
+
+    struct uuid_command *u = (struct uuid_command *)dy_lc(&lc, h, LC_UUID, sizeof *u);
+    for (int i = 0; i < 16; i++) u->uuid[i] = (uint8_t)(0x10 + i);
+
+    struct linkedit_data_command *fs = (struct linkedit_data_command *)dy_lc(&lc, h,
+        LC_FUNCTION_STARTS, sizeof *fs);
+    fs->dataoff = 0x3080;
+    fs->datasize = sizeof starts;
+    if (opts & DY_DIC) {
+        struct linkedit_data_command *dc = (struct linkedit_data_command *)dy_lc(&lc, h,
+            LC_DATA_IN_CODE, sizeof *dc);
+        dc->dataoff = 0x3090;
+        dc->datasize = sizeof dic;
+        memcpy(buf + 0x3090, dic, sizeof dic);
+    }
+    if (opts & DY_SPLIT) {
+        struct linkedit_data_command *sp = (struct linkedit_data_command *)dy_lc(&lc, h,
+            LC_SEGMENT_SPLIT_INFO, sizeof *sp);
+        sp->dataoff = 0x3098;
+        sp->datasize = 8;
+        memset(buf + 0x3098, 0x5a, 8);
+    }
+    if (opts & DY_ROUTINES) {
+        struct routines_command_64 *rt = (struct routines_command_64 *)dy_lc(&lc, h,
+            LC_ROUTINES_64, sizeof *rt);
+        rt->init_address = base + 0x1010;
+    }
+
+    /* f1: lea base(%rip), %rax; ret.  f2: push %rbp; ret. */
+    memset(buf + 0x1000, 0x90, 0x110);
+    buf[0x1000] = 0x48; buf[0x1001] = 0x8d; buf[0x1002] = 0x05;
+    int32_t disp = (int32_t)(int64_t)(base - (base + 0x1007));
+    memcpy(buf + 0x1003, &disp, sizeof disp);
+    buf[0x1007] = 0xc3;
+    buf[0x1010] = 0x55; buf[0x1011] = 0xc3;
+    if (opts & DY_UNWIND) {
+        uint32_t *uw = (uint32_t *)(buf + 0x1800);
+        uw[0] = 1; uw[3] = 28; uw[4] = 1; uw[5] = 32; uw[6] = 2;
+        uw[7] = 0x2040;                             /* personality: the __got slot */
+        uw[8] = 0x1000; uw[9] = 0x48; uw[10] = 56;  /* f1; its page; LSDA from 56 */
+        uw[11] = 0x1100; uw[12] = 0; uw[13] = 64;   /* the sentinel: the end of f2 */
+        uw[14] = 0x1010; uw[15] = 0x1180;           /* f2's LSDA, in __gcc_except_tab */
+        uw[18] = 3; ((uint16_t *)(buf + 0x1800 + 0x48))[2] = 8;
+        ((uint16_t *)(buf + 0x1800 + 0x48))[3] = 2;
+        uw[20] = 0x00000000u | (1u << 24); uw[21] = 0x00000010u | (1u << 24);
+    }
+
+    uint64_t ptrs[3];
+    for (int i = 0; i < 3; i++) ptrs[i] = base + dy_ptrs[i];
+    memcpy(buf + 0x2000, ptrs, sizeof ptrs);
+    uint64_t init = base + 0x1010, lazy = base + 0x1100;
+    memcpy(buf + 0x2030, &init, 8);
+    memcpy(buf + 0x2038, &lazy, 8);
+
+    memcpy(buf + 0x3000, rebase, sizeof rebase);
+    memcpy(buf + 0x3010, bind, sizeof bind);
+    memcpy(buf + 0x3040, trie, sizeof trie);
+    memcpy(buf + 0x3080, starts, sizeof starts);
+    struct nlist_64 *nl = (struct nlist_64 *)(buf + 0x30a0);
+    static const struct { uint32_t strx; uint8_t type, sect; uint64_t value; } syms[5] = {
+        { 1, N_SECT | N_PEXT, 1, 0 }, { 19, N_SECT | N_EXT, 1, 0x1000 },
+        { 23, N_SECT | N_EXT, 1, 0x1010 }, { 27, N_SECT | N_EXT, 0, 0x2020 },
+        { 30, N_UNDF | N_EXT, 0, 0 } };
+    for (int i = 0; i < 5; i++) {
+        nl[i].n_un.n_strx = syms[i].strx;
+        nl[i].n_type = syms[i].type;
+        nl[i].n_sect = i == 3 ? (uint8_t)(ntext + 1) : syms[i].sect;
+        nl[i].n_value = syms[i].type == (N_UNDF | N_EXT) ? 0 : base + syms[i].value;
+    }
+    memcpy(buf + 0x3200, strs, sizeof strs);
+    *fsize = DY_FSIZE;
+    return buf;
+}
+
+static uint8_t *build_dylib(size_t *fsize, int opts) { return build_dylib_at(0, fsize, opts); }
+
+/* The dylib's `cmd` command, or NULL. */
+static uint8_t *dy_find(uint8_t *buf, uint32_t cmd) { return (uint8_t *)find_lc(buf, DY_FSIZE, cmd); }
+static struct section_64 *dy_section(uint8_t *buf, const char *seg, const char *name) {
+    mi_image im;
+    return mi_wrap(buf, DY_FSIZE, &im) == 0 ? mi_find_section(&im, seg, name) : NULL;
+}
+
+/* Each way a raise refuses before it changes anything: `poke` breaks
+ * build_dylib's image, and the refusal must say `why`. */
+typedef void (*dy_poke)(uint8_t *buf);
+static void dy_no_info(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_DYLD_INFO_ONLY))->cmd = LC_SOURCE_VERSION; }
+static void dy_unixthread(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_UUID))->cmd = LC_UNIXTHREAD; }
+static void dy_thread(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_UUID))->cmd = LC_THREAD; }
+static void dy_encrypted(uint8_t *buf) {
+    struct encryption_info_command_64 *e = (struct encryption_info_command_64 *)dy_find(buf, LC_UUID);
+    e->cmd = LC_ENCRYPTION_INFO_64;
+    e->cryptid = 1;
+}
+static void dy_short_crypt(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_ENCRYPTION_INFO; }
+static void dy_short_routines(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_ROUTINES_64; }
+static void dy_protected(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->flags |= SG_PROTECTED_VERSION_1; }
+static void dy_misplaced(uint8_t *buf) { dy_section(buf, "__TEXT", "__stub_helper")->addr += 0x10; }
+static void dy_below(uint8_t *buf) {
+    dy_section(buf, "__DATA", "__bss")->addr = seg_named(buf, DY_FSIZE, "__TEXT")->vmaddr + 0xfff;
+}
+static void dy_early(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->fileoff = 0xfff; }
+static void dy_short_dysymtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYSYMTAB; }
+static struct dysymtab_command *dy_dysymtab(uint8_t *buf) { return (struct dysymtab_command *)dy_find(buf, LC_DYSYMTAB); }
+static void dy_toc(uint8_t *buf) { dy_dysymtab(buf)->ntoc = 1; }
+static void dy_modtab(uint8_t *buf) { dy_dysymtab(buf)->nmodtab = 1; }
+static void dy_extrel(uint8_t *buf) { dy_dysymtab(buf)->nextrel = 1; }
+static void dy_locrel(uint8_t *buf) { dy_dysymtab(buf)->nlocrel = 1; }
+static void dy_no_info_locrel(uint8_t *buf) { dy_no_info(buf); dy_locrel(buf); }
+static void dy_overaligned(uint8_t *buf) { dy_section(buf, "__DATA", "__data")->align = 13; }
+static void dy_not_x86_64(uint8_t *buf) { ((struct mach_header_64 *)buf)->cputype = CPU_TYPE_POWERPC64; }
+static const struct { const char *what; dy_poke poke; const char *why; } dy_unraisable[] = {
+    { "no LC_DYLD_INFO", dy_no_info,
+      "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes list every "
+      "pointer a raise moves; refusing to grow" },
+    { "LC_UNIXTHREAD", dy_unixthread,
+      "ERROR: a dylib or bundle with a thread command (0x5), whose register state a raise does "
+      "not move; refusing to grow" },
+    { "LC_THREAD", dy_thread, "ERROR: a dylib or bundle with a thread command (0x4)" },
+    { "an encrypted image", dy_encrypted,
+      "ERROR: the image is encrypted (cryptid 1), and a raise would move its encrypted pages; "
+      "refusing to grow" },
+    { "a short encryption command", dy_short_crypt,
+      "ERROR: an encryption command is 16 bytes, too short to hold cryptid; refusing to grow" },
+    { "a short LC_ROUTINES_64", dy_short_routines,
+      "ERROR: LC_ROUTINES_64 is 16 bytes, too short to hold init_address; refusing to grow" },
+    { "a protected segment", dy_protected,
+      "ERROR: segment __DATA is protected (SG_PROTECTED_VERSION_1), and a raise would move its "
+      "encrypted pages; refusing to grow" },
+    { "a __TEXT section whose address and offset disagree", dy_misplaced,
+      "ERROR: section __TEXT,__stub_helper lies 0x1110 past the image base in memory and 0x1100 "
+      "in the file; refusing to grow" },
+    { "a section below the first content", dy_below,
+      "ERROR: section __DATA,__bss lies at 0xfff, below the first content at 0x1000; refusing "
+      "to grow" },
+    { "a segment whose file data starts before the first content", dy_early,
+      "ERROR: segment __DATA's file data starts at 4095, before the first content at 4096; "
+      "refusing to grow" },
+    { "a short LC_DYSYMTAB", dy_short_dysymtab,
+      "ERROR: LC_DYSYMTAB is 16 bytes, too short to hold its tables' counts; refusing to grow" },
+    { "a table of contents", dy_toc,
+      "ERROR: LC_DYSYMTAB lists 1 table-of-contents entries, 0 modules, 0 external and 0 local "
+      "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
+    { "a module table", dy_modtab, "ERROR: LC_DYSYMTAB lists 0 table-of-contents entries, 1 modules" },
+    { "external relocations", dy_extrel, "0 modules, 1 external and 0 local relocations" },
+    { "local relocations", dy_locrel, "0 external and 1 local relocations" },
+    { "local relocations and no LC_DYLD_INFO", dy_no_info_locrel,
+      "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase opcodes" },
+    { "a section aligned past a page", dy_overaligned,
+      "ERROR: section __DATA,__data is aligned to 2^13 bytes, more than the page a raise moves it "
+      "by; refusing to grow" },
+    { "a dylib that is not x86_64", dy_not_x86_64,
+      "ERROR: only an x86_64 dylib or bundle can be grown (cputype=0x1000012): its code is "
+      "decoded to find what addresses its header" },
+};
+
+static void test_grow_refuses_what_it_cannot_raise(void) {
+    for (size_t i = 0; i < sizeof dy_unraisable / sizeof dy_unraisable[0]; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib(&fsize, 0);
+        dy_unraisable[i].poke(buf);
+        check_grow_refuses_header_refs(dy_unraisable[i].what, buf, fsize, dy_unraisable[i].why);
+    }
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(0x10000000, &fsize, 0);
+    dy_below(buf);
+    check_grow_refuses_header_refs("a section below the first content, above base 0", buf, fsize,
+        "ERROR: section __DATA,__bss lies at 0x10000fff, below the first content at 0x10001000; "
+        "refusing to grow");
+}
+
+/* An unencrypted image's encryption command, an LC_ROUTINES_64 long enough
+ * to read, and a zero-fill segment at file offset 0 are no reason to refuse,
+ * at base 0 or above it: such a dylib or bundle reaches the refusal every
+ * dylib and bundle meets until the raise is written. */
+static void test_grow_raises_past_what_it_can_vouch_for(void) {
+    static const uint32_t filetype[3] = { MH_DYLIB, MH_BUNDLE, MH_DYLIB };
+    static const uint64_t base[3] = { 0, 0, 0x10000000 };
+    for (int i = 0; i < 3; i++) {
+        size_t fsize;
+        char needle[64];
+        uint8_t *buf = build_dylib_at(base[i], &fsize, DY_ROUTINES | DY_ZEROSEG);
+        struct encryption_info_command_64 *e =
+            (struct encryption_info_command_64 *)dy_find(buf, LC_UUID);
+        ((struct mach_header_64 *)buf)->filetype = filetype[i];
+        e->cmd = LC_ENCRYPTION_INFO_64;
+        e->cryptoff = e->cryptsize = e->cryptid = 0;
+        dy_section(buf, "__DATA", "__data")->align = 12;
+        snprintf(needle, sizeof needle, "ERROR: only MH_EXECUTE can be grown (filetype=%u)",
+                 filetype[i]);
+        check_grow_refuses_header_refs("a dylib or bundle a raise can vouch for", buf, fsize,
+                                       needle);
+    }
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -4435,6 +4790,8 @@ int main(void) {
     test_grow_refuses_a_bind_in_the_segment_that_maps_the_header();
     test_grow_refuses_binds_it_cannot_read();
     test_grow_accepts_binds_outside_the_header_segment();
+    test_grow_refuses_what_it_cannot_raise();
+    test_grow_raises_past_what_it_can_vouch_for();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;

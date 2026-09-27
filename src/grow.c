@@ -1606,6 +1606,111 @@ static int mg_header_symbols(uint8_t *buf, size_t fsize, uint64_t base, uint64_t
     return c.bad ? -1 : 0;
 }
 
+/* mg_raise_ok's mi_each_lc callback: says why, and stops, at the first load
+ * command a raise cannot vouch for; notes LC_DYLD_INFO and LC_DYSYMTAB's
+ * counts, which mg_raise_ok judges together. */
+struct mg_raise_ctx { uint64_t base; uint32_t first; int di; uint32_t toc, mod, ext, loc; };
+static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_raise_ctx *c = (struct mg_raise_ctx *)ctx_;
+    switch (lc->cmd) {
+    case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY:
+        c->di = 1;
+        return 0;
+    case LC_UNIXTHREAD: case LC_THREAD:
+        fprintf(stderr, "ERROR: a dylib or bundle with a thread command (%#x), whose register "
+                        "state a raise does not move; refusing to grow\n", lc->cmd);
+        return 1;
+    case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64: {
+        const struct encryption_info_command *e = (const struct encryption_info_command *)lc;
+        if (lc->cmdsize < sizeof *e) {
+            fprintf(stderr, "ERROR: an encryption command is %u bytes, too short to hold "
+                            "cryptid; refusing to grow\n", lc->cmdsize);
+            return 1;
+        }
+        if (!e->cryptid) return 0;
+        fprintf(stderr, "ERROR: the image is encrypted (cryptid %u), and a raise would move "
+                        "its encrypted pages; refusing to grow\n", e->cryptid);
+        return 1;
+    }
+    case LC_DYSYMTAB: {
+        const struct dysymtab_command *d = (const struct dysymtab_command *)lc;
+        if (lc->cmdsize < sizeof *d) {
+            fprintf(stderr, "ERROR: LC_DYSYMTAB is %u bytes, too short to hold its tables' "
+                            "counts; refusing to grow\n", lc->cmdsize);
+            return 1;
+        }
+        c->toc = d->ntoc;
+        c->mod = d->nmodtab;
+        c->ext = d->nextrel;
+        c->loc = d->nlocrel;
+        return 0;
+    }
+    case LC_ROUTINES_64:
+        if (lc->cmdsize >= sizeof(struct routines_command_64)) return 0;
+        fprintf(stderr, "ERROR: LC_ROUTINES_64 is %u bytes, too short to hold init_address; "
+                        "refusing to grow\n", lc->cmdsize);
+        return 1;
+    case LC_SEGMENT_64: {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *s = (const struct section_64 *)(seg + 1);
+        int header = seg->fileoff == 0 && seg->filesize > 0;
+        if (seg->flags & SG_PROTECTED_VERSION_1) {
+            fprintf(stderr, "ERROR: segment %.16s is protected (SG_PROTECTED_VERSION_1), and a "
+                            "raise would move its encrypted pages; refusing to grow\n",
+                    seg->segname);
+            return 1;
+        }
+        if (!header && seg->filesize > 0 && seg->fileoff < c->first) {
+            fprintf(stderr, "ERROR: segment %.16s's file data starts at %llu, before the first "
+                            "content at %u; refusing to grow\n", seg->segname,
+                    (unsigned long long)seg->fileoff, c->first);
+            return 1;
+        }
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            if (s[j].align > 12) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s is aligned to 2^%u bytes, more than "
+                                "the page a raise moves it by; refusing to grow\n", s[j].segname,
+                        s[j].sectname, s[j].align);
+                return 1;
+            }
+            if (s[j].addr < c->base + c->first) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s lies at %#llx, below the first "
+                                "content at %#llx; refusing to grow\n", s[j].segname,
+                        s[j].sectname, (unsigned long long)s[j].addr,
+                        (unsigned long long)(c->base + c->first));
+                return 1;
+            }
+            if (header && s[j].addr - c->base != s[j].offset) {
+                fprintf(stderr, "ERROR: section %.16s,%.16s lies %#llx past the image base in "
+                                "memory and %#x in the file; refusing to grow\n", s[j].segname,
+                        s[j].sectname, (unsigned long long)(s[j].addr - c->base), s[j].offset);
+                return 1;
+            }
+        }
+        return 0;
+    }
+    }
+    return 0;
+}
+
+/* 0 when a raise can vouch for every load command of the dylib or bundle
+ * `im`, whose image base is `base` and first content base + `first`; else
+ * -1, having said why. */
+static int mg_raise_ok(const mi_image *im, uint64_t base, uint32_t first) {
+    struct mg_raise_ctx c = { base, first, 0, 0, 0, 0, 0 };
+    if (!mi_each_lc(im, mg_raise_ok_cb, &c)) return -1;
+    if (!c.di) {
+        fprintf(stderr, "ERROR: a dylib or bundle with no LC_DYLD_INFO[_ONLY]: only its rebase "
+                        "opcodes list every pointer a raise moves; refusing to grow\n");
+        return -1;
+    }
+    if (!(c.toc | c.mod | c.ext | c.loc)) return 0;
+    fprintf(stderr, "ERROR: LC_DYSYMTAB lists %u table-of-contents entries, %u modules, %u "
+                    "external and %u local relocations beside LC_DYLD_INFO, whose addresses a "
+                    "raise does not move; refusing to grow\n", c.toc, c.mod, c.ext, c.loc);
+    return -1;
+}
+
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     uint8_t *buf = *pbuf;
     size_t fsize = *pfsize;
@@ -1643,13 +1748,19 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                         "above this check\n", hdr->magic);
         return -1;
     }
-    if (hdr->filetype != MH_EXECUTE) {
-        fprintf(stderr, "ERROR: only MH_EXECUTE can be grown (filetype=%u): growing "
-                        "lowers the image base into __PAGEZERO, and a dylib or bundle has "
-                        "none. This tool cannot grow a dylib or bundle.\n", hdr->filetype);
+    int raise = hdr->filetype == MH_DYLIB || hdr->filetype == MH_BUNDLE;
+    if (hdr->filetype != MH_EXECUTE && !raise) {
+        fprintf(stderr, "ERROR: only MH_EXECUTE, MH_DYLIB and MH_BUNDLE can be grown "
+                        "(filetype=%u)\n", hdr->filetype);
         return -1;
     }
-    if (!(hdr->flags & MH_PIE)) {
+    if (raise && hdr->cputype != CPU_TYPE_X86_64) {
+        fprintf(stderr, "ERROR: only an x86_64 dylib or bundle can be grown (cputype=%#x): "
+                        "its code is decoded to find what addresses its header\n",
+                hdr->cputype);
+        return -1;
+    }
+    if (!raise && !(hdr->flags & MH_PIE)) {
         fprintf(stderr, "ERROR: executable is not PIE (flags=0x%x); lowering the "
                         "image base would require fixing absolute relocations, which "
                         "this tool does not do\n", hdr->flags);
@@ -1712,11 +1823,18 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
     struct segment_command_64 *pagezero = mi_find_segment(&find_im, "__PAGEZERO");
-    if (!mi_text_base(&find_im)) {
+    uint64_t base;
+    if (mi_image_base(&find_im, &base) != 0) {
         fprintf(stderr, "ERROR: no __TEXT-like segment holds the header\n");
         return -1;
     }
-    if (!pagezero || pagezero->vmsize < grow) {
+    if (raise) {
+        if (mg_raise_ok(&find_im, base, insert) != 0) return -1;
+        fprintf(stderr, "ERROR: only MH_EXECUTE can be grown (filetype=%u): growing "
+                        "lowers the image base into __PAGEZERO, and a dylib or bundle has "
+                        "none. This tool cannot grow a dylib or bundle.\n", hdr->filetype);
+        return -1;
+    } else if (!pagezero || pagezero->vmsize < grow) {
         fprintf(stderr, "ERROR: need a __PAGEZERO >= %u bytes to lower the image "
                         "base (image-base trick requires a PIE executable)\n", grow);
         return -1;
