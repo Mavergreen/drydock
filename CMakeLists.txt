@@ -273,9 +273,8 @@ target_compile_options(linkedit_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(linkedit_test PRIVATE drydockcore)
 add_test(NAME linkedit_test COMMAND linkedit_test)
 
-# Hermetic tests for src/relations.c: hand-built images, no fixture file, so
-# liveness never depends on what the host linker emits -- the dependence that
-# made cli_test's build-version fixtures pass here and fail on the cross runner.
+# Hermetic tests for src/linkedit_order.c and src/linkedit_pack.c, on
+# tests/linkedit_fixture.h's hand-built images.
 add_executable(linkedit_order_test tests/linkedit_order_test.c)
 target_compile_options(linkedit_order_test PRIVATE -O2 -Wall -Wextra -Wno-unused-function)
 target_link_libraries(linkedit_order_test PRIVATE drydockcore)
@@ -291,6 +290,9 @@ add_test(NAME codesign_order_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/codesign_order_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(codesign_order_test PROPERTIES SKIP_RETURN_CODE 77)
 
+# Hermetic tests for src/relations.c: hand-built images, no fixture file, so
+# liveness never depends on what the host linker emits -- the dependence that
+# made cli_test's build-version fixtures pass here and fail on the cross runner.
 add_executable(relations_test tests/relations_test.c)
 target_compile_options(relations_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(relations_test PRIVATE drydockcore)

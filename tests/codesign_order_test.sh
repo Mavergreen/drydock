@@ -37,8 +37,10 @@ trap 'rm -rf "$T"' EXIT INT TERM
 
 fail=0 files=0 refused=0 corrupt=0 fat=0
 
-# Does every "…"-separated part of $1 appear in file $2?
+# Does every "…"-separated part of $1 appear in file $2? An empty $1, which
+# is `info` printing no verdict at all, does not.
 matches() {
+    [ -n "$1" ] || return 1
     printf '%s\n' "$1" | sed 's/…/\
 /g' | while IFS= read -r part; do
         [ -z "$part" ] || grep -qF -- "$part" "$2" || exit 1
@@ -163,6 +165,9 @@ A=$("$DMR" info "$T/reg" | awk -v p="$T/liba.dylib" 'index($0, "  ordinal=") == 
     split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); if (a[2] == p) { print o; exit } }')
 "$T/mkbindstream" set "$T/reg" "$T/grow" bind "ord:$A" sym:_x type:1 seg:2:0 do sym:_y do done
 run "$T/grow" "$T/grow.out" "dylib append $T/libshim.dylib" "import redirect _x $T/liba.dylib $T/libshim.dylib"
+# a header grow whose rebuilt export trie no longer fits
+"$MK" grow-trie "$T/grow-trie"
+run "$T/grow-trie" "$T/grow-trie.out" "rpath append /$(printf '%500s' '' | tr ' ' x)"
 # a fat file: one slice in order, one that would re-sign corrupt
 "$BIN/makefat" "$T/fat" "$T/canonical" 0x1000007 3 12 "$T/hole-16" 0x1000007 8 12
 run "$T/fat" "$T/fat.out" 'load-command delete codesig'

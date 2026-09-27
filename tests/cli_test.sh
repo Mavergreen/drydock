@@ -5169,7 +5169,8 @@ lo "$T/lk_canonical" "$T/lk_nodrs" 'load-command delete code-sign-drs'
     && ok "order: load-command delete code-sign-drs drops the DRs' bytes" \
     || bad "order: delete code-sign-drs" "rc $lo_rc, resign [$(resign "$T/lk_nodrs")]: $(cat "$T/lo.err")"
 lo "$T/lk_bind-first-exec" "$T/lk_nouuid" 'load-command delete uuid'
-[ "$lo_rc" -eq 0 ] && ! grep -q '__LINKEDIT\|resign' "$T/lo.err" \
+[ "$lo_rc" -eq 0 ] && grep -qF "$lo_out: written (" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" && ! grep -q 'resign' "$T/lo.err" \
     && [ "$(resign "$T/lk_nouuid")" = "$(resign "$T/lk_bind-first-exec")" ] \
     && grep -q 'this run disturbed sizeofcmds' "$T/lo.err" \
     && ok "order: load-command delete uuid changes no piece, so nothing is re-packed or said" \
@@ -5198,13 +5199,15 @@ lo "$T/lk_bind-first-dep" "$T/lk_insert" 'dylib insert /usr/lib/libz.1.dylib'
     && ok "order: dylib insert's renumbering is a change, and the image is packed" \
     || bad "order: dylib insert" "rc $lo_rc, resign [$(resign "$T/lk_insert")]: $(cat "$T/lo.err")"
 lo "$T/lk_canonical-dep" "$T/lk_insert2" 'dylib insert /usr/lib/libz.1.dylib'
-[ "$lo_rc" -eq 0 ] && ! grep -q '__LINKEDIT\|resign' "$T/lo.err" && [ "$(resign "$T/lk_insert2")" = ok ] \
+[ "$lo_rc" -eq 0 ] && grep -qF "$lo_out: written (" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" && ! grep -q 'resign' "$T/lo.err" && [ "$(resign "$T/lk_insert2")" = ok ] \
     && ok "order: ... and on an image already in order, nothing is said" \
     || bad "order: dylib insert, in order" "rc $lo_rc: $(cat "$T/lo.err")"
 
 # A header-only edit of a still-chained image prints nothing new.
 lo "$T/chained.in" "$T/lk_chained_rpath" 'rpath append /lk'
-[ "$lo_rc" -eq 0 ] && ! grep -q '__LINKEDIT\|resign' "$T/lo.err" \
+[ "$lo_rc" -eq 0 ] && grep -qF "$lo_out: written (" "$T/lo.err" \
+    && ! grep -q '__LINKEDIT' "$T/lo.err" && ! grep -q 'resign' "$T/lo.err" \
     && [ "$(resign "$T/lk_chained_rpath")" = "malformed object (unknown load command 3)" ] \
     && ok "order: an edit of a chained image says nothing new; info has the verdict" \
     || bad "order: chained rpath" "rc $lo_rc, resign [$(resign "$T/lk_chained_rpath")]: $(cat "$T/lo.err")"
@@ -5215,6 +5218,13 @@ lo "$T/lk_hole-16" "$T/lk_hole.out" 'rpath append /lk'
 [ "$lo_rc" -eq 0 ] && packed && [ "$(resign "$T/lk_hole.out")" = ok ] \
     && ok "order: a hole codesign_allocate would corrupt is repaired by any edit" \
     || bad "order: hole repaired" "rc $lo_rc: $(cat "$T/lo.err")"
+lo "$T/lk_hole-16" "$T/lk_hole_unmatched.out" 'allow-unmatched' 'rpath delete /nowhere'
+[ "$lo_rc" -eq 0 ] && grep -q 'rpath /nowhere matched nothing' "$T/lo.err" && packed \
+    && [ "$(resign "$T/lk_hole_unmatched.out")" = ok ] \
+    && "$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole_unmatched.out" | grep -q '^resign 10.9: ok$' \
+    && ! "$DRYDOCK_MACHO_REWRITE" info "$T/lk_hole_unmatched.out" | grep -q '^resign corrupt' \
+    && ok "order: a hole codesign_allocate would corrupt is repaired even by a run that matched nothing (allow-unmatched)" \
+    || bad "order: hole repaired, unmatched" "rc $lo_rc: $(cat "$T/lo.err")"
 lo "$T/lk_hole-16-note" "$T/lk_note.out" 'rpath append /lk'
 [ "$lo_rc" -eq 1 ] && [ ! -e "$T/lk_note.out" ] \
     && grep -q '__LINKEDIT not re-packed: load command 8 (cmd 0x31)' "$T/lo.err" \
@@ -5311,6 +5321,18 @@ lo "$T/lk_fat" "$T/lk_fat_empty.out" 'arch x86_64h'
     && ! grep -q 'disturbed nothing' "$T/lo.err" \
     && ok "order: a fat slice that packs under an empty script does not also claim it disturbed nothing" \
     || bad "order: fat pack no disturb-nothing" "rc $lo_rc: $(cat "$T/lo.err")"
+
+# A header grow whose rebuilt export trie no longer fits its 16 bytes: the
+# grow appends the 17-byte trie past the signature, and the pass puts it back
+# at __LINKEDIT's start (0x5000, once the header has grown by 0x1000).
+"$T/mklinkedit" grow-trie "$T/lk_grow_trie"
+lo "$T/lk_grow_trie" "$T/lk_grow_trie.out" "rpath append /$(printf '%500s' '' | tr ' ' x)"
+[ "$lo_rc" -eq 0 ] && grep -q 'grew the header pad by 4096 bytes' "$T/lo.err" && packed \
+    && [ "$(resign "$T/lk_grow_trie.out")" = ok ] \
+    && "$T/mklinkedit" pieces "$T/lk_grow_trie.out" | grep -qx 'export 20480 17' \
+    && [ "$("$DRYDOCK_MACHO_REWRITE" exports "$T/lk_grow_trie.out")" = "$("$DRYDOCK_MACHO_REWRITE" exports "$T/lk_grow_trie")" ] \
+    && ok "order: a header grow that rebuilds a larger export trie is packed back in order" \
+    || bad "order: trie-growing grow" "rc $lo_rc, resign [$(resign "$T/lk_grow_trie.out")], $("$T/mklinkedit" pieces "$T/lk_grow_trie.out" | tr '\n' ' '): $(cut -c1-200 "$T/lo.err")"
 
 # The lowering: its streams padded to 8, and the result in order.
 "$T/mkchained" make-signable "$T/lk_chained"
