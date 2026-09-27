@@ -191,11 +191,13 @@ typedef struct { mrb_set s; mg_rbval *v; } mg_rebases;
 /* Reads every rebase target into *r: none when the image has no
  * LC_DYLD_INFO[_ONLY] or its rebase opcodes are empty. Returns 0; or -1, with
  * *r empty and `why` saying what, when the image has more than one
- * LC_DYLD_INFO[_ONLY], when its rebase opcodes lie past the end of the image
- * or do not decode, or when a target is not a plain pointer
- * (REBASE_TYPE_POINTER), lies in the segment that maps the header, does not
- * lie wholly within its segment's file data, or is named more than once.
- * Free *r with mg_rebases_free, which is safe on an empty one. */
+ * LC_DYLD_INFO[_ONLY]; when it has none and LC_DYSYMTAB lists local
+ * relocation entries, which dyld then reads in their place; when its rebase
+ * opcodes lie past the end of the image or do not decode; or when a target
+ * is not a plain pointer (REBASE_TYPE_POINTER), lies in the segment that maps
+ * the header, does not lie wholly within its segment's file data, or is named
+ * more than once. Free *r with mg_rebases_free, which is safe on an empty
+ * one. */
 int  mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, size_t whysz);
 void mg_rebases_free(mg_rebases *r);
 

@@ -3309,6 +3309,8 @@ static void test_grow_moves_no_symbol_when_it_refuses(void) {
 #define PT_OPS    PT_LE
 #define PT_FS     (PT_LE + 64)
 #define PT_CODE   1
+#define PT_LOCREL 2   /* an LC_DYSYMTAB listing one local relocation entry */
+#define PT_NOINFO 4   /* no LC_DYLD_INFO_ONLY: dyld reads LC_DYSYMTAB's entries instead */
 static const uint64_t pt_ptrs[4] = {
     PT_BASE,             /* the header */
     PT_DATAVM + 0x40,    /* content */
@@ -3376,13 +3378,27 @@ static uint8_t *build_pointer_image(size_t *fsize, int opts) {
     le->filesize = PT_FSIZE - PT_LE;
     lc += le->cmdsize;
 
-    struct dyld_info_command *di = (struct dyld_info_command *)lc;
-    di->cmd = LC_DYLD_INFO_ONLY;
-    di->cmdsize = sizeof *di;
-    di->rebase_off = PT_OPS;
-    di->rebase_size = 8;
-    lc += di->cmdsize;
-    h->ncmds = 5;
+    h->ncmds = 4;
+    if (!(opts & PT_NOINFO)) {
+        struct dyld_info_command *di = (struct dyld_info_command *)lc;
+        di->cmd = LC_DYLD_INFO_ONLY;
+        di->cmdsize = sizeof *di;
+        di->rebase_off = PT_OPS;
+        di->rebase_size = 8;
+        lc += di->cmdsize;
+        h->ncmds++;
+    }
+    if (opts & PT_LOCREL) {
+        struct dysymtab_command *ds = (struct dysymtab_command *)lc;
+        ds->cmd = LC_DYSYMTAB;
+        ds->cmdsize = sizeof *ds;
+        ds->locreloff = PT_LE + 128;   /* X86_64_RELOC_UNSIGNED, 8 bytes, at __DATA+0, section 2 */
+        ds->nlocrel = 1;
+        lc += ds->cmdsize;
+        h->ncmds++;
+        static const uint8_t reloc[8] = { 0, 0, 0, 0, 0x02, 0, 0, 0x06 };
+        memcpy(buf + PT_LE + 128, reloc, sizeof reloc);
+    }
 
     /* SET_TYPE_IMM pointer; SET_SEGMENT_AND_OFFSET_ULEB 2, 0;
      * DO_REBASE_IMM_TIMES 4; DONE */
@@ -3769,6 +3785,58 @@ static void test_snapshot_refuses_rebases_it_cannot_read(void) {
     free(buf);
 }
 
+/* An image with no rebase opcodes lists its pointers, if any, in LC_DYSYMTAB's
+ * local relocation entries, and dyld then slides the pointers they name. A
+ * grow does not read those, so it cannot move one that names the header:
+ * refused. With rebase opcodes, dyld reads only those, and so does the grow. */
+static void test_rebases_read_refuses_local_relocations(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, PT_NOINFO | PT_LOCREL);
+    mg_rebases rb;
+    char why[256] = "";
+    int r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == -1 && strcmp(why, "the image lists its pointers in LC_DYSYMTAB's local "
+                                 "relocation entries (1), not in rebase opcodes, and a grow does "
+                                 "not read those") == 0,
+          "local relocations: refused (got %d, '%s')", r, why);
+    mg_rebases_free(&rb);
+    free(buf);
+
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == PT_N, "local relocations beside rebase opcodes: the opcodes are "
+          "read (got %d, %zu: %s)", r, rb.s.n, why);
+    mg_rebases_free(&rb);
+    free(buf);
+
+    buf = build_pointer_image(&fsize, PT_NOINFO);
+    r = mg_rebases_read(buf, fsize, &rb, why, sizeof why);
+    CHECK(r == 0 && rb.s.n == 0, "neither: nothing to read (got %d, %zu: %s)", r, rb.s.n, why);
+    mg_rebases_free(&rb);
+    free(buf);
+}
+
+static void test_grow_refuses_local_relocations(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, PT_NOINFO | PT_LOCREL);
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000,
+        "ERROR: the image lists its pointers in LC_DYSYMTAB's local relocation entries (1), not "
+        "in rebase opcodes, and a grow does not read those; refusing to grow", &r);
+    CHECK(r == -1 && said, "local relocations: the grow refuses, saying why (got %d)", r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "local relocations: nothing changed");
+    free(before);
+    free(buf);
+    buf = build_pointer_image(&fsize, PT_LOCREL);
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "local relocations beside rebase opcodes: the grow succeeds (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -3893,6 +3961,8 @@ int main(void) {
     test_ensure_pad_announces_the_pointers_it_moves();
     test_verify_watches_the_pointers();
     test_snapshot_refuses_rebases_it_cannot_read();
+    test_rebases_read_refuses_local_relocations();
+    test_grow_refuses_local_relocations();
     test_rebases_read_refuses_a_malformed_image();
     test_find_trie_refuses_a_short_dyld_info();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

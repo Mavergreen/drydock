@@ -380,6 +380,7 @@ struct mg_rb_lcs {
     const struct dyld_info_command *di;
     uint32_t short_di;   /* nonzero: an LC_DYLD_INFO[_ONLY] this small was found;
                           * its rebase_off/rebase_size were never read */
+    uint32_t nlocrel;
 };
 
 static int mg_rb_lcs_cb(const struct load_command *lc, void *ctx_) {
@@ -397,6 +398,7 @@ static int mg_rb_lcs_cb(const struct load_command *lc, void *ctx_) {
         if (lc->cmdsize < sizeof(struct dyld_info_command)) { c->short_di = lc->cmdsize; return 1; }
         if (!c->di) c->di = (const struct dyld_info_command *)lc;
     }
+    if (lc->cmd == LC_DYSYMTAB) c->nlocrel += ((const struct dysymtab_command *)lc)->nlocrel;
     return 0;
 }
 
@@ -425,6 +427,10 @@ int mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, 
                           "short to hold rebase_off/rebase_size", c.short_di);
     if (c.ndi > 1)
         return mg_rb_fail(r, why, whysz, "the image has %d LC_DYLD_INFO commands", c.ndi);
+    if (!c.di && c.nlocrel)
+        return mg_rb_fail(r, why, whysz, "the image lists its pointers in LC_DYSYMTAB's local "
+                          "relocation entries (%u), not in rebase opcodes, and a grow does not "
+                          "read those", c.nlocrel);
     if (!c.di || !c.di->rebase_size) return 0;
     if (c.di->rebase_size > fsize || c.di->rebase_off > fsize - c.di->rebase_size)
         return mg_rb_fail(r, why, whysz, "the rebase opcodes (%u bytes at offset %u) run past "
