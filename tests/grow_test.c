@@ -3601,6 +3601,103 @@ static void test_find_trie_refuses_a_short_dyld_info(void) {
     free(buf);
 }
 
+/* The pointer values in __DATA after a grow, wherever the file now holds them. */
+static const uint64_t *pt_values(uint8_t *buf, size_t fsize) {
+    struct segment_command_64 *da = seg_named(buf, fsize, "__DATA");
+    return da ? (const uint64_t *)(buf + da->fileoff) : NULL;
+}
+
+static void check_pointers_after(const char *what, uint32_t grow_req, uint32_t grow, int also) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    uint64_t want[PT_N];
+    memcpy(want, pt_ptrs, sizeof want);
+    if (also) {                                  /* slot 3 names the header too */
+        ((uint64_t *)(buf + PT_DATA))[3] = PT_BASE;
+        want[3] = PT_BASE;
+    }
+    want[0] -= grow;
+    if (also) want[3] -= grow;
+    int r = mg_grow_header(&buf, &fsize, grow_req);
+    CHECK(r == 0, "%s: the grow succeeds (got %d)", what, r);
+    const uint64_t *v = r == 0 ? pt_values(buf, fsize) : NULL;
+    for (int i = 0; v && i < PT_N; i++)
+        CHECK(v[i] == want[i], "%s: pointer %d holds %#llx after the grow, want %#llx", what, i,
+              (unsigned long long)v[i], (unsigned long long)want[i]);
+    free(buf);
+}
+
+/* The header moves down by the grow; what names it follows, and what names
+ * content, the first byte of content, or nothing in the image stays. */
+static void test_grow_moves_the_pointers_that_name_the_header(void) {
+    check_pointers_after("pointers", 0x1000, 0x1000, 0);
+    check_pointers_after("two pointers to the header", 0x1000, 0x1000, 1);
+    check_pointers_after("pointers, two-page grow", 0x1001, 0x2000, 0);
+}
+
+/* A value strictly inside (base, base + F) names a byte of the header or its
+ * load commands, which the grow moves apart: refused, nothing changed. */
+static void check_grow_refuses_a_pointer_inside(uint64_t value, const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    ((uint64_t *)(buf + PT_DATA))[1] = value;
+    size_t fsize0 = fsize;
+    uint8_t *before = (uint8_t *)malloc(fsize0);
+    memcpy(before, buf, fsize0);
+    int r;
+    int said = stderr_contains_during(mg_grow_header, &buf, &fsize, 0x1000, needle, &r);
+    CHECK(r == -1 && said, "inside: %#llx is refused, saying '%s' (got %d)",
+          (unsigned long long)value, needle, r);
+    CHECK(fsize == fsize0 && memcmp(before, buf, fsize0) == 0,
+          "inside: %#llx: nothing changed", (unsigned long long)value);
+    free(before);
+    free(buf);
+}
+
+static void test_grow_refuses_a_pointer_inside_the_header(void) {
+    check_grow_refuses_a_pointer_inside(PT_BASE + 1,
+        "ERROR: the pointer at 0x100002008 names 0x100000001, between the header at 0x100000000 "
+        "and its first content at 0x100001000, which a grow moves apart; refusing to grow");
+    check_grow_refuses_a_pointer_inside(PT_BASE + PT_F - 1,
+        "ERROR: the pointer at 0x100002008 names 0x100000fff, between the header");
+}
+
+static void test_header_pointers_counts_without_moving(void) {
+    size_t fsize;
+    uint8_t *buf = build_pointer_image(&fsize, 0);
+    ((uint64_t *)(buf + PT_DATA))[3] = PT_BASE;
+    uint8_t *before = (uint8_t *)malloc(fsize);
+    memcpy(before, buf, fsize);
+    char why[256] = "";
+    int64_t n = mg_header_pointers(buf, fsize, PT_BASE, PT_F, 0, why, sizeof why);
+    CHECK(n == 2, "count: two pointers name the header (got %lld: %s)", (long long)n, why);
+    CHECK(memcmp(before, buf, fsize) == 0, "count: counting moves nothing");
+    free(before);
+    free(buf);
+}
+
+/* mg_ensure_pad announces the pointers it moved, with the code it repaired. */
+static void check_ensure_pad_announces(const char *what, int opts, int also, const char *tail) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_pointer_image(&fsize, opts);
+    if (also) ((uint64_t *)(buf + PT_DATA))[3] = PT_BASE;
+    char *err = ensure_pad_stderr(&buf, &fsize, PT_F + 1, &r);
+    CHECK(r == 0 && strstr(err, tail) != NULL, "%s: announced as '...%s' (got %d):\n%s", what,
+          tail, r, err);
+    free(err);
+    free(buf);
+}
+
+static void test_ensure_pad_announces_the_pointers_it_moves(void) {
+    check_ensure_pad_announces("one pointer", 0, 0,
+        "image base 0x100000000 -> 0xfffff000; repaired 1 reference to the header\n");
+    check_ensure_pad_announces("two pointers", 0, 1,
+        "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n");
+    check_ensure_pad_announces("a pointer and an instruction", PT_CODE, 0,
+        "image base 0x100000000 -> 0xfffff000; repaired 2 references to the header\n");
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -3719,6 +3816,10 @@ int main(void) {
     test_rebases_read_refuses_what_it_cannot_read();
     test_grow_refuses_rebases_it_cannot_read();
     test_grow_accepts_readable_rebases();
+    test_grow_moves_the_pointers_that_name_the_header();
+    test_grow_refuses_a_pointer_inside_the_header();
+    test_header_pointers_counts_without_moving();
+    test_ensure_pad_announces_the_pointers_it_moves();
     test_rebases_read_refuses_a_malformed_image();
     test_find_trie_refuses_a_short_dyld_info();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

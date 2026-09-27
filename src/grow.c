@@ -81,6 +81,8 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
     int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
+    char why[256];
+    int64_t ptrs = mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, why, sizeof why);
 
     uint32_t grow_req = need_end - first;
     if (mg_grow_header(pbuf, pfsize, grow_req) != 0) {
@@ -104,9 +106,10 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
                     "image base %#llx -> %#llx",
             label, first - first_before, pad_avail, first - cur_lc_end,
             (unsigned long long)base_before, (unsigned long long)mg_base_of(*pbuf, *pfsize));
-    if (refs > 0)
-        fprintf(stderr, "; repaired %lld reference%s to the header", (long long)refs,
-                refs == 1 ? "" : "s");
+    int64_t repaired = (refs > 0 ? refs : 0) + (ptrs > 0 ? ptrs : 0);
+    if (repaired > 0)
+        fprintf(stderr, "; repaired %lld reference%s to the header", (long long)repaired,
+                repaired == 1 ? "" : "s");
     fprintf(stderr, "\n");
     return 0;
 }
@@ -473,6 +476,30 @@ void mg_rebases_free(mg_rebases *r) {
     mrb_free(&r->s);
     free(r->v);
     r->v = NULL;
+}
+
+int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                           uint32_t grow, char *why, size_t whysz) {
+    mg_rebases rb;
+    int64_t n = 0;
+    if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
+    for (size_t i = 0; i < rb.s.n; i++) {
+        uint64_t v = rb.v[i].value;
+        if (v > base && v - base < first) {
+            snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
+                     "and its first content at %#llx, which a grow moves apart",
+                     (unsigned long long)rb.v[i].vm, (unsigned long long)v,
+                     (unsigned long long)base, (unsigned long long)(base + first));
+            mg_rebases_free(&rb);
+            return -1;
+        }
+        if (v != base) continue;
+        n++;
+        v -= grow;
+        memcpy(buf + rb.v[i].at, &v, sizeof v);
+    }
+    mg_rebases_free(&rb);
+    return n;
 }
 
 /* mg_snapshot_take's mhr_scan callback: keep each reference to the header. */
@@ -1528,13 +1555,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;
     if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
     {
-        mg_rebases rb;
         char why[256];
-        if (mg_rebases_read(buf, fsize, &rb, why, sizeof why) != 0) {
+        int64_t n = mg_header_pointers(buf, fsize, mg_base_of(buf, fsize), insert, 0, why,
+                                       sizeof why);
+        if (n < 0) {
             fprintf(stderr, "ERROR: %s; refusing to grow\n", why);
             return -1;
         }
-        mg_rebases_free(&rb);
     }
     /* If an address's ULEB would widen, mg_trie_node's in-place patch (below,
      * after the buffer is mutated) can't do it: widening one entry cascades
@@ -1808,6 +1835,16 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
                         "after passing the pre-check\n");
         mg_snapshot_free(&snap);
         return -1;
+    }
+
+    {
+        char why[256];
+        if (mg_header_pointers(buf, final_size, snap.base, insert, grow, why, sizeof why) < 0) {
+            fprintf(stderr, "ERROR: internal error moving the pointers that name the header "
+                            "after passing the pre-check: %s\n", why);
+            mg_snapshot_free(&snap);
+            return -1;
+        }
     }
 
     /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: the base

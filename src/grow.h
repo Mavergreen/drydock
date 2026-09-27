@@ -26,7 +26,8 @@
  * address that names content changes. The fields that move are file offsets —
  * which we shift uniformly (borrowed from LIEF: the exhaustive list of offset
  * fields) — and what names the header, which moved: code that reaches it
- * RIP-relatively (src/hdrref.h), and the value of a symbol that names it.
+ * RIP-relatively (src/hdrref.h), the value of a symbol that names it, and a
+ * rebased pointer to it.
  *
  * Precondition: a MH_PIE executable with a __PAGEZERO at least `grow` bytes
  * large. (Always true for the Claude Code executable: 0x1_0000_0000 pagezero.)
@@ -115,7 +116,8 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
  * available); image base 0xOLD -> 0xNEW", ending "; repaired N references to
  * the header" (or "1 reference") when the grow repaired code that addresses
- * the image's own header (src/hdrref.h).
+ * the image's own header (src/hdrref.h) or moved pointers to it
+ * (mg_header_pointers), counting both.
  *
  * Returns -1, with the reason on stderr prefixed by `label`, when it does not
  * fit and growth failed. Also -1, with the
@@ -196,6 +198,15 @@ typedef struct { mrb_set s; mg_rbval *v; } mg_rebases;
  * Free *r with mg_rebases_free, which is safe on an empty one. */
 int  mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, size_t whysz);
 void mg_rebases_free(mg_rebases *r);
+
+/* The pointers that name the header: each rebase target whose value is
+ * `base`. Each loses `grow` (0 to count them), following the header down.
+ * One whose value lies strictly inside (base, base + first), in the header
+ * and its load commands, is refused: a grow moves those apart, so no value
+ * names that byte both before and after. Returns how many name the header,
+ * or -1 with `why` set (mg_rebases_read's reasons, or that one). */
+int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
+                           uint32_t grow, char *why, size_t whysz);
 
 /* What mg_verify compares a grown image against: the resolved addresses
  * mg_collect finds, the image base with every reference to it the
@@ -385,10 +396,11 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * file offset lies past the end of the image; and one with a candidate
  * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
  * for; one whose LC_SYMTAB symbol table does not fit in the image; and one
- * whose rebase targets mg_rebases_read cannot read. Every confirmed
- * reference is repaired: its disp32 loses the grow, so it still reaches the
- * header. So does the value of each symbol that names the header
- * (__mh_execute_header). A failure partway through growing can leave the
+ * whose rebase targets mg_rebases_read cannot read, or one of which
+ * mg_header_pointers refuses. Every confirmed reference is repaired: its
+ * disp32 loses the grow, so it still reaches the header. So does the value
+ * of each symbol that names the header (__mh_execute_header), and of each
+ * rebased pointer that does. A failure partway through growing can leave the
  * buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);
