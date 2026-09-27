@@ -499,6 +499,23 @@ void mg_rebases_free(mg_rebases *r) {
     r->v = NULL;
 }
 
+/* Whether `v`, a pointer's value read at `vm`, lies strictly between the
+ * header and its first content, at base + `first`: a byte a grow moves
+ * apart from what it names. Sets `why` and returns 1 when it does, else 0;
+ * shared by mg_header_pointers and mg_raise_pointers, whose callers both
+ * free the read-in rebases and return -1 on a 1. */
+static int mg_ptr_inside_header(uint64_t v, uint64_t vm, uint64_t base, uint64_t first,
+                                char *why, size_t whysz) {
+    if (v > base && v - base < first) {
+        snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
+                 "and its first content at %#llx, which a grow moves apart",
+                 (unsigned long long)vm, (unsigned long long)v,
+                 (unsigned long long)base, (unsigned long long)(base + first));
+        return 1;
+    }
+    return 0;
+}
+
 int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t first,
                            uint32_t below, uint32_t grow, char *why, size_t whysz) {
     mg_rebases rb;
@@ -506,11 +523,7 @@ int64_t mg_header_pointers(uint8_t *buf, size_t fsize, uint64_t base, uint64_t f
     if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
     for (size_t i = 0; i < rb.s.n; i++) {
         uint64_t v = rb.v[i].value;
-        if (v > base && v - base < first) {
-            snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
-                     "and its first content at %#llx, which a grow moves apart",
-                     (unsigned long long)rb.v[i].vm, (unsigned long long)v,
-                     (unsigned long long)base, (unsigned long long)(base + first));
+        if (mg_ptr_inside_header(v, rb.v[i].vm, base, first, why, whysz)) {
             mg_rebases_free(&rb);
             return -1;
         }
@@ -549,15 +562,16 @@ int mg_raise_pointers(const uint8_t *buf, size_t fsize, uint64_t base, uint64_t 
     struct mg_segs segs;
     if (mg_rebases_read(buf, fsize, &rb, why, whysz) != 0) return -1;
     memset(&segs, 0, sizeof segs);
-    if (mi_wrap((uint8_t *)buf, fsize, &im) == 0) mi_each_lc(&im, mg_segs_cb, &segs);
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
+        snprintf(why, whysz, "the image does not validate");
+        mg_rebases_free(&rb);
+        return -1;
+    }
+    mi_each_lc(&im, mg_segs_cb, &segs);
     for (size_t i = 0; i < rb.s.n; i++) {
         uint64_t v = rb.v[i].value;
         int mapped = 0;
-        if (v > base && v - base < first) {
-            snprintf(why, whysz, "the pointer at %#llx names %#llx, between the header at %#llx "
-                     "and its first content at %#llx, which a grow moves apart",
-                     (unsigned long long)rb.v[i].vm, (unsigned long long)v,
-                     (unsigned long long)base, (unsigned long long)(base + first));
+        if (mg_ptr_inside_header(v, rb.v[i].vm, base, first, why, whysz)) {
             mg_rebases_free(&rb);
             return -1;
         }
