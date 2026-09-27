@@ -406,7 +406,11 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * reference to its own header (src/hdrref.h) that mhr_confirm cannot vouch
  * for; one whose LC_SYMTAB symbol table does not fit in the image; and one
  * whose rebase targets mg_rebases_read cannot read, or one of which
- * mg_header_pointers refuses. Every confirmed reference is repaired: its
+ * mg_header_pointers refuses.
+ * So is one with bytes in an instruction section that name a byte strictly
+ * between the header and its first content, which a grow moves apart,
+ * unless decoding refutes that they are code (mhr_confirm_each).
+ * Every confirmed reference is repaired: its
  * disp32 loses the grow, so it still reaches the header. So does the value
  * of each symbol that names the header (__mh_execute_header), and of each
  * rebased pointer that does. A failure partway through growing can leave the

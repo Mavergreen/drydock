@@ -1417,6 +1417,35 @@ static int mg_header_refs_ok(const uint8_t *buf, size_t fsize, uint32_t grow) {
     return -1;
 }
 
+/* mg_inside_refs_ok's verdict callback: the first candidate decoding
+ * confirms. */
+struct mg_inside_ctx { int hit; mhr_cand c; };
+static int mg_inside_cb(const mhr_cand *c, int verdict, void *ctx_) {
+    struct mg_inside_ctx *x = (struct mg_inside_ctx *)ctx_;
+    if (verdict == MHR_REFUTED) return 0;
+    x->hit = 1;
+    x->c = *c;
+    return 1;
+}
+
+/* 0 unless code names a byte strictly between the header at `base` and its
+ * first content at base + `first`, which a grow moves apart; then -1,
+ * having said so. */
+static int mg_inside_refs_ok(const uint8_t *buf, size_t fsize, uint64_t base, uint32_t first) {
+    struct mg_inside_ctx x = { 0, { 0, 0, 0, 0 } };
+    int r = mhr_confirm_each(buf, fsize, base + 1, base + first - 1, mg_inside_cb, &x);
+    if (r == MHR_CONFIRMED && !x.hit) return 0;
+    if (x.hit)
+        fprintf(stderr, "ERROR: the code at %#llx names %#llx, between the header at %#llx and "
+                        "its first content at %#llx, which a grow moves apart; refusing to grow\n",
+                (unsigned long long)x.c.addr, (unsigned long long)x.c.target,
+                (unsigned long long)base, (unsigned long long)(base + first));
+    else
+        fprintf(stderr, "ERROR: could not search the image for code that names the inside of "
+                        "its header; refusing to grow\n");
+    return -1;
+}
+
 /* The symbols that name the header: each N_SECT symbol, not a stab, whose
  * value is `base`. With `patch`, each loses `grow`, following the header
  * down; without, this checks that the symbol table lies within the image,
@@ -1623,6 +1652,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
     if (mg_header_refs_ok(buf, fsize, grow) != 0) return -1;
+    if (mg_inside_refs_ok(buf, fsize, mg_base_of(buf, fsize), insert) != 0) return -1;
     if (mg_header_symbols(buf, fsize, 0, grow, 0) != 0) return -1;
     {
         char why[256];

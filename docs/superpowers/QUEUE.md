@@ -1508,15 +1508,17 @@ a grow would move that slot's contents out from under it.
 **I1**, the one rule's strictly-inside refusal: its **data half is done**
 since `f5b186a`. A rebase value strictly inside (base, base + F), such as
 `(const char *)&_mh_execute_header + 16`, refuses the grow (none among this
-host's executables). Its **code half is not**: a
-`movl __mh_execute_header+16(%rip)` still grows silently wrong. Measured
-2026-09-26 while planning the data half, a scan for RIP-relative targets
-strictly inside (base, base + F) finds 1,060 candidates in 120 of this
-host's 1,059 x86_64 executables, and 29 in Claude Code, and decoding
-confirms none as an instruction. The same decoding confirms 151 of the 152
-exact-base candidates. Refusing every candidate it cannot confirm would stop
-119 of those executables growing, and Claude Code; refusing only confirmed
-ones changes nothing measured. It is deferred to dylib-growth M2, which
+host's executables). Its **code half is done**, in dylib-growth M2a: bytes
+in an instruction section that name a byte strictly inside (base, base + F),
+such as `movl __mh_execute_header+16(%rip)`, refuse the grow unless decoding
+refutes that they are code: the owner's ruling, 2026-09-26. Measured
+then, a scan for RIP-relative targets strictly inside (base, base + F) finds
+1,060 candidates in 120 of this host's 1,059 x86_64 executables, and 29 in
+Claude Code. Decoding confirms none. It refutes 1,057, among them the other
+immediate lengths of every exact-base reference, and all 29 of Claude
+Code's. It cannot reach 3, all in `thnucups`, which has no
+`LC_FUNCTION_STARTS` and is refused already. So nothing measured changes.
+It is deferred to dylib-growth M2, which
 decides that, with the symbol half (a symbol strictly inside: none here).
 
 Landed `549c57e..8a79c86`. 10.9's `codesign_allocate` requires `__LINKEDIT` in

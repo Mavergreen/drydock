@@ -4083,6 +4083,65 @@ static void test_confirm_each_reports_an_image_it_cannot_scan(void) {
     free(buf);
 }
 
+/* ---- the one rule's code half ----
+ * __plain holds one lea (plant_header_refs), at __plain + `at`, whose
+ * disp32 names `target`; with MG_T_FUNCSTARTS in `opts`, __plain is a
+ * function. */
+static uint8_t *build_inside_ref(uint64_t target, uint32_t at, int opts, size_t *fsize) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_PLAINSECT | opts);
+    plant_header_refs(buf, *fsize, &at, 1);
+    struct section_64 *pl = find_section_struct(buf, *fsize, "__plain");
+    if (pl) hr_plant(buf + pl->offset, HR_PLAIN_VA, at + 2, 0x05, 0, target);
+    return buf;
+}
+
+/* A grow moves the header's bytes away from its first content, so code that
+ * names one of them names nothing after it. */
+static void test_grow_refuses_code_that_names_the_inside_of_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_inside_ref(HR_BASE + 1, 0, MG_T_FUNCSTARTS, &fsize);
+    check_grow_refuses_header_refs("code naming base + 1", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000001, between the header at 0x100000000 and "
+        "its first content at 0x100001000, which a grow moves apart; refusing to grow");
+    buf = build_inside_ref(HR_BASE + 0xfff, 0, MG_T_FUNCSTARTS, &fsize);
+    check_grow_refuses_header_refs("code naming base + F - 1", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000fff, between the header");
+}
+
+static void test_grow_leaves_code_that_names_the_first_content(void) {
+    size_t fsize;
+    uint8_t *buf = build_inside_ref(HR_BASE + 0x1000, 0, MG_T_FUNCSTARTS, &fsize);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && refs_to(buf, fsize, HR_BASE + 0x1000) == 1,
+          "inside: code naming the first content grows, and still names it (got %d)", r);
+    free(buf);
+}
+
+/* Bytes in the header's range that decoding does not confirm as code: a
+ * lookalike it refutes grows; a lea it cannot reach past an EVEX prefix,
+ * and one with no LC_FUNCTION_STARTS to decode from, refuse. */
+static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_inside_ref(HR_BASE + 16, 0, MG_T_FUNCSTARTS, &fsize);
+    struct section_64 *pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) buf[pl->offset + 1] = 0xb8;                     /* mov $imm32, %eax */
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "inside: a lookalike decoding refutes grows (got %d)", r);
+    free(buf);
+
+    buf = build_inside_ref(HR_BASE + 16, 4, MG_T_FUNCSTARTS, &fsize);
+    pl = find_section_struct(buf, fsize, "__plain");
+    if (pl) buf[pl->offset] = 0x62;                         /* EVEX: not decoded */
+    check_grow_refuses_header_refs("a lea decoding cannot reach", buf, fsize,
+        "ERROR: the code at 0x100001807 names 0x100000010, between the header at 0x100000000 and "
+        "its first content at 0x100001000, which a grow moves apart; refusing to grow");
+
+    buf = build_inside_ref(HR_BASE + 16, 0, 0, &fsize);
+    check_grow_refuses_header_refs("a lea with no function starts to decode from", buf, fsize,
+        "ERROR: the code at 0x100001803 names 0x100000010, between the header");
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -4219,6 +4278,9 @@ int main(void) {
     test_confirm_each_resumes_the_sweep_across_candidates();
     test_confirm_each_stops_when_asked();
     test_confirm_each_reports_an_image_it_cannot_scan();
+    test_grow_refuses_code_that_names_the_inside_of_the_header();
+    test_grow_leaves_code_that_names_the_first_content();
+    test_grow_decides_what_decoding_does_not_confirm_inside_the_header();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
