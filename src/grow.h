@@ -181,6 +181,7 @@ int mg_trie_scan(const uint8_t *trie, uint32_t size, uint32_t off, int depth);
  * LC_FUNCTION_STARTS. */
 #define MG_K_ANY  0
 #define MG_K_FUNC 1
+#define MG_K_ABS  2   /* an absolute export: its value, not an offset from the base */
 
 /* Every rebase target of an image, in the order its rebase opcodes name
  * them (src/rebase.h): each slot, where its 8 bytes lie in the file (`at`)
@@ -407,6 +408,9 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * for; one whose LC_SYMTAB symbol table does not fit in the image; and one
  * whose rebase targets mg_rebases_read cannot read, or one of which
  * mg_header_pointers refuses.
+ * So is one with an N_SECT symbol, not a stab, or an export, not an
+ * absolute one, that names a byte strictly between the header and its first
+ * content.
  * So is one with bytes in an instruction section that name a byte strictly
  * between the header and its first content, which a grow moves apart,
  * unless decoding refutes that they are code (mhr_confirm_each).

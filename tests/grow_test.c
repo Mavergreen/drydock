@@ -4142,6 +4142,84 @@ static void test_grow_decides_what_decoding_does_not_confirm_inside_the_header(v
         "ERROR: the code at 0x100001803 names 0x100000010, between the header");
 }
 
+/* ---- the one rule's symbol and export halves ---- */
+/* MG_T_SYMTAB's string table is the 8 bytes at 6720, or at `stroff`; the
+ * byte after it is not part of it. */
+static void check_grow_refuses_symbol(uint64_t value, uint32_t strx, uint32_t stroff,
+                                      const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    memcpy(buf + 6720, "\0_in\0\0xyz", 9);
+    buf[fsize - 3] = 'q';
+    ((struct symtab_command *)find_lc(buf, fsize, LC_SYMTAB))->stroff = stroff;
+    hsym(buf, fsize, 1)->n_value = value;
+    hsym(buf, fsize, 1)->n_un.n_strx = strx;
+    check_grow_refuses_header_refs("a symbol inside the header", buf, fsize, needle);
+}
+
+static void test_grow_refuses_a_symbol_inside_the_header(void) {
+    check_grow_refuses_symbol(HR_BASE + 1, 1, 6720,
+        "ERROR: symbol 1, \"_in\", names 0x100000001, between the header at 0x100000000 and its "
+        "first content at 0x100001000, which a grow moves apart; refusing to grow");
+    check_grow_refuses_symbol(HR_BASE + 0xfff, 1, 6720, "ERROR: symbol 1, \"_in\", names 0x100000fff");
+    check_grow_refuses_symbol(HR_BASE + 16, 8, 6720, "ERROR: symbol 1, \"\", names 0x100000010");
+    check_grow_refuses_symbol(HR_BASE + 16, 6, 6720, "ERROR: symbol 1, \"xy\", names 0x100000010");
+    check_grow_refuses_symbol(HR_BASE + 16, 1, 8192 - 4, "ERROR: symbol 1, \"\", names 0x100000010");
+}
+
+/* A stab or an absolute symbol there is not an address a grow moves, and
+ * one at the first content names content. */
+static void test_grow_leaves_other_symbols_that_name_the_inside_of_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    hsym(buf, fsize, 1)->n_value = HR_BASE + 0x1000;
+    hsym(buf, fsize, 2)->n_value = HR_BASE + 16;       /* N_BNSYM */
+    hsym(buf, fsize, 3)->n_value = HR_BASE + 16;       /* N_ABS */
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && hsym(buf, fsize, 1)->n_value == HR_BASE + 0x1000 &&
+          hsym(buf, fsize, 2)->n_value == HR_BASE + 16 && hsym(buf, fsize, 3)->n_value == HR_BASE + 16,
+          "symbols: a stab and an absolute symbol inside the header, and one at its first "
+          "content, grow unchanged (got %d)", r);
+    free(buf);
+}
+
+/* MG_T_TRIE's node A, its address `a` in its two bytes, and `flags`. */
+static uint8_t *build_export_at(uint64_t a, uint8_t flags, size_t *fsize) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, MG_T_TRIE);
+    buf[TRIE_OFF + MG_TRIE_A_FLAGS] = flags;
+    mu_encode_fixed(buf + TRIE_OFF + MG_TRIE_A_ADDR, a, 2);
+    return buf;
+}
+
+static void test_grow_refuses_an_export_inside_the_header(void) {
+    size_t fsize;
+    uint8_t *buf = build_export_at(1, 0, &fsize);
+    check_grow_refuses_header_refs("an export at offset 1", buf, fsize,
+        "ERROR: an export names 0x100000001, between the header at 0x100000000 and its first "
+        "content at 0x100001000, which a grow moves apart; refusing to grow");
+    buf = build_export_at(0xfff, 0, &fsize);
+    check_grow_refuses_header_refs("an export at offset F - 1", buf, fsize,
+        "ERROR: an export names 0x100000fff, between the header");
+}
+
+/* MG_T_TRIE's trie, with node A absolute and valued base + 16: a value, so
+ * the grow leaves it alone. */
+static void test_grow_leaves_an_absolute_export_inside_the_header(void) {
+    static const uint8_t trie[20] = {
+        0x00, 0x02, 'A', 0x00, 8, 'B', 0x00, 16,
+        0x06, 0x02, 0x90, 0x80, 0x80, 0x80, 0x10, 0x00,     /* A: absolute, 0x100000010 */
+        0x02, 0x00, 0x00, 0x00                              /* B: 0 */
+    };
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, MG_T_TRIE);
+    memcpy(buf + TRIE_OFF, trie, sizeof trie);
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->export_size = sizeof trie;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "an absolute export valued base + 16 grows (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -4281,6 +4359,10 @@ int main(void) {
     test_grow_refuses_code_that_names_the_inside_of_the_header();
     test_grow_leaves_code_that_names_the_first_content();
     test_grow_decides_what_decoding_does_not_confirm_inside_the_header();
+    test_grow_refuses_a_symbol_inside_the_header();
+    test_grow_leaves_other_symbols_that_name_the_inside_of_the_header();
+    test_grow_refuses_an_export_inside_the_header();
+    test_grow_leaves_an_absolute_export_inside_the_header();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
     printf("macho_grow_test: all cases pass\n");
     return 0;
