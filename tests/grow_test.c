@@ -4687,15 +4687,17 @@ static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsiz
     free(buf);
 }
 
+/* Each image carries split info (DY_SPLIT), which a raise drops once it
+ * will go ahead: so every refusal is also shown to leave it in place. */
 static void test_grow_refuses_what_it_cannot_raise(void) {
     for (size_t i = 0; i < sizeof dy_unraisable / sizeof dy_unraisable[0]; i++) {
         size_t fsize;
-        uint8_t *buf = build_dylib(&fsize, 0);
+        uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
         dy_unraisable[i].poke(buf);
         check_grow_refuses_raise(dy_unraisable[i].what, buf, fsize, dy_unraisable[i].why);
     }
     size_t fsize;
-    uint8_t *buf = build_dylib_at(0x10000000, &fsize, 0);
+    uint8_t *buf = build_dylib_at(0x10000000, &fsize, DY_SPLIT);
     dy_below(buf);
     check_grow_refuses_raise("a section below the first content, above base 0", buf, fsize,
         "ERROR: section __DATA,__bss lies at 0x10000fff, below the first content at 0x10001000; "
@@ -5161,10 +5163,87 @@ static void test_raise_drops_every_split_info(void) {
     size_t fsize;
     uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
     hr_add_lc(buf, LC_SEGMENT_SPLIT_INFO, 0x3098, "\x5a\x5a\x5a\x5a\x5a\x5a\x5a\x5a", 8);
+    struct mach_header_64 h0 = *(struct mach_header_64 *)buf;
     int r = mg_grow_header(&buf, &fsize, 0x1000);
-    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO),
-          "split info: a raise deletes both of two (got %d)", r);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO) && h->ncmds == h0.ncmds - 2 &&
+          h->sizeofcmds == h0.sizeofcmds - 2 * sizeof(struct linkedit_data_command),
+          "split info: a raise deletes both of two (got %d, %u commands, %u bytes, from %u and %u)",
+          r, h->ncmds, h->sizeofcmds, h0.ncmds, h0.sizeofcmds);
     free(buf);
+}
+
+/* Check 3 expects the load commands a raise makes from them as they were
+ * before the split-info drop, which it restates for itself: the snapshot's
+ * copy of the image is taken after the drop, and holds whatever the drop
+ * did. Each planted change here lands in both the raised image and that
+ * copy, as a drop that did it would leave them. */
+static void dy_flip_reexports(uint8_t *buf, size_t fsize) {
+    (void)fsize;
+    ((struct mach_header_64 *)buf)->flags ^= MH_NO_REEXPORTED_DYLIBS;
+}
+static void dy_scribble_last(uint8_t *buf, size_t fsize) {
+    struct routines_command_64 *rt = (struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64);
+    memset(&rt->reserved6, 0x41, 4);
+}
+static void dy_as_split(uint8_t *buf, size_t fsize) {
+    ((struct load_command *)find_lc(buf, fsize, LC_DYLIB_CODE_SIGN_DRS))->cmd = LC_SEGMENT_SPLIT_INFO;
+}
+static void test_verify_watches_the_split_info_drop(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    check_verify_rejects_raise_of("the header's flags changed with the snapshot's", buf, fsize,
+        0x1000, dy_flip_reexports, dy_flip_reexports,
+        "ERROR: verify FAILED -- the grown image's header, or its size (17152 bytes), is not the "
+        "original's with 4096 more; refusing.");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    check_verify_rejects_raise_of("a load command changed with the snapshot's", buf, fsize,
+        0x1000, dy_scribble_last, dy_scribble_last,
+        "ERROR: verify FAILED -- load-command byte ");
+    /* Split info the raise kept: LC_DYLIB_CODE_SIGN_DRS has its shape and
+     * is kept, and is split info again in the raised image and the
+     * snapshot's copy of the image as it was. */
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | DY_SPLIT);
+    ((struct load_command *)find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO))->cmd = LC_DYLIB_CODE_SIGN_DRS;
+    check_verify_rejects_raise_of("split info the raise kept", buf, fsize, 0x1000, dy_as_split,
+        dy_as_split, "ERROR: verify FAILED -- the raised image carries LC_SEGMENT_SPLIT_INFO, "
+        "whose offsets a raise leaves stale; refusing.");
+
+    /* As mg_grow_header has it: the snapshot of the image after the drop
+     * (build_dylib's without DY_SPLIT, with the payload the drop leaves),
+     * told the load commands from before it. The bytes the dropped command
+     * held must be zero, whatever the snapshot's copy says. */
+    size_t n;
+    uint8_t *pre = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | DY_SPLIT);
+    uint8_t *post = build_dylib_at(DY_RAISED_AT, &n, DY_ALL);
+    memset(post + 0x3098, 0x5a, 8);
+    size_t had = sizeof(struct mach_header_64) + ((struct mach_header_64 *)pre)->sizeofcmds;
+    size_t lcend = sizeof(struct mach_header_64) + ((struct mach_header_64 *)post)->sizeofcmds;
+    uint8_t *lcs = (uint8_t *)malloc(had);
+    memcpy(lcs, pre, had);
+    mg_snapshot snap;
+    if (mg_snapshot_take(post, n, &snap) != 0 || mg_grow_header(&pre, &fsize, 0x1000) != 0) {
+        CHECK(0, "split info: snapshot and raise");
+        free(lcs);
+    } else {
+        free(snap.lcs);
+        snap.lcs = lcs;
+        CHECK(mg_verify(pre, fsize, &snap) == 0 && had == lcend + 16,
+              "split info: verify accepts the raise that dropped it, told the commands before it");
+        pre[lcend + 4] = snap.old[lcend + 4] = 0x77;
+        int r;
+        verify_snap = &snap;
+        char *err = stderr_during(verify_thunk, &pre, &fsize, 0, &r);
+        char want[128];
+        snprintf(want, sizeof want, "ERROR: verify FAILED -- header pad byte %#zx holds 0x77 after "
+                 "the grow, and must hold 0; refusing.", lcend + 4);
+        CHECK(r == -1 && strstr(err, want), "verify REJECTS a byte the dropped command held, left "
+              "set in the snapshot's copy too, saying '%s' (got %d):\n%s", want, r, err);
+        free(err);
+    }
+    mg_snapshot_free(&snap);
+    free(pre);
+    free(post);
 }
 
 static void test_lowering_refuses_split_info(void) {
@@ -5836,6 +5915,7 @@ int main(void) {
     test_verify_watches_the_stabs();
     test_raise_drops_split_info();
     test_raise_drops_every_split_info();
+    test_verify_watches_the_split_info_drop();
     test_lowering_refuses_split_info();
     test_ensure_pad_announces_dropped_split_info();
     test_grow_takes_an_upward_dylib();

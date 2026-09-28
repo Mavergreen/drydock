@@ -127,7 +127,8 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     else
         fprintf(stderr, "image base %#llx -> %#llx", (unsigned long long)base_before,
                 (unsigned long long)mg_base_of(*pbuf, *pfsize));
-    if (split) fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
+    if (split && !mg_has_cmd(*pbuf, *pfsize, LC_SEGMENT_SPLIT_INFO))
+        fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
     int64_t repaired = (refs > 0 ? refs : 0) + (ptrs > 0 ? ptrs : 0);
     if (repaired > 0)
         fprintf(stderr, "; repaired %lld reference%s to the header", (long long)repaired,
@@ -750,6 +751,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->kinds = NULL;
     s->old = NULL;
     s->oldsize = 0;
+    s->lcs = NULL;
     s->oracles = 0;
     s->first = mg_first_sect_off(buf, fsize);
     s->raise = h->filetype == MH_DYLIB || h->filetype == MH_BUNDLE;
@@ -772,11 +774,13 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
         s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
     }
     if (!s->raise) return 0;
-    if (!(s->old = (uint8_t *)malloc(fsize + 1))) {
+    size_t lcend = sizeof *h + h->sizeofcmds;
+    if (!(s->old = (uint8_t *)malloc(fsize + 1)) || !(s->lcs = (uint8_t *)malloc(lcend))) {
         mg_snapshot_free(s);
         return -1;
     }
     memcpy(s->old, buf, fsize);
+    memcpy(s->lcs, buf, lcend);
     s->oldsize = fsize;
     s->oracles = mg_oracles(buf, fsize, 0, why, sizeof why);
     return 0;
@@ -790,6 +794,7 @@ void mg_snapshot_free(mg_snapshot *s) {
     free(s->symtype); s->symtype = NULL;
     free(s->symaddr); s->symaddr = NULL; s->nsyms = 0;
     free(s->old); s->old = NULL; s->oldsize = 0;
+    free(s->lcs); s->lcs = NULL;
     mg_rebases_free(&s->rb);
 }
 
@@ -1477,20 +1482,43 @@ unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, 
     return holds;
 }
 
+/* Deletes every LC_SEGMENT_SPLIT_INFO from the header and load commands at
+ * `lc`, as a raise must, restated apart from the raise's own drop; returns
+ * where the load commands end now. */
+static size_t mg_expect_no_split_info(uint8_t *lc) {
+    struct mach_header_64 *h = (struct mach_header_64 *)lc;
+    size_t end = sizeof *h + h->sizeofcmds, at = sizeof *h;
+    for (uint32_t i = 0, n = h->ncmds; i < n && end - at >= sizeof(struct load_command); i++) {
+        uint32_t size = ((const struct load_command *)(lc + at))->cmdsize;
+        if (size < sizeof(struct load_command) || size > end - at) break;
+        if (((const struct load_command *)(lc + at))->cmd != LC_SEGMENT_SPLIT_INFO) {
+            at += size;
+            continue;
+        }
+        memmove(lc + at, lc + at + size, end - at - size);
+        end -= size;
+        h->ncmds--;
+        h->sizeofcmds -= size;
+    }
+    return end;
+}
+
 /* Check 3 of a raise (see mg_verify). */
 static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
                            uint64_t grow) {
     const uint8_t *old = before->old;
-    size_t n = before->oldsize, lcend = sizeof(struct mach_header_64) +
-                                        ((const struct mach_header_64 *)old)->sizeofcmds;
+    size_t n = before->oldsize, had = sizeof(struct mach_header_64) +
+                                      ((const struct mach_header_64 *)before->lcs)->sizeofcmds;
     uint32_t first = before->first, toff, tsize;
     int rc = -1, appended = fsize > n + grow, rebuilt = -1;
-    uint8_t *want = (uint8_t *)malloc(lcend), *mask = (uint8_t *)calloc(n + 1, 1);
+    uint8_t *want = (uint8_t *)malloc(had), *mask = (uint8_t *)calloc(n + 1, 1);
     uint8_t *raised = (uint8_t *)malloc(n + 1);
+    size_t lcend = 0;
     mi_image wim, oim, bim;
     struct mg_expect_ctx x = { first, (uint32_t)grow };
     struct mg_exempt_ctx e = { old, n, mask };
     if (want && mask && raised) {
+        lcend = mg_expect_no_split_info(memcpy(want, before->lcs, had));
         /* What compact unwind and an export trie patched in place become. */
         memcpy(raised, old, n);
         rebuilt = mg_trie_walk(raised, n, (uint32_t)grow, 0, 0, NULL, NULL, NULL, 0);
@@ -1498,16 +1526,23 @@ static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *
             mg_unwind_walk(raised, n, (uint32_t)grow, 1, 0, NULL, NULL, NULL, 0))
             rebuilt = -1;
     }
-    if (fsize < n + grow || (appended && rebuilt == 0) ||
-        memcmp(old, buf, sizeof(struct mach_header_64)) != 0) {
+    if (mg_has_cmd((uint8_t *)buf, fsize, LC_SEGMENT_SPLIT_INFO)) {
+        fprintf(stderr, "ERROR: verify FAILED -- the raised image carries LC_SEGMENT_SPLIT_INFO, "
+                        "whose offsets a raise leaves stale; refusing.\n");
+        goto out;
+    }
+    if (lcend && (fsize < n + grow || (appended && rebuilt == 0) ||
+                  memcmp(want, buf, sizeof(struct mach_header_64)) != 0)) {
         fprintf(stderr, "ERROR: verify FAILED -- the grown image's header, or its size (%zu bytes), "
                         "is not the original's with %llu more; refusing.\n", fsize,
                 (unsigned long long)grow);
         goto out;
     }
-    if (rebuilt < 0 || mi_wrap(memcpy(want, old, lcend), lcend, &wim) != 0 ||
+    if (!lcend || rebuilt < 0 || mi_wrap(want, lcend, &wim) != 0 ||
         mi_wrap((uint8_t *)old, n, &oim) != 0 || mi_wrap((uint8_t *)buf, fsize, &bim) != 0) {
-        fprintf(stderr, "ERROR: verify FAILED -- could not read the image as it was; refusing.\n");
+        fprintf(stderr, "ERROR: verify FAILED -- could not work out what the raise should make of "
+                        "the image as it was (out of memory, or the image, or its compact unwind "
+                        "or export trie, does not read); refusing.\n");
         goto out;
     }
     if (mg_verify_unwind_words(&oim, raised, (uint32_t)grow) != 0 ||
@@ -1523,7 +1558,7 @@ static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *
         goto out;
     }
     for (size_t i = lcend; i < first + grow; i++) {
-        uint8_t w = i < first ? old[i] : 0;
+        uint8_t w = i >= had && i < first ? old[i] : 0;
         if (buf[i] == w) continue;
         fprintf(stderr, "ERROR: verify FAILED -- header pad byte %#zx holds %#x after the grow, "
                         "and must hold %#x; refusing.\n", i, buf[i], w);
@@ -2846,7 +2881,18 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    if (raise) mg_drop_split_info(buf);
+    /* Check 3 expects the load commands from these, as they were before the
+     * drop, so that it sees what the drop did. */
+    uint8_t *lcs = NULL;
+    if (raise) {
+        if (!(lcs = (uint8_t *)malloc(lc_end))) {
+            fprintf(stderr, "ERROR: out of memory copying the load commands; refusing to grow\n");
+            free(mg_new_trie);
+            return -1;
+        }
+        memcpy(lcs, buf, lc_end);
+        mg_drop_split_info(buf);
+    }
 
     /* Phase 4 prep: snapshot every base-relative resolved address BEFORE touching
      * a byte, so the verify at the end has something to prove against. If we
@@ -2856,8 +2902,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     if (mg_snapshot_take(buf, fsize, &snap) != 0) {
         fprintf(stderr, "ERROR: could not snapshot the base-relative structures; "
                         "refusing to grow without a way to verify the result\n");
+        free(lcs);
         free(mg_new_trie);
         return -1;
+    }
+    if (raise) {
+        free(snap.lcs);
+        snap.lcs = lcs;
     }
 
     /* Insert `grow` zero bytes after the load commands, shifting file data down. */

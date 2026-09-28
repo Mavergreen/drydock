@@ -264,6 +264,7 @@ typedef struct {
     int raise;
     uint8_t *old;        /* a raise's image as it was, for its byte check */
     size_t oldsize;
+    uint8_t *lcs;        /* a raise's header and load commands before the split-info drop */
     unsigned oracles;    /* the mg_oracles that held of it */
     mhr_cand *refs;
     uint32_t nrefs;
@@ -323,52 +324,65 @@ void mg_snapshot_free(mg_snapshot *s);
 #define MG_OR_ALL     15u
 unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);
 
-/* The grow G is how far the first section moved; a raise moves every
- * content address by it, a lowering none.
+/* Whether `buf` is what the grow should have made of the image `before`
+ * was taken of. The grow G is how far the first section moved. A raise
+ * moves every content address by G; a lowering moves none. Returns 0 when
+ * every check below holds, else -1 with a message naming the first that
+ * does not.
  *
- * The checks this and the top-of-file comment name by number: check 1, the
- * addresses mg_collect finds and the offsets mg_each_fileoff walks resolve
- * where they did before the grow, moved by that; check 2, every symbol that
- * holds a moved address (mg_symtab) and every rebase target
- * (mg_rebases_read) names what it named, moved; check 3, a raise only, see
- * below; check 4, every mg_oracles bit that held of the image before still
- * holds after; check 5, every reference to the header mhr_scan found still
- * addresses the base as it is.
+ * The checks, numbered as here and in the top-of-file comment:
  *
- * 0 if every base-relative structure
- * and every mg_each_fileoff offset resolves where it did before the grow,
- * moved by that (an absolute export not at all); no two segments overlap in
- * memory; no code addresses the base as it is plus G, where an unrepaired
- * reference to the header would; every reference to the header the snapshot
- * recorded addresses the base as it is; each symbol that holds an address a
- * grow moves (mg_sym_address: an N_SECT symbol, not a stab; on a raise,
- * also a stab that does), and each rebase target's value, names the base as
- * it is if it named the header, and else what it named, moved; and the
- * rebase targets are the same
- * slots, moved. On a raise, also (check 3, which shares with the raise
- * ml_each_off, the snapshot's rebase and reference worklists rb and refs,
- * mg_raised_uuid, mg_trie_walk and mg_unwind_walk, and so trusts them but
- * for what it asks below of the UUID, the export trie and compact unwind):
- * the header is the same; each load command is byte for byte what the raise
- * makes of the old one, its addresses and file offsets moved by rules
- * restated apart from the raise's, its UUID replaced by mg_raised_uuid's,
- * which must also differ from the old one, be version 4 and be RFC 4122's
- * variant, and an export trie rebuilt too wide for its place located at
- * __LINKEDIT's old end, moved, and running to the end of the file; the pad
- * the old one had is as it was and the inserted G bytes are zero; an export
- * trie patched in place, and compact unwind, are what mg_trie_walk and
- * mg_unwind_walk make of a copy of the old image, and that copy's compact
- * unwind differs from the old only by G added to 32-bit words; the export
- * trie, patched or rebuilt, holds the old one's exports, each moved, as
- * mexp_trie_walk reads both, which neither walker nor mt_trie_rebuild uses;
- * the checks above watch the rest of what the raise moves; and from the
- * first section on, the file is the old one G bytes further on, except
- * what the raise moves there: the rebased pointers, the repaired code, the
- * symbols' values, the leading function start, the export trie, and the
- * offsets in data in code, compact
- * unwind and S_INIT_FUNC_OFFSETS; and each mg_oracles that held of the image
- * before holds after. -1 (with a message naming the first failure)
- * otherwise. */
+ * Check 1. Every address mg_collect finds, and every offset mg_each_fileoff
+ * walks, resolves where it did before the grow, moved by the route's delta.
+ * An absolute export does not move.
+ *
+ * Check 2. Every symbol that holds an address a grow moves (mg_sym_address:
+ * an N_SECT symbol, not a stab; on a raise, also a stab that holds one)
+ * keeps its type and names what it named, moved. The rebase targets are the
+ * same slots, in the same order, moved, and each holds what it held, moved.
+ * A symbol or pointer that named the header names the base as it is now.
+ *
+ * Check 3, a raise only. See below.
+ *
+ * Check 4, a raise only. Each mg_oracles bit that held of the image before
+ * holds after.
+ *
+ * Check 5. No code addresses the base as it is plus G, where an unrepaired
+ * reference to the header would. Every reference to the header that
+ * mhr_scan found before addresses the base as it is now.
+ *
+ * Besides these, no two segments may overlap in memory.
+ *
+ * Check 3 compares the raised image with the old one byte by byte.
+ * - It takes the header and load commands from before the split-info drop
+ *   (the snapshot's lcs), and deletes each LC_SEGMENT_SPLIT_INFO from them
+ *   itself, so that it sees whatever the drop did. None may remain.
+ * - The header is that one, with ncmds and sizeofcmds less the deleted
+ *   commands.
+ * - Each load command is byte for byte what the raise makes of the old
+ *   one. Its addresses and file offsets move by rules restated apart from
+ *   the raise's. Its UUID is mg_raised_uuid's, which must also differ from
+ *   the old one, be version 4, and be RFC 4122's variant.
+ * - An export trie rebuilt too wide for its place lies at __LINKEDIT's old
+ *   end, moved, and runs to the end of the file.
+ * - The bytes the deleted commands held are zero. The rest of the old pad
+ *   is as it was, and the inserted G bytes are zero.
+ * - An export trie patched in place, and compact unwind, are what
+ *   mg_trie_walk and mg_unwind_walk make of a copy of the old image. That
+ *   copy's compact unwind differs from the old only by G added to 32-bit
+ *   words.
+ * - The export trie, patched or rebuilt, holds the old one's exports, each
+ *   moved, as mexp_trie_walk reads both. Neither walker, nor
+ *   mt_trie_rebuild, uses mexp_trie_walk.
+ * - From the first section on, the file is the old one G bytes further on,
+ *   except what the raise moves there: the rebased pointers, the repaired
+ *   code, the symbols' values, the leading function start, the export trie,
+ *   and the offsets in data in code, compact unwind and
+ *   S_INIT_FUNC_OFFSETS. The other checks watch those.
+ * Check 3 shares with the raise ml_each_off, the snapshot's rebase and
+ * reference worklists (rb and refs), mg_raised_uuid, mg_trie_walk and
+ * mg_unwind_walk. So it trusts them, except for what it asks above of the
+ * UUID, the export trie and compact unwind. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 
