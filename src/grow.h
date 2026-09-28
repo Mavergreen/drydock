@@ -50,9 +50,12 @@
  * drops is neither moved nor compared. What guards those decoders is their
  * tests in tests/grow_test.c and, for the rebase opcodes alone (mrb_decode,
  * under mg_rebases_read), tests/rebase_oracle_test.sh's comparison with
- * dyldinfo over 10.9's /usr/lib. mg_oracles (check 4) and mg_plausible read
- * what they check with code of their own, and catch some such misses: an
- * initializer, a lazy pointer, an export or an LSDA left where it was.
+ * dyldinfo over 10.9's /usr/lib. mg_oracles (check 4) reads what it checks
+ * with code of its own, and catches some such misses: an initializer, a
+ * lazy pointer, an export or an LSDA left where it was. mg_plausible does
+ * not: it collects its entries through the same mg_collect walkers the
+ * raise patches through, then checks them against LC_FUNCTION_STARTS, so it
+ * never sees an entry a walker missed.
  */
 #ifndef DRYDOCK_GROW_H
 #define DRYDOCK_GROW_H
@@ -298,8 +301,8 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s);
 void mg_snapshot_free(mg_snapshot *s);
 
 
-/* Four things true of an image ld64 linked, whatever a grow moved (spec:
- * check 4): every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
+/* Four things true of an image ld64 linked, whatever a grow moved
+ * (check 4): every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
  * value, and LC_ROUTINES_64's initializer, is an LC_FUNCTION_STARTS start
  * (vacuous with no starts); every __la_symbol_ptr value lies in
  * __TEXT,__stub_helper; every regular export, at the base plus its trie
@@ -308,10 +311,11 @@ void mg_snapshot_free(mg_snapshot *s);
  * non-lazy pointer section (__got, __nl_symbol_ptr), and every LSDA lies in
  * __TEXT,__gcc_except_tab. Each reads what it checks itself: the sections'
  * values, the export trie's names, __unwind_info. It shares with the grow
- * only mi_wrap's view of the load commands, mg_funcstarts_decode and
- * mg_find_trie, and none of the walkers that move what it reads. Returns the
- * MG_OR_ bits of those that hold, and sets `why` for the first that does not
- * among `want`. */
+ * only mi_wrap's view of the load commands, mi_image_base, mg_funcstarts_decode,
+ * mg_find_trie, mu_decode, MT_TRIE_MAX_DEPTH and the MG_EXPORT_* masks, and
+ * none of the walkers that move what it reads. Returns the MG_OR_ bits of
+ * those that hold, and sets `why` for the first that does not among
+ * `want`. */
 #define MG_OR_INITS   1u
 #define MG_OR_LAZY    2u
 #define MG_OR_EXPORTS 4u
@@ -320,7 +324,18 @@ void mg_snapshot_free(mg_snapshot *s);
 unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);
 
 /* The grow G is how far the first section moved; a raise moves every
- * content address by it, a lowering none. 0 if every base-relative structure
+ * content address by it, a lowering none.
+ *
+ * The checks this and the top-of-file comment name by number: check 1, the
+ * addresses mg_collect finds and the offsets mg_each_fileoff walks resolve
+ * where they did before the grow, moved by that; check 2, every symbol that
+ * holds a moved address (mg_symtab) and every rebase target
+ * (mg_rebases_read) names what it named, moved; check 3, a raise only, see
+ * below; check 4, every mg_oracles bit that held of the image before still
+ * holds after; check 5, every reference to the header mhr_scan found still
+ * addresses the base as it is.
+ *
+ * 0 if every base-relative structure
  * and every mg_each_fileoff offset resolves where it did before the grow,
  * moved by that (an absolute export not at all); no two segments overlap in
  * memory; no code addresses the base as it is plus G, where an unrepaired

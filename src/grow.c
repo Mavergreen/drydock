@@ -1339,7 +1339,9 @@ static int mg_or_by_name(const void *a, const void *b) {
 }
 
 /* 0 when every regular export whose name an N_SECT | N_EXT symbol has names
- * that symbol's address; else 1, with `why` set; -1 when it cannot tell. */
+ * that symbol's address; else 1, with `why` set; -1 when it cannot tell. It
+ * skips thread-local and stub-and-resolver exports, which the raise moves
+ * and check 3's export compare covers. */
 static int mg_or_exports(const uint8_t *buf, size_t fsize, uint64_t base,
                          const struct symtab_command *st, char *why, size_t whysz) {
     uint32_t off, size;
