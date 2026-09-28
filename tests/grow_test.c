@@ -4978,17 +4978,19 @@ static void test_raise_keeps_an_offset_no_segment_maps(void) {
 /* Verification, on the raise: each check_verify_rejects_raise undoes one
  * thing a correct raise did. */
 typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
-static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo undo,
-                                            const char *needle) {
-    size_t fsize;
-    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
+/* `unsnap`, where given, changes the snapshot's copy of the image as it was
+ * instead, so that only what reads that copy sees it. */
+static void check_verify_rejects_raise_of(const char *what, uint8_t *buf, size_t fsize,
+                                          uint32_t grow_req, dy_undo undo, dy_undo unsnap,
+                                          const char *needle) {
     mg_snapshot snap;
     if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "%s: snapshot", what); free(buf); return; }
-    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+    if (mg_grow_header(&buf, &fsize, grow_req) != 0) {
         CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
     }
     CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the raise as made", what);
-    undo(buf, fsize);
+    if (undo) undo(buf, fsize);
+    if (unsnap) unsnap(snap.old, snap.oldsize);
     int r;
     verify_snap = &snap;
     char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
@@ -4997,6 +4999,12 @@ static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo 
     free(err);
     mg_snapshot_free(&snap);
     free(buf);
+}
+static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo undo,
+                                            const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
+    check_verify_rejects_raise_of(what, buf, fsize, 0x1000, undo, NULL, needle);
 }
 static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
     check_verify_rejects_raise_with(what, 0, undo, needle);
@@ -5323,7 +5331,7 @@ static void test_verify_watches_the_raised_bytes(void) {
     check_verify_rejects_raise("LC_ROUTINES_64 off by one", dy_misroute,
         "ERROR: verify FAILED -- load-command byte ");
     check_verify_rejects_raise("the UUID kept", dy_keep_uuid,
-        "ERROR: verify FAILED -- load-command byte ");
+        "ERROR: verify FAILED -- the raised image's UUID is the original's; refusing.");
     check_verify_rejects_raise("a byte of the inserted pad set", dy_dirty_pad,
         "ERROR: verify FAILED -- header pad byte 0x1010 holds 0x1 after the grow, and must hold "
         "0; refusing.");
@@ -5365,6 +5373,180 @@ static void test_raise_moves_the_initializer_offsets(void) {
     memcpy(&v, buf + 0x2120, sizeof v);
     CHECK(v == 0x2010, "raise: the initializer offset is %#x, want 0x2010", v);
     free(buf);
+}
+
+/* ---- verification: what a raise makes of compact unwind, the export trie,
+ * __LINKEDIT and the UUID ----
+ * One page moves the export trie in place. Two widen _d, and the trie is
+ * rebuilt: appended past __LINKEDIT, or, from dy_rich_trie, in its place. */
+
+/* _f1 (with a spare byte after its address), _f2 (a stub at 0x1100, its
+ * resolver f2), _d, and _r (a re-export of libSystem's _x): 45 bytes, as its
+ * rebuild two pages up is, without the spare byte and with _d wider. */
+static void dy_rich_trie(uint8_t *buf) {
+    static const uint8_t trie[45] = {
+        0x00, 0x04, '_', 'f', '1', 0, 20, '_', 'f', '2', 0, 26, '_', 'd', 0, 33, '_', 'r', 0, 38,
+        0x04, 0x00, 0x80, 0x20, 0x00, 0x00,
+        0x05, 0x10, 0x80, 0x22, 0x90, 0x20, 0x00,
+        0x03, 0x00, 0xa0, 0x40, 0x00,
+        0x05, 0x08, 0x01, '_', 'x', 0x00, 0x00 };
+    memcpy(buf + 0x3040, trie, sizeof trie);
+    ((struct dyld_info_command *)dy_find(buf, LC_DYLD_INFO_ONLY))->export_size = sizeof trie;
+}
+static void check_verify_rejects_trie_raise(const char *what, int rich, dy_undo undo,
+                                            dy_undo unsnap, const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    if (rich) dy_rich_trie(buf);
+    check_verify_rejects_raise_of(what, buf, fsize, 0x1001, undo, unsnap, needle);
+}
+
+static uint8_t *dy_trie(uint8_t *buf, size_t fsize) {
+    uint32_t off = 0, size = 0;
+    mg_find_trie(buf, fsize, &off, &size);
+    return buf + off;
+}
+static void dy_recommon(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2804] ^= 1; }
+static void dy_old_unwind_later(uint8_t *old, size_t n) { (void)n; old[0x1821]++; }  /* f1: 0x1100 */
+static void dy_rename_export(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[4] ^= 2; }  /* _f3 */
+static void dy_weaken_export(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[21] = 0x04; }
+static void dy_reordinal(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[40] = 2; }
+static void dy_reimport(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[42] = 'y'; }
+static void dy_old_export_later(uint8_t *old, size_t n) { (void)n; old[0x3040 + 22]++; }
+static void dy_old_resolver_later(uint8_t *old, size_t n) { (void)n; old[0x3040 + 30]++; }
+static void dy_old_three_exports(uint8_t *old, size_t n) { (void)n; old[0x3040 + 1] = 3; }
+static void dy_old_shared_node(uint8_t *old, size_t n) { (void)n; old[0x3040 + 19] = 33; }
+static void dy_old_unterminated(uint8_t *old, size_t n) { (void)n; old[0x3040 + 43] = 'z'; }
+static void dy_old_narrow_d(uint8_t *old, size_t n) { (void)n; old[0x3040 + 29] = 0x20; }  /* 0x1020 */
+static void dy_rename_replaced(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x5044] ^= 2; }
+static void dy_relazy(uint8_t *buf, size_t fsize) {
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->lazy_bind_size += 16;
+}
+static void dy_revm_linkedit(uint8_t *buf, size_t fsize) {
+    seg_named(buf, fsize, "__LINKEDIT")->vmsize += 0x1000;
+}
+static void dy_refile_linkedit(uint8_t *buf, size_t fsize) {
+    seg_named(buf, fsize, "__LINKEDIT")->filesize--;
+}
+static void dy_old_linkedit_shorter(uint8_t *old, size_t n) {
+    seg_named(old, n, "__LINKEDIT")->filesize -= 0x10;
+}
+static void dy_uuid_v3(uint8_t *buf, size_t fsize) {
+    uint8_t *u = ((struct uuid_command *)find_lc(buf, fsize, LC_UUID))->uuid;
+    u[6] = (uint8_t)((u[6] & 0x0f) | 0x30);
+}
+static void dy_uuid_ncs(uint8_t *buf, size_t fsize) {
+    ((struct uuid_command *)find_lc(buf, fsize, LC_UUID))->uuid[8] &= 0x3f;
+}
+static void dy_uuid_other(uint8_t *buf, size_t fsize) {
+    ((struct uuid_command *)find_lc(buf, fsize, LC_UUID))->uuid[0] ^= 1;
+}
+
+static void test_verify_watches_what_the_raise_derives(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    check_verify_rejects_raise("a byte of compact unwind's header changed", dy_recommon,
+        "ERROR: verify FAILED -- file offset 0x2804 holds 0x1 after the grow, and must hold 0, "
+        "as file offset 0x1804 did before it; refusing.");
+    check_verify_rejects_raise_of("an unwind entry the snapshot says was later", buf, fsize,
+        0x1000, NULL, dy_old_unwind_later,
+        "ERROR: verify FAILED -- file offset 0x2821 holds 0x20 after the grow, and must hold "
+        "0x21, file offset 0x1821's 0x11 raised; refusing.");
+    check_verify_rejects_raise("an export renamed in place", dy_rename_export,
+        "ERROR: verify FAILED -- file offset 0x4044 holds 0x33 after the grow, and must hold "
+        "0x31, as file offset 0x3044 did before it; refusing.");
+
+    check_verify_rejects_trie_raise("an export renamed in the appended trie", 0, dy_rename_export,
+        NULL, "ERROR: verify FAILED -- export 0 of the raised trie, \"_f3\", differs in its name "
+        "from what the raise makes of the old one, \"_f1\"; refusing.");
+    check_verify_rejects_trie_raise("an export weakened in the rebuilt trie", 1, dy_weaken_export,
+        NULL, "ERROR: verify FAILED -- export 0 of the raised trie, \"_f1\", differs in its flags "
+        "from what the raise makes of the old one, \"_f1\"; refusing.");
+    check_verify_rejects_trie_raise("a re-export's ordinal changed", 1, dy_reordinal, NULL,
+        "ERROR: verify FAILED -- export 3 of the raised trie, \"_r\", differs in its re-export "
+        "ordinal from what the raise makes of the old one, \"_r\"; refusing.");
+    check_verify_rejects_trie_raise("a re-export's imported name changed", 1, dy_reimport, NULL,
+        "ERROR: verify FAILED -- export 3 of the raised trie, \"_r\", differs in its imported "
+        "name from what the raise makes of the old one, \"_r\"; refusing.");
+    check_verify_rejects_trie_raise("an export the snapshot says was later", 1, NULL,
+        dy_old_export_later, "ERROR: verify FAILED -- export 0 of the raised trie, \"_f1\", "
+        "differs in its address from what the raise makes of the old one, \"_f1\"; refusing.");
+    check_verify_rejects_trie_raise("a resolver the snapshot says was later", 1, NULL,
+        dy_old_resolver_later, "ERROR: verify FAILED -- export 1 of the raised trie, \"_f2\", "
+        "differs in its resolver from what the raise makes of the old one, \"_f2\"; refusing.");
+    check_verify_rejects_trie_raise("an export the snapshot never had", 1, NULL,
+        dy_old_three_exports, "ERROR: verify FAILED -- the raised export trie holds 4 exports, "
+        "and the old one 3; refusing.");
+    check_verify_rejects_trie_raise("a trie the snapshot says shared a node", 1, NULL,
+        dy_old_shared_node, "ERROR: verify FAILED -- the old export trie could not be read: a "
+        "node is reachable more than one way; refusing.");
+    check_verify_rejects_trie_raise("a re-export the snapshot says was unterminated", 1, NULL,
+        dy_old_unterminated, "ERROR: verify FAILED -- the old export trie could not be read: an "
+        "export's terminal is malformed; refusing.");
+    check_verify_rejects_trie_raise("a trie appended that the snapshot says fit", 0, NULL,
+        dy_old_narrow_d, "ERROR: verify FAILED -- the grown image's header, or its size (21280 "
+        "bytes), is not the original's with 8192 more; refusing.");
+    check_verify_rejects_trie_raise("a byte of the trie an appended one replaced", 0,
+        dy_rename_replaced, NULL, "ERROR: verify FAILED -- file offset 0x5044 holds 0x33 after "
+        "the grow, and must hold 0x31, as file offset 0x3044 did before it; refusing.");
+
+    check_verify_rejects_trie_raise("lazy_bind_size changed beside an appended trie", 0,
+        dy_relazy, NULL, "ERROR: verify FAILED -- load-command byte 0x4ec holds 0x10 after the "
+        "grow, and must hold 0; refusing.");
+    check_verify_rejects_trie_raise("__LINKEDIT's vm size changed beside an appended trie", 0,
+        dy_revm_linkedit, NULL, "ERROR: verify FAILED -- load-command byte 0x3a1 holds 0x20 "
+        "after the grow, and must hold 0x10; refusing.");
+    check_verify_rejects_trie_raise("__LINKEDIT's file size short of an appended trie", 0,
+        dy_refile_linkedit, NULL, "ERROR: verify FAILED -- load-command byte 0x3b0 holds 0x1f "
+        "after the grow, and must hold 0x20; refusing.");
+    check_verify_rejects_trie_raise("an appended trie past where the snapshot's __LINKEDIT ended",
+        0, NULL, dy_old_linkedit_shorter, "ERROR: verify FAILED -- load-command byte 0x4f0 holds "
+        "0 after the grow, and must hold 0xf0; refusing.");
+
+    check_verify_rejects_raise("a UUID of version 3", dy_uuid_v3,
+        "ERROR: verify FAILED -- the raised image's UUID is not version 4; refusing.");
+    check_verify_rejects_raise("a UUID of the NCS variant", dy_uuid_ncs,
+        "ERROR: verify FAILED -- the raised image's UUID is not RFC 4122's variant; refusing.");
+    check_verify_rejects_raise("a UUID not the raise's", dy_uuid_other,
+        "ERROR: verify FAILED -- load-command byte 0x568 holds ");
+}
+
+/* A rebuilt trie keeps an absolute export's value, and an export at offset
+ * 0, as the in-place walk does. */
+static void test_raise_rebuilds_a_trie_with_what_stays(void) {
+    static const struct { const char *what; uint8_t at, v; uint64_t want; } p[2] = {
+        { "an absolute export", 21, 0x02, 0x1000 }, { "an export at offset 0", 23, 0x00, 0 } };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize;
+        uint64_t a = 1;
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+        dy_rich_trie(buf);
+        buf[0x3040 + p[i].at] = p[i].v;
+        if (p[i].at == 23) buf[0x3040 + 22] = 0x80;       /* _f1: 0, in its two bytes */
+        int r = mg_grow_header(&buf, &fsize, 0x1001);
+        mu_decode(dy_trie(buf, fsize) + 22, buf + fsize, &a);
+        CHECK(r == 0 && a == p[i].want, "raise: a rebuilt trie keeps %s at %#llx (got %d, %#llx)",
+              p[i].what, (unsigned long long)p[i].want, r, (unsigned long long)a);
+        free(buf);
+    }
+}
+
+/* A rebuilt trie appended to __LINKEDIT: its vm size covers its file size,
+ * rounded up to a page, and never shrinks. */
+static void test_raise_appends_a_trie_to_linkedit_of_any_vmsize(void) {
+    static const uint64_t was[2] = { 0x300, 0x2000 }, want[2] = { 0x1000, 0x2000 };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+        seg_named(buf, fsize, "__LINKEDIT")->vmsize = was[i];
+        int r = mg_grow_header(&buf, &fsize, 0x1001);
+        struct segment_command_64 *le = seg_named(buf, fsize, "__LINKEDIT");
+        CHECK(r == 0 && le && le->vmsize == want[i] && le->filesize == fsize - le->fileoff,
+              "raise: an appended trie leaves __LINKEDIT's vm size %#llx at %#llx, want %#llx "
+              "(got %d)", (unsigned long long)was[i], le ? (unsigned long long)le->vmsize : 0,
+              (unsigned long long)want[i], r);
+        free(buf);
+    }
 }
 
 int main(void) {
@@ -5542,6 +5724,9 @@ int main(void) {
     test_raise_refuses_a_short_uuid();
     test_ensure_pad_announces_no_uuid_it_has_not();
     test_verify_watches_the_raised_bytes();
+    test_verify_watches_what_the_raise_derives();
+    test_raise_appends_a_trie_to_linkedit_of_any_vmsize();
+    test_raise_rebuilds_a_trie_with_what_stays();
     test_raise_moves_the_initializer_offsets();
     test_raise_moves_a_relocation_offset_and_keeps_the_pad();
     test_verify_watches_the_raise();

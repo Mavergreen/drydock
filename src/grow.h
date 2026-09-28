@@ -289,13 +289,27 @@ void mg_snapshot_free(mg_snapshot *s);
  * also a stab that does), and each rebase target's value, names the base as
  * it is if it named the header, and else what it named, moved; and the
  * rebase targets are the same
- * slots, moved. On a raise, also: the header is the same; each load command
- * is byte for byte what the raise makes of the old one (its segment, section
- * and initializer addresses, file offsets, and UUID); the pad the old one had
- * is as it was and the inserted G bytes are zero; and from the first section
- * on, the file is the old one G bytes further on, except where a check above
- * watches: the rebased pointers, the repaired code, the symbols' values, the
- * export trie, the leading function start, data in code's offsets, compact
+ * slots, moved. On a raise, also (check 3, which shares with the raise
+ * ml_each_off, the snapshot's rebase and reference worklists rb and refs,
+ * mg_raised_uuid, mg_trie_walk and mg_unwind_walk, and so trusts them but
+ * for what it asks below of the UUID, the export trie and compact unwind):
+ * the header is the same; each load command is byte for byte what the raise
+ * makes of the old one, its addresses and file offsets moved by rules
+ * restated apart from the raise's, its UUID replaced by mg_raised_uuid's,
+ * which must also differ from the old one, be version 4 and be RFC 4122's
+ * variant, and an export trie rebuilt too wide for its place located at
+ * __LINKEDIT's old end, moved, and running to the end of the file; the pad
+ * the old one had is as it was and the inserted G bytes are zero; an export
+ * trie patched in place, and compact unwind, are what mg_trie_walk and
+ * mg_unwind_walk make of a copy of the old image, and that copy's compact
+ * unwind differs from the old only by G added to 32-bit words; the export
+ * trie, patched or rebuilt, holds the old one's exports, each moved, as
+ * mexp_trie_walk reads both, which neither walker nor mt_trie_rebuild uses;
+ * the checks above watch the rest of what the raise moves; and from the
+ * first section on, the file is the old one G bytes further on, except
+ * what the raise moves there: the rebased pointers, the repaired code, the
+ * symbols' values, the leading function start, the export trie, and the
+ * offsets in data in code, compact
  * unwind and S_INIT_FUNC_OFFSETS. -1 (with a message naming the first
  * failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
