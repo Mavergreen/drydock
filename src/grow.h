@@ -116,7 +116,8 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
  * available); image base 0xOLD -> 0xNEW" for an executable, or "...;
- * contents raised by 0xN" for a dylib or bundle, ending "; repaired N
+ * contents raised by 0xN" for a dylib or bundle, then "; dropped
+ * LC_SEGMENT_SPLIT_INFO" if the raise dropped it, ending "; repaired N
  * references to the header" (or "1 reference") when the grow repaired code
  * that addresses the image's own header (src/hdrref.h) or, lowering, moved
  * pointers to it (mg_header_pointers), counting both.
@@ -395,7 +396,10 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
 
 
 
-int mg_classify(const uint8_t *buf, size_t fsize);
+/* 0 if a grow can vouch for every load command and section type of the
+ * image, on the route `raise` says: LC_SEGMENT_SPLIT_INFO only on a raise,
+ * which drops it. Otherwise -1, having said why on stderr. */
+int mg_classify(const uint8_t *buf, size_t fsize, int raise);
 
 
 /* ---- plausibility: verification with no "before" to compare against --------
@@ -445,8 +449,9 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * Every confirmed reference is repaired: its
  * disp32 loses the grow, so it still reaches the header. So does the value
  * of each symbol that names the header (__mh_execute_header), and of each
- * rebased pointer that does. A failure partway through growing can leave the
- * buffer modified (see mg_ensure_pad).
+ * rebased pointer that does. A raise deletes LC_SEGMENT_SPLIT_INFO, whose
+ * offsets it would leave stale, leaving its payload unreferenced. A failure
+ * partway through growing can leave the buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);
 

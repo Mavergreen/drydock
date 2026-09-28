@@ -5111,6 +5111,95 @@ static void test_verify_watches_the_stabs(void) {
         "symbol 10 is type 0x4e, value 0x1002 after the grow, and must be type 0x4e, value 0x2");
 }
 
+/* ---- split info ----
+ * A raise leaves LC_SEGMENT_SPLIT_INFO's offsets stale, so it deletes the
+ * command, and its payload (DY_SPLIT: 8 bytes of 0x5a) stays, unreferenced.
+ * A lowering refuses it, as before. */
+static void test_raise_drops_split_info(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib(&fsize, DY_SPLIT | DY_ROUTINES);
+    struct mach_header_64 h0 = *(struct mach_header_64 *)buf;
+    uint8_t *after = dy_find(buf, LC_SEGMENT_SPLIT_INFO) + sizeof(struct linkedit_data_command);
+    ((struct routines_command_64 *)after)->reserved6 = 0x5a5a5a5a5a5a5a5aull;   /* the last 8 bytes */
+    struct routines_command_64 rt0 = *(struct routines_command_64 *)after;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct routines_command_64 *rt = (struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64);
+    static const uint8_t payload[8] = { 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a };
+    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO) && h->ncmds == h0.ncmds - 1 &&
+          h->sizeofcmds == h0.sizeofcmds - sizeof(struct linkedit_data_command),
+          "split info: the raise deletes the command (got %d, %u commands, %u bytes)", r,
+          h->ncmds, h->sizeofcmds);
+    CHECK(rt && rt->cmdsize == rt0.cmdsize && rt->init_address == rt0.init_address + 0x1000 &&
+          rt->reserved6 == rt0.reserved6, "split info: the command after it moved down whole");
+    CHECK(memcmp(buf + 0x3098 + 0x1000, payload, sizeof payload) == 0,
+          "split info: its payload stays where it was");
+    CHECK(buf[sizeof *h + h->sizeofcmds] == 0 &&
+          memcmp(buf + sizeof *h + h->sizeofcmds, buf + sizeof *h + h->sizeofcmds + 1,
+                 sizeof(struct linkedit_data_command) - 1) == 0,
+          "split info: the bytes it held are zero");
+    free(buf);
+}
+
+static void test_raise_drops_every_split_info(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
+    hr_add_lc(buf, LC_SEGMENT_SPLIT_INFO, 0x3098, "\x5a\x5a\x5a\x5a\x5a\x5a\x5a\x5a", 8);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO),
+          "split info: a raise deletes both of two (got %d)", r);
+    free(buf);
+}
+
+static void test_lowering_refuses_split_info(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, 0);
+    hr_add_lc(buf, LC_SEGMENT_SPLIT_INFO, 6656, "\x5a\x5a\x5a\x5a\x5a\x5a\x5a\x5a", 8);
+    check_grow_refuses_header_refs("split info on an executable", buf, fsize,
+        "ERROR: LC_SEGMENT_SPLIT_INFO carries base-relative offsets that are not re-based");
+}
+
+/* LC_LOAD_UPWARD_DYLIB names a dylib, as LC_LOAD_DYLIB does, and nothing a
+ * grow moves; AppKit, HIToolbox, Metadata and ten of libSystem's parts carry
+ * one. */
+static void test_grow_takes_an_upward_dylib(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    ((struct load_command *)dy_find(buf, LC_LOAD_DYLIB))->cmd = LC_LOAD_UPWARD_DYLIB;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "upward: a dylib with an upward dylib is raised (got %d)", r);
+    free(buf);
+    buf = build_image(&fsize, &sect_off, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct dylib_command *d = (struct dylib_command *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    d->cmd = LC_LOAD_UPWARD_DYLIB;
+    d->cmdsize = 32;
+    d->dylib.name.offset = sizeof *d;
+    memcpy(d + 1, "/x", 3);
+    h->ncmds++;
+    h->sizeofcmds += 32;
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "upward: an executable with an upward dylib is lowered (got %d)", r);
+    free(buf);
+}
+
+static void test_ensure_pad_announces_dropped_split_info(void) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
+    uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) +
+                      ((struct mach_header_64 *)buf)->sizeofcmds;
+    char want[192];
+    snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
+             "contents raised by 0x1000; dropped LC_SEGMENT_SPLIT_INFO; repaired 1 reference to "
+             "the header\n", DY_F - lc_end, DY_F + 0x1000 - lc_end + 16);
+    char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
+    CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib with split info: announced "
+          "as '%s' (got %d):\n%s", want, r, err);
+    free(err);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -5275,6 +5364,11 @@ int main(void) {
     test_raise_refuses_stabs_it_cannot_move();
     test_lowering_leaves_the_stabs();
     test_verify_watches_the_stabs();
+    test_raise_drops_split_info();
+    test_raise_drops_every_split_info();
+    test_lowering_refuses_split_info();
+    test_ensure_pad_announces_dropped_split_info();
+    test_grow_takes_an_upward_dylib();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

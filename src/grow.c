@@ -45,6 +45,15 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     return first == UINT32_MAX ? MG_NO_SECTION_DATA : first;
 }
 
+/* Whether the image in `buf` has a `cmd` load command; 0 if unreadable. */
+static int mg_find_cb(const struct load_command *lc, void *ctx_) {
+    return lc->cmd == *(const uint32_t *)ctx_;
+}
+static int mg_has_cmd(uint8_t *buf, size_t fsize, uint32_t cmd) {
+    mi_image im;
+    return mi_wrap(buf, fsize, &im) == 0 && !mi_each_lc(&im, mg_find_cb, &cmd);
+}
+
 /* The image base, for mg_ensure_pad's announcement; 0 if unreadable. */
 static uint64_t mg_base_of(uint8_t *buf, size_t fsize) {
     mi_image im;
@@ -83,6 +92,7 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
     int raise = hdr->filetype == MH_DYLIB || hdr->filetype == MH_BUNDLE;
+    int split = raise && mg_has_cmd(*pbuf, *pfsize, LC_SEGMENT_SPLIT_INFO);
     int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
     char why[256];
     int64_t ptrs = raise ? 0 : mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, 0, why,
@@ -114,6 +124,7 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     else
         fprintf(stderr, "image base %#llx -> %#llx", (unsigned long long)base_before,
                 (unsigned long long)mg_base_of(*pbuf, *pfsize));
+    if (split) fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
     int64_t repaired = (refs > 0 ? refs : 0) + (ptrs > 0 ? ptrs : 0);
     if (repaired > 0)
         fprintf(stderr, "; repaired %lld reference%s to the header", (long long)repaired,
@@ -1262,7 +1273,6 @@ static void mg_why_refused(const char *why) {
  * the hand-rolled loop's early `return -1` -- "unknown means unsafe", never
  * widened to keep going. */
 static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
-    (void)ctx_;
     const char *why = NULL;
     switch (lc->cmd) {
         /* Handled by a re-baser above. */
@@ -1289,6 +1299,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
         case LC_UUID:
         case LC_LOAD_DYLIB: case LC_ID_DYLIB: case LC_LOAD_WEAK_DYLIB:
         case LC_REEXPORT_DYLIB: case LC_LAZY_LOAD_DYLIB: case LC_PREBOUND_DYLIB:
+        case LC_LOAD_UPWARD_DYLIB:
         case LC_LOAD_DYLINKER: case LC_ID_DYLINKER: case LC_DYLD_ENVIRONMENT:
         case LC_RPATH: case LC_MAIN: case LC_UNIXTHREAD: case LC_THREAD:
         case LC_VERSION_MIN_MACOSX: case LC_VERSION_MIN_IPHONEOS:
@@ -1300,6 +1311,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
 
         /* Known to carry base-relative payloads we do NOT re-base. */
         case LC_SEGMENT_SPLIT_INFO:
+            if (*(const int *)ctx_) break;       /* a raise drops it */
             why = "LC_SEGMENT_SPLIT_INFO carries base-relative offsets that are not re-based";
             break;
         case LC_LINKER_OPTIMIZATION_HINT:
@@ -1355,7 +1367,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
     return 0;
 }
 
-int mg_classify(const uint8_t *buf, size_t fsize) {
+int mg_classify(const uint8_t *buf, size_t fsize, int raise) {
     mi_image im;
     /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
      * signature is non-const only because some OTHER caller needs a
@@ -1367,7 +1379,7 @@ int mg_classify(const uint8_t *buf, size_t fsize) {
                         "that don't fit); refusing to classify\n");
         return -1;
     }
-    return mi_each_lc(&im, mg_classify_cb, NULL) ? 0 : -1;
+    return mi_each_lc(&im, mg_classify_cb, &raise) ? 0 : -1;
 }
 
 int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
@@ -1914,6 +1926,27 @@ static void mg_raise_rebased(uint8_t *buf, const mg_snapshot *snap, uint32_t gro
     }
 }
 
+/* Deletes each LC_SEGMENT_SPLIT_INFO, whose offsets a raise would leave
+ * stale, from the load commands of the validated image in `buf`; its
+ * payload stays, unreferenced. */
+static void mg_drop_split_info(uint8_t *buf) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lc = (uint8_t *)(h + 1), *end = lc + h->sizeofcmds;
+    for (uint32_t i = 0; i < h->ncmds;) {
+        uint32_t size = ((struct load_command *)lc)->cmdsize;
+        if (((struct load_command *)lc)->cmd != LC_SEGMENT_SPLIT_INFO) {
+            lc += size;
+            i++;
+            continue;
+        }
+        memmove(lc, lc + size, (size_t)(end - lc - size));
+        end -= size;
+        memset(end, 0, size);
+        h->ncmds--;
+        h->sizeofcmds -= size;
+    }
+}
+
 /* A grow puts the header and its code `grow` bytes closer together on
  * either route, so each reference the snapshot recorded, which the insert
  * moved `grow` further into the file, loses `grow`. */
@@ -2087,7 +2120,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     /* Audit the other base-relative structures before touching the buffer, so a
      * refusal leaves it pristine. Silently shipping a binary whose constructors
      * or exports are `grow` bytes low is far worse than failing here. */
-    if (mg_classify(buf, fsize) != 0) return -1;
+    if (mg_classify(buf, fsize, raise) != 0) return -1;
     if (mg_dice_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0) != 0) {
         fprintf(stderr, "ERROR: LC_DATA_IN_CODE is malformed or an entry offset would "
                         "overflow; refusing to grow\n");
@@ -2154,6 +2187,8 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         free(mg_new_trie);
         return -1;
     }
+
+    if (raise) mg_drop_split_info(buf);
 
     /* Phase 4 prep: snapshot every base-relative resolved address BEFORE touching
      * a byte, so the verify at the end has something to prove against. If we

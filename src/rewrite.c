@@ -669,9 +669,10 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
     /* Build the new table once to learn its size (and print diagnostics).
      * This is the counting pass: hit_dylib/hit_rpath/hit_strip are real
      * here, and whatever this call finds is what gets reported, whether or
-     * not a header grow later replaces the TABLE this call built (the SET
-     * of load commands -- and so which operations match -- does not change
-     * when the header grows; only file offsets elsewhere in the image do). */
+     * not a header grow later replaces the TABLE this call built (which
+     * operations match does not change when the header grows: a raise drops
+     * LC_SEGMENT_SPLIT_INFO, which no statement can name, and otherwise only
+     * file offsets and addresses elsewhere in the image move). */
     uint8_t *new_lcs = calloc(1, first_sect_off + add_bytes + 64);
     uint32_t new_off, new_ncmds; int modifications; int renames;
     if (mr_build_lcs(&im, ops, new_lcs, &new_off, &new_ncmds, &modifications, &renames, 1,
@@ -741,9 +742,9 @@ static int mr_process_thin(uint8_t **pbuf, size_t *pfsize, const char *label,
         }
         /* Rebuild against the relocated header so segment/linkedit offsets in
          * the copied load commands reflect the shift. NULL counters here,
-         * deliberately: this walks the SAME load commands the call above
-         * already counted (the grow moved offsets elsewhere in the image,
-         * not which command matches which operation), so passing the real
+         * deliberately: this walks the load commands the call above already
+         * counted, less any LC_SEGMENT_SPLIT_INFO a raise dropped, which no
+         * operation matches, so passing the real
          * counters a second time would double-count every hit into a false
          * "matched twice" that this operation only did once. */
         free(new_lcs);
