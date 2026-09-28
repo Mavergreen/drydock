@@ -136,4 +136,9 @@ struct mc_build_version { uint32_t cmd, cmdsize, platform, minos, sdk, ntools; }
 #define CPU_SUBTYPE_MASK 0xff000000u
 #endif
 
+/* <mach-o/stab.h>'s Swift AST stab, named for its module's AST file. */
+#ifndef N_AST
+#define N_AST 0x32
+#endif
+
 #endif /* DRYDOCK_MACH_COMPAT_H */

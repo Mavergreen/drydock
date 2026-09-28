@@ -1,6 +1,8 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
+#include <CommonCrypto/CommonDigest.h>
 #include <mach-o/nlist.h>
+#include <mach-o/stab.h>
 #include <stdarg.h>
 
 #include "grow.h"
@@ -44,6 +46,15 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
     return first == UINT32_MAX ? MG_NO_SECTION_DATA : first;
 }
 
+/* Whether the image in `buf` has a `cmd` load command; 0 if unreadable. */
+static int mg_find_cb(const struct load_command *lc, void *ctx_) {
+    return lc->cmd == *(const uint32_t *)ctx_;
+}
+static int mg_has_cmd(uint8_t *buf, size_t fsize, uint32_t cmd) {
+    mi_image im;
+    return mi_wrap(buf, fsize, &im) == 0 && !mi_each_lc(&im, mg_find_cb, &cmd);
+}
+
 /* The image base, for mg_ensure_pad's announcement; 0 if unreadable. */
 static uint64_t mg_base_of(uint8_t *buf, size_t fsize) {
     mi_image im;
@@ -82,6 +93,8 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint32_t first_before = first;
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
     int raise = hdr->filetype == MH_DYLIB || hdr->filetype == MH_BUNDLE;
+    int split = raise && mg_has_cmd(*pbuf, *pfsize, LC_SEGMENT_SPLIT_INFO);
+    int uuid = raise && mg_has_cmd(*pbuf, *pfsize, LC_UUID);
     int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
     char why[256];
     int64_t ptrs = raise ? 0 : mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, 0, why,
@@ -109,10 +122,11 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); ", label,
             first - first_before, pad_avail, first - (uint32_t)sizeof *hdr - hdr->sizeofcmds);
     if (raise)
-        fprintf(stderr, "contents raised by %#x", first - first_before);
+        fprintf(stderr, "contents raised by %#x%s", first - first_before, uuid ? "; new UUID" : "");
     else
         fprintf(stderr, "image base %#llx -> %#llx", (unsigned long long)base_before,
                 (unsigned long long)mg_base_of(*pbuf, *pfsize));
+    if (split) fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
     int64_t repaired = (refs > 0 ? refs : 0) + (ptrs > 0 ? ptrs : 0);
     if (repaired > 0)
         fprintf(stderr, "; repaired %lld reference%s to the header", (long long)repaired,
@@ -658,17 +672,19 @@ static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
     return 0;
 }
 
-/* The first LC_SYMTAB's table, or NULL with *nsyms 0 when there is none;
- * -1 when it does not fit within the image. */
+/* The first LC_SYMTAB (*st) and its table, or NULL with *nsyms 0 when
+ * there is none; -1 when it does not fit within the image. */
 struct mg_symtab_ctx { const struct symtab_command *st; };
 static int mg_symtab_cb(const struct load_command *lc, void *ctx_) {
     if (lc->cmd != LC_SYMTAB) return 0;
     ((struct mg_symtab_ctx *)ctx_)->st = (const struct symtab_command *)lc;
     return 1;
 }
-static int mg_symtab(const mi_image *im, size_t fsize, const struct nlist_64 **nl, uint32_t *nsyms) {
+static int mg_symtab(const mi_image *im, size_t fsize, const struct symtab_command **st,
+                     const struct nlist_64 **nl, uint32_t *nsyms) {
     struct mg_symtab_ctx c = { NULL };
     mi_each_lc(im, mg_symtab_cb, &c);
+    *st = c.st;
     *nl = NULL;
     *nsyms = 0;
     if (!c.st) return 0;
@@ -678,8 +694,48 @@ static int mg_symtab(const mi_image *im, size_t fsize, const struct nlist_64 **n
     return 0;
 }
 
+/* The name of symbol `nl` in LC_SYMTAB `st`'s string table, as a length and
+ * a pointer; empty when it lies outside the table or the image. */
+static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
+                       const struct nlist_64 *nl, const char **name) {
+    *name = "";
+    if (st->strsize > fsize || st->stroff > fsize - st->strsize || nl->n_un.n_strx >= st->strsize)
+        return 0;
+    *name = (const char *)buf + st->stroff + nl->n_un.n_strx;
+    const char *nul = (const char *)memchr(*name, 0, st->strsize - nl->n_un.n_strx);
+    return nul ? (int)(nul - *name) : (int)(st->strsize - nl->n_un.n_strx);
+}
+
+/* Whether stab `nl` holds an address: 1 if it does; 0 if its value is a
+ * size, a timestamp or nothing; -1 for a type this does not know. `named`:
+ * its name is not empty. */
+static int mg_stab_address(const struct nlist_64 *nl, int named) {
+    switch (nl->n_type) {
+    case N_BNSYM: case N_STSYM: case N_LCSYM: case N_SLINE:
+        return 1;
+    case N_FUN:
+        return named;
+    case N_SO: case N_SOL:
+        return nl->n_sect != NO_SECT;
+    case N_ENSYM: case N_OSO: case N_GSYM: case N_OPT: case N_OLEVEL: case N_AST:
+        return 0;
+    }
+    return -1;
+}
+
+/* Whether symbol `nl` of LC_SYMTAB `st` holds an address a grow moves: an
+ * N_SECT symbol, not a stab; and, on a raise, a stab mg_stab_address says
+ * does. -1 for a stab of a type it does not know, on a raise. */
+static int mg_sym_address(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
+                          const struct nlist_64 *nl, int raise) {
+    const char *name;
+    if (!(nl->n_type & N_STAB)) return (nl->n_type & N_TYPE) == N_SECT;
+    return raise ? mg_stab_address(nl, mg_sym_name(buf, fsize, st, nl, &name) > 0) : 0;
+}
+
 int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     mi_image im;
+    const struct symtab_command *st;
     const struct nlist_64 *nl;
     char why[256];
     const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
@@ -687,6 +743,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->nrefs = 0;
     s->symval = NULL;
     s->symtype = NULL;
+    s->symaddr = NULL;
     s->nsyms = 0;
     memset(&s->rb, 0, sizeof s->rb);
     s->kinds = NULL;
@@ -697,9 +754,10 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
         mg_collect(buf, fsize, s->addr, s->kinds, MG_SNAP_MAX, &s->n) != 0 ||
         mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &s->base) != 0 ||
         mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs ||
-        mg_symtab(&im, fsize, &nl, &s->nsyms) != 0 ||
+        mg_symtab(&im, fsize, &st, &nl, &s->nsyms) != 0 ||
         !(s->symval = (uint64_t *)malloc((s->nsyms + 1) * sizeof *s->symval)) ||
         !(s->symtype = (uint8_t *)malloc(s->nsyms + 1)) ||
+        !(s->symaddr = (uint8_t *)malloc(s->nsyms + 1)) ||
         mg_rebases_read(buf, fsize, &s->rb, why, sizeof why) != 0) {
         mg_snapshot_free(s);
         return -1;
@@ -707,6 +765,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     for (uint32_t i = 0; i < s->nsyms; i++) {
         s->symval[i] = nl[i].n_value;
         s->symtype[i] = nl[i].n_type;
+        s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
     }
     return 0;
 }
@@ -716,7 +775,8 @@ void mg_snapshot_free(mg_snapshot *s) {
     free(s->kinds); s->kinds = NULL;
     free(s->refs); s->refs = NULL; s->nrefs = 0;
     free(s->symval); s->symval = NULL;
-    free(s->symtype); s->symtype = NULL; s->nsyms = 0;
+    free(s->symtype); s->symtype = NULL;
+    free(s->symaddr); s->symaddr = NULL; s->nsyms = 0;
     mg_rebases_free(&s->rb);
 }
 
@@ -786,14 +846,16 @@ static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *b
     return 0;
 }
 
-/* Every symbol keeps its type, and its value unless it is an N_SECT symbol,
- * not a stab: one that named the header names it where it is now, and one
- * that named content, at the first section or past it, has moved `delta`. */
+/* Every symbol keeps its type, and its value unless it held an address a
+ * grow moves (mg_sym_address): one that named the header names it where it
+ * is now, and one that named content, at the first section or past it, has
+ * moved `delta`. */
 static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot *before,
                              uint64_t base, uint64_t delta) {
+    const struct symtab_command *st;
     const struct nlist_64 *nl;
     uint32_t nsyms;
-    if (mg_symtab(im, fsize, &nl, &nsyms) != 0) {
+    if (mg_symtab(im, fsize, &st, &nl, &nsyms) != 0) {
         fprintf(stderr, "ERROR: verify FAILED -- LC_SYMTAB's symbol table does not fit within "
                         "the grown image; refusing.\n");
         return -1;
@@ -806,7 +868,7 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
     for (uint32_t i = 0; i < nsyms; i++) {
         uint8_t t = before->symtype[i];
         uint64_t want = before->symval[i];
-        if (!(t & N_STAB) && (t & N_TYPE) == N_SECT)
+        if (before->symaddr[i])
             want = want > before->base && want - before->base >= before->first ? want + delta
                  : want == before->base ? base : want;
         if (nl[i].n_type == t && nl[i].n_value == want) continue;
@@ -1213,7 +1275,6 @@ static void mg_why_refused(const char *why) {
  * the hand-rolled loop's early `return -1` -- "unknown means unsafe", never
  * widened to keep going. */
 static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
-    (void)ctx_;
     const char *why = NULL;
     switch (lc->cmd) {
         /* Handled by a re-baser above. */
@@ -1240,6 +1301,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
         case LC_UUID:
         case LC_LOAD_DYLIB: case LC_ID_DYLIB: case LC_LOAD_WEAK_DYLIB:
         case LC_REEXPORT_DYLIB: case LC_LAZY_LOAD_DYLIB: case LC_PREBOUND_DYLIB:
+        case LC_LOAD_UPWARD_DYLIB:
         case LC_LOAD_DYLINKER: case LC_ID_DYLINKER: case LC_DYLD_ENVIRONMENT:
         case LC_RPATH: case LC_MAIN: case LC_UNIXTHREAD: case LC_THREAD:
         case LC_VERSION_MIN_MACOSX: case LC_VERSION_MIN_IPHONEOS:
@@ -1251,6 +1313,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
 
         /* Known to carry base-relative payloads we do NOT re-base. */
         case LC_SEGMENT_SPLIT_INFO:
+            if (*(const int *)ctx_) break;       /* a raise drops it */
             why = "LC_SEGMENT_SPLIT_INFO carries base-relative offsets that are not re-based";
             break;
         case LC_LINKER_OPTIMIZATION_HINT:
@@ -1306,7 +1369,7 @@ static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
     return 0;
 }
 
-int mg_classify(const uint8_t *buf, size_t fsize) {
+int mg_classify(const uint8_t *buf, size_t fsize, int raise) {
     mi_image im;
     /* Same reasoning as mg_first_sect_off's identical cast above: mi_wrap's
      * signature is non-const only because some OTHER caller needs a
@@ -1318,7 +1381,7 @@ int mg_classify(const uint8_t *buf, size_t fsize) {
                         "that don't fit); refusing to classify\n");
         return -1;
     }
-    return mi_each_lc(&im, mg_classify_cb, NULL) ? 0 : -1;
+    return mi_each_lc(&im, mg_classify_cb, &raise) ? 0 : -1;
 }
 
 int mg_addr_known(const uint64_t *sorted, int n, uint64_t a) {
@@ -1502,13 +1565,28 @@ static int mg_patch_cb(const struct load_command *lc_in, void *ctx_) {
     return 0;
 }
 
+void mg_raised_uuid(const uint8_t old[16], uint64_t grow, uint8_t out[16]) {
+    uint8_t in[24], digest[CC_SHA256_DIGEST_LENGTH];
+    memcpy(in, old, 16);
+    for (int i = 0; i < 8; i++) in[16 + i] = (uint8_t)(grow >> (8 * i));
+    CC_SHA256(in, (CC_LONG)sizeof in, digest);
+    memcpy(out, digest, 16);
+    out[6] = (uint8_t)((out[6] & 0x0f) | 0x40);
+    out[8] = (uint8_t)((out[8] & 0x3f) | 0x80);
+}
+
 /* mg_grow_header's mi_each_lc callback for a raise's geometry: every segment
  * but the one that maps the header moves up `grow` in memory, and in the
  * file when its data lies past the insert; the header's segment grows by
  * `grow`; every section's address, and LC_ROUTINES_64's initializer, moves
- * up `grow`. */
+ * up `grow`; LC_UUID is replaced (mg_raised_uuid). */
 static int mg_raise_cb(const struct load_command *lc_in, void *ctx_) {
     struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
+    if (lc_in->cmd == LC_UUID) {
+        struct uuid_command *u = (struct uuid_command *)lc_in;
+        mg_raised_uuid(u->uuid, ctx->grow, u->uuid);
+        return 0;
+    }
     if (lc_in->cmd == LC_ROUTINES_64) {
         ((struct routines_command_64 *)lc_in)->init_address += ctx->grow;
         return 0;
@@ -1652,26 +1730,14 @@ static int mg_exports_ok(uint8_t *buf, size_t fsize, uint64_t base, uint32_t fir
     return rc;
 }
 
-/* The name of symbol `nl` in LC_SYMTAB `st`'s string table, as a length and
- * a pointer; empty when it lies outside the table or the image. */
-static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
-                       const struct nlist_64 *nl, const char **name) {
-    *name = "";
-    if (st->strsize > fsize || st->stroff > fsize - st->strsize || nl->n_un.n_strx >= st->strsize)
-        return 0;
-    *name = (const char *)buf + st->stroff + nl->n_un.n_strx;
-    const char *nul = (const char *)memchr(*name, 0, st->strsize - nl->n_un.n_strx);
-    return nul ? (int)(nul - *name) : (int)(st->strsize - nl->n_un.n_strx);
-}
-
-/* The symbols a grow moves: each N_SECT symbol, not a stab. With `patch`,
- * on a lowering, one whose value is `base` loses `grow`, following the
- * header down; on a raise, one that names content, at base + `first` or
- * past it, gains `grow`, following the content up. Without `patch`, this
- * checks that the symbol table lies within the image, and says so on stderr
- * when it does not; on a raise, it refuses a stab. Either way, one that names
- * a byte strictly between the header and its first content, at base +
- * `first`, is refused, saying so. Returns 0, or -1. */
+/* The symbols a grow moves (mg_sym_address). With `patch`, on a lowering,
+ * one whose value is `base` loses `grow`, following the header down; on a
+ * raise, one that names content, at base + `first` or past it, gains
+ * `grow`, following the content up. Without `patch`, this checks that the
+ * symbol table lies within the image, and says so on stderr when it does
+ * not; on a raise, it refuses a stab of a type it does not know. Either way,
+ * one that names a byte strictly between the header and its first content,
+ * at base + `first`, is refused, saying so. Returns 0, or -1. */
 struct mg_hsym_ctx {
     uint8_t *buf;
     size_t fsize;
@@ -1699,7 +1765,8 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
     struct nlist_64 *nl = (struct nlist_64 *)(c->buf + st->symoff);
     for (uint32_t i = 0; i < st->nsyms; i++) {
         const char *name;
-        if (c->raise && (nl[i].n_type & N_STAB)) {
+        int addr = mg_sym_address(c->buf, c->fsize, st, &nl[i], c->raise);
+        if (addr < 0) {
             int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
             fprintf(stderr, "ERROR: symbol %u, \"%.*s\", is a stab of type %#x, which a raise "
                             "does not know how to move; refusing to grow\n", i, len, name,
@@ -1707,7 +1774,7 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
             c->bad = 1;
             return 1;
         }
-        if ((nl[i].n_type & N_STAB) || (nl[i].n_type & N_TYPE) != N_SECT) continue;
+        if (!addr) continue;
         uint64_t v = nl[i].n_value;
         if (v > c->base && v - c->base < c->first) {
             int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
@@ -1795,6 +1862,11 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         c->loc += d->nlocrel;
         return 0;
     }
+    case LC_UUID:
+        if (lc->cmdsize >= sizeof(struct uuid_command)) return 0;
+        fprintf(stderr, "ERROR: LC_UUID is %u bytes, too short to hold its UUID; refusing to "
+                        "grow\n", lc->cmdsize);
+        return 1;
     case LC_ROUTINES_64:
         if (lc->cmdsize >= sizeof(struct routines_command_64)) return 0;
         fprintf(stderr, "ERROR: LC_ROUTINES_64 is %u bytes, too short to hold init_address; "
@@ -1873,6 +1945,27 @@ static void mg_raise_rebased(uint8_t *buf, const mg_snapshot *snap, uint32_t gro
         if (v == snap->base) continue;
         v += grow;
         memcpy(buf + snap->rb.v[i].at + grow, &v, sizeof v);
+    }
+}
+
+/* Deletes each LC_SEGMENT_SPLIT_INFO, whose offsets a raise would leave
+ * stale, from the load commands of the validated image in `buf`; its
+ * payload stays, unreferenced. */
+static void mg_drop_split_info(uint8_t *buf) {
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    uint8_t *lc = (uint8_t *)(h + 1), *end = lc + h->sizeofcmds;
+    for (uint32_t i = 0; i < h->ncmds;) {
+        uint32_t size = ((struct load_command *)lc)->cmdsize;
+        if (((struct load_command *)lc)->cmd != LC_SEGMENT_SPLIT_INFO) {
+            lc += size;
+            i++;
+            continue;
+        }
+        memmove(lc, lc + size, (size_t)(end - lc - size));
+        end -= size;
+        memset(end, 0, size);
+        h->ncmds--;
+        h->sizeofcmds -= size;
     }
 }
 
@@ -2049,7 +2142,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     /* Audit the other base-relative structures before touching the buffer, so a
      * refusal leaves it pristine. Silently shipping a binary whose constructors
      * or exports are `grow` bytes low is far worse than failing here. */
-    if (mg_classify(buf, fsize) != 0) return -1;
+    if (mg_classify(buf, fsize, raise) != 0) return -1;
     if (mg_dice_walk(buf, fsize, grow, 0, 0, NULL, NULL, NULL, 0) != 0) {
         fprintf(stderr, "ERROR: LC_DATA_IN_CODE is malformed or an entry offset would "
                         "overflow; refusing to grow\n");
@@ -2116,6 +2209,8 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         free(mg_new_trie);
         return -1;
     }
+
+    if (raise) mg_drop_split_info(buf);
 
     /* Phase 4 prep: snapshot every base-relative resolved address BEFORE touching
      * a byte, so the verify at the end has something to prove against. If we

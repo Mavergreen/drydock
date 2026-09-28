@@ -9,6 +9,8 @@
 #include "script.h"
 #include "arch_names.h"
 #include "relations.h"
+#include "lc_kinds.h"
+#include <mach-o/loader.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -826,6 +828,19 @@ static void test_retired_minimum_statements_are_unknown(void) {
     }
 }
 
+/* A header grow that raises a dylib deletes its LC_SEGMENT_SPLIT_INFO, and
+ * src/rewrite.c rebuilds the load commands after a grow expecting the same
+ * statements to match them: so no statement may name that command. */
+static void test_no_statement_names_split_info(void) {
+    uint32_t cmd = 0;
+    CHECK(lc_kind_by_name("uuid", &cmd) == 0 && cmd == LC_UUID,
+          "load-command kinds: uuid names LC_UUID (got %#x)", cmd);
+    for (size_t i = 0; i < LC_STRIP_KINDS_COUNT; i++)
+        CHECK(LC_STRIP_KINDS[i].cmd != LC_SEGMENT_SPLIT_INFO,
+              "load-command delete %s names LC_SEGMENT_SPLIT_INFO, which a grow may drop",
+              LC_STRIP_KINDS[i].name);
+}
+
 int main(void) {
     test_plain_fields();
     test_blank_and_comment();
@@ -870,6 +885,7 @@ int main(void) {
     test_minos_at_most_and_if_absent_take_a_version();
     test_retired_minimum_statements_are_unknown();
     test_objc_methods_set_takes_only_absolute();
+    test_no_statement_names_split_info();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
 }

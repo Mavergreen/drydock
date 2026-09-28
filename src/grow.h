@@ -116,7 +116,9 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
  * available); image base 0xOLD -> 0xNEW" for an executable, or "...;
- * contents raised by 0xN" for a dylib or bundle, ending "; repaired N
+ * contents raised by 0xN" for a dylib or bundle, then "; new UUID" if it
+ * has an LC_UUID (mg_raised_uuid), then "; dropped
+ * LC_SEGMENT_SPLIT_INFO" if the raise dropped it, ending "; repaired N
  * references to the header" (or "1 reference") when the grow repaired code
  * that addresses the image's own header (src/hdrref.h) or, lowering, moved
  * pointers to it (mg_header_pointers), counting both.
@@ -242,6 +244,7 @@ typedef struct {
     uint32_t nrefs;
     uint64_t *symval;
     uint8_t *symtype;
+    uint8_t *symaddr;
     uint32_t nsyms;
     mg_rebases rb;
 } mg_snapshot;
@@ -279,9 +282,11 @@ void mg_snapshot_free(mg_snapshot *s);
  * moved by that (an absolute export not at all); no two segments overlap in
  * memory; no code addresses the base as it is plus G, where an unrepaired
  * reference to the header would; every reference to the header the snapshot
- * recorded addresses the base as it is; each N_SECT symbol, not a stab, and
- * each rebase target's value, names the base as it is if it named the
- * header, and else what it named, moved; and the rebase targets are the same
+ * recorded addresses the base as it is; each symbol that holds an address a
+ * grow moves (mg_sym_address: an N_SECT symbol, not a stab; on a raise,
+ * also a stab that does), and each rebase target's value, names the base as
+ * it is if it named the header, and else what it named, moved; and the
+ * rebase targets are the same
  * slots, moved. -1 (with a message naming the first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
@@ -392,7 +397,17 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
 
 
 
-int mg_classify(const uint8_t *buf, size_t fsize);
+/* The UUID a raise of `grow` bytes gives an image whose LC_UUID held `old`:
+ * the first 16 bytes of SHA-256 over `old` and then `grow` as 8 bytes,
+ * little-endian, made an RFC 4122 version 4 UUID. A raised image's addresses
+ * all moved, so its old dSYM would describe it wrongly; the same input and
+ * grow always give the same UUID. `out` may be `old`. */
+void mg_raised_uuid(const uint8_t old[16], uint64_t grow, uint8_t out[16]);
+
+/* 0 if a grow can vouch for every load command and section type of the
+ * image, on the route `raise` says: LC_SEGMENT_SPLIT_INFO only on a raise,
+ * which drops it. Otherwise -1, having said why on stderr. */
+int mg_classify(const uint8_t *buf, size_t fsize, int raise);
 
 
 /* ---- plausibility: verification with no "before" to compare against --------
@@ -431,17 +446,21 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * So is one with a bind, weak bind or lazy bind in the segment that maps the
  * header, whose contents a grow moves out from under it, or bind opcodes it
  * cannot read.
- * So is one with an N_SECT symbol, not a stab, or an export, not an
- * absolute one, that names a byte strictly between the header and its first
- * content.
+ * So is one with a symbol that holds an address a grow moves (mg_sym_address:
+ * an N_SECT symbol, not a stab; on a raise, also a stab that does), or an
+ * export, not an absolute one, that names a byte strictly between the header
+ * and its first content. On a raise, it also refuses a stab of a type it
+ * does not know how to move (mg_stab_address).
  * So is one with bytes in an instruction section that name a byte strictly
  * between the header and its first content, which a grow moves apart,
  * unless decoding refutes that they are code (mhr_confirm_each).
  * Every confirmed reference is repaired: its
  * disp32 loses the grow, so it still reaches the header. So does the value
  * of each symbol that names the header (__mh_execute_header), and of each
- * rebased pointer that does. A failure partway through growing can leave the
- * buffer modified (see mg_ensure_pad).
+ * rebased pointer that does. A raise replaces LC_UUID (mg_raised_uuid), and
+ * deletes LC_SEGMENT_SPLIT_INFO, whose
+ * offsets it would leave stale, leaving its payload unreferenced. A failure
+ * partway through growing can leave the buffer modified (see mg_ensure_pad).
  */
 int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req);
 

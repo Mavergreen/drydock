@@ -4401,6 +4401,7 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
 #define DY_SPLIT  8
 #define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
 #define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
+#define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
 static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
 
 static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
@@ -4424,6 +4425,21 @@ static uint8_t *dy_lc(uint8_t **lc, struct mach_header_64 *h, uint32_t cmd, uint
     h->sizeofcmds += size;
     return at;
 }
+
+/* A debugging image's stabs, as ld64 writes them for a -g build: `at` is an
+ * offset from the base when `moves` (the value is an address), else the
+ * value itself. build_dylib_at's string table holds "x.h" at 33 and "a.o"
+ * at 37 with them. */
+static const struct { uint32_t strx; uint8_t type, sect; uint64_t at; int moves; } dy_stabs[15] = {
+    { 33, N_SO, NO_SECT, 0x5000, 0 },     { 37, N_OSO, 3, 0x6ab898db, 0 },
+    { 0, N_BNSYM, 1, 0x1010, 1 },         { 23, N_FUN, 1, 0x1010, 1 },
+    { 0, N_FUN, NO_SECT, 2, 0 },          { 0, N_ENSYM, 1, 2, 0 },
+    { 27, N_GSYM, NO_SECT, 0, 0 },        { 27, N_STSYM, 3, 0x2020, 1 },
+    { 0, N_LCSYM, 7, 0x3000, 1 },         { 0, N_SLINE, 1, 0x1011, 1 },
+    { 33, N_SOL, 1, 0x1010, 1 },          { 0, N_SO, 1, 0, 0 },
+    { 0, N_OPT, NO_SECT, 0, 0 },          { 0, N_OLEVEL, NO_SECT, 2, 0 },
+    { 37, N_AST, NO_SECT, 0, 0 },
+};
 
 static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     static const uint8_t rebase[16] = { 0x11, 0x21, 0x00, 0x53, 0x21, 0x30, 0x52, 0x00 };
@@ -4596,6 +4612,17 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
         nl[i].n_value = syms[i].type == (N_UNDF | N_EXT) ? 0 : base + syms[i].value;
     }
     memcpy(buf + 0x3200, strs, sizeof strs);
+    if (opts & DY_STABS) {
+        memcpy(buf + 0x3200 + sizeof strs, "x.h\0a.o", 8);
+        st->strsize += 8;
+        st->nsyms = 20;
+        for (int i = 0; i < 15; i++) {
+            nl[5 + i].n_un.n_strx = dy_stabs[i].strx;
+            nl[5 + i].n_type = dy_stabs[i].type;
+            nl[5 + i].n_sect = dy_stabs[i].sect;
+            nl[5 + i].n_value = dy_stabs[i].moves ? base + dy_stabs[i].at : dy_stabs[i].at;
+        }
+    }
     *fsize = DY_FSIZE;
     return buf;
 }
@@ -4911,7 +4938,7 @@ static void test_raise_rebuilds_a_widening_export_trie(void) {
 }
 
 /* A value strictly inside (base, base + F), or that no segment maps, cannot
- * be raised; nor can a debugging stab yet. */
+ * be raised. */
 static void test_raise_refuses_what_it_cannot_move(void) {
     size_t fsize;
     uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
@@ -4934,11 +4961,6 @@ static void test_raise_refuses_what_it_cannot_move(void) {
     dy_syms(buf, fsize)[3].n_value = DY_RAISED_AT + 16;
     check_grow_refuses_header_refs("a symbol inside the header", buf, fsize,
         "ERROR: symbol 3, \"_d\", names 0x10000010, between the header at 0x10000000");
-    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
-    dy_syms(buf, fsize)[4].n_type = N_FUN;
-    check_grow_refuses_header_refs("a stab", buf, fsize,
-        "ERROR: symbol 4, \"_x\", is a stab of type 0x24, which a raise does not know how to "
-        "move; refusing to grow");
     buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
     hr_plant(buf + 0x1000, DY_RAISED_AT + 0x1000, 2, 0x05, 0, DY_RAISED_AT + 16);
     check_grow_refuses_header_refs("code inside the header", buf, fsize,
@@ -5029,9 +5051,10 @@ static void test_raise_keeps_an_offset_no_segment_maps(void) {
 /* Verification, on the raise: each check_verify_rejects_raise undoes one
  * thing a correct raise did. */
 typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
-static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
+static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo undo,
+                                            const char *needle) {
     size_t fsize;
-    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
     mg_snapshot snap;
     if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "%s: snapshot", what); free(buf); return; }
     if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
@@ -5047,6 +5070,9 @@ static void check_verify_rejects_raise(const char *what, dy_undo undo, const cha
     free(err);
     mg_snapshot_free(&snap);
     free(buf);
+}
+static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
+    check_verify_rejects_raise_with(what, 0, undo, needle);
 }
 static void dy_unraise_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3009] -= 0x10; }
 static void dy_raise_header_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3001] += 0x10; }
@@ -5088,11 +5114,239 @@ static void test_ensure_pad_announces_a_raise(void) {
                       ((struct mach_header_64 *)buf)->sizeofcmds;
     char want[160];
     snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
-             "contents raised by 0x1000; repaired 1 reference to the header\n",
+             "contents raised by 0x1000; new UUID; repaired 1 reference to the header\n",
              DY_F - lc_end, DY_F + 0x1000 - lc_end);
     char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
     CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib: announced as '%s' (got %d):\n%s",
           want, r, err);
+    free(err);
+    free(buf);
+}
+
+/* ---- stabs on a raise ----
+ * A stab that holds an address names content, which moves, or the header,
+ * which does not; one that holds a size, a timestamp or nothing stays. The
+ * closing N_SO holds 0, the base of a dylib linked at 0. */
+static void check_raise_moves_the_stabs(uint64_t base) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(base, &fsize, DY_STABS);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "stabs: a raise at base %#llx succeeds (got %d)", (unsigned long long)base, r);
+    struct nlist_64 *nl = r == 0 ? dy_syms(buf, fsize) : NULL;
+    for (int i = 0; nl && i < 15; i++) {
+        uint64_t want = dy_stabs[i].moves ? base + dy_stabs[i].at + 0x1000 : dy_stabs[i].at;
+        CHECK(nl[5 + i].n_value == want, "stabs: at base %#llx, stab %d (type %#x) is %#llx, "
+              "want %#llx", (unsigned long long)base, i, dy_stabs[i].type,
+              (unsigned long long)nl[5 + i].n_value, (unsigned long long)want);
+    }
+    free(buf);
+}
+
+static void test_raise_moves_the_stabs_that_hold_addresses(void) {
+    check_raise_moves_the_stabs(0);
+    check_raise_moves_the_stabs(DY_RAISED_AT);
+}
+
+/* N_LSYM is a stab this does not know; an N_STSYM naming the header's
+ * inside names what a raise moves apart. */
+static void test_raise_refuses_stabs_it_cannot_move(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_STABS);
+    dy_syms(buf, fsize)[17].n_type = N_LSYM;
+    check_grow_refuses_header_refs("an N_LSYM", buf, fsize,
+        "ERROR: symbol 17, \"\", is a stab of type 0x80, which a raise does not know how to "
+        "move; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_STABS);
+    dy_syms(buf, fsize)[12].n_value = DY_RAISED_AT + 16;
+    check_grow_refuses_header_refs("an N_STSYM inside the header", buf, fsize,
+        "ERROR: symbol 12, \"_d\", names 0x10000010, between the header at 0x10000000");
+}
+
+/* A lowered executable's stabs stay, whatever they hold. */
+static void test_lowering_leaves_the_stabs(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    hsym(buf, fsize, 1)->n_type = N_FUN;
+    hsym(buf, fsize, 1)->n_un.n_strx = 1;
+    hsym(buf, fsize, 1)->n_value = 0x100000000ull;
+    memcpy(buf + 6720, "\0_f", 4);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && hsym(buf, fsize, 1)->n_value == 0x100000000ull,
+          "stabs: a lowering leaves a named N_FUN (got %d, %#llx)", r,
+          (unsigned long long)hsym(buf, fsize, 1)->n_value);
+    free(buf);
+}
+
+static void dy_unraise_stab(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[8].n_value -= 0x1000; }
+static void dy_raise_ensym(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[10].n_value += 0x1000; }
+
+static void test_verify_watches_the_stabs(void) {
+    check_verify_rejects_raise_with("a named N_FUN left where it was", DY_STABS, dy_unraise_stab,
+        "ERROR: verify FAILED -- symbol 8 is type 0x24, value 0x10001010 after the grow, and must "
+        "be type 0x24, value 0x10002010; refusing.");
+    check_verify_rejects_raise_with("an N_ENSYM's size raised", DY_STABS, dy_raise_ensym,
+        "symbol 10 is type 0x4e, value 0x1002 after the grow, and must be type 0x4e, value 0x2");
+}
+
+/* ---- split info ----
+ * A raise leaves LC_SEGMENT_SPLIT_INFO's offsets stale, so it deletes the
+ * command, and its payload (DY_SPLIT: 8 bytes of 0x5a) stays, unreferenced.
+ * A lowering refuses it, as before. */
+static void test_raise_drops_split_info(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib(&fsize, DY_SPLIT | DY_ROUTINES);
+    struct mach_header_64 h0 = *(struct mach_header_64 *)buf;
+    uint8_t *after = dy_find(buf, LC_SEGMENT_SPLIT_INFO) + sizeof(struct linkedit_data_command);
+    ((struct routines_command_64 *)after)->reserved6 = 0x5a5a5a5a5a5a5a5aull;   /* the last 8 bytes */
+    struct routines_command_64 rt0 = *(struct routines_command_64 *)after;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct routines_command_64 *rt = (struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64);
+    static const uint8_t payload[8] = { 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a };
+    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO) && h->ncmds == h0.ncmds - 1 &&
+          h->sizeofcmds == h0.sizeofcmds - sizeof(struct linkedit_data_command),
+          "split info: the raise deletes the command (got %d, %u commands, %u bytes)", r,
+          h->ncmds, h->sizeofcmds);
+    CHECK(rt && rt->cmdsize == rt0.cmdsize && rt->init_address == rt0.init_address + 0x1000 &&
+          rt->reserved6 == rt0.reserved6, "split info: the command after it moved down whole");
+    CHECK(memcmp(buf + 0x3098 + 0x1000, payload, sizeof payload) == 0,
+          "split info: its payload stays where it was");
+    CHECK(buf[sizeof *h + h->sizeofcmds] == 0 &&
+          memcmp(buf + sizeof *h + h->sizeofcmds, buf + sizeof *h + h->sizeofcmds + 1,
+                 sizeof(struct linkedit_data_command) - 1) == 0,
+          "split info: the bytes it held are zero");
+    free(buf);
+}
+
+static void test_raise_drops_every_split_info(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
+    hr_add_lc(buf, LC_SEGMENT_SPLIT_INFO, 0x3098, "\x5a\x5a\x5a\x5a\x5a\x5a\x5a\x5a", 8);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO),
+          "split info: a raise deletes both of two (got %d)", r);
+    free(buf);
+}
+
+static void test_lowering_refuses_split_info(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, 0);
+    hr_add_lc(buf, LC_SEGMENT_SPLIT_INFO, 6656, "\x5a\x5a\x5a\x5a\x5a\x5a\x5a\x5a", 8);
+    check_grow_refuses_header_refs("split info on an executable", buf, fsize,
+        "ERROR: LC_SEGMENT_SPLIT_INFO carries base-relative offsets that are not re-based");
+}
+
+/* LC_LOAD_UPWARD_DYLIB names a dylib, as LC_LOAD_DYLIB does, and nothing a
+ * grow moves; AppKit, HIToolbox, Metadata and ten of libSystem's parts carry
+ * one. */
+static void test_grow_takes_an_upward_dylib(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    ((struct load_command *)dy_find(buf, LC_LOAD_DYLIB))->cmd = LC_LOAD_UPWARD_DYLIB;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "upward: a dylib with an upward dylib is raised (got %d)", r);
+    free(buf);
+    buf = build_image(&fsize, &sect_off, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct dylib_command *d = (struct dylib_command *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    d->cmd = LC_LOAD_UPWARD_DYLIB;
+    d->cmdsize = 32;
+    d->dylib.name.offset = sizeof *d;
+    memcpy(d + 1, "/x", 3);
+    h->ncmds++;
+    h->sizeofcmds += 32;
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "upward: an executable with an upward dylib is lowered (got %d)", r);
+    free(buf);
+}
+
+static void test_ensure_pad_announces_dropped_split_info(void) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
+    uint32_t lc_end = (uint32_t)sizeof(struct mach_header_64) +
+                      ((struct mach_header_64 *)buf)->sizeofcmds;
+    char want[192];
+    snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
+             "contents raised by 0x1000; new UUID; dropped LC_SEGMENT_SPLIT_INFO; repaired 1 "
+             "reference to the header\n", DY_F - lc_end, DY_F + 0x1000 - lc_end + 16);
+    char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
+    CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib with split info: announced "
+          "as '%s' (got %d):\n%s", want, r, err);
+    free(err);
+    free(buf);
+}
+
+/* ---- the UUID ----
+ * build_dylib's UUID is 10 11 ... 1f. The digests, taken with shasum -a 256
+ * over those 16 bytes and then 00 10 00 00 00 00 00 00 (or 00 20 ...), begin
+ * 02990cf9 272abb54 62af123c 32f75b2f and e5407efb 8d35fadb 31323fb6
+ * 50fa04b5; the version nibble and variant bits make them these. */
+static const uint8_t dy_uuid_raised[2][16] = {
+    { 0x02, 0x99, 0x0c, 0xf9, 0x27, 0x2a, 0x4b, 0x54, 0xa2, 0xaf, 0x12, 0x3c, 0x32, 0xf7, 0x5b, 0x2f },
+    { 0xe5, 0x40, 0x7e, 0xfb, 0x8d, 0x35, 0x4a, 0xdb, 0xb1, 0x32, 0x3f, 0xb6, 0x50, 0xfa, 0x04, 0xb5 },
+};
+
+static void test_raised_uuid_is_derived(void) {
+    uint8_t old[16], out[16];
+    for (int i = 0; i < 16; i++) old[i] = (uint8_t)(0x10 + i);
+    mg_raised_uuid(old, 0x1000, out);
+    CHECK(memcmp(out, dy_uuid_raised[0], 16) == 0, "uuid: raised by 0x1000");
+    mg_raised_uuid(old, 0x2000, out);
+    CHECK(memcmp(out, dy_uuid_raised[1], 16) == 0, "uuid: raised by 0x2000");
+    memcpy(out, old, 16);
+    mg_raised_uuid(out, 0x1000, out);
+    CHECK(memcmp(out, dy_uuid_raised[0], 16) == 0, "uuid: derived in place");
+}
+
+static void test_raise_replaces_the_uuid(void) {
+    static const uint32_t req[2] = { 0x1000, 0x1001 };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib(&fsize, 0);
+        int r = mg_grow_header(&buf, &fsize, req[i]);
+        struct uuid_command *u = (struct uuid_command *)find_lc(buf, fsize, LC_UUID);
+        CHECK(r == 0 && u && memcmp(u->uuid, dy_uuid_raised[i], 16) == 0,
+              "uuid: a raise by %#x replaces it (got %d)", i ? 0x2000 : 0x1000, r);
+        free(buf);
+    }
+}
+
+/* A lowering moves no address a dSYM holds, so it keeps its UUID. */
+static void test_lowering_keeps_the_uuid(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct uuid_command *u = (struct uuid_command *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    u->cmd = LC_UUID;
+    u->cmdsize = sizeof *u;
+    for (int i = 0; i < 16; i++) u->uuid[i] = (uint8_t)(0x10 + i);
+    h->ncmds++;
+    h->sizeofcmds += sizeof *u;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    u = (struct uuid_command *)find_lc(buf, fsize, LC_UUID);
+    CHECK(r == 0 && u && u->uuid[0] == 0x10 && u->uuid[15] == 0x1f,
+          "uuid: a lowering keeps it (got %d)", r);
+    free(buf);
+}
+
+static void test_raise_refuses_a_short_uuid(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_UUID;
+    check_grow_refuses_header_refs("a short LC_UUID", buf, fsize,
+        "ERROR: LC_UUID is 16 bytes, too short to hold its UUID; refusing to grow");
+}
+
+/* Without an LC_UUID, a raise has none to replace, and says nothing of one. */
+static void test_ensure_pad_announces_no_uuid_it_has_not(void) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    ((struct load_command *)dy_find(buf, LC_UUID))->cmd = LC_SOURCE_VERSION;
+    char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
+    CHECK(r == 0 && strstr(err, "contents raised by 0x1000; repaired 1 reference") != NULL,
+          "ensure_pad on a dylib with no UUID: says no new one (got %d):\n%s", r, err);
     free(err);
     free(buf);
 }
@@ -5258,6 +5512,20 @@ int main(void) {
     test_raise_leaves_an_export_at_offset_0();
     test_raise_leaves_an_absolute_export_alone();
     test_raise_leaves_a_symbol_below_the_base();
+    test_raise_moves_the_stabs_that_hold_addresses();
+    test_raise_refuses_stabs_it_cannot_move();
+    test_lowering_leaves_the_stabs();
+    test_verify_watches_the_stabs();
+    test_raise_drops_split_info();
+    test_raise_drops_every_split_info();
+    test_lowering_refuses_split_info();
+    test_ensure_pad_announces_dropped_split_info();
+    test_grow_takes_an_upward_dylib();
+    test_raised_uuid_is_derived();
+    test_raise_replaces_the_uuid();
+    test_lowering_keeps_the_uuid();
+    test_raise_refuses_a_short_uuid();
+    test_ensure_pad_announces_no_uuid_it_has_not();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
