@@ -116,7 +116,8 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize);
  * caller held into the buffer is stale. A grow is always announced, on
  * stderr, in one line: "LABEL: grew the header pad by N bytes (A -> B
  * available); image base 0xOLD -> 0xNEW" for an executable, or "...;
- * contents raised by 0xN" for a dylib or bundle, then "; dropped
+ * contents raised by 0xN" for a dylib or bundle, then "; new UUID" if it
+ * has an LC_UUID (mg_raised_uuid), then "; dropped
  * LC_SEGMENT_SPLIT_INFO" if the raise dropped it, ending "; repaired N
  * references to the header" (or "1 reference") when the grow repaired code
  * that addresses the image's own header (src/hdrref.h) or, lowering, moved
@@ -396,6 +397,13 @@ int mg_trie_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
 
 
 
+/* The UUID a raise of `grow` bytes gives an image whose LC_UUID held `old`:
+ * the first 16 bytes of SHA-256 over `old` and then `grow` as 8 bytes,
+ * little-endian, made an RFC 4122 version 4 UUID. A raised image's addresses
+ * all moved, so its old dSYM would describe it wrongly; the same input and
+ * grow always give the same UUID. `out` may be `old`. */
+void mg_raised_uuid(const uint8_t old[16], uint64_t grow, uint8_t out[16]);
+
 /* 0 if a grow can vouch for every load command and section type of the
  * image, on the route `raise` says: LC_SEGMENT_SPLIT_INFO only on a raise,
  * which drops it. Otherwise -1, having said why on stderr. */
@@ -449,7 +457,8 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * Every confirmed reference is repaired: its
  * disp32 loses the grow, so it still reaches the header. So does the value
  * of each symbol that names the header (__mh_execute_header), and of each
- * rebased pointer that does. A raise deletes LC_SEGMENT_SPLIT_INFO, whose
+ * rebased pointer that does. A raise replaces LC_UUID (mg_raised_uuid), and
+ * deletes LC_SEGMENT_SPLIT_INFO, whose
  * offsets it would leave stale, leaving its payload unreferenced. A failure
  * partway through growing can leave the buffer modified (see mg_ensure_pad).
  */

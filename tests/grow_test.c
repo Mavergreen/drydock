@@ -5037,7 +5037,7 @@ static void test_ensure_pad_announces_a_raise(void) {
                       ((struct mach_header_64 *)buf)->sizeofcmds;
     char want[160];
     snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
-             "contents raised by 0x1000; repaired 1 reference to the header\n",
+             "contents raised by 0x1000; new UUID; repaired 1 reference to the header\n",
              DY_F - lc_end, DY_F + 0x1000 - lc_end);
     char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
     CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib: announced as '%s' (got %d):\n%s",
@@ -5191,11 +5191,85 @@ static void test_ensure_pad_announces_dropped_split_info(void) {
                       ((struct mach_header_64 *)buf)->sizeofcmds;
     char want[192];
     snprintf(want, sizeof want, "t: grew the header pad by 4096 bytes (%u -> %u available); "
-             "contents raised by 0x1000; dropped LC_SEGMENT_SPLIT_INFO; repaired 1 reference to "
-             "the header\n", DY_F - lc_end, DY_F + 0x1000 - lc_end + 16);
+             "contents raised by 0x1000; new UUID; dropped LC_SEGMENT_SPLIT_INFO; repaired 1 "
+             "reference to the header\n", DY_F - lc_end, DY_F + 0x1000 - lc_end + 16);
     char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
     CHECK(r == 0 && strcmp(err, want) == 0, "ensure_pad on a dylib with split info: announced "
           "as '%s' (got %d):\n%s", want, r, err);
+    free(err);
+    free(buf);
+}
+
+/* ---- the UUID ----
+ * build_dylib's UUID is 10 11 ... 1f. The digests, taken with shasum -a 256
+ * over those 16 bytes and then 00 10 00 00 00 00 00 00 (or 00 20 ...), begin
+ * 02990cf9 272abb54 62af123c 32f75b2f and e5407efb 8d35fadb 31323fb6
+ * 50fa04b5; the version nibble and variant bits make them these. */
+static const uint8_t dy_uuid_raised[2][16] = {
+    { 0x02, 0x99, 0x0c, 0xf9, 0x27, 0x2a, 0x4b, 0x54, 0xa2, 0xaf, 0x12, 0x3c, 0x32, 0xf7, 0x5b, 0x2f },
+    { 0xe5, 0x40, 0x7e, 0xfb, 0x8d, 0x35, 0x4a, 0xdb, 0xb1, 0x32, 0x3f, 0xb6, 0x50, 0xfa, 0x04, 0xb5 },
+};
+
+static void test_raised_uuid_is_derived(void) {
+    uint8_t old[16], out[16];
+    for (int i = 0; i < 16; i++) old[i] = (uint8_t)(0x10 + i);
+    mg_raised_uuid(old, 0x1000, out);
+    CHECK(memcmp(out, dy_uuid_raised[0], 16) == 0, "uuid: raised by 0x1000");
+    mg_raised_uuid(old, 0x2000, out);
+    CHECK(memcmp(out, dy_uuid_raised[1], 16) == 0, "uuid: raised by 0x2000");
+    memcpy(out, old, 16);
+    mg_raised_uuid(out, 0x1000, out);
+    CHECK(memcmp(out, dy_uuid_raised[0], 16) == 0, "uuid: derived in place");
+}
+
+static void test_raise_replaces_the_uuid(void) {
+    static const uint32_t req[2] = { 0x1000, 0x1001 };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib(&fsize, 0);
+        int r = mg_grow_header(&buf, &fsize, req[i]);
+        struct uuid_command *u = (struct uuid_command *)find_lc(buf, fsize, LC_UUID);
+        CHECK(r == 0 && u && memcmp(u->uuid, dy_uuid_raised[i], 16) == 0,
+              "uuid: a raise by %#x replaces it (got %d)", i ? 0x2000 : 0x1000, r);
+        free(buf);
+    }
+}
+
+/* A lowering moves no address a dSYM holds, so it keeps its UUID. */
+static void test_lowering_keeps_the_uuid(void) {
+    size_t fsize; uint32_t sect_off;
+    uint8_t *buf = build_image(&fsize, &sect_off, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct uuid_command *u = (struct uuid_command *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    u->cmd = LC_UUID;
+    u->cmdsize = sizeof *u;
+    for (int i = 0; i < 16; i++) u->uuid[i] = (uint8_t)(0x10 + i);
+    h->ncmds++;
+    h->sizeofcmds += sizeof *u;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    u = (struct uuid_command *)find_lc(buf, fsize, LC_UUID);
+    CHECK(r == 0 && u && u->uuid[0] == 0x10 && u->uuid[15] == 0x1f,
+          "uuid: a lowering keeps it (got %d)", r);
+    free(buf);
+}
+
+static void test_raise_refuses_a_short_uuid(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_UUID;
+    check_grow_refuses_header_refs("a short LC_UUID", buf, fsize,
+        "ERROR: LC_UUID is 16 bytes, too short to hold its UUID; refusing to grow");
+}
+
+/* Without an LC_UUID, a raise has none to replace, and says nothing of one. */
+static void test_ensure_pad_announces_no_uuid_it_has_not(void) {
+    size_t fsize;
+    int r;
+    uint8_t *buf = build_dylib(&fsize, 0);
+    ((struct load_command *)dy_find(buf, LC_UUID))->cmd = LC_SOURCE_VERSION;
+    char *err = ensure_pad_stderr(&buf, &fsize, DY_F + 1, &r);
+    CHECK(r == 0 && strstr(err, "contents raised by 0x1000; repaired 1 reference") != NULL,
+          "ensure_pad on a dylib with no UUID: says no new one (got %d):\n%s", r, err);
     free(err);
     free(buf);
 }
@@ -5369,6 +5443,11 @@ int main(void) {
     test_lowering_refuses_split_info();
     test_ensure_pad_announces_dropped_split_info();
     test_grow_takes_an_upward_dylib();
+    test_raised_uuid_is_derived();
+    test_raise_replaces_the_uuid();
+    test_lowering_keeps_the_uuid();
+    test_raise_refuses_a_short_uuid();
+    test_ensure_pad_announces_no_uuid_it_has_not();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

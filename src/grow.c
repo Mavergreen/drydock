@@ -1,5 +1,6 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
+#include <CommonCrypto/CommonDigest.h>
 #include <mach-o/nlist.h>
 #include <mach-o/stab.h>
 #include <stdarg.h>
@@ -93,6 +94,7 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     uint64_t base_before = mg_base_of(*pbuf, *pfsize);
     int raise = hdr->filetype == MH_DYLIB || hdr->filetype == MH_BUNDLE;
     int split = raise && mg_has_cmd(*pbuf, *pfsize, LC_SEGMENT_SPLIT_INFO);
+    int uuid = raise && mg_has_cmd(*pbuf, *pfsize, LC_UUID);
     int64_t refs = mhr_scan(*pbuf, *pfsize, base_before, NULL, NULL);
     char why[256];
     int64_t ptrs = raise ? 0 : mg_header_pointers(*pbuf, *pfsize, base_before, first, 0, 0, why,
@@ -120,7 +122,7 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     fprintf(stderr, "%s: grew the header pad by %u bytes (%u -> %u available); ", label,
             first - first_before, pad_avail, first - (uint32_t)sizeof *hdr - hdr->sizeofcmds);
     if (raise)
-        fprintf(stderr, "contents raised by %#x", first - first_before);
+        fprintf(stderr, "contents raised by %#x%s", first - first_before, uuid ? "; new UUID" : "");
     else
         fprintf(stderr, "image base %#llx -> %#llx", (unsigned long long)base_before,
                 (unsigned long long)mg_base_of(*pbuf, *pfsize));
@@ -1563,13 +1565,28 @@ static int mg_patch_cb(const struct load_command *lc_in, void *ctx_) {
     return 0;
 }
 
+void mg_raised_uuid(const uint8_t old[16], uint64_t grow, uint8_t out[16]) {
+    uint8_t in[24], digest[CC_SHA256_DIGEST_LENGTH];
+    memcpy(in, old, 16);
+    for (int i = 0; i < 8; i++) in[16 + i] = (uint8_t)(grow >> (8 * i));
+    CC_SHA256(in, (CC_LONG)sizeof in, digest);
+    memcpy(out, digest, 16);
+    out[6] = (uint8_t)((out[6] & 0x0f) | 0x40);
+    out[8] = (uint8_t)((out[8] & 0x3f) | 0x80);
+}
+
 /* mg_grow_header's mi_each_lc callback for a raise's geometry: every segment
  * but the one that maps the header moves up `grow` in memory, and in the
  * file when its data lies past the insert; the header's segment grows by
  * `grow`; every section's address, and LC_ROUTINES_64's initializer, moves
- * up `grow`. */
+ * up `grow`; LC_UUID is replaced (mg_raised_uuid). */
 static int mg_raise_cb(const struct load_command *lc_in, void *ctx_) {
     struct mg_patch_ctx *ctx = (struct mg_patch_ctx *)ctx_;
+    if (lc_in->cmd == LC_UUID) {
+        struct uuid_command *u = (struct uuid_command *)lc_in;
+        mg_raised_uuid(u->uuid, ctx->grow, u->uuid);
+        return 0;
+    }
     if (lc_in->cmd == LC_ROUTINES_64) {
         ((struct routines_command_64 *)lc_in)->init_address += ctx->grow;
         return 0;
@@ -1845,6 +1862,11 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         c->loc += d->nlocrel;
         return 0;
     }
+    case LC_UUID:
+        if (lc->cmdsize >= sizeof(struct uuid_command)) return 0;
+        fprintf(stderr, "ERROR: LC_UUID is %u bytes, too short to hold its UUID; refusing to "
+                        "grow\n", lc->cmdsize);
+        return 1;
     case LC_ROUTINES_64:
         if (lc->cmdsize >= sizeof(struct routines_command_64)) return 0;
         fprintf(stderr, "ERROR: LC_ROUTINES_64 is %u bytes, too short to hold init_address; "
