@@ -240,6 +240,8 @@ typedef struct {
     uint64_t base;
     uint32_t first;
     int raise;
+    uint8_t *old;        /* a raise's image as it was, for its byte check */
+    size_t oldsize;
     mhr_cand *refs;
     uint32_t nrefs;
     uint64_t *symval;
@@ -287,7 +289,15 @@ void mg_snapshot_free(mg_snapshot *s);
  * also a stab that does), and each rebase target's value, names the base as
  * it is if it named the header, and else what it named, moved; and the
  * rebase targets are the same
- * slots, moved. -1 (with a message naming the first failure) otherwise. */
+ * slots, moved. On a raise, also: the header is the same; each load command
+ * is byte for byte what the raise makes of the old one (its segment, section
+ * and initializer addresses, file offsets, and UUID); the pad the old one had
+ * is as it was and the inserted G bytes are zero; and from the first section
+ * on, the file is the old one G bytes further on, except where a check above
+ * watches: the rebased pointers, the repaired code, the symbols' values, the
+ * export trie, the leading function start, data in code's offsets, compact
+ * unwind and S_INIT_FUNC_OFFSETS. -1 (with a message naming the first
+ * failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 

@@ -747,6 +747,8 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->nsyms = 0;
     memset(&s->rb, 0, sizeof s->rb);
     s->kinds = NULL;
+    s->old = NULL;
+    s->oldsize = 0;
     s->first = mg_first_sect_off(buf, fsize);
     s->raise = h->filetype == MH_DYLIB || h->filetype == MH_BUNDLE;
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
@@ -767,6 +769,13 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
         s->symtype[i] = nl[i].n_type;
         s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
     }
+    if (!s->raise) return 0;
+    if (!(s->old = (uint8_t *)malloc(fsize + 1))) {
+        mg_snapshot_free(s);
+        return -1;
+    }
+    memcpy(s->old, buf, fsize);
+    s->oldsize = fsize;
     return 0;
 }
 
@@ -777,6 +786,7 @@ void mg_snapshot_free(mg_snapshot *s) {
     free(s->symval); s->symval = NULL;
     free(s->symtype); s->symtype = NULL;
     free(s->symaddr); s->symaddr = NULL; s->nsyms = 0;
+    free(s->old); s->old = NULL; s->oldsize = 0;
     mg_rebases_free(&s->rb);
 }
 
@@ -925,6 +935,148 @@ static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsi
     return rc;
 }
 
+/* What a raise of `grow` makes of a load command, derived from the old one
+ * alone: mg_verify_bytes compares it with what the raise made. */
+struct mg_expect_ctx { uint32_t first; uint32_t grow; };
+static int mg_expect_cb(const struct load_command *lc_in, void *ctx_) {
+    struct mg_expect_ctx *x = (struct mg_expect_ctx *)ctx_;
+    if (lc_in->cmd == LC_UUID) {
+        struct uuid_command *u = (struct uuid_command *)lc_in;
+        mg_raised_uuid(u->uuid, x->grow, u->uuid);
+    } else if (lc_in->cmd == LC_ROUTINES_64) {
+        ((struct routines_command_64 *)lc_in)->init_address += x->grow;
+    } else if (lc_in->cmd == LC_SEGMENT_64) {
+        struct segment_command_64 *seg = (struct segment_command_64 *)lc_in;
+        struct section_64 *s = (struct section_64 *)(seg + 1);
+        int header = seg->fileoff == 0 && seg->filesize > 0;
+        seg->vmaddr += header ? 0 : x->grow;
+        seg->vmsize += header ? x->grow : 0;
+        seg->filesize += header ? x->grow : 0;
+        seg->fileoff += seg->fileoff >= x->first ? x->grow : 0;
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            s[j].addr += x->grow;
+            s[j].offset += s[j].offset >= x->first ? x->grow : 0;
+            s[j].reloff += s[j].reloff >= x->first ? x->grow : 0;
+        }
+    }
+    return 0;
+}
+static int mg_expect_off(uint32_t *off, uint32_t cmd, int flags, void *ctx_) {
+    struct mg_expect_ctx *x = (struct mg_expect_ctx *)ctx_;
+    (void)cmd; (void)flags;
+    *off += *off >= x->first ? x->grow : 0;
+    return 0;
+}
+
+/* The command that locates the export trie, and __LINKEDIT's sizes, in `to`
+ * become those of `from`: a rebuilt trie that does not fit is appended past
+ * __LINKEDIT's end, and check 1 resolves the command's other offsets. Both
+ * hold the same load commands. */
+static void mg_expect_appended_trie(uint8_t *to, size_t tosize, const uint8_t *from,
+                                    size_t fromsize) {
+    mi_image ti, fi;
+    long toff, foff;
+    uint32_t tcmd, fcmd;
+    if (mi_wrap(to, tosize, &ti) != 0 || mi_wrap((uint8_t *)from, fromsize, &fi) != 0) return;
+    struct segment_command_64 *tl = mi_find_segment(&ti, "__LINKEDIT");
+    struct segment_command_64 *fl = mi_find_segment(&fi, "__LINKEDIT");
+    if (tl && fl) {
+        tl->filesize = fl->filesize;
+        tl->vmsize = fl->vmsize;
+    }
+    if (mg_find_trie_lc(to, tosize, &toff, &tcmd) && mg_find_trie_lc(from, fromsize, &foff, &fcmd))
+        memcpy(to + toff, from + foff, ((const struct load_command *)(to + toff))->cmdsize);
+}
+
+/* Marks old[lo, lo + len) as bytes check 3 does not compare, within n. */
+static void mg_exempt(uint8_t *mask, size_t n, uint64_t lo, uint64_t len) {
+    for (uint64_t i = lo; i < lo + len && i < n; i++) mask[i] = 1;
+}
+
+struct mg_exempt_ctx { const uint8_t *old; size_t n; uint8_t *mask; };
+static int mg_exempt_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_exempt_ctx *x = (struct mg_exempt_ctx *)ctx_;
+    const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+    if (lc->cmd == LC_SYMTAB) {
+        const struct symtab_command *st = (const struct symtab_command *)lc;
+        for (uint32_t i = 0; i < st->nsyms; i++)
+            mg_exempt(x->mask, x->n, st->symoff + 16ull * i + 8, 8);        /* n_value */
+    } else if (lc->cmd == LC_FUNCTION_STARTS && d->datasize && d->dataoff < x->n) {
+        uint64_t v;
+        uint64_t end = (uint64_t)d->dataoff + d->datasize > x->n ? x->n : d->dataoff + d->datasize;
+        mg_exempt(x->mask, x->n, d->dataoff,
+                  (uint64_t)mu_decode(x->old + d->dataoff, x->old + end, &v));
+    } else if (lc->cmd == LC_DATA_IN_CODE) {
+        for (uint32_t k = 0; k + 8 <= d->datasize; k += 8)
+            mg_exempt(x->mask, x->n, (uint64_t)d->dataoff + k, 4);            /* offset */
+    } else if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *s = (const struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++)
+            if ((s[j].flags & SECTION_TYPE) == S_INIT_FUNC_OFFSETS ||
+                strncmp(s[j].sectname, "__unwind_info", sizeof s[j].sectname) == 0)
+                mg_exempt(x->mask, x->n, s[j].offset, s[j].size);
+    }
+    return 0;
+}
+
+/* Check 3 of a raise (see mg_verify). */
+static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
+                           uint64_t grow) {
+    const uint8_t *old = before->old;
+    size_t n = before->oldsize, lcend = sizeof(struct mach_header_64) +
+                                        ((const struct mach_header_64 *)old)->sizeofcmds;
+    uint32_t first = before->first, toff, tsize;
+    int rc = -1;
+    if (fsize < n + grow || memcmp(old, buf, sizeof(struct mach_header_64)) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- the grown image's header, or its size (%zu bytes), "
+                        "is not the original's with %llu more; refusing.\n", fsize,
+                (unsigned long long)grow);
+        return -1;
+    }
+    uint8_t *want = (uint8_t *)malloc(lcend), *mask = (uint8_t *)calloc(n + 1, 1);
+    mi_image wim, oim;
+    struct mg_expect_ctx x = { first, (uint32_t)grow };
+    struct mg_exempt_ctx e = { old, n, mask };
+    if (!want || !mask || mi_wrap(memcpy(want, old, lcend), lcend, &wim) != 0 ||
+        mi_wrap((uint8_t *)old, n, &oim) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- could not read the image as it was; refusing.\n");
+        goto out;
+    }
+    mi_each_lc(&wim, mg_expect_cb, &x);
+    ml_each_off(&wim, mg_expect_off, &x);
+    if (fsize > n + grow) mg_expect_appended_trie(want, lcend, buf, fsize);
+    for (size_t i = sizeof(struct mach_header_64); i < lcend; i++) {
+        if (want[i] == buf[i]) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- load-command byte %#zx holds %#x after the grow, "
+                        "and must hold %#x; refusing.\n", i, buf[i], want[i]);
+        goto out;
+    }
+    for (size_t i = lcend; i < first + grow; i++) {
+        uint8_t w = i < first ? old[i] : 0;
+        if (buf[i] == w) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- header pad byte %#zx holds %#x after the grow, "
+                        "and must hold %#x; refusing.\n", i, buf[i], w);
+        goto out;
+    }
+    mi_each_lc(&oim, mg_exempt_cb, &e);
+    if (mg_find_trie(old, n, &toff, &tsize)) mg_exempt(mask, n, toff, tsize);
+    for (size_t i = 0; i < before->rb.s.n; i++) mg_exempt(mask, n, before->rb.v[i].at, 8);
+    for (uint32_t i = 0; i < before->nrefs; i++) mg_exempt(mask, n, before->refs[i].off, 4);
+    for (size_t i = first; i < n; i++) {
+        if (mask[i] || buf[i + grow] == old[i]) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- file offset %#llx holds %#x after the grow, and "
+                        "must hold %#x, as file offset %#zx did before it; refusing.\n",
+                (unsigned long long)(i + grow), buf[i + grow], old[i], i);
+        goto out;
+    }
+    rc = 0;
+out:
+    free(want);
+    free(mask);
+    return rc;
+}
+
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     uint64_t grow = (uint64_t)mg_first_sect_off(buf, fsize) - before->first;
     uint64_t delta = before->raise ? grow : 0;
@@ -973,7 +1125,8 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     if (mi_image_base(&im, &base) != 0) return -1;
     if (mg_verify_symbols(&im, fsize, before, base, delta) != 0) return -1;
     if (mg_verify_pointers(&im, buf, fsize, before, base, delta) != 0) return -1;
-    return mg_verify_refs(buf, fsize, before, base, grow, delta);
+    if (mg_verify_refs(buf, fsize, before, base, grow, delta) != 0) return -1;
+    return before->raise ? mg_verify_bytes(buf, fsize, before, grow) : 0;
 }
 
 int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {

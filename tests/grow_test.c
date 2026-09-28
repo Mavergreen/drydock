@@ -4325,6 +4325,7 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
 #define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
 #define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
 #define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
+#define DY_INITOFF 64    /* __TEXT,__init_offsets at 0x1120: f2 */
 static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
 
 static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
@@ -4384,7 +4385,7 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     h->filetype = MH_DYLIB;
     h->flags = MH_DYLDLINK | MH_TWOLEVEL | MH_NOUNDEFS;
 
-    int ntext = (opts & DY_UNWIND) ? 4 : 2;
+    int ntext = 2 + 2 * !!(opts & DY_UNWIND) + !!(opts & DY_INITOFF);
     struct segment_command_64 *tx = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
         sizeof *tx + ntext * sizeof(struct section_64));
     strcpy(tx->segname, "__TEXT");
@@ -4401,6 +4402,8 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
         s = dy_sect(s, "__TEXT", "__gcc_except_tab", base + 0x1180, 0x10, 0x1180, 0);
         s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
     }
+    if (opts & DY_INITOFF)
+        s = dy_sect(s, "__TEXT", "__init_offsets", base + 0x1120, 4, 0x1120, S_INIT_FUNC_OFFSETS);
 
     struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
         sizeof *da + 5 * sizeof(struct section_64));
@@ -4500,6 +4503,7 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     memcpy(buf + 0x1003, &disp, sizeof disp);
     buf[0x1007] = 0xc3;
     buf[0x1010] = 0x55; buf[0x1011] = 0xc3;
+    if (opts & DY_INITOFF) { uint32_t f2 = 0x1010; memcpy(buf + 0x1120, &f2, sizeof f2); }
     if (opts & DY_UNWIND) {
         uint32_t *uw = (uint32_t *)(buf + 0x1800);
         uw[0] = 1; uw[3] = 28; uw[4] = 1; uw[5] = 32; uw[6] = 2;
@@ -5274,6 +5278,95 @@ static void test_ensure_pad_announces_no_uuid_it_has_not(void) {
     free(buf);
 }
 
+/* ---- verification: the raise's bytes ----
+ * A correct raise, then one planted change that only the byte check sees. */
+static void dy_flip_code(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2011] ^= 1; }
+static void dy_realign(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) == 0) mi_find_section(&im, "__TEXT", "__stub_helper")->align = 4;
+}
+static void dy_move_stub_helper(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) == 0) mi_find_section(&im, "__TEXT", "__stub_helper")->addr++;
+}
+static void dy_reprotect(uint8_t *buf, size_t fsize) { seg_named(buf, fsize, "__DATA")->maxprot = 7; }
+static void dy_misroute(uint8_t *buf, size_t fsize) {
+    ((struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64))->init_address++;
+}
+static void dy_keep_uuid(uint8_t *buf, size_t fsize) {
+    struct uuid_command *u = (struct uuid_command *)find_lc(buf, fsize, LC_UUID);
+    for (int i = 0; i < 16; i++) u->uuid[i] = (uint8_t)(0x10 + i);
+}
+static void dy_dirty_pad(uint8_t *buf, size_t fsize) { (void)fsize; buf[DY_F + 0x10] = 1; }
+static void dy_dirty_old_pad(uint8_t *buf, size_t fsize) { (void)fsize; buf[DY_F - 1] = 1; }
+static void dy_redesc(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[1].n_desc = 0x10; }
+static void dy_relength_dic(uint8_t *buf, size_t fsize) {
+    struct linkedit_data_command *dc = (struct linkedit_data_command *)find_lc(buf, fsize, LC_DATA_IN_CODE);
+    buf[dc->dataoff + 4]++;
+}
+static void dy_restart(uint8_t *buf, size_t fsize) {
+    struct linkedit_data_command *fs = (struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
+    buf[fs->dataoff + 2]++;                            /* the second start */
+}
+static void dy_reflag(uint8_t *buf, size_t fsize) { (void)fsize; ((struct mach_header_64 *)buf)->flags |= MH_PIE; }
+
+static void test_verify_watches_the_raised_bytes(void) {
+    check_verify_rejects_raise("a byte of code changed", dy_flip_code,
+        "ERROR: verify FAILED -- file offset 0x2011 holds 0xc2 after the grow, and must hold 0xc3, "
+        "as file offset 0x1011 did before it; refusing.");
+    check_verify_rejects_raise("a section's alignment changed", dy_realign,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("a section's address off by one", dy_move_stub_helper,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("a segment's protection changed", dy_reprotect,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("LC_ROUTINES_64 off by one", dy_misroute,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("the UUID kept", dy_keep_uuid,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("a byte of the inserted pad set", dy_dirty_pad,
+        "ERROR: verify FAILED -- header pad byte 0x1010 holds 0x1 after the grow, and must hold "
+        "0; refusing.");
+    check_verify_rejects_raise("a byte of the original pad set", dy_dirty_old_pad,
+        "ERROR: verify FAILED -- header pad byte 0xfff holds 0x1 after the grow, and must hold 0");
+    check_verify_rejects_raise("a symbol's n_desc changed", dy_redesc, "as file offset 0x30b6 did");
+    check_verify_rejects_raise("data in code's length changed", dy_relength_dic,
+        "as file offset 0x3094 did");
+    check_verify_rejects_raise("a later function start changed", dy_restart,
+        "as file offset 0x3082 did");
+    check_verify_rejects_raise("the header's flags changed", dy_reflag,
+        "ERROR: verify FAILED -- the grown image's header, or its size (17152 bytes), is not the "
+        "original's with 4096 more; refusing.");
+}
+
+/* The raise moves a section's relocation offset with the file, and keeps
+ * the pad it found, whatever it held. */
+static void test_raise_moves_a_relocation_offset_and_keeps_the_pad(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    mi_image im;
+    mi_wrap(buf, fsize, &im);
+    mi_find_section(&im, "__DATA", "__data")->reloff = 0x3000;
+    buf[DY_F - 1] = 0xaa;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mi_wrap(buf, fsize, &im);
+    CHECK(r == 0 && mi_find_section(&im, "__DATA", "__data")->reloff == 0x4000 &&
+          buf[DY_F - 1] == 0xaa, "raise: a relocation offset moves, and the pad stays (got %d)", r);
+    free(buf);
+}
+
+/* What the byte check leaves to the others it does not see as a change:
+ * S_INIT_FUNC_OFFSETS raised, as mg_collect watches. */
+static void test_raise_moves_the_initializer_offsets(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL | DY_INITOFF, 0x1000);
+    if (!buf) return;
+    uint32_t v;
+    memcpy(&v, buf + 0x2120, sizeof v);
+    CHECK(v == 0x2010, "raise: the initializer offset is %#x, want 0x2010", v);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -5448,6 +5541,9 @@ int main(void) {
     test_lowering_keeps_the_uuid();
     test_raise_refuses_a_short_uuid();
     test_ensure_pad_announces_no_uuid_it_has_not();
+    test_verify_watches_the_raised_bytes();
+    test_raise_moves_the_initializer_offsets();
+    test_raise_moves_a_relocation_offset_and_keeps_the_pad();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
