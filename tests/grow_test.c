@@ -4324,6 +4324,7 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
 #define DY_SPLIT  8
 #define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
 #define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
+#define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
 static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
 
 static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
@@ -4347,6 +4348,21 @@ static uint8_t *dy_lc(uint8_t **lc, struct mach_header_64 *h, uint32_t cmd, uint
     h->sizeofcmds += size;
     return at;
 }
+
+/* A debugging image's stabs, as ld64 writes them for a -g build: `at` is an
+ * offset from the base when `moves` (the value is an address), else the
+ * value itself. build_dylib_at's string table holds "x.h" at 33 and "a.o"
+ * at 37 with them. */
+static const struct { uint32_t strx; uint8_t type, sect; uint64_t at; int moves; } dy_stabs[15] = {
+    { 33, N_SO, NO_SECT, 0x5000, 0 },     { 37, N_OSO, 3, 0x6ab898db, 0 },
+    { 0, N_BNSYM, 1, 0x1010, 1 },         { 23, N_FUN, 1, 0x1010, 1 },
+    { 0, N_FUN, NO_SECT, 2, 0 },          { 0, N_ENSYM, 1, 2, 0 },
+    { 27, N_GSYM, NO_SECT, 0, 0 },        { 27, N_STSYM, 3, 0x2020, 1 },
+    { 0, N_LCSYM, 7, 0x3000, 1 },         { 0, N_SLINE, 1, 0x1011, 1 },
+    { 33, N_SOL, 1, 0x1010, 1 },          { 0, N_SO, 1, 0, 0 },
+    { 0, N_OPT, NO_SECT, 0, 0 },          { 0, N_OLEVEL, NO_SECT, 2, 0 },
+    { 37, N_AST, NO_SECT, 0, 0 },
+};
 
 static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     static const uint8_t rebase[16] = { 0x11, 0x21, 0x00, 0x53, 0x21, 0x30, 0x52, 0x00 };
@@ -4519,6 +4535,17 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
         nl[i].n_value = syms[i].type == (N_UNDF | N_EXT) ? 0 : base + syms[i].value;
     }
     memcpy(buf + 0x3200, strs, sizeof strs);
+    if (opts & DY_STABS) {
+        memcpy(buf + 0x3200 + sizeof strs, "x.h\0a.o", 8);
+        st->strsize += 8;
+        st->nsyms = 20;
+        for (int i = 0; i < 15; i++) {
+            nl[5 + i].n_un.n_strx = dy_stabs[i].strx;
+            nl[5 + i].n_type = dy_stabs[i].type;
+            nl[5 + i].n_sect = dy_stabs[i].sect;
+            nl[5 + i].n_value = dy_stabs[i].moves ? base + dy_stabs[i].at : dy_stabs[i].at;
+        }
+    }
     *fsize = DY_FSIZE;
     return buf;
 }
@@ -4834,7 +4861,7 @@ static void test_raise_rebuilds_a_widening_export_trie(void) {
 }
 
 /* A value strictly inside (base, base + F), or that no segment maps, cannot
- * be raised; nor can a debugging stab yet. */
+ * be raised. */
 static void test_raise_refuses_what_it_cannot_move(void) {
     size_t fsize;
     uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
@@ -4857,11 +4884,6 @@ static void test_raise_refuses_what_it_cannot_move(void) {
     dy_syms(buf, fsize)[3].n_value = DY_RAISED_AT + 16;
     check_grow_refuses_header_refs("a symbol inside the header", buf, fsize,
         "ERROR: symbol 3, \"_d\", names 0x10000010, between the header at 0x10000000");
-    buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
-    dy_syms(buf, fsize)[4].n_type = N_FUN;
-    check_grow_refuses_header_refs("a stab", buf, fsize,
-        "ERROR: symbol 4, \"_x\", is a stab of type 0x24, which a raise does not know how to "
-        "move; refusing to grow");
     buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
     hr_plant(buf + 0x1000, DY_RAISED_AT + 0x1000, 2, 0x05, 0, DY_RAISED_AT + 16);
     check_grow_refuses_header_refs("code inside the header", buf, fsize,
@@ -4952,9 +4974,10 @@ static void test_raise_keeps_an_offset_no_segment_maps(void) {
 /* Verification, on the raise: each check_verify_rejects_raise undoes one
  * thing a correct raise did. */
 typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
-static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
+static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo undo,
+                                            const char *needle) {
     size_t fsize;
-    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
     mg_snapshot snap;
     if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "%s: snapshot", what); free(buf); return; }
     if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
@@ -4970,6 +4993,9 @@ static void check_verify_rejects_raise(const char *what, dy_undo undo, const cha
     free(err);
     mg_snapshot_free(&snap);
     free(buf);
+}
+static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
+    check_verify_rejects_raise_with(what, 0, undo, needle);
 }
 static void dy_unraise_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3009] -= 0x10; }
 static void dy_raise_header_pointer(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x3001] += 0x10; }
@@ -5018,6 +5044,70 @@ static void test_ensure_pad_announces_a_raise(void) {
           want, r, err);
     free(err);
     free(buf);
+}
+
+/* ---- stabs on a raise ----
+ * A stab that holds an address names content, which moves, or the header,
+ * which does not; one that holds a size, a timestamp or nothing stays. The
+ * closing N_SO holds 0, the base of a dylib linked at 0. */
+static void check_raise_moves_the_stabs(uint64_t base) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(base, &fsize, DY_STABS);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "stabs: a raise at base %#llx succeeds (got %d)", (unsigned long long)base, r);
+    struct nlist_64 *nl = r == 0 ? dy_syms(buf, fsize) : NULL;
+    for (int i = 0; nl && i < 15; i++) {
+        uint64_t want = dy_stabs[i].moves ? base + dy_stabs[i].at + 0x1000 : dy_stabs[i].at;
+        CHECK(nl[5 + i].n_value == want, "stabs: at base %#llx, stab %d (type %#x) is %#llx, "
+              "want %#llx", (unsigned long long)base, i, dy_stabs[i].type,
+              (unsigned long long)nl[5 + i].n_value, (unsigned long long)want);
+    }
+    free(buf);
+}
+
+static void test_raise_moves_the_stabs_that_hold_addresses(void) {
+    check_raise_moves_the_stabs(0);
+    check_raise_moves_the_stabs(DY_RAISED_AT);
+}
+
+/* N_LSYM is a stab this does not know; an N_STSYM naming the header's
+ * inside names what a raise moves apart. */
+static void test_raise_refuses_stabs_it_cannot_move(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_STABS);
+    dy_syms(buf, fsize)[17].n_type = N_LSYM;
+    check_grow_refuses_header_refs("an N_LSYM", buf, fsize,
+        "ERROR: symbol 17, \"\", is a stab of type 0x80, which a raise does not know how to "
+        "move; refusing to grow");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_STABS);
+    dy_syms(buf, fsize)[12].n_value = DY_RAISED_AT + 16;
+    check_grow_refuses_header_refs("an N_STSYM inside the header", buf, fsize,
+        "ERROR: symbol 12, \"_d\", names 0x10000010, between the header at 0x10000000");
+}
+
+/* A lowered executable's stabs stay, whatever they hold. */
+static void test_lowering_leaves_the_stabs(void) {
+    size_t fsize;
+    uint8_t *buf = build_symbol_image(&fsize, 4, 0);
+    hsym(buf, fsize, 1)->n_type = N_FUN;
+    hsym(buf, fsize, 1)->n_un.n_strx = 1;
+    memcpy(buf + 6720, "\0_f", 4);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && hsym(buf, fsize, 1)->n_value == 0x100001000ull,
+          "stabs: a lowering leaves a named N_FUN (got %d, %#llx)", r,
+          (unsigned long long)hsym(buf, fsize, 1)->n_value);
+    free(buf);
+}
+
+static void dy_unraise_stab(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[8].n_value -= 0x1000; }
+static void dy_raise_ensym(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[10].n_value += 0x1000; }
+
+static void test_verify_watches_the_stabs(void) {
+    check_verify_rejects_raise_with("a named N_FUN left where it was", DY_STABS, dy_unraise_stab,
+        "ERROR: verify FAILED -- symbol 8 is type 0x24, value 0x10001010 after the grow, and must "
+        "be type 0x24, value 0x10002010; refusing.");
+    check_verify_rejects_raise_with("an N_ENSYM's size raised", DY_STABS, dy_raise_ensym,
+        "symbol 10 is type 0x4e, value 0x1002 after the grow, and must be type 0x4e, value 0x2");
 }
 
 int main(void) {
@@ -5180,6 +5270,10 @@ int main(void) {
     test_raise_leaves_an_export_at_offset_0();
     test_raise_leaves_an_absolute_export_alone();
     test_raise_leaves_a_symbol_below_the_base();
+    test_raise_moves_the_stabs_that_hold_addresses();
+    test_raise_refuses_stabs_it_cannot_move();
+    test_lowering_leaves_the_stabs();
+    test_verify_watches_the_stabs();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

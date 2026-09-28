@@ -242,6 +242,7 @@ typedef struct {
     uint32_t nrefs;
     uint64_t *symval;
     uint8_t *symtype;
+    uint8_t *symaddr;
     uint32_t nsyms;
     mg_rebases rb;
 } mg_snapshot;

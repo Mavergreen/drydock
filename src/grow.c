@@ -1,6 +1,7 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
 #include <mach-o/nlist.h>
+#include <mach-o/stab.h>
 #include <stdarg.h>
 
 #include "grow.h"
@@ -658,17 +659,19 @@ static int mg_keep_ref(const mhr_cand *c, void *ctx_) {
     return 0;
 }
 
-/* The first LC_SYMTAB's table, or NULL with *nsyms 0 when there is none;
- * -1 when it does not fit within the image. */
+/* The first LC_SYMTAB (*st) and its table, or NULL with *nsyms 0 when
+ * there is none; -1 when it does not fit within the image. */
 struct mg_symtab_ctx { const struct symtab_command *st; };
 static int mg_symtab_cb(const struct load_command *lc, void *ctx_) {
     if (lc->cmd != LC_SYMTAB) return 0;
     ((struct mg_symtab_ctx *)ctx_)->st = (const struct symtab_command *)lc;
     return 1;
 }
-static int mg_symtab(const mi_image *im, size_t fsize, const struct nlist_64 **nl, uint32_t *nsyms) {
+static int mg_symtab(const mi_image *im, size_t fsize, const struct symtab_command **st,
+                     const struct nlist_64 **nl, uint32_t *nsyms) {
     struct mg_symtab_ctx c = { NULL };
     mi_each_lc(im, mg_symtab_cb, &c);
+    *st = c.st;
     *nl = NULL;
     *nsyms = 0;
     if (!c.st) return 0;
@@ -678,8 +681,48 @@ static int mg_symtab(const mi_image *im, size_t fsize, const struct nlist_64 **n
     return 0;
 }
 
+/* The name of symbol `nl` in LC_SYMTAB `st`'s string table, as a length and
+ * a pointer; empty when it lies outside the table or the image. */
+static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
+                       const struct nlist_64 *nl, const char **name) {
+    *name = "";
+    if (st->strsize > fsize || st->stroff > fsize - st->strsize || nl->n_un.n_strx >= st->strsize)
+        return 0;
+    *name = (const char *)buf + st->stroff + nl->n_un.n_strx;
+    const char *nul = (const char *)memchr(*name, 0, st->strsize - nl->n_un.n_strx);
+    return nul ? (int)(nul - *name) : (int)(st->strsize - nl->n_un.n_strx);
+}
+
+/* Whether stab `nl` holds an address: 1 if it does; 0 if its value is a
+ * size, a timestamp or nothing; -1 for a type this does not know. `named`:
+ * its name is not empty. */
+static int mg_stab_address(const struct nlist_64 *nl, int named) {
+    switch (nl->n_type) {
+    case N_BNSYM: case N_STSYM: case N_LCSYM: case N_SLINE:
+        return 1;
+    case N_FUN:
+        return named;
+    case N_SO: case N_SOL:
+        return nl->n_sect != NO_SECT;
+    case N_ENSYM: case N_OSO: case N_GSYM: case N_OPT: case N_OLEVEL: case N_AST:
+        return 0;
+    }
+    return -1;
+}
+
+/* Whether symbol `nl` of LC_SYMTAB `st` holds an address a grow moves: an
+ * N_SECT symbol, not a stab; and, on a raise, a stab mg_stab_address says
+ * does. -1 for a stab of a type it does not know, on a raise. */
+static int mg_sym_address(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
+                          const struct nlist_64 *nl, int raise) {
+    const char *name;
+    if (!(nl->n_type & N_STAB)) return (nl->n_type & N_TYPE) == N_SECT;
+    return raise ? mg_stab_address(nl, mg_sym_name(buf, fsize, st, nl, &name) > 0) : 0;
+}
+
 int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     mi_image im;
+    const struct symtab_command *st;
     const struct nlist_64 *nl;
     char why[256];
     const struct mach_header_64 *h = (const struct mach_header_64 *)buf;
@@ -687,6 +730,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->nrefs = 0;
     s->symval = NULL;
     s->symtype = NULL;
+    s->symaddr = NULL;
     s->nsyms = 0;
     memset(&s->rb, 0, sizeof s->rb);
     s->kinds = NULL;
@@ -697,9 +741,10 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
         mg_collect(buf, fsize, s->addr, s->kinds, MG_SNAP_MAX, &s->n) != 0 ||
         mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &s->base) != 0 ||
         mhr_scan(buf, fsize, s->base, mg_keep_ref, s) != (int64_t)s->nrefs ||
-        mg_symtab(&im, fsize, &nl, &s->nsyms) != 0 ||
+        mg_symtab(&im, fsize, &st, &nl, &s->nsyms) != 0 ||
         !(s->symval = (uint64_t *)malloc((s->nsyms + 1) * sizeof *s->symval)) ||
         !(s->symtype = (uint8_t *)malloc(s->nsyms + 1)) ||
+        !(s->symaddr = (uint8_t *)malloc(s->nsyms + 1)) ||
         mg_rebases_read(buf, fsize, &s->rb, why, sizeof why) != 0) {
         mg_snapshot_free(s);
         return -1;
@@ -707,6 +752,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     for (uint32_t i = 0; i < s->nsyms; i++) {
         s->symval[i] = nl[i].n_value;
         s->symtype[i] = nl[i].n_type;
+        s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
     }
     return 0;
 }
@@ -716,7 +762,8 @@ void mg_snapshot_free(mg_snapshot *s) {
     free(s->kinds); s->kinds = NULL;
     free(s->refs); s->refs = NULL; s->nrefs = 0;
     free(s->symval); s->symval = NULL;
-    free(s->symtype); s->symtype = NULL; s->nsyms = 0;
+    free(s->symtype); s->symtype = NULL;
+    free(s->symaddr); s->symaddr = NULL; s->nsyms = 0;
     mg_rebases_free(&s->rb);
 }
 
@@ -786,14 +833,16 @@ static int mg_verify_refs(const uint8_t *buf, size_t fsize, const mg_snapshot *b
     return 0;
 }
 
-/* Every symbol keeps its type, and its value unless it is an N_SECT symbol,
- * not a stab: one that named the header names it where it is now, and one
- * that named content, at the first section or past it, has moved `delta`. */
+/* Every symbol keeps its type, and its value unless it held an address a
+ * grow moves (mg_sym_address): one that named the header names it where it
+ * is now, and one that named content, at the first section or past it, has
+ * moved `delta`. */
 static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot *before,
                              uint64_t base, uint64_t delta) {
+    const struct symtab_command *st;
     const struct nlist_64 *nl;
     uint32_t nsyms;
-    if (mg_symtab(im, fsize, &nl, &nsyms) != 0) {
+    if (mg_symtab(im, fsize, &st, &nl, &nsyms) != 0) {
         fprintf(stderr, "ERROR: verify FAILED -- LC_SYMTAB's symbol table does not fit within "
                         "the grown image; refusing.\n");
         return -1;
@@ -806,7 +855,7 @@ static int mg_verify_symbols(const mi_image *im, size_t fsize, const mg_snapshot
     for (uint32_t i = 0; i < nsyms; i++) {
         uint8_t t = before->symtype[i];
         uint64_t want = before->symval[i];
-        if (!(t & N_STAB) && (t & N_TYPE) == N_SECT)
+        if (before->symaddr[i])
             want = want > before->base && want - before->base >= before->first ? want + delta
                  : want == before->base ? base : want;
         if (nl[i].n_type == t && nl[i].n_value == want) continue;
@@ -1652,26 +1701,14 @@ static int mg_exports_ok(uint8_t *buf, size_t fsize, uint64_t base, uint32_t fir
     return rc;
 }
 
-/* The name of symbol `nl` in LC_SYMTAB `st`'s string table, as a length and
- * a pointer; empty when it lies outside the table or the image. */
-static int mg_sym_name(const uint8_t *buf, size_t fsize, const struct symtab_command *st,
-                       const struct nlist_64 *nl, const char **name) {
-    *name = "";
-    if (st->strsize > fsize || st->stroff > fsize - st->strsize || nl->n_un.n_strx >= st->strsize)
-        return 0;
-    *name = (const char *)buf + st->stroff + nl->n_un.n_strx;
-    const char *nul = (const char *)memchr(*name, 0, st->strsize - nl->n_un.n_strx);
-    return nul ? (int)(nul - *name) : (int)(st->strsize - nl->n_un.n_strx);
-}
-
-/* The symbols a grow moves: each N_SECT symbol, not a stab. With `patch`,
- * on a lowering, one whose value is `base` loses `grow`, following the
- * header down; on a raise, one that names content, at base + `first` or
- * past it, gains `grow`, following the content up. Without `patch`, this
- * checks that the symbol table lies within the image, and says so on stderr
- * when it does not; on a raise, it refuses a stab. Either way, one that names
- * a byte strictly between the header and its first content, at base +
- * `first`, is refused, saying so. Returns 0, or -1. */
+/* The symbols a grow moves (mg_sym_address). With `patch`, on a lowering,
+ * one whose value is `base` loses `grow`, following the header down; on a
+ * raise, one that names content, at base + `first` or past it, gains
+ * `grow`, following the content up. Without `patch`, this checks that the
+ * symbol table lies within the image, and says so on stderr when it does
+ * not; on a raise, it refuses a stab of a type it does not know. Either way,
+ * one that names a byte strictly between the header and its first content,
+ * at base + `first`, is refused, saying so. Returns 0, or -1. */
 struct mg_hsym_ctx {
     uint8_t *buf;
     size_t fsize;
@@ -1699,7 +1736,8 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
     struct nlist_64 *nl = (struct nlist_64 *)(c->buf + st->symoff);
     for (uint32_t i = 0; i < st->nsyms; i++) {
         const char *name;
-        if (c->raise && (nl[i].n_type & N_STAB)) {
+        int addr = mg_sym_address(c->buf, c->fsize, st, &nl[i], c->raise);
+        if (addr < 0) {
             int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
             fprintf(stderr, "ERROR: symbol %u, \"%.*s\", is a stab of type %#x, which a raise "
                             "does not know how to move; refusing to grow\n", i, len, name,
@@ -1707,7 +1745,7 @@ static int mg_hsym_cb(const struct load_command *lc, void *ctx_) {
             c->bad = 1;
             return 1;
         }
-        if ((nl[i].n_type & N_STAB) || (nl[i].n_type & N_TYPE) != N_SECT) continue;
+        if (!addr) continue;
         uint64_t v = nl[i].n_value;
         if (v > c->base && v - c->base < c->first) {
             int len = mg_sym_name(c->buf, c->fsize, st, &nl[i], &name);
