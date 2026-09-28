@@ -4664,7 +4664,7 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
 
 /* Like check_grow_refuses_header_refs, but also insists stderr holds exactly
  * one ERROR, catching a refusal that prints its reason without stopping the
- * walk (mg_each_lc's callback returning 0 where it should return 1). */
+ * walk (mi_each_lc's callback returning 0 where it should return 1). */
 static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsize,
                                      const char *needle) {
     size_t fsize0 = fsize;
@@ -4720,7 +4720,7 @@ static void test_grow_raises_past_what_it_can_vouch_for(void) {
     }
 }
 
-/* ---- what a raise moves (spec Decision 2) ----
+/* ---- what a raise moves ----
  * Each test raises build_dylib_at(DY_RAISED_AT, ...) by one page and reads
  * the result back. */
 #define DY_RAISED_AT 0x10000000ull

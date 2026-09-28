@@ -412,8 +412,9 @@ int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
 
 
 /* ---- export trie ----------------------------------------------------------
- * Each exported address is a ULEB offset FROM THE IMAGE BASE, so lowering the
- * base means every one must gain `grow`. The reason this is safe to do in place:
+ * Each exported address is a ULEB offset FROM THE IMAGE BASE, so every one must
+ * gain `grow`: a lowering drops the base under the content, and a raise moves
+ * the content up from the base. The reason this is safe to do in place:
  * adding a page never widens the encoding on a real binary. Measured across all
  * 670 entries of Claude Code 2.1.263 at 4K, 8K and 16K grows, zero needed a
  * wider ULEB and zero needed redundant padding. So each address is re-encoded at
@@ -421,10 +422,11 @@ int mg_dice_walk(uint8_t *buf, size_t fsize, uint32_t grow, int patch,
  * moves. If one ever would widen, we refuse -- that is the case the old guard
  * was written for, and it is still handled, just no longer assumed.
  *
- * Address 0 stays 0. That is __mh_execute_header, which names the header itself;
- * the header moved down with the base, so 0 remains correct. It is therefore
- * neither bumped nor collected -- its resolved address is base+0, which SHOULD
- * change, and collecting it would make verify fail on a correct grow.
+ * Address 0 stays 0. That is __mh_execute_header (or a dylib's
+ * __mh_dylib_header), which names the header itself; the header stays at the
+ * base on either route, so 0 remains correct. It is therefore neither bumped
+ * nor collected -- its resolved address, base+0, does not move as content
+ * does, and collecting it would make verify fail on a correct grow.
  *
  * An EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE entry holds the symbol's value, not an
  * offset from the base, so it is never bumped. It is collected as that value,

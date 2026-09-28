@@ -2714,18 +2714,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    /* Locate the donor (__PAGEZERO) and confirm a header-bearing segment
-     * (__TEXT) exists, via the same finders every other converted walk in
-     * this toolkit uses instead of a third hand-rolled copy of the search.
-     * Documented gap from a review round: mi_find_segment returns the FIRST
-     * "__PAGEZERO"-named segment; the original hand-rolled loop had no
-     * `break` on a pagezero match, so it kept the LAST. mi_text_base (used
-     * just below for `text`) has the identical first-vs-last change --
-     * matches unconditionally return on the first hit, where the original
-     * loop's `else if` also had no `break`. Neither is exercised by any
-     * fixture (none carries more than one __PAGEZERO or more than one
-     * fileoff==0-with-content segment); the commit that made this
-     * conversion documented neither at the time. Recorded here now. */
+    /* A lowering's donor (__PAGEZERO) and the image base, through the
+     * finders every other walk here uses. Each takes the FIRST match:
+     * mi_find_segment the first segment named "__PAGEZERO", mi_image_base
+     * the first segment at file offset 0 with file data. No fixture carries
+     * two of either. */
     mi_image find_im;
     if (mi_wrap(buf, fsize, &find_im) != 0) {
         fprintf(stderr, "ERROR: internal error -- the header no longer validates\n");
@@ -2911,10 +2904,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
 
-    /* Re-point the dyld4 initializer offsets: the base dropped by `grow`, the
-     * constructors did not move, so each offset must gain `grow`. Section file
-     * offsets were bumped in the walk above, so these read from the new home.
-     * The pre-mutation audit proved this cannot overflow. */
+    /* Everything measured from the base now lies `grow` further from it, on
+     * either route: a lowering drops the base and leaves the content, a raise
+     * keeps the base and moves the content up. So each export-trie address
+     * gains `grow` (in place, or by the rebuild), and below, so does each
+     * offset in data in code, compact unwind and S_INIT_FUNC_OFFSETS. Section
+     * file offsets were bumped in the walk above, so these read from their
+     * new home. The pre-mutation audit proved none of this can overflow. */
     if (!mg_trie_needs_rebuild) {
         /* The common case (measured: zero widening entries across all 670
          * exports of Claude Code 2.1.263 at 4K/8K/16K grows): every address
@@ -3091,11 +3087,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
 
-    /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: the base
-     * dropped by `grow`, so the first delta must gain `grow` to keep every
-     * function's absolute address fixed. The blob moved with the memmove; it now
-     * lives at fs_dataoff+grow. The pre-mutation check above already proved the
-     * width is preserved, so this cannot widen — a nonzero return is a bug. */
+    /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: every
+     * function now lies `grow` further from the base (a lowering drops the
+     * base, a raise moves the functions up), so the first delta gains `grow`
+     * and the later ones, between functions, stay. The blob moved with the
+     * memmove; it now lives at fs_dataoff+grow. The pre-mutation check above
+     * already proved the width is preserved, so this cannot widen — a nonzero
+     * return is a bug. */
     if (fs_dataoff && fs_datasize) {
         int r = mg_reencode_funcstarts_base(buf + fs_dataoff + grow, fs_datasize, grow);
         if (r != 1) {
@@ -3106,10 +3104,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
 
-    /* Phase 4: prove it. Every base-relative structure must resolve exactly where
-     * it did before. A mismatch means a handler did not run, ran twice, or ran
-     * with the wrong delta -- all of which produce a binary that loads and is
-     * wrong, so this is the last chance to catch it. */
+    /* Phase 4: prove it. Every base-relative structure must resolve where it
+     * did before, moved by the route's delta (0 lowering, `grow` raising). A
+     * mismatch means a handler did not run, ran twice, or ran with the wrong
+     * delta -- all of which produce a binary that loads and is wrong, so this
+     * is the last chance to catch it. */
     if (mg_verify(buf, final_size, &snap) != 0) {
         mg_snapshot_free(&snap);
         /* The buffer has been transformed and is NOT safe to write. *pbuf already
@@ -3119,11 +3118,12 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     }
     mg_snapshot_free(&snap);
 
-    /* And independently: do the results still name plausible targets? mg_verify
-     * proves nothing MOVED, which is silent about a structure we never collected.
-     * This asks a different question of the finished file -- do initializers and
-     * unwind entries still land on function starts -- so the two fail for
-     * different reasons. */
+    /* And separately: do the results still name plausible targets? mg_verify
+     * proves each collected structure moved exactly as the route moves it
+     * (not at all, lowering). This asks a different question of the finished
+     * file -- do initializers and unwind entries still land on function
+     * starts -- so the two fail for different reasons. It collects through
+     * the same walkers, so it cannot see an entry they miss. */
     if (mg_plausible(buf, final_size) != 0) {
         fprintf(stderr, "ERROR: the grown image does not pass its own plausibility "
                         "check; refusing. Discard this buffer.\n");
