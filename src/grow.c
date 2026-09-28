@@ -1230,8 +1230,8 @@ struct mg_or_lcs {
     const struct linkedit_data_command *fs;
     const struct symtab_command *st;
     const struct routines_command_64 *rt;
-    const struct section_64 *helper, *unwind, *except, *nl[8];
-    int nlazy, nnl;
+    const struct section_64 *unwind, *except[4], *nl[8];
+    int nexcept, nnl;
 };
 static int mg_or_lcs_cb(const struct load_command *lc, void *ctx_) {
     struct mg_or_lcs *c = (struct mg_or_lcs *)ctx_;
@@ -1242,16 +1242,52 @@ static int mg_or_lcs_cb(const struct load_command *lc, void *ctx_) {
     const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
     const struct section_64 *s = (const struct section_64 *)(seg + 1);
     for (uint32_t j = 0; j < seg->nsects; j++) {
-        if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__stub_helper", 16))
-            c->helper = &s[j];
-        if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__gcc_except_tab", 16))
-            c->except = &s[j];
+        if (!strncmp(s[j].sectname, "__gcc_except_tab", 16) && c->nexcept < 4)
+            c->except[c->nexcept++] = &s[j];
         if (!c->unwind && !strncmp(s[j].sectname, "__unwind_info", 16)) c->unwind = &s[j];
-        if ((s[j].flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS) c->nlazy++;
         if ((s[j].flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS && c->nnl < 8)
             c->nl[c->nnl++] = &s[j];
     }
     return 0;
+}
+
+/* Every 8-byte slot of every S_LAZY_SYMBOL_POINTERS section, in turn: its
+ * address, and the value the file holds there. `bad` when out of memory. */
+typedef struct { uint64_t at, v; } mg_or_slot;
+struct mg_or_slots { const uint8_t *buf; size_t fsize; mg_or_slot *s; size_t n, cap; int bad; };
+static int mg_or_slots_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_slots *c = (struct mg_or_slots *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if ((s[j].flags & SECTION_TYPE) != S_LAZY_SYMBOL_POINTERS || !s[j].offset) continue;
+        for (uint64_t k = 0; k + 8 <= s[j].size && s[j].offset + k + 8 <= c->fsize; k += 8) {
+            if (c->n == c->cap) {
+                mg_or_slot *t = (mg_or_slot *)realloc(c->s, (c->cap * 2 + 64) * sizeof *t);
+                if (!t) { c->bad = 1; return 1; }
+                c->s = t;
+                c->cap = c->cap * 2 + 64;
+            }
+            c->s[c->n].at = s[j].addr + k;
+            memcpy(&c->s[c->n++].v, c->buf + s[j].offset + k, 8);
+        }
+    }
+    return 0;
+}
+
+/* Whether a raise moves `v`, a pointer's value in the image as it was: it
+ * lies in a segment's vm range, its end included, and is not the base,
+ * where the header stays. */
+struct mg_or_moves { uint64_t v, base; int moves; };
+static int mg_or_moves_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_moves *m = (struct mg_or_moves *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    if (!seg->vmsize || m->v == m->base || m->v < seg->vmaddr || m->v - seg->vmaddr > seg->vmsize)
+        return 0;
+    m->moves = 1;
+    return 1;
 }
 
 static int mg_by_u64(const void *a, const void *b) {
@@ -1284,13 +1320,6 @@ static int mg_or_not_start(uint64_t x, void *ctx_) {
     struct mg_or_starts *s = (struct mg_or_starts *)ctx_;
     if (bsearch(&x, s->a, s->n, sizeof *s->a, mg_by_u64)) return 0;
     s->bad = x;
-    return 1;
-}
-struct mg_or_range { uint64_t lo, hi, bad; };
-static int mg_or_outside(uint64_t x, void *ctx_) {
-    struct mg_or_range *r = (struct mg_or_range *)ctx_;
-    if (x >= r->lo && x < r->hi) return 0;
-    r->bad = x;
     return 1;
 }
 
@@ -1393,13 +1422,17 @@ static int mg_or_in_nl(const struct mg_or_lcs *c, uint64_t a) {
 }
 
 /* 0 when every personality compact unwind names is a slot of __got or
- * __nl_symbol_ptr, and every LSDA it names lies in __TEXT,__gcc_except_tab;
- * else 1, with `why` set; -1 when __unwind_info cannot be read. Read here,
- * not through mg_unwind_walk. */
+ * __nl_symbol_ptr, and every LSDA it names lies in a section named
+ * __gcc_except_tab; else 1, with `why` set; -1 when __unwind_info cannot be
+ * read. Read here, not through mg_unwind_walk. On 0, *lsda is its LSDA
+ * index, *nlsda entries of a function offset and an LSDA offset. */
 static int mg_or_unwind(const uint8_t *buf, size_t fsize, uint64_t base,
-                        const struct mg_or_lcs *c, char *why, size_t whysz) {
+                        const struct mg_or_lcs *c, const uint8_t **lsda, uint32_t *nlsda,
+                        char *why, size_t whysz) {
     const struct section_64 *u = c->unwind;
     uint32_t h[7], lo, hi;
+    *lsda = NULL;
+    *nlsda = 0;
     if (!u || !u->size) return 0;
     if (u->offset > fsize || u->size > fsize - u->offset || u->size < sizeof h) return -1;
     const uint8_t *p = buf + u->offset;
@@ -1419,28 +1452,38 @@ static int mg_or_unwind(const uint8_t *buf, size_t fsize, uint64_t base,
     memcpy(&hi, p + h[5] + 12ull * (h[6] - 1) + 8, sizeof hi);
     if (hi < lo || hi > u->size) return -1;
     for (uint32_t e = lo; e + 8 <= hi; e += 8) {
-        uint32_t lsda;
-        memcpy(&lsda, p + e + 4, sizeof lsda);
-        uint64_t a = base + lsda;
-        if (c->except && a >= c->except->addr && a - c->except->addr < c->except->size) continue;
+        uint32_t l;
+        int k = 0;
+        memcpy(&l, p + e + 4, sizeof l);
+        uint64_t a = base + l;
+        while (k < c->nexcept && !(a >= c->except[k]->addr && a - c->except[k]->addr < c->except[k]->size))
+            k++;
+        if (k < c->nexcept) continue;
         snprintf(why, whysz, "the LSDA %#llx lies outside __gcc_except_tab", (unsigned long long)a);
         return 1;
     }
+    *lsda = p + lo;
+    *nlsda = hi > lo ? (hi - lo) / 8 : 0;
     return 0;
 }
 
-unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz) {
-    mi_image im;
-    struct mg_or_lcs c;
-    uint64_t base;
+unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old, size_t n,
+                           uint64_t grow, unsigned want, char *why, size_t whysz) {
+    mi_image im, oim;
+    struct mg_or_lcs c, oc;
+    uint64_t base, obase;
     unsigned holds = 0;
-    char w[4][256] = { "LC_FUNCTION_STARTS could not be read", "",
+    char w[4][256] = { "LC_FUNCTION_STARTS could not be read", "the lazy pointers could not be read",
                        "the export trie or the symbols could not be read",
                        "__unwind_info could not be read" };
     memset(&c, 0, sizeof c);
+    memset(&oc, 0, sizeof oc);
     snprintf(why, whysz, "the image could not be read");
-    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &base) != 0) return 0;
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &base) != 0 ||
+        mi_wrap((uint8_t *)old, n, &oim) != 0 || mi_image_base(&oim, &obase) != 0)
+        return 0;
     mi_each_lc(&im, mg_or_lcs_cb, &c);
+    mi_each_lc(&oim, mg_or_lcs_cb, &oc);
 
     uint32_t nfs = c.fs && c.fs->datasize <= fsize && c.fs->dataoff <= fsize - c.fs->datasize
                    ? c.fs->datasize : 0;
@@ -1464,22 +1507,67 @@ unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, 
     }
     free(a);
 
-    struct mg_or_range r = { c.helper ? c.helper->addr : 0,
-                             c.helper ? c.helper->addr + c.helper->size : 0, 0 };
-    struct mg_or_vals l = { buf, fsize, S_LAZY_SYMBOL_POINTERS, mg_or_outside, &r, 0 };
-    if (c.nlazy) mi_each_lc(&im, mg_or_vals_cb, &l);
-    if (!l.r) holds |= MG_OR_LAZY;
-    else snprintf(w[1], sizeof w[1], "the lazy pointer %#llx lies outside __stub_helper",
-                  (unsigned long long)r.bad);
+    /* Each lazy pointer, slot by slot, holds what the old one held, moved
+     * as a raise moves it. */
+    struct mg_or_slots ls = { buf, fsize, NULL, 0, 0, 0 }, ols = { old, n, NULL, 0, 0, 0 };
+    mi_each_lc(&im, mg_or_slots_cb, &ls);
+    mi_each_lc(&oim, mg_or_slots_cb, &ols);
+    if (!ls.bad && !ols.bad && ls.n != ols.n) {
+        snprintf(w[1], sizeof w[1], "the image holds %zu lazy pointers, and held %zu,", ls.n,
+                 ols.n);
+    } else if (!ls.bad && !ols.bad) {
+        size_t i = 0;
+        uint64_t to = 0;
+        for (; i < ls.n; i++) {
+            struct mg_or_moves m = { ols.s[i].v, obase, 0 };
+            mi_each_lc(&oim, mg_or_moves_cb, &m);
+            to = m.moves ? ols.s[i].v + grow : ols.s[i].v;
+            if (ls.s[i].v != to) break;
+        }
+        if (i == ls.n) holds |= MG_OR_LAZY;
+        else snprintf(w[1], sizeof w[1], "the lazy pointer at %#llx holds %#llx, and must hold %#llx",
+                      (unsigned long long)ls.s[i].at, (unsigned long long)ls.s[i].v,
+                      (unsigned long long)to);
+    }
+    free(ls.s);
+    free(ols.s);
 
     if (mg_or_exports(buf, fsize, base, c.st, w[2], sizeof w[2]) == 0) holds |= MG_OR_EXPORTS;
-    if (mg_or_unwind(buf, fsize, base, &c, w[3], sizeof w[3]) == 0) holds |= MG_OR_UNWIND;
+
+    /* And each LSDA index entry holds what the old one held, moved. */
+    const uint8_t *l, *ol;
+    uint32_t nl, onl;
+    char ow[256];
+    int u = mg_or_unwind(buf, fsize, base, &c, &l, &nl, w[3], sizeof w[3]);
+    if (u == 0 && mg_or_unwind(old, n, obase, &oc, &ol, &onl, ow, sizeof ow) != 0) {
+        snprintf(w[3], sizeof w[3], "__unwind_info could not be read as it was");
+        u = -1;
+    } else if (u == 0 && nl != onl) {
+        snprintf(w[3], sizeof w[3], "compact unwind lists %u LSDAs, and listed %u,", nl, onl);
+        u = 1;
+    }
+    for (uint32_t k = 0; u == 0 && k < nl; k++) {
+        uint32_t e[2], oe[2];
+        memcpy(e, l + 8 * k, sizeof e);
+        memcpy(oe, ol + 8 * k, sizeof oe);
+        if (e[0] == oe[0] + grow && e[1] == oe[1] + grow) continue;
+        snprintf(w[3], sizeof w[3], "the LSDA index names %#llx's LSDA at %#llx, and must name "
+                 "%#llx's at %#llx", (unsigned long long)(base + e[0]),
+                 (unsigned long long)(base + e[1]), (unsigned long long)(obase + oe[0] + grow),
+                 (unsigned long long)(obase + oe[1] + grow));
+        u = 1;
+    }
+    if (u == 0) holds |= MG_OR_UNWIND;
     for (int i = 0; i < 4; i++)
         if (want & ~holds & (1u << i)) {
             snprintf(why, whysz, "%s", w[i]);
             break;
         }
     return holds;
+}
+
+unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz) {
+    return mg_oracles_raised(buf, fsize, buf, fsize, 0, want, why, whysz);
 }
 
 /* Deletes every LC_SEGMENT_SPLIT_INFO from the header and load commands at
@@ -1641,8 +1729,8 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     if (!before->raise) return 0;
     if (mg_verify_bytes(buf, fsize, before, grow) != 0) return -1;
     char why[256];
-    if ((mg_oracles(buf, fsize, before->oracles, why, sizeof why) & before->oracles) ==
-        before->oracles)
+    if ((mg_oracles_raised(buf, fsize, before->old, before->oldsize, grow, before->oracles, why,
+                           sizeof why) & before->oracles) == before->oracles)
         return 0;
     fprintf(stderr, "ERROR: verify FAILED -- %s after the grow, which held before it; "
                     "refusing.\n", why);

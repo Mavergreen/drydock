@@ -4,16 +4,16 @@ count	files	1557
 count	inits held	45
 count	inits skipped	0
 count	inits nothing	1512
-count	lazy held	1472
-count	lazy skipped	48
+count	lazy held	1520
+count	lazy skipped	0
 count	lazy nothing	37
 count	exports held	1532
 count	exports skipped	0
 count	exports nothing	25
-count	unwind held	1539
-count	unwind skipped	1
+count	unwind held	1540
+count	unwind skipped	0
 count	unwind nothing	17
-count	all four hold	1508
+count	all four hold	1557
 file	/System/Library/Frameworks/AGL.framework/Versions/A/AGL inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/AVFoundation.framework/Versions/A/Resources/libAVFAudio.dylib inits=nothing lazy=held exports=held unwind=held
@@ -56,7 +56,7 @@ file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Framewo
 file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/ColloquialDictPlugIn.bundle/Contents/MacOS/ColloquialDictPlugIn inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/ItaijiDictionaryPlugIn.bundle/Contents/MacOS/ItaijiDictionaryPlugIn inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/JVCDictionaryPlugIn.bundle/Contents/MacOS/JVCDictionaryPlugIn inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/JapaneseAnalysisPlugIn.bundle/Contents/MacOS/JapaneseAnalysisPlugIn inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/JapaneseAnalysisPlugIn.bundle/Contents/MacOS/JapaneseAnalysisPlugIn inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/LastResortDictPlugIn.bundle/Contents/MacOS/LastResortDictPlugIn inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/NumeralDictionaryPlugIn.bundle/Contents/MacOS/NumeralDictionaryPlugIn inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/LangAnalysis.framework/Versions/A/Support/StandardDictionaryPlugIn.bundle/Contents/MacOS/StandardDictionaryPlugIn inits=nothing lazy=held exports=held unwind=held
@@ -176,7 +176,7 @@ file	/System/Library/Frameworks/JavaVM.framework/Versions/A/JavaVM inits=held la
 file	/System/Library/Frameworks/Kerberos.framework/Versions/A/Kerberos inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/LDAP.framework/Versions/A/LDAP inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/LatentSemanticMapping.framework/Versions/A/LatentSemanticMapping inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/MapKit.framework/Versions/A/MapKit inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/MapKit.framework/Versions/A/MapKit inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/MapKit.framework/Versions/A/Resources/BridgeSupport/MapKit.dylib inits=nothing lazy=nothing exports=held unwind=held
 file	/System/Library/Frameworks/MediaAccessibility.framework/Versions/A/MediaAccessibility inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/MediaLibrary.framework/Versions/A/MediaLibrary inits=nothing lazy=held exports=held unwind=held
@@ -185,9 +185,9 @@ file	/System/Library/Frameworks/Message.framework/Versions/B/Message inits=nothi
 file	/System/Library/Frameworks/NetFS.framework/Versions/A/NetFS inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OSAKit.framework/Versions/A/OSAKit inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenAL.framework/Versions/A/OpenAL inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/AMDil.dylib inits=held lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/AMDil_r700.dylib inits=held lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/IGIL.dylib inits=held lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/AMDil.dylib inits=held lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/AMDil_r700.dylib inits=held lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/IGIL.dylib inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/ImageFormats/float_i.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/ImageFormats/float_rgba.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/ImageFormats/float_rgbx.dylib inits=nothing lazy=held exports=held unwind=held
@@ -217,8 +217,8 @@ file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/ImageForma
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/ImageFormats/unorm8_rgbx.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/ImageFormats/unorm8_rgx.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/Legacy/libcl2module.dylib inits=held lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/PTX.dylib inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/PTXSM1X.dylib inits=held lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/PTX.dylib inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/PTXSM1X.dylib inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/Vectorizer.dylib inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/libCLVMAMDilPlugin.dylib inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenCL.framework/Versions/A/Libraries/libCLVMAMDil_r700Plugin.dylib inits=held lazy=held exports=held unwind=held
@@ -232,7 +232,7 @@ file	/System/Library/Frameworks/OpenCL.framework/Versions/A/OpenCL inits=nothing
 file	/System/Library/Frameworks/OpenDirectory.framework/Versions/A/Frameworks/CFOpenDirectory.framework/Versions/A/CFOpenDirectory inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/Legacy/libCoreVMClient.mono.dylib inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/Legacy/libLLVMContainer.dylib inits=held lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/Legacy/libLLVMContainer.dylib inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCVMSPluginSupport.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreVMClient.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGFXShared.dylib inits=nothing lazy=held exports=held unwind=held
@@ -241,7 +241,7 @@ file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLImage
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLProgrammability.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLU.dylib inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLVMPlugin.dylib inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libLLVMContainer.dylib inits=held lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libLLVMContainer.dylib inits=held lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Resources/GLEngine.bundle/GLEngine inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/OpenGL.framework/Versions/A/Resources/GLRendererFloat.bundle/GLRendererFloat inits=nothing lazy=held exports=held unwind=held
@@ -389,17 +389,17 @@ file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/PyObjC/objc/_objc.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/bonjour/_bonjour.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_cntr.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_delaunay.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_image.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_path.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_png.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_tri.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/backends/_backend_agg.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/backends/_macosx.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/backends/_tkagg.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/ft2font.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_delaunay.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_image.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_path.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_png.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/_tri.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/backends/_backend_agg.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/backends/_macosx.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/backends/_tkagg.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/ft2font.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/nxutils.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/ttconv.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/matplotlib/ttconv.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/numpy/core/_dotblas.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/numpy/core/_sort.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/numpy/core/multiarray.so inits=nothing lazy=held exports=held unwind=held
@@ -422,7 +422,7 @@ file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/integrate/_quadpack.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/integrate/vode.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/interpolate/_fitpack.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/interpolate/_interpolate.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/interpolate/_interpolate.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/interpolate/dfitpack.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/interpolate/interpnd.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/io/matlab/mio5_utils.so inits=nothing lazy=held exports=held unwind=held
@@ -461,12 +461,12 @@ file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/linalg/dsolve/_superlu.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/linalg/eigen/arpack/_arpack.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/linalg/isolve/_iterative.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_bsr.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_coo.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_csc.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_csgraph.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_csr.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_dia.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_bsr.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_coo.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_csc.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_csgraph.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_csr.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/sparse/sparsetools/_dia.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/spatial/_distance_wrap.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/spatial/ckdtree.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.6/Extras/lib/python/scipy/spatial/qhull.so inits=nothing lazy=held exports=held unwind=held
@@ -607,17 +607,17 @@ file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/PyObjC/objc/_objc.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/bonjour/_bonjour.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_cntr.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_delaunay.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_image.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_path.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_png.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_tri.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/backends/_backend_agg.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/backends/_macosx.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/backends/_tkagg.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/ft2font.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_delaunay.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_image.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_path.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_png.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/_tri.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/backends/_backend_agg.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/backends/_macosx.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/backends/_tkagg.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/ft2font.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/nxutils.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/ttconv.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/matplotlib/ttconv.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/numpy/core/_dotblas.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/numpy/core/_sort.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/numpy/core/multiarray.so inits=nothing lazy=held exports=held unwind=held
@@ -640,7 +640,7 @@ file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/integrate/_quadpack.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/integrate/vode.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/interpolate/_fitpack.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/interpolate/_interpolate.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/interpolate/_interpolate.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/interpolate/dfitpack.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/interpolate/interpnd.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/io/matlab/mio5_utils.so inits=nothing lazy=held exports=held unwind=held
@@ -679,12 +679,12 @@ file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/linalg/dsolve/_superlu.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/linalg/eigen/arpack/_arpack.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/linalg/isolve/_iterative.so inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_bsr.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_coo.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_csc.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_csgraph.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_csr.so inits=nothing lazy=skipped exports=held unwind=held
-file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_dia.so inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_bsr.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_coo.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_csc.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_csgraph.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_csr.so inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/sparse/sparsetools/_dia.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/spatial/_distance_wrap.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/spatial/ckdtree.so inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Python.framework/Versions/2.7/Extras/lib/python/scipy/spatial/qhull.so inits=nothing lazy=held exports=held unwind=held
@@ -986,7 +986,7 @@ file	/System/Library/Frameworks/Tcl.framework/Versions/8.4/Tcl inits=nothing laz
 file	/System/Library/Frameworks/Tcl.framework/Versions/8.5/Tcl inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/Tk.framework/Versions/8.5/Tk inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/VideoDecodeAcceleration.framework/Versions/A/VideoDecodeAcceleration inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox inits=nothing lazy=held exports=held unwind=skipped
+file	/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebCore.framework/Versions/A/WebCore inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/WebKit.framework/WebKitPluginHost.app/Contents/MacOS/WebKitPluginHostShim.dylib inits=nothing lazy=held exports=held unwind=held
@@ -1086,7 +1086,7 @@ file	/System/Library/PrivateFrameworks/CoreProfile.framework/Versions/A/PlugIns/
 file	/System/Library/PrivateFrameworks/CoreProfile.framework/Versions/A/PlugIns/AppleProfileThreadInfoAction.bundle/Contents/MacOS/AppleProfileThreadInfoAction inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/CoreProfile.framework/Versions/A/PlugIns/AppleProfileTimestampAction.bundle/Contents/MacOS/AppleProfileTimestampAction inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/CoreRAID.framework/Versions/A/CoreRAID inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/PrivateFrameworks/CoreRAID.framework/Versions/A/PlugIns/AppleRAIDCard.crplugin/Contents/MacOS/AppleRAIDCard inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/PrivateFrameworks/CoreRAID.framework/Versions/A/PlugIns/AppleRAIDCard.crplugin/Contents/MacOS/AppleRAIDCard inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/CoreRecents.framework/Versions/A/CoreRecents inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/CoreRecognition.framework/Versions/A/CoreRecognition inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/CoreSDB.framework/Versions/A/CoreSDB inits=nothing lazy=held exports=held unwind=held
@@ -1213,7 +1213,7 @@ file	/System/Library/PrivateFrameworks/MessagesHelperKit.framework/PlugIns/Messa
 file	/System/Library/PrivateFrameworks/MessagesHelperKit.framework/PlugIns/UnreadCountController.bundle/Contents/MacOS/UnreadCountController inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/MessagesHelperKit.framework/Versions/A/MessagesHelperKit inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/MessagesKit.framework/Versions/A/MessagesKit inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice inits=nothing lazy=skipped exports=held unwind=held
+file	/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/MonitorPanel.framework/Versions/A/MonitorPanel inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/A/MultitouchSupport inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/NetAuth.framework/Versions/A/NetAuth inits=nothing lazy=held exports=held unwind=held
@@ -1361,7 +1361,7 @@ file	/System/Library/PrivateFrameworks/iCalendar.framework/Versions/A/iCalendar 
 file	/System/Library/PrivateFrameworks/iLifeMediaBrowser.framework/Versions/A/iLifeMediaBrowser inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/iPod.framework/Versions/A/iPod inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/iPodSync.framework/Versions/A/iPodSync inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/PrivateFrameworks/iTunesAccess.framework/Versions/A/iTunesAccess inits=held lazy=skipped exports=held unwind=held
+file	/System/Library/PrivateFrameworks/iTunesAccess.framework/Versions/A/iTunesAccess inits=held lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/login.framework/Versions/A/Frameworks/loginsupport.framework/Versions/A/loginsupport inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/PrivateFrameworks/login.framework/Versions/A/login inits=nothing lazy=held exports=held unwind=held
@@ -1390,8 +1390,8 @@ file	/usr/lib/libauditd.0.dylib inits=nothing lazy=held exports=held unwind=held
 file	/usr/lib/libauto.dylib inits=nothing lazy=held exports=held unwind=held
 file	/usr/lib/libbsm.0.dylib inits=nothing lazy=held exports=held unwind=held
 file	/usr/lib/libbz2.1.0.dylib inits=nothing lazy=held exports=held unwind=held
-file	/usr/lib/libc++.1.dylib inits=held lazy=skipped exports=held unwind=held
-file	/usr/lib/libc++abi.dylib inits=nothing lazy=skipped exports=held unwind=held
+file	/usr/lib/libc++.1.dylib inits=held lazy=held exports=held unwind=held
+file	/usr/lib/libc++abi.dylib inits=nothing lazy=held exports=held unwind=held
 file	/usr/lib/libcharset.1.dylib inits=nothing lazy=held exports=held unwind=held
 file	/usr/lib/libcmph.dylib inits=nothing lazy=held exports=held unwind=held
 file	/usr/lib/libcrypto.0.9.7.dylib inits=nothing lazy=held exports=held unwind=held

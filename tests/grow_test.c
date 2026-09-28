@@ -5667,16 +5667,8 @@ static void test_oracles_judge_the_fixture(void) {
     ((struct linkedit_data_command *)dy_find(buf, LC_FUNCTION_STARTS))->datasize = 0;
     check_oracle("an initializer, and no function starts", buf, MG_OR_ALL, NULL);
     buf = build_dylib(&fsize, 0);
-    dy_poke64(buf, 0x2038, 0x1110);
-    check_oracle("a lazy pointer at __stub_helper's end", buf, MG_OR_ALL & ~MG_OR_LAZY,
-                 "the lazy pointer 0x1110 lies outside __stub_helper");
-    buf = build_dylib(&fsize, 0);
-    dy_poke64(buf, 0x2038, 0x10ff);
-    check_oracle("a lazy pointer before __stub_helper", buf, MG_OR_ALL & ~MG_OR_LAZY,
-                 "the lazy pointer 0x10ff lies outside __stub_helper");
-    buf = build_dylib(&fsize, 0);
-    dy_poke64(buf, 0x2038, 0x110f);
-    check_oracle("a lazy pointer at __stub_helper's last byte", buf, MG_OR_ALL, NULL);
+    dy_poke64(buf, 0x2038, 0x2000);
+    check_oracle("a lazy pointer outside __stub_helper, compared with itself", buf, MG_OR_ALL, NULL);
     buf = build_dylib(&fsize, 0);
     buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001 */
     check_oracle("an export off by one", buf, MG_OR_ALL & ~MG_OR_EXPORTS,
@@ -5705,22 +5697,102 @@ static void test_oracles_judge_the_fixture(void) {
         check_oracle(uw[i].what, buf, uw[i].why ? MG_OR_ALL & ~MG_OR_UNWIND : MG_OR_ALL,
                      uw[i].why);
     }
+    buf = build_dylib(&fsize, DY_UNWIND);
+    memcpy(dy_section(buf, "__TEXT", "__gcc_except_tab")->segname, "__DATA", 7);
+    check_oracle("an LSDA in __DATA's __gcc_except_tab", buf, MG_OR_ALL, NULL);
 
     /* Two fail; `why` is the first of those asked about. */
     char why[256] = "";
     buf = build_dylib(&fsize, 0);
     dy_poke64(buf, 0x2030, 0x1011);
-    dy_poke64(buf, 0x2038, 0x1110);
+    buf[0x3040 + 18] = 0x81;
     unsigned holds = mg_oracles(buf, fsize, MG_OR_LAZY | MG_OR_EXPORTS, why, sizeof why);
-    CHECK(holds == (MG_OR_EXPORTS | MG_OR_UNWIND) &&
-          strcmp(why, "the lazy pointer 0x1110 lies outside __stub_helper") == 0,
-          "oracles: asked about the lazy pointers alone, says why they fail (%#x, '%s')", holds, why);
+    CHECK(holds == (MG_OR_LAZY | MG_OR_UNWIND) &&
+          strcmp(why, "the export _f1 names 0x1001, and its symbol 0x1000") == 0,
+          "oracles: asked about the lazy pointers and exports, says why the exports fail (%#x, '%s')",
+          holds, why);
     free(buf);
 }
 
-/* A lazy pointer moved outside __stub_helper, and the snapshot told it
- * moved there too: only check 4 sees it. And what did not hold before is
- * not asked after. */
+/* mg_oracles_raised holds each lazy pointer and LSDA index entry of a raise
+ * to the old image's, slot by slot, moved as a raise moves it: `poke`
+ * changes the old image, the raised one, or both. */
+typedef void (*dy_pair)(uint8_t *old, uint8_t *buf);
+static void check_oracle_raised(const char *what, dy_pair poke, unsigned want, const char *why) {
+    size_t n, fsize;
+    uint8_t *old = build_dylib_at(DY_RAISED_AT, &n, DY_ALL);
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: %s: grow", what); free(old); free(buf); return;
+    }
+    if (poke) poke(old, buf);
+    char got[256] = "";
+    unsigned holds = mg_oracles_raised(buf, fsize, old, n, 0x1000, MG_OR_ALL, got, sizeof got);
+    CHECK(holds == want && (!why || strcmp(got, why) == 0),
+          "oracles, raised: %s: %#x hold, want %#x; said '%s', want '%s'", what, holds, want, got,
+          why ? why : "");
+    free(old);
+    free(buf);
+}
+static void dy_lazy_left(uint8_t *old, uint8_t *buf) { (void)old; dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x1100); }
+static void dy_lazy_past(uint8_t *old, uint8_t *buf) { (void)old; dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x2108); }
+static void dy_lazy_zero(uint8_t *old, uint8_t *buf) { dy_poke64(old, 0x2038, 0); dy_poke64(buf, 0x3038, 0); }
+static void dy_lazy_zero_moved(uint8_t *old, uint8_t *buf) { dy_poke64(old, 0x2038, 0); dy_poke64(buf, 0x3038, 0x1000); }
+static void dy_lazy_base(uint8_t *old, uint8_t *buf) {
+    dy_poke64(old, 0x2038, DY_RAISED_AT); dy_poke64(buf, 0x3038, DY_RAISED_AT);
+}
+static void dy_lazy_base_moved(uint8_t *old, uint8_t *buf) {
+    dy_poke64(old, 0x2038, DY_RAISED_AT); dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x1000);
+}
+static void dy_lazy_gone(uint8_t *old, uint8_t *buf) {
+    (void)old;
+    mi_image im;
+    if (mi_wrap(buf, DY_FSIZE + 0x1000, &im) == 0) mi_find_section(&im, "__DATA", "__la_symbol_ptr")->size = 0;
+}
+static void dy_lazy_end(uint8_t *old, uint8_t *buf) {
+    dy_poke64(old, 0x2038, DY_RAISED_AT + 0x5000); dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x6000);
+}
+static void dy_lsda_past(uint8_t *old, uint8_t *buf) { (void)old; UW32(buf, 0x2800, 60) += 1; }
+static void dy_lsda_more(uint8_t *old, uint8_t *buf) {
+    (void)old;
+    UW32(buf, 0x2800, 52) = 72;                        /* the sentinel: two LSDAs end at 72 */
+    UW32(buf, 0x2800, 64) = 0x2010;
+    UW32(buf, 0x2800, 68) = 0x2184;
+}
+static void dy_old_unwind_v2(uint8_t *old, uint8_t *buf) { (void)buf; UW32(old, 0x1800, 0) = 2; }
+static void dy_lsda_func_past(uint8_t *old, uint8_t *buf) { (void)old; UW32(buf, 0x2800, 56) += 1; }
+static void test_oracles_compare_the_raise(void) {
+    check_oracle_raised("the raise as made", NULL, MG_OR_ALL, NULL);
+    check_oracle_raised("a lazy pointer left where it was", dy_lazy_left, MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x10001100, and must hold 0x10002100");
+    check_oracle_raised("a lazy pointer moved 8 past the grow, still in __stub_helper", dy_lazy_past,
+                        MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x10002108, and must hold 0x10002100");
+    check_oracle_raised("a lazy pointer that names no segment, kept", dy_lazy_zero, MG_OR_ALL, NULL);
+    check_oracle_raised("a lazy pointer that names no segment, moved", dy_lazy_zero_moved,
+                        MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x1000, and must hold 0");
+    check_oracle_raised("a lazy pointer to the header, kept", dy_lazy_base, MG_OR_ALL, NULL);
+    check_oracle_raised("a lazy pointer to the header, moved", dy_lazy_base_moved,
+                        MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x10001000, and must hold 0x10000000");
+    check_oracle_raised("a lazy pointer fewer", dy_lazy_gone, MG_OR_ALL & ~MG_OR_LAZY,
+                        "the image holds 0 lazy pointers, and held 1,");
+    check_oracle_raised("a lazy pointer to __LINKEDIT's end, moved", dy_lazy_end, MG_OR_ALL, NULL);
+    check_oracle_raised("an LSDA moved 1 past the grow, still in __gcc_except_tab", dy_lsda_past,
+                        MG_OR_ALL & ~MG_OR_UNWIND, "the LSDA index names 0x10002010's LSDA at "
+                        "0x10002181, and must name 0x10002010's at 0x10002180");
+    check_oracle_raised("an LSDA's function moved 1 past the grow", dy_lsda_func_past,
+                        MG_OR_ALL & ~MG_OR_UNWIND, "the LSDA index names 0x10002011's LSDA at "
+                        "0x10002180, and must name 0x10002010's at 0x10002180");
+    check_oracle_raised("an LSDA more", dy_lsda_more, MG_OR_ALL & ~MG_OR_UNWIND,
+                        "compact unwind lists 2 LSDAs, and listed 1,");
+    check_oracle_raised("compact unwind the old image's reader cannot read", dy_old_unwind_v2,
+                        MG_OR_ALL & ~MG_OR_UNWIND, "__unwind_info could not be read as it was");
+}
+
+/* A lazy pointer moved elsewhere, and the snapshot told it moved there too:
+ * only check 4 sees it. And what did not hold before is not asked after. */
 static void test_verify_watches_the_oracles(void) {
     size_t fsize;
     uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
@@ -5735,15 +5807,34 @@ static void test_verify_watches_the_oracles(void) {
     int r;
     verify_snap = &snap;
     char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
-    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the lazy pointer 0x10003000 lies outside "
-                                 "__stub_helper after the grow, which held before it; refusing.\n"),
-          "oracles: verify REJECTS a lazy pointer outside __stub_helper (got %d):\n%s", r, err);
+    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the lazy pointer at 0x10003038 holds "
+                                 "0x10003000, and must hold 0x10002100 after the grow, which held "
+                                 "before it; refusing.\n"),
+          "oracles: verify REJECTS a lazy pointer moved elsewhere (got %d):\n%s", r, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+
+    /* Moved G + 8, it still lies inside the raised __stub_helper: only a
+     * comparison with where it was sees it. */
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "oracles: snapshot"); free(buf); return; }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x2108);
+    snap.rb.v[4].value += 8;
+    verify_snap = &snap;
+    err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the lazy pointer at 0x10003038 holds "
+                                 "0x10002108, and must hold 0x10002100 after the grow"),
+          "oracles: verify REJECTS a lazy pointer moved by the grow and 8 (got %d):\n%s", r, err);
     free(err);
     mg_snapshot_free(&snap);
     free(buf);
 
     buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
-    dy_poke64(buf, 0x2038, DY_RAISED_AT + 0x2000);
+    buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001, its symbol 0x1000 */
     r = mg_grow_header(&buf, &fsize, 0x1000);
     CHECK(r == 0, "oracles: a raise of an image one did not hold of succeeds (got %d)", r);
     free(buf);
@@ -5931,6 +6022,7 @@ int main(void) {
     test_raise_moves_the_initializer_offsets();
     test_raise_moves_a_relocation_offset_and_keeps_the_pad();
     test_oracles_judge_the_fixture();
+    test_oracles_compare_the_raise();
     test_verify_watches_the_oracles();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();

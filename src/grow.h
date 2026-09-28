@@ -303,26 +303,36 @@ void mg_snapshot_free(mg_snapshot *s);
 
 
 /* Four things true of an image ld64 linked, whatever a grow moved
- * (check 4): every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
- * value, and LC_ROUTINES_64's initializer, is an LC_FUNCTION_STARTS start
- * (vacuous with no starts); every __la_symbol_ptr value lies in
- * __TEXT,__stub_helper; every regular export, at the base plus its trie
- * offset, is the address of the N_SECT | N_EXT symbol of its name, where
- * there is one; and every personality compact unwind names is a slot of a
- * non-lazy pointer section (__got, __nl_symbol_ptr), and every LSDA lies in
- * __TEXT,__gcc_except_tab. Each reads what it checks itself: the sections'
- * values, the export trie's names, __unwind_info. It shares with the grow
- * only mi_wrap's view of the load commands, mi_image_base, mg_funcstarts_decode,
- * mg_find_trie, mu_decode, MT_TRIE_MAX_DEPTH and the MG_EXPORT_* masks, and
- * none of the walkers that move what it reads. Returns the MG_OR_ bits of
- * those that hold, and sets `why` for the first that does not among
- * `want`. */
+ * (check 4). mg_oracles_raised asks them of `buf`, a raise by `grow` of the
+ * image `old`:
+ * - inits: every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
+ *   value, and LC_ROUTINES_64's initializer, is an LC_FUNCTION_STARTS start
+ *   (vacuous with no starts);
+ * - lazy: every S_LAZY_SYMBOL_POINTERS slot holds what the same slot of
+ *   `old` held, plus `grow` if that lay in one of `old`'s segments and was
+ *   not its base;
+ * - exports: every regular export, at the base plus its trie offset, is the
+ *   address of the N_SECT | N_EXT symbol of its name, where there is one;
+ * - unwind: every personality compact unwind names is a slot of a non-lazy
+ *   pointer section (__got, __nl_symbol_ptr), every LSDA lies in a section
+ *   named __gcc_except_tab, and each LSDA index entry's function and LSDA
+ *   offsets are `old`'s, plus `grow`.
+ * mg_oracles asks them of `buf` alone, as a raise by 0 of itself: the lazy
+ * pointers then hold whenever they can be read.
+ * Each reads what it checks itself: the sections' values, the export trie's
+ * names, __unwind_info. It shares with the grow only mi_wrap's view of the
+ * load commands, mi_image_base, mg_funcstarts_decode, mg_find_trie,
+ * mu_decode, MT_TRIE_MAX_DEPTH and the MG_EXPORT_* masks, and none of the
+ * walkers that move what it reads. Returns the MG_OR_ bits of those that
+ * hold, and sets `why` for the first that does not among `want`. */
 #define MG_OR_INITS   1u
 #define MG_OR_LAZY    2u
 #define MG_OR_EXPORTS 4u
 #define MG_OR_UNWIND  8u
 #define MG_OR_ALL     15u
 unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);
+unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old, size_t n,
+                           uint64_t grow, unsigned want, char *why, size_t whysz);
 
 /* Whether `buf` is what the grow should have made of the image `before`
  * was taken of. The grow G is how far the first section moved. A raise
@@ -345,7 +355,8 @@ unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, 
  * Check 3, a raise only. See below.
  *
  * Check 4, a raise only. Each mg_oracles bit that held of the image before
- * holds after.
+ * holds after, as mg_oracles_raised asks it of the raised image and the
+ * old one.
  *
  * Check 5. No code addresses the base as it is plus G, where an unrepaired
  * reference to the header would. Every reference to the header that
