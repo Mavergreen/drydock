@@ -3048,8 +3048,8 @@ fi
 # (src/relations.h) skips the gate for it, the slice's edit succeeds, and
 # there is no MR_ERROR to propagate. Nor can any verb make THIS fixture meet
 # that gate: only a header grow disturbs the base-relative values, and
-# mkimplausible builds an MH_DYLIB, which mg_grow_header refuses to grow at
-# all (it has no __PAGEZERO to lower the base into).
+# mkimplausible builds an MH_DYLIB with LC_DYLD_CHAINED_FIXUPS, which
+# mg_grow_header refuses to raise until they are converted.
 #
 # So the per-slice refusal is now the header-pad one: a dylib path whose load
 # command fits ONE slice's header pad and not the OTHER's. One slice is
@@ -3093,7 +3093,8 @@ else
     mrerr_pad_hi=$mrerr_pad_fixture;     mrerr_pad_lo=$mrerr_pad_compiled
 fi
 # The tighter slice must refuse for want of room rather than grow: a copy of
-# it with MH_PIE cleared cannot grow, and its pad is the same.
+# it with MH_PIE cleared cannot grow if it is the executable, and the dylib's
+# chained fixups refuse its raise; its pad is the same.
 cp "$mrerr_refused" "$T/mrerr_refused"
 unpie "$T/mrerr_refused"
 mrerr_refused="$T/mrerr_refused"
@@ -5390,6 +5391,72 @@ lo "$T/lk_relmeth" "$T/lk_relmeth.out" 'objc-methods set absolute'
     && [ -s "$T/lk.want" ] && cmp -s "$T/lk.want" "$T/lk.got" \
     && ok "order: objc-methods set absolute is packed, and its lists read as they did" \
     || bad "order: objc-methods" "rc $lo_rc, resign [$(resign "$T/lk_relmeth.out")]: $(cat "$T/lo.err")"
+
+# ============================================================================
+# a dylib's header pad grows by raising its contents
+# ============================================================================
+# A dylib has no __PAGEZERO to lower its base into, so what follows its load
+# commands moves up instead (src/grow.h). Each statement asks for more pad
+# than the fixture has; each grows it, says so, and verifies. The driver
+# finds the raised dylib through its own rpath, and runs. (That rpath is
+# @loader_path/., not @loader_path: 10.9's dyld expands only the form with a
+# slash.) A linker that signs the dylib leaves a signature the raise
+# invalidates, so each script deletes it first, as the sweeps do; and a host
+# that kills whatever was modified since it was signed skips the run.
+cat > "$T/raise.c" <<'EOF'
+int raise_fn(void) { return 7; }
+EOF
+cat > "$T/raise_main.c" <<'EOF'
+int raise_fn(void);
+int main(void) { return raise_fn() == 7 ? 0 : 1; }
+EOF
+mkdir -p "$T/raise"
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@rpath/libraise.dylib" \
+    -Wl,-rpath,/usr/lib/swift "$T/raise.c" -o "$T/raise/libraise.dylib"
+"$CC" -O2 $FIXTURE_FLAGS -Wl,-rpath,@loader_path/. "$T/raise_main.c" \
+    "$T/raise/libraise.dylib" -o "$T/raise/driver"
+raise_pad=$("$DRYDOCK_MACHO_REWRITE" info "$T/raise/libraise.dylib" \
+    | sed -n 's/^header pad: \([0-9][0-9]*\) bytes available.*/\1/p')
+raise_path="/nonexistent/$(printf 'r%.0s' $(seq 1 $((${raise_pad:-0} + 100))))"
+raise_sig=
+"$DRYDOCK_MACHO_REWRITE" info "$T/raise/libraise.dylib" | grep -q ' LC_CODE_SIGNATURE ' \
+    && raise_sig='load-command delete codesig'
+raise_script() { [ -z "$raise_sig" ] || echo "$raise_sig"; printf '%s\n' "$1"; }
+for raise_stmt in "dylib append $raise_path" "dylib insert $raise_path" \
+                  "rpath replace /usr/lib/swift $raise_path"; do
+    raise_what=${raise_stmt%% /*}
+    rm -f "$T/raise_out"
+    rc=0
+    raise_script "$raise_stmt" | "$DRYDOCK_MACHO_REWRITE" "$T/raise/libraise.dylib" \
+        "$T/raise_out" >"$T/raise.out" 2>"$T/raise.err" || rc=$?
+    [ "$rc" -eq 0 ] && grep -q "^$T/raise/libraise.dylib: grew the header pad by [0-9]* bytes ([0-9]* -> [0-9]* available); contents raised by 0x[0-9a-f]*; new UUID" "$T/raise.err" \
+        && ok "raise: $raise_what, past a dylib's pad, grows it by raising its contents, announced" \
+        || bad "raise: $raise_what" "exit $rc: $(cut -c1-300 "$T/raise.err")"
+    "$DRYDOCK_MACHO_REWRITE" verify "$T/raise_out" >/dev/null 2>&1 \
+        && "$DRYDOCK_MACHO_REWRITE" info "$T/raise_out" | grep -qF "$raise_path" \
+        && ok "raise: $raise_what: the raised dylib names the path and verifies" \
+        || bad "raise: $raise_what" "the output lacks the path or does not verify"
+done
+cp "$T/raise_out" "$T/raise/libraise.dylib"
+if [ "$signing_enforced" -eq 1 ]; then
+    skip "raise: a program loads the raised dylib and runs" \
+        "this host SIGKILLs any binary modified since it was signed (established independently of drydock-macho-rewrite by the host probe above); exercised for real on 10.9"
+else
+    "$T/raise/driver" && ok "raise: a program loads the raised dylib and runs" \
+        || bad "raise: run" "the driver failed"
+    DYLD_PRINT_LIBRARIES=1 "$T/raise/driver" 2>&1 | grep -q "raise/.*libraise\.dylib" \
+        && ok "raise: ... and the dylib it loaded is the raised copy" \
+        || bad "raise: run" "dyld did not say it loaded $T/raise's libraise.dylib"
+fi
+# A statement after the raise edits the raised image, re-read: the raise needs
+# no relation of its own (src/relations.h).
+rc=0
+printf '%s\n' "rpath append /opt/after-the-raise" | "$DRYDOCK_MACHO_REWRITE" \
+    "$T/raise/libraise.dylib" "$T/raise_after" >"$T/raise.out" 2>"$T/raise.err" || rc=$?
+[ "$rc" -eq 0 ] && "$DRYDOCK_MACHO_REWRITE" info "$T/raise_after" | grep -qF "/opt/after-the-raise" \
+    && "$DRYDOCK_MACHO_REWRITE" verify "$T/raise_after" >/dev/null 2>&1 \
+    && ok "raise: a later edit of the raised dylib fits the grown pad and verifies" \
+    || bad "raise: a later edit" "exit $rc: $(cut -c1-300 "$T/raise.err")"
 
 reached_end=1
 echo "cli_test: $fails failure(s)"
