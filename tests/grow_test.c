@@ -5091,9 +5091,10 @@ static void test_lowering_leaves_the_stabs(void) {
     uint8_t *buf = build_symbol_image(&fsize, 4, 0);
     hsym(buf, fsize, 1)->n_type = N_FUN;
     hsym(buf, fsize, 1)->n_un.n_strx = 1;
+    hsym(buf, fsize, 1)->n_value = 0x100000000ull;
     memcpy(buf + 6720, "\0_f", 4);
     int r = mg_grow_header(&buf, &fsize, 0x1000);
-    CHECK(r == 0 && hsym(buf, fsize, 1)->n_value == 0x100001000ull,
+    CHECK(r == 0 && hsym(buf, fsize, 1)->n_value == 0x100000000ull,
           "stabs: a lowering leaves a named N_FUN (got %d, %#llx)", r,
           (unsigned long long)hsym(buf, fsize, 1)->n_value);
     free(buf);

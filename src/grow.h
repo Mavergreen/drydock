@@ -280,9 +280,11 @@ void mg_snapshot_free(mg_snapshot *s);
  * moved by that (an absolute export not at all); no two segments overlap in
  * memory; no code addresses the base as it is plus G, where an unrepaired
  * reference to the header would; every reference to the header the snapshot
- * recorded addresses the base as it is; each N_SECT symbol, not a stab, and
- * each rebase target's value, names the base as it is if it named the
- * header, and else what it named, moved; and the rebase targets are the same
+ * recorded addresses the base as it is; each symbol that holds an address a
+ * grow moves (mg_sym_address: an N_SECT symbol, not a stab; on a raise,
+ * also a stab that does), and each rebase target's value, names the base as
+ * it is if it named the header, and else what it named, moved; and the
+ * rebase targets are the same
  * slots, moved. -1 (with a message naming the first failure) otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
@@ -432,9 +434,11 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * So is one with a bind, weak bind or lazy bind in the segment that maps the
  * header, whose contents a grow moves out from under it, or bind opcodes it
  * cannot read.
- * So is one with an N_SECT symbol, not a stab, or an export, not an
- * absolute one, that names a byte strictly between the header and its first
- * content.
+ * So is one with a symbol that holds an address a grow moves (mg_sym_address:
+ * an N_SECT symbol, not a stab; on a raise, also a stab that does), or an
+ * export, not an absolute one, that names a byte strictly between the header
+ * and its first content. On a raise, it also refuses a stab of a type it
+ * does not know how to move (mg_stab_address).
  * So is one with bytes in an instruction section that name a byte strictly
  * between the header and its first content, which a grow moves apart,
  * unless decoding refutes that they are code (mhr_confirm_each).
