@@ -26,6 +26,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
 CC="${CC:-clang}"
+# platform: x86_64, which is what this toolkit targets, on every host: a
+# modern runner's clang builds arm64 by default, whose 16 KB pages the header
+# grow refuses.
+FIXTURE_FLAGS="-arch x86_64 -mmacosx-version-min=10.9"
 
 [ -x "$BIN/insert_dylib" ] || { echo "insert_dylib_test: $BIN/insert_dylib not found or not executable" >&2; exit 1; }
 [ -x "$BIN/drydock-macho-rewrite" ] || { echo "insert_dylib_test: $BIN/drydock-macho-rewrite not found or not executable" >&2; exit 1; }
@@ -93,9 +97,9 @@ cat >"$T/wmain.c" <<'EOF'
 int foo_sym(void);
 int main(void) { return foo_sym() == 42 ? 0 : 1; }
 EOF
-"$CC" -dynamiclib -O2 -mmacosx-version-min=10.9 -install_name /usr/lib/libfoo.dylib \
+"$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name /usr/lib/libfoo.dylib \
     "$T/foo_stub.c" -o "$T/libfoo_stub.dylib" 2>"$T/wk_build.err" \
-    && "$CC" -O2 -mmacosx-version-min=10.9 "$T/wmain.c" "$T/libfoo_stub.dylib" -o "$T/wk_in" 2>>"$T/wk_build.err"
+    && "$CC" -O2 $FIXTURE_FLAGS "$T/wmain.c" "$T/libfoo_stub.dylib" -o "$T/wk_in" 2>>"$T/wk_build.err"
 if [ ! -x "$T/wk_in" ]; then
     skip "--weak" "cannot build a fixture that imports from /usr/lib/libfoo.dylib: $(cat "$T/wk_build.err")"
 else
@@ -326,9 +330,9 @@ EOF
 if [ ! -x "$T/has_lc" ]; then
     skip "unknown load command refused" "cannot build tests/has_lc helper: $(cat "$T/has_lc_build.err")"
 else
-    "$CC" -dynamiclib -O2 -mmacosx-version-min=10.9 -install_name "@loader_path/liblazy_a.dylib" \
+    "$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/liblazy_a.dylib" \
         "$T/lazy_a.c" -o "$T/liblazy_a.dylib" 2>"$T/lazy.err"
-    "$CC" -O2 -mmacosx-version-min=10.9 "$T/lazy_main.c" \
+    "$CC" -O2 $FIXTURE_FLAGS "$T/lazy_main.c" \
         -Xlinker -lazy_library -Xlinker "$T/liblazy_a.dylib" -o "$T/lazy_main" 2>>"$T/lazy.err" || true
     if [ ! -x "$T/lazy_main" ] || ! "$T/has_lc" "$T/lazy_main" 0x20; then
         skip "unknown load command refused" "this host's linker did not produce an LC_LAZY_LOAD_DYLIB from -lazy_library ($(head -1 "$T/lazy.err" 2>/dev/null || echo "no diagnostic"))"
@@ -534,7 +538,7 @@ rc=$?
     && ok "no room: ... the output names the dylib and verifies" \
     || bad "no room" "the output lacks the dylib or does not verify"
 printf 'int nr_fn(void) { return 1; }\n' >"$T/nr.c"
-if "$CC" -dynamiclib -mmacosx-version-min=10.9 -o "$T/nr.dylib" "$T/nr.c" 2>"$T/nrcc.err"; then
+if "$CC" -dynamiclib $FIXTURE_FLAGS -o "$T/nr.dylib" "$T/nr.c" 2>"$T/nrcc.err"; then
     ( cd "$T" && "$BIN/insert_dylib" --all-yes "$nr_path" nr.dylib nr_dy_out ) \
         >"$T/14d.out" 2>"$T/14d.err"
     rc=$?

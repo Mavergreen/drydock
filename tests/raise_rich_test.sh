@@ -21,6 +21,10 @@
 #
 # Fixtures are x86_64 with a 10.9 floor, which runs on 10.9 and under Rosetta.
 # Where C++ or Objective-C cannot be built, those parts are skipped, saying so.
+# A linker may leave out a feature the fixtures ask of it (lld drops the
+# resolver, -init and -segaddr): each is looked for in the built fixture, and
+# one that is missing skips only its own checks, by name. The raises, verify,
+# the stabs and the run comparisons never skip.
 set -u
 
 BIN="${1:?usage: raise_rich_test.sh <bindir>}"
@@ -260,6 +264,8 @@ extern "C" void driver_cxx(void (*thrower)(int)) {
 }
 EOF
 # stabs FILE: each stab, in order: its type, section, value (decimal) and name.
+# stabs FILE SYMBOL: the 8 bytes at SYMBOL's address, then SYMBOL's address,
+# in hex.
 cat >stabs.c <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
@@ -267,14 +273,40 @@ cat >stabs.c <<'EOF'
 #include <stdint.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
+static int word(uint8_t *b, long n, const char *sym) {
+    struct mach_header_64 *h = (struct mach_header_64 *)b;
+    struct symtab_command *st = NULL;
+    uint8_t *p = b + sizeof *h;
+    for (uint32_t i = 0; i < h->ncmds; i++, p += ((struct load_command *)p)->cmdsize)
+        if (((struct load_command *)p)->cmd == LC_SYMTAB) st = (struct symtab_command *)p;
+    if (!st) return 1;
+    struct nlist_64 *nl = (struct nlist_64 *)(b + st->symoff);
+    for (uint32_t k = 0; k < st->nsyms; k++) {
+        if ((nl[k].n_type & (N_STAB | N_TYPE)) != N_SECT || strcmp((char *)b + st->stroff + nl[k].n_un.n_strx, sym))
+            continue;
+        p = b + sizeof *h;
+        for (uint32_t i = 0; i < h->ncmds; i++, p += ((struct load_command *)p)->cmdsize) {
+            struct segment_command_64 *s = (struct segment_command_64 *)p;
+            if (s->cmd != LC_SEGMENT_64 || nl[k].n_value < s->vmaddr || nl[k].n_value + 8 > s->vmaddr + s->filesize)
+                continue;
+            uint64_t off = s->fileoff + (nl[k].n_value - s->vmaddr), v;
+            if ((long)(off + 8) > n) return 1;
+            memcpy(&v, b + off, 8);
+            printf("%#llx %#llx\n", (unsigned long long)v, (unsigned long long)nl[k].n_value);
+            return 0;
+        }
+    }
+    return 1;
+}
 int main(int argc, char **argv) {
-    FILE *f = argc == 2 ? fopen(argv[1], "rb") : NULL;
+    FILE *f = argc >= 2 ? fopen(argv[1], "rb") : NULL;
     if (!f) return 2;
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     uint8_t *b = malloc((size_t)n);
     fseek(f, 0, SEEK_SET);
     if (!b || fread(b, 1, (size_t)n, f) != (size_t)n) return 2;
+    if (argc == 3) return word(b, n, argv[2]);
     struct mach_header_64 *h = (struct mach_header_64 *)b;
     uint8_t *p = b + sizeof *h;
     for (uint32_t i = 0; i < h->ncmds; i++, p += ((struct load_command *)p)->cmdsize) {
@@ -312,7 +344,13 @@ mkdir g0
 build "$link" $FF -dynamiclib -install_name @rpath/librich.dylib -Wl,-init,_rich_init \
     rich.o $objs $libs -o g0/librich.dylib
 build "$link" $FF -bundle rich_bundle.o $objs $libs -o g0/rich.bundle
-build "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib -Wl,-segaddr,__GAP,0x100000 gap.o -o g0/libgap.dylib
+gap=libgap.dylib
+if ! "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib -Wl,-segaddr,__GAP,0x100000 gap.o \
+        -o g0/libgap.dylib >gap.log 2>&1 &&
+   ! "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib gap.o -o g0/libgap.dylib >>gap.log 2>&1; then
+    gap=
+    skip "segment\$start\$" "the linker cannot link libgap.dylib, so its raise and run are skipped: $(head -3 gap.log | tr '\n' ' ')"
+fi
 cx=
 [ -z "$defs" ] || [ "$link" = "$CC" ] || cx=driver_cxx.o
 build "$CC" $FF $defs -DLINKED -O2 -c driver.c -o drive.o
@@ -321,19 +359,36 @@ build "$link" $FF -Wl,-rpath,@loader_path/. drive.o $cx g0/librich.dylib $libs -
 build "$link" $FF load.o $cx $libs -o g0/load
 
 # ---- the fixtures are what they say ------------------------------------------
+# feature NAME WHAT CMD...: whether the built fixture has WHAT, by CMD (otool
+# or nm, or the export trie, which neither prints); have_NAME says, and a
+# missing one is a SKIP naming it.
+feature() {
+    n=$1 w=$2; shift 2
+    if "$@" >/dev/null 2>&1; then
+        eval "have_$n=1"; ok "the fixture has $w"
+    else
+        eval "have_$n=0"; skip "$n" "the linker left out $w, so its checks are skipped"
+    fi
+}
+has() { eval "[ \"\${have_$1:-0}\" -eq 1 ]"; }
 "$DMR" exports g0/librich.dylib >exports.tsv
-for k in stub-resolver absolute thread-local; do
-    awk -F'\t' -v k="$k" '$3 == k { f = 1 } END { exit !f }' exports.tsv &&
-        ok "librich.dylib exports a $k symbol" || bad "fixture" "librich.dylib has no $k export"
-done
-"$DMR" info g0/librich.dylib | grep -q '^LC\[[0-9]*\] 0x0000001a ' &&
-    ok "librich.dylib has an LC_ROUTINES_64" || bad "fixture" "librich.dylib has no LC_ROUTINES_64"
-"$DMR" info g0/libgap.dylib | awk '/segname=__GAP / { print; exit }' | grep -q 'vmaddr=0x100000 ' &&
-    ok "libgap.dylib's __GAP lies past a gap in vm" || bad "fixture" "libgap.dylib has no __GAP at 0x100000"
+otool -l g0/librich.dylib >rich.lcs 2>&1
+nm -m g0/librich.dylib >rich.nm 2>&1
+feature resolver "a stub-and-resolver export (.symbol_resolver) in librich.dylib's export trie" \
+    awk -F'\t' '$3 == "stub-resolver" { f = 1 } END { exit !f }' exports.tsv
+feature absolute "an absolute symbol, _rich_abs" grep -q '(absolute) external _rich_abs$' rich.nm
+feature tlv "thread-local variables (__thread_vars)" grep -q 'sectname __thread_vars$' rich.lcs
+feature init "an -init initializer (LC_ROUTINES_64)" grep -q 'cmd LC_ROUTINES_64$' rich.lcs
+if [ -n "$gap" ]; then
+    otool -l g0/libgap.dylib >gap.lcs 2>&1
+    feature segaddr "__GAP placed past a gap in vm, at 0x100000 (-segaddr)" sh -c \
+        "awk '/segname __GAP\$/ { g = 1 } g && /vmaddr/ { print \$2; exit }' gap.lcs | grep -q '^0x0*100000\$'"
+    feature segstart "a pointer to segment\$start\$__GAP that names __GAP's first variable" sh -c \
+        "[ \"\$(./stabs g0/libgap.dylib _gap_ptrs | cut -d' ' -f1)\" = \"\$(./stabs g0/libgap.dylib _gap_first | cut -d' ' -f2)\" ]"
+fi
 ./stabs g0/librich.dylib >stabs.g0
 for ty in 36 46 38 100 102; do   # N_FUN N_BNSYM N_STSYM N_SO N_OSO
-    awk -v t="$ty" '$1 == t { f = 1 } END { exit !f }' stabs.g0 ||
-        bad "fixture" "librich.dylib has no stab of type $ty"
+    feature "stab$ty" "a stab of type $ty in librich.dylib" awk -v t="$ty" '$1 == t { f = 1 } END { exit !f }' stabs.g0
 done
 
 # ---- raise -------------------------------------------------------------------
@@ -369,7 +424,7 @@ raise() {
 for p in 1 2; do
     mkdir "g$p"
     cp g0/drive g0/load "g$p/"
-    for f in librich.dylib rich.bundle libgap.dylib; do raise "$p" "g0/$f" "g$p/$f"; done
+    for f in librich.dylib rich.bundle $gap; do raise "$p" "g0/$f" "g$p/$f"; done
 done
 
 # ---- the stabs ---------------------------------------------------------------
@@ -415,11 +470,16 @@ else
         run "$d" drive ./drive
         run "$d" dylib ./load ./librich.dylib
         run "$d" bundle ./load ./rich.bundle
-        run "$d" gap ./load ./libgap.dylib gap_report
+        [ -z "$gap" ] || run "$d" gap ./load ./libgap.dylib gap_report
     done
-    for n in drive dylib bundle gap; do
-        if grep -q -E 'WRONG|MISSES|ANOTHER|NOT |FALLS SHORT|dlopen:|nothing thrown' "g0/out.$n" ||
-           ! grep -q '^exit 0$' "g0/out.$n"; then
+    for n in drive dylib bundle ${gap:+gap}; do
+        # A feature the fixture lacks says so in the original's output too.
+        rx='^$'
+        has resolver || rx="$rx|^resolver: "
+        [ "$n" != gap ] || has segstart || rx="$rx|^gap: "
+        grep -v -E "$rx" "g0/out.$n" >"g0/own.$n"
+        if grep -q -E 'WRONG|MISSES|ANOTHER|NOT |FALLS SHORT|dlopen:|nothing thrown' "g0/own.$n" ||
+           ! grep -q '^exit 0$' "g0/own.$n"; then
             bad "$n" "the original does not pass its own checks: $(tr '\n' ' ' <"g0/out.$n")"
         else
             ok "$n: the original passes its own checks ($(wc -l <"g0/out.$n" | tr -d ' ') lines)"
@@ -433,10 +493,15 @@ else
         ok "drive: ... and the library it loaded is the raised copy beside it" ||
         bad "drive" "dyld did not say it loaded g1's librich.dylib"
     for n in drive dylib; do
-        grep -q '^constructor 1, -init 1, zero-fill 2$' "g0/out.$n" &&
-            grep -q '^resolver: resolved to its implementation$' "g0/out.$n" &&
-            grep -q '^thread-local: this thread 6, the other 15$' "g0/out.$n" ||
-            bad "$n" "the original's constructor, -init, resolver or thread-local variable did not work"
+        grep -q '^constructor 1, -init [01], zero-fill 2$' "g0/out.$n" &&
+            ok "$n: the original's constructor ran" || bad "$n" "the original's constructor did not run"
+        ! has init || { grep -q '^constructor 1, -init 1,' "g0/out.$n" &&
+            ok "$n: the original's -init ran" || bad "$n" "the original's -init (LC_ROUTINES_64) did not run"; }
+        ! has resolver || { grep -q '^resolver: resolved to its implementation$' "g0/out.$n" &&
+            ok "$n: the original's resolver resolved" || bad "$n" "the original's resolver did not resolve"; }
+        ! has tlv || { grep -q '^thread-local: this thread 6, the other 15$' "g0/out.$n" &&
+            ok "$n: the original's thread-local variables are per thread" ||
+            bad "$n" "the original's thread-local variables did not work"; }
     done
     grep -q "^c++: caught across: " g0/out.drive || [ -z "$cx" ] ||
         bad "c++" "the driver did not catch what the dylib threw"
