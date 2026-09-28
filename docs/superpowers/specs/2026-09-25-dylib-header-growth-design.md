@@ -344,8 +344,21 @@ None of the refusals added here fired on the three motivating frameworks.
 
 Every grow verifies itself and refuses, writing nothing, on any difference.
 Checks 1–3 derive their expectations from Decision 2's table, so they catch
-slips in the implementation but not a row missing from the table. Checks 4–6
-are independent of the table, and exist to catch exactly that.
+slips in the code that applies it, but not a row missing from the table —
+except the UUID, which check 3 does not derive from the table (below).
+Checks 4–6 are independent of the table, and exist to catch exactly that.
+Checks 1–3 and 5 read the image through the same readers as the raise.
+Check 3 also shares `ml_each_off`, the snapshot's rb/refs worklists,
+`mg_raised_uuid`, `mg_trie_walk` and `mg_unwind_walk` with the raise: its
+new UUID is not derived independently. An entry one of those readers misses
+is missed by the grow and its check alike, so checks 1–3 and 5 do not catch
+a slip in a decoder the grow and its checks share; their unit tests guard
+the decoders instead, and for the rebase opcodes so does the `dyldinfo`
+oracle (Decision 9). Only `mg_oracles` (check 4) reads with code of its
+own — it shares `mi_wrap`'s view, `mi_image_base`, `mg_funcstarts_decode`,
+`mg_find_trie`, `mu_decode`, `MT_TRIE_MAX_DEPTH` and the `MG_EXPORT_*`
+masks — and so catches some such misses. `mg_plausible` collects through
+`mg_collect`'s walkers and cannot catch what they miss.
 
 1. **Relation.** `mg_snapshot_take` / `mg_verify` gain a delta, 0 for the
    executable route and G for the raise. Every base-relative structure and
@@ -366,6 +379,8 @@ are independent of the table, and exist to catch exactly that.
    - Every `S_MOD_INIT_FUNC_POINTERS` / `S_MOD_TERM_FUNC_POINTERS` value and
      `LC_ROUTINES_64.init_address` is a function start.
    - Every `__la_symbol_ptr` value lies in `__stub_helper`.
+   - Every compact-unwind personality names a `__got` or `__nl_symbol_ptr`
+     slot, and every LSDA lies in `__gcc_except_tab` (added by plan M2b).
    - For every regular export, base + trie offset equals the `n_value` of
      the same-named `N_SECT | N_EXT` symbol. Two structures, adjusted by two
      different code paths, must agree.
@@ -470,8 +485,45 @@ This covers:
 
 Header-reference repair from M1 applies to it unchanged.
 
+**Done** (`6d08bdc..582a5eb`, plans M2a and M2b). What the plans settled that
+this section left open, for M3's reader:
+
+- Decoding gives each in-range candidate one of three verdicts: confirmed,
+  refuted, or not reached. The owner's I1 answer (2026-09-26): a confirmed or
+  not-reached candidate refuses the grow, and a refuted one passes.
+- Checks 2 (its load-command half), 3 and 4 run on the raise route only;
+  the executable route keeps checks 1, 2's pointer and symbol halves, 5 and
+  6. Check 4 asks of the raised image only the oracles that held of the
+  original.
+- A symbol or stab below the base, like one naming the header, stays.
+- The UUID is SHA-256 over the old UUID and then G as 8 bytes,
+  little-endian.
+- `LC_LOAD_UPWARD_DYLIB` is accepted on both routes.
+- `compat/README.md`'s rows that said a dylib is refused change with M2, not
+  M3, so no document says so while dylibs grow.
+- A raise's segment must have its file data at F or past it, and an
+  `LC_UUID`, `LC_ROUTINES_64`, `LC_DYSYMTAB` or encryption command too
+  short to read is refused. So are what no system image has: beside
+  `LC_DYLD_INFO`, `LC_DYSYMTAB`'s table of contents, module table, and
+  external or local relocations, whose addresses no rebase opcode lists;
+  and a section aligned to more than a page.
+- Code that names an address outside the image is not refused. Tried, it
+  refused 20 system images, each for a jump table that decoding took for
+  code naming an address 143 MiB or more away; a position-independent
+  image names nothing outside itself RIP-relatively.
+
 **M3: proof on real dylibs, and documentation.** This covers the real-run
-test below, and the documentation updates.
+test below, and the documentation updates. The documentation must also say,
+as M2's review found:
+
+- Grows add up. The function-starts leading delta gains G at each grow, and
+  a grow refuses once it would need a wider ULEB (Decision 6), so an image
+  grown more than once, on either route, can reach that refusal.
+- Under the owner's I1 ruling, decoding "refutes" a candidate that sits
+  after an undeclared jump table in `__text` (no `LC_DATA_IN_CODE` for it),
+  if the table's bytes happen to decode as instructions that end inside or
+  past the candidate. A real in-range reference there passes, and grows
+  silently wrong.
 
 ## Testing
 

@@ -34,7 +34,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; I1's other halves and binds in `__TEXT` since `1105e76..ca53e71` (dylib-growth M2a), see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
-| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | — | **designed** 2026-09-25; the adversarial review's findings are being folded in |
+| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | M2a `6d08bdc..4da4997`, M2b `9d6bbbd..582a5eb` (plans deleted once implemented) | **raised** since `9df0468`: a dylib's or bundle's header pad grows; M3, the committed run test and the documentation, remains, see below |
 | 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
 | 33 | The executable grow has no refusal of its own for encrypted or protected images | — | — | **to do**, found 2026-09-26 while planning dylib-growth M2; see below |
 
@@ -1549,6 +1549,51 @@ identical, and round-trips an encode/decode of a text file.
 14,120 bytes, signs, verifies, keeps 416 lines identical, and demangles
 `_ZN3foo3barEv` to `foo::bar()`. `sh tests/codesign_order_test.sh` on 10.9
 (M4's gate): 0 failures.
+
+## Item 31: grow a dylib's header
+
+**M2 done** (`6d08bdc..582a5eb`). A dylib's or bundle's header pad grows by raising
+everything after its load commands a page at a time, and every absolute
+address that names it: rebased pointers, symbols (a debugging image's stabs
+among them), sections, segments and `LC_ROUTINES_64`. `LC_UUID` is replaced,
+since the old dSYM would describe the raised image wrongly, and
+`LC_SEGMENT_SPLIT_INFO`, which a raise leaves stale, is deleted. Each raise
+verifies itself six ways (the spec's Decision 7), among them a byte-for-byte
+comparison with the image it came from, and four oracles (initializers, lazy
+pointers, exports, compact unwind) that read what they check with code of
+their own. The other checks read the image through the decoders the raise
+reads it through (`mg_rebases_read`, `mg_collect`'s walkers, `mg_symtab`,
+`mhr_scan`), so an entry one of those misses is missed by both: those
+decoders are guarded by their unit tests, and the rebase opcodes' by
+`rebase_oracle_test`'s comparison with `dyldinfo`. `LC_LOAD_UPWARD_DYLIB`, which no grow had
+classified, is accepted on both routes: AppKit, HIToolbox, Metadata and ten
+of libSystem's parts carry one.
+
+Measured 2026-09-26 over this host's 1,180 x86_64 dylibs and bundles under
+`/usr/lib` and `/System/Library/Frameworks` (399 dylibs, 781 bundles), with
+`rpath append`s past each pad: 1,177 grow and verify, where none did before.
+364 drop split info, and 37 repair 312 references to their own header.
+Three are refused: CFNetwork and `libxcselect.dylib` carry
+`LC_LAZY_LOAD_DYLIB`, which the rewriter's ordinal renumbering refuses, and
+MediaToolbox has code at 0x2380d0 that may address its header and that
+decoding does not confirm. Raised copies of libz, libxml2, libsqlite3,
+libcurl, libc++, CoreFoundation and Foundation load under `gzip`, `xmllint`,
+`sqlite3`, `curl`, a C++ program that throws across libc++, and `plutil`,
+and print what the originals print. `info` says `resign 10.9: ok` of each,
+and a copy signed ad hoc with 10.9's `codesign` verifies and runs. An old
+Sparkle.framework (ppc, i386 and x86_64, no `LC_DYLD_INFO`) is refused for
+that; newer ones grow. The executable route is unchanged: the M1 sweep's
+1,059 executables give byte-identical output, and so does Claude Code.
+
+**M3 remains**: the committed run test, `tests/grown_dylib_runs_test.sh`
+(Apple's dylibs under Apple's programs, and host-built dylibs for what no
+system dylib has: a thread-local variable, `dlsym` through the trie,
+`&__dso_handle` beside a data pointer to it, and both F < G and F > G), and
+the documentation: `docs/macl-case-study.md` rows 9 and 23, `src/grow.h`'s
+top comment, the two limits the spec's M3 section names (repeated grows and
+the function-starts delta; a real reference after an undeclared jump table),
+and items 29 and 31 marked done. (`compat/README.md`'s and
+`tests/README.md`'s words that a dylib is refused changed with M2 itself.)
 
 ## Item 32: a load command shorter than its struct
 

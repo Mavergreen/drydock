@@ -78,9 +78,10 @@ real hardware, with their results committed or reported by hand:
   On a header-pad-exhausted input the fork's header-growth trick needs
   `__PAGEZERO` to shrink and has none to shrink on any dylib (dylibs do not
   carry one) — it reports success anyway, and the file it wrote fails
-  `drydock-macho-rewrite verify`'s own plausibility check; this wrapper refuses
-  instead (`EX_REFUSED`; a dylib cannot grow, which today's wording says as
-  "only MH_EXECUTE can be grown"), leaving the input untouched. (3) On an unwritable `--inplace` target the fork's own
+  `drydock-macho-rewrite verify`'s own plausibility check; this wrapper then
+  refused instead (`EX_REFUSED`, "only MH_EXECUTE can be grown"), leaving the
+  input untouched, and now grows the dylib's header pad by raising its
+  contents, verified. (3) On an unwritable `--inplace` target the fork's own
   diagnostic lands on ITS STDOUT (`main.c`'s `printf`, not `perror`); this
   wrapper's lands on stderr only — both still exit 1 having touched nothing.
 
