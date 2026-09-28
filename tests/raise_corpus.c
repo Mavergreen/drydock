@@ -3,14 +3,21 @@
  *
  *   raise_corpus list      paths on stdin; prints those with an x86_64
  *                          MH_DYLIB or MH_BUNDLE, thin or in a fat file
+ *   raise_corpus shas      paths on stdin; prints each with a tab and the
+ *                          sha256 of its x86_64 slice
  *   raise_corpus thin IN OUT
  *                          writes IN's x86_64 slice (IN itself, if thin)
  *   raise_corpus oracles   paths on stdin; prints, for each file's x86_64
- *                          slice, what each of mg_oracles' four says of it:
- *                          "held", "skipped" (it does not hold, so a grow's
- *                          check 4 does not ask it) or "nothing" (it holds,
- *                          with nothing to check)
+ *                          slice, its path, a tab, its sha256, a tab, and
+ *                          what each of mg_oracles' four says of it: "held",
+ *                          "skipped" (it does not hold, so a grow's check 4
+ *                          does not ask it) or "nothing" (it holds, with
+ *                          nothing to check)
+ *
+ * The sha256 keys tests/data's tables on contents: a row is compared only
+ * while the file it was measured on is unchanged.
  */
+#include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,6 +99,36 @@ static int list(void) {
     return 0;
 }
 
+/* The sha256 of `n` bytes at `buf`, as 64 hex digits in `hex`. */
+static void sha_of(const uint8_t *buf, size_t n, char hex[65]) {
+    uint8_t d[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_CTX c;
+    CC_SHA256_Init(&c);
+    for (size_t at = 0; at < n; at += 1u << 30) {
+        size_t k = n - at < (1u << 30) ? n - at : (1u << 30);
+        CC_SHA256_Update(&c, buf + at, (CC_LONG)k);
+    }
+    CC_SHA256_Final(d, &c);
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
+}
+
+static int shas(void) {
+    char path[4096], hex[65];
+    while (fgets(path, sizeof path, stdin)) {
+        uint8_t *buf;
+        size_t size;
+        path[strcspn(path, "\n")] = 0;
+        if (read_slice(path, &buf, &size) != 0) {
+            printf("%s\tunreadable\n", path);
+            continue;
+        }
+        sha_of(buf, size, hex);
+        printf("%s\t%s\n", path, hex);
+        free(buf);
+    }
+    return 0;
+}
+
 static int thin(const char *in, const char *out) {
     uint8_t *buf;
     size_t size;
@@ -128,7 +165,7 @@ static const char *say(unsigned holds, unsigned bit, int something) {
 }
 
 static int oracles(void) {
-    char path[4096], why[256];
+    char path[4096], why[256], hex[65];
     while (fgets(path, sizeof path, stdin)) {
         uint8_t *buf;
         size_t size;
@@ -139,7 +176,7 @@ static int oracles(void) {
         path[strcspn(path, "\n")] = 0;
         if (read_slice(path, &buf, &size) != 0 || mi_wrap(buf, size, &im) != 0 ||
             mi_image_base(&im, &base) != 0) {
-            printf("%s unreadable\n", path);
+            printf("%s\tunreadable\n", path);
             continue;
         }
         memset(&h, 0, sizeof h);
@@ -148,7 +185,8 @@ static int oracles(void) {
                       mg_funcstarts_decode(buf + h.fs->dataoff, h.fs->datasize, base, starts, 1) != 0;
         int trie = mg_find_trie(buf, size, &toff, &tsize) && toff && tsize;
         unsigned holds = mg_oracles(buf, size, MG_OR_ALL, why, sizeof why);
-        printf("%s inits=%s lazy=%s exports=%s unwind=%s\n", path,
+        sha_of(buf, size, hex);
+        printf("%s\t%s\tinits=%s lazy=%s exports=%s unwind=%s\n", path, hex,
                say(holds, MG_OR_INITS, nstarts && (h.values || h.routines)),
                say(holds, MG_OR_LAZY, h.lazy),
                say(holds, MG_OR_EXPORTS, trie && h.symtab),
@@ -160,8 +198,9 @@ static int oracles(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "list")) return list();
+    if (argc == 2 && !strcmp(argv[1], "shas")) return shas();
     if (argc == 4 && !strcmp(argv[1], "thin")) return thin(argv[2], argv[3]);
     if (argc == 2 && !strcmp(argv[1], "oracles")) return oracles();
-    fprintf(stderr, "usage: raise_corpus list | thin IN OUT | oracles\n");
+    fprintf(stderr, "usage: raise_corpus list | shas | thin IN OUT | oracles\n");
     return 2;
 }

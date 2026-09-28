@@ -11,8 +11,14 @@
 # Per oracle and file: "held", "skipped" (does not hold) or "nothing" (holds,
 # with nothing to check).
 #
+# Rows are keyed on the sha256 of each file's x86_64 slice, as
+# raise_corpus_test.sh's are (tests/golden_match.awk): only unchanged files
+# are compared, the counts compared are those of the matched rows, and a file
+# missing, added or changed is reported, not failed.
+#
 # Local only: it SKIPs, saying why, unless this is the 10.9 build the table
-# was measured on.
+# was measured on, and unless at least half the table's files are here with
+# the contents it was measured on.
 set -u
 
 BIN="${1:?usage: raise_oracle_counts_test.sh <bindir> [update]}"
@@ -34,40 +40,58 @@ fail=0
 bad() { echo "FAIL $1: $2"; fail=$((fail + 1)); }
 
 find /usr/lib /System/Library/Frameworks /System/Library/PrivateFrameworks -type f 2>/dev/null |
-    LC_ALL=C sort | "$RC" list | "$RC" oracles >"$T/rows"
-nu=$(grep -c " unreadable\$" "$T/rows")
-[ "$nu" -eq 0 ] || bad "$nu file(s)" "raise_corpus could not read them: $(grep " unreadable\$" "$T/rows" | head -3 | tr "\\n" " ")"
+    LC_ALL=C sort | "$RC" list | "$RC" oracles | sed 's/^/file	/' >"$T/rows"
+nu=$(grep -c "	unreadable\$" "$T/rows")
+[ "$nu" -eq 0 ] || bad "$nu file(s)" "raise_corpus could not read them: $(grep "	unreadable\$" "$T/rows" | head -3 | tr "\\n" " ")"
 
-{
-    printf 'build\t%s\n' "$build"
-    printf 'count\tfiles\t%s\n' "$(wc -l <"$T/rows" | tr -d ' ')"
+# table ROWS: the counts derived from ROWS, then ROWS.
+table() {
+    printf 'count\tfiles\t%s\n' "$(wc -l <"$1" | tr -d ' ')"
     for o in inits lazy exports unwind; do
         for v in held skipped nothing; do
-            printf 'count\t%s %s\t%s\n' "$o" "$v" "$(grep -c " $o=$v" "$T/rows")"
+            printf 'count\t%s %s\t%s\n' "$o" "$v" "$(grep -c "[	 ]$o=$v" "$1")"
         done
     done
-    printf 'count\tall four hold\t%s\n' "$(grep -vc '=skipped' "$T/rows")"
-    sed 's/^/file	/' "$T/rows"
-} >"$T/table"
+    printf 'count\tall four hold\t%s\n' "$(grep -vc '=skipped' "$1")"
+    cat "$1"
+}
 
 if [ "$MODE" = update ]; then
     { echo "# written by: sh tests/raise_oracle_counts_test.sh <bindir> update -- say in the commit why a row changed"
-      cat "$T/table"; } >"$TABLE" && echo "raise_oracle_counts_test: wrote $TABLE"
+      printf 'build\t%s\n' "$build"
+      table "$T/rows"; } >"$TABLE" && echo "raise_oracle_counts_test: wrote $TABLE"
     exit 0
 fi
 
-grep -v '^#' "$TABLE" >"$T/want"
-if diff "$T/want" "$T/table" >"$T/diff"; then
-    echo "PASS $(awk -F'\t' '$1 == "count" { printf "%s: %s, ", $2, $3 }' "$T/table")as the table has them"
+awk -f "$HERE/golden_match.awk" -v tm="$T/tm" -v rm="$T/rm" "$TABLE" "$T/rows" >"$T/match"
+set -- $(tail -1 "$T/match")
+matched=$2 total=$4 missing=$8 added=${10} changed=${12}
+sed '$d' "$T/match"
+echo "INFO $(tail -1 "$T/match")"
+if [ $((matched * 2)) -lt "$total" ]; then
+    echo "SKIP: only $matched of the table's $total files are here with the contents it was measured on; below half, this is not its corpus"
+    exit 77
+fi
+table "$T/tm" >"$T/want"
+table "$T/rm" >"$T/got"
+if diff "$T/want" "$T/got" >"$T/diff"; then
+    echo "PASS $(awk -F'\t' '$1 == "count" { printf "%s: %s, ", $2, $3 }' "$T/got")as the table has them, of the $matched files it was measured on"
 else
-    bad "the table" "what the oracles say differs from $TABLE (< the table, > this run):"
+    bad "the table" "what the oracles say of the files it was measured on differs from $TABLE (< the table, > this run):"
     head -40 "$T/diff"
 fi
+if [ $((missing + added + changed)) -eq 0 ]; then
+    grep '^count	' "$TABLE" >"$T/wantc"
+    table "$T/rows" | grep '^count	' >"$T/gotc"
+    diff "$T/wantc" "$T/gotc" >/dev/null && echo "PASS every file matched, and so do the table's own counts" ||
+        bad "the table's counts" "every file matched, but its count lines do not: $(diff "$T/wantc" "$T/gotc" | head -6 | tr '\n' ' ')"
+fi
 
-# The positive control: one file's oracle turned off is a difference.
-awk 'BEGIN { FS = OFS = "\t" } $1 == "file" && !d && sub(/ exports=held/, " exports=skipped") { d = 1 } { print }' \
-    "$T/table" >"$T/changed"
-if cmp -s "$T/table" "$T/changed" || diff "$T/want" "$T/changed" >/dev/null; then
+# The positive control: one matched file's oracle turned off is a difference.
+awk 'BEGIN { FS = OFS = "\t" } !d && sub(/ exports=held/, " exports=skipped") { d = 1 } { print }' \
+    "$T/rm" >"$T/rm9"
+table "$T/rm9" >"$T/got9"
+if cmp -s "$T/rm" "$T/rm9" || diff "$T/want" "$T/got9" >/dev/null; then
     bad "the positive control" "with one file's export oracle turned off, the comparison still matched"
 else
     echo "PASS the positive control: one file's export oracle turned off is a difference"
