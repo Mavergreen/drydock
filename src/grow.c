@@ -750,6 +750,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->kinds = NULL;
     s->old = NULL;
     s->oldsize = 0;
+    s->oracles = 0;
     s->first = mg_first_sect_off(buf, fsize);
     s->raise = h->filetype == MH_DYLIB || h->filetype == MH_BUNDLE;
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
@@ -777,6 +778,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     }
     memcpy(s->old, buf, fsize);
     s->oldsize = fsize;
+    s->oracles = mg_oracles(buf, fsize, 0, why, sizeof why);
     return 0;
 }
 
@@ -1218,6 +1220,261 @@ static int mg_exempt_cb(const struct load_command *lc, void *ctx_) {
     return 0;
 }
 
+/* ---- mg_oracles ---- */
+struct mg_or_lcs {
+    const struct linkedit_data_command *fs;
+    const struct symtab_command *st;
+    const struct routines_command_64 *rt;
+    const struct section_64 *helper, *unwind, *except, *nl[8];
+    int nlazy, nnl;
+};
+static int mg_or_lcs_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_lcs *c = (struct mg_or_lcs *)ctx_;
+    if (lc->cmd == LC_FUNCTION_STARTS && !c->fs) c->fs = (const struct linkedit_data_command *)lc;
+    if (lc->cmd == LC_SYMTAB && !c->st) c->st = (const struct symtab_command *)lc;
+    if (lc->cmd == LC_ROUTINES_64 && !c->rt) c->rt = (const struct routines_command_64 *)lc;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__stub_helper", 16))
+            c->helper = &s[j];
+        if (!strncmp(s[j].segname, "__TEXT", 16) && !strncmp(s[j].sectname, "__gcc_except_tab", 16))
+            c->except = &s[j];
+        if (!c->unwind && !strncmp(s[j].sectname, "__unwind_info", 16)) c->unwind = &s[j];
+        if ((s[j].flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS) c->nlazy++;
+        if ((s[j].flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS && c->nnl < 8)
+            c->nl[c->nnl++] = &s[j];
+    }
+    return 0;
+}
+
+static int mg_by_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* Each 8-byte value of every section of `type`, in turn, to `fn`; stops at the
+ * first it returns nonzero for, and returns that. */
+struct mg_or_vals { const uint8_t *buf; size_t fsize; uint32_t type; int (*fn)(uint64_t, void *);
+                    void *ctx; int r; };
+static int mg_or_vals_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_vals *v = (struct mg_or_vals *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects && !v->r; j++) {
+        if ((s[j].flags & SECTION_TYPE) != v->type || !s[j].offset) continue;
+        for (uint64_t k = 0; k + 8 <= s[j].size && s[j].offset + k + 8 <= v->fsize && !v->r; k += 8) {
+            uint64_t x;
+            memcpy(&x, v->buf + s[j].offset + k, sizeof x);
+            v->r = v->fn(x, v->ctx);
+        }
+    }
+    return v->r;
+}
+
+struct mg_or_starts { const uint64_t *a; size_t n; uint64_t bad; };
+static int mg_or_not_start(uint64_t x, void *ctx_) {
+    struct mg_or_starts *s = (struct mg_or_starts *)ctx_;
+    if (bsearch(&x, s->a, s->n, sizeof *s->a, mg_by_u64)) return 0;
+    s->bad = x;
+    return 1;
+}
+struct mg_or_range { uint64_t lo, hi, bad; };
+static int mg_or_outside(uint64_t x, void *ctx_) {
+    struct mg_or_range *r = (struct mg_or_range *)ctx_;
+    if (x >= r->lo && x < r->hi) return 0;
+    r->bad = x;
+    return 1;
+}
+
+/* A regular export: its name, and its offset from the base. */
+typedef struct { char *name; uint64_t off; } mg_or_exp;
+struct mg_or_trie { const uint8_t *t; uint32_t size; uint8_t *seen; char name[1024];
+                    mg_or_exp *e; size_t n, cap; int bad; };
+static void mg_or_trie_walk(struct mg_or_trie *w, uint32_t off, size_t len, int depth) {
+    const uint8_t *p, *end = w->t + w->size;
+    uint64_t term, flags, a, coff;
+    int k;
+    if (w->bad || depth > MT_TRIE_MAX_DEPTH || off >= w->size || w->seen[off]) { w->bad = 1; return; }
+    w->seen[off] = 1;
+    p = w->t + off;
+    if (!(k = mu_decode(p, end, &term))) { w->bad = 1; return; }
+    p += k;
+    if (term) {
+        const uint8_t *q = p;
+        if (!(k = mu_decode(q, end, &flags))) { w->bad = 1; return; }
+        q += k;
+        if (!(flags & (MG_EXPORT_REEXPORT | MG_EXPORT_STUB_AND_RESOLVER | MG_EXPORT_KIND_MASK))) {
+            if (!(k = mu_decode(q, end, &a))) { w->bad = 1; return; }
+            if (w->n == w->cap) {
+                mg_or_exp *e = (mg_or_exp *)realloc(w->e, (w->cap * 2 + 16) * sizeof *e);
+                if (!e) { w->bad = 1; return; }
+                w->e = e;
+                w->cap = w->cap * 2 + 16;
+            }
+            if (!(w->e[w->n].name = (char *)malloc(len + 1))) { w->bad = 1; return; }
+            memcpy(w->e[w->n].name, w->name, len);
+            w->e[w->n].name[len] = 0;
+            w->e[w->n++].off = a;
+        }
+        if (term > (uint64_t)(end - p)) { w->bad = 1; return; }
+        p += term;
+    }
+    if (p >= end) { w->bad = 1; return; }
+    for (uint8_t i = 0, nch = *p++; i < nch && !w->bad; i++) {
+        size_t l = 0;
+        while (p + l < end && p[l]) l++;
+        if (p + l >= end || len + l >= sizeof w->name) { w->bad = 1; return; }
+        memcpy(w->name + len, p, l);
+        p += l + 1;
+        if (!(k = mu_decode(p, end, &coff))) { w->bad = 1; return; }
+        p += k;
+        mg_or_trie_walk(w, (uint32_t)(coff > UINT32_MAX ? UINT32_MAX : coff), len + l, depth + 1);
+    }
+}
+static int mg_or_by_name(const void *a, const void *b) {
+    return strcmp(((const mg_or_exp *)a)->name, ((const mg_or_exp *)b)->name);
+}
+
+/* 0 when every regular export whose name an N_SECT | N_EXT symbol has names
+ * that symbol's address; else 1, with `why` set; -1 when it cannot tell. */
+static int mg_or_exports(const uint8_t *buf, size_t fsize, uint64_t base,
+                         const struct symtab_command *st, char *why, size_t whysz) {
+    uint32_t off, size;
+    struct mg_or_trie w;
+    int r = 0;
+    if (!mg_find_trie(buf, fsize, &off, &size) || !off || !size || !st) return 0;
+    if ((uint64_t)off + size > fsize || (uint64_t)st->symoff + 16ull * st->nsyms > fsize ||
+        (uint64_t)st->stroff + st->strsize > fsize)
+        return -1;
+    memset(&w, 0, sizeof w);
+    w.t = buf + off;
+    w.size = size;
+    if (!(w.seen = (uint8_t *)calloc(size, 1))) return -1;
+    mg_or_trie_walk(&w, 0, 0, 0);
+    if (w.bad) r = -1;
+    else qsort(w.e, w.n, sizeof *w.e, mg_or_by_name);
+    const struct nlist_64 *nl = (const struct nlist_64 *)(buf + st->symoff);
+    for (uint32_t i = 0; r == 0 && i < st->nsyms; i++) {
+        if ((nl[i].n_type & (N_STAB | N_TYPE | N_EXT)) != (N_SECT | N_EXT) ||
+            nl[i].n_un.n_strx >= st->strsize)
+            continue;
+        const char *nm = (const char *)buf + st->stroff + nl[i].n_un.n_strx;
+        if (!memchr(nm, 0, st->strsize - nl[i].n_un.n_strx)) continue;
+        mg_or_exp key = { (char *)nm, 0 };
+        const mg_or_exp *e = (const mg_or_exp *)bsearch(&key, w.e, w.n, sizeof *w.e, mg_or_by_name);
+        if (!e || base + e->off == nl[i].n_value) continue;
+        snprintf(why, whysz, "the export %s names %#llx, and its symbol %#llx", nm,
+                 (unsigned long long)(base + e->off), (unsigned long long)nl[i].n_value);
+        r = 1;
+    }
+    for (size_t i = 0; i < w.n; i++) free(w.e[i].name);
+    free(w.e);
+    free(w.seen);
+    return r;
+}
+
+/* Whether `a` is an 8-byte slot of a non-lazy pointer section. */
+static int mg_or_in_nl(const struct mg_or_lcs *c, uint64_t a) {
+    for (int k = 0; k < c->nnl; k++)
+        if (a >= c->nl[k]->addr && a - c->nl[k]->addr < c->nl[k]->size &&
+            (a - c->nl[k]->addr) % 8 == 0)
+            return 1;
+    return 0;
+}
+
+/* 0 when every personality compact unwind names is a slot of __got or
+ * __nl_symbol_ptr, and every LSDA it names lies in __TEXT,__gcc_except_tab;
+ * else 1, with `why` set; -1 when __unwind_info cannot be read. Read here,
+ * not through mg_unwind_walk. */
+static int mg_or_unwind(const uint8_t *buf, size_t fsize, uint64_t base,
+                        const struct mg_or_lcs *c, char *why, size_t whysz) {
+    const struct section_64 *u = c->unwind;
+    uint32_t h[7], lo, hi;
+    if (!u || !u->size) return 0;
+    if (u->offset > fsize || u->size > fsize - u->offset || u->size < sizeof h) return -1;
+    const uint8_t *p = buf + u->offset;
+    memcpy(h, p, sizeof h);
+    if (h[0] != 1 || (uint64_t)h[3] + 4ull * h[4] > u->size || h[6] < 1 ||
+        (uint64_t)h[5] + 12ull * h[6] > u->size)
+        return -1;
+    for (uint32_t k = 0; k < h[4]; k++) {
+        uint32_t pe;
+        memcpy(&pe, p + h[3] + 4 * k, sizeof pe);
+        if (mg_or_in_nl(c, base + pe)) continue;
+        snprintf(why, whysz, "the personality %#llx names no __got or __nl_symbol_ptr slot",
+                 (unsigned long long)(base + pe));
+        return 1;
+    }
+    memcpy(&lo, p + h[5] + 8, sizeof lo);
+    memcpy(&hi, p + h[5] + 12ull * (h[6] - 1) + 8, sizeof hi);
+    if (hi < lo || hi > u->size) return -1;
+    for (uint32_t e = lo; e + 8 <= hi; e += 8) {
+        uint32_t lsda;
+        memcpy(&lsda, p + e + 4, sizeof lsda);
+        uint64_t a = base + lsda;
+        if (c->except && a >= c->except->addr && a - c->except->addr < c->except->size) continue;
+        snprintf(why, whysz, "the LSDA %#llx lies outside __gcc_except_tab", (unsigned long long)a);
+        return 1;
+    }
+    return 0;
+}
+
+unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz) {
+    mi_image im;
+    struct mg_or_lcs c;
+    uint64_t base;
+    unsigned holds = 0;
+    char w[4][256] = { "LC_FUNCTION_STARTS could not be read", "",
+                       "the export trie or the symbols could not be read",
+                       "__unwind_info could not be read" };
+    memset(&c, 0, sizeof c);
+    snprintf(why, whysz, "the image could not be read");
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &base) != 0) return 0;
+    mi_each_lc(&im, mg_or_lcs_cb, &c);
+
+    uint32_t nfs = c.fs && c.fs->datasize <= fsize && c.fs->dataoff <= fsize - c.fs->datasize
+                   ? c.fs->datasize : 0;
+    struct mg_or_starts s = { NULL, 0, 0 };
+    uint64_t *a = (uint64_t *)malloc(nfs * sizeof *a + 1);
+    int ns = a ? mg_funcstarts_decode(buf + (nfs ? c.fs->dataoff : 0), nfs, base, a, (int)nfs) : -1;
+    s.a = a;
+    s.n = ns > 0 ? (size_t)ns : 0;
+    qsort(a, s.n, sizeof *a, mg_by_u64);
+    struct mg_or_vals v = { buf, fsize, S_MOD_INIT_FUNC_POINTERS, mg_or_not_start, &s, 0 };
+    if (ns == 0) {
+        holds |= MG_OR_INITS;
+    } else if (ns > 0) {
+        mi_each_lc(&im, mg_or_vals_cb, &v);
+        v.type = S_MOD_TERM_FUNC_POINTERS;
+        if (!v.r) mi_each_lc(&im, mg_or_vals_cb, &v);
+        if (!v.r && c.rt) v.r = mg_or_not_start(c.rt->init_address, &s);
+        if (!v.r) holds |= MG_OR_INITS;
+        else snprintf(w[0], sizeof w[0], "the initializer %#llx is not a function start",
+                      (unsigned long long)s.bad);
+    }
+    free(a);
+
+    struct mg_or_range r = { c.helper ? c.helper->addr : 0,
+                             c.helper ? c.helper->addr + c.helper->size : 0, 0 };
+    struct mg_or_vals l = { buf, fsize, S_LAZY_SYMBOL_POINTERS, mg_or_outside, &r, 0 };
+    if (c.nlazy) mi_each_lc(&im, mg_or_vals_cb, &l);
+    if (!l.r) holds |= MG_OR_LAZY;
+    else snprintf(w[1], sizeof w[1], "the lazy pointer %#llx lies outside __stub_helper",
+                  (unsigned long long)r.bad);
+
+    if (mg_or_exports(buf, fsize, base, c.st, w[2], sizeof w[2]) == 0) holds |= MG_OR_EXPORTS;
+    if (mg_or_unwind(buf, fsize, base, &c, w[3], sizeof w[3]) == 0) holds |= MG_OR_UNWIND;
+    for (int i = 0; i < 4; i++)
+        if (want & ~holds & (1u << i)) {
+            snprintf(why, whysz, "%s", w[i]);
+            break;
+        }
+    return holds;
+}
+
 /* Check 3 of a raise (see mg_verify). */
 static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
                            uint64_t grow) {
@@ -1344,7 +1601,15 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     if (mg_verify_symbols(&im, fsize, before, base, delta) != 0) return -1;
     if (mg_verify_pointers(&im, buf, fsize, before, base, delta) != 0) return -1;
     if (mg_verify_refs(buf, fsize, before, base, grow, delta) != 0) return -1;
-    return before->raise ? mg_verify_bytes(buf, fsize, before, grow) : 0;
+    if (!before->raise) return 0;
+    if (mg_verify_bytes(buf, fsize, before, grow) != 0) return -1;
+    char why[256];
+    if ((mg_oracles(buf, fsize, before->oracles, why, sizeof why) & before->oracles) ==
+        before->oracles)
+        return 0;
+    fprintf(stderr, "ERROR: verify FAILED -- %s after the grow, which held before it; "
+                    "refusing.\n", why);
+    return -1;
 }
 
 int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {

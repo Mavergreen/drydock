@@ -34,6 +34,25 @@
  * A dylib or bundle, which has no __PAGEZERO, is raised instead: everything
  * past the header moves up by the grow, and so does every absolute address
  * that names it: each rebased pointer, symbol, section and segment.
+ *
+ * What a grow's verification trusts. mg_verify derives what each field must
+ * hold from the route's rules, not from the code that moved it, but it reads
+ * the image through the decoders the grow itself reads it through:
+ * mg_rebases_read for the rebased pointers (checks 2 and 3), mg_collect's
+ * walkers of the export trie, compact unwind, data in code, function starts
+ * and initializer offsets (check 1), mg_symtab (check 2) and mhr_scan (check
+ * 5). Check 3 also shares with the raise itself ml_each_off, the snapshot's
+ * rb and refs worklists, mg_raised_uuid, mg_trie_walk and mg_unwind_walk,
+ * and so trusts them for the UUID, the export trie and compact unwind but
+ * for what its own contract (below) still asks of each -- it does not
+ * derive the new UUID independently. An entry one of those misses is missed
+ * by the grow and its check alike, and the grow passes: a rebase the reader
+ * drops is neither moved nor compared. What guards those decoders is their
+ * tests in tests/grow_test.c and, for the rebase opcodes alone (mrb_decode,
+ * under mg_rebases_read), tests/rebase_oracle_test.sh's comparison with
+ * dyldinfo over 10.9's /usr/lib. mg_oracles (check 4) and mg_plausible read
+ * what they check with code of their own, and catch some such misses: an
+ * initializer, a lazy pointer, an export or an LSDA left where it was.
  */
 #ifndef DRYDOCK_GROW_H
 #define DRYDOCK_GROW_H
@@ -242,6 +261,7 @@ typedef struct {
     int raise;
     uint8_t *old;        /* a raise's image as it was, for its byte check */
     size_t oldsize;
+    unsigned oracles;    /* the mg_oracles that held of it */
     mhr_cand *refs;
     uint32_t nrefs;
     uint64_t *symval;
@@ -278,6 +298,27 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s);
 void mg_snapshot_free(mg_snapshot *s);
 
 
+/* Four things true of an image ld64 linked, whatever a grow moved (spec:
+ * check 4): every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
+ * value, and LC_ROUTINES_64's initializer, is an LC_FUNCTION_STARTS start
+ * (vacuous with no starts); every __la_symbol_ptr value lies in
+ * __TEXT,__stub_helper; every regular export, at the base plus its trie
+ * offset, is the address of the N_SECT | N_EXT symbol of its name, where
+ * there is one; and every personality compact unwind names is a slot of a
+ * non-lazy pointer section (__got, __nl_symbol_ptr), and every LSDA lies in
+ * __TEXT,__gcc_except_tab. Each reads what it checks itself: the sections'
+ * values, the export trie's names, __unwind_info. It shares with the grow
+ * only mi_wrap's view of the load commands, mg_funcstarts_decode and
+ * mg_find_trie, and none of the walkers that move what it reads. Returns the
+ * MG_OR_ bits of those that hold, and sets `why` for the first that does not
+ * among `want`. */
+#define MG_OR_INITS   1u
+#define MG_OR_LAZY    2u
+#define MG_OR_EXPORTS 4u
+#define MG_OR_UNWIND  8u
+#define MG_OR_ALL     15u
+unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);
+
 /* The grow G is how far the first section moved; a raise moves every
  * content address by it, a lowering none. 0 if every base-relative structure
  * and every mg_each_fileoff offset resolves where it did before the grow,
@@ -310,8 +351,9 @@ void mg_snapshot_free(mg_snapshot *s);
  * what the raise moves there: the rebased pointers, the repaired code, the
  * symbols' values, the leading function start, the export trie, and the
  * offsets in data in code, compact
- * unwind and S_INIT_FUNC_OFFSETS. -1 (with a message naming the first
- * failure) otherwise. */
+ * unwind and S_INIT_FUNC_OFFSETS; and each mg_oracles that held of the image
+ * before holds after. -1 (with a message naming the first failure)
+ * otherwise. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 

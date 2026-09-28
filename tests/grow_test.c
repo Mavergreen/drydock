@@ -5549,6 +5549,123 @@ static void test_raise_appends_a_trie_to_linkedit_of_any_vmsize(void) {
     }
 }
 
+/* ---- check 4: the oracles ---- */
+static void dy_poke64(uint8_t *buf, uint32_t at, uint64_t v) { memcpy(buf + at, &v, sizeof v); }
+
+static void check_oracle(const char *what, uint8_t *buf, unsigned want, const char *why) {
+    char got[256] = "";
+    unsigned holds = mg_oracles(buf, DY_FSIZE, MG_OR_ALL, got, sizeof got);
+    CHECK(holds == want && (!why || strcmp(got, why) == 0),
+          "oracles: %s: %#x hold, want %#x; said '%s', want '%s'", what, holds, want, got,
+          why ? why : "");
+    free(buf);
+}
+
+static void test_oracles_judge_the_fixture(void) {
+    size_t fsize;
+    uint8_t *buf;
+    check_oracle("the fixture", build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | DY_INITOFF),
+                 MG_OR_ALL, NULL);
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2030, 0x1011);
+    check_oracle("an initializer mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
+                 "the initializer 0x1011 is not a function start");
+    buf = build_dylib(&fsize, DY_ROUTINES);
+    ((struct routines_command_64 *)dy_find(buf, LC_ROUTINES_64))->init_address = 0x1012;
+    check_oracle("LC_ROUTINES_64 mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
+                 "the initializer 0x1012 is not a function start");
+    buf = build_dylib(&fsize, 0);
+    dy_section(buf, "__DATA", "__mod_init_func")->flags = S_MOD_TERM_FUNC_POINTERS;
+    dy_poke64(buf, 0x2030, 0x1013);
+    check_oracle("a terminator mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
+                 "the initializer 0x1013 is not a function start");
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2030, 0x1011);
+    ((struct linkedit_data_command *)dy_find(buf, LC_FUNCTION_STARTS))->datasize = 0;
+    check_oracle("an initializer, and no function starts", buf, MG_OR_ALL, NULL);
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2038, 0x1110);
+    check_oracle("a lazy pointer at __stub_helper's end", buf, MG_OR_ALL & ~MG_OR_LAZY,
+                 "the lazy pointer 0x1110 lies outside __stub_helper");
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2038, 0x10ff);
+    check_oracle("a lazy pointer before __stub_helper", buf, MG_OR_ALL & ~MG_OR_LAZY,
+                 "the lazy pointer 0x10ff lies outside __stub_helper");
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2038, 0x110f);
+    check_oracle("a lazy pointer at __stub_helper's last byte", buf, MG_OR_ALL, NULL);
+    buf = build_dylib(&fsize, 0);
+    buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001 */
+    check_oracle("an export off by one", buf, MG_OR_ALL & ~MG_OR_EXPORTS,
+                 "the export _f1 names 0x1001, and its symbol 0x1000");
+    buf = build_dylib(&fsize, 0);
+    buf[0x3040 + 18] = 0x81;
+    dy_syms(buf, DY_FSIZE)[1].n_type = N_SECT;         /* _f1 is not external */
+    check_oracle("an export with no external symbol", buf, MG_OR_ALL, NULL);
+
+    /* Compact unwind (DY_UNWIND): its personality at word 7, f2's LSDA at 15. */
+    static const struct { const char *what; int word; uint32_t v; const char *why; } uw[6] = {
+        { "an LSDA outside __gcc_except_tab", 15, 0x1010,
+          "the LSDA 0x1010 lies outside __gcc_except_tab" },
+        { "an LSDA at __gcc_except_tab's end", 15, 0x1190,
+          "the LSDA 0x1190 lies outside __gcc_except_tab" },
+        { "an LSDA at __gcc_except_tab's last byte", 15, 0x118f, NULL },
+        { "a personality in __data", 7, 0x2000,
+          "the personality 0x2000 names no __got or __nl_symbol_ptr slot" },
+        { "a personality mid-slot", 7, 0x2044,
+          "the personality 0x2044 names no __got or __nl_symbol_ptr slot" },
+        { "compact unwind of a version it does not read", 0, 2, "__unwind_info could not be read" },
+    };
+    for (int i = 0; i < 6; i++) {
+        buf = build_dylib(&fsize, DY_UNWIND);
+        ((uint32_t *)(buf + 0x1800))[uw[i].word] = uw[i].v;
+        check_oracle(uw[i].what, buf, uw[i].why ? MG_OR_ALL & ~MG_OR_UNWIND : MG_OR_ALL,
+                     uw[i].why);
+    }
+
+    /* Two fail; `why` is the first of those asked about. */
+    char why[256] = "";
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2030, 0x1011);
+    dy_poke64(buf, 0x2038, 0x1110);
+    unsigned holds = mg_oracles(buf, fsize, MG_OR_LAZY | MG_OR_EXPORTS, why, sizeof why);
+    CHECK(holds == (MG_OR_EXPORTS | MG_OR_UNWIND) &&
+          strcmp(why, "the lazy pointer 0x1110 lies outside __stub_helper") == 0,
+          "oracles: asked about the lazy pointers alone, says why they fail (%#x, '%s')", holds, why);
+    free(buf);
+}
+
+/* A lazy pointer moved outside __stub_helper, and the snapshot told it
+ * moved there too: only check 4 sees it. And what did not hold before is
+ * not asked after. */
+static void test_verify_watches_the_oracles(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "oracles: snapshot"); free(buf); return; }
+    CHECK(snap.oracles == MG_OR_ALL, "oracles: the snapshot says all hold (%#x)", snap.oracles);
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x3000);
+    snap.rb.v[4].value = DY_RAISED_AT + 0x2000;
+    int r;
+    verify_snap = &snap;
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the lazy pointer 0x10003000 lies outside "
+                                 "__stub_helper after the grow, which held before it; refusing.\n"),
+          "oracles: verify REJECTS a lazy pointer outside __stub_helper (got %d):\n%s", r, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    dy_poke64(buf, 0x2038, DY_RAISED_AT + 0x2000);
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "oracles: a raise of an image one did not hold of succeeds (got %d)", r);
+    free(buf);
+}
+
 int main(void) {
     test_uleb_decode();
     test_uleb_minlen();
@@ -5729,6 +5846,8 @@ int main(void) {
     test_raise_rebuilds_a_trie_with_what_stays();
     test_raise_moves_the_initializer_offsets();
     test_raise_moves_a_relocation_offset_and_keeps_the_pad();
+    test_oracles_judge_the_fixture();
+    test_verify_watches_the_oracles();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
