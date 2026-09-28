@@ -34,9 +34,15 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; I1's other halves and binds in `__TEXT` since `1105e76..ca53e71` (dylib-growth M2a), see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
-| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | M2a `6d08bdc..4da4997`, M2b `9d6bbbd..582a5eb` (plans deleted once implemented) | **raised** since `9df0468`: a dylib's or bundle's header pad grows; M3, the committed run test and the documentation, remains, see below |
+| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | M2a `6d08bdc..4da4997`, M2b `9d6bbbd..582a5eb` (plans deleted once implemented) | **raised** since `9df0468`: a dylib's or bundle's header pad grows; M3, the documentation and CI's first run of the rich test, remains, see below |
 | 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
 | 33 | The executable grow has no refusal of its own for encrypted or protected images | — | — | **to do**, found 2026-09-26 while planning dylib-growth M2; see below |
+| 34 | Check 3 trusts the unwind walker to add G only to offsets | — | — | **to do**, found 2026-09-27 by dylib-growth M2b's review; see below |
+| 35 | The decoder "confirms" jump-table bytes as RIP-relative operands | — | — | **to do**, found by dylib-growth M2's reviews; see below |
+| 36 | A rebase the reader drops passes a grow's verification | — | — | **to do**, documented in `src/grow.h`; see below |
+| 37 | The export oracle gives up on a name of 1024 bytes or more | — | — | **to do**, found 2026-09-28 by dylib-growth M2b's final review; see below |
+| 38 | `raise_runs_test` fails, not skips, without a C++ compiler | — | — | **to do**, found 2026-09-28 by dylib-growth M2b's final review; see below |
+| 39 | Check 3 holds three copies of the image | — | — | **to look at**, found 2026-09-27 by dylib-growth M2b's review; see below |
 
 Items 9–11 follow from item 2 and run **before item 3**, in the order 10, 11, 9: item 9's wrappers emit edit scripts for multi-command invocations, which needs item 11's fat support. Their plans are
 written against today's names (`macho9`, `cli/macho9.c`) and today's
@@ -1585,15 +1591,27 @@ Sparkle.framework (ppc, i386 and x86_64, no `LC_DYLD_INFO`) is refused for
 that; newer ones grow. The executable route is unchanged: the M1 sweep's
 1,059 executables give byte-identical output, and so does Claude Code.
 
-**M3 remains**: the committed run test, `tests/grown_dylib_runs_test.sh`
-(Apple's dylibs under Apple's programs, and host-built dylibs for what no
-system dylib has: a thread-local variable, `dlsym` through the trie,
-`&__dso_handle` beside a data pointer to it, and both F < G and F > G), and
-the documentation: `docs/macl-case-study.md` rows 9 and 23, `src/grow.h`'s
-top comment, the two limits the spec's M3 section names (repeated grows and
-the function-starts delta; a real reference after an undeclared jump table),
-and items 29 and 31 marked done. (`compat/README.md`'s and
-`tests/README.md`'s words that a dylib is refused changed with M2 itself.)
+The run tests M3 was to write came with M2b: `tests/raise_runs_test.sh`
+runs raised copies of ten of 10.9's libraries under Apple's programs, and
+`tests/raise_rich_test.sh` builds dylibs with what no system dylib has (a
+thread-local variable, `dlsym` through the trie, `&__dso_handle` beside a
+data pointer to it, a resolver, C++ and Objective-C), raises each by one
+page and by two, so G falls on both sides of F, and runs them. Two golden
+tables, keyed on each file's contents, hold every x86_64 dylib and bundle
+10.9 ships: what each raise says (`raise_corpus_test`) and what each of
+check 4's oracles says of it (`raise_oracle_counts_test`).
+`tests/guard_page_test.c` holds a grow to reading nothing past a short
+command on any host.
+
+**M3 remains**: `raise_rich_test`'s first run on CI's runner, whose linker
+it has not met (a feature the linker leaves out is a named SKIP); the
+Mantle end to end the spec names; the documentation: `README.md`'s grow
+paragraph, `docs/macl-case-study.md` rows 9 and 23, `src/grow.h`'s top
+comment, and the three limits the spec's M3 section names (repeated grows
+and the function-starts delta; a real reference after an undeclared jump
+table; a stab counts as named when its name is a non-empty string); and
+items 29 and 31 marked done. (`compat/README.md`'s and `tests/README.md`'s
+words that a dylib is refused changed with M2 itself.)
 
 ## Item 32: a load command shorter than its struct
 
@@ -1621,6 +1639,12 @@ under libgmalloc, which CI does not load. When `mi_validate` gains its floor,
 its test should place the cut image against a `PROT_NONE` guard page sized by
 `getpagesize()`, so a plain `ctest`, CI's included, fails on such a read.
 
+`tests/guard_page_test.c` is that test for a grow, since dylib-growth M2b.
+It found an 8-byte `LC_SYMTAB` read past on both routes (SIGBUS in
+`mg_move_symbols`); a grow now refuses one in `mg_classify_cb`, before
+anything reads it. Its comment names this item as the home of the short
+`LC_DYLD_EXPORTS_TRIE`, `LC_FUNCTION_STARTS` and `LC_DATA_IN_CODE` cases.
+
 ## Item 33: encrypted or protected executables
 
 **Found 2026-09-26** while planning dylib-growth M2, whose raise refuses an
@@ -1633,3 +1657,73 @@ nonzero `cryptid`. Four executables have a protected `__TEXT`: Finder, Dock,
 SystemUIServer and loginwindow. A grow refuses each of them, but only because
 their `__unwind_info` lies in the protected pages and does not parse
 (`ERROR: __TEXT,__unwind_info is malformed, …`), not for being protected.
+
+## Item 34: check 3 trusts the unwind walker to add G only to offsets
+
+**Found 2026-09-27** by dylib-growth M2b's review of check 3 (K2). Check 3
+expects compact unwind to be what `mg_unwind_walk` makes of a copy of the
+old image, and asks of that only that each 32-bit word is unchanged or
+gained exactly G. A walker slip that adds G to a word that is not an offset
+(a compressed entry's encoding index, a page's entry count, a
+`*SectionOffset` field) passes: the raise and its check share the walker,
+and G is an allowed change. Closing it needs check 3's own list of which
+words of `__unwind_info` are offsets from the base, restated apart from the
+walker, as check 3 restates the load commands' fields. `src/grow.h`'s
+mg_verify contract says check 3 trusts the walker this far.
+
+## Item 35: the decoder "confirms" jump-table bytes as RIP-relative operands
+
+**Found** by dylib-growth M2's reviews. With no `LC_DATA_IN_CODE` for a
+switch's jump table in `__text`, the instruction decoder reads the table's
+bytes as instructions, and some decode as a RIP-relative operand. In 21 of
+10.9's system images such a "target" lies far outside the image (143 MiB or
+more away), which is why a grow does not refuse code naming an address
+outside the image. Nothing stops one landing exactly on the image base,
+where M1's repair would then patch four bytes of the jump table as if they
+were a displacement. None does today. A fix would stop decoding at what is
+evidently data (a run of 32-bit entries that are offsets into the same
+function), or refuse an in-range candidate inside such a run.
+
+## Item 36: a rebase the reader drops passes a grow's verification
+
+**Documented** in `src/grow.h`'s top comment. Checks 1–3 read the rebased
+pointers through `mg_rebases_read`, which the raise reads them through: a
+target the reader misses is neither moved nor compared, and check 3 then
+finds its bytes unchanged, as it expects of bytes nothing moves. The rebase
+opcodes' decoder is held to `dyldinfo` over 10.9's `/usr/lib` by
+`rebase_oracle_test`, and since M2b's final wave check 4 compares every lazy
+pointer slot by slot, so a dropped lazy-pointer rebase is refused. A
+dropped rebase of any other pointer (`__data`, `__const`, `__got`) is not.
+An oracle of its own would compare every 8-byte slot the old image's
+segments hold that names content, with the new image's, apart from the
+reader.
+
+## Item 37: the export oracle gives up on a name of 1024 bytes or more
+
+**Found 2026-09-28** by dylib-growth M2b's final review (M-5).
+`mg_or_trie_walk` builds each export's name in a 1024-byte buffer and marks
+the whole walk bad when a name would not fit, so an image with one export
+name that long has no export oracle at all: check 4 does not ask it, and
+`raise_oracle_counts_test` counts the image as skipped. No 10.9 system image
+has such a name; C++ and Swift can. A fix grows the buffer, or skips the one
+export, not the oracle.
+
+## Item 38: `raise_runs_test` fails, not skips, without a C++ compiler
+
+**Found 2026-09-28** by dylib-growth M2b's final review (M-6).
+`tests/raise_runs_test.sh` builds the C++ driver that throws across the
+raised libc++ and exits 1 when it cannot ("could not build the C++
+driver"), where the test's other host dependencies SKIP (77). On a 10.9
+host without the command line tools it fails for a reason that is not the
+raise's. It should skip only the libc++ run, saying why, as
+`raise_rich_test.sh` does for C++.
+
+## Item 39: check 3 holds three copies of the image
+
+**Found 2026-09-27** by dylib-growth M2b's review of check 3. A raise keeps
+the snapshot's copy of the image as it was, and check 3 allocates two more
+of its size: the walkers' raised copy and a byte mask. WebCore's raise
+peaks at 142 MB. An Electron-sized framework, several hundred MB, would
+need over a gigabyte. A bitmap
+mask (an eighth of the size), and comparing the walkers' output region by
+region instead of copying the whole image, would recover most of it.

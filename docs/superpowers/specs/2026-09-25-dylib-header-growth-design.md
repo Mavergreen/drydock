@@ -344,13 +344,15 @@ None of the refusals added here fired on the three motivating frameworks.
 
 Every grow verifies itself and refuses, writing nothing, on any difference.
 Checks 1–3 derive their expectations from Decision 2's table, so they catch
-slips in the code that applies it, but not a row missing from the table —
-except the UUID, which check 3 does not derive from the table (below).
-Checks 4–6 are independent of the table, and exist to catch exactly that.
-Checks 1–3 and 5 read the image through the same readers as the raise.
-Check 3 also shares `ml_each_off`, the snapshot's rb/refs worklists,
-`mg_raised_uuid`, `mg_trie_walk` and `mg_unwind_walk` with the raise: its
-new UUID is not derived independently. An entry one of those readers misses
+slips in the code that applies it, but not a row missing from the table.
+Check 3 departs from the table in three places, where it takes what it
+expects from the raise's own code: compact unwind and an export trie patched
+in place, from `mg_unwind_walk` and `mg_trie_walk` run on a copy of the old
+image, and the new UUID, from `mg_raised_uuid`. What it asks of each apart
+from that is below. Checks 4–6 are independent of the table, and exist to
+catch exactly that. Checks 1–3 and 5 read the image through the same readers
+as the raise, and check 3 also shares `ml_each_off` and the snapshot's
+rb/refs worklists with it. An entry one of those readers misses
 is missed by the grow and its check alike, so checks 1–3 and 5 do not catch
 a slip in a decoder the grow and its checks share; their unit tests guard
 the decoders instead, and for the rebase opcodes so does the `dyldinfo`
@@ -373,14 +375,27 @@ masks — and so catches some such misses. `mg_plausible` collects through
 3. **Bytes.** From F onward, the new file equals the old one moved up by G,
    except at the fields Decision 2 names and the instructions Decision 3
    patched. Below F, the load commands are compared command by command, and
-   each is byte-identical except for those fields, the replaced UUID, and
-   the deleted split info. The rest of the pad is zero.
+   each is byte-identical except for those fields and the replaced UUID.
+   Check 3 deletes the split info itself, from the load commands as they
+   were before the raise dropped it (Decision 4), so it sees anything else
+   the drop changed, and no split info may remain. The rest of the pad is
+   zero. Compact unwind and an export trie patched in place are what the
+   raise's walkers make of a copy of the old image, and compact unwind may
+   differ from the old only by G added to 32-bit words. The export trie,
+   patched or rebuilt, holds the old one's exports, each moved, as a
+   decoder neither walker uses reads them. The new UUID differs from the
+   old, is version 4, and is RFC 4122's variant.
 4. **Independent oracles.**
    - Every `S_MOD_INIT_FUNC_POINTERS` / `S_MOD_TERM_FUNC_POINTERS` value and
      `LC_ROUTINES_64.init_address` is a function start.
-   - Every `__la_symbol_ptr` value lies in `__stub_helper`.
+   - Every `__la_symbol_ptr` slot holds what the old one held plus G, or
+     what it held, where that named the base or no segment. (A range check,
+     "lies in `__stub_helper`", missed a pointer left where it was whenever
+     the section is larger than G.)
    - Every compact-unwind personality names a `__got` or `__nl_symbol_ptr`
-     slot, and every LSDA lies in `__gcc_except_tab` (added by plan M2b).
+     slot; every LSDA lies in a section named `__gcc_except_tab`, in any
+     segment (VideoToolbox's is in `__DATA`); and each LSDA index entry's
+     function and LSDA offsets are the old ones plus G (added by plan M2b).
    - For every regular export, base + trie offset equals the `n_value` of
      the same-named `N_SECT | N_EXT` symbol. Two structures, adjusted by two
      different code paths, must agree.
@@ -503,7 +518,7 @@ this section left open, for M3's reader:
   M3, so no document says so while dylibs grow.
 - A raise's segment must have its file data at F or past it, and an
   `LC_UUID`, `LC_ROUTINES_64`, `LC_DYSYMTAB` or encryption command too
-  short to read is refused. So are what no system image has: beside
+  short to read is refused, and so, on both routes, is an `LC_SYMTAB`. So are what no system image has: beside
   `LC_DYLD_INFO`, `LC_DYSYMTAB`'s table of contents, module table, and
   external or local relocations, whose addresses no rebase opcode lists;
   and a section aligned to more than a page.
@@ -512,9 +527,23 @@ this section left open, for M3's reader:
   code naming an address 143 MiB or more away; a position-independent
   image names nothing outside itself RIP-relatively.
 
-**M3: proof on real dylibs, and documentation.** This covers the real-run
-test below, and the documentation updates. The documentation must also say,
-as M2's review found:
+**M3: proof on real dylibs, and documentation.** Plan M2b already
+committed the real-run tests: `tests/raise_runs_test.sh` raises ten of
+10.9's libraries (libz, libxml2, libsqlite3, libcurl, libc++,
+CoreFoundation, Foundation, libarchive, libbz2 and libgmalloc) and runs each
+under its own programs beside the original, with `DYLD_PRINT_LIBRARIES` as
+the positive control; `tests/raise_rich_test.sh` builds a dylib, a bundle
+and an address-gap dylib with what no system dylib has (a thread-local
+variable, `dlsym` through the trie, `&__dso_handle` and the image's own
+header beside data pointers to both, a resolver, an absolute export, C++
+exceptions across the image, Objective-C, a constructor and `-init`, stabs),
+raises each by one page and by two, which puts G on both sides of F, and
+runs each beside the original; and `tests/raise_corpus_test.sh` and
+`tests/raise_oracle_counts_test.sh` hold every x86_64 dylib and bundle 10.9
+ships to golden tables. M3 still has to: see `raise_rich_test` pass on CI's
+runner, whose linker it has not yet met; run the Mantle end to end below;
+write the documentation below; mark QUEUE items 29 and 31 done; and delete
+this spec. The documentation must also say, as M2's reviews found:
 
 - Grows add up. The function-starts leading delta gains G at each grow, and
   a grow refuses once it would need a wider ULEB (Decision 6), so an image
@@ -524,6 +553,12 @@ as M2's review found:
   if the table's bytes happen to decode as instructions that end inside or
   past the candidate. A real in-range reference there passes, and grows
   silently wrong.
+- A stab counts as named when its name is a non-empty string. An unnamed
+  `N_FUN` ends a function and holds its size, which a raise does not move;
+  every unnamed stab ld64 writes has an empty name. A stab whose `n_strx`
+  happens to name a non-empty string, as a hand-built one at `n_strx` 0 can
+  when the string table begins with a character, is taken for named, and
+  its value is moved.
 
 ## Testing
 
@@ -542,7 +577,7 @@ as M2's review found:
 | `dylib append`, `dylib insert`, `rpath replace` on a no-pad dylib fixture: success, announced, `verify` passes | `tests/cli_test.sh` | M2 |
 | Sparkle (no compressed dyld info): refused with Decision 6's reason | local end-to-end | M2 |
 | the executable route is byte-for-byte unchanged on every existing grow fixture without header references, except, from M1, the `__mh_execute_header` symbol's value | existing suites | M0–M2 |
-| **real 10.9 system dylibs run by Apple's programs, and host-built fixture dylibs run by a driver** | new `tests/grown_dylib_runs_test.sh` | M3 |
+| **real 10.9 system dylibs run by Apple's programs, and host-built fixture dylibs run by a driver** | `tests/raise_runs_test.sh` and `tests/raise_rich_test.sh`, committed by plan M2b | M3 |
 
 **Real dylibs, run (M3).** The test grows copies of dylibs to force a raise
 (`dylib append` of a long path), runs a program against each copy, and
