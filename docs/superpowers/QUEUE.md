@@ -34,7 +34,7 @@ The agreed order. Each item names its spec and, once written, its plan.
 | 28 | A test for `ME_TARGET_MAX` | — | — | **to do**, found 2026-09-21 by the citation rewrite (`f636b68`); see below |
 | 29 | **Executable grow breaks code that addresses its own header** | `specs/2026-09-25-dylib-header-growth-design.md` (the fix is shared with the dylib route) | M0 `0ffa6df..cd05fea`, M1 `7a3a439..688ae2b` (plans deleted once implemented) | **done**: code repaired since `5d93921`, data pointers since `f5b186a`; I1's other halves and binds in `__TEXT` since `1105e76..ca53e71` (dylib-growth M2a), see below |
 | 30 | `fixups set classic` output cannot be re-signed with 10.9's `codesign` | spec and plan deleted once implemented | `549c57e..8a79c86` | **done**: a run that changes `__LINKEDIT` packs it in `codesign_allocate`'s order; `docs/codesign-order.md` |
-| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | M2a `6d08bdc..4da4997`, M2b `9d6bbbd..582a5eb` (plans deleted once implemented) | **raised** since `9df0468`: a dylib's or bundle's header pad grows; M3, the documentation and CI's first run of the rich test, remains, see below |
+| 31 | Grow a dylib's header | `specs/2026-09-25-dylib-header-growth-design.md` | M2a `6d08bdc..4da4997`, M2b `9d6bbbd..b36e066` (plans deleted once implemented) | **raised** since `9df0468`: a dylib's or bundle's header pad grows; M3, the documentation and CI's first run of the rich test, remains, see below |
 | 32 | `info` crashes on a lone load command shorter than its struct | — | — | **to do**, found 2026-09-26 by item 30's final review; see below |
 | 33 | The executable grow has no refusal of its own for encrypted or protected images | — | — | **to do**, found 2026-09-26 while planning dylib-growth M2; see below |
 | 34 | Check 3 trusts the unwind walker to add G only to offsets | — | — | **to do**, found 2026-09-27 by dylib-growth M2b's review; see below |
@@ -1558,7 +1558,7 @@ identical, and round-trips an encode/decode of a text file.
 
 ## Item 31: grow a dylib's header
 
-**M2 done** (`6d08bdc..582a5eb`). A dylib's or bundle's header pad grows by raising
+**M2 done** (`6d08bdc..b36e066`). A dylib's or bundle's header pad grows by raising
 everything after its load commands a page at a time, and every absolute
 address that names it: rebased pointers, symbols (a debugging image's stabs
 among them), sections, segments and `LC_ROUTINES_64`. `LC_UUID` is replaced,

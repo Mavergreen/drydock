@@ -500,7 +500,7 @@ This covers:
 
 Header-reference repair from M1 applies to it unchanged.
 
-**Done** (`6d08bdc..582a5eb`, plans M2a and M2b). What the plans settled that
+**Done** (`6d08bdc..b36e066`, plans M2a and M2b). What the plans settled that
 this section left open, for M3's reader:
 
 - Decoding gives each in-range candidate one of three verdicts: confirmed,
