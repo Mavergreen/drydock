@@ -185,6 +185,14 @@ target_compile_options(grow_test PRIVATE -O2 -Wall -Wno-unused-function)
 target_link_libraries(grow_test PRIVATE drydockcore)
 add_test(NAME grow_test COMMAND grow_test)
 
+# Hermetic: a load command shorter than its struct, last in an image that ends
+# at a PROT_NONE page, so a grow that reads past it faults on any host, CI's
+# included, where grow_test's cut images fault only under libgmalloc.
+add_executable(guard_page_test tests/guard_page_test.c)
+target_compile_options(guard_page_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(guard_page_test PRIVATE drydockcore)
+add_test(NAME guard_page_test COMMAND guard_page_test)
+
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
 # invented. WORKING_DIRECTORY is the source dir because the fixture path is

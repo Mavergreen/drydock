@@ -4582,6 +4582,7 @@ static void dy_below(uint8_t *buf) {
     dy_section(buf, "__DATA", "__bss")->addr = seg_named(buf, DY_FSIZE, "__TEXT")->vmaddr + 0xfff;
 }
 static void dy_early(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->fileoff = 0xfff; }
+static void dy_short_symtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_SYMTAB; }
 static void dy_short_dysymtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYSYMTAB; }
 static struct dysymtab_command *dy_dysymtab(uint8_t *buf) { return (struct dysymtab_command *)dy_find(buf, LC_DYSYMTAB); }
 static void dy_toc(uint8_t *buf) { dy_dysymtab(buf)->ntoc = 1; }
@@ -4637,6 +4638,9 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
       "refusing to grow" },
     { "a short LC_DYSYMTAB", dy_short_dysymtab,
       "ERROR: LC_DYSYMTAB is 16 bytes, too short to hold its tables' counts; refusing to grow" },
+    { "a short LC_SYMTAB", dy_short_symtab,
+      "ERROR: LC_SYMTAB is 16 bytes, too short to hold its symbol and string tables' offsets "
+      "and sizes; refusing to grow" },
     { "a table of contents", dy_toc,
       "ERROR: LC_DYSYMTAB lists 1 table-of-contents entries, 0 modules, 0 external and 0 local "
       "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },

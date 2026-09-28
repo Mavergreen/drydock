@@ -1914,6 +1914,11 @@ static void mg_why_refused(const char *why) {
  * widened to keep going. */
 static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
     const char *why = NULL;
+    if (lc->cmd == LC_SYMTAB && lc->cmdsize < sizeof(struct symtab_command)) {
+        fprintf(stderr, "ERROR: LC_SYMTAB is %u bytes, too short to hold its symbol and string "
+                        "tables' offsets and sizes; refusing to grow\n", lc->cmdsize);
+        return -1;
+    }
     switch (lc->cmd) {
         /* Handled by a re-baser above. */
         case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
