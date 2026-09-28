@@ -72,17 +72,17 @@ static int mexp_bad(const mexp_slice *s, const char *name, size_t len) {
 
 typedef struct { uint32_t off; uint32_t child, nchildren; const uint8_t *next; size_t name_len; } mexp_frame;
 
-static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
+int mexp_trie_walk(const uint8_t *t, uint32_t size, mexp_terminal_fn fn, void *ctx,
+                   const char **why) {
     mexp_frame stack[MT_TRIE_MAX_DEPTH];
     uint8_t *seen = calloc(size ? size : 1, 1);
     char *name = NULL;
     size_t name_room = 0;
-    int depth = 0, rc = -1;
-    if (!seen) { s->oom = 1; return -1; }
+    int depth = 0, rc = MEXP_WALK_MALFORMED;
+    if (!seen) return MEXP_WALK_OOM;
     const uint8_t *end = t + size;
 
-#define MEXP_FAIL(why) do { fprintf(stderr, WHAT ": %s: malformed export trie: %s; refusing\n", \
-                                    s->arch, why); goto out; } while (0)
+#define MEXP_FAIL(w) do { *why = (w); goto out; } while (0)
 
     uint32_t off = 0;
     size_t name_len = 0;
@@ -99,22 +99,14 @@ static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
         if (tsize > (uint64_t)(end - p)) MEXP_FAIL("a terminal runs past its end");
         const uint8_t *children = p + tsize;
         if (tsize) {
-            uint64_t flags;
-            if (mu_decode(p, children, &flags) == 0)
-                MEXP_FAIL("a symbol's flags are truncated or past 64 bits");
-            const char *kind;
-            if (flags & EXPORT_SYMBOL_FLAGS_REEXPORT) kind = "reexport";
-            else if (flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) kind = "stub-resolver";
-            else switch (flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) {
-                case EXPORT_SYMBOL_FLAGS_KIND_REGULAR:      kind = "regular"; break;
-                case EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL: kind = "thread-local"; break;
-                case 2:                                     kind = "absolute"; break;
-                default: MEXP_FAIL("a symbol has an unknown kind");
-            }
-            if (name_len == 0) MEXP_FAIL("a symbol has an empty name");
-            if (mexp_bad(s, name, name_len)) goto out;
-            mexp_add(s, name, name_len, kind, (flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION) != 0);
-            if (s->oom) goto out;
+            mexp_terminal term;
+            int k = mu_decode(p, children, &term.flags);
+            if (k == 0) MEXP_FAIL("a symbol's flags are truncated or past 64 bits");
+            term.name = name;
+            term.name_len = name_len;
+            term.info = p + k;
+            term.info_end = children;
+            if (fn(&term, ctx)) { rc = MEXP_WALK_STOPPED; goto out; }
         }
         if (children >= end) MEXP_FAIL("a node has no child count");
         stack[depth].off = off;
@@ -125,7 +117,7 @@ static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
         depth++;
 
         for (;;) {
-            if (depth == 0) { rc = 0; goto out; }
+            if (depth == 0) { rc = MEXP_WALK_DONE; goto out; }
             mexp_frame *f = &stack[depth - 1];
             if (f->child == f->nchildren) { depth--; continue; }
             const uint8_t *q = f->next;
@@ -144,7 +136,7 @@ static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
                 size_t room = name_room ? name_room : 256;
                 while (room < f->name_len + lbl_len + 1) room *= 2;
                 char *nn = realloc(name, room);
-                if (!nn) { s->oom = 1; goto out; }
+                if (!nn) { rc = MEXP_WALK_OOM; goto out; }
                 name = nn; name_room = room;
             }
             memcpy(name + f->name_len, lbl, lbl_len);
@@ -159,6 +151,37 @@ out:
     free(seen);
     free(name);
     return rc;
+}
+
+struct mexp_trie_ctx { mexp_slice *s; const char *why; };
+
+static int mexp_terminal_row(const mexp_terminal *t, void *ctx_) {
+    struct mexp_trie_ctx *c = ctx_;
+    mexp_slice *s = c->s;
+    const char *kind;
+    if (t->flags & EXPORT_SYMBOL_FLAGS_REEXPORT) kind = "reexport";
+    else if (t->flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER) kind = "stub-resolver";
+    else switch (t->flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) {
+        case EXPORT_SYMBOL_FLAGS_KIND_REGULAR:      kind = "regular"; break;
+        case EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL: kind = "thread-local"; break;
+        case 2:                                     kind = "absolute"; break;
+        default: c->why = "a symbol has an unknown kind"; return 1;
+    }
+    if (t->name_len == 0) { c->why = "a symbol has an empty name"; return 1; }
+    if (mexp_bad(s, t->name, t->name_len)) return 1;
+    mexp_add(s, t->name, t->name_len, kind, (t->flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION) != 0);
+    return s->oom;
+}
+
+static int mexp_trie(mexp_slice *s, const uint8_t *t, uint32_t size) {
+    struct mexp_trie_ctx c = { s, NULL };
+    const char *why = NULL;
+    int r = mexp_trie_walk(t, size, mexp_terminal_row, &c, &why);
+    if (r == MEXP_WALK_OOM) s->oom = 1;
+    if (r == MEXP_WALK_MALFORMED || (r == MEXP_WALK_STOPPED && c.why))
+        fprintf(stderr, WHAT ": %s: malformed export trie: %s; refusing\n", s->arch,
+                r == MEXP_WALK_MALFORMED ? why : c.why);
+    return r == MEXP_WALK_DONE ? 0 : -1;
 }
 
 static int mexp_symtab(mexp_slice *s, const mi_image *im, const struct symtab_command *st) {

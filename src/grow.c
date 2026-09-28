@@ -5,6 +5,7 @@
 #include <mach-o/stab.h>
 #include <stdarg.h>
 
+#include "exports.h"
 #include "grow.h"
 #include "hdrref.h"
 #include "ordinals.h"
@@ -126,7 +127,8 @@ int mg_ensure_pad(uint8_t **pbuf, size_t *pfsize, uint32_t need_end,
     else
         fprintf(stderr, "image base %#llx -> %#llx", (unsigned long long)base_before,
                 (unsigned long long)mg_base_of(*pbuf, *pfsize));
-    if (split) fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
+    if (split && !mg_has_cmd(*pbuf, *pfsize, LC_SEGMENT_SPLIT_INFO))
+        fprintf(stderr, "; dropped LC_SEGMENT_SPLIT_INFO");
     int64_t repaired = (refs > 0 ? refs : 0) + (ptrs > 0 ? ptrs : 0);
     if (repaired > 0)
         fprintf(stderr, "; repaired %lld reference%s to the header", (long long)repaired,
@@ -747,6 +749,10 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
     s->nsyms = 0;
     memset(&s->rb, 0, sizeof s->rb);
     s->kinds = NULL;
+    s->old = NULL;
+    s->oldsize = 0;
+    s->lcs = NULL;
+    s->oracles = 0;
     s->first = mg_first_sect_off(buf, fsize);
     s->raise = h->filetype == MH_DYLIB || h->filetype == MH_BUNDLE;
     s->addr = (uint64_t *)malloc(MG_SNAP_MAX * sizeof(uint64_t));
@@ -767,6 +773,16 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s) {
         s->symtype[i] = nl[i].n_type;
         s->symaddr[i] = mg_sym_address(buf, fsize, st, &nl[i], s->raise) == 1;
     }
+    if (!s->raise) return 0;
+    size_t lcend = sizeof *h + h->sizeofcmds;
+    if (!(s->old = (uint8_t *)malloc(fsize + 1)) || !(s->lcs = (uint8_t *)malloc(lcend))) {
+        mg_snapshot_free(s);
+        return -1;
+    }
+    memcpy(s->old, buf, fsize);
+    memcpy(s->lcs, buf, lcend);
+    s->oldsize = fsize;
+    s->oracles = mg_oracles(buf, fsize, 0, why, sizeof why);
     return 0;
 }
 
@@ -777,6 +793,8 @@ void mg_snapshot_free(mg_snapshot *s) {
     free(s->symval); s->symval = NULL;
     free(s->symtype); s->symtype = NULL;
     free(s->symaddr); s->symaddr = NULL; s->nsyms = 0;
+    free(s->old); s->old = NULL; s->oldsize = 0;
+    free(s->lcs); s->lcs = NULL;
     mg_rebases_free(&s->rb);
 }
 
@@ -925,6 +943,740 @@ static int mg_verify_pointers(const mi_image *im, const uint8_t *buf, size_t fsi
     return rc;
 }
 
+/* What a raise of `grow` makes of a load command: its addresses, and its
+ * segments' and sections' file offsets, by the raise's rules restated apart
+ * from mg_raise_cb and mg_each_fileoff; its UUID by the raise's own
+ * mg_raised_uuid, and so mg_verify_uuid also asks what any new UUID must be.
+ * mg_expect_off moves its other file offsets through ml_each_off, as the
+ * raise does. mg_verify_bytes compares the result with what the raise made. */
+struct mg_expect_ctx { uint32_t first; uint32_t grow; };
+static int mg_expect_cb(const struct load_command *lc_in, void *ctx_) {
+    struct mg_expect_ctx *x = (struct mg_expect_ctx *)ctx_;
+    if (lc_in->cmd == LC_UUID) {
+        struct uuid_command *u = (struct uuid_command *)lc_in;
+        mg_raised_uuid(u->uuid, x->grow, u->uuid);
+    } else if (lc_in->cmd == LC_ROUTINES_64) {
+        ((struct routines_command_64 *)lc_in)->init_address += x->grow;
+    } else if (lc_in->cmd == LC_SEGMENT_64) {
+        struct segment_command_64 *seg = (struct segment_command_64 *)lc_in;
+        struct section_64 *s = (struct section_64 *)(seg + 1);
+        int header = seg->fileoff == 0 && seg->filesize > 0;
+        seg->vmaddr += header ? 0 : x->grow;
+        seg->vmsize += header ? x->grow : 0;
+        seg->filesize += header ? x->grow : 0;
+        seg->fileoff += seg->fileoff >= x->first ? x->grow : 0;
+        for (uint32_t j = 0; j < seg->nsects; j++) {
+            s[j].addr += x->grow;
+            s[j].offset += s[j].offset >= x->first ? x->grow : 0;
+            s[j].reloff += s[j].reloff >= x->first ? x->grow : 0;
+        }
+    }
+    return 0;
+}
+static int mg_expect_off(uint32_t *off, uint32_t cmd, int flags, void *ctx_) {
+    struct mg_expect_ctx *x = (struct mg_expect_ctx *)ctx_;
+    (void)cmd; (void)flags;
+    *off += *off >= x->first ? x->grow : 0;
+    return 0;
+}
+
+/* A rebuilt trie too wide for its place lies past __LINKEDIT's old end,
+ * moved up `grow`, and runs to the end of the file: the command that locates
+ * it says so, __LINKEDIT's file size reaches the end, and its vm size is that
+ * rounded up to a page, if that is more. `want` holds the load commands the
+ * raise makes, `oim` the image as it was. */
+static void mg_expect_appended_trie(uint8_t *want, size_t lcend, const mi_image *oim,
+                                    size_t fsize, uint32_t grow) {
+    mi_image wim;
+    long lc;
+    uint32_t cmd;
+    if (mi_wrap(want, lcend, &wim) != 0 || !mg_find_trie_lc(want, lcend, &lc, &cmd)) return;
+    struct segment_command_64 *wl = mi_find_segment(&wim, "__LINKEDIT");
+    const struct segment_command_64 *ol = mi_find_segment(oim, "__LINKEDIT");
+    if (!wl || !ol || wl->fileoff > fsize) return;
+    wl->filesize = fsize - wl->fileoff;
+    uint64_t vm = (wl->filesize + MG_PAGE - 1) & ~(uint64_t)(MG_PAGE - 1);
+    if (vm > wl->vmsize) wl->vmsize = vm;
+    uint64_t at = ol->fileoff + ol->filesize + grow;
+    struct load_command *l = (struct load_command *)(want + lc);
+    if ((cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) &&
+        l->cmdsize >= sizeof(struct dyld_info_command)) {
+        ((struct dyld_info_command *)l)->export_off = (uint32_t)at;
+        ((struct dyld_info_command *)l)->export_size = (uint32_t)(fsize - at);
+    } else if (cmd == LC_DYLD_EXPORTS_TRIE && l->cmdsize >= sizeof(struct linkedit_data_command)) {
+        ((struct linkedit_data_command *)l)->dataoff = (uint32_t)at;
+        ((struct linkedit_data_command *)l)->datasize = (uint32_t)(fsize - at);
+    }
+}
+
+/* What any UUID a raise gives must be, whatever computed it: not the old
+ * one, version 4, RFC 4122's variant. */
+static int mg_uuid_cb(const struct load_command *lc, void *ctx_) {
+    if (lc->cmd != LC_UUID || lc->cmdsize < sizeof(struct uuid_command)) return 0;
+    *(const uint8_t **)ctx_ = ((const struct uuid_command *)lc)->uuid;
+    return 1;
+}
+static int mg_verify_uuid(const mi_image *now, const mi_image *was) {
+    const uint8_t *u = NULL, *o = NULL;
+    mi_each_lc(now, mg_uuid_cb, &u);
+    mi_each_lc(was, mg_uuid_cb, &o);
+    if (!u || !o) return 0;         /* the load commands' comparison sees one missing */
+    const char *why = memcmp(u, o, 16) == 0 ? "is the original's" :
+                      u[6] >> 4 != 4 ? "is not version 4" :
+                      (u[8] & 0xc0) != 0x80 ? "is not RFC 4122's variant" : NULL;
+    if (!why) return 0;
+    fprintf(stderr, "ERROR: verify FAILED -- the raised image's UUID %s; refusing.\n", why);
+    return -1;
+}
+
+/* An export as check 3 compares a rebuilt trie's with the old one's: each
+ * field as the trie holds it, but the old one's addresses as the raise must
+ * move them (an absolute one, or one at offset 0, stays). */
+typedef struct {
+    size_t name, name_len;
+    uint64_t flags, ordinal, addr, other;
+    const uint8_t *import;
+    size_t import_len;
+} mg_export;
+
+static int mg_export_read(const mexp_terminal *t, uint64_t grow, mg_export *x) {
+    const uint8_t *p = t->info;
+    int k;
+    memset(x, 0, sizeof *x);
+    x->flags = t->flags;
+    if (t->flags & MG_EXPORT_REEXPORT) {
+        if (!(k = mu_decode(p, t->info_end, &x->ordinal))) return -1;
+        x->import = p += k;
+        while (p < t->info_end && *p) p++;
+        x->import_len = (size_t)(p - x->import);
+        return p < t->info_end ? 0 : -1;
+    }
+    uint64_t *a[2] = { &x->addr, &x->other };
+    int moves = (t->flags & MG_EXPORT_KIND_MASK) != MG_EXPORT_KIND_ABSOLUTE;
+    for (int r = 0; r < ((t->flags & MG_EXPORT_STUB_AND_RESOLVER) ? 2 : 1); r++) {
+        if (!(k = mu_decode(p, t->info_end, a[r]))) return -1;
+        p += k;
+        if (moves && *a[r]) *a[r] += grow;
+    }
+    return 0;
+}
+
+struct mg_exports {
+    mg_export *e;
+    uint32_t n, cap, at;
+    char *names;
+    size_t used, room;
+    uint64_t grow;
+    const char *why;        /* why a walk stopped, if not at an export that differs */
+};
+
+static int mg_export_keep(const mexp_terminal *t, void *ctx_) {
+    struct mg_exports *c = (struct mg_exports *)ctx_;
+    if (c->n == c->cap) {
+        uint32_t cap = c->cap ? c->cap * 2 : 256;
+        mg_export *e = (mg_export *)realloc(c->e, cap * sizeof *e);
+        if (!e) { c->why = "out of memory"; return 1; }
+        c->e = e; c->cap = cap;
+    }
+    if (c->used + t->name_len > c->room) {
+        size_t room = c->room ? c->room : 4096;
+        while (room < c->used + t->name_len) room *= 2;
+        char *names = (char *)realloc(c->names, room);
+        if (!names) { c->why = "out of memory"; return 1; }
+        c->names = names; c->room = room;
+    }
+    mg_export *x = &c->e[c->n];
+    if (mg_export_read(t, c->grow, x) != 0) { c->why = "an export's terminal is malformed"; return 1; }
+    if (t->name_len) memcpy(c->names + c->used, t->name, t->name_len);
+    x->name = c->used;
+    x->name_len = t->name_len;
+    c->used += t->name_len;
+    c->n++;
+    return 0;
+}
+
+static int mg_export_match(const mexp_terminal *t, void *ctx_) {
+    struct mg_exports *c = (struct mg_exports *)ctx_;
+    mg_export x;
+    if (mg_export_read(t, 0, &x) != 0) { c->why = "an export's terminal is malformed"; return 1; }
+    uint32_t i = c->at++;
+    if (i >= c->n) return 0;                /* only counted: the totals differ */
+    const mg_export *w = &c->e[i];
+    const char *field =
+        t->name_len != w->name_len || (w->name_len && memcmp(t->name, c->names + w->name,
+                                                             w->name_len)) ? "name" :
+        x.flags != w->flags ? "flags" :
+        x.ordinal != w->ordinal ? "re-export ordinal" :
+        x.import_len != w->import_len || (w->import_len && memcmp(x.import, w->import,
+                                                                  w->import_len)) ? "imported name" :
+        x.addr != w->addr ? "address" :
+        x.other != w->other ? "resolver" : NULL;
+    if (!field) return 0;
+    fprintf(stderr, "ERROR: verify FAILED -- export %u of the raised trie, \"%.*s\", differs in its "
+                    "%s from what the raise makes of the old one, \"%.*s\"; refusing.\n", i,
+            (int)t->name_len, t->name ? t->name : "", field, (int)w->name_len,
+            c->names ? c->names + w->name : "");
+    return 1;
+}
+
+/* The raised export trie, rebuilt or patched in place, holds the old one's
+ * exports, in its order, each as mg_export_read has it: both read by
+ * mexp_trie_walk, which neither mt_trie_rebuild nor mg_trie_walk uses. */
+static int mg_verify_trie_exports(const uint8_t *buf, size_t fsize, const uint8_t *old, size_t n,
+                                  uint64_t grow) {
+    uint32_t off, size;
+    const char *why = "it does not lie within the image", *which = "old";
+    struct mg_exports c;
+    int r = MEXP_WALK_MALFORMED, rc = -1;
+    if (!mg_find_trie(old, n, &off, &size) || !off || !size) return 0;
+    memset(&c, 0, sizeof c);
+    c.grow = grow;
+    if ((uint64_t)off + size <= n)
+        r = mexp_trie_walk(old + off, size, mg_export_keep, &c, &why);
+    if (r == MEXP_WALK_DONE) {
+        which = "raised";
+        r = MEXP_WALK_MALFORMED;
+        why = "it does not lie within the image";
+        if (mg_find_trie(buf, fsize, &off, &size) && (uint64_t)off + size <= fsize)
+            r = mexp_trie_walk(buf + off, size, mg_export_match, &c, &why);
+        if (r == MEXP_WALK_STOPPED && !c.why) goto out;      /* said which export differs */
+    }
+    if (r != MEXP_WALK_DONE) {
+        fprintf(stderr, "ERROR: verify FAILED -- the %s export trie could not be read: %s; "
+                        "refusing.\n", which, r == MEXP_WALK_OOM ? "out of memory" :
+                                              r == MEXP_WALK_STOPPED ? c.why : why);
+        goto out;
+    }
+    if (c.at != c.n) {
+        fprintf(stderr, "ERROR: verify FAILED -- the raised export trie holds %u exports, and the "
+                        "old one %u; refusing.\n", c.at, c.n);
+        goto out;
+    }
+    rc = 0;
+out:
+    free(c.e);
+    free(c.names);
+    return rc;
+}
+
+/* mg_unwind_walk may change compact unwind only by adding `grow` to 32-bit
+ * words, whichever it takes for offsets: so what it makes of the old image,
+ * `raised`, is held to that apart from the walker. */
+struct mg_unwind_sect { uint64_t off, size; int found; };
+static int mg_unwind_sect_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_unwind_sect *u = (struct mg_unwind_sect *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if (strncmp(s[j].sectname, "__unwind_info", sizeof s[j].sectname)) continue;
+        u->off = s[j].offset; u->size = s[j].size; u->found = 1;
+        return 1;
+    }
+    return 0;
+}
+static int mg_verify_unwind_words(const mi_image *oim, const uint8_t *raised, uint32_t grow) {
+    struct mg_unwind_sect u = { 0, 0, 0 };
+    mi_each_lc(oim, mg_unwind_sect_cb, &u);
+    if (!u.found || u.off + u.size > oim->size) return 0;
+    for (uint64_t k = 0; k < u.size; k += 4) {
+        uint32_t o = 0, r = 0;
+        size_t w = u.size - k < 4 ? (size_t)(u.size - k) : 4;
+        memcpy(&o, oim->buf + u.off + k, w);
+        memcpy(&r, raised + u.off + k, w);
+        if (r == o || r == o + grow) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- compact unwind's word at file offset %#llx would "
+                        "hold %#x after the grow, which is neither %#x, as it held before it, nor "
+                        "that plus %#x; refusing.\n", (unsigned long long)(u.off + k + grow), r, o,
+                grow);
+        return -1;
+    }
+    return 0;
+}
+
+/* Marks old[lo, lo + len) as bytes check 3 does not compare, within n. */
+static void mg_exempt(uint8_t *mask, size_t n, uint64_t lo, uint64_t len) {
+    for (uint64_t i = lo; i < lo + len && i < n; i++) mask[i] = 1;
+}
+
+struct mg_exempt_ctx { const uint8_t *old; size_t n; uint8_t *mask; };
+static int mg_exempt_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_exempt_ctx *x = (struct mg_exempt_ctx *)ctx_;
+    const struct linkedit_data_command *d = (const struct linkedit_data_command *)lc;
+    if (lc->cmd == LC_SYMTAB) {
+        const struct symtab_command *st = (const struct symtab_command *)lc;
+        for (uint32_t i = 0; i < st->nsyms; i++)
+            mg_exempt(x->mask, x->n, st->symoff + 16ull * i + 8, 8);        /* n_value */
+    } else if (lc->cmd == LC_FUNCTION_STARTS && d->datasize && d->dataoff < x->n) {
+        uint64_t v;
+        uint64_t end = (uint64_t)d->dataoff + d->datasize > x->n ? x->n : d->dataoff + d->datasize;
+        mg_exempt(x->mask, x->n, d->dataoff,
+                  (uint64_t)mu_decode(x->old + d->dataoff, x->old + end, &v));
+    } else if (lc->cmd == LC_DATA_IN_CODE) {
+        for (uint32_t k = 0; k + 8 <= d->datasize; k += 8)
+            mg_exempt(x->mask, x->n, (uint64_t)d->dataoff + k, 4);            /* offset */
+    } else if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+        const struct section_64 *s = (const struct section_64 *)(seg + 1);
+        for (uint32_t j = 0; j < seg->nsects; j++)
+            if ((s[j].flags & SECTION_TYPE) == S_INIT_FUNC_OFFSETS)
+                mg_exempt(x->mask, x->n, s[j].offset, s[j].size);
+    }
+    return 0;
+}
+
+/* ---- mg_oracles ---- */
+struct mg_or_lcs {
+    const struct linkedit_data_command *fs;
+    const struct symtab_command *st;
+    const struct routines_command_64 *rt;
+    const struct section_64 *unwind, *except[4], *nl[8];
+    int nexcept, nnl;
+};
+static int mg_or_lcs_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_lcs *c = (struct mg_or_lcs *)ctx_;
+    if (lc->cmd == LC_FUNCTION_STARTS && !c->fs) c->fs = (const struct linkedit_data_command *)lc;
+    if (lc->cmd == LC_SYMTAB && !c->st) c->st = (const struct symtab_command *)lc;
+    if (lc->cmd == LC_ROUTINES_64 && !c->rt) c->rt = (const struct routines_command_64 *)lc;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if (!strncmp(s[j].sectname, "__gcc_except_tab", 16) && c->nexcept < 4)
+            c->except[c->nexcept++] = &s[j];
+        if (!c->unwind && !strncmp(s[j].sectname, "__unwind_info", 16)) c->unwind = &s[j];
+        if ((s[j].flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS && c->nnl < 8)
+            c->nl[c->nnl++] = &s[j];
+    }
+    return 0;
+}
+
+/* Every 8-byte slot of every S_LAZY_SYMBOL_POINTERS section, in turn: its
+ * address, and the value the file holds there. `bad` when out of memory. */
+typedef struct { uint64_t at, v; } mg_or_slot;
+struct mg_or_slots { const uint8_t *buf; size_t fsize; mg_or_slot *s; size_t n, cap; int bad; };
+static int mg_or_slots_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_slots *c = (struct mg_or_slots *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects; j++) {
+        if ((s[j].flags & SECTION_TYPE) != S_LAZY_SYMBOL_POINTERS || !s[j].offset) continue;
+        for (uint64_t k = 0; k + 8 <= s[j].size && s[j].offset + k + 8 <= c->fsize; k += 8) {
+            if (c->n == c->cap) {
+                mg_or_slot *t = (mg_or_slot *)realloc(c->s, (c->cap * 2 + 64) * sizeof *t);
+                if (!t) { c->bad = 1; return 1; }
+                c->s = t;
+                c->cap = c->cap * 2 + 64;
+            }
+            c->s[c->n].at = s[j].addr + k;
+            memcpy(&c->s[c->n++].v, c->buf + s[j].offset + k, 8);
+        }
+    }
+    return 0;
+}
+
+/* Whether a raise moves `v`, a pointer's value in the image as it was: it
+ * lies in a segment's vm range, its end included, and is not the base,
+ * where the header stays. */
+struct mg_or_moves { uint64_t v, base; int moves; };
+static int mg_or_moves_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_moves *m = (struct mg_or_moves *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    if (!seg->vmsize || m->v == m->base || m->v < seg->vmaddr || m->v - seg->vmaddr > seg->vmsize)
+        return 0;
+    m->moves = 1;
+    return 1;
+}
+
+static int mg_by_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* Each 8-byte value of every section of `type`, in turn, to `fn`; stops at the
+ * first it returns nonzero for, and returns that. */
+struct mg_or_vals { const uint8_t *buf; size_t fsize; uint32_t type; int (*fn)(uint64_t, void *);
+                    void *ctx; int r; };
+static int mg_or_vals_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_vals *v = (struct mg_or_vals *)ctx_;
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    const struct section_64 *s = (const struct section_64 *)(seg + 1);
+    for (uint32_t j = 0; j < seg->nsects && !v->r; j++) {
+        if ((s[j].flags & SECTION_TYPE) != v->type || !s[j].offset) continue;
+        for (uint64_t k = 0; k + 8 <= s[j].size && s[j].offset + k + 8 <= v->fsize && !v->r; k += 8) {
+            uint64_t x;
+            memcpy(&x, v->buf + s[j].offset + k, sizeof x);
+            v->r = v->fn(x, v->ctx);
+        }
+    }
+    return v->r;
+}
+
+struct mg_or_starts { const uint64_t *a; size_t n; uint64_t bad; };
+static int mg_or_not_start(uint64_t x, void *ctx_) {
+    struct mg_or_starts *s = (struct mg_or_starts *)ctx_;
+    if (bsearch(&x, s->a, s->n, sizeof *s->a, mg_by_u64)) return 0;
+    s->bad = x;
+    return 1;
+}
+
+/* A regular export: its name, and its offset from the base. */
+typedef struct { char *name; uint64_t off; } mg_or_exp;
+struct mg_or_trie { const uint8_t *t; uint32_t size; uint8_t *seen; char name[1024];
+                    mg_or_exp *e; size_t n, cap; int bad; };
+static void mg_or_trie_walk(struct mg_or_trie *w, uint32_t off, size_t len, int depth) {
+    const uint8_t *p, *end = w->t + w->size;
+    uint64_t term, flags, a, coff;
+    int k;
+    if (w->bad || depth > MT_TRIE_MAX_DEPTH || off >= w->size || w->seen[off]) { w->bad = 1; return; }
+    w->seen[off] = 1;
+    p = w->t + off;
+    if (!(k = mu_decode(p, end, &term))) { w->bad = 1; return; }
+    p += k;
+    if (term) {
+        const uint8_t *q = p;
+        if (!(k = mu_decode(q, end, &flags))) { w->bad = 1; return; }
+        q += k;
+        if (!(flags & (MG_EXPORT_REEXPORT | MG_EXPORT_STUB_AND_RESOLVER | MG_EXPORT_KIND_MASK))) {
+            if (!(k = mu_decode(q, end, &a))) { w->bad = 1; return; }
+            if (w->n == w->cap) {
+                mg_or_exp *e = (mg_or_exp *)realloc(w->e, (w->cap * 2 + 16) * sizeof *e);
+                if (!e) { w->bad = 1; return; }
+                w->e = e;
+                w->cap = w->cap * 2 + 16;
+            }
+            if (!(w->e[w->n].name = (char *)malloc(len + 1))) { w->bad = 1; return; }
+            memcpy(w->e[w->n].name, w->name, len);
+            w->e[w->n].name[len] = 0;
+            w->e[w->n++].off = a;
+        }
+        if (term > (uint64_t)(end - p)) { w->bad = 1; return; }
+        p += term;
+    }
+    if (p >= end) { w->bad = 1; return; }
+    for (uint8_t i = 0, nch = *p++; i < nch && !w->bad; i++) {
+        size_t l = 0;
+        while (p + l < end && p[l]) l++;
+        if (p + l >= end || len + l >= sizeof w->name) { w->bad = 1; return; }
+        memcpy(w->name + len, p, l);
+        p += l + 1;
+        if (!(k = mu_decode(p, end, &coff))) { w->bad = 1; return; }
+        p += k;
+        mg_or_trie_walk(w, (uint32_t)(coff > UINT32_MAX ? UINT32_MAX : coff), len + l, depth + 1);
+    }
+}
+static int mg_or_by_name(const void *a, const void *b) {
+    return strcmp(((const mg_or_exp *)a)->name, ((const mg_or_exp *)b)->name);
+}
+
+/* 0 when every regular export whose name an N_SECT | N_EXT symbol has names
+ * that symbol's address; else 1, with `why` set; -1 when it cannot tell. It
+ * skips thread-local and stub-and-resolver exports, which the raise moves
+ * and check 3's export compare covers. */
+static int mg_or_exports(const uint8_t *buf, size_t fsize, uint64_t base,
+                         const struct symtab_command *st, char *why, size_t whysz) {
+    uint32_t off, size;
+    struct mg_or_trie w;
+    int r = 0;
+    if (!mg_find_trie(buf, fsize, &off, &size) || !off || !size || !st) return 0;
+    if ((uint64_t)off + size > fsize || (uint64_t)st->symoff + 16ull * st->nsyms > fsize ||
+        (uint64_t)st->stroff + st->strsize > fsize)
+        return -1;
+    memset(&w, 0, sizeof w);
+    w.t = buf + off;
+    w.size = size;
+    if (!(w.seen = (uint8_t *)calloc(size, 1))) return -1;
+    mg_or_trie_walk(&w, 0, 0, 0);
+    if (w.bad) r = -1;
+    else qsort(w.e, w.n, sizeof *w.e, mg_or_by_name);
+    const struct nlist_64 *nl = (const struct nlist_64 *)(buf + st->symoff);
+    for (uint32_t i = 0; r == 0 && i < st->nsyms; i++) {
+        if ((nl[i].n_type & (N_STAB | N_TYPE | N_EXT)) != (N_SECT | N_EXT) ||
+            nl[i].n_un.n_strx >= st->strsize)
+            continue;
+        const char *nm = (const char *)buf + st->stroff + nl[i].n_un.n_strx;
+        if (!memchr(nm, 0, st->strsize - nl[i].n_un.n_strx)) continue;
+        mg_or_exp key = { (char *)nm, 0 };
+        const mg_or_exp *e = (const mg_or_exp *)bsearch(&key, w.e, w.n, sizeof *w.e, mg_or_by_name);
+        if (!e || base + e->off == nl[i].n_value) continue;
+        snprintf(why, whysz, "the export %s names %#llx, and its symbol %#llx", nm,
+                 (unsigned long long)(base + e->off), (unsigned long long)nl[i].n_value);
+        r = 1;
+    }
+    for (size_t i = 0; i < w.n; i++) free(w.e[i].name);
+    free(w.e);
+    free(w.seen);
+    return r;
+}
+
+/* Whether `a` is an 8-byte slot of a non-lazy pointer section. */
+static int mg_or_in_nl(const struct mg_or_lcs *c, uint64_t a) {
+    for (int k = 0; k < c->nnl; k++)
+        if (a >= c->nl[k]->addr && a - c->nl[k]->addr < c->nl[k]->size &&
+            (a - c->nl[k]->addr) % 8 == 0)
+            return 1;
+    return 0;
+}
+
+/* 0 when every personality compact unwind names is a slot of __got or
+ * __nl_symbol_ptr, and every LSDA it names lies in a section named
+ * __gcc_except_tab; else 1, with `why` set; -1 when __unwind_info cannot be
+ * read. Read here, not through mg_unwind_walk. On 0, *lsda is its LSDA
+ * index, *nlsda entries of a function offset and an LSDA offset. */
+static int mg_or_unwind(const uint8_t *buf, size_t fsize, uint64_t base,
+                        const struct mg_or_lcs *c, const uint8_t **lsda, uint32_t *nlsda,
+                        char *why, size_t whysz) {
+    const struct section_64 *u = c->unwind;
+    uint32_t h[7], lo, hi;
+    *lsda = NULL;
+    *nlsda = 0;
+    if (!u || !u->size) return 0;
+    if (u->offset > fsize || u->size > fsize - u->offset || u->size < sizeof h) return -1;
+    const uint8_t *p = buf + u->offset;
+    memcpy(h, p, sizeof h);
+    if (h[0] != 1 || (uint64_t)h[3] + 4ull * h[4] > u->size || h[6] < 1 ||
+        (uint64_t)h[5] + 12ull * h[6] > u->size)
+        return -1;
+    for (uint32_t k = 0; k < h[4]; k++) {
+        uint32_t pe;
+        memcpy(&pe, p + h[3] + 4 * k, sizeof pe);
+        if (mg_or_in_nl(c, base + pe)) continue;
+        snprintf(why, whysz, "the personality %#llx names no __got or __nl_symbol_ptr slot",
+                 (unsigned long long)(base + pe));
+        return 1;
+    }
+    memcpy(&lo, p + h[5] + 8, sizeof lo);
+    memcpy(&hi, p + h[5] + 12ull * (h[6] - 1) + 8, sizeof hi);
+    if (hi < lo || hi > u->size) return -1;
+    for (uint32_t e = lo; e + 8 <= hi; e += 8) {
+        uint32_t l;
+        int k = 0;
+        memcpy(&l, p + e + 4, sizeof l);
+        uint64_t a = base + l;
+        while (k < c->nexcept && !(a >= c->except[k]->addr && a - c->except[k]->addr < c->except[k]->size))
+            k++;
+        if (k < c->nexcept) continue;
+        snprintf(why, whysz, "the LSDA %#llx lies outside __gcc_except_tab", (unsigned long long)a);
+        return 1;
+    }
+    *lsda = p + lo;
+    *nlsda = hi > lo ? (hi - lo) / 8 : 0;
+    return 0;
+}
+
+unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old, size_t n,
+                           uint64_t grow, unsigned want, char *why, size_t whysz) {
+    mi_image im, oim;
+    struct mg_or_lcs c, oc;
+    uint64_t base, obase;
+    unsigned holds = 0;
+    char w[4][256] = { "LC_FUNCTION_STARTS could not be read", "the lazy pointers could not be read",
+                       "the export trie or the symbols could not be read",
+                       "__unwind_info could not be read" };
+    memset(&c, 0, sizeof c);
+    memset(&oc, 0, sizeof oc);
+    snprintf(why, whysz, "the image could not be read");
+    if (mi_wrap((uint8_t *)buf, fsize, &im) != 0 || mi_image_base(&im, &base) != 0 ||
+        mi_wrap((uint8_t *)old, n, &oim) != 0 || mi_image_base(&oim, &obase) != 0)
+        return 0;
+    mi_each_lc(&im, mg_or_lcs_cb, &c);
+    mi_each_lc(&oim, mg_or_lcs_cb, &oc);
+
+    uint32_t nfs = c.fs && c.fs->datasize <= fsize && c.fs->dataoff <= fsize - c.fs->datasize
+                   ? c.fs->datasize : 0;
+    struct mg_or_starts s = { NULL, 0, 0 };
+    uint64_t *a = (uint64_t *)malloc(nfs * sizeof *a + 1);
+    int ns = a ? mg_funcstarts_decode(buf + (nfs ? c.fs->dataoff : 0), nfs, base, a, (int)nfs) : -1;
+    s.a = a;
+    s.n = ns > 0 ? (size_t)ns : 0;
+    qsort(a, s.n, sizeof *a, mg_by_u64);
+    struct mg_or_vals v = { buf, fsize, S_MOD_INIT_FUNC_POINTERS, mg_or_not_start, &s, 0 };
+    if (ns == 0) {
+        holds |= MG_OR_INITS;
+    } else if (ns > 0) {
+        mi_each_lc(&im, mg_or_vals_cb, &v);
+        v.type = S_MOD_TERM_FUNC_POINTERS;
+        if (!v.r) mi_each_lc(&im, mg_or_vals_cb, &v);
+        if (!v.r && c.rt) v.r = mg_or_not_start(c.rt->init_address, &s);
+        if (!v.r) holds |= MG_OR_INITS;
+        else snprintf(w[0], sizeof w[0], "the initializer %#llx is not a function start",
+                      (unsigned long long)s.bad);
+    }
+    free(a);
+
+    /* Each lazy pointer, slot by slot, holds what the old one held, moved
+     * as a raise moves it. */
+    struct mg_or_slots ls = { buf, fsize, NULL, 0, 0, 0 }, ols = { old, n, NULL, 0, 0, 0 };
+    mi_each_lc(&im, mg_or_slots_cb, &ls);
+    mi_each_lc(&oim, mg_or_slots_cb, &ols);
+    if (!ls.bad && !ols.bad && ls.n != ols.n) {
+        snprintf(w[1], sizeof w[1], "the image holds %zu lazy pointers, and held %zu,", ls.n,
+                 ols.n);
+    } else if (!ls.bad && !ols.bad) {
+        size_t i = 0;
+        uint64_t to = 0;
+        for (; i < ls.n; i++) {
+            struct mg_or_moves m = { ols.s[i].v, obase, 0 };
+            mi_each_lc(&oim, mg_or_moves_cb, &m);
+            to = m.moves ? ols.s[i].v + grow : ols.s[i].v;
+            if (ls.s[i].v != to) break;
+        }
+        if (i == ls.n) holds |= MG_OR_LAZY;
+        else snprintf(w[1], sizeof w[1], "the lazy pointer at %#llx holds %#llx, and must hold %#llx",
+                      (unsigned long long)ls.s[i].at, (unsigned long long)ls.s[i].v,
+                      (unsigned long long)to);
+    }
+    free(ls.s);
+    free(ols.s);
+
+    if (mg_or_exports(buf, fsize, base, c.st, w[2], sizeof w[2]) == 0) holds |= MG_OR_EXPORTS;
+
+    /* And each LSDA index entry holds what the old one held, moved. */
+    const uint8_t *l, *ol;
+    uint32_t nl, onl;
+    char ow[256];
+    int u = mg_or_unwind(buf, fsize, base, &c, &l, &nl, w[3], sizeof w[3]);
+    if (u == 0 && mg_or_unwind(old, n, obase, &oc, &ol, &onl, ow, sizeof ow) != 0) {
+        snprintf(w[3], sizeof w[3], "__unwind_info could not be read as it was");
+        u = -1;
+    } else if (u == 0 && nl != onl) {
+        snprintf(w[3], sizeof w[3], "compact unwind lists %u LSDAs, and listed %u,", nl, onl);
+        u = 1;
+    }
+    for (uint32_t k = 0; u == 0 && k < nl; k++) {
+        uint32_t e[2], oe[2];
+        memcpy(e, l + 8 * k, sizeof e);
+        memcpy(oe, ol + 8 * k, sizeof oe);
+        if (e[0] == oe[0] + grow && e[1] == oe[1] + grow) continue;
+        snprintf(w[3], sizeof w[3], "the LSDA index names %#llx's LSDA at %#llx, and must name "
+                 "%#llx's at %#llx", (unsigned long long)(base + e[0]),
+                 (unsigned long long)(base + e[1]), (unsigned long long)(obase + oe[0] + grow),
+                 (unsigned long long)(obase + oe[1] + grow));
+        u = 1;
+    }
+    if (u == 0) holds |= MG_OR_UNWIND;
+    for (int i = 0; i < 4; i++)
+        if (want & ~holds & (1u << i)) {
+            snprintf(why, whysz, "%s", w[i]);
+            break;
+        }
+    return holds;
+}
+
+unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz) {
+    return mg_oracles_raised(buf, fsize, buf, fsize, 0, want, why, whysz);
+}
+
+/* Deletes every LC_SEGMENT_SPLIT_INFO from the header and load commands at
+ * `lc`, as a raise must, restated apart from the raise's own drop; returns
+ * where the load commands end now. */
+static size_t mg_expect_no_split_info(uint8_t *lc) {
+    struct mach_header_64 *h = (struct mach_header_64 *)lc;
+    size_t end = sizeof *h + h->sizeofcmds, at = sizeof *h;
+    for (uint32_t i = 0, n = h->ncmds; i < n && end - at >= sizeof(struct load_command); i++) {
+        uint32_t size = ((const struct load_command *)(lc + at))->cmdsize;
+        if (size < sizeof(struct load_command) || size > end - at) break;
+        if (((const struct load_command *)(lc + at))->cmd != LC_SEGMENT_SPLIT_INFO) {
+            at += size;
+            continue;
+        }
+        memmove(lc + at, lc + at + size, end - at - size);
+        end -= size;
+        h->ncmds--;
+        h->sizeofcmds -= size;
+    }
+    return end;
+}
+
+/* Check 3 of a raise (see mg_verify). */
+static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *before,
+                           uint64_t grow) {
+    const uint8_t *old = before->old;
+    size_t n = before->oldsize, had = sizeof(struct mach_header_64) +
+                                      ((const struct mach_header_64 *)before->lcs)->sizeofcmds;
+    uint32_t first = before->first, toff, tsize;
+    int rc = -1, appended = fsize > n + grow, rebuilt = -1;
+    uint8_t *want = (uint8_t *)malloc(had), *mask = (uint8_t *)calloc(n + 1, 1);
+    uint8_t *raised = (uint8_t *)malloc(n + 1);
+    size_t lcend = 0;
+    mi_image wim, oim, bim;
+    struct mg_expect_ctx x = { first, (uint32_t)grow };
+    struct mg_exempt_ctx e = { old, n, mask };
+    if (want && mask && raised) {
+        lcend = mg_expect_no_split_info(memcpy(want, before->lcs, had));
+        /* What compact unwind and an export trie patched in place become. */
+        memcpy(raised, old, n);
+        rebuilt = mg_trie_walk(raised, n, (uint32_t)grow, 0, 0, NULL, NULL, NULL, 0);
+        if ((rebuilt == 0 && mg_trie_walk(raised, n, (uint32_t)grow, 1, 0, NULL, NULL, NULL, 0)) ||
+            mg_unwind_walk(raised, n, (uint32_t)grow, 1, 0, NULL, NULL, NULL, 0))
+            rebuilt = -1;
+    }
+    if (mg_has_cmd((uint8_t *)buf, fsize, LC_SEGMENT_SPLIT_INFO)) {
+        fprintf(stderr, "ERROR: verify FAILED -- the raised image carries LC_SEGMENT_SPLIT_INFO, "
+                        "whose offsets a raise leaves stale; refusing.\n");
+        goto out;
+    }
+    if (lcend && (fsize < n + grow || (appended && rebuilt == 0) ||
+                  memcmp(want, buf, sizeof(struct mach_header_64)) != 0)) {
+        fprintf(stderr, "ERROR: verify FAILED -- the grown image's header, or its size (%zu bytes), "
+                        "is not the original's with %llu more; refusing.\n", fsize,
+                (unsigned long long)grow);
+        goto out;
+    }
+    if (!lcend || rebuilt < 0 || mi_wrap(want, lcend, &wim) != 0 ||
+        mi_wrap((uint8_t *)old, n, &oim) != 0 || mi_wrap((uint8_t *)buf, fsize, &bim) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- could not work out what the raise should make of "
+                        "the image as it was (out of memory, or the image, or its compact unwind "
+                        "or export trie, does not read); refusing.\n");
+        goto out;
+    }
+    if (mg_verify_unwind_words(&oim, raised, (uint32_t)grow) != 0 ||
+        mg_verify_uuid(&bim, &oim) != 0)
+        goto out;
+    mi_each_lc(&wim, mg_expect_cb, &x);
+    ml_each_off(&wim, mg_expect_off, &x);
+    if (appended) mg_expect_appended_trie(want, lcend, &oim, fsize, (uint32_t)grow);
+    for (size_t i = sizeof(struct mach_header_64); i < lcend; i++) {
+        if (want[i] == buf[i]) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- load-command byte %#zx holds %#x after the grow, "
+                        "and must hold %#x; refusing.\n", i, buf[i], want[i]);
+        goto out;
+    }
+    for (size_t i = lcend; i < first + grow; i++) {
+        uint8_t w = i >= had && i < first ? old[i] : 0;
+        if (buf[i] == w) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- header pad byte %#zx holds %#x after the grow, "
+                        "and must hold %#x; refusing.\n", i, buf[i], w);
+        goto out;
+    }
+    mi_each_lc(&oim, mg_exempt_cb, &e);
+    if (rebuilt && !appended && mg_find_trie(old, n, &toff, &tsize)) mg_exempt(mask, n, toff, tsize);
+    for (size_t i = 0; i < before->rb.s.n; i++) mg_exempt(mask, n, before->rb.v[i].at, 8);
+    for (uint32_t i = 0; i < before->nrefs; i++) mg_exempt(mask, n, before->refs[i].off, 4);
+    for (size_t i = first; i < n; i++) {
+        if (mask[i] || buf[i + grow] == raised[i]) continue;
+        if (raised[i] == old[i])
+            fprintf(stderr, "ERROR: verify FAILED -- file offset %#llx holds %#x after the grow, "
+                            "and must hold %#x, as file offset %#zx did before it; refusing.\n",
+                    (unsigned long long)(i + grow), buf[i + grow], old[i], i);
+        else
+            fprintf(stderr, "ERROR: verify FAILED -- file offset %#llx holds %#x after the grow, "
+                            "and must hold %#x, file offset %#zx's %#x raised; refusing.\n",
+                    (unsigned long long)(i + grow), buf[i + grow], raised[i], i, old[i]);
+        goto out;
+    }
+    if (mg_verify_trie_exports(buf, fsize, old, n, grow) != 0) goto out;
+    rc = 0;
+out:
+    free(want);
+    free(mask);
+    free(raised);
+    return rc;
+}
+
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     uint64_t grow = (uint64_t)mg_first_sect_off(buf, fsize) - before->first;
     uint64_t delta = before->raise ? grow : 0;
@@ -973,7 +1725,16 @@ int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before) {
     if (mi_image_base(&im, &base) != 0) return -1;
     if (mg_verify_symbols(&im, fsize, before, base, delta) != 0) return -1;
     if (mg_verify_pointers(&im, buf, fsize, before, base, delta) != 0) return -1;
-    return mg_verify_refs(buf, fsize, before, base, grow, delta);
+    if (mg_verify_refs(buf, fsize, before, base, grow, delta) != 0) return -1;
+    if (!before->raise) return 0;
+    if (mg_verify_bytes(buf, fsize, before, grow) != 0) return -1;
+    char why[256];
+    if ((mg_oracles_raised(buf, fsize, before->old, before->oldsize, grow, before->oracles, why,
+                           sizeof why) & before->oracles) == before->oracles)
+        return 0;
+    fprintf(stderr, "ERROR: verify FAILED -- %s after the grow, which held before it; "
+                    "refusing.\n", why);
+    return -1;
 }
 
 int mg_uw_bump(uint8_t *p, uint32_t grow, int patch) {
@@ -1276,6 +2037,11 @@ static void mg_why_refused(const char *why) {
  * widened to keep going. */
 static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
     const char *why = NULL;
+    if (lc->cmd == LC_SYMTAB && lc->cmdsize < sizeof(struct symtab_command)) {
+        fprintf(stderr, "ERROR: LC_SYMTAB is %u bytes, too short to hold its symbol and string "
+                        "tables' offsets and sizes; refusing to grow\n", lc->cmdsize);
+        return -1;
+    }
     switch (lc->cmd) {
         /* Handled by a re-baser above. */
         case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
@@ -2076,18 +2842,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    /* Locate the donor (__PAGEZERO) and confirm a header-bearing segment
-     * (__TEXT) exists, via the same finders every other converted walk in
-     * this toolkit uses instead of a third hand-rolled copy of the search.
-     * Documented gap from a review round: mi_find_segment returns the FIRST
-     * "__PAGEZERO"-named segment; the original hand-rolled loop had no
-     * `break` on a pagezero match, so it kept the LAST. mi_text_base (used
-     * just below for `text`) has the identical first-vs-last change --
-     * matches unconditionally return on the first hit, where the original
-     * loop's `else if` also had no `break`. Neither is exercised by any
-     * fixture (none carries more than one __PAGEZERO or more than one
-     * fileoff==0-with-content segment); the commit that made this
-     * conversion documented neither at the time. Recorded here now. */
+    /* A lowering's donor (__PAGEZERO) and the image base, through the
+     * finders every other walk here uses. Each takes the FIRST match:
+     * mi_find_segment the first segment named "__PAGEZERO", mi_image_base
+     * the first segment at file offset 0 with file data. No fixture carries
+     * two of either. */
     mi_image find_im;
     if (mi_wrap(buf, fsize, &find_im) != 0) {
         fprintf(stderr, "ERROR: internal error -- the header no longer validates\n");
@@ -2210,7 +2969,18 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
-    if (raise) mg_drop_split_info(buf);
+    /* Check 3 expects the load commands from these, as they were before the
+     * drop, so that it sees what the drop did. */
+    uint8_t *lcs = NULL;
+    if (raise) {
+        if (!(lcs = (uint8_t *)malloc(lc_end))) {
+            fprintf(stderr, "ERROR: out of memory copying the load commands; refusing to grow\n");
+            free(mg_new_trie);
+            return -1;
+        }
+        memcpy(lcs, buf, lc_end);
+        mg_drop_split_info(buf);
+    }
 
     /* Phase 4 prep: snapshot every base-relative resolved address BEFORE touching
      * a byte, so the verify at the end has something to prove against. If we
@@ -2220,8 +2990,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     if (mg_snapshot_take(buf, fsize, &snap) != 0) {
         fprintf(stderr, "ERROR: could not snapshot the base-relative structures; "
                         "refusing to grow without a way to verify the result\n");
+        free(lcs);
         free(mg_new_trie);
         return -1;
+    }
+    if (raise) {
+        free(snap.lcs);
+        snap.lcs = lcs;
     }
 
     /* Insert `grow` zero bytes after the load commands, shifting file data down. */
@@ -2273,10 +3048,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
 
-    /* Re-point the dyld4 initializer offsets: the base dropped by `grow`, the
-     * constructors did not move, so each offset must gain `grow`. Section file
-     * offsets were bumped in the walk above, so these read from the new home.
-     * The pre-mutation audit proved this cannot overflow. */
+    /* Everything measured from the base now lies `grow` further from it, on
+     * either route: a lowering drops the base and leaves the content, a raise
+     * keeps the base and moves the content up. So each export-trie address
+     * gains `grow` (in place, or by the rebuild), and below, so does each
+     * offset in data in code, compact unwind and S_INIT_FUNC_OFFSETS. Section
+     * file offsets were bumped in the walk above, so these read from their
+     * new home. The pre-mutation audit proved none of this can overflow. */
     if (!mg_trie_needs_rebuild) {
         /* The common case (measured: zero widening entries across all 670
          * exports of Claude Code 2.1.263 at 4K/8K/16K grows): every address
@@ -2453,11 +3231,13 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
 
-    /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: the base
-     * dropped by `grow`, so the first delta must gain `grow` to keep every
-     * function's absolute address fixed. The blob moved with the memmove; it now
-     * lives at fs_dataoff+grow. The pre-mutation check above already proved the
-     * width is preserved, so this cannot widen — a nonzero return is a bug. */
+    /* Re-encode the base-relative LC_FUNCTION_STARTS leading delta: every
+     * function now lies `grow` further from the base (a lowering drops the
+     * base, a raise moves the functions up), so the first delta gains `grow`
+     * and the later ones, between functions, stay. The blob moved with the
+     * memmove; it now lives at fs_dataoff+grow. The pre-mutation check above
+     * already proved the width is preserved, so this cannot widen — a nonzero
+     * return is a bug. */
     if (fs_dataoff && fs_datasize) {
         int r = mg_reencode_funcstarts_base(buf + fs_dataoff + grow, fs_datasize, grow);
         if (r != 1) {
@@ -2468,10 +3248,11 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         }
     }
 
-    /* Phase 4: prove it. Every base-relative structure must resolve exactly where
-     * it did before. A mismatch means a handler did not run, ran twice, or ran
-     * with the wrong delta -- all of which produce a binary that loads and is
-     * wrong, so this is the last chance to catch it. */
+    /* Phase 4: prove it. Every base-relative structure must resolve where it
+     * did before, moved by the route's delta (0 lowering, `grow` raising). A
+     * mismatch means a handler did not run, ran twice, or ran with the wrong
+     * delta -- all of which produce a binary that loads and is wrong, so this
+     * is the last chance to catch it. */
     if (mg_verify(buf, final_size, &snap) != 0) {
         mg_snapshot_free(&snap);
         /* The buffer has been transformed and is NOT safe to write. *pbuf already
@@ -2481,11 +3262,12 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     }
     mg_snapshot_free(&snap);
 
-    /* And independently: do the results still name plausible targets? mg_verify
-     * proves nothing MOVED, which is silent about a structure we never collected.
-     * This asks a different question of the finished file -- do initializers and
-     * unwind entries still land on function starts -- so the two fail for
-     * different reasons. */
+    /* And separately: do the results still name plausible targets? mg_verify
+     * proves each collected structure moved exactly as the route moves it
+     * (not at all, lowering). This asks a different question of the finished
+     * file -- do initializers and unwind entries still land on function
+     * starts -- so the two fail for different reasons. It collects through
+     * the same walkers, so it cannot see an entry they miss. */
     if (mg_plausible(buf, final_size) != 0) {
         fprintf(stderr, "ERROR: the grown image does not pass its own plausibility "
                         "check; refusing. Discard this buffer.\n");

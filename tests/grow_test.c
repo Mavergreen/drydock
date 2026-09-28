@@ -4402,6 +4402,7 @@ static void test_grow_accepts_binds_outside_the_header_segment(void) {
 #define DY_ZEROSEG 16    /* a zero-fill segment, __ZERO, at vm 0x6000: file offset 0, no file data */
 #define DY_ZEROFAR 128   /* __ZERO at 0x7000 */
 #define DY_STABS  32     /* dy_stabs, as symbols 5 to 19 */
+#define DY_INITOFF 64    /* __TEXT,__init_offsets at 0x1120: f2 */
 static const uint64_t dy_ptrs[3] = { 0, 0x1010, 0x2020 };   /* the header, f2, _d */
 
 static struct section_64 *dy_sect(struct section_64 *s, const char *seg, const char *name,
@@ -4461,7 +4462,7 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     h->filetype = MH_DYLIB;
     h->flags = MH_DYLDLINK | MH_TWOLEVEL | MH_NOUNDEFS;
 
-    int ntext = (opts & DY_UNWIND) ? 4 : 2;
+    int ntext = 2 + 2 * !!(opts & DY_UNWIND) + !!(opts & DY_INITOFF);
     struct segment_command_64 *tx = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
         sizeof *tx + ntext * sizeof(struct section_64));
     strcpy(tx->segname, "__TEXT");
@@ -4478,6 +4479,8 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
         s = dy_sect(s, "__TEXT", "__gcc_except_tab", base + 0x1180, 0x10, 0x1180, 0);
         s = dy_sect(s, "__TEXT", "__unwind_info", base + 0x1800, 0x60, 0x1800, 0);
     }
+    if (opts & DY_INITOFF)
+        s = dy_sect(s, "__TEXT", "__init_offsets", base + 0x1120, 4, 0x1120, S_INIT_FUNC_OFFSETS);
 
     struct segment_command_64 *da = (struct segment_command_64 *)dy_lc(&lc, h, LC_SEGMENT_64,
         sizeof *da + 5 * sizeof(struct section_64));
@@ -4577,6 +4580,7 @@ static uint8_t *build_dylib_at(uint64_t base, size_t *fsize, int opts) {
     memcpy(buf + 0x1003, &disp, sizeof disp);
     buf[0x1007] = 0xc3;
     buf[0x1010] = 0x55; buf[0x1011] = 0xc3;
+    if (opts & DY_INITOFF) { uint32_t f2 = 0x1010; memcpy(buf + 0x1120, &f2, sizeof f2); }
     if (opts & DY_UNWIND) {
         uint32_t *uw = (uint32_t *)(buf + 0x1800);
         uw[0] = 1; uw[3] = 28; uw[4] = 1; uw[5] = 32; uw[6] = 2;
@@ -4655,6 +4659,7 @@ static void dy_below(uint8_t *buf) {
     dy_section(buf, "__DATA", "__bss")->addr = seg_named(buf, DY_FSIZE, "__TEXT")->vmaddr + 0xfff;
 }
 static void dy_early(uint8_t *buf) { seg_named(buf, DY_FSIZE, "__DATA")->fileoff = 0xfff; }
+static void dy_short_symtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_SYMTAB; }
 static void dy_short_dysymtab(uint8_t *buf) { ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_DYSYMTAB; }
 static struct dysymtab_command *dy_dysymtab(uint8_t *buf) { return (struct dysymtab_command *)dy_find(buf, LC_DYSYMTAB); }
 static void dy_toc(uint8_t *buf) { dy_dysymtab(buf)->ntoc = 1; }
@@ -4710,6 +4715,9 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
       "refusing to grow" },
     { "a short LC_DYSYMTAB", dy_short_dysymtab,
       "ERROR: LC_DYSYMTAB is 16 bytes, too short to hold its tables' counts; refusing to grow" },
+    { "a short LC_SYMTAB", dy_short_symtab,
+      "ERROR: LC_SYMTAB is 16 bytes, too short to hold its symbol and string tables' offsets "
+      "and sizes; refusing to grow" },
     { "a table of contents", dy_toc,
       "ERROR: LC_DYSYMTAB lists 1 table-of-contents entries, 0 modules, 0 external and 0 local "
       "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
@@ -4737,7 +4745,7 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
 
 /* Like check_grow_refuses_header_refs, but also insists stderr holds exactly
  * one ERROR, catching a refusal that prints its reason without stopping the
- * walk (mg_each_lc's callback returning 0 where it should return 1). */
+ * walk (mi_each_lc's callback returning 0 where it should return 1). */
 static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsize,
                                      const char *needle) {
     size_t fsize0 = fsize;
@@ -4756,15 +4764,17 @@ static void check_grow_refuses_raise(const char *what, uint8_t *buf, size_t fsiz
     free(buf);
 }
 
+/* Each image carries split info (DY_SPLIT), which a raise drops once it
+ * will go ahead: so every refusal is also shown to leave it in place. */
 static void test_grow_refuses_what_it_cannot_raise(void) {
     for (size_t i = 0; i < sizeof dy_unraisable / sizeof dy_unraisable[0]; i++) {
         size_t fsize;
-        uint8_t *buf = build_dylib(&fsize, 0);
+        uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
         dy_unraisable[i].poke(buf);
         check_grow_refuses_raise(dy_unraisable[i].what, buf, fsize, dy_unraisable[i].why);
     }
     size_t fsize;
-    uint8_t *buf = build_dylib_at(0x10000000, &fsize, 0);
+    uint8_t *buf = build_dylib_at(0x10000000, &fsize, DY_SPLIT);
     dy_below(buf);
     check_grow_refuses_raise("a section below the first content, above base 0", buf, fsize,
         "ERROR: section __DATA,__bss lies at 0x10000fff, below the first content at 0x10001000; "
@@ -5051,17 +5061,19 @@ static void test_raise_keeps_an_offset_no_segment_maps(void) {
 /* Verification, on the raise: each check_verify_rejects_raise undoes one
  * thing a correct raise did. */
 typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
-static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo undo,
-                                            const char *needle) {
-    size_t fsize;
-    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
+/* `unsnap`, where given, changes the snapshot's copy of the image as it was
+ * instead, so that only what reads that copy sees it. */
+static void check_verify_rejects_raise_of(const char *what, uint8_t *buf, size_t fsize,
+                                          uint32_t grow_req, dy_undo undo, dy_undo unsnap,
+                                          const char *needle) {
     mg_snapshot snap;
     if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "%s: snapshot", what); free(buf); return; }
-    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+    if (mg_grow_header(&buf, &fsize, grow_req) != 0) {
         CHECK(0, "%s: grow", what); mg_snapshot_free(&snap); free(buf); return;
     }
     CHECK(mg_verify(buf, fsize, &snap) == 0, "%s: verify accepts the raise as made", what);
-    undo(buf, fsize);
+    if (undo) undo(buf, fsize);
+    if (unsnap) unsnap(snap.old, snap.oldsize);
     int r;
     verify_snap = &snap;
     char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
@@ -5070,6 +5082,12 @@ static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo 
     free(err);
     mg_snapshot_free(&snap);
     free(buf);
+}
+static void check_verify_rejects_raise_with(const char *what, int opts, dy_undo undo,
+                                            const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | opts);
+    check_verify_rejects_raise_of(what, buf, fsize, 0x1000, undo, NULL, needle);
 }
 static void check_verify_rejects_raise(const char *what, dy_undo undo, const char *needle) {
     check_verify_rejects_raise_with(what, 0, undo, needle);
@@ -5222,10 +5240,87 @@ static void test_raise_drops_every_split_info(void) {
     size_t fsize;
     uint8_t *buf = build_dylib(&fsize, DY_SPLIT);
     hr_add_lc(buf, LC_SEGMENT_SPLIT_INFO, 0x3098, "\x5a\x5a\x5a\x5a\x5a\x5a\x5a\x5a", 8);
+    struct mach_header_64 h0 = *(struct mach_header_64 *)buf;
     int r = mg_grow_header(&buf, &fsize, 0x1000);
-    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO),
-          "split info: a raise deletes both of two (got %d)", r);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    CHECK(r == 0 && !find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO) && h->ncmds == h0.ncmds - 2 &&
+          h->sizeofcmds == h0.sizeofcmds - 2 * sizeof(struct linkedit_data_command),
+          "split info: a raise deletes both of two (got %d, %u commands, %u bytes, from %u and %u)",
+          r, h->ncmds, h->sizeofcmds, h0.ncmds, h0.sizeofcmds);
     free(buf);
+}
+
+/* Check 3 expects the load commands a raise makes from them as they were
+ * before the split-info drop, which it restates for itself: the snapshot's
+ * copy of the image is taken after the drop, and holds whatever the drop
+ * did. Each planted change here lands in both the raised image and that
+ * copy, as a drop that did it would leave them. */
+static void dy_flip_reexports(uint8_t *buf, size_t fsize) {
+    (void)fsize;
+    ((struct mach_header_64 *)buf)->flags ^= MH_NO_REEXPORTED_DYLIBS;
+}
+static void dy_scribble_last(uint8_t *buf, size_t fsize) {
+    struct routines_command_64 *rt = (struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64);
+    memset(&rt->reserved6, 0x41, 4);
+}
+static void dy_as_split(uint8_t *buf, size_t fsize) {
+    ((struct load_command *)find_lc(buf, fsize, LC_DYLIB_CODE_SIGN_DRS))->cmd = LC_SEGMENT_SPLIT_INFO;
+}
+static void test_verify_watches_the_split_info_drop(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    check_verify_rejects_raise_of("the header's flags changed with the snapshot's", buf, fsize,
+        0x1000, dy_flip_reexports, dy_flip_reexports,
+        "ERROR: verify FAILED -- the grown image's header, or its size (17152 bytes), is not the "
+        "original's with 4096 more; refusing.");
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    check_verify_rejects_raise_of("a load command changed with the snapshot's", buf, fsize,
+        0x1000, dy_scribble_last, dy_scribble_last,
+        "ERROR: verify FAILED -- load-command byte ");
+    /* Split info the raise kept: LC_DYLIB_CODE_SIGN_DRS has its shape and
+     * is kept, and is split info again in the raised image and the
+     * snapshot's copy of the image as it was. */
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | DY_SPLIT);
+    ((struct load_command *)find_lc(buf, fsize, LC_SEGMENT_SPLIT_INFO))->cmd = LC_DYLIB_CODE_SIGN_DRS;
+    check_verify_rejects_raise_of("split info the raise kept", buf, fsize, 0x1000, dy_as_split,
+        dy_as_split, "ERROR: verify FAILED -- the raised image carries LC_SEGMENT_SPLIT_INFO, "
+        "whose offsets a raise leaves stale; refusing.");
+
+    /* As mg_grow_header has it: the snapshot of the image after the drop
+     * (build_dylib's without DY_SPLIT, with the payload the drop leaves),
+     * told the load commands from before it. The bytes the dropped command
+     * held must be zero, whatever the snapshot's copy says. */
+    size_t n;
+    uint8_t *pre = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | DY_SPLIT);
+    uint8_t *post = build_dylib_at(DY_RAISED_AT, &n, DY_ALL);
+    memset(post + 0x3098, 0x5a, 8);
+    size_t had = sizeof(struct mach_header_64) + ((struct mach_header_64 *)pre)->sizeofcmds;
+    size_t lcend = sizeof(struct mach_header_64) + ((struct mach_header_64 *)post)->sizeofcmds;
+    uint8_t *lcs = (uint8_t *)malloc(had);
+    memcpy(lcs, pre, had);
+    mg_snapshot snap;
+    if (mg_snapshot_take(post, n, &snap) != 0 || mg_grow_header(&pre, &fsize, 0x1000) != 0) {
+        CHECK(0, "split info: snapshot and raise");
+        free(lcs);
+    } else {
+        free(snap.lcs);
+        snap.lcs = lcs;
+        CHECK(mg_verify(pre, fsize, &snap) == 0 && had == lcend + 16,
+              "split info: verify accepts the raise that dropped it, told the commands before it");
+        pre[lcend + 4] = snap.old[lcend + 4] = 0x77;
+        int r;
+        verify_snap = &snap;
+        char *err = stderr_during(verify_thunk, &pre, &fsize, 0, &r);
+        char want[128];
+        snprintf(want, sizeof want, "ERROR: verify FAILED -- header pad byte %#zx holds 0x77 after "
+                 "the grow, and must hold 0; refusing.", lcend + 4);
+        CHECK(r == -1 && strstr(err, want), "verify REJECTS a byte the dropped command held, left "
+              "set in the snapshot's copy too, saying '%s' (got %d):\n%s", want, r, err);
+        free(err);
+    }
+    mg_snapshot_free(&snap);
+    free(pre);
+    free(post);
 }
 
 static void test_lowering_refuses_split_info(void) {
@@ -5348,6 +5443,477 @@ static void test_ensure_pad_announces_no_uuid_it_has_not(void) {
     CHECK(r == 0 && strstr(err, "contents raised by 0x1000; repaired 1 reference") != NULL,
           "ensure_pad on a dylib with no UUID: says no new one (got %d):\n%s", r, err);
     free(err);
+    free(buf);
+}
+
+/* ---- verification: the raise's bytes ----
+ * A correct raise, then one planted change that only the byte check sees. */
+static void dy_flip_code(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2011] ^= 1; }
+static void dy_realign(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) == 0) mi_find_section(&im, "__TEXT", "__stub_helper")->align = 4;
+}
+static void dy_move_stub_helper(uint8_t *buf, size_t fsize) {
+    mi_image im;
+    if (mi_wrap(buf, fsize, &im) == 0) mi_find_section(&im, "__TEXT", "__stub_helper")->addr++;
+}
+static void dy_reprotect(uint8_t *buf, size_t fsize) { seg_named(buf, fsize, "__DATA")->maxprot = 7; }
+static void dy_misroute(uint8_t *buf, size_t fsize) {
+    ((struct routines_command_64 *)find_lc(buf, fsize, LC_ROUTINES_64))->init_address++;
+}
+static void dy_keep_uuid(uint8_t *buf, size_t fsize) {
+    struct uuid_command *u = (struct uuid_command *)find_lc(buf, fsize, LC_UUID);
+    for (int i = 0; i < 16; i++) u->uuid[i] = (uint8_t)(0x10 + i);
+}
+static void dy_dirty_pad(uint8_t *buf, size_t fsize) { (void)fsize; buf[DY_F + 0x10] = 1; }
+static void dy_dirty_old_pad(uint8_t *buf, size_t fsize) { (void)fsize; buf[DY_F - 1] = 1; }
+static void dy_redesc(uint8_t *buf, size_t fsize) { dy_syms(buf, fsize)[1].n_desc = 0x10; }
+static void dy_relength_dic(uint8_t *buf, size_t fsize) {
+    struct linkedit_data_command *dc = (struct linkedit_data_command *)find_lc(buf, fsize, LC_DATA_IN_CODE);
+    buf[dc->dataoff + 4]++;
+}
+static void dy_restart(uint8_t *buf, size_t fsize) {
+    struct linkedit_data_command *fs = (struct linkedit_data_command *)find_lc(buf, fsize, LC_FUNCTION_STARTS);
+    buf[fs->dataoff + 2]++;                            /* the second start */
+}
+static void dy_reflag(uint8_t *buf, size_t fsize) { (void)fsize; ((struct mach_header_64 *)buf)->flags |= MH_PIE; }
+
+static void test_verify_watches_the_raised_bytes(void) {
+    check_verify_rejects_raise("a byte of code changed", dy_flip_code,
+        "ERROR: verify FAILED -- file offset 0x2011 holds 0xc2 after the grow, and must hold 0xc3, "
+        "as file offset 0x1011 did before it; refusing.");
+    check_verify_rejects_raise("a section's alignment changed", dy_realign,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("a section's address off by one", dy_move_stub_helper,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("a segment's protection changed", dy_reprotect,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("LC_ROUTINES_64 off by one", dy_misroute,
+        "ERROR: verify FAILED -- load-command byte ");
+    check_verify_rejects_raise("the UUID kept", dy_keep_uuid,
+        "ERROR: verify FAILED -- the raised image's UUID is the original's; refusing.");
+    check_verify_rejects_raise("a byte of the inserted pad set", dy_dirty_pad,
+        "ERROR: verify FAILED -- header pad byte 0x1010 holds 0x1 after the grow, and must hold "
+        "0; refusing.");
+    check_verify_rejects_raise("a byte of the original pad set", dy_dirty_old_pad,
+        "ERROR: verify FAILED -- header pad byte 0xfff holds 0x1 after the grow, and must hold 0");
+    check_verify_rejects_raise("a symbol's n_desc changed", dy_redesc, "as file offset 0x30b6 did");
+    check_verify_rejects_raise("data in code's length changed", dy_relength_dic,
+        "as file offset 0x3094 did");
+    check_verify_rejects_raise("a later function start changed", dy_restart,
+        "as file offset 0x3082 did");
+    check_verify_rejects_raise("the header's flags changed", dy_reflag,
+        "ERROR: verify FAILED -- the grown image's header, or its size (17152 bytes), is not the "
+        "original's with 4096 more; refusing.");
+}
+
+/* The raise moves a section's relocation offset with the file, and keeps
+ * the pad it found, whatever it held. */
+static void test_raise_moves_a_relocation_offset_and_keeps_the_pad(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+    mi_image im;
+    mi_wrap(buf, fsize, &im);
+    mi_find_section(&im, "__DATA", "__data")->reloff = 0x3000;
+    buf[DY_F - 1] = 0xaa;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    mi_wrap(buf, fsize, &im);
+    CHECK(r == 0 && mi_find_section(&im, "__DATA", "__data")->reloff == 0x4000 &&
+          buf[DY_F - 1] == 0xaa, "raise: a relocation offset moves, and the pad stays (got %d)", r);
+    free(buf);
+}
+
+/* What the byte check leaves to the others it does not see as a change:
+ * S_INIT_FUNC_OFFSETS raised, as mg_collect watches. */
+static void test_raise_moves_the_initializer_offsets(void) {
+    size_t fsize;
+    uint8_t *buf = raised_dylib(&fsize, DY_ALL | DY_INITOFF, 0x1000);
+    if (!buf) return;
+    uint32_t v;
+    memcpy(&v, buf + 0x2120, sizeof v);
+    CHECK(v == 0x2010, "raise: the initializer offset is %#x, want 0x2010", v);
+    free(buf);
+}
+
+/* ---- verification: what a raise makes of compact unwind, the export trie,
+ * __LINKEDIT and the UUID ----
+ * One page moves the export trie in place. Two widen _d, and the trie is
+ * rebuilt: appended past __LINKEDIT, or, from dy_rich_trie, in its place. */
+
+/* _f1 (with a spare byte after its address), _f2 (a stub at 0x1100, its
+ * resolver f2), _d, and _r (a re-export of libSystem's _x): 45 bytes, as its
+ * rebuild two pages up is, without the spare byte and with _d wider. */
+static void dy_rich_trie(uint8_t *buf) {
+    static const uint8_t trie[45] = {
+        0x00, 0x04, '_', 'f', '1', 0, 20, '_', 'f', '2', 0, 26, '_', 'd', 0, 33, '_', 'r', 0, 38,
+        0x04, 0x00, 0x80, 0x20, 0x00, 0x00,
+        0x05, 0x10, 0x80, 0x22, 0x90, 0x20, 0x00,
+        0x03, 0x00, 0xa0, 0x40, 0x00,
+        0x05, 0x08, 0x01, '_', 'x', 0x00, 0x00 };
+    memcpy(buf + 0x3040, trie, sizeof trie);
+    ((struct dyld_info_command *)dy_find(buf, LC_DYLD_INFO_ONLY))->export_size = sizeof trie;
+}
+static void check_verify_rejects_trie_raise(const char *what, int rich, dy_undo undo,
+                                            dy_undo unsnap, const char *needle) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    if (rich) dy_rich_trie(buf);
+    check_verify_rejects_raise_of(what, buf, fsize, 0x1001, undo, unsnap, needle);
+}
+
+static uint8_t *dy_trie(uint8_t *buf, size_t fsize) {
+    uint32_t off = 0, size = 0;
+    mg_find_trie(buf, fsize, &off, &size);
+    return buf + off;
+}
+static void dy_recommon(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2804] ^= 1; }
+static void dy_old_unwind_later(uint8_t *old, size_t n) { (void)n; old[0x1821]++; }  /* f1: 0x1100 */
+static void dy_rename_export(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[4] ^= 2; }  /* _f3 */
+static void dy_weaken_export(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[21] = 0x04; }
+static void dy_reordinal(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[40] = 2; }
+static void dy_reimport(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[42] = 'y'; }
+static void dy_old_export_later(uint8_t *old, size_t n) { (void)n; old[0x3040 + 22]++; }
+static void dy_old_resolver_later(uint8_t *old, size_t n) { (void)n; old[0x3040 + 30]++; }
+static void dy_old_three_exports(uint8_t *old, size_t n) { (void)n; old[0x3040 + 1] = 3; }
+static void dy_old_shared_node(uint8_t *old, size_t n) { (void)n; old[0x3040 + 19] = 33; }
+static void dy_old_unterminated(uint8_t *old, size_t n) { (void)n; old[0x3040 + 43] = 'z'; }
+static void dy_old_narrow_d(uint8_t *old, size_t n) { (void)n; old[0x3040 + 29] = 0x20; }  /* 0x1020 */
+static void dy_rename_replaced(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x5044] ^= 2; }
+static void dy_relazy(uint8_t *buf, size_t fsize) {
+    ((struct dyld_info_command *)find_lc(buf, fsize, LC_DYLD_INFO_ONLY))->lazy_bind_size += 16;
+}
+static void dy_revm_linkedit(uint8_t *buf, size_t fsize) {
+    seg_named(buf, fsize, "__LINKEDIT")->vmsize += 0x1000;
+}
+static void dy_refile_linkedit(uint8_t *buf, size_t fsize) {
+    seg_named(buf, fsize, "__LINKEDIT")->filesize--;
+}
+static void dy_old_linkedit_shorter(uint8_t *old, size_t n) {
+    seg_named(old, n, "__LINKEDIT")->filesize -= 0x10;
+}
+static void dy_uuid_v3(uint8_t *buf, size_t fsize) {
+    uint8_t *u = ((struct uuid_command *)find_lc(buf, fsize, LC_UUID))->uuid;
+    u[6] = (uint8_t)((u[6] & 0x0f) | 0x30);
+}
+static void dy_uuid_ncs(uint8_t *buf, size_t fsize) {
+    ((struct uuid_command *)find_lc(buf, fsize, LC_UUID))->uuid[8] &= 0x3f;
+}
+static void dy_uuid_other(uint8_t *buf, size_t fsize) {
+    ((struct uuid_command *)find_lc(buf, fsize, LC_UUID))->uuid[0] ^= 1;
+}
+
+static void test_verify_watches_what_the_raise_derives(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    check_verify_rejects_raise("a byte of compact unwind's header changed", dy_recommon,
+        "ERROR: verify FAILED -- file offset 0x2804 holds 0x1 after the grow, and must hold 0, "
+        "as file offset 0x1804 did before it; refusing.");
+    check_verify_rejects_raise_of("an unwind entry the snapshot says was later", buf, fsize,
+        0x1000, NULL, dy_old_unwind_later,
+        "ERROR: verify FAILED -- file offset 0x2821 holds 0x20 after the grow, and must hold "
+        "0x21, file offset 0x1821's 0x11 raised; refusing.");
+    check_verify_rejects_raise("an export renamed in place", dy_rename_export,
+        "ERROR: verify FAILED -- file offset 0x4044 holds 0x33 after the grow, and must hold "
+        "0x31, as file offset 0x3044 did before it; refusing.");
+
+    check_verify_rejects_trie_raise("an export renamed in the appended trie", 0, dy_rename_export,
+        NULL, "ERROR: verify FAILED -- export 0 of the raised trie, \"_f3\", differs in its name "
+        "from what the raise makes of the old one, \"_f1\"; refusing.");
+    check_verify_rejects_trie_raise("an export weakened in the rebuilt trie", 1, dy_weaken_export,
+        NULL, "ERROR: verify FAILED -- export 0 of the raised trie, \"_f1\", differs in its flags "
+        "from what the raise makes of the old one, \"_f1\"; refusing.");
+    check_verify_rejects_trie_raise("a re-export's ordinal changed", 1, dy_reordinal, NULL,
+        "ERROR: verify FAILED -- export 3 of the raised trie, \"_r\", differs in its re-export "
+        "ordinal from what the raise makes of the old one, \"_r\"; refusing.");
+    check_verify_rejects_trie_raise("a re-export's imported name changed", 1, dy_reimport, NULL,
+        "ERROR: verify FAILED -- export 3 of the raised trie, \"_r\", differs in its imported "
+        "name from what the raise makes of the old one, \"_r\"; refusing.");
+    check_verify_rejects_trie_raise("an export the snapshot says was later", 1, NULL,
+        dy_old_export_later, "ERROR: verify FAILED -- export 0 of the raised trie, \"_f1\", "
+        "differs in its address from what the raise makes of the old one, \"_f1\"; refusing.");
+    check_verify_rejects_trie_raise("a resolver the snapshot says was later", 1, NULL,
+        dy_old_resolver_later, "ERROR: verify FAILED -- export 1 of the raised trie, \"_f2\", "
+        "differs in its resolver from what the raise makes of the old one, \"_f2\"; refusing.");
+    check_verify_rejects_trie_raise("an export the snapshot never had", 1, NULL,
+        dy_old_three_exports, "ERROR: verify FAILED -- the raised export trie holds 4 exports, "
+        "and the old one 3; refusing.");
+    check_verify_rejects_trie_raise("a trie the snapshot says shared a node", 1, NULL,
+        dy_old_shared_node, "ERROR: verify FAILED -- the old export trie could not be read: a "
+        "node is reachable more than one way; refusing.");
+    check_verify_rejects_trie_raise("a re-export the snapshot says was unterminated", 1, NULL,
+        dy_old_unterminated, "ERROR: verify FAILED -- the old export trie could not be read: an "
+        "export's terminal is malformed; refusing.");
+    check_verify_rejects_trie_raise("a trie appended that the snapshot says fit", 0, NULL,
+        dy_old_narrow_d, "ERROR: verify FAILED -- the grown image's header, or its size (21280 "
+        "bytes), is not the original's with 8192 more; refusing.");
+    check_verify_rejects_trie_raise("a byte of the trie an appended one replaced", 0,
+        dy_rename_replaced, NULL, "ERROR: verify FAILED -- file offset 0x5044 holds 0x33 after "
+        "the grow, and must hold 0x31, as file offset 0x3044 did before it; refusing.");
+
+    check_verify_rejects_trie_raise("lazy_bind_size changed beside an appended trie", 0,
+        dy_relazy, NULL, "ERROR: verify FAILED -- load-command byte 0x4ec holds 0x10 after the "
+        "grow, and must hold 0; refusing.");
+    check_verify_rejects_trie_raise("__LINKEDIT's vm size changed beside an appended trie", 0,
+        dy_revm_linkedit, NULL, "ERROR: verify FAILED -- load-command byte 0x3a1 holds 0x20 "
+        "after the grow, and must hold 0x10; refusing.");
+    check_verify_rejects_trie_raise("__LINKEDIT's file size short of an appended trie", 0,
+        dy_refile_linkedit, NULL, "ERROR: verify FAILED -- load-command byte 0x3b0 holds 0x1f "
+        "after the grow, and must hold 0x20; refusing.");
+    check_verify_rejects_trie_raise("an appended trie past where the snapshot's __LINKEDIT ended",
+        0, NULL, dy_old_linkedit_shorter, "ERROR: verify FAILED -- load-command byte 0x4f0 holds "
+        "0 after the grow, and must hold 0xf0; refusing.");
+
+    check_verify_rejects_raise("a UUID of version 3", dy_uuid_v3,
+        "ERROR: verify FAILED -- the raised image's UUID is not version 4; refusing.");
+    check_verify_rejects_raise("a UUID of the NCS variant", dy_uuid_ncs,
+        "ERROR: verify FAILED -- the raised image's UUID is not RFC 4122's variant; refusing.");
+    check_verify_rejects_raise("a UUID not the raise's", dy_uuid_other,
+        "ERROR: verify FAILED -- load-command byte 0x568 holds ");
+}
+
+/* A rebuilt trie keeps an absolute export's value, and an export at offset
+ * 0, as the in-place walk does. */
+static void test_raise_rebuilds_a_trie_with_what_stays(void) {
+    static const struct { const char *what; uint8_t at, v; uint64_t want; } p[2] = {
+        { "an absolute export", 21, 0x02, 0x1000 }, { "an export at offset 0", 23, 0x00, 0 } };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize;
+        uint64_t a = 1;
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+        dy_rich_trie(buf);
+        buf[0x3040 + p[i].at] = p[i].v;
+        if (p[i].at == 23) buf[0x3040 + 22] = 0x80;       /* _f1: 0, in its two bytes */
+        int r = mg_grow_header(&buf, &fsize, 0x1001);
+        mu_decode(dy_trie(buf, fsize) + 22, buf + fsize, &a);
+        CHECK(r == 0 && a == p[i].want, "raise: a rebuilt trie keeps %s at %#llx (got %d, %#llx)",
+              p[i].what, (unsigned long long)p[i].want, r, (unsigned long long)a);
+        free(buf);
+    }
+}
+
+/* A rebuilt trie appended to __LINKEDIT: its vm size covers its file size,
+ * rounded up to a page, and never shrinks. */
+static void test_raise_appends_a_trie_to_linkedit_of_any_vmsize(void) {
+    static const uint64_t was[2] = { 0x300, 0x2000 }, want[2] = { 0x1000, 0x2000 };
+    for (int i = 0; i < 2; i++) {
+        size_t fsize;
+        uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, 0);
+        seg_named(buf, fsize, "__LINKEDIT")->vmsize = was[i];
+        int r = mg_grow_header(&buf, &fsize, 0x1001);
+        struct segment_command_64 *le = seg_named(buf, fsize, "__LINKEDIT");
+        CHECK(r == 0 && le && le->vmsize == want[i] && le->filesize == fsize - le->fileoff,
+              "raise: an appended trie leaves __LINKEDIT's vm size %#llx at %#llx, want %#llx "
+              "(got %d)", (unsigned long long)was[i], le ? (unsigned long long)le->vmsize : 0,
+              (unsigned long long)want[i], r);
+        free(buf);
+    }
+}
+
+/* ---- check 4: the oracles ---- */
+static void dy_poke64(uint8_t *buf, uint32_t at, uint64_t v) { memcpy(buf + at, &v, sizeof v); }
+
+static void check_oracle(const char *what, uint8_t *buf, unsigned want, const char *why) {
+    char got[256] = "";
+    unsigned holds = mg_oracles(buf, DY_FSIZE, MG_OR_ALL, got, sizeof got);
+    CHECK(holds == want && (!why || strcmp(got, why) == 0),
+          "oracles: %s: %#x hold, want %#x; said '%s', want '%s'", what, holds, want, got,
+          why ? why : "");
+    free(buf);
+}
+
+static void test_oracles_judge_the_fixture(void) {
+    size_t fsize;
+    uint8_t *buf;
+    check_oracle("the fixture", build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL | DY_INITOFF),
+                 MG_OR_ALL, NULL);
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2030, 0x1011);
+    check_oracle("an initializer mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
+                 "the initializer 0x1011 is not a function start");
+    buf = build_dylib(&fsize, DY_ROUTINES);
+    ((struct routines_command_64 *)dy_find(buf, LC_ROUTINES_64))->init_address = 0x1012;
+    check_oracle("LC_ROUTINES_64 mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
+                 "the initializer 0x1012 is not a function start");
+    buf = build_dylib(&fsize, 0);
+    dy_section(buf, "__DATA", "__mod_init_func")->flags = S_MOD_TERM_FUNC_POINTERS;
+    dy_poke64(buf, 0x2030, 0x1013);
+    check_oracle("a terminator mid-function", buf, MG_OR_ALL & ~MG_OR_INITS,
+                 "the initializer 0x1013 is not a function start");
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2030, 0x1011);
+    ((struct linkedit_data_command *)dy_find(buf, LC_FUNCTION_STARTS))->datasize = 0;
+    check_oracle("an initializer, and no function starts", buf, MG_OR_ALL, NULL);
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2038, 0x2000);
+    check_oracle("a lazy pointer outside __stub_helper, compared with itself", buf, MG_OR_ALL, NULL);
+    buf = build_dylib(&fsize, 0);
+    buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001 */
+    check_oracle("an export off by one", buf, MG_OR_ALL & ~MG_OR_EXPORTS,
+                 "the export _f1 names 0x1001, and its symbol 0x1000");
+    buf = build_dylib(&fsize, 0);
+    buf[0x3040 + 18] = 0x81;
+    dy_syms(buf, DY_FSIZE)[1].n_type = N_SECT;         /* _f1 is not external */
+    check_oracle("an export with no external symbol", buf, MG_OR_ALL, NULL);
+
+    /* Compact unwind (DY_UNWIND): its personality at word 7, f2's LSDA at 15. */
+    static const struct { const char *what; int word; uint32_t v; const char *why; } uw[6] = {
+        { "an LSDA outside __gcc_except_tab", 15, 0x1010,
+          "the LSDA 0x1010 lies outside __gcc_except_tab" },
+        { "an LSDA at __gcc_except_tab's end", 15, 0x1190,
+          "the LSDA 0x1190 lies outside __gcc_except_tab" },
+        { "an LSDA at __gcc_except_tab's last byte", 15, 0x118f, NULL },
+        { "a personality in __data", 7, 0x2000,
+          "the personality 0x2000 names no __got or __nl_symbol_ptr slot" },
+        { "a personality mid-slot", 7, 0x2044,
+          "the personality 0x2044 names no __got or __nl_symbol_ptr slot" },
+        { "compact unwind of a version it does not read", 0, 2, "__unwind_info could not be read" },
+    };
+    for (int i = 0; i < 6; i++) {
+        buf = build_dylib(&fsize, DY_UNWIND);
+        ((uint32_t *)(buf + 0x1800))[uw[i].word] = uw[i].v;
+        check_oracle(uw[i].what, buf, uw[i].why ? MG_OR_ALL & ~MG_OR_UNWIND : MG_OR_ALL,
+                     uw[i].why);
+    }
+    buf = build_dylib(&fsize, DY_UNWIND);
+    memcpy(dy_section(buf, "__TEXT", "__gcc_except_tab")->segname, "__DATA", 7);
+    check_oracle("an LSDA in __DATA's __gcc_except_tab", buf, MG_OR_ALL, NULL);
+
+    /* Two fail; `why` is the first of those asked about. */
+    char why[256] = "";
+    buf = build_dylib(&fsize, 0);
+    dy_poke64(buf, 0x2030, 0x1011);
+    buf[0x3040 + 18] = 0x81;
+    unsigned holds = mg_oracles(buf, fsize, MG_OR_LAZY | MG_OR_EXPORTS, why, sizeof why);
+    CHECK(holds == (MG_OR_LAZY | MG_OR_UNWIND) &&
+          strcmp(why, "the export _f1 names 0x1001, and its symbol 0x1000") == 0,
+          "oracles: asked about the lazy pointers and exports, says why the exports fail (%#x, '%s')",
+          holds, why);
+    free(buf);
+}
+
+/* mg_oracles_raised holds each lazy pointer and LSDA index entry of a raise
+ * to the old image's, slot by slot, moved as a raise moves it: `poke`
+ * changes the old image, the raised one, or both. */
+typedef void (*dy_pair)(uint8_t *old, uint8_t *buf);
+static void check_oracle_raised(const char *what, dy_pair poke, unsigned want, const char *why) {
+    size_t n, fsize;
+    uint8_t *old = build_dylib_at(DY_RAISED_AT, &n, DY_ALL);
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: %s: grow", what); free(old); free(buf); return;
+    }
+    if (poke) poke(old, buf);
+    char got[256] = "";
+    unsigned holds = mg_oracles_raised(buf, fsize, old, n, 0x1000, MG_OR_ALL, got, sizeof got);
+    CHECK(holds == want && (!why || strcmp(got, why) == 0),
+          "oracles, raised: %s: %#x hold, want %#x; said '%s', want '%s'", what, holds, want, got,
+          why ? why : "");
+    free(old);
+    free(buf);
+}
+static void dy_lazy_left(uint8_t *old, uint8_t *buf) { (void)old; dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x1100); }
+static void dy_lazy_past(uint8_t *old, uint8_t *buf) { (void)old; dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x2108); }
+static void dy_lazy_zero(uint8_t *old, uint8_t *buf) { dy_poke64(old, 0x2038, 0); dy_poke64(buf, 0x3038, 0); }
+static void dy_lazy_zero_moved(uint8_t *old, uint8_t *buf) { dy_poke64(old, 0x2038, 0); dy_poke64(buf, 0x3038, 0x1000); }
+static void dy_lazy_base(uint8_t *old, uint8_t *buf) {
+    dy_poke64(old, 0x2038, DY_RAISED_AT); dy_poke64(buf, 0x3038, DY_RAISED_AT);
+}
+static void dy_lazy_base_moved(uint8_t *old, uint8_t *buf) {
+    dy_poke64(old, 0x2038, DY_RAISED_AT); dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x1000);
+}
+static void dy_lazy_gone(uint8_t *old, uint8_t *buf) {
+    (void)old;
+    mi_image im;
+    if (mi_wrap(buf, DY_FSIZE + 0x1000, &im) == 0) mi_find_section(&im, "__DATA", "__la_symbol_ptr")->size = 0;
+}
+static void dy_lazy_end(uint8_t *old, uint8_t *buf) {
+    dy_poke64(old, 0x2038, DY_RAISED_AT + 0x5000); dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x6000);
+}
+static void dy_lsda_past(uint8_t *old, uint8_t *buf) { (void)old; UW32(buf, 0x2800, 60) += 1; }
+static void dy_lsda_more(uint8_t *old, uint8_t *buf) {
+    (void)old;
+    UW32(buf, 0x2800, 52) = 72;                        /* the sentinel: two LSDAs end at 72 */
+    UW32(buf, 0x2800, 64) = 0x2010;
+    UW32(buf, 0x2800, 68) = 0x2184;
+}
+static void dy_old_unwind_v2(uint8_t *old, uint8_t *buf) { (void)buf; UW32(old, 0x1800, 0) = 2; }
+static void dy_lsda_func_past(uint8_t *old, uint8_t *buf) { (void)old; UW32(buf, 0x2800, 56) += 1; }
+static void test_oracles_compare_the_raise(void) {
+    check_oracle_raised("the raise as made", NULL, MG_OR_ALL, NULL);
+    check_oracle_raised("a lazy pointer left where it was", dy_lazy_left, MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x10001100, and must hold 0x10002100");
+    check_oracle_raised("a lazy pointer moved 8 past the grow, still in __stub_helper", dy_lazy_past,
+                        MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x10002108, and must hold 0x10002100");
+    check_oracle_raised("a lazy pointer that names no segment, kept", dy_lazy_zero, MG_OR_ALL, NULL);
+    check_oracle_raised("a lazy pointer that names no segment, moved", dy_lazy_zero_moved,
+                        MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x1000, and must hold 0");
+    check_oracle_raised("a lazy pointer to the header, kept", dy_lazy_base, MG_OR_ALL, NULL);
+    check_oracle_raised("a lazy pointer to the header, moved", dy_lazy_base_moved,
+                        MG_OR_ALL & ~MG_OR_LAZY,
+                        "the lazy pointer at 0x10003038 holds 0x10001000, and must hold 0x10000000");
+    check_oracle_raised("a lazy pointer fewer", dy_lazy_gone, MG_OR_ALL & ~MG_OR_LAZY,
+                        "the image holds 0 lazy pointers, and held 1,");
+    check_oracle_raised("a lazy pointer to __LINKEDIT's end, moved", dy_lazy_end, MG_OR_ALL, NULL);
+    check_oracle_raised("an LSDA moved 1 past the grow, still in __gcc_except_tab", dy_lsda_past,
+                        MG_OR_ALL & ~MG_OR_UNWIND, "the LSDA index names 0x10002010's LSDA at "
+                        "0x10002181, and must name 0x10002010's at 0x10002180");
+    check_oracle_raised("an LSDA's function moved 1 past the grow", dy_lsda_func_past,
+                        MG_OR_ALL & ~MG_OR_UNWIND, "the LSDA index names 0x10002011's LSDA at "
+                        "0x10002180, and must name 0x10002010's at 0x10002180");
+    check_oracle_raised("an LSDA more", dy_lsda_more, MG_OR_ALL & ~MG_OR_UNWIND,
+                        "compact unwind lists 2 LSDAs, and listed 1,");
+    check_oracle_raised("compact unwind the old image's reader cannot read", dy_old_unwind_v2,
+                        MG_OR_ALL & ~MG_OR_UNWIND, "__unwind_info could not be read as it was");
+}
+
+/* A lazy pointer moved elsewhere, and the snapshot told it moved there too:
+ * only check 4 sees it. And what did not hold before is not asked after. */
+static void test_verify_watches_the_oracles(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "oracles: snapshot"); free(buf); return; }
+    CHECK(snap.oracles == MG_OR_ALL, "oracles: the snapshot says all hold (%#x)", snap.oracles);
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x3000);
+    snap.rb.v[4].value = DY_RAISED_AT + 0x2000;
+    int r;
+    verify_snap = &snap;
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the lazy pointer at 0x10003038 holds "
+                                 "0x10003000, and must hold 0x10002100 after the grow, which held "
+                                 "before it; refusing.\n"),
+          "oracles: verify REJECTS a lazy pointer moved elsewhere (got %d):\n%s", r, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+
+    /* Moved G + 8, it still lies inside the raised __stub_helper: only a
+     * comparison with where it was sees it. */
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "oracles: snapshot"); free(buf); return; }
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    dy_poke64(buf, 0x3038, DY_RAISED_AT + 0x2108);
+    snap.rb.v[4].value += 8;
+    verify_snap = &snap;
+    err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the lazy pointer at 0x10003038 holds "
+                                 "0x10002108, and must hold 0x10002100 after the grow"),
+          "oracles: verify REJECTS a lazy pointer moved by the grow and 8 (got %d):\n%s", r, err);
+    free(err);
+    mg_snapshot_free(&snap);
+    free(buf);
+
+    buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001, its symbol 0x1000 */
+    r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "oracles: a raise of an image one did not hold of succeeds (got %d)", r);
     free(buf);
 }
 
@@ -5518,6 +6084,7 @@ int main(void) {
     test_verify_watches_the_stabs();
     test_raise_drops_split_info();
     test_raise_drops_every_split_info();
+    test_verify_watches_the_split_info_drop();
     test_lowering_refuses_split_info();
     test_ensure_pad_announces_dropped_split_info();
     test_grow_takes_an_upward_dylib();
@@ -5526,6 +6093,15 @@ int main(void) {
     test_lowering_keeps_the_uuid();
     test_raise_refuses_a_short_uuid();
     test_ensure_pad_announces_no_uuid_it_has_not();
+    test_verify_watches_the_raised_bytes();
+    test_verify_watches_what_the_raise_derives();
+    test_raise_appends_a_trie_to_linkedit_of_any_vmsize();
+    test_raise_rebuilds_a_trie_with_what_stays();
+    test_raise_moves_the_initializer_offsets();
+    test_raise_moves_a_relocation_offset_and_keeps_the_pad();
+    test_oracles_judge_the_fixture();
+    test_oracles_compare_the_raise();
+    test_verify_watches_the_oracles();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }
