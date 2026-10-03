@@ -23,8 +23,9 @@
 # Where C++ or Objective-C cannot be built, those parts are skipped, saying so.
 # A linker may leave out a feature the fixtures ask of it (lld drops the
 # resolver, -init and -segaddr): each is looked for in the built fixture, and
-# one that is missing skips only its own checks, by name. The raises, verify,
-# the stabs and the run comparisons never skip.
+# one that is missing skips only its own checks, by name. So does a part whose
+# original does not pass its own checks (the linker built a broken fixture):
+# nothing is judged against it. The raises, verify and the stabs never skip.
 set -u
 
 BIN="${1:?usage: raise_rich_test.sh <bindir>}"
@@ -480,19 +481,22 @@ else
         grep -v -E "$rx" "g0/out.$n" >"g0/own.$n"
         if grep -q -E 'WRONG|MISSES|ANOTHER|NOT |FALLS SHORT|dlopen:|nothing thrown' "g0/own.$n" ||
            ! grep -q '^exit 0$' "g0/own.$n"; then
-            bad "$n" "the original does not pass its own checks: $(tr '\n' ' ' <"g0/out.$n")"
-        else
-            ok "$n: the original passes its own checks ($(wc -l <"g0/out.$n" | tr -d ' ') lines)"
+            skip "$n" "the original does not pass its own checks, so the linker or host built a broken fixture and the raise cannot be judged on it: $(tr '\n' ' ' <"g0/out.$n")"
+            eval "broken_$n=1"
+            continue
         fi
+        ok "$n: the original passes its own checks ($(wc -l <"g0/out.$n" | tr -d ' ') lines)"
         for p in 1 2; do
             cmp -s "g0/out.$n" "g$p/out.$n" && ok "$n: raised by $p page(s), it does what the original does" ||
                 bad "$n: raised by $p page(s)" "$(diff "g0/out.$n" "g$p/out.$n" | head -6 | tr '\n' ' ')"
         done
     done
-    DYLD_PRINT_LIBRARIES=1 g1/drive 2>&1 >/dev/null | grep -q "g1/.*librich\.dylib" &&
+    [ "${broken_drive:-0}" -eq 1 ] ||
+    { DYLD_PRINT_LIBRARIES=1 g1/drive 2>&1 >/dev/null | grep -q "g1/.*librich\.dylib" &&
         ok "drive: ... and the library it loaded is the raised copy beside it" ||
-        bad "drive" "dyld did not say it loaded g1's librich.dylib"
+        bad "drive" "dyld did not say it loaded g1's librich.dylib"; }
     for n in drive dylib; do
+        [ "$(eval "echo \${broken_$n:-0}")" -eq 0 ] || continue
         grep -q '^constructor 1, -init [01], zero-fill 2$' "g0/out.$n" &&
             ok "$n: the original's constructor ran" || bad "$n" "the original's constructor did not run"
         ! has init || { grep -q '^constructor 1, -init 1,' "g0/out.$n" &&
@@ -503,10 +507,12 @@ else
             ok "$n: the original's thread-local variables are per thread" ||
             bad "$n" "the original's thread-local variables did not work"; }
     done
-    grep -q "^c++: caught across: " g0/out.drive || [ -z "$cx" ] ||
-        bad "c++" "the driver did not catch what the dylib threw"
-    grep -q "^objc: +load 1" g0/out.drive || ! printf '%s' "$defs" | grep -q RICH_OBJC ||
-        bad "objc" "+load did not run"
+    if [ "${broken_drive:-0}" -eq 0 ]; then
+        grep -q "^c++: caught across: " g0/out.drive || [ -z "$cx" ] ||
+            bad "c++" "the driver did not catch what the dylib threw"
+        grep -q "^objc: +load 1" g0/out.drive || ! printf '%s' "$defs" | grep -q RICH_OBJC ||
+            bad "objc" "+load did not run"
+    fi
 fi
 
 [ "$fail" -eq 0 ] || { echo "raise_rich_test: $fail failure(s)"; exit 1; }
