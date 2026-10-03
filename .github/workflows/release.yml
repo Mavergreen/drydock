@@ -117,6 +117,15 @@ jobs:
       - name: Build + compat guard
         run: shipyard-cmake --build --preset cross
 
+      # family_conventions runs shipyard's conventions gate, whose workflow-parse
+      # check needs PyYAML; the runner's python3 has none, and install@v1 does
+      # not provision it. setup-python, so pip is not PEP 668 externally-managed.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Provision PyYAML (family_conventions' dependency)
+        run: python3 -m pip install --quiet pyyaml && python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+
       # The shared runner takes the whole suite, so a newly added test runs the
       # day it lands rather than when someone remembers a CI line. Includes
       # `characterize`, which is the equivalence gate.
