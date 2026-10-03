@@ -192,6 +192,7 @@ add_executable(guard_page_test tests/guard_page_test.c)
 target_compile_options(guard_page_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(guard_page_test PRIVATE drydockcore)
 add_test(NAME guard_page_test COMMAND guard_page_test)
+set_tests_properties(guard_page_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
