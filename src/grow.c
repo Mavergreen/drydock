@@ -1323,9 +1323,10 @@ static int mg_or_not_start(uint64_t x, void *ctx_) {
     return 1;
 }
 
-/* A regular export: its name, and its offset from the base. */
+/* A regular export: its name, and its offset from the base. `name` holds the
+ * name the walk is at, `namecap` bytes, grown as an edge needs. */
 typedef struct { char *name; uint64_t off; } mg_or_exp;
-struct mg_or_trie { const uint8_t *t; uint32_t size; uint8_t *seen; char name[1024];
+struct mg_or_trie { const uint8_t *t; uint32_t size; uint8_t *seen; char *name; size_t namecap;
                     mg_or_exp *e; size_t n, cap; int bad; };
 static void mg_or_trie_walk(struct mg_or_trie *w, uint32_t off, size_t len, int depth) {
     const uint8_t *p, *end = w->t + w->size;
@@ -1349,7 +1350,7 @@ static void mg_or_trie_walk(struct mg_or_trie *w, uint32_t off, size_t len, int 
                 w->cap = w->cap * 2 + 16;
             }
             if (!(w->e[w->n].name = (char *)malloc(len + 1))) { w->bad = 1; return; }
-            memcpy(w->e[w->n].name, w->name, len);
+            if (len) memcpy(w->e[w->n].name, w->name, len);
             w->e[w->n].name[len] = 0;
             w->e[w->n++].off = a;
         }
@@ -1360,7 +1361,13 @@ static void mg_or_trie_walk(struct mg_or_trie *w, uint32_t off, size_t len, int 
     for (uint8_t i = 0, nch = *p++; i < nch && !w->bad; i++) {
         size_t l = 0;
         while (p + l < end && p[l]) l++;
-        if (p + l >= end || len + l >= sizeof w->name) { w->bad = 1; return; }
+        if (p + l >= end) { w->bad = 1; return; }
+        if (len + l >= w->namecap) {
+            char *name = (char *)realloc(w->name, (len + l) * 2 + 1);
+            if (!name) { w->bad = 1; return; }
+            w->name = name;
+            w->namecap = (len + l) * 2 + 1;
+        }
         memcpy(w->name + len, p, l);
         p += l + 1;
         if (!(k = mu_decode(p, end, &coff))) { w->bad = 1; return; }
@@ -1409,6 +1416,7 @@ static int mg_or_exports(const uint8_t *buf, size_t fsize, uint64_t base,
     for (size_t i = 0; i < w.n; i++) free(w.e[i].name);
     free(w.e);
     free(w.seen);
+    free(w.name);
     return r;
 }
 

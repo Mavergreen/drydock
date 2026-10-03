@@ -102,6 +102,9 @@ static int run(int r, uint8_t *img, size_t n, char *err, size_t errsz) {
     snprintf(path, sizeof path, "%s/guard_page_test.XXXXXX", tmp && *tmp ? tmp : "/tmp");
     int fd = mkstemp(path);
     if (fd < 0) { perror("mkstemp"); exit(2); }
+    uint8_t *before = (uint8_t *)malloc(n);
+    if (!before) { perror("malloc"); exit(2); }
+    memcpy(before, img, n);
     fflush(stdout);
     fflush(stderr);
     pid_t pid = fork();
@@ -115,7 +118,8 @@ static int run(int r, uint8_t *img, size_t n, char *err, size_t errsz) {
         uint32_t off, size;
         switch (r) {
         case R_GROW:
-            _exit(mg_grow_header(&b, &sz, 0x1000) == -1 && b == img && sz == n ? 0 : 1);
+            _exit(mg_grow_header(&b, &sz, 0x1000) == -1 && b == img && sz == n &&
+                  memcmp(img, before, n) == 0 ? 0 : 1);
         case R_REBASES: {
             int got = mg_rebases_read(img, n, &rb, why, sizeof why);
             fprintf(stderr, "%s\n", why);
@@ -134,6 +138,7 @@ static int run(int r, uint8_t *img, size_t n, char *err, size_t errsz) {
     err[got > 0 ? got : 0] = 0;
     close(fd);
     unlink(path);
+    free(before);
     return WIFSIGNALED(st) ? 128 + WTERMSIG(st) : WEXITSTATUS(st);
 }
 
@@ -170,14 +175,17 @@ int main(void) {
     size_t n = cut_image(src, MH_DYLIB, LC_UUID);
     uint8_t *img = guarded(src, n);
     int st = run(R_PEEK, img, n, err, sizeof err);
-    CHECK(st == 128 + SIGSEGV || st == 128 + SIGBUS,
-          "the positive control: a read of the byte past the image faults (got %d)", st);
+    if (st != 128 + SIGSEGV && st != 128 + SIGBUS) {
+        printf("SKIP guard_page_test: the host does not fault on a PROT_NONE page (got %d), "
+               "so the readers' bounds cannot be judged here\n", st);
+        return 77;
+    }
 
     for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
         n = cut_image(src, cases[k].filetype, cases[k].cmd);
         img = guarded(src, n);
         st = run(R_GROW, img, n, err, sizeof err);
-        CHECK(st == 0 && strstr(err, cases[k].grow_says) != NULL && memcmp(img, src, n) == 0,
+        CHECK(st == 0 && strstr(err, cases[k].grow_says) != NULL,
               "%s, last, refuses the grow before reading past it (got %d): %s", cases[k].what, st, err);
         st = run(R_REBASES, img, n, err, sizeof err);
         if (cases[k].rebases_say)

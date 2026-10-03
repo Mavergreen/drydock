@@ -25,6 +25,13 @@
  * | file-offset fields                | __LINKEDIT's blobs             | src/linkedit.h's list, src/grow.c's bump|
  * | initializer and unwind targets    | LC_FUNCTION_STARTS             | mg_plausible -- checked, never repaired |
  * | sizeofcmds                        | the header pad                 | mr_build_lcs, mg_grow_header            |
+ * | absolute addresses of the contents | the contents' place in memory | src/grow.c's raise of a dylib or bundle |
+ *
+ * The last row has no bit below: only a grow raises the contents, a grow
+ * always moves the first section and so already sets MREL_BASE_REL and
+ * MREL_FILE_OFF (src/edit.c's me_note_disturbed), and every statement after
+ * it reads the raised image afresh. The raise also deletes
+ * LC_SEGMENT_SPLIT_INFO, which no statement can name.
  */
 
 #ifndef DRYDOCK_RELATIONS_H

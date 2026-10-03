@@ -5791,6 +5791,69 @@ static void test_oracles_judge_the_fixture(void) {
     free(buf);
 }
 
+/* build_dylib, a page longer, whose one export is f2 under a 1500-byte name,
+ * at `at`: the trie at 0x3300, and the string table moved to 0x3a00 with that
+ * name, now f2's symbol's. */
+#define DY_LONG_NAME 1500
+static uint8_t *dy_long_export(size_t *fsize, uint32_t at) {
+    size_t n0;
+    uint8_t *old = build_dylib(&n0, 0);
+    uint8_t *buf = (uint8_t *)calloc(1, DY_FSIZE + 0x1000);
+    memcpy(buf, old, DY_FSIZE);
+    free(old);
+    char name[DY_LONG_NAME + 1];
+    name[0] = '_';
+    memset(name + 1, 'a', DY_LONG_NAME - 1);
+    name[DY_LONG_NAME] = 0;
+    uint8_t *t = buf + 0x3300;
+    size_t k = 0, child;
+    t[k++] = 0;                                       /* the root: no export of its own */
+    t[k++] = 1;                                       /* one edge, the whole name */
+    memcpy(t + k, name, sizeof name);
+    k += sizeof name;
+    child = k + 2;
+    t[k++] = (uint8_t)(0x80 | (child & 0x7f));
+    t[k++] = (uint8_t)(child >> 7);
+    t[k++] = 3;                                       /* the export: flags 0, `at` */
+    t[k++] = 0;
+    t[k++] = (uint8_t)(0x80 | (at & 0x7f));
+    t[k++] = (uint8_t)(at >> 7);
+    t[k++] = 0;
+    struct dyld_info_command *di = (struct dyld_info_command *)find_lc(buf, DY_FSIZE, LC_DYLD_INFO_ONLY);
+    di->export_off = 0x3300;
+    di->export_size = (uint32_t)k;
+    struct symtab_command *st = (struct symtab_command *)find_lc(buf, DY_FSIZE, LC_SYMTAB);
+    memcpy(buf + 0x3a00, buf + st->stroff, st->strsize);
+    memcpy(buf + 0x3a00 + st->strsize, name, sizeof name);
+    dy_syms(buf, DY_FSIZE)[2].n_un.n_strx = st->strsize;
+    st->stroff = 0x3a00;
+    st->strsize += (uint32_t)sizeof name;
+    struct segment_command_64 *le = seg_named(buf, DY_FSIZE, "__LINKEDIT");
+    le->filesize += 0x1000;
+    le->vmsize += 0x1000;
+    *fsize = DY_FSIZE + 0x1000;
+    return buf;
+}
+
+/* An export whose name is longer than any buffer a walk might keep is
+ * checked like any other: it holds when its symbol agrees, not when it does
+ * not, and the other oracles say what they said. */
+static void test_oracles_judge_an_export_with_a_long_name(void) {
+    size_t fsize;
+    char why[256] = "";
+    uint8_t *buf = dy_long_export(&fsize, 0x1010);
+    unsigned holds = mg_oracles(buf, fsize, MG_OR_ALL, why, sizeof why);
+    CHECK(holds == MG_OR_ALL, "oracles: a %d-byte export name, at its symbol: %#x hold, want %#x (%s)",
+          DY_LONG_NAME, holds, MG_OR_ALL, why);
+    free(buf);
+    buf = dy_long_export(&fsize, 0x1000);
+    holds = mg_oracles(buf, fsize, MG_OR_ALL, why, sizeof why);
+    CHECK(holds == (MG_OR_ALL & ~MG_OR_EXPORTS) && strncmp(why, "the export _aaaa", 16) == 0,
+          "oracles: a %d-byte export name, not at its symbol: %#x hold, want %#x; said '%.40s'",
+          DY_LONG_NAME, holds, MG_OR_ALL & ~MG_OR_EXPORTS, why);
+    free(buf);
+}
+
 /* mg_oracles_raised holds each lazy pointer and LSDA index entry of a raise
  * to the old image's, slot by slot, moved as a raise moves it: `poke`
  * changes the old image, the raised one, or both. */
@@ -6100,6 +6163,7 @@ int main(void) {
     test_raise_moves_the_initializer_offsets();
     test_raise_moves_a_relocation_offset_and_keeps_the_pad();
     test_oracles_judge_the_fixture();
+    test_oracles_judge_an_export_with_a_long_name();
     test_oracles_compare_the_raise();
     test_verify_watches_the_oracles();
     test_verify_watches_the_raise();

@@ -192,6 +192,7 @@ add_executable(guard_page_test tests/guard_page_test.c)
 target_compile_options(guard_page_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(guard_page_test PRIVATE drydockcore)
 add_test(NAME guard_page_test COMMAND guard_page_test)
+set_tests_properties(guard_page_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # Reads tests/fixture.macho, a real 10.9-built executable, so the walk is
 # exercised against a binary a linker actually emitted rather than one this test
@@ -331,6 +332,27 @@ target_link_libraries(rebase_oracle PRIVATE drydockcore)
 add_test(NAME rebase_oracle_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/rebase_oracle_test.sh" "$<TARGET_FILE_DIR:rebase_oracle>")
 set_tests_properties(rebase_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# Raised copies of every x86_64 dylib and bundle 10.9 ships, and what the
+# grow's oracles say of each original, each held to a table in tests/data/.
+# Local only: SKIP (77) anywhere but the 10.9 build the tables were measured on.
+add_executable(raise_corpus tests/raise_corpus.c)
+target_compile_options(raise_corpus PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(raise_corpus PRIVATE drydockcore)
+add_test(NAME raise_corpus_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_corpus_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+set_tests_properties(raise_corpus_test PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME raise_oracle_counts_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_oracle_counts_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+set_tests_properties(raise_oracle_counts_test PROPERTIES SKIP_RETURN_CODE 77)
+# Raised copies of 10.9's libraries, run by its programs. SKIPs (77) off 10.9.
+add_test(NAME raise_runs_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_runs_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+set_tests_properties(raise_runs_test PROPERTIES SKIP_RETURN_CODE 77)
+# A dylib, a bundle and an address-gap dylib built here, raised by one page and
+# by two, and run beside the originals. Hermetic: it runs on CI.
+add_test(NAME raise_rich_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_rich_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
 # directory under $TMPDIR: it never writes its input, it writes its output
