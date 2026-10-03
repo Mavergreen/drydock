@@ -175,7 +175,7 @@ enable_testing()
 
 # CI's conventions gate, here too, so a push is not the first run of it.
 add_test(NAME family_conventions
-  COMMAND sh -c "git rev-parse --git-dir >/dev/null 2>&1 || { echo 'SKIP: not a git checkout'; exit 77; }; exec sh \"$0\"/check-family-conventions.sh"
+  COMMAND sh -c "git rev-parse --git-dir >/dev/null 2>&1 || { echo 'SKIP: not a git checkout'; exit 77; }; python3 -c 'import yaml' 2>/dev/null || { echo 'SKIP: python3 has no PyYAML, which the gate needs'; exit 77; }; exec sh \"$0\"/check-family-conventions.sh"
           "${MavericksShipyard_SCRIPTS}"
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 set_tests_properties(family_conventions PROPERTIES SKIP_RETURN_CODE 77)
