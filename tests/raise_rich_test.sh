@@ -346,9 +346,9 @@ build "$link" $FF -dynamiclib -install_name @rpath/librich.dylib -Wl,-init,_rich
     rich.o $objs $libs -o g0/librich.dylib
 build "$link" $FF -bundle rich_bundle.o $objs $libs -o g0/rich.bundle
 gap=libgap.dylib
-if ! "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib -Wl,-segaddr,__GAP,0x100000 gap.o \
-        -o g0/libgap.dylib >gap.log 2>&1 &&
-   ! "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib gap.o -o g0/libgap.dylib >>gap.log 2>&1; then
+if ! { "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib -Wl,-segaddr,__GAP,0x100000 gap.o \
+            -o g0/libgap.dylib >gap.log 2>&1 ||
+        "$CC" $FF -dynamiclib -install_name @rpath/libgap.dylib gap.o -o g0/libgap.dylib >>gap.log 2>&1; }; then
     gap=
     skip "segment\$start\$" "the linker cannot link libgap.dylib, so its raise and run are skipped: $(head -3 gap.log | tr '\n' ' ')"
 fi
@@ -479,8 +479,8 @@ else
         has resolver || rx="$rx|^resolver: "
         [ "$n" != gap ] || has segstart || rx="$rx|^gap: "
         grep -v -E "$rx" "g0/out.$n" >"g0/own.$n"
-        if grep -q -E 'WRONG|MISSES|ANOTHER|NOT |FALLS SHORT|dlopen:|nothing thrown' "g0/own.$n" ||
-           ! grep -q '^exit 0$' "g0/own.$n"; then
+        if ! grep -q '^exit 0$' "g0/own.$n" ||
+           grep -q -E 'WRONG|MISSES|ANOTHER|NOT |FALLS SHORT|dlopen:|nothing thrown' "g0/own.$n"; then
             skip "$n" "the original does not pass its own checks, so the linker or host built a broken fixture and the raise cannot be judged on it: $(tr '\n' ' ' <"g0/out.$n")"
             eval "broken_$n=1"
             continue
