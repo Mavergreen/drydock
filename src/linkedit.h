@@ -166,7 +166,8 @@ int ml_bump_all(mi_image *im, uint32_t insert, uint32_t grow);
  * stops the walk; ml_each_off then returns -1, else 0.
  * ML_OFF_EXPORT_TRIE marks the export trie's offset, which mg_grow_header
  * may legitimately move a second time when it rebuilds the trie.
- * Held by tests/grow_test.c test_verify_watches_every_adjusted_field. */
+ * Held by test_verify_watches_every_adjusted_field in
+ * tests/grow_test.c. */
 #define ML_OFF_EXPORT_TRIE 1
 typedef int (*ml_off_fn)(uint32_t *off, uint32_t cmd, int flags, void *ctx);
 int ml_each_off(mi_image *im, ml_off_fn fn, void *ctx);

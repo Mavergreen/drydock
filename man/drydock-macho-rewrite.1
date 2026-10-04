@@ -1,0 +1,389 @@
+.TH DRYDOCK-MACHO-REWRITE 1 "2026-09-29" "Drydock" "User Commands"
+.SH NAME
+drydock-macho-rewrite \- rewrite and inspect Mach-O executables
+.SH SYNOPSIS
+.B drydock-macho-rewrite
+.I input output
+.br
+.B drydock-macho-rewrite
+.RI "verify FILE | info [--thin] FILE | imports FILE | exports FILE"
+.SH DESCRIPTION
+Given a script on standard input, drydock-macho-rewrite writes a modified
+copy of a Mach-O executable. The query verbs inspect a file without
+changing it.
+.SS Script format
+One statement per line.
+Blank lines are ignored.
+Begin a comment with \fB#\fR at the start of an unquoted field.
+Fields are split like shell words:
+.UL
+.IP \[bu] 2
+Whitespace-separated
+.IP \[bu] 2
+Single- and double-quote grouping
+.IP \[bu] 2
+Backslash escapes
+.SS Statements
+.IP
+.nf
+\f(CW
+load-command  delete    KIND        uuid | codesig | source-version
+                                    | build-version | code-sign-drs
+segment       rename    OLD NEW
+minos         at-most   VERSION     e.g. 10.9, 10.12, 10.9.5
+minos         if-absent VERSION
+swift-abi     set       legacy
+fixups        set       classic
+dylib         replace   OLD NEW
+dylib         append    PATH
+dylib         insert    PATH
+dylib         delete    PATH
+dylib         reexport  PATH
+dylib         retype    PATH KIND   load | weak | reexport | upward
+rpath         replace   OLD NEW
+rpath         delete    PATH
+rpath         append    PATH
+rpath         insert    PATH
+import        redirect  SYMBOL FROM-LIB TO-LIB
+target        10.9                  the one statement whose meaning depends on
+                                    the binary; see \[dq]The \[ga]target\[ga] statement\[dq]
+\fR
+.fi
+.PP
+Statements run one at a time, in the order written, so
+\fBdylib insert A\fR then \fBdylib insert B\fR
+leaves B at ordinal 1 and A at ordinal 2.
+Likewise for \fBrpath insert\fR, where dyld will search B before A.
+.PP
+\fBminos at-most VERSION\fR lowers a declared minimum.
+\fBminos if-absent VERSION\fR leaves any declared minimum as it is.
+Both declare VERSION where nothing is declared, and both compare at
+VERSION\[aq]s own precision, so \fBminos at-most 10.9\fR keeps a
+declared 10.9.5.
+A minimum read from an \fBLC_BUILD_VERSION\fR keeps that
+command\[aq]s sdk; with nothing declared, the sdk written is 10.9.
+.PP
+Finder and LaunchServices refuse to launch on
+\fBLSMinimumSystemVersion\fR in \fBInfo.plist\fR, not on the
+Mach-O minimum.
+On 10.9 the sdk field decides linked-on-or-after behaviour and whether
+dyld registers a dylib\[aq]s code signature; see
+docs/minimum-os-version.md.
+Each \fBminos\fR statement leaves exactly one
+\fBLC_VERSION_MIN_MACOSX\fR per slice, and no
+\fBLC_BUILD_VERSION\fR.
+On a universal binary, write \fBarch x86_64\fR to leave the other
+slices\[aq] minimums alone.
+.SS Re-signing
+Every edit invalidates a code signature, and known port flows re-sign ad
+hoc afterwards (\fBcodesign --force --sign -\fR).
+Sign last, after the last \fBdrydock-macho-rewrite\fR run.
+10.9\[aq]s own \fBcodesign\fR can re-sign what Drydock writes,
+because a run that changes anything in \fB__LINKEDIT\fR also puts
+\fB__LINKEDIT\fR back in the order 10.9\[aq]s
+\fBcodesign_allocate\fR requires.
+The report says so:
+.IP
+.nf
+\f(CW
+Mantle: __LINKEDIT re-packed in codesign_allocate\[aq]s order: 40,992 -> 38,176 bytes, 2,828 unreferenced bytes dropped
+\fR
+.fi
+.PP
+\fBinfo\fR\[aq]s last line says whether 10.9\[aq]s
+\fBcodesign_allocate\fR would re-sign the file as it stands:
+.IP
+.nf
+\f(CW
+resign 10.9: ok
+resign 10.9: malformed object (unknown load command 4)
+resign 10.9: slice x86_64h: malformed object (unknown load command 4)
+\fR
+.fi
+.PP
+A file that \fBcodesign_allocate\fR would accept but re-sign
+\f[B]corrupt\fR, with its fixup opcodes or symbol table overwritten
+under a signature that \fBcodesign -v\fR still accepts, gets a
+second line, \fBresign corrupt: \&...\fR.
+No run writes such a file: one it cannot repair is refused.
+.PP
+\fBload-command delete codesig\fR removes the signature\[aq]s bytes,
+not only its load command.
+A universal binary is checked slice by slice, and one slice 10.9 cannot
+re-sign stops the whole file; on 10.9, which runs only the x86_64 slice,
+\fBlipo -thin x86_64\fR first.
+.SS Directives
+.IP
+.nf
+\f(CW
+arch NAME           apply the script only to the slice named NAME (lipo\[aq]s
+                    names: x86_64, x86_64h, arm64, arm64e, i386); repeatable.
+                    Without it, every 64-bit slice of a fat file is edited
+allow-unmatched     an operation that matched nothing is reported and the run
+                    continues, instead of refusing the whole run
+\fR
+.fi
+.PP
+If used, these must appear before any other operations.
+.PP
+An operation that matches nothing refuses the whole run (exit 1, nothing
+written).
+These are the statements that can match nothing:
+.IP \[bu] 2
+\fBload-command delete\fR (no command of that kind)
+.IP \[bu] 2
+\fBdylib replace/delete/reexport/retype\fR and
+\fBrpath replace/delete\fR (no command naming that path)
+.IP \[bu] 2
+\fBsegment rename\fR (no segment of that name)
+.IP \[bu] 2
+\fBimport redirect\fR (no bind of that symbol names that library)
+.PP
+On a fat file, a statement has matched if it matched in any selected
+slice.
+.PP
+\fBminos\fR and \fBswift-abi set\fR cannot miss: with nothing to
+do, they are no-ops.
+\fBswift-abi set legacy\fR refuses an image that still has chained
+fixups, whose class-record pointers it cannot read: write
+\fBfixups set classic\fR before it.
+\fBfixups set classic\fR is a no-op on an image that already uses
+\fBLC_DYLD_INFO_ONLY\fR, but it refuses an image with neither that
+nor chained fixups.
+On a chained image it also refuses when there is no single macOS
+\fBLC_BUILD_VERSION\fR to keep as a version-min.
+That means two macOS ones, or one for a platform other than macOS (such
+as iOS or a simulator), alone or beside macOS.
+\fBallow-unmatched\fR covers none of these refusals.
+.PP
+\fBallow-unmatched\fR is for the wrappers that reproduce tools which
+exited 0 when an operation matched nothing: \fBchange_dylib\fR,
+\fBfix_macho\fR and \fBinsert_dylib\fR head their scripts with
+it.
+compat/README.md records why for each.
+.SS The \fBtarget\fR statement
+.IP
+.nf
+\f(CW
+target        10.9
+\fR
+.fi
+.PP
+Every other statement means the same thing for every input \[em]
+\fBdylib replace A B\fR may match nothing, but \f[I]what it asks
+for\fR is fixed.
+\fBtarget 10.9\fR asks a different question of every binary and
+answers it differently.
+.PP
+\f[B]It expands, where it is written, into statements the language
+already has\fR \[em] the ones this binary actually needs \[em] and
+those run in its place.
+It is this script, with each conditional line kept only where its
+condition holds:
+.IP
+.nf
+\f(CW
+fixups set classic                   # where LC_DYLD_CHAINED_FIXUPS is present
+minos at-most 10.9
+segment rename __DATA_CONST __DATA   # where __DATA_CONST holds __objc_ sections
+swift-abi set legacy                 # where class records carry the stable-ABI Swift tag
+\fR
+.fi
+.PP
+Each condition is tested on the image as the lines before it left it, so
+the Swift tag is read after \fBfixups set classic\fR has made the
+class-record pointers readable.
+.PP
+Each detection is exact rather than a guess: a load command is present
+or it is not, a section name begins with \fB__objc_\fR or it does
+not, a tag bit is set or it is not.
+\f[B]Never \fBdylib\f[B] or \fBrpath\f[B] work\fR \[em] no tool
+can guess which stub dylib you meant, and that is the dominant real
+workload, so a profile stops where the guessing would start.
+.PP
+What \fBtarget\fR adds over writing that script by hand:
+.IP \[bu] 2
+it renames \fB__DATA_CONST\fR only where \fB__objc_\fR sections
+need it, per slice.
+Renaming a C-only \fB__DATA_CONST\fR breaks nothing measured on
+10.9, but it leaves two segments named \fB__DATA\fR, which
+\fBgetsegbyname\fR and tools cannot tell apart;
+.IP \[bu] 2
+it chooses per slice of a fat file;
+.IP \[bu] 2
+it derives \fBfixups set classic\fR only where there are chained
+fixups, so it never hits that statement\[aq]s refusal on an image with
+no fixup information;
+.IP \[bu] 2
+it reports why each line was derived.
+.PP
+A second profile is what would show the design earns its place; this
+build has one, and refuses any other.
+.RS
+.PP
+A declared minimum at or below 10.9 (every 10.9.x counts as 10.9) is
+left as it is: raising it would discard a true fact and buy nothing.
+10.9\[aq]s dyld does not enforce the field \[em] a 10.12 executable
+runs, and a 10.12 dylib loads \[em] so lowering it keeps the file honest
+rather than making it load.
+.RE
+.PP
+\f[B]Use \fBtarget 10.9\f[B]\fR to make a whole binary built for a
+newer macOS run on 10.9, especially one with chained fixups or more than
+one slice.
+It combines with the \fBdylib\fR and \fBrpath\fR lines it never
+derives, as below.
+.PP
+\f[B]Write the statements by hand\fR when you want some of those
+changes and not the rest.
+Then:
+.IP \[bu] 2
+put \fBfixups set classic\fR first, and leave it out for an image
+with neither chained fixups nor \fBLC_DYLD_INFO_ONLY\fR (it
+refuses);
+.IP \[bu] 2
+put \fBswift-abi set legacy\fR after it (it refuses an image that
+still has chained fixups);
+.IP \[bu] 2
+rename \fB__DATA_CONST\fR only where \fBinfo\fR shows
+\fB__objc_\fR sections in it;
+.IP \[bu] 2
+when slices need different lines, run one script per slice with
+\fBarch\fR, since a directive applies to the whole script.
+.PP
+\fBinfo\fR shows what \fBtarget\fR would act on: each of its
+detections is an \fBinfo\fR line (see Queries).
+.PP
+\f[B]Position is not cosmetic, which is why this is a statement and not
+a flag.\fR \fBfixups set classic\fR rewrites \fB__LINKEDIT\fR
+and strips load commands, which changes the header pad available to
+every \fBdylib replace\fR after it, and nothing reorders your
+statements \[em] the script is the plan.
+Where you write the line is where the expansion lands:
+.IP
+.nf
+\f(CW
+target 10.9
+
+dylib replace /System/Library/Frameworks/Metal.framework/Versions/A/Metal  \[at]loader_path/libMetalStub.dylib
+rpath  insert  \[at]loader_path/../Frameworks
+\fR
+.fi
+.PP
+The report lists the expansion line by line, with the finding that
+produced each, since the same line does different things to different
+binaries:
+.IP
+.nf
+\f(CW
+  target 10.9
+    fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)
+      chained fixups -> LC_DYLD_INFO_ONLY; LC_BUILD_VERSION 12.0 (sdk 12.3) kept as LC_VERSION_MIN_MACOSX
+    minos at-most 10.9  (always)
+      version-min 12.0 -> 10.9; sdk 12.3 kept
+\fR
+.fi
+.RS
+.PP
+Each statement\[aq]s own lines follow it; the conversion\[aq]s other
+figures are left out here.
+The report says
+\fBnothing to do: this binary already targets 10.9\fR only when no
+line changed the image: the slice already held one
+\fBLC_VERSION_MIN_MACOSX\fR at or below 10.9, no
+\fBLC_BUILD_VERSION\fR, and nothing else to convert.
+.RE
+.PP
+The rest of the rules:
+.IP \[bu] 2
+\f[B]One \fBtarget\f[B] per script.\fR A second is a parse error.
+.IP \[bu] 2
+\f[B]An unknown target is a refusal.\fR \fBtarget 10.10\fR errors,
+naming what this build does know, rather than silently doing 10.9\[aq]s
+work.
+.IP \[bu] 2
+\f[B]A derived statement behaves as the one you would have written\fR
+\[em] a derived \fBminos at-most 10.9\fR grows a short header pad
+exactly as one you wrote does \[em] and if a derived statement is
+refused, the refusal names the \fBtarget\fR line, which is the line
+you wrote.
+.IP \[bu] 2
+\f[B]\fBtarget\f[B] never counts as unmatched,\fR and neither does
+anything it derived: \[dq]this binary already targets 10.9
+correctly\[dq] is a correct answer for a profile, unlike for an explicit
+operation.
+.IP \[bu] 2
+\f[B]Writing \fBtarget 10.9\f[B] \fBand\f[B], after it, an
+explicit statement it derived makes the explicit one redundant, and if
+that statement can miss, it refuses as unmatched.\fR That is right,
+and is documented rather than special-cased.
+.SS Queries
+Four verbs read a file and change nothing:
+.IP
+.nf
+\f(CW
+drydock-macho-rewrite verify FILE          is the file structurally plausible?
+drydock-macho-rewrite info [--thin] FILE   load commands, ordinals, sections, header pad
+drydock-macho-rewrite imports FILE         TSV, one row per bind
+drydock-macho-rewrite exports FILE         TSV, one row per export
+\fR
+.fi
+.PP
+\fBinfo\fR reads a fat container as one block per 64-bit slice, and
+names the slices it passes over; \fB--thin\fR refuses a fat
+container instead (exit 1).
+\fBverify\fR reads only a thin file.
+\fBimports\fR and \fBexports\fR read either; each row names its
+slice in an \fBarch\fR column, and the header row names the columns.
+.PP
+\fBverify\fR checks structure, not what 10.9\[aq]s runtime requires:
+it passes an Objective-C image whose \fB__objc_\fR sections sit in
+\fB__DATA_CONST\fR, and that image dies at launch on 10.9.
+.PP
+\fBinfo\fR answers each of \fBtarget 10.9\fR\[aq]s three
+detections: an \fBLC[n]\fR line for
+\fBLC_DYLD_CHAINED_FIXUPS\fR, a \fBsectname=\fR line under
+\fBsegname=__DATA_CONST\fR, and the \fBswift-abi:\fR line, which
+says \fBunknown\fR on an image whose fixups are still chained.
+.RS
+.PP
+The declared minimum is on the line beneath its command:
+\fBversion=\&... sdk=\&...\fR under \fBLC_VERSION_MIN_MACOSX\fR,
+\fBplatform=\&... minos=\&... sdk=\&...\fR under
+\fBLC_BUILD_VERSION\fR.
+.RE
+.PP
+From \fBdrydock-macho-rewrite info hello\fR, on a two-slice x86_64 +
+i386 build:
+.IP
+.nf
+\f(CW
+hello: 16576 bytes, 2 slices
+slice x86_64: 4312 bytes, 15 load commands, filetype=2
+LC[0] LC_SEGMENT_64 cmdsize=72
+  segname=__PAGEZERO vmaddr=0x0 vmsize=0x100000000 fileoff=0 filesize=0 nsects=0
+LC[1] LC_SEGMENT_64 cmdsize=312
+  segname=__TEXT vmaddr=0x100000000 vmsize=0x1000 fileoff=0 filesize=4096 nsects=3
+    sectname=__text
+    sectname=__unwind_info
+    sectname=__eh_frame
+\&...
+LC[8] LC_VERSION_MIN_MACOSX cmdsize=16
+  version=10.9.0 sdk=10.9.0
+\&...
+LC[11] LC_LOAD_DYLIB cmdsize=56
+  ordinal=1 path=/usr/lib/libSystem.B.dylib
+\&...
+swift-abi: no class records carry the stable-ABI tag
+header pad: 3112 bytes available (LC end=856, first sect=3968)
+slice i386: 32-bit; passed through unchanged
+resign 10.9: not checked: slice i386 is not a 64-bit Mach-O
+\fR
+.fi
+.PP
+On a thin file there is no slice header: the first line names the path.
+.SS Limitations
+.IP \[bu] 2
+32-bit input is currently refused.
+.IP \[bu] 2
+64-bit fat containers (\fBfat_arch_64\fR) are currently refused.

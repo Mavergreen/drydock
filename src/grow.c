@@ -359,7 +359,8 @@ static int mg_resolve_emit(struct mg_resolve_ctx *c, uint64_t off) {
 static int mg_resolve_cb(void *field, int width, uint64_t span, int flags, void *ctx_) {
     struct mg_resolve_ctx *c = (struct mg_resolve_ctx *)ctx_;
     /* The trie rebuild may move it; the trie walk watches its content.
-     * Held by tests/grow_test.c test_verify_watches_every_adjusted_field. */
+     * Held by test_verify_watches_every_adjusted_field in
+     * tests/grow_test.c. */
     if (flags & ML_OFF_EXPORT_TRIE) return 0;
     uint64_t off = width == 8 ? *(uint64_t *)field : *(uint32_t *)field;
     if (off == 0) return 0;                     /* absent */

@@ -6,10 +6,10 @@
  * through mr_apply_image, which is the only way in now.
  * Parsing stays in each front-end; what crosses this boundary is an mr_ops.
  * Every diagnostic lives here once, not re-emitted per caller: contract.
- * tests/change_dylib_test.sh captures stderr and compares it.
- * tests/cli_test.sh's "drydock-macho-rewrite stands alone": the CLI links this in
- * rather than forking change_dylib, so change_dylib can wrap drydock-macho-rewrite.
- * A dylib insert or delete (src/ordinals.h) shifts every later library
+ * tests/change_dylib_test.sh captures stderr and compares it. The CLI links
+ * this in rather than forking change_dylib, so change_dylib can wrap
+ * drydock-macho-rewrite (tests/cli_test.sh "drydock-macho-rewrite stands
+ * alone"). A dylib insert or delete shifts every later library
  * ordinal and this module renumbers; an rpath insert shifts none. */
 #include <stdint.h>
 #include <stddef.h>
@@ -50,8 +50,8 @@ typedef struct {
  * one before it left. Two operations are never in flight at once, so nothing
  * here resolves a conflict between them: `dylib replace P X` followed by
  * `dylib delete P` renames P and then finds no P to delete.
- * tests/cli_test.sh's "dylib: replace+delete same path" holds that
- * sequence, asserted to produce the rename. */
+ * tests/cli_test.sh "dylib: replace+delete same path" asserts that sequence
+ * produces the rename. */
 typedef struct {
     const mr_change *dylib_change;     /* rewrite/delete/reexport a dependency */
     const char      *dylib_append;     /* brand-new LC_LOAD_DYLIB, placed last */
@@ -100,7 +100,7 @@ typedef struct {
  * MR_REFUSED or MR_FAIL -- this function's own, or a primitive's: mi_open,
  * mfat_parse, mg_first_sect_off, mo_map_build, mr_build_lcs, mg_grow_header,
  * mo_map_validate, mo_map_apply, mg_plausible.
- * tests/cli_test.sh's "pinning the MR_REFUSED/MR_FAIL split" holds both
+ * tests/cli_test.sh "pinning the MR_REFUSED/MR_FAIL split" holds both
  * sides of that line, and both of the two size refusals.
  * PRECONDITION, unenforced here: `out` must not name `path`. cli/drydock-macho-rewrite.c
  * refuses it before any read, and wa_write_new checks again, so an unchecked

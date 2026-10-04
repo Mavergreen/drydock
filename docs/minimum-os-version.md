@@ -256,8 +256,8 @@ real sdk:
   <https://developer.apple.com/forums/thread/659964>);
 - macOS 11 and later report "10.16" to binaries whose sdk is 10.15 or lower.
 
-**Why the original `add_version_min` writes sdk 10.9.** Its one commit (`6cb8675` here, this
-repository's copy of Wowfunhappy/Mavericks-Porting-Resources's initial commit, which has a different hash there) gives only this rationale: `patch_macho`
+**Why the original `add_version_min` writes sdk 10.9.** Its one commit (`6cb8675`, this
+repository's extracted root and Wowfunhappy/Mavericks-Porting-Resources's initial commit) gives only this rationale: `patch_macho`
 leaves no platform declaration, and "10.9's dyld uses that signal for some behaviors
 (including, possibly, TLV handling)". 10.9 was the target, and no requirement for
 that sdk specifically is recorded anywhere.

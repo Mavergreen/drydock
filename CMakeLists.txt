@@ -156,6 +156,17 @@ add_custom_command(TARGET compat_wrappers POST_BUILD
           "${CMAKE_CURRENT_SOURCE_DIR}/compat/translate.sh"
           "$<TARGET_FILE_DIR:drydock-macho-rewrite>/drydock-macho-rewrite-translate.sh")
 
+# Stage the manual page in the build tree alongside the built command's
+# documentation, matching the installed share/man/man1 location.
+add_custom_target(manpage ALL
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:drydock-macho-rewrite>/man1"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/man/drydock-macho-rewrite.1"
+          "$<TARGET_FILE_DIR:drydock-macho-rewrite>/man1/drydock-macho-rewrite.1"
+  DEPENDS drydock-macho-rewrite "${CMAKE_CURRENT_SOURCE_DIR}/man/drydock-macho-rewrite.1"
+  COMMENT "staging drydock-macho-rewrite(1)")
+
 # ${MACHO_TOOLS} is empty now that fix_macho is a wrapper, so this installs
 # drydock-macho-rewrite and nothing else. It is left expanded rather than deleted for the
 # same reason the empty list above is: a future compiled compat tool joins
@@ -170,6 +181,7 @@ foreach(tool IN LISTS MACHO_WRAPPERS)
 endforeach()
 install(PROGRAMS "compat/drydock-macho-rewrite-compat.sh" DESTINATION bin)
 install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewrite-translate.sh)
+install(FILES "man/drydock-macho-rewrite.1" DESTINATION share/man/man1)
 
 enable_testing()
 

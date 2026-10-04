@@ -1,9 +1,7 @@
 # Bind-stream editing: per-symbol fixes for missing symbols
 
 Why Drydock plans `import weaken` and `import flatten`, and how they differ
-from the shim libraries the Mavericks community already uses.
-It is not
-built yet.
+from the shim libraries the Mavericks community already uses. It is not built yet.
 
 ## The problem
 

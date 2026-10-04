@@ -283,7 +283,8 @@ typedef struct {
  * entryoff (width 8), and linkedit.h's ml_each_off list (with its flags).
  * mg_grow_header bumps exactly these and mg_collect resolves exactly these,
  * so the patcher cannot adjust a field the check does not watch.
- * Held by tests/grow_test.c test_verify_watches_every_adjusted_field. */
+ * Held by test_verify_watches_every_adjusted_field in
+ * tests/grow_test.c. */
 typedef int (*mg_off_fn)(void *field, int width, uint64_t span, int flags, void *ctx);
 int mg_each_fileoff(mi_image *im, mg_off_fn fn, void *ctx);
 

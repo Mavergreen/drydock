@@ -8,3 +8,4 @@ build/Testing/
 /VERSION
 CMakeUserPresets.json
 /.idea/
+/.superpowers/

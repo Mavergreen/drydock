@@ -5146,7 +5146,7 @@ static int dy_measured(const char *what, int how) {
  * (some hosts keep realloc's old block resident), which must itself be
  * under one image and 32 MB. Under libgmalloc, which gives each allocation
  * pages of its own, the measure means nothing; and where the raise's image
- * moved (macOS 26 moves it), the bound is not enforced. */
+ * moved, the bound is not enforced (macOS 26: tests/README.md). */
 static void test_raise_holds_two_images_at_most(void) {
     const char *inserted = getenv("DYLD_INSERT_LIBRARIES");
     if (inserted && *inserted) return;
@@ -5162,9 +5162,10 @@ static void test_raise_holds_two_images_at_most(void) {
     CHECK(bmb <= img + 32, "raise: a bare realloc of %ld MB grows the resident set by %ld MB "
           "here, more than one image and 32 MB: this host's realloc is not understood", img, bmb);
     if (raised.moved) {
-        printf("INFO raise: the image moved, so the memory bound is not enforced here, "
-               "only where realloc grows in place: grew by %ld MB (now %ld MB); a bare "
-               "realloc and shift grows it by %ld MB\n", rmb, (long)(raised.now >> 20), bmb);
+        printf("INFO raise: the image moved, so the memory bound is not enforced here: "
+               "on this host realloc moves the image (see tests/README.md); it is "
+               "enforced only where realloc grows in place: grew by %ld MB (now %ld "
+               "MB); a bare realloc and shift grows it by %ld MB\n", rmb, (long)(raised.now >> 20), bmb);
         return;
     }
     CHECK(rmb < bmb + 3 * img / 2, "raise: a %ld MB image's raise grows its resident set by "
