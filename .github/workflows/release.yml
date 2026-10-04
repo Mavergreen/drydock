@@ -4,9 +4,10 @@ name: release
 # equivalent to a native 10.9 build. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
-#   - vX.Y.Z tag: build, then publish the binaries as a GitHub Release through
-#     shipyard's publish-release.yml. Tag-only, because this repo is its own
-#     upstream -- there is no external bump to auto-cut on, so a release is deliberate
+#   - workflow_dispatch with release=true, on main: build, then publish the binaries as
+#     a GitHub Release through shipyard's publish-release.yml. Dispatch-only, because
+#     this repo is its own upstream -- there is no external bump to auto-cut on, so a
+#     release is deliberate
 #
 # There is no 10.9 runner here, or anywhere in the family. What makes that safe
 # is the "Prove build equivalence" step below, not optimism.
@@ -14,15 +15,20 @@ name: release
 on:
   push:
     branches: [main]
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']   # this repo's own semver vX.Y.Z, not the family's -mavericks.N shape
   pull_request:
     branches: [main]          # the status check Renovate automerge waits on
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish v<UPSTREAM_VERSION> as a GitHub Release (main only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 # Only a pull_request supersedes -- keyed per ref, so a force-push replaces its own predecessor.
-# Everything else (a branch push, a vX.Y.Z tag) is keyed per RUN and is therefore alone in its
+# Everything else (a branch push, a dispatch) is keyed per RUN and is therefore alone in its
 # group: never queued, never evicted, never cancelled.
 #
 # cancel-in-progress:false was never the protection it looked like: it protects the RUNNING job and
@@ -30,7 +36,7 @@ permissions:
 # the old shared group discarded runs silently. golang lost one on 2026-09-09, 13 seconds after the
 # run that evicted it.
 #
-# This repo publishes only from a tag, but keeps the family's one shape: most of the family's
+# This repo publishes only by dispatch, but keeps the family's one shape: most of the family's
 # product repos auto-cut on a push to main, and a rule that holds only in some of them is a rule
 # nobody can apply from memory.
 concurrency:
@@ -74,33 +80,32 @@ jobs:
         run: echo "CROSS_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross" >> "$GITHUB_ENV"
 
       # Nothing external to derive from -- this repo is its own upstream -- so the version
-      # IS UPSTREAM_VERSION, hand-bumped, and a release is the vX.Y.Z tag someone pushes on
-      # purpose. Computed here rather than through shipyard's version.sh or
+      # IS UPSTREAM_VERSION, hand-bumped, and the tag is v plus that, so the two cannot
+      # disagree. Computed here rather than through shipyard's version.sh or
       # resolve-version.sh: both only ever emit the <upstream>-mavericks.N shape a PORT
       # needs, which is exactly the suffix this repo does not carry. mavericks-porthole,
       # the family's other self-upstream repo, computes inline for the same reason.
       - name: Version (vX.Y.Z) + publish decision
         id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main' }}
         run: |
           set -eu
-          want="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            tag="$GITHUB_REF_NAME"; full="${tag#v}"; rel=yes
-            # The tag and the committed version must agree. CMakeLists.txt stamps the tools
-            # from UPSTREAM_VERSION, so a tag that disagrees publishes a release whose own
-            # binaries report a different version -- green the whole way, wrong at the end.
-            # A release here is a hand bump plus a matching tag; this is the half that
-            # would otherwise be forgotten quietly.
-            [ "$tag" = "v$want" ] || {
-              echo "::error::tag $tag disagrees with UPSTREAM_VERSION ($want), which is what the binaries are stamped with -- bump the file and re-tag, or tag v$want"
+          full="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          tag="v$full"
+          rel=no
+          if [ "$WANT_RELEASE" = true ]; then
+            err="$(mktemp)"
+            if gh release view "$tag" > /dev/null 2> "$err"; then
+              echo "::error::release $tag already exists -- bump UPSTREAM_VERSION to publish a new one"
+              exit 1
+            fi
+            grep -q 'release not found' "$err" || {
+              echo "::error::could not tell whether release $tag exists: $(cat "$err")"
               exit 1
             }
-          else
-            # Tag-only-publish: with no external upstream there is no bump to auto-cut on,
-            # so every non-tag run -- main, a branch, a pull request -- builds and publishes
-            # nothing. Stricter than the family's "only main may release" guard and
-            # subsuming it: a pull request cannot reach rel=yes, because nothing but a tag can.
-            full="$want"; tag="v$want"; rel=no
+            rel=yes
           fi
           printf '%s\n' "$full" > VERSION
           { echo "full=$full"; echo "tag=$tag"; echo "release=$rel"; } >> "$GITHUB_OUTPUT"
@@ -221,7 +226,7 @@ jobs:
           name: drydock
           path: dist/*
 
-  # The only writer to Releases, and only a tag reaches it: nothing else sets release=yes.
+  # The only writer to Releases, and only a dispatch on main reaches it: nothing else sets release=yes.
   # The shared workflow regenerates SHA256SUMS, uses RELEASE_NOTES.md from the artifact as the
   # Release body, and fails if those notes are missing or empty.
   #

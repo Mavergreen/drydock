@@ -10,7 +10,7 @@ not a port of somebody else's project — they were written for this problem, an
 
 | Ingredient | Pinned in | Renovate | On a bump |
 |---|---|---|---|
-| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump plus a matching `X.Y.Z` tag cuts the release |
+| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump, then a dispatch of `release.yml` with `release=true`, cuts the release as tag `v0.1.0` |
 | MacOSX10.9 SDK, CMake helpers, compat guard, test runner | `Mavergreen/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
 | `tests/fixture.macho` + `tests/EXPECTED` | committed | **untrackable** — a characterization reference, deliberately frozen | never bumped by a bot; changing it is a deliberate commit that says why |
 
@@ -22,7 +22,7 @@ repo's own recipe. A change there is a repackage you cut deliberately.
 `check-artifact-conformance.sh`'s `scheme` check is repo-wide, not per-artifact, so it is declared
 unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-upstream deviation is:
 
-- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as semver vX.Y.Z per the self-upstream rule (tag `v0.1.0` for `UPSTREAM_VERSION` `0.1.0`), and there is no -mavericks.N axis to carry.
+- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as semver vX.Y.Z per the self-upstream rule (tag `v0.1.0` for `UPSTREAM_VERSION` `0.1.0`), and there is no -mavericks.N axis to carry. The reason for semver over a date: users write scripts in Drydock's language; a major version says when those may break, which a date cannot.
 - rosetta:tests/grown_binary_runs_test.sh: builds x86_64/10.9 fixture programs (`-arch x86_64 -mmacosx-version-min=10.9`) and executes them directly — a linked fixture, the `hdr` and `ctl` programs that reach their own header, their header-grown copies, and a thinned `/usr/bin/printf` when it qualifies — to prove a header grow changes nothing about what a program does. On the macos-26 (arm64) release runner every one of those executions is translated by Rosetta, and there is no SKIP-if-absent guard, so Rosetta is a required dependency there. Reconsider when an x86_64 host (the 10.9 box, or an Intel runner) can run it in CI; at the latest, before macOS 28 removes Rosetta.
 - rosetta:tests/cli_test.sh: builds x86_64/10.9 fixture programs (`FIXTURE_FLAGS`: `-arch x86_64 -mmacosx-version-min=10.9`) and executes several of them directly after rewriting them — e.g. `signing_probe` after its header pad is perturbed, `lc_fixture` after its load commands are edited — to prove a rewritten binary still loads and runs. On the macos-26 (arm64) release runner each of those executions is translated by Rosetta, with no SKIP-if-absent guard, so Rosetta is a required dependency there. Reconsider when an x86_64 host can run it in CI; at the latest, before macOS 28 removes Rosetta.
 - rosetta:tests/change_dylib_test.sh: builds x86_64/10.9 fixture programs (`FIXTURE_FLAGS`, as above) and executes the original and each dylib-rewritten copy — e.g. `main` and `main_ins` after a dylib insert — comparing what they print, to prove a dylib rewrite leaves the program loading and behaving the same. On the arm64 release runner every execution is translated by Rosetta, with no SKIP-if-absent guard, so Rosetta is a required dependency there. Reconsider when an x86_64 host can run it in CI; at the latest, before macOS 28 removes Rosetta.
@@ -36,9 +36,10 @@ nothing to point one at here: no external project publishes these tools, so
 there is no datasource that could observe a new version. The pin moves when a
 human decides it has, which is the honest arrangement rather than a missing one.
 
-That is also why the release model is **tag-only-publish** rather than
+That is also why a release is published by **workflow_dispatch** rather than
 auto-cut-on-main: with no upstream bump to trigger it, a release is always a
-deliberate act.
+deliberate act. The tag is derived (`v` plus `UPSTREAM_VERSION`) and created by
+the publish, so a tag can never disagree with the version the binaries report.
 
 ## Why `tests/EXPECTED` is an ingredient
 
