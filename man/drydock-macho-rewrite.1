@@ -317,6 +317,106 @@ operation.
 explicit statement it derived makes the explicit one redundant, and if
 that statement can miss, it refuses as unmatched.\fR That is right,
 and is documented rather than special-cased.
+.SS Growing the header
+A statement that needs more header pad than the image has makes room
+first, and says so:
+.IP
+.nf
+\f(CW
+Mantle: grew the header pad by 4096 bytes (16 -> 4112 available); contents raised by 0x1000; new UUID
+\fR
+.fi
+.PP
+An executable grows by lowering its image base into \fB__PAGEZERO\fR,
+so no address that names content changes.
+A dylib or bundle has no \fB__PAGEZERO\fR, so it grows by a
+\f[B]raise\fR: every address in it moves up by whole pages, and so does
+every pointer that holds one.
+Besides that, a raise:
+.IP \[bu] 2
+gives the image a new \fBLC_UUID\fR, derived from the old one, so that a
+dSYM for the old addresses is not taken for this image\[aq]s;
+.IP \[bu] 2
+drops \fBLC_SEGMENT_SPLIT_INFO\fR, whose positions would be stale (the
+report ends \fBdropped LC_SEGMENT_SPLIT_INFO\fR);
+.IP \[bu] 2
+invalidates the code signature, as every edit does: re-sign last.
+.PP
+A raise refuses, writing nothing, an image that:
+.IP \[bu] 2
+is not x86_64, since its code is decoded to find what addresses the
+header;
+.IP \[bu] 2
+has no \fBLC_DYLD_INFO\fR or \fBLC_DYLD_INFO_ONLY\fR, since only its
+rebase opcodes list every pointer that moves, or has a
+\fBLC_DYSYMTAB\fR with table-of-contents, module or relocation entries
+beside it;
+.IP \[bu] 2
+has an \fBLC_UNIXTHREAD\fR or \fBLC_THREAD\fR, or a section aligned to
+more than a page;
+.IP \[bu] 2
+has a rebase or bind in the segment that maps the header, or a pointer,
+symbol, export or RIP-relative reference naming the bytes between the
+header and the first content, which a raise moves apart;
+.IP \[bu] 2
+has a segment other than the one that maps the header whose file data
+starts before the first content, or a section that lies below it;
+.IP \[bu] 2
+has a stab of a type a raise does not know how to move;
+.IP \[bu] 2
+has code that addresses the image\[aq]s own header and that the grow
+cannot repair or confirm; or
+.IP \[bu] 2
+has a function-starts leading delta that would need a wider encoding
+once raised.
+.PP
+Both routes also refuse an image that:
+.IP \[bu] 2
+has chained fixups: run \fBfixups set classic\fR first;
+.IP \[bu] 2
+is encrypted (a nonzero \fBcryptid\fR) or has a segment flagged
+\fBSG_PROTECTED_VERSION_1\fR; or
+.IP \[bu] 2
+has a load command the grow cannot classify, or
+\fBLC_LINKER_OPTIMIZATION_HINT\fR, \fBLC_NOTE\fR or \fBLC_ATOM_INFO\fR.
+.PP
+An executable, which lowers its base, also refuses an image that has
+\fBLC_SEGMENT_SPLIT_INFO\fR (a raise drops it), is not PIE, is arm64
+(whose pages are 16 KB), or has a \fB__PAGEZERO\fR too small to give the
+header what it needs.
+.PP
+Every grow checks its own result and refuses, writing nothing, on any
+difference.
+It checks that:
+.IP \[bu] 2
+every address, section, symbol, rebase target and file offset is its old
+value moved by exactly the raise, or unchanged where it named the header;
+.IP \[bu] 2
+every byte past the header is the old one moved, and each load command
+is byte-identical except for the fields above;
+.IP \[bu] 2
+structures that were computed separately agree: initializers are
+function starts, and each export\[aq]s address equals its symbol\[aq]s;
+and
+.IP \[bu] 2
+no code still addresses the header unrepaired, and no two segments
+overlap.
+.PP
+Three limits of that:
+.IP \[bu] 2
+Grows add up.
+The function-starts leading delta gains the raise at each grow, so an
+image grown more than once can reach the refusal above.
+.IP \[bu] 2
+Code is decoded to find a reference to the header.
+A real reference that follows a jump table in \fB__text\fR not declared
+by \fBLC_DATA_IN_CODE\fR can be taken for data, and the grow then passes
+it unrepaired.
+.IP \[bu] 2
+A stab counts as named when its name is a non-empty string.
+An unnamed \fBN_FUN\fR holds a size, which a raise does not move; one
+whose \fBn_strx\fR happens to name a non-empty string is taken for named,
+and its value is moved.
 .SS Queries
 Four verbs read a file and change nothing:
 .IP
@@ -387,3 +487,6 @@ On a thin file there is no slice header: the first line names the path.
 32-bit input is currently refused.
 .IP \[bu] 2
 64-bit fat containers (\fBfat_arch_64\fR) are currently refused.
+.IP \[bu] 2
+A raise needs an x86_64 dylib or bundle with compressed dyld info; see
+Growing the header.

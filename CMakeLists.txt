@@ -367,6 +367,12 @@ set_tests_properties(raise_oracle_counts_test PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME raise_runs_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_runs_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(raise_runs_test PROPERTIES SKIP_RETURN_CODE 77)
+# Mantle from ~/Downloads/OpenCode.app, taken to classic fixups, given a load
+# command it has no room for (a raise) and a 120-byte rpath, on copies.
+# Local only: SKIP (77) where the app or its x86_64 slice is absent.
+add_test(NAME mantle_raise_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/mantle_raise_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+set_tests_properties(mantle_raise_test PROPERTIES SKIP_RETURN_CODE 77)
 # A dylib, a bundle and an address-gap dylib built here, raised by one page and
 # by two, and run beside the originals. Hermetic: it runs on CI.
 add_test(NAME raise_rich_test
