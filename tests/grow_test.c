@@ -23,6 +23,9 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <mach/mach.h>
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -5049,6 +5052,125 @@ static void test_raise_keeps_an_offset_no_segment_maps(void) {
     free(buf);
 }
 
+/* A raise of an image of DY_BIG bytes, its __LINKEDIT run on past the
+ * string table with bytes that are not zero, in a child: what its resident
+ * set grows by, in bytes, which the child writes to a pipe, into *m, with what it
+ * still holds and whether the image moved.
+ * Returns DY_MEASURED, or why there is no measure. With `bare`, it is a
+ * realloc of a touched DY_BIG-byte buffer by as much, then shifted up by it
+ * as the grow does (which writes every page of a block the allocator moved
+ * by remapping), that is measured instead: what the host's allocator costs by itself. */
+#define DY_BIG (128u << 20)
+#define DY_GROW 0x1000
+enum { DY_MEASURED, DY_NO_PIPE, DY_NO_FORK, DY_NO_WAIT, DY_NO_READ, DY_REFUSED, DY_DIED };
+struct dy_measure { uint64_t peak, now, moved; };
+static uint64_t dy_resident(void) {
+    struct mach_task_basic_info ti;
+    mach_msg_type_number_t cnt = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&ti, &cnt) != KERN_SUCCESS)
+        return 0;
+    return ti.resident_size;
+}
+static int dy_raise_growth(int bare, struct dy_measure *m) {
+    int fd[2];
+    fflush(stdout);
+    if (pipe(fd) != 0) return DY_NO_PIPE;
+    pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); return DY_NO_FORK; }
+    if (pid == 0) {
+        struct rusage before, after;
+        struct dy_measure out = { 0, 0, 0 };
+        uint64_t res0;
+        int failed;
+        close(fd[0]);
+        if (bare) {
+            uint8_t *buf = (uint8_t *)malloc(DY_BIG), *nbuf = NULL;
+            if (buf) memset(buf, 0x5a, DY_BIG);
+            res0 = dy_resident();
+            getrusage(RUSAGE_SELF, &before);
+            if (buf) nbuf = (uint8_t *)realloc(buf, DY_BIG + DY_GROW);
+            if (nbuf) {
+                memmove(nbuf + DY_GROW, nbuf, DY_BIG);
+                memset(nbuf, 0, DY_GROW);
+            }
+            getrusage(RUSAGE_SELF, &after);
+            failed = !nbuf;
+            out.moved = nbuf != buf;
+        } else {
+            size_t n0, fsize = DY_BIG;
+            uint8_t *small = build_dylib(&n0, 0), *buf = (uint8_t *)malloc(DY_BIG);
+            memcpy(buf, small, DY_FSIZE);
+            memset(buf + DY_FSIZE, 0x5a, DY_BIG - DY_FSIZE);
+            free(small);
+            struct segment_command_64 *le = seg_named(buf, DY_FSIZE, "__LINKEDIT");
+            le->filesize = DY_BIG - le->fileoff;
+            le->vmsize = (le->filesize + 0xfff) & ~0xfffull;
+            uint8_t *given = buf;
+            res0 = dy_resident();
+            getrusage(RUSAGE_SELF, &before);
+            failed = mg_grow_header(&buf, &fsize, DY_GROW) != 0;
+            getrusage(RUSAGE_SELF, &after);
+            out.moved = buf != given;
+        }
+        out.peak = (uint64_t)(after.ru_maxrss - before.ru_maxrss);
+        out.now = dy_resident() - res0;
+        if (failed || write(fd[1], &out, sizeof out) != (ssize_t)sizeof out) _exit(1);
+        _exit(0);
+    }
+    close(fd[1]);
+    ssize_t got = read(fd[0], m, sizeof *m);
+    close(fd[0]);
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid) return DY_NO_WAIT;
+    if (!WIFEXITED(st)) return DY_DIED;
+    if (WEXITSTATUS(st) != 0) return DY_REFUSED;
+    return got == (ssize_t)sizeof *m ? DY_MEASURED : DY_NO_READ;
+}
+
+/* Why dy_raise_growth has no measure, as a FAIL, or 0 if it has one. */
+static int dy_measured(const char *what, int how) {
+    CHECK(how != DY_NO_PIPE, "raise: the resident set is not measured (%s): pipe failed", what);
+    CHECK(how != DY_NO_FORK, "raise: the resident set is not measured (%s): fork failed", what);
+    CHECK(how != DY_NO_WAIT, "raise: the resident set is not measured (%s): waitpid failed", what);
+    CHECK(how != DY_NO_READ, "raise: the resident set is not measured (%s): the child's "
+          "measure was short or missing", what);
+    CHECK(how != DY_DIED, "raise: the resident set is not measured (%s): the child died", what);
+    CHECK(how != DY_REFUSED, "raise: the resident set is not measured (%s): the %u MB image's "
+          "raise was refused, or its realloc or malloc failed", what, DY_BIG >> 20);
+    return how == DY_MEASURED;
+}
+
+/* A raise holds the image as it was, for check 3, and the image as it
+ * grows: each once, and nothing else of the image's size, so it grows by
+ * one image and a little, more by what a bare realloc costs on this host
+ * (some hosts keep realloc's old block resident), which must itself be
+ * under one image and 32 MB. Under libgmalloc, which gives each allocation
+ * pages of its own, the measure means nothing; and where the raise's image
+ * moved (macOS 26 moves it), the bound is not enforced. */
+static void test_raise_holds_two_images_at_most(void) {
+    const char *inserted = getenv("DYLD_INSERT_LIBRARIES");
+    if (inserted && *inserted) return;
+    struct dy_measure raised = { 0, 0, 0 }, bare = { 0, 0, 0 };
+    int ok = dy_measured("a raise", dy_raise_growth(0, &raised));
+    ok = dy_measured("a bare realloc", dy_raise_growth(1, &bare)) && ok;
+    if (!ok) return;
+    long img = DY_BIG >> 20, rmb = (long)(raised.peak >> 20), bmb = (long)(bare.peak >> 20);
+    printf("raise: a %ld MB image's raise grew the resident set by %ld MB (now %ld MB; the image "
+           "moved: %s); a bare realloc and shift here grows it by %ld MB (now %ld MB; moved: %s)\n",
+           img, rmb, (long)(raised.now >> 20), raised.moved ? "yes" : "no", bmb,
+           (long)(bare.now >> 20), bare.moved ? "yes" : "no");
+    CHECK(bmb <= img + 32, "raise: a bare realloc of %ld MB grows the resident set by %ld MB "
+          "here, more than one image and 32 MB: this host's realloc is not understood", img, bmb);
+    if (raised.moved) {
+        printf("INFO raise: the image moved, so the memory bound is not enforced here, "
+               "only where realloc grows in place: grew by %ld MB (now %ld MB); a bare "
+               "realloc and shift grows it by %ld MB\n", rmb, (long)(raised.now >> 20), bmb);
+        return;
+    }
+    CHECK(rmb < bmb + 3 * img / 2, "raise: a %ld MB image's raise grows its resident set by "
+          "%ld MB, less than 1.5 images more than a bare realloc's %ld MB", img, rmb, bmb);
+}
+
 /* Verification, on the raise: each check_verify_rejects_raise undoes one
  * thing a correct raise did. */
 typedef void (*dy_undo)(uint8_t *buf, size_t fsize);
@@ -5568,6 +5690,24 @@ static void test_raise_moves_the_initializer_offsets(void) {
     free(buf);
 }
 
+/* f1's page as a regular one: its two entries f1 and f2, each with
+ * encoding 0. A raise moves each entry's function, and its check holds it
+ * to that. */
+static void test_raise_moves_a_regular_unwind_page(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    UW32(buf, 0x1800, 72) = 2;                           /* UNWIND_SECOND_LEVEL_REGULAR */
+    UW32(buf, 0x1800, 80) = 0x1000;
+    UW32(buf, 0x1800, 84) = 0;
+    UW32(buf, 0x1800, 88) = 0x1010;
+    UW32(buf, 0x1800, 92) = 0;
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0 && UW32(buf, 0x2800, 80) == 0x2000 && UW32(buf, 0x2800, 84) == 0 &&
+          UW32(buf, 0x2800, 88) == 0x2010 && UW32(buf, 0x2800, 92) == 0,
+          "raise: a regular page's functions are raised, and its encodings are not (got %d)", r);
+    free(buf);
+}
+
 /* ---- verification: what a raise makes of compact unwind, the export trie,
  * __LINKEDIT and the UUID ----
  * One page moves the export trie in place. Two widen _d, and the trie is
@@ -5601,6 +5741,47 @@ static uint8_t *dy_trie(uint8_t *buf, size_t fsize) {
 }
 static void dy_recommon(uint8_t *buf, size_t fsize) { (void)fsize; buf[0x2804] ^= 1; }
 static void dy_old_unwind_later(uint8_t *old, size_t n) { (void)n; old[0x1821]++; }  /* f1: 0x1100 */
+static void dy_raise_compressed(uint8_t *buf, size_t fsize) { (void)fsize; UW32(buf, 0x2800, 80) += 0x1000; }
+static void dy_raise_page_entries(uint8_t *buf, size_t fsize) { (void)fsize; UW32(buf, 0x2800, 76) += 0x1000; }
+/* Compact unwind as it was that check 3 cannot read: words of its header
+ * (4: personalities, 6: first-level entries), of the sentinel (13: where
+ * f1's LSDAs end), of f1's (9: its page, moved to the section's last word,
+ * which says compressed) and of the page (18: its kind; 19: its entries, as
+ * a regular page). */
+static void dy_uw_v2(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 0) = 2; }
+static void dy_uw_pers_past(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 16) = 0x100; }
+static void dy_uw_no_index(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 24) = 0; }
+static void dy_uw_index_past(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 24) = 0x100; }
+static void dy_uw_index_straddles(uint8_t *old, size_t n) {
+    (void)n;
+    UW32(old, 0x1800, 20) = 84;
+    UW32(old, 0x1800, 24) = 2;
+}
+static void dy_uw_lsda_past(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 52) = 0x100; }
+static void dy_uw_lsda_back(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 52) = 48; }
+static void dy_uw_page_past(uint8_t *old, size_t n) {
+    (void)n;
+    UW32(old, 0x1800, 36) = 0x5c;                     /* its kind, 3, its last word */
+    UW32(old, 0x1800, 92) = 3;
+}
+static void dy_uw_page_kind(uint8_t *old, size_t n) { (void)n; UW32(old, 0x1800, 72) = 4; }
+static void dy_uw_entries_past(uint8_t *old, size_t n) {
+    (void)n;
+    UW32(old, 0x1800, 72) = 2;                         /* UNWIND_SECOND_LEVEL_REGULAR */
+    UW32(old, 0x1800, 76) = 8 | (3u << 16);
+}
+static const struct { const char *what; dy_undo unsnap; } dy_uw_unreadable[10] = {
+    { "compact unwind of version 2", dy_uw_v2 },
+    { "personalities past compact unwind's end", dy_uw_pers_past },
+    { "no first-level entry", dy_uw_no_index },
+    { "first-level entries past compact unwind's end", dy_uw_index_past },
+    { "first-level entries that straddle compact unwind's end", dy_uw_index_straddles },
+    { "LSDAs past compact unwind's end", dy_uw_lsda_past },
+    { "LSDAs that end before they start", dy_uw_lsda_back },
+    { "a page past compact unwind's end", dy_uw_page_past },
+    { "a page of kind 4", dy_uw_page_kind },
+    { "a regular page whose entries run past compact unwind's end", dy_uw_entries_past },
+};
 static void dy_rename_export(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[4] ^= 2; }  /* _f3 */
 static void dy_weaken_export(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[21] = 0x04; }
 static void dy_reordinal(uint8_t *buf, size_t fsize) { dy_trie(buf, fsize)[40] = 2; }
@@ -5639,12 +5820,26 @@ static void test_verify_watches_what_the_raise_derives(void) {
     size_t fsize;
     uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
     check_verify_rejects_raise("a byte of compact unwind's header changed", dy_recommon,
-        "ERROR: verify FAILED -- file offset 0x2804 holds 0x1 after the grow, and must hold 0, "
-        "as file offset 0x1804 did before it; refusing.");
+        "ERROR: verify FAILED -- compact unwind's word at file offset 0x2804 holds 0x1 after the "
+        "grow, and must hold 0, as it held before it; refusing.");
     check_verify_rejects_raise_of("an unwind entry the snapshot says was later", buf, fsize,
         0x1000, NULL, dy_old_unwind_later,
-        "ERROR: verify FAILED -- file offset 0x2821 holds 0x20 after the grow, and must hold "
-        "0x21, file offset 0x1821's 0x11 raised; refusing.");
+        "ERROR: verify FAILED -- compact unwind's word at file offset 0x2820 holds 0x2000 after "
+        "the grow, and must hold 0x2100, the offset from the base it held, moved; refusing.");
+    check_verify_rejects_raise("a compressed entry raised, as a slipped walker would",
+        dy_raise_compressed,
+        "ERROR: verify FAILED -- compact unwind's word at file offset 0x2850 holds 0x1001000 after "
+        "the grow, and must hold 0x1000000, as it held before it; refusing.");
+    check_verify_rejects_raise("a page's entry offset raised, as a slipped walker would",
+        dy_raise_page_entries,
+        "ERROR: verify FAILED -- compact unwind's word at file offset 0x284c holds 0x21008 after "
+        "the grow, and must hold 0x20008, as it held before it; refusing.");
+    for (int i = 0; i < 10; i++) {
+        uint8_t *b = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+        check_verify_rejects_raise_of(dy_uw_unreadable[i].what, b, fsize, 0x1000, NULL,
+            dy_uw_unreadable[i].unsnap,
+            "ERROR: verify FAILED -- compact unwind does not read as check 3 reads it; refusing.");
+    }
     check_verify_rejects_raise("an export renamed in place", dy_rename_export,
         "ERROR: verify FAILED -- file offset 0x4044 holds 0x33 after the grow, and must hold "
         "0x31, as file offset 0x3044 did before it; refusing.");
@@ -5817,7 +6012,7 @@ static void test_oracles_judge_the_fixture(void) {
     dy_poke64(buf, 0x2030, 0x1011);
     buf[0x3040 + 18] = 0x81;
     unsigned holds = mg_oracles(buf, fsize, MG_OR_LAZY | MG_OR_EXPORTS, why, sizeof why);
-    CHECK(holds == (MG_OR_LAZY | MG_OR_UNWIND) &&
+    CHECK(holds == (MG_OR_LAZY | MG_OR_UNWIND | MG_OR_REBASES) &&
           strcmp(why, "the export _f1 names 0x1001, and its symbol 0x1000") == 0,
           "oracles: asked about the lazy pointers and exports, says why the exports fail (%#x, '%s')",
           holds, why);
@@ -5934,20 +6129,69 @@ static void dy_lsda_more(uint8_t *old, uint8_t *buf) {
 }
 static void dy_old_unwind_v2(uint8_t *old, uint8_t *buf) { (void)buf; UW32(old, 0x1800, 0) = 2; }
 static void dy_lsda_func_past(uint8_t *old, uint8_t *buf) { (void)old; UW32(buf, 0x2800, 56) += 1; }
+/* The rebase opcodes at 0x3000 (0x4000 raised) name __DATA+0, +8, +0x10,
+ * +0x30 and +0x38: the header, f2, _d, f2 and __stub_helper. */
+static void dy_rebase_left(uint8_t *old, uint8_t *buf) { (void)old; dy_poke64(buf, 0x3008, DY_RAISED_AT + 0x1010); }
+static void dy_rebase_base_moved(uint8_t *old, uint8_t *buf) { (void)old; dy_poke64(buf, 0x3000, DY_RAISED_AT + 0x1000); }
+static void dy_rebase_zero(uint8_t *old, uint8_t *buf) { dy_poke64(old, 0x2010, 0); dy_poke64(buf, 0x3010, 0); }
+static void dy_rebase_more(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000 + 6] = 0x53; }
+static void dy_rebase_moved_slot(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000 + 2] = 0x08; }
+static void dy_rebase_unreadable(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000 + 1] = 0x2f; }
+static void dy_rebase_absolute(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000] = 0x12; }
+static void dy_rebase_unknown_op(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000 + 3] = 0x90; }
+static void dy_rebase_no_file(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000 + 1] = 0x23; }
+static void dy_rebase_no_segment(uint8_t *old, uint8_t *buf) { (void)old; buf[0x4000 + 1] = 0x30; }
+
+/* The same five slots, named by the opcodes the fixture's do not use:
+ * ADD_ADDR_ULEB (to 8), DO_REBASE_ADD_ADDR_ULEB (8, then on to 0x28),
+ * ADD_ADDR_IMM_SCALED (to 0x30), ULEB_TIMES (0x30 and 0x38), and
+ * ULEB_TIMES_SKIPPING_ULEB (0 and 0x10). */
+static const uint8_t dy_other_ops[16] = { 0x11, 0x21, 0x00, 0x30, 0x08, 0x70, 0x18, 0x41,
+                                          0x60, 0x02, 0x21, 0x00, 0x80, 0x02, 0x08, 0x00 };
+static void dy_put_other_ops(uint8_t *img, size_t n, uint32_t at) {
+    memcpy(img + at, dy_other_ops, sizeof dy_other_ops);
+    ((struct dyld_info_command *)find_lc(img, n, LC_DYLD_INFO_ONLY))->rebase_size = sizeof dy_other_ops;
+}
+static void dy_rebase_other_ops(uint8_t *old, uint8_t *buf) {
+    dy_put_other_ops(old, DY_FSIZE, 0x3000);
+    dy_put_other_ops(buf, DY_FSIZE + 0x1000, 0x4000);
+}
+/* Each slot, named so, left where it was: only the rebases oracle asked. */
+static void check_other_ops_left(uint32_t at, uint64_t was) {
+    size_t n, fsize;
+    char what[64], why[256] = "", want[160];
+    uint8_t *old = build_dylib_at(DY_RAISED_AT, &n, DY_ALL);
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    snprintf(what, sizeof what, "other opcodes, the slot at %#x left", at);
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "oracles: %s: grow", what); free(old); free(buf); return;
+    }
+    dy_rebase_other_ops(old, buf);
+    dy_poke64(buf, at, DY_RAISED_AT + was);
+    snprintf(want, sizeof want, "the rebased pointer at %#llx holds %#llx, and must hold %#llx",
+             (unsigned long long)(DY_RAISED_AT + at), (unsigned long long)(DY_RAISED_AT + was),
+             (unsigned long long)(DY_RAISED_AT + was + 0x1000));
+    unsigned holds = mg_oracles_raised(buf, fsize, old, n, 0x1000, MG_OR_REBASES, why, sizeof why);
+    CHECK(!(holds & MG_OR_REBASES) && strcmp(why, want) == 0, "oracles, raised: %s: said '%s', "
+          "want '%s'", what, why, want);
+    free(old);
+    free(buf);
+}
 static void test_oracles_compare_the_raise(void) {
     check_oracle_raised("the raise as made", NULL, MG_OR_ALL, NULL);
-    check_oracle_raised("a lazy pointer left where it was", dy_lazy_left, MG_OR_ALL & ~MG_OR_LAZY,
+    check_oracle_raised("a lazy pointer left where it was", dy_lazy_left,
+                        MG_OR_ALL & ~MG_OR_LAZY & ~MG_OR_REBASES,
                         "the lazy pointer at 0x10003038 holds 0x10001100, and must hold 0x10002100");
     check_oracle_raised("a lazy pointer moved 8 past the grow, still in __stub_helper", dy_lazy_past,
-                        MG_OR_ALL & ~MG_OR_LAZY,
+                        MG_OR_ALL & ~MG_OR_LAZY & ~MG_OR_REBASES,
                         "the lazy pointer at 0x10003038 holds 0x10002108, and must hold 0x10002100");
     check_oracle_raised("a lazy pointer that names no segment, kept", dy_lazy_zero, MG_OR_ALL, NULL);
     check_oracle_raised("a lazy pointer that names no segment, moved", dy_lazy_zero_moved,
-                        MG_OR_ALL & ~MG_OR_LAZY,
+                        MG_OR_ALL & ~MG_OR_LAZY & ~MG_OR_REBASES,
                         "the lazy pointer at 0x10003038 holds 0x1000, and must hold 0");
     check_oracle_raised("a lazy pointer to the header, kept", dy_lazy_base, MG_OR_ALL, NULL);
     check_oracle_raised("a lazy pointer to the header, moved", dy_lazy_base_moved,
-                        MG_OR_ALL & ~MG_OR_LAZY,
+                        MG_OR_ALL & ~MG_OR_LAZY & ~MG_OR_REBASES,
                         "the lazy pointer at 0x10003038 holds 0x10001000, and must hold 0x10000000");
     check_oracle_raised("a lazy pointer fewer", dy_lazy_gone, MG_OR_ALL & ~MG_OR_LAZY,
                         "the image holds 0 lazy pointers, and held 1,");
@@ -5962,6 +6206,34 @@ static void test_oracles_compare_the_raise(void) {
                         "compact unwind lists 2 LSDAs, and listed 1,");
     check_oracle_raised("compact unwind the old image's reader cannot read", dy_old_unwind_v2,
                         MG_OR_ALL & ~MG_OR_UNWIND, "__unwind_info could not be read as it was");
+    check_oracle_raised("a rebased pointer in __data left where it was", dy_rebase_left,
+                        MG_OR_ALL & ~MG_OR_REBASES,
+                        "the rebased pointer at 0x10003008 holds 0x10001010, and must hold 0x10002010");
+    check_oracle_raised("a rebased pointer to the header, moved", dy_rebase_base_moved,
+                        MG_OR_ALL & ~MG_OR_REBASES,
+                        "the rebased pointer at 0x10003000 holds 0x10001000, and must hold 0x10000000");
+    check_oracle_raised("a rebased pointer that names no segment, kept", dy_rebase_zero, MG_OR_ALL,
+                        NULL);
+    check_oracle_raised("a rebase more", dy_rebase_more, MG_OR_ALL & ~MG_OR_REBASES,
+                        "the rebase opcodes name 6 pointers, and named 5,");
+    check_oracle_raised("a rebase named a slot on", dy_rebase_moved_slot, MG_OR_ALL & ~MG_OR_REBASES,
+                        "the rebase opcodes name 0x10003008, and must name 0x10003000");
+    check_oracle_raised("rebase opcodes the oracle cannot read", dy_rebase_unreadable,
+                        MG_OR_ALL & ~MG_OR_REBASES, "the rebased pointers could not be read");
+    check_oracle_raised("a rebase of a type other than a pointer", dy_rebase_absolute,
+                        MG_OR_ALL & ~MG_OR_REBASES, "the rebased pointers could not be read");
+    check_oracle_raised("an opcode the oracle does not know", dy_rebase_unknown_op,
+                        MG_OR_ALL & ~MG_OR_REBASES, "the rebased pointers could not be read");
+    check_oracle_raised("a rebase in a segment with no file data", dy_rebase_no_file,
+                        MG_OR_ALL & ~MG_OR_REBASES, "the rebased pointers could not be read");
+    check_oracle_raised("a rebase before any segment is named", dy_rebase_no_segment,
+                        MG_OR_ALL & ~MG_OR_REBASES, "the rebased pointers could not be read");
+    check_oracle_raised("the same rebases, named by other opcodes", dy_rebase_other_ops, MG_OR_ALL,
+                        NULL);
+    check_other_ops_left(0x3008, 0x1010);
+    check_other_ops_left(0x3010, 0x2020);
+    check_other_ops_left(0x3030, 0x1010);
+    check_other_ops_left(0x3038, 0x1100);
 }
 
 /* A lazy pointer moved elsewhere, and the snapshot told it moved there too:
@@ -6010,6 +6282,32 @@ static void test_verify_watches_the_oracles(void) {
     buf[0x3040 + 18] = 0x81;                           /* _f1: 0x1001, its symbol 0x1000 */
     r = mg_grow_header(&buf, &fsize, 0x1000);
     CHECK(r == 0, "oracles: a raise of an image one did not hold of succeeds (got %d)", r);
+    free(buf);
+}
+
+/* A rebase the reader dropped, as both the raise and checks 1 to 3 would
+ * have missed it: the snapshot says the pointer held what the raised image
+ * now holds, unmoved. Only check 4's own reading of the opcodes sees it. */
+static void test_verify_watches_a_dropped_rebase(void) {
+    size_t fsize;
+    uint8_t *buf = build_dylib_at(DY_RAISED_AT, &fsize, DY_ALL);
+    mg_snapshot snap;
+    if (mg_snapshot_take(buf, fsize, &snap) != 0) { CHECK(0, "rebases: snapshot"); free(buf); return; }
+    CHECK(snap.oracles == MG_OR_ALL, "rebases: the snapshot says all hold (%#x)", snap.oracles);
+    if (mg_grow_header(&buf, &fsize, 0x1000) != 0) {
+        CHECK(0, "rebases: grow"); mg_snapshot_free(&snap); free(buf); return;
+    }
+    dy_poke64(buf, 0x3008, DY_RAISED_AT + 0x1010);
+    snap.rb.v[1].value -= 0x1000;
+    int r;
+    verify_snap = &snap;
+    char *err = stderr_during(verify_thunk, &buf, &fsize, 0, &r);
+    CHECK(r == -1 && strstr(err, "ERROR: verify FAILED -- the rebased pointer at 0x10003008 holds "
+                                 "0x10001010, and must hold 0x10002010 after the grow, which held "
+                                 "before it; refusing.\n"),
+          "rebases: verify REJECTS a pointer the reader dropped (got %d):\n%s", r, err);
+    free(err);
+    mg_snapshot_free(&snap);
     free(buf);
 }
 
@@ -6171,6 +6469,7 @@ int main(void) {
     test_raise_refuses_what_it_cannot_move();
     test_raise_moves_pointers_to_the_edges_of_content();
     test_raise_keeps_an_offset_no_segment_maps();
+    test_raise_holds_two_images_at_most();
     test_raise_leaves_an_export_at_offset_0();
     test_raise_leaves_an_absolute_export_alone();
     test_raise_leaves_a_symbol_below_the_base();
@@ -6192,6 +6491,7 @@ int main(void) {
     test_ensure_pad_announces_no_uuid_it_has_not();
     test_verify_watches_the_raised_bytes();
     test_verify_watches_what_the_raise_derives();
+    test_raise_moves_a_regular_unwind_page();
     test_raise_appends_a_trie_to_linkedit_of_any_vmsize();
     test_raise_rebuilds_a_trie_with_what_stays();
     test_raise_moves_the_initializer_offsets();
@@ -6200,6 +6500,7 @@ int main(void) {
     test_oracles_judge_an_export_with_a_long_name();
     test_oracles_compare_the_raise();
     test_verify_watches_the_oracles();
+    test_verify_watches_a_dropped_rebase();
     test_verify_watches_the_raise();
     test_ensure_pad_announces_a_raise();
     if (fails) { printf("macho_grow_test: %d FAILURE(S)\n", fails); return 1; }

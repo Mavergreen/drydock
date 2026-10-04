@@ -1,9 +1,11 @@
 /* grow.c -- see grow.h for the design and every function's contract. */
 
 #include <CommonCrypto/CommonDigest.h>
+#include <mach-o/compact_unwind_encoding.h>
 #include <mach-o/nlist.h>
 #include <mach-o/stab.h>
 #include <stdarg.h>
+#include <stddef.h>
 
 #include "exports.h"
 #include "grow.h"
@@ -1135,9 +1137,61 @@ out:
     return rc;
 }
 
-/* mg_unwind_walk may change compact unwind only by adding `grow` to 32-bit
- * words, whichever it takes for offsets: so what it makes of the old image,
- * `raised`, is held to that apart from the walker. */
+/* Marks old[lo, lo + len) as bytes check 3 does not compare, within n: a
+ * bit of `mask` for each byte. */
+static void mg_exempt(uint8_t *mask, size_t n, uint64_t lo, uint64_t len) {
+    for (uint64_t i = lo; i < lo + len && i < n; i++) mask[i / 8] |= (uint8_t)(1u << (i % 8));
+}
+static int mg_exempted(const uint8_t *mask, size_t i) { return mask[i / 8] >> (i % 8) & 1; }
+
+/* is[k / 4] = 1 for each word at u + k that grow.h's "MUST gain" list names; -1 if unreadable. */
+static int mg_uw_offsets(const uint8_t *u, uint64_t size, uint8_t *is) {
+    struct unwind_info_section_header h;
+    struct unwind_info_section_header_index_entry e, next;
+    struct unwind_info_regular_second_level_page_header pg;
+    const uint64_t esz = sizeof e, lsz = sizeof(struct unwind_info_section_header_lsda_index_entry),
+                   rsz = sizeof(struct unwind_info_regular_second_level_entry);
+    if (size < sizeof h) return -1;
+    memcpy(&h, u, sizeof h);
+    if (h.version != UNWIND_SECTION_VERSION || h.indexCount < 1 ||
+        (uint64_t)h.personalityArraySectionOffset + 4ull * h.personalityArrayCount > size ||
+        (uint64_t)h.indexSectionOffset + esz * h.indexCount > size)
+        return -1;
+    for (uint32_t k = 0; k < h.personalityArrayCount; k++)
+        is[(h.personalityArraySectionOffset + 4ull * k) / 4] = 1;
+    for (uint32_t k = 0; k < h.indexCount; k++) {
+        uint64_t at = h.indexSectionOffset + esz * k;
+        memcpy(&e, u + at, sizeof e);
+        is[(at + offsetof(struct unwind_info_section_header_index_entry, functionOffset)) / 4] = 1;
+        if (k + 1 == h.indexCount) break;
+        memcpy(&next, u + at + esz, sizeof next);
+        if (next.lsdaIndexArraySectionOffset < e.lsdaIndexArraySectionOffset ||
+            next.lsdaIndexArraySectionOffset > size)
+            return -1;
+        for (uint64_t l = e.lsdaIndexArraySectionOffset; l + lsz <= next.lsdaIndexArraySectionOffset;
+             l += lsz) {
+            is[(l + offsetof(struct unwind_info_section_header_lsda_index_entry, functionOffset)) / 4] = 1;
+            is[(l + offsetof(struct unwind_info_section_header_lsda_index_entry, lsdaOffset)) / 4] = 1;
+        }
+        if (!e.secondLevelPagesSectionOffset) continue;
+        if ((uint64_t)e.secondLevelPagesSectionOffset + sizeof pg > size)
+            return -1;
+        memcpy(&pg, u + e.secondLevelPagesSectionOffset, sizeof pg);
+        if (pg.kind == UNWIND_SECOND_LEVEL_COMPRESSED) continue;
+        if (pg.kind != UNWIND_SECOND_LEVEL_REGULAR) return -1;
+        uint64_t first = (uint64_t)e.secondLevelPagesSectionOffset + pg.entryPageOffset;
+        if (first + rsz * pg.entryCount > size) return -1;
+        for (uint32_t j = 0; j < pg.entryCount; j++)
+            is[(first + rsz * j + offsetof(struct unwind_info_regular_second_level_entry,
+                                           functionOffset)) / 4] = 1;
+    }
+    return 0;
+}
+
+/* Check 3's comparison of compact unwind: each word of the old image's
+ * holds, `grow` further into the raised one, what it held, plus `grow` where
+ * mg_uw_offsets says it is an offset from the base. Marks the section in
+ * `mask`, so the byte comparison leaves it to this. */
 struct mg_unwind_sect { uint64_t off, size; int found; };
 static int mg_unwind_sect_cb(const struct load_command *lc, void *ctx_) {
     struct mg_unwind_sect *u = (struct mg_unwind_sect *)ctx_;
@@ -1151,28 +1205,35 @@ static int mg_unwind_sect_cb(const struct load_command *lc, void *ctx_) {
     }
     return 0;
 }
-static int mg_verify_unwind_words(const mi_image *oim, const uint8_t *raised, uint32_t grow) {
+static int mg_verify_unwind(const mi_image *oim, const uint8_t *buf, uint32_t grow,
+                            uint8_t *mask) {
     struct mg_unwind_sect u = { 0, 0, 0 };
     mi_each_lc(oim, mg_unwind_sect_cb, &u);
-    if (!u.found || u.off + u.size > oim->size) return 0;
+    if (!u.found || !u.size || u.off + u.size > oim->size) return 0;
+    uint8_t *is = (uint8_t *)calloc(u.size / 4 + 1, 1);
+    if (!is || mg_uw_offsets(oim->buf + u.off, u.size, is) != 0) {
+        fprintf(stderr, "ERROR: verify FAILED -- compact unwind does not read as check 3 reads it; "
+                        "refusing.\n");
+        free(is);
+        return -1;
+    }
     for (uint64_t k = 0; k < u.size; k += 4) {
         uint32_t o = 0, r = 0;
         size_t w = u.size - k < 4 ? (size_t)(u.size - k) : 4;
         memcpy(&o, oim->buf + u.off + k, w);
-        memcpy(&r, raised + u.off + k, w);
-        if (r == o || r == o + grow) continue;
-        fprintf(stderr, "ERROR: verify FAILED -- compact unwind's word at file offset %#llx would "
-                        "hold %#x after the grow, which is neither %#x, as it held before it, nor "
-                        "that plus %#x; refusing.\n", (unsigned long long)(u.off + k + grow), r, o,
-                grow);
+        memcpy(&r, buf + u.off + grow + k, w);
+        uint32_t want = is[k / 4] ? o + grow : o;
+        if (r == want) continue;
+        fprintf(stderr, "ERROR: verify FAILED -- compact unwind's word at file offset %#llx holds %#x "
+                        "after the grow, and must hold %#x, %s; refusing.\n",
+                (unsigned long long)(u.off + k + grow), r, want,
+                is[k / 4] ? "the offset from the base it held, moved" : "as it held before it");
+        free(is);
         return -1;
     }
+    free(is);
+    mg_exempt(mask, oim->size, u.off, u.size);
     return 0;
-}
-
-/* Marks old[lo, lo + len) as bytes check 3 does not compare, within n. */
-static void mg_exempt(uint8_t *mask, size_t n, uint64_t lo, uint64_t len) {
-    for (uint64_t i = lo; i < lo + len && i < n; i++) mask[i] = 1;
 }
 
 struct mg_exempt_ctx { const uint8_t *old; size_t n; uint8_t *mask; };
@@ -1451,15 +1512,110 @@ static int mg_or_unwind(const uint8_t *buf, size_t fsize, uint64_t base,
     return 0;
 }
 
+/* Every slot the rebase opcodes of the image in `buf` name, in their order:
+ * where its 8 bytes lie in the file, and its address. Read here, not
+ * through mrb_decode or mg_rebases_read. `bad` when the image has no
+ * readable opcodes to read, or they name a type other than a pointer, a
+ * segment past its first 16, or a slot past its segment's file data. */
+typedef struct { uint64_t at, vm; } mg_or_rb;
+struct mg_or_rbs { mg_or_rb *r; size_t n, cap; int bad; };
+struct mg_or_rbsrc { const struct segment_command_64 *seg[16]; int nsegs; const struct dyld_info_command *di; };
+static int mg_or_rbsrc_cb(const struct load_command *lc, void *ctx_) {
+    struct mg_or_rbsrc *c = (struct mg_or_rbsrc *)ctx_;
+    if (lc->cmd == LC_SEGMENT_64 && c->nsegs < 16) c->seg[c->nsegs++] = (const struct segment_command_64 *)lc;
+    if ((lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) && !c->di)
+        c->di = (const struct dyld_info_command *)lc;
+    return 0;
+}
+static void mg_or_rb_add(struct mg_or_rbs *x, const struct mg_or_rbsrc *c, int seg, uint64_t off,
+                         size_t fsize) {
+    const struct segment_command_64 *s;
+    if (x->bad || seg < 0 || seg >= c->nsegs) { x->bad = 1; return; }
+    s = c->seg[seg];
+    if (s->filesize < 8 || off > s->filesize - 8 || s->fileoff > fsize - 8 ||
+        off > fsize - 8 - s->fileoff) {
+        x->bad = 1;
+        return;
+    }
+    if (x->n == x->cap) {
+        mg_or_rb *r = (mg_or_rb *)realloc(x->r, (x->cap * 2 + 64) * sizeof *r);
+        if (!r) { x->bad = 1; return; }
+        x->r = r;
+        x->cap = x->cap * 2 + 64;
+    }
+    x->r[x->n].at = s->fileoff + off;
+    x->r[x->n++].vm = s->vmaddr + off;
+}
+static void mg_or_rebases(const uint8_t *buf, size_t fsize, struct mg_or_rbs *x) {
+    mi_image im;
+    struct mg_or_rbsrc c;
+    memset(&c, 0, sizeof c);
+    if (fsize < 8 || mi_wrap((uint8_t *)buf, fsize, &im) != 0) { x->bad = 1; return; }
+    mi_each_lc(&im, mg_or_rbsrc_cb, &c);
+    if (!c.di || !c.di->rebase_size) return;
+    if (c.di->rebase_size > fsize || c.di->rebase_off > fsize - c.di->rebase_size) { x->bad = 1; return; }
+    const uint8_t *p = buf + c.di->rebase_off, *end = p + c.di->rebase_size;
+    int seg = -1, k;
+    uint64_t off = 0, count, skip;
+    while (p < end && !x->bad) {
+        uint8_t op = *p & REBASE_OPCODE_MASK, imm = *p & REBASE_IMMEDIATE_MASK;
+        p++;
+        switch (op) {
+        case REBASE_OPCODE_DONE:
+            return;
+        case REBASE_OPCODE_SET_TYPE_IMM:
+            if (imm != REBASE_TYPE_POINTER) x->bad = 1;
+            break;
+        case REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+            seg = imm;
+            if (!(k = mu_decode(p, end, &off))) { x->bad = 1; break; }
+            p += k;
+            break;
+        case REBASE_OPCODE_ADD_ADDR_ULEB:
+            if (!(k = mu_decode(p, end, &skip))) { x->bad = 1; break; }
+            p += k;
+            off += skip;
+            break;
+        case REBASE_OPCODE_ADD_ADDR_IMM_SCALED:
+            off += 8ull * imm;
+            break;
+        case REBASE_OPCODE_DO_REBASE_IMM_TIMES:
+            for (uint8_t i = 0; i < imm && !x->bad; i++, off += 8) mg_or_rb_add(x, &c, seg, off, fsize);
+            break;
+        case REBASE_OPCODE_DO_REBASE_ULEB_TIMES:
+            if (!(k = mu_decode(p, end, &count))) { x->bad = 1; break; }
+            p += k;
+            for (uint64_t i = 0; i < count && !x->bad; i++, off += 8) mg_or_rb_add(x, &c, seg, off, fsize);
+            break;
+        case REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB:
+            if (!(k = mu_decode(p, end, &skip))) { x->bad = 1; break; }
+            p += k;
+            mg_or_rb_add(x, &c, seg, off, fsize);
+            off += 8 + skip;
+            break;
+        case REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB:
+            if (!(k = mu_decode(p, end, &count))) { x->bad = 1; break; }
+            p += k;
+            if (!(k = mu_decode(p, end, &skip))) { x->bad = 1; break; }
+            p += k;
+            for (uint64_t i = 0; i < count && !x->bad; i++, off += 8 + skip)
+                mg_or_rb_add(x, &c, seg, off, fsize);
+            break;
+        default:
+            x->bad = 1;
+        }
+    }
+}
+
 unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old, size_t n,
                            uint64_t grow, unsigned want, char *why, size_t whysz) {
     mi_image im, oim;
     struct mg_or_lcs c, oc;
     uint64_t base, obase;
     unsigned holds = 0;
-    char w[4][256] = { "LC_FUNCTION_STARTS could not be read", "the lazy pointers could not be read",
+    char w[5][256] = { "LC_FUNCTION_STARTS could not be read", "the lazy pointers could not be read",
                        "the export trie or the symbols could not be read",
-                       "__unwind_info could not be read" };
+                       "__unwind_info could not be read", "the rebased pointers could not be read" };
     memset(&c, 0, sizeof c);
     memset(&oc, 0, sizeof oc);
     snprintf(why, whysz, "the image could not be read");
@@ -1542,7 +1698,40 @@ unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old,
         u = 1;
     }
     if (u == 0) holds |= MG_OR_UNWIND;
-    for (int i = 0; i < 4; i++)
+
+    /* Each rebased pointer, slot by slot, as the opcodes name it. */
+    struct mg_or_rbs rb = { NULL, 0, 0, 0 }, orb = { NULL, 0, 0, 0 };
+    mg_or_rebases(buf, fsize, &rb);
+    mg_or_rebases(old, n, &orb);
+    if (!rb.bad && !orb.bad && rb.n != orb.n) {
+        snprintf(w[4], sizeof w[4], "the rebase opcodes name %zu pointers, and named %zu,", rb.n,
+                 orb.n);
+    } else if (!rb.bad && !orb.bad) {
+        size_t i = 0;
+        uint64_t v = 0, was = 0, to = 0;
+        for (; i < rb.n; i++) {
+            if (rb.r[i].vm != orb.r[i].vm + grow) {
+                snprintf(w[4], sizeof w[4], "the rebase opcodes name %#llx, and must name %#llx",
+                         (unsigned long long)rb.r[i].vm, (unsigned long long)(orb.r[i].vm + grow));
+                break;
+            }
+            memcpy(&v, buf + rb.r[i].at, sizeof v);
+            memcpy(&was, old + orb.r[i].at, sizeof was);
+            struct mg_or_moves m = { was, obase, 0 };
+            mi_each_lc(&oim, mg_or_moves_cb, &m);
+            to = m.moves ? was + grow : was;
+            if (v != to) {
+                snprintf(w[4], sizeof w[4], "the rebased pointer at %#llx holds %#llx, and must hold "
+                         "%#llx", (unsigned long long)rb.r[i].vm, (unsigned long long)v,
+                         (unsigned long long)to);
+                break;
+            }
+        }
+        if (i == rb.n) holds |= MG_OR_REBASES;
+    }
+    free(rb.r);
+    free(orb.r);
+    for (int i = 0; i < 5; i++)
         if (want & ~holds & (1u << i)) {
             snprintf(why, whysz, "%s", w[i]);
             break;
@@ -1581,21 +1770,22 @@ static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *
     const uint8_t *old = before->old;
     size_t n = before->oldsize, had = sizeof(struct mach_header_64) +
                                       ((const struct mach_header_64 *)before->lcs)->sizeofcmds;
-    uint32_t first = before->first, toff, tsize;
+    uint32_t first = before->first, toff = 0, tsize = 0;
     int rc = -1, appended = fsize > n + grow, rebuilt = -1;
-    uint8_t *want = (uint8_t *)malloc(had), *mask = (uint8_t *)calloc(n + 1, 1);
-    uint8_t *raised = (uint8_t *)malloc(n + 1);
+    uint8_t *want = (uint8_t *)malloc(had), *mask = (uint8_t *)calloc(n / 8 + 1, 1);
+    uint8_t *trie = NULL, *seen = NULL;
     size_t lcend = 0;
     mi_image wim, oim, bim;
     struct mg_expect_ctx x = { first, (uint32_t)grow };
     struct mg_exempt_ctx e = { old, n, mask };
-    if (want && mask && raised) {
+    if (want && mask) {
         lcend = mg_expect_no_split_info(memcpy(want, before->lcs, had));
-        /* What compact unwind and an export trie patched in place become. */
-        memcpy(raised, old, n);
-        rebuilt = mg_trie_walk(raised, n, (uint32_t)grow, 0, 0, NULL, NULL, NULL, 0);
-        if ((rebuilt == 0 && mg_trie_walk(raised, n, (uint32_t)grow, 1, 0, NULL, NULL, NULL, 0)) ||
-            mg_unwind_walk(raised, n, (uint32_t)grow, 1, 0, NULL, NULL, NULL, 0))
+        /* What an export trie patched in place becomes: a copy of it alone. */
+        rebuilt = mg_trie_walk((uint8_t *)old, n, (uint32_t)grow, 0, 0, NULL, NULL, NULL, 0);
+        if (rebuilt == 0 && mg_find_trie(old, n, &toff, &tsize) && toff && tsize &&
+            (!(trie = (uint8_t *)malloc(tsize)) || !(seen = (uint8_t *)calloc(tsize, 1)) ||
+             mg_trie_node(memcpy(trie, old + toff, tsize), tsize, 0, 0, (uint32_t)grow, 1, 0, NULL,
+                          NULL, NULL, 0, seen) != 0))
             rebuilt = -1;
     }
     if (mg_has_cmd((uint8_t *)buf, fsize, LC_SEGMENT_SPLIT_INFO)) {
@@ -1613,12 +1803,11 @@ static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *
     if (!lcend || rebuilt < 0 || mi_wrap(want, lcend, &wim) != 0 ||
         mi_wrap((uint8_t *)old, n, &oim) != 0 || mi_wrap((uint8_t *)buf, fsize, &bim) != 0) {
         fprintf(stderr, "ERROR: verify FAILED -- could not work out what the raise should make of "
-                        "the image as it was (out of memory, or the image, or its compact unwind "
-                        "or export trie, does not read); refusing.\n");
+                        "the image as it was (out of memory, or the image or its export trie does "
+                        "not read); refusing.\n");
         goto out;
     }
-    if (mg_verify_unwind_words(&oim, raised, (uint32_t)grow) != 0 ||
-        mg_verify_uuid(&bim, &oim) != 0)
+    if (mg_verify_unwind(&oim, buf, (uint32_t)grow, mask) != 0 || mg_verify_uuid(&bim, &oim) != 0)
         goto out;
     mi_each_lc(&wim, mg_expect_cb, &x);
     ml_each_off(&wim, mg_expect_off, &x);
@@ -1641,15 +1830,16 @@ static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *
     for (size_t i = 0; i < before->rb.s.n; i++) mg_exempt(mask, n, before->rb.v[i].at, 8);
     for (uint32_t i = 0; i < before->nrefs; i++) mg_exempt(mask, n, before->refs[i].off, 4);
     for (size_t i = first; i < n; i++) {
-        if (mask[i] || buf[i + grow] == raised[i]) continue;
-        if (raised[i] == old[i])
+        uint8_t w = trie && i >= toff && i - toff < tsize ? trie[i - toff] : old[i];
+        if (mg_exempted(mask, i) || buf[i + grow] == w) continue;
+        if (w == old[i])
             fprintf(stderr, "ERROR: verify FAILED -- file offset %#llx holds %#x after the grow, "
                             "and must hold %#x, as file offset %#zx did before it; refusing.\n",
                     (unsigned long long)(i + grow), buf[i + grow], old[i], i);
         else
             fprintf(stderr, "ERROR: verify FAILED -- file offset %#llx holds %#x after the grow, "
                             "and must hold %#x, file offset %#zx's %#x raised; refusing.\n",
-                    (unsigned long long)(i + grow), buf[i + grow], raised[i], i, old[i]);
+                    (unsigned long long)(i + grow), buf[i + grow], w, i, old[i]);
         goto out;
     }
     if (mg_verify_trie_exports(buf, fsize, old, n, grow) != 0) goto out;
@@ -1657,7 +1847,8 @@ static int mg_verify_bytes(const uint8_t *buf, size_t fsize, const mg_snapshot *
 out:
     free(want);
     free(mask);
-    free(raised);
+    free(trie);
+    free(seen);
     return rc;
 }
 
@@ -2936,6 +3127,23 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         return -1;
     }
 
+    /* Room for the `grow` bytes, before the snapshot copies the image for
+     * check 3: realloc may copy the image, and that copy is freed before the
+     * snapshot's is made. Nothing has changed yet. */
+    uint8_t *nbuf = (uint8_t *)realloc(buf, fsize + grow);
+    if (!nbuf) {
+        fprintf(stderr, "ERROR: realloc failed\n");
+        free(mg_new_trie);
+        return -1;
+    }
+    buf = nbuf;
+    /* Hand the new pointer back IMMEDIATELY. realloc may have moved the block and
+     * freed the old one, so from here on the caller's *pbuf would otherwise be
+     * dangling on any failure return -- a double free waiting for whoever frees
+     * on error. */
+    *pbuf = buf;
+    hdr = (struct mach_header_64 *)buf;
+
     /* Check 3 expects the load commands from these, as they were before the
      * drop, so that it sees what the drop did. */
     uint8_t *lcs = NULL;
@@ -2967,21 +3175,6 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
     }
 
     /* Insert `grow` zero bytes after the load commands, shifting file data down. */
-    uint8_t *nbuf = (uint8_t *)realloc(buf, fsize + grow);
-    if (!nbuf) {
-        fprintf(stderr, "ERROR: realloc failed\n");
-        mg_snapshot_free(&snap);
-        free(mg_new_trie);
-        return -1;
-    }
-    buf = nbuf;
-    /* Hand the new pointer back IMMEDIATELY. realloc may have moved the block and
-     * freed the old one, so from here on the caller's *pbuf would otherwise be
-     * dangling on any failure return -- a double free waiting for whoever frees
-     * on error. The paths below are "cannot happen" assertions, which is exactly
-     * the kind of path that is never exercised until it is. */
-    *pbuf = buf;
-    hdr = (struct mach_header_64 *)buf;
     memmove(buf + insert + grow, buf + insert, fsize - insert);
     memset(buf + insert, 0, grow);
 

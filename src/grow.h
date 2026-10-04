@@ -301,7 +301,7 @@ int mg_snapshot_take(const uint8_t *buf, size_t fsize, mg_snapshot *s);
 void mg_snapshot_free(mg_snapshot *s);
 
 
-/* Four things true of an image ld64 linked, whatever a grow moved
+/* Five things true of an image ld64 linked, whatever a grow moved
  * (check 4). mg_oracles_raised asks them of `buf`, a raise by `grow` of the
  * image `old`:
  * - inits: every S_MOD_INIT_FUNC_POINTERS and S_MOD_TERM_FUNC_POINTERS
@@ -315,11 +315,14 @@ void mg_snapshot_free(mg_snapshot *s);
  * - unwind: every personality compact unwind names is a slot of a non-lazy
  *   pointer section (__got, __nl_symbol_ptr), every LSDA lies in a section
  *   named __gcc_except_tab, and each LSDA index entry's function and LSDA
- *   offsets are `old`'s, plus `grow`.
+ *   offsets are `old`'s, plus `grow`;
+ * - rebases: the rebase opcodes name the slots `old`'s named, each `grow`
+ *   on, and each holds what the same slot of `old` held, plus `grow` if
+ *   that lay in one of `old`'s segments and was not its base.
  * mg_oracles asks them of `buf` alone, as a raise by 0 of itself: the lazy
- * pointers then hold whenever they can be read.
+ * pointers and the rebases then hold whenever they can be read.
  * Each reads what it checks itself: the sections' values, the export trie's
- * names, __unwind_info. It shares with the grow only mi_wrap's view of the
+ * names, __unwind_info, the rebase opcodes. It shares with the grow only mi_wrap's view of the
  * load commands, mi_image_base, mg_funcstarts_decode, mg_find_trie,
  * mu_decode, MT_TRIE_MAX_DEPTH and the MG_EXPORT_* masks, and none of the
  * walkers that move what it reads. Returns the MG_OR_ bits of those that
@@ -328,7 +331,8 @@ void mg_snapshot_free(mg_snapshot *s);
 #define MG_OR_LAZY    2u
 #define MG_OR_EXPORTS 4u
 #define MG_OR_UNWIND  8u
-#define MG_OR_ALL     15u
+#define MG_OR_REBASES 16u
+#define MG_OR_ALL     31u
 unsigned mg_oracles(const uint8_t *buf, size_t fsize, unsigned want, char *why, size_t whysz);
 unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old, size_t n,
                            uint64_t grow, unsigned want, char *why, size_t whysz);
@@ -355,7 +359,8 @@ unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old,
  *
  * Check 4, a raise only. Each mg_oracles bit that held of the image before
  * holds after, as mg_oracles_raised asks it of the raised image and the
- * old one.
+ * old one. Its rebases oracle reads the rebase opcodes apart from
+ * mg_rebases_read, so it sees a rebase that reader drops.
  *
  * Check 5. No code addresses the base as it is plus G, where an unrepaired
  * reference to the header would. Every reference to the header that
@@ -377,22 +382,26 @@ unsigned mg_oracles_raised(const uint8_t *buf, size_t fsize, const uint8_t *old,
  *   end, moved, and runs to the end of the file.
  * - The bytes the deleted commands held are zero. The rest of the old pad
  *   is as it was, and the inserted G bytes are zero.
- * - An export trie patched in place, and compact unwind, are what
- *   mg_trie_walk and mg_unwind_walk make of a copy of the old image. That
- *   copy's compact unwind differs from the old only by G added to 32-bit
- *   words.
+ * - An export trie patched in place is what mg_trie_walk makes of a copy
+ *   of the old image.
+ * - Compact unwind is the old one with G added to each 32-bit word that
+ *   holds an offset from the base, which check 3 reads apart from
+ *   mg_unwind_walk, through <mach-o/compact_unwind_encoding.h>'s structs:
+ *   each personality, each first-level entry's function (the sentinel's
+ *   too), both offsets of each LSDA index entry, and each regular page
+ *   entry's function.
  * - The export trie, patched or rebuilt, holds the old one's exports, each
  *   moved, as mexp_trie_walk reads both. Neither walker, nor
  *   mt_trie_rebuild, uses mexp_trie_walk.
  * - From the first section on, the file is the old one G bytes further on,
  *   except what the raise moves there: the rebased pointers, the repaired
  *   code, the symbols' values, the leading function start, the export trie,
- *   and the offsets in data in code, compact unwind and
- *   S_INIT_FUNC_OFFSETS. The other checks watch those.
+ *   and the offsets in data in code and S_INIT_FUNC_OFFSETS. The other
+ *   checks watch those.
  * Check 3 shares with the raise ml_each_off, the snapshot's rebase and
- * reference worklists (rb and refs), mg_raised_uuid, mg_trie_walk and
- * mg_unwind_walk. So it trusts them, except for what it asks above of the
- * UUID, the export trie and compact unwind. */
+ * reference worklists (rb and refs), mg_raised_uuid and mg_trie_walk. So it
+ * trusts them, except for what it asks above of the UUID and the export
+ * trie. */
 int mg_verify(const uint8_t *buf, size_t fsize, const mg_snapshot *before);
 
 

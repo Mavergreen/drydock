@@ -9,7 +9,7 @@
  *                          writes IN's x86_64 slice (IN itself, if thin)
  *   raise_corpus oracles   paths on stdin; prints, for each file's x86_64
  *                          slice, its path, a tab, its sha256, a tab, and
- *                          what each of mg_oracles' four says of it: "held",
+ *                          what each of mg_oracles' five says of it: "held",
  *                          "skipped" (it does not hold, so a grow's check 4
  *                          does not ask it) or "nothing" (it holds, with
  *                          nothing to check)
@@ -142,11 +142,14 @@ static int thin(const char *in, const char *out) {
 }
 
 /* What each oracle has to check, read here without mg_oracles. */
-struct have { int values, routines, lazy, symtab, unwind; const struct linkedit_data_command *fs; };
+struct have { int values, routines, lazy, symtab, unwind, rebases; const struct linkedit_data_command *fs; };
 static int have_cb(const struct load_command *lc, void *ctx) {
     struct have *h = (struct have *)ctx;
     if (lc->cmd == LC_ROUTINES_64) h->routines = 1;
     if (lc->cmd == LC_SYMTAB) h->symtab = 1;
+    if ((lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) &&
+        ((const struct dyld_info_command *)lc)->rebase_size)
+        h->rebases = 1;
     if (lc->cmd == LC_FUNCTION_STARTS && !h->fs) h->fs = (const struct linkedit_data_command *)lc;
     if (lc->cmd != LC_SEGMENT_64) return 0;
     const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
@@ -186,11 +189,12 @@ static int oracles(void) {
         int trie = mg_find_trie(buf, size, &toff, &tsize) && toff && tsize;
         unsigned holds = mg_oracles(buf, size, MG_OR_ALL, why, sizeof why);
         sha_of(buf, size, hex);
-        printf("%s\t%s\tinits=%s lazy=%s exports=%s unwind=%s\n", path, hex,
+        printf("%s\t%s\tinits=%s lazy=%s exports=%s unwind=%s rebases=%s\n", path, hex,
                say(holds, MG_OR_INITS, nstarts && (h.values || h.routines)),
                say(holds, MG_OR_LAZY, h.lazy),
                say(holds, MG_OR_EXPORTS, trie && h.symtab),
-               say(holds, MG_OR_UNWIND, h.unwind));
+               say(holds, MG_OR_UNWIND, h.unwind),
+               say(holds, MG_OR_REBASES, h.rebases));
         free(buf);
     }
     return 0;
