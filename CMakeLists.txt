@@ -359,6 +359,21 @@ set_tests_properties(raise_runs_test PROPERTIES SKIP_RETURN_CODE 77)
 # by two, and run beside the originals. Hermetic: it runs on CI.
 add_test(NAME raise_rich_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_rich_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+# What src/hdrref.c's jump-table rule changes over 10.9's own Mach-Os: one
+# helper holds hdrref.c twice, the second without the rule and its external
+# names prefixed so both link. SKIPs (77) off 10.9.
+add_library(hdrref_norule OBJECT src/hdrref.c)
+target_include_directories(hdrref_norule PRIVATE src)
+target_compile_definitions(hdrref_norule PRIVATE MHR_NO_TABLE_RULE
+  mhr_scan_code=mhr_nr_scan_code mhr_scan=mhr_nr_scan mhr_scan_range=mhr_nr_scan_range
+  mhr_confirm_each=mhr_nr_confirm_each mhr_confirm=mhr_nr_confirm)
+target_compile_options(hdrref_norule PRIVATE -O2 -Wall -Wno-unused-function -Wno-unused-variable)
+add_executable(hdrref_ab tests/hdrref_ab.c $<TARGET_OBJECTS:hdrref_norule>)
+target_compile_options(hdrref_ab PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(hdrref_ab PRIVATE drydockcore)
+add_test(NAME hdrref_table_rule_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/hdrref_table_rule_test.sh" "$<TARGET_FILE_DIR:hdrref_ab>")
+set_tests_properties(hdrref_table_rule_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # Hermetic tests for src/atomic_write.c's wa_write_new, in a scratch
 # directory under $TMPDIR: it never writes its input, it writes its output

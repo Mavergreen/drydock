@@ -254,9 +254,11 @@ static int mhr_confirm_cb(const mhr_cand *c, void *ctx_) {
         return x->fn(c, m->nstarts ? MHR_UNCONFIRMED : MHR_NO_STARTS, x->ctx);
     int s = mhr_sweep(m, x->sect, m->starts[lo - 1], c, &x->r);
     uint64_t end = x->sect->addr + x->sect->size;
+#ifndef MHR_NO_TABLE_RULE
     if (s > 0 && mhr_in_table(m, c, m->starts[lo - 1],
                               lo < m->nstarts && m->starts[lo] < end ? m->starts[lo] : end))
         s = -1;
+#endif
     return x->fn(c, s > 0 ? MHR_CONFIRMED : s == 0 ? MHR_REFUTED : MHR_UNCONFIRMED, x->ctx);
 }
 
