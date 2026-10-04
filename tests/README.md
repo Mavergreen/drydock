@@ -5,6 +5,7 @@ The suites are the `add_test` entries in `../CMakeLists.txt`, all run by `ctest`
 
 | test | what it proves |
 |---|---|
+| `family_conventions` | shipyard's `check-family-conventions.sh`, the gate CI's conventions workflow runs (shell portability among it), against the installed shipyard rather than CI's `@v1`. Needs a git checkout and `python3` with PyYAML, and fails without either rather than skipping; CI's release job provisions PyYAML |
 | `grow_test` | hermetic: the grow, every base-relative re-baser, `mg_verify`, `mg_plausible`, against synthetic images |
 | `guard_page_test` | hermetic: a load command shorter than its struct, last in an image that ends against a `PROT_NONE` page, so a reader that takes a field past the command faults on any host (CI included), not only under libgmalloc. Each of the grow, `mg_rebases_read` and `mg_find_trie` must refuse or read nothing past an 8-byte `LC_DYSYMTAB`, `LC_DYLD_INFO_ONLY`, `LC_UUID` or `LC_SYMTAB`, on the raise route and the lowering; a positive control reads the byte past the image and must fault, or the test skips |
 | `grown_binary_runs_test` | runs what a header grow produced: a PIE executable linked with `-headerpad 0`, and `/usr/bin/printf` where it qualifies, each grown by more `LC_RPATH`s than its pad holds, then run beside its input with the same arguments and environment -- stdout, stderr and exit status must agree. Structure checks cannot see a wrong entry point: with `LC_MAIN`'s `entryoff` left unbumped the grown binary still passes `verify`, and dies here of SIGBUS |

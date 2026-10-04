@@ -173,6 +173,12 @@ install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewr
 
 enable_testing()
 
+# CI's conventions gate, here too, so a push is not the first run of it.
+add_test(NAME family_conventions
+  COMMAND sh -c "python3 -c 'import yaml' || { echo 'family_conventions needs python3 with PyYAML: python3 -m pip install pyyaml' >&2; exit 1; }; exec sh \"$0\"/check-family-conventions.sh"
+          "${MavericksShipyard_SCRIPTS}"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,
 # against synthetic images built in memory. -Wno-unused-function because
 # src/grow.h declares helpers this translation unit does not all call.
