@@ -538,7 +538,10 @@ int mg_plausible(const uint8_t *buf, size_t fsize);
  * Grow the header pad by at least `grow_req` bytes (rounded up to a page).
  * pbuf is realloc'd, pfsize updated. Returns 0 on success, -1 on refusal. A
  * refusal on a precondition, checked before anything moves, leaves the buffer
- * and size unchanged. Among those: an executable that is not PIE, or lacks a
+ * and size unchanged. Among those: an image that is encrypted (cryptid not
+ * 0) or has a segment flagged SG_PROTECTED_VERSION_1, on either route,
+ * since the kernel decrypts those pages where they lie in the file; an
+ * executable that is not PIE, or lacks a
  * large enough __PAGEZERO; a dylib or bundle that is not x86_64, or that a
  * raise cannot vouch for (mg_raise_ok); any other file type; one with no
  * section data to insert the new space

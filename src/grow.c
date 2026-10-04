@@ -2581,13 +2581,6 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         fprintf(stderr, "ERROR: a dylib or bundle with a thread command (%#x), whose register "
                         "state a raise does not move; refusing to grow\n", lc->cmd);
         return 1;
-    case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64: {
-        const struct encryption_info_command *e = (const struct encryption_info_command *)lc;
-        if (!e->cryptid) return 0;
-        fprintf(stderr, "ERROR: the image is encrypted (cryptid %u), and a raise would move "
-                        "its encrypted pages; refusing to grow\n", e->cryptid);
-        return 1;
-    }
     case LC_DYSYMTAB: {
         const struct dysymtab_command *d = (const struct dysymtab_command *)lc;
         c->toc += d->ntoc;
@@ -2600,12 +2593,6 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
         const struct section_64 *s = (const struct section_64 *)(seg + 1);
         int header = seg == c->header_seg;
-        if (seg->flags & SG_PROTECTED_VERSION_1) {
-            fprintf(stderr, "ERROR: segment %.16s is protected (SG_PROTECTED_VERSION_1), and a "
-                            "raise would move its encrypted pages; refusing to grow\n",
-                    seg->segname);
-            return 1;
-        }
         if (!header && seg->filesize > 0 && seg->fileoff < c->first) {
             fprintf(stderr, "ERROR: segment %.16s's file data starts at %llu, before the first "
                             "content at %u; refusing to grow\n", seg->segname,
@@ -2637,6 +2624,27 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
     }
     }
     return 0;
+}
+
+/* mg_grow_header's mi_each_lc callback, on either route: says why, and
+ * stops, at an encryption command whose cryptid is not 0 or a segment
+ * flagged SG_PROTECTED_VERSION_1, whose pages the kernel decrypts where they
+ * lie in the file. */
+static int mg_crypt_cb(const struct load_command *lc, void *ctx_) {
+    (void)ctx_;
+    if (lc->cmd == LC_ENCRYPTION_INFO || lc->cmd == LC_ENCRYPTION_INFO_64) {
+        const struct encryption_info_command *e = (const struct encryption_info_command *)lc;
+        if (!e->cryptid) return 0;
+        fprintf(stderr, "ERROR: the image is encrypted (cryptid %u), and a grow would move "
+                        "its encrypted pages; refusing to grow\n", e->cryptid);
+        return 1;
+    }
+    if (lc->cmd != LC_SEGMENT_64) return 0;
+    const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+    if (!(seg->flags & SG_PROTECTED_VERSION_1)) return 0;
+    fprintf(stderr, "ERROR: segment %.16s is protected (SG_PROTECTED_VERSION_1), and a grow "
+                    "would move its encrypted pages; refusing to grow\n", seg->segname);
+    return 1;
 }
 
 /* 0 when a raise can vouch for every load command of the dylib or bundle
@@ -2816,6 +2824,7 @@ int mg_grow_header(uint8_t **pbuf, size_t *pfsize, uint32_t grow_req) {
         fprintf(stderr, "ERROR: no __TEXT-like segment holds the header\n");
         return -1;
     }
+    if (!mi_each_lc(&find_im, mg_crypt_cb, NULL)) return -1;
     if (raise) {
         if (mg_raise_ok(&find_im, base, insert) != 0) return -1;
     } else if (!pagezero || pagezero->vmsize < grow) {

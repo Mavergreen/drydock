@@ -4691,12 +4691,12 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
       "not move; refusing to grow" },
     { "LC_THREAD", dy_thread, "ERROR: a dylib or bundle with a thread command (0x4)" },
     { "an encrypted image", dy_encrypted,
-      "ERROR: the image is encrypted (cryptid 1), and a raise would move its encrypted pages; "
+      "ERROR: the image is encrypted (cryptid 1), and a grow would move its encrypted pages; "
       "refusing to grow" },
     { "a short encryption command", dy_short_crypt, "ERROR: image fails validation" },
     { "a short LC_ROUTINES_64", dy_short_routines, "ERROR: image fails validation" },
     { "a protected segment", dy_protected,
-      "ERROR: segment __DATA is protected (SG_PROTECTED_VERSION_1), and a raise would move its "
+      "ERROR: segment __DATA is protected (SG_PROTECTED_VERSION_1), and a grow would move its "
       "encrypted pages; refusing to grow" },
     { "a __TEXT section whose address and offset disagree", dy_misplaced,
       "ERROR: section __TEXT,__stub_helper lies 0x1110 past the image base in memory and 0x1100 "
@@ -5396,6 +5396,48 @@ static void test_raise_replaces_the_uuid(void) {
               "uuid: a raise by %#x replaces it (got %d)", i ? 0x2000 : 0x1000, r);
         free(buf);
     }
+}
+
+/* build_image with an encryption command, `cmd`, over its first page of
+ * code, whose cryptid is `cryptid`. */
+static uint8_t *build_crypt_image(size_t *fsize, uint32_t cmd, uint32_t cryptid) {
+    uint32_t sect_off;
+    uint8_t *buf = build_image(fsize, &sect_off, 0);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    struct encryption_info_command_64 *e =
+        (struct encryption_info_command_64 *)((uint8_t *)(h + 1) + h->sizeofcmds);
+    e->cmd = cmd;
+    e->cmdsize = sizeof *e;
+    e->cryptoff = sect_off;
+    e->cryptsize = 0x1000;
+    e->cryptid = cryptid;
+    h->ncmds++;
+    h->sizeofcmds += sizeof *e;
+    return buf;
+}
+
+/* A lowering, like a raise, refuses an encrypted image or a protected
+ * segment: it would move the pages the kernel decrypts where they lie. An
+ * encryption command whose cryptid is 0 is no reason to refuse. */
+static void test_lowering_refuses_encrypted_pages(void) {
+    size_t fsize;
+    uint8_t *buf = build_crypt_image(&fsize, LC_ENCRYPTION_INFO_64, 1);
+    check_grow_refuses_header_refs("an encrypted executable", buf, fsize,
+        "ERROR: the image is encrypted (cryptid 1), and a grow would move its encrypted pages; "
+        "refusing to grow");
+    buf = build_crypt_image(&fsize, LC_ENCRYPTION_INFO, 2);
+    check_grow_refuses_header_refs("an executable encrypted by LC_ENCRYPTION_INFO", buf, fsize,
+        "ERROR: the image is encrypted (cryptid 2), and a grow would move its encrypted pages; "
+        "refusing to grow");
+    buf = build_crypt_image(&fsize, LC_ENCRYPTION_INFO_64, 0);
+    seg_named(buf, fsize, "__TEXT")->flags |= SG_PROTECTED_VERSION_1;
+    check_grow_refuses_header_refs("an executable whose __TEXT is protected", buf, fsize,
+        "ERROR: segment __TEXT is protected (SG_PROTECTED_VERSION_1), and a grow would move its "
+        "encrypted pages; refusing to grow");
+    buf = build_crypt_image(&fsize, LC_ENCRYPTION_INFO_64, 0);
+    int r = mg_grow_header(&buf, &fsize, 0x1000);
+    CHECK(r == 0, "an executable whose encryption command says cryptid 0 grows (got %d)", r);
+    free(buf);
 }
 
 /* A lowering moves no address a dSYM holds, so it keeps its UUID. */
@@ -6145,6 +6187,7 @@ int main(void) {
     test_raised_uuid_is_derived();
     test_raise_replaces_the_uuid();
     test_lowering_keeps_the_uuid();
+    test_lowering_refuses_encrypted_pages();
     test_raise_refuses_a_short_uuid();
     test_ensure_pad_announces_no_uuid_it_has_not();
     test_verify_watches_the_raised_bytes();
