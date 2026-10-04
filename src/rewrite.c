@@ -104,7 +104,8 @@ static uint32_t mr_emit_rpath_lc(uint8_t *dst, const char *path) {
  *
  * Returns 0 to continue, 1 to stop the walk -- the two cases below where a
  * dylib or LC_RPATH command's own name offset is out of bounds for its
- * cmdsize (mo_lc_str_at, ordinals.h). Stopping here is exactly what the
+ * cmdsize, or its name has no NUL before the command ends (mo_lc_str_at,
+ * ordinals.h). Stopping here is exactly what the
  * stop-capable mi_each_lc exists for: without it, the walk would keep
  * calling this callback for every later load command after the refusal
  * fires, each one still writing into new_lcs -- corrupting/overrunning a
@@ -225,8 +226,8 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
                  * delete it as dead, and don't trust it as covered -- the
                  * LC_RPATH refusal just below is the one change_dylib_test.sh
                  * case 19 actually exercises. */
-                fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
-                                "exceeds cmdsize %u); refusing\n",
+                fprintf(stderr, "ERROR: malformed dylib load command (no name from offset %u "
+                                "to cmdsize %u); refusing\n",
                         dc->dylib.name.offset, cmdsize);
                 return 1;
             }
@@ -260,8 +261,8 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
         const struct rpath_command *rc = (const struct rpath_command *)lc;
         const char *rp = mo_lc_str_at(lc, rc->path.offset);
         if (!rp) {
-            fprintf(stderr, "ERROR: malformed LC_RPATH command (path offset %u "
-                            "exceeds cmdsize %u); refusing\n",
+            fprintf(stderr, "ERROR: malformed LC_RPATH command (no path from offset %u "
+                            "to cmdsize %u); refusing\n",
                     rc->path.offset, cmdsize);
             return 1;
         }
@@ -362,7 +363,8 @@ static int mr_build_lcs_lc(const struct load_command *lc, void *ctx_) {
  *
  * Returns 0 on success, -1 (message already on stderr, via mr_build_lcs_lc) if a
  * dylib or LC_RPATH command's name offset is out of bounds for its own
- * cmdsize -- see mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are
+ * cmdsize, or its name has no NUL before the command ends -- see
+ * mo_lc_str_at (ordinals.h). out_off/out_ncmds/out_mods are
  * unspecified on failure; the caller must not use them. The per-command work
  * is mr_build_lcs_lc, walked via the stop-capable mi_each_lc so that refusal
  * can abort before writing another byte into new_lcs; everything below

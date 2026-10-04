@@ -222,7 +222,7 @@ static int md_collect_lc(const struct load_command *lc_, void *ctx_) {
         ctx->has_dyld_info_only = 1;
     } else if (lc->cmd == LC_BUILD_VERSION) {
         const struct mc_build_version *bv = (const struct mc_build_version *)lc;
-        if (lc->cmdsize >= sizeof *bv && bv->platform == MV_PLATFORM_MACOS &&
+        if (bv->platform == MV_PLATFORM_MACOS &&
             ctx->n_macos_bv++ == 0) {
             ctx->bv_minos = bv->minos;
             ctx->bv_sdk = bv->sdk;

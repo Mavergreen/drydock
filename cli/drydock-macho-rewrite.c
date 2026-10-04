@@ -314,7 +314,7 @@ struct info_ctx {
  * what the rewriters consider in-bounds. */
 static const char *lc_str_at(const struct load_command *lc, uint32_t offset) {
     const char *s = mo_lc_str_at(lc, offset);
-    return s ? s : "(malformed: offset past cmdsize)";
+    return s ? s : "(malformed: no name inside the command)";
 }
 
 static int info_cb(const struct load_command *lc, void *ctx_) {
@@ -348,7 +348,7 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
                vc->version >> 16, (vc->version >> 8) & 0xff, vc->version & 0xff,
                vc->sdk >> 16, (vc->sdk >> 8) & 0xff, vc->sdk & 0xff);
     }
-    if (lc->cmd == LC_BUILD_VERSION && lc->cmdsize >= sizeof(struct mc_build_version)) {
+    if (lc->cmd == LC_BUILD_VERSION) {
         const struct mc_build_version *bv = (const struct mc_build_version *)lc;
         printf("  platform=%u minos=%u.%u.%u sdk=%u.%u.%u\n", bv->platform,
                bv->minos >> 16, (bv->minos >> 8) & 0xff, bv->minos & 0xff,

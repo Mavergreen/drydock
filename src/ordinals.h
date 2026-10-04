@@ -113,8 +113,9 @@ const char *mo_kind_name(uint32_t cmd);
  * here rather than repeating the check inline: cli/drydock-macho-rewrite.c's info dump,
  * change_dylib.c's build_lcs, and mo_map_build below each used to compute
  * this pointer independently, and only one of the three actually checked.
- * Returns NULL for an out-of-bounds offset; the caller decides whether that
- * means "skip this command" or "refuse the whole operation". */
+ * Returns NULL for an offset past the command, or a name with no NUL before
+ * the command ends; the caller decides whether that means "skip this
+ * command" or "refuse the whole operation". */
 const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset);
 
 /* Walk the `ncmds` load commands starting right after the mach_header_64 at

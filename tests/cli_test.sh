@@ -5145,9 +5145,10 @@ done
     && ok "info: a fat file gets one resign line, the whole file's, slice by slice" \
     || bad "info resign fat" "[$(resign "$T/lk_fat_info")] [$(resign "$T/lk_fat_info2")]"
 
-# A load command shorter than its kind: refused in 10.9's words, and never
-# read past. Under libgmalloc where this host has one, byte-exact, so a read
-# even one byte past a command at the end of the file faults.
+# A load command shorter than its kind: no reader takes a field past it, so
+# `info` refuses the file and an edit writes nothing. Under libgmalloc where
+# this host has one, byte-exact, so a read even one byte past a command at the
+# end of the file faults.
 case $(DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib "$DRYDOCK_MACHO_REWRITE" --capabilities 2>&1 >/dev/null) in
 *GuardMalloc*) gm=/usr/lib/libgmalloc.dylib ;;
 *) gm=; skip "order: short load commands under libgmalloc" "libgmalloc does not load here" ;;
@@ -5157,24 +5158,33 @@ short_bad=
 for k in 0x2:LC_SYMTAB 0xb:LC_DYSYMTAB 0x16:LC_TWOLEVEL_HINTS 0x1e:LC_SEGMENT_SPLIT_INFO \
          0x1d:LC_CODE_SIGNATURE 0x26:LC_FUNCTION_STARTS 0x29:LC_DATA_IN_CODE \
          0x2b:LC_DYLIB_CODE_SIGN_DRS 0x2e:LC_LINKER_OPTIMIZATION_HINT 0x22:LC_DYLD_INFO \
-         0x80000022:LC_DYLD_INFO_ONLY 0xd:LC_ID_DYLIB; do
+         0x80000022:LC_DYLD_INFO_ONLY 0xd:LC_ID_DYLIB 0xc:LC_LOAD_DYLIB \
+         0x80000018:LC_LOAD_WEAK_DYLIB 0x8000001c:LC_RPATH 0x8000001f:LC_REEXPORT_DYLIB \
+         0x80000023:LC_LOAD_UPWARD_DYLIB 0x24:LC_VERSION_MIN_MACOSX; do
     "$T/mklinkedit" lone "${k%%:*}" 8 "$T/lk_short"
-    got=$(gmrun "$DRYDOCK_MACHO_REWRITE" info "$T/lk_short" 2>/dev/null | sed -n 's/^resign 10\.9: //p')
-    [ "$got" = "malformed object (${k#*:} cmdsize too small) in command 0" ] || short_bad="$short_bad [${k#*:}: $got]"
+    rc=0; gmrun "$DRYDOCK_MACHO_REWRITE" info "$T/lk_short" >/dev/null 2>"$T/lk_short.err" || rc=$?
+    [ "$rc" -eq 1 ] && grep -q 'not a readable 64-bit Mach-O' "$T/lk_short.err" ||
+        short_bad="$short_bad [${k#*:}: exit $rc]"
 done
 [ -z "$short_bad" ] \
-    && ok "info: an 8-byte command of each kind the verdict reads is refused as too small" \
+    && ok "info: an 8-byte command of each kind a reader reads is refused, not read past" \
     || bad "info: short commands" "$short_bad"
+# A name with no NUL inside its command: info says so, and reads nothing past
+# it (an LC_RPATH of 16 bytes whose path, at 12, is "AAAA").
+"$T/mklinkedit" lone 0x8000001c 16 "$T/lk_noname"
+printf '\014\000\000\000AAAA' | dd of="$T/lk_noname" bs=1 seek=40 conv=notrunc 2>/dev/null
+rc=0; out=$(gmrun "$DRYDOCK_MACHO_REWRITE" info "$T/lk_noname" 2>/dev/null) || rc=$?
+[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx '  rpath=(malformed: no name inside the command)' \
+    && ok "info: an LC_RPATH whose name has no NUL inside it is named malformed, not read past" \
+    || bad "info: an unterminated rpath" "exit $rc: $(printf '%s\n' "$out" | grep 'rpath=')"
 "$T/mklinkedit" short-last "$T/lk_short_last"
 rm -f "$T/lk_short_last.out"
 rc=0
 printf 'load-command delete uuid\n' | gmrun "$DRYDOCK_MACHO_REWRITE" "$T/lk_short_last" "$T/lk_short_last.out" \
     >/dev/null 2>"$T/lo.err" || rc=$?
-[ "$rc" -eq 0 ] && grep -q "lk_short_last.out: written" "$T/lo.err" \
-    && ! grep -q '__LINKEDIT' "$T/lo.err" \
-    && [ "$(resign "$T/lk_short_last.out")" = "malformed object (LC_DYSYMTAB cmdsize too small) in command 2" ] \
-    && ok "order: an edit of an image whose LC_DYSYMTAB is 8 bytes neither reads past it nor packs" \
-    || bad "order: short LC_DYSYMTAB" "rc $rc, resign [$(resign "$T/lk_short_last.out")]: $(grep -v GuardMalloc "$T/lo.err")"
+[ "$rc" -eq 1 ] && [ ! -e "$T/lk_short_last.out" ] && grep -q 'not a readable 64-bit Mach-O' "$T/lo.err" \
+    && ok "order: an edit of an image whose LC_DYSYMTAB is 8 bytes refuses it, writing nothing" \
+    || bad "order: short LC_DYSYMTAB" "rc $rc: $(grep -v GuardMalloc "$T/lo.err")"
 
 # The pass, on a thin file. It runs when the run changed a piece of
 # __LINKEDIT, or the output would re-sign corrupt.

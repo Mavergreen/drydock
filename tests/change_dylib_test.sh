@@ -1605,7 +1605,8 @@ cat > "$T/corrupt_rpath_offset.c" <<'EOF'
 #include <sys/stat.h>
 #include <mach-o/loader.h>
 /* Rewrites the FIRST LC_RPATH's path.offset to cmdsize (one byte past the
- * command's own end -- mo_lc_str_at's bound is `offset >= cmdsize`, so this
+ * command's own end -- mo_lc_str_at refuses `offset >= cmdsize`, as it does
+ * a name with no NUL before the command ends, so this
  * is minimally out of range, not wildly so). Exit 0 on success, 2 if no
  * LC_RPATH was found (a fixture-building bug, not the thing under test). */
 int main(int argc, char **argv) {

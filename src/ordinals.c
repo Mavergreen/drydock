@@ -35,7 +35,8 @@ const char *mo_kind_name(uint32_t cmd) {
 }
 
 const char *mo_lc_str_at(const struct load_command *lc, uint32_t offset) {
-    if (offset >= lc->cmdsize) return NULL;
+    if (offset >= lc->cmdsize || !memchr((const char *)lc + offset, 0, lc->cmdsize - offset))
+        return NULL;
     return (const char *)lc + offset;
 }
 
@@ -80,8 +81,8 @@ int mo_map_build(const uint8_t *buf, uint32_t ncmds, int base,
             const struct dylib_command *dc = (const struct dylib_command *)p;
             const char *name = mo_lc_str_at(lc, dc->dylib.name.offset);
             if (!name) {
-                fprintf(stderr, "ERROR: malformed dylib load command (name offset %u "
-                                "exceeds cmdsize %u); refusing\n",
+                fprintf(stderr, "ERROR: malformed dylib load command (no name from offset %u "
+                                "to cmdsize %u); refusing\n",
                         dc->dylib.name.offset, lc->cmdsize);
                 return -1;
             }

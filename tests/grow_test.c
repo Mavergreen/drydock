@@ -3641,10 +3641,6 @@ static const struct { const char *what; pt_poke poke; const char *why; } pt_unre
       "the rebase opcodes (1000 bytes at offset 12288) run past the end of the 12544-byte image" },
     { "two LC_DYLD_INFO commands", pt_two_dyld_info, "the image has 2 LC_DYLD_INFO commands" },
     { "a slot rebased twice", pt_twice, "the rebase opcodes name __DATA+0x10 more than once" },
-    { "a short LC_DYLD_INFO command", pt_short_di,
-      "the image's LC_DYLD_INFO command is 8 bytes, too short to hold rebase_off/rebase_size" },
-    { "a short LC_DYSYMTAB command", pt_short_dysymtab,
-      "the image's LC_DYSYMTAB command is 8 bytes, too short to hold nlocrel" },
 };
 
 static void test_rebases_read_refuses_what_it_cannot_read(void) {
@@ -3678,7 +3674,7 @@ static void test_rebases_read_refuses_a_short_command_before_reading_it(void) {
         mg_rebases rb;
         char why[256] = "";
         int r = mg_rebases_read(cut, end, &rb, why, sizeof why);
-        CHECK(r == -1 && strstr(why, "too short to hold") != NULL,
+        CHECK(r == -1 && strstr(why, "the image does not validate") != NULL,
               "rebases: short command %zu, at the end of the image, is refused (got %d, '%s')",
               k, r, why);
         mg_rebases_free(&rb);
@@ -4697,10 +4693,8 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
     { "an encrypted image", dy_encrypted,
       "ERROR: the image is encrypted (cryptid 1), and a raise would move its encrypted pages; "
       "refusing to grow" },
-    { "a short encryption command", dy_short_crypt,
-      "ERROR: an encryption command is 16 bytes, too short to hold cryptid; refusing to grow" },
-    { "a short LC_ROUTINES_64", dy_short_routines,
-      "ERROR: LC_ROUTINES_64 is 16 bytes, too short to hold init_address; refusing to grow" },
+    { "a short encryption command", dy_short_crypt, "ERROR: image fails validation" },
+    { "a short LC_ROUTINES_64", dy_short_routines, "ERROR: image fails validation" },
     { "a protected segment", dy_protected,
       "ERROR: segment __DATA is protected (SG_PROTECTED_VERSION_1), and a raise would move its "
       "encrypted pages; refusing to grow" },
@@ -4713,11 +4707,8 @@ static const struct { const char *what; dy_poke poke; const char *why; } dy_unra
     { "a segment whose file data starts before the first content", dy_early,
       "ERROR: segment __DATA's file data starts at 4095, before the first content at 4096; "
       "refusing to grow" },
-    { "a short LC_DYSYMTAB", dy_short_dysymtab,
-      "ERROR: LC_DYSYMTAB is 16 bytes, too short to hold its tables' counts; refusing to grow" },
-    { "a short LC_SYMTAB", dy_short_symtab,
-      "ERROR: LC_SYMTAB is 16 bytes, too short to hold its symbol and string tables' offsets "
-      "and sizes; refusing to grow" },
+    { "a short LC_DYSYMTAB", dy_short_dysymtab, "ERROR: image fails validation" },
+    { "a short LC_SYMTAB", dy_short_symtab, "ERROR: image fails validation" },
     { "a table of contents", dy_toc,
       "ERROR: LC_DYSYMTAB lists 1 table-of-contents entries, 0 modules, 0 external and 0 local "
       "relocations beside LC_DYLD_INFO, whose addresses a raise does not move; refusing to grow" },
@@ -5430,7 +5421,7 @@ static void test_raise_refuses_a_short_uuid(void) {
     uint8_t *buf = build_dylib(&fsize, 0);
     ((struct load_command *)dy_find(buf, LC_FUNCTION_STARTS))->cmd = LC_UUID;
     check_grow_refuses_header_refs("a short LC_UUID", buf, fsize,
-        "ERROR: LC_UUID is 16 bytes, too short to hold its UUID; refusing to grow");
+        "ERROR: image fails validation");
 }
 
 /* Without an LC_UUID, a raise has none to replace, and says nothing of one. */

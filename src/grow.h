@@ -114,7 +114,7 @@
  * Two answers are not offsets, and every caller must check for both:
  *
  * UINT32_MAX, with a message on stderr, if the buffer fails to wrap (bad
- * magic, or load commands that don't fit).
+ * magic, or load commands that don't fit or are shorter than their kinds).
  *
  * MG_NO_SECTION_DATA, printing nothing, if the image validates but no section
  * has file data, so nothing in the file says where the header pad ends. The
@@ -217,9 +217,8 @@ typedef struct { mrb_set s; mg_rbval *v; } mg_rebases;
 
 /* Reads every rebase target into *r: none when the image has no
  * LC_DYLD_INFO[_ONLY] or its rebase opcodes are empty. Returns 0; or -1, with
- * *r empty and `why` saying what, when the image does not validate; when an
- * LC_DYLD_INFO[_ONLY] is too short to hold rebase_off/rebase_size, or an
- * LC_DYSYMTAB too short to hold nlocrel; when the image has more than one
+ * *r empty and `why` saying what, when the image does not validate (among
+ * other reasons, a command shorter than its kind); when the image has more than one
  * LC_DYLD_INFO[_ONLY]; when it has none and LC_DYSYMTAB lists local
  * relocation entries, which dyld then reads in their place; when its rebase
  * opcodes lie past the end of the image or do not decode; or when a target
@@ -493,9 +492,7 @@ int mg_find_trie_lc(const uint8_t *buf, size_t fsize, long *lc_off, uint32_t *cm
  * LC_DYLD_INFO[_ONLY]'s export_off/export_size, or LC_DYLD_EXPORTS_TRIE's
  * dataoff/datasize. Returns 1 with *off and *size set, or 0 if this image has
  * no export-trie load command at all (not an error -- just nothing to walk),
- * or if its LC_DYLD_INFO[_ONLY] is too short to hold export_off/export_size
- * (mi_validate vouches for only its first 8 bytes; treated the same as
- * absent, since neither can be walked). */
+ * or if the image does not validate. */
 int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size);
 
 

@@ -16,7 +16,7 @@ void mv_format_version(uint32_t v, char out[16]) {
 }
 
 struct mv_decl_scan {
-    int      n_vm, n_macos, n_bv, n_foreign, n_catalyst, n_other, short_cmd;
+    int      n_vm, n_macos, n_bv, n_foreign, n_catalyst, n_other;
     uint32_t vm_version, vm_sdk, bv_minos, bv_sdk, foreign, other;
 };
 
@@ -24,11 +24,9 @@ static int mv_decl_lc(const struct load_command *lc, void *ctx_) {
     struct mv_decl_scan *c = ctx_;
     if (lc->cmd == LC_VERSION_MIN_MACOSX) {
         const struct version_min_command *vm = (const struct version_min_command *)lc;
-        if (lc->cmdsize < sizeof *vm) { c->short_cmd = 1; return 1; }
         if (c->n_vm++ == 0) { c->vm_version = vm->version; c->vm_sdk = vm->sdk; }
     } else if (lc->cmd == LC_BUILD_VERSION) {
         const struct mc_build_version *bv = (const struct mc_build_version *)lc;
-        if (lc->cmdsize < sizeof *bv) { c->short_cmd = 1; return 1; }
         c->n_bv++;
         if (bv->platform == MV_PLATFORM_MACOS) {
             if (c->n_macos++ == 0) { c->bv_minos = bv->minos; c->bv_sdk = bv->sdk; }
@@ -115,10 +113,6 @@ int mv_declare_minos(uint8_t **pbuf, size_t *psize, const char *label, int rule,
         return MR_REFUSED;
     }
     mi_each_lc(&im, mv_decl_lc, &c);
-    if (c.short_cmd) {
-        fprintf(stderr, "%s: a version load command is shorter than its structure; refusing\n", label);
-        return MR_REFUSED;
-    }
     if (c.n_vm > 1) {
         fprintf(stderr, "%s: %d LC_VERSION_MIN_MACOSX commands; refusing rather than choose one\n",
                 label, c.n_vm);

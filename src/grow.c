@@ -36,7 +36,8 @@ uint32_t mg_first_sect_off(const uint8_t *buf, size_t fsize) {
      * contract its own `const uint8_t *buf` parameter promises callers. */
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
         fprintf(stderr, "ERROR: image fails validation (bad magic, or load commands "
-                        "that don't fit); refusing to guess the header pad boundary\n");
+                        "that don't fit or are shorter than their kinds); refusing to guess "
+                        "the header pad boundary\n");
         return UINT32_MAX;
     }
 
@@ -401,35 +402,19 @@ struct mg_rb_lcs {
     const struct segment_command_64 *seg[16];
     int nsegs, ndi;
     const struct dyld_info_command *di;
-    const char *short_lc, *short_of;   /* a command too short for the fields read */
-    uint32_t short_size;
     uint32_t nlocrel;
 };
 
-static int mg_rb_short(struct mg_rb_lcs *c, const struct load_command *lc, const char *name,
-                       const char *of) {
-    c->short_lc = name;
-    c->short_of = of;
-    c->short_size = lc->cmdsize;
-    return 1;
-}
-
-/* mi_validate vouches for only a command's first 8 bytes. */
 static int mg_rb_lcs_cb(const struct load_command *lc, void *ctx_) {
     struct mg_rb_lcs *c = (struct mg_rb_lcs *)ctx_;
     if (lc->cmd == LC_SEGMENT_64 && c->nsegs < 16)
         c->seg[c->nsegs++] = (const struct segment_command_64 *)lc;
     if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
         c->ndi++;
-        if (lc->cmdsize < sizeof(struct dyld_info_command))
-            return mg_rb_short(c, lc, "LC_DYLD_INFO", "rebase_off/rebase_size");
         if (!c->di) c->di = (const struct dyld_info_command *)lc;
     }
-    if (lc->cmd == LC_DYSYMTAB) {
-        if (lc->cmdsize < sizeof(struct dysymtab_command))
-            return mg_rb_short(c, lc, "LC_DYSYMTAB", "nlocrel");
+    if (lc->cmd == LC_DYSYMTAB)
         c->nlocrel += ((const struct dysymtab_command *)lc)->nlocrel;
-    }
     return 0;
 }
 
@@ -453,9 +438,6 @@ int mg_rebases_read(const uint8_t *buf, size_t fsize, mg_rebases *r, char *why, 
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0)
         return mg_rb_fail(r, why, whysz, "the image does not validate");
     mi_each_lc(&im, mg_rb_lcs_cb, &c);
-    if (c.short_lc)
-        return mg_rb_fail(r, why, whysz, "the image's %s command is %u bytes, too short to "
-                          "hold %s", c.short_lc, c.short_size, c.short_of);
     if (c.ndi > 1)
         return mg_rb_fail(r, why, whysz, "the image has %d LC_DYLD_INFO commands", c.ndi);
     if (!c.di && c.nlocrel)
@@ -634,11 +616,6 @@ static int mg_binds_ok(const uint8_t *buf, size_t fsize, char *why, size_t whysz
         return -1;
     }
     mi_each_lc(&im, mg_rb_lcs_cb, &c);
-    if (c.short_lc) {
-        snprintf(why, whysz, "the image's %s command is %u bytes, too short to hold %s", c.short_lc,
-                 c.short_size, c.short_of);
-        return -1;
-    }
     if (!c.di) return 0;
     const struct { const char *kind; uint32_t off, size; } s[3] = {
         { "bind", c.di->bind_off, c.di->bind_size },
@@ -999,11 +976,10 @@ static void mg_expect_appended_trie(uint8_t *want, size_t lcend, const mi_image 
     if (vm > wl->vmsize) wl->vmsize = vm;
     uint64_t at = ol->fileoff + ol->filesize + grow;
     struct load_command *l = (struct load_command *)(want + lc);
-    if ((cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) &&
-        l->cmdsize >= sizeof(struct dyld_info_command)) {
+    if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
         ((struct dyld_info_command *)l)->export_off = (uint32_t)at;
         ((struct dyld_info_command *)l)->export_size = (uint32_t)(fsize - at);
-    } else if (cmd == LC_DYLD_EXPORTS_TRIE && l->cmdsize >= sizeof(struct linkedit_data_command)) {
+    } else if (cmd == LC_DYLD_EXPORTS_TRIE) {
         ((struct linkedit_data_command *)l)->dataoff = (uint32_t)at;
         ((struct linkedit_data_command *)l)->datasize = (uint32_t)(fsize - at);
     }
@@ -1012,7 +988,7 @@ static void mg_expect_appended_trie(uint8_t *want, size_t lcend, const mi_image 
 /* What any UUID a raise gives must be, whatever computed it: not the old
  * one, version 4, RFC 4122's variant. */
 static int mg_uuid_cb(const struct load_command *lc, void *ctx_) {
-    if (lc->cmd != LC_UUID || lc->cmdsize < sizeof(struct uuid_command)) return 0;
+    if (lc->cmd != LC_UUID) return 0;
     *(const uint8_t **)ctx_ = ((const struct uuid_command *)lc)->uuid;
     return 1;
 }
@@ -1995,8 +1971,6 @@ int mg_find_trie(const uint8_t *buf, size_t fsize, uint32_t *off, uint32_t *size
     if (!mg_find_trie_lc(buf, fsize, &lc_off, &cmd)) return 0;
     if (cmd == LC_DYLD_INFO || cmd == LC_DYLD_INFO_ONLY) {
         const struct dyld_info_command *d = (const struct dyld_info_command *)(buf + lc_off);
-        /* mi_validate vouches for only this command's first 8 bytes. */
-        if (d->cmdsize < sizeof(struct dyld_info_command)) return 0;
         *off = d->export_off; *size = d->export_size;
     } else {
         const struct linkedit_data_command *d =
@@ -2045,11 +2019,6 @@ static void mg_why_refused(const char *why) {
  * widened to keep going. */
 static int mg_classify_cb(const struct load_command *lc, void *ctx_) {
     const char *why = NULL;
-    if (lc->cmd == LC_SYMTAB && lc->cmdsize < sizeof(struct symtab_command)) {
-        fprintf(stderr, "ERROR: LC_SYMTAB is %u bytes, too short to hold its symbol and string "
-                        "tables' offsets and sizes; refusing to grow\n", lc->cmdsize);
-        return -1;
-    }
     switch (lc->cmd) {
         /* Handled by a re-baser above. */
         case LC_FUNCTION_STARTS: case LC_DATA_IN_CODE:
@@ -2152,7 +2121,8 @@ int mg_classify(const uint8_t *buf, size_t fsize, int raise) {
      * its own `const uint8_t *buf` promise to callers. */
     if (mi_wrap((uint8_t *)buf, fsize, &im) != 0) {
         fprintf(stderr, "ERROR: image fails validation (bad magic, or load commands "
-                        "that don't fit); refusing to classify\n");
+                        "that don't fit or are shorter than their kinds); refusing to "
+                        "classify\n");
         return -1;
     }
     return mi_each_lc(&im, mg_classify_cb, &raise) ? 0 : -1;
@@ -2613,11 +2583,6 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
         return 1;
     case LC_ENCRYPTION_INFO: case LC_ENCRYPTION_INFO_64: {
         const struct encryption_info_command *e = (const struct encryption_info_command *)lc;
-        if (lc->cmdsize < sizeof *e) {
-            fprintf(stderr, "ERROR: an encryption command is %u bytes, too short to hold "
-                            "cryptid; refusing to grow\n", lc->cmdsize);
-            return 1;
-        }
         if (!e->cryptid) return 0;
         fprintf(stderr, "ERROR: the image is encrypted (cryptid %u), and a raise would move "
                         "its encrypted pages; refusing to grow\n", e->cryptid);
@@ -2625,27 +2590,12 @@ static int mg_raise_ok_cb(const struct load_command *lc, void *ctx_) {
     }
     case LC_DYSYMTAB: {
         const struct dysymtab_command *d = (const struct dysymtab_command *)lc;
-        if (lc->cmdsize < sizeof *d) {
-            fprintf(stderr, "ERROR: LC_DYSYMTAB is %u bytes, too short to hold its tables' "
-                            "counts; refusing to grow\n", lc->cmdsize);
-            return 1;
-        }
         c->toc += d->ntoc;
         c->mod += d->nmodtab;
         c->ext += d->nextrel;
         c->loc += d->nlocrel;
         return 0;
     }
-    case LC_UUID:
-        if (lc->cmdsize >= sizeof(struct uuid_command)) return 0;
-        fprintf(stderr, "ERROR: LC_UUID is %u bytes, too short to hold its UUID; refusing to "
-                        "grow\n", lc->cmdsize);
-        return 1;
-    case LC_ROUTINES_64:
-        if (lc->cmdsize >= sizeof(struct routines_command_64)) return 0;
-        fprintf(stderr, "ERROR: LC_ROUTINES_64 is %u bytes, too short to hold init_address; "
-                        "refusing to grow\n", lc->cmdsize);
-        return 1;
     case LC_SEGMENT_64: {
         const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
         const struct section_64 *s = (const struct section_64 *)(seg + 1);

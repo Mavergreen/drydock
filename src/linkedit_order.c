@@ -84,8 +84,6 @@ static int mlo_sized_at(uint32_t cmd) {
 
 static int mlo_collect(const struct load_command *lc, void *ctx_) {
     mlo_cmds *c = (mlo_cmds *)ctx_;
-    int z = mlo_sized_at(lc->cmd);
-    if (z >= 0 && lc->cmdsize < mlo_sized[z].size) return 0;
     switch (lc->cmd) {
     case LC_SEGMENT_64: {
         const struct segment_command_64 *s = (const struct segment_command_64 *)lc;
@@ -341,9 +339,6 @@ static void mlo_ofile_loop(const mi_image *im, mlo_verdict *v) {
         int z = mlo_sized_at(lc->cmd);
         if (second && z >= 0 && mlo_sized[z].second_first) {
             mlo_add(v, MLO_REFUSES, 0, "malformed object (more than one %s command)", second);
-        } else if (z >= 0 && lc->cmdsize < mlo_sized[z].size) {
-            mlo_add(v, MLO_REFUSES, 0, "malformed object (%s cmdsize too small) in command %u",
-                    mlo_sized[z].name, i);
         } else if (second) {
             mlo_add(v, MLO_REFUSES, 0, "malformed object (more than one %s command)", second);
         } else if (z >= 0 && mlo_sized[z].exact && lc->cmdsize != mlo_sized[z].size) {

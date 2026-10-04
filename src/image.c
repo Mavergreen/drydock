@@ -1,6 +1,7 @@
 /* image.c — open, validate, iterate a 64-bit Mach-O. See image.h. */
 
 #include "image.h"
+#include "mach_compat.h"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -16,10 +17,51 @@ static int name_eq(const char *field, const char *want) {
     return strncmp(field, want, 16) == 0;
 }
 
+/* The least cmdsize a command of kind `cmd` may have: the size of the struct
+ * a reader here casts it to, and of a bare load_command for any other. */
+static uint32_t mi_min_cmdsize(uint32_t cmd) {
+    switch (cmd) {
+    case LC_SEGMENT_64:
+        return sizeof(struct segment_command_64);
+    case LC_SYMTAB:
+        return sizeof(struct symtab_command);
+    case LC_DYSYMTAB:
+        return sizeof(struct dysymtab_command);
+    case LC_LOAD_DYLIB: case LC_ID_DYLIB: case LC_LOAD_WEAK_DYLIB: case LC_REEXPORT_DYLIB:
+    case LC_LOAD_UPWARD_DYLIB:
+        return sizeof(struct dylib_command);
+    case LC_ROUTINES_64:
+        return sizeof(struct routines_command_64);
+    case LC_TWOLEVEL_HINTS:
+        return sizeof(struct twolevel_hints_command);
+    case LC_UUID:
+        return sizeof(struct uuid_command);
+    case LC_RPATH:
+        return sizeof(struct rpath_command);
+    case LC_CODE_SIGNATURE: case LC_SEGMENT_SPLIT_INFO: case LC_FUNCTION_STARTS:
+    case LC_DATA_IN_CODE: case LC_DYLIB_CODE_SIGN_DRS: case LC_LINKER_OPTIMIZATION_HINT:
+    case LC_DYLD_EXPORTS_TRIE: case LC_DYLD_CHAINED_FIXUPS:
+        return sizeof(struct linkedit_data_command);
+    case LC_ENCRYPTION_INFO:
+        return sizeof(struct encryption_info_command);
+    case LC_ENCRYPTION_INFO_64:
+        return sizeof(struct encryption_info_command_64);
+    case LC_DYLD_INFO: case LC_DYLD_INFO_ONLY:
+        return sizeof(struct dyld_info_command);
+    case LC_VERSION_MIN_MACOSX:
+        return sizeof(struct version_min_command);
+    case LC_MAIN:
+        return sizeof(struct entry_point_command);
+    case LC_BUILD_VERSION:
+        return sizeof(struct mc_build_version);
+    }
+    return sizeof(struct load_command);
+}
+
 /* Shared by mi_open_slack and mi_wrap: is `buf[0..size)` a 64-bit Mach-O whose
  * load commands fit inside it? The load commands must fit in the buffer, each
- * must be large enough to be a load command and not stride past the end of
- * the region, AND -- the part a bare cmdsize/sizeofcmds bound misses -- an
+ * must be as long as its kind's struct (mi_min_cmdsize) and not stride past
+ * the end of the region, AND -- the part a bare cmdsize/sizeofcmds bound misses -- an
  * LC_SEGMENT_64's own cmdsize must actually cover its trailing section_64
  * array, since nsects is what every section walk (mi_find_section,
  * mg_first_sect_off) trusts. A rewriter that trusts one of these without
@@ -40,7 +82,7 @@ static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **
         if (off + sizeof(struct load_command) > (size_t)hdr->sizeofcmds) return 1;
         const struct load_command *lc =
             (const struct load_command *)(buf + sizeof(*hdr) + off);
-        if (lc->cmdsize < sizeof(struct load_command)) return 1;
+        if (lc->cmdsize < mi_min_cmdsize(lc->cmd)) return 1;
         /* 64-bit Mach-O requires every load command to be a multiple of 8
          * bytes (so 64-bit fields inside later commands stay naturally
          * aligned); an unaligned cmdsize is malformed, not merely unusual.
@@ -53,7 +95,6 @@ static int mi_validate(const uint8_t *buf, size_t size, struct mach_header_64 **
         if (off + lc->cmdsize > (size_t)hdr->sizeofcmds) return 1;
 
         if (lc->cmd == LC_SEGMENT_64) {
-            if (lc->cmdsize < sizeof(struct segment_command_64)) return 1;
             const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
             /* nsects is a full uint32_t; widen to uint64_t before multiplying
              * so the bound check itself can never overflow -- the maximum

@@ -129,14 +129,29 @@ while read -r name; do
     [ "$rc" -eq 0 ] && check "$T/$name.packed"
 done <"$T/names"
 
+# both_refuse FILE: the tool refuses FILE as too small, and `info` will not
+# read it at all, so it prints no resign verdict to compare.
+both_refuse() {
+    files=$((files + 1))
+    rc=0; "$CA" -i "$1" -a x86_64 16384 -o "$T/out" 2>"$T/err" || rc=$?
+    irc=0; "$DMR" info "$1" >/dev/null 2>"$T/ierr" || irc=$?
+    if [ "$rc" -ne 0 ] && grep -q 'cmdsize too small' "$T/err" && [ "$irc" -eq 1 ] &&
+       grep -q 'not a readable 64-bit Mach-O' "$T/ierr"; then
+        refused=$((refused + 1))
+    else
+        echo "FAIL $1: the tool says [$(cat "$T/err")] (exit $rc), info says [$(cat "$T/ierr")] (exit $irc)"
+        fail=$((fail + 1))
+    fi
+}
+
 # ---- a load command of the wrong size, of each kind the verdict reads --------
 for c in 0x2:24 0xb:80 0x16:16 0x1e:16 0x1d:16 0x26:16 0x29:16 0x2b:16 0x2e:16 0x22:48 \
          0x80000022:48 0xd:24; do
-    "$MK" lone "${c%%:*}" 8 "$T/short-${c%%:*}" && check "$T/short-${c%%:*}"
+    "$MK" lone "${c%%:*}" 8 "$T/short-${c%%:*}" && both_refuse "$T/short-${c%%:*}"
     [ "${c%%:*}" = 0xd ] && continue   # an LC_ID_DYLIB may be longer than its struct
     "$MK" lone "${c%%:*}" $((${c#*:} + 8)) "$T/long-${c%%:*}" && check "$T/long-${c%%:*}"
 done
-"$MK" short-last "$T/short-last" && check "$T/short-last"
+"$MK" short-last "$T/short-last" && both_refuse "$T/short-last"
 
 # ---- what the CLI suites pack -------------------------------------------------
 run() {   # run IN OUT STATEMENT...

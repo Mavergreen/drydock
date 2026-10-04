@@ -51,7 +51,8 @@ typedef struct {
 #define MI_NOT_MACHO  (-2)
 
 /* Read `path` whole, validate it is a 64-bit Mach-O whose load commands fit
- * inside the file, and populate *out. Returns 0 on success, MI_IO_ERROR or
+ * inside the file, each at least as long as its kind's struct, and populate
+ * *out. Returns 0 on success, MI_IO_ERROR or
  * MI_NOT_MACHO otherwise (see those constants above). On failure *out is
  * untouched and nothing is allocated. */
 int mi_open(const char *path, mi_image *out);
@@ -66,8 +67,8 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out);
 /* Build an mi_image over `buf` (exactly `size` bytes), which the CALLER owns --
  * no file, no read, no allocation. Runs the same validation mi_open does
  * (magic, load commands fitting inside `size`, no cmdsize striding past the
- * end, and each LC_SEGMENT_64's cmdsize actually covering the section_64
- * array its own nsects claims) and returns MI_NOT_MACHO on failure (never
+ * end, no command shorter than its kind's struct, and each LC_SEGMENT_64's
+ * cmdsize actually covering the section_64 array its own nsects claims) and returns MI_NOT_MACHO on failure (never
  * MI_IO_ERROR: there is no I/O here to fail), leaving *out untouched. `cap`
  * is set to `size`. This is how a synthetic, in-memory Mach-O
  * (tests/grow_test.c builds several) gets the same validated view mi_open

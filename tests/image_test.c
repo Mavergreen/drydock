@@ -13,6 +13,7 @@
  *   clang -O2 -I src -o /tmp/imgtest tests/image_test.c src/image.c && /tmp/imgtest
  */
 #include "image.h"
+#include "mach_compat.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -220,7 +221,7 @@ static void test_wrap_refuses_zero_cmdsize(void) {
     hdr->ncmds = 1;
     hdr->sizeofcmds = 16;
     struct load_command *lc = (struct load_command *)(buf + sizeof(*hdr));
-    lc->cmd = LC_UUID;
+    lc->cmd = 0x7fff;   /* no kind this tree reads: only the bare floor applies */
     lc->cmdsize = 0;
 
     mi_image im;
@@ -251,15 +252,15 @@ static void test_wrap_refuses_unaligned_cmdsize(void) {
      * aligned. Before this was checked, a cmdsize like 17 -- large enough to
      * be a load command, and small enough to fit inside sizeofcmds -- was
      * accepted and walked, misaligning every command after it. */
-    uint8_t buf[sizeof(struct mach_header_64) + 24];
+    uint8_t buf[sizeof(struct mach_header_64) + 32];
     memset(buf, 0, sizeof buf);
     struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
     hdr->magic = MH_MAGIC_64;
     hdr->ncmds = 1;
-    hdr->sizeofcmds = 24;
+    hdr->sizeofcmds = 32;
     struct load_command *lc = (struct load_command *)(buf + sizeof(*hdr));
     lc->cmd = LC_UUID;
-    lc->cmdsize = 17;   /* well-formed size, but not a multiple of 8 */
+    lc->cmdsize = 25;   /* covers a uuid_command, but is not a multiple of 8 */
 
     mi_image im;
     CHECK(mi_wrap(buf, sizeof buf, &im) != 0,
@@ -285,6 +286,65 @@ static void test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct(void) {
     mi_image im;
     CHECK(mi_wrap(buf, sizeof buf, &im) != 0,
           "mi_wrap(LC_SEGMENT_64 cmdsize < sizeof(segment_command_64)) refuses");
+}
+
+/* An image of one command, `cmd`, of `cmdsize` bytes, with nothing after it. */
+static int wraps_one(uint32_t cmd, uint32_t cmdsize) {
+    uint8_t buf[sizeof(struct mach_header_64) + 96];
+    memset(buf, 0, sizeof buf);
+    struct mach_header_64 *hdr = (struct mach_header_64 *)buf;
+    hdr->magic = MH_MAGIC_64;
+    hdr->ncmds = 1;
+    hdr->sizeofcmds = cmdsize;
+    struct load_command *lc = (struct load_command *)(hdr + 1);
+    lc->cmd = cmd;
+    lc->cmdsize = cmdsize;
+    mi_image im;
+    return mi_wrap(buf, sizeof *hdr + cmdsize, &im) == 0;
+}
+
+/* Every kind a reader here casts to its struct, and that struct's size,
+ * restated from <mach-o/loader.h>: a command shorter than its kind is
+ * refused, one as long as it (rounded up to 8) is not. A kind no reader
+ * casts keeps the bare floor of 8. */
+static void test_wrap_refuses_a_command_shorter_than_its_kind(void) {
+    static const struct { uint32_t cmd; const char *name; uint32_t size; } k[] = {
+        { LC_SEGMENT_64, "LC_SEGMENT_64", 72 },
+        { LC_SYMTAB, "LC_SYMTAB", 24 },
+        { LC_DYSYMTAB, "LC_DYSYMTAB", 80 },
+        { LC_LOAD_DYLIB, "LC_LOAD_DYLIB", 24 },
+        { LC_ID_DYLIB, "LC_ID_DYLIB", 24 },
+        { LC_LOAD_WEAK_DYLIB, "LC_LOAD_WEAK_DYLIB", 24 },
+        { LC_REEXPORT_DYLIB, "LC_REEXPORT_DYLIB", 24 },
+        { LC_LOAD_UPWARD_DYLIB, "LC_LOAD_UPWARD_DYLIB", 24 },
+        { LC_ROUTINES_64, "LC_ROUTINES_64", 72 },
+        { LC_TWOLEVEL_HINTS, "LC_TWOLEVEL_HINTS", 16 },
+        { LC_UUID, "LC_UUID", 24 },
+        { LC_RPATH, "LC_RPATH", 12 },
+        { LC_CODE_SIGNATURE, "LC_CODE_SIGNATURE", 16 },
+        { LC_SEGMENT_SPLIT_INFO, "LC_SEGMENT_SPLIT_INFO", 16 },
+        { LC_FUNCTION_STARTS, "LC_FUNCTION_STARTS", 16 },
+        { LC_DATA_IN_CODE, "LC_DATA_IN_CODE", 16 },
+        { LC_DYLIB_CODE_SIGN_DRS, "LC_DYLIB_CODE_SIGN_DRS", 16 },
+        { LC_LINKER_OPTIMIZATION_HINT, "LC_LINKER_OPTIMIZATION_HINT", 16 },
+        { LC_DYLD_EXPORTS_TRIE, "LC_DYLD_EXPORTS_TRIE", 16 },
+        { LC_DYLD_CHAINED_FIXUPS, "LC_DYLD_CHAINED_FIXUPS", 16 },
+        { LC_ENCRYPTION_INFO, "LC_ENCRYPTION_INFO", 20 },
+        { LC_ENCRYPTION_INFO_64, "LC_ENCRYPTION_INFO_64", 24 },
+        { LC_DYLD_INFO, "LC_DYLD_INFO", 48 },
+        { LC_DYLD_INFO_ONLY, "LC_DYLD_INFO_ONLY", 48 },
+        { LC_VERSION_MIN_MACOSX, "LC_VERSION_MIN_MACOSX", 16 },
+        { LC_MAIN, "LC_MAIN", 24 },
+        { LC_BUILD_VERSION, "LC_BUILD_VERSION", 24 },
+    };
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+        uint32_t below = (k[i].size - 1) / 8 * 8, whole = (k[i].size + 7) / 8 * 8;
+        CHECK(!wraps_one(k[i].cmd, below), "mi_wrap refuses %s at %u bytes", k[i].name, below);
+        CHECK(wraps_one(k[i].cmd, whole), "mi_wrap accepts %s at %u bytes", k[i].name, whole);
+    }
+    CHECK(wraps_one(0x7fff, 8), "mi_wrap accepts an 8-byte command of a kind no reader reads");
+    CHECK(wraps_one(LC_SOURCE_VERSION, 8), "mi_wrap accepts an 8-byte LC_SOURCE_VERSION, which no "
+          "reader casts");
 }
 
 static void test_wrap_refuses_nsects_disagreeing_with_cmdsize(void) {
@@ -528,6 +588,7 @@ int main(void) {
     test_wrap_refuses_a_cmdsize_striding_past_sizeofcmds();
     test_wrap_refuses_an_lc_segment_64_shorter_than_the_struct();
     test_wrap_refuses_nsects_disagreeing_with_cmdsize();
+    test_wrap_refuses_a_command_shorter_than_its_kind();
     test_wrap_does_not_copy();
     test_each_lc_visits_every_command();
     test_each_lc_stops_early();

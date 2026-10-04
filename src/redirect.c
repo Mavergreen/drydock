@@ -238,8 +238,7 @@ int mrd_redirect(uint8_t **pbuf, size_t *psize, const char *symbol,
     memset(isfrom, 0, sizeof isfrom);
     for (i = 1; i <= s.n; i++) {
         if (!s.names[i]) {
-            fprintf(stderr, WHAT ": dylib load command %d has a name offset past its "
-                            "cmdsize; refusing\n", i);
+            fprintf(stderr, WHAT ": dylib load command %d has no name inside it; refusing\n", i);
             return MR_REFUSED;
         }
         if (!rep->to && strcmp(s.names[i], to) == 0) rep->to = i;
