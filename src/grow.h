@@ -42,20 +42,22 @@
  * walkers of the export trie, compact unwind, data in code, function starts
  * and initializer offsets (check 1), mg_symtab (check 2) and mhr_scan (check
  * 5). Check 3 also shares with the raise itself ml_each_off, the snapshot's
- * rb and refs worklists, mg_raised_uuid, mg_trie_walk and mg_unwind_walk,
- * and so trusts them for the UUID, the export trie and compact unwind but
- * for what its own contract (below) still asks of each -- it does not
- * derive the new UUID independently. An entry one of those misses is missed
- * by the grow and its check alike, and the grow passes: a rebase the reader
- * drops is neither moved nor compared. What guards those decoders is their
- * tests in tests/grow_test.c and, for the rebase opcodes alone (mrb_decode,
- * under mg_rebases_read), tests/rebase_oracle_test.sh's comparison with
- * dyldinfo over 10.9's /usr/lib. mg_oracles (check 4) reads what it checks
- * with code of its own, and catches some such misses: an initializer, a
- * lazy pointer, an export or an LSDA left where it was. mg_plausible does
- * not: it collects its entries through the same mg_collect walkers the
- * raise patches through, then checks them against LC_FUNCTION_STARTS, so it
- * never sees an entry a walker missed.
+ * rb and refs worklists, mg_raised_uuid and mg_trie_walk, and so trusts them
+ * for the UUID and the export trie but for what its own contract (below)
+ * still asks of each -- it does not derive the new UUID independently. It
+ * reads compact unwind itself. An entry one of those misses is missed by the
+ * grow and its check alike. What guards those decoders is their tests in
+ * tests/grow_test.c and, for the rebase opcodes (mrb_decode, under
+ * mg_rebases_read), tests/rebase_oracle_test.sh's comparison with dyldinfo
+ * over 10.9's /usr/lib. mg_oracles (check 4, a raise's only) reads what it
+ * checks with code of its own, the rebase opcodes among it (sharing with
+ * mrb_decode nothing but mu_decode), and so catches such misses on a raise:
+ * an initializer, a lazy pointer, an export, an LSDA or any rebased pointer
+ * left where it was. A lowering moves only the pointers that name the
+ * header, and one of those the reader drops is neither moved nor compared.
+ * mg_plausible does not: it collects its entries through the same
+ * mg_collect walkers the raise patches through, then checks them against
+ * LC_FUNCTION_STARTS, so it never sees an entry a walker missed.
  */
 #ifndef DRYDOCK_GROW_H
 #define DRYDOCK_GROW_H

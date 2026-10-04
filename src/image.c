@@ -159,6 +159,14 @@ int mi_wrap(uint8_t *buf, size_t size, mi_image *out) {
     return 0;
 }
 
+int mi_malformed_64(const uint8_t *buf, size_t size) {
+    struct mach_header_64 *hdr;
+    uint32_t magic;
+    if (size < sizeof magic) return 0;
+    memcpy(&magic, buf, sizeof magic);
+    return magic == MH_MAGIC_64 && mi_validate(buf, size, &hdr) != 0;
+}
+
 void mi_close(mi_image *im) {
     if (!im) return;
     if (im->owned) free(im->buf);

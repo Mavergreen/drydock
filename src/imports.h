@@ -94,10 +94,11 @@ typedef void (*mimp_row_fn)(const mimp_row *row, void *ctx);
  * mo_map_apply's own comment draws; it has never been reachable through a
  * linker-built fixture, only a hand-corrupted one.
  *
- * A fat slice mi_wrap cannot read at all (not 64-bit, or malformed) is
+ * A fat slice mi_wrap cannot read at all because it is not a 64-bit Mach-O is
  * SKIPPED, not fatal, matching fix_macho's/mr_process_fat's own "skip this
  * arch" convention -- one unreadable slice must not suppress the readable
- * ones. A slice that uses LC_DYLD_CHAINED_FIXUPS is a different case: it IS
+ * ones. One whose magic is MH_MAGIC_64 but which mi_wrap refuses is a
+ * malformed 64-bit Mach-O, and refuses the WHOLE report. A slice that uses LC_DYLD_CHAINED_FIXUPS is a different case: it IS
  * a readable 64-bit Mach-O, this module simply does not speak its import
  * format, so -- again matching mr_process_fat's MR_ERROR handling -- it
  * refuses the WHOLE report rather than silently omitting that slice's

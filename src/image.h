@@ -76,6 +76,11 @@ int mi_open_slack(const char *path, size_t slack, mi_image *out);
  * frees `buf`: the caller still owns it. */
 int mi_wrap(uint8_t *buf, size_t size, mi_image *out);
 
+/* Does buf[0..size) claim to be a 64-bit Mach-O (its magic is MH_MAGIC_64)
+ * that mi_wrap refuses? A fat slice that does is a malformed 64-bit Mach-O,
+ * not another format, and refuses the whole file. */
+int mi_malformed_64(const uint8_t *buf, size_t size);
+
 /* Free the buffer and zero the struct -- but only if the image owns it: a
  * buffer handed to mi_wrap belongs to the caller and is left untouched. Safe
  * on an all-zero mi_image, and safe after mi_release. */

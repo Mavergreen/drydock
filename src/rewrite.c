@@ -950,7 +950,9 @@ static void mr_fat_placed(const mfat_arch *a, uint32_t index,
  * MR_SKIP for -- today that means anything but a 64-bit Mach-O; 32-bit stays
  * deliberately unsupported, see src/grow.h) is passed through byte-for-byte
  * unchanged, exactly like fix_macho's own per-arch loop already does ("Not
- * 64-bit Mach-O ... Skipping arch"). A slice that IS a 64-bit Mach-O but
+ * 64-bit Mach-O ... Skipping arch"). A slice whose magic is MH_MAGIC_64 but
+ * which mi_wrap refuses is a malformed 64-bit Mach-O, not another format, and
+ * refuses the whole file before any slice is touched. A slice that IS a 64-bit Mach-O but
  * where the requested edit itself fails (MR_ERROR) aborts the WHOLE
  * operation: a fat binary's slices are all meant to carry the same edit
  * (the same -change, the same -insert, ...), and writing some of them but
@@ -1004,6 +1006,15 @@ static int mr_process_fat(uint8_t **pbuf, size_t *pfsize,
                         "a slice overlapping the header, or two slices overlapping "
                         "each other)\n");
         return MR_REFUSED;
+    }
+    for (uint32_t j = 0; j < narch; j++) {
+        mfat_arch a;
+        mfat_get(*pbuf, swap, j, &a);
+        if (mi_malformed_64(*pbuf + a.offset, a.size)) {
+            fprintf(stderr, "ERROR: arch %u (cputype 0x%x): not a readable 64-bit Mach-O; "
+                            "refusing the whole fat file\n", j, a.cputype);
+            return MR_REFUSED;
+        }
     }
     mr_fat_ctx ctx = { ops, declared_disturbs, hit_dylib, hit_rpath, hit_strip };
     int rc = mfat_rewrite(pbuf, pfsize, narch, swap, mr_fat_slice, mr_fat_placed,

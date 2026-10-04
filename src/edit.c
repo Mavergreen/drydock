@@ -1037,6 +1037,16 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         me_say_left(log, path, out);
         return MR_REFUSED;
     }
+    for (uint32_t j = 0; j < narch; j++) {
+        mfat_arch a; mfat_get(buf, swap, j, &a);
+        if (!mi_malformed_64(buf + a.offset, a.size)) continue;
+        char name[32]; ma_describe(a.cputype, a.cpusubtype, name);
+        me_say(log, "drydock-macho-rewrite edit: %s: slice %s is not a readable 64-bit Mach-O; ",
+               path, name);
+        me_say_left(log, path, out);
+        free(buf);
+        return MR_REFUSED;
+    }
 
     /* Which slices the script applies to, and whether it names any the file
      * lacks or cannot edit -- all decided before any slice is touched. */

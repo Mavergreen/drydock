@@ -286,6 +286,13 @@ int mexp_report(const uint8_t *buf, size_t size, mexp_row_fn fn, void *ctx) {
             mfat_arch a;
             mi_image im;
             mfat_get(buf, swapped, i, &a);
+            if (mi_malformed_64(buf + a.offset, a.size)) {
+                char name[32];
+                ma_describe(a.cputype, a.cpusubtype, name);
+                fprintf(stderr, WHAT ": slice %s is not a readable 64-bit Mach-O\n", name);
+                rc = MEXP_REFUSED;
+                continue;
+            }
             if (mi_wrap((uint8_t *)buf + a.offset, a.size, &im) != 0) continue;
             readable[i] = 1;
             ma_describe(a.cputype, a.cpusubtype, sl[i].arch);

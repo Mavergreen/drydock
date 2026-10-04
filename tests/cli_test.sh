@@ -3252,19 +3252,19 @@ fi
 #
 # WHY THIS IS NOT SHAPE TWO AGAIN. "Declared 64-bit, bytes are not a 64-bit
 # Mach-O" is a direction, not a shape, and it has more members than one: a
-# 32-bit Mach-O, a non-Mach-O blob (shape two), a truncated slice, an
-# MH_MAGIC_64 header whose load commands do not fit, a zero-length slice. They
-# agree in outcome and they do NOT agree in what a wrong implementation gets
+# 32-bit Mach-O, a non-Mach-O blob (shape two), a zero-length slice. (An
+# MH_MAGIC_64 header mi_wrap refuses is not one: it refuses the whole file, below.)
+# They agree in outcome and they do NOT agree in what a wrong implementation gets
 # right. An implementation that answers "is this a 64-bit Mach-O?" by looking
 # at the DECLARED cputype and then excusing itself for one magic value -- the
 # half-revert that is one edit away from me_slice_is_64 -- passes shape two,
 # because a blob of 'Z' has no Mach-O magic at all, and fails here. Measured:
 # with that half-revert in place this container goes back to a whole-file
 # refusal (exit 1, nothing written) while the shape-two assertions above stay
-# green. The remaining three members (truncated, bad load commands, size 0) are
-# left uncovered on purpose: each is refused by mi_wrap for the SAME reason a
-# non-Mach-O is -- it is not a 64-bit Mach-O image -- and no reachable
-# implementation of this predicate distinguishes them from shape two while
+# green. The remaining member (size 0) is left uncovered on purpose: it is
+# refused by mi_wrap for the SAME reason a non-Mach-O is -- it is not a 64-bit
+# Mach-O image -- and no reachable implementation of this predicate
+# distinguishes it from shape two while
 # distinguishing this one.
 #
 # Built by hand rather than with `clang -arch i386`, which a modern toolchain
@@ -3381,6 +3381,96 @@ grep -q "arm64 slice is not a 64-bit Mach-O, and statements apply only to 64-bit
 [ "$(sha "$T/fatarchnm")" = "$fatarchnm_before" ] \
     && ok "fat: ... and that refusal left the container byte-for-byte unchanged" \
     || bad "fat: arch naming a slice that is not a 64-bit Mach-O" "the refused fat file was modified"
+
+# A SLICE WHOSE MAGIC IS MH_MAGIC_64 BUT WHOSE LOAD COMMANDS mi_wrap REFUSES is
+# a malformed 64-bit Mach-O, not some other format. The thin file is refused,
+# so the fat file is refused whole: nothing written, exit 1, the slice named --
+# never its other slices edited at exit 0. Built from this script's own x86_64
+# image with its first 16-byte command retyped LC_DYLD_INFO (48 bytes), found
+# at run time; the second slice is the same image intact, declared x86_64h.
+cat > "$T/retype16.c" <<'EOF'
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <mach-o/loader.h>
+int main(int argc, char **argv) {
+    FILE *f = fopen(argv[1], "rb");
+    static uint8_t buf[1 << 24];
+    size_t n, off = sizeof(struct mach_header_64);
+    if (argc != 3 || !f) return 2;
+    n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    struct mach_header_64 *h = (struct mach_header_64 *)buf;
+    for (uint32_t i = 0; n >= off && h->magic == MH_MAGIC_64 && i < h->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)(buf + off);
+        if (lc->cmdsize == 16) {
+            lc->cmd = LC_DYLD_INFO;
+            if (!(f = fopen(argv[2], "wb"))) return 2;
+            fwrite(buf, 1, n, f);
+            return fclose(f) != 0;
+        }
+        off += lc->cmdsize;
+    }
+    fprintf(stderr, "retype16: %s has no 16-byte load command\n", argv[1]);
+    return 1;
+}
+EOF
+"$CC" -O2 -o "$T/retype16" "$T/retype16.c"
+"$T/retype16" "$T/segment_fat_slice" "$T/short_lc"
+rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/short_lc" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "fat: malformed 64-bit slice -- premise: the slice alone is refused as a thin file (exit 1)" \
+    || bad "fat: malformed 64-bit slice" "the retyped image is not refused on its own (info exited $rc), so it tests nothing"
+"$BIN/makefat" "$T/fatshort" "$T/short_lc" 0x1000007 3 12 "$T/segment_fat_slice" 0x1000007 8 12
+fatshort_before=$(sha "$T/fatshort")
+rm -f "$T/fatshort.out"
+rc=0
+printf 'rpath append /fatshort\n' | "$DRYDOCK_MACHO_REWRITE" "$T/fatshort" "$T/fatshort.out" \
+    >"$T/fatshort.log" 2>"$T/fatshort.err" || rc=$?
+[ "$rc" -eq 1 ] \
+    && ok "fat: a slice with MH_MAGIC_64 that mi_wrap refuses refuses the whole edit (exit 1)" \
+    || bad "fat: malformed 64-bit slice" "exited $rc -- the other slice was edited around it: $(cat "$T/fatshort.err")"
+[ ! -e "$T/fatshort.out" ] && [ "$(sha "$T/fatshort")" = "$fatshort_before" ] \
+    && ok "fat: ... and nothing was written: no OUT, FILE unchanged" \
+    || bad "fat: malformed 64-bit slice" "a refused run wrote OUT or changed FILE"
+grep -qF "fatshort: slice x86_64 is not a readable 64-bit Mach-O" "$T/fatshort.err" \
+    && ok "fat: ... and the refusal names the slice" \
+    || bad "fat: malformed 64-bit slice" "no refusal naming slice x86_64: $(cat "$T/fatshort.err")"
+for fs_verb in info imports exports; do
+    rc=0
+    "$DRYDOCK_MACHO_REWRITE" "$fs_verb" "$T/fatshort" >"$T/fatshort.$fs_verb.out" 2>"$T/fatshort.$fs_verb.err" || rc=$?
+    [ "$rc" -eq 1 ] && grep -qF "slice x86_64 is not a readable 64-bit Mach-O" "$T/fatshort.$fs_verb.err" \
+        && ok "fat: $fs_verb over the malformed 64-bit slice exits 1 and names the slice" \
+        || bad "fat: malformed 64-bit slice" "$fs_verb exited $rc: $(cat "$T/fatshort.$fs_verb.err")"
+done
+
+# The controls, run exactly as above: a real 32-bit Mach-O declared i386, and a
+# big-endian 64-bit header (MH_CIGAM_64, a ppc64 slice's magic) declared ppc64,
+# are other formats, and still pass through while the x86_64 slice is edited.
+dd if=/dev/zero bs=4096 count=1 2>/dev/null > "$T/slice_be64"
+printf '\376\355\372\317' | dd of="$T/slice_be64" conv=notrunc 2>/dev/null
+fs_control() {   # NAME CPUTYPE CPUSUBTYPE SLICE LABEL WHY
+    fs_label=$5; fs_why=$6
+    "$BIN/makefat" "$T/fatok_$1" "$T/segment_fat_slice" 0x1000007 3 12 "$T/$4" "$2" "$3" 12
+    rm -f "$T/fatok_$1.out"
+    rc=0
+    printf 'rpath append /fatok\n' | "$DRYDOCK_MACHO_REWRITE" "$T/fatok_$1" "$T/fatok_$1.out" \
+        >"$T/fatok.log" 2>"$T/fatok.err" || rc=$?
+    [ "$rc" -eq 0 ] && grep -qF "slice $fs_label: $fs_why; passed through unchanged" "$T/fatok.err" \
+        && ok "fat: control -- a $1 slice is passed through and the edit succeeds" \
+        || bad "fat: control $1" "exited $rc: $(cat "$T/fatok.err")"
+    "$BIN/fatcheck" dump "$T/fatok_$1.out" 1 "$T/fatok_$1_s1" 2>/dev/null || :
+    "$BIN/fatcheck" dump "$T/fatok_$1.out" 0 "$T/fatok_$1_s0" 2>/dev/null || :
+    cmp -s "$T/fatok_$1_s1" "$T/$4" && "$DRYDOCK_MACHO_REWRITE" info "$T/fatok_$1_s0" | grep -qF "rpath=/fatok" \
+        && ok "fat: control -- ... the $1 slice byte-identical, the x86_64 slice given the rpath" \
+        || bad "fat: control $1" "the passed-through slice changed, or slice 0 lacks the rpath"
+    rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/fatok_$1" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] \
+        && ok "fat: control -- info over the $1 container still exits 0" \
+        || bad "fat: control $1" "info exited $rc"
+}
+fs_control i386 7 3 slice32 i386 "32-bit"
+fs_control ppc64 0x1000012 0 slice_be64 "cputype 0x1000012" "not a 64-bit Mach-O"
 
 # ============================================================================
 # the mutating form never writes its input

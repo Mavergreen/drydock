@@ -254,6 +254,13 @@ int mimp_report(const uint8_t *buf, size_t size, mimp_row_fn fn, void *ctx) {
             for (uint32_t i = 0; i < narch && rc == MIMP_OK; i++) {
                 mfat_arch a;
                 mfat_get(buf, swapped, i, &a);
+                if (mi_malformed_64(buf + a.offset, a.size)) {
+                    ma_describe(a.cputype, a.cpusubtype, names[i]);
+                    fprintf(stderr, "drydock-macho-rewrite imports: slice %s is not a readable "
+                                    "64-bit Mach-O\n", names[i]);
+                    rc = MIMP_REFUSED;
+                    continue;
+                }
                 /* One cast, documented once more at the thin path below --
                  * image.h has no observe-only mi_wrap. */
                 if (mi_wrap((uint8_t *)buf + a.offset, a.size, &ims[i]) != 0) {

@@ -8,7 +8,8 @@
  * symbol that is not undefined. Each row says which source it came from.
  *
  * Scope and refusals follow imports.h: 64-bit only, a fat container slice by
- * slice (a slice mi_wrap cannot read is skipped), every row committed only
+ * slice (a slice that is not a 64-bit Mach-O is skipped; one whose MH_MAGIC_64
+ * mi_wrap refuses refuses the report), every row committed only
  * after every slice has been read, and a symbol carrying a TAB or NEWLINE
  * refuses the whole report rather than corrupt a TSV row.
  */

@@ -460,6 +460,18 @@ static int cmd_info(const char *path, int thin_only) {
             }
         }
 
+        for (i = 0; i < narch; i++) {
+            mfat_arch a;
+            char name[32];
+            mfat_get(buf, swapped, i, &a);
+            if (!mi_malformed_64(buf + a.offset, a.size)) continue;
+            ma_describe(a.cputype, a.cpusubtype, name);
+            free(buf);
+            fprintf(stderr, "drydock-macho-rewrite info: %s: slice %s is not a readable 64-bit Mach-O\n",
+                    path, name);
+            return EX_REFUSED;
+        }
+
         printf("%s: %zu bytes, %u slices\n", path, size, narch);
         for (i = 0; i < narch; i++) {
             mfat_arch a;
