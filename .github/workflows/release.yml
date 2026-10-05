@@ -4,8 +4,8 @@ name: release
 # equivalent to a native 10.9 build. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
-#   - workflow_dispatch with release=true, on main: build, then publish the binaries as
-#     a GitHub Release through shipyard's publish-release.yml. Dispatch-only, because
+#   - workflow_dispatch with release=true, on main: build, sign, then publish the .pkg and
+#     its feed as a GitHub Release through shipyard's publish-release.yml. Dispatch-only, because
 #     this repo is its own upstream -- there is no external bump to auto-cut on, so a
 #     release is deliberate
 #
@@ -114,8 +114,8 @@ jobs:
       # The cross preset asserts it is NOT on 10.9 and pins CMAKE_OSX_SYSROOT to
       # the fetched 10.9 SDK. Building against the runner's own SDK with only
       # -mmacosx-version-min=10.9 would accept declarations 10.9 never had.
-      - name: Configure (cross, against the pinned 10.9 SDK)
-        run: shipyard-cmake --preset cross
+      - name: Configure (cross, against the pinned 10.9 SDK, with the updater)
+        run: shipyard-cmake --preset cross -DDRYDOCK_BUILD_UPDATER=ON
 
       # Every tool is gated POST_BUILD by shipyard's compat guard: fails if a
       # binary declares a floor above 10.9 or imports a symbol 10.9 lacks.
@@ -166,38 +166,20 @@ jobs:
       - name: The build must not have written into the source tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
 
-      # drydock-macho-rewrite and the two files the wrappers source belong in
-      # the artifact too, and are not optional: all eight names below are
-      # /bin/sh wrappers that look for drydock-macho-rewrite,
-      # drydock-macho-rewrite-compat.sh and drydock-macho-rewrite-translate.sh
-      # in their own directory, so an artifact without them is eight names
-      # that cannot run. (The binary itself was missing from
-      # this list even before that, when it was still a standalone CLI.)
-      # insert_dylib and bake-mavericks-shim are the wrappers here with no
-      # known caller (their own headers say so); they ship anyway, the same
-      # way the other six do. Eleven files in all.
-      #
-      # The paths below are unchanged by fix_macho becoming a wrapper: this
-      # list names FILES in the cross build dir, not CMake targets, and CMake
-      # stages every wrapper there under its historical name -- so
-      # $CROSS_BUILD_DIR/fix_macho exists either way. Verified, not assumed.
-      #
-      # Staged FLAT into dist/, because that is what publishing needs: the shared
-      # publisher downloads this artifact into one directory and attaches the files
-      # sitting directly in it. Anything a directory deep is not published at all --
-      # release-assets.sh would see only the notes and refuse the release.
-      - name: Stage the release artifact
+      # The .pkg installs the tools by the build's own install rules, under
+      # /usr/local/mavergreen/drydock, with the updater; installed_layout_test has
+      # already run those same files through a farm of symlinks, and the payload
+      # test below proves the package carries exactly them.
+      - name: Package the .pkg
         run: |
           set -eu
-          mkdir -p dist
-          for f in drydock-macho-rewrite drydock-macho-rewrite-compat.sh \
-                   drydock-macho-rewrite-translate.sh \
-                   patch_macho change_dylib add_version_min fix_macho \
-                   rename_segment retag_swift_classes insert_dylib \
-                   bake-mavericks-shim; do
-            cp "$CROSS_BUILD_DIR/$f" dist/
-          done
-          ls -l dist
+          sh packaging/build-pkg.sh "$CROSS_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
+            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
+
+      - name: The package installs exactly what was tested
+        run: |
+          sh tests/pkg_payload_test.sh "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg" \
+            "$(command -v shipyard-cmake)" "$CROSS_BUILD_DIR"
 
       # The Release body travels IN the artifact: publish-release.yml never checks this
       # repo out, and it refuses an empty body. Generated on every run rather than only a
@@ -207,34 +189,69 @@ jobs:
           set -eu
           sh "$SHIPYARD_SCRIPTS/release-notes.sh" \
             --tag '${{ steps.ver.outputs.tag }}' --version '${{ steps.ver.outputs.full }}' \
-            --product Drydock --min-os 10.9.5 --out dist/RELEASE_NOTES.md
-          echo "=== RELEASE_NOTES.md ==="; cat dist/RELEASE_NOTES.md
+            --product Drydock --min-os 10.9.5 --out "$CROSS_BUILD_DIR/dist/RELEASE_NOTES.md"
+          echo "=== RELEASE_NOTES.md ==="; cat "$CROSS_BUILD_DIR/dist/RELEASE_NOTES.md"
 
-      # Do the artifacts about to be published agree with each other and with the family's
-      # schemes? Gated like the publish itself: this asks about a release, and a run that is
-      # not releasing has not produced the thing to ask about. The vX.Y.Z scheme is a DECLARED
-      # deviation (INGREDIENTS.md) -- the shared check hard-requires <upstream>-mavericks.N
-      # and has no self-upstream exemption -- which is what this step reads that declaration for.
+      - name: Unsigned stand-in feeds (never published)
+        if: steps.ver.outputs.release != 'yes'
+        run: sh "$SHIPYARD_SCRIPTS/stand-in-feeds.sh" "$CROSS_BUILD_DIR/dist" '${{ steps.ver.outputs.full }}'
+
+      - name: EdDSA-sign the .pkg + write drydock.xml
+        if: steps.ver.outputs.release == 'yes'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          printenv SPARKLE_PRIVATE_KEY | grep -q . || { echo "::error::SPARKLE_PRIVATE_KEY secret not set"; exit 1; }
+          VER='${{ steps.ver.outputs.full }}'
+          TAG='${{ steps.ver.outputs.tag }}'
+          PKG="$CROSS_BUILD_DIR/dist/drydock-$VER.pkg"
+          sh "$SHIPYARD_SCRIPTS/sign_and_appcast.sh" \
+            --product drydock --feed-dir "$CROSS_BUILD_DIR/dist" \
+            --channel-title Drydock --version "$VER" \
+            --pkg-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$(basename "$PKG")" \
+            --notes-file "$CROSS_BUILD_DIR/dist/RELEASE_NOTES.md" --pkg "$PKG" --min-os 10.9.5
+
+      # Every run, against the stand-in feed when not releasing, so a pull request finds
+      # what a release would. The vX.Y.Z scheme is a DECLARED deviation (INGREDIENTS.md) --
+      # the shared check hard-requires <upstream>-mavericks.N and has no self-upstream
+      # exemption -- which is what this step reads that declaration for.
       - name: Artifact conformance
+        run: |
+          sh "$SHIPYARD_SCRIPTS/artifact-facts.sh" "$CROSS_BUILD_DIR/dist" "${{ steps.ver.outputs.full }}" \
+            | sh "$SHIPYARD_SCRIPTS/check-artifact-conformance.sh"
+
+      - name: The feed is an upgrade on its line
         if: steps.ver.outputs.release == 'yes'
         run: |
-          sh "$SHIPYARD_SCRIPTS/artifact-facts.sh" dist "${{ steps.ver.outputs.full }}" \
-            | sh "$SHIPYARD_SCRIPTS/check-artifact-conformance.sh"
+          sh "$SHIPYARD_SCRIPTS/assert_appcast_upgradeable.sh" --appcast "$CROSS_BUILD_DIR/dist/drydock.xml" \
+            --version '${{ steps.ver.outputs.tag }}' --tag-glob 'v*.*.*'
 
       - uses: actions/upload-artifact@v7
         with:
           name: drydock
-          path: dist/*
+          path: ${{ env.CROSS_BUILD_DIR }}/dist/*
+
+  # Proves this run's logs and files carry no piece of the signing key, before anything
+  # publishes; always(), so a run that failed after signing is scanned too.
+  scan:
+    needs: [build]
+    if: always() && (needs.build.outputs.publish == 'yes')
+    permissions:
+      actions: read
+      contents: read
+    uses: Mavergreen/shipyard/.github/workflows/scan-for-key.yml@v1
+    with:
+      artifact: drydock
+    secrets:
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
 
   # The only writer to Releases, and only a dispatch on main reaches it: nothing else sets release=yes.
   # The shared workflow regenerates SHA256SUMS, uses RELEASE_NOTES.md from the artifact as the
   # Release body, and fails if those notes are missing or empty.
-  #
-  # What ships is the binaries and the two files the wrappers source. There is still no .pkg
-  # and no Sparkle updater; when there are, they join the staged artifact above and this job
-  # publishes them unchanged.
   publish:
-    needs: [build]
+    needs: [build, scan]
     if: needs.build.outputs.publish == 'yes'
     permissions:
       contents: write

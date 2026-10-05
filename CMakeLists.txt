@@ -183,6 +183,18 @@ install(PROGRAMS "compat/drydock-macho-rewrite-compat.sh" DESTINATION bin)
 install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewrite-translate.sh)
 install(FILES "man/drydock-macho-rewrite.1" DESTINATION share/man/man1)
 
+option(DRYDOCK_BUILD_UPDATER "Build the Sparkle updater the .pkg ships (fetches Sparkle at configure time)" OFF)
+if(DRYDOCK_BUILD_UPDATER)
+  include(MavericksSparkle)
+  mavericks_add_updater_app(
+    PRODUCT drydock
+    PRODUCT_NAME "Drydock"
+    ALLOW_GENERIC
+    VERSION "${MAVERICKS_VERSION}"
+    CONFIRM_TITLE "Drydock updated"
+    CONFIRM_BODY "Drydock was updated. The next drydock-macho-rewrite you run is the new version.")
+endif()
+
 enable_testing()
 
 # CI's conventions gate, here too, so a push is not the first run of it.
@@ -443,6 +455,8 @@ set_tests_properties(chained_fixups PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME characterize
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/characterize.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>" check)
+add_test(NAME installed_layout_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/installed_layout_test.sh" "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}")
 
 # drydock-macho-rewrite's own CLI: --capabilities plus each verb it implements. Builds its own
 # fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
