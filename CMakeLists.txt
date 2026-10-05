@@ -385,6 +385,11 @@ set_tests_properties(raise_runs_test PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME mantle_raise_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/mantle_raise_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(mantle_raise_test PROPERTIES SKIP_RETURN_CODE 77)
+# Edited dylibs and programs, stale, stripped and re-signed, run on arm64 and
+# under Rosetta. SKIPs (77) anywhere but Apple Silicon; CI's runner is one.
+add_test(NAME apple_silicon_signing_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/apple_silicon_signing_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+set_tests_properties(apple_silicon_signing_test PROPERTIES SKIP_RETURN_CODE 77)
 # A dylib, a bundle and an address-gap dylib built here, raised by one page and
 # by two, and run beside the originals. Hermetic: it runs on CI.
 add_test(NAME raise_rich_test

@@ -157,6 +157,18 @@ jobs:
           fi
           exit "$rc"
 
+      # The same reasoning as chained-fixups above: this runner is the arm64 Mac with
+      # Rosetta that the test needs, so a SKIP here means it measured nothing.
+      - name: Edited outputs on Apple Silicon (strip or re-sign, by arch)
+        run: |
+          set -eu
+          sh tests/apple_silicon_signing_test.sh "$CROSS_BUILD_DIR" && rc=0 || rc=$?
+          if [ "$rc" = 77 ]; then
+            echo "::error::apple_silicon_signing_test SKIPPED on the arm64 runner -- it should run here"
+            exit 1
+          fi
+          exit "$rc"
+
       - name: Prove build equivalence against the native 10.9 reference
         run: |
           set -eu

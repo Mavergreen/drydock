@@ -305,9 +305,8 @@ kill-flagged host, and stripping the signature makes the sdk irrelevant to loadi
 
 Open questions:
 
-- **Modern macOS.** Whether edited x86_64 outputs run under Rosetta, and arm64 ones
-  natively, with the signature stale, stripped, or re-signed; and whether the
-  two-version-command case is refused there. Not measured.
+- **Modern macOS.** Answered in `docs/apple-silicon-signing.md`: under
+  Rosetta the sdk rule above still holds, and arm64 must be re-signed.
 - **The shipped CoreFoundation.** Its exact `_CFExecutableLinkedOnOrAfter` logic is unknown.
 - **LaunchServices' stored minimum.** Whether 10.9 LaunchServices uses it anywhere,
   e.g. in "Open with" filtering, was not observed.

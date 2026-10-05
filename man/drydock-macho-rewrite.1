@@ -112,6 +112,15 @@ not only its load command.
 A universal binary is checked slice by slice, and one slice 10.9 cannot
 re-sign stops the whole file; on 10.9, which runs only the x86_64 slice,
 \fBlipo -thin x86_64\fR first.
+.PP
+An arm64 output must be re-signed (\fBcodesign --force --sign -\fR):
+one left with its stale signature is killed, and a stripped one is refused.
+An x86_64 output may instead be stripped with
+\fBload-command delete codesig\fR, which works on 10.9 and under Rosetta
+alike.
+A host process signed with the hardened runtime rejects any ad hoc
+signed dylib, so there the host\[aq]s own signature has to change; see
+docs/apple-silicon-signing.md.
 .SS Directives
 .IP
 .nf
