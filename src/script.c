@@ -130,7 +130,8 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
   R("import",       MS_IMPORT,       "redirect", MS_REDIRECT,     3, NULL,        0,             0, MREL_FILE_OFF) \
   R("minos",        MS_MINOS,        "at-most",  MS_AT_MOST,      1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD) \
-  R("objc-methods", MS_OBJC_METHODS, "set",      MS_SET,          1, NULL,        0,             0, MREL_FILE_OFF)
+  R("objc-methods", MS_OBJC_METHODS, "set",      MS_SET,          1, NULL,        0,             0, MREL_FILE_OFF) \
+  R("symbol",       MS_SYMBOL,       "rename",   MS_RENAME,       2, NULL,        0,             0, MREL_NONE)
 
 static const struct { const char *kind; int k; const char *op; int o; int nargs;
                       const char *flag; unsigned modes; int ops_ord;
@@ -452,6 +453,10 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[3], fields[4]) == 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "import redirect: FROM-LIB and TO-LIB are both '%s'", fields[3]);
+            } else if (kind == MS_SYMBOL && (fields[2][0] == '\0' || fields[3][0] == '\0')) {
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "symbol rename: %s is empty; name a symbol as the symbol table spells it",
+                    fields[2][0] == '\0' ? "OLD" : "NEW");
             } else if (kind == MS_OBJC_METHODS && op == MS_SET &&
                        strcmp(fields[2], "absolute") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,

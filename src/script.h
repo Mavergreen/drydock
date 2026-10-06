@@ -40,7 +40,7 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz);
  * every other statement. */
 enum { MS_LOAD_COMMAND, MS_SEGMENT, MS_SWIFT_ABI,
        MS_FIXUPS, MS_DYLIB, MS_RPATH, MS_TARGET, MS_IMPORT, MS_MINOS,
-       MS_OBJC_METHODS };
+       MS_OBJC_METHODS, MS_SYMBOL };
 enum { MS_DELETE, MS_RENAME, MS_SET, MS_REPLACE, MS_APPEND,
        MS_INSERT, MS_REEXPORT, MS_PROFILE_10_9, MS_RETYPE, MS_REDIRECT,
        MS_AT_MOST, MS_IF_ABSENT };

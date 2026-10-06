@@ -495,8 +495,8 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 # tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 19 ] && [ "$n_unique" -eq 19 ] \
-    && ok "capabilities: exactly 19 unique statement lines" \
+[ "$n_statements" -eq 20 ] && [ "$n_unique" -eq 20 ] \
+    && ok "capabilities: exactly 20 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 if echo "$caps" | grep -qxF "statement minos at-most 1"; then
     if echo "$caps" | grep -qxF "statement minos set 1"; then
@@ -524,6 +524,11 @@ echo "$caps" | grep -qxF "statement target 10.9 0" \
 echo "$caps" | grep -q "statement dylib replace 2" \
     && ok "capabilities: statement table is advertised" \
     || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
+echo "$caps" | grep -qxF "statement symbol rename 2" \
+    && ok "capabilities: symbol rename statement is advertised, last" \
+    || bad "capabilities: symbol rename" "no 'statement symbol rename 2' line: $(echo "$caps" | grep '^statement symbol')"
+[ "$(echo "$caps" | grep '^statement ' | tail -1)" = "statement symbol rename 2" ] \
+    || bad "capabilities: symbol rename" "not the last statement line, so existing lines moved"
 echo "$caps" | grep -qxF "statement dylib retype 2" \
     && ok "capabilities: dylib retype statement is advertised" \
     || bad "capabilities: dylib retype" "no 'statement dylib retype 2' line: $(echo "$caps" | grep '^statement dylib retype')"
@@ -947,16 +952,24 @@ dcl "$T/not-a-macho-in-cli-test" "$T/nope" >/dev/null 2>"$T/nm.err" && rc=0 || r
 [ -e "$T/nope" ] && bad "declassify: non-Mach-O" "wrote an output file for an input it refused" \
     || ok "declassify: a refused input produces no output file"
 
-# A 64-bit Mach-O with NEITHER chained fixups NOR LC_DYLD_INFO_ONLY -- a plain
-# object file is exactly that -- is not idempotent-pass-through material and
+# A linked image with NEITHER chained fixups NOR LC_DYLD_INFO_ONLY (mknobind's
+# dylib with no load commands) is not idempotent-pass-through material and
 # not convertible either. It must say so and refuse, not quietly copy.
-"$CC" -c -O2 $FIXTURE_FLAGS "$T/main.c" -o "$T/plain.o"
-dcl "$T/plain.o" "$T/plain.out" >/dev/null 2>"$T/plain.err" && rc=0 || rc=$?
+"$CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
+"$T/mknobind" "$T/plain"
+dcl "$T/plain" "$T/plain.out" >/dev/null 2>"$T/plain.err" && rc=0 || rc=$?
 [ "$rc" -eq 1 ] && ok "declassify: refuses a Mach-O with no chained fixups and no LC_DYLD_INFO_ONLY" \
     || bad "declassify: no fixups" "expected 1, got $rc"
 grep -q "No chained fixups found" "$T/plain.err" \
     && ok "declassify: says why it refused" \
     || bad "declassify: no fixups" "no reason on stderr: $(cat "$T/plain.err")"
+
+# An object file never reaches the conversion: the object gate refuses it.
+"$CC" -c -O2 $FIXTURE_FLAGS "$T/main.c" -o "$T/plain.o"
+dcl "$T/plain.o" "$T/plain.o.out" >/dev/null 2>"$T/plain.o.err" && rc=0 || rc=$?
+[ "$rc" -eq 1 ] && grep -qF '`fixups set` is for linked images' "$T/plain.o.err" \
+    && ok "declassify: an object file is refused by the object gate" \
+    || bad "declassify: object" "rc $rc: $(cat "$T/plain.o.err")"
 
 # An OUT that cannot be written is an OPERATIONAL failure, not a refusal: the
 # input was fine and drydock-macho-rewrite declined nothing. It must exit 2 (EX_FAIL), and
@@ -1264,8 +1277,8 @@ grep -q 'fixups set' "$T/imp_chained.err" \
 # source-version/build-version/code-sign-drs -- src/lc_kinds.c), so the
 # fixture is hand-built in C, beside tests/mkimplausible.c: the smallest
 # possible thin 64-bit Mach-O is a bare mach_header_64 with zero load
-# commands, which mi_wrap's own validation accepts outright.
-"$CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
+# commands, which mi_wrap's own validation accepts outright. mknobind was
+# built for the declassify refusals above.
 "$T/mknobind" "$T/imp_nobind"
 rc=0
 "$DRYDOCK_MACHO_REWRITE" imports "$T/imp_nobind" >"$T/imp_nobind.out" 2>"$T/imp_nobind.err" || rc=$?

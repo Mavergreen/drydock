@@ -410,7 +410,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 19, "the statement table has 19 rows (got %d)", n_rows);
+    CHECK(n_rows == 20, "the statement table has 20 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row. Each mask below was read out of
@@ -526,6 +526,28 @@ static void test_disturbs_matches_the_spec_table(void) {
      * bytes where __LINKEDIT began, which moves every __LINKEDIT offset. */
     CHECK(ms_disturbs(MS_OBJC_METHODS, MS_SET) == MREL_FILE_OFF,
           "objc-methods set absolute moves __LINKEDIT's offsets, and nothing else");
+
+    /* The rename appends to the string table, which is the file's tail, and
+     * repoints n_strx: no offset another structure records moves. */
+    CHECK(ms_disturbs(MS_SYMBOL, MS_RENAME) == MREL_NONE,
+          "symbol rename moves no offset another structure records; the string table is the file tail");
+}
+
+static void test_symbol_rename_refuses_an_empty_name(void) {
+    ms_script s; char err[256] = {0};
+    const char *ok = "symbol rename _foo _impl_foo\n";
+    CHECK(ms_parse(ok, strlen(ok), &s, err, sizeof err) == 0 && s.n == 1 &&
+          s.stmts[0].kind == MS_SYMBOL && strcmp(s.stmts[0].b, "_impl_foo") == 0,
+          "symbol rename _foo _impl_foo rejected: %s", err);
+    ms_free(&s);
+    const char *bad[][2] = { { "symbol rename _foo ''\n", "NEW is empty" },
+                             { "symbol rename \"\" _foo\n", "OLD is empty" },
+                             { "symbol rename '' ''\n", "OLD is empty" } };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        err[0] = 0;
+        CHECK(ms_parse(bad[i][0], strlen(bad[i][0]), &s, err, sizeof err) == -1 &&
+              strstr(err, bad[i][1]) != NULL, "%s: want \"%s\", got: %s", bad[i][0], bad[i][1], err);
+    }
 }
 
 static void test_objc_methods_set_takes_only_absolute(void) {
@@ -884,6 +906,7 @@ int main(void) {
     test_import_redirect();
     test_minos_at_most_and_if_absent_take_a_version();
     test_retired_minimum_statements_are_unknown();
+    test_symbol_rename_refuses_an_empty_name();
     test_objc_methods_set_takes_only_absolute();
     test_no_statement_names_split_info();
     printf("script_test: %d failure(s)\n", fails);

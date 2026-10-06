@@ -41,6 +41,7 @@
 #include "fat.h"
 #include "arch_names.h"
 #include "linkedit_order.h"
+#include "symrename.h"
 
 /* Every line this module writes, to the log or to stderr, goes through here.
  * The operations print their progress to stdout, which is fully buffered
@@ -269,6 +270,46 @@ static void me_log_objc_methods(FILE *log, const mma_report *r) {
     if (r->zerofill)
         me_say(log, "      %.16s's %s bytes of zero fill are file bytes now\n", r->dname,
                me_count(c1, (long)r->zerofill));
+}
+
+/* msr_reason's text, with the statement's own names where it says OLD and NEW. */
+static void me_say_msr(FILE *f, int rc, const char *old, const char *new_) {
+    const char *p = msr_reason(rc);
+    fflush(stdout);
+    if (rc == MSR_SAME) {
+        fprintf(f, "%s (%s)", p, old);
+        return;
+    }
+    while (*p) {
+        if (strncmp(p, "OLD", 3) == 0)      { fputs(old, f); p += 3; }
+        else if (strncmp(p, "NEW", 3) == 0) { fputs(new_, f); p += 3; }
+        else                                fputc(*p++, f);
+    }
+}
+
+static int me_is_object(const uint8_t *buf, size_t size) {
+    mi_image im;
+    return mi_wrap((uint8_t *)buf, size, &im) == 0 && im.hdr->filetype == MH_OBJECT;
+}
+
+/* Before any statement runs: a relocatable object takes only `symbol rename`,
+ * and a linked image takes anything but. */
+static int me_object_gate(const ms_script *s, int is_object, const char *path, FILE *log) {
+    for (int i = 0; i < s->n; i++) {
+        const ms_stmt *st = &s->stmts[i];
+        if (is_object && st->kind != MS_SYMBOL) {
+            me_say(log, "drydock-macho-rewrite edit: %s: `%s %s` is for linked images; a relocatable "
+                        "object takes only `symbol rename`\n",
+                   path, ms_kind_name(st->kind), ms_op_name(st->op));
+            return MR_REFUSED;
+        }
+        if (!is_object && st->kind == MS_SYMBOL) {
+            me_say(log, "drydock-macho-rewrite edit: %s: symbol rename renames symbols in .o files; "
+                        "a linked image is not supported\n", path);
+            return MR_REFUSED;
+        }
+    }
+    return 0;
 }
 
 /* The version-min and swift-abi cores take an mi_image; the buffer is the
@@ -519,6 +560,32 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         int rc = mma_convert(pbuf, psize, &r);
         if (rc != 0) return rc;
         me_log_objc_methods(log, &r);
+        return 0;
+    }
+
+    case MS_SYMBOL: {
+        msr_report r;
+        if (st->op != MS_RENAME) goto unknown;
+        int rc = msr_rename(pbuf, psize, st->a, st->b, &r);
+        if (rc == MSR_NOMEM) {
+            me_say(log, "drydock-macho-rewrite edit: %s: out of memory renaming %s\n", path, st->a);
+            return MR_FAIL;
+        }
+        if (rc != MSR_OK && rc != MSR_UNMATCHED) {
+            me_say(log, "drydock-macho-rewrite edit: %s: symbol rename %s %s: ", path, st->a, st->b);
+            me_say_msr(log, rc, st->a, st->b);
+            fputc('\n', log);
+            return MR_REFUSED;
+        }
+        if (rc == MSR_OK)
+            me_say(log, "      symbol rename %s -> %s: %u entr%s\n", st->a, st->b, r.entries,
+                   r.entries == 1 ? "y" : "ies");
+        *v->renamed += (int)r.entries;
+        if (!v->decide || *v->renamed > 0) return 0;
+        me_say(stderr, "drydock-macho-rewrite: symbol rename %s %s matched nothing (", st->a, st->b);
+        me_say_msr(stderr, MSR_UNMATCHED, st->a, st->b);
+        fputs(")\n", stderr);
+        if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
         return 0;
     }
     }
@@ -932,10 +999,11 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
         return MR_FAIL;
     }
     memcpy(orig, *pbuf, osize);
+    int is_object = me_is_object(*pbuf, *psize);
     int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
                            c->hits, c->renamed, index == c->last, name, &disturbed);
     int packed = 0;
-    if (rc == 0) {
+    if (rc == 0 && !is_object) {
         char label[48];
         snprintf(label, sizeof label, "slice %s", name);
         rc = me_pack(pbuf, psize, orig, osize, label, c->path, c->out, c->log, &packed);
@@ -946,7 +1014,9 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     /* Each slice's own final verification, on the same derived terms as a thin
      * file's: whenever anything it checks was disturbed, and then never
      * subject to MACHO_NO_VERIFY. */
-    if (me_verify_applies(*pbuf, *psize, disturbed)) {
+    if (is_object) {
+        me_say(c->log, "slice %s: an object is not verified as an image\n", name);
+    } else if (me_verify_applies(*pbuf, *psize, disturbed)) {
         if (mg_plausible(*pbuf, *psize) != 0) {
             me_say(c->log, "drydock-macho-rewrite edit: refused at verification of slice %s; ", name);
             me_say_left(c->log, c->path, c->out);
@@ -1105,6 +1175,17 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         me_say(log, "drydock-macho-rewrite edit: %s has no 64-bit slice to edit (it has: %s); ", path, have);
         rc = MR_REFUSED;
     }
+    int objects = 0;
+    for (uint32_t j = 0; rc == 0 && j < narch; j++) {
+        if (selected[j] != ME_SLICE_EDIT) continue;
+        mfat_arch a; mfat_get(buf, swap, j, &a);
+        int is_object = me_is_object(buf + a.offset, a.size);
+        objects |= is_object;
+        if (me_object_gate(s, is_object, path, log) != 0) {
+            free(selected); free(hits); free(renamed); free(buf);
+            return MR_REFUSED;
+        }
+    }
     if (rc != 0) {
         me_say_left(log, path, out);
         free(selected); free(hits); free(renamed); free(buf);
@@ -1137,11 +1218,11 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         free(buf);
         return MR_REFUSED;
     }
-    if (me_resign(buf, size, path, out, s, ctx.packed, log) != 0) {
+    if (!objects && me_resign(buf, size, path, out, s, ctx.packed, log) != 0) {
         free(buf);
         return MR_REFUSED;
     }
-    me_say(log, "%s: verified\n", path);
+    me_say(log, objects ? "%s: an object is not verified as an image\n" : "%s: verified\n", path);
     return me_write_once(buf, size, path, out, log);
 }
 
@@ -1204,6 +1285,11 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
             return MR_REFUSED;
         }
     }
+    int is_object = me_is_object(im.buf, im.size);
+    if (me_object_gate(s, is_object, path, log) != 0) {
+        mi_close(&im);
+        return MR_REFUSED;
+    }
     size_t size = im.size;
     uint8_t *buf = mi_release(&im);
 
@@ -1234,9 +1320,10 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL,
                            &disturbed);
     free(hits); free(renamed);
-    if (rc == 0) rc = me_pack(&buf, &size, orig, osize, path, path, out, log, &packed);
+    if (rc == 0 && !is_object) rc = me_pack(&buf, &size, orig, osize, path, path, out, log, &packed);
     free(orig);
-    if (rc == 0) rc = me_resign(buf, size, path, out, s, packed, log);
+    /* An object is not re-signed. */
+    if (rc == 0 && !is_object) rc = me_resign(buf, size, path, out, s, packed, log);
     if (rc != 0) { free(buf); return rc; }
 
     /* Verify the finished image whenever anything it checks was disturbed, and
@@ -1252,7 +1339,9 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
      * A script with no statements needs no branch of its own here: it runs
      * nothing, so it disturbs nothing, so the gate cannot apply and nothing
      * can say "after statement 0 of 0". */
-    if (me_verify_applies(buf, size, disturbed)) {
+    if (is_object) {
+        me_say(log, "%s: an object is not verified as an image\n", path);
+    } else if (me_verify_applies(buf, size, disturbed)) {
         if (mg_plausible(buf, size) != 0) {
             me_say(log, "drydock-macho-rewrite edit: refused at verification, after statement %d of %d; ",
                    s->n, s->n);

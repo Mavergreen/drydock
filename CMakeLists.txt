@@ -63,7 +63,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c src/linkedit_pack.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c src/linkedit_pack.c src/symrename.c)
 target_include_directories(drydockcore PUBLIC src)
 target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
@@ -304,6 +304,12 @@ target_link_libraries(edit_test PRIVATE drydockcore)
 add_test(NAME edit_test COMMAND edit_test)
 set_tests_properties(edit_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
+add_executable(symrename_test tests/symrename_test.c)
+target_compile_options(symrename_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(symrename_test PRIVATE drydockcore)
+add_test(NAME symrename_test COMMAND symrename_test)
+set_tests_properties(symrename_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
 # Hermetic tests for src/linkedit.c's ml_bump_all: a synthetic
 # image built by hand via mi_wrap, so no fixture file is needed -- same
 # reasoning as trie_test.
@@ -523,6 +529,11 @@ set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 # streams tests/mkbindstream.c writes by hand into them.
 add_test(NAME import_redirect_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/import_redirect_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+
+# `symbol rename` on objects built here, linked with the host's ld64 and run;
+# the object gate's refusals.
+add_test(NAME symbol_rename_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/symbol_rename_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # compat/bake-mavericks-shim.sh end to end, including a baked binary that runs
 # with the shim's implementation and no DYLD_* variables.

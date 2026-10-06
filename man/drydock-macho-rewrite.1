@@ -1,6 +1,6 @@
-.TH DRYDOCK-MACHO-REWRITE 1 "2026-09-29" "Drydock" "User Commands"
+.TH DRYDOCK-MACHO-REWRITE 1 "2026-10-06" "Drydock" "User Commands"
 .SH NAME
-drydock-macho-rewrite \- rewrite and inspect Mach-O executables
+drydock-macho-rewrite \- rewrite and inspect Mach-O executables and objects
 .SH SYNOPSIS
 .B drydock-macho-rewrite
 .I input output
@@ -9,8 +9,9 @@ drydock-macho-rewrite \- rewrite and inspect Mach-O executables
 .RI "verify FILE | info [--thin] FILE | imports FILE | exports FILE"
 .SH DESCRIPTION
 Given a script on standard input, drydock-macho-rewrite writes a modified
-copy of a Mach-O executable. The query verbs inspect a file without
-changing it.
+copy of a Mach-O executable, dylib or bundle, or of a relocatable object
+(see \fBRelocatable objects\fR).
+The query verbs inspect a file without changing it.
 .SS Script format
 One statement per line.
 Blank lines are ignored.
@@ -47,6 +48,8 @@ rpath         insert    PATH
 import        redirect  SYMBOL FROM-LIB TO-LIB
 target        10.9                  the one statement whose meaning depends on
                                     the binary; see \[dq]The \[ga]target\[ga] statement\[dq]
+symbol        rename    OLD NEW     relocatable objects only; see
+                                    \[dq]Relocatable objects\[dq]
 \fR
 .fi
 .PP
@@ -147,6 +150,8 @@ These are the statements that can match nothing:
 \fBsegment rename\fR (no segment of that name)
 .IP \[bu] 2
 \fBimport redirect\fR (no bind of that symbol names that library)
+.IP \[bu] 2
+\fBsymbol rename\fR (no symbol of that name)
 .PP
 On a fat file, a statement has matched if it matched in any selected
 slice.
@@ -326,6 +331,57 @@ operation.
 explicit statement it derived makes the explicit one redundant, and if
 that statement can miss, it refuses as unmatched.\fR That is right,
 and is documented rather than special-cased.
+.SS Relocatable objects
+A relocatable object (a \fB.o\fR file, filetype \fBMH_OBJECT\fR)
+takes one statement, \fBsymbol rename\fR, and a linked executable,
+dylib or bundle takes every statement but that one.
+A script that breaks either rule is refused before any statement runs,
+naming the first statement that broke it:
+.IP
+.nf
+\f(CW
+drydock-macho-rewrite edit: impl.o: \[ga]rpath append\[ga] is for linked images; a relocatable object takes only \[ga]symbol rename\[ga]
+drydock-macho-rewrite edit: prog: symbol rename renames symbols in .o files; a linked image is not supported
+\fR
+.fi
+.PP
+\fBsymbol rename OLD NEW\fR renames every symbol-table entry named
+OLD: defined or undefined, global or local.
+Names are spelled as the symbol table spells them, leading underscore
+included (\fB_clock_gettime\fR).
+Relocations name a symbol by its index, so a definition and every
+reference to it follow the rename.
+NEW is appended to the string table and the entries point at it.
+OLD\[aq]s bytes stay where they are, because the compiler may share them
+with another name, and no symbol moves.
+The report counts the entries renamed:
+.IP
+.nf
+\f(CW
+  symbol rename _foo _impl_foo
+      symbol rename _foo -> _impl_foo: 1 entry
+\fR
+.fi
+.PP
+It refuses when:
+.IP \[bu] 2
+no symbol is named OLD, unless \fBallow-unmatched\fR;
+.IP \[bu] 2
+OLD and NEW are the same name;
+.IP \[bu] 2
+a symbol is already named NEW, since two entries would then share a name;
+.IP \[bu] 2
+the string table is not the last thing in the file, or a load command
+records bytes after it, as a section or relocation table moved past it
+would.
+Compilers and \fBld\~-r\fR put it last.
+.PP
+On a fat object, \fBarch\fR selects slices as it does for an
+executable.
+An object is not re-signed or verified as an image, and its
+\fB__LINKEDIT\fR is not re-packed; the report says so.
+.PP
+DWARF debug information is not rewritten: a debugger shows the old name.
 .SS Growing the header
 A statement that needs more header pad than the image has makes room
 first, and says so:
@@ -499,3 +555,7 @@ On a thin file there is no slice header: the first line names the path.
 .IP \[bu] 2
 A raise needs an x86_64 dylib or bundle with compressed dyld info; see
 Growing the header.
+.IP \[bu] 2
+\fBsymbol rename\fR renames only in relocatable objects; a linked image
+is refused.
+It does not rewrite DWARF, so a debugger shows the old name.
