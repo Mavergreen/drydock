@@ -232,11 +232,8 @@ int msr_rename(uint8_t **pbuf, size_t *psize, const char *old, const char *new_,
     size_t end = t.stroff + t.strsize;
     size_t tail = size - end;
     if (loc.claim > end) return MSR_STRTAB_NOT_LAST;
-    if (tail != 0) {
-        if (tail >= 8 || size % 8 != 0) return MSR_STRTAB_NOT_LAST;
-        for (size_t i = end; i < size; i++)
-            if (buf[i]) return MSR_STRTAB_NOT_LAST;
-    }
+    for (size_t i = end; i < size; i++)
+        if (buf[i] != '\n' && buf[i] != 0) return MSR_STRTAB_NOT_LAST;
 
     size_t add = strlen(new_) + 1;
     if (add > (size_t)UINT32_MAX - t.strsize) return MSR_MALFORMED;

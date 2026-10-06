@@ -250,6 +250,37 @@ static void test_claimed_tail(void) {
     CHECK(msr_unpadded_size((const uint8_t *)&c, sizeof c) == sizeof c, "unpadded: a tail that is not padding is kept");
 }
 
+/* `ar -x` leaves a libtool-built member with its archive padding after the
+ * string table: '\n', and as many as the member's alignment needed. A thin
+ * object takes the same unclaimed '\n'/NUL tail an archive member does. */
+static void test_archive_padding_accepted(void) {
+    for (int extra = 0; extra <= 10; extra += 10) {
+        for (int claim = CLAIM_NONE; claim < CLAIM_N; claim++) {
+            claimed c;
+            claimed_obj(&c, claim, '\n');
+            size_t end = offsetof(claimed, tail), size = sizeof c + (size_t)extra;
+            obj o = { malloc(size), size, offsetof(claimed, nl), end - sizeof c.str, sizeof c.str };
+            memcpy(o.buf, &c, sizeof c);
+            memset(o.buf + sizeof c, '\n', (size_t)extra);
+            uint8_t *copy = malloc(size); memcpy(copy, o.buf, size);
+            char what[96];
+            snprintf(what, sizeof what, "newline tail of %zu, claim %s", size - end, claim_names[claim]);
+            if (claim == CLAIM_NONE) {
+                CHECK(rename_obj(&o, "_foo", "_impl_foo", NULL) == MSR_OK, "%s: rename refused", what);
+                CHECK(strcmp(name_of(&o, 0), "_impl_foo") == 0, "%s: got %s", what, name_of(&o, 0));
+                struct symtab_command st; memcpy(&st, o.buf + offsetof(claimed, st), sizeof st);
+                size_t strend = (size_t)st.stroff + st.strsize;
+                CHECK(strend <= o.size && o.size - strend < 8 && o.size % 8 == 0, "%s: size %zu, strings end %zu", what, o.size, strend);
+                for (size_t i = strend; i < o.size; i++)
+                    CHECK(o.buf[i] == 0, "%s: byte %zu after the strings is %d", what, i, o.buf[i]);
+            } else {
+                unchanged(what, rename_obj(&o, "_foo", "_impl_foo", NULL), MSR_STRTAB_NOT_LAST, &o, copy, size);
+            }
+            free(copy); free(o.buf);
+        }
+    }
+}
+
 static void test_trailing_pad_kept(void) {
     sym s[] = { { "_foo", N_SECT | N_EXT, 0, 0, 0 } };
     obj o = build(s, 1, TRAIL_PAD, NULL);
@@ -370,6 +401,7 @@ int main(void) {
     test_strtab_not_last();
     test_claimed_tail();
     test_trailing_pad_kept();
+    test_archive_padding_accepted();
     test_long_new_name();
     test_malformed();
     test_each_defined_external();

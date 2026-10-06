@@ -10,7 +10,7 @@ not a port of somebody else's project — they were written for this problem, an
 
 | Ingredient | Pinned in | Renovate | On a bump |
 |---|---|---|---|
-| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump, then a dispatch of `release.yml` with `release=true`, cuts the release as tag `v0.2.0` |
+| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump, then a dispatch of `release.yml` with `release=true`, cuts the release as tag `v0.2.1` |
 | MacOSX10.9 SDK (x86_64) and MacOSX11.3 SDK (arm64), CMake helpers, compat guard, test runner | `Mavergreen/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
 | Sparkle 1.27.3, in the updater | shipyard's `fetch_sparkle_framework.sh`, pinned by hash there | **untrackable** here: shipyard owns that pin | follows shipyard |
 | `tests/fixture.macho` + `tests/EXPECTED` | committed | **untrackable** — a characterization reference, deliberately frozen | never bumped by a bot; changing it is a deliberate commit that says why |

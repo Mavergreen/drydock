@@ -17,7 +17,9 @@ typedef struct { unsigned entries; } msr_report;
  * Every nlist_64 entry named `old` is pointed at a copy of `new_` appended to
  * the string table. On any nonzero return the buffer is unchanged.
  * MSR_STRTAB_NOT_LAST: a load command records file bytes past the string
- * table, or more than 7 bytes, or any nonzero byte, follow it. */
+ * table, or a byte other than '\n' or NUL follows it. Such a tail -- the
+ * padding `ar -x` leaves on a libtool-built member -- is replaced by NULs to
+ * the next 8-byte boundary. */
 int msr_rename(uint8_t **pbuf, size_t *psize, const char *old, const char *new_, msr_report *r);
 
 /* `size` less the '\n'/NUL bytes after the string table that no load command

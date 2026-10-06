@@ -249,6 +249,17 @@ run "$T/impl.o" "$T/x.o" 'symbol rename _foo _impl_foo' 'target 10.9'
 refused "target 10.9 after symbol rename on an object" \
     "\`target 10.9\` is for linked images; a relocatable object or archive takes only \`symbol rename\`"
 
+# What `ar -x` leaves of a libtool-built member: its archive padding after the
+# string table. Taken as a thin object takes it inside an archive.
+cp "$T/impl.o" "$T/padded.o"
+printf '\n\n\n\n\n\n\n\n\n\n\n\n' >>"$T/padded.o"
+run "$T/padded.o" "$T/padded-out.o" 'symbol rename _foo _impl_foo'
+if [ "$run_rc" -eq 0 ] && link padded "$T/main.o" "$T/stub.o" "$T/padded-out.o" && [ "$("$T/padded")" = 43 ]; then
+    ok "an object with archive padding after its string table renames, links and runs"
+else
+    bad "archive padding" "rc $run_rc: $(cat "$T/run.err" "$T/link.err" 2>/dev/null)"
+fi
+
 cp "$T/impl.o" "$T/tail.o"
 printf 'drydock!' >>"$T/tail.o"
 run "$T/tail.o" "$T/x.o" 'symbol rename _foo _impl_foo'
