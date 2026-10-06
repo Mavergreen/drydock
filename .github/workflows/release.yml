@@ -1,7 +1,8 @@
 name: release
 
-# Cross-builds the x86_64/10.9 tools on a modern runner and proves the result is
-# equivalent to a native 10.9 build. Entry points:
+# Cross-builds the tools twice on a modern runner, x86_64 at a 10.9 floor and arm64
+# at 11.0, tests both, ships them merged into one universal .pkg, and proves the
+# x86_64 build equivalent to a native 10.9 one. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
 #   - workflow_dispatch with release=true, on main: build, sign, then publish the .pkg and
@@ -48,7 +49,7 @@ concurrency:
 jobs:
   build:
     name: build
-    runs-on: macos-26   # Apple Silicon; cross-builds the x86_64/10.9 slice. Use macos-15 if 26 is unavailable.
+    runs-on: macos-26   # Apple Silicon; cross-builds both slices, runs x86_64 under Rosetta. Use macos-15 if 26 is unavailable.
     outputs:
       version: ${{ steps.ver.outputs.full }}
       tag: ${{ steps.ver.outputs.tag }}
@@ -77,7 +78,9 @@ jobs:
         # preset CAN re-declare the variable from $penv to win, but then an unset variable
         # breaks a fresh clone (binaryDir expands to "/macho-tools-native", which CMake
         # refuses as unwritable), so we do not.
-        run: echo "CROSS_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross" >> "$GITHUB_ENV"
+        run: |
+          echo "CROSS_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross" >> "$GITHUB_ENV"
+          echo "ARM64_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross-arm64" >> "$GITHUB_ENV"
 
       # Nothing external to derive from -- this repo is its own upstream -- so the version
       # IS UPSTREAM_VERSION, hand-bumped, and the tag is v plus that, so the two cannot
@@ -122,6 +125,15 @@ jobs:
       - name: Build + compat guard
         run: shipyard-cmake --build --preset cross
 
+      # The arm64 slice: a second configure, because a deployment floor is per-configure and
+      # arm64 has no 10.9. shipyard's toolchain pins the 11.3 SDK and an 11.0 floor, and the
+      # compat guard holds each binary to that.
+      - name: Configure + build + compat guard (cross-arm64, against the pinned 11.3 SDK, with the updater)
+        run: |
+          set -eu
+          shipyard-cmake --preset cross-arm64 -DDRYDOCK_BUILD_UPDATER=ON
+          shipyard-cmake --build --preset cross-arm64
+
       # family_conventions runs shipyard's conventions gate, whose workflow-parse
       # check needs PyYAML; the runner's python3 has none, and install@v1 does
       # not provision it. setup-python, so pip is not PEP 668 externally-managed.
@@ -134,20 +146,24 @@ jobs:
       # The shared runner takes the whole suite, so a newly added test runs the
       # day it lands rather than when someone remembers a CI line. Includes
       # `characterize`, which is the equivalence gate.
-      - name: Run the repo's tests
+      # The x86_64 build runs translated by Rosetta here (INGREDIENTS.md declares it).
+      - name: Run the repo's tests (x86_64)
         run: sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross
+
+      - name: Run the repo's tests (arm64)
+        run: sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross-arm64
 
       # Stated separately so a failure reads as what it is. tests/EXPECTED was
       # recorded from a NATIVE build on real 10.9 hardware; this compares the
       # cross build's pipeline output against it. Matching digests are the claim
       # "cross ≡ native" made checkable. These tools are deterministic file
-      # transformers, and a cross-built tool is x86_64 with a 10.9 FLOOR -- so it
-      # still runs on this runner, which is what lets CI execute what it built.
+      # transformers, and each slice runs on this runner (x86_64 under Rosetta),
+      # which is what lets CI execute what it built.
       # Run separately as well as under ctest. ctest hides a skipped test's
       # output, so a SKIP here would be indistinguishable from a pass -- exactly
       # the silent no-op this test exists to avoid. On a modern runner it must
       # actually run; a skip is a failure of the check, not of the tools.
-      - name: Cover patch_macho's chained-fixups conversion
+      - name: Cover patch_macho's chained-fixups conversion (x86_64)
         run: |
           set -eu
           sh tests/chained-fixups.sh "$CROSS_BUILD_DIR" && rc=0 || rc=$?
@@ -157,9 +173,19 @@ jobs:
           fi
           exit "$rc"
 
+      - name: Cover patch_macho's chained-fixups conversion (arm64)
+        run: |
+          set -eu
+          sh tests/chained-fixups.sh "$ARM64_BUILD_DIR" && rc=0 || rc=$?
+          if [ "$rc" = 77 ]; then
+            echo "::error::chained-fixups SKIPPED on a modern runner — it should be able to emit them"
+            exit 1
+          fi
+          exit "$rc"
+
       # The same reasoning as chained-fixups above: this runner is the arm64 Mac with
       # Rosetta that the test needs, so a SKIP here means it measured nothing.
-      - name: Edited outputs on Apple Silicon (strip or re-sign, by arch)
+      - name: Edited outputs on Apple Silicon (strip or re-sign, by arch; x86_64 Drydock)
         run: |
           set -eu
           sh tests/apple_silicon_signing_test.sh "$CROSS_BUILD_DIR" && rc=0 || rc=$?
@@ -169,29 +195,47 @@ jobs:
           fi
           exit "$rc"
 
-      - name: Prove build equivalence against the native 10.9 reference
+      - name: Edited outputs on Apple Silicon (strip or re-sign, by arch; arm64 Drydock)
+        run: |
+          set -eu
+          sh tests/apple_silicon_signing_test.sh "$ARM64_BUILD_DIR" && rc=0 || rc=$?
+          if [ "$rc" = 77 ]; then
+            echo "::error::apple_silicon_signing_test SKIPPED on the arm64 runner -- it should run here"
+            exit 1
+          fi
+          exit "$rc"
+
+      - name: Prove build equivalence against the native 10.9 reference (x86_64)
         run: |
           set -eu
           echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
           sh tests/characterize.sh "$CROSS_BUILD_DIR" check
 
+      # The arm64 slice must transform files exactly as 10.9's own build does.
+      - name: Prove build equivalence against the native 10.9 reference (arm64)
+        run: |
+          set -eu
+          echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
+          sh tests/characterize.sh "$ARM64_BUILD_DIR" check
+
       - name: The build must not have written into the source tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
 
-      # The .pkg installs the tools by the build's own install rules, under
-      # /usr/local/mavergreen/drydock, with the updater; installed_layout_test has
-      # already run those same files through a farm of symlinks, and the payload
-      # test below proves the package carries exactly them.
+      # The .pkg installs the tools by each build's own install rules, merged into one
+      # universal tree under /usr/local/mavergreen/drydock, with the two updaters merged
+      # the same way; installed_layout_test has already run each build's files through a
+      # farm of symlinks, and the payload test below proves the package carries exactly
+      # them, both slices in every Mach-O.
       - name: Package the .pkg
         run: |
           set -eu
-          sh packaging/build-pkg.sh "$CROSS_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
+          sh packaging/build-pkg.sh "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
             "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
 
       - name: The package installs exactly what was tested
         run: |
           sh tests/pkg_payload_test.sh "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg" \
-            "$(command -v shipyard-cmake)" "$CROSS_BUILD_DIR"
+            "$(command -v shipyard-cmake)" "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR"
 
       # The Release body travels IN the artifact: publish-release.yml never checks this
       # repo out, and it refuses an empty body. Generated on every run rather than only a

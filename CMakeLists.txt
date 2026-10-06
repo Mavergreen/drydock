@@ -2,9 +2,14 @@ cmake_minimum_required(VERSION 3.16)
 
 # These tools RUN on 10.9 -- they are the thing being ported, not a cross-built
 # artifact -- so the deployment target and architecture are the product, not a
-# packaging detail.
-set(CMAKE_OSX_DEPLOYMENT_TARGET 10.9 CACHE STRING "runs on 10.9")
-set(CMAKE_OSX_ARCHITECTURES x86_64 CACHE STRING "Intel-only (10.9)")
+# packaging detail. One arch per configure: x86_64 at 10.9, or arm64 at 11.0
+# (arm64 has no 10.9); the .pkg merges the two.
+set(CMAKE_OSX_ARCHITECTURES x86_64 CACHE STRING "one arch per configure: x86_64 or arm64")
+if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "arm64's floor")
+else()
+  set(CMAKE_OSX_DEPLOYMENT_TARGET 10.9 CACHE STRING "runs on 10.9")
+endif()
 
 # Versioning: this repo is its OWN upstream -- but not in mavericks-ed25519's
 # sense. ed25519 is a PORT: date-versioned, `<date>-mavericks.N`, where the
@@ -41,14 +46,15 @@ mavericks_build_mode(MAVERICKS_MODE)
 mavericks_require_expected_mode("${MAVERICKS_MODE}")
 message(STATUS "Drydock ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
 
-# Cross builds compile against the PINNED 10.9 SDK, not the host's. Building
-# with a modern SDK and only -mmacosx-version-min=10.9 is weaker: the compiler
-# would happily accept declarations 10.9's headers never had, and the first
-# symptom would be a link or load failure on the target. Native builds already
-# have the right headers, so they need nothing.
+# Cross builds compile against the PINNED SDK for their arch (10.9's for
+# x86_64), not the host's. Building with a modern SDK and only
+# -mmacosx-version-min=10.9 is weaker: the compiler would happily accept
+# declarations 10.9's headers never had, and the first symptom would be a link
+# or load failure on the target. Native builds already have the right headers,
+# so they need nothing.
 if(MAVERICKS_MODE STREQUAL "cross")
-  mavericks_fetch_sdk(MAVERICKS_SDK)
-  set(CMAKE_OSX_SYSROOT "${MAVERICKS_SDK}" CACHE PATH "pinned 10.9 SDK" FORCE)
+  mavericks_fetch_sdk(MAVERICKS_SDK ARCH ${CMAKE_OSX_ARCHITECTURES})
+  set(CMAKE_OSX_SYSROOT "${MAVERICKS_SDK}" CACHE PATH "pinned SDK for ${CMAKE_OSX_ARCHITECTURES}" FORCE)
   message(STATUS "Drydock: cross build against ${MAVERICKS_SDK}")
 endif()
 
@@ -107,8 +113,8 @@ foreach(tool IN LISTS MACHO_TOOLS)
   target_compile_options(${tool} PRIVATE -O2 -Wall)
   target_link_libraries(${tool} PRIVATE drydockcore)
   # The compat guard is the in-CI equivalence proof: no 10.9 runner validates
-  # these, so the build fails if a binary declares a floor above 10.9 or links a
-  # symbol 10.9 lacks. It matters more here than in most of the family, because
+  # these, so the build fails if a binary declares a floor above its arch's pin
+  # (10.9 for x86_64) or links a symbol 10.9 lacks. It matters more here than in most of the family, because
   # these tools are themselves what makes other binaries loadable on 10.9.
   mavericks_assert_binary_compatible(${tool})
 endforeach()

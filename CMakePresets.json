@@ -14,14 +14,27 @@
       "inherits": "mavericks-cross",
       "displayName": "cross — build for 10.9 on a modern host, against the pinned 10.9 SDK",
       "cacheVariables": { "MAVERICKS_EXPECTED_MODE": "cross" }
+    },
+    {
+      "name": "cross-arm64",
+      "inherits": "mavericks-cross",
+      "displayName": "cross-arm64 — the arm64 slice, for 11.0, against the pinned 11.3 SDK",
+      "binaryDir": "$env{MAVERICKS_BUILD_ROOT}/${sourceDirName}-cross-arm64",
+      "cacheVariables": {
+        "MAVERICKS_EXPECTED_MODE": "cross",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
+      }
     }
   ],
   "buildPresets": [
     { "name": "native", "configurePreset": "native" },
-    { "name": "cross", "configurePreset": "cross" }
+    { "name": "cross", "configurePreset": "cross" },
+    { "name": "cross-arm64", "configurePreset": "cross-arm64" }
   ],
   "testPresets": [
     { "name": "native", "configurePreset": "native", "output": { "outputOnFailure": true } },
-    { "name": "cross", "configurePreset": "cross", "output": { "outputOnFailure": true } }
+    { "name": "cross", "configurePreset": "cross", "output": { "outputOnFailure": true } },
+    { "name": "cross-arm64", "configurePreset": "cross-arm64", "output": { "outputOnFailure": true } }
   ]
 }
