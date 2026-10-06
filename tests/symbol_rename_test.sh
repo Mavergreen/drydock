@@ -236,18 +236,18 @@ run "$T/impl.o" "$T/x.o" "symbol rename _foo ''"
 
 if [ -x "$T/fwd" ]; then
     run "$T/fwd" "$T/x" 'symbol rename _foo _impl_foo'
-    refused "on a linked executable" "symbol rename renames symbols in .o files; a linked image is not supported"
+    refused "on a linked executable" "symbol rename renames symbols in .o and .a files; a linked image is not supported"
 else
     bad "refused: on a linked executable" "the forwarding case built no executable"
 fi
 
 run "$T/impl.o" "$T/x.o" 'rpath append /x'
 refused "rpath append on an object" \
-    "\`rpath append\` is for linked images; a relocatable object takes only \`symbol rename\`"
+    "\`rpath append\` is for linked images; a relocatable object or archive takes only \`symbol rename\`"
 
 run "$T/impl.o" "$T/x.o" 'symbol rename _foo _impl_foo' 'target 10.9'
 refused "target 10.9 after symbol rename on an object" \
-    "\`target 10.9\` is for linked images; a relocatable object takes only \`symbol rename\`"
+    "\`target 10.9\` is for linked images; a relocatable object or archive takes only \`symbol rename\`"
 
 cp "$T/impl.o" "$T/tail.o"
 printf 'drydock!' >>"$T/tail.o"

@@ -176,8 +176,8 @@ static void test_strtab_not_last(void) {
 }
 
 /* The bytes after the string table are claimed by one load command field, or
- * by none. A claim past the string table's end must refuse whatever the tail
- * holds, even with the file cut back to the string table. */
+ * by none. The archive path hands msr_rename a member already cut back to its
+ * string table, so a claim past that end must refuse whatever the tail holds. */
 enum { CLAIM_NONE, CLAIM_SEGMENT, CLAIM_SECTION, CLAIM_RELOC, CLAIM_INDIRECT,
        CLAIM_EXTREL, CLAIM_DATA_IN_CODE, CLAIM_N };
 static const char *claim_names[] = { "none", "segment", "section", "relocations",
@@ -236,7 +236,18 @@ static void test_claimed_tail(void) {
             }
             free(copy); free(o.buf);
         }
+        for (int pad = 0; pad < 2; pad++) {
+            claimed c;
+            claimed_obj(&c, claim, pad ? '\n' : 0);
+            size_t want = claim == CLAIM_NONE ? end : sizeof c;
+            size_t got = msr_unpadded_size((const uint8_t *)&c, sizeof c);
+            CHECK(got == want, "unpadded, claim %s, %s padding: %zu, want %zu", claim_names[claim],
+                  pad ? "newline" : "NUL", got, want);
+        }
     }
+    claimed c;
+    claimed_obj(&c, CLAIM_NONE, 'x');
+    CHECK(msr_unpadded_size((const uint8_t *)&c, sizeof c) == sizeof c, "unpadded: a tail that is not padding is kept");
 }
 
 static void test_trailing_pad_kept(void) {
@@ -319,6 +330,30 @@ static void test_each_defined_external(void) {
     free(o.buf);
 }
 
+/* clang puts each function's FDE symbol (_f.eh) in __eh_frame, whose
+ * S_ATTR_NO_TOC keeps it out of ranlib's index. */
+static void test_each_defined_external_skips_no_toc(void) {
+    struct { struct mach_header_64 h; struct segment_command_64 sg; struct section_64 sec[2];
+             struct symtab_command st; struct nlist_64 nl[3]; char str[16]; } o;
+    memset(&o, 0, sizeof o);
+    o.h.magic = MH_MAGIC_64; o.h.cputype = 0x01000007; o.h.cpusubtype = 3; o.h.filetype = MH_OBJECT;
+    o.h.ncmds = 2; o.h.sizeofcmds = sizeof o.sg + sizeof o.sec + sizeof o.st;
+    o.sg.cmd = LC_SEGMENT_64; o.sg.cmdsize = sizeof o.sg + sizeof o.sec; o.sg.nsects = 2;
+    memcpy(o.sec[0].sectname, "__text", 6); o.sec[0].flags = S_ATTR_PURE_INSTRUCTIONS;
+    memcpy(o.sec[1].sectname, "__eh_frame", 10);
+    o.sec[1].flags = S_COALESCED | S_ATTR_NO_TOC | S_ATTR_STRIP_STATIC_SYMS | S_ATTR_LIVE_SUPPORT;
+    o.st.cmd = LC_SYMTAB; o.st.cmdsize = sizeof o.st; o.st.nsyms = 3;
+    o.st.symoff = (uint32_t)offsetof(__typeof__(o), nl); o.st.stroff = (uint32_t)offsetof(__typeof__(o), str);
+    o.st.strsize = sizeof o.str;
+    memcpy(o.str, "\0_f\0_f.eh\0_g\0", 13);
+    o.nl[0].n_un.n_strx = 1; o.nl[0].n_type = N_SECT | N_EXT; o.nl[0].n_sect = 1;
+    o.nl[1].n_un.n_strx = 4; o.nl[1].n_type = N_SECT | N_EXT; o.nl[1].n_sect = 2;
+    o.nl[2].n_un.n_strx = 10; o.nl[2].n_type = N_SECT | N_EXT; o.nl[2].n_sect = 3;
+    char out[256] = "";
+    CHECK(msr_each_defined_external((const uint8_t *)&o, sizeof o, collect, out) == 0, "no_toc: walk failed");
+    CHECK(strcmp(out, "_f,_g,") == 0, "no_toc: got %s", out);
+}
+
 static void test_reasons(void) {
     for (int rc = MSR_UNMATCHED; rc <= MSR_MALFORMED; rc++)
         CHECK(*msr_reason(rc) != '\0', "no reason for %d", rc);
@@ -338,6 +373,7 @@ int main(void) {
     test_long_new_name();
     test_malformed();
     test_each_defined_external();
+    test_each_defined_external_skips_no_toc();
     test_reasons();
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("symrename_test: ok\n");

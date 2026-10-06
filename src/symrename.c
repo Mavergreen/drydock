@@ -12,6 +12,8 @@
 typedef struct {
     const struct symtab_command *st;
     int found;
+    unsigned nsect;
+    uint8_t no_toc[256];
     uint64_t claim;     /* the end of the last file byte a load command records, the string table aside */
 } msr_find;
 
@@ -99,6 +101,12 @@ static int msr_find_lc(const struct load_command *lc, void *ctx) {
         f->found = 1;
         own = 1;
     }
+    if (lc->cmd == LC_SEGMENT_64) {
+        const struct segment_command_64 *sg = (const struct segment_command_64 *)lc;
+        const struct section_64 *sec = (const struct section_64 *)(sg + 1);
+        for (uint32_t i = 0; i < sg->nsects; i++)
+            if (++f->nsect < 256) f->no_toc[f->nsect] = (sec[i].flags & S_ATTR_NO_TOC) != 0;
+    }
     msr_claim_lc(f, lc, own);
     return 0;
 }
@@ -152,6 +160,20 @@ int msr_has(const uint8_t *buf, size_t size, const char *name) {
     return 0;
 }
 
+size_t msr_unpadded_size(const uint8_t *buf, size_t size) {
+    mi_image im;
+    msr_find f;
+    if (mi_wrap((uint8_t *)buf, size, &im) != 0) return size;
+    memset(&f, 0, sizeof f);
+    mi_each_lc(&im, msr_find_lc, &f);
+    if (!f.found || f.st->stroff > size || size - f.st->stroff < f.st->strsize) return size;
+    size_t end = (size_t)f.st->stroff + f.st->strsize;
+    if (f.claim > end) return size;
+    for (size_t i = end; i < size; i++)
+        if (buf[i] != '\n' && buf[i] != 0) return size;
+    return end;
+}
+
 int msr_each_defined_external(const uint8_t *buf, size_t size,
                               int (*fn)(const char *name, void *ctx), void *ctx) {
     msr_tab t;
@@ -165,6 +187,7 @@ int msr_each_defined_external(const uint8_t *buf, size_t size,
         if (!s) return -1;
         if (n.n_type & N_STAB) continue;
         if (!(n.n_type & N_EXT) || (n.n_type & N_TYPE) == N_UNDF) continue;
+        if ((n.n_type & N_TYPE) == N_SECT && n.n_sect <= f.nsect && f.no_toc[n.n_sect]) continue;
         int stop = fn(s, ctx);
         if (stop) return stop;
     }

@@ -39,8 +39,9 @@ typedef struct {
  * NOT MR_ERROR: that is (-1), private to src/rewrite.c, and it is
  * mr_fat_slice's per-slice status, not an exit code.
  *
- * INPUT. A thin 64-bit Mach-O, or a fat (universal) file, which is edited
- * slice by slice and kept whole. Anything else is refused; an input that
+ * INPUT. A thin 64-bit Mach-O, a fat (universal) file, which is edited
+ * slice by slice and kept whole, or a static archive, edited member by member
+ * with its index rebuilt (src/archive.h). Anything else is refused; an input that
  * cannot be opened or read at all is MR_FAIL. Beyond its statements the
  * script may carry directives -- `arch`, `allow-unmatched` -- which select
  * slices and let an unmatched statement be a report rather than a refusal of

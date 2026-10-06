@@ -42,6 +42,7 @@
 #include "arch_names.h"
 #include "linkedit_order.h"
 #include "symrename.h"
+#include "archive.h"
 
 /* Every line this module writes, to the log or to stderr, goes through here.
  * The operations print their progress to stdout, which is fully buffered
@@ -299,13 +300,13 @@ static int me_object_gate(const ms_script *s, int is_object, const char *path, F
         const ms_stmt *st = &s->stmts[i];
         if (is_object && st->kind != MS_SYMBOL) {
             me_say(log, "drydock-macho-rewrite edit: %s: `%s %s` is for linked images; a relocatable "
-                        "object takes only `symbol rename`\n",
+                        "object or archive takes only `symbol rename`\n",
                    path, ms_kind_name(st->kind), ms_op_name(st->op));
             return MR_REFUSED;
         }
         if (!is_object && st->kind == MS_SYMBOL) {
-            me_say(log, "drydock-macho-rewrite edit: %s: symbol rename renames symbols in .o files; "
-                        "a linked image is not supported\n", path);
+            me_say(log, "drydock-macho-rewrite edit: %s: symbol rename renames symbols in .o and .a "
+                        "files; a linked image is not supported\n", path);
             return MR_REFUSED;
         }
     }
@@ -941,14 +942,46 @@ static int me_write_once(uint8_t *buf, size_t size, const char *path, const char
     return 0;
 }
 
-/* The first four bytes of `path`, or 0 if they cannot be read. */
-static uint32_t me_magic(const char *path) {
+static int me_is_archive(const uint8_t *buf, size_t size) {
+    return size >= 8 && memcmp(buf, "!<arch>\n", 8) == 0;
+}
+
+/* The first four bytes of `path`, or 0 if they cannot be read; *archive is
+ * set when the first eight are an archive's "!<arch>\n". */
+static uint32_t me_magic(const char *path, int *archive) {
+    uint8_t head[8];
     uint32_t magic = 0;
+    *archive = 0;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return 0;
-    if (read(fd, &magic, sizeof magic) != (ssize_t)sizeof magic) magic = 0;
+    ssize_t got = read(fd, head, sizeof head);
     close(fd);
+    if (got < 4) return 0;
+    memcpy(&magic, head, sizeof magic);
+    *archive = me_is_archive(head, (size_t)got);
     return magic;
+}
+
+/* Read `path` whole into a malloc'd buffer. 0, or MR_FAIL having said so. */
+static int me_slurp(const char *path, uint8_t **pbuf, size_t *psize, FILE *log) {
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0) {
+        if (fd >= 0) close(fd);
+        me_say(log, "drydock-macho-rewrite edit: %s: cannot open or read\n", path);
+        return MR_FAIL;
+    }
+    size_t size = (size_t)st.st_size;
+    uint8_t *buf = (uint8_t *)malloc(size ? size : 1);
+    if (!buf || read(fd, buf, size) != (ssize_t)size) {
+        close(fd); free(buf);
+        me_say(log, "drydock-macho-rewrite edit: %s: cannot open or read\n", path);
+        return MR_FAIL;
+    }
+    close(fd);
+    *pbuf = buf;
+    *psize = size;
+    return 0;
 }
 
 /* What the pre-pass decided about one slice.
@@ -1079,21 +1112,9 @@ static int me_slice_is_64(uint8_t *buf, size_t size, const mfat_arch *a) {
 static int me_run_fat(const char *path, const char *out, const ms_script *s,
                       FILE *log) {
     /* Read the whole container once. */
-    int fd = open(path, O_RDONLY);
-    struct stat st;
-    if (fd < 0 || fstat(fd, &st) != 0) {
-        if (fd >= 0) close(fd);
-        me_say(log, "drydock-macho-rewrite edit: %s: cannot open or read\n", path);
-        return MR_FAIL;
-    }
-    size_t size = (size_t)st.st_size;
-    uint8_t *buf = (uint8_t *)malloc(size ? size : 1);
-    if (!buf || read(fd, buf, size) != (ssize_t)size) {
-        close(fd); free(buf);
-        me_say(log, "drydock-macho-rewrite edit: %s: cannot open or read\n", path);
-        return MR_FAIL;
-    }
-    close(fd);
+    uint8_t *buf;
+    size_t size;
+    if (me_slurp(path, &buf, &size, log) != 0) return MR_FAIL;
 
     uint32_t narch; int swap;
     int prc = mfat_parse(buf, size, &narch, &swap);
@@ -1109,6 +1130,12 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     }
     for (uint32_t j = 0; j < narch; j++) {
         mfat_arch a; mfat_get(buf, swap, j, &a);
+        if (me_is_archive(buf + a.offset, a.size)) {
+            me_say(log, "drydock-macho-rewrite edit: %s is a universal archive; thin it with lipo first; ", path);
+            me_say_left(log, path, out);
+            free(buf);
+            return MR_REFUSED;
+        }
         if (!mi_malformed_64(buf + a.offset, a.size)) continue;
         char name[32]; ma_describe(a.cputype, a.cpusubtype, name);
         me_say(log, "drydock-macho-rewrite edit: %s: slice %s is not a readable 64-bit Mach-O; ",
@@ -1226,6 +1253,280 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     return me_write_once(buf, size, path, out, log);
 }
 
+typedef struct { const char *name; int found; } me_def;
+
+static int me_def_fn(const char *name, void *ctx) {
+    me_def *d = (me_def *)ctx;
+    if (strcmp(name, d->name) != 0) return 0;
+    d->found = 1;
+    return 1;
+}
+
+static int me_defines(const uint8_t *buf, size_t size, const char *name) {
+    me_def d = { name, 0 };
+    msr_each_defined_external(buf, size, me_def_fn, &d);
+    return d.found;
+}
+
+/* Everything the archive path's member callback needs. Per-member arrays are
+ * indexed by the member's position among the non-index members; the per-
+ * statement ones by [statement * nmem + member]. */
+typedef struct {
+    const ms_script *s;
+    const char *path, *out;
+    FILE *log;
+    size_t nmem, next;
+    const char **names;
+    unsigned char *edit;         /* the member is an object the script renames in */
+    unsigned *entries;
+    unsigned char *had_new, *has_new;
+    int fn_failed;
+} me_ar_ctx;
+
+static int me_ar_member(uint8_t **pbuf, size_t *psize, const mar_member *m, void *ctx_) {
+    me_ar_ctx *c = (me_ar_ctx *)ctx_;
+    size_t k = c->next++;
+    (void)m;
+    if (!c->edit[k]) return 0;
+    for (int i = 0; i < c->s->n; i++) {
+        const ms_stmt *st = &c->s->stmts[i];
+        if (st->kind == MS_SYMBOL && st->op == MS_RENAME) continue;
+        c->fn_failed = 1;
+        me_say(c->log, "drydock-macho-rewrite edit: %s: member %s: `%s %s` is for linked images; a "
+                       "relocatable object or archive takes only `symbol rename`; ",
+               c->path, c->names[k], ms_kind_name(st->kind), ms_op_name(st->op));
+        me_say_left(c->log, c->path, c->out);
+        return MR_REFUSED;
+    }
+    size_t full = *psize;
+    *psize = msr_unpadded_size(*pbuf, *psize);
+    for (int i = 0; i < c->s->n; i++)
+        c->had_new[(size_t)i * c->nmem + k] = (unsigned char)me_defines(*pbuf, *psize, c->s->stmts[i].b);
+    int changed = 0;
+    for (int i = 0; i < c->s->n; i++) {
+        const ms_stmt *st = &c->s->stmts[i];
+        msr_report r;
+        int rc = msr_rename(pbuf, psize, st->a, st->b, &r);
+        if (rc == MSR_UNMATCHED) continue;
+        if (rc == MSR_OK) {
+            c->entries[(size_t)i * c->nmem + k] = r.entries;
+            changed = 1;
+            continue;
+        }
+        c->fn_failed = 1;
+        if (rc == MSR_NOMEM) {
+            me_say(c->log, "drydock-macho-rewrite edit: %s: out of memory renaming %s in member %s; ",
+                   c->path, st->a, c->names[k]);
+            me_say_left(c->log, c->path, c->out);
+            return MR_FAIL;
+        }
+        me_say(c->log, "drydock-macho-rewrite edit: %s: member %s: symbol rename %s %s: ",
+               c->path, c->names[k], st->a, st->b);
+        me_say_msr(c->log, rc, st->a, st->b);
+        fputc('\n', c->log);
+        me_say(c->log, "drydock-macho-rewrite edit: refused at statement %d of %d (line %d) in member %s; ",
+               i + 1, c->s->n, st->line, c->names[k]);
+        me_say_left(c->log, c->path, c->out);
+        return MR_REFUSED;
+    }
+    for (int i = 0; i < c->s->n; i++)
+        c->has_new[(size_t)i * c->nmem + k] = (unsigned char)me_defines(*pbuf, *psize, c->s->stmts[i].b);
+    /* msr_rename leaves the bytes alone when it matches nothing, so an
+     * unchanged member gets its padding back. */
+    if (!changed) *psize = full;
+    return 0;
+}
+
+/* A member's header and load commands, validated on an aligned copy: in a BSD
+ * archive a member's bytes need not start on a 4-byte boundary. 0, MR_REFUSED
+ * if they do not read as a 64-bit Mach-O, or MR_FAIL. */
+static int me_ar_header(const uint8_t *d, size_t size, struct mach_header_64 *h) {
+    uint32_t sizeofcmds = 0;
+    if (size >= sizeof *h) memcpy(&sizeofcmds, d + offsetof(struct mach_header_64, sizeofcmds), sizeof sizeofcmds);
+    size_t n = size < sizeof *h + (size_t)sizeofcmds ? size : sizeof *h + (size_t)sizeofcmds;
+    uint8_t *copy = (uint8_t *)malloc(n ? n : 1);
+    if (!copy) return MR_FAIL;
+    memcpy(copy, d, n);
+    mi_image im;
+    int rc = mi_wrap(copy, n, &im) == 0 ? 0 : MR_REFUSED;
+    if (rc == 0) memcpy(h, copy, sizeof *h);
+    free(copy);
+    return rc;
+}
+
+/* Which members the script renames in: 64-bit objects of a selected arch.
+ * Bitcode, a 32-bit or unselected Mach-O, or a linked image is refused
+ * before anything is renamed; any other member passes through. */
+static int me_ar_classify(uint8_t *buf, const mar_archive *a, const ms_script *s,
+                          me_ar_ctx *c) {
+    size_t k = 0;
+    for (size_t j = 0; j < a->n; j++) {
+        const mar_member *m = &a->m[j];
+        if (m->is_index) continue;
+        uint8_t *d = buf + m->data_off;
+        uint32_t magic = 0;
+        if (m->data_size >= 4) memcpy(&magic, d, 4);
+        const char *why = NULL;
+        char arch[32];
+        c->names[k] = m->name;
+        if (magic == 0x0B17C0DE || (m->data_size >= 4 && memcmp(d, "BC\xC0\xDE", 4) == 0))
+            why = "is LLVM bitcode, whose symbols this tool cannot rename";
+        else if (magic == MH_MAGIC || magic == MH_CIGAM)
+            why = "is a 32-bit Mach-O, and symbol rename applies only to 64-bit objects";
+        else if (magic == MH_CIGAM_64 || magic == FAT_MAGIC || magic == FAT_CIGAM)
+            why = "is not a thin little-endian Mach-O";
+        else if (magic == MH_MAGIC_64) {
+            struct mach_header_64 h;
+            int r = me_ar_header(d, m->data_size, &h);
+            if (r == MR_FAIL) {
+                me_say(c->log, "drydock-macho-rewrite edit: out of memory; ");
+                me_say_left(c->log, c->path, c->out);
+                return MR_FAIL;
+            }
+            if (r != 0)
+                why = "is not a readable 64-bit Mach-O";
+            else if (h.filetype != MH_OBJECT)
+                why = "is a linked image, and symbol rename renames symbols in .o and .a files";
+            else {
+                int row = ma_index((uint32_t)h.cputype, (uint32_t)h.cpusubtype);
+                if (s->arch_mask && (row < 0 || !(s->arch_mask & (1u << row)))) {
+                    ma_describe((uint32_t)h.cputype, (uint32_t)h.cpusubtype, arch);
+                    me_say(c->log, "drydock-macho-rewrite edit: %s: member %s is %s, which the script's "
+                                   "arch directives do not name; ", c->path, m->name, arch);
+                    me_say_left(c->log, c->path, c->out);
+                    return MR_REFUSED;
+                }
+                c->edit[k] = 1;
+            }
+        }
+        if (why) {
+            me_say(c->log, "drydock-macho-rewrite edit: %s: member %s %s; ", c->path, m->name, why);
+            me_say_left(c->log, c->path, c->out);
+            return MR_REFUSED;
+        }
+        k++;
+    }
+    return 0;
+}
+
+/* After the pass: report each statement, then the archive-scope verdicts --
+ * OLD in no member, and NEW newly defined beside another definition. */
+static int me_ar_verdicts(const me_ar_ctx *c, unsigned *total) {
+    *total = 0;
+    for (int i = 0; i < c->s->n; i++) {
+        const ms_stmt *st = &c->s->stmts[i];
+        size_t row = (size_t)i * c->nmem;
+        unsigned sum = 0;
+        me_log_stmt(c->log, st);
+        for (size_t k = 0; k < c->nmem; k++) {
+            unsigned n = c->entries[row + k];
+            if (n) me_say(c->log, "      %s: %u entr%s\n", c->names[k], n, n == 1 ? "y" : "ies");
+            sum += n;
+        }
+        *total += sum;
+        if (sum) {
+            me_say(c->log, "      symbol rename %s -> %s: %u entr%s\n", st->a, st->b, sum,
+                   sum == 1 ? "y" : "ies");
+        } else {
+            me_say(stderr, "drydock-macho-rewrite: symbol rename %s %s matched nothing (", st->a, st->b);
+            me_say_msr(stderr, MSR_UNMATCHED, st->a, st->b);
+            fputs(")\n", stderr);
+            if (!c->s->allow_unmatched) {
+                me_say(c->log, "drydock-macho-rewrite edit: refused at statement %d of %d (line %d): it "
+                               "matched nothing in any member; ", i + 1, c->s->n, st->line);
+                me_say_left(c->log, c->path, c->out);
+                return MR_REFUSED;
+            }
+        }
+        size_t gained = c->nmem, other = c->nmem;
+        for (size_t k = 0; k < c->nmem && gained == c->nmem; k++)
+            if (c->has_new[row + k] && !c->had_new[row + k]) gained = k;
+        for (size_t k = 0; k < c->nmem && gained < c->nmem && other == c->nmem; k++)
+            if (c->has_new[row + k] && k != gained) other = k;
+        if (other == c->nmem) continue;
+        me_say(c->log, "drydock-macho-rewrite edit: refused at statement %d of %d (line %d): after the "
+                       "rename, %s is defined in both %s and %s; ", i + 1, c->s->n, st->line, st->b,
+               c->names[gained < other ? gained : other], c->names[gained < other ? other : gained]);
+        me_say_left(c->log, c->path, c->out);
+        return MR_REFUSED;
+    }
+    return 0;
+}
+
+/* A static archive: every selected object member renamed, the index rebuilt
+ * (src/archive.h), written once. A run that renames nothing writes the input's
+ * own bytes. */
+static int me_run_archive(const char *path, const char *out, const ms_script *s, FILE *log) {
+    uint8_t *buf;
+    size_t size;
+    if (me_slurp(path, &buf, &size, log) != 0) return MR_FAIL;
+    if (me_object_gate(s, 1, path, log) != 0) { free(buf); return MR_REFUSED; }
+
+    mar_archive a;
+    char why[256];
+    int rc = mar_parse(buf, size, &a, why, sizeof why);
+    if (rc != 0) {
+        if (rc == MR_FAIL) me_say(log, "drydock-macho-rewrite edit: out of memory reading %s; ", path);
+        else me_say(log, "drydock-macho-rewrite edit: %s: not a readable archive (%s); ", path, why);
+        me_say_left(log, path, out);
+        free(buf);
+        return rc == MR_FAIL ? MR_FAIL : MR_REFUSED;
+    }
+    size_t nmem = 0;
+    for (size_t j = 0; j < a.n; j++) nmem += !a.m[j].is_index;
+    size_t cells = (s->n ? (size_t)s->n : 1) * (nmem ? nmem : 1);
+    me_ar_ctx c = { s, path, out, log, nmem, 0, NULL, NULL, NULL, NULL, NULL, 0 };
+    c.names = (const char **)calloc(nmem ? nmem : 1, sizeof *c.names);
+    c.edit = (unsigned char *)calloc(nmem ? nmem : 1, 1);
+    c.entries = (unsigned *)calloc(cells, sizeof *c.entries);
+    c.had_new = (unsigned char *)calloc(cells, 1);
+    c.has_new = (unsigned char *)calloc(cells, 1);
+    uint8_t *work = (uint8_t *)malloc(size);
+    unsigned total = 0;
+    if (!c.names || !c.edit || !c.entries || !c.had_new || !c.has_new || !work) {
+        me_say(log, "drydock-macho-rewrite edit: out of memory; ");
+        me_say_left(log, path, out);
+        rc = MR_FAIL;
+        goto done;
+    }
+    rc = me_ar_classify(buf, &a, s, &c);
+    if (rc != 0) goto done;
+
+    memcpy(work, buf, size);
+    size_t wsize = size;
+    rc = mar_rewrite(&work, &wsize, me_ar_member, &c, why, sizeof why);
+    if (rc != 0) {
+        if (!c.fn_failed) {
+            me_say(log, "drydock-macho-rewrite edit: could not lay out %s's members again (%s); ", path, why);
+            me_say_left(log, path, out);
+        }
+        goto done;
+    }
+    rc = me_ar_verdicts(&c, &total);
+    if (rc != 0) goto done;
+    mar_archive check;
+    if (total && mar_parse(work, wsize, &check, why, sizeof why) != 0) {
+        me_say(log, "drydock-macho-rewrite edit: the reassembled %s fails validation (%s); ", path, why);
+        me_say_left(log, path, out);
+        rc = MR_REFUSED;
+        goto done;
+    }
+    if (total) {
+        mar_free(&check);
+        free(buf);
+        buf = work;
+        size = wsize;
+        work = NULL;
+    }
+
+done:
+    mar_free(&a);
+    free((void *)c.names); free(c.edit); free(c.entries); free(c.had_new); free(c.has_new);
+    free(work);
+    if (rc != 0) { free(buf); return rc; }
+    return me_write_once(buf, size, path, out, log);
+}
+
 /* mi_open said MI_NOT_MACHO, and me_run has already dispatched every fat
  * container to its own path or refusal: what is left is not an image this
  * tool reads at all. */
@@ -1253,7 +1554,9 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         return MR_FAIL;
     }
 
-    uint32_t magic = me_magic(path);
+    int archive;
+    uint32_t magic = me_magic(path, &archive);
+    if (archive) return me_run_archive(path, out, s, log);
     if (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64) {
         me_say(log, "drydock-macho-rewrite edit: %s is a 64-bit fat container (fat_arch_64), which this "
                     "tool does not read; ", path);
