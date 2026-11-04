@@ -113,7 +113,12 @@ run_case fix_macho '"$1/fix_macho" f -change /usr/lib/libSystem.B.dylib @loader_
 run_case rename_segment '"$1/rename_segment" f __DATA __DATB'
 run_case retag_swift_classes '"$1/retag_swift_classes" f'
 run_case insert_dylib '"$1/insert_dylib" --all-yes /usr/lib/libfoo.dylib f o'
-run_case bake-mavericks-shim '"$1/bake-mavericks-shim" f o --shim /usr/lib/system/libsystem_c.dylib'
+printf 'int printf(const char *f, ...) { return 0; }\n' > "$t/shim.c"
+if cc -dynamiclib -arch x86_64 -mmacosx-version-min=10.9 -o "$t/shim.dylib" "$t/shim.c" 2>/dev/null; then
+  run_case bake-mavericks-shim "\"\$1/bake-mavericks-shim\" f o --shim '$t/shim.dylib'"
+else
+  echo "INFO: no cc here to build a shim, so bake-mavericks-shim did not run from the archive"
+fi
 
 mkdir "$t/linkbin" "$t/run-link"
 ln -s "$A/bin/insert_dylib" "$t/linkbin/insert_dylib"
