@@ -3,12 +3,14 @@
 #   usage: standalone_archive_test.sh ARCHIVE DRYDOCK.pkg
 #          ARCHIVE is drydock-<v>-macos-universal.tar.gz: one top directory, drydock-<v>/, holding
 #          exactly what the .pkg installs under usr/local/mavergreen/drydock except its manifest,
-#          with no AppleDouble entries and no bundle. Every Mach-O carries both slices and loads
-#          nothing from outside /usr/lib, /System/Library or itself. Unpacked under a path with a
-#          space, with a decoy drydock-macho-rewrite first on PATH, the tool and every wrapper give
-#          the same results as the .pkg's own copies. A wrapper reached through a symlink asks for
-#          DRYDOCK_MACHO_REWRITE_COMPAT_DIR, and works once given it. Uses only tools Mac OS X 10.9
-#          ships (tar, pkgutil, gzip, cpio, lipo, otool, shasum).
+#          owned by root:wheel, with no AppleDouble entries, stored xattrs or bundle, and with the
+#          .pkg's file modes. Every Mach-O carries both slices and loads nothing from outside
+#          /usr/lib, /System/Library or itself. Unpacked under a path with a space, with a decoy
+#          drydock-macho-rewrite first on PATH, the tool and every wrapper give the same results as
+#          the .pkg's own copies. A wrapper reached through a symlink asks for
+#          DRYDOCK_MACHO_REWRITE_COMPAT_DIR, and works once given it. Without a cc to build the bake
+#          shim it skips that one case, except under GitHub Actions. Uses only tools Mac OS X 10.9
+#          ships (tar, pkgutil, gzip, cpio, lipo, otool, shasum, stat).
 set -eu
 usage='usage: standalone_archive_test.sh ARCHIVE DRYDOCK.pkg'
 [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
@@ -37,6 +39,10 @@ while IFS= read -r e; do
   case "$n" in mavergreen.plist) fail "$b holds the package manager's manifest: $e" ;; esac
   case "$e" in *.app|*.app/*) fail "$b holds a bundle: $e" ;; esac
 done < "$t/list"
+tar -tvzf "$archive" | awk '$3 != "root" || $4 != "wheel" { print; exit 1 }' > "$t/owner" \
+  || fail "$b records an owner other than root:wheel: $(cat "$t/owner")"
+gzip -dc "$archive" | grep -a -q -E 'LIBARCHIVE\.xattr\.|SCHILY\.xattr\.' \
+  && fail "$b stores extended attributes in its pax headers"
 
 u="$t/with space"
 mkdir "$u"
@@ -57,6 +63,11 @@ done
 [ "$found" -eq 1 ] || fail "$found payloads in $pkg carry $tree (want exactly 1)"
 diff -r -x mavergreen.plist "$P" "$A" > "$t/diff" \
   || fail "$top/ is not the package's $tree without its manifest: $(head -5 "$t/diff")"
+modes() { (cd "$1" && find . ! -name mavergreen.plist -exec stat -f '%Lp %N' {} + | sort); }
+modes "$P" > "$t/modes-pkg"
+modes "$A" > "$t/modes-archive"
+diff "$t/modes-pkg" "$t/modes-archive" > "$t/diff" \
+  || fail "$top/'s file modes differ from the package's: $(head -5 "$t/diff")"
 
 machos=0
 find "$A" -type f > "$t/files"
@@ -65,7 +76,7 @@ while IFS= read -r f; do
   machos=$((machos + 1))
   r=${f#"$A"/}
   lipo "$f" -verify_arch x86_64 arm64 || fail "$r lacks a slice: $(lipo -info "$f" 2>&1 | sed 's/.*: //')"
-  otool -arch all -L "$f" | sed -n 's/^[[:space:]]\{1,\}\([^ ]*\) (.*/\1/p' > "$t/deps"
+  otool -arch all -L "$f" | sed -n 's/^[[:space:]]\{1,\}\(.*\) (compatibility version .*/\1/p' > "$t/deps"
   while IFS= read -r dep; do
     case "$dep" in
       /usr/lib/*|/System/Library/*|@loader_path/*|@executable_path/*|@rpath/*) ;;
@@ -114,10 +125,12 @@ run_case rename_segment '"$1/rename_segment" f __DATA __DATB'
 run_case retag_swift_classes '"$1/retag_swift_classes" f'
 run_case insert_dylib '"$1/insert_dylib" --all-yes /usr/lib/libfoo.dylib f o'
 printf 'int printf(const char *f, ...) { return 0; }\n' > "$t/shim.c"
-if cc -dynamiclib -arch x86_64 -mmacosx-version-min=10.9 -o "$t/shim.dylib" "$t/shim.c" 2>/dev/null; then
+if ${CC:-cc} -dynamiclib -arch x86_64 -mmacosx-version-min=10.9 -o "$t/shim.dylib" "$t/shim.c" 2>"$t/cc.err"; then
   run_case bake-mavericks-shim "\"\$1/bake-mavericks-shim\" f o --shim '$t/shim.dylib'"
+elif [ -n "${GITHUB_ACTIONS:-}" ]; then
+  fail "${CC:-cc} could not build the shim, so bake-mavericks-shim would go unproven: $(head -3 "$t/cc.err")"
 else
-  echo "INFO: no cc here to build a shim, so bake-mavericks-shim did not run from the archive"
+  echo "INFO: ${CC:-cc} could not build a shim here, so bake-mavericks-shim did not run from the archive"
 fi
 
 mkdir "$t/linkbin" "$t/run-link"
