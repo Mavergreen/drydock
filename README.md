@@ -7,7 +7,7 @@ When all you have is a binary executable, there's Drydock.
 
 Each [release](https://github.com/Mavergreen/drydock/releases) has two downloads:
 
-- `drydock-<version>-macos-universal.tar.gz`: no installer. Unpack it anywhere and run what's in `bin/`. Nothing outside that directory is read or touched. (A wrapper symlinked from elsewhere needs `DRYDOCK_MACHO_REWRITE_COMPAT_DIR` set to the real `bin/`.)
+- `drydock-<version>-macos-universal.tar.gz`: no installer. Unpack it anywhere and run what's in `bin/`. It needs nothing installed outside that directory beyond what Mac OS X ships, and writes only the files you name and its own temporary files. The wrappers find `drydock-macho-rewrite` beside themselves, unless `DRYDOCK_MACHO_REWRITE_COMPAT_DIR` is set: then they use the one there. So a wrapper symlinked from elsewhere needs it set to the real `bin/`, and an inherited setting overrides the copy you unpacked.
 - `drydock-<version>.pkg`: installs into `/usr/local/mavergreen`, puts it on your `PATH`, and keeps itself up to date.
 
 `SHA256SUMS` covers both.
