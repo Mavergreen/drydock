@@ -3,6 +3,15 @@
 Source code can often be adjusted to build and run on Mavericks.
 When all you have is a binary executable, there's Drydock.
 
+## Installing
+
+Each [release](https://github.com/Mavergreen/drydock/releases) has two downloads:
+
+- `drydock-<version>-macos-universal.tar.gz`: no installer. Unpack it anywhere and run what's in `bin/`. Nothing outside that directory is read or touched. (A wrapper symlinked from elsewhere needs `DRYDOCK_MACHO_REWRITE_COMPAT_DIR` set to the real `bin/`.)
+- `drydock-<version>.pkg`: installs into `/usr/local/mavergreen`, puts it on your `PATH`, and keeps itself up to date.
+
+`SHA256SUMS` covers both.
+
 ## Example usage
 
 To adapt Claude Code to load and run,

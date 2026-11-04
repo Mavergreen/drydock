@@ -33,6 +33,13 @@ The suites are the `add_test` entries in `../CMakeLists.txt`, all run by `ctest`
 | `symbol_rename_test` | hermetic: x86_64 objects built with 10.9 flags, renamed, linked with the host's ld64 and **run**: a definition moved aside behind a forwarding stub, an undefined reference redirected, a local symbol, a 4,096-character NEW, names moved across sort order (also through `ld -r`), a fat object with one slice selected (the other byte-identical; that case SKIPs where the compiler cannot build `x86_64h`); refusals pinned by message: OLD absent and its `allow-unmatched` pass-through, NEW present, OLD equal to NEW, a linked executable, `rpath append` and `target 10.9` on an object, a string table that is not last |
 | `archive_rename_test` | SKIPs (77) without `libtool`: archives built with the host's libtool, `ar` and `ranlib`, renamed, linked with `-l` and **run**; a caller's undefined reference renamed with the definition; unchanged members byte-identical; the rebuilt index compared with `ranlib`'s own over the output (on Darwin 13 the index date and the string padding 10.9 leaves uninitialised are masked; strict elsewhere); OLD only referenced; an index-less `ar rcS` archive; an object padded inside its size; refusals pinned by message: NEW defined in two members, OLD and NEW in one member, OLD in no member and its `allow-unmatched` pass-through (byte-identical, junk index padding kept), `rpath append`, an unselected arch, a truncated archive, a bitcode member, a universal archive and a 32-bit member (the last three SKIP where the compiler cannot build them) |
 
+## Run by the release job, not `ctest`
+
+These read the packaged artifacts, so they run after packaging in `release.yml`:
+
+- **`pkg_payload_test.sh`** — the `.pkg` installs exactly the two builds merged, both slices in every Mach-O, the docs and the updater.
+- **`standalone_archive_test.sh`** — `drydock-<v>-macos-universal.tar.gz` is the `.pkg`'s tree without its manifest, every Mach-O universal and loading nothing from outside the system or itself, and the tool and every wrapper, run from a path with a space with a decoy `drydock-macho-rewrite` first on `PATH`, give the `.pkg`'s results. A wrapper through a symlink asks for `DRYDOCK_MACHO_REWRITE_COMPAT_DIR`.
+
 ## Not run by `ctest`: the by-hand sweeps
 
 Three scripts here need more than a build tree and are run deliberately, on

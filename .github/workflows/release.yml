@@ -228,6 +228,17 @@ jobs:
           sh tests/pkg_payload_test.sh "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg" \
             "$(command -v shipyard-cmake)" "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR"
 
+      - name: Package the standalone archive
+        run: |
+          sh packaging/build-standalone.sh "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
+            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz"
+
+      - name: The standalone archive is the package's tree, and runs from anywhere
+        run: |
+          sh tests/standalone_archive_test.sh \
+            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz" \
+            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
+
       # The Release body travels IN the artifact: publish-release.yml never checks this
       # repo out, and it refuses an empty body. Generated on every run rather than only a
       # publishing one, so a broken notes pipeline costs a pull request instead of a release.
