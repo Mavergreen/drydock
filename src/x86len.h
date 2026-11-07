@@ -7,7 +7,7 @@
  * (C4, C5): everything the 10.9 toolchain emits and 10.9's otool
  * disassembles. EVEX (62), XOP (8F with map 8 or above), 3DNow! (0F 0F),
  * and every opcode that is invalid in 64-bit mode are not decoded, so a
- * caller never trusts a length for them.
+ * caller never trusts a length for them. mx_decode_evex decodes EVEX too.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -23,10 +23,22 @@ typedef struct {
                    * (next truncated to 32 bits) + disp32, not next + disp32 --
                    * so a caller computing a 64-bit RIP-relative target must
                    * not trust one. */
+    int evex;     /* 1 for an EVEX instruction (mx_decode_evex only). Its
+                   * one-byte displacement is disp8*N, scaled by a size this
+                   * decoder does not compute, so a caller must not take a
+                   * displen of 1 as the offset. A disp32, RIP-relative ones
+                   * included, is exact. */
 } mx_insn;
 
 /* Decodes the instruction at code[0, avail). Returns 1 with *out filled, or
  * 0 if it is not one this decoder knows or it runs past `avail`. */
 int mx_decode(const uint8_t *code, size_t avail, mx_insn *out);
+
+/* mx_decode, and also EVEX (62) in maps 1, 2, 3, 5 and 6 (AVX-512 and
+ * AVX512-FP16), each as LLVM 22 decodes it. EVEX after a 66, F2, F3, F0 or
+ * REX prefix, APX's forms (P0 bit 3 set, map 4, or P1 bit 2 clear) and
+ * every other map are not decoded. mx_decode itself is unchanged, so
+ * Drydock's own rewriting still never trusts a length past EVEX. */
+int mx_decode_evex(const uint8_t *code, size_t avail, mx_insn *out);
 
 #endif /* DRYDOCK_X86LEN_H */

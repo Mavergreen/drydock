@@ -61,24 +61,42 @@ static int mx_group_ok(uint8_t op, uint8_t modrm) {
     return 1;
 }
 
-int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
-    mx_insn o = { 0, -1, -1, 0, 0, 0 };
-    int n = 0, opsize = 0, adsize = 0, rexw = 0;
+/* Whether an EVEX opcode takes an imm8: all of map 3, and in map 1 the
+ * shifts and shuffles by an immediate (70-73) and C2, C4, C5 and C6. */
+static int mx_evex_imm8(int map, uint8_t op) {
+    if (map == 3) return 1;
+    return map == 1 && ((op >= 0x70 && op <= 0x73) || op == 0xC2 || op == 0xC4 || op == 0xC5 || op == 0xC6);
+}
+
+static int mx_decode_ex(const uint8_t *code, size_t avail, mx_insn *out, int evex_ok) {
+    mx_insn o = { 0, -1, -1, 0, 0, 0, 0 };
+    int n = 0, opsize = 0, adsize = 0, rexw = 0, noevex = 0;
     for (;; n++) {
         if (n >= 15 || (size_t)n >= avail) return 0;
         uint8_t b = code[n];
-        if (b == 0x66) opsize = 1;
+        if (b == 0x66) opsize = noevex = 1;
         else if (b == 0x67) adsize = 1;
-        else if (b == 0xF0 || b == 0xF2 || b == 0xF3 || b == 0x2E || b == 0x36 ||
-                 b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) ;
-        else if ((b & 0xF0) == 0x40) { rexw = (b & 8) != 0; continue; }
+        else if (b == 0xF0 || b == 0xF2 || b == 0xF3) noevex = 1;
+        else if (b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) ;
+        else if ((b & 0xF0) == 0x40) { rexw = (b & 8) != 0; noevex = 1; continue; }
         else break;
         rexw = 0;
     }
     uint8_t op = code[n++];
     char c = mx_map0[op];
     int map = 0;
-    if (c == 'X') {
+    if (op == 0x62 && evex_ok) {   /* 62 P0 P1 P2, opcode, ModRM [SIB] [disp] [imm8] */
+        if (noevex || (size_t)n + 3 >= avail) return 0;
+        uint8_t p0 = code[n], p1 = code[n + 1];
+        map = p0 & 7;
+        if ((p0 & 8) || !(p1 & 4) || !(map == 1 || map == 2 || map == 3 || map == 5 || map == 6)) return 0;
+        op = code[n + 3];
+        n = mx_modrm(code, avail, n + 4, &o);
+        if (n < 0) return 0;
+        if (mx_evex_imm8(map, op)) o.immlen = 1;
+        o.evex = 1;
+        c = 'e';
+    } else if (c == 'X') {
         if ((size_t)n + (op == 0xC4 ? 2 : 1) >= avail) return 0;
         map = op == 0xC4 ? code[n] & 0x1F : 1;
         n += op == 0xC4 ? 2 : 1;
@@ -106,7 +124,7 @@ int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
         if (c == 'g' && ((code[o.modrm] >> 3) & 7) == 0) o.immlen = 1;
         if (c == 'G' && ((code[o.modrm] >> 3) & 7) == 0) o.immlen = immz;
         break;
-    case '-': break;
+    case '-': case 'e': break;
     case '1': o.immlen = 1; break;
     case '2': o.immlen = 2; break;
     case '3': o.immlen = 3; break;
@@ -123,3 +141,6 @@ int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) {
     *out = o;
     return 1;
 }
+
+int mx_decode(const uint8_t *code, size_t avail, mx_insn *out) { return mx_decode_ex(code, avail, out, 0); }
+int mx_decode_evex(const uint8_t *code, size_t avail, mx_insn *out) { return mx_decode_ex(code, avail, out, 1); }
