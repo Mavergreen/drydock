@@ -163,8 +163,9 @@ static void disarm(void) {
     sigaction(SIGSEGV, &was_segv, NULL);
 }
 
-static void test_each_case(void) {
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+static void run_cases(const struct xcase *cases, size_t ncases,
+                      int (*dec)(const uint8_t *, size_t, mx_insn *), int evex) {
+    for (size_t i = 0; i < ncases; i++) {
         const struct xcase *c = &cases[i];
         const uint8_t *b = at_page_end(c->b, c->n);
         CHECK(b != NULL, "setup: a guard page");
@@ -174,9 +175,9 @@ static void test_each_case(void) {
             CHECK(0, "%s: read past avail", c->what);
             continue;
         }
-        mx_insn in = { 99, 99, 99, 99, 99, 99 };
+        mx_insn in = { 99, 99, 99, 99, 99, 99, 99 };
         arm();
-        int ok = mx_decode(b, (size_t)c->n, &in);
+        int ok = dec(b, (size_t)c->n, &in);
         disarm();
         if (c->len == 0) {
             CHECK(!ok, "%s: decoded as %d bytes, want not decoded", c->what, in.len);
@@ -189,7 +190,66 @@ static void test_each_case(void) {
               "%s: len %d modrm %d disp %d/%d imm %d, want %d %d %d/%d %d", c->what,
               in.len, in.modrm, in.disp, in.displen, in.immlen,
               c->len, c->modrm, c->disp, c->displen, c->immlen);
+        int want_evex = evex && c->b[0] != 0x48;
+        CHECK(in.evex == want_evex, "%s: evex %d, want %d", c->what, in.evex, want_evex);
     }
+}
+
+static void test_each_case(void) { run_cases(cases, sizeof cases / sizeof cases[0], mx_decode, 0); }
+
+/* mx_decode_evex: everything mx_decode decodes, as it decodes it, and EVEX
+ * (62) too. Encodings are LLVM 22 llvm-mc's (-mattr=+avx512f,+avx512bw,
+ * +avx512vl,+avx512fp16); 10.9's otool decodes none of them. */
+static const struct xcase evex_cases[] = {
+    { "vpbroadcastd x(%rip), %zmm9 (map 2, RIP)", 10, { 0x62, 0x72, 0x7d, 0x48, 0x58, 0x0d, D32 }, 10, 5, 6, 4, 0 },
+    { "vmovdqa32 (%rsp), %zmm12 (SIB)", 7, { 0x62, 0x71, 0x7d, 0x48, 0x6f, 0x24, 0x24 }, 7, 5, -1, 0, 0 },
+    { "vmovdqa32 0x40(%rsp), %zmm13 (a scaled disp8)", 8, { 0x62, 0x71, 0x7d, 0x48, 0x6f, 0x6c, 0x24, 0x01 }, 8, 5, 7, 1, 0 },
+    { "vmovdqu32 %zmm1, -0x80(%rbp,%rax,4)", 8, { 0x62, 0xf1, 0x7e, 0x48, 0x7f, 0x4c, 0x85, 0xfe }, 8, 5, 7, 1, 0 },
+    { "vpaddd %zmm1, %zmm2, %zmm3", 6, { 0x62, 0xf1, 0x6d, 0x48, 0xfe, 0xd9 }, 6, 5, -1, 0, 0 },
+    { "vpaddd %zmm17, %zmm18, %zmm19 {%k1} {z}", 6, { 0x62, 0xa1, 0x6d, 0xc1, 0xfe, 0xd9 }, 6, 5, -1, 0, 0 },
+    { "vprord $16 (map 1, 72: imm8)", 7, { 0x62, 0xf1, 0x6d, 0x48, 0x72, 0xc1, 0x10 }, 7, 5, -1, 0, 1 },
+    { "vpshufd $0x1b, 0x40(%rdi) (map 1, 70: imm8)", 8, { 0x62, 0xf1, 0x7d, 0x48, 0x70, 0x57, 0x01, 0x1b }, 8, 5, 6, 1, 1 },
+    { "vpternlogd $0x96 (map 3: imm8)", 7, { 0x62, 0xf3, 0x6d, 0x48, 0x25, 0xd9, 0x96 }, 7, 5, -1, 0, 1 },
+    { "vpcmpeqd %zmm1, %zmm2, %k1", 6, { 0x62, 0xf1, 0x6d, 0x48, 0x76, 0xc9 }, 6, 5, -1, 0, 0 },
+    { "vcmpltps (map 1, C2: imm8)", 7, { 0x62, 0xf1, 0x6c, 0x48, 0xc2, 0xd1, 0x01 }, 7, 5, -1, 0, 1 },
+    { "vshufps (map 1, C6: imm8)", 7, { 0x62, 0xf1, 0x6c, 0x48, 0xc6, 0xd9, 0x44 }, 7, 5, -1, 0, 1 },
+    { "vpinsrw (map 1, C4: imm8)", 7, { 0x62, 0xe1, 0x75, 0x00, 0xc4, 0xd0, 0x01 }, 7, 5, -1, 0, 1 },
+    { "vpextrw (map 1, C5: imm8)", 7, { 0x62, 0xb1, 0x7d, 0x08, 0xc5, 0xc1, 0x01 }, 7, 5, -1, 0, 1 },
+    { "vpermt2d x(%rip) (map 2, RIP)", 10, { 0x62, 0xf2, 0x75, 0x48, 0x7e, 0x15, D32 }, 10, 5, 6, 4, 0 },
+    { "vpgatherdd 0x10(%rax,%zmm1,4) (VSIB)", 8, { 0x62, 0xf2, 0x7d, 0x49, 0x90, 0x54, 0x88, 0x04 }, 8, 5, 7, 1, 0 },
+    { "vaddph (map 5)", 6, { 0x62, 0xf5, 0x6c, 0x48, 0x58, 0xd9 }, 6, 5, -1, 0, 0 },
+    { "vfmadd132ph (map 6)", 6, { 0x62, 0xf6, 0x6d, 0x48, 0x98, 0xd9 }, 6, 5, -1, 0, 0 },
+    { "vmovw %xmm17, %eax (map 5, 7E)", 6, { 0x62, 0xe5, 0x7d, 0x08, 0x7e, 0xc8 }, 6, 5, -1, 0, 0 },
+    { "vaddps {rn-sae} (EVEX.b, register form)", 6, { 0x62, 0xf1, 0x6c, 0x18, 0x58, 0xd9 }, 6, 5, -1, 0, 0 },
+    { "vmovd %xmm17, %eax", 6, { 0x62, 0xe1, 0x7d, 0x08, 0x7e, 0xc8 }, 6, 5, -1, 0, 0 },
+    { "vextracti32x4 $1, %zmm17, 0x10(%rax) (map 3)", 8, { 0x62, 0xe3, 0x7d, 0x48, 0x39, 0x48, 0x01, 0x01 }, 8, 5, 6, 1, 1 },
+    { "%gs: vmovdqa32 (%rax) (a segment override may precede 62)", 7, { 0x65, 0x62, 0xf1, 0x7d, 0x48, 0x6f, 0x00 }, 7, 6, -1, 0, 0 },
+    { "the 62 that mx_decode refuses", 11, { 0x62, 0xf1, 0xfd, 0x48, 0x6f, 0x05, D32, 0x00 }, 10, 5, 6, 4, 0 },
+    { "a legacy instruction, unchanged", 7, { 0x48, 0x8d, 0x15, D32 }, 7, 2, 3, 4, 0 },
+
+    { "EVEX map 0", 6, { 0x62, 0xf0, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "EVEX map 4 (APX)", 6, { 0x62, 0xf4, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "EVEX map 7", 6, { 0x62, 0xf7, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "EVEX P0 bit 3 set (not AVX-512)", 6, { 0x62, 0xf9, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "EVEX P1 bit 2 clear", 6, { 0x62, 0xf1, 0x69, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "66 before 62", 7, { 0x66, 0x62, 0xf1, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "F3 before 62", 7, { 0xf3, 0x62, 0xf1, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "a REX before 62", 7, { 0x48, 0x62, 0xf1, 0x6d, 0x48, 0xfe, 0xd9 }, 0, 0, 0, 0, 0 },
+    { "EVEX cut short in its prefix", 3, { 0x62, 0xf1, 0x6d }, 0, 0, 0, 0, 0 },
+    { "EVEX with no opcode", 4, { 0x62, 0xf1, 0x6d, 0x48 }, 0, 0, 0, 0, 0 },
+    { "EVEX with no ModRM", 5, { 0x62, 0xf1, 0x6d, 0x48, 0xfe }, 0, 0, 0, 0, 0 },
+    { "EVEX cut short in its displacement", 8, { 0x62, 0x72, 0x7d, 0x48, 0x58, 0x0d, 0x44, 0x33 }, 0, 0, 0, 0, 0 },
+    { "EVEX map 3 with no imm8", 6, { 0x62, 0xf3, 0x6d, 0x48, 0x25, 0xd9 }, 0, 0, 0, 0, 0 },
+};
+
+/* Every mx_decode case decodes the same through mx_decode_evex, except EVEX. */
+static void test_evex_cases(void) {
+    static struct xcase legacy[sizeof cases / sizeof cases[0]];
+    size_t n = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        if (strcmp(cases[i].what, "EVEX (62)") != 0) legacy[n++] = cases[i];
+    run_cases(legacy, n, mx_decode_evex, 0);
+    run_cases(evex_cases, sizeof evex_cases / sizeof evex_cases[0], mx_decode_evex, 1);
 }
 
 /* Bytes past the instruction do not change it. */
@@ -233,6 +293,7 @@ static void test_the_guard_is_disarmed_between_decodes(void) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     test_each_case();
+    test_evex_cases();
     test_ignores_what_follows();
     test_prefix_run_stops_at_fifteen();
     test_the_guard_is_disarmed_between_decodes();
