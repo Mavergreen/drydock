@@ -239,6 +239,20 @@ jobs:
             "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz" \
             "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
 
+      - name: Equivalence inputs, and what each slice's drydock-macho-rewrite makes of them
+        run: |
+          set -eu
+          EQ="$RUNNER_TEMP/equivalence"
+          sh tests/equivalence.sh inputs "$EQ/inputs"
+          sh tests/equivalence.sh produce "$CROSS_BUILD_DIR" "$EQ/inputs" "$EQ/macos-x86_64"
+          sh tests/equivalence.sh produce "$ARM64_BUILD_DIR" "$EQ/inputs" "$EQ/macos-arm64"
+          sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/macos-arm64"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: drydock-equivalence
+          path: ${{ runner.temp }}/equivalence
+
       # The Release body travels IN the artifact: publish-release.yml never checks this
       # repo out, and it refuses an empty body. Generated on every run rather than only a
       # publishing one, so a broken notes pipeline costs a pull request instead of a release.
@@ -291,17 +305,163 @@ jobs:
           name: drydock
           path: ${{ env.CROSS_BUILD_DIR }}/dist/*
 
+  linux:
+    name: build (linux-x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install mavericks-shipyard
+        uses: Mavergreen/shipyard/.github/actions/install@v1
+
+      - name: Out of tree
+        run: |
+          echo "LINUX_BUILD_DIR=$RUNNER_TEMP/mm-build/drydock-linux" >> "$GITHUB_ENV"
+          echo "LINUX_DIST=$RUNNER_TEMP/dist-linux" >> "$GITHUB_ENV"
+          echo "VERSION_FULL=$(tr -d '[:space:]' < UPSTREAM_VERSION)" >> "$GITHUB_ENV"
+
+      - name: Record the pre-build tree
+        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
+
+      - name: Configure + build with the runner's C compiler
+        run: |
+          set -eu
+          CM="$(command -v cmake)"
+          "$CM" -S . -B "$LINUX_BUILD_DIR"
+          "$CM" --build "$LINUX_BUILD_DIR" -j "$(nproc)"
+
+      - name: Every test that does not need a Mac runs, and none skips
+        run: |
+          set -eu
+          CT="$(command -v ctest)"
+          rc=0
+          "$CT" --test-dir "$LINUX_BUILD_DIR" --output-on-failure -LE macos-only -j "$(nproc)" \
+            > "$RUNNER_TEMP/ctest.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/ctest.log"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          if grep -q 'did not run' "$RUNNER_TEMP/ctest.log"; then
+            echo "::error::a test skipped on Linux without declaring that it needs macOS"
+            exit 1
+          fi
+
+      - name: The tests that need a Mac, each skipped with its reason
+        run: |
+          set -eu
+          CT="$(command -v ctest)"
+          "$CT" --test-dir "$LINUX_BUILD_DIR" -L macos-only -V > "$RUNNER_TEMP/skips.log" 2>&1
+          want="$("$CT" --test-dir "$LINUX_BUILD_DIR" -N -L macos-only | sed -n 's/^Total Tests: //p')"
+          grep -E '^[0-9]+: SKIP .*: needs macOS: ' "$RUNNER_TEMP/skips.log" | sed 's/^[0-9]*: //' > "$RUNNER_TEMP/skips.txt"
+          cat "$RUNNER_TEMP/skips.txt"
+          got="$(wc -l < "$RUNNER_TEMP/skips.txt" | tr -d ' ')"
+          [ -n "$want" ] && [ "$got" -eq "$want" ] || { echo "::error::$got of ${want:-?} macOS-only tests said why they skip"; exit 1; }
+
+      - name: Package the Linux archive
+        run: |
+          set -eu
+          sh packaging/build-linux.sh "$LINUX_BUILD_DIR" "$VERSION_FULL" \
+            "$LINUX_DIST/drydock-$VERSION_FULL-linux-x86_64.tar.gz"
+          cache() { sed -n "s/^$1:[A-Z]*=//p" "$LINUX_BUILD_DIR/CMakeCache.txt"; }
+          sh "$SHIPYARD_SCRIPTS/build-info.sh" "$LINUX_DIST/build-info-linux-x86_64.txt" \
+            variant=linux-x86_64 arch=x86_64 \
+            build-cc="$("$(cache CMAKE_C_COMPILER)" --version | sed -n 1p)" \
+            build-cmake="$("$(cache CMAKE_COMMAND)" --version | sed -n 1p)" \
+            build-libc="$(ldd --version | sed -n 1p)"
+          cat "$LINUX_DIST/build-info-linux-x86_64.txt"
+
+      - name: The Linux archive is the standalone tree, and runs from anywhere
+        run: sh tests/linux_archive_test.sh "$LINUX_DIST/drydock-$VERSION_FULL-linux-x86_64.tar.gz"
+
+      - name: The build must not have written into the source tree
+        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: drydock-linux
+          path: ${{ env.LINUX_DIST }}/*
+
+  equivalence:
+    name: equivalence (linux-x86_64 against macOS)
+    needs: [build, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock-equivalence
+          path: ${{ runner.temp }}/equivalence
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock-linux
+          path: ${{ runner.temp }}/linux
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock
+          path: ${{ runner.temp }}/macos
+
+      - name: The Linux drydock-macho-rewrite makes what both macOS slices make, byte for byte
+        run: |
+          set -eu
+          V='${{ needs.build.outputs.version }}'
+          EQ="$RUNNER_TEMP/equivalence"
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP/linux/drydock-$V-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/unpacked"
+          sh tests/equivalence.sh produce "$RUNNER_TEMP/unpacked/drydock-$V/bin" "$EQ/inputs" "$EQ/linux-x86_64"
+          sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/linux-x86_64"
+          sh tests/equivalence.sh compare "$EQ/macos-arm64" "$EQ/linux-x86_64"
+
+      - name: The Linux archive holds the macOS archive's tree
+        run: |
+          V='${{ needs.build.outputs.version }}'
+          sh tests/linux_archive_test.sh "$RUNNER_TEMP/linux/drydock-$V-linux-x86_64.tar.gz" \
+            "$RUNNER_TEMP/macos/drydock-$V-macos-universal.tar.gz"
+
+  assemble:
+    needs: [build, linux, equivalence]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock-linux
+          path: dist
+
+      - name: Every asset is there
+        run: |
+          set -eu
+          V='${{ needs.build.outputs.version }}'
+          for f in "drydock-$V.pkg" "drydock-$V-macos-universal.tar.gz" "drydock-$V-linux-x86_64.tar.gz" \
+                   build-info-linux-x86_64.txt drydock.xml RELEASE_NOTES.md; do
+            [ -s "dist/$f" ] || { echo "::error::dist/$f is missing"; exit 1; }
+          done
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: drydock-release
+          path: dist/*
+
   # Proves this run's logs and files carry no piece of the signing key, before anything
   # publishes; always(), so a run that failed after signing is scanned too.
   scan:
-    needs: [build]
+    needs: [build, assemble]
     if: always() && (needs.build.outputs.publish == 'yes')
     permissions:
       actions: read
       contents: read
     uses: Mavergreen/shipyard/.github/workflows/scan-for-key.yml@v1
     with:
-      artifact: drydock
+      artifact: drydock-release
     secrets:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
 
@@ -309,11 +469,21 @@ jobs:
   # The shared workflow regenerates SHA256SUMS, uses RELEASE_NOTES.md from the artifact as the
   # Release body, and fails if those notes are missing or empty.
   publish:
-    needs: [build, scan]
+    needs: [build, linux, equivalence, assemble, scan]
     if: needs.build.outputs.publish == 'yes'
     permissions:
       contents: write
     uses: Mavergreen/shipyard/.github/workflows/publish-release.yml@v1
     with:
       version: ${{ needs.build.outputs.tag }}
-      artifact: drydock
+      artifact: drydock-release
+
+  required:
+    name: required (release)
+    if: always()
+    needs: [build, linux, equivalence, assemble, scan, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Mavergreen/shipyard/.github/actions/required-gate@v1
+        with:
+          needs: ${{ toJSON(needs) }}
