@@ -525,6 +525,9 @@ add_test(NAME characterize
 add_test(NAME installed_layout_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/installed_layout_test.sh" "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}")
 
+add_test(NAME release_workflow_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_workflow_test.sh")
+
 # drydock-macho-rewrite's own CLI: --capabilities plus each verb it implements. Builds its own
 # fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
 # change_dylib_test.sh) rather than reading tests/fixture.macho, so no

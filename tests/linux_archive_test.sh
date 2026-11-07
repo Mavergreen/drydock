@@ -33,6 +33,11 @@ magic=$(od -An -tx1 -N4 "$BIN/drydock-macho-rewrite" | tr -d ' \n')
 machine=$(od -An -tx1 -j18 -N2 "$BIN/drydock-macho-rewrite" | tr -d ' \n')
 [ "$magic" = 7f454c46 ] && [ "$machine" = 3e00 ] \
   && ok "drydock-macho-rewrite is an x86_64 ELF executable" || bad "drydock-macho-rewrite: magic $magic, machine $machine"
+needs=$(sh "$HERE/../packaging/elf-needs.sh" "$BIN/drydock-macho-rewrite") || needs=
+isa=$(printf '%s\n' "$needs" | sed -n 's/^isa-needed=//p')
+[ "$isa" = x86-64-baseline ] \
+  && ok "drydock-macho-rewrite needs no x86 ISA level above the baseline" \
+  || bad "drydock-macho-rewrite needs x86 ISA level ${isa:-unknown}, above the x86-64 baseline every x86_64 host has"
 "$BIN/drydock-macho-rewrite" --capabilities | grep -q '^statement symbol rename' \
   && ok "drydock-macho-rewrite runs from the unpacked archive" || bad "drydock-macho-rewrite --capabilities"
 (cd / && sh "$HERE/characterize.sh" "$BIN" check) && ok "the unpacked archive's tools match the 10.9 reference digest" \
