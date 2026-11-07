@@ -12,7 +12,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __APPLE__
 #include <malloc/malloc.h>
+#define real_malloc(n) malloc_zone_malloc(malloc_default_zone(), n)
+#define real_calloc(k, n) malloc_zone_calloc(malloc_default_zone(), k, n)
+#define real_realloc(p, n) malloc_zone_realloc(malloc_default_zone(), p, n)
+#else
+extern void *__libc_malloc(size_t);
+extern void *__libc_calloc(size_t, size_t);
+extern void *__libc_realloc(void *, size_t);
+#define real_malloc(n) __libc_malloc(n)
+#define real_calloc(k, n) __libc_calloc(k, n)
+#define real_realloc(p, n) __libc_realloc(p, n)
+#endif
 #include <mach-o/loader.h>
 
 static int fails = 0;
@@ -30,9 +42,9 @@ static int oom_now(void) {
     oom_failed = 1;
     return 1;
 }
-void *malloc(size_t n) { return oom_now() ? NULL : malloc_zone_malloc(malloc_default_zone(), n); }
-void *calloc(size_t k, size_t n) { return oom_now() ? NULL : malloc_zone_calloc(malloc_default_zone(), k, n); }
-void *realloc(void *p, size_t n) { return oom_now() ? NULL : malloc_zone_realloc(malloc_default_zone(), p, n); }
+void *malloc(size_t n) { return oom_now() ? NULL : real_malloc(n); }
+void *calloc(size_t k, size_t n) { return oom_now() ? NULL : real_calloc(k, n); }
+void *realloc(void *p, size_t n) { return oom_now() ? NULL : real_realloc(p, n); }
 
 static int walk(unsigned variant, mml_walk *w) {
     mi_image im;

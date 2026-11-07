@@ -17,7 +17,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifdef __APPLE__
 #include <malloc/malloc.h>
+#else
+#include <malloc.h>
+#define malloc_size malloc_usable_size
+#endif
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \

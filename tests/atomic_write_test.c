@@ -16,6 +16,12 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
+
+#ifdef __APPLE__
+#define TEST_XATTR "com.example.tag"
+#else
+#define TEST_XATTR "user.example.tag"
+#endif
 #include <unistd.h>
 
 static int fails = 0;
@@ -70,7 +76,7 @@ static void test_new_output_carries_the_inputs_metadata(void) {
     char in[600], out[600];
     path_in(in, sizeof in, "in"); path_in(out, sizeof out, "out");
     put(in, "ORIGINAL", 0751);
-    CHECK(setxattr(in, "com.example.tag", "keep", 4, 0, 0) == 0, "setup: xattr");
+    CHECK(setxattr(in, TEST_XATTR, "keep", 4, 0, 0) == 0, "setup: xattr");
     const uint8_t nb[] = "NEWCONTENT";
     CHECK(wa_write_new(in, out, nb, 10) == 0, "a new output is written");
     CHECK(is(out, "NEWCONTENT"), "the output has the new content");
@@ -79,7 +85,7 @@ static void test_new_output_carries_the_inputs_metadata(void) {
     CHECK(stat(out, &st) == 0 && (st.st_mode & 07777) == 0751,
           "the output has the input's mode (got %o)", (unsigned)(st.st_mode & 07777));
     char v[8] = {0};
-    CHECK(getxattr(out, "com.example.tag", v, sizeof v, 0, 0) == 4 && memcmp(v, "keep", 4) == 0,
+    CHECK(getxattr(out, TEST_XATTR, v, sizeof v, 0, 0) == 4 && memcmp(v, "keep", 4) == 0,
           "the output has the input's extended attribute");
     unlink(in); unlink(out);
 }

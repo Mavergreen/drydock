@@ -25,7 +25,9 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#ifdef __APPLE__
 #include <mach/mach.h>
+#endif
 
 static int fails = 0;
 #define CHECK(cond, msg, ...) do { if (!(cond)) { \
@@ -5064,6 +5066,8 @@ static void test_raise_keeps_an_offset_no_segment_maps(void) {
 #define DY_GROW 0x1000
 enum { DY_MEASURED, DY_NO_PIPE, DY_NO_FORK, DY_NO_WAIT, DY_NO_READ, DY_REFUSED, DY_DIED };
 struct dy_measure { uint64_t peak, now, moved; };
+#ifdef __APPLE__
+#define DY_MAXRSS_UNIT 1
 static uint64_t dy_resident(void) {
     struct mach_task_basic_info ti;
     mach_msg_type_number_t cnt = MACH_TASK_BASIC_INFO_COUNT;
@@ -5071,6 +5075,17 @@ static uint64_t dy_resident(void) {
         return 0;
     return ti.resident_size;
 }
+#else
+#define DY_MAXRSS_UNIT 1024
+static uint64_t dy_resident(void) {
+    unsigned long size, resident;
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    int got = fscanf(f, "%lu %lu", &size, &resident);
+    fclose(f);
+    return got == 2 ? (uint64_t)resident * (uint64_t)sysconf(_SC_PAGESIZE) : 0;
+}
+#endif
 static int dy_raise_growth(int bare, struct dy_measure *m) {
     int fd[2];
     fflush(stdout);
@@ -5112,7 +5127,7 @@ static int dy_raise_growth(int bare, struct dy_measure *m) {
             getrusage(RUSAGE_SELF, &after);
             out.moved = buf != given;
         }
-        out.peak = (uint64_t)(after.ru_maxrss - before.ru_maxrss);
+        out.peak = (uint64_t)(after.ru_maxrss - before.ru_maxrss) * DY_MAXRSS_UNIT;
         out.now = dy_resident() - res0;
         if (failed || write(fd[1], &out, sizeof out) != (ssize_t)sizeof out) _exit(1);
         _exit(0);

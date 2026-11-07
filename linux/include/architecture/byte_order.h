@@ -1,0 +1,4 @@
+#ifndef DRYDOCK_LINUX_ARCHITECTURE_BYTE_ORDER_H
+#define DRYDOCK_LINUX_ARCHITECTURE_BYTE_ORDER_H
+#include <libkern/OSByteOrder.h>
+#endif

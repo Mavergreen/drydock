@@ -38,24 +38,37 @@ project(Drydock VERSION ${MAVERICKS_VERSION_NUMERIC} LANGUAGES C)
 # MavericksShipyardConfig.cmake, and the family is mid-rename (six local repos
 # still ask for the old name, six for the new). New repos take the new one.
 find_package(MavericksShipyard REQUIRED)
-include(Mavericks)             # AppleClang gate + build conventions
-include(MavericksMode)         # native-on-10.9 vs cross-on-modern
-include(MavericksCompatGuard)  # assert every shipped binary is 10.9-safe
+if(APPLE)
+  include(Mavericks)             # AppleClang gate + build conventions
+  include(MavericksMode)         # native-on-10.9 vs cross-on-modern
+  include(MavericksCompatGuard)  # assert every shipped binary is 10.9-safe
 
-mavericks_build_mode(MAVERICKS_MODE)
-mavericks_require_expected_mode("${MAVERICKS_MODE}")
-message(STATUS "Drydock ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
+  mavericks_build_mode(MAVERICKS_MODE)
+  mavericks_require_expected_mode("${MAVERICKS_MODE}")
+  message(STATUS "Drydock ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
 
-# Cross builds compile against the PINNED SDK for their arch (10.9's for
-# x86_64), not the host's. Building with a modern SDK and only
-# -mmacosx-version-min=10.9 is weaker: the compiler would happily accept
-# declarations 10.9's headers never had, and the first symptom would be a link
-# or load failure on the target. Native builds already have the right headers,
-# so they need nothing.
-if(MAVERICKS_MODE STREQUAL "cross")
-  mavericks_fetch_sdk(MAVERICKS_SDK ARCH ${CMAKE_OSX_ARCHITECTURES})
-  set(CMAKE_OSX_SYSROOT "${MAVERICKS_SDK}" CACHE PATH "pinned SDK for ${CMAKE_OSX_ARCHITECTURES}" FORCE)
-  message(STATUS "Drydock: cross build against ${MAVERICKS_SDK}")
+  # Cross builds compile against the PINNED SDK for their arch (10.9's for
+  # x86_64), not the host's. Building with a modern SDK and only
+  # -mmacosx-version-min=10.9 is weaker: the compiler would happily accept
+  # declarations 10.9's headers never had, and the first symptom would be a link
+  # or load failure on the target. Native builds already have the right headers,
+  # so they need nothing.
+  if(MAVERICKS_MODE STREQUAL "cross")
+    mavericks_fetch_sdk(MAVERICKS_SDK ARCH ${CMAKE_OSX_ARCHITECTURES})
+    set(CMAKE_OSX_SYSROOT "${MAVERICKS_SDK}" CACHE PATH "pinned SDK for ${CMAKE_OSX_ARCHITECTURES}" FORCE)
+    message(STATUS "Drydock: cross build against ${MAVERICKS_SDK}")
+  endif()
+else()
+  include(MavericksFetch)
+  mavericks_fetch_sdk(DRYDOCK_MACH_SDK ARCH x86_64)
+  set(DRYDOCK_MACH_HEADERS "${CMAKE_BINARY_DIR}/mach-headers")
+  foreach(h mach-o/loader.h mach-o/fat.h mach-o/nlist.h mach-o/reloc.h mach-o/stab.h
+            mach-o/compact_unwind_encoding.h mach/machine.h mach/vm_prot.h)
+    get_filename_component(d "${h}" DIRECTORY)
+    file(COPY "${DRYDOCK_MACH_SDK}/usr/include/${h}" DESTINATION "${DRYDOCK_MACH_HEADERS}/${d}")
+  endforeach()
+  include_directories(BEFORE "${CMAKE_CURRENT_SOURCE_DIR}/linux/include" "${DRYDOCK_MACH_HEADERS}")
+  message(STATUS "Drydock ${MAVERICKS_VERSION}: a Linux build, Mach-O definitions from ${DRYDOCK_MACH_SDK}")
 endif()
 
 # No -std=: src/declassify.c (patch_macho's conversion) assigns to an anonymous struct, which clang rejects under -std=c11 and accepts
@@ -129,7 +142,9 @@ endforeach()
 add_executable(drydock-macho-rewrite cli/drydock-macho-rewrite.c)
 target_compile_options(drydock-macho-rewrite PRIVATE -O2 -Wall)
 target_link_libraries(drydock-macho-rewrite PRIVATE drydockcore)
-mavericks_assert_binary_compatible(drydock-macho-rewrite)
+if(APPLE)
+  mavericks_assert_binary_compatible(drydock-macho-rewrite)
+endif()
 
 # Stage the wrappers and the two files they source NEXT TO drydock-macho-rewrite in the build
 # tree, under their installed names, so ctest exercises exactly the layout
@@ -203,6 +218,15 @@ endif()
 
 enable_testing()
 
+function(drydock_macos_test name reason)
+  if(APPLE)
+    add_test(NAME ${name} ${ARGN})
+  else()
+    add_test(NAME ${name} COMMAND sh -c "echo \"SKIP $0: needs macOS: $1\"; exit 77" ${name} "${reason}")
+    set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77 LABELS macos-only)
+  endif()
+endfunction()
+
 # CI's conventions gate, here too, so a push is not the first run of it.
 add_test(NAME family_conventions
   COMMAND sh -c "python3 -c 'import yaml' || { echo 'family_conventions needs python3 with PyYAML: python3 -m pip install pyyaml' >&2; exit 1; }; exec sh \"$0\"/check-family-conventions.sh"
@@ -263,7 +287,7 @@ add_test(NAME x86len_test COMMAND x86len_test)
 add_executable(x86len_oracle tests/x86len_oracle.c)
 target_compile_options(x86len_oracle PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(x86len_oracle PRIVATE drydockcore)
-add_test(NAME x86len_oracle_test
+drydock_macos_test(x86len_oracle_test "10.9's otool over a corpus of 10.9's own images"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/x86len_oracle_test.sh" "$<TARGET_FILE_DIR:x86len_oracle>")
 set_tests_properties(x86len_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -363,7 +387,7 @@ set_tests_properties(linkedit_order_test PROPERTIES ENVIRONMENT MallocScribble=1
 # expectations. It SKIPs anywhere else, CI included.
 add_executable(mklinkedit tests/mklinkedit.c)
 target_compile_options(mklinkedit PRIVATE -O2 -Wall -Wextra -Wno-unused-function)
-add_test(NAME codesign_order_test
+drydock_macos_test(codesign_order_test "10.9's codesign_allocate as the oracle"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/codesign_order_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(codesign_order_test PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -397,7 +421,7 @@ set_tests_properties(rebase_test PROPERTIES ENVIRONMENT MallocScribble=1)
 add_executable(rebase_oracle tests/rebase_oracle.c)
 target_compile_options(rebase_oracle PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(rebase_oracle PRIVATE drydockcore)
-add_test(NAME rebase_oracle_test
+drydock_macos_test(rebase_oracle_test "10.9's dyldinfo over 10.9's own dylibs"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/rebase_oracle_test.sh" "$<TARGET_FILE_DIR:rebase_oracle>")
 set_tests_properties(rebase_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -407,30 +431,30 @@ set_tests_properties(rebase_oracle_test PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(raise_corpus tests/raise_corpus.c)
 target_compile_options(raise_corpus PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(raise_corpus PRIVATE drydockcore)
-add_test(NAME raise_corpus_test
+drydock_macos_test(raise_corpus_test "10.9's own dylibs and bundles, and the tables measured from them"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_corpus_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(raise_corpus_test PROPERTIES SKIP_RETURN_CODE 77)
-add_test(NAME raise_oracle_counts_test
+drydock_macos_test(raise_oracle_counts_test "10.9's own dylibs and bundles, and the tables measured from them"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_oracle_counts_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(raise_oracle_counts_test PROPERTIES SKIP_RETURN_CODE 77)
 # Raised copies of 10.9's libraries, run by its programs. SKIPs (77) off 10.9.
-add_test(NAME raise_runs_test
+drydock_macos_test(raise_runs_test "10.9's own libraries, raised and run by its programs"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_runs_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(raise_runs_test PROPERTIES SKIP_RETURN_CODE 77)
 # Mantle from ~/Downloads/OpenCode.app, taken to classic fixups, given a load
 # command it has no room for (a raise) and a 120-byte rpath, on copies.
 # Local only: SKIP (77) where the app or its x86_64 slice is absent.
-add_test(NAME mantle_raise_test
+drydock_macos_test(mantle_raise_test "a Mach-O app on this Mac, raised and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/mantle_raise_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(mantle_raise_test PROPERTIES SKIP_RETURN_CODE 77)
 # Edited dylibs and programs, stale, stripped and re-signed, run on arm64 and
 # under Rosetta. SKIPs (77) anywhere but Apple Silicon; CI's runner is one.
-add_test(NAME apple_silicon_signing_test
+drydock_macos_test(apple_silicon_signing_test "codesign and Rosetta on Apple Silicon"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/apple_silicon_signing_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(apple_silicon_signing_test PROPERTIES SKIP_RETURN_CODE 77)
 # A dylib, a bundle and an address-gap dylib built here, raised by one page and
 # by two, and run beside the originals. Hermetic: it runs on CI.
-add_test(NAME raise_rich_test
+drydock_macos_test(raise_rich_test "dylibs and bundles built with the host's clang and ld64, then run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/raise_rich_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 # What src/hdrref.c's jump-table rule changes over 10.9's own Mach-Os: one
 # helper holds hdrref.c twice, the second without the rule and its external
@@ -444,7 +468,7 @@ target_compile_options(hdrref_norule PRIVATE -O2 -Wall -Wno-unused-function -Wno
 add_executable(hdrref_ab tests/hdrref_ab.c $<TARGET_OBJECTS:hdrref_norule>)
 target_compile_options(hdrref_ab PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(hdrref_ab PRIVATE drydockcore)
-add_test(NAME hdrref_table_rule_test
+drydock_macos_test(hdrref_table_rule_test "10.9's own Mach-O images"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/hdrref_table_rule_test.sh" "$<TARGET_FILE_DIR:hdrref_ab>")
 set_tests_properties(hdrref_table_rule_test PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -479,7 +503,7 @@ target_compile_options(fatcheck PRIVATE -O2 -Wall -Wextra)
 # drydockcore by hand -- it still builds drydock-macho-rewrite from source, deriving
 # the list from a glob, and copies the two wrappers beside it, when run
 # standalone with no bindir argument.
-add_test(NAME change_dylib_test
+drydock_macos_test(change_dylib_test "Mach-O fixtures built with the host's clang and ld64, read with otool and nm, then run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/change_dylib_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Build equivalence. The tool binaries can never match across a 2014 clang and a
@@ -492,7 +516,7 @@ add_test(NAME change_dylib_test
 # above cannot: its fixture is 10.9-built and has no chained fixups to convert.
 # SKIPs (77) on hosts that cannot emit them -- 10.9 included -- so it is real
 # coverage on a modern host and an honest no-op on the target.
-add_test(NAME chained_fixups
+drydock_macos_test(chained_fixups "a linker that emits chained fixups, and otool"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/chained-fixups.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(chained_fixups PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -506,7 +530,7 @@ add_test(NAME installed_layout_test
 # change_dylib_test.sh) rather than reading tests/fixture.macho, so no
 # WORKING_DIRECTORY is needed -- everything it needs is the bindir, passed the
 # same way chained_fixups passes patch_macho's.
-add_test(NAME cli_test
+drydock_macos_test(cli_test "Mach-O fixtures built with the host's clang and ld64, read with otool, nm, lipo and codesign_allocate, then run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # compat/translate.sh: one assertion per translation from an old tool's grammar
@@ -527,7 +551,7 @@ add_test(NAME translate_test
 # assertion in it names the divergence it closes, which compat/README.md
 # records. Also parses every wrapper under /bin/sh AND /bin/ksh, the same
 # second-shell cross-check translate_test does.
-add_test(NAME wrapper_test
+drydock_macos_test(wrapper_test "Mach-O fixtures built with the host's clang and ld64, BSD stat, and running them"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/wrapper_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # THE GATE for the wrappers: every known caller of the six historical tools,
@@ -546,7 +570,7 @@ add_test(NAME known_callers
 # tests/compat-sweep.sh or tests/known-callers.sh -- see this test file's own
 # header for why (no known caller to replay, and the sweep's matrix is frozen
 # for the six historical tools).
-add_test(NAME insert_dylib_test
+drydock_macos_test(insert_dylib_test "Mach-O fixtures built with the host's clang and ld64, and codesign"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/insert_dylib_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 # A modest ceiling, not ctest's 1500s default: this is the one test in the
 # suite that opens /dev/tty through a detached (setsid'd) child expecting a
@@ -559,31 +583,31 @@ set_tests_properties(insert_dylib_test PROPERTIES TIMEOUT 120)
 
 # `import redirect` and `exports`, against host-linked fixtures and bind
 # streams tests/mkbindstream.c writes by hand into them.
-add_test(NAME import_redirect_test
+drydock_macos_test(import_redirect_test "Mach-O fixtures built with the host's clang and ld64, otool and codesign_allocate"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/import_redirect_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # `symbol rename` on objects built here, linked with the host's ld64 and run;
 # the object gate's refusals.
-add_test(NAME symbol_rename_test
+drydock_macos_test(symbol_rename_test "objects built with the host's clang, linked by ld64 and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/symbol_rename_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # `symbol rename` across archives made by the host's libtool, ar and ranlib:
 # linked and run, the rebuilt index compared with ranlib's.
-add_test(NAME archive_rename_test
+drydock_macos_test(archive_rename_test "archives made by the host's libtool, ar and ranlib, linked by ld64 and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_rename_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(archive_rename_test PROPERTIES SKIP_RETURN_CODE 77)
-add_test(NAME legacysupport_rename_test
+drydock_macos_test(legacysupport_rename_test "MacPorts' libMacportsLegacySupport.a, linked by ld64 and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/legacysupport_rename_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 set_tests_properties(legacysupport_rename_test PROPERTIES SKIP_RETURN_CODE 77)
 
 # compat/bake-mavericks-shim.sh end to end, including a baked binary that runs
 # with the shim's implementation and no DYLD_* variables.
-add_test(NAME bake_mavericks_shim_test
+drydock_macos_test(bake_mavericks_shim_test "Mach-O programs built with the host's clang and ld64, codesign, and running them"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/bake_mavericks_shim_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # A grown binary, run beside its input with the same arguments and
 # environment: stdout, stderr and exit status must agree.
-add_test(NAME grown_binary_runs_test
+drydock_macos_test(grown_binary_runs_test "Mach-O programs built with the host's clang and ld64, then run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/grown_binary_runs_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # Regression coverage for two heap-overflow crashes a code review found in
@@ -592,7 +616,7 @@ add_test(NAME grown_binary_runs_test
 # addresses derived from them, so a fixture can pass mi_open cleanly and
 # still contain an out-of-bounds reference. See the script's own header for
 # what each fixture is shaped to trigger.
-add_test(NAME leaf_tool_crashes
+drydock_macos_test(leaf_tool_crashes "Mach-O fixtures built with the host's clang"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/leaf-tool-crashes.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 
 # src/live.h -- the header-only, malloc-free query surface for
@@ -607,8 +631,20 @@ add_test(NAME leaf_tool_crashes
 # a TU that includes only live.h stays free of malloc/free/stdio -- the
 # constraint pin `tests/README.md` calls for, wired
 # into CI rather than left as an unchecked comment.
-add_executable(live_test tests/live_test.c)
-target_compile_options(live_test PRIVATE -O2 -Wall -Wextra)
-target_include_directories(live_test PRIVATE src)
-add_test(NAME live_test COMMAND live_test
+if(APPLE)
+  add_executable(live_test tests/live_test.c)
+  target_compile_options(live_test PRIVATE -O2 -Wall -Wextra)
+  target_include_directories(live_test PRIVATE src)
+endif()
+drydock_macos_test(live_test "dyld's own loaded image" COMMAND live_test
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+if(NOT APPLE)
+  get_property(drydock_tests DIRECTORY PROPERTY TESTS)
+  foreach(t IN LISTS drydock_tests)
+    get_test_property(${t} ENVIRONMENT env)
+    if(env MATCHES "MallocScribble=1")
+      set_property(TEST ${t} APPEND PROPERTY ENVIRONMENT MALLOC_PERTURB_=85)
+    endif()
+  endforeach()
+endif()
