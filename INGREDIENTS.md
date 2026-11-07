@@ -11,12 +11,17 @@ not a port of somebody else's project — they were written for this problem, an
 | Ingredient | Pinned in | Renovate | On a bump |
 |---|---|---|---|
 | the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump, then a dispatch of `release.yml` with `release=true`, cuts the release as tag `v0.2.2` |
-| MacOSX10.9 SDK (x86_64) and MacOSX11.3 SDK (arm64), CMake helpers, compat guard, test runner | `Mavergreen/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
+| MacOSX10.9 SDK (x86_64) and MacOSX11.3 SDK (arm64), CMake helpers, compat guard, test runner; on Linux, the 10.9 SDK's `mach-o/` and `mach/` headers the Linux build compiles against | `Mavergreen/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
 | Sparkle 1.27.3, in the updater | shipyard's `fetch_sparkle_framework.sh`, pinned by hash there | **untrackable** here: shipyard owns that pin | follows shipyard |
+| Linux host C compiler, C library and CMake (build the Linux archive) | runner-provided, unpinned; `build-info-linux-x86_64.txt` records each (`build-cc`, `build-libc`, `build-cmake`) | ❌ untrackable here: the runner image provides them, so no pin exists to track. Exit: a pinned toolchain on Linux hosts (shipyard QUEUE) | none; a runner image update can change them, and the archive's executable needs a glibc at least as new as the runner's |
 | `tests/fixture.macho` + `tests/EXPECTED` | committed | **untrackable** — a characterization reference, deliberately frozen | never bumped by a bot; changing it is a deliberate commit that says why |
 
 Not ingredients: `CMakeLists.txt`, the test scripts and the workflows are this
-repo's own recipe. A change there is a repackage you cut deliberately.
+repo's own recipe. A change there is a repackage you cut deliberately. So is
+`linux/include/`: this repo's own stand-ins, for the Linux build only, for the
+Apple headers the SDK's `mach-o/` and `mach/` headers include and for the three
+Apple APIs `src/` calls (`CC_SHA256`, `OSSwapInt32`, and the extended-attribute
+calls' Apple argument lists).
 
 ## Conformance deviations
 
@@ -32,7 +37,7 @@ unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-up
 - rosetta:tests/symbol_rename_test.sh: builds x86_64/10.9 fixture objects (`FIXTURE_FLAGS`: `-arch x86_64 -mmacosx-version-min=10.9`), renames symbols in them, then links and executes the programs — `fwd`, `undef`, `local`, `long`, `sorted`, `sorted2` and the fat case's `fatfwd` — to prove a renamed definition and its references still meet. On the macos-26 (arm64) release runner each of those executions is translated by Rosetta, in both builds' suites, with no SKIP-if-absent guard, so Rosetta is a required dependency there. Its arm64 case runs natively. Reconsider when an x86_64 host can run it in CI; at the latest, before macOS 28 removes Rosetta.
 - rosetta:tests/archive_rename_test.sh: builds x86_64/10.9 fixture objects (`FIXTURE_FLAGS`, as above) into static archives, renames across them, and executes the programs linked against the result — `fwd`, and `zrun`, linked against an object whose `__data` was moved past its string table — to prove the renamed archive still links and behaves. On the arm64 release runner each execution is translated by Rosetta, in both builds' suites, with no SKIP-if-absent guard, so Rosetta is a required dependency there. Reconsider when an x86_64 host can run it in CI; at the latest, before macOS 28 removes Rosetta.
 - rosetta:tests/legacysupport_rename_test.sh: links an x86_64/10.9 program (`-arch x86_64 -mmacosx-version-min=10.9`) against MacPorts' `libMacportsLegacySupport.a` after a rename and executes it (`prog`). It skips (77) where no copy of the library is found, as on the release runner today; wherever it finds one on an arm64 host, that execution is translated by Rosetta, with no SKIP-if-absent guard. Reconsider when a copy reaches CI, and at the latest before macOS 28 removes Rosetta.
-- rosetta:.github/workflows/release.yml: the x86_64 build's whole suite runs under Rosetta on the arm64 runner, because CI must test the x86_64 slice the .pkg ships and has no x86_64 host. Reconsider when macOS 28 removes Rosetta: the x86_64 suite then runs only on the 10.9 box.
+- rosetta:.github/workflows/release.yml: the x86_64 build's whole suite, and its share of the Linux equivalence proof's macOS outputs, run under Rosetta on the arm64 runner, because CI must test the x86_64 slice the .pkg ships and has no x86_64 host. Reconsider when macOS 28 removes Rosetta: the x86_64 suite then runs only on the 10.9 box.
 - on-target: no 10.9 acceptance job yet; exit: a release.yml job on Mavergreen/mavericks-vm@v1 that installs this run's pkg in the guest and runs what it ships, which publish needs
 
 ## Why there is no Renovate customManager for the own upstream
