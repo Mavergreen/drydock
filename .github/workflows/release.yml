@@ -308,10 +308,20 @@ jobs:
   linux:
     name: build (linux-x86_64)
     runs-on: ubuntu-latest
+    container: ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
     steps:
+      - name: The image's toolchain
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            ca-certificates git curl xz-utils perl gcc libc6-dev make cmake binutils python3 python3-yaml bats
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Trust the checkout, which the runner's user owns
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Install mavericks-shipyard
         uses: Mavergreen/shipyard/.github/actions/install@v1
@@ -325,11 +335,11 @@ jobs:
       - name: Record the pre-build tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
 
-      - name: Configure + build with the runner's C compiler
+      - name: Configure + build for the x86-64 baseline
         run: |
           set -eu
           CM="$(command -v cmake)"
-          "$CM" -S . -B "$LINUX_BUILD_DIR"
+          "$CM" -S . -B "$LINUX_BUILD_DIR" -DCMAKE_C_FLAGS="-march=x86-64 -mtune=generic"
           "$CM" --build "$LINUX_BUILD_DIR" -j "$(nproc)"
 
       - name: Every test that does not need a Mac runs, and none skips
@@ -363,12 +373,17 @@ jobs:
           sh packaging/build-linux.sh "$LINUX_BUILD_DIR" "$VERSION_FULL" \
             "$LINUX_DIST/drydock-$VERSION_FULL-linux-x86_64.tar.gz"
           cache() { sed -n "s/^$1:[A-Z]*=//p" "$LINUX_BUILD_DIR/CMakeCache.txt"; }
+          needs="$(sh packaging/elf-needs.sh "$LINUX_BUILD_DIR/drydock-macho-rewrite")"
           sh "$SHIPYARD_SCRIPTS/build-info.sh" "$LINUX_DIST/build-info-linux-x86_64.txt" \
-            variant=linux-x86_64 arch=x86_64 \
+            variant=linux-x86_64 arch=x86_64 $needs \
+            build-image="$(. /etc/os-release && echo "$PRETTY_NAME")" \
             build-cc="$("$(cache CMAKE_C_COMPILER)" --version | sed -n 1p)" \
             build-cmake="$("$(cache CMAKE_COMMAND)" --version | sed -n 1p)" \
             build-libc="$(ldd --version | sed -n 1p)"
           cat "$LINUX_DIST/build-info-linux-x86_64.txt"
+
+      - name: The executable asks for no x86 ISA level above the x86-64 baseline
+        run: grep -qx 'isa-needed=x86-64-baseline' "$LINUX_DIST/build-info-linux-x86_64.txt"
 
       - name: The Linux archive is the standalone tree, and runs from anywhere
         run: sh tests/linux_archive_test.sh "$LINUX_DIST/drydock-$VERSION_FULL-linux-x86_64.tar.gz"
@@ -461,7 +476,7 @@ jobs:
       contents: read
     uses: Mavergreen/shipyard/.github/workflows/scan-for-key.yml@v1
     with:
-      artifact: drydock-release
+      artifact: 'drydock*'
     secrets:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
 
