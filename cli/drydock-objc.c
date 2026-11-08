@@ -61,7 +61,9 @@
  * OBJC_INCLUDE_PATH, SDKROOT and CCC_OVERRIDE_OPTIONS (libclang's driver reads
  * them) and sets LC_ALL=C. The tool's exits are kept: 0 written, 2 usage or an
  * existing destination, 4 an unverifiable input or a parse failure; any other
- * result is 4.
+ * exit status the producer returns is 4. The producer runs in this process, so
+ * a crash inside libclang kills drydock-objc with a signal and no status of
+ * its own: a caller that needs a status should map death by signal to 4.
  *
  * ON LINUX drydock-objc holds receipt alone: main.m is Foundation, so analyze,
  * evidence and link-args say they are not built for Linux yet and exit 2.
@@ -140,6 +142,7 @@ static const char *default_references(char *out, size_t outlen) {
 static int run(const char *mode, int argc, char **argv, int want_refs, int want_id) {
     char refs[PATH_MAX];
     const char *r = NULL;
+    /* Slots, worst case (analyze): program name, the caller's argc words, --references and its value, --analyzer-id and its value, NULL = argc + 6; a new default adds its words here. */
     char **v = calloc((size_t)argc + 6, sizeof *v);
     int n = 0, i;
     if (!v) { fprintf(stderr, "drydock-objc: out of memory\n"); return 4; }

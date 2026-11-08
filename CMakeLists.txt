@@ -221,6 +221,14 @@ target_include_directories(drydock_objc_receipt PRIVATE "${DRYDOCK_OBJC_CLANG_HE
 set_target_properties(drydock_objc_receipt PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
 # spec: shipyard's scripts/objc-source-inventory.sh -- the warnings it built the tool with.
 target_compile_options(drydock_objc_receipt PRIVATE -O2 -Wall -Wextra -Werror)
+if(NOT APPLE)
+  # platform: tools/objc-source-inventory.c is byte-locked (its hash is the receipt's identity), so a warning a
+  # newer gcc on a non-Apple host raises in it cannot be fixed in the source: it stays -Wall -Wextra there, and
+  # only -Werror is dropped, for that one source. The shim and the CLI keep -Werror everywhere.
+  set_source_files_properties(tools/objc-source-inventory.c PROPERTIES COMPILE_OPTIONS -Wno-error)
+endif()
+# The CLI is ours to fix, so it holds the same warnings as the shim, on every host.
+set_source_files_properties(cli/drydock-objc.c PROPERTIES COMPILE_OPTIONS "-Wextra;-Werror")
 
 if(APPLE)
   enable_language(OBJC)
@@ -350,6 +358,9 @@ add_test(NAME family_conventions
   COMMAND sh -c "python3 -c 'import yaml' || { echo 'family_conventions needs python3 with PyYAML: python3 -m pip install pyyaml' >&2; exit 1; }; exec sh \"$0\"/check-family-conventions.sh"
           "${MavericksShipyard_SCRIPTS}"
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# platform: host-agnostic -- the Linux archive's ISA/glibc measurement is exercised with a stub readelf.
+add_test(NAME elf_needs_all COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_needs_all_test.sh)
 
 # The imported Objective-C analyzer is byte-identical to shipyard's.
 add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/import_identity_test.sh)

@@ -373,7 +373,12 @@ jobs:
           sh packaging/build-linux.sh "$LINUX_BUILD_DIR" "$VERSION_FULL" \
             "$LINUX_DIST/drydock-$VERSION_FULL-linux-x86_64.tar.gz"
           cache() { sed -n "s/^$1:[A-Z]*=//p" "$LINUX_BUILD_DIR/CMakeCache.txt"; }
-          needs="$(sh packaging/elf-needs.sh "$LINUX_BUILD_DIR/drydock-macho-rewrite")"
+          # The archive's own bin/ is what ships, so it is what is measured: the highest ISA level and glibc
+          # version over every ELF in it (drydock-macho-rewrite and drydock-objc both).
+          probe="$(mktemp -d)"
+          tar -xzf "$LINUX_DIST/drydock-$VERSION_FULL-linux-x86_64.tar.gz" -C "$probe"
+          needs="$(sh packaging/elf-needs-all.sh "$probe/drydock-$VERSION_FULL/bin" | grep -v '^elf-count=')"
+          rm -rf "$probe"
           sh "$SHIPYARD_SCRIPTS/build-info.sh" "$LINUX_DIST/build-info-linux-x86_64.txt" \
             variant=linux-x86_64 arch=x86_64 $needs \
             build-image="$(. /etc/os-release && echo "$PRETTY_NAME")" \

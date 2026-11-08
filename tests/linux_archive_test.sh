@@ -33,11 +33,30 @@ magic=$(od -An -tx1 -N4 "$BIN/drydock-macho-rewrite" | tr -d ' \n')
 machine=$(od -An -tx1 -j18 -N2 "$BIN/drydock-macho-rewrite" | tr -d ' \n')
 [ "$magic" = 7f454c46 ] && [ "$machine" = 3e00 ] \
   && ok "drydock-macho-rewrite is an x86_64 ELF executable" || bad "drydock-macho-rewrite: magic $magic, machine $machine"
-needs=$(sh "$HERE/../packaging/elf-needs.sh" "$BIN/drydock-macho-rewrite") || needs=
+# spec: README -- every ELF in bin/ is measured, drydock-objc as much as drydock-macho-rewrite: the archive's floor is the
+# x86-64 baseline and glibc 2.34, and no executable may ask for more.
+GLIBC_FLOOR=2.34
+needs=$(sh "$HERE/../packaging/elf-needs-all.sh" "$BIN") || needs=
 isa=$(printf '%s\n' "$needs" | sed -n 's/^isa-needed=//p')
+glibc=$(printf '%s\n' "$needs" | sed -n 's/^glibc-needed=//p')
+count=$(printf '%s\n' "$needs" | sed -n 's/^elf-count=//p')
 [ "$isa" = x86-64-baseline ] \
-  && ok "drydock-macho-rewrite needs no x86 ISA level above the baseline" \
-  || bad "drydock-macho-rewrite needs x86 ISA level ${isa:-unknown}, above the x86-64 baseline every x86_64 host has"
+  && ok "no executable in bin/ needs an x86 ISA level above the baseline" \
+  || bad "bin/ needs x86 ISA level ${isa:-unknown}, above the x86-64 baseline every x86_64 host has"
+top=$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$glibc" | sort -t. -k1,1n -k2,2n -k3,3n | sed -n '$p')
+[ -n "$glibc" ] && [ "$top" = "$GLIBC_FLOOR" ] \
+  && ok "no executable in bin/ needs glibc above $GLIBC_FLOOR (highest: $glibc)" \
+  || bad "bin/ needs glibc ${glibc:-unknown}, above the archive's stated floor $GLIBC_FLOOR"
+for exe in drydock-macho-rewrite drydock-objc; do
+  one=$(sh "$HERE/../packaging/elf-needs.sh" "$BIN/$exe") || one=
+  oi=$(printf '%s\n' "$one" | sed -n 's/^isa-needed=//p')
+  og=$(printf '%s\n' "$one" | sed -n 's/^glibc-needed=//p')
+  ot=$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$og" | sort -t. -k1,1n -k2,2n -k3,3n | sed -n '$p')
+  [ "$oi" = x86-64-baseline ] && [ -n "$og" ] && [ "$ot" = "$GLIBC_FLOOR" ] \
+    && ok "$exe needs the baseline ISA and glibc $og, within the floor" \
+    || bad "$exe needs ISA ${oi:-unknown} and glibc ${og:-unknown}, beyond the baseline and glibc $GLIBC_FLOOR"
+done
+[ "${count:-0}" -ge 2 ] && ok "$count ELF executables measured" || bad "only ${count:-0} ELF executables measured"
 "$BIN/drydock-macho-rewrite" --capabilities | grep -q '^statement symbol rename' \
   && ok "drydock-macho-rewrite runs from the unpacked archive" || bad "drydock-macho-rewrite --capabilities"
 [ -f "$T/a dir/drydock-$V/share/drydock/objc/reference/manifest.json" ] \

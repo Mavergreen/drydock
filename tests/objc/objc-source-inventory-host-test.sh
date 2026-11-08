@@ -77,6 +77,23 @@ rc=0; receipt --clang-prefix "$T/stale" --sdk "$SDK" --output "$T/stale.receipt"
 [ "$rc" = 4 ] && grep -q 'clang/21' "$T/err" && grep -q 'clang version 22' "$T/err" && [ ! -e "$T/stale.receipt" ] &&
   pass 'receipt_stale_resource_dir: lib/clang/21 beside libclang 22 exits 4 and writes nothing' || fail "receipt_stale_resource_dir: exit $rc"
 
+# receipt_missing_symbol: a libclang that loads but exports only clang_getClangVersion is a prerequisite failure
+# naming the first clang_ function it lacks, exit 4, and writes nothing.
+# platform: the stub is a Mach-O dylib built with the pinned SDK and /usr/bin/clang, so this runs on a Mac only.
+if [ "$(uname -s)" = Darwin ]; then
+  mkdir -p "$T/stubprefix/lib/clang/22/include"
+  printf 'int clang_getClangVersion(void) { return 0; }\n' >"$T/stub.c"
+  env -i PATH=/usr/bin:/bin /usr/bin/clang -dynamiclib -isysroot "$SDK" -o "$T/stubprefix/lib/libclang.dylib" "$T/stub.c" 2>"$T/err" ||
+    { echo 'FAIL: cannot build the stub libclang'; cat "$T/err"; exit 1; }
+  # spec: src/objc/libclang_shim.c -- the functions are resolved in the order DRYDOCK_LIBCLANG_FUNCTIONS lists them.
+  first=$(sed -n 's/^    X([A-Za-z ]*, \(clang_[A-Za-z0-9_]*\),.*/\1/p' "$ROOT/src/objc/libclang_shim.c" | head -1)
+  rc=0; receipt --clang-prefix "$T/stubprefix" --sdk "$SDK" --output "$T/stub.receipt" 2>"$T/err" || rc=$?
+  [ "$rc" = 4 ] && [ -n "$first" ] && grep -Fq "has no $first" "$T/err" && [ ! -e "$T/stub.receipt" ] &&
+    pass "receipt_missing_symbol: a libclang without $first exits 4, names it, and writes nothing" || fail "receipt_missing_symbol: exit $rc, first symbol '$first'"
+else
+  echo "SKIP: receipt_missing_symbol: needs a Mac to build the stub dylib ($(uname -s))"
+fi
+
 # linux_analyze_refused: the Foundation front end is not built for Linux.
 if [ "$(uname -s)" = Linux ]; then
   rc=0; "$DRYDOCK_OBJC" analyze --artifact /bin/sh --root / --report "$T/report" 2>"$T/err" || rc=$?

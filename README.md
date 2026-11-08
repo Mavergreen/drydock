@@ -60,7 +60,7 @@ Given an Objective-C binary built for Mavericks, report which of its message sen
 * `drydock-objc analyze`: analyze an artifact against the reference set and write a report.
 * `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against.
 * `drydock-objc link-args`: print the link arguments for a provider prefix and link map.
-* `drydock-objc receipt`: record the pinned clang and SDK a source inventory was taken with.
+* `drydock-objc receipt`: write an Objective-C provider's source receipt: every Objective-C send in its verified prepared sources, with the identities of the clang (its libclang version), the SDK and the tool that took it.
 
 Their arguments and exit statuses are those of the shipyard scripts they replace; run `drydock-objc` with no arguments for the usage. It reads its reference set from `share/drydock/objc/reference`, found from where the real `drydock-objc` binary is, so a symlink to it works; `--references DIR` names another.
 
