@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's own libraries, raised and run by its programs
 # tests/raise_runs_test.sh -- raised copies of 10.9's own libraries, loaded by
 # 10.9's own programs, must do what the originals do.
 #

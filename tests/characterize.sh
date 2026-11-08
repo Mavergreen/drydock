@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- hashes what the tools make of the committed fixture, as ctest runs it on Linux too
 # Characterization: run the whole pipeline over a committed fixture and hash the
 # result. The tools are deterministic file transformers, so the OUTPUT is the
 # invariant worth pinning -- not the tool binaries, which can never match across

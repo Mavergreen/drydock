@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- builds its Mach-O inputs with a Mac's clang, ar and libtool
 #   usage: equivalence.sh inputs DIR                 build the Mach-O inputs into DIR (needs a Mac's clang, ar and libtool)
 #          equivalence.sh produce BINDIR INPUTS OUT  run BINDIR's drydock-macho-rewrite and wrappers over INPUTS, into OUT
 #          equivalence.sh compare A B                every output in A is byte-identical to its namesake in B

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- reads one ELF file with readelf, in the Linux job or anywhere binutils is
 #   usage: elf-needs.sh ELF
 #          prints what ELF asks of the host that loads it, as build-info key=value lines:
 #          isa-needed=<the highest x86 ISA level its GNU property note names, or none>

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- reads ELF files with readelf, in the Linux job or anywhere binutils is
 #   usage: elf-needs-all.sh DIR
 #          measures every ELF file directly in DIR with elf-needs.sh and prints the most any of them asks:
 #          isa-needed=<the highest x86 ISA level over them, none when none names one>

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- a linker that emits chained fixups, and otool
 # Cover patch_macho's conversion, which tests/fixture.macho cannot reach.
 #
 # That fixture was built on 10.9, whose linker predates chained fixups by a

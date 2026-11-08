@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O fixtures built with the host's clang
 # tests/leaf-tool-crashes.sh — regression coverage for two heap-overflow
 # crashes a code review found in add_version_min and retag_swift_classes
 # after they were converted onto src/image.h.

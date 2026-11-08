@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O fixtures built with the host's clang and ld64, read with otool and nm, then run
 # Hermetic test for change_dylib's library-ordinal renumbering (-insert, -delete).
 #
 # Two-level-namespace binaries record, for every undefined symbol, WHICH dylib it

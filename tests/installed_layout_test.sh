@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- this build's own install rules and a farm of symlinks, as ctest runs it on Linux too
 # tests/installed_layout_test.sh -- the tools as the .pkg lays them out: installed
 # into a prefix by this build's own install rules, then reached through a farm
 # of symlinks, the way /usr/local/mavergreen/bin reaches every family product.

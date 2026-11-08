@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- compares the archive with the .pkg's payload, read with pkgutil
 # tests/standalone_archive_test.sh -- the standalone archive is the .pkg's tree, and runs from anywhere
 #   usage: standalone_archive_test.sh ARCHIVE DRYDOCK.pkg
 #          ARCHIVE is drydock-<v>-macos-universal.tar.gz: one top directory, drydock-<v>/, holding

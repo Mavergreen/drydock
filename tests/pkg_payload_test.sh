@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- reads the .pkg's payload with pkgutil
 # tests/pkg_payload_test.sh -- what the .pkg installs, read from its payload with pkgutil
 #   usage: pkg_payload_test.sh DRYDOCK.pkg CMAKE BUILD-X86_64 BUILD-ARM64
 #          The package installs exactly what the two builds' install rules install, merged into

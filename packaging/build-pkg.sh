@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- pkgbuild, productbuild and lipo make the universal .pkg
 # packaging/build-pkg.sh -- the .pkg, through shipyard's lipo-merge-tree.sh, stage_product.sh, build_component_pkg.sh and set_install_floor.sh
 #   usage: build-pkg.sh BUILD-X86_64 BUILD-ARM64 VERSION OUT.pkg
 #          Builds merge-tree.sh's universal tree (the tools, manual page and docs the standalone

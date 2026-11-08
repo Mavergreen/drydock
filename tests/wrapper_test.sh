@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O fixtures built with the host's clang and ld64, BSD stat, and running them
 # tests/wrapper_test.sh -- the six /bin/sh wrappers' own behaviour: the
 # grammar they translate, the exit codes they map, and the stdout they
 # reshape.

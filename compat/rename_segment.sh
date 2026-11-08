@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
 # rename_segment -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
 # `segment rename OLD NEW` statement on its stdin.
 #

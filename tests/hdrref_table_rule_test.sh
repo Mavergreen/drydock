@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's own Mach-O images
 # tests/hdrref_table_rule_test.sh -- what src/hdrref.c's jump-table rule
 # changes over this host's own Mach-Os, by tests/hdrref_ab: the x86_64 slice
 # of every dylib and bundle under /usr/lib, /System/Library/Frameworks and

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- lipo merges the x86_64 and arm64 builds into one universal tree
 # packaging/merge-tree.sh -- the universal tree the .pkg and the standalone archive both ship
 #   usage: merge-tree.sh BUILD-X86_64 BUILD-ARM64 OUT-DIR
 #          Installs each build's tools and manual page by its own install rules (byte for byte as

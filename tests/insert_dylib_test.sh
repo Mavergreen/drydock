@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O fixtures built with the host's clang and ld64, and codesign
 # tests/insert_dylib_test.sh -- compat/insert_dylib.sh's own behaviour: the
 # fork's `[flags] dylib_path binary_path [new_binary_path]` grammar
 # (Wowfunhappy/insert_dylib, commit bd221b8) translated onto `dylib append`/

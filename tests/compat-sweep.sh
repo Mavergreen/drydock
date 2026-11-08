@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- runs the historical Mach-O tools, by hand on 10.9
 # tests/compat-sweep.sh -- run EVERY enumerated argument combination of the six
 # historical tools BOTH ways, on the same input, and record what each did.
 #

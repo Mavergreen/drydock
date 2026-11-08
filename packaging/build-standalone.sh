@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- tars merge-tree.sh's universal tree, which lipo makes
 # packaging/build-standalone.sh -- the standalone archive: merge-tree.sh's universal tree, tarred
 #   usage: build-standalone.sh BUILD-X86_64 BUILD-ARM64 VERSION OUT.tar.gz
 #          OUT is drydock-VERSION-macos-universal.tar.gz, one top directory drydock-VERSION/

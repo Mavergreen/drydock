@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- archives made by the host's libtool, ar and ranlib, linked by ld64 and run
 # tests/archive_rename_test.sh -- `symbol rename OLD NEW` across a static
 # archive made by this host's libtool, ar and ranlib: linked and run, the
 # rebuilt index compared with ranlib's, and the archive-scope refusals.

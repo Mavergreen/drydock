@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- runs in the Linux job, with GNU tar
 # packaging/build-linux.sh -- the Linux archive: the standalone archive's tree, built for Linux
 #   usage: build-linux.sh BUILD VERSION OUT.tar.gz
 #          OUT is drydock-VERSION-linux-x86_64.tar.gz, one top directory drydock-VERSION/ holding

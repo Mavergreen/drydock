@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
 # patch_macho -- a /bin/sh wrapper around `drydock-macho-rewrite IN OUT` with one
 # `fixups set classic` statement on its stdin.
 #

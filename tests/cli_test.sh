@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O fixtures built with the host's clang and ld64, read with otool, nm, lipo and codesign_allocate
 # tests/cli_test.sh — exercises the drydock-macho-rewrite CLI itself: --capabilities, the
 # three read-only verbs (verify, info, imports), and the bare `FILE OUT` form
 # that is the only way to change a binary.

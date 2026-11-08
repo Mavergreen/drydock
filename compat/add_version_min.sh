@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
 # add_version_min -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
 # `minos if-absent 10.9` statement on its stdin.
 #

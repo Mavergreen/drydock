@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's own dylibs and bundles
 # tests/raise_corpus_test.sh -- raise a copy of every x86_64 dylib and bundle
 # under 10.9's /usr/lib, /System/Library/Frameworks and
 # /System/Library/PrivateFrameworks, and hold what happens to

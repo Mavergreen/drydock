@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- compares compat/translate.sh's text, as ctest runs it on Linux too
 # tests/translate_test.sh -- one test per translation, asserting the EXACT
 # text compat/translate.sh emits: a `printf ... | drydock-macho-rewrite FILE OUT`
 # pipeline, statements and quoting included, plus the `mv` install line the

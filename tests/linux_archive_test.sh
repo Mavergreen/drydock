@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- reads the archives with tar, and runs the Linux tools in the Linux job
 #   usage: linux_archive_test.sh LINUX.tar.gz [MACOS.tar.gz]
 #          the Linux archive holds the standalone archive's tree with Linux x86_64 executables, owned
 #          by root, and runs from anywhere; given the macOS archive, it holds the same paths with the

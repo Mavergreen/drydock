@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O programs built with the host's clang and ld64, then run
 # tests/grown_binary_runs_test.sh -- a header grow must not change what a
 # program DOES. Every other grow test checks structure; this one runs the
 # grown binary and its input with the same arguments and environment and

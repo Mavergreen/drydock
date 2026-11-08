@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- MacPorts' libMacportsLegacySupport.a, linked by ld64 and run
 # tests/legacysupport_rename_test.sh -- `symbol rename` across a real static
 # archive, MacPorts' libMacportsLegacySupport.a: _clock_gettime becomes
 # ___recaulk_impl_clock_gettime, a stub defines clock_gettime on top of it,

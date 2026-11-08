@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's otool over a corpus of 10.9's own images
 # tests/x86len_oracle_test.sh -- src/x86len.h's instruction boundaries must
 # be otool's, over every function of a corpus of real 10.9 images.
 #

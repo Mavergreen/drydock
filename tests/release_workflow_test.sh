@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- reads release.yml, as ctest runs it on Linux too
 #   usage: release_workflow_test.sh [release.yml]
 #          the signing-key scan reads every artifact that holds release files, the signed macOS
 #          dist included, so a release run that fails after signing still has its files scanned

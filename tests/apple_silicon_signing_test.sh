@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- codesign and Rosetta on an Apple Silicon Mac
 # tests/apple_silicon_signing_test.sh -- what an Apple Silicon Mac does with
 # Drydock's edited outputs, where the kernel enforces code signing for every
 # process: the rows behind the per-arch re-signing rule in

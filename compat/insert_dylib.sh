@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
 # insert_dylib -- a /bin/sh wrapper presenting Wowfunhappy/insert_dylib's
 # command line (commit bd221b8) over `dylib append`/`dylib retype`, and,
 # when asked, `load-command delete codesig`.

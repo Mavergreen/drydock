@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- a Mach-O app on this Mac, raised and run
 # tests/mantle_raise_test.sh -- a real chained-fixups dylib, taken to classic
 # fixups, given a load command it has no room for, and given a long rpath.
 #

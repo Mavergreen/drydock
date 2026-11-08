@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's dyldinfo over 10.9's own dylibs
 # tests/rebase_oracle_test.sh -- src/rebase.h's decode must be dyldinfo's,
 # slot for slot and in stream order, over every x86_64 dylib under 10.9's
 # /usr/lib.

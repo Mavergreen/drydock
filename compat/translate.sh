@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- pure text, shipped in the Linux archive too
 # compat/translate.sh -- print the drydock-macho-rewrite command line(s) an
 # old-grammar invocation is equivalent to. Pure text: it opens, reads and
 # runs nothing.

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O fixtures built with the host's clang and ld64, otool and codesign_allocate
 # tests/import_redirect_test.sh -- the `import redirect SYMBOL FROM-LIB TO-LIB`
 # statement and the `exports` verb.
 #

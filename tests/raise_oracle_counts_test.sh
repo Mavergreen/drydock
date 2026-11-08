@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's own dylibs and bundles
 # tests/raise_oracle_counts_test.sh -- over raise_corpus_test.sh's corpus, what
 # each of a grow's five independent oracles (mg_oracles: inits, lazy, exports,
 # unwind, rebases) says of every original, held to

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- replays the callers over the committed fixture, as ctest runs it on Linux too
 # tests/known-callers.sh -- replay every KNOWN CALLER of the six historical
 # tools, end to end, against the shell wrappers that replaced five of them.
 #

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- objects built with the host's clang, linked by ld64 and run
 # tests/symbol_rename_test.sh -- `symbol rename OLD NEW` on relocatable
 # objects, linked with this host's ld64 and run; the object gate's refusals.
 #

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
 # retag_swift_classes -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
 # `swift-abi set legacy` statement on its stdin, once per argument.
 #

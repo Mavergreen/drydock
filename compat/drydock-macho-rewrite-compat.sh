@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- sourced by the /bin/sh wrappers, which the Linux archive ships too
 # compat/drydock-macho-rewrite-compat.sh -- what the historical tools' /bin/sh
 # wrappers share. Sourced, never run:
 #

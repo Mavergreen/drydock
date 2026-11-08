@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- runs two builds over the Mac's own Mach-O binaries
 # tests/differential.sh — run TWO builds of these tools over the same real
 # Mach-O binaries and prove they behave identically: same output bytes, same
 # exit code, same stdout, same stderr, on every invocation.

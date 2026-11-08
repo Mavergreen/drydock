@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- Mach-O programs built with the host's clang and ld64, codesign, and running them
 # tests/bake_mavericks_shim_test.sh -- compat/bake-mavericks-shim.sh end to end:
 # Wowfunhappy's bake-mavericks-shim.py command line, its summary, the one
 # edit script it composes, and the divergences compat/README.md's

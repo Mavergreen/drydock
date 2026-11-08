@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- 10.9's codesign_allocate is the oracle
 # tests/codesign_order_test.sh -- `info`'s resign lines (src/linkedit_order.h)
 # must be 10.9's own codesign_allocate's verdict: on every
 # tests/linkedit_fixture.h variant and on each after the pass has packed it,

@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- runs the fork's insert_dylib over the Mac's own Mach-O binaries
 # tests/insert-dylib-diff.sh -- run compat/insert_dylib.sh against a real build
 # of the fork it presents an interface for, over real Mach-O binaries, and
 # prove the interface claim rather than asserting it.

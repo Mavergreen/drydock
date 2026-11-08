@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: host-agnostic -- a stub readelf stands in for binutils
 #   usage: elf_needs_all_test.sh
 #          packaging/elf-needs-all.sh reports the highest ISA level and glibc version over every ELF in
 #          a directory, not one binary's, and says what it cannot measure

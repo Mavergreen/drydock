@@ -1,4 +1,5 @@
 #!/bin/sh
+# platform: macOS-only -- dylibs and bundles built with the host's clang and ld64, then run
 # tests/raise_rich_test.sh -- a dylib with everything a raise must move, built
 # here, raised by one page and by two, and run: every raised copy must do
 # what the original does.
