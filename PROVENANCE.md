@@ -64,12 +64,12 @@ the older one can be deleted once nothing is left to salvage from it.
 
 The Objective-C analyzer (`src/objc/`, `tools/objc-*`, `reference/objc/`, the
 `scripts/objc-*` helpers and `tests/objc/`) was copied byte for byte from
-shipyard at three commits: 28956af,
-4f5049e and c49959c. The last, c49959c, is local only: the "step 0" commit on
-the `objc-inventory-linux` branch, not yet on shipyard main.
+shipyard at four commits: 28956af,
+4f5049e, c49959c and c56de8a. The last two are the "step 0" on shipyard main:
+c49959c, the receipt tool running on Linux, and c56de8a, which gives the receipt
+its own clang pin, `components/objc-receipt-clang` (22.1.8-mavericks.16).
 
 The history stays in shipyard (same owner), so nothing was replayed here.
 `tests/objc/IMPORTED.sha256` holds the hashes taken in the shipyard checkout,
 and `tests/objc/import_identity_test.sh` checks the copies against them.
-`components/objc-reference-clang/linux-sha256` is not imported yet: it does not
-exist in shipyard until clang-22's Linux libclang release lands.
+`components/objc-receipt-clang/{version,linux-sha256}` were copied byte for byte from c56de8a.

@@ -7,7 +7,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/^components/objc-reference-clang/version$/"
+        "/^components/objc-(reference|receipt)-clang/version$/"
       ],
       "matchStrings": [
         "(?<currentValue>[^\\s]+)"
@@ -20,12 +20,12 @@
   ],
   "packageRules": [
     {
-      "description": "Renovate moves components/objc-reference-clang/version but cannot write the Linux archive's digest beside it, so the Linux job fails on the bump until the linux-sha256 beside the moved version names the new release's archive.",
+      "description": "Renovate moves components/clang22/version and components/objc-receipt-clang/version but cannot write the Linux archive's digest beside either, so the Linux job fails on the bump until the linux-sha256 beside the moved version names the new release's archive.",
       "matchDepNames": [
         "Mavergreen/clang-22"
       ],
       "prBodyNotes": [
-        "Before this can merge, replace components/objc-reference-clang/linux-sha256 with the `clang22-<version>-linux-x86_64.tar.gz` line of the new release's SHA256SUMS: `gh release download <version> -R Mavergreen/clang-22 -p SHA256SUMS -O - | grep linux-x86_64.tar.gz > components/objc-reference-clang/linux-sha256`."
+        "Before this can merge, replace the linux-sha256 beside each moved version (components/clang22, components/objc-receipt-clang) with the `clang22-<version>-linux-x86_64.tar.gz` line of the new release's SHA256SUMS: `gh release download <version> -R Mavergreen/clang-22 -p SHA256SUMS -O - | grep linux-x86_64.tar.gz > components/<dir>/linux-sha256`. An objc-receipt-clang bump must also pass tests/objc-source-inventory-host-test.sh on Linux and a Mac."
       ]
     }
   ]

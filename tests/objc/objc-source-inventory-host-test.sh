@@ -18,7 +18,7 @@ pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; [ ! -f "$T/err" ] || tail -15 "$T/err"; fails=$((fails + 1)); }
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -c1-64; }
 
-CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$ROOT/components/objc-reference-clang") || { echo 'FAIL: cannot fetch the pinned reference clang'; exit 1; }
+CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$ROOT/components/objc-receipt-clang") || { echo 'FAIL: cannot fetch the pinned receipt clang'; exit 1; }
 # spec: tools/objc-source-inventory.c header -- the profile parses against the floor SDK Recaulk's build uses.
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64) || { echo 'FAIL: cannot fetch the pinned floor SDK'; exit 1; }
 # platform: a Mac's libclang is a .dylib, Linux's a .so.

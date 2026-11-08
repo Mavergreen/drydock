@@ -368,6 +368,14 @@ if [ -z "$CLANG" ]; then
   version=$(tr -d '[:space:]' < "$ROOT/components/objc-reference-clang/version")
   CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
 fi
+# spec: components/objc-receipt-clang -- `drydock-objc receipt` takes the receipt's own clang pin (the first clang22 whose
+#       libclang ships everywhere), not the analyzer's: CLANG above still builds the fixtures.
+RECEIPT_CLANG=${MAVERGREEN_OBJC_RECEIPT_CLANG_PREFIX:-${MAVERGREEN_OBJC_CLANG_PREFIX:-}}
+if [ -z "$RECEIPT_CLANG" ]; then
+  case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
+  version=$(tr -d '[:space:]' < "$ROOT/components/objc-receipt-clang/version")
+  RECEIPT_CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-receipt-$short-$version")
+fi
 
 # spec: src/objc/provider.c obj_target -- a provider's 8-byte literal is matched where the linker merged it:
 #       ld64 into __TEXT,__const, lld (which links Codex) into __TEXT,__literals.
@@ -401,7 +409,7 @@ body_prefix() {
   declare_prefix "$P" "$P.inputs"
   if [ "${RECEIPT:-1}" = 1 ]; then
     rm -f "$P.receipt"
-    "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$P.inputs" --root "$D" \
+    "$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inputs "$P.inputs" --root "$D" \
       --unit provider-body.m --unit provider-register.c --output "$P.receipt" 2>"$T/err" || fail "source inventory of $D"
   fi
 }
@@ -491,14 +499,14 @@ rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/sourced-body" --root "$T/r
   --mode strict --source-receipt "$T/pfx-body.receipt" 2>"$T/err" || rc=$?
 exit_is 2 'a source receipt without a provider prefix'
 rm -f "$T/again.receipt"
-"$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
+"$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
   --unit provider-body.m --unit provider-register.c --output "$T/again.receipt" 2>"$T/err" || fail 'second inventory'
 cmp -s "$T/again.receipt" "$T/pfx-body.receipt" || fail 'the source receipt is not deterministic'
 printf '\n' >>"$T/body/provider-body.m"
-rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
+rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
   --unit provider-body.m --unit provider-register.c --output "$T/changed.receipt" 2>"$T/err" || rc=$?
 exit_is 4 'inventory of a source that no longer hashes to its input list'; [ ! -e "$T/changed.receipt" ] || fail 'a refused inventory wrote a receipt'
-rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
+rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
   --unit provider-body.m --output "$T/pfx-body.receipt" 2>"$T/err" || rc=$?
 exit_is 2 'inventory onto an existing receipt'
 

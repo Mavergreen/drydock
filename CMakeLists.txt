@@ -195,11 +195,11 @@ message(STATUS "Drydock: drydock-objc analyzer id ${DRYDOCK_OBJC_ANALYZER_ID}")
 # src/objc/libclang_shim.c, which defines the clang_* functions it calls and
 # loads libclang at run time. Only the pinned clang22's clang-c headers are
 # needed to build them, copied from it at configure time; nothing is linked.
-set(DRYDOCK_OBJC_CLANG_PIN "${CMAKE_CURRENT_SOURCE_DIR}/components/objc-reference-clang")
+set(DRYDOCK_OBJC_CLANG_PIN "${CMAKE_CURRENT_SOURCE_DIR}/components/objc-receipt-clang")
 if(NOT APPLE AND NOT EXISTS "${DRYDOCK_OBJC_CLANG_PIN}/linux-sha256")
   message(FATAL_ERROR "drydock-objc receipt needs the pinned clang22's clang-c headers, and on Linux "
     "fetch_clang22.sh takes them from its linux-x86_64 archive, verified against "
-    "components/objc-reference-clang/linux-sha256 -- which does not exist. Copy that archive's line "
+    "components/objc-receipt-clang/linux-sha256 -- which does not exist. Copy that archive's line "
     "from the pinned release's SHA256SUMS into it (a release whose Linux archive carries libclang.so).")
 endif()
 execute_process(COMMAND sh "${MavericksShipyard_SCRIPTS}/fetch_clang22.sh" "${DRYDOCK_OBJC_CLANG_PIN}"
