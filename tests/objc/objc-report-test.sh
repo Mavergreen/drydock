@@ -84,10 +84,10 @@ for h in hostA 'host B'; do
 done
 cmp -s "$T/out/cross-hostA" "$T/out/cross-hostB" || fail 'reports differ only by the hosts'"'"' absolute paths'
 ! grep -F "$T" "$T/out/cross-hostA" >/dev/null || fail 'the report names an absolute path'
-# spec: cli/drydock-objc.c header -- inputs.analyzer is the compiled-in identity, drydock-VERSION-objc-src- and 16 hex
-#       of the source digest (CMakeLists.txt), when the caller names none.
-version=$(sed -n 1p "$ROOT/UPSTREAM_VERSION" | sed 's/\./\\./g')
-grep "\"analyzer\": \"drydock-$version-objc-src-[0-9a-f]\{16\}\"" "$T/out/cross-hostA" >/dev/null || fail 'inputs.analyzer is not the source identity'
+# spec: cli/drydock-objc.c header -- inputs.analyzer is the compiled-in identity when the caller names none: exactly
+#       DRYDOCK_OBJC_ANALYZER_ID, which CMakeLists.txt computes and CTest passes (drydock-VERSION-objc-src- and 16 hex).
+: "${DRYDOCK_OBJC_ANALYZER_ID:?names the analyzer id CMakeLists.txt computed (CTest sets it)}"
+grep -F "\"analyzer\": \"$DRYDOCK_OBJC_ANALYZER_ID\"" "$T/out/cross-hostA" >/dev/null || fail 'inputs.analyzer is not the source identity'
 
 # spec: src/objc/main.m header -- misuse is 2 and writes nothing.
 usage_case() {  # usage_case WHY REPORT ARGS...
@@ -95,9 +95,7 @@ usage_case() {  # usage_case WHY REPORT ARGS...
   rc=0; "$DRYDOCK_OBJC" analyze "$@" --report "$rep" 2>"$T/err" || rc=$?
   [ "$rc" = 2 ] || fail "$why: exit $rc, want 2"
 }
-# spec: cli/drydock-objc.c header -- --references now defaults to the shipped set, so a missing --root stands for the
-#       missing required option.
-usage_case 'missing --root' "$T/out/u1" --artifact "$C" --references "$REF"
+usage_case 'missing --references' "$T/out/u1" --artifact "$C" --root "$T/root"
 [ ! -e "$T/out/u1" ] || fail 'a usage error wrote a report'
 usage_case 'unknown option' "$T/out/u2" --artifact "$C" --root "$T/root" --references "$REF" --fast yes
 usage_case 'repeated option' "$T/out/u3" --artifact "$C" --root "$T/root" --references "$REF" --mode strict --mode strict

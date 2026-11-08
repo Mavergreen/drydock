@@ -1,7 +1,7 @@
 #!/bin/sh
 # platform: macOS-only -- links an x86_64 fixture against the pinned 10.9 SDK, then runs drydock-objc on it
 # spec: cli/drydock-objc.c header -- the defaults drydock-objc adds and nothing else: --references from the binary's
-#       real path (an installed tree, else the source tree's reference/objc), --analyzer-id from the compiled-in
+#       real path (an installed tree, and nothing else), --analyzer-id from the compiled-in
 #       identity unless the caller names one, and usage (exit 2) for no subcommand or an unknown one.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -46,6 +46,19 @@ rc=0; "$T/link/drydock-objc" analyze --artifact "$T/root/bin/plain" --root "$T/r
   fail "references_from_symlink: exit $rc with the installed set tampered, want 4 (reference-hash-mismatch)"
 echo 'PASS: references_from_symlink'
 
+# spec: cli/drydock-objc.c header -- no_shipped_references: a copy with no share/drydock/objc/reference beside it, and no
+#       --references, falls back to nothing; main.m refuses the missing option and writes no report.
+mkdir -p "$T/bare/bin"
+cp "$DRYDOCK_OBJC" "$T/bare/bin/drydock-objc"
+rc=0; "$T/bare/bin/drydock-objc" analyze --artifact "$T/root/bin/plain" --root "$T/root" --report "$T/out/bare" 2>"$T/err" || rc=$?
+[ "$rc" = 2 ] || fail "no_shipped_references: exit $rc, want 2"
+grep -F -- --references "$T/err" >/dev/null || fail 'no_shipped_references: the refusal does not name --references'
+[ ! -e "$T/out/bare" ] || fail 'no_shipped_references: a report was written'
+rc=0; "$T/bare/bin/drydock-objc" evidence --artifact "$T/root/bin/plain" --prestrip "$T/root/bin/plain" --source-root "$FX" \
+  --output "$T/out/bare-ev" 2>"$T/err" || rc=$?
+[ "$rc" = 2 ] && [ ! -e "$T/out/bare-ev" ] || fail "no_shipped_references: evidence exit $rc, want 2 and no output"
+echo 'PASS: no_shipped_references'
+
 # spec: cli/drydock-objc.c header -- analyzer_id_override: an explicit --analyzer-id is the one the report names.
 rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/plain" --root "$T/root" --references "$REF" --report "$T/out/override" \
   --analyzer-id X 2>"$T/err" || rc=$?
@@ -53,11 +66,14 @@ rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/plain" --root "$T/root" --
 grep '"analyzer": "X"' "$T/out/override" >/dev/null || fail 'analyzer_id_override: the report does not name X'
 echo 'PASS: analyzer_id_override'
 
-# spec: cli/drydock-objc.c header -- default_id: without one, the report names drydock-VERSION-objc-src- and 16 hex.
-version=$(sed -n 1p "$ROOT/UPSTREAM_VERSION" | sed 's/\./\\./g')
-rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/plain" --root "$T/root" --report "$T/out/default" 2>"$T/err" || rc=$?
+# spec: cli/drydock-objc.c header -- default_id: without one, the report names exactly DRYDOCK_OBJC_ANALYZER_ID, the id
+#       CMakeLists.txt computed (drydock-VERSION-objc-src- and 16 hex), which CTest passes.
+: "${DRYDOCK_OBJC_ANALYZER_ID:?names the analyzer id CMakeLists.txt computed (CTest sets it)}"
+printf '%s\n' "$DRYDOCK_OBJC_ANALYZER_ID" | grep -E '^drydock-[0-9]+\.[0-9]+\.[0-9]+[^ ]*-objc-src-[0-9a-f]{16}$' >/dev/null ||
+  fail "default_id: DRYDOCK_OBJC_ANALYZER_ID is $DRYDOCK_OBJC_ANALYZER_ID, not drydock-VERSION-objc-src- and 16 hex"
+rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/plain" --root "$T/root" --references "$REF" --report "$T/out/default" 2>"$T/err" || rc=$?
 [ "$rc" = 0 ] || fail "default_id: exit $rc, want 0"
-grep "\"analyzer\": \"drydock-$version-objc-src-[0-9a-f]\{16\}\"" "$T/out/default" >/dev/null ||
+grep -F "\"analyzer\": \"$DRYDOCK_OBJC_ANALYZER_ID\"" "$T/out/default" >/dev/null ||
   fail "default_id: the report names $(grep -o '"analyzer": "[^"]*"' "$T/out/default")"
 echo 'PASS: default_id'
-echo 'objc-cli: usage, references_from_symlink, analyzer_id_override and default_id pass'
+echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override and default_id pass'

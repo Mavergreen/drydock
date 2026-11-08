@@ -1,3 +1,4 @@
+# platform: host-agnostic
 # Sourced by objc-binding, objc-reference-set, objc-sdk-inventory and objc-sdk-signatures; needs ROOT (this
 # checkout) and SHIPYARD_SCRIPTS (build/msc.sh).
 # spec: scripts/objc-reference-set.sh and scripts/objc-sdk-inventory.sh are shipyard's, byte for byte: the reference

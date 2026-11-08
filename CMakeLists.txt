@@ -204,8 +204,7 @@ if(APPLE)
   target_include_directories(drydock-objc PRIVATE src/objc)
   target_compile_definitions(drydock-objc PRIVATE
     OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}"
-    DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}"
-    DRYDOCK_OBJC_BUILD_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/reference/objc")
+    DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}")
   set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF OBJC_STANDARD 99 OBJC_EXTENSIONS OFF)
   target_compile_options(drydock-objc PRIVATE -O2 -Wall)
   target_link_libraries(drydock-objc PRIVATE drydockcore "-framework Foundation")
@@ -328,7 +327,7 @@ foreach(t binding classification closure provider reader reference-set report sd
     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
   if(APPLE)
     set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
   endif()
 endforeach()
 

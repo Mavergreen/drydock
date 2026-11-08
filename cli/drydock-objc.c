@@ -30,9 +30,11 @@
  *     so a caller that passes its own gets the report it got before.
  *   --references (analyze, evidence): the shipped reference set,
  *     <realpath(this binary)>/../../share/drydock/objc/reference, resolved from
- *     the real path so a symlinked or unpacked copy still finds its own; when
- *     that is not there (a build tree), DRYDOCK_OBJC_BUILD_REFERENCES, the
- *     source tree's reference/objc. link-args takes no reference set.
+ *     the real path so a symlinked or unpacked copy still finds its own. There
+ *     is no other fallback: without that directory (a build tree, or a copy
+ *     moved away from its share/) and without --references, main.m refuses
+ *     the missing option (exit 2). No build-machine path is compiled in.
+ *     link-args takes no reference set.
  *
  * Nothing is fetched or executed: the analyzer reads its inputs as data.
  */
@@ -46,9 +48,6 @@
 
 #ifndef DRYDOCK_OBJC_ANALYZER_ID
 #error "DRYDOCK_OBJC_ANALYZER_ID is computed by CMakeLists.txt"
-#endif
-#ifndef DRYDOCK_OBJC_BUILD_REFERENCES
-#error "DRYDOCK_OBJC_BUILD_REFERENCES is set by CMakeLists.txt"
 #endif
 
 int objc_compat_main(int argc, char **argv);
@@ -70,8 +69,8 @@ static int has_option(int argc, char **argv, const char *opt) {
     return 0;
 }
 
-/* The reference set beside the real binary, else the source tree's; NULL when
- * neither is a directory (main.m then says --references is required). */
+/* The reference set beside the real binary; NULL when it is not a directory
+ * (main.m then says --references is required). */
 static const char *default_references(char *out, size_t outlen) {
     char self[PATH_MAX], real[PATH_MAX];
     uint32_t len = sizeof self;
@@ -87,7 +86,6 @@ static const char *default_references(char *out, size_t outlen) {
             stat(out, &st) == 0 && S_ISDIR(st.st_mode))
             return out;
     }
-    if (stat(DRYDOCK_OBJC_BUILD_REFERENCES, &st) == 0 && S_ISDIR(st.st_mode)) return DRYDOCK_OBJC_BUILD_REFERENCES;
     return NULL;
 }
 
