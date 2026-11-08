@@ -84,11 +84,12 @@ if [ -n "$M" ]; then
     a="$T/m/$p" b="$T/a dir/$p"
     [ -f "$b" ] || continue
     [ "$(ls -ld "$a" | cut -c1-10)" = "$(ls -ld "$b" | cut -c1-10)" ] || { bad "$p: mode differs"; continue; }
-    [ "$p" = "drydock-$V/bin/drydock-macho-rewrite" ] && continue
+    # spec: README -- the executables are built per host (ELF here, Mach-O there); every other file is shared
+    case "$p" in "drydock-$V/bin/drydock-macho-rewrite"|"drydock-$V/bin/drydock-objc") continue ;; esac
     if cmp -s "$a" "$b"; then same=$((same + 1)); else differ=$((differ + 1)); bad "$p differs from the macOS archive's"; fi
   done < "$T/linux.list"
   [ "$same" -ge 10 ] && [ "$differ" -eq 0 ] \
-    && ok "every file but drydock-macho-rewrite is the macOS archive's, byte for byte ($same files)" \
+    && ok "every file but the two executables is the macOS archive's, byte for byte ($same files)" \
     || bad "$same files the same, $differ different"
 fi
 
