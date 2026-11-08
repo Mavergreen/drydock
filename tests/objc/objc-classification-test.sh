@@ -1,30 +1,33 @@
 #!/bin/sh
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then classifies their sends
-# spec: tools/objc-compat/classify.c header -- one verdict per send from measured receivers, the
+# spec: src/objc/classify.c header -- one verdict per send from measured receivers, the
 #       versioned 10.9.5 reference set and reviewed build-bound evidence; R1, R2 and downcast
 #       refinement close only what they prove; no denylist anywhere.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
-FX="$HERE/fixtures/objc-api"
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+# spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
+. "$ROOT/build/msc.sh"
+: "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
+FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-classification-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1; }
 
-SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch x86_64)
+SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
 cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 mkdir -p "$T/root/bin"
 n=0
-# spec: scripts/objc-compat.sh header -- analyze ARTIFACT MODE [options]: rc and $T/report; REFS, when set, replaces the reference set.
+# spec: cli/drydock-objc.c header (analyze) -- analyze ARTIFACT MODE [options]: rc and $T/report; REFS, when set, replaces the reference set.
 analyze() {
   art=$1 mode=$2; shift 2
   n=$((n + 1)); rep="$T/report.$n"
-  rc=0; sh "$ROOT/scripts/objc-compat.sh" --artifact "$art" --root "$T/root" --references "${REFS:-$REF}" --report "$rep" --mode "$mode" "$@" 2>"$T/err" || rc=$?
+  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$T/root" --references "${REFS:-$REF}" --report "$rep" --mode "$mode" "$@" 2>"$T/err" || rc=$?
   ln -sf "$rep" "$T/report"
 }
-# spec: tools/objc-compat/main.m header -- verdict FUNCTION SELECTOR: the verdicts of that function's sends of SELECTOR, one per line.
+# spec: src/objc/main.m header -- verdict FUNCTION SELECTOR: the verdicts of that function's sends of SELECTOR, one per line.
 verdicts() {
   grep "\"function\": \"$1\"" "$T/report" | grep "\"selector\": \"$2\"" | sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p'
 }
@@ -38,7 +41,7 @@ none() { ! grep "\"function\": \"$1\"" "$T/report" | grep "\"selector\": \"$2\""
 exit_is() { [ "$rc" = "$1" ] || fail "$2: exit $rc, want $1"; }
 error_is() { grep "\"code\": \"$1\"" "$T/report" >/dev/null || fail "$2: no $1 error"; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
-# spec: tools/objc-compat/source-evidence.c header -- evidence ARTIFACT OUT [GUARDS] [TYPES] [CRATES] [TYPEMAP] [SOURCE]: schema-1 build evidence bound to ARTIFACT.
+# spec: src/objc/source-evidence.c header -- evidence ARTIFACT OUT [GUARDS] [TYPES] [CRATES] [TYPEMAP] [SOURCE]: schema-1 build evidence bound to ARTIFACT.
 SRCID='"revision": "0000000000000000000000000000000000000001", "patches_sha256": "p", "features": "f"'
 evidence() {
   pe=; [ -z "${8:-}" ] || pe=" \"position_evidence\": [$8],"
@@ -61,7 +64,7 @@ guard() {  # guard FUNCTION SELECTOR STATUS [SOURCE-IDENTITY]
 cc "$FX/classify.c" -o "$T/root/bin/classify" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use
 C="$T/root/bin/classify"
 
-# spec: tools/objc-compat/classify.c header -- exact class, kind and inheritance from the floor runtime capture.
+# spec: src/objc/classify.c header -- exact class, kind and inheritance from the floor runtime capture.
 analyze "$C" strict
 exit_is 1 'classify fixture strict'
 want _class_method sharedWorkspace floor-supported 'floor runtime: +NSWorkspace sharedWorkspace in AppKit'
@@ -69,39 +72,39 @@ want _instance_kind sharedWorkspace 'floor-supported unsupported'
 grep '"function": "_instance_kind"' "$T/report" | grep '"method_kind": "-"' | grep '"verdict": "unsupported"' >/dev/null ||
   fail 'an instance send of a class method was not unsupported'
 want _inherited description floor-supported '-NSObject description'
-# spec: tools/objc-compat/classify.c header -- a selector some unrelated class implements is not availability here.
+# spec: src/objc/classify.c header -- a selector some unrelated class implements is not availability here.
 want _unrelated count unsupported 'absent from the floor runtime for -NSWorkspace'
-# spec: tools/objc-compat/classify.c header -- later methods and classes are caught without a list: an analogous missing method.
+# spec: src/objc/classify.c header -- later methods and classes are caught without a list: an analogous missing method.
 want _later_method containsString: unsupported 'introduced 10.10'
 want _later_class alloc unsupported 'NSVisualEffectView is not on the floor'
-# spec: tools/objc-compat/classify.c header -- outside the reference closure, or an image whose methods were not captured: unresolved.
+# spec: src/objc/classify.c header -- outside the reference closure, or an image whose methods were not captured: unresolved.
 want _outside new unresolved 'outside the reference closure'
 want _uncaptured defaultSession unresolved 'did not record the methods of ODSession'
-# spec: tools/objc-compat/classify.c header -- a category in another image counts with that image as framework.
+# spec: src/objc/classify.c header -- a category in another image counts with that image as framework.
 want _category sizeWithAttributes: floor-supported 'in AppKit'
 grep '"function": "_category"' "$T/report" | grep '"selector": "sizeWithAttributes:"' | grep '"framework": "AppKit"' >/dev/null ||
   fail 'the category method is not attributed to AppKit'
-# spec: tools/objc-compat/classify.c header -- class clusters: the +alloc witness closes its concrete method; a subclass-only one stays uncertain.
+# spec: src/objc/classify.c header -- class clusters: the +alloc witness closes its concrete method; a subclass-only one stays uncertain.
 want _cluster_alloc initWithBytes:length:encoding: floor-supported 'cluster witness'
 want _cluster_uncertain appendString: unresolved 'NSMutableString implements it'
-# spec: tools/objc-compat/classify.c header -- a selector built only to ask respondsToSelector:, or only for introspection, is not a send of it.
+# spec: src/objc/classify.c header -- a selector built only to ask respondsToSelector:, or only for introspection, is not a send of it.
 none _query_only isVoiceOverEnabled
 want _query_only respondsToSelector: floor-supported
 none _introspect 'openURLs:withApplicationAtURL:options:configuration:error:'
 grep '"kind": "sel-register", "selector": "isVoiceOverEnabled"' "$T/report" >/dev/null ||
   fail 'the queried selector is not kept as an observation'
-# spec: tools/objc-compat/classify.c header -- guards: a measured guard needs reviewed evidence; wrong selector/receiver or an ineffective fallback is no guard.
+# spec: src/objc/classify.c header -- guards: a measured guard needs reviewed evidence; wrong selector/receiver or an ineffective fallback is no guard.
 want _guarded accessibilityDisplayShouldReduceMotion unresolved 'no build evidence holds a reviewed guard record'
 want _wrong_selector accessibilityDisplayShouldReduceMotion unsupported unguarded
 want _wrong_receiver accessibilityDisplayShouldReduceMotion unsupported unguarded
 want _ineffective accessibilityDisplayShouldReduceMotion unsupported unguarded
-# spec: tools/objc-compat/classify.c header -- downcast refinement: YES on the same value only.
+# spec: src/objc/classify.c header -- downcast refinement: YES on the same value only.
 want _downcast_same UTF8String floor-supported
 grep '"function": "_downcast_same"' "$T/report" | grep '"selector": "UTF8String"' | grep '"receiver_closure": "downcast"' >/dev/null ||
   fail 'the same-value downcast did not close the receiver'
 want _downcast_other UTF8String unresolved 'receiver not closed'
 want _downcast_no UTF8String unresolved 'receiver not closed'
-# spec: tools/objc-compat/classify.c header -- R1 (b), amended: the witness measures existence, NSProxy-rooted classes
+# spec: src/objc/classify.c header -- R1 (b), amended: the witness measures existence, NSProxy-rooted classes
 #       implement the root selectors, and the real witness's exceptions are exactly the reviewed residual risk, so an
 #       unknown floor-vended receiver of a reviewed root selector closes; a non-root selector does not.
 want _vended_root description floor-supported 'R1: receiver vended by -[NSDictionary'
@@ -111,30 +114,30 @@ want _vended_root description floor-supported 'accepted residual risk: NSLeafPro
 want _vended_nonroot count unresolved 'receiver not closed'
 # spec: scripts/objc-reference-set.sh header -- the witness covers hash, measured with exactly the reviewed exceptions.
 want _vended_hash hash floor-supported 'R1: receiver vended by -[NSDictionary'
-# spec: tools/objc-compat/classify.c header -- retain, release, autorelease and +class are root selectors whose own
+# spec: src/objc/classify.c header -- retain, release, autorelease and +class are root selectors whose own
 #       measured exception sets, strict subsets of the six, are recorded per selector: the proof names that set.
 want _vended_retain retain floor-supported 'R1: receiver vended by -[NSDictionary'
 want _vended_retain retain floor-supported 'accepted residual risk: _NSZombie_ __NSAtom __NSMessageBuilder'
 want _vended_autorelease autorelease floor-supported 'accepted residual risk: _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder'
-# spec: tools/objc-compat/classify.c header -- -class is reviewed too, held to the six it measures, so a receiver of
+# spec: src/objc/classify.c header -- -class is reviewed too, held to the six it measures, so a receiver of
 #       unknown class, which could be sent either kind, closes class with both kinds' sets as the residual risk.
 want _vended_class class floor-supported 'R1: receiver vended by -[NSDictionary'
 want _vended_class class floor-supported 'accepted residual risk: NSLeafProxy Object _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder'
-# spec: tools/objc-compat/main.m header -- every report lists the measured non-implementing floor classes as an
+# spec: src/objc/main.m header -- every report lists the measured non-implementing floor classes as an
 #       accepted residual risk, with the witness identity.
 residual() {
   grep -F '"accepted_residual_risk": [{"kind": "r1-root-method-witness", ' "$T/report" >/dev/null &&
     grep -F "\"witness\": {\"os\": \"10.9.5\", \"build\": \"13F1911\", \"arch\": \"x86_64\", \"floor_runtime_sha256\": \"$(sha "${REFS:-$REF}/floor-runtime.tsv")\", \"tool_source_sha256\": \"" "$T/report" >/dev/null &&
     grep -F '"root_selectors": ["autorelease", "class", "conformsToProtocol:", "description", "hash", "isEqual:", "isKindOfClass:", "isMemberOfClass:", "performSelector:", "release", "respondsToSelector:", "retain", "self"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]' "$T/report" >/dev/null ||
     fail "$1: the report does not list the R1 residual risk with the witness identity"
-  # spec: tools/objc-compat/main.m header -- and each root selector's own non-implementing classes, with its reviewed kinds.
+  # spec: src/objc/main.m header -- and each root selector's own non-implementing classes, with its reviewed kinds.
   grep -F '"per_selector": [{"selector": "autorelease", "kinds": ["+", "-"], "non_implementing_floor_classes": ["_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "class", "kinds": ["+"], "non_implementing_floor_classes": ["NSLeafProxy", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "class", "kinds": ["-"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "conformsToProtocol:", "kinds": ["+", "-"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, ' "$T/report" >/dev/null &&
     grep -F '{"selector": "release", "kinds": ["+", "-"], "non_implementing_floor_classes": ["_NSZombie_", "__NSAtom", "__NSMessageBuilder"]}, {"selector": "respondsToSelector:", "kinds": ["+", "-"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "retain", "kinds": ["+", "-"], "non_implementing_floor_classes": ["_NSZombie_", "__NSAtom", "__NSMessageBuilder"]}, {"selector": "self", ' "$T/report" >/dev/null ||
     fail "$1: the report does not list each root selector's own exception set"
 }
 residual 'classify fixture'
 
-# spec: tools/objc-compat/source-evidence.c header -- reviewed guard records: exact function and selector, reviewed, under the build's own source identity.
+# spec: src/objc/source-evidence.c header -- reviewed guard records: exact function and selector, reviewed, under the build's own source identity.
 G=$(guard _guarded accessibilityDisplayShouldReduceMotion reviewed)
 W=$(guard _wrong_selector accessibilityDisplayShouldReduceMotion reviewed)
 I=$(guard _ineffective accessibilityDisplayShouldReduceMotion reviewed)
@@ -147,19 +150,19 @@ want _ineffective accessibilityDisplayShouldReduceMotion unsupported unguarded
 evidence "$C" "$T/ev-pending" "$(guard _guarded accessibilityDisplayShouldReduceMotion required)"
 analyze "$C" strict --build-evidence "$T/ev-pending"
 want _guarded accessibilityDisplayShouldReduceMotion unresolved 'its guard record is not reviewed'
-# spec: tools/objc-compat/source-evidence.c header -- changed source or features: a record reviewed under another identity is cannot-measure.
+# spec: src/objc/source-evidence.c header -- changed source or features: a record reviewed under another identity is cannot-measure.
 evidence "$C" "$T/ev-stale" "$(guard _guarded accessibilityDisplayShouldReduceMotion reviewed '"revision": "0000000000000000000000000000000000000001", "patches_sha256": "p", "features": "other-features"')"
 analyze "$C" strict --build-evidence "$T/ev-stale"
 exit_is 4 'guard reviewed under other features'; error_is guard-evidence-stale 'changed features'
 evidence "$C" "$T/ev-stale2" "$G" '' '' '' '"revision": "0000000000000000000000000000000000000002", "patches_sha256": "p", "features": "f"'
 analyze "$C" strict --build-evidence "$T/ev-stale2"
 exit_is 4 'guard reviewed under another revision'; error_is guard-evidence-stale 'changed source'
-# spec: tools/objc-compat/source-evidence.c header -- evidence for a different artifact is stale.
+# spec: src/objc/source-evidence.c header -- evidence for a different artifact is stale.
 evidence "$FX/classify.c" "$T/ev-other" "$G"
 analyze "$C" strict --build-evidence "$T/ev-other"
 exit_is 4 'evidence for another artifact'; error_is stale-build-evidence 'another artifact'
 
-# spec: tools/objc-compat/classify.c header -- the second, unguarded caller of a guarded shared objc2 cache is its own blocking finding.
+# spec: src/objc/classify.c header -- the second, unguarded caller of a guarded shared objc2 cache is its own blocking finding.
 closure_fixture() {
   cc "$FX/closure.c" -o "$1" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
     -Wl,-U,_fixture_use -Wl,-U,_objc_retainAutoreleasedReturnValue -Wl,-U,_objc_release
@@ -171,7 +174,7 @@ exit_is 1 'shared cache'
 want _voiceover_guarded isVoiceOverEnabled guarded
 want _voiceover_unguarded isVoiceOverEnabled unsupported 'introduced 10.13'
 
-# spec: tools/objc-compat/classify.c header -- application-defined ownership and R1 (a): root proof through the artifact's own classes.
+# spec: src/objc/classify.c header -- application-defined ownership and R1 (a): root proof through the artifact's own classes.
 cc -c "$FX/classify-app.m" -o "$T/app.o" 2>/dev/null
 cc "$T/app.o" -o "$T/root/bin/app" -framework AppKit -framework Foundation -lobjc
 analyze "$T/root/bin/app" strict
@@ -185,7 +188,7 @@ want _app_cases isKindOfClass: floor-supported 'R1: application class Forwarder 
 want _app_cases mavergreenProbe floor-supported '(a category)'
 residual 'application classes'
 
-# spec: tools/objc-compat/classify.c header -- R1 (b) on receivers of unknown class (arguments, collection elements):
+# spec: src/objc/classify.c header -- R1 (b) on receivers of unknown class (arguments, collection elements):
 #       only when every class the artifact defines has a measured NSObject or NSProxy root and every dependency is
 #       in the floor capture; the report records that fact and names whatever keeps R1 off.
 roots_fixture() {  # roots_fixture FORM OUTPUT [LINK-OPTIONS]
@@ -226,13 +229,13 @@ blocked 'a floor superclass with another root' 'MGLeaf: floor superclass NSLeafP
 roots_fixture 0 "$T/root/bin/roots0w" -framework WebKit
 analyze "$T/root/bin/roots0w" strict
 blocked 'a dependency outside the floor capture' 'dependency /System/Library/Frameworks/WebKit.framework/Versions/A/WebKit is not in the floor capture'
-# spec: tools/objc-compat/macho-reader.c header -- run-time class creation is cannot-measure, and the report counts it.
+# spec: src/objc/macho-reader.c header -- run-time class creation is cannot-measure, and the report counts it.
 cc -DFORM=6 "$FX/unsupported.c" -o "$T/root/bin/made" -lobjc
 analyze "$T/root/bin/made" strict
 exit_is 4 'objc_allocateClassPair'; error_is runtime-class-creation 'objc_allocateClassPair'
 roots_fact '"runtime_class_creation_sites": 1'
 
-# spec: tools/objc-compat/reference.c header -- R1's witness: a missing witness leaves R1 off; an exception set other than
+# spec: src/objc/reference.c header -- R1's witness: a missing witness leaves R1 off; an exception set other than
 #       the reviewed one, or a manifest that does not list the reviewed one, is cannot-measure.
 copy_refs() {  # copy_refs DIR: a writable copy of the reference set whose manifest is re-hashed by rehash
   rm -rf "$1"; mkdir -p "$1"; cp "$REF"/* "$1"/
@@ -258,7 +261,7 @@ copy_refs "$T/manexc"
 sed 's/"root_exceptions": \["NSLeafProxy", /"root_exceptions": [/' "$REF/manifest.json" >"$T/manexc/manifest.json"
 REFS="$T/manexc"; analyze "$C" strict; REFS=
 exit_is 4 'a manifest with another exception set'; error_is witness-exceptions-mismatch 'a manifest with another exception set'
-# spec: tools/objc-compat/reference.c header -- per selector and kind: a reviewed exception that resolves one root
+# spec: src/objc/reference.c header -- per selector and kind: a reviewed exception that resolves one root
 #       selector leaves the union unchanged but makes that selector's exception set another one.
 copy_refs "$T/oneexc"
 awk -F '\t' 'BEGIN {OFS = "\t"} $1 == "witness" && $2 == "Object" && $3 == "-" && $4 == "description" {$5 = "-NSObject"; $6 = "libobjc.A.dylib"} {print}' \
@@ -267,7 +270,7 @@ rehash "$T/oneexc" floor-runtime.tsv
 REFS="$T/oneexc"; analyze "$C" strict; REFS=
 exit_is 4 'an exception that resolves one selector'; error_is witness-exceptions-mismatch 'an exception that resolves one selector'
 grep -F 'resolves -Object description on reviewed exception Object' "$T/report" >/dev/null || fail 'the per-selector mismatch does not name the selector'
-# spec: tools/objc-compat/reference.c header -- a recorded per-selector set is held exactly: a witness whose retain
+# spec: src/objc/reference.c header -- a recorded per-selector set is held exactly: a witness whose retain
 #       set differs from the recorded one, smaller or larger, or a manifest that records another one or none, is
 #       cannot-measure; a recorded set must be a strict subset of root_exceptions.
 copy_refs "$T/retainless"
@@ -284,7 +287,7 @@ awk -F '\t' 'BEGIN {OFS = "\t"} $1 == "witness" && $2 == "Object" && $3 == "+" &
 rehash "$T/retainmore" floor-runtime.tsv
 REFS="$T/retainmore"; analyze "$C" strict; REFS=
 exit_is 4 'a retain set one larger'; error_is witness-exceptions-mismatch 'a retain set one larger'
-# spec: tools/objc-compat/reference.c header -- -class has no recorded set, so it is held to the six: a witness in
+# spec: src/objc/reference.c header -- -class has no recorded set, so it is held to the six: a witness in
 #       which Object resolves -class is cannot-measure, not a smaller residual risk.
 copy_refs "$T/classless"
 awk -F '\t' 'BEGIN {OFS = "\t"} $1 == "witness" && $2 == "Object" && $3 == "-" && $4 == "class" {$5 = "-NSObject"; $6 = "libobjc.A.dylib"} {print}' \
@@ -335,7 +338,7 @@ rehash "$T/badid" floor-runtime.tsv
 REFS="$T/badid"; analyze "$C" strict; REFS=
 exit_is 4 'runtime identity'; error_is reference-identity-mismatch 'runtime build'
 
-# spec: tools/objc-compat/source-evidence.c header -- R2: exact v0 symbol, mapped type in its self type, pinned crate revisions.
+# spec: src/objc/source-evidence.c header -- R2: exact v0 symbol, mapped type in its self type, pinned crate revisions.
 cc "$FX/r2.c" -o "$T/root/bin/r2" -lobjc
 R2="$T/root/bin/r2"
 NSS=objc2_foundation::generated::__NSString::NSString
@@ -375,7 +378,7 @@ exit_is 1 'stripped artifact'
 ! grep '"receiver_closure": "R2"' "$T/report" >/dev/null || fail 'R2 closed a send in a stripped artifact'
 grep '"unused_type_evidence": \["r2"\]' "$T/report" >/dev/null || fail 'unused R2 evidence not reported'
 
-# spec: tools/objc-compat/source-evidence.c header -- R3: a row names a function, its selectors, a class and the
+# spec: src/objc/source-evidence.c header -- R3: a row names a function, its selectors, a class and the
 #       position the receiver comes from (result, downcast, field), with pinned crates; shipyard checks the
 #       position where the reader models the receiver and refuses a row the binary contradicts.
 cc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
@@ -427,7 +430,7 @@ r3 merged "$(prow mrg "$FNM" '"UTF8String"' NSString '{"form": "result", "select
 want "$FNM" UTF8String floor-supported
 grep "\"function\": \"$FNM\"" "$T/report" | grep '"selector": "UTF8String"' | grep 'position not checked' >/dev/null ||
   fail 'a merged receiver closed by R3 does not say its position was not checked'
-# spec: tools/objc-compat/source-evidence.c objc_apply_position_evidence -- R2 first: an R3 row agreeing with an R2 closure is used; one naming another class is refused.
+# spec: src/objc/source-evidence.c objc_apply_position_evidence -- R2 first: an R3 row agreeing with an R2 closure is used; one naming another class is refused.
 PO=objc2::runtime::protocol_object::ProtocolObject
 R2ROW="{\"id\": \"r2r\", \"symbol\": \"$FNR\", \"rust_type\": \"$PO\", \"position\": \"self\", \"kind\": \"-\", \"selectors\": [\"UTF8String\"], \"source\": \"r2cite\"}"
 evidence "$R3B" "$T/ev-after" '' "$R2ROW" "$C3" "$M3, {\"rust_type\": \"$PO\", \"class\": \"NSString\", \"source\": \"s4\"}" '' "$RES"
@@ -438,29 +441,29 @@ evidence "$R3B" "$T/ev-after2" '' "$R2ROW" "$C3" "$M3, {\"rust_type\": \"$PO\", 
   "$(prow res "$FNR" '"UTF8String"' NSArray '{"form": "result", "selector": "description"}')"
 analyze "$R3B" strict --build-evidence "$T/ev-after2"
 exit_is 4 'R3 disagreeing with R2'; error_is position-contradicted 'R2 says NSString'
-# spec: tools/objc-compat/source-evidence.c objc_apply_position_evidence -- Rows for one send are judged together: any two that differ in class or kind are refused, in either order,
+# spec: src/objc/source-evidence.c objc_apply_position_evidence -- Rows for one send are judged together: any two that differ in class or kind are refused, in either order,
 #       even when one class descends from the other.
 OBJ="$(prow obj "$FNR" '"UTF8String"' NSObject '{"form": "result", "selector": "description"}')"
 r3 sub-first "$RES, $OBJ"
 exit_is 4 'NSString then NSObject'; error_is position-contradicted 'NSString then NSObject'
 r3 sub-last "$OBJ, $RES"
 exit_is 4 'NSObject then NSString'; error_is position-contradicted 'NSObject then NSString'
-# spec: tools/objc-compat/source-evidence.c objc_apply_position_evidence -- A row meeting a send another rule closed must agree on the kind, not only the class.
+# spec: src/objc/source-evidence.c objc_apply_position_evidence -- A row meeting a send another rule closed must agree on the kind, not only the class.
 evidence "$R3B" "$T/ev-kind" '' "$R2ROW" "$C3" "$M3, {\"rust_type\": \"$PO\", \"class\": \"NSString\", \"source\": \"s4\"}" '' \
   "$(prow res "$FNR" '"UTF8String"' NSString '{"form": "result", "selector": "description"}' | sed 's/"kind": "-"/"kind": "+"/')"
 analyze "$R3B" strict --build-evidence "$T/ev-kind"
 exit_is 4 'R3 + against R2 -'; error_is position-contradicted 'kind + against -'
-# spec: tools/objc-compat/source-evidence.c objc_apply_position_evidence -- A downcast or field row is never checked against the binary's receiver: its basis says so.
+# spec: src/objc/source-evidence.c objc_apply_position_evidence -- A downcast or field row is never checked against the binary's receiver: its basis says so.
 r3 fldnote "$FLD"
 grep "\"function\": \"$FNF.llvm.1\"" "$T/report" | grep 'position not checked' >/dev/null || fail 'a field closure does not say its position was not checked'
 r3 dwnnote "$DWN"
 grep "\"function\": \"$FND\"" "$T/report" | grep 'position not checked' >/dev/null || fail 'a downcast closure does not say its position was not checked'
-# spec: tools/objc-compat/main.m build-evidence parser -- Evidence with no position_evidence reads as before.
+# spec: src/objc/main.m build-evidence parser -- Evidence with no position_evidence reads as before.
 evidence "$R3B" "$T/ev-none" '' '' "$C3" "$M3"
 analyze "$R3B" strict --build-evidence "$T/ev-none"
 want "$FNR" UTF8String unresolved
 
-# spec: tools/objc-compat/classify.c header -- the real defective artifact: unsupported launch, guards only with review, every send classified.
+# spec: src/objc/classify.c header -- the real defective artifact: unsupported launch, guards only with review, every send classified.
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   [ "$(sha "$MAVERGREEN_OBJC_CODEX_ARTIFACT")" = 1d056b0d4ada3d74b4c0f4c5450bc06856bfdbc504320fa430a4249f640f6c40 ] ||
     fail "unexpected Codex artifact"
@@ -479,7 +482,7 @@ if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   [ "$(grep -c '"verdict": ' "$T/report")" = 87 ] || fail 'not every Codex send has a finding'
   grep -F '"receiver_closure": {"open": 7, "measured": 42, "receipt": 30, "R2": 6, "downcast": 2, "source": 0, "R3": 0}' "$T/report" >/dev/null ||
     fail "Codex closure counts changed: $(grep -o '"receiver_closure": {[^}]*}' "$T/report")"
-  # spec: tools/objc-compat/classify.c header -- R1 (b) closes the root-selector sends on receivers of unknown class:
+  # spec: src/objc/classify.c header -- R1 (b) closes the root-selector sends on receivers of unknown class:
   #       Codex defines no class and every dependency is captured. Their receivers stay open, so the closure counts
   #       above do not move.
   grep -F '"closure_class_roots": {"defined_classes": 0, "roots": {"NSObject": 0, "NSProxy": 0}, "runtime_class_creation_sites": 0, "uncaptured_dependencies": [], "blocking": [], "r1_unknown_receivers": true}' "$T/report" >/dev/null ||
@@ -488,14 +491,14 @@ if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
     fail "Codex verdicts changed: $(grep -o '"verdicts": {[^}]*}' "$T/report")"
   grep -F '"R1": 4,' "$T/report" >/dev/null || fail "Codex R1 closures changed: $(grep -o '"R1": [0-9]*' "$T/report")"
   residual 'Codex 0.165.0 strict'
-  # spec: tools/objc-compat/source-evidence.c header -- with a review, the same build-bound records make both accessibility calls guarded.
+  # spec: src/objc/source-evidence.c header -- with a review, the same build-bound records make both accessibility calls guarded.
   sed 's/"status": "required", "reviewer": null, "reason": null/"status": "reviewed", "reviewer": "test reviewer", "reason": "test-only review"/' "$EV" >"$T/codex-reviewed"
   analyze "$T/root/codex/codex" strict --build-evidence "$T/codex-reviewed"
   exit_is 1 'Codex with reviewed guards still fails on the launch'
   for s in accessibilityDisplayShouldReduceMotion isVoiceOverEnabled; do
     grep "\"selector\": \"$s\"" "$T/report" | grep '"verdict": "guarded"' >/dev/null || fail "$s not guarded with a reviewed record"
   done
-  # spec: tools/objc-compat/source-evidence.c header -- every citation recomputes against the prepared source and the pinned crates.
+  # spec: src/objc/source-evidence.c header -- every citation recomputes against the prepared source and the pinned crates.
   if [ -n "${MAVERGREEN_OBJC_CODEX_SOURCE:-}" ]; then
     for f in codex-rs/tui/src/system_motion.rs codex-rs/tui/src/screen_reader.rs; do
       h=$(sha "$MAVERGREEN_OBJC_CODEX_SOURCE/$f")

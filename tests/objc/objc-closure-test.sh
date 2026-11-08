@@ -1,27 +1,30 @@
 #!/bin/sh
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
-# spec: tools/objc-compat/main.m "The shipped closure" -- a non-system image the artifact loads is
+# spec: src/objc/main.m "The shipped closure" -- a non-system image the artifact loads is
 #       found inside --root and measured by its interface: its classes and methods close the
 #       artifact's sends into it, its own code stays exempt by its pinned bytes, and anything that
 #       cannot be found exactly once inside the root, or is loaded weak, lazy or upward, is
 #       cannot-measure.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
-FX="$HERE/fixtures/objc-api"
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+# spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
+. "$ROOT/build/msc.sh"
+: "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
+FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-closure-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1; }
 
-SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch x86_64)
+SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
 cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@" 2>>"$T/cc.log"; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 n=0
 analyze() {
   n=$((n + 1)); rep="$T/report.$n"
-  rc=0; sh "$ROOT/scripts/objc-compat.sh" --artifact "$2" --root "$1" --references "$REF" --report "$rep" --mode strict 2>"$T/err" || rc=$?
+  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$2" --root "$1" --references "$REF" --report "$rep" --mode strict 2>"$T/err" || rc=$?
   ln -sf "$rep" "$T/report"
 }
 exit_is() { [ "$rc" = "$1" ] || fail "$2: exit $rc, want $1"; }
@@ -53,7 +56,7 @@ bundle() {
 FWREL=App.app/Contents/Frameworks/MGShipped.framework/Versions/A/MGShipped
 INREL=App.app/Contents/Frameworks/MGShipped.framework/Versions/A/libMGInner.dylib
 
-# spec: tools/objc-compat/main.m "The shipped closure" -- @rpath and @loader_path resolve inside the root; the
+# spec: src/objc/main.m "The shipped closure" -- @rpath and @loader_path resolve inside the root; the
 #       artifact's sends into the framework close against the framework's own implementations.
 bundle "$T/ok" -- -framework MGShipped -Wl,-rpath,@executable_path/../Frameworks
 APP="$T/ok/App.app/Contents/MacOS/App"
@@ -65,11 +68,11 @@ want _shipped_missing notShipped unsupported -
 want _shipped_inherited description floor-supported - 'floor'
 want _shipped_category mgShippedHello floor-supported "$FWREL" "implemented by shipped image $FWREL on floor class NSObject (a category)"
 want _inner_inherited innerThing floor-supported "$INREL" "implemented by shipped image $INREL's own +MGInner"
-# spec: tools/objc-compat/main.m "The shipped closure" -- a finding closed in a shipped image names it in its id.
+# spec: src/objc/main.m "The shipped closure" -- a finding closed in a shipped image names it in its id.
 finding _shipped_class sharedShipped | grep -F "\"id\": \"x86_64@0x" | grep -F ":+[MGShipped sharedShipped]@$FWREL\"" >/dev/null ||
   fail "the framework's finding id is not image-qualified: $(finding _shipped_class sharedShipped)"
 finding _shipped_missing notShipped | grep -F ':+[MGShipped notShipped]", ' >/dev/null || fail 'a finding closed nowhere gained an image in its id'
-# spec: tools/objc-compat/main.m "The shipped closure" -- every image is hashed into the report, and each one's
+# spec: src/objc/main.m "The shipped closure" -- every image is hashed into the report, and each one's
 #       own code is listed as exempt by those bytes.
 for p in "$FWREL" "$INREL"; do
   s=$(sha "$T/ok/$p")
@@ -78,12 +81,12 @@ for p in "$FWREL" "$INREL"; do
 done
 grep -F "{\"path\": \"$INREL\", \"sha256\": \"$(sha "$T/ok/$INREL")\", \"slices\": [\"x86_64\"], \"loaded_by\": \"$FWREL\", \"load\": \"load\", \"install_name\": \"@loader_path/libMGInner.dylib\"" \
   "$T/report" >/dev/null || fail "libMGInner.dylib's artifact entry does not say what loads it"
-# spec: tools/objc-compat/classify.c header -- R1 counts the shipped images' classes, and their system
+# spec: src/objc/classify.c header -- R1 counts the shipped images' classes, and their system
 #       dependencies must be captured.
 grep -F '"closure_class_roots": {"defined_classes": 4, "roots": {"NSObject": 4, "NSProxy": 0}, "runtime_class_creation_sites": 0, "uncaptured_dependencies": [], "blocking": [], "r1_unknown_receivers": true}' \
   "$T/report" >/dev/null || fail "the shipped classes are not in the class roots: $(grep -o '"closure_class_roots": {[^}]*}[^}]*}' "$T/report")"
 
-# spec: tools/objc-compat/main.m "The shipped closure" -- a report of one image is unchanged: no image key,
+# spec: src/objc/main.m "The shipped closure" -- a report of one image is unchanged: no image key,
 #       no shipped images, the old limit.
 mkdir -p "$T/one/bin"
 cc "$FX/classify.c" -o "$T/one/bin/app" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use || fail 'single-image fixture did not build'
@@ -92,7 +95,7 @@ analyze "$T/one" "$T/one/bin/app"
 grep -F '"the shipped closure is the artifact alone: a non-system dependency is cannot-measure"' "$T/report" >/dev/null ||
   fail 'a single-image report lost its limit'
 
-# spec: tools/objc-compat/main.m "The shipped closure" -- missing, ambiguous, escaping, weak and duplicate-class closures are cannot-measure.
+# spec: src/objc/main.m "The shipped closure" -- missing, ambiguous, escaping, weak and duplicate-class closures are cannot-measure.
 bundle "$T/missing" -- -framework MGShipped -Wl,-rpath,@executable_path/../Frameworks
 rm "$T/missing/$INREL"
 analyze "$T/missing" "$T/missing/App.app/Contents/MacOS/App"

@@ -5,20 +5,23 @@
 #       ABI encoding, without changing the eleven fact columns; output is exclusive and atomic.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+# spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
+. "$ROOT/build/msc.sh"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-signatures-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
-SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch x86_64)
-NEW_SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch arm64)
+SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
+NEW_SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch arm64)
 PREFIX=${MAVERGREEN_OBJC_CLANG_PREFIX:-}
 if [ -z "$PREFIX" ]; then
   case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
   version=$(tr -d '[:space:]' < "$ROOT/components/objc-reference-clang/version")
-  PREFIX=$(sh "$ROOT/scripts/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
+  PREFIX=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
 fi
 MAVERICKS_BUILD_ROOT="$T/build"; export MAVERICKS_BUILD_ROOT
-WRAPPER="$ROOT/scripts/objc-sdk-inventory.sh"
-FX="$HERE/fixtures/objc-api/signatures.h"
+. "$HERE/lib/objc_staged_scripts.sh"
+WRAPPER="$(stage_objc_scripts "$T/staged")/objc-sdk-inventory.sh"
+FX="$HERE/fixtures/signatures.h"
 fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -15 "$T/err" >&2; exit 1; }
 run() { rc=0; sh "$WRAPPER" --clang-prefix "$PREFIX" "$@" >"$T/out" 2>"$T/err" || rc=$?; }
 # spec: tools/objc-sdk-inventory.c header -- Signature row: 1 record 2 owner 3 kind 4 selector 5 result kind 6 result class 7 source 8 container.

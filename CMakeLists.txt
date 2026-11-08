@@ -146,6 +146,80 @@ if(APPLE)
   mavericks_assert_binary_compatible(drydock-macho-rewrite)
 endif()
 
+# drydock-objc: the Objective-C send analyzer imported from shipyard
+# (PROVENANCE.md), its sources byte-identical to shipyard's. Its front end,
+# src/objc/main.m, is Foundation, so analyze, evidence and link-args are
+# macOS-only for now (the interim deviation in the move's design); main.m's main
+# becomes objc_compat_main on its own compile line alone, and cli/drydock-objc.c
+# dispatches to it. The flags are the ones shipyard's objc-compat-build.sh used
+# (-std=c99 -O2 -Wall), plus the receipt tool's identity, which
+# source-evidence.c requires a receipt's `tool` line to equal.
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c" OBJC_SOURCE_INVENTORY_SHA256)
+set(DRYDOCK_OBJC_SOURCES)
+foreach(m macho-reader binding reference report classify source-evidence provider)
+  list(APPEND DRYDOCK_OBJC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/${m}.c")
+endforeach()
+
+# The analyzer's identity, which every report carries in its inputs: the
+# release version plus the first 16 hex of a SHA-256 over the bytes
+# objc-compat-build.sh's sources() hashed, in its order, with its first line
+# (the Drydock pin's commit) replaced by drydock-VERSION, since the reader core
+# is now this tree's own: "analyzer", the seven modules, report.h, main.m, the
+# receipt tool, the thirteen reader-core modules it named, then every src/*.h in
+# byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
+# sources()). Each file is a configure dependency, so an edit reconfigures and
+# the identity follows it.
+set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/report.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/main.m"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c")
+foreach(m image fat x86len ordinals uleb rebase objc_meth arch_names grow exports hdrref linkedit trie)
+  list(APPEND DRYDOCK_OBJC_ID_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/${m}.c")
+endforeach()
+file(GLOB DRYDOCK_CORE_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
+list(APPEND DRYDOCK_OBJC_ID_FILES ${DRYDOCK_CORE_HEADERS})
+set(DRYDOCK_OBJC_ID_INPUT "${CMAKE_CURRENT_BINARY_DIR}/drydock-objc-id-input")
+file(WRITE "${DRYDOCK_OBJC_ID_INPUT}" "drydock-${MAVERICKS_VERSION}\nanalyzer\n")
+foreach(f IN LISTS DRYDOCK_OBJC_ID_FILES)
+  file(READ "${f}" DRYDOCK_OBJC_ID_CHUNK)
+  file(APPEND "${DRYDOCK_OBJC_ID_INPUT}" "${DRYDOCK_OBJC_ID_CHUNK}")
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${DRYDOCK_OBJC_ID_FILES})
+file(SHA256 "${DRYDOCK_OBJC_ID_INPUT}" DRYDOCK_OBJC_ID_SHA256)
+string(SUBSTRING "${DRYDOCK_OBJC_ID_SHA256}" 0 16 DRYDOCK_OBJC_ID_HEX)
+set(DRYDOCK_OBJC_ANALYZER_ID "drydock-${MAVERICKS_VERSION}-objc-src-${DRYDOCK_OBJC_ID_HEX}")
+message(STATUS "Drydock: drydock-objc analyzer id ${DRYDOCK_OBJC_ANALYZER_ID}")
+
+if(APPLE)
+  enable_language(OBJC)
+  # The seven analyzer modules, shared by drydock-objc and the reader harness.
+  add_library(drydock_objc_core OBJECT ${DRYDOCK_OBJC_SOURCES})
+  target_include_directories(drydock_objc_core PRIVATE src/objc src)
+  target_compile_definitions(drydock_objc_core PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
+  set_target_properties(drydock_objc_core PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(drydock_objc_core PRIVATE -O2 -Wall)
+
+  add_executable(drydock-objc cli/drydock-objc.c src/objc/main.m $<TARGET_OBJECTS:drydock_objc_core>)
+  set_source_files_properties(src/objc/main.m PROPERTIES COMPILE_DEFINITIONS main=objc_compat_main)
+  target_include_directories(drydock-objc PRIVATE src/objc)
+  target_compile_definitions(drydock-objc PRIVATE
+    OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}"
+    DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}"
+    DRYDOCK_OBJC_BUILD_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/reference/objc")
+  set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF OBJC_STANDARD 99 OBJC_EXTENSIONS OFF)
+  target_compile_options(drydock-objc PRIVATE -O2 -Wall)
+  target_link_libraries(drydock-objc PRIVATE drydockcore "-framework Foundation")
+  mavericks_assert_binary_compatible(drydock-objc)
+
+  # The harness that prints the reader's and binding's records
+  # (objc-compat-build.sh --reader-driver). A test tool, never installed.
+  add_executable(objc-reader-driver tests/objc/fixtures/reader-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
+  target_include_directories(objc-reader-driver PRIVATE src/objc)
+  set_target_properties(objc-reader-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(objc-reader-driver PRIVATE -O2 -Wall)
+  target_link_libraries(objc-reader-driver PRIVATE drydockcore)
+endif()
+
 # Stage the wrappers and the two files they source NEXT TO drydock-macho-rewrite in the build
 # tree, under their installed names, so ctest exercises exactly the layout
 # that ships -- a wrapper looks for drydock-macho-rewrite, drydock-macho-rewrite-compat.sh and
@@ -235,6 +309,28 @@ add_test(NAME family_conventions
 
 # The imported Objective-C analyzer is byte-identical to shipyard's.
 add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/import_identity_test.sh)
+
+# The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
+# drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
+# DRYDOCK_OBJC and the reader harness as DRYDOCK_OBJC_READER_DRIVER, and
+# shipyard's fetchers through SHIPYARD_SCRIPTS -- the directory build/msc.sh
+# resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
+# pinned SDKs and clang22, and the reference-set test regenerates the set, so
+# they take minutes.
+foreach(t binding classification closure provider reader reference-set report sdk-inventory sdk-signatures cli)
+  string(REPLACE "-" "_" n "${t}")
+  if(t STREQUAL "cli")
+    set(f cli-test.sh)
+  else()
+    set(f objc-${t}-test.sh)
+  endif()
+  drydock_macos_test(objc_${n} "the analyzer front end is Foundation"
+    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
+  if(APPLE)
+    set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
+      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+  endif()
+endforeach()
 
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,
 # against synthetic images built in memory. -Wno-unused-function because

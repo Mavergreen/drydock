@@ -4,24 +4,27 @@
 #       runtime capture with its R1 root-method witness, and the manifest that binds them.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
-FX="$HERE/fixtures/objc-api"
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+# spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
+. "$ROOT/build/msc.sh"
+FX="$HERE/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-reference-set-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
-REFSET="$ROOT/scripts/objc-reference-set.sh"
+. "$HERE/lib/objc_staged_scripts.sh"
+REFSET="$(stage_objc_scripts "$T/staged")/objc-reference-set.sh"
 PREFIX=${MAVERGREEN_OBJC_CLANG_PREFIX:-}
 if [ -z "$PREFIX" ]; then
   case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
   version=$(tr -d '[:space:]' < "$ROOT/components/objc-reference-clang/version")
-  PREFIX=$(sh "$ROOT/scripts/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
+  PREFIX=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
 fi
 fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -15 "$T/err" >&2; exit 1; }
 OPEN='openURLs:withApplicationAtURL:options:configuration:error:'
 
 # spec: tools/objc-runtime-inventory.m header -- the capture tool, over fixture classes loaded into it.
 sh "$REFSET" capture-tool --output "$T/capture" 2>"$T/err" || fail 'capture tool did not build'
-case "$(uname -m)" in x86_64) HOST_SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch x86_64); HOST_MIN=10.9 ;;
-  arm64) HOST_SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch arm64); HOST_MIN=11.0 ;; esac
+case "$(uname -m)" in x86_64) HOST_SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64); HOST_MIN=10.9 ;;
+  arm64) HOST_SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch arm64); HOST_MIN=11.0 ;; esac
 fixture() {  # $1 output, then -D flags
   out=$1; shift
   env -i PATH=/usr/bin:/bin /usr/bin/clang -arch "$(uname -m)" -isysroot "$HOST_SDK" -mmacosx-version-min="$HOST_MIN" -O1 \
@@ -303,7 +306,7 @@ synthetic() {  # $1 dir
     for s in autorelease class conformsToProtocol: description hash isEqual: isKindOfClass: isMemberOfClass: performSelector: \
       release respondsToSelector: retain self; do
       printf 'check\troot-selector\t-\t%s\treviewed\t-\t-\n' "$s"
-      # spec: tools/objc-compat/reference.c root_exceptions -- the reviewed non-implementing classes, exactly: the R1 amendment's accepted residual risk;
+      # spec: src/objc/reference.c root_exceptions -- the reviewed non-implementing classes, exactly: the R1 amendment's accepted residual risk;
       #       retain, release and autorelease as measured on the floor, each its own strict subset
       for c in NSLeafProxy Object _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder; do
         case "$s:$c" in
@@ -315,7 +318,7 @@ synthetic() {  # $1 dir
       done
       printf 'witness\tRefRoot\t-\t%s\t-RefRoot\tFoundation\tRefRoot\n' "$s"
     done
-    # spec: tools/objc-compat/reference.c root_exceptions -- +class: Object resolves it, so its set is the six but Object; -class above is the six, held to them
+    # spec: src/objc/reference.c root_exceptions -- +class: Object resolves it, so its set is the six but Object; -class above is the six, held to them
     for c in NSLeafProxy Object _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder; do
       if [ "$c" = Object ]; then printf 'witness\tObject\t+\tclass\t+Object\tFoundation\tObject\n'
       else printf 'witness\t%s\t+\tclass\t-\t-\t%s\n' "$c" "$c"; fi
@@ -356,7 +359,7 @@ sh "$REFSET" verify "$T/ref" >"$T/out" 2>"$T/err" || fail 'a fresh reference doe
 # spec: scripts/objc-reference-set.sh header -- The manifest binds SDK archives, header trees, extractor, runtime identity and every file.
 M="$T/ref/manifest.json"
 mget() { sed -n "s/^ *\"$1\": \"\\([^\"]*\\)\",\\{0,1\\}\$/\\1/p" "$M"; }
-pinsha() { . "$ROOT/scripts/sdk-pins.sh"; shipyard_sdk_pin "$1" | cut -d' ' -f2; }
+pinsha() { . "$SHIPYARD_SCRIPTS/sdk-pins.sh"; shipyard_sdk_pin "$1" | cut -d' ' -f2; }
 [ "$(mget archive_sha256 | head -1)" = "$(pinsha x86_64)" ] && [ "$(mget archive_sha256 | tail -1)" = "$(pinsha arm64)" ] || fail 'SDK archive identities missing'
 mget header_tree_sha256 | grep -Eq '^[0-9a-f]{64}$' || fail 'no header tree digest'
 [ "$(mget producer_sha256)" = "$(shasum -a 256 "$ROOT/tools/objc-sdk-inventory.c" | cut -c1-64)" ] || fail 'producer identity missing'

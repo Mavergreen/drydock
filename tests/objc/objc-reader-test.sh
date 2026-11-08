@@ -1,21 +1,23 @@
 #!/bin/sh
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reads their bytes
-# spec: tools/objc-compat/macho-reader.c header -- the real reader over real fixture bytes, on
+# spec: src/objc/macho-reader.c header -- the real reader over real fixture bytes, on
 #       either host arch; every unsupported shape is cannot-measure.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
-FX="$HERE/fixtures/objc-api"
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+# spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
+. "$ROOT/build/msc.sh"
+FX="$HERE/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-reader-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL: $*" >&2; [ ! -f "$T/out" ] || tail -20 "$T/out" >&2; exit 1; }
 
-sh "$ROOT/scripts/objc-compat-build.sh" --reader-driver "$T/reader" || fail "reader harness did not build"
-SDK=$(sh "$ROOT/scripts/fetch_sdk.sh" --arch x86_64)
+[ -x "${DRYDOCK_OBJC_READER_DRIVER:-}" ] || fail "reader harness: DRYDOCK_OBJC_READER_DRIVER names no built objc-reader-driver"
+SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
 cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
-read_artifact() { rc=0; "$T/reader" --artifact "$1" >"$T/out" 2>"$T/err" || rc=$?; }
-# spec: tools/objc-compat/macho-reader.c header -- has KIND COL=VALUE...: some evidence row of KIND matches every column (1-based after "evidence").
+read_artifact() { rc=0; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$1" >"$T/out" 2>"$T/err" || rc=$?; }
+# spec: src/objc/macho-reader.c header -- has KIND COL=VALUE...: some evidence row of KIND matches every column (1-based after "evidence").
 has() {
   kind=$1; shift
   awk -F '\t' -v kind="$kind" -v want="$*" '
@@ -33,10 +35,10 @@ refused() {
   [ "$rc" = 4 ] || fail "$1: expected cannot-measure exit 4, got $rc"
   grep "^error	$2	" "$T/out" >/dev/null || fail "$1: expected error $2"
 }
-# spec: tools/objc-compat/macho-reader.c header -- Columns: 1 kind 2 slice 3 address 4 target 5 owner 6 method-kind 7 selector 8 name 9 symbol.
+# spec: src/objc/macho-reader.c header -- Columns: 1 kind 2 slice 3 address 4 target 5 owner 6 method-kind 7 selector 8 name 9 symbol.
 OPEN='openURLs:withApplicationAtURL:options:configuration:error:'
 
-# spec: tools/objc-compat/macho-reader.c header -- Conventional metadata: class, metaclass, category, selector/class/super references and sends.
+# spec: src/objc/macho-reader.c header -- Conventional metadata: class, metaclass, category, selector/class/super references and sends.
 # platform: ARC at compile time only. An ARC link below a 10.11 floor makes current clang drivers add
 #           libarclite_macosx.a, which current CommandLineTools no longer ship; the 10.9 driver adds none.
 #           -lobjc reproduces the runtime link -fobjc-arc implied, so the linked bytes are unchanged.
@@ -60,7 +62,7 @@ has dispatch-call 8=objc_msgSend
 ! awk -F '\t' '$2 == "method" && $8 == "'"$OPEN"'"' "$T/out" | grep . >/dev/null ||
   fail 'a declared-only later method became an implementation'
 
-# spec: tools/objc-compat/macho-reader.c header -- objc2 0.6: caches named by their v0 statics, literals from the fetch site, real consumers.
+# spec: src/objc/macho-reader.c header -- objc2 0.6: caches named by their v0 statics, literals from the fetch site, real consumers.
 cc "$FX/objc2-pattern.c" -o "$T/objc2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring
 read_artifact "$T/objc2"
 measured objc2
@@ -82,7 +84,7 @@ awk -F '\t' '$2 == "sel-cache" && $8 == "-"' "$T/out" | grep . >/dev/null && fai
 grep -F 'accessibilityDisplayShouldReduceMotion' "$T/out" >/dev/null && fail 'incidental prose became a producer'
 grep -F 'isVoiceOverEnabledNSString' "$T/out" >/dev/null && fail 'packed bytes read past their length'
 
-# spec: tools/objc-compat/macho-reader.c header -- Dispatch operands: columns 10 function, 11 receiver, 12 selector, 13 first argument, each "form:0xref:text".
+# spec: src/objc/macho-reader.c header -- Dispatch operands: columns 10 function, 11 receiver, 12 selector, 13 first argument, each "form:0xref:text".
 send() {
   awk -F '\t' -v fn="$1" -v r="$2" -v s="$3" -v g="${4:-*}" '
     function norm(v,   i, rest) { i = index(v, ":"); rest = substr(v, i + 1); return substr(v, 1, i - 1) ":" substr(rest, index(rest, ":") + 1) }
@@ -127,21 +129,21 @@ for form in 3:_iter_next:unknown:-:sel-cache:countByEnumeratingWithState:objects
   send "$fn" "$recv" "$sel"
 done
 
-# spec: tools/objc-compat/macho-reader.c header -- A measured image without Objective-C: success with no observations at all.
+# spec: src/objc/macho-reader.c header -- A measured image without Objective-C: success with no observations at all.
 cc "$FX/plain.c" -o "$T/plain"
 read_artifact "$T/plain"
 measured plain
 grep '^evidence' "$T/out" >/dev/null && fail 'plain C image invented Objective-C evidence'
 
-# spec: tools/objc-compat/macho-reader.c header -- The x86_64 slice of a fat file reads exactly like the thin image.
+# spec: src/objc/macho-reader.c header -- The x86_64 slice of a fat file reads exactly like the thin image.
 lipo -create "$T/objc2" -output "$T/fat"
 read_artifact "$T/fat"
 measured fat
 grep '^evidence' "$T/out" >"$T/fat.ev"
-"$T/reader" --artifact "$T/objc2" | grep '^evidence' >"$T/thin.ev"
+"$DRYDOCK_OBJC_READER_DRIVER" --artifact "$T/objc2" | grep '^evidence' >"$T/thin.ev"
 cmp -s "$T/fat.ev" "$T/thin.ev" || fail 'fat x86_64 slice reads differently from the thin image'
 
-# spec: tools/objc-compat/macho-reader.c header -- Unsupported shapes are cannot-measure, never an empty success.
+# spec: src/objc/macho-reader.c header -- Unsupported shapes are cannot-measure, never an empty success.
 head -c 4096 "$T/conventional" >"$T/truncated"
 read_artifact "$T/truncated"; refused truncated malformed-macho
 printf 'not a Mach-O\n' >"$T/text"
@@ -155,7 +157,7 @@ printf '\001\000\000\014' | dd of="$T/noslice" bs=1 seek=8 conv=notrunc 2>/dev/n
 read_artifact "$T/noslice"; refused noslice no-x86_64-slice
 cp "$T/objc2" "$T/stripped"; chmod u+w "$T/stripped"; strip "$T/stripped"
 read_artifact "$T/stripped"; refused stripped computed-selector-producer
-# spec: tools/objc-compat/macho-reader.c header -- a call that makes a class at run time (objc_allocateClassPair) is runtime-class-creation.
+# spec: src/objc/macho-reader.c header -- a call that makes a class at run time (objc_allocateClassPair) is runtime-class-creation.
 for form in 1:computed-selector-producer 2:computed-class-producer 3:unclassified-objc-runtime-import \
             4:indirect-objc-entry 5:computed-selector-producer 6:runtime-class-creation; do
   n=${form%%:*}
@@ -163,8 +165,8 @@ for form in 1:computed-selector-producer 2:computed-class-producer 3:unclassifie
   read_artifact "$T/unsupported$n"; refused "unsupported form $n" "${form#*:}"
 done
 
-# spec: tools/objc-compat/macho-reader.c header -- A GOT-loaded entry point held in a register and only ever called through
-#       (modern -Os codegen: tests/fixtures/objc-api/hoisted-entry.S), copied to a register only jumped through, past a
+# spec: src/objc/macho-reader.c header -- A GOT-loaded entry point held in a register and only ever called through
+#       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), copied to a register only jumped through, past a
 #       call that never returns, or spilled to a frame slot no escaped frame address reaches and reloaded only to be called
 #       through (clang -O0), is followed, each call its own send. A copy passed as an argument, a path where it holds
 #       something else, a slot whose address escapes, that another path overwrites or that is read some other way, or a
@@ -182,9 +184,9 @@ for n in 2 3 4 5 6 7 8 9 11; do
   cc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
 done
-# spec: tools/objc-compat/macho-reader.c header -- A landing pad the function's LSDA lists starts with the callee-saved registers,
+# spec: src/objc/macho-reader.c header -- A landing pad the function's LSDA lists starts with the callee-saved registers,
 #       frame slots and escapes of every call its call-site ranges cover (clang -O2 @try/@catch:
-#       tests/fixtures/objc-api/landing-pad-entry.S), in both call-site encodings: an entry point held across the throwing
+#       tests/objc/fixtures/landing-pad-entry.S), in both call-site encodings: an entry point held across the throwing
 #       call is followed into the pad and where the pad rejoins; another value at that call, or a copy passed as an
 #       argument in the pad, is cannot-measure.
 for e in 1 3; do
@@ -202,8 +204,8 @@ for e in 1 3; do
   done
 done
 
-# spec: tools/objc-compat/macho-reader.c header -- An inline jump table in __text that no data-in-code entry marks (Apple clang 6
-#       -O0: tests/fixtures/objc-api/jump-table-entry.S) is data, and each case starts from the state at its jmp: an entry
+# spec: src/objc/macho-reader.c header -- An inline jump table in __text that no data-in-code entry marks (Apple clang 6
+#       -O0: tests/objc/fixtures/jump-table-entry.S) is data, and each case starts from the state at its jmp: an entry
 #       point held in a register or spilled across the switch is followed into every case. A table its bound does not
 #       match is not taken apart: its cases stay reached only indirectly, cannot-measure.
 for n in 0 1; do
@@ -217,10 +219,10 @@ done
 cc -DFORM=2 "$FX/jump-table-entry.S" -o "$T/table2" -lobjc
 read_artifact "$T/table2"; refused 'jump table form 2' indirect-objc-entry
 
-# spec: tools/objc-compat/macho-reader.c header -- A selector reference spilled to a frame slot is followed to its reload
+# spec: src/objc/macho-reader.c header -- A selector reference spilled to a frame slot is followed to its reload
 #       when the one store reaching every path is still there: the frame's escaped addresses are only an enumeration
 #       state and buffer given to countByEnumeratingWithState:objects:count:, whose extents do not reach the slot
-#       (Apple clang 21 -Os for-in loops: tests/fixtures/objc-api/spilled-selector.S). The slot's own address escaping,
+#       (Apple clang 21 -Os for-in loops: tests/objc/fixtures/spilled-selector.S). The slot's own address escaping,
 #       a write that reaches it, another value on some path, any other escape of a frame address, or a stack write
 #       through an rsp of unknown offset leaves the selector unknown -- in a provider body, cannot-measure.
 unknown_sels() { awk -F '\t' '$2 == "dispatch-call" && $13 ~ /^unknown:/' "$T/out" | wc -l | tr -d ' '; }
@@ -240,9 +242,9 @@ for form in 1:2 2:1 3:1 4:5 5:5 6:0; do
   measured "spilled selectors form $n"
   [ "$(unknown_sels)" = "$want" ] || fail "spilled selectors form $n: $(unknown_sels) sends without their selector, want $want"
 done
-# spec: tools/objc-compat/macho-reader.c header -- A conventional frame is one where rbp is written only by its prologue and
+# spec: src/objc/macho-reader.c header -- A conventional frame is one where rbp is written only by its prologue and
 #       restore: a bit test (bt) writes no register and keeps it; bts/btr on rbp do not. Clang 21 -Os code for Recaulk's
-#       note_recent_files (tests/fixtures/objc-api/recents-loop.S) opens with one and calls through registers.
+#       note_recent_files (tests/objc/fixtures/recents-loop.S) opens with one and calls through registers.
 unknown_in() { awk -F '\t' -v fn="$1" '$2 == "dispatch-call" && $11 == fn && $13 ~ /^unknown:/' "$T/out" | wc -l | tr -d ' '; }
 for form in 0:0 1:2 2:2; do
   n=${form%%:*} want=${form#*:}
@@ -255,10 +257,10 @@ read_artifact "$T/recents0"
 for sel in isFileURL addObject:; do
   [ -n "$(sends_of "selref:$sel" | awk -F '\t' '$11 == "_note_recent_files"')" ] || fail "recents loop: no send of $sel"
 done
-# spec: tools/objc-compat/macho-reader.c header -- After a frame address escapes to a callee outside the enumeration contract,
+# spec: src/objc/macho-reader.c header -- After a frame address escapes to a callee outside the enumeration contract,
 #       a spilled selector's slot that lies wholly below the lowest such address stays known: the callee is assumed never
 #       to write below what it was given, as for every other slot. An address derived from an escaped one, or one that
-#       escapes other than to a call, keeps no slot (Recaulk workspace.m:129: tests/fixtures/objc-api/escaped-frame-slot.S).
+#       escapes other than to a call, keeps no slot (Recaulk workspace.m:129: tests/objc/fixtures/escaped-frame-slot.S).
 for form in 0:0 1:2 2:1 3:2 4:2; do
   n=${form%%:*} want=${form#*:}
   cc -DFORM="$n" "$FX/escaped-frame-slot.S" -o "$T/escaped$n" -framework Foundation -lobjc
@@ -273,15 +275,15 @@ done
 read_artifact "$T/escaped2"
 [ -n "$(sends_of "selref:setAttributeDescriptor:forKeyword:" | awk -F '\t' '$11 == "_target_loop"')" ] ||
   fail 'escaped frame slot form 2: the slot below the escaped address lost its selector'
-# spec: tools/objc-compat/macho-reader.c "Merged calls" -- a call a compiler merged from the sends of several paths is read
+# spec: src/objc/macho-reader.c "Merged calls" -- a call a compiler merged from the sends of several paths is read
 #       once per incoming path, when its block is entered by direct edges only and every path names its selector and
 #       its receiver: one dispatch row per path, with that path's operands and, in column 16, the address of the
-#       predecessor's last instruction (tests/fixtures/objc-api/merged-send.S). A path whose selector the reader does
+#       predecessor's last instruction (tests/objc/fixtures/merged-send.S). A path whose selector the reader does
 #       not model keeps the one row with the meet's operands, its selector unknown; a call measured once has "-" there.
 at() { b=$(nm "$art" | awk -v f="$1" '$3 == f {print $1}'); printf '0x%x' $((0x$b + $2)); }   # at FUNCTION OFFSET
-# spec: tools/objc-compat/macho-reader.c "Merged calls" -- rows_at ADDRESS: "receiver selector incoming" of each dispatch row at ADDRESS.
+# spec: src/objc/macho-reader.c "Merged calls" -- rows_at ADDRESS: "receiver selector incoming" of each dispatch row at ADDRESS.
 rows_at() { awk -F '\t' -v a="$1" '$2 == "dispatch-call" && $4 == a {print $12, $13, $16}' "$T/out"; }
-# spec: tools/objc-compat/macho-reader.c "Merged calls" -- row_is ADDRESS N PATTERN...: exactly N rows at ADDRESS, and each PATTERN (a shell pattern) matches one of them.
+# spec: src/objc/macho-reader.c "Merged calls" -- row_is ADDRESS N PATTERN...: exactly N rows at ADDRESS, and each PATTERN (a shell pattern) matches one of them.
 row_is() {
   ra=$1 rn=$2; shift 2
   rows_at "$ra" >"$T/rows"
@@ -308,7 +310,7 @@ for n in 0 1 2 3; do
                                      "result:$(at _merged 0x31):- selref:*:count $(at _merged 0x31)" ;;
   esac
 done
-# spec: tests/fixtures/objc-api/open-urls-merge.S header -- open_urls_with_ops: the spilled selectors of lines 88, 63 and 65 are
+# spec: tests/objc/fixtures/open-urls-merge.S header -- open_urls_with_ops: the spilled selectors of lines 88, 63 and 65 are
 #       followed; line 97's merged send is two, +[NSMutableDictionary dictionary] from +0x76e and -autorelease of the
 #       mutableCopy result from +0x333; line 125's reload past escapes to callees, of frame addresses all above its slot, is
 #       setAttributeDescriptor:forKeyword:, and no send is unknown but the merged one's own.
@@ -325,86 +327,7 @@ row_is "$(at _open_urls_with_ops 0x778)" 2 \
 row_is "$(at _open_urls_with_ops 0xa36)" 1 "* selref:*:setAttributeDescriptor:forKeyword: -"
 [ "$(unknown_in _open_urls_with_ops)" = 0 ] || fail "open_urls_with_ops: $(unknown_in _open_urls_with_ops) sends without their selector, want 0"
 
-# spec: scripts/objc-compat-build.sh header -- The analyzer needs neither the Command Line Tools nor git: it compiles with the
-#       pinned clang22 package (components/objc-reference-clang/version) and takes Drydock from the pinned commit's tarball,
-#       verified against ARCHIVE_SHA256 and extracted fresh and privately for every build, so a stale or edited tree is
-#       never compiled. A 10.9 host without them is simulated: PATH holds only a wrapper directory whose git, clang, cc, ld,
-#       xcrun and friends are stubs that record a call and fail, and, where sandbox-exec works, the real ones (and the
-#       Command Line Tools and Xcode trees) cannot be executed at all. A missing prerequisite is cannot-measure, never a skip.
-PIN="$ROOT/components/objc-reader-drydock/version"
-DIGEST=$(sed -n 's/^DIGEST=//p' "$PIN")
-ARCHIVE_SHA=$(sed -n 's/^ARCHIVE_SHA256=//p' "$PIN")
-printf '%s\n' "$ARCHIVE_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail 'the Drydock pin has no ARCHIVE_SHA256'
-NOCL="$T/nocl"
-mkdir -p "$NOCL/bin"
-DENY='git clang clang++ cc c++ gcc g++ cpp ld as xcrun xcodebuild xcode-select make libtool lipo otool nm strip ar ranlib'
-for d in /bin /usr/bin /usr/sbin; do
-  for f in "$d"/*; do
-    n=${f##*/}
-    case " $DENY " in *" $n "*) continue ;; esac
-    # platform: an exec stub, not a symlink: 10.9's shasum is a perl-version dispatcher that finds
-    #           shasum5.16 beside its own $0.
-    [ -e "$NOCL/bin/$n" ] || { printf '#!/bin/sh\nexec %s "$@"\n' "$f" >"$NOCL/bin/$n"; chmod +x "$NOCL/bin/$n"; }
-  done
-done
-for n in $DENY; do
-  printf '#!/bin/sh\necho "$0 $*" >>"%s"\nexit 127\n' "$NOCL/used" >"$NOCL/bin/$n"
-  chmod +x "$NOCL/bin/$n"
-done
-PROFILE='(version 1)(allow default)(deny process-exec (literal "/usr/bin/git") (literal "/usr/bin/clang") (literal "/usr/bin/cc")
-  (literal "/usr/bin/ld") (literal "/usr/bin/xcrun") (literal "/usr/bin/make") (subpath "/Library/Developer/CommandLineTools")
-  (subpath "/Applications/Xcode.app"))'
-# platform: sandbox-exec cannot nest inside another sandbox; then the PATH wrapper alone stands for the bare host.
-if command -v sandbox-exec >/dev/null 2>&1 && sandbox-exec -p "$PROFILE" /bin/sh -c ':' 2>/dev/null; then
-  bare() { sandbox-exec -p "$PROFILE" /usr/bin/env PATH="$NOCL/bin" "$@"; }
-  how='PATH wrapper and sandbox'
-else
-  bare() { /usr/bin/env PATH="$NOCL/bin" "$@"; }
-  how='PATH wrapper'
-fi
-# platform: MAVERGREEN_OBJC_COMPAT_CACHE is fresh, so this builds rather than reuses an analyzer; the extracted toolchain
-#           under MAVERICKS_BUILD_ROOT is reused (2 GB, extracted once by objc-binding-test or the first build).
-rc=0; bare MAVERGREEN_OBJC_COMPAT_CACHE="$NOCL/cache" sh "$ROOT/scripts/objc-compat-build.sh" --reader-driver "$NOCL/reader" 2>"$NOCL/err" || rc=$?
-[ "$rc" = 0 ] && [ -x "$NOCL/reader" ] || { cat "$NOCL/err" >&2; fail "no-CLT build ($how): exit $rc"; }
-[ ! -s "$NOCL/used" ] || fail "no-CLT build ($how) ran $(sort -u "$NOCL/used" | tr '\n' ' ')"
-grep -F "toolchain clang22" "$NOCL/err" >/dev/null || fail "no-CLT build did not name the pinned toolchain: $(tail -1 "$NOCL/err")"
-"$NOCL/reader" --artifact "$T/conventional" | grep '^evidence' >"$NOCL/conventional.ev"
-"$T/reader" --artifact "$T/conventional" | grep '^evidence' >"$T/conventional.ev"
-cmp -s "$NOCL/conventional.ev" "$T/conventional.ev" || fail 'the no-CLT reader reads differently'
-id() { sed -n 's/.* source \([0-9a-f]*\) .*/\1/p' "$1" | tail -1; }
-SRCKEY=$(id "$NOCL/err")
-# spec: scripts/objc-compat-build.sh header -- each missing or failing prerequisite: exit 4, no output, the reason said.
-prereq() {   # prereq LABEL PATTERN ENV...: the build with ENV fails 4 and says PATTERN
-  label=$1 pat=$2; shift 2
-  rm -f "$T/pre"; rc=0
-  bare MAVERGREEN_OBJC_COMPAT_CACHE="$T/pre-cache" "$@" sh "$ROOT/scripts/objc-compat-build.sh" --reader-driver "$T/pre" 2>"$T/err" || rc=$?
-  [ "$rc" = 4 ] && [ ! -e "$T/pre" ] || fail "$label: exit $rc, want 4 and no output"
-  grep -E "$pat" "$T/err" >/dev/null || fail "$label: does not say '$pat': $(cat "$T/err")"
-}
-prereq 'a named toolchain that is not there' 'no bin/clang' MAVERGREEN_OBJC_CLANG_PREFIX="$T/no-clang"
-mkdir -p "$T/no-releases"
-prereq 'a toolchain that cannot be fetched' 'pinned toolchain' MAVERGREEN_OBJC_CLANG_PREFIX= MAVERICKS_BUILD_ROOT="$T/fresh-root" MAVERGREEN_RELEASES="file://$T/no-releases" \
-  MAVERGREEN_PKG_CACHE="$T/no-pkgs"
-mkdir -p "$T/sc" "$T/no-codeload"
-src_cache=${MAVERICKS_SOURCE_CACHE:-$HOME/Library/Caches/mavericks-sources}
-[ -f "$src_cache/drydock-$DIGEST.tar.gz" ] || fail "the verified Drydock tarball is not in $src_cache"
-cp "$src_cache/drydock-$DIGEST.tar.gz" "$T/sc/" && printf 'x' | dd of="$T/sc/drydock-$DIGEST.tar.gz" bs=1 seek=100 conv=notrunc 2>/dev/null
-prereq 'a Drydock tarball that is not the pinned one' 'Drydock' MAVERICKS_SOURCE_CACHE="$T/sc" MAVERICKS_CODELOAD="file://$T/no-codeload"
-prereq 'no Drydock tarball to be had' 'Drydock' MAVERICKS_SOURCE_CACHE="$T/sc-empty" MAVERICKS_CODELOAD="file://$T/no-codeload"
-prereq 'the retired source override' 'retired' MAVERGREEN_OBJC_READER_SRC="$T/dd"
-prereq 'the retired repository override' 'retired' MAVERGREEN_OBJC_READER_DRYDOCK_REPO="$T/dd"
-# spec: scripts/objc-compat-build.sh header -- a tree left where the git-era cache kept it, edited, is never read.
-mkdir -p "$T/stale/src/drydock-$DIGEST/src"
-printf '#error stale\n' >"$T/stale/src/drydock-$DIGEST/src/image.h"
-PREFIX=$(sed -n 's/.* toolchain clang22[^ ]* [^ ]* at \([^,]*\),.*/\1/p' "$NOCL/err" | tail -1)
-[ -x "$PREFIX/bin/clang" ] || fail "the build did not say where its toolchain is: $(tail -1 "$NOCL/err")"
-rc=0; bare MAVERICKS_BUILD_ROOT="$T/stale" MAVERGREEN_OBJC_CLANG_PREFIX="$PREFIX" sh "$ROOT/scripts/objc-compat-build.sh" --reader-driver "$T/stale-reader" 2>"$T/err" || rc=$?
-[ "$rc" = 0 ] || fail "a stale tree in the old cache place broke the build: $(tail -3 "$T/err")"
-[ "$(id "$T/err")" = "$SRCKEY" ] || fail 'a stale tree in the old cache place changed the source identity'
-[ -z "$(ls -A "$T/stale/src" | grep -v "^drydock-$DIGEST\$")" ] || fail "a build left its private Drydock tree behind: $(ls "$T/stale/src")"
-echo "objc-reader: the analyzer builds with neither the Command Line Tools nor git ($how)"
-
-# spec: tools/objc-compat/macho-reader.c header -- The real defective artifact, when the caller supplies it (never fetched, modified or run).
+# spec: src/objc/macho-reader.c header -- The real defective artifact, when the caller supplies it (never fetched, modified or run).
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   sum=$(shasum -a 256 "$MAVERGREEN_OBJC_CODEX_ARTIFACT" | cut -d' ' -f1)
   [ "$sum" = 1d056b0d4ada3d74b4c0f4c5450bc06856bfdbc504320fa430a4249f640f6c40 ] || fail "unexpected Codex artifact $sum"
@@ -416,7 +339,7 @@ if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   has sel-cache 7="$OPEN"
   has sel-register 7=isVoiceOverEnabled 8=NSSelectorFromString
   has sel-register 7=accessibilityDisplayShouldReduceMotion 8=NSSelectorFromString
-  # spec: tools/objc-compat/macho-reader.c header -- Task 1 Step 3 inventory: every send's selector from a named cache; receivers by measured form.
+  # spec: src/objc/macho-reader.c header -- Task 1 Step 3 inventory: every send's selector from a named cache; receivers by measured form.
   [ "$(count sel-register)" = 4 ] && [ "$(count class-lookup)" = 2 ] && [ "$(count cache-fetch)" = 106 ] &&
     [ "$(count cache-use)" = 124 ] || fail 'Codex producer inventory changed'
   forms=$(awk -F '\t' '$2 == "dispatch-call" { split($12, r, ":"); split($13, s, ":"); print $9, r[1], s[1] }' "$T/out" | sort | uniq -c |

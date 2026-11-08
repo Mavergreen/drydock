@@ -1,9 +1,9 @@
 # platform: macOS-only -- libtool and the caller's pinned-SDK cc
-# spec: tests/fixtures/objc-api/provider-register.c header -- the fixture Objective-C provider, shared by
+# spec: tests/objc/fixtures/provider-register.c header -- the fixture Objective-C provider, shared by
 #       objc-provider-test.sh and objc-guard-test.sh; tests/lib/ is not itself run, since
 #       run-repo-tests.sh takes top-level tests only. The caller defines cc (the pinned-SDK compiler),
-#       sha (a file's SHA-256), SDK, FX (tests/fixtures/objc-api) and T (its scratch directory).
-# spec: tests/fixtures/objc-api/provider-register.c header -- fixture_prefix DIR [CC-FLAGS]: the fixture provider at
+#       sha (a file's SHA-256), SDK, FX (tests/objc/fixtures) and T (its scratch directory).
+# spec: tests/objc/fixtures/provider-register.c header -- fixture_prefix DIR [CC-FLAGS]: the fixture provider at
 #       DIR, built with CC-FLAGS and declared as Recaulk's build declares its own.
 fixture_prefix() {
   P=$1; shift
@@ -15,7 +15,7 @@ fixture_prefix() {
   printf '%s  provider-register.c\n%s  provider-impl.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-impl.c")" >"$T/fixture-receipt"
   declare_prefix "$P" "$T/fixture-receipt"
 }
-# spec: tests/fixtures/objc-api/provider-register.c header -- declare_prefix DIR RECEIPT: the declaration of DIR's archive,
+# spec: tests/objc/fixtures/provider-register.c header -- declare_prefix DIR RECEIPT: the declaration of DIR's archive,
 #       whose prepared source RECEIPT (`SHA256  LABEL` lines) lists.
 declare_prefix() {
   P=$1
