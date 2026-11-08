@@ -50,14 +50,17 @@ fi
 mkdir -p "$T/bad/lib/clang/22/include"
 : >"$T/bad/lib/libclang.dylib"; : >"$T/bad/lib/libclang.so"
 rc=0; receipt --clang-prefix "$T/bad" --sdk "$SDK" --output "$T/bad.receipt" 2>"$T/err" || rc=$?
-[ "$rc" = 4 ] && grep -q libclang "$T/err" && [ ! -e "$T/bad.receipt" ] &&
-  pass 'receipt_bad_libclang: an empty libclang exits 4, names libclang and writes nothing' || fail "receipt_bad_libclang: exit $rc"
+[ "$rc" = 4 ] && grep -q "^drydock-objc: cannot load libclang $T/bad/lib/$lib: " "$T/err" && [ ! -e "$T/bad.receipt" ] &&
+  pass 'receipt_bad_libclang: an empty libclang exits 4, says it cannot load it, and writes nothing' || fail "receipt_bad_libclang: exit $rc"
 
-# receipt_needs_prefix, and its twin for the SDK: either one missing is a usage error.
+# receipt_needs_prefix, and its twin for the SDK: either one missing is a usage error, with receipt's usage.
+usage_line='       drydock-objc receipt --clang-prefix PREFIX --sdk FLOOR_SDK --inputs FILE'
 rc=0; receipt --sdk "$SDK" --output "$T/noprefix.receipt" 2>"$T/err" || rc=$?
-[ "$rc" = 2 ] && [ ! -e "$T/noprefix.receipt" ] && pass 'receipt_needs_prefix: no --clang-prefix exits 2' || fail "receipt_needs_prefix: exit $rc"
+[ "$rc" = 2 ] && grep -Fq "$usage_line" "$T/err" && [ ! -e "$T/noprefix.receipt" ] &&
+  pass 'receipt_needs_prefix: no --clang-prefix exits 2 with the usage' || fail "receipt_needs_prefix: exit $rc"
 rc=0; receipt --clang-prefix "$CLANG" --output "$T/nosdk.receipt" 2>"$T/err" || rc=$?
-[ "$rc" = 2 ] && [ ! -e "$T/nosdk.receipt" ] && pass 'receipt_needs_sdk: no --sdk exits 2' || fail "receipt_needs_sdk: exit $rc"
+[ "$rc" = 2 ] && grep -Fq "$usage_line" "$T/err" && [ ! -e "$T/nosdk.receipt" ] &&
+  pass 'receipt_needs_sdk: no --sdk exits 2 with the usage' || fail "receipt_needs_sdk: exit $rc"
 
 # receipt_resource_dir: the resource directory is the one PREFIX/lib/clang/* directory; none, or two, exits 4.
 resource=$(ls -d "$CLANG"/lib/clang/* | head -1)
@@ -68,6 +71,11 @@ mkdir -p "$T/two/lib/clang"; ln -s "$CLANG/lib/$lib" "$T/two/lib/$lib"
 ln -s "$resource" "$T/two/lib/clang/a"; ln -s "$resource" "$T/two/lib/clang/b"
 rc=0; receipt --clang-prefix "$T/two" --sdk "$SDK" --output "$T/two.receipt" 2>"$T/err" || rc=$?
 [ "$rc" = 4 ] && [ ! -e "$T/two.receipt" ] && pass 'receipt_resource_dir: two PREFIX/lib/clang/* directories exit 4' || fail "receipt_resource_dir (two): exit $rc"
+# receipt_stale_resource_dir: the one directory must be libclang's own major version; lib/clang/21 beside clang 22 exits 4.
+mkdir -p "$T/stale/lib/clang/21/include"; ln -s "$CLANG/lib/$lib" "$T/stale/lib/$lib"
+rc=0; receipt --clang-prefix "$T/stale" --sdk "$SDK" --output "$T/stale.receipt" 2>"$T/err" || rc=$?
+[ "$rc" = 4 ] && grep -q 'clang/21' "$T/err" && grep -q 'clang version 22' "$T/err" && [ ! -e "$T/stale.receipt" ] &&
+  pass 'receipt_stale_resource_dir: lib/clang/21 beside libclang 22 exits 4 and writes nothing' || fail "receipt_stale_resource_dir: exit $rc"
 
 # linux_analyze_refused: the Foundation front end is not built for Linux.
 if [ "$(uname -s)" = Linux ]; then

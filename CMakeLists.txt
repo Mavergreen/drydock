@@ -219,7 +219,8 @@ add_library(drydock_objc_receipt OBJECT src/objc/libclang_shim.c tools/objc-sour
 set_source_files_properties(tools/objc-source-inventory.c PROPERTIES COMPILE_DEFINITIONS main=objc_source_inventory_main)
 target_include_directories(drydock_objc_receipt PRIVATE "${DRYDOCK_OBJC_CLANG_HEADERS}" src/objc)
 set_target_properties(drydock_objc_receipt PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-target_compile_options(drydock_objc_receipt PRIVATE -O2 -Wall)
+# spec: shipyard's scripts/objc-source-inventory.sh -- the warnings it built the tool with.
+target_compile_options(drydock_objc_receipt PRIVATE -O2 -Wall -Wextra -Werror)
 
 if(APPLE)
   enable_language(OBJC)
@@ -250,7 +251,7 @@ if(APPLE)
   target_compile_options(objc-reader-driver PRIVATE -O2 -Wall)
   target_link_libraries(objc-reader-driver PRIVATE drydockcore)
 else()
-  # Linux: receipt alone, until the front end is not Foundation.
+  # platform: Linux has no Foundation, so drydock-objc holds receipt alone until the front end is not Foundation.
   add_executable(drydock-objc cli/drydock-objc.c $<TARGET_OBJECTS:drydock_objc_receipt>)
   target_include_directories(drydock-objc PRIVATE src/objc)
   target_compile_definitions(drydock-objc PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
@@ -349,8 +350,8 @@ add_test(NAME family_conventions
 # The imported Objective-C analyzer is byte-identical to shipyard's.
 add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/import_identity_test.sh)
 
-# drydock-objc receipt, on every host (drydock-objc is built on Linux too, with
-# the receipt producer alone). It fetches the pinned clang22 and floor SDK.
+# platform: host-agnostic -- drydock-objc receipt, on every host (drydock-objc is built on Linux too,
+# with the receipt producer alone). It fetches the pinned clang22 and floor SDK.
 add_test(NAME objc_source_inventory_host COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-source-inventory-host-test.sh)
 set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONMENT
   "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")

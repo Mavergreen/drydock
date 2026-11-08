@@ -112,3 +112,14 @@ int drydock_libclang_load(const char *path, char *err, size_t errlen) {
     handle = h;
     return 0;
 }
+
+int drydock_libclang_major(char *out, size_t outlen) {
+    CXString v = clang_getClangVersion();
+    const char *text = clang_getCString(v), *p;
+    int major = -1;
+    snprintf(out, outlen, "%s", text ? text : "");
+    clang_disposeString(v);
+    if ((p = strstr(out, "version ")) && (p += 8, *p >= '0' && *p <= '9'))
+        for (major = 0; *p >= '0' && *p <= '9' && major < 100000; p++) major = major * 10 + (*p - '0');
+    return major;
+}

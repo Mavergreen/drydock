@@ -48,12 +48,15 @@
  * caller's other options in order. ID is OBJC_SOURCE_INVENTORY_SHA256, the
  * SHA-256 of that source, computed by CMake. libclang is not linked: receipt
  * loads PREFIX/lib/libclang.dylib (a Mac) or PREFIX/lib/libclang.so (Linux)
- * through src/objc/libclang_shim.c, and R is the one directory in PREFIX/lib/clang
- * (for the pinned clang22, the directory its clang -print-resource-dir names).
+ * through src/objc/libclang_shim.c, and R is the one directory in PREFIX/lib/clang,
+ * which must be named for the major version clang_getClangVersion() reports (for
+ * the pinned clang22, lib/clang/22: the directory its clang -print-resource-dir
+ * names).
  * Option names are the seven above, each followed by its value; any other name,
  * a repeated --clang-prefix or --sdk, or either one missing is usage (exit 2).
  * A libclang that does not load or lacks a function, or no single resource
- * directory with an include/ in it, is exit 4, before anything is written.
+ * directory with an include/ in it and libclang's major version for a name, is
+ * exit 4, before anything is written.
  * As the wrapper did, receipt clears CPATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH,
  * OBJC_INCLUDE_PATH, SDKROOT and CCC_OVERRIDE_OPTIONS (libclang's driver reads
  * them) and sets LC_ALL=C. The tool's exits are kept: 0 written, 2 usage or an
@@ -202,9 +205,10 @@ static int receipt(int argc, char **argv) {
     static const char *const scrub[] = {"CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "SDKROOT",
                                         "CCC_OVERRIDE_OPTIONS", NULL};
     const char *prefix = NULL, *sdk = NULL;
-    char lib[PATH_MAX], resource[PATH_MAX], why[PATH_MAX + 256];
+    char lib[PATH_MAX], resource[PATH_MAX], why[2 * PATH_MAX + 512], version[256], want[16];
+    const char *base;
     char **v;
-    int i, k, n = 0, rc;
+    int i, k, n = 0, rc, major;
     if (argc % 2) { usage(); return 2; }
     for (i = 0; i < argc; i += 2) {
         for (k = 0; names[k] && strcmp(argv[i], names[k]); k++) ;
@@ -227,6 +231,16 @@ static int receipt(int argc, char **argv) {
 #endif
     if (drydock_libclang_load(lib, why, sizeof why) != 0) return receipt_fail(why);
     if (resource_dir(prefix, resource, sizeof resource, why, sizeof why) != 0) return receipt_fail(why);
+    /* A resource directory left from another release would give the parse another release's
+     * headers: its name must be libclang's own major version. */
+    major = drydock_libclang_major(version, sizeof version);
+    base = strrchr(resource, '/') + 1;
+    snprintf(want, sizeof want, "%d", major);
+    if (major < 0 || strcmp(base, want)) {
+        snprintf(why, sizeof why, "%s is not the resource directory of libclang %s (%s)", resource, lib,
+                 version[0] ? version : "no version");
+        return receipt_fail(why);
+    }
     for (k = 0; scrub[k]; k++) unsetenv(scrub[k]);
     setenv("LC_ALL", "C", 1);
     if (!(v = calloc((size_t)argc + 8, sizeof *v))) return receipt_fail("out of memory");

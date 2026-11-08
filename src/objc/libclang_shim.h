@@ -16,4 +16,8 @@
  * a success is -1. */
 int drydock_libclang_load(const char *path, char *err, size_t errlen);
 
+/* The loaded libclang's clang_getClangVersion(), into OUT (truncated to OUTLEN), and the
+ * major version that follows its first "version ", or -1 when it names none. */
+int drydock_libclang_major(char *out, size_t outlen);
+
 #endif
