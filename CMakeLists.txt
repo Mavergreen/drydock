@@ -318,6 +318,10 @@ install(PROGRAMS "compat/drydock-macho-rewrite-compat.sh" DESTINATION bin)
 install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewrite-translate.sh)
 install(FILES "man/drydock-macho-rewrite.1" DESTINATION share/man/man1)
 
+# drydock-objc finds its reference set at realpath(binary)/../../share/drydock/objc/reference.
+install(TARGETS drydock-objc RUNTIME DESTINATION bin)
+install(DIRECTORY "reference/objc/" DESTINATION share/drydock/objc/reference)
+
 option(DRYDOCK_BUILD_UPDATER "Build the Sparkle updater the .pkg ships (fetches Sparkle at configure time)" OFF)
 if(DRYDOCK_BUILD_UPDATER)
   include(MavericksSparkle)

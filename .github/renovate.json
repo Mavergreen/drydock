@@ -1,4 +1,32 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>Mavergreen/shipyard"]
+  "extends": [
+    "github>Mavergreen/shipyard"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^components/objc-reference-clang/version$/"
+      ],
+      "matchStrings": [
+        "(?<currentValue>[^\\s]+)"
+      ],
+      "depNameTemplate": "Mavergreen/clang-22",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.+)$",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-mavericks\\.(?<build>\\d+)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Renovate moves components/objc-reference-clang/version but cannot write the Linux archive's digest beside it, so the Linux job fails on the bump until the linux-sha256 beside the moved version names the new release's archive.",
+      "matchDepNames": [
+        "Mavergreen/clang-22"
+      ],
+      "prBodyNotes": [
+        "Before this can merge, replace components/objc-reference-clang/linux-sha256 with the `clang22-<version>-linux-x86_64.tar.gz` line of the new release's SHA256SUMS: `gh release download <version> -R Mavergreen/clang-22 -p SHA256SUMS -O - | grep linux-x86_64.tar.gz > components/objc-reference-clang/linux-sha256`."
+      ]
+    }
+  ]
 }

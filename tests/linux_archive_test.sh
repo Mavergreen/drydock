@@ -40,6 +40,11 @@ isa=$(printf '%s\n' "$needs" | sed -n 's/^isa-needed=//p')
   || bad "drydock-macho-rewrite needs x86 ISA level ${isa:-unknown}, above the x86-64 baseline every x86_64 host has"
 "$BIN/drydock-macho-rewrite" --capabilities | grep -q '^statement symbol rename' \
   && ok "drydock-macho-rewrite runs from the unpacked archive" || bad "drydock-macho-rewrite --capabilities"
+[ -f "$T/a dir/drydock-$V/share/drydock/objc/reference/manifest.json" ] \
+  && ok "the archive carries the objc reference set" || bad "no share/drydock/objc/reference/manifest.json"
+# platform: the Linux drydock-objc does receipt alone; receipt with no arguments is a usage error, exit 2.
+"$BIN/drydock-objc" receipt >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "drydock-objc receipt without arguments exits 2" || bad "drydock-objc receipt without arguments exited $rc, not 2"
 (cd / && sh "$HERE/characterize.sh" "$BIN" check) && ok "the unpacked archive's tools match the 10.9 reference digest" \
   || bad "characterize against the unpacked archive"
 (cd / && sh "$HERE/known-callers.sh" "$BIN" >/dev/null) && ok "the known callers replay against the unpacked archive" \

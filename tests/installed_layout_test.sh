@@ -18,6 +18,13 @@ trap 'rm -rf "$t"' EXIT
 "$CMAKE" --install "$B" --prefix "$t/tree" >/dev/null
 [ -f "$t/tree/share/man/man1/drydock-macho-rewrite.1" ] \
   || { echo "FAIL: the install has no share/man/man1/drydock-macho-rewrite.1"; exit 1; }
+[ -x "$t/tree/bin/drydock-objc" ] \
+  || { echo "FAIL: the install has no executable bin/drydock-objc"; exit 1; }
+[ -f "$t/tree/share/drydock/objc/reference/manifest.json" ] \
+  || { echo "FAIL: the install has no share/drydock/objc/reference/manifest.json"; exit 1; }
+# spec: drydock-objc finds its references at realpath(binary)/../../share/drydock/objc/reference.
+diff -r "$here/../reference/objc" "$t/tree/share/drydock/objc/reference" >/dev/null \
+  || { echo "FAIL: the installed reference set is not reference/objc/, byte for byte"; exit 1; }
 mkdir "$t/farm"
 for f in "$t/tree/bin/"*; do ln -s "$f" "$t/farm/${f##*/}"; done
 

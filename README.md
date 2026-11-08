@@ -53,6 +53,21 @@ See [drydock-macho-rewrite(1)](man/drydock-macho-rewrite.1) for script syntax, o
 
 (The wrappers will probably go away at some point, so take their guidance and change your call sites.)
 
+## drydock-objc
+
+Given an Objective-C binary built for Mavericks, report which of its message sends the Mavericks runtime and SDK can answer. It is shipyard's Objective-C analyzer, moved here so the tool that rewrites a Mach-O file and the tool that checks what it will do on 10.9 ship together. It has four subcommands:
+
+* `drydock-objc analyze`: analyze an artifact against the reference set and write a report.
+* `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against.
+* `drydock-objc link-args`: print the link arguments for a provider prefix and link map.
+* `drydock-objc receipt`: record the pinned clang and SDK a source inventory was taken with.
+
+Their arguments and exit statuses are those of the shipyard scripts they replace; run `drydock-objc` with no arguments for the usage. It reads its reference set from `share/drydock/objc/reference`, found from where the real `drydock-objc` binary is, so a symlink to it works; `--references DIR` names another.
+
+`analyze`, `evidence` and `link-args` run on macOS only. On Linux, for now, the tarball's `drydock-objc` does `receipt` alone and those three exit 2: their front end is Foundation, which Linux lacks, until it is ported to C. `receipt` runs everywhere. It takes `--clang-prefix` and `--sdk`, and fetches nothing: you name the clang and the SDK, and it loads that clang's libclang at run time.
+
+Building Drydock now fetches the pinned clang22 at configure time, for its `clang-c` headers only (nothing of it ships), so a build needs network access or a warm cache.
+
 ## Other related tools
 
 - `install_name_tool` from the Mavericks Command Line Tools
