@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
+# platform: macOS-only -- mw_prepare runs BSD `stat -f %l` (hard-link guard) on an existing target, and GNU stat on Linux refuses every in-place rewrite
 # add_version_min -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
 # `minos if-absent 10.9` statement on its stdin.
 #

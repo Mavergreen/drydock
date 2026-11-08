@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
+# platform: macOS-only -- mw_prepare runs BSD `stat -f %l` (hard-link guard) on an existing target, and GNU stat on Linux refuses every in-place rewrite
 # bake-mavericks-shim -- make a binary that needs
 #
 #     DYLD_FORCE_FLAT_NAMESPACE=1 DYLD_INSERT_LIBRARIES=SHIM ./binary

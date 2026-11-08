@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
+# platform: macOS-only -- mw_prepare runs BSD `stat -f %l` (hard-link guard) on an existing target, and GNU stat on Linux refuses every in-place rewrite
 # retag_swift_classes -- a /bin/sh wrapper around `drydock-macho-rewrite FILE OUT` with one
 # `swift-abi set legacy` statement on its stdin, once per argument.
 #

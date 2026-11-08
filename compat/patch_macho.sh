@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
+# platform: macOS-only -- mw_prepare runs BSD `stat -f %l` (hard-link guard), and this wrapper also runs BSD `stat -f %Lp` for the output mode; GNU stat on Linux misreads both
 # patch_macho -- a /bin/sh wrapper around `drydock-macho-rewrite IN OUT` with one
 # `fixups set classic` statement on its stdin.
 #

@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: host-agnostic -- a /bin/sh wrapper over drydock-macho-rewrite, which the Linux archive ships too
+# platform: macOS-only -- mw_prepare runs BSD `stat -f %l` (hard-link guard) on an existing target, and GNU stat on Linux refuses every in-place rewrite
 # insert_dylib -- a /bin/sh wrapper presenting Wowfunhappy/insert_dylib's
 # command line (commit bd221b8) over `dylib append`/`dylib retype`, and,
 # when asked, `load-command delete codesig`.

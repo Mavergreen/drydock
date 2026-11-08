@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: host-agnostic -- sourced by the /bin/sh wrappers, which the Linux archive ships too
+# platform: macOS-only -- mw_prepare runs BSD `stat -f %l` (hard-link guard); sourced by the wrappers, which GNU stat on Linux makes refuse every in-place rewrite
 # compat/drydock-macho-rewrite-compat.sh -- what the historical tools' /bin/sh
 # wrappers share. Sourced, never run:
 #
