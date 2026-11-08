@@ -190,6 +190,37 @@ string(SUBSTRING "${DRYDOCK_OBJC_ID_SHA256}" 0 16 DRYDOCK_OBJC_ID_HEX)
 set(DRYDOCK_OBJC_ANALYZER_ID "drydock-${MAVERICKS_VERSION}-objc-src-${DRYDOCK_OBJC_ID_HEX}")
 message(STATUS "Drydock: drydock-objc analyzer id ${DRYDOCK_OBJC_ANALYZER_ID}")
 
+# drydock-objc receipt, on every host: tools/objc-source-inventory.c, unchanged
+# but for -Dmain=objc_source_inventory_main on its own compile line, beside
+# src/objc/libclang_shim.c, which defines the clang_* functions it calls and
+# loads libclang at run time. Only the pinned clang22's clang-c headers are
+# needed to build them, copied from it at configure time; nothing is linked.
+set(DRYDOCK_OBJC_CLANG_PIN "${CMAKE_CURRENT_SOURCE_DIR}/components/objc-reference-clang")
+if(NOT APPLE AND NOT EXISTS "${DRYDOCK_OBJC_CLANG_PIN}/linux-sha256")
+  message(FATAL_ERROR "drydock-objc receipt needs the pinned clang22's clang-c headers, and on Linux "
+    "fetch_clang22.sh takes them from its linux-x86_64 archive, verified against "
+    "components/objc-reference-clang/linux-sha256 -- which does not exist. Copy that archive's line "
+    "from the pinned release's SHA256SUMS into it (a release whose Linux archive carries libclang.so).")
+endif()
+execute_process(COMMAND sh "${MavericksShipyard_SCRIPTS}/fetch_clang22.sh" "${DRYDOCK_OBJC_CLANG_PIN}"
+  OUTPUT_VARIABLE DRYDOCK_OBJC_CLANG OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_VARIABLE DRYDOCK_OBJC_CLANG_ERR RESULT_VARIABLE DRYDOCK_OBJC_CLANG_RC)
+if(NOT DRYDOCK_OBJC_CLANG_RC EQUAL 0 OR NOT EXISTS "${DRYDOCK_OBJC_CLANG}/include/clang-c/Index.h")
+  message(FATAL_ERROR "drydock-objc receipt needs the pinned clang22's clang-c headers: "
+    "fetch_clang22.sh ${DRYDOCK_OBJC_CLANG_PIN} exited ${DRYDOCK_OBJC_CLANG_RC} with "
+    "'${DRYDOCK_OBJC_CLANG}' and said: ${DRYDOCK_OBJC_CLANG_ERR}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${DRYDOCK_OBJC_CLANG_PIN}/version")
+set(DRYDOCK_OBJC_CLANG_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/libclang-headers")
+file(REMOVE_RECURSE "${DRYDOCK_OBJC_CLANG_HEADERS}")
+file(COPY "${DRYDOCK_OBJC_CLANG}/include/clang-c" DESTINATION "${DRYDOCK_OBJC_CLANG_HEADERS}")
+message(STATUS "Drydock: drydock-objc receipt builds against ${DRYDOCK_OBJC_CLANG}/include/clang-c")
+add_library(drydock_objc_receipt OBJECT src/objc/libclang_shim.c tools/objc-source-inventory.c)
+set_source_files_properties(tools/objc-source-inventory.c PROPERTIES COMPILE_DEFINITIONS main=objc_source_inventory_main)
+target_include_directories(drydock_objc_receipt PRIVATE "${DRYDOCK_OBJC_CLANG_HEADERS}" src/objc)
+set_target_properties(drydock_objc_receipt PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(drydock_objc_receipt PRIVATE -O2 -Wall)
+
 if(APPLE)
   enable_language(OBJC)
   # The seven analyzer modules, shared by drydock-objc and the reader harness.
@@ -199,7 +230,8 @@ if(APPLE)
   set_target_properties(drydock_objc_core PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
   target_compile_options(drydock_objc_core PRIVATE -O2 -Wall)
 
-  add_executable(drydock-objc cli/drydock-objc.c src/objc/main.m $<TARGET_OBJECTS:drydock_objc_core>)
+  add_executable(drydock-objc cli/drydock-objc.c src/objc/main.m $<TARGET_OBJECTS:drydock_objc_core>
+    $<TARGET_OBJECTS:drydock_objc_receipt>)
   set_source_files_properties(src/objc/main.m PROPERTIES COMPILE_DEFINITIONS main=objc_compat_main)
   target_include_directories(drydock-objc PRIVATE src/objc)
   target_compile_definitions(drydock-objc PRIVATE
@@ -207,7 +239,7 @@ if(APPLE)
     DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}")
   set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF OBJC_STANDARD 99 OBJC_EXTENSIONS OFF)
   target_compile_options(drydock-objc PRIVATE -O2 -Wall)
-  target_link_libraries(drydock-objc PRIVATE drydockcore "-framework Foundation")
+  target_link_libraries(drydock-objc PRIVATE drydockcore "-framework Foundation" ${CMAKE_DL_LIBS})
   mavericks_assert_binary_compatible(drydock-objc)
 
   # The harness that prints the reader's and binding's records
@@ -217,6 +249,14 @@ if(APPLE)
   set_target_properties(objc-reader-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
   target_compile_options(objc-reader-driver PRIVATE -O2 -Wall)
   target_link_libraries(objc-reader-driver PRIVATE drydockcore)
+else()
+  # Linux: receipt alone, until the front end is not Foundation.
+  add_executable(drydock-objc cli/drydock-objc.c $<TARGET_OBJECTS:drydock_objc_receipt>)
+  target_include_directories(drydock-objc PRIVATE src/objc)
+  target_compile_definitions(drydock-objc PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
+  set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(drydock-objc PRIVATE -O2 -Wall)
+  target_link_libraries(drydock-objc PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 # Stage the wrappers and the two files they source NEXT TO drydock-macho-rewrite in the build
@@ -308,6 +348,12 @@ add_test(NAME family_conventions
 
 # The imported Objective-C analyzer is byte-identical to shipyard's.
 add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/import_identity_test.sh)
+
+# drydock-objc receipt, on every host (drydock-objc is built on Linux too, with
+# the receipt producer alone). It fetches the pinned clang22 and floor SDK.
+add_test(NAME objc_source_inventory_host COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-source-inventory-host-test.sh)
+set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONMENT
+  "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
 
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as

@@ -8,7 +8,7 @@
 #       build/build-objc.sh: lib/librecaulk-objc.a and share/recaulk/objc-providers.json), else the
 #       fixture provider built here in the same shape. MAVERGREEN_OBJC_CODEX_ARTIFACT, when set, is
 #       the original Codex 0.165.0 binary, which must still fail. MAVERGREEN_OBJC_RECAULK_RECEIPT, with the Recaulk
-#       prefix, is that provider's source receipt (scripts/objc-source-inventory.sh): its body's sends then close where
+#       prefix, is that provider's source receipt (drydock-objc receipt): its body's sends then close where
 #       their static types name a class, every one is mapped, and the rest stay open. Nothing built here is executed.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -401,7 +401,7 @@ body_prefix() {
   declare_prefix "$P" "$P.inputs"
   if [ "${RECEIPT:-1}" = 1 ]; then
     rm -f "$P.receipt"
-    sh "$ROOT/scripts/objc-source-inventory.sh" --clang-prefix "$CLANG" --inputs "$P.inputs" --root "$D" \
+    "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$P.inputs" --root "$D" \
       --unit provider-body.m --unit provider-register.c --output "$P.receipt" 2>"$T/err" || fail "source inventory of $D"
   fi
 }
@@ -421,12 +421,6 @@ finding_is() {   # finding_is SELECTOR VERDICT CLOSURE WHY: every body send of S
   ! printf '%s\n' "$got" | grep -v "\"verdict\": \"$2\"" >/dev/null || fail "$4: a body send of $1 is not $2"
   ! printf '%s\n' "$got" | grep -v "\"receiver_closure\": $3" >/dev/null || fail "$4: a body send of $1 is not closed by $3"
 }
-# spec: tests/objc/fixtures/provider-body.m header -- the receipts below need a source receipt producer, which Drydock
-#       gains with drydock-objc receipt (the move's Task 3); that task removes this one condition and nothing else.
-RECEIPT_PRODUCER=
-if [ -z "$RECEIPT_PRODUCER" ]; then
-  echo "SKIP: source receipt producer arrives with drydock-objc receipt (Task 3)"
-else
 body_source "$T/body"; body_prefix "$T/pfx-body" "$T/body" -g
 body plain-body "$T/pfx-body"
 exit_is 1 'body without its source receipt'; want_verdict provided 'body without its source receipt'
@@ -497,17 +491,16 @@ rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/sourced-body" --root "$T/r
   --mode strict --source-receipt "$T/pfx-body.receipt" 2>"$T/err" || rc=$?
 exit_is 2 'a source receipt without a provider prefix'
 rm -f "$T/again.receipt"
-sh "$ROOT/scripts/objc-source-inventory.sh" --clang-prefix "$CLANG" --inputs "$T/pfx-body.inputs" --root "$T/body" \
+"$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
   --unit provider-body.m --unit provider-register.c --output "$T/again.receipt" 2>"$T/err" || fail 'second inventory'
 cmp -s "$T/again.receipt" "$T/pfx-body.receipt" || fail 'the source receipt is not deterministic'
 printf '\n' >>"$T/body/provider-body.m"
-rc=0; sh "$ROOT/scripts/objc-source-inventory.sh" --clang-prefix "$CLANG" --inputs "$T/pfx-body.inputs" --root "$T/body" \
+rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
   --unit provider-body.m --unit provider-register.c --output "$T/changed.receipt" 2>"$T/err" || rc=$?
 exit_is 4 'inventory of a source that no longer hashes to its input list'; [ ! -e "$T/changed.receipt" ] || fail 'a refused inventory wrote a receipt'
-rc=0; sh "$ROOT/scripts/objc-source-inventory.sh" --clang-prefix "$CLANG" --inputs "$T/pfx-body.inputs" --root "$T/body" \
+rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/pfx-body.inputs" --root "$T/body" \
   --unit provider-body.m --output "$T/pfx-body.receipt" 2>"$T/err" || rc=$?
 exit_is 2 'inventory onto an existing receipt'
-fi
 
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   mkdir -p "$T/root/codex"
