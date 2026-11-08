@@ -1,0 +1,8 @@
+# objc-signatures 1
+method	NSObject	+	alloc	id	-	usr/include/objc/NSObject.h:61	interface
+method	NSObject	+	description	class	NSString	usr/include/objc/NSObject.h:89	interface
+method	NSObject	+	new	id	-	usr/include/objc/NSObject.h:59	interface
+method	NSPasteboard	+	generalPasteboard	class	NSPasteboard	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:64	interface
+method	NSPasteboard	-	pasteboardItems	class	NSArray	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:94	interface
+method	NSPropertyListSerialization	+	propertyListWithData:options:format:error:	id	-	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSPropertyList.h:43	interface
+method	NSWorkspace	+	sharedWorkspace	class	NSWorkspace	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSWorkspace.h:50	interface

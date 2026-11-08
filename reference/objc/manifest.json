@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "floor_sdk": {
+    "archive": "MacOSX10.9.sdk.tar.xz",
+    "archive_sha256": "fcf88ce8ff0dd3248b97f4eb81c7909f2cc786725de277f4d05a2b935cc49de0",
+    "header_tree_sha256": "eb786495c84e3dc55bfc18ac61aee7ac8f036aad3cf299d897da75a39c91c14d",
+    "headers": ["System/Library/Frameworks/AppKit.framework/Headers/AppKit.h"],
+    "parsed_target": "x86_64-apple-macos10.9",
+    "facts": "floor-sdk.tsv",
+    "signatures": "floor-signatures.tsv"
+  },
+  "newer_sdk": {
+    "archive": "MacOSX11.3.sdk.tar.xz",
+    "archive_sha256": "cd4f08a75577145b8f05245a2975f7c81401d75e9535dcffbb879ee1deefcbf4",
+    "header_tree_sha256": "c0bcfdfcd5294055bb7aeb7ab17ab58af12658a8f81ac246cdb815a98f7f8c12",
+    "headers": ["System/Library/Frameworks/AppKit.framework/Headers/AppKit.h"],
+    "parsed_target": "x86_64-apple-macos10.9",
+    "facts": "newer-sdk.tsv",
+    "signatures": "newer-signatures.tsv"
+  },
+  "extractor": {
+    "producer_sha256": "ab3baa857f70fbbed0c58fe7a2dead8ddb3b86430732651add87cd7ff5c4a5eb",
+    "wrapper_sha256": "a7059bde400d157f53f26be75519eac4f00b40058142724e90842ef2143406f1",
+    "clang_package": "22.1.8-mavericks.12",
+    "clang_version": "clang version 22.1.8",
+    "consumed_resource_headers": ["include/__float_float.h", "include/__float_header_macro.h", "include/__float_infinity_nan.h", "include/__stdarg___gnuc_va_list.h", "include/__stdarg___va_copy.h", "include/__stdarg_header_macro.h", "include/__stdarg_va_arg.h", "include/__stdarg_va_copy.h", "include/__stdarg_va_list.h", "include/__stddef_header_macro.h", "include/__stddef_max_align_t.h", "include/__stddef_null.h", "include/__stddef_offsetof.h", "include/__stddef_ptrdiff_t.h", "include/__stddef_rsize_t.h", "include/__stddef_size_t.h", "include/__stddef_wchar_t.h", "include/emmintrin.h", "include/float.h", "include/inttypes.h", "include/limits.h", "include/mm_malloc.h", "include/mmintrin.h", "include/ptrauth.h", "include/stdarg.h", "include/stdbool.h", "include/stddef.h", "include/stdint.h", "include/xmmintrin.h"],
+    "consumed_resource_headers_sha256": "f8a16d9add1a50907b2543c2eb274ed4501684de0014d0b629d1dd3607b04bbd"
+  },
+  "runtime_status": "captured",
+  "runtime": {
+    "os": "10.9.5",
+    "build": "13F1911",
+    "arch": "x86_64",
+    "tool_source_sha256": "d7cea5dc12a2af683f404cda035943fc442995cf3fc806642e56403074b8bfc6",
+    "tool_compiler": "Apple_LLVM_version_6.0_(clang-600.0.57)_(based_on_LLVM_3.5svn)",
+    "host_sdk_sha256": "fcf88ce8ff0dd3248b97f4eb81c7909f2cc786725de277f4d05a2b935cc49de0",
+    "root_selectors": ["autorelease", "class", "conformsToProtocol:", "description", "hash", "isEqual:", "isKindOfClass:", "isMemberOfClass:", "performSelector:", "release", "respondsToSelector:", "retain", "self"],
+    "root_exceptions": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"],
+    "root_subset_exceptions": [{"selector": "autorelease", "kinds": ["+", "-"], "exceptions": ["_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "class", "kinds": ["+"], "exceptions": ["NSLeafProxy", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "release", "kinds": ["+", "-"], "exceptions": ["_NSZombie_", "__NSAtom", "__NSMessageBuilder"]}, {"selector": "retain", "kinds": ["+", "-"], "exceptions": ["_NSZombie_", "__NSAtom", "__NSMessageBuilder"]}],
+    "behavior_classes": ["NSProxy"],
+    "absent_targets": ["NSWorkspace - openURLs:withApplicationAtURL:options:configuration:error:"],
+    "framework_overrides": [{"framework": "Security", "source": "/System/Library/Frameworks/Security.framework/Versions/A/Security.original", "sha256": "d84b99af62c29eb27ede6ed111f799688fd44a22542cc34322ac122ab34341d3", "signature": "anchor-apple", "reason": "system Security replaced by AquaTransport; original binary used"}],
+    "required_images": [
+      {"path": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit", "uuid": "9DC13B27-841D-3839-93B2-3EDE66157BDE"},
+      {"path": "/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork", "uuid": "CAA196FE-BF5A-384F-975E-E0F81359805B"},
+      {"path": "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon", "uuid": "EFC1A1C0-CB07-395A-B038-CFA2E71D3E69"},
+      {"path": "/System/Library/Frameworks/CoreData.framework/Versions/A/CoreData", "uuid": "E78734AA-E3D0-33CB-A014-620BBCAB2E96"},
+      {"path": "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation", "uuid": "729BD6DA-1F63-3E72-A148-26F21EBF52BB"},
+      {"path": "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation", "uuid": "E0B0FAF6-5CA8-3EEB-8BF2-104C0AEEF925"},
+      {"path": "/System/Library/Frameworks/QuartzCore.framework/Versions/A/Frameworks/CoreImage.framework/Versions/A/CoreImage", "uuid": "7B28C3F3-8EB3-3150-A55D-EBCDBDCA4977"},
+      {"path": "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore", "uuid": "CFB972D1-FA37-380C-9A47-2A67A84B7442"},
+      {"path": "/usr/lib/libobjc.A.dylib", "uuid": "AD7FD984-271E-30F4-A361-6B20319EC73B"}
+    ],
+    "loaded_images": 154,
+    "loaded_images_sha256": "e17d6b0a9bc55b8c048be4719b43b3ccf59a95f5f5a552d0c9b2c72d6e8e9ec4",
+    "facts": "floor-runtime.tsv",
+    "cluster_witnesses": "cluster-witnesses.json"
+  },
+  "files": [
+    {"name": "cluster-witnesses.json", "sha256": "523552b50ab985d4dc8555f247a0117e2bfeb63c7ccefd82881a2af70e13ee85", "rows": 6},
+    {"name": "floor-runtime.tsv", "sha256": "d8b7241f29fe68934e82189575b11e1553dc4e4efbd4c67801cd341baac7c50e", "rows": 142773},
+    {"name": "floor-sdk.tsv", "sha256": "f0892f5b6fd7beddf9fcd43d652aa89f39dcbf28b800f879b58d824b4fef32f4", "rows": 12173},
+    {"name": "floor-signatures.tsv", "sha256": "23a29c8605e6caa60a92b0354638d83d3e7b973b8b6b710ca156b0d260eba9d3", "rows": 10737},
+    {"name": "newer-sdk.tsv", "sha256": "1ca8644fd6e7665c0f4b49db787f2938e67e9fc3a1bea3328f7325a6efc1659b", "rows": 22463},
+    {"name": "newer-signatures.tsv", "sha256": "a8fae5eb59c2cf9c70ab638fe24b776489824ec03428382557beec0f67142df0", "rows": 18418}
+  ]
+}

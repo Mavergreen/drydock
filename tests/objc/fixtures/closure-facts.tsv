@@ -1,0 +1,8 @@
+class	-	NSObject	-	-	-	10.0	-	0	usr/include/objc/NSObject.h:50	-
+class	AppKit	NSPasteboard	-	NSObject	-	-	-	0	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:50	-
+class	AppKit	NSWorkspace	-	NSObject	-	-	-	0	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSWorkspace.h:38	-
+class	Foundation	NSArray	-	NSObject	-	-	-	0	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSArray.h:14	-
+class	Foundation	NSDictionary	-	NSObject	-	-	-	0	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSDictionary.h:12	-
+class	Foundation	NSError	-	NSObject	-	-	-	0	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSError.h:36	-
+class	Foundation	NSPropertyListSerialization	-	NSObject	-	-	-	0	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSPropertyList.h:25	-
+class	Foundation	NSString	-	NSObject	-	-	-	0	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSString.h:74	-

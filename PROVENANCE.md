@@ -59,3 +59,17 @@ since merged upstream as PRs #6 and #5.
 The two share the root commit `6cb8675` but diverge above it, because they
 filtered different path sets from different branches. This repo supersedes it;
 the older one can be deleted once nothing is left to salvage from it.
+
+## Objective-C analyzer, imported from shipyard
+
+The Objective-C analyzer (`src/objc/`, `tools/objc-*`, `reference/objc/`, the
+`scripts/objc-*` helpers and `tests/objc/`) was copied byte for byte from
+shipyard at three commits: 28956af,
+4f5049e and c49959c. The last, c49959c, is local only: the "step 0" commit on
+the `objc-inventory-linux` branch, not yet on shipyard main.
+
+The history stays in shipyard (same owner), so nothing was replayed here.
+`tests/objc/IMPORTED.sha256` holds the hashes taken in the shipyard checkout,
+and `tests/objc/import_identity_test.sh` checks the copies against them.
+`components/objc-reference-clang/linux-sha256` is not imported yet: it does not
+exist in shipyard until clang-22's Linux libclang release lands.

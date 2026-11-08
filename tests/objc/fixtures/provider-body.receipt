@@ -1,0 +1,13 @@
+# objc-source-receipt 1
+profile	recaulk-objc-x86_64-10.9
+args	-x objective-c -target x86_64-apple-macos10.9 -isysroot <sdk> -resource-dir <resource> -nostdinc -isystem <resource>/include -isystem <sdk>/usr/include -iframework <sdk>/System/Library/Frameworks -fno-objc-arc -fblocks -Os -fPIC -Wall -Wno-deprecated-declarations
+sdk	018e9f329ba04ee9dd50b870aa1d048af79c8614f52efa6aa26d16a5df511f9b
+input	provider-body.m	a5019a744d93f968eb11161b12f414c4c5a8c91204bcd3960f2a7904a6164072
+input	provider-register.c	1c0e59569f36867d6a798c955f73166be99ba10fb75fb0e5715786471fc62974
+unit	provider-body.m
+unit	provider-register.c
+send	provider-body.m	25:51-25:63	25:42,25:44,25:51	message	-	count	NSArray	NSArray *	NSArray
+send	provider-body.m	34:10-34:25	31:85,34:5,34:9	message	-	isFileURL	NSURL	NSURL *	NSURL
+send	provider-body.m	35:22-35:65	31:85,35:5	message	-	objectForKey:	NSDictionary	NSDictionary *	NSDictionary
+send	provider-body.m	53:12-53:126	31:85,53:5,53:12	message	-	launchApplicationAtURL:options:configuration:error:	NSWorkspace	NSWorkspace *	NSWorkspace
+send	provider-body.m	53:13-53:42	31:85,53:5,53:12	message	+	sharedWorkspace	NSWorkspace	NSWorkspace	NSWorkspace

@@ -1,0 +1,15 @@
+# symbol	demangled (llvm-cxxfilt 22 agrees)	cache static	producer form
+__RINCNCNCNCNCNvNtNtCs6O6z955upT8_10codex_core7session4turn24try_run_sampling_request000s_00lEBg_	codex_core::session::turn::try_run_sampling_request::{closure#0}::{closure#0}::{closure#0}::{closure#1}::{closure#0}::<i32>	-	-
+__RNvMNtCsfbgI1Y5RolW_5plist7integerNtB2_7Integer8from_str	<plist::integer::Integer>::from_str	-	-
+__RNvMNtNtCs2ucXwfqiSr7_5objc215___macro_helpers5cacheNtB2_9CachedSel5fetch	<objc2::__macro_helpers::cache::CachedSel>::fetch	-	sel-fetch
+__RNvMs0_NtCsltbaDnwDLUa_16objc2_foundation6stringNtNtNtB7_9generated10___NSString8NSString8from_str	<objc2_foundation::generated::__NSString::NSString>::from_str	-	nsstring-wrapper
+__RNvMs2_NtCs2ucXwfqiSr7_5objc27runtimeNtB5_3Sel18register_unchecked	<objc2::runtime::Sel>::register_unchecked	-	sel-wrapper
+__RNvMs_NtNtCs2ucXwfqiSr7_5objc215___macro_helpers5cacheNtB4_11CachedClass5fetch	<objc2::__macro_helpers::cache::CachedClass>::fetch	-	class-fetch
+__RNvNCNKNvCs9dR9Abwk5tw_25codex_utils_absolute_path18ABSOLUTE_PATH_BASE0023___RUST_STD_INTERNAL_VAL$tlv$init	codex_utils_absolute_path::ABSOLUTE_PATH_BASE::{K#0}::{closure#0}::__RUST_STD_INTERNAL_VAL	-	-
+__RNvNCNvNtNtCs2ucXwfqiSr7_5objc215___macro_helpers10null_error17create_null_error010CACHED_SEL.0.llvm.17947433011947877056	objc2::__macro_helpers::null_error::create_null_error::{closure#0}::CACHED_SEL	sel-cache	-
+__RNvNCNvNtNtCs2ucXwfqiSr7_5objc215___macro_helpers10null_error17create_null_error0s_10CACHED_SEL.0.llvm.17947433011947877056	objc2::__macro_helpers::null_error::create_null_error::{closure#0}::CACHED_SEL	sel-cache	-
+__RNvNtCsjhCCeTe3XW8_9codex_tui16worktree_browser5fetch	codex_tui::worktree_browser::fetch	-	-
+__RNvNvMs0_NtNtCsc3rn5Z0uvZ2_13objc2_app_kit9generated13___NSWorkspaceNtB7_11NSWorkspace15sharedWorkspace10CACHED_SEL.llvm.14758197362344036277	<objc2_app_kit::generated::__NSWorkspace::NSWorkspace>::sharedWorkspace::CACHED_SEL	sel-cache	-
+__RNvNvMs3_NtNtCsltbaDnwDLUa_16objc2_foundation9generated14___NSDictionaryINtB7_12NSDictionaryppE12objectForKey10CACHED_SEL	<objc2_foundation::generated::__NSDictionary::NSDictionary<_, _>>::objectForKey::CACHED_SEL	sel-cache	-
+__RNvNvMsj_NtNtCsc3rn5Z0uvZ2_13objc2_app_kit9generated13___NSWorkspaceNtB7_11NSWorkspace57openURLs_withApplicationAtURL_options_configuration_error10CACHED_SEL.llvm.14758197362344036277	<objc2_app_kit::generated::__NSWorkspace::NSWorkspace>::openURLs_withApplicationAtURL_options_configuration_error::CACHED_SEL	sel-cache	-
+__RNvNvXsq_NtNtCsltbaDnwDLUa_16objc2_foundation9generated9___NSArrayINtB7_7NSArraypENtNtCs2ucXwfqiSr7_5objc216top_level_traits9ClassType5class12CACHED_CLASS	<objc2_foundation::generated::__NSArray::NSArray<_> as objc2::top_level_traits::ClassType>::class::CACHED_CLASS	class-cache	-

@@ -233,6 +233,9 @@ add_test(NAME family_conventions
           "${MavericksShipyard_SCRIPTS}"
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
+# The imported Objective-C analyzer is byte-identical to shipyard's.
+add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/import_identity_test.sh)
+
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,
 # against synthetic images built in memory. -Wno-unused-function because
 # src/grow.h declares helpers this translation unit does not all call.
