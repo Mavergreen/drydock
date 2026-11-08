@@ -371,9 +371,11 @@ add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/
 
 # platform: host-agnostic -- drydock-objc receipt, on every host (drydock-objc is built on Linux too,
 # with the receipt producer alone). It fetches the pinned clang22 and floor SDK.
+# DRYDOCK_OBJC_ARCH is drydock-objc's own architecture, so a test that has it dlopen a libclang fetches one that
+# carries that architecture, not the shell's: the x86_64 build's tests run on an arm64 Mac under Rosetta.
 add_test(NAME objc_source_inventory_host COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-source-inventory-host-test.sh)
 set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONMENT
-  "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+  "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
 
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
@@ -393,7 +395,7 @@ foreach(t binding classification closure provider reader reference-set report sd
     COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
   if(APPLE)
     set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
   endif()
 endforeach()
 

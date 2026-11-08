@@ -370,9 +370,13 @@ if [ -z "$CLANG" ]; then
 fi
 # spec: components/objc-receipt-clang -- `drydock-objc receipt` takes the receipt's own clang pin (the first clang22 whose
 #       libclang ships everywhere), not the analyzer's: CLANG above still builds the fixtures.
+# platform: drydock-objc dlopens RECEIPT_CLANG's libclang, so it is picked by drydock-objc's architecture (DRYDOCK_OBJC_ARCH,
+#           which CTest sets; a standalone run takes the shell's), not the shell's: the x86_64 build's tests run on an
+#           Apple Silicon Mac under Rosetta, where the clang22-cross pkg's libclang is arm64 alone and the native
+#           clang22 pkg's is x86_64.
 RECEIPT_CLANG=${MAVERGREEN_OBJC_RECEIPT_CLANG_PREFIX:-${MAVERGREEN_OBJC_CLANG_PREFIX:-}}
 if [ -z "$RECEIPT_CLANG" ]; then
-  case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
+  case "${DRYDOCK_OBJC_ARCH:-$(uname -m)}" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
   version=$(tr -d '[:space:]' < "$ROOT/components/objc-receipt-clang/version")
   RECEIPT_CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-receipt-$short-$version")
 fi
