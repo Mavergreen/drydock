@@ -226,6 +226,10 @@ if(NOT APPLE)
   # newer gcc on a non-Apple host raises in it cannot be fixed in the source: it stays -Wall -Wextra there, and
   # only -Werror is dropped, for that one source. The shim and the CLI keep -Werror everywhere.
   set_source_files_properties(tools/objc-source-inventory.c PROPERTIES COMPILE_OPTIONS -Wno-error)
+  # platform: glibc declares vasprintf only under _GNU_SOURCE, which the tool's own _XOPEN_SOURCE 700 does not
+  # imply; the byte-locked source cannot define it, so its compile line does (as shipyard's build did, fac5b3c).
+  # The shim and the CLI call only POSIX functions that _XOPEN_SOURCE 700 declares, and need nothing more.
+  set_property(SOURCE tools/objc-source-inventory.c APPEND PROPERTY COMPILE_DEFINITIONS _GNU_SOURCE)
 endif()
 # The CLI is ours to fix, so it holds the same warnings as the shim, on every host.
 set_source_files_properties(cli/drydock-objc.c PROPERTIES COMPILE_OPTIONS "-Wextra;-Werror")
