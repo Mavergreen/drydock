@@ -391,8 +391,23 @@ foreach(t binding classification closure provider reader reference-set report sd
   else()
     set(f objc-${t}-test.sh)
   endif()
-  drydock_macos_test(objc_${n} "the analyzer front end is Foundation"
-    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
+  if(t STREQUAL "reference-set")
+    # platform: the reference-set test DYLD-inserts fixture dylibs into a system process, which CI's macOS 26 runner
+    # refuses (an arm64 dylib into an arm64e process); in shipyard it was a maintainer test, run by hand on the 10.9
+    # box and the modern Mac. It runs on Darwin 13 (10.9), or anywhere DRYDOCK_OBJC_MAINTAINER=1 asks; elsewhere
+    # it is a skip, exit 77.
+    # Registered here, not through drydock_macos_test: its ARGN would split the script at each semicolon.
+    if(APPLE)
+      add_test(NAME objc_${n} COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ] || [ \"\${DRYDOCK_OBJC_MAINTAINER:-}\" = 1 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: a maintainer test that inserts dylibs into system processes -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1\"; exit 77"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}" objc_${n})
+      set_tests_properties(objc_${n} PROPERTIES SKIP_RETURN_CODE 77)
+    else()
+      drydock_macos_test(objc_${n} "the analyzer front end is Foundation")
+    endif()
+  else()
+    drydock_macos_test(objc_${n} "the analyzer front end is Foundation"
+      COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
+  endif()
   if(APPLE)
     set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
       "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
