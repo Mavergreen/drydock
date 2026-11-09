@@ -1,9 +1,11 @@
 #!/bin/sh
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then runs compare.sh over doctored baselines
 # spec: tests/objc/baseline/compare.sh header -- COMPARE_MODE=fewer-unmeasured lets a report lose only the error kinds
-#       it names, table-byte errors only inside a table the reader lists and "different value" errors only in a
-#       function holding one it follows, and undecoded bytes only by what the listed tables hold; an added error,
-#       or any other lost error, fails. fewer-passed-arguments and the default identical mode refuse all of these.
+#       it names, table-byte errors only inside a table the reader lists, "different value" and "read other" errors
+#       only in a function holding one it follows, "not followed" only at such a function's start, "address taken"
+#       only at a weak import's check, and undecoded bytes only by what the listed tables hold; an added error, or
+#       any other lost error, fails. fewer-passed-arguments and the default identical mode refuse all of these.
+#       COMPARE_RENAMED=1 maps a detail's ": reason" back to the baseline's detail, and nothing else.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
@@ -23,8 +25,10 @@ cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -m
 for c in 0 1; do
   cc -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
+# spec: tests/objc/fixtures/weak-import-check.S header -- FORM 0 a weak import's check, measured
+cc -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClassPair
 sh "$HERE/baseline/record-artifacts.sh" "$DRYDOCK_OBJC" "$ROOT/reference/objc" "$T/base" \
-  jt0 "$T/jt0" - jt1 "$T/jt1" - 2>/dev/null
+  jt0 "$T/jt0" - jt1 "$T/jt1" - weak "$T/weak" - 2>/dev/null
 
 # the table the reader lists for jt0: jmp, table, entries, function start, end
 DRYDOCK_OBJC_JUMP_TABLES=1 "$DRYDOCK_OBJC" analyze --artifact "$T/jt0" --root "$T" --references "$ROOT/reference/objc" \
@@ -44,8 +48,10 @@ doctor() {
 }
 err() { printf '{"code": "%s", "slice": "x86_64", "address": "%s", "detail": "%s"}' "$1" "$2" "$3"; }
 # passes|refuses WHAT [MODE]: compare.sh over the doctored copy $d, in MODE (default fewer-unmeasured)
-passes() { COMPARE_MODE=${2:-fewer-unmeasured} sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1: compare refused it"; }
-refuses() { ! COMPARE_MODE=${2:-fewer-unmeasured} sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1 (${2:-fewer-unmeasured}): compare let it pass"; }
+# RN: COMPARE_RENAMED for them (0 unless a line sets it)
+RN=0
+passes() { COMPARE_RENAMED=$RN COMPARE_MODE=${2:-fewer-unmeasured} sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1: compare refused it"; }
+refuses() { ! COMPARE_RENAMED=$RN COMPARE_MODE=${2:-fewer-unmeasured} sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1 (${2:-fewer-unmeasured}): compare let it pass"; }
 # spec: tests/objc/baseline/compare.sh split_errors -- an empty list is "errors": []}; a full one opens at the end
 #       of its line, one error per line after it
 ONLY='{ if (sub(/"errors": \[\]}$/, "\"errors\": [" e "]}")) n++; print } END { exit n != 1 }'
@@ -61,8 +67,42 @@ doctor jt0 "$ONLY" "$(err indirect-objc-entry "$table" "$READ")"; passes 'a lost
 grep -q '1 fewer errors inside a jump table' "$T/log" || fail 'a lost table error inside the listed table: not counted'
 refuses 'a lost table error' fewer-passed-arguments
 refuses 'a lost table error' identical
-doctor jt0 "$ONLY" "$(err indirect-objc-entry "$fn" "$READ")"; refuses 'a lost table error outside any table'
+doctor jt1 "$FIRST" "$(err indirect-objc-entry "$fn" "$READ")"; refuses 'a lost table error outside any table'
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost table error outside any table: refused for another reason'
+doctor jt0 "$ONLY" "$(err indirect-objc-entry "$fn" "$READ")"; passes 'a lost "read other" error in the function of a followed table'
+grep -q '1 fewer "read other" errors in a followed jump table' "$T/log" || fail 'a lost "read other" error in a followed function: not counted'
+refuses 'a lost "read other" error in a followed function' fewer-passed-arguments
+NOTFOLLOWED='objc entry point loaded in a function whose control flow is not followed'
+doctor jt0 "$ONLY" "$(err indirect-objc-entry "$fn" "$NOTFOLLOWED")"; passes 'a lost "not followed" error at a followed table'"'"'s function'
+grep -q '1 fewer functions whose control flow is not followed' "$T/log" || fail 'a lost "not followed" error: not counted'
+doctor jt0 "$ONLY" "$(err indirect-objc-entry "$(printf '0x%x' $((fn + 1)))" "$NOTFOLLOWED")"
+refuses 'a lost "not followed" error off its function'"'"'s start'
+# spec: tests/objc/baseline/compare.sh header -- an "address taken" error may vanish only at a weak import's check
+check=$(otool -tV "$T/weak" | awk '$2 ~ /^cmpq$/ && $4 ~ /\(%rip\)$/ { printf "0x%s", $1; exit }' | sed 's/^0x0*/0x/')
+[ -n "$check" ] || fail 'weak: otool shows no cmpq of a rip-relative slot'
+doctor weak "$ONLY" "$(err indirect-objc-entry "$check" '_objc_readClassPair address taken')"; passes 'a lost "address taken" error at a weak import'"'"'s check'
+grep -q '1 fewer "address taken" errors at a weak import' "$T/log" || fail 'a lost "address taken" error at the check: not counted'
+refuses 'a lost "address taken" error at the check' fewer-passed-arguments
+wfn=$(nm "$T/weak" | awk '$3 == "_main" { print $1 }' | sed 's/^0*/0x/')
+doctor weak "$ONLY" "$(err indirect-objc-entry "$wfn" '_objc_readClassPair address taken')"; refuses 'a lost "address taken" error elsewhere'
+grep -q '^compare: lost error ' "$T/log" || fail 'a lost "address taken" error elsewhere: refused for another reason'
+# spec: tests/objc/baseline/compare.sh header -- COMPARE_RENAMED=1: a detail may gain only its own ": reason". jt1's
+#       cases are refused "in code reached only through an indirect jump this reader does not follow"; its baseline is
+#       doctored back to the detail before it.
+SEED=': in code reached only through an indirect jump this reader does not follow'
+grep -q "$MERGED$SEED" "$T/base/jt1.objc-compat.json" || fail "jt1's cases are not refused by name"
+doctor jt1 '{ n += gsub(/: in code reached only through an indirect jump this reader does not follow"/, "\""); print } END { exit !n }'
+refuses 'a renamed error' fewer-unmeasured
+grep -q 'new, changed or reordered error' "$T/log" || fail 'a renamed error: refused for another reason'
+RN=1
+passes 'a renamed error, mapped'
+grep -q "^compare: jt1: exit 4, identical apart from analyzer and reference identity and 3 errors renamed\$" "$T/log" || fail 'a renamed error, mapped: not counted as 3'
+passes 'a renamed error, mapped' identical
+doctor jt1 '{ n += gsub(/: in code reached only through an indirect jump this reader does not follow"/, ": stored to memory at 0x1\""); print } END { exit !n }'
+refuses 'a renamed error whose baseline names another reason'
+doctor jt1 '{ n += gsub(/where another path left a different value: in code reached only through an indirect jump this reader does not follow"/, "is returned\""); print } END { exit !n }'
+refuses 'a renamed error whose baseline is another error'
+RN=0
 doctor jt0 "$ONLY" "$(err indirect-objc-entry "$fn" "$MERGED")"; passes 'a lost "different value" error in the function of a followed table'
 refuses 'a lost "different value" error' fewer-passed-arguments
 refuses 'a lost "different value" error' identical

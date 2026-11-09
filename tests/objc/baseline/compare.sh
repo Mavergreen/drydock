@@ -36,10 +36,28 @@
 #              table's bytes (the reader decoded that data as code before);
 #            - before the errors list, a fall in an artifact's "undecoded_code_bytes" of no more than
 #              the listed tables' bytes in all; nothing else there may change.
+#            - one that ends "is read other than to call through it (a spill, a copy or an escape)" inside a
+#              function holding a listed table whose cases it follows (a copy of a register such a table's
+#              cases started unknown in);
+#            - "objc entry point loaded in a function whose control flow is not followed" at the start of a
+#              function holding a listed table whose cases it follows (its table bytes were decoded as code);
+#            - one whose detail ends " address taken" at an instruction otool -tV shows as a `cmp $IMM` of a
+#              rip-relative slot (a weak import's check, src/objc/macho-reader.c scan_function);
 #          As a cross-check, otool -tV must show every listed table: a `cmp $N-1; ja` (or `cmp $N; jae`),
 #          a `leaq T(%rip)` and a `jmpq *reg` (the whole text, or else the table's function alone, as
 #          otool's linear sweep can lose step after data). Each artifact's line counts what it lost by
 #          kind, and names a fall in undecoded bytes.
+#          COMPARE_RENAMED=1, in any mode, lets an indirect-objc-entry error's detail gain a ": reason" that names
+#          its pattern (src/objc/macho-reader.c entry_escapes), and nothing else: the renamed error must be the
+#          baseline's at the same place with the same code, slice and address, its detail the baseline's plus
+#          one of these, each only after the detail it names:
+#            - "is passed as an argument": "this send's selector is not known on every path", "a declaration of
+#              SEL is variadic", "no declaration of SEL was known when this send was read";
+#            - "is returned": "the method's type encoding returns nothing in rax|rdx";
+#            - "is read other than to call through it (a spill, a copy or an escape)": "stored to memory at 0xADDR";
+#            - any of those three, or "is called through where another path left a different value": "in code
+#              reached only through an indirect jump this reader does not follow".
+#          Each artifact's line then counts the renamed errors.
 #          Exit 0 identical, 1 a difference, 2 usage, 4 a stale or missing baseline or input.
 #          Prints "compare: N of N identical apart from analyzer and reference identity" on success.
 set -eu
@@ -112,6 +130,8 @@ blank() {
 
 MODE=${COMPARE_MODE:-identical}
 case $MODE in identical|fewer-passed-arguments|fewer-unmeasured) ;; *) fail "unknown COMPARE_MODE $MODE" ;; esac
+RENAMED=${COMPARE_RENAMED:-0}
+case $RENAMED in 0|1) ;; *) fail "COMPARE_RENAMED is 0 or 1, not $RENAMED" ;; esac
 
 # split_errors REPORT HEAD ERRORS: HEAD gets REPORT up to and including the '"errors": [' that opens
 # its last key, ERRORS one error object per line. The writer puts each error after the first on its
@@ -192,9 +212,17 @@ reader_tables() {
 fewer_errors() {
   split_errors "$1" "$1.head" "$1.errs" && split_errors "$2" "$2.head" "$2.errs" ||
     { echo "compare.sh: $1 or $2 does not end in an errors list" >&2; return 1; }
-  : > "$1.tables"; fell=0
+  : > "$1.tables"; : > "$1.cmps"; fell=0
   if [ "$MODE" = fewer-unmeasured ]; then
     reader_tables "$3" "$4" "$1.tables" || return 1
+    # spec: src/objc/macho-reader.c scan_function -- a weak import's check: the decimal address of each baseline
+    #       "address taken" error that otool shows as a cmp of an immediate with a rip-relative slot
+    sed -n 's/^{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x\([0-9a-f]*\)", "detail": "[^"]* address taken"}$/\1/p' "$1.errs" > "$1.taken"
+    if [ -s "$1.taken" ]; then
+      otool -tV "$4" | awk 'NR == FNR { want[$1] = 1; next }
+        { a = $1; sub(/^0+/, "", a) } (a in want) && $2 ~ /^cmp[bwlq]$/ && $3 ~ /^\$/ && $4 ~ /\(%rip\)$/ { print a }' "$1.taken" - |
+        while read -r a; do printf '%.0f\n' "$((0x$a))"; done > "$1.cmps" || { echo "compare.sh: otool cannot read $4" >&2; return 1; }
+    fi
     # spec: src/objc/main.m -- "undecoded_code_bytes" is the reader's limit_undecoded_bytes; a table read as
     #       data is no longer decoded as code, so it may fall, by at most the listed tables' bytes
     grep -o '"undecoded_code_bytes": [0-9]*' "$1.head" | awk '{ print $2 }' > "$1.ub"
@@ -215,8 +243,9 @@ fewer_errors() {
     diff "$1.head" "$2.head" | cut -c1-300 | head -40 >&2 || true
     return 1
   fi
-  awk -v mode="$MODE" -v tables="$1.tables" -v fell="$fell" '
-       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2]; flo[nt] = r[3]; fhi[nt] = r[4]; st[nt] = r[5] } }
+  awk -v mode="$MODE" -v renamed="$RENAMED" -v tables="$1.tables" -v cmps="$1.cmps" -v fell="$fell" '
+       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2]; flo[nt] = r[3]; fhi[nt] = r[4]; st[nt] = r[5] }
+               while ((getline l < cmps) > 0) cmp[l + 0] = 1 }
        function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
          for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
          return x }
@@ -224,18 +253,42 @@ fewer_errors() {
        function in_table(e,   a, i) { a = addr(e); for (i = 1; i <= nt; i++) if (tlo[i] + 0 <= a && a < thi[i] + 0) return 1; return 0 }
        function in_function(e,   a, i) {
          a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && flo[i] + 0 <= a && a < fhi[i] + 0) return 1; return 0 }
+       function in_start(e,   a, i) {
+         a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && flo[i] + 0 == a) return 1; return 0 }
+       # spec: src/objc/macho-reader.c entry_escapes -- the ": reason" each refusal may name, after its own detail
+       function unrename(e,   d, w, r, j) {
+         if (e !~ /^\{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x[0-9a-f]+", "detail": "objc entry point in [a-z0-9]+ [^"]*"}$/) return e
+         d = substr(e, index(e, "\"detail\": \"") + 11); d = substr(d, 1, length(d) - 2)
+         if ((j = index(d, ": ")) == 0) return e
+         w = substr(d, 1, j - 1); r = substr(d, j + 2)
+         if (w !~ /^objc entry point in [a-z0-9]+ (is passed as an argument|is returned|is read other than to call through it \(a spill, a copy or an escape\)|is called through where another path left a different value)$/) return e
+         if (!(r == "in code reached only through an indirect jump this reader does not follow" ||
+               (w ~ / is passed as an argument$/ && (r == "this send\047s selector is not known on every path" ||
+                  r ~ /^a declaration of [^ ]+ is variadic$/ || r ~ /^no declaration of [^ ]+ was known when this send was read$/)) ||
+               (w ~ / is returned$/ && r ~ /^the method\047s type encoding returns nothing in (rax|rdx)$/) ||
+               (w ~ / is read other than / && r ~ /^stored to memory at 0x[0-9a-f]+$/))) return e
+         return substr(e, 1, index(e, "\"detail\": \"") + 10) w "\"}" }
        function kind(e) {
+         if (mode == "identical") return ""
          if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is passed as an argument"}$/) return "passed"
          if (mode != "fewer-unmeasured") return ""
          if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is called through where another path left a different value"}$/ && in_function(e))
            return "merged"
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "objc entry point loaded in a function whose control flow is not followed"}$/ && in_start(e))
+           return "unfollowed"
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]* address taken"}$/ && ((addr(e) + 0) in cmp))
+           return "weak"
          if ((e ~ /^\{"code": "undecodable-objc-reference", / ||
               (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*(is returned|is read other than to call through it \(a spill, a copy or an escape\))"}$/)) && in_table(e))
            return "table"
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is read other than to call through it \(a spill, a copy or an escape\)"}$/ && in_function(e))
+           return "copied"
          return "" }
        function drop(e,   k) { k = kind(e); if (k == "") { print "compare: lost error " e > "/dev/stderr"; bad = 1 } else lost[k]++ }
        NR == FNR { base[++nb] = $0; next }
-       { for (q = p + 1; q <= nb && base[q] != $0; q++) ;
+       { e = $0
+         if (renamed) { e = unrename($0); if (e != $0) nren++ }
+         for (q = p + 1; q <= nb && base[q] != e; q++) ;
          if (q > nb) { print "compare: new, changed or reordered error " $0 > "/dev/stderr"; bad = 1; next }
          while (p + 1 < q) drop(base[++p])
          p = q }
@@ -244,8 +297,12 @@ fewer_errors() {
              s = ""
              if (lost["passed"]) s = s ", " lost["passed"] " fewer \"is passed as an argument\" errors"
              if (lost["merged"]) s = s ", " lost["merged"] " fewer \"where another path left a different value\" errors"
+             if (lost["copied"]) s = s ", " lost["copied"] " fewer \"read other\" errors in a followed jump table\047s function"
+             if (lost["unfollowed"]) s = s ", " lost["unfollowed"] " fewer functions whose control flow is not followed"
+             if (lost["weak"]) s = s ", " lost["weak"] " fewer \"address taken\" errors at a weak import\047s check"
              if (lost["table"]) s = s ", " lost["table"] " fewer errors inside a jump table"
              if (fell + 0) s = s ", " fell " fewer undecoded bytes"
+             if (nren) s = s ", " nren " errors renamed"
              print substr(s, 3) }' "$1.errs" "$2.errs"
 }
 
@@ -269,7 +326,7 @@ check() {
     blank "$BASELINE_DIR/$name.objc-compat.json" "$WORK/$name.base" || ok=0
     blank "$WORK/$name.json" "$WORK/$name.new" || ok=0
     if [ -f "$WORK/$name.new" ] && ! cmp -s "$WORK/$name.base" "$WORK/$name.new"; then
-      if [ "$MODE" != identical ]; then
+      if [ "$MODE" != identical ] || [ "$RENAMED" = 1 ]; then
         lost=$(fewer_errors "$WORK/$name.base" "$WORK/$name.new" "$WORK/$name.stderr" "$art") || { echo "compare: $name: reports differ" >&2; ok=0; }
       else
         echo "compare: $name: reports differ:" >&2
