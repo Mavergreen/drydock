@@ -49,7 +49,7 @@
 #              objc_getAssociatedObject, objc_setAssociatedObject, objc_removeAssociatedObjects, object_getIvar,
 #              object_setIvar, objc_constructInstance, objc_disposeClassPair, class_respondsToSelector,
 #              protocol_getMethodDescription, class_getInstanceVariable, class_getIvarLayout,
-#              property_copyAttributeList, class_getInstanceMethod, class_getClassMethod, method_getImplementation,
+#              property_copyAttributeList, class_getInstanceMethod, class_getClassMethod,
 #              ivar_getOffset, objc_getProtocol, protocol_getName, class_conformsToProtocol, ivar_getName and
 #              class_getInstanceSize (each with its leading underscore);
 #            - before the errors list, a fall in an artifact's "undecoded_code_bytes" of no more than
@@ -76,7 +76,10 @@
 #              _method_setImplementation, _method_exchangeImplementations and _class_replaceMethod;
 #            - runtime-class-creation, "SYM: a class changed at run time is not the class measured", for
 #              _class_addProtocol, _class_addIvar and _class_addProperty, and "SYM: a class made or reparented at
-#              run time has no measured root" for _objc_initializeClassPair.
+#              run time has no measured root" for _objc_initializeClassPair;
+#            - runtime-imp-lookup, "SYM: the implementation it returns may be called directly, a send this reader
+#              does not see", for _method_getImplementation, _class_getMethodImplementation and
+#              _class_getMethodImplementation_stret.
 #          The report's "runtime_class_creation_sites" may then rise by exactly the runtime-class-creation errors gained,
 #          no more than those that name one of these four imports.
 #          Each artifact's line then counts the renamed errors.
@@ -302,13 +305,15 @@ fewer_errors() {
                          "_objc_constructInstance _objc_disposeClassPair _class_respondsToSelector " \
                          "_protocol_getMethodDescription _class_getInstanceVariable _class_getIvarLayout " \
                          "_property_copyAttributeList _class_getInstanceMethod _class_getClassMethod " \
-                         "_method_getImplementation _ivar_getOffset _objc_getProtocol _protocol_getName " \
+                         "_ivar_getOffset _objc_getProtocol _protocol_getName " \
                          "_class_conformsToProtocol _ivar_getName _class_getInstanceSize", w, " ")
                for (i = 1; i <= n; i++) classified[w[i]] = 1
                n = split("_method_setImplementation _method_exchangeImplementations _class_replaceMethod", w, " ")
                for (i = 1; i <= n; i++) swizzle[w[i]] = 1
                n = split("_class_addProtocol _class_addIvar _class_addProperty", w, " ")
-               for (i = 1; i <= n; i++) changed[w[i]] = 1 }
+               for (i = 1; i <= n; i++) changed[w[i]] = 1
+               n = split("_method_getImplementation _class_getMethodImplementation _class_getMethodImplementation_stret", w, " ")
+               for (i = 1; i <= n; i++) implookup[w[i]] = 1 }
        function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
          for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
          return x }
@@ -321,14 +326,15 @@ fewer_errors() {
        # spec: src/objc/macho-reader.c ROLES -- the code and message each import this piece classified as swizzling
        #       or class creation is refused with, mapped back to its unclassified-objc-runtime-import error
        function unrole(e,   c, d, j, sym, r) {
-         if (e !~ /^\{"code": "(runtime-method-swizzle|runtime-class-creation)", "slice": "[^"]*", "address": "0x[0-9a-f]+", "detail": "[^"]*"}$/) return e
+         if (e !~ /^\{"code": "(runtime-method-swizzle|runtime-class-creation|runtime-imp-lookup)", "slice": "[^"]*", "address": "0x[0-9a-f]+", "detail": "[^"]*"}$/) return e
          c = substr(e, 11); c = substr(c, 1, index(c, "\"") - 1)
          d = substr(e, index(e, "\"detail\": \"") + 11); d = substr(d, 1, length(d) - 2)
          if ((j = index(d, ": ")) == 0) return e
          sym = substr(d, 1, j - 1); r = substr(d, j + 2)
          if (!((c == "runtime-method-swizzle" && (sym in swizzle) && r == "a method implementation replaced at run time is not measured") ||
                (c == "runtime-class-creation" && (sym in changed) && r == "a class changed at run time is not the class measured") ||
-               (c == "runtime-class-creation" && sym == "_objc_initializeClassPair" && r == "a class made or reparented at run time has no measured root")))
+               (c == "runtime-class-creation" && sym == "_objc_initializeClassPair" && r == "a class made or reparented at run time has no measured root") ||
+               (c == "runtime-imp-lookup" && (sym in implookup) && r == "the implementation it returns may be called directly, a send this reader does not see")))
            return e
          return "{\"code\": \"unclassified-objc-runtime-import\", " substr(e, index(e, "\"slice\": "), index(e, ", \"detail\": ") - index(e, "\"slice\": ")) ", \"detail\": \"" sym "\"}" }
        # spec: src/objc/macho-reader.c entry_escapes -- the ": reason" each refusal may name, after its own detail

@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
     sink = (void *)(uintptr_t)class_conformsToProtocol(c, objc_getProtocol("MGPropsProtocol"));
     sink = (void *)class_getIvarLayout(c);
     sink = property_copyAttributeList(prop, &n);
-    sink = (void *)method_getImplementation(class_getInstanceMethod(c, @selector(mgPropsRequired)));
+    sink = class_getInstanceMethod(c, @selector(mgPropsRequired));
     sink = class_getClassMethod(c, @selector(alloc));
     sink = (void *)ivar_getName(iv);
     sink = object_getIvar(p, iv);

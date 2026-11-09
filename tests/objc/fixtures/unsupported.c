@@ -19,8 +19,8 @@ int main(int argc, char **argv) {
     /* A class name computed at runtime. */
     return objc_getClass(getenv("CLASS")) != NULL;
 #elif FORM == 3
-    /* A libobjc import outside the table: class_getMethodImplementation may send +initialize and
-     * +resolveInstanceMethod:, and answers an IMP for an arbitrary send. */
+    /* An IMP fetched for an arbitrary send: a call through it is a dispatch this reader does not see
+     * (runtime-imp-lookup). */
     return class_getMethodImplementation(objc_getClass("NSObject"), sel_registerName("description")) != NULL;
 #elif FORM == 4
     /* objc_msgSend's address escapes into data: sends through it are unexaminable. */

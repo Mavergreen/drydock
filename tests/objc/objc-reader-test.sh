@@ -162,7 +162,7 @@ read_artifact "$T/noslice"; refused noslice no-x86_64-slice
 cp "$T/objc2" "$T/stripped"; chmod u+w "$T/stripped"; strip "$T/stripped"
 read_artifact "$T/stripped"; refused stripped computed-selector-producer
 # spec: src/objc/macho-reader.c header -- a call that makes a class at run time (objc_allocateClassPair) is runtime-class-creation.
-for form in 1:computed-selector-producer 2:computed-class-producer 3:unclassified-objc-runtime-import \
+for form in 1:computed-selector-producer 2:computed-class-producer 3:runtime-imp-lookup \
             4:indirect-objc-entry 5:computed-selector-producer 6:runtime-class-creation; do
   n=${form%%:*}
   cc -DFORM="$n" "$FX/unsupported.c" -o "$T/unsupported$n" -lobjc -Wl,-U,_NSSelectorFromString
@@ -175,7 +175,7 @@ cc "$T/props.o" -o "$T/props" -framework Foundation -lobjc
 for f in objc_getProperty objc_setProperty objc_setProperty_atomic objc_setProperty_nonatomic objc_setProperty_atomic_copy \
          objc_setProperty_nonatomic_copy objc_getAssociatedObject objc_setAssociatedObject objc_removeAssociatedObjects \
          class_respondsToSelector protocol_getMethodDescription class_getInstanceVariable class_getIvarLayout \
-         property_copyAttributeList class_getInstanceMethod class_getClassMethod method_getImplementation ivar_getOffset \
+         property_copyAttributeList class_getInstanceMethod class_getClassMethod ivar_getOffset \
          objc_getProtocol protocol_getName class_conformsToProtocol object_getIvar object_setIvar ivar_getName \
          class_getInstanceSize objc_constructInstance objc_disposeClassPair; do
   nm -u "$T/props" | grep -qx "_$f" || fail "props: does not import $f"
@@ -200,6 +200,16 @@ cc -DFORM=8 "$FX/swizzle.m" -o "$T/swizzle8" -framework Foundation -lobjc
 read_artifact "$T/swizzle8"
 measured 'swizzle form 8 (class_addMethod)'
 has method-registration 8=class_addMethod
+# spec: src/objc/macho-reader.c ROLES -- method_getImplementation and class_getMethodImplementation[_stret] answer an
+#       IMP whose call is a send this reader cannot see: runtime-imp-lookup.
+for form in 1:_method_getImplementation 2:_class_getMethodImplementation 3:_class_getMethodImplementation_stret; do
+  n=${form%%:*}; sym=${form#*:}
+  cc -DFORM="$n" "$FX/imp-lookup.c" -o "$T/implookup$n" -lobjc
+  read_artifact "$T/implookup$n"; refused "imp lookup form $n" runtime-imp-lookup
+  grep "^error	runtime-imp-lookup	.*	$sym: the implementation it returns may be called directly" "$T/out" >/dev/null ||
+    fail "imp lookup form $n: runtime-imp-lookup does not name $sym"
+  grep '^error	unclassified-objc-runtime-import	' "$T/out" >/dev/null && fail "imp lookup form $n: still unclassified"
+done
 # spec: src/objc/macho-reader.c role_of -- a libobjc import outside the table is still refused.
 cc "$FX/unlisted-runtime.S" -o "$T/unlisted" -lobjc -Wl,-U,_objc_setHook_getClass
 read_artifact "$T/unlisted"; refused 'an unlisted runtime import' unclassified-objc-runtime-import

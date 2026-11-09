@@ -15,7 +15,10 @@
  *     runtime-class-creation wherever they are: such a class has no root or shape this reader
  *     can measure;
  *   - calls that replace a method's implementation at run time (method_setImplementation,
- *     method_exchangeImplementations, class_replaceMethod), refused as runtime-method-swizzle.
+ *     method_exchangeImplementations, class_replaceMethod), refused as runtime-method-swizzle;
+ *   - calls that answer a method's implementation (method_getImplementation,
+ *     class_getMethodImplementation[_stret]), refused as runtime-imp-lookup: a call through
+ *     the answer is a send this reader cannot see.
  * A class record says when its superclass slot is a measured null (symbol "root": a root class
  * of the artifact's own) or could not be read (symbol "unmeasured"); classify.c decides what that
  * means for R1.
@@ -122,7 +125,7 @@ enum { REG_RAX = 0, REG_RCX = 1, REG_RDX = 2, REG_RSP = 4, REG_RBP = 5, REG_RSI 
  * family that is absent from this table is refused rather than assumed harmless. */
 typedef enum { IMP_OTHER, IMP_SEL_PRODUCER, IMP_SEL_PRODUCER_NSSTRING, IMP_CLASS_PRODUCER,
                IMP_CLASS_PRODUCER_NSSTRING, IMP_DISPATCH, IMP_MEMORY, IMP_PASSTHROUGH, IMP_INTROSPECT,
-               IMP_REGISTRATION, IMP_CLASS_CREATION, IMP_SWIZZLE, IMP_UNCLASSIFIED } ImportRole;
+               IMP_REGISTRATION, IMP_CLASS_CREATION, IMP_SWIZZLE, IMP_IMP_LOOKUP, IMP_UNCLASSIFIED } ImportRole;
 
 static const struct { const char *name; ImportRole role; } ROLES[] = {
     { "_sel_registerName", IMP_SEL_PRODUCER }, { "_sel_getUid", IMP_SEL_PRODUCER },
@@ -160,20 +163,23 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
     { "_sel_isEqual", IMP_INTROSPECT }, { "_NSStringFromSelector", IMP_INTROSPECT },
     { "_NSStringFromClass", IMP_INTROSPECT },
     { "_class_copyMethodList", IMP_INTROSPECT }, { "_method_getName", IMP_INTROSPECT },
+    /* spec: the 10.9 libobjc (/usr/lib/libobjc.A.dylib on 10.9.5) exports objc_getProperty, objc_setProperty and
+     *       its four _atomic/_nonatomic[_copy] forms, and objc_initializeClassPair, though the 10.9 SDK's objc
+     *       headers do not declare them (objc4-551.1 declares them in objc-abi.h and objc-internal.h). */
     /* spec: objc4-551.1 (the 10.9 libobjc), runtime/Accessors.subproj/objc-accessors.mm objc_getProperty_non_gc,
      *       reallySetProperty, objc_setProperty_non_gc and objc_setProperty_{atomic,nonatomic}[_copy]: the getter
      *       is objc_retain then objc_autoreleaseReturnValue (atomic) or a plain load; the setters send
      *       copyWithZone: or mutableCopyWithZone:, or call objc_retain, then objc_release the old value. Under GC
      *       (objc_*_gc) they send copyWithZone:/mutableCopyWithZone: and store with objc_assign_ivar. NSObject
-     *       answers copyWithZone: and mutableCopyWithZone: on 10.9 (NSObject.mm); no other message is sent. */
+     *       answers copyWithZone: and mutableCopyWithZone: on 10.9 (NSObject.mm); they send no other message. */
     { "_objc_getProperty", IMP_MEMORY }, { "_objc_setProperty", IMP_MEMORY },
     { "_objc_setProperty_atomic", IMP_MEMORY }, { "_objc_setProperty_nonatomic", IMP_MEMORY },
     { "_objc_setProperty_atomic_copy", IMP_MEMORY }, { "_objc_setProperty_nonatomic_copy", IMP_MEMORY },
     /* spec: objc4-551.1 objc-runtime.mm objc_{get,set}AssociatedObject_non_gc and objc_removeAssociatedObjects;
      *       objc-references.mm _object_get_associative_reference, acquireValue, releaseValue and
-     *       _object_remove_assocations: the only messages are retain, autorelease, copy and release, each
-     *       through objc_msgSend from the runtime; the GC variants send copy only. NSObject answers all four on
-     *       10.9 (NSObject.mm; -copy is [self copyWithZone:nil]). */
+     *       _object_remove_assocations: they send retain, autorelease, copy and release, each through
+     *       objc_msgSend from the runtime, and no other message; the GC variants send copy only. NSObject answers
+     *       all four on 10.9 (NSObject.mm; -copy is [self copyWithZone:nil]). */
     { "_objc_getAssociatedObject", IMP_MEMORY }, { "_objc_setAssociatedObject", IMP_MEMORY },
     { "_objc_removeAssociatedObjects", IMP_MEMORY },
     /* spec: objc4-551.1 objc-class.mm object_getIvar (objc_loadWeak -- NSObject.mm: objc_loadWeakRetained then
@@ -192,20 +198,19 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
     { "_objc_disposeClassPair", IMP_MEMORY },
     /* spec: objc4-551.1, each reading the runtime's tables and sending no message:
      *       objc-runtime-new.mm protocol_getMethodDescription (protocol_getMethod), class_getIvarLayout,
-     *       property_copyAttributeList, method_getImplementation, ivar_getOffset, ivar_getName, objc_getProtocol,
-     *       protocol_getName, class_conformsToProtocol; objc-class.mm class_getInstanceVariable (_class_getVariable),
+     *       property_copyAttributeList, ivar_getOffset, ivar_getName, objc_getProtocol, protocol_getName,
+     *       class_conformsToProtocol; objc-class.mm class_getInstanceVariable (_class_getVariable),
      *       class_getInstanceSize.
-     *       class_respondsToSelector (objc-class.mm), class_getInstanceMethod (objc-runtime-new.mm) and
-     *       class_getClassMethod (objc-class.mm, class_getInstanceMethod of the metaclass) look up with
-     *       initialize NO and resolver YES: on a miss, lookUpImpOrForward calls _class_resolveMethod
-     *       (objc-class.mm), which sends +resolveInstanceMethod: or +resolveClassMethod: only when the class's
-     *       metaclass implements it. NSObject does on 10.9 (NSObject.mm), so any class answers it. Their only
-     *       other effect is realizing the class, which sends nothing. method_getImplementation answers an IMP; a
-     *       call through it is an indirect call the reader does not see as a send. */
+     * spec: objc4-551.1 -- class_respondsToSelector (objc-class.mm), class_getInstanceMethod (objc-runtime-new.mm)
+     *       and class_getClassMethod (objc-class.mm, class_getInstanceMethod of the metaclass) may send
+     *       +resolveInstanceMethod: or +resolveClassMethod:, and no other message: they look up with initialize
+     *       NO and resolver YES, and on a miss lookUpImpOrForward calls _class_resolveMethod (objc-class.mm),
+     *       which sends the resolver when the class's metaclass implements it. NSObject answers both on 10.9
+     *       (NSObject.mm). Their only other effect is realizing the class, which sends nothing. */
     { "_class_respondsToSelector", IMP_INTROSPECT }, { "_protocol_getMethodDescription", IMP_INTROSPECT },
     { "_class_getInstanceVariable", IMP_INTROSPECT }, { "_class_getIvarLayout", IMP_INTROSPECT },
     { "_property_copyAttributeList", IMP_INTROSPECT }, { "_class_getInstanceMethod", IMP_INTROSPECT },
-    { "_class_getClassMethod", IMP_INTROSPECT }, { "_method_getImplementation", IMP_INTROSPECT },
+    { "_class_getClassMethod", IMP_INTROSPECT },
     { "_ivar_getOffset", IMP_INTROSPECT }, { "_objc_getProtocol", IMP_INTROSPECT },
     { "_protocol_getName", IMP_INTROSPECT }, { "_class_conformsToProtocol", IMP_INTROSPECT },
     { "_ivar_getName", IMP_INTROSPECT }, { "_class_getInstanceSize", IMP_INTROSPECT },
@@ -227,6 +232,14 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
      *       (addMethod, replace NO) only adds where no method is, and keeps IMP_REGISTRATION above. */
     { "_method_setImplementation", IMP_SWIZZLE }, { "_method_exchangeImplementations", IMP_SWIZZLE },
     { "_class_replaceMethod", IMP_SWIZZLE },
+    /* Answers a method's implementation: a call through it is a send that bypasses the dispatch entry points,
+     * which this reader cannot see, so always cannot-measure, runtime-imp-lookup. (A deviation from the design,
+     * which had method_getImplementation IMP_INTROSPECT: soundness wins.)
+     * spec: objc4-551.1 objc-runtime-new.mm method_getImplementation (m->imp); objc-class.mm
+     *       class_getMethodImplementation (lookUpImpOrNil with initialize and resolver YES, else _objc_msgForward)
+     *       and class_getMethodImplementation_stret (the same, _objc_msgForward_stret). */
+    { "_method_getImplementation", IMP_IMP_LOOKUP }, { "_class_getMethodImplementation", IMP_IMP_LOOKUP },
+    { "_class_getMethodImplementation_stret", IMP_IMP_LOOKUP },
 };
 
 static ImportRole role_of(const char *sym, const char *dylib) {
@@ -2939,6 +2952,9 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
                     break;
                 case IMP_SWIZZLE:
                     fail(s, "runtime-method-swizzle", site, "%s: a method implementation replaced at run time is not measured", p->name);
+                    break;
+                case IMP_IMP_LOOKUP:
+                    fail(s, "runtime-imp-lookup", site, "%s: the implementation it returns may be called directly, a send this reader does not see", p->name);
                     break;
                 case IMP_REGISTRATION:
                     if (add_ev(s, OBJC_EV_METHOD_REGISTRATION, site, target, NULL, NULL, NULL, p->name + 1, NULL))

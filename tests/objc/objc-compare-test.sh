@@ -32,8 +32,10 @@ cc -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClass
 #       tests/objc/fixtures/unsupported.c FORM 6 objc_allocateClassPair
 for f in 1 4; do cc -O1 -DFORM=$f "$FX/swizzle.m" -o "$T/sw$f" -framework Foundation -lobjc; done
 cc -O1 -DFORM=6 "$FX/unsupported.c" -o "$T/made" -lobjc
+# spec: tests/objc/fixtures/imp-lookup.c header -- FORM 1 method_getImplementation
+cc -O1 -DFORM=1 "$FX/imp-lookup.c" -o "$T/imp" -lobjc
 sh "$HERE/baseline/record-artifacts.sh" "$DRYDOCK_OBJC" "$ROOT/reference/objc" "$T/base" \
-  jt0 "$T/jt0" - jt1 "$T/jt1" - jt14 "$T/jt14" - weak "$T/weak" - sw1 "$T/sw1" - sw4 "$T/sw4" - made "$T/made" - 2>/dev/null
+  jt0 "$T/jt0" - jt1 "$T/jt1" - jt14 "$T/jt14" - weak "$T/weak" - sw1 "$T/sw1" - sw4 "$T/sw4" - made "$T/made" - imp "$T/imp" - 2>/dev/null
 
 # the table the reader lists for jt0: jmp, table, entries, function start, end
 DRYDOCK_OBJC_JUMP_TABLES=1 "$DRYDOCK_OBJC" analyze --artifact "$T/jt0" --root "$T" --references "$ROOT/reference/objc" \
@@ -137,13 +139,15 @@ refuses 'a lost unclassified _objc_disposeClassPair' fewer-passed-arguments
 refuses 'a lost unclassified _objc_disposeClassPair' identical
 # the ones this piece makes runtime-method-swizzle or runtime-class-creation are renamed, never lost
 for sym in _method_setImplementation _method_exchangeImplementations _class_replaceMethod _class_addProtocol _class_addIvar \
-           _class_addProperty _objc_initializeClassPair _class_addMethod; do
+           _class_addProperty _objc_initializeClassPair _class_addMethod _method_getImplementation \
+           _class_getMethodImplementation_stret; do
   doctor jt0 "$ONLY" "$(err unclassified-objc-runtime-import "$fn" "$sym")"; refuses "a lost unclassified $sym"
   grep -q '^compare: lost error ' "$T/log" || fail "a lost unclassified $sym: refused for another reason"
 done
 # spec: tests/objc/baseline/compare.sh header -- COMPARE_RENAMED=1: an unclassified-objc-runtime-import error may become
 #       runtime-method-swizzle (method_setImplementation, method_exchangeImplementations, class_replaceMethod) or
-#       runtime-class-creation (class_addProtocol, class_addIvar, class_addProperty, objc_initializeClassPair) at the same
+#       runtime-class-creation (class_addProtocol, class_addIvar, class_addProperty, objc_initializeClassPair) or
+#       runtime-imp-lookup (method_getImplementation, class_getMethodImplementation[_stret]) at the same
 #       place, its detail the symbol's; nothing else. Each baseline is doctored back to the unclassified error.
 # unclassify NAME CODE SYMBOL [AS]: NAME's CODE error naming SYMBOL becomes unclassified AS (default SYMBOL); a
 #       runtime-class-creation error leaves "runtime_class_creation_sites" one lower unless KEEP_SITES is set
@@ -179,6 +183,10 @@ refuses 'a class change renamed from unclassified, runtime_class_creation_sites 
 grep -q 'runtime_class_creation_sites 1 -> 1 is not the 1 runtime-class-creation errors renamed' "$T/log" ||
   fail 'runtime_class_creation_sites not risen: refused for another reason'
 unclassify made runtime-class-creation _objc_allocateClassPair; refuses 'a class creation this piece did not classify, renamed'
+unclassify imp runtime-imp-lookup _method_getImplementation; passes 'an imp lookup renamed from unclassified'
+grep -q '^compare: imp: exit 4, identical apart from analyzer and reference identity and 1 errors renamed$' "$T/log" ||
+  fail 'an imp lookup renamed from unclassified: not counted as 1'
+unclassify imp runtime-imp-lookup _method_getImplementation _class_getInstanceMethod; refuses 'an imp lookup renamed from another symbol'
 RN=0
 # jt1's table is not followed: its "different value" errors may not vanish
 doctor jt1 "$FIRST" "$(err indirect-objc-entry "$jmp" "$MERGED")"
