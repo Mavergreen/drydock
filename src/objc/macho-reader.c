@@ -206,7 +206,7 @@ typedef struct {
     struct { uint64_t lo, hi; } *dice; size_t ndice;
     uint64_t *fetch_arg_sites; size_t nfas, capfas;
     const char *cur_fn;                 /* symbol of the function being scanned, or NULL */
-    struct { uint64_t jmp, target; } *jt; size_t njt, capjt;   /* the scanned function's inline jump tables */
+    struct { uint64_t jmp, target, table, first; uint32_t n; } *jt; size_t njt, capjt;   /* the scanned function's inline jump tables: one per entry */
     int status;
     int quiet;                          /* an image view: record no dylibs */
 } Slice;
@@ -1715,21 +1715,45 @@ static int sse_flagless(const Ins *x) {
                            (op >= 0xC4 && op <= 0xC6) || op == 0xC2 || (op >= 0xD0 && op <= 0xFE && op != 0xF7));
 }
 
-/* Whether code at ips[a..b) leaves the flags of ins[a-1] and the table sequence's registers `keep`:
- * moves, as -O0 writes them, and -O3's instructions that write no flags and neither read nor write
- * a register in keep (SSE arithmetic, between the ja and the lea). */
-static int flags_kept(const Ins *ins, size_t a, size_t b, uint16_t keep) {
-    for (; a < b; a++) {
-        const Ins *x = &ins[a];
-        int r;
-        if (x->map == 0 && (x->op == 0x88 || x->op == 0x89 || x->op == 0x8A || x->op == 0x8B || x->op == 0x8D ||
-                            x->op == 0xC6 || x->op == 0xC7 || x->op == 0x63))
-            continue;
-        if (x->map == 1 && (x->op == 0xB6 || x->op == 0xB7 || x->op == 0xBE || x->op == 0xBF)) continue;
-        if (!sse_flagless(x) || (gpr_reads(x) & keep)) return 0;
-        for (r = 0; r < 16; r++) if ((keep & (1u << r)) && may_write(x, r)) return 0;
-    }
+/* A register-to-register mov of 32 or 64 bits: its destination then holds its source's value. */
+static int rr_move(const Ins *x, int *dst, int *src) {
+    if (!(x->map == 0 && (x->op == 0x89 || x->op == 0x8B) && x->modrm && x->mod == 3 && !x->p66)) return 0;
+    *dst = x->op == 0x89 ? x->rm : x->reg; *src = x->op == 0x89 ? x->reg : x->rm;
     return 1;
+}
+
+/* Whether ins[j+1..b) -- from the bound's cmp at j through its ja, the lea at a, to the movsxd at b
+ * -- keeps the bound on the table's index I. `bound` holds the compared register and any register
+ * a mov copied it to just before the cmp. Before the lea each instruction must leave the flags:
+ *   - a move (as -O0 writes them); one that writes a register makes that register bound only if
+ *     it copies a bound one, so a move may overwrite R or D (the lea and movsxd write them again)
+ *     but I only from the compared register or a copy of it;
+ *   - or one that writes no flags (an sse_flagless instruction: -O3's arithmetic between the ja and
+ *     the lea) and neither reads nor writes R, D, I or a bound register.
+ * Between the lea and the movsxd, whatever jump_table_at let through (nothing writing R); any
+ * write there to a bound register unbinds it. I must be bound at the movsxd. */
+static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, int R, int D, uint16_t bound) {
+    int I = ins[b].sibindex;
+    size_t k;
+    for (k = j + 1; k < b; k++) {
+        const Ins *x = &ins[k];
+        int dst, src, r;
+        if (k == ja) continue;
+        if (k < a && !(x->map == 0 && (x->op == 0x88 || x->op == 0x89 || x->op == 0x8A || x->op == 0x8B || x->op == 0x8D ||
+                                       x->op == 0xC6 || x->op == 0xC7 || x->op == 0x63)) &&
+            !(x->map == 1 && (x->op == 0xB6 || x->op == 0xB7 || x->op == 0xBE || x->op == 0xBF))) {
+            uint16_t keep = (uint16_t)(bound | (1u << R) | (1u << D) | (1u << I));
+            if (!sse_flagless(x) || (gpr_reads(x) & keep)) return 0;
+            for (r = 0; r < 16; r++) if ((keep & (1u << r)) && may_write(x, r)) return 0;
+            continue;
+        }
+        if (rr_move(x, &dst, &src)) {
+            if (bound & (1u << src)) bound |= (uint16_t)(1u << dst); else bound &= (uint16_t)~(1u << dst);
+            continue;
+        }
+        for (r = 0; r < 16; r++) if (may_write(x, r)) bound &= (uint16_t)~(1u << r);
+    }
+    return (bound >> I) & 1;
 }
 
 /* An inline jump table at T, the form clang writes into __text for a switch when no data-in-code
@@ -1737,11 +1761,12 @@ static int flags_kept(const Ins *ins, size_t a, size_t b, uint16_t keep) {
  *     cmp|sub idx, N-1 ; (moves) ; ja default
  *     lea R, [rip + T] ; movsxd D, dword [R + I*4] ; add D, R ; jmp D
  * with N int32 entries at T, each T plus itself an instruction start already decoded in this
- * function before T. Clang at -O3 puts other instructions between the ja and the lea (SSE arithmetic:
- * iTerm2 3.0.15's +[PseudoTerminal drawArrangementPreview:screenFrames:]); flags_kept takes one that
- * writes no flags and neither reads nor writes the compared register, R, D or the index I. Recognised
- * only whole: the bound, the four instructions (nothing between them writing R or D) and every
- * entry; then each target is recorded as the jmp's successor and
+ * function before T. The index I is the compared register, or a copy of it made by a mov just
+ * before the cmp or between the cmp and the movsxd; clang at -O3 also puts SSE arithmetic between
+ * the ja and the lea (iTerm2 3.0.15's +[PseudoTerminal drawArrangementPreview:screenFrames:]):
+ * bound_kept says what may stand there. Recognised only whole: the bound, the four instructions
+ * (nothing between them writing R) and every entry; then each target is recorded as the jmp's
+ * successor and
  * the 4N bytes are data, so the reader does not decode them as code. Returns 4N, or 0 when the
  * bytes at T are not such a table (they are then decoded as before). -1 out of memory. */
 static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, const uint8_t *at,
@@ -1749,9 +1774,10 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
     size_t a, b, c, d, e, j;
     for (a = 0; a < n; a++) {
         const Ins *l = &ins[a];
-        int R, D, ja = -1;
+        int R, D, ja = -1, C = -1, md, ms;
         int64_t N = -1;
-        uint16_t keep;
+        uint16_t bound;
+        size_t first;
         if (!(l->map == 0 && l->op == 0x8D && (l->rex & 8) && l->riprel && l->riptarget == t)) continue;
         R = l->reg;
         for (b = a + 1; b < n && b < a + 12; b++) {
@@ -1769,29 +1795,28 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
             continue;
         d = c + 1;
         if (!(d < n && is_ff(&ins[d], 4) && ins[d].mod == 3 && ins[d].rm == D)) continue;
-        /* The bound: the nearest ja/jae before the lea, after a cmp/sub of an immediate with only
-         * moves between. */
+        /* The bound: the nearest ja/jae before the lea, after a cmp/sub of an immediate (bound_kept). */
         for (j = a; j-- > 0 && j + 12 > a; ) {
             const Ins *x = &ins[j];
             if ((x->map == 0 && (x->op == 0x77 || x->op == 0x73)) || (x->map == 1 && (x->op == 0x87 || x->op == 0x83))) { ja = (int)j; break; }
             if (ends_flow(x) || is_call_any(x)) break;
         }
-        keep = (uint16_t)((1u << R) | (1u << D) | (1u << ins[b].sibindex));
-        if (ja < 0 || !flags_kept(ins, (size_t)ja + 1, a, keep)) continue;
+        if (ja < 0) continue;
         for (j = (size_t)ja; j-- > 0 && j + 6 > (size_t)ja; ) {
             const Ins *x = &ins[j];
             if (x->map == 0 && (x->op == 0x81 || x->op == 0x83) && x->modrm && x->mod == 3 &&
-                ((x->reg & 7) == 7 || (x->reg & 7) == 5) && x->imm >= 0) {
-                if (!flags_kept(ins, j + 1, (size_t)ja, (uint16_t)(keep | (1u << x->rm)))) break;
-                N = x->imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
-                break;
-            }
-            if (x->map == 0 && x->op == 0x3D && x->imm >= 0) {
-                if (!flags_kept(ins, j + 1, (size_t)ja, (uint16_t)(keep | (1u << REG_RAX)))) break;
-                N = x->imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
-                break;
-            }
+                ((x->reg & 7) == 7 || (x->reg & 7) == 5) && x->imm >= 0) { C = x->rm; break; }
+            if (x->map == 0 && x->op == 0x3D && x->imm >= 0) { C = REG_RAX; break; }
         }
+        if (C < 0) continue;
+        bound = (uint16_t)(1u << C);
+        first = j;
+        if (j > 0 && rr_move(&ins[j - 1], &md, &ms) && (md == C || ms == C)) {   /* mov I, C ; cmp C */
+            bound |= (uint16_t)((1u << md) | (1u << ms));
+            first = j - 1;
+        }
+        if (!bound_kept(ins, j, (size_t)ja, a, b, R, D, bound)) continue;
+        N = ins[j].imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
         if (N < 1 || N > 4096 || (uint64_t)N * 4 > hi - t) continue;
         for (e = 0; e < (size_t)N; e++) {
             int32_t off;
@@ -1809,7 +1834,8 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
                 if (!g) return -1;
                 s->jt = g;
             }
-            s->jt[s->njt].jmp = ips[d]; s->jt[s->njt].target = t + (uint64_t)(int64_t)off; s->njt++;
+            s->jt[s->njt].jmp = ips[d]; s->jt[s->njt].target = t + (uint64_t)(int64_t)off;
+            s->jt[s->njt].table = t; s->jt[s->njt].first = ips[first]; s->jt[s->njt].n = (uint32_t)N; s->njt++;
         }
         return N * 4;
     }
@@ -2568,6 +2594,38 @@ static const char *function_name(const Slice *s, uint64_t start) {
     return lo < s->nsym && s->syms[lo].addr == start ? s->syms[lo].name : NULL;
 }
 
+/* Once the function [lo, hi) is decoded: a table's bound holds only if its sequence -- the mov or
+ * cmp jump_table_at began it at, through the jmp -- is entered at its start. A direct branch, or a
+ * table entry, to any later instruction of it leaves that table's cases reached only indirectly; its
+ * bytes stay data. With DRYDOCK_OBJC_JUMP_TABLES set, each table is listed on stderr (compare.sh):
+ *     drydock-objc-jump-table TAB jmp TAB table TAB entries TAB function-start TAB function-end
+ *         TAB followed|data TAB function-name */
+static void jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo, uint64_t hi,
+                      const uint64_t *ips, const Ins *ins, size_t n) {
+    const char *trace = getenv("DRYDOCK_OBJC_JUMP_TABLES");
+    size_t g, e, k, i, keep = 0;
+    for (g = 0; g < s->njt; g = e) {
+        int dead = 0;
+        for (e = g; e < s->njt && s->jt[e].jmp == s->jt[g].jmp; e++)
+            if (s->jt[e].target > s->jt[g].first && s->jt[e].target <= s->jt[g].jmp) dead = 1;
+        for (i = 0; i < s->njt && !dead; i++)
+            if (s->jt[i].target > s->jt[g].first && s->jt[i].target <= s->jt[g].jmp) dead = 1;
+        for (k = 0; k < n && !dead; k++) {
+            uint64_t tg;
+            if (!is_jcc(&ins[k]) && !is_jmp_rel(&ins[k])) continue;
+            tg = (uint64_t)rel_target(base + (ips[k] - x->addr), &ins[k], ips[k]);
+            if (tg > s->jt[g].first && tg <= s->jt[g].jmp) dead = 1;
+        }
+        if (trace && *trace)
+            fprintf(stderr, "drydock-objc-jump-table\t0x%llx\t0x%llx\t%u\t0x%llx\t0x%llx\t%s\t%s\n",
+                    (unsigned long long)s->jt[g].jmp, (unsigned long long)s->jt[g].table, s->jt[g].n,
+                    (unsigned long long)lo, (unsigned long long)hi, dead ? "data" : "followed",
+                    s->cur_fn ? s->cur_fn : "-");
+        if (!dead) for (i = g; i < e; i++) s->jt[keep++] = s->jt[i];
+    }
+    s->njt = keep;
+}
+
 /* One function [lo, hi) of code section x. Site-level refusals are recorded and the scan
  * continues, so one report lists every unsupported form; any of them still fails the stage. */
 static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
@@ -2619,6 +2677,7 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
     }
     free(cand);
     if (!n) return s->status;
+    jt_settle(s, x, base, lo, hi, *ipbuf, *insbuf, n);
     memset(&flow, 0, sizeof flow);
 
 #define REG_VAL(reg, va, def) reg_value(s, &flow, base, x->addr, *ipbuf, *insbuf, n, k, reg, va, def)

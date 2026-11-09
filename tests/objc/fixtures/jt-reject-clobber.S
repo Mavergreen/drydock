@@ -11,6 +11,8 @@
  *   CLOBBER 1  the twin: a cvttsd2si between the ja and the lea writes eax, the table's index, so the
  *              bound no longer bounds it: not a table this reader takes apart, so the cases stay
  *              reached only indirectly: cannot-measure
+ *   CLOBBER 2  the twin by a move: `movl %ebx, %eax` between the ja and the lea writes the index from a
+ *              register that is not the compared one (r14) nor a copy of it: cannot-measure
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -51,6 +53,8 @@ _main:
 	divpd %xmm1, %xmm2
 #if CLOBBER == 1
 	cvttsd2si %xmm2, %eax
+#elif CLOBBER == 2
+	movl %ebx, %eax
 #endif
 	leaq Ltable(%rip), %rcx
 	movslq (%rcx,%rax,4), %rax
