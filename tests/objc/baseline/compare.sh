@@ -52,7 +52,8 @@
 #          baseline's at the same place with the same code, slice and address, its detail the baseline's plus
 #          one of these, each only after the detail it names:
 #            - "is passed as an argument": "this send's selector is not known on every path", "a declaration of
-#              SEL is variadic", "no declaration of SEL was known when this send was read";
+#              SEL is variadic", "a declaration of SEL takes argument registers this reader does not count",
+#              "no declaration of SEL was known when this send was read";
 #            - "is returned": "the method's type encoding returns nothing in rax|rdx";
 #            - "is read other than to call through it (a spill, a copy or an escape)": "stored to memory at 0xADDR";
 #            - any of those three, or "is called through where another path left a different value": "in code
@@ -264,7 +265,8 @@ fewer_errors() {
          if (w !~ /^objc entry point in [a-z0-9]+ (is passed as an argument|is returned|is read other than to call through it \(a spill, a copy or an escape\)|is called through where another path left a different value)$/) return e
          if (!(r == "in code reached only through an indirect jump this reader does not follow" ||
                (w ~ / is passed as an argument$/ && (r == "this send\047s selector is not known on every path" ||
-                  r ~ /^a declaration of [^ ]+ is variadic$/ || r ~ /^no declaration of [^ ]+ was known when this send was read$/)) ||
+                  r ~ /^a declaration of [^ ]+ (is variadic|takes argument registers this reader does not count)$/ ||
+                  r ~ /^no declaration of [^ ]+ was known when this send was read$/)) ||
                (w ~ / is returned$/ && r ~ /^the method\047s type encoding returns nothing in (rax|rdx)$/) ||
                (w ~ / is read other than / && r ~ /^stored to memory at 0x[0-9a-f]+$/))) return e
          return substr(e, 1, index(e, "\"detail\": \"") + 10) w "\"}" }

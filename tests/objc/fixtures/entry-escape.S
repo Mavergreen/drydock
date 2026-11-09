@@ -6,6 +6,8 @@
  *
  *   _unknown_colon      a send of a colon selector no catalog or method list declares: unbounded
  *   _format             a send of stringWithFormat:, which is variadic: unbounded
+ *   _uncounted          a send of NSBitmapImageRep's initWithBitmapDataPlanes:...bitsPerPixel:,
+ *                       whose eleven parameter GPRs are more than six: unbounded
  *   _stret_shift        an objc_msgSend_stret send of rectOfRow: (one parameter): the hidden
  *                       result pointer shifts it, so rdi, rsi, rdx and rcx -- rcx IS its argument
  *   _c_noreturn_params  a call to __assert_rtn, which never returns and takes four parameters:
@@ -25,6 +27,8 @@ L_sel_format:
 	.asciz "stringWithFormat:"
 L_sel_rectOfRow:
 	.asciz "rectOfRow:"
+L_sel_uncounted:
+	.asciz "initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bitmapFormat:bytesPerRow:bitsPerPixel:"
 	.section __DATA,__objc_selrefs,literal_pointers,no_dead_strip
 	.p2align 3
 L_selref_unknown:
@@ -33,6 +37,8 @@ L_selref_format:
 	.quad L_sel_format
 L_selref_rectOfRow:
 	.quad L_sel_rectOfRow
+L_selref_uncounted:
+	.quad L_sel_uncounted
 	.section __DATA,__objc_classrefs,regular,no_dead_strip
 	.p2align 3
 L_classref_NSString:
@@ -49,6 +55,7 @@ _main:
 	movq %rsp, %rbp
 	callq _unknown_colon
 	callq _format
+	callq _uncounted
 	callq _stret_shift
 	callq _c_noreturn_params
 	xorl %eax, %eax
@@ -86,6 +93,24 @@ _format:
 	movq L_selref_format(%rip), %rsi
 	xorl %edx, %edx
 	xorl %eax, %eax
+	callq *%rbx
+	popq %rbx
+	popq %r15
+	popq %rbp
+	retq
+
+	.p2align 4
+_uncounted:
+	pushq %rbp
+	movq %rsp, %rbp
+	pushq %r15
+	pushq %rbx
+	movq _objc_msgSend@GOTPCREL(%rip), %r15
+	movq %r15, %rcx
+	movq %rcx, %rbx
+	movq L_classref_NSString(%rip), %rdi
+	movq L_selref_uncounted(%rip), %rsi
+	xorl %edx, %edx
 	callq *%rbx
 	popq %rbx
 	popq %r15

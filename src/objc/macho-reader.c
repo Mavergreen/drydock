@@ -2369,6 +2369,7 @@ static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip
             const char *w = objc_selector_unbounded_why(s->a, sel);
             if (w && !strcmp(w, "variadic")) snprintf(why, whysz, "a declaration of %s is variadic", sel);
             else if (w && !strcmp(w, "undeclared")) snprintf(why, whysz, "no declaration of %s was known when this send was read", sel);
+            else if (w && !strcmp(w, "uncounted")) snprintf(why, whysz, "a declaration of %s takes argument registers this reader does not count", sel);
         }
     } else
         n = objc_import_gprs(s->a, p->name, p->lib);

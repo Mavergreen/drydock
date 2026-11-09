@@ -279,12 +279,14 @@ art="$T/entry-escape"
 cc22 "$FX/entry-escape.S" -o "$art" -framework Foundation -lobjc
 read_refs "$art"
 refused 'entry-escape' indirect-objc-entry
-# spec: src/objc/macho-reader.c call_arg_regs -- an unbounded send names why: no declaration, or a variadic one.
+# spec: src/objc/macho-reader.c call_arg_regs -- an unbounded send names why: no declaration, a variadic one, or one whose
+#       argument registers it does not count (over six, or a type it cannot classify).
 passed_at _unknown_colon '*%rbx' 'no declaration of zzNoSuchSelector: was known when this send was read'
 passed_at _format '*%rbx' 'a declaration of stringWithFormat: is variadic'
+passed_at _uncounted '*%rbx' 'a declaration of initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bitmapFormat:bytesPerRow:bitsPerPixel: takes argument registers this reader does not count'
 passed_at _stret_shift '*%rbx'
 passed_at _c_noreturn_params ___assert_rtn
-[ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 4 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
+[ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 5 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
 # spec: src/objc/macho-reader.c entry_escapes -- an entry point left in rax or rdx at a method's return stays refused; the
 #       detail names a register the method's own type encoding returns nothing in (tests/objc/fixtures/return-register.S).
 art="$T/return-register"
