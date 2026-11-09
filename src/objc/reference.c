@@ -11,7 +11,20 @@
  * Either may be absent; closure then leaves open whatever needed it. A present but unreadable,
  * malformed or truncated file is cannot-measure, never a partial load. The analyzer points both at
  * the versioned set (reference/objc), whose manifest main.m verifies first; the rest of that set
- * loads below (objc_load_reference_set). */
+ * loads below (objc_load_reference_set).
+ *
+ * Stated limit, argument registers (the section of that name below). spec: the compiled-reader design's
+ * "Argument registers at a dispatch call" -- the bound is closed-world: it assumes every call was
+ * compiled against one of the known declarations: the SDK signature catalogs, the analyzed images'
+ * own methods, or the floor function catalogs with their hand-written builtins.
+ *   - A call compiled against some other declaration of a known colon selector -- from a private
+ *     framework, or an embedded framework the analysis did not read -- could set more registers than
+ *     the bound, and an entry point held in one of them would not count as an argument.
+ *   - A selector without a colon is exact by Objective-C semantics, not by the catalogs: a method
+ *     without parameters cannot read an argument register, so even a cast call that passes extra
+ *     values hands them to nothing that reads them.
+ * Method type encodings carry no variadic marker, so the analyzed images' own methods are taken as
+ * not variadic. */
 #include "report.h"
 #include <errno.h>
 #include <stdio.h>
@@ -647,11 +660,17 @@ int objc_function_gprs(const ObjcAnalysis *a, const char *sym) {
 
 enum { EB_NONE, EB_SSE, EB_INT };
 
+/* Past any type qualifiers: const, in, inout, out, bycopy, byref, oneway, atomic. */
+static const char *skip_qualifiers(const char *p) {
+    while (*p && strchr("rnNoORVA", *p)) p++;
+    return p;
+}
+
 /* Skips one type without classifying it (a pointee, a result). NULL when malformed. */
 static const char *skip_type(const char *p, int depth) {
     char open, close;
     int level = 0;
-    while (*p && strchr("rnNoORVA", *p)) p++;
+    p = skip_qualifiers(p);
     if (depth > 32 || !*p) return NULL;
     if (*p == '^') return skip_type(p + 1, depth + 1);
     if (*p == '@') {
@@ -697,7 +716,7 @@ static size_t align_of(const char *p, int depth) {
  * gives its size and alignment. Returns the rest, or NULL when it is not classifiable. */
 static const char *layout(const char *p, size_t off, int eb[2], size_t *size, size_t *align, int depth) {
     int cls = EB_INT;
-    while (*p && strchr("rnNoORVA", *p)) p++;
+    p = skip_qualifiers(p);
     if (depth > 32) return NULL;
     switch (*p) {
     case 'c': case 'C': case 'B': *size = 1; break;
@@ -748,12 +767,13 @@ static const char *layout(const char *p, size_t off, int eb[2], size_t *size, si
     return p + 1;
 }
 
-/* One argument: its GPRs, *size the bytes clang's frame gives it. -1 when not classifiable. */
-static int param_gprs(const char **pp, size_t *size) {
-    const char *p = *pp;
+/* One argument: its GPRs; *size the bytes clang's frame gives it; *aggregate whether it is a struct
+ * or array. -1 when not classifiable. */
+static int param_gprs(const char **pp, size_t *size, int *aggregate) {
+    const char *p = skip_qualifiers(*pp);
     int eb[2] = { EB_NONE, EB_NONE }, n = 0, k;
     size_t align;
-    while (*p && strchr("rnNoORVA", *p)) p++;
+    *aggregate = *p == '{' || *p == '[';
     if (*p == '[') {   /* a C array parameter is a pointer */
         if (!(*pp = layout(p, 0, eb, size, &align, 0))) return -1;
         *size = 8;
@@ -762,7 +782,9 @@ static int param_gprs(const char **pp, size_t *size) {
     if (!(*pp = layout(p, 0, eb, size, &align, 0))) return -1;
     if (*size > 16) return 0;   /* MEMORY: on the stack */
     for (k = 0; k < 2; k++) n += eb[k] == EB_INT;
-    if (*size < 4) *size = 4;
+    /* spec: clang's getObjCEncodingTypeSize widens a scalar (an enum encodes as its integer) under 4
+     * bytes to 4; a small struct keeps its size (v26@0:8{?=s}16@18, measured with clang 22). */
+    if (!*aggregate && *size < 4) *size = 4;
     return n;
 }
 
@@ -775,26 +797,28 @@ static int frame_offset(const char **pp, unsigned long *v) {
     return 1;
 }
 
+/* Offsets are all or nothing: the frame size and every argument's offset, self's 0 first, each the
+ * end of the one before; or none at all. Without them a struct's layout is a guess, so an aggregate
+ * argument is -1; scalars, pointers and objects still count. */
 int objc_encoding_gprs(const char *types) {
     const char *p = types;
-    unsigned long frame = 0, off = 0, prev_off = 0;
-    size_t prev_size = 0, size;
-    int have_frame, have_prev = 0, args = 0, total = 0, g;
+    unsigned long frame = 0, off = 0, end = 0;
+    size_t size;
+    int offsets, args = 0, total = 0, g, aggregate;
     if (!p || !(p = skip_type(p, 0))) return -1;
-    have_frame = frame_offset(&p, &frame);
+    offsets = frame_offset(&p, &frame);
     while (*p) {
-        const char *t = p;
-        while (*t && strchr("rnNoORVA", *t)) t++;
+        const char *t = skip_qualifiers(p);
         if (args == 0 && *t != '@') return -1;
         if (args == 1 && *t != ':') return -1;
-        if ((g = param_gprs(&p, &size)) < 0) return -1;
-        if (frame_offset(&p, &off)) {
-            if (have_prev && off - prev_off != prev_size) return -1;
-            have_prev = 1; prev_off = off; prev_size = size;
-        } else if (have_prev) return -1;   /* offsets on some arguments only */
+        if ((g = param_gprs(&p, &size, &aggregate)) < 0) return -1;
+        if (frame_offset(&p, &off) != offsets) return -1;
+        if (offsets) {
+            if (off != end) return -1;
+            end = off + size;
+        } else if (aggregate) return -1;
         if (args++ >= 2) total += g;
     }
-    if (args < 2) return -1;
-    if (have_prev && have_frame && frame - prev_off != prev_size) return -1;
+    if (args < 2 || (offsets && frame != end)) return -1;
     return total <= GPR_ARGS ? total : -1;
 }

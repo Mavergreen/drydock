@@ -100,8 +100,17 @@ q 'enc	v24@0:8@"NSString"16' | is enc_class_named 1
 q 'enc	v40@0:8@?16^?24r*32' | is enc_block_fnptr_cstr 3
 q 'enc	{CGRect={CGPoint=dd}{CGSize=dd}}16@0:8' | is enc_struct_result 0
 q 'enc	v@:@' | is enc_no_offsets 1
+q 'enc	v@:^{x=ii}r*#:' | is enc_no_offsets_scalars 4
+q 'enc	v26@0:8{?=s}16@18' | is enc_small_struct_unwidened 2
+# Without offsets an aggregate's layout is a guess; offsets are on every argument or none.
+q 'enc	v@:{?=ii}' | is enc_no_offsets_struct -1
+q 'enc	v@:[4i]' | is enc_no_offsets_array -1
+q 'enc	v@:{?=ii}@16' | is enc_some_offsets -1
+q 'enc	v24@0:8@' | is enc_last_offset_missing -1
+q 'enc	v@0:8@16' | is enc_no_frame -1
+q 'enc	v24@8:16@24' | is enc_self_not_first -1
 # encoding_unknown: a union, bitfield, long double or anything unrecognised.
-q 'enc	{weird=b3}' | is encoding_unknown -1
+q 'enc	v24@0:8{weird=b3}16' | is encoding_unknown -1
 q 'enc	v24@0:8(?=id)16' | is enc_union -1
 q 'enc	v32@0:8{?=b3i}16' | is enc_bitfield -1
 q 'enc	v48@0:8D32' | is enc_long_double -1
