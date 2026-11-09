@@ -260,10 +260,14 @@ fewer_errors() {
     grep -o '"undecoded_code_bytes": [0-9]*' "$1.head" | awk '{ print $2 }' > "$1.ub"
     grep -o '"undecoded_code_bytes": [0-9]*' "$2.head" | awk '{ print $2 }' > "$2.ub"
     room=$(awk '{ r += $2 - $1 } END { printf "%.0f", r }' "$1.tables")
-    if [ "$(wc -l < "$1.ub")" != "$(wc -l < "$2.ub")" ] ||
-       ! fell=$(paste -d ' ' "$1.ub" "$2.ub" | awk -v room="$room" '
-           $2 + 0 > $1 + 0 { bad = 1 } { f += $1 - $2 } END { if (bad || f > room + 0) exit 1; printf "%.0f", f }')
-    then
+    fell_ok=1
+    if [ "$(wc -l < "$1.ub")" = "$(wc -l < "$2.ub")" ]; then
+      fell=$(paste -d ' ' "$1.ub" "$2.ub" | awk -v room="$room" '
+           $2 + 0 > $1 + 0 { bad = 1 } { f += $1 - $2 } END { if (bad || f > room + 0) exit 1; printf "%.0f", f }') || fell_ok=0
+    else
+      fell_ok=0
+    fi
+    if [ "$fell_ok" = 0 ]; then
       echo "compare: undecoded_code_bytes rose, or fell by more than the listed jump tables' $room bytes:" $(cat "$1.ub") "->" $(cat "$2.ub") >&2
       return 1
     fi
