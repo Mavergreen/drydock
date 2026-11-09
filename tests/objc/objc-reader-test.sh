@@ -188,6 +188,16 @@ for n in 2 3 4 5 6 7 8 9 11; do
   cc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
 done
+# spec: src/objc/macho-reader.c scan_function -- a weak import's check, `cmpq $0, GOT(_objc_readClassPair)` (libarclite in
+#       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other
+#       read of the slot but a load is still "address taken".
+for n in 0 1; do
+  cc -DFORM="$n" "$FX/weak-import-check.S" -o "$T/weak$n" -lobjc -Wl,-U,_objc_readClassPair
+done
+read_artifact "$T/weak0"; measured 'weak import check'
+[ "$(count dispatch-call)" = 1 ] || fail "weak import check: $(count dispatch-call) sends, want 1"
+read_artifact "$T/weak1"; refused 'weak import check, an add' indirect-objc-entry
+grep '^error	indirect-objc-entry	.*	_objc_readClassPair address taken$' "$T/out" >/dev/null || fail 'weak import check, an add: not address taken'
 # spec: src/objc/macho-reader.c "Argument registers" -- bounded, isEqual:'s one parameter is rdx: still passed.
 for n in 2 9; do
   read_refs "$T/hoisted$n"; refused "hoisted entry point form $n, bounded" indirect-objc-entry

@@ -2868,7 +2868,11 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
             if (q && q->role != IMP_OTHER && q->role != IMP_MEMORY && q->role != IMP_PASSTHROUGH && q->role != IMP_INTROSPECT) {
                 if (in->map == 0 && in->op == 0x8B && (in->rex & 8)) {   /* settled by a call reg below */
                     if (pending_entry(s, &entries, &nentries, site)) { flow_free(&flow); return s->status; }
-                } else fail(s, "indirect-objc-entry", site, "%s address taken", q->name);
+                } else if (!(in->map == 0 && (in->op == 0x80 || in->op == 0x81 || in->op == 0x83) && (in->reg & 7) == 7))
+                    fail(s, "indirect-objc-entry", site, "%s address taken", q->name);
+                /* else `cmp [rip+slot], imm`: a weak import's check (libarclite's
+                 * `cmpq $0, GOT(_objc_readClassPair)`) writes only the flags; no copy of the
+                 * entry point leaves the slot. */
                 continue;
             }
             tx = sect_of(s, t);
