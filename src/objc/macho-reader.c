@@ -170,8 +170,11 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
      *       reallySetProperty, objc_setProperty_non_gc and objc_setProperty_{atomic,nonatomic}[_copy]: the getter
      *       is objc_retain then objc_autoreleaseReturnValue (atomic) or a plain load; the setters send
      *       copyWithZone: or mutableCopyWithZone:, or call objc_retain, then objc_release the old value. Under GC
-     *       (objc_*_gc) they send copyWithZone:/mutableCopyWithZone: and store with objc_assign_ivar. NSObject
-     *       answers copyWithZone: and mutableCopyWithZone: on 10.9 (NSObject.mm); they send no other message. */
+     *       (objc_*_gc) they send copyWithZone:/mutableCopyWithZone: and store with objc_assign_ivar; they send no
+     *       other message. NSObject.mm defines only the class methods +copyWithZone: and +mutableCopyWithZone:,
+     *       so an instance does not answer them: the copy variants send copyWithZone: or mutableCopyWithZone:
+     *       to the value, whose class must adopt NSCopying (NSMutableCopying) -- the obligation an explicit
+     *       -copy or -mutableCopy carries, which this reader does not measure here. */
     { "_objc_getProperty", IMP_MEMORY }, { "_objc_setProperty", IMP_MEMORY },
     { "_objc_setProperty_atomic", IMP_MEMORY }, { "_objc_setProperty_nonatomic", IMP_MEMORY },
     { "_objc_setProperty_atomic_copy", IMP_MEMORY }, { "_objc_setProperty_nonatomic_copy", IMP_MEMORY },
@@ -205,7 +208,8 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
      *       and class_getClassMethod (objc-class.mm, class_getInstanceMethod of the metaclass) may send
      *       +resolveInstanceMethod: or +resolveClassMethod:, and no other message: they look up with initialize
      *       NO and resolver YES, and on a miss lookUpImpOrForward calls _class_resolveMethod (objc-class.mm),
-     *       which sends the resolver when the class's metaclass implements it. NSObject answers both on 10.9
+     *       which sends the resolver when the class's metaclass implements it (and the +initialize any first send
+     *       to a class carries, which NSObject answers on 10.9). NSObject answers both resolvers on 10.9
      *       (NSObject.mm). Their only other effect is realizing the class, which sends nothing. */
     { "_class_respondsToSelector", IMP_INTROSPECT }, { "_protocol_getMethodDescription", IMP_INTROSPECT },
     { "_class_getInstanceVariable", IMP_INTROSPECT }, { "_class_getIvarLayout", IMP_INTROSPECT },

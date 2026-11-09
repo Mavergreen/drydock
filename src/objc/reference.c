@@ -20,6 +20,9 @@
  *   - A call compiled against some other declaration of a known colon selector -- from a private
  *     framework, or an embedded framework the analysis did not read -- could set more registers than
  *     the bound, and an entry point held in one of them would not count as an argument.
+ *   - A method added at run time by class_addMethod brings its own type string at that call site;
+ *     the reader does not note it as a declaration, so a send compiled against it is bounded by the
+ *     known declarations of its selector only.
  *   - A selector without a colon is exact by Objective-C semantics, not by the catalogs: a method
  *     without parameters cannot read an argument register, so even a cast call that passes extra
  *     values hands them to nothing that reads them.
