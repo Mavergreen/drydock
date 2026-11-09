@@ -18,6 +18,13 @@
 #          record the provider prefix codex-rebuilt was analyzed with), COMPARE_REFERENCES (the reference set, instead of the one beside the shipyard
 #          INPUTS names; a negative control points it at an edited copy), COMPARE_WORK (scratch
 #          directory, default a fresh mktemp one, removed on exit unless set).
+#          COMPARE_MODE=fewer-passed-arguments (default: identical) also lets a report's "errors" list,
+#          its last key, lose entries whose detail ends "is passed as an argument" -- what bounding a
+#          call's argument registers by its declarations may remove (src/objc/macho-reader.c
+#          "Argument registers") -- and nothing else: everything before that list must still be byte
+#          for byte the baseline's after the blanking above, the remaining errors must be the
+#          baseline's in the baseline's order, and no error may be new or changed. The exit status
+#          must still match. Each artifact's line then says how many such errors it lost.
 #          Exit 0 identical, 1 a difference, 2 usage, 4 a stale or missing baseline or input.
 #          Prints "compare: N of N identical apart from analyzer and reference identity" on success.
 set -eu
@@ -88,6 +95,52 @@ blank() {
       -e "s/$REFS_RE/\"references\": {\"manifest_sha256\": \"\", \"files\": []}/" "$1" > "$2"
 }
 
+MODE=${COMPARE_MODE:-identical}
+case $MODE in identical|fewer-passed-arguments) ;; *) fail "unknown COMPARE_MODE $MODE" ;; esac
+
+# split_errors REPORT HEAD ERRORS: HEAD gets REPORT up to and including the '"errors": [' that opens
+# its last key, ERRORS one error object per line. The writer puts each error after the first on its
+# own line, separated by ",<newline>  ", and closes the list with "]}"; a JSON string holds no raw newline.
+split_errors() {
+  awk -v head="$2" -v errs="$3" '
+    { line[NR] = $0 }
+    END {
+      for (i = NR; i >= 1 && !(k = index(line[i], "\"errors\": [")); i--) ;
+      if (!i) exit 1
+      for (j = 1; j < i; j++) print line[j] > head
+      print substr(line[i], 1, k + 10) > head
+      rest[0] = substr(line[i], k + 11); n = 0
+      for (j = i + 1; j <= NR; j++) rest[++n] = line[j]
+      printf "" > errs
+      for (j = 0; j <= n; j++) {
+        e = rest[j]; sub(/^  /, "", e)
+        if (e == "" && j < n) continue   # the list opens at the end of its line
+        if (j == n) { if (!sub(/]}$/, "", e)) exit 1 } else if (!sub(/,$/, "", e)) exit 1
+        if (e != "") print e > errs
+      }
+    }' "$1"
+}
+
+# fewer_passed BASE NEW: 0 when NEW's report differs from BASE's only by errors it lost whose detail ends
+# "is passed as an argument"; prints how many. Otherwise 1, with what differs on stderr.
+fewer_passed() {
+  split_errors "$1" "$1.head" "$1.errs" && split_errors "$2" "$2.head" "$2.errs" ||
+    { echo "compare.sh: $1 or $2 does not end in an errors list" >&2; return 1; }
+  if ! cmp -s "$1.head" "$2.head"; then
+    echo "compare: reports differ before their errors:" >&2
+    diff "$1.head" "$2.head" | cut -c1-300 | head -40 >&2 || true
+    return 1
+  fi
+  awk 'NR == FNR { base[++nb] = $0; next }
+       function drop(e) { return e ~ /"detail": "[^"]*is passed as an argument"}$/ }
+       { for (q = p + 1; q <= nb && base[q] != $0; q++) ;
+         if (q > nb) { print "compare: new, changed or reordered error " $0 > "/dev/stderr"; bad = 1; next }
+         while (p + 1 < q) { if (!drop(base[++p])) { print "compare: lost error " base[p] > "/dev/stderr"; bad = 1 } else lost++ }
+         p = q }
+       END { while (p < nb) { if (!drop(base[++p])) { print "compare: lost error " base[p] > "/dev/stderr"; bad = 1 } else lost++ }
+             if (bad) exit 1; print lost + 0 }' "$1.errs" "$2.errs"
+}
+
 status=0; total=0; same=0
 check() {
   name=$1; art=$2; shift 2
@@ -97,7 +150,7 @@ check() {
   "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$(dirname "$art")" --references "$REFS" \
     --report "$WORK/$name.json" --mode strict "$@" 2> "$WORK/$name.stderr" || rc=$?
   was=$(cat "$BASELINE_DIR/$name.exit")
-  ok=1
+  ok=1; lost=0
   if [ "$rc" != "$was" ]; then
     echo "compare: $name: exit $rc, baseline $was" >&2; ok=0
   fi
@@ -107,12 +160,18 @@ check() {
     blank "$BASELINE_DIR/$name.objc-compat.json" "$WORK/$name.base" || ok=0
     blank "$WORK/$name.json" "$WORK/$name.new" || ok=0
     if [ -f "$WORK/$name.new" ] && ! cmp -s "$WORK/$name.base" "$WORK/$name.new"; then
-      echo "compare: $name: reports differ:" >&2
-      diff "$WORK/$name.base" "$WORK/$name.new" | cut -c1-300 | head -40 >&2 || true
-      ok=0
+      if [ "$MODE" = fewer-passed-arguments ]; then
+        lost=$(fewer_passed "$WORK/$name.base" "$WORK/$name.new") || { echo "compare: $name: reports differ" >&2; ok=0; }
+      else
+        echo "compare: $name: reports differ:" >&2
+        diff "$WORK/$name.base" "$WORK/$name.new" | cut -c1-300 | head -40 >&2 || true
+        ok=0
+      fi
     fi
   fi
-  if [ "$ok" = 1 ]; then
+  if [ "$ok" = 1 ] && [ "$lost" != 0 ]; then
+    same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity and $lost fewer \"is passed as an argument\" errors"
+  elif [ "$ok" = 1 ]; then
     same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity"
   else
     status=1; echo "compare: $name: DIFFERS" >&2
