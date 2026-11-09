@@ -3,9 +3,9 @@
 set -eu
 unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH SDKROOT CCC_OVERRIDE_OPTIONS
 fail() { echo "objc-sdk-inventory: $*" >&2; exit 4; }
-usage() { echo 'usage: objc-sdk-inventory.sh --clang-prefix PREFIX --sdk SDKROOT --header HEADER [--header HEADER ...] [--signature-output FILE]' >&2; exit 2; }
+usage() { echo 'usage: objc-sdk-inventory.sh --clang-prefix PREFIX --sdk SDKROOT --header HEADER [--header HEADER ...] [--signature-output FILE] [--function-output FILE]' >&2; exit 2; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-prefix= sdk= headers=0 signatures=
+prefix= sdk= headers=0 signatures= functions=
 parse() {
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || usage
@@ -14,6 +14,7 @@ while [ "$#" -gt 0 ]; do
     --clang-prefix) [ -z "$prefix" ] || usage; prefix=$2 ;;
     --sdk) [ -z "$sdk" ] || usage; sdk=$2 ;;
     --signature-output) [ -z "$signatures" ] || usage; signatures=$2 ;;
+    --function-output) [ -z "$functions" ] || usage; functions=$2 ;;
     --header) headers=$((headers + 1)) ;;
     *) usage ;;
   esac

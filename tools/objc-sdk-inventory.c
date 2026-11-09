@@ -3,10 +3,10 @@
  * Standard output: the eleven TAB-separated fact columns (record, framework, owner, kind, name,
  * ABI encoding, introduced, deprecated, unavailable, source, container), sorted and unique.
  *
- * --signature-output FILE: a companion, schema 1, for the declared result of every method and
- * property getter. First line "# objc-signatures 1", then sorted unique rows:
+ * --signature-output FILE: a companion, schema 2, for the declared result and parameters of every
+ * method and property getter. First line "# objc-signatures 2", then sorted unique rows:
  *   1 record (method, property-get, protocol-method, protocol-property-get) 2 owner 3 kind
- *   4 selector 5 result kind 6 result class or "-" 7 source 8 container.
+ *   4 selector 5 result kind 6 result class or "-" 7 source 8 container 9 gprs 10 variadic.
  * The result kind comes from the declared libclang type, never from the ABI encoding (which
  * spells every object "@"): "class" for a pointer to a named interface (protocol qualifiers and
  * typedef aliases looked through, a forward @class included), "instancetype", "id" for id and
@@ -15,6 +15,23 @@
  * never changes the eleven columns. It is exclusive and atomic: an existing destination,
  * symlink or not, is refused before parsing; signatures are written to a temporary beside it
  * and linked into place only after the facts succeeded, so a failure leaves nothing behind.
+ *
+ * gprs is the number of general-purpose argument registers the declared parameters take under the
+ * SysV x86_64 calling convention, not counting self and _cmd (a getter takes 0). Each parameter's
+ * canonical type: a pointer, integer, enum, BOOL, block or Objective-C object takes 1 (an __int128
+ * takes 2); float and double take 0; a struct of at most 16 bytes takes one per eightbyte holding
+ * an integer or pointer (an NSRange takes 2, a struct of two doubles 0); a larger aggregate is
+ * passed in memory and takes 0. Whatever this producer cannot classify with certainty (a union, a
+ * bitfield, a misaligned field, long double, a vector, a complex, an unprototyped function) makes
+ * the whole count "-", which consumers read as unbounded. variadic is 1 for a "..." declaration.
+ *
+ * --function-output FILE: a catalog, schema 1, of the C function prototypes the parsed headers
+ * declare (the SDK's and the explicit headers'; the compiler resource directory's are left out).
+ * First line "# objc-functions 1", then one row per name, sorted:
+ *   1 function (the C name as the source spells it, no Mach-O underscore) 2 gprs 3 variadic
+ *   4 noreturn 5 source (of the first declaration in sorted order).
+ * Redeclarations are merged: gprs is "-" unless every declaration agrees, and variadic or noreturn is
+ * 1 if any declaration says so. It is exclusive and atomic, as the signature companion is.
  *
  * After a successful parse, stderr carries one "objc-sdk-inventory: resource-header PATH" line per
  * file included from below the compiler resource directory, PATH relative to it, sorted. */
@@ -38,6 +55,9 @@ struct inventory {
     const char *signatures;   /* --signature-output destination, or NULL */
     char **sigs;
     size_t nsigs, sigcapacity;
+    const char *functions;    /* --function-output destination, or NULL */
+    char **fns;
+    size_t nfns, fncapacity;
 };
 struct context {
     struct inventory *inventory;
@@ -167,40 +187,160 @@ static void result_of(CXType t, const char **kind, char **class_name) {
     }
     cannot("typedef chain nested too deeply");
 }
+static void push(char ***rows, size_t *n, size_t *capacity, char *row) {
+    if (*n == *capacity) {
+        size_t more = *capacity ? *capacity * 2 : 1024;
+        char **grown = realloc(*rows, more * sizeof(*grown));
+        if (!grown) cannot("out of memory");
+        *rows = grown; *capacity = more;
+    }
+    (*rows)[(*n)++] = row;
+}
+/* SysV x86_64 eightbyte classes, as far as this producer classifies them. */
+enum eightbyte { EB_NONE, EB_SSE, EB_INTEGER };
+struct layout { enum eightbyte classes[2]; int failed; };
+static void classify_at(CXType t, long long bits, struct layout *layout);
+static enum CXVisitorResult classify_field(CXCursor c, CXClientData data) {
+    struct layout *layout = ((void **)data)[0];
+    long long base = *(long long *)((void **)data)[1];
+    long long offset = clang_Cursor_getOffsetOfField(c);
+    if (clang_Cursor_isBitField(c) || offset < 0) { layout->failed = 1; return CXVisit_Break; }
+    classify_at(clang_getCanonicalType(clang_getCursorType(c)), base + offset, layout);
+    return layout->failed ? CXVisit_Break : CXVisit_Continue;
+}
+/* Integer-class scalars (pointers, integers, enums, objects) are 1; float and double are 0; else -1. */
+static int scalar_class(CXType t) {
+    switch (t.kind) {
+    case CXType_Pointer: case CXType_BlockPointer: case CXType_ObjCObjectPointer: case CXType_ObjCId:
+    case CXType_ObjCClass: case CXType_ObjCSel: case CXType_NullPtr: case CXType_Enum:
+    case CXType_Bool: case CXType_Char_U: case CXType_UChar: case CXType_Char16: case CXType_Char32:
+    case CXType_UShort: case CXType_UInt: case CXType_ULong: case CXType_ULongLong: case CXType_Char_S:
+    case CXType_SChar: case CXType_WChar: case CXType_Short: case CXType_Int: case CXType_Long:
+    case CXType_LongLong:
+        return 1;
+    case CXType_Float: case CXType_Double:
+        return 0;
+    default:
+        return -1;
+    }
+}
+static void classify_at(CXType t, long long bits, struct layout *layout) {
+    long long size = clang_Type_getSizeOf(t), align = clang_Type_getAlignOf(t), byte = bits / 8;
+    if (bits % 8 || size < 0 || align <= 0 || byte % align || byte + size > 16) { layout->failed = 1; return; }
+    if (t.kind == CXType_Record) {
+        void *data[2] = {layout, &bits};
+        if (clang_getCursorKind(clang_getTypeDeclaration(t)) != CXCursor_StructDecl) { layout->failed = 1; return; }
+        clang_Type_visitFields(t, classify_field, data);
+        return;
+    }
+    if (t.kind == CXType_ConstantArray) {
+        CXType element = clang_getCanonicalType(clang_getArrayElementType(t));
+        long long count = clang_getNumElements(t), step = clang_Type_getSizeOf(element);
+        if (count < 0 || step <= 0) { layout->failed = 1; return; }
+        for (long long i = 0; i < count && !layout->failed; ++i) classify_at(element, bits + i * step * 8, layout);
+        return;
+    }
+    int integer = scalar_class(t);
+    if (integer < 0 || byte / 8 != (byte + size - 1) / 8) { layout->failed = 1; return; }
+    enum eightbyte *slot = &layout->classes[byte / 8];
+    if (integer) *slot = EB_INTEGER;
+    else if (*slot == EB_NONE) *slot = EB_SSE;
+}
+/* One parameter's GPRs (see the header), or -1 when it cannot be classified with certainty. */
+static int parameter_gprs(CXType t) {
+    t = clang_getCanonicalType(t);
+    /* spec: C adjusts an array or function parameter to a pointer (C99 6.7.5.3); libclang reports
+     * the declared type, as in "const id objects[]" or va_list (an array of __va_list_tag). */
+    if (t.kind == CXType_ConstantArray || t.kind == CXType_IncompleteArray || t.kind == CXType_VariableArray ||
+        t.kind == CXType_FunctionProto || t.kind == CXType_FunctionNoProto) return 1;
+    if (t.kind == CXType_Int128 || t.kind == CXType_UInt128) return 2;
+    if (t.kind == CXType_Record) {
+        long long size = clang_Type_getSizeOf(t);
+        struct layout layout = {{EB_NONE, EB_NONE}, 0};
+        if (size < 0) return -1;
+        if (clang_getCursorKind(clang_getTypeDeclaration(t)) != CXCursor_StructDecl) return -1;
+        if (size > 16) return 0;
+        classify_at(t, 0, &layout);
+        if (layout.failed) return -1;
+        return (layout.classes[0] == EB_INTEGER) + (layout.classes[1] == EB_INTEGER);
+    }
+    return scalar_class(t);
+}
+/* The declaration's parameter GPRs into out ("-" when unbounded) and whether it is variadic. */
+static int parameters(CXCursor c, char *out, size_t size) {
+    int n = clang_Cursor_getNumArguments(c), total = 0;
+    if (n < 0 || clang_getCanonicalType(clang_getCursorType(c)).kind == CXType_FunctionNoProto) total = -1;
+    for (int i = 0; i < n && total >= 0; ++i) {
+        int g = parameter_gprs(clang_getCursorType(clang_Cursor_getArgument(c, (unsigned)i)));
+        total = g < 0 ? -1 : total + g;
+    }
+    if (total < 0) snprintf(out, size, "-");
+    else snprintf(out, size, "%d", total);
+    return !!clang_Cursor_isVariadic(c);
+}
+static enum CXChildVisitResult noreturn_attribute(CXCursor c, CXCursor parent, CXClientData data) {
+    (void)parent;
+    if (clang_isAttribute(clang_getCursorKind(c))) {
+        CXTranslationUnit tu = clang_Cursor_getTranslationUnit(c);
+        CXToken *tokens = NULL;
+        unsigned count = 0;
+        clang_tokenize(tu, clang_getCursorExtent(c), &tokens, &count);
+        for (unsigned i = 0; i < count; ++i) {
+            CXString spelling = clang_getTokenSpelling(tu, tokens[i]);
+            const char *t = clang_getCString(spelling);
+            if (t && (!strcmp(t, "_Noreturn") || !strcmp(t, "noreturn") || !strcmp(t, "__noreturn__")))
+                *(int *)data = 1;
+            clang_disposeString(spelling);
+        }
+        if (tokens) clang_disposeTokens(tu, tokens, count);
+    }
+    return CXChildVisit_Continue;
+}
+/* spec: libclang 22 has no noreturn query and no noreturn attribute cursor kind. GNU
+ * __attribute__((noreturn)) (the SDK's __dead2) is part of the function type, so it shows only as
+ * the canonical type spelling's " __attribute__((noreturn))" suffix -- unless the result type, a
+ * pointer to a noreturn function, is what spells it. C11 _Noreturn is a declaration attribute that
+ * libclang exposes only as an UnexposedAttr child, recognized by its token. */
+static int noreturn_function(CXCursor c) {
+    static const char suffix[] = " __attribute__((noreturn))";
+    char *type = type_name(clang_getCanonicalType(clang_getCursorType(c)));
+    char *result = type_name(clang_getCanonicalType(clang_getCursorResultType(c)));
+    size_t length = strlen(type);
+    int noreturn = length >= sizeof(suffix) - 1 && !strcmp(type + length - (sizeof(suffix) - 1), suffix) &&
+                   !strstr(result, "noreturn");
+    free(type); free(result);
+    if (!noreturn) clang_visitChildren(c, noreturn_attribute, &noreturn);
+    return noreturn;
+}
 static void signature(struct inventory *inventory, CXCursor c, const char *record, const char *owner,
                       const char *method_kind, const char *name, const char *source, const char *container) {
     const char *kind;
-    char *class_name, *row;
+    char *class_name, *row, gprs[16] = "0";
     size_t size;
-    CXType t = strstr(record, "property") ? clang_getCursorType(c) : clang_getCursorResultType(c);
+    int property = strstr(record, "property") != NULL, variadic = 0;
+    CXType t = property ? clang_getCursorType(c) : clang_getCursorResultType(c);
     result_of(t, &kind, &class_name);
     field(class_name);
+    if (!property) variadic = parameters(c, gprs, sizeof(gprs));
     size = strlen(record) + strlen(owner) + strlen(method_kind) + strlen(name) + strlen(kind) +
-           strlen(class_name) + strlen(source) + strlen(container) + 16;
+           strlen(class_name) + strlen(source) + strlen(container) + strlen(gprs) + 32;
     row = allocate(size);
-    snprintf(row, size, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s", record, owner, method_kind, name, kind,
-             class_name, source, container);
+    snprintf(row, size, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d", record, owner, method_kind, name, kind,
+             class_name, source, container, gprs, variadic);
     free(class_name);
-    if (inventory->nsigs == inventory->sigcapacity) {
-        size_t capacity = inventory->sigcapacity ? inventory->sigcapacity * 2 : 1024;
-        char **sigs = realloc(inventory->sigs, capacity * sizeof(*sigs));
-        if (!sigs) cannot("out of memory");
-        inventory->sigs = sigs; inventory->sigcapacity = capacity;
-    }
-    inventory->sigs[inventory->nsigs++] = row;
+    push(&inventory->sigs, &inventory->nsigs, &inventory->sigcapacity, row);
 }
-static void record(struct context *ctx, CXCursor c, const char *kind, const char *method_kind,
-                   const char *name, const char *encoding) {
+/* The declaration's file relative to the SDK, or "input/N" for the Nth explicit header, and its
+ * line. NULL when it has no location, or (unless required) when it lies elsewhere. */
+static char *located(struct inventory *inventory, CXCursor c, unsigned *line, int required) {
     CXFile file;
-    unsigned line;
-    clang_getSpellingLocation(clang_getCursorLocation(c), &file, &line, NULL, NULL);
-    if (!file || !line) return;
+    clang_getSpellingLocation(clang_getCursorLocation(c), &file, line, NULL, NULL);
+    if (!file || !*line) return NULL;
     CXString filename = clang_getFileName(file);
     const char *raw = clang_getCString(filename);
     char *path = raw ? realpath(raw, NULL) : NULL;
     if (!path) cannot("unreadable declaration location");
     clang_disposeString(filename);
-    struct inventory *inventory = ctx->inventory;
     char *relative = NULL;
     size_t sdklen = strlen(inventory->sdk);
     if (!strncmp(path, inventory->sdk, sdklen) && path[sdklen] == '/')
@@ -215,8 +355,29 @@ static void record(struct context *ctx, CXCursor c, const char *kind, const char
             }
         }
     }
-    if (!relative) cannot("declaration outside the SDK and explicit headers: %s", path);
+    if (!relative && required) cannot("declaration outside the SDK and explicit headers: %s", path);
     free(path);
+    return relative;
+}
+static void function(struct inventory *inventory, CXCursor c) {
+    unsigned line;
+    char *relative = located(inventory, c, &line, 0), *name, *row, gprs[16];
+    if (!relative) return;
+    name = cursor_name(c);
+    field(name); field(relative);
+    int variadic = parameters(c, gprs, sizeof(gprs)), noreturn = noreturn_function(c);
+    size_t size = strlen(name) + strlen(gprs) + strlen(relative) + 64;
+    row = allocate(size);
+    snprintf(row, size, "%s\t%s\t%d\t%d\t%s:%u", name, gprs, variadic, noreturn, relative, line);
+    free(name); free(relative);
+    push(&inventory->fns, &inventory->nfns, &inventory->fncapacity, row);
+}
+static void record(struct context *ctx, CXCursor c, const char *kind, const char *method_kind,
+                   const char *name, const char *encoding) {
+    unsigned line;
+    struct inventory *inventory = ctx->inventory;
+    char *relative = located(inventory, c, &line, 1);
+    if (!relative) return;
     char *framework = copy("-");
     const char *start = relative, *match;
     while ((match = strstr(start, ".framework/")) != NULL) {
@@ -248,13 +409,7 @@ static void record(struct context *ctx, CXCursor c, const char *kind, const char
         signature(inventory, c, kind, owner, method_kind, name, source, container);
     }
     free(relative); free(framework);
-    if (inventory->nrows == inventory->capacity) {
-        size_t capacity = inventory->capacity ? inventory->capacity * 2 : 1024;
-        char **rows = realloc(inventory->rows, capacity * sizeof(*rows));
-        if (!rows) cannot("out of memory");
-        inventory->rows = rows; inventory->capacity = capacity;
-    }
-    inventory->rows[inventory->nrows++] = row;
+    push(&inventory->rows, &inventory->nrows, &inventory->capacity, row);
 }
 static enum CXChildVisitResult superclass(CXCursor c, CXCursor parent, CXClientData data) {
     (void)parent;
@@ -304,7 +459,10 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
         free(container); free(owner); free(name);
         return CXChildVisit_Continue;
     }
-    if (!ctx->owner) return CXChildVisit_Recurse;
+    if (!ctx->owner) {
+        if (kind == CXCursor_FunctionDecl && ctx->inventory->functions) function(ctx->inventory, c);
+        return CXChildVisit_Recurse;
+    }
     if (kind == CXCursor_ObjCClassMethodDecl || kind == CXCursor_ObjCInstanceMethodDecl) {
         char *name = cursor_name(c);
         CXString encoding = clang_getDeclObjCTypeEncoding(c);
@@ -355,8 +513,60 @@ static void included(CXFile file, CXSourceLocation *stack, unsigned depth, CXCli
     free(resolved);
     clang_disposeString(name);
 }
+/* Temporaries not yet linked into place; a failure exit removes them. */
+static char *pending[2];
+static void remove_pending(void) {
+    for (size_t i = 0; i < 2; ++i) if (pending[i]) unlink(pending[i]);
+}
+/* Sorted rows written, deduplicated, to a temporary beside dest; NULL when dest is NULL. */
+static char *companion(const char *dest, const char *header, char **rows, size_t n) {
+    FILE *out = NULL;
+    int fd;
+    if (!dest) return NULL;
+    char *temporary = join(dest, ".XXXXXX");
+    if ((fd = mkstemp(temporary)) < 0 || !(out = fdopen(fd, "w")))
+        cannot("cannot create a temporary beside %s", dest);
+    if (n > 1) qsort(rows, n, sizeof(*rows), compare);
+    fputs(header, out);
+    for (size_t i = 0; i < n; ++i)
+        if (!i || strcmp(rows[i], rows[i - 1])) fprintf(out, "%s\n", rows[i]);
+    if (fflush(out) || ferror(out) || fsync(fileno(out)) || fclose(out)) {
+        unlink(temporary);
+        free(temporary);
+        cannot("cannot write %s", dest);
+    }
+    pending[pending[0] ? 1 : 0] = temporary;
+    return temporary;
+}
+/* Sorted function rows merged to one per name, as the header describes. */
+static void merge_functions(struct inventory *inventory) {
+    size_t kept = 0;
+    for (size_t i = 0; i < inventory->nfns;) {
+        char *first = inventory->fns[i], *columns[5], *mine = copy(first), *cursor = mine;
+        for (int k = 0; k < 5; ++k) columns[k] = strsep(&cursor, "\t");
+        if (!columns[4]) cannot("malformed function row");
+        int same = 1, variadic = !strcmp(columns[2], "1"), noreturn = !strcmp(columns[3], "1");
+        size_t j = i + 1, name = strlen(columns[0]);
+        for (; j < inventory->nfns && !strncmp(inventory->fns[j], first, name) && inventory->fns[j][name] == '\t'; ++j) {
+            char *other = copy(inventory->fns[j]), *at = other, *theirs[5];
+            for (int k = 0; k < 5; ++k) theirs[k] = strsep(&at, "\t");
+            if (!theirs[4]) cannot("malformed function row");
+            same &= !strcmp(theirs[1], columns[1]);
+            variadic |= !strcmp(theirs[2], "1");
+            noreturn |= !strcmp(theirs[3], "1");
+            free(other); free(inventory->fns[j]);
+        }
+        size_t size = strlen(first) + 8;
+        char *row = allocate(size);
+        snprintf(row, size, "%s\t%s\t%d\t%d\t%s", columns[0], same ? columns[1] : "-", variadic, noreturn, columns[4]);
+        free(mine); free(first);
+        inventory->fns[kept++] = row;
+        i = j;
+    }
+    inventory->nfns = kept;
+}
 static int usage(void) {
-    fprintf(stderr, "usage: objc-sdk-inventory --sdk SDKROOT --resource-dir DIR --header HEADER [--header HEADER ...] [--signature-output FILE]\n");
+    fprintf(stderr, "usage: objc-sdk-inventory --sdk SDKROOT --resource-dir DIR --header HEADER [--header HEADER ...] [--signature-output FILE] [--function-output FILE]\n");
     return 2;
 }
 int main(int argc, char **argv) {
@@ -370,13 +580,16 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--resource-dir") && !resource) resource = argv[++i];
         else if (!strcmp(argv[i], "--header")) inventory.headers[inventory.nheaders++] = argv[++i];
         else if (!strcmp(argv[i], "--signature-output") && !inventory.signatures) inventory.signatures = argv[++i];
+        else if (!strcmp(argv[i], "--function-output") && !inventory.functions) inventory.functions = argv[++i];
         else return usage();
     }
     if (!sdk || !resource || !inventory.nheaders) return usage();
-    if (inventory.signatures) {
+    if (inventory.signatures && inventory.functions && !strcmp(inventory.signatures, inventory.functions)) return usage();
+    const char *destinations[] = {inventory.signatures, inventory.functions};
+    for (size_t i = 0; i < 2; ++i) {
         struct stat st;
-        if (!lstat(inventory.signatures, &st) || errno != ENOENT)
-            cannot("signature destination exists or is unusable: %s", inventory.signatures);
+        if (destinations[i] && (!lstat(destinations[i], &st) || errno != ENOENT))
+            cannot("%s destination exists or is unusable: %s", i ? "function" : "signature", destinations[i]);
     }
     inventory.sdk = directory(sdk);
     char *resource_dir = directory(resource);
@@ -448,37 +661,37 @@ int main(int argc, char **argv) {
         }
         free(in.paths);
     }
-    char *temporary = NULL;
-    if (inventory.signatures) {
-        FILE *out = NULL;
-        int fd;
-        temporary = join(inventory.signatures, ".XXXXXX");
-        if ((fd = mkstemp(temporary)) < 0 || !(out = fdopen(fd, "w")))
-            cannot("cannot create signature temporary beside %s", inventory.signatures);
-        if (inventory.nsigs > 1) qsort(inventory.sigs, inventory.nsigs, sizeof(*inventory.sigs), compare);
-        fputs("# objc-signatures 1\n", out);
-        for (size_t i = 0; i < inventory.nsigs; ++i)
-            if (!i || strcmp(inventory.sigs[i], inventory.sigs[i - 1])) fprintf(out, "%s\n", inventory.sigs[i]);
-        if (fflush(out) || ferror(out) || fsync(fileno(out)) || fclose(out)) {
-            unlink(temporary);
-            cannot("cannot write signatures");
-        }
-    }
+    if (inventory.nfns > 1) qsort(inventory.fns, inventory.nfns, sizeof(*inventory.fns), compare);
+    merge_functions(&inventory);
+    if (atexit(remove_pending)) cannot("cannot register temporary cleanup");
+    char *sig_temporary = companion(inventory.signatures, "# objc-signatures 2\n", inventory.sigs, inventory.nsigs);
+    char *fn_temporary = companion(inventory.functions, "# objc-functions 1\n", inventory.fns, inventory.nfns);
     for (size_t i = 0; i < inventory.nrows; ++i)
         if (!i || strcmp(inventory.rows[i], inventory.rows[i - 1])) puts(inventory.rows[i]);
-    if (fflush(stdout) || ferror(stdout)) {
-        if (temporary) unlink(temporary);
-        cannot("cannot write facts");
+    if (fflush(stdout) || ferror(stdout)) cannot("cannot write facts");
+    /* link(2) refuses an existing destination, so a racing writer is never overwritten. A function
+     * catalog that cannot be placed takes back the signatures this run placed. */
+    if (sig_temporary) {
+        if (link(sig_temporary, inventory.signatures))
+            cannot("cannot place signatures at %s: %s", inventory.signatures, strerror(errno));
+        unlink(sig_temporary);
+        pending[0] = NULL;
+        free(sig_temporary);
     }
-    if (temporary) {
-        /* link(2) refuses an existing destination, so a racing writer is never overwritten. */
-        int linked = link(temporary, inventory.signatures);
-        unlink(temporary);
-        if (linked) cannot("cannot place signatures at %s: %s", inventory.signatures, strerror(errno));
-        free(temporary);
-        for (size_t i = 0; i < inventory.nsigs; ++i) free(inventory.sigs[i]);
-        free(inventory.sigs);
+    if (fn_temporary) {
+        int linked = link(fn_temporary, inventory.functions);
+        if (linked) {
+            int saved = errno;
+            if (inventory.signatures) unlink(inventory.signatures);
+            cannot("cannot place functions at %s: %s", inventory.functions, strerror(saved));
+        }
+        unlink(fn_temporary);
+        pending[0] = pending[1] = NULL;
+        free(fn_temporary);
     }
+    for (size_t i = 0; i < inventory.nsigs; ++i) free(inventory.sigs[i]);
+    for (size_t i = 0; i < inventory.nfns; ++i) free(inventory.fns[i]);
+    free(inventory.sigs); free(inventory.fns);
     for (size_t i = 0; i < inventory.nrows; ++i) free(inventory.rows[i]);
     for (size_t i = 0; i < inventory.nheaders; ++i) free(inventory.headers[i]);
     free(inventory.rows); free(inventory.headers); free(inventory.sdk);
