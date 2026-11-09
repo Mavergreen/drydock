@@ -262,6 +262,13 @@ if(APPLE)
   set_target_properties(objc-reader-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
   target_compile_options(objc-reader-driver PRIVATE -O2 -Wall)
   target_link_libraries(objc-reader-driver PRIVATE drydockcore)
+
+  # The harness that answers argument-register queries (objc-arity-test.sh). A test tool, never installed.
+  add_executable(objc-arity-driver tests/objc/fixtures/arity-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
+  target_include_directories(objc-arity-driver PRIVATE src/objc)
+  set_target_properties(objc-arity-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(objc-arity-driver PRIVATE -O2 -Wall)
+  target_link_libraries(objc-arity-driver PRIVATE drydockcore)
 else()
   # platform: Linux has no Foundation, so drydock-objc holds receipt alone until the front end is not Foundation.
   add_executable(drydock-objc cli/drydock-objc.c $<TARGET_OBJECTS:drydock_objc_receipt>)
@@ -379,12 +386,13 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
-# DRYDOCK_OBJC and the reader harness as DRYDOCK_OBJC_READER_DRIVER, and
+# DRYDOCK_OBJC, the reader harness as DRYDOCK_OBJC_READER_DRIVER, the arity
+# harness as DRYDOCK_OBJC_ARITY_DRIVER, and
 # shipyard's fetchers through SHIPYARD_SCRIPTS -- the directory build/msc.sh
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t binding classification closure provider reader reference-set report sdk-inventory sdk-signatures cli)
+foreach(t arity binding classification closure provider reader reference-set report sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)
@@ -410,7 +418,7 @@ foreach(t binding classification closure provider reader reference-set report sd
   endif()
   if(APPLE)
     set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
   endif()
 endforeach()
 

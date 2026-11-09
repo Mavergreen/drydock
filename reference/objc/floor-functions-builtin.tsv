@@ -1,0 +1,2 @@
+# objc-functions 1
+__stack_chk_fail	0	0	1	compiler stack-protector ABI: clang emits calls to void __stack_chk_fail(void); /usr/lib/system/libsystem_c.dylib exports ___stack_chk_fail

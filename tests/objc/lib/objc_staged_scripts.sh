@@ -8,7 +8,8 @@
 #       fetch_sdk.sh and sdk-pins.sh through their own directory, and tools/ and components/ through its parent, as
 #       they did in shipyard. stage_objc_scripts DIR lays that tree out at DIR: DIR/scripts holds a link to every
 #       entry of $SHIPYARD_SCRIPTS (fetch_sdk.sh and sdk-pins.sh, and what they source: mavericks_fetch.sh, ...)
-#       and copies of the two scripts; DIR/tools and DIR/components link to this checkout's. It prints DIR/scripts.
+#       and copies of the two scripts; DIR/tools, DIR/components and DIR/reference (the hand-written
+#       floor-functions-builtin.tsv build copies) link to this checkout's. It prints DIR/scripts.
 stage_objc_scripts() {
   _st=$1
   mkdir -p "$_st/scripts" || return 1
@@ -17,6 +18,6 @@ stage_objc_scripts() {
     rm -f "$_st/scripts/$_s"
     cp "$ROOT/scripts/$_s" "$_st/scripts/$_s" || return 1
   done
-  ln -s "$ROOT/tools" "$_st/tools" && ln -s "$ROOT/components" "$_st/components" || return 1
+  ln -s "$ROOT/tools" "$_st/tools" && ln -s "$ROOT/components" "$_st/components" && ln -s "$ROOT/reference" "$_st/reference" || return 1
   printf '%s\n' "$_st/scripts"
 }

@@ -79,6 +79,7 @@ typedef struct {
     char *selector;
     char *name;
     char *symbol;       /* raw symbol naming the record, or NULL */
+    char *types;        /* OBJC_EV_METHOD_DEF only: the method's type encoding, or NULL when unread */
     /* OBJC_EV_DISPATCH_CALL only: the receiver, selector and first argument operands. */
     ObjcValue receiver, sel, arg;
     char *function;     /* the symbol of the function containing a code site, or NULL */
@@ -295,6 +296,10 @@ typedef struct {
      * verification found. */
     struct ObjcProvider *providers; size_t n_providers;
     ObjcMap *nw_encoding;         /* newer SDK: "class\tkind\tselector" -> type encoding */
+    /* Argument registers (reference.c): selector -> the most parameter GPRs any declaration takes, and C
+     * function -> its GPRs; "-" unbounded. Each catalog flag says it loaded (objc_load_gprs_catalogs). */
+    ObjcMap *sel_gprs, *fn_gprs;
+    int have_floor_sel_gprs, have_newer_sel_gprs, have_fn_gprs;
 } ObjcAnalysis;
 
 ObjcAnalysis *objc_analysis_create(void);
@@ -354,6 +359,26 @@ int objc_r1_reviewed(const ObjcAnalysis *a, const char *kind, const char *sel);
 void objc_r1_selector_exceptions(const ObjcAnalysis *a, const char *kind, const char *sel, char *out, size_t outsz);
 const char *objc_r1_subset_kinds(const ObjcAnalysis *a, const char *sel);
 int objc_add_probe(ObjcAnalysis *a, const ObjcClusterProbe *p);
+
+/* reference.c "argument registers": how many SysV x86_64 argument GPRs (rdi, rsi, rdx, rcx, r8, r9) a
+ * call may use; -1 means unbounded, all six. objc_load_gprs_catalogs reads references_dir's
+ * floor-signatures.tsv, newer-signatures.tsv, floor-functions.tsv and floor-functions-builtin.tsv
+ * (objc_load_reference_set calls it); an absent one leaves what it bounds unbounded, a malformed one,
+ * or a builtin name the SDK catalog also has, is cannot-measure. 0 or 4. */
+int objc_load_gprs_catalogs(ObjcAnalysis *a);
+/* The total at a send of SEL: self, _cmd, the hidden result pointer when STRET, and the most parameter
+ * GPRs over every declaration of SEL in both catalogs and the analyzed images' method lists. A
+ * selector without a colon needs no lookup. -1 when a declaration is variadic or unclassified, none is
+ * known, a catalog is missing, or the total is over six. */
+int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret);
+/* A direct call to import SYMBOL (leading "_", an asm label's "$SUFFIX" ignored): the floor function
+ * catalog's GPRs, a hidden result pointer included; -1 when uncatalogued, variadic, unclassified or
+ * over six. */
+int objc_function_gprs(const ObjcAnalysis *a, const char *sym);
+/* A method type encoding's parameter GPRs, self and _cmd excluded; -1 for anything it cannot classify. */
+int objc_encoding_gprs(const char *types);
+/* Merges one declaration of SEL taking PARAMS parameter GPRs (-1 unbounded) into a->sel_gprs. 0 or 4. */
+int objc_note_selector_gprs(ObjcAnalysis *a, const char *sel, int params);
 
 /* binding.c: the v0 helpers source-evidence.c needs. objc_binding_impl_types writes the
  * display text of an impl's self type and every generic argument in `symbol`'s path,

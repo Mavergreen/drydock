@@ -8,7 +8,8 @@
     "parsed_target": "x86_64-apple-macos10.9",
     "facts": "floor-sdk.tsv",
     "signatures": "floor-signatures.tsv",
-    "functions": "floor-functions.tsv"
+    "functions": "floor-functions.tsv",
+    "builtin_functions": "floor-functions-builtin.tsv"
   },
   "newer_sdk": {
     "archive": "MacOSX11.3.sdk.tar.xz",
@@ -59,6 +60,7 @@
   },
   "files": [
     {"name": "cluster-witnesses.json", "sha256": "523552b50ab985d4dc8555f247a0117e2bfeb63c7ccefd82881a2af70e13ee85", "rows": 6},
+    {"name": "floor-functions-builtin.tsv", "sha256": "359bf9123736930819c4ad3ef7dd31bc0b94304961ec4e3444b0a7d08eb466d6", "rows": 1},
     {"name": "floor-functions.tsv", "sha256": "1e6a23e88c19195f3c307fad246c64af11d55eb488f3d0414d5e41776f372637", "rows": 6372},
     {"name": "floor-runtime.tsv", "sha256": "d8b7241f29fe68934e82189575b11e1553dc4e4efbd4c67801cd341baac7c50e", "rows": 142773},
     {"name": "floor-sdk.tsv", "sha256": "f0892f5b6fd7beddf9fcd43d652aa89f39dcbf28b800f879b58d824b4fef32f4", "rows": 12173},

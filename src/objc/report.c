@@ -9,7 +9,7 @@ ObjcAnalysis *objc_analysis_create(void) { return calloc(1, sizeof(ObjcAnalysis)
 
 static void free_evidence(ObjcEvidence *e) {
     free(e->slice); free(e->owner); free(e->method_kind); free(e->selector); free(e->name);
-    free(e->symbol); free(e->receiver.text); free(e->sel.text); free(e->arg.text); free(e->function);
+    free(e->symbol); free(e->types); free(e->receiver.text); free(e->sel.text); free(e->arg.text); free(e->function);
 }
 
 static void free_signature(ObjcSignature *s) {
@@ -40,6 +40,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
     objc_map_destroy(a->rt_behavior); objc_map_destroy(a->rt_image_role); objc_map_destroy(a->rt_override);
     objc_map_destroy(a->nw_method); objc_map_destroy(a->nw_class); objc_map_destroy(a->fl_method);
     objc_map_destroy(a->fl_class); objc_map_destroy(a->nw_later_sel); objc_map_destroy(a->nw_encoding);
+    objc_map_destroy(a->sel_gprs); objc_map_destroy(a->fn_gprs);
     free_strv(a->root_selectors, a->n_root_selectors);
     free_strv(a->class_roots, a->n_class_roots);
     free_strv(a->roots_blocking, a->n_roots_blocking);
@@ -188,7 +189,8 @@ int objc_add_evidence(ObjcAnalysis *a, const ObjcEvidence *ev) {
         objc_set_string(&e.slice, ev->slice) || objc_set_string(&e.owner, ev->owner) ||
         objc_set_string(&e.method_kind, ev->method_kind) ||
         objc_set_string(&e.selector, ev->selector) || objc_set_string(&e.name, ev->name) ||
-        objc_set_string(&e.symbol, ev->symbol) || copy_value(&e.receiver, &ev->receiver) ||
+        objc_set_string(&e.symbol, ev->symbol) || objc_set_string(&e.types, ev->types) ||
+        copy_value(&e.receiver, &ev->receiver) ||
         copy_value(&e.sel, &ev->sel) || copy_value(&e.arg, &ev->arg) ||
         objc_set_string(&e.function, ev->function)) {
         free_evidence(&e);
@@ -196,6 +198,11 @@ int objc_add_evidence(ObjcAnalysis *a, const ObjcEvidence *ev) {
         return -1;
     }
     a->evidence[a->n_evidence++] = e;
+    /* Every method an analyzed image defines is a declaration of its selector (reference.c "argument
+     * registers"); an unread encoding leaves the selector unbounded. */
+    if (e.kind == OBJC_EV_METHOD_DEF && e.selector &&
+        objc_note_selector_gprs(a, e.selector, e.types ? objc_encoding_gprs(e.types) : -1))
+        return -1;
     return 0;
 }
 

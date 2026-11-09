@@ -5,7 +5,7 @@
  *     TAB-separated columns: record, owner, kind, selector, result kind, result class, source,
  *     container, gprs -- a count, or "-" when unclassified -- and variadic, 0 or 1). Only declared
  *     results are loaded; nothing is inferred from an ABI encoding. gprs and variadic are kept on
- *     each signature, and nothing reads them yet.
+ *     each signature; the argument-register table below reads them from the catalogs itself.
  *   - facts_path: the eleven-column facts; only `class` rows are read, for each interface's
  *     declared superclass (column 5, "-" for a root).
  * Either may be absent; closure then leaves open whatever needed it. A present but unreadable,
@@ -499,5 +499,302 @@ int objc_load_reference_set(ObjcAnalysis *a) {
         return objc_fail(a, "out-of-memory", NULL, 0, "reference maps");
     if ((rc = load_runtime(a))) return rc;
     if ((rc = load_sdk(a, "newer-sdk.tsv", a->nw_method, a->nw_class))) return rc;
-    return load_sdk(a, "floor-sdk.tsv", a->fl_method, a->fl_class);
+    if ((rc = load_sdk(a, "floor-sdk.tsv", a->fl_method, a->fl_class))) return rc;
+    return objc_load_gprs_catalogs(a);
+}
+
+
+/* ---- argument registers ----------------------------------------------------------------------
+ *
+ * spec: the compiled-reader design's "Argument registers" goals. How many SysV x86_64 integer
+ * argument registers (rdi, rsi, rdx, rcx, r8, r9) a call may use, so the reader can tell an argument
+ * from a register that merely holds something. A count is a bound only when every declaration that
+ * could be called is known and classified; anything else is -1, unbounded, the reader's old rule.
+ *   - A send: self and _cmd, the _stret entry point's hidden result pointer, and the most parameter
+ *     GPRs over every declaration of the selector -- any class, either kind, both signature catalogs
+ *     and every method list the analysis read (objc_add_evidence notes each). The receiver is unknown
+ *     here, so the maximum is the only sound bound. A selector without a colon has no parameters.
+ *   - A C call: the floor function catalog and the hand-written builtin one beside it (the runtime
+ *     calls the compiler emits, which no header declares); a count includes a hidden result pointer.
+ *   - Every value is range-checked: a total over six is unbounded, never clamped down.
+ * The table is a map built as the catalogs load and the reader records methods, merged by maximum
+ * with "-" absorbing, so the order of those never matters. */
+
+#define GPR_ARGS 6
+
+/* Stores PARAMS (-1 "-") as KEY's value in M when it raises it; "-" stays. 0, or -1 out of memory. */
+static int merge_max(ObjcMap **m, const char *key, int params) {
+    const char *cur;
+    char v[16];
+    size_t i;
+    if (!*m && !(*m = objc_map_create())) return -1;
+    if (params > GPR_ARGS) params = -1;
+    if (params < 0) snprintf(v, sizeof v, "-"); else snprintf(v, sizeof v, "%d", params);
+    if (!(cur = objc_map_get(*m, key))) return objc_map_put(*m, key, v) < 0 ? -1 : 0;
+    if (!strcmp(cur, "-") || (params >= 0 && params <= atoi(cur))) return 0;
+    i = map_slot(*m, key);
+    free((*m)->vals[i]);
+    return ((*m)->vals[i] = strdup(v)) ? 0 : -1;
+}
+
+int objc_note_selector_gprs(ObjcAnalysis *a, const char *sel, int params) {
+    return merge_max(&a->sel_gprs, sel, params) ? objc_fail(a, "out-of-memory", NULL, 0, "selector registers") : OBJC_OK;
+}
+
+/* Reads one catalog under references_dir into the table: a schema-2 signature file (SIGNATURES), or a
+ * function catalog; with BUILTIN, the hand-written one, whose names must be new to the table.
+ * *loaded says it was there; absent is not an error. */
+static int load_gprs_file(ObjcAnalysis *a, const char *name, int signatures, int builtin, int *loaded) {
+    char path[4096], *line;
+    FILE *f;
+    size_t lineno = 0;
+    int status = OBJC_OK;
+    *loaded = 0;
+    if (snprintf(path, sizeof path, "%s/%s", a->references_dir, name) >= (int)sizeof path)
+        return objc_fail(a, "unreadable-reference", NULL, 0, "path too long");
+    if (!(f = fopen(path, "r"))) {
+        if (errno == ENOENT) return OBJC_OK;
+        return objc_fail(a, "unreadable-reference", NULL, 0, "%s: %s", path, strerror(errno));
+    }
+    if (!(line = malloc(LINE_MAX_BYTES))) { fclose(f); return objc_fail(a, "out-of-memory", NULL, 0, "reference"); }
+    while (status == OBJC_OK && fgets(line, LINE_MAX_BYTES, f)) {
+        char *c[12];
+        size_t len = strlen(line);
+        int n, gprs;
+        lineno++;
+        if (!len || line[len - 1] != '\n') { status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu unterminated", name, lineno); break; }
+        line[len - 1] = 0;
+        if (lineno == 1) {
+            if (strcmp(line, signatures ? "# objc-signatures 2" : "# objc-functions 1"))
+                status = objc_fail(a, "malformed-reference", NULL, 0, "%s: not its schema", name);
+            continue;
+        }
+        n = split(line, c, 11);
+        /* spec: tools/objc-sdk-inventory.c -- signatures: selector column 4, gprs 9, variadic 10;
+         * functions: name, gprs, variadic, noreturn, source. */
+        if (signatures ? (n != 10 || parse_gprs(c[8], &gprs) || (strcmp(c[9], "0") && strcmp(c[9], "1")) || !c[3][0])
+                       : (n != 5 || parse_gprs(c[1], &gprs) || (strcmp(c[2], "0") && strcmp(c[2], "1")) ||
+                          (strcmp(c[3], "0") && strcmp(c[3], "1")) || !c[0][0])) {
+            status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu not a %s row", name, lineno, signatures ? "signature" : "function");
+            break;
+        }
+        if ((signatures ? c[9] : c[2])[0] == '1') gprs = -1;
+        /* spec: scripts/objc-reference-set.sh header -- a builtin row never restates a declared function. */
+        if (builtin && objc_map_get(a->fn_gprs, c[0])) {
+            status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu %s is already catalogued", name, lineno, c[0]);
+            break;
+        }
+        if (merge_max(signatures ? &a->sel_gprs : &a->fn_gprs, signatures ? c[3] : c[0], gprs))
+            status = objc_fail(a, "out-of-memory", NULL, 0, "argument registers");
+    }
+    if (status == OBJC_OK && ferror(f)) status = objc_fail(a, "unreadable-reference", NULL, 0, "%s: read error", name);
+    if (status == OBJC_OK && lineno == 0) status = objc_fail(a, "malformed-reference", NULL, 0, "%s: empty, not even a header", name);
+    free(line); fclose(f);
+    *loaded = status == OBJC_OK;
+    return status;
+}
+
+int objc_load_gprs_catalogs(ObjcAnalysis *a) {
+    int rc, builtin;
+    if (!a->references_dir) return OBJC_OK;
+    if ((rc = load_gprs_file(a, "floor-signatures.tsv", 1, 0, &a->have_floor_sel_gprs))) return rc;
+    if ((rc = load_gprs_file(a, "newer-signatures.tsv", 1, 0, &a->have_newer_sel_gprs))) return rc;
+    if ((rc = load_gprs_file(a, "floor-functions.tsv", 0, 0, &a->have_fn_gprs))) return rc;
+    /* An absent builtin catalog only leaves its functions uncatalogued, unbounded. */
+    return load_gprs_file(a, "floor-functions-builtin.tsv", 0, 1, &builtin);
+}
+
+/* A stored count, or -1 for "-", absent, or out of range. */
+static int stored_gprs(const ObjcMap *m, const char *key) {
+    const char *v = m ? objc_map_get(m, key) : NULL;
+    int n;
+    if (!v || !strcmp(v, "-")) return -1;
+    n = atoi(v);
+    return n >= 0 && n <= GPR_ARGS ? n : -1;
+}
+
+int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret) {
+    int params, total;
+    stret = stret != 0;
+    if (!sel) return -1;
+    if (!strchr(sel, ':')) return 2 + stret;
+    if (!a->have_floor_sel_gprs || !a->have_newer_sel_gprs || (params = stored_gprs(a->sel_gprs, sel)) < 0) return -1;
+    total = 2 + stret + params;
+    return total <= GPR_ARGS ? total : -1;
+}
+
+int objc_function_gprs(const ObjcAnalysis *a, const char *sym) {
+    char name[1024];
+    size_t n;
+    /* spec: Mach-O C symbols carry a leading "_"; an asm label appends "$UNIX2003", "$INODE64"... */
+    if (!sym || sym[0] != '_' || !a->have_fn_gprs) return -1;
+    n = strcspn(sym + 1, "$");
+    if (!n || n >= sizeof name) return -1;
+    memcpy(name, sym + 1, n); name[n] = 0;
+    return stored_gprs(a->fn_gprs, name);
+}
+
+/* ---- method type encodings ----
+ *
+ * spec: the Objective-C runtime's type encodings, as clang writes method_list_t types: the result type,
+ * the argument frame size, then each argument's type and frame offset, self ("@") and _cmd (":") first.
+ * clang widens an argument under 4 bytes to 4 and passes a C array parameter as a pointer. Parameters
+ * classify by the SysV x86_64 ABI: an integer or pointer takes a GPR, float and double none, an
+ * aggregate over 16 bytes none (memory), and one of 16 bytes or less one GPR per eightbyte that holds
+ * any integer or pointer member, its members laid out at their natural alignment. A union, bitfield,
+ * long double, complex, vector or anything else unrecognised is -1. An argument's frame offset, when
+ * given, must agree with that layout's size, or the encoding is not understood. */
+
+enum { EB_NONE, EB_SSE, EB_INT };
+
+/* Skips one type without classifying it (a pointee, a result). NULL when malformed. */
+static const char *skip_type(const char *p, int depth) {
+    char open, close;
+    int level = 0;
+    while (*p && strchr("rnNoORVA", *p)) p++;
+    if (depth > 32 || !*p) return NULL;
+    if (*p == '^') return skip_type(p + 1, depth + 1);
+    if (*p == '@') {
+        p++;
+        if (*p == '?') { p++; if (*p == '<') { while (*p && *p != '>') p++; if (!*p) return NULL; p++; } }
+        else if (*p == '"') { p = strchr(p + 1, '"'); if (!p) return NULL; p++; }
+        return p;
+    }
+    if (*p == 'b') { p++; while (*p >= '0' && *p <= '9') p++; return p; }
+    if (*p != '{' && *p != '(' && *p != '[') return p + 1;
+    open = *p; close = open == '{' ? '}' : open == '(' ? ')' : ']';
+    for (; *p; p++) {
+        if (*p == '"') { if (!(p = strchr(p + 1, '"'))) return NULL; continue; }
+        if (*p == open) level++;
+        else if (*p == close && !--level) return p + 1;
+    }
+    return NULL;
+}
+
+/* A type's natural alignment: its widest scalar, 8 for a pointer; 0 when malformed. layout() rejects
+ * whatever this passes over that it cannot classify. */
+static size_t align_of(const char *p, int depth) {
+    const char *end = skip_type(p, depth);
+    size_t a = 1, w;
+    if (!end) return 0;
+    while (p && p < end) {
+        switch (*p) {
+        case '^': case '@': p = skip_type(p, depth + 1); w = 8; break;
+        case '"': p = strchr(p + 1, '"'); if (p) p++; continue;
+        case '{': case '(': p += strcspn(p, "=}"); continue;
+        case 'c': case 'C': case 'B': w = 1; p++; break;
+        case 's': case 'S': w = 2; p++; break;
+        case 'i': case 'I': case 'l': case 'L': case 'f': w = 4; p++; break;
+        case 'q': case 'Q': case 'd': case '*': case '#': case ':': w = 8; p++; break;
+        default: p++; continue;   /* digits, closers, qualifiers */
+        }
+        if (w > a) a = w;
+    }
+    return p ? a : 0;
+}
+
+/* Parses one type at byte offset OFF of the outermost aggregate, marking eightbytes 0 and 1 in EB, and
+ * gives its size and alignment. Returns the rest, or NULL when it is not classifiable. */
+static const char *layout(const char *p, size_t off, int eb[2], size_t *size, size_t *align, int depth) {
+    int cls = EB_INT;
+    while (*p && strchr("rnNoORVA", *p)) p++;
+    if (depth > 32) return NULL;
+    switch (*p) {
+    case 'c': case 'C': case 'B': *size = 1; break;
+    case 's': case 'S': *size = 2; break;
+    case 'i': case 'I': case 'l': case 'L': *size = 4; break;
+    case 'q': case 'Q': *size = 8; break;
+    case 'f': *size = 4; cls = EB_SSE; break;
+    case 'd': *size = 8; cls = EB_SSE; break;
+    case '*': case '#': case ':': *size = 8; break;
+    case '@': case '^':
+        if (!(p = skip_type(p, depth))) return NULL;
+        *size = *align = 8;
+        if (off / 8 < 2) eb[off / 8] = EB_INT;
+        return p;
+    case '[': {
+        char *end;
+        unsigned long n = strtoul(p + 1, &end, 10), k;
+        const char *elem = end, *rest;
+        size_t esize, ealign;
+        if (end == p + 1 || !n || n > 4096 || !(rest = layout(elem, off, eb, &esize, &ealign, depth + 1))) return NULL;
+        for (k = 1; k < n && off + k * esize < 16; k++)
+            if (!layout(elem, off + k * esize, eb, &esize, &ealign, depth + 1)) return NULL;
+        if (*rest != ']') return NULL;
+        *size = n * esize; *align = ealign;
+        return rest + 1;
+    }
+    case '{': {
+        size_t at = 0, msize, malign, maxalign = 1;
+        p++;
+        while (*p && *p != '=' && *p != '}') p++;
+        if (*p != '=' || p[1] == '}') return NULL;   /* "{Name}" is incomplete, "{Name=}" empty */
+        p++;
+        while (*p != '}') {
+            if (*p == '"') { if (!(p = strchr(p + 1, '"'))) return NULL; p++; }   /* a member name */
+            if (!*p || !(malign = align_of(p, depth + 1))) return NULL;
+            at = (at + malign - 1) / malign * malign;
+            if (!(p = layout(p, off + at, eb, &msize, &malign, depth + 1))) return NULL;
+            at += msize;
+            if (malign > maxalign) maxalign = malign;
+        }
+        *size = (at + maxalign - 1) / maxalign * maxalign; *align = maxalign;
+        return p + 1;
+    }
+    default: return NULL;   /* union, bitfield, long double, complex, vector, '?', 'v' ... */
+    }
+    *align = *size;
+    if (off / 8 < 2 && (eb[off / 8] == EB_NONE || cls == EB_INT)) eb[off / 8] = cls;
+    return p + 1;
+}
+
+/* One argument: its GPRs, *size the bytes clang's frame gives it. -1 when not classifiable. */
+static int param_gprs(const char **pp, size_t *size) {
+    const char *p = *pp;
+    int eb[2] = { EB_NONE, EB_NONE }, n = 0, k;
+    size_t align;
+    while (*p && strchr("rnNoORVA", *p)) p++;
+    if (*p == '[') {   /* a C array parameter is a pointer */
+        if (!(*pp = layout(p, 0, eb, size, &align, 0))) return -1;
+        *size = 8;
+        return 1;
+    }
+    if (!(*pp = layout(p, 0, eb, size, &align, 0))) return -1;
+    if (*size > 16) return 0;   /* MEMORY: on the stack */
+    for (k = 0; k < 2; k++) n += eb[k] == EB_INT;
+    if (*size < 4) *size = 4;
+    return n;
+}
+
+/* An unsigned decimal at *pp: 1 and *v when present, 0 when absent. */
+static int frame_offset(const char **pp, unsigned long *v) {
+    char *end;
+    if (**pp < '0' || **pp > '9') return 0;
+    *v = strtoul(*pp, &end, 10);
+    *pp = end;
+    return 1;
+}
+
+int objc_encoding_gprs(const char *types) {
+    const char *p = types;
+    unsigned long frame = 0, off = 0, prev_off = 0;
+    size_t prev_size = 0, size;
+    int have_frame, have_prev = 0, args = 0, total = 0, g;
+    if (!p || !(p = skip_type(p, 0))) return -1;
+    have_frame = frame_offset(&p, &frame);
+    while (*p) {
+        const char *t = p;
+        while (*t && strchr("rnNoORVA", *t)) t++;
+        if (args == 0 && *t != '@') return -1;
+        if (args == 1 && *t != ':') return -1;
+        if ((g = param_gprs(&p, &size)) < 0) return -1;
+        if (frame_offset(&p, &off)) {
+            if (have_prev && off - prev_off != prev_size) return -1;
+            have_prev = 1; prev_off = off; prev_size = size;
+        } else if (have_prev) return -1;   /* offsets on some arguments only */
+        if (args++ >= 2) total += g;
+    }
+    if (args < 2) return -1;
+    if (have_prev && have_frame && frame - prev_off != prev_size) return -1;
+    return total <= GPR_ARGS ? total : -1;
 }

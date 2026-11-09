@@ -351,10 +351,10 @@ FIXTURES="--floor-header $FX/reference-floor.h --newer-header $FX/reference-newe
 # shellcheck disable=SC2086  # option list
 build --output "$T/ref" --runtime "$T/runtime" $FIXTURES
 [ "$rc" = 0 ] || fail "fixture reference build exits $rc"
-for f in manifest.json floor-sdk.tsv floor-signatures.tsv floor-functions.tsv newer-sdk.tsv newer-signatures.tsv floor-runtime.tsv cluster-witnesses.json; do
+for f in manifest.json floor-sdk.tsv floor-signatures.tsv floor-functions.tsv floor-functions-builtin.tsv newer-sdk.tsv newer-signatures.tsv floor-runtime.tsv cluster-witnesses.json; do
   [ -f "$T/ref/$f" ] || fail "reference lacks $f"
 done
-[ "$(ls -A "$T/ref" | wc -l | tr -d ' ')" = 8 ] || fail 'reference has unexpected files'
+[ "$(ls -A "$T/ref" | wc -l | tr -d ' ')" = 9 ] || fail 'reference has unexpected files'
 sh "$REFSET" verify "$T/ref" >"$T/out" 2>"$T/err" || fail 'a fresh reference does not verify'
 # spec: tools/objc-sdk-inventory.c header -- the signature companions are schema 2 (parameter GPRs and
 #       variadic); the floor side alone carries the C prototype catalog, schema 1.
@@ -365,6 +365,8 @@ done
 [ "$(head -1 "$T/ref/floor-functions.tsv")" = '# objc-functions 1' ] || fail 'the floor function catalog lacks its schema line'
 grep -Fx "$(printf 'RefLog\t1\t1\t0\tinput/1:29')" "$T/ref/floor-functions.tsv" >/dev/null || fail 'the fixture C prototype is not catalogued'
 grep -F '"functions": "floor-functions.tsv"' "$T/ref/manifest.json" >/dev/null || fail 'the floor SDK side does not name its function catalog'
+cmp -s "$T/ref/floor-functions-builtin.tsv" "$ROOT/reference/objc/floor-functions-builtin.tsv" || fail 'the builtin function catalog is not copied verbatim'
+grep -F '"builtin_functions": "floor-functions-builtin.tsv"' "$T/ref/manifest.json" >/dev/null || fail 'the floor SDK side does not name its builtin function catalog'
 grep -F "{\"name\": \"floor-functions.tsv\", \"sha256\": \"$(shasum -a 256 "$T/ref/floor-functions.tsv" | cut -c1-64)\", \"rows\": $(($(wc -l <"$T/ref/floor-functions.tsv") - 1))}" "$T/ref/manifest.json" >/dev/null ||
   fail 'function catalog identity or row count missing'
 # spec: scripts/objc-reference-set.sh header -- The manifest binds SDK archives, header trees, extractor, runtime identity and every file.
@@ -628,6 +630,14 @@ rc=0; sh "$REFSET" verify "$T/tamper" >"$T/out" 2>"$T/err" || rc=$?
 rm -rf "$T/tamper"; cp -R "$T/ref" "$T/tamper"; rm "$T/tamper/cluster-witnesses.json"
 rc=0; sh "$REFSET" verify "$T/tamper" >"$T/out" 2>"$T/err" || rc=$?
 [ "$rc" = 4 ] || fail "a missing file verified ($rc)"
+# spec: scripts/objc-reference-set.sh header -- a builtin function the SDK catalog also declares is refused.
+rm -rf "$T/tamper"; cp -R "$T/ref" "$T/tamper"
+printf 'RefLog\t1\t1\t0\tdup\n' >>"$T/tamper/floor-functions-builtin.tsv"
+old=$(grep -F '"name": "floor-functions-builtin.tsv"' "$T/ref/manifest.json")
+new="    {\"name\": \"floor-functions-builtin.tsv\", \"sha256\": \"$(shasum -a 256 "$T/tamper/floor-functions-builtin.tsv" | cut -c1-64)\", \"rows\": $(($(wc -l <"$T/tamper/floor-functions-builtin.tsv") - 1))},"
+awk -v o="$old" -v n="$new" '$0 == o { print n; next } { print }' "$T/ref/manifest.json" >"$T/tamper/manifest.json"
+rc=0; sh "$REFSET" verify "$T/tamper" >"$T/out" 2>"$T/err" || rc=$?
+[ "$rc" = 4 ] && grep 'RefLog is in both' "$T/err" >/dev/null || fail "a builtin restating a declared function verified ($rc)"
 rc=0; sh "$REFSET" verify "$T/missing" >"$T/out" 2>"$T/err" || rc=$?
 [ "$rc" = 4 ] || fail "an absent reference verified ($rc)"
 

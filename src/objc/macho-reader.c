@@ -316,6 +316,19 @@ static int add_ev(Slice *s, ObjcEvidenceKind kind, uint64_t addr, uint64_t targe
     return 0;
 }
 
+/* A method definition, with its type encoding (NULL when unread). */
+static int add_method(Slice *s, uint64_t list, uint64_t imp, const char *owner, const char *mkind,
+                      const char *sel, const char *category, const char *types) {
+    ObjcEvidence e;
+    memset(&e, 0, sizeof e);
+    e.kind = OBJC_EV_METHOD_DEF; e.slice = s->slice; e.address = list; e.target = imp;
+    e.owner = (char *)owner; e.method_kind = (char *)mkind; e.selector = (char *)sel;
+    e.name = (char *)category; e.types = (char *)types; e.function = (char *)s->cur_fn;
+    e.receiver.form = e.sel.form = e.arg.form = OBJC_VAL_NONE;
+    if (objc_add_evidence(s->a, &e)) { s->status = OBJC_CANNOT_MEASURE; return -1; }
+    return 0;
+}
+
 /* A dispatch call with its receiver, selector and first-argument operands; `incoming` is the
  * predecessor path's last instruction for one path of a split call, else 0. */
 static int add_dispatch(Slice *s, uint64_t addr, uint64_t target, const char *callee, const char *tail,
@@ -614,7 +627,7 @@ typedef struct { uint64_t slot; char owner[MAX_LITERAL]; const char *kind; char 
 
 static int metadata(Slice *s) {
     size_t i, j;
-    char name[MAX_LITERAL], other[MAX_LITERAL], sel[MAX_LITERAL];
+    char name[MAX_LITERAL], other[MAX_LITERAL], sel[MAX_LITERAL], types[MAX_LITERAL];
     mml_walk w;
     ListOwner *own = NULL; size_t nown = 0, capown = 0;
     int rc, meta;
@@ -725,8 +738,11 @@ static int metadata(Slice *s) {
                 free(own); mml_walk_free(&w);
                 return fail(s, "malformed-objc-metadata", r->list_va, "%s", "method entry");
             }
-            if (add_ev(s, OBJC_EV_METHOD_DEF, r->list_va, me.imp, o->owner, o->kind, sel,
-                       o->category[0] ? o->category : NULL, NULL)) { free(own); mml_walk_free(&w); return s->status; }
+            /* The method's type encoding, when it reads as a literal; NULL leaves its selector unbounded. */
+            if (add_method(s, r->list_va, me.imp, o->owner, o->kind, sel, o->category[0] ? o->category : NULL,
+                           literal_at(s, me.types, types, sizeof types) ? NULL : types)) {
+                free(own); mml_walk_free(&w); return s->status;
+            }
         }
     }
     free(own);

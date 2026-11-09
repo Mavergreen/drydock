@@ -40,7 +40,10 @@
 #          with libobjc's C API headers (FLOOR_OBJC_HEADERS) added on the floor side; the --*-header
 #          options replace that list (fixtures). The signature companions are schema 2; the floor
 #          side alone also writes the C prototype catalog (floor-functions.tsv, "# objc-functions 1"):
-#          every function its parse declares, outside the compiler's own resource headers.
+#          every function its parse declares, outside the compiler's own resource headers. Beside it goes
+#          floor-functions-builtin.tsv, the same five columns, copied verbatim from the committed
+#          reference/objc and never generated: the reviewed runtime calls the compiler emits, which no
+#          header declares. A name in both catalogs is refused (verify, and the analyzer's loader).
 #          Each SDK is identified by its pinned archive's SHA-256 (recomputed from the cached archive) and a digest
 #          of its extracted header tree, so a cache edited after extraction does not keep the pin's name.
 #          The extractor identity names, and digests, only the compiler resource headers the parse
@@ -418,6 +421,10 @@ build() {
   trap 'rm -rf "$tmpl" "$work"' EXIT
   sdk_facts x86_64 floor "$work" "$tmpl/floor"
   sdk_facts arm64 newer "$work" "$tmpl/newer"
+  # spec: the compiled-reader design's "Argument registers at a C call" -- no SDK header declares the
+  #       runtime calls the compiler itself emits (__stack_chk_fail), so they are reviewed by hand in
+  #       floor-functions-builtin.tsv and copied, never generated.
+  cp "$ROOT/reference/objc/floor-functions-builtin.tsv" "$work/" || fail 'cannot copy the builtin function catalog'
   resource=$("$prefix/bin/clang" -print-resource-dir) || fail 'cannot query the compiler resource directory'
   clang_version=$("$prefix/bin/clang" --version | head -1)
   package=$(tr -d '[:space:]' <"$ROOT/components/objc-reference-clang/version")
@@ -436,7 +443,7 @@ build() {
       printf '    "archive": "%s",\n    "archive_sha256": "%s",\n    "header_tree_sha256": "%s",\n' "$archive" "$archive_sha" "$tree"
       printf '    "headers": [%s],\n' "$(json_list <"$work/$side.headers")"
       printf '    "parsed_target": "%s",\n    "facts": "%s-sdk.tsv",\n    "signatures": "%s-signatures.tsv"' "$target" "$side" "$side"
-      [ "$side" != floor ] || printf ',\n    "functions": "floor-functions.tsv"'
+      [ "$side" != floor ] || printf ',\n    "functions": "floor-functions.tsv",\n    "builtin_functions": "floor-functions-builtin.tsv"'
       printf '\n  },\n'
     done
     plain "$clang_version"; plain "$package"
@@ -495,7 +502,7 @@ build() {
     fi
     printf '  "files": [\n'
     first=1
-    for f in cluster-witnesses.json floor-functions.tsv floor-runtime.tsv floor-sdk.tsv floor-signatures.tsv newer-sdk.tsv newer-signatures.tsv; do
+    for f in cluster-witnesses.json floor-functions-builtin.tsv floor-functions.tsv floor-runtime.tsv floor-sdk.tsv floor-signatures.tsv newer-sdk.tsv newer-signatures.tsv; do
       [ -f "$work/$f" ] || continue
       [ "$first" = 1 ] || printf ',\n'
       case "$f" in
@@ -540,6 +547,11 @@ verify() {
       floor-runtime.tsv) [ "$(head -1 "$d/$f")" = '# objc-runtime 1' ] || fail "$d/$f lacks its schema line" ;;
     esac
   done || exit 4
+  if [ -f "$d/floor-functions-builtin.tsv" ] && [ -f "$d/floor-functions.tsv" ]; then
+    dup=$(awk -F '\t' 'FNR == 1 { f++; next } f == 1 { a[$1] = 1 } f == 2 && ($1 in a) { print $1; exit }' \
+      "$d/floor-functions.tsv" "$d/floor-functions-builtin.tsv")
+    [ -z "$dup" ] || fail "$d: $dup is in both floor-functions.tsv and floor-functions-builtin.tsv"
+  fi
   for f in "$d"/* "$d"/.[!.]*; do
     [ -e "$f" ] || continue
     b=$(basename -- "$f")
