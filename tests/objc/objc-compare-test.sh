@@ -2,7 +2,8 @@
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then runs compare.sh over doctored baselines
 # spec: tests/objc/baseline/compare.sh header -- COMPARE_MODE=fewer-unmeasured lets a report lose only the error kinds
 #       it names, table-byte errors only inside a table the reader lists and "different value" errors only in a
-#       function holding one it follows; an added error, or any other lost error, fails.
+#       function holding one it follows, and undecoded bytes only by what the listed tables hold; an added error,
+#       or any other lost error, fails. fewer-passed-arguments and the default identical mode refuse all of these.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
@@ -42,8 +43,9 @@ doctor() {
   awk -v e="${3:-}" "$2" "$d/$1.objc-compat.json" > "$d/x" && mv "$d/x" "$d/$1.objc-compat.json"
 }
 err() { printf '{"code": "%s", "slice": "x86_64", "address": "%s", "detail": "%s"}' "$1" "$2" "$3"; }
-passes() { COMPARE_MODE=fewer-unmeasured sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1: compare refused it"; }
-refuses() { ! COMPARE_MODE=fewer-unmeasured sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1: compare let it pass"; }
+# passes|refuses WHAT [MODE]: compare.sh over the doctored copy $d, in MODE (default fewer-unmeasured)
+passes() { COMPARE_MODE=${2:-fewer-unmeasured} sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1: compare refused it"; }
+refuses() { ! COMPARE_MODE=${2:-fewer-unmeasured} sh "$COMPARE" "$d" "$DRYDOCK_OBJC" > "$T/log" 2>&1 || fail "$1 (${2:-fewer-unmeasured}): compare let it pass"; }
 # spec: tests/objc/baseline/compare.sh split_errors -- an empty list is "errors": []}; a full one opens at the end
 #       of its line, one error per line after it
 ONLY='{ if (sub(/"errors": \[\]}$/, "\"errors\": [" e "]}")) n++; print } END { exit n != 1 }'
@@ -57,9 +59,13 @@ grep -q '^compare: jt0: exit 0, identical apart from analyzer and reference iden
 
 doctor jt0 "$ONLY" "$(err indirect-objc-entry "$table" "$READ")"; passes 'a lost table error inside the listed table'
 grep -q '1 fewer errors inside a jump table' "$T/log" || fail 'a lost table error inside the listed table: not counted'
+refuses 'a lost table error' fewer-passed-arguments
+refuses 'a lost table error' identical
 doctor jt0 "$ONLY" "$(err indirect-objc-entry "$fn" "$READ")"; refuses 'a lost table error outside any table'
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost table error outside any table: refused for another reason'
 doctor jt0 "$ONLY" "$(err indirect-objc-entry "$fn" "$MERGED")"; passes 'a lost "different value" error in the function of a followed table'
+refuses 'a lost "different value" error' fewer-passed-arguments
+refuses 'a lost "different value" error' identical
 doctor jt0 "$ONLY" "$(err unclassified-objc-runtime-import "$fn" _objc_getProperty)"; refuses 'a lost unrelated error'
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost unrelated error: refused for another reason'
 # jt1's table is not followed: its "different value" errors may not vanish
@@ -68,4 +74,20 @@ refuses 'a lost "different value" error in a function holding no followed table'
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost "different value" error with no followed table: refused for another reason'
 doctor jt1 "$DROP"; refuses 'an added error'
 grep -q 'new, changed or reordered error' "$T/log" || fail 'an added error: refused for another reason'
+# spec: tests/objc/baseline/compare.sh header -- undecoded_code_bytes may only fall, by at most the listed tables' bytes
+ub=$(grep -o '"undecoded_code_bytes": [0-9]*' "$T/base/jt0.objc-compat.json" | awk '{ print $2 }')
+room=$(( 4 * $(printf '%s\n' "$line" | cut -f4) ))
+UB='{ n += gsub(/"undecoded_code_bytes": [0-9]+/, "\"undecoded_code_bytes\": " e); print } END { exit n != 1 }'
+# a rise: jt1 decodes its unrecognised table as code, so it has undecoded bytes to lower in its baseline
+ub1=$(grep -o '"undecoded_code_bytes": [0-9]*' "$T/base/jt1.objc-compat.json" | awk '{ print $2 }')
+[ "$ub1" -ge 1 ] || fail "jt1 decodes every byte: no rise to doctor"
+doctor jt1 "$UB" $((ub1 - 1)); refuses 'undecoded bytes that rose'
+grep -q 'undecoded_code_bytes rose' "$T/log" || fail 'undecoded bytes that rose: refused for another reason'
+doctor jt0 "$UB" $((ub + room + 1)); refuses 'undecoded bytes that fell by more than the listed tables hold'
+grep -q 'undecoded_code_bytes rose, or fell by more' "$T/log" || fail 'undecoded bytes that fell too far: refused for another reason'
+doctor jt0 "$UB" $((ub + room)); passes 'undecoded bytes that fell by exactly the listed tables'"'"' bytes'
+grep -q "^compare: jt0: exit 0, identical apart from analyzer and reference identity and $room fewer undecoded bytes\$" "$T/log" ||
+  fail "undecoded bytes that fell by the tables' bytes: not reported as $room fewer"
+refuses 'undecoded bytes that fell' fewer-passed-arguments
+refuses 'undecoded bytes that fell' identical
 echo "PASS: objc-compare-test"
