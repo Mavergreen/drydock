@@ -8,6 +8,7 @@
  *   sel SELECTOR STRET   objc_selector_gprs (STRET 0 or 1)
  *   fn SYMBOL            objc_function_gprs
  *   enc TYPES            objc_encoding_gprs
+ *   imp SYMBOL LIB       objc_import_gprs: SYMBOL bound to install name LIB
  *   rely SEL STRET INDEX objc_rely_selector_gprs for an entry point in argument register INDEX (named
  *                        "rcx", at 0x1000 of slice x86_64): its status
  *   note SEL PARAMS      objc_note_selector_gprs: the analysis's error count after it
@@ -47,6 +48,7 @@ int main(int argc, char **argv) {
         for (p = line; n < 4 && (p = strchr(p, '\t')); n++) { *p++ = 0; f[n] = p; }
         if (!strcmp(f[0], "sel") && n == 3) printf("%d\n", objc_selector_gprs(a, f[1], atoi(f[2])));
         else if (!strcmp(f[0], "fn") && n == 2) printf("%d\n", objc_function_gprs(a, f[1]));
+        else if (!strcmp(f[0], "imp") && n == 3) printf("%d\n", objc_import_gprs(a, f[1], f[2]));
         else if (!strcmp(f[0], "enc") && n == 2) printf("%d\n", objc_encoding_gprs(f[1]));
         else if (!strcmp(f[0], "rely") && n == 4)
             printf("%d\n", objc_rely_selector_gprs(a, f[1], atoi(f[2]), atoi(f[3]), "rcx", "x86_64", 0x1000));

@@ -300,6 +300,7 @@ typedef struct {
      * function -> its GPRs; "-" unbounded. Each catalog flag says it loaded (objc_load_gprs_catalogs). */
     ObjcMap *sel_gprs, *fn_gprs;
     int have_floor_sel_gprs, have_newer_sel_gprs, have_fn_gprs;
+    ObjcMap *fn_home;             /* C function -> the install-name prefix it lives under, "" none (reference.c note_home) */
     ObjcMap *sel_relied;          /* selector -> what the reader's sends of it rely on (objc_rely_selector_gprs) */
 } ObjcAnalysis;
 
@@ -376,6 +377,10 @@ int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret);
  * catalog's GPRs, a hidden result pointer included; -1 when uncatalogued, variadic, unclassified or
  * over six. */
 int objc_function_gprs(const ObjcAnalysis *a, const char *sym);
+/* objc_function_gprs for an import of SYMBOL bound to LIB (an install name): only when LIB is the system
+ * library the catalog's declaration lives in (reference.c note_home); a flat lookup, the main executable or
+ * any other library is -1. */
+int objc_import_gprs(const ObjcAnalysis *a, const char *sym, const char *lib);
 /* The reader left the entry point in register REG (index REG_INDEX in rdi, rsi, rdx, rcx, r8, r9) out of
  * the arguments of a send of SEL at SITE in SLICE, by objc_selector_gprs. A declaration of SEL noted later
  * (objc_note_selector_gprs) that raises the bound past it records indirect-objc-entry at SITE. 0 or 4. */

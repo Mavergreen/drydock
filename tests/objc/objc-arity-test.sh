@@ -98,6 +98,20 @@ rc=0; printf 'note\tzzOne:\t1\nrely\tzzOne:\t0\t3\nnote\tzzOne:\t2\n' | "$D" >"$
 grep -F 'objc entry point in rcx is passed as an argument: a declaration of zzOne: read after this send' "$T/err" >/dev/null ||
   fail 'rely_message: the raised bound is not reported at its send'
 
+# imp: an import's bound only when it binds to the system library its catalogued declaration lives in -- usr/include's
+# under /usr/lib/, a framework header's in that framework (a sub-framework's in its umbrella); flat lookup, the main
+# executable or any other library may be another function of that name.
+q 'imp	_write	/usr/lib/libSystem.B.dylib' | is imp_libsystem 3 --references "$REF"
+q 'imp	_write$UNIX2003	/usr/lib/libSystem.B.dylib' | is imp_suffix 3 --references "$REF"
+q 'imp	___stack_chk_fail	/usr/lib/libSystem.B.dylib' | is imp_builtin 0 --references "$REF"
+q 'imp	_NSBeep	/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit' | is imp_framework 0 --references "$REF"
+q 'imp	_AECreateDesc	/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices' | is imp_umbrella 4 --references "$REF"
+q 'imp	_NSBeep	/usr/lib/libSystem.B.dylib' | is imp_other_system_lib -1 --references "$REF"
+q 'imp	_write	@rpath/libelsewhere.dylib' | is imp_other_lib -1 --references "$REF"
+q 'imp	_write	/usr/local/lib/libwrite.dylib' | is imp_nonsystem_path -1 --references "$REF"
+q 'imp	_write	(flat lookup)' | is imp_flat -1 --references "$REF"
+q 'imp	_write	(the main executable)' | is imp_main_executable -1 --references "$REF"
+
 # Encodings: parameter GPRs without self and _cmd.
 q 'enc	v32@0:8@16@24' | is enc_ids 2
 q 'enc	v40@0:8^S16{_NSRange=QQ}24' | is enc_range 3

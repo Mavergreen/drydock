@@ -17,6 +17,10 @@ SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
 cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 read_artifact() { rc=0; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$1" >"$T/out" 2>"$T/err" || rc=$?; }
+# spec: src/objc/macho-reader.c "Argument registers" -- read_refs FILE [ARGS...]: as read_artifact, with the reference
+#       set's argument-register catalogs loaded, so a call's argument registers are bounded by its declarations.
+REF="$ROOT/reference/objc"
+read_refs() { rc=0; f=$1; shift; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$f" --references "$REF" "$@" >"$T/out" 2>"$T/err" || rc=$?; }
 # spec: src/objc/macho-reader.c header -- has KIND COL=VALUE...: some evidence row of KIND matches every column (1-based after "evidence").
 has() {
   kind=$1; shift
@@ -184,6 +188,12 @@ for n in 2 3 4 5 6 7 8 9 11; do
   cc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
 done
+# spec: src/objc/macho-reader.c "Argument registers" -- bounded, isEqual:'s one parameter is rdx: still passed.
+for n in 2 9; do
+  read_refs "$T/hoisted$n"; refused "hoisted entry point form $n, bounded" indirect-objc-entry
+  grep '^error	indirect-objc-entry	.*objc entry point in rdx is passed as an argument$' "$T/out" >/dev/null ||
+    fail "hoisted entry point form $n, bounded: rdx is not passed to isEqual:"
+done
 # spec: src/objc/macho-reader.c header -- A landing pad the function's LSDA lists starts with the callee-saved registers,
 #       frame slots and escapes of every call its call-site ranges cover (clang -O2 @try/@catch:
 #       tests/objc/fixtures/landing-pad-entry.S), in both call-site encodings: an entry point held across the throwing
@@ -202,6 +212,9 @@ for e in 1 3; do
     cc -DFORM="$n" -DCSENC="$e" "$FX/landing-pad-entry.S" -o "$T/pad$e$n" -lobjc
     read_artifact "$T/pad$e$n"; refused "landing pad form $n, call-site encoding $e" indirect-objc-entry
   done
+  read_refs "$T/pad${e}3"; refused "landing pad form 3, call-site encoding $e, bounded" indirect-objc-entry
+  grep '^error	indirect-objc-entry	.*objc entry point in rdx is passed as an argument$' "$T/out" >/dev/null ||
+    fail "landing pad form 3, call-site encoding $e, bounded: rdx is not passed to isEqual:"
 done
 
 # spec: src/objc/macho-reader.c header, "Argument registers" -- at a send whose selector the reader knows, only the
@@ -210,8 +223,6 @@ done
 #       point copied into a register no call reads is followed: Alacritty's -[RecaulkTabPSMTabBarControl setDelegate:]
 #       keeps objc_msgSend in rcx across a respondsToSelector: send (tests/objc/fixtures/entry-copy.S). Each twin that
 #       leaves it where the call may read it is cannot-measure at that call (entry-escape.S, entry-escape.m).
-REF="$ROOT/reference/objc"
-read_refs() { rc=0; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$1" --references "$REF" >"$T/out" 2>"$T/err" || rc=$?; }
 CLANG=${MAVERGREEN_OBJC_CLANG_PREFIX:-}
 if [ -z "$CLANG" ]; then
   case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
@@ -251,6 +262,30 @@ refused 'entry-escape' indirect-objc-entry
 for twin in _unknown_colon _format _stret_shift; do passed_at "$twin" '*%rbx'; done
 passed_at _c_noreturn_params ___assert_rtn
 [ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 4 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
+# spec: src/objc/macho-reader.c "Argument registers" -- a catalogued name bound to a non-system library or by flat
+#       lookup may be another function: all six count (tests/objc/fixtures/entry-elsewhere.S).
+mkdir -p "$T/elsewhere"
+cc22 -Wno-incompatible-library-redeclaration -dynamiclib "$FX/entry-elsewhere-lib.c" -install_name @rpath/libelsewhere.dylib \
+  -o "$T/elsewhere/libelsewhere.dylib"
+art="$T/elsewhere/entry-elsewhere"
+cc22 "$FX/entry-elsewhere.S" -o "$art" -L"$T/elsewhere" -lelsewhere -Wl,-rpath,@loader_path -Wl,-U,_NSBeep -framework Foundation -lobjc
+xcrun dyldinfo -bind -lazy_bind "$art" | awk '$NF == "_write" && $(NF - 1) == "libelsewhere" { w = 1 } $NF == "_NSBeep" && $(NF - 1) == "flat-namespace" { b = 1 } END { exit !(w && b) }' ||
+  fail 'entry-elsewhere: write is not bound to libelsewhere, or NSBeep not by flat lookup'
+read_refs "$art"
+refused 'entry-elsewhere' indirect-objc-entry
+passed_at _write_elsewhere _write
+passed_at _beep_flat _NSBeep
+# spec: src/objc/reference.c objc_rely_selector_gprs -- a shipped image's declaration, read after the code, that raises
+#       respondsToSelector:'s bound past rcx makes entry-copy.S's `_responds` send cannot-measure at that send.
+cc22 -dynamiclib "$FX/entry-copy-shipped.m" -o "$T/entry-copy-shipped.dylib" -lobjc
+art="$T/entry-copy"
+read_refs "$art" --shipped "$T/entry-copy-shipped.dylib"
+refused 'entry-copy, shipped declaration' indirect-objc-entry
+rs=$(site _responds '*%rbx')
+awk -F '\t' -v a="$rs" '$1 == "error" && $2 == "indirect-objc-entry" && $4 == a &&
+  $5 == "objc entry point in rcx is passed as an argument: a declaration of respondsToSelector: read after this send takes more argument registers"' "$T/out" |
+  grep . >/dev/null || fail "entry-copy, shipped declaration: no reliance error at _responds $rs"
+[ "$(grep -c '^error	' "$T/out")" = 1 ] || fail "entry-copy, shipped declaration: $(grep -c '^error	' "$T/out") errors, want 1"
 art="$T/entry-escape-c"
 cc22 -Os "$FX/entry-escape.m" -o "$art" -framework Foundation
 read_refs "$art"

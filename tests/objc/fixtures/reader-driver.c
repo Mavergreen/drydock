@@ -4,7 +4,9 @@
  * analyzer's (tools/objc-compat/main.m); this harness never classifies.
  * With --close it also runs receiver/use closure over the loaded references. --references DIR first
  * loads DIR's argument-register catalogs alone (objc_load_gprs_catalogs), as the analyzer's reference
- * set would, so the reader bounds a call's argument registers by them.
+ * set would, so the reader bounds a call's argument registers by them. --shipped FILE then reads FILE's
+ * metadata alone and adds its method definitions, as src/objc/main.m add_shipped does for a shipped
+ * image after the artifact's code has been read.
  * Exit 0 measured (and, with --close, every send closed), 4 cannot-measure, 2 usage. */
 #include "report.h"
 #include <stdio.h>
@@ -53,7 +55,7 @@ static int demangle(void) {
 }
 
 static int usage(void) {
-    fprintf(stderr, "usage: reader-driver --artifact FILE [--references DIR] [--binding-receipt FILE] "
+    fprintf(stderr, "usage: reader-driver --artifact FILE [--references DIR] [--shipped FILE] [--binding-receipt FILE] "
                     "[--close --signatures FILE [--sdk-facts FILE]]\n");
     return 2;
 }
@@ -62,11 +64,12 @@ int main(int argc, char **argv) {
     ObjcAnalysis *a;
     int i, rc, close = 0;
     size_t k;
-    const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL, *refs = NULL;
+    const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL, *refs = NULL, *shipped = NULL;
     if (argc == 2 && !strcmp(argv[1], "--demangle")) return demangle();
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--artifact") && i + 1 < argc) artifact = argv[++i];
         else if (!strcmp(argv[i], "--references") && i + 1 < argc) refs = argv[++i];
+        else if (!strcmp(argv[i], "--shipped") && i + 1 < argc) shipped = argv[++i];
         else if (!strcmp(argv[i], "--binding-receipt") && i + 1 < argc) receipt = argv[++i];
         else if (!strcmp(argv[i], "--signatures") && i + 1 < argc) sigs = argv[++i];
         else if (!strcmp(argv[i], "--sdk-facts") && i + 1 < argc) facts = argv[++i];
@@ -80,6 +83,19 @@ int main(int argc, char **argv) {
     rc = refs ? objc_load_gprs_catalogs(a) : 0;
     if (rc == 0) rc = objc_load_references(a);
     if (rc == 0) rc = objc_collect_artifacts(a);
+    if (rc == 0 && shipped) {
+        ObjcAnalysis *sub = objc_analysis_create();
+        if (!sub || objc_set_string(&sub->artifact_path, shipped)) { fprintf(stderr, "out of memory\n"); return 4; }
+        sub->metadata_only = 1;
+        rc = objc_collect_artifacts(sub);
+        for (k = 0; rc == 0 && k < sub->n_evidence; k++) {
+            ObjcEvidence e = sub->evidence[k];
+            if (e.kind != OBJC_EV_METHOD_DEF) continue;
+            e.image = 1;
+            if (objc_add_evidence(a, &e)) rc = 4;
+        }
+        objc_analysis_destroy(sub);
+    }
     if (rc == 0 && close) rc = objc_close_sends(a);
     if (rc == 0 && a->n_errors) rc = 4;   /* a stage can never report success past an error */
     for (k = 0; k < a->n_evidence; k++) {

@@ -19,10 +19,10 @@
 #          INPUTS names; a negative control points it at an edited copy), COMPARE_WORK (scratch
 #          directory, default a fresh mktemp one, removed on exit unless set).
 #          COMPARE_MODE=fewer-passed-arguments (default: identical) also lets a report's "errors" list,
-#          its last key, lose entries whose detail ends "is passed as an argument" -- what bounding a
-#          call's argument registers by its declarations may remove (src/objc/macho-reader.c
-#          "Argument registers") -- and nothing else: everything before that list must still be byte
-#          for byte the baseline's after the blanking above, the remaining errors must be the
+#          its last key, lose indirect-objc-entry entries whose detail ends "is passed as an argument"
+#          -- what bounding a call's argument registers by its declarations may remove
+#          (src/objc/macho-reader.c "Argument registers") -- and nothing else: everything before
+#          that list must still be byte for byte the baseline's after the blanking above, the remaining errors must be the
 #          baseline's in the baseline's order, and no error may be new or changed. The exit status
 #          must still match. Each artifact's line then says how many such errors it lost.
 #          Exit 0 identical, 1 a difference, 2 usage, 4 a stale or missing baseline or input.
@@ -132,7 +132,7 @@ fewer_passed() {
     return 1
   fi
   awk 'NR == FNR { base[++nb] = $0; next }
-       function drop(e) { return e ~ /"detail": "[^"]*is passed as an argument"}$/ }
+       function drop(e) { return e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is passed as an argument"}$/ }
        { for (q = p + 1; q <= nb && base[q] != $0; q++) ;
          if (q > nb) { print "compare: new, changed or reordered error " $0 > "/dev/stderr"; bad = 1; next }
          while (p + 1 < q) { if (!drop(base[++p])) { print "compare: lost error " base[p] > "/dev/stderr"; bad = 1 } else lost++ }

@@ -566,6 +566,26 @@ int objc_note_selector_gprs(ObjcAnalysis *a, const char *sel, int params) {
     return OBJC_OK;
 }
 
+/* Where a catalogued C function lives, as the install-name prefix of the system library that defines
+ * it, from its row's source column. spec: tools/objc-sdk-inventory.c -- a declared function's source is
+ * its floor SDK header, "PATH:LINE": usr/include/... is a /usr/lib/ library's (libSystem, libobjc ...),
+ * and System/Library/Frameworks/X.framework/... (a sub-framework's too) is X.framework's. A builtin row's
+ * source is prose that names the dylib exporting it; one naming /usr/lib/ lives there. Anything else has
+ * no home. "" when unknown, or when two rows disagree. */
+static int note_home(ObjcMap **m, const char *fn, const char *source, int builtin) {
+    char home[512] = "";
+    const char *cur;
+    if (builtin) { if (strstr(source, " /usr/lib/")) snprintf(home, sizeof home, "/usr/lib/"); }
+    else if (!strncmp(source, "usr/", 4)) snprintf(home, sizeof home, "/usr/lib/");
+    else if (!strncmp(source, "System/Library/Frameworks/", 26)) {
+        const char *e = strstr(source + 26, ".framework/");
+        if (e && (size_t)(e - source) + 12 < sizeof home) snprintf(home, sizeof home, "/%.*s", (int)(e - source + 11), source);
+    }
+    if (!*m && !(*m = objc_map_create())) return -1;
+    if (!(cur = objc_map_get(*m, fn))) return objc_map_put(*m, fn, home) < 0 ? -1 : 0;
+    return strcmp(cur, home) ? map_replace(*m, fn, "") : 0;
+}
+
 /* Reads one catalog under references_dir into the table: a schema-2 signature file (SIGNATURES), or a
  * function catalog; with BUILTIN, the hand-written one, whose names must be new to the table.
  * *loaded says it was there; absent is not an error. */
@@ -609,7 +629,8 @@ static int load_gprs_file(ObjcAnalysis *a, const char *name, int signatures, int
             status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu %s is already catalogued", name, lineno, c[0]);
             break;
         }
-        if (merge_max(signatures ? &a->sel_gprs : &a->fn_gprs, signatures ? c[3] : c[0], gprs))
+        if (merge_max(signatures ? &a->sel_gprs : &a->fn_gprs, signatures ? c[3] : c[0], gprs) ||
+            (!signatures && note_home(&a->fn_home, c[0], c[4], builtin)))
             status = objc_fail(a, "out-of-memory", NULL, 0, "argument registers");
     }
     if (status == OBJC_OK && ferror(f)) status = objc_fail(a, "unreadable-reference", NULL, 0, "%s: read error", name);
@@ -646,6 +667,18 @@ int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret) {
     if (!a->have_floor_sel_gprs || !a->have_newer_sel_gprs || (params = stored_gprs(a->sel_gprs, sel)) < 0) return -1;
     total = 2 + stret + params;
     return total <= GPR_ARGS ? total : -1;
+}
+
+int objc_import_gprs(const ObjcAnalysis *a, const char *sym, const char *lib) {
+    char name[1024];
+    const char *home;
+    size_t n;
+    if (!sym || sym[0] != '_' || !lib || lib[0] != '/') return -1;
+    n = strcspn(sym + 1, "$");
+    if (!n || n >= sizeof name) return -1;
+    memcpy(name, sym + 1, n); name[n] = 0;
+    if (!(home = a->fn_home ? objc_map_get(a->fn_home, name) : NULL) || !*home || strncmp(lib, home, strlen(home))) return -1;
+    return objc_function_gprs(a, sym);
 }
 
 /* The reader asks objc_selector_gprs while it reads the artifact's code, but a shipped image's methods

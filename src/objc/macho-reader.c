@@ -55,9 +55,11 @@
  * direct call to its stub -- whose selector the propagation names at the call (a selector reference, a
  * literal, NSSelectorFromString of literal bytes, or a cache whose literal is already read), only the
  * first objc_selector_gprs of rdi, rsi, rdx, rcx, r8 and r9 are arguments; the _stret forms count their
- * hidden result pointer. At a direct or GOT call to an import the floor function catalog knows, only its
- * objc_function_gprs are. Anything else keeps all six: a selector the paths disagree on or that is not
- * named, an implied one (objc_alloc, objc_opt_*), a local function, an unbounded answer. Stated limits,
+ * hidden result pointer. At a direct or GOT call to an import the floor function catalog knows, bound to
+ * the system library its declaration lives in, only its objc_function_gprs are (objc_import_gprs): the
+ * same name bound by flat lookup, to the main executable or to any other library may be another function.
+ * Anything else keeps all six: a selector the paths disagree on or that is not named, an implied one
+ * (objc_alloc, objc_opt_*), a local function, an unbounded answer. Stated limits,
  * spec: src/objc/reference.c header and its "argument registers" section --
  *   - the bound is closed-world: it assumes each call was compiled against a declaration the catalogs or
  *     the analyzed images' method lists hold, so a call compiled against another declaration of a colon
@@ -2234,7 +2236,8 @@ static void operand_of(const Slice *s, int kd, uint64_t va, uint64_t def, ObjcVa
  * in a register, a GOT call, or a direct call to its stub -- whose selector ST names takes
  * objc_selector_gprs (the _stret forms shift by a hidden result pointer); *sel then names the selector
  * and *stret is set, so the caller can record what it relied on. Any other import takes
- * objc_function_gprs when the floor catalog knows it. Everything else, or an unbounded answer, is six. */
+ * objc_function_gprs when the floor catalog knows it and the import binds to the system library its
+ * declaration lives in (objc_import_gprs). Everything else, or an unbounded answer, is six. */
 static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip, const uint8_t *at,
                          char *sel, size_t selsz, int *stret) {
     uint64_t target;
@@ -2261,7 +2264,7 @@ static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip
         *stret = strstr(p->name, "_stret") != NULL;
         n = objc_selector_gprs(s->a, sel, *stret);
     } else
-        n = objc_function_gprs(s->a, p->name);
+        n = objc_import_gprs(s->a, p->name, p->lib);
     if (n < 0) { *sel = 0; return 6; }
     return n;
 }
