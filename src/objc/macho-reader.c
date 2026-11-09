@@ -890,10 +890,32 @@ static int64_t rel_target(const uint8_t *code, const Ins *x, uint64_t ip) {
     return (int64_t)(x->next + (uint64_t)(int64_t)d32);
 }
 
+/* spec: Intel SDM vol. 2, 2.1.5 (table 2-2) and 3.1.1.1 -- with no REX prefix, byte registers 4..7 are
+ * ah, ch, dh and bh: bits 8..15 of rax, rcx, rdx and rbx, not spl, bpl, sil and dil. X's modrm fields
+ * with any such byte register named by the register it is part of (an rm field only when mod is 3). */
+static Ins byte_regs(const Ins *x) {
+    Ins y = *x;
+    int op = x->op, both = 0, rmonly = 0;
+    if (x->rex || !x->modrm) return y;
+    if (x->map == 0) {
+        both = (op <= 0x3F && !(op & 1) && (op & 7) <= 3) || op == 0x84 || op == 0x86 || op == 0x88 || op == 0x8A;
+        rmonly = op == 0x80 || op == 0x82 || op == 0xC0 || op == 0xC6 || op == 0xD0 || op == 0xD2 || op == 0xF6 || op == 0xFE;
+    } else if (x->map == 1) {
+        both = op == 0xB0 || op == 0xC0;                                    /* cmpxchg, xadd r/m8, r8 */
+        rmonly = (op >= 0x90 && op <= 0x9F) || op == 0xB6 || op == 0xBE;     /* setcc; movzx/movsx from r/m8 */
+    }
+    if ((both || rmonly) && x->mod == 3 && y.rm >= 4 && y.rm <= 7) y.rm -= 4;
+    if (both && y.reg >= 4 && y.reg <= 7) y.reg -= 4;
+    return y;
+}
+
 /* 0 only when this instruction provably does not write register r. */
-static int may_write(const Ins *x, int r) {
+static int may_write(const Ins *x0, int r) {
+    Ins y = byte_regs(x0);
+    const Ins *x = &y;
     int op = x->op, low3 = op & 7, dst_rm = x->modrm && x->mod == 3 && x->rm == r;
     int dst_reg = x->modrm && x->reg == r, opreg = (op & 7) | (x->rex & 1 ? 8 : 0);
+    if (x->map == 0 && op >= 0xB0 && op <= 0xB7 && !x->rex && opreg >= 4) opreg -= 4;   /* mov ah..bh, imm8 */
     if (x->map == 0) {
         if (op <= 0x3F && low3 <= 5 && op != 0x0F && op != 0x26 && op != 0x2E && op != 0x36 && op != 0x3E) {
             if (op >= 0x38 && op <= 0x3D) return 0;             /* cmp */
@@ -1305,7 +1327,8 @@ static void transfer_values(const Slice *s, const Flow *f, RS *r, const Ins *x, 
     /* A byte copy (mov r8, r8 / movzx r32, r8) of a dispatch's BOOL keeps only that BOOL. */
     if (x->modrm && x->mod == 3 && ((x->map == 0 && (x->op == 0x88 || x->op == 0x8A)) || (x->map == 1 && x->op == 0xB6))) {
         int st = x->map == 0 && x->op == 0x88, dst = st ? x->rm : x->reg, src = st ? x->reg : x->rm;
-        if ((x->rex || src < 4) && (r->k[src] == RS_SEND || r->k[src] == RS_BOOL)) {
+        /* ah..bh (no REX, 4..7) are neither a low-byte source nor a destination to give the BOOL */
+        if ((x->rex || src < 4) && (x->rex || x->map == 1 || dst < 4) && (r->k[src] == RS_SEND || r->k[src] == RS_BOOL)) {
             r->k[dst] = RS_BOOL; r->va[dst] = r->va[src]; r->def[dst] = 0;
             return;
         }
@@ -1443,7 +1466,9 @@ static void transfer(const Slice *s, const Flow *f, RS *r, const Ins *x, uint64_
 /* The general-purpose registers instruction x reads as data or to form an address, excluding the
  * register a `call/jmp *reg` transfers through (entry_escapes checks that one). An opcode this
  * table does not know reads every register: an entry point held across it is refused, not missed. */
-static uint16_t gpr_reads_ex(const Ins *x, int mem) {   /* mem 0: not the memory operand's base and index */
+static uint16_t gpr_reads_ex(const Ins *x0, int mem) {   /* mem 0: not the memory operand's base and index */
+    Ins y = byte_regs(x0);   /* ah..bh read the register they are part of */
+    const Ins *x = &y;
     uint16_t m = 0;
     int op = x->op, low3 = op & 7, rm = x->modrm && x->mod == 3, opreg = (op & 7) | (x->rex & 1 ? 8 : 0);
 #define R(n) (m |= (uint16_t)(1u << ((n) & 15)))
@@ -2362,13 +2387,14 @@ static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip
         else if (v.form == OBJC_VAL_SEL_CACHE && (c = cache_at(s, v.ref)) && c->kind == 1 && c->literal &&
                  strlen(c->literal) < selsz)
             name = strcpy(sel, c->literal);
-        if (!name) { *sel = 0; snprintf(why, whysz, "%s", "this send's selector is not known on every path"); return 6; }
+        if (!name) { *sel = 0; snprintf(why, whysz, "%s", "this send's selector is not known"); return 6; }
         *stret = strstr(p->name, "_stret") != NULL;
         n = objc_selector_gprs(s->a, sel, *stret);
         if (n < 0) {
             const char *w = objc_selector_unbounded_why(s->a, sel);
             if (w && !strcmp(w, "variadic")) snprintf(why, whysz, "a declaration of %s is variadic", sel);
             else if (w && !strcmp(w, "undeclared")) snprintf(why, whysz, "no declaration of %s was known when this send was read", sel);
+            else if (w && !strcmp(w, "oversix")) snprintf(why, whysz, "a declaration of %s takes more than six argument registers", sel);
             else if (w && !strcmp(w, "uncounted")) snprintf(why, whysz, "a declaration of %s takes argument registers this reader does not count", sel);
         }
     } else
@@ -2479,6 +2505,9 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                             { fail(s, "out-of-memory", ips[i], "%s", "flow"); return; }
                         for (q = 0, j = np >= 2 ? -1 : j; q < np && np >= 2 && j < 0; q++)
                             j = arg_escape(s, &pin[q].st, pin[q].st.me, through, x, ips[i], at, why, sizeof why);
+                        /* A split call: the paths, not the call, are what lack a selector. */
+                        if (np >= 2 && j >= 0 && !strcmp(why, "this send's selector is not known"))
+                            snprintf(why, sizeof why, "%s", "this send's selector is not known on every path");
                     }
                     if (j == -2) { s->status = OBJC_CANNOT_MEASURE; return; }
                     if (j >= 0) { r = args[j]; how = "is passed as an argument"; } else *why = 0;
@@ -2491,7 +2520,7 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                         snprintf(why, sizeof why, "the method's type encoding returns nothing in %s", REGNAME[r]);
                 }
             }
-            if (how && !*why && r >= 0 && (fresh & (1u << r)))
+            if (how && !*why && r >= 0 && f->ijump && (fresh & (1u << r)))
                 snprintf(why, sizeof why, "%s", "in code reached only through an indirect jump this reader does not follow");
             if (how) {
                 char msg[MAX_LITERAL + 256];

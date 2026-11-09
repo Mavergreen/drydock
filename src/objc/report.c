@@ -41,7 +41,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
     objc_map_destroy(a->nw_method); objc_map_destroy(a->nw_class); objc_map_destroy(a->fl_method);
     objc_map_destroy(a->fl_class); objc_map_destroy(a->nw_later_sel); objc_map_destroy(a->nw_encoding);
     objc_map_destroy(a->sel_gprs); objc_map_destroy(a->fn_gprs); objc_map_destroy(a->sel_relied); objc_map_destroy(a->fn_home);
-    objc_map_destroy(a->sel_variadic);
+    objc_map_destroy(a->sel_variadic); objc_map_destroy(a->sel_oversix);
     free_strv(a->root_selectors, a->n_root_selectors);
     free_strv(a->class_roots, a->n_class_roots);
     free_strv(a->roots_blocking, a->n_roots_blocking);

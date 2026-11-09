@@ -283,7 +283,7 @@ refused 'entry-escape' indirect-objc-entry
 #       argument registers it does not count (over six, or a type it cannot classify).
 passed_at _unknown_colon '*%rbx' 'no declaration of zzNoSuchSelector: was known when this send was read'
 passed_at _format '*%rbx' 'a declaration of stringWithFormat: is variadic'
-passed_at _uncounted '*%rbx' 'a declaration of initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bitmapFormat:bytesPerRow:bitsPerPixel: takes argument registers this reader does not count'
+passed_at _uncounted '*%rbx' 'a declaration of initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bitmapFormat:bytesPerRow:bitsPerPixel: takes more than six argument registers'
 passed_at _stret_shift '*%rbx'
 passed_at _c_noreturn_params ___assert_rtn
 [ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 5 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
@@ -291,7 +291,7 @@ passed_at _c_noreturn_params ___assert_rtn
 #       detail names a register the method's own type encoding returns nothing in (tests/objc/fixtures/return-register.S).
 art="$T/return-register"
 cc "$FX/return-register.S" -o "$art" -framework Foundation -lobjc
-read_artifact "$art"; refused 'return register' indirect-objc-entry
+read_refs "$art"; refused 'return register' indirect-objc-entry
 for want in 'tick: rax is returned: the method'"'"'s type encoding returns nothing in rax' \
             'rank rdx is returned: the method'"'"'s type encoding returns nothing in rdx' 'thing rax is returned'; do
   fn=${want%% *}; rest=${want#* }; reg=${rest%% *}; how=${rest#* }
@@ -299,7 +299,8 @@ for want in 'tick: rax is returned: the method'"'"'s type encoding returns nothi
   awk -F '\t' -v a="$a" -v d="objc entry point in $reg $how" '$1 == "error" && $4 == a && $5 == d' "$T/out" | grep . >/dev/null ||
     fail "return register: -[ReturnProbe $fn] is not refused at $a as '$how'"
 done
-[ "$(grep -c '^error	' "$T/out")" = 3 ] || fail "return register: $(grep -c '^error	' "$T/out") errors, want 3"
+passed_at _send_bits '*%rbx' 'a declaration of zzTakeBits: takes argument registers this reader does not count'
+[ "$(grep -c '^error	' "$T/out")" = 4 ] || fail "return register: $(grep -c '^error	' "$T/out") errors, want 4"
 # spec: src/objc/macho-reader.c "Argument registers" -- a catalogued name bound to a non-system library or by flat
 #       lookup may be another function: all six count (tests/objc/fixtures/entry-elsewhere.S).
 mkdir -p "$T/elsewhere"
@@ -364,7 +365,7 @@ grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_sse: the table 
 for sel in objectForKey: description count allKeys allValues; do send "$pv" argument:- "selref:$sel"; done
 [ "$(awk -F '\t' -v f="$pv" '$2 == "dispatch-call" && $11 == f && $12 ~ /^argument:/' "$T/out" | wc -l | tr -d ' ')" = 6 ] ||
   fail "jt_sse: the cases do not all start from the state at the jmp"
-for c in 0 1 2 3 4 5 6 7 8 9 10; do
+for c in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
   cc22 -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt-clobber$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 read_artifact "$T/jt-clobber0"
@@ -383,7 +384,7 @@ measured 'jt_reject_clobber, a sub after the copy'
 #       does not use may stand between the ja and the lea (its -[PseudoTerminal canonicalizeWindowFrame]). A copy
 #       written again before the load, an immediate written into the index, or a load into the base's own register
 #       (the add then doubles the entry), is not such a table: cannot-measure.
-for c in 5 7; do
+for c in 5 7 14; do
   read_artifact "$T/jt-clobber$c"
   measured "jt_reject_clobber form $c"
   [ "$(count dispatch-call)" = 4 ] || fail "jt_reject_clobber form $c: $(count dispatch-call) sends, want 4"
@@ -392,6 +393,12 @@ done
 read_artifact "$T/jt-clobber6"; refused 'jt_reject_clobber, the base copy written again' indirect-objc-entry
 read_artifact "$T/jt-clobber8"; refused 'jt_reject_clobber, an immediate into the index' indirect-objc-entry
 read_artifact "$T/jt-clobber9"; refused 'jt_reject_clobber, the load into the base itself' indirect-objc-entry
+# spec: src/objc/macho-reader.c byte_regs -- without REX, byte registers 4..7 are ah..bh: a write to ah writes the
+#       index eax. A 32-bit copy of the table's address is not the address.
+otool -tV "$T/jt-clobber12" | grep -q 'movb	%bl, %ah' || fail 'jt_reject_clobber form 12: no movb %bl, %ah'
+read_artifact "$T/jt-clobber11"; refused 'jt_reject_clobber, movb $1, %ah on the index' indirect-objc-entry
+read_artifact "$T/jt-clobber12"; refused 'jt_reject_clobber, movb %bl, %ah on the index' indirect-objc-entry
+read_artifact "$T/jt-clobber13"; refused 'jt_reject_clobber, a 32-bit copy of the base' indirect-objc-entry
 # spec: src/objc/macho-reader.c entry_escapes -- a table whose lea is hoisted out of its loop (iTerm2 3.0.15's
 #       -[iTermTipCardViewController performLayoutForWidth:dry:origin:]) is not taken apart: each case's call is
 #       refused, and its detail names the indirect jump this reader does not follow.

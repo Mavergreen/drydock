@@ -303,6 +303,7 @@ typedef struct {
     ObjcMap *fn_home;             /* C function -> the install-name prefix it lives under, "" none (reference.c note_home) */
     ObjcMap *sel_relied;          /* selector -> what the reader's sends of it rely on (objc_rely_selector_gprs) */
     ObjcMap *sel_variadic;        /* selector -> "1": a signature catalog row declares it variadic */
+    ObjcMap *sel_oversix;         /* selector -> "1": a declaration takes more than six parameter GPRs */
 } ObjcAnalysis;
 
 ObjcAnalysis *objc_analysis_create(void);
@@ -375,8 +376,9 @@ int objc_load_gprs_catalogs(ObjcAnalysis *a);
  * known, a catalog is missing, or the total is over six. */
 int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret);
 /* Why objc_selector_gprs leaves colon selector SEL unbounded, for an error's detail: "variadic" when a
- * signature catalog row declares it so, "undeclared" when nothing has declared it so far, "uncounted"
- * for any other unbounded declaration; NULL when SEL is bounded, has no colon, or a catalog is
+ * signature catalog row declares it so, "undeclared" when nothing has declared it so far, "oversix" when
+ * a declaration's total (self and _cmd included) is over six, "uncounted" for any other unbounded
+ * declaration (a type it cannot classify); NULL when SEL is bounded, has no colon, or a catalog is
  * missing. */
 const char *objc_selector_unbounded_why(const ObjcAnalysis *a, const char *sel);
 /* A direct call to import SYMBOL (leading "_", an asm label's "$SUFFIX" ignored): the floor function

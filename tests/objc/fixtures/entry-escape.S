@@ -7,7 +7,7 @@
  *   _unknown_colon      a send of a colon selector no catalog or method list declares: unbounded
  *   _format             a send of stringWithFormat:, which is variadic: unbounded
  *   _uncounted          a send of NSBitmapImageRep's initWithBitmapDataPlanes:...bitsPerPixel:,
- *                       whose eleven parameter GPRs are more than six: unbounded
+ *                       whose eleven parameter GPRs are more than six: unbounded, by name
  *   _stret_shift        an objc_msgSend_stret send of rectOfRow: (one parameter): the hidden
  *                       result pointer shifts it, so rdi, rsi, rdx and rcx -- rcx IS its argument
  *   _c_noreturn_params  a call to __assert_rtn, which never returns and takes four parameters:

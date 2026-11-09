@@ -8,14 +8,22 @@
  *   -[ReturnProbe rank]    q16@0:8: rdx holds it at a ret of a method returning one integer
  *   -[ReturnProbe thing]   @16@0:8: rax holds it at a ret of a method returning an object, which it
  *                          may be: the detail stays "is returned"
+ * And, for "Argument registers": -[ReturnProbe zzTakeBits:] (v20@0:8{bits=b8b8}16) takes a struct of
+ * bitfields, which the reader cannot count, so _send_bits's send of zzTakeBits: with a copy of the
+ * entry point in rcx is refused "a declaration of zzTakeBits: takes argument registers this reader
+ * does not count" (upstream iTerm2 3.0.15's brightnessOfCharBackground: and its screen_char_t).
  */
 	.section	__TEXT,__objc_methname,cstring_literals
 L_sel_description:
 	.asciz	"description"
+L_name_bits:
+	.asciz	"zzTakeBits:"
 	.section	__DATA,__objc_selrefs,literal_pointers,no_dead_strip
 	.align	3
 L_selref_description:
 	.quad	L_sel_description
+L_selref_bits:
+	.quad	L_name_bits
 
 	.text
 	.align	4, 0x90
@@ -56,6 +64,26 @@ _main:
 	xorl	%eax, %eax
 	retq
 
+	.align	4, 0x90
+"-[ReturnProbe zzTakeBits:]":
+	retq
+
+	.globl	_send_bits
+	.align	4, 0x90
+_send_bits:
+	pushq	%rbp
+	movq	%rsp, %rbp
+	pushq	%rbx
+	pushq	%rax
+	movq	_objc_msgSend@GOTPCREL(%rip), %rbx
+	movq	%rbx, %rcx
+	movq	L_selref_bits(%rip), %rsi
+	callq	*%rbx
+	addq	$8, %rsp
+	popq	%rbx
+	popq	%rbp
+	retq
+
 	.section	__TEXT,__objc_classname,cstring_literals
 L_OBJC_CLASS_NAME_:                     ## @"\01L_OBJC_CLASS_NAME_"
 	.asciz	"ReturnProbe"
@@ -90,6 +118,8 @@ L_OBJC_METH_VAR_NAME_:                  ## @"\01L_OBJC_METH_VAR_NAME_"
 	.asciz	"tick:"
 
 	.section	__TEXT,__objc_methtype,cstring_literals
+L_type_bits:
+	.asciz	"v20@0:8{bits=b8b8}16"
 L_OBJC_METH_VAR_TYPE_:                  ## @"\01L_OBJC_METH_VAR_TYPE_"
 	.asciz	"v24@0:8@16"
 
@@ -113,7 +143,10 @@ L_OBJC_METH_VAR_TYPE_4:                 ## @"\01L_OBJC_METH_VAR_TYPE_4"
 	.align	3                       ## @"\01l_OBJC_$_INSTANCE_METHODS_ReturnProbe"
 l_OBJC_$_INSTANCE_METHODS_ReturnProbe:
 	.long	24                      ## 0x18
-	.long	3                       ## 0x3
+	.long	4                       ## 0x4
+	.quad	L_name_bits
+	.quad	L_type_bits
+	.quad	"-[ReturnProbe zzTakeBits:]"
 	.quad	L_OBJC_METH_VAR_NAME_
 	.quad	L_OBJC_METH_VAR_TYPE_
 	.quad	"-[ReturnProbe tick:]"

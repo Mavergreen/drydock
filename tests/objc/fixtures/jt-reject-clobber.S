@@ -34,6 +34,13 @@
  *              at 0x1001e3180): not a table this reader takes apart, so each case's call through r12
  *              is cannot-measure "in code reached only through an indirect jump this reader does
  *              not follow"
+ *   CLOBBER 11 the twin: `movb $1, %ah` between the ja and the lea writes bits 8..15 of eax, the
+ *              index (no REX: register 4 is ah, not spl): cannot-measure
+ *   CLOBBER 12 the twin: `movb %bl, %ah` in its 8A form there, the same: cannot-measure
+ *   CLOBBER 13 the twin: a 32-bit copy of the table's address, `movl %eax, %edx`, and the load and
+ *              add through it: the copy drops the address's upper half: cannot-measure
+ *   CLOBBER 14 as 0, with the first case copying r12 to rax (`movq %r12, %rax`), for
+ *              tests/objc/objc-compare-test.sh's register copy in a table's cases: four sends
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -90,11 +97,19 @@ Lloop:
 	movb $1, %bl
 #elif CLOBBER == 8
 	movl $1, %eax
+#elif CLOBBER == 11
+	movb $1, %ah
+#elif CLOBBER == 12
+	.byte 0x8a, 0xe3		/* movb %bl, %ah */
 #endif
-#if CLOBBER == 5 || CLOBBER == 6
+#if CLOBBER == 5 || CLOBBER == 6 || CLOBBER == 13
 	movl %eax, %ecx
 	leaq Ltable(%rip), %rax
+#if CLOBBER == 13
+	movl %eax, %edx
+#else
 	movq %rax, %rdx
+#endif
 #if CLOBBER == 6
 	addq $4, %rdx
 #endif
@@ -116,6 +131,9 @@ Lloop:
 	jmpq *%rax
 #endif
 Lcase0:
+#if CLOBBER == 14
+	movq %r12, %rax
+#endif
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_hash(%rip), %rsi
 	callq *%r12

@@ -560,8 +560,15 @@ static int merge_max(ObjcMap **m, const char *key, int params) {
 
 static void recheck_reliance(ObjcAnalysis *a, const char *sel);
 
+/* Remembers that a declaration of SEL takes more than six parameter GPRs (objc_selector_unbounded_why). 0, or -1 out of memory. */
+static int note_oversix(ObjcAnalysis *a, const char *sel) {
+    if (!a->sel_oversix && !(a->sel_oversix = objc_map_create())) return -1;
+    return objc_map_get(a->sel_oversix, sel) || objc_map_put(a->sel_oversix, sel, "1") >= 0 ? 0 : -1;
+}
+
 int objc_note_selector_gprs(ObjcAnalysis *a, const char *sel, int params) {
-    if (merge_max(&a->sel_gprs, sel, params)) return objc_fail(a, "out-of-memory", NULL, 0, "selector registers");
+    if ((params > GPR_ARGS && note_oversix(a, sel)) || merge_max(&a->sel_gprs, sel, params))
+        return objc_fail(a, "out-of-memory", NULL, 0, "selector registers");
     recheck_reliance(a, sel);
     return OBJC_OK;
 }
@@ -636,6 +643,10 @@ static int load_gprs_file(ObjcAnalysis *a, const char *name, int signatures, int
             status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu %s is already catalogued", name, lineno, c[0]);
             break;
         }
+        if (signatures && gprs > GPR_ARGS && note_oversix(a, c[3])) {
+            status = objc_fail(a, "out-of-memory", NULL, 0, "argument registers");
+            break;
+        }
         if (merge_max(signatures ? &a->sel_gprs : &a->fn_gprs, signatures ? c[3] : c[0], gprs) ||
             (!signatures && note_home(&a->fn_home, c[0], c[4], builtin)))
             status = objc_fail(a, "out-of-memory", NULL, 0, "argument registers");
@@ -681,6 +692,7 @@ const char *objc_selector_unbounded_why(const ObjcAnalysis *a, const char *sel) 
         return NULL;
     if (a->sel_variadic && objc_map_get(a->sel_variadic, sel)) return "variadic";
     if (!a->sel_gprs || !objc_map_get(a->sel_gprs, sel)) return "undeclared";
+    if ((a->sel_oversix && objc_map_get(a->sel_oversix, sel)) || stored_gprs(a->sel_gprs, sel) >= 0) return "oversix";
     return "uncounted";
 }
 
