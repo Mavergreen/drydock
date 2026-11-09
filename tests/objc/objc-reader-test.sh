@@ -326,7 +326,7 @@ grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_sse: the table 
 for sel in objectForKey: description count allKeys allValues; do send "$pv" argument:- "selref:$sel"; done
 [ "$(awk -F '\t' -v f="$pv" '$2 == "dispatch-call" && $11 == f && $12 ~ /^argument:/' "$T/out" | wc -l | tr -d ' ')" = 6 ] ||
   fail "jt_sse: the cases do not all start from the state at the jmp"
-for c in 0 1 2 3 4; do
+for c in 0 1 2 3 4 5 6 7 8 9; do
   cc22 -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt-clobber$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 read_artifact "$T/jt-clobber0"
@@ -340,6 +340,20 @@ read_artifact "$T/jt-clobber3"; refused 'jt_reject_clobber, a sub on the index' 
 read_artifact "$T/jt-clobber4"
 measured 'jt_reject_clobber, a sub after the copy'
 [ "$(count dispatch-call)" = 4 ] || fail "jt_reject_clobber, a sub after the copy: $(count dispatch-call) sends, want 4"
+# spec: src/objc/macho-reader.c jump_table_at -- the table's base may be copied after its lea and the load and add
+#       made through the copy (iTerm2 3.0.15's _CoreSearch), and a move of an immediate into a register the table
+#       does not use may stand between the ja and the lea (its -[PseudoTerminal canonicalizeWindowFrame]). A copy
+#       written again before the load, an immediate written into the index, or a load into the base's own register
+#       (the add then doubles the entry), is not such a table: cannot-measure.
+for c in 5 7; do
+  read_artifact "$T/jt-clobber$c"
+  measured "jt_reject_clobber form $c"
+  [ "$(count dispatch-call)" = 4 ] || fail "jt_reject_clobber form $c: $(count dispatch-call) sends, want 4"
+  grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_reject_clobber form $c: the table was decoded as code"
+done
+read_artifact "$T/jt-clobber6"; refused 'jt_reject_clobber, the base copy written again' indirect-objc-entry
+read_artifact "$T/jt-clobber8"; refused 'jt_reject_clobber, an immediate into the index' indirect-objc-entry
+read_artifact "$T/jt-clobber9"; refused 'jt_reject_clobber, the load into the base itself' indirect-objc-entry
 
 # spec: src/objc/macho-reader.c header -- A selector reference spilled to a frame slot is followed to its reload
 #       when the one store reaching every path is still there: the frame's escaped addresses are only an enumeration

@@ -1725,14 +1725,15 @@ static int rr_move(const Ins *x, int *dst, int *src) {
 /* Whether ins[j+1..b) -- from the bound's cmp at j through its ja, the lea at a, to the movsxd at b
  * -- keeps the bound on the table's index I. `bound` holds the compared register and any register
  * a mov copied it to just before the cmp. Before the lea each instruction must leave the flags:
- *   - a move (as -O0 writes them); one that writes a register makes that register bound only if
- *     it copies a bound one, so a move may overwrite R or D (the lea and movsxd write them again)
- *     but I only from the compared register or a copy of it;
+ *   - a move (as -O0 writes them, or an immediate's, as -O3 sets a flag register there); one that
+ *     writes a register makes that register bound only if it copies a bound one, so a move may
+ *     overwrite R or D (the lea and movsxd write them again) but I only from the compared register
+ *     or a copy of it;
  *   - or one that writes no flags (an sse_flagless instruction: -O3's arithmetic between the ja and
  *     the lea) and neither reads nor writes R, D, I or a bound register.
  * Between the lea and the movsxd, whatever jump_table_at let through (nothing writing R); any
  * write there to a bound register unbinds it. I must be bound at the movsxd. */
-static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, int R, int D, uint16_t bound) {
+static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, int R, int D, int B, uint16_t bound) {
     int I = ins[b].sibindex;
     size_t k;
     for (k = j + 1; k < b; k++) {
@@ -1740,9 +1741,9 @@ static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, i
         int dst, src, r;
         if (k == ja) continue;
         if (k < a && !(x->map == 0 && (x->op == 0x88 || x->op == 0x89 || x->op == 0x8A || x->op == 0x8B || x->op == 0x8D ||
-                                       x->op == 0xC6 || x->op == 0xC7 || x->op == 0x63)) &&
+                                       x->op == 0xC6 || x->op == 0xC7 || x->op == 0x63 || (x->op >= 0xB0 && x->op <= 0xBF))) &&
             !(x->map == 1 && (x->op == 0xB6 || x->op == 0xB7 || x->op == 0xBE || x->op == 0xBF))) {
-            uint16_t keep = (uint16_t)(bound | (1u << R) | (1u << D) | (1u << I));
+            uint16_t keep = (uint16_t)(bound | (1u << R) | (1u << D) | (1u << B) | (1u << I));
             if (!sse_flagless(x) || (gpr_reads(x) & keep)) return 0;
             for (r = 0; r < 16; r++) if ((keep & (1u << r)) && may_write(x, r)) return 0;
             continue;
@@ -1765,9 +1766,10 @@ static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, i
  * difference there instead), or a copy of it made by a mov just before the cmp or sub or between
  * it and the movsxd; clang at -O3 also puts SSE arithmetic between
  * the ja and the lea (iTerm2 3.0.15's +[PseudoTerminal drawArrangementPreview:screenFrames:]):
- * bound_kept says what may stand there. Recognised only whole: the bound, the four instructions
- * (nothing between them writing R) and every entry; then each target is recorded as the jmp's
- * successor and
+ * bound_kept says what may stand there. The load and the add may go through a 64-bit copy B of R
+ * made after the lea instead of R itself (iTerm2 3.0.15's _CoreSearch), when nothing between the
+ * copy and the add writes B and D is not B. Recognised only whole: the bound, the four
+ * instructions and every entry; then each target is recorded as the jmp's successor and
  * the 4N bytes are data, so the reader does not decode them as code. Returns 4N, or 0 when the
  * bytes at T are not such a table (they are then decoded as before). -1 out of memory. */
 static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, const uint8_t *at,
@@ -1775,24 +1777,37 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
     size_t a, b, c, d, e, j;
     for (a = 0; a < n; a++) {
         const Ins *l = &ins[a];
-        int R, D, ja = -1, C = -1, md, ms, sub = 0;
+        int R, D, B, ja = -1, C = -1, md, ms, sub = 0;
         int64_t N = -1;
-        uint16_t bound;
+        uint16_t bound, tb;
         size_t first;
         if (!(l->map == 0 && l->op == 0x8D && (l->rex & 8) && l->riprel && l->riptarget == t)) continue;
         R = l->reg;
+        /* The registers holding T after the lea: R, and any 64-bit copy of one (iTerm2 3.0.15's
+         * _CoreSearch: lea rax, [rip+T] ; mov rdx, rax ; movsxd rax, [rdx+rcx*4] ; add rax, rdx).
+         * Any other write to one drops it. */
+        tb = (uint16_t)(1u << R);
         for (b = a + 1; b < n && b < a + 12; b++) {
             const Ins *m = &ins[b];
+            int r;
             if (m->map == 0 && m->op == 0x63 && (m->rex & 8) && m->modrm && m->mod != 3 && m->sib &&
-                m->sibbase == R && m->sibindex >= 0 && m->sibscale == 2 && m->mdisp == 0)
+                m->sibbase >= 0 && (tb & (1u << m->sibbase)) && m->sibindex >= 0 && m->sibscale == 2 && m->mdisp == 0)
                 break;
-            if (may_write(m, R)) { b = n; break; }
+            if (rr_move(m, &md, &ms) && (m->rex & 8)) {
+                if (tb & (1u << ms)) tb |= (uint16_t)(1u << md); else tb &= (uint16_t)~(1u << md);
+                continue;
+            }
+            for (r = 0; r < 16; r++) if (may_write(m, r)) tb &= (uint16_t)~(1u << r);
+            if (!tb) { b = n; break; }
         }
         if (b >= n || b >= a + 12) continue;
         D = ins[b].reg;
+        B = ins[b].sibbase;
         c = b + 1;
+        /* The add needs T still in B: a load into B itself has replaced it. */
+        if (D == B) continue;
         if (!(c < n && ins[c].map == 0 && ins[c].modrm && ins[c].mod == 3 && (ins[c].rex & 8) &&
-              ((ins[c].op == 0x01 && ins[c].reg == R && ins[c].rm == D) || (ins[c].op == 0x03 && ins[c].reg == D && ins[c].rm == R))))
+              ((ins[c].op == 0x01 && ins[c].reg == B && ins[c].rm == D) || (ins[c].op == 0x03 && ins[c].reg == D && ins[c].rm == B))))
             continue;
         d = c + 1;
         if (!(d < n && is_ff(&ins[d], 4) && ins[d].mod == 3 && ins[d].rm == D)) continue;
@@ -1819,7 +1834,7 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
             first = j - 1;
         }
         if (!bound) continue;
-        if (!bound_kept(ins, j, (size_t)ja, a, b, R, D, bound)) continue;
+        if (!bound_kept(ins, j, (size_t)ja, a, b, R, D, B, bound)) continue;
         N = ins[j].imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
         if (N < 1 || N > 4096 || (uint64_t)N * 4 > hi - t) continue;
         for (e = 0; e < (size_t)N; e++) {

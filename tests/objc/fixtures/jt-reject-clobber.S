@@ -17,6 +17,18 @@
  *              the bounded value, so the index is unbound: cannot-measure
  *   CLOBBER 4  the bound by `subl $2, %r14d` after the copy to eax: the copy is the bounded value,
  *              a table as in CLOBBER 0: four sends
+ *   CLOBBER 5  the table's base copied after its lea, and the load and add through the copy, the
+ *              lea's register then reused for the target (iTerm2 3.0.15's _CoreSearch, its table at
+ *              0x1000cc7ec): lea rax, [rip + table] ; mov rdx, rax ; movsxd rax, dword [rdx + rcx*4] ;
+ *              add rax, rdx ; jmp rax: a table as in CLOBBER 0: four sends
+ *   CLOBBER 6  the twin: as 5, but `addq $4, %rdx` after the copy, so rdx no longer holds the
+ *              table's address: cannot-measure
+ *   CLOBBER 7  a byte move of an immediate into a register the table does not use between the ja and
+ *              the lea (iTerm2 3.0.15's -[PseudoTerminal canonicalizeWindowFrame], its table at
+ *              0x1001c6644: movb $0x1, %r14b): a table as in CLOBBER 0: four sends
+ *   CLOBBER 8  the twin: `movl $1, %eax` there writes the index: cannot-measure
+ *   CLOBBER 9  the load into the table's own register: movsxd rcx, [rcx + rax*4] ; add rcx, rcx ;
+ *              jmp rcx adds the entry to itself, not to the table's address: cannot-measure
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -65,11 +77,33 @@ _main:
 	cvttsd2si %xmm2, %eax
 #elif CLOBBER == 2
 	movl %ebx, %eax
+#elif CLOBBER == 7
+	movb $1, %bl
+#elif CLOBBER == 8
+	movl $1, %eax
 #endif
+#if CLOBBER == 5 || CLOBBER == 6
+	movl %eax, %ecx
+	leaq Ltable(%rip), %rax
+	movq %rax, %rdx
+#if CLOBBER == 6
+	addq $4, %rdx
+#endif
+	movslq (%rdx,%rcx,4), %rax
+	addq %rdx, %rax
+#elif CLOBBER == 9
+	leaq Ltable(%rip), %rcx
+	movslq (%rcx,%rax,4), %rcx
+	addq %rcx, %rcx
+	jmpq *%rcx
+#else
 	leaq Ltable(%rip), %rcx
 	movslq (%rcx,%rax,4), %rax
 	addq %rcx, %rax
+#endif
+#if CLOBBER != 9
 	jmpq *%rax
+#endif
 Lcase0:
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_hash(%rip), %rsi
