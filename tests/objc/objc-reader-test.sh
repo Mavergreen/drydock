@@ -311,8 +311,8 @@ read_artifact "$T/table2"; refused 'jump table form 2' indirect-objc-entry
 #       arithmetic: tests/objc/fixtures/jt-sse.m from the pinned clang22, jt-reject-clobber.S from upstream iTerm2
 #       3.0.15): the table is still taken apart when each of them writes no flags and neither reads nor writes a
 #       register the bound, load and dispatch use, and the index is the compared register or a mov's copy of it.
-#       An instruction that writes the index otherwise (cvttsd2si, or a mov from another register) is not such a
-#       table: cannot-measure.
+#       An instruction that writes the index otherwise (cvttsd2si, or a mov from another register), or a sub on the
+#       index itself (it then holds the difference), is not such a table: cannot-measure.
 # platform: -no_data_in_code_info -- iTerm2 3.0.15 ships an empty LC_DATA_IN_CODE; clang22's linker would mark the table.
 jt=$T/jt-sse
 cc22 -O3 "$FX/jt-sse.m" -o "$jt" -framework Foundation -Wl,-no_data_in_code_info
@@ -326,7 +326,7 @@ grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_sse: the table 
 for sel in objectForKey: description count allKeys allValues; do send "$pv" argument:- "selref:$sel"; done
 [ "$(awk -F '\t' -v f="$pv" '$2 == "dispatch-call" && $11 == f && $12 ~ /^argument:/' "$T/out" | wc -l | tr -d ' ')" = 6 ] ||
   fail "jt_sse: the cases do not all start from the state at the jmp"
-for c in 0 1 2; do
+for c in 0 1 2 3 4; do
   cc22 -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt-clobber$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 read_artifact "$T/jt-clobber0"
@@ -336,6 +336,10 @@ measured 'jt_reject_clobber control'
 grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_reject_clobber control: the table was decoded as code"
 read_artifact "$T/jt-clobber1"; refused jt_reject_clobber indirect-objc-entry
 read_artifact "$T/jt-clobber2"; refused 'jt_reject_clobber by a move' indirect-objc-entry
+read_artifact "$T/jt-clobber3"; refused 'jt_reject_clobber, a sub on the index' indirect-objc-entry
+read_artifact "$T/jt-clobber4"
+measured 'jt_reject_clobber, a sub after the copy'
+[ "$(count dispatch-call)" = 4 ] || fail "jt_reject_clobber, a sub after the copy: $(count dispatch-call) sends, want 4"
 
 # spec: src/objc/macho-reader.c header -- A selector reference spilled to a frame slot is followed to its reload
 #       when the one store reaching every path is still there: the frame's escaped addresses are only an enumeration

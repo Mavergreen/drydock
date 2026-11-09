@@ -1761,8 +1761,9 @@ static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, i
  *     cmp|sub idx, N-1 ; (moves) ; ja default
  *     lea R, [rip + T] ; movsxd D, dword [R + I*4] ; add D, R ; jmp D
  * with N int32 entries at T, each T plus itself an instruction start already decoded in this
- * function before T. The index I is the compared register, or a copy of it made by a mov just
- * before the cmp or between the cmp and the movsxd; clang at -O3 also puts SSE arithmetic between
+ * function before T. The index I is the compared register (after a cmp; a sub leaves the
+ * difference there instead), or a copy of it made by a mov just before the cmp or sub or between
+ * it and the movsxd; clang at -O3 also puts SSE arithmetic between
  * the ja and the lea (iTerm2 3.0.15's +[PseudoTerminal drawArrangementPreview:screenFrames:]):
  * bound_kept says what may stand there. Recognised only whole: the bound, the four instructions
  * (nothing between them writing R) and every entry; then each target is recorded as the jmp's
@@ -1774,7 +1775,7 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
     size_t a, b, c, d, e, j;
     for (a = 0; a < n; a++) {
         const Ins *l = &ins[a];
-        int R, D, ja = -1, C = -1, md, ms;
+        int R, D, ja = -1, C = -1, md, ms, sub = 0;
         int64_t N = -1;
         uint16_t bound;
         size_t first;
@@ -1805,16 +1806,19 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
         for (j = (size_t)ja; j-- > 0 && j + 6 > (size_t)ja; ) {
             const Ins *x = &ins[j];
             if (x->map == 0 && (x->op == 0x81 || x->op == 0x83) && x->modrm && x->mod == 3 &&
-                ((x->reg & 7) == 7 || (x->reg & 7) == 5) && x->imm >= 0) { C = x->rm; break; }
+                ((x->reg & 7) == 7 || (x->reg & 7) == 5) && x->imm >= 0) { C = x->rm; sub = (x->reg & 7) == 5; break; }
             if (x->map == 0 && x->op == 0x3D && x->imm >= 0) { C = REG_RAX; break; }
         }
         if (C < 0) continue;
-        bound = (uint16_t)(1u << C);
+        /* After `sub C, imm` C holds the difference, not the bounded value: only a copy made before
+         * the sub is bound. A cmp leaves C bound. */
+        bound = sub ? 0 : (uint16_t)(1u << C);
         first = j;
-        if (j > 0 && rr_move(&ins[j - 1], &md, &ms) && (md == C || ms == C)) {   /* mov I, C ; cmp C */
-            bound |= (uint16_t)((1u << md) | (1u << ms));
+        if (j > 0 && rr_move(&ins[j - 1], &md, &ms) && (md == C || ms == C) && md != ms) {   /* mov I, C ; cmp C */
+            bound |= (uint16_t)(1u << (md == C ? ms : md));
             first = j - 1;
         }
+        if (!bound) continue;
         if (!bound_kept(ins, j, (size_t)ja, a, b, R, D, bound)) continue;
         N = ins[j].imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
         if (N < 1 || N > 4096 || (uint64_t)N * 4 > hi - t) continue;
@@ -2596,20 +2600,26 @@ static const char *function_name(const Slice *s, uint64_t start) {
 
 /* Once the function [lo, hi) is decoded: a table's bound holds only if its sequence -- the mov or
  * cmp jump_table_at began it at, through the jmp -- is entered at its start. A direct branch, or a
- * table entry, to any later instruction of it leaves that table's cases reached only indirectly; its
- * bytes stay data. With DRYDOCK_OBJC_JUMP_TABLES set, each table is listed on stderr (compare.sh):
+ * table entry, or an LSDA landing pad at any later instruction of it leaves that table's cases
+ * reached only indirectly; its bytes stay data. -1 out of memory. With DRYDOCK_OBJC_JUMP_TABLES set, each table is listed on stderr (compare.sh):
  *     drydock-objc-jump-table TAB jmp TAB table TAB entries TAB function-start TAB function-end
  *         TAB followed|data TAB function-name */
-static void jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo, uint64_t hi,
-                      const uint64_t *ips, const Ins *ins, size_t n) {
+static int jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo, uint64_t hi,
+                     const uint64_t *ips, const Ins *ins, size_t n) {
     const char *trace = getenv("DRYDOCK_OBJC_JUMP_TABLES");
     size_t g, e, k, i, keep = 0;
+    Flow pads;
+    memset(&pads, 0, sizeof pads);
+    /* spec: lsda_sites -- the unwinder enters a landing pad directly: one inside a sequence bypasses its bound */
+    if (s->njt && lsda_sites(s, &pads, ips[0], ins[n - 1].next) < 0) return -1;
     for (g = 0; g < s->njt; g = e) {
         int dead = 0;
         for (e = g; e < s->njt && s->jt[e].jmp == s->jt[g].jmp; e++)
             if (s->jt[e].target > s->jt[g].first && s->jt[e].target <= s->jt[g].jmp) dead = 1;
         for (i = 0; i < s->njt && !dead; i++)
             if (s->jt[i].target > s->jt[g].first && s->jt[i].target <= s->jt[g].jmp) dead = 1;
+        for (i = 0; i < pads.ncs && !dead; i++)
+            if (pads.cs[i].pad > s->jt[g].first && pads.cs[i].pad <= s->jt[g].jmp) dead = 1;
         for (k = 0; k < n && !dead; k++) {
             uint64_t tg;
             if (!is_jcc(&ins[k]) && !is_jmp_rel(&ins[k])) continue;
@@ -2624,6 +2634,8 @@ static void jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo,
         if (!dead) for (i = g; i < e; i++) s->jt[keep++] = s->jt[i];
     }
     s->njt = keep;
+    flow_free(&pads);
+    return 0;
 }
 
 /* One function [lo, hi) of code section x. Site-level refusals are recorded and the scan
@@ -2677,7 +2689,7 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
     }
     free(cand);
     if (!n) return s->status;
-    jt_settle(s, x, base, lo, hi, *ipbuf, *insbuf, n);
+    if (jt_settle(s, x, base, lo, hi, *ipbuf, *insbuf, n) < 0) return fail(s, "out-of-memory", lo, "%s", "landing pads");
     memset(&flow, 0, sizeof flow);
 
 #define REG_VAL(reg, va, def) reg_value(s, &flow, base, x->addr, *ipbuf, *insbuf, n, k, reg, va, def)

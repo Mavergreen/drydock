@@ -13,6 +13,10 @@
  *              reached only indirectly: cannot-measure
  *   CLOBBER 2  the twin by a move: `movl %ebx, %eax` between the ja and the lea writes the index from a
  *              register that is not the compared one (r14) nor a copy of it: cannot-measure
+ *   CLOBBER 3  the bound by `subl $2, %eax` on the index itself: eax then holds the difference, not
+ *              the bounded value, so the index is unbound: cannot-measure
+ *   CLOBBER 4  the bound by `subl $2, %r14d` after the copy to eax: the copy is the bounded value,
+ *              a table as in CLOBBER 0: four sends
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -47,7 +51,13 @@ _main:
 	movq L_selref_description(%rip), %rsi
 	callq *%r12
 	movl %r14d, %eax
+#if CLOBBER == 3
+	subl $2, %eax
+#elif CLOBBER == 4
+	subl $2, %r14d
+#else
 	cmpl $2, %r14d
+#endif
 	ja Ldefault
 	movapd %xmm0, %xmm2
 	divpd %xmm1, %xmm2
