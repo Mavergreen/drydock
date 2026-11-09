@@ -355,7 +355,11 @@ cc22 -Wno-incompatible-library-redeclaration -dynamiclib "$FX/entry-elsewhere-li
   -o "$T/elsewhere/libelsewhere.dylib"
 art="$T/elsewhere/entry-elsewhere"
 cc22 "$FX/entry-elsewhere.S" -o "$art" -L"$T/elsewhere" -lelsewhere -Wl,-rpath,@loader_path -Wl,-U,_NSBeep -framework Foundation -lobjc
-xcrun dyldinfo -bind -lazy_bind "$art" | awk '$NF == "_write" && $(NF - 1) == "libelsewhere" { w = 1 } $NF == "_NSBeep" && $(NF - 1) == "flat-namespace" { b = 1 } END { exit !(w && b) }' ||
+# platform: modern Xcode has no dyldinfo; drydock-macho-rewrite imports (its man page: one TSV row per bind, columns
+#       arch ordinal kind install_name symbol weak stream) reads the binds on 10.9 and macOS 26 alike.
+: "${DRYDOCK_MACHO_REWRITE:?names the built drydock-macho-rewrite (CTest sets it)}"
+"$DRYDOCK_MACHO_REWRITE" imports "$art" | awk -F '\t' '$5 == "_write" && $4 == "@rpath/libelsewhere.dylib" { w = 1 }
+  $5 == "_NSBeep" && $2 == "flat" { b = 1 } END { exit !(w && b) }' ||
   fail 'entry-elsewhere: write is not bound to libelsewhere, or NSBeep not by flat lookup'
 read_refs "$art"
 refused 'entry-elsewhere' indirect-objc-entry

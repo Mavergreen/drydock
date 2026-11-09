@@ -387,7 +387,8 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
 # DRYDOCK_OBJC, the reader harness as DRYDOCK_OBJC_READER_DRIVER, the arity
-# harness as DRYDOCK_OBJC_ARITY_DRIVER, and
+# harness as DRYDOCK_OBJC_ARITY_DRIVER, this repo's Mach-O query tool as
+# DRYDOCK_MACHO_REWRITE (its imports TSV: modern Xcode has no dyldinfo), and
 # shipyard's fetchers through SHIPYARD_SCRIPTS -- the directory build/msc.sh
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
@@ -419,7 +420,7 @@ foreach(t arity binding classification closure compare provider reader reference
   endif()
   if(APPLE)
     set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+      "DRYDOCK_OBJC=$<TARGET_FILE:drydock-objc>;DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_MACHO_REWRITE=$<TARGET_FILE:drydock-macho-rewrite>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
   endif()
 endforeach()
 
