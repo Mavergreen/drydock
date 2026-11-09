@@ -1705,15 +1705,29 @@ static int jt_has(const Slice *s, uint64_t ip) {
     return 0;
 }
 
-/* Whether code at ips[a..b) leaves the flags of ins[a-1] (only moves between them). */
-static int flags_kept(const Ins *ins, size_t a, size_t b) {
+/* spec: Intel SDM vol. 2 -- an SSE instruction of the 0F map that writes no flags. Left out: comiss and
+ * ucomiss (0F 2E/2F), emms and vmread/vmwrite (0F 77-79), maskmovq (0F F7, an implicit rdi), and the
+ * 0F38/0F3A, VEX and EVEX maps, which hold flag writers such as ptest and pcmpestri. */
+static int sse_flagless(const Ins *x) {
+    int op = x->op;
+    return x->map == 1 && ((op >= 0x10 && op <= 0x17) || (op >= 0x28 && op <= 0x2D) ||
+                           (op >= 0x50 && op <= 0x7F && op != 0x77 && op != 0x78 && op != 0x79) ||
+                           (op >= 0xC4 && op <= 0xC6) || op == 0xC2 || (op >= 0xD0 && op <= 0xFE && op != 0xF7));
+}
+
+/* Whether code at ips[a..b) leaves the flags of ins[a-1] and the table sequence's registers `keep`:
+ * moves, as -O0 writes them, and -O3's instructions that write no flags and neither read nor write
+ * a register in keep (SSE arithmetic, between the ja and the lea). */
+static int flags_kept(const Ins *ins, size_t a, size_t b, uint16_t keep) {
     for (; a < b; a++) {
         const Ins *x = &ins[a];
+        int r;
         if (x->map == 0 && (x->op == 0x88 || x->op == 0x89 || x->op == 0x8A || x->op == 0x8B || x->op == 0x8D ||
                             x->op == 0xC6 || x->op == 0xC7 || x->op == 0x63))
             continue;
         if (x->map == 1 && (x->op == 0xB6 || x->op == 0xB7 || x->op == 0xBE || x->op == 0xBF)) continue;
-        return 0;
+        if (!sse_flagless(x) || (gpr_reads(x) & keep)) return 0;
+        for (r = 0; r < 16; r++) if ((keep & (1u << r)) && may_write(x, r)) return 0;
     }
     return 1;
 }
@@ -1723,8 +1737,11 @@ static int flags_kept(const Ins *ins, size_t a, size_t b) {
  *     cmp|sub idx, N-1 ; (moves) ; ja default
  *     lea R, [rip + T] ; movsxd D, dword [R + I*4] ; add D, R ; jmp D
  * with N int32 entries at T, each T plus itself an instruction start already decoded in this
- * function before T. Recognised only whole: the bound, the four instructions (nothing between
- * them writing R or D) and every entry; then each target is recorded as the jmp's successor and
+ * function before T. Clang at -O3 puts other instructions between the ja and the lea (SSE arithmetic:
+ * iTerm2 3.0.15's +[PseudoTerminal drawArrangementPreview:screenFrames:]); flags_kept takes one that
+ * writes no flags and neither reads nor writes the compared register, R, D or the index I. Recognised
+ * only whole: the bound, the four instructions (nothing between them writing R or D) and every
+ * entry; then each target is recorded as the jmp's successor and
  * the 4N bytes are data, so the reader does not decode them as code. Returns 4N, or 0 when the
  * bytes at T are not such a table (they are then decoded as before). -1 out of memory. */
 static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, const uint8_t *at,
@@ -1734,6 +1751,7 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
         const Ins *l = &ins[a];
         int R, D, ja = -1;
         int64_t N = -1;
+        uint16_t keep;
         if (!(l->map == 0 && l->op == 0x8D && (l->rex & 8) && l->riprel && l->riptarget == t)) continue;
         R = l->reg;
         for (b = a + 1; b < n && b < a + 12; b++) {
@@ -1758,17 +1776,18 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
             if ((x->map == 0 && (x->op == 0x77 || x->op == 0x73)) || (x->map == 1 && (x->op == 0x87 || x->op == 0x83))) { ja = (int)j; break; }
             if (ends_flow(x) || is_call_any(x)) break;
         }
-        if (ja < 0 || !flags_kept(ins, (size_t)ja + 1, a)) continue;
+        keep = (uint16_t)((1u << R) | (1u << D) | (1u << ins[b].sibindex));
+        if (ja < 0 || !flags_kept(ins, (size_t)ja + 1, a, keep)) continue;
         for (j = (size_t)ja; j-- > 0 && j + 6 > (size_t)ja; ) {
             const Ins *x = &ins[j];
             if (x->map == 0 && (x->op == 0x81 || x->op == 0x83) && x->modrm && x->mod == 3 &&
                 ((x->reg & 7) == 7 || (x->reg & 7) == 5) && x->imm >= 0) {
-                if (!flags_kept(ins, j + 1, (size_t)ja)) break;
+                if (!flags_kept(ins, j + 1, (size_t)ja, (uint16_t)(keep | (1u << x->rm)))) break;
                 N = x->imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
                 break;
             }
             if (x->map == 0 && x->op == 0x3D && x->imm >= 0) {
-                if (!flags_kept(ins, j + 1, (size_t)ja)) break;
+                if (!flags_kept(ins, j + 1, (size_t)ja, (uint16_t)(keep | (1u << REG_RAX)))) break;
                 N = x->imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
                 break;
             }
