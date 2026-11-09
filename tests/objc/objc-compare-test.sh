@@ -28,8 +28,12 @@ for c in 0 1 14; do
 done
 # spec: tests/objc/fixtures/weak-import-check.S header -- FORM 0 a weak import's check, measured
 cc -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClassPair
+# spec: tests/objc/fixtures/swizzle.m header -- FORM 1 method_setImplementation, FORM 4 class_addProtocol;
+#       tests/objc/fixtures/unsupported.c FORM 6 objc_allocateClassPair
+for f in 1 4; do cc -O1 -DFORM=$f "$FX/swizzle.m" -o "$T/sw$f" -framework Foundation -lobjc; done
+cc -O1 -DFORM=6 "$FX/unsupported.c" -o "$T/made" -lobjc
 sh "$HERE/baseline/record-artifacts.sh" "$DRYDOCK_OBJC" "$ROOT/reference/objc" "$T/base" \
-  jt0 "$T/jt0" - jt1 "$T/jt1" - jt14 "$T/jt14" - weak "$T/weak" - 2>/dev/null
+  jt0 "$T/jt0" - jt1 "$T/jt1" - jt14 "$T/jt14" - weak "$T/weak" - sw1 "$T/sw1" - sw4 "$T/sw4" - made "$T/made" - 2>/dev/null
 
 # the table the reader lists for jt0: jmp, table, entries, function start, end
 DRYDOCK_OBJC_JUMP_TABLES=1 "$DRYDOCK_OBJC" analyze --artifact "$T/jt0" --root "$T" --references "$ROOT/reference/objc" \
@@ -120,8 +124,62 @@ grep -q '^compare: lost error ' "$T/log" || fail 'a lost "different value" error
 doctor jt0 "$ONLY" "$(err indirect-objc-entry "$jmp" "$MERGED")"; passes 'a lost "different value" error in a followed table'"'"'s cases'
 refuses 'a lost "different value" error' fewer-passed-arguments
 refuses 'a lost "different value" error' identical
-doctor jt0 "$ONLY" "$(err unclassified-objc-runtime-import "$fn" _objc_getProperty)"; refuses 'a lost unrelated error'
+doctor jt0 "$ONLY" "$(err unclassified-objc-runtime-import "$fn" _class_getMethodImplementation)"; refuses 'a lost unrelated error'
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost unrelated error: refused for another reason'
+# spec: tests/objc/baseline/compare.sh header -- an unclassified-objc-runtime-import error may vanish when its symbol is
+#       one src/objc/macho-reader.c ROLES now classifies as memory or introspection, and only in fewer-unmeasured
+for sym in _objc_getProperty _objc_setProperty_nonatomic_copy _objc_setAssociatedObject _class_respondsToSelector \
+           _object_setIvar _objc_constructInstance _objc_disposeClassPair; do
+  doctor jt0 "$ONLY" "$(err unclassified-objc-runtime-import "$fn" "$sym")"; passes "a lost unclassified $sym"
+  grep -q '1 fewer unclassified-objc-runtime-import errors for imports now classified' "$T/log" || fail "a lost unclassified $sym: not counted"
+done
+refuses 'a lost unclassified _objc_disposeClassPair' fewer-passed-arguments
+refuses 'a lost unclassified _objc_disposeClassPair' identical
+# the ones this piece makes runtime-method-swizzle or runtime-class-creation are renamed, never lost
+for sym in _method_setImplementation _method_exchangeImplementations _class_replaceMethod _class_addProtocol _class_addIvar \
+           _class_addProperty _objc_initializeClassPair _class_addMethod; do
+  doctor jt0 "$ONLY" "$(err unclassified-objc-runtime-import "$fn" "$sym")"; refuses "a lost unclassified $sym"
+  grep -q '^compare: lost error ' "$T/log" || fail "a lost unclassified $sym: refused for another reason"
+done
+# spec: tests/objc/baseline/compare.sh header -- COMPARE_RENAMED=1: an unclassified-objc-runtime-import error may become
+#       runtime-method-swizzle (method_setImplementation, method_exchangeImplementations, class_replaceMethod) or
+#       runtime-class-creation (class_addProtocol, class_addIvar, class_addProperty, objc_initializeClassPair) at the same
+#       place, its detail the symbol's; nothing else. Each baseline is doctored back to the unclassified error.
+# unclassify NAME CODE SYMBOL [AS]: NAME's CODE error naming SYMBOL becomes unclassified AS (default SYMBOL); a
+#       runtime-class-creation error leaves "runtime_class_creation_sites" one lower unless KEEP_SITES is set
+unclassify() {
+  n=$((n + 1)); d="$T/doc$n"
+  cp -R "$T/base" "$d"
+  if [ "$2" = runtime-class-creation ] && [ -z "${KEEP_SITES:-}" ]; then
+    awk '{ if (match($0, /"runtime_class_creation_sites": [0-9]+/)) { v = substr($0, RSTART + 32, RLENGTH - 32) - 1
+             $0 = substr($0, 1, RSTART - 1) "\"runtime_class_creation_sites\": " v substr($0, RSTART + RLENGTH); k++ } print }
+         END { exit k != 1 }' "$d/$1.objc-compat.json" > "$d/x" || fail "unclassify $1: no runtime_class_creation_sites"
+    mv "$d/x" "$d/$1.objc-compat.json"
+  fi
+  sed -E "s/\{\"code\": \"$2\", (\"slice\": \"[^\"]*\", \"address\": \"0x[0-9a-f]+\"), \"detail\": \"$3: [^\"]*\"\}/{\"code\": \"unclassified-objc-runtime-import\", \1, \"detail\": \"${4:-$3}\"}/" \
+    "$d/$1.objc-compat.json" > "$d/x"
+  ! cmp -s "$d/x" "$d/$1.objc-compat.json" || fail "unclassify $1 $2 $3: no such error"
+  mv "$d/x" "$d/$1.objc-compat.json"
+}
+grep -q '"code": "runtime-method-swizzle", .*"detail": "_method_setImplementation: ' "$T/base/sw1.objc-compat.json" ||
+  fail 'sw1: method_setImplementation is not runtime-method-swizzle'
+unclassify sw1 runtime-method-swizzle _method_setImplementation
+RN=0; refuses 'a swizzle renamed from unclassified, unmapped'
+grep -q 'new, changed or reordered error' "$T/log" || fail 'a swizzle renamed from unclassified, unmapped: refused for another reason'
+RN=1; passes 'a swizzle renamed from unclassified'
+grep -q '^compare: sw1: exit 4, identical apart from analyzer and reference identity and 1 errors renamed$' "$T/log" ||
+  fail 'a swizzle renamed from unclassified: not counted as 1'
+passes 'a swizzle renamed from unclassified' identical
+unclassify sw1 runtime-method-swizzle _method_setImplementation _class_addMethod; refuses 'a swizzle renamed from another symbol'
+unclassify sw4 runtime-class-creation _class_addProtocol; passes 'a class change renamed from unclassified'
+grep -q '^compare: sw4: exit 4, identical apart from analyzer and reference identity and 1 errors renamed$' "$T/log" ||
+  fail 'a class change renamed from unclassified: not counted as 1'
+KEEP_SITES=1 unclassify sw4 runtime-class-creation _class_addProtocol
+refuses 'a class change renamed from unclassified, runtime_class_creation_sites not risen with it'
+grep -q 'runtime_class_creation_sites 1 -> 1 is not the 1 runtime-class-creation errors renamed' "$T/log" ||
+  fail 'runtime_class_creation_sites not risen: refused for another reason'
+unclassify made runtime-class-creation _objc_allocateClassPair; refuses 'a class creation this piece did not classify, renamed'
+RN=0
 # jt1's table is not followed: its "different value" errors may not vanish
 doctor jt1 "$FIRST" "$(err indirect-objc-entry "$jmp" "$MERGED")"
 refuses 'a lost "different value" error in a function holding no followed table'

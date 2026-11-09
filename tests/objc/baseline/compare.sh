@@ -42,6 +42,16 @@
 #              function holding a listed table whose cases it follows (its table bytes were decoded as code);
 #            - "_SYMBOL address taken" at an instruction otool -tV shows as a `cmp $0x0` of a rip-relative
 #              slot (a weak import's check, src/objc/macho-reader.c scan_function);
+#            - an unclassified-objc-runtime-import error whose detail is one of the imports
+#              src/objc/macho-reader.c ROLES classifies as memory or introspection (each with its cited
+#              reason there): objc_getProperty, objc_setProperty, objc_setProperty_atomic,
+#              objc_setProperty_nonatomic, objc_setProperty_atomic_copy, objc_setProperty_nonatomic_copy,
+#              objc_getAssociatedObject, objc_setAssociatedObject, objc_removeAssociatedObjects, object_getIvar,
+#              object_setIvar, objc_constructInstance, objc_disposeClassPair, class_respondsToSelector,
+#              protocol_getMethodDescription, class_getInstanceVariable, class_getIvarLayout,
+#              property_copyAttributeList, class_getInstanceMethod, class_getClassMethod, method_getImplementation,
+#              ivar_getOffset, objc_getProtocol, protocol_getName, class_conformsToProtocol, ivar_getName and
+#              class_getInstanceSize (each with its leading underscore);
 #            - before the errors list, a fall in an artifact's "undecoded_code_bytes" of no more than
 #              the listed tables' bytes in all; nothing else there may change.
 #          As a cross-check, otool -tV must show every listed table: a `cmp $N-1; ja` (or `cmp $N; jae`),
@@ -60,6 +70,15 @@
 #            - "is read other than to call through it (a spill, a copy or an escape)": "stored to memory at 0xADDR";
 #            - any of those three, or "is called through where another path left a different value": "in code
 #              reached only through an indirect jump this reader does not follow".
+#          It also lets an unclassified-objc-runtime-import error become, at the same place and slice, the code
+#          src/objc/macho-reader.c ROLES now gives its import, the detail that import's name plus that code's message:
+#            - runtime-method-swizzle, "SYM: a method implementation replaced at run time is not measured", for
+#              _method_setImplementation, _method_exchangeImplementations and _class_replaceMethod;
+#            - runtime-class-creation, "SYM: a class changed at run time is not the class measured", for
+#              _class_addProtocol, _class_addIvar and _class_addProperty, and "SYM: a class made or reparented at
+#              run time has no measured root" for _objc_initializeClassPair.
+#          The report's "runtime_class_creation_sites" may then rise by exactly the runtime-class-creation errors gained,
+#          no more than those that name one of these four imports.
 #          Each artifact's line then counts the renamed errors.
 #          Exit 0 identical, 1 a difference, 2 usage, 4 a stale or missing baseline or input.
 #          Prints "compare: N of N identical apart from analyzer and reference identity" on success.
@@ -248,6 +267,25 @@ fewer_errors() {
     sed 's/"undecoded_code_bytes": [0-9]*/"undecoded_code_bytes": 0/' "$1.head" > "$1.head.u" && mv "$1.head.u" "$1.head"
     sed 's/"undecoded_code_bytes": [0-9]*/"undecoded_code_bytes": 0/' "$2.head" > "$2.head.u" && mv "$2.head.u" "$2.head"
   fi
+  if [ "$RENAMED" = 1 ]; then
+    # spec: src/objc/main.m -- "runtime_class_creation_sites" counts the report's runtime-class-creation errors; it
+    #       may rise by exactly the runtime-class-creation errors gained, each of which the errors check below must
+    #       map back to a baseline unclassified-objc-runtime-import error, and by no more than those that name an
+    #       import this piece made runtime-class-creation
+    rs1=$(grep -o '"runtime_class_creation_sites": [0-9]*' "$1.head" | awk '{ print $2 }')
+    rs2=$(grep -o '"runtime_class_creation_sites": [0-9]*' "$2.head" | awk '{ print $2 }')
+    rc1=$(grep -c '^{"code": "runtime-class-creation", ' "$1.errs" || true)
+    rc2=$(grep -c '^{"code": "runtime-class-creation", ' "$2.errs" || true)
+    rcn=$(grep -cE '^\{"code": "runtime-class-creation", .*"detail": "(_class_add(Protocol|Ivar|Property): a class changed at run time is not the class measured|_objc_initializeClassPair: a class made or reparented at run time has no measured root)"\}$' "$2.errs" || true)
+    if [ -z "$rs1$rs2" ]; then :   # neither report reached its closure facts
+    elif [ "$(printf '%s\n' "$rs1" | wc -l | tr -d ' ')" != 1 ] || [ "$(printf '%s\n' "$rs2" | wc -l | tr -d ' ')" != 1 ] || [ -z "$rs1" ] || [ -z "$rs2" ] ||
+       [ $((rs2 - rs1)) != $((rc2 - rc1)) ] || [ $((rc2 - rc1)) -lt 0 ] || [ $((rc2 - rc1)) -gt "$rcn" ]; then
+      echo "compare: runtime_class_creation_sites $rs1 -> $rs2 is not the $((rc2 - rc1)) runtime-class-creation errors renamed" >&2
+      return 1
+    fi
+    sed 's/"runtime_class_creation_sites": [0-9]*/"runtime_class_creation_sites": 0/' "$1.head" > "$1.head.r" && mv "$1.head.r" "$1.head"
+    sed 's/"runtime_class_creation_sites": [0-9]*/"runtime_class_creation_sites": 0/' "$2.head" > "$2.head.r" && mv "$2.head.r" "$2.head"
+  fi
   if ! cmp -s "$1.head" "$2.head"; then
     echo "compare: reports differ before their errors:" >&2
     diff "$1.head" "$2.head" | cut -c1-300 | head -40 >&2 || true
@@ -256,7 +294,21 @@ fewer_errors() {
   awk -v mode="$MODE" -v renamed="$RENAMED" -v tables="$1.tables" -v cmps="$1.cmps" -v movs="$1.movs" -v fell="$fell" '
        BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2]; flo[nt] = r[3]; fhi[nt] = r[4]; st[nt] = r[5]; tj[nt] = r[6] }
                while ((getline l < cmps) > 0) cmp[l + 0] = 1
-               while ((getline l < movs) > 0) mov[l + 0] = 1 }
+               while ((getline l < movs) > 0) mov[l + 0] = 1
+               # spec: src/objc/macho-reader.c ROLES -- the imports this piece classified, by the role they now have
+               n = split("_objc_getProperty _objc_setProperty _objc_setProperty_atomic _objc_setProperty_nonatomic " \
+                         "_objc_setProperty_atomic_copy _objc_setProperty_nonatomic_copy _objc_getAssociatedObject " \
+                         "_objc_setAssociatedObject _objc_removeAssociatedObjects _object_getIvar _object_setIvar " \
+                         "_objc_constructInstance _objc_disposeClassPair _class_respondsToSelector " \
+                         "_protocol_getMethodDescription _class_getInstanceVariable _class_getIvarLayout " \
+                         "_property_copyAttributeList _class_getInstanceMethod _class_getClassMethod " \
+                         "_method_getImplementation _ivar_getOffset _objc_getProtocol _protocol_getName " \
+                         "_class_conformsToProtocol _ivar_getName _class_getInstanceSize", w, " ")
+               for (i = 1; i <= n; i++) classified[w[i]] = 1
+               n = split("_method_setImplementation _method_exchangeImplementations _class_replaceMethod", w, " ")
+               for (i = 1; i <= n; i++) swizzle[w[i]] = 1
+               n = split("_class_addProtocol _class_addIvar _class_addProperty", w, " ")
+               for (i = 1; i <= n; i++) changed[w[i]] = 1 }
        function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
          for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
          return x }
@@ -266,6 +318,19 @@ fewer_errors() {
          a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && tj[i] + 0 <= a && a < tlo[i] + 0) return 1; return 0 }
        function in_start(e,   a, i) {
          a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && flo[i] + 0 == a) return 1; return 0 }
+       # spec: src/objc/macho-reader.c ROLES -- the code and message each import this piece classified as swizzling
+       #       or class creation is refused with, mapped back to its unclassified-objc-runtime-import error
+       function unrole(e,   c, d, j, sym, r) {
+         if (e !~ /^\{"code": "(runtime-method-swizzle|runtime-class-creation)", "slice": "[^"]*", "address": "0x[0-9a-f]+", "detail": "[^"]*"}$/) return e
+         c = substr(e, 11); c = substr(c, 1, index(c, "\"") - 1)
+         d = substr(e, index(e, "\"detail\": \"") + 11); d = substr(d, 1, length(d) - 2)
+         if ((j = index(d, ": ")) == 0) return e
+         sym = substr(d, 1, j - 1); r = substr(d, j + 2)
+         if (!((c == "runtime-method-swizzle" && (sym in swizzle) && r == "a method implementation replaced at run time is not measured") ||
+               (c == "runtime-class-creation" && (sym in changed) && r == "a class changed at run time is not the class measured") ||
+               (c == "runtime-class-creation" && sym == "_objc_initializeClassPair" && r == "a class made or reparented at run time has no measured root")))
+           return e
+         return "{\"code\": \"unclassified-objc-runtime-import\", " substr(e, index(e, "\"slice\": "), index(e, ", \"detail\": ") - index(e, "\"slice\": ")) ", \"detail\": \"" sym "\"}" }
        # spec: src/objc/macho-reader.c entry_escapes -- the ": reason" each refusal may name, after its own detail
        function unrename(e,   d, w, r, j) {
          if (e !~ /^\{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x[0-9a-f]+", "detail": "objc entry point in [a-z0-9]+ [^"]*"}$/) return e
@@ -296,11 +361,14 @@ fewer_errors() {
            return "table"
          if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is read other than to call through it \(a spill, a copy or an escape\)"}$/ && in_cases(e) && ((addr(e) + 0) in mov))
            return "copied"
+         if (e ~ /^\{"code": "unclassified-objc-runtime-import", "slice": "[^"]*", "address": "0x[0-9a-f]+", "detail": "[^"]*"}$/ &&
+             (substr(e, index(e, "\"detail\": \"") + 11, length(e) - index(e, "\"detail\": \"") - 12) in classified))
+           return "classified"
          return "" }
        function drop(e,   k) { k = kind(e); if (k == "") { print "compare: lost error " e > "/dev/stderr"; bad = 1 } else lost[k]++ }
        NR == FNR { base[++nb] = $0; next }
        { e = $0
-         if (renamed) { e = unrename($0); if (e != $0) nren++ }
+         if (renamed) { e = unrename(unrole($0)); if (e != $0) nren++ }
          for (q = p + 1; q <= nb && base[q] != e; q++) ;
          if (q > nb) { print "compare: new, changed or reordered error " $0 > "/dev/stderr"; bad = 1; next }
          while (p + 1 < q) drop(base[++p])
@@ -314,6 +382,7 @@ fewer_errors() {
              if (lost["unfollowed"]) s = s ", " lost["unfollowed"] " fewer functions whose control flow is not followed"
              if (lost["weak"]) s = s ", " lost["weak"] " fewer \"address taken\" errors at a weak import\047s check"
              if (lost["table"]) s = s ", " lost["table"] " fewer errors inside a jump table"
+             if (lost["classified"]) s = s ", " lost["classified"] " fewer unclassified-objc-runtime-import errors for imports now classified"
              if (fell + 0) s = s ", " fell " fewer undecoded bytes"
              if (nren) s = s ", " nren " errors renamed"
              print substr(s, 3) }' "$1.errs" "$2.errs"

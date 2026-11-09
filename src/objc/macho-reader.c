@@ -10,9 +10,12 @@
  *     objc_getClass, ...) whose name argument is a literal in the image;
  *   - calls and jumps into dispatch/allocation entry points;
  *   - calls to class_addMethod, a run-time method registration, which provider.c must attest;
- *   - calls that make or reparent a class at run time (objc_allocateClassPair and its family),
- *     refused as runtime-class-creation wherever they are: such a class has no root this
- *     reader can measure.
+ *   - calls that make, reparent or change a class at run time (objc_allocateClassPair and its
+ *     family, class_addProtocol, class_addIvar, class_addProperty), refused as
+ *     runtime-class-creation wherever they are: such a class has no root or shape this reader
+ *     can measure;
+ *   - calls that replace a method's implementation at run time (method_setImplementation,
+ *     method_exchangeImplementations, class_replaceMethod), refused as runtime-method-swizzle.
  * A class record says when its superclass slot is a measured null (symbol "root": a root class
  * of the artifact's own) or could not be read (symbol "unmeasured"); classify.c decides what that
  * means for R1.
@@ -119,7 +122,7 @@ enum { REG_RAX = 0, REG_RCX = 1, REG_RDX = 2, REG_RSP = 4, REG_RBP = 5, REG_RSI 
  * family that is absent from this table is refused rather than assumed harmless. */
 typedef enum { IMP_OTHER, IMP_SEL_PRODUCER, IMP_SEL_PRODUCER_NSSTRING, IMP_CLASS_PRODUCER,
                IMP_CLASS_PRODUCER_NSSTRING, IMP_DISPATCH, IMP_MEMORY, IMP_PASSTHROUGH, IMP_INTROSPECT,
-               IMP_REGISTRATION, IMP_CLASS_CREATION, IMP_UNCLASSIFIED } ImportRole;
+               IMP_REGISTRATION, IMP_CLASS_CREATION, IMP_SWIZZLE, IMP_UNCLASSIFIED } ImportRole;
 
 static const struct { const char *name; ImportRole role; } ROLES[] = {
     { "_sel_registerName", IMP_SEL_PRODUCER }, { "_sel_getUid", IMP_SEL_PRODUCER },
@@ -157,12 +160,73 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
     { "_sel_isEqual", IMP_INTROSPECT }, { "_NSStringFromSelector", IMP_INTROSPECT },
     { "_NSStringFromClass", IMP_INTROSPECT },
     { "_class_copyMethodList", IMP_INTROSPECT }, { "_method_getName", IMP_INTROSPECT },
+    /* spec: objc4-551.1 (the 10.9 libobjc), runtime/Accessors.subproj/objc-accessors.mm objc_getProperty_non_gc,
+     *       reallySetProperty, objc_setProperty_non_gc and objc_setProperty_{atomic,nonatomic}[_copy]: the getter
+     *       is objc_retain then objc_autoreleaseReturnValue (atomic) or a plain load; the setters send
+     *       copyWithZone: or mutableCopyWithZone:, or call objc_retain, then objc_release the old value. Under GC
+     *       (objc_*_gc) they send copyWithZone:/mutableCopyWithZone: and store with objc_assign_ivar. NSObject
+     *       answers copyWithZone: and mutableCopyWithZone: on 10.9 (NSObject.mm); no other message is sent. */
+    { "_objc_getProperty", IMP_MEMORY }, { "_objc_setProperty", IMP_MEMORY },
+    { "_objc_setProperty_atomic", IMP_MEMORY }, { "_objc_setProperty_nonatomic", IMP_MEMORY },
+    { "_objc_setProperty_atomic_copy", IMP_MEMORY }, { "_objc_setProperty_nonatomic_copy", IMP_MEMORY },
+    /* spec: objc4-551.1 objc-runtime.mm objc_{get,set}AssociatedObject_non_gc and objc_removeAssociatedObjects;
+     *       objc-references.mm _object_get_associative_reference, acquireValue, releaseValue and
+     *       _object_remove_assocations: the only messages are retain, autorelease, copy and release, each
+     *       through objc_msgSend from the runtime; the GC variants send copy only. NSObject answers all four on
+     *       10.9 (NSObject.mm; -copy is [self copyWithZone:nil]). */
+    { "_objc_getAssociatedObject", IMP_MEMORY }, { "_objc_setAssociatedObject", IMP_MEMORY },
+    { "_objc_removeAssociatedObjects", IMP_MEMORY },
+    /* spec: objc4-551.1 objc-class.mm object_getIvar (objc_loadWeak -- NSObject.mm: objc_loadWeakRetained then
+     *       objc_autorelease --, objc_read_weak under GC, or a load) and object_setIvar (objc_storeWeak,
+     *       objc_storeStrong, objc_assign_weak and objc_assign_ivar under GC, or a store): the barriers this table
+     *       already holds as IMP_MEMORY or IMP_PASSTHROUGH, and no message of their own. */
+    { "_object_getIvar", IMP_MEMORY }, { "_object_setIvar", IMP_MEMORY },
+    /* spec: objc4-551.1 objc-class.mm objc_constructInstance, _objc_constructInstance and
+     *       object_cxxConstructFromClass: sets isa, then calls each class's .cxx_construct IMP directly, superclass
+     *       first -- compiled code in its image, which the reader measures like any other -- and sends no
+     *       message. */
+    { "_objc_constructInstance", IMP_MEMORY },
+    /* spec: objc4-551.1 objc-runtime-new.mm objc_disposeClassPair, detach_class and free_class: refuses (with
+     *       _objc_inform) a class objc_allocateClassPair did not make, else unlinks and frees it; no message. The
+     *       class it frees was made at run time, which is runtime-class-creation at its own call. */
+    { "_objc_disposeClassPair", IMP_MEMORY },
+    /* spec: objc4-551.1, each reading the runtime's tables and sending no message:
+     *       objc-runtime-new.mm protocol_getMethodDescription (protocol_getMethod), class_getIvarLayout,
+     *       property_copyAttributeList, method_getImplementation, ivar_getOffset, ivar_getName, objc_getProtocol,
+     *       protocol_getName, class_conformsToProtocol; objc-class.mm class_getInstanceVariable (_class_getVariable),
+     *       class_getInstanceSize.
+     *       class_respondsToSelector (objc-class.mm), class_getInstanceMethod (objc-runtime-new.mm) and
+     *       class_getClassMethod (objc-class.mm, class_getInstanceMethod of the metaclass) look up with
+     *       initialize NO and resolver YES: on a miss, lookUpImpOrForward calls _class_resolveMethod
+     *       (objc-class.mm), which sends +resolveInstanceMethod: or +resolveClassMethod: only when the class's
+     *       metaclass implements it. NSObject does on 10.9 (NSObject.mm), so any class answers it. Their only
+     *       other effect is realizing the class, which sends nothing. method_getImplementation answers an IMP; a
+     *       call through it is an indirect call the reader does not see as a send. */
+    { "_class_respondsToSelector", IMP_INTROSPECT }, { "_protocol_getMethodDescription", IMP_INTROSPECT },
+    { "_class_getInstanceVariable", IMP_INTROSPECT }, { "_class_getIvarLayout", IMP_INTROSPECT },
+    { "_property_copyAttributeList", IMP_INTROSPECT }, { "_class_getInstanceMethod", IMP_INTROSPECT },
+    { "_class_getClassMethod", IMP_INTROSPECT }, { "_method_getImplementation", IMP_INTROSPECT },
+    { "_ivar_getOffset", IMP_INTROSPECT }, { "_objc_getProtocol", IMP_INTROSPECT },
+    { "_protocol_getName", IMP_INTROSPECT }, { "_class_conformsToProtocol", IMP_INTROSPECT },
+    { "_ivar_getName", IMP_INTROSPECT }, { "_class_getInstanceSize", IMP_INTROSPECT },
     /* Adds a method at run time: recorded, and cannot-measure unless provider.c attests the code. */
     { "_class_addMethod", IMP_REGISTRATION },
     /* Makes or reparents a class at run time: its root is unmeasurable, so always cannot-measure. */
     { "_objc_allocateClassPair", IMP_CLASS_CREATION }, { "_objc_registerClassPair", IMP_CLASS_CREATION },
     { "_objc_duplicateClass", IMP_CLASS_CREATION }, { "_objc_readClassPair", IMP_CLASS_CREATION },
     { "_class_setSuperclass", IMP_CLASS_CREATION },
+    /* spec: objc4-551.1 objc-runtime-new.mm objc_initializeClassPair (objc_initializeClassPair_internal: a class pair
+     *       made in memory the caller supplies) and class_addProtocol, class_addIvar, class_addProperty (a class
+     *       changed at run time): the shape the reader measured is not the one the class has. */
+    { "_objc_initializeClassPair", IMP_CLASS_CREATION }, { "_class_addProtocol", IMP_CLASS_CREATION },
+    { "_class_addIvar", IMP_CLASS_CREATION }, { "_class_addProperty", IMP_CLASS_CREATION },
+    /* Replaces a method's implementation at run time: a send may run code no image declares for it, so always
+     * cannot-measure, runtime-method-swizzle.
+     * spec: objc4-551.1 objc-runtime-new.mm method_setImplementation (_method_setImplementation),
+     *       method_exchangeImplementations, and class_replaceMethod (addMethod with replace YES). class_addMethod
+     *       (addMethod, replace NO) only adds where no method is, and keeps IMP_REGISTRATION above. */
+    { "_method_setImplementation", IMP_SWIZZLE }, { "_method_exchangeImplementations", IMP_SWIZZLE },
+    { "_class_replaceMethod", IMP_SWIZZLE },
 };
 
 static ImportRole role_of(const char *sym, const char *dylib) {
@@ -2868,7 +2932,13 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
                     fail(s, "unclassified-objc-runtime-import", site, "%s", p->name);
                     break;
                 case IMP_CLASS_CREATION:
-                    fail(s, "runtime-class-creation", site, "%s: a class made or reparented at run time has no measured root", p->name);
+                    if (!strncmp(p->name, "_class_add", 10))
+                        fail(s, "runtime-class-creation", site, "%s: a class changed at run time is not the class measured", p->name);
+                    else
+                        fail(s, "runtime-class-creation", site, "%s: a class made or reparented at run time has no measured root", p->name);
+                    break;
+                case IMP_SWIZZLE:
+                    fail(s, "runtime-method-swizzle", site, "%s: a method implementation replaced at run time is not measured", p->name);
                     break;
                 case IMP_REGISTRATION:
                     if (add_ev(s, OBJC_EV_METHOD_REGISTRATION, site, target, NULL, NULL, NULL, p->name + 1, NULL))

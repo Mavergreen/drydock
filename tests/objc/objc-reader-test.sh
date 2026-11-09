@@ -168,6 +168,43 @@ for form in 1:computed-selector-producer 2:computed-class-producer 3:unclassifie
   cc -DFORM="$n" "$FX/unsupported.c" -o "$T/unsupported$n" -lobjc -Wl,-U,_NSSelectorFromString
   read_artifact "$T/unsupported$n"; refused "unsupported form $n" "${form#*:}"
 done
+# spec: src/objc/macho-reader.c ROLES -- the property, associated-object and introspection functions compiled
+#       Objective-C calls send no message an NSObject does not answer: measured, no unclassified import.
+cc -c "$FX/props.m" -o "$T/props.o"
+cc "$T/props.o" -o "$T/props" -framework Foundation -lobjc
+for f in objc_getProperty objc_setProperty objc_setProperty_atomic objc_setProperty_nonatomic objc_setProperty_atomic_copy \
+         objc_setProperty_nonatomic_copy objc_getAssociatedObject objc_setAssociatedObject objc_removeAssociatedObjects \
+         class_respondsToSelector protocol_getMethodDescription class_getInstanceVariable class_getIvarLayout \
+         property_copyAttributeList class_getInstanceMethod class_getClassMethod method_getImplementation ivar_getOffset \
+         objc_getProtocol protocol_getName class_conformsToProtocol object_getIvar object_setIvar ivar_getName \
+         class_getInstanceSize objc_constructInstance objc_disposeClassPair; do
+  nm -u "$T/props" | grep -qx "_$f" || fail "props: does not import $f"
+done
+read_artifact "$T/props"
+grep '^error	unclassified-objc-runtime-import	' "$T/out" >/dev/null && fail 'props: a classified runtime import is unclassified'
+measured props
+# spec: src/objc/macho-reader.c ROLES -- replacing a method's implementation is runtime-method-swizzle; adding a
+#       protocol, ivar or property to a class, or initializing a class pair, is runtime-class-creation; class_addMethod
+#       stays a method registration provider.c must attest.
+for form in 1:_method_setImplementation:runtime-method-swizzle 2:_method_exchangeImplementations:runtime-method-swizzle \
+            3:_class_replaceMethod:runtime-method-swizzle 4:_class_addProtocol:runtime-class-creation \
+            5:_class_addIvar:runtime-class-creation 6:_class_addProperty:runtime-class-creation \
+            7:_objc_initializeClassPair:runtime-class-creation; do
+  n=${form%%:*}; rest=${form#*:}; sym=${rest%%:*}; code=${rest#*:}
+  cc -DFORM="$n" "$FX/swizzle.m" -o "$T/swizzle$n" -framework Foundation -lobjc
+  read_artifact "$T/swizzle$n"; refused "swizzle form $n" "$code"
+  grep "^error	$code	.*	$sym: " "$T/out" >/dev/null || fail "swizzle form $n: $code does not name $sym"
+  grep '^error	unclassified-objc-runtime-import	' "$T/out" >/dev/null && fail "swizzle form $n: still unclassified"
+done
+cc -DFORM=8 "$FX/swizzle.m" -o "$T/swizzle8" -framework Foundation -lobjc
+read_artifact "$T/swizzle8"
+measured 'swizzle form 8 (class_addMethod)'
+has method-registration 8=class_addMethod
+# spec: src/objc/macho-reader.c role_of -- a libobjc import outside the table is still refused.
+cc "$FX/unlisted-runtime.S" -o "$T/unlisted" -lobjc -Wl,-U,_objc_setHook_getClass
+read_artifact "$T/unlisted"; refused 'an unlisted runtime import' unclassified-objc-runtime-import
+grep '^error	unclassified-objc-runtime-import	.*	_objc_setHook_getClass$' "$T/out" >/dev/null ||
+  fail 'an unlisted runtime import: not named'
 
 # spec: src/objc/macho-reader.c header -- A GOT-loaded entry point held in a register and only ever called through
 #       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), copied to a register only jumped through, past a
