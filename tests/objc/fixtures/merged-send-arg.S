@@ -1,7 +1,8 @@
-/* Fixture: a merged send with a copy of objc_msgSend in an argument register, the shape of
- * upstream iTerm2 3.0.15's -[iTermEditKeyActionWindowController ok:] at 0x1001b1772: each path
- * loads its own selector, every path leaves a copy of the entry point in rdx (`movq %rdx, %rbx`
- * there; here `movq %rbx, %rdx`), and the join calls through rbx. At the join the paths disagree
+/* Fixture: a merged send with a copy of objc_msgSend in an argument register, after upstream
+ * iTerm2 3.0.15's -[iTermEditKeyActionWindowController ok:] at 0x1001b1772: each path loads its
+ * own selector, every path leaves a copy of the entry point in rdx (`movq %rdx, %rbx` there; here
+ * `movq %rbx, %rdx`), and the join calls through rbx. (There one incoming path is itself a join of
+ * two, which a one-level read does not split, so that send stays refused.) At the join the paths disagree
  * on the selector, so the meet has none and all six registers would count as arguments. Read per
  * path ("Merged calls"), each path's selector bounds them. Hand-assembled so the shape does not
  * depend on which compiler builds it. Never executed.

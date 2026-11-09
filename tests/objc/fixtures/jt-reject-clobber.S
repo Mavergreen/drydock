@@ -29,6 +29,11 @@
  *   CLOBBER 8  the twin: `movl $1, %eax` there writes the index: cannot-measure
  *   CLOBBER 9  the load into the table's own register: movsxd rcx, [rcx + rax*4] ; add rcx, rcx ;
  *              jmp rcx adds the entry to itself, not to the table's address: cannot-measure
+ *   CLOBBER 10 the table's lea hoisted out of a loop, into another block than its jmp (iTerm2
+ *              3.0.15's -[iTermTipCardViewController performLayoutForWidth:dry:origin:], its table
+ *              at 0x1001e3180): not a table this reader takes apart, so each case's call through r12
+ *              is cannot-measure "in code reached only through an indirect jump this reader does
+ *              not follow"
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -62,6 +67,10 @@ _main:
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_description(%rip), %rsi
 	callq *%r12
+#if CLOBBER == 10
+	leaq Ltable(%rip), %rcx
+Lloop:
+#endif
 	movl %r14d, %eax
 #if CLOBBER == 3
 	subl $2, %eax
@@ -97,7 +106,9 @@ _main:
 	addq %rcx, %rcx
 	jmpq *%rcx
 #else
+#if CLOBBER != 10
 	leaq Ltable(%rip), %rcx
+#endif
 	movslq (%rcx,%rax,4), %rax
 	addq %rcx, %rax
 #endif
@@ -118,6 +129,9 @@ Lcase2:
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_hash(%rip), %rsi
 	callq *%r12
+#if CLOBBER == 10
+	jmp Lloop
+#endif
 Ldefault:
 	xorl %eax, %eax
 	popq %r12

@@ -207,6 +207,7 @@ typedef struct {
     uint64_t *fetch_arg_sites; size_t nfas, capfas;
     const char *cur_fn;                 /* symbol of the function being scanned, or NULL */
     struct { uint64_t jmp, target, table, first; uint32_t n; } *jt; size_t njt, capjt;   /* the scanned function's inline jump tables: one per entry */
+    struct { uint64_t imp; int ret; } *mret; size_t nmret, capmret;   /* each method's IMP and what its encoding returns (encoding_ret) */
     int status;
     int quiet;                          /* an image view: record no dylibs */
 } Slice;
@@ -338,10 +339,37 @@ static int add_ev(Slice *s, ObjcEvidenceKind kind, uint64_t addr, uint64_t targe
     return 0;
 }
 
+/* What a method type encoding's return type leaves in rax and rdx: RET_NONE for void, RET_RAX for
+ * one integer or pointer (spec: System V AMD64 ABI 3.2.3 -- an INTEGER class of eight bytes or fewer
+ * returns in rax alone), RET_UNKNOWN for anything else or no encoding. Type qualifiers are skipped. */
+enum { RET_UNKNOWN, RET_NONE, RET_RAX };
+static int encoding_ret(const char *types) {
+    if (!types) return RET_UNKNOWN;
+    while (*types && strchr("rnNoORV", *types)) types++;
+    if (*types == 'v') return RET_NONE;
+    if (*types && strchr("cislqCISLQB@#:*^", *types)) return RET_RAX;
+    return RET_UNKNOWN;
+}
+
+/* What every method whose IMP is fn returns (encoding_ret); RET_UNKNOWN when none is, or two disagree. */
+static int method_ret(const Slice *s, uint64_t fn) {
+    size_t i;
+    int r = -1;
+    for (i = 0; i < s->nmret; i++)
+        if (s->mret[i].imp == fn) { if (r >= 0 && r != s->mret[i].ret) return RET_UNKNOWN; r = s->mret[i].ret; }
+    return r < 0 ? RET_UNKNOWN : r;
+}
+
 /* A method definition, with its type encoding (NULL when unread). */
 static int add_method(Slice *s, uint64_t list, uint64_t imp, const char *owner, const char *mkind,
                       const char *sel, const char *category, const char *types) {
     ObjcEvidence e;
+    if (s->nmret == s->capmret) {
+        void *g = realloc(s->mret, (s->capmret = s->capmret ? s->capmret * 2 : 64) * sizeof *s->mret);
+        if (!g) return fail(s, "out-of-memory", list, "%s", "methods");
+        s->mret = g;
+    }
+    s->mret[s->nmret].imp = imp; s->mret[s->nmret].ret = encoding_ret(types); s->nmret++;
     memset(&e, 0, sizeof e);
     e.kind = OBJC_EV_METHOD_DEF; e.slice = s->slice; e.address = list; e.target = imp;
     e.owner = (char *)owner; e.method_kind = (char *)mkind; e.selector = (char *)sel;
@@ -1026,6 +1054,7 @@ typedef struct {
     struct CallSite { uint64_t lo, hi, pad; } *cs; size_t ncs;   /* LSDA ranges that land (lsda_sites) */
     uint8_t *lpad;                   /* per block: an LSDA landing pad */
     uint8_t *plain;                  /* per block: entered only by the direct edges block_edges gives */
+    uint8_t *seed;                   /* per block: nothing reaches it directly; it starts unknown (flow_build) */
     int ijump;                       /* the function has an indirect jump that may be a jump table */
 } Flow;
 
@@ -1383,6 +1412,8 @@ static int is_call_any(const Ins *x) { return is_call_rel(x) || is_ff(x, 2) || i
 /* The values above, plus `me`: the registers that may hold a GOT-loaded objc entry point on SOME
  * path (rs_meet unions it), where k[] says what they hold on every path. A call keeps the
  * callee-saved registers; any other write the instruction may make clears the bit. */
+/* rax, rcx, rdx, rsi, rdi, r8-r11: what a call clobbers (transfer's `clobber`). */
+#define CALLER_SAVED ((uint16_t)0x0FC7)
 static void transfer(const Slice *s, const Flow *f, RS *r, const Ins *x, uint64_t ip, const uint8_t *at) {
     static const int clobber[] = { 0, 1, 2, 6, 7, 8, 9, 10, 11 };
     uint16_t me = r->me, mf = r->mf;
@@ -1489,7 +1520,7 @@ static int ends_flow(const Ins *x) {   /* no fallthrough successor */
            (x->map == 1 && x->op == 0x0B);
 }
 
-static void flow_free(Flow *f) { free(f->blk); free(f->bstart); free(f->in); free(f->wild); free(f->cs); free(f->lpad); free(f->plain); memset(f, 0, sizeof *f); }
+static void flow_free(Flow *f) { free(f->blk); free(f->bstart); free(f->in); free(f->wild); free(f->cs); free(f->lpad); free(f->plain); free(f->seed); memset(f, 0, sizeof *f); }
 
 static long index_of(const uint64_t *ips, size_t n, uint64_t va) {
     size_t lo = 0, hi = n;
@@ -2008,7 +2039,7 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
     if (!f->blk || !f->bstart) { free(leader); return -1; }
     for (i = 0, b = 0; i < n; i++) { if (leader[i]) f->bstart[b++] = i; f->blk[i] = b - 1; }
     f->nb = b; f->bstart[b] = n;
-    if (!(f->lpad = calloc(f->nb, 1)) || !(f->plain = calloc(f->nb, 1))) { free(leader); return -1; }
+    if (!(f->lpad = calloc(f->nb, 1)) || !(f->plain = calloc(f->nb, 1)) || !(f->seed = calloc(f->nb, 1))) { free(leader); return -1; }
     for (i = 0; i < f->ncs; i++) f->lpad[f->blk[index_of(ips, n, f->cs[i].pad)]] = 1;
     f->in = malloc(f->nb * sizeof *f->in);
     direct = calloc(f->nb, 1); inq = calloc(f->nb, 1); queue = malloc(f->nb * sizeof *queue);
@@ -2049,7 +2080,10 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
             queue[qt] = b; qt = (qt + 1) % f->nb; qn++; inq[b] = 1;
         }
     }
-    for (b = 0; b < f->nb; b++) f->plain[b] = b != 0 && leader[f->bstart[b]] != 2 && !f->lpad[b];
+    for (b = 0; b < f->nb; b++) {
+        f->plain[b] = b != 0 && leader[f->bstart[b]] != 2 && !f->lpad[b];
+        f->seed[b] = b != 0 && leader[f->bstart[b]] == 2;
+    }
     for (i = 0; i < s->njt; i++) {
         long j = index_of(ips, n, s->jt[i].target);
         if (j >= 0) f->plain[f->blk[j]] = 0;
@@ -2250,7 +2284,11 @@ static int tail_jump(const uint8_t *base, uint64_t sect_addr, const uint64_t *ip
  * instruction: any other read -- a spill, an address formed from it, an operand of anything else,
  * a copy where some path left another value --, a call through it where some path left another
  * value, the value in an argument register at another call or jump, or in
- * rax/rdx at a return. Without the function's direct control flow nothing is followed. */
+ * rax/rdx at a return. Without the function's direct control flow nothing is followed. A refusal's
+ * detail names what this reader knows of it: why a send's bound is unknown (call_arg_regs), the
+ * address a store to a global writes, a register the method's own type encoding returns nothing in
+ * (method_ret), or that the register is as an indirect jump this reader does not follow brought it
+ * (a block flow_build seeded). Each stays cannot-measure. */
 /* Bytes an instruction may read at its memory operand; 64 when this module does not know the
  * form (more than any read here). */
 static int64_t read_width(const Ins *x) {
@@ -2364,6 +2402,9 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
     if (!f->ok) { fail(s, "indirect-objc-entry", fn_start, "%s", "objc entry point loaded in a function whose control flow is not followed"); return; }
     for (b = 0; b < f->nb; b++) {
         RS st = f->in[b];
+        /* Registers still as the seed of a block nothing reaches directly left them: what an
+         * indirect jump this reader does not follow brings (flow_build), for the error's detail. */
+        uint16_t fresh = f->seed[b] ? 0xFFFF : 0;
         if (!st.reached) continue;
         if (exposed_entry_slot(f, &st) >= 0)
             fail(s, "indirect-objc-entry", ips[f->bstart[b]], "%s",
@@ -2421,6 +2462,8 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                 if (!how && (hit = gpr_reads(x) & live)) {
                     for (r = 0; !(hit & (1u << r)); r++) ;
                     how = "is read other than to call through it (a spill, a copy or an escape)";
+                    if (x->map == 0 && x->op == 0x89 && x->modrm && x->mod != 3 && x->riprel && x->reg == r)
+                        snprintf(why, sizeof why, "stored to memory at 0x%llx", (unsigned long long)x->riptarget);
                 }
                 if (!how && (is_call_any(x) || (is_ff(x, 4) && !jt_has(s, ips[i])) || is_ff(x, 5) ||
                              (is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i)))) {
@@ -2440,15 +2483,23 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                     if (j >= 0) { r = args[j]; how = "is passed as an argument"; } else *why = 0;
                 }
                 if (!how && x->map == 0 && (x->op == 0xC3 || x->op == 0xC2) && (live & ((1u << REG_RAX) | (1u << REG_RDX)))) {
+                    int ret = method_ret(s, fn_start);
                     r = live & (1u << REG_RAX) ? REG_RAX : REG_RDX; how = "is returned";
+                    /* Named, not modeled: the IMP may be reached other than as this method. */
+                    if (ret == RET_NONE || (ret == RET_RAX && r == REG_RDX))
+                        snprintf(why, sizeof why, "the method's type encoding returns nothing in %s", REGNAME[r]);
                 }
             }
+            if (how && !*why && r >= 0 && (fresh & (1u << r)))
+                snprintf(why, sizeof why, "%s", "in code reached only through an indirect jump this reader does not follow");
             if (how) {
                 char msg[MAX_LITERAL + 256];
                 snprintf(msg, sizeof msg, "objc entry point in %s %s%s%s", REGNAME[r], how, *why ? ": " : "", why);
                 fail(s, "indirect-objc-entry", ips[i], "%s", msg);
             }
             transfer(s, f, &st, x, ips[i], base + (ips[i] - sect_addr));
+            if (is_call_any(x)) fresh &= (uint16_t)~CALLER_SAVED;
+            else for (j = 0; j < 16; j++) if (may_write(x, j)) fresh &= (uint16_t)~(1u << j);
             /* A frame address escaping (a lea at or below the slot) while the slot may hold an entry
              * point: code holding the address may read it (macho-reader.c header, frame slots). */
             if (!was_exposed && exposed_entry_slot(f, &st) >= 0)
@@ -2993,7 +3044,7 @@ static void slice_close(Slice *s) {
     if (s->res_open) mml_resolver_close(&s->res);
     for (i = 0; i < s->ncaches; i++) free(s->caches[i].literal);
     free(s->jt); free(s->caches); free(s->sects); free(s->syms); free(s->ptrs); free(s->binds); free(s->starts);
-    free(s->dice); free(s->fetch_arg_sites);
+    free(s->dice); free(s->fetch_arg_sites); free(s->mret);
 }
 
 static int analyze_slice(ObjcAnalysis *a, uint8_t *buf, size_t size, uint32_t cputype, uint32_t cpusub) {

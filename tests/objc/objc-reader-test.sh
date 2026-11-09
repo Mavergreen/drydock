@@ -188,6 +188,15 @@ for n in 2 3 4 5 6 7 8 9 11; do
   cc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
 done
+# spec: src/objc/macho-reader.c entry_escapes -- a store to a global names the address it is stored to.
+read_artifact "$T/hoisted7"
+g=$(printf '0x%x' "$((0x$(nm "$T/hoisted7" | awk '$3 == "_hoisted_global" {print $1}')))")
+grep "^error	indirect-objc-entry	.*	objc entry point in r12 is read other than to call through it (a spill, a copy or an escape): stored to memory at $g\$" "$T/out" >/dev/null ||
+  fail "hoisted entry point form 7: the store to the global at $g is not named"
+read_artifact "$T/hoisted8"
+grep '^error	indirect-objc-entry	.*	objc entry point in r12 is read other than to call through it (a spill, a copy or an escape)$' "$T/out" >/dev/null ||
+  fail 'hoisted entry point form 8: a store through a register is not refused as before'
+
 # spec: src/objc/macho-reader.c scan_function -- a weak import's check, `cmpq $0, GOT(_objc_readClassPair)` (libarclite in
 #       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other
 #       read of the slot but a load is still "address taken".
@@ -276,6 +285,19 @@ passed_at _format '*%rbx' 'a declaration of stringWithFormat: is variadic'
 passed_at _stret_shift '*%rbx'
 passed_at _c_noreturn_params ___assert_rtn
 [ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 4 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
+# spec: src/objc/macho-reader.c entry_escapes -- an entry point left in rax or rdx at a method's return stays refused; the
+#       detail names a register the method's own type encoding returns nothing in (tests/objc/fixtures/return-register.S).
+art="$T/return-register"
+cc "$FX/return-register.S" -o "$art" -framework Foundation -lobjc
+read_artifact "$art"; refused 'return register' indirect-objc-entry
+for want in 'tick: rax is returned: the method'"'"'s type encoding returns nothing in rax' \
+            'rank rdx is returned: the method'"'"'s type encoding returns nothing in rdx' 'thing rax is returned'; do
+  fn=${want%% *}; rest=${want#* }; reg=${rest%% *}; how=${rest#* }
+  a=$(site "-[ReturnProbe $fn]" retq) || fail "return register: no ret in -[ReturnProbe $fn]"
+  awk -F '\t' -v a="$a" -v d="objc entry point in $reg $how" '$1 == "error" && $4 == a && $5 == d' "$T/out" | grep . >/dev/null ||
+    fail "return register: -[ReturnProbe $fn] is not refused at $a as '$how'"
+done
+[ "$(grep -c '^error	' "$T/out")" = 3 ] || fail "return register: $(grep -c '^error	' "$T/out") errors, want 3"
 # spec: src/objc/macho-reader.c "Argument registers" -- a catalogued name bound to a non-system library or by flat
 #       lookup may be another function: all six count (tests/objc/fixtures/entry-elsewhere.S).
 mkdir -p "$T/elsewhere"
@@ -340,7 +362,7 @@ grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_sse: the table 
 for sel in objectForKey: description count allKeys allValues; do send "$pv" argument:- "selref:$sel"; done
 [ "$(awk -F '\t' -v f="$pv" '$2 == "dispatch-call" && $11 == f && $12 ~ /^argument:/' "$T/out" | wc -l | tr -d ' ')" = 6 ] ||
   fail "jt_sse: the cases do not all start from the state at the jmp"
-for c in 0 1 2 3 4 5 6 7 8 9; do
+for c in 0 1 2 3 4 5 6 7 8 9 10; do
   cc22 -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt-clobber$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 read_artifact "$T/jt-clobber0"
@@ -368,6 +390,12 @@ done
 read_artifact "$T/jt-clobber6"; refused 'jt_reject_clobber, the base copy written again' indirect-objc-entry
 read_artifact "$T/jt-clobber8"; refused 'jt_reject_clobber, an immediate into the index' indirect-objc-entry
 read_artifact "$T/jt-clobber9"; refused 'jt_reject_clobber, the load into the base itself' indirect-objc-entry
+# spec: src/objc/macho-reader.c entry_escapes -- a table whose lea is hoisted out of its loop (iTerm2 3.0.15's
+#       -[iTermTipCardViewController performLayoutForWidth:dry:origin:]) is not taken apart: each case's call is
+#       refused, and its detail names the indirect jump this reader does not follow.
+read_artifact "$T/jt-clobber10"; refused 'jt_reject_clobber, the lea hoisted' indirect-objc-entry
+[ "$(grep -c '^error	indirect-objc-entry	.*	objc entry point in r12 is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow$' "$T/out")" = 3 ] ||
+  fail 'jt_reject_clobber, the lea hoisted: the three cases are not refused by name'
 
 # spec: src/objc/macho-reader.c header -- A selector reference spilled to a frame slot is followed to its reload
 #       when the one store reaching every path is still there: the frame's escaped addresses are only an enumeration
