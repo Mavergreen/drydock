@@ -396,6 +396,18 @@ for n in 0 1; do
 done
 cc -DFORM=2 "$FX/jump-table-entry.S" -o "$T/table2" -lobjc
 read_artifact "$T/table2"; refused 'jump table form 2' indirect-objc-entry
+# spec: src/objc/macho-reader.c jt_settle, flow_build -- a table entered past its bound is not followed, but its jmp
+#       still reaches each of its entries: one also reached by a direct branch starts from the state at the jmp too,
+#       so the entry point held there is followed into it (FORM 3). An unfollowed indirect jump carries an entry
+#       point its own block loads to the blocks reached only indirectly (FORM 4).
+cc -DFORM=3 "$FX/jump-table-entry.S" -o "$T/table3" -lobjc
+read_artifact "$T/table3"; refused 'jump table form 3' indirect-objc-entry
+c0=$(otool -tV "$T/table3" | awk '$2 == "callq" && $3 == "*%r12" { n++; if (n == 2) { print $1; exit } }' | sed 's/^0*/0x/')
+grep "^error	indirect-objc-entry	x86_64	$c0	objc entry point in r12 is called through where another path left a different value\$" "$T/out" >/dev/null ||
+  fail "jump table form 3: the direct-and-table case's call at $c0 is not refused"
+cc -DFORM=4 "$FX/jump-table-entry.S" -o "$T/table4" -lobjc
+read_artifact "$T/table4"; refused 'jump table form 4' indirect-objc-entry
+[ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 3 ] || fail "jump table form 4: the three cases are not refused"
 
 # spec: src/objc/macho-reader.c header -- -O3 puts instructions between a table's bound check and its lea (SSE
 #       arithmetic: tests/objc/fixtures/jt-sse.m from the pinned clang22, jt-reject-clobber.S from upstream iTerm2

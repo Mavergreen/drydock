@@ -9,6 +9,13 @@
  *   FORM 1  as FORM 0, spilled to a frame slot and reloaded in each case (the -O0 shape): four
  *   FORM 2  as FORM 0, but the bound says four cases and the table holds three: not a table this
  *           reader takes apart, so the cases stay reached only indirectly: cannot-measure
+ *   FORM 3  as FORM 0, but a branch from the last case enters the sequence at its lea, past the bound
+ *           (so the table is data, not followed: jt_settle), and the first case is also reached by a
+ *           direct branch taken before r12 holds the entry point: the entry point the jmp carries is
+ *           still followed into that case, whose call through r12 is cannot-measure
+ *   FORM 4  as FORM 2, with the entry point loaded into r12 only between the ja and the lea (no send
+ *           before the switch), in the block that ends at the jmp: the cases reached only indirectly
+ *           still get it: cannot-measure
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -39,6 +46,11 @@ _main:
 	pushq %rbx
 	subq $16, %rsp
 	movl %edi, %ebx
+#if FORM == 3
+	testl %esi, %esi
+	je Lcase0
+#endif
+#if FORM != 4
 	movq _objc_msgSend@GOTPCREL(%rip), %r12
 #if FORM == 1
 	movq %r12, -24(%rbp)
@@ -46,13 +58,18 @@ _main:
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_description(%rip), %rsi
 	callq *%r12
+#endif
 	movl %ebx, %eax
-#if FORM == 2
+#if FORM == 2 || FORM == 4
 	cmpl $3, %eax
 #else
 	cmpl $2, %eax
 #endif
 	ja Ldefault
+#if FORM == 4
+	movq _objc_msgSend@GOTPCREL(%rip), %r12
+#endif
+Lmid:
 	leaq Ltable(%rip), %rcx
 	movslq (%rcx,%rax,4), %rax
 	addq %rcx, %rax
@@ -85,6 +102,10 @@ Lcase2:
 	callq *%rax
 #else
 	callq *%r12
+#endif
+#if FORM == 3
+	testl %edx, %edx
+	jne Lmid
 #endif
 Ldefault:
 	xorl %eax, %eax

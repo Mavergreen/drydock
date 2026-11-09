@@ -288,6 +288,7 @@ typedef struct {
     uint64_t *fetch_arg_sites; size_t nfas, capfas;
     const char *cur_fn;                 /* symbol of the function being scanned, or NULL */
     struct { uint64_t jmp, target, table, first; uint32_t n; } *jt; size_t njt, capjt;   /* the scanned function's inline jump tables: one per entry */
+    struct { uint64_t jmp, target; } *djt; size_t ndjt, capdjt;   /* its tables jt_settle left unfollowed: one per entry */
     struct { uint64_t imp; int ret; } *mret; size_t nmret, capmret;   /* each method's IMP and what its encoding returns (encoding_ret) */
     int status;
     int quiet;                          /* an image view: record no dylibs */
@@ -2186,6 +2187,10 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
         long j = index_of(ips, n, s->jt[i].target);
         if (j >= 0) leader[j] = 1;
     }
+    for (i = 0; i < s->ndjt; i++) {
+        long j = index_of(ips, n, s->djt[i].target);
+        if (j >= 0) leader[j] = 1;
+    }
     if (lsda_sites(s, f, ips[0], ins[n - 1].next) < 0) { free(leader); return -1; }
     for (i = 0; i < f->ncs; i++) {   /* a pad that is not an instruction here: the LSDA is not this code's */
         long j = index_of(ips, n, f->cs[i].pad);
@@ -2245,6 +2250,10 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
         long j = index_of(ips, n, s->jt[i].target);
         if (j >= 0) f->plain[f->blk[j]] = 0;
     }
+    for (i = 0; i < s->ndjt; i++) {   /* entered from an unfollowed table's jmp too: not by direct edges only */
+        long j = index_of(ips, n, s->djt[i].target);
+        if (j >= 0) f->plain[f->blk[j]] = 0;
+    }
     for (;;) {
     uint16_t u = 0;
     uint64_t ums = 0;
@@ -2277,6 +2286,15 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
                     tb = f->blk[j];
                     if (rs_meet(&f->in[tb], &pre) && !inq[tb]) { queue[qt] = tb; qt = (qt + 1) % f->nb; qn++; inq[tb] = 1; }
                 }
+                /* An unfollowed table (jt_settle): its jmp may go anywhere, which the seeded blocks
+                 * below stand for; its own entries, reached directly too, get the state at the jmp. */
+                for (c = 0; c < s->ndjt; c++) {
+                    long j;
+                    size_t tb;
+                    if (s->djt[c].jmp != ips[last] || (j = index_of(ips, n, s->djt[c].target)) < 0) continue;
+                    tb = f->blk[j];
+                    if (rs_meet(&f->in[tb], &pre) && !inq[tb]) { queue[qt] = tb; qt = (qt + 1) % f->nb; qn++; inq[tb] = 1; }
+                }
             }
         }
     }
@@ -2287,9 +2305,10 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
     for (b = 0; b < f->nb; b++) {
         RS st = f->in[b];
         const Ins *x = &ins[f->bstart[b + 1] - 1];
-        if (!st.reached || !(st.me || st.ms) || !is_ff(x, 4) || x->riprel || jt_has(s, ips[f->bstart[b + 1] - 1])) continue;
+        if (!st.reached || !is_ff(x, 4) || x->riprel || jt_has(s, ips[f->bstart[b + 1] - 1])) continue;
+        /* the state at the jump: an entry point the block itself loads is carried too */
         for (i = f->bstart[b]; i + 1 < f->bstart[b + 1]; i++) transfer(s, f, &st, &ins[i], ips[i], base + (ips[i] - sect_addr));
-        if (x->mod == 3 && st.k[x->rm] == RS_ENTRY) continue;
+        if (!(st.me || st.ms) || (x->mod == 3 && st.k[x->rm] == RS_ENTRY)) continue;
         u |= st.me; ums |= st.ms;
     }
     for (b = 1; b < f->nb; b++)
@@ -2859,7 +2878,8 @@ static const char *function_name(const Slice *s, uint64_t start) {
 /* Once the function [lo, hi) is decoded: a table's bound holds only if its sequence -- the mov or
  * cmp jump_table_at began it at, through the jmp -- is entered at its start. A direct branch, or a
  * table entry, or an LSDA landing pad at any later instruction of it leaves that table's cases
- * reached only indirectly; its bytes stay data. -1 out of memory. With DRYDOCK_OBJC_JUMP_TABLES set, each table is listed on stderr (compare.sh):
+ * reached only indirectly; its bytes stay data. Its entries move to s->djt: the jmp may still go
+ * to each of them, so flow_build gives each the state at the jmp. -1 out of memory. With DRYDOCK_OBJC_JUMP_TABLES set, each table is listed on stderr (compare.sh):
  *     drydock-objc-jump-table TAB jmp TAB table TAB entries TAB function-start TAB function-end
  *         TAB followed|data TAB function-name */
 static int jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo, uint64_t hi,
@@ -2890,6 +2910,14 @@ static int jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo, 
                     (unsigned long long)lo, (unsigned long long)hi, dead ? "data" : "followed",
                     s->cur_fn ? s->cur_fn : "-");
         if (!dead) for (i = g; i < e; i++) s->jt[keep++] = s->jt[i];
+        else for (i = g; i < e; i++) {   /* still targets of their jmp, among the others it may reach (flow_build) */
+            if (s->ndjt == s->capdjt) {
+                void *q = realloc(s->djt, (s->capdjt = s->capdjt ? s->capdjt * 2 : 64) * sizeof *s->djt);
+                if (!q) { flow_free(&pads); return -1; }
+                s->djt = q;
+            }
+            s->djt[s->ndjt].jmp = s->jt[i].jmp; s->djt[s->ndjt].target = s->jt[i].target; s->ndjt++;
+        }
     }
     s->njt = keep;
     flow_free(&pads);
@@ -2909,7 +2937,7 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
     const uint8_t *base = bytes_at(s, x->addr, x->size);
     if (!base) return fail(s, "malformed-macho", x->addr, "%s", "code section outside the file");
     s->cur_fn = function_name(s, lo);
-    s->njt = 0;
+    s->njt = 0; s->ndjt = 0;
     while (ip < hi) {
         uint64_t skip = dice_end(s, ip);
         Ins in;
@@ -3214,7 +3242,7 @@ static void slice_close(Slice *s) {
     size_t i;
     if (s->res_open) mml_resolver_close(&s->res);
     for (i = 0; i < s->ncaches; i++) free(s->caches[i].literal);
-    free(s->jt); free(s->caches); free(s->sects); free(s->syms); free(s->ptrs); free(s->binds); free(s->starts);
+    free(s->jt); free(s->djt); free(s->caches); free(s->sects); free(s->syms); free(s->ptrs); free(s->binds); free(s->starts);
     free(s->dice); free(s->fetch_arg_sites); free(s->mret);
 }
 
