@@ -49,6 +49,26 @@
  * reaching it, or another value in it at a reload that is called through is cannot-measure.
  * Values spilled to frame slots carry a further stated limit, given with the value kinds below.
  *
+ * Argument registers. An entry point live in an argument register at a call or tail jump is "passed as
+ * an argument", cannot-measure, unless the call provably does not read that register (call_arg_regs).
+ * At a send through an objc dispatch import -- through the entry point in a register, a GOT call or a
+ * direct call to its stub -- whose selector the propagation names at the call (a selector reference, a
+ * literal, NSSelectorFromString of literal bytes, or a cache whose literal is already read), only the
+ * first objc_selector_gprs of rdi, rsi, rdx, rcx, r8 and r9 are arguments; the _stret forms count their
+ * hidden result pointer. At a direct or GOT call to an import the floor function catalog knows, only its
+ * objc_function_gprs are. Anything else keeps all six: a selector the paths disagree on or that is not
+ * named, an implied one (objc_alloc, objc_opt_*), a local function, an unbounded answer. Stated limits,
+ * spec: src/objc/reference.c header and its "argument registers" section --
+ *   - the bound is closed-world: it assumes each call was compiled against a declaration the catalogs or
+ *     the analyzed images' method lists hold, so a call compiled against another declaration of a colon
+ *     selector (a private framework's, an image the analysis did not read) may read more registers;
+ *   - a method type encoding cannot mark a method variadic, so a variadic method that only the analyzed
+ *     images declare is taken as fixed-arity, and an entry point passed among its variadic arguments
+ *     is not counted.
+ * A shipped image's methods are noted after the artifact's code is read (main.m "The shipped closure").
+ * A send whose bound left an entry point out says so (objc_rely_selector_gprs), and a declaration noted
+ * later that raises the bound past that register is cannot-measure at the send.
+ *
  * Each dispatch call also carries its receiver, selector and first-argument operands as the same
  * propagation measured them at the call (report.h ObjcValueForm): which cache, reference slot or
  * literal they came from, which earlier dispatch returned them, or which incoming argument they
@@ -2207,6 +2227,45 @@ static int exposed_entry_slot(const Flow *f, const RS *r) {
     return -1;
 }
 
+static void operand_of(const Slice *s, int kd, uint64_t va, uint64_t def, ObjcValue *v, char *buf, size_t bufsz);
+
+/* "Argument registers" (header): how many of rdi, rsi, rdx, rcx, r8, r9 call or tail jump X, in state ST,
+ * may read as arguments. A send through an objc dispatch import -- a call or jump through the entry point
+ * in a register, a GOT call, or a direct call to its stub -- whose selector ST names takes
+ * objc_selector_gprs (the _stret forms shift by a hidden result pointer); *sel then names the selector
+ * and *stret is set, so the caller can record what it relied on. Any other import takes
+ * objc_function_gprs when the floor catalog knows it. Everything else, or an unbounded answer, is six. */
+static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip, const uint8_t *at,
+                         char *sel, size_t selsz, int *stret) {
+    uint64_t target;
+    const Ptr *p;
+    int recv, sr, arg, n;
+    *sel = 0; *stret = 0;
+    if (is_call_rel(x) || is_jmp_rel(x)) target = (uint64_t)rel_target(at, x, ip);
+    else if ((is_ff(x, 2) || is_ff(x, 4)) && x->riprel) target = x->riptarget;
+    else if ((is_ff(x, 2) || is_ff(x, 4)) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
+    else return 6;
+    if (!(p = find_ptr(s->ptrs, s->nptrs, target)) || !p->name) return 6;
+    if (p->role == IMP_DISPATCH) {
+        ObjcValue v;
+        const Cache *c;
+        const char *name = NULL;
+        dispatch_regs(p->name, &recv, &sr, &arg);
+        if (sr < 0) return 6;
+        operand_of(s, st->k[sr], st->va[sr], st->def[sr], &v, sel, selsz);
+        if (v.form == OBJC_VAL_SELREF || v.form == OBJC_VAL_SEL_LITERAL || v.form == OBJC_VAL_SEL_NSSTRING) name = v.text;
+        else if (v.form == OBJC_VAL_SEL_CACHE && (c = cache_at(s, v.ref)) && c->kind == 1 && c->literal &&
+                 strlen(c->literal) < selsz)
+            name = strcpy(sel, c->literal);
+        if (!name) { *sel = 0; return 6; }
+        *stret = strstr(p->name, "_stret") != NULL;
+        n = objc_selector_gprs(s->a, sel, *stret);
+    } else
+        n = objc_function_gprs(s->a, p->name);
+    if (n < 0) { *sel = 0; return 6; }
+    return n;
+}
+
 static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_addr, uint64_t fn_start,
                           const uint64_t *ips, const Ins *ins, size_t n) {
     static const int args[] = { REG_RDI, REG_RSI, REG_RDX, REG_RCX, 8, 9 };
@@ -2272,9 +2331,17 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                     how = "is read other than to call through it (a spill, a copy or an escape)";
                 }
                 if (!how && (is_call_any(x) || (is_ff(x, 4) && !jt_has(s, ips[i])) || is_ff(x, 5) ||
-                             (is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i))))
+                             (is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i)))) {
+                    char sel[MAX_LITERAL];
+                    int stret, nargs = call_arg_regs(s, &st, x, ips[i], base + (ips[i] - sect_addr), sel, sizeof sel, &stret);
                     for (j = 0; j < 6 && !how; j++)
-                        if ((live & (1u << args[j])) && !(through & (1u << args[j]))) { r = args[j]; how = "is passed as an argument"; }
+                        if ((live & (1u << args[j])) && !(through & (1u << args[j]))) {
+                            if (j < nargs) { r = args[j]; how = "is passed as an argument"; }
+                            /* Left out by a selector's bound: a declaration noted later must not raise it. */
+                            else if (*sel && objc_rely_selector_gprs(s->a, sel, stret, j, REGNAME[args[j]], s->slice, ips[i]))
+                                { s->status = OBJC_CANNOT_MEASURE; return; }
+                        }
+                }
                 if (!how && x->map == 0 && (x->op == 0xC3 || x->op == 0xC2) && (live & ((1u << REG_RAX) | (1u << REG_RDX)))) {
                     r = live & (1u << REG_RAX) ? REG_RAX : REG_RDX; how = "is returned";
                 }

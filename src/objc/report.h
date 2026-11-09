@@ -300,6 +300,7 @@ typedef struct {
      * function -> its GPRs; "-" unbounded. Each catalog flag says it loaded (objc_load_gprs_catalogs). */
     ObjcMap *sel_gprs, *fn_gprs;
     int have_floor_sel_gprs, have_newer_sel_gprs, have_fn_gprs;
+    ObjcMap *sel_relied;          /* selector -> what the reader's sends of it rely on (objc_rely_selector_gprs) */
 } ObjcAnalysis;
 
 ObjcAnalysis *objc_analysis_create(void);
@@ -375,6 +376,11 @@ int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret);
  * catalog's GPRs, a hidden result pointer included; -1 when uncatalogued, variadic, unclassified or
  * over six. */
 int objc_function_gprs(const ObjcAnalysis *a, const char *sym);
+/* The reader left the entry point in register REG (index REG_INDEX in rdi, rsi, rdx, rcx, r8, r9) out of
+ * the arguments of a send of SEL at SITE in SLICE, by objc_selector_gprs. A declaration of SEL noted later
+ * (objc_note_selector_gprs) that raises the bound past it records indirect-objc-entry at SITE. 0 or 4. */
+int objc_rely_selector_gprs(ObjcAnalysis *a, const char *sel, int stret, int reg_index, const char *reg,
+                            const char *slice, uint64_t site);
 /* A method type encoding's parameter GPRs, self and _cmd excluded; -1 for anything it cannot classify. */
 int objc_encoding_gprs(const char *types);
 /* Merges one declaration of SEL taking PARAMS parameter GPRs (-1 unbounded) into a->sel_gprs. 0 or 4. */

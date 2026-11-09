@@ -531,27 +531,39 @@ int objc_load_reference_set(ObjcAnalysis *a) {
  *     calls the compiler emits, which no header declares); a count includes a hidden result pointer.
  *   - Every value is range-checked: a total over six is unbounded, never clamped down.
  * The table is a map built as the catalogs load and the reader records methods, merged by maximum
- * with "-" absorbing, so the order of those never matters. */
+ * with "-" absorbing, so the order of those never matters to the table; a query the reader made before a
+ * later declaration was noted is guarded by objc_rely_selector_gprs. */
 
 #define GPR_ARGS 6
+
+/* Replaces present KEY's value in M. 0, or -1 out of memory. */
+static int map_replace(ObjcMap *m, const char *key, const char *value) {
+    size_t i = map_slot(m, key);
+    char *d = strdup(value);
+    if (!d) return -1;
+    free(m->vals[i]);
+    m->vals[i] = d;
+    return 0;
+}
 
 /* Stores PARAMS (-1 "-") as KEY's value in M when it raises it; "-" stays. 0, or -1 out of memory. */
 static int merge_max(ObjcMap **m, const char *key, int params) {
     const char *cur;
     char v[16];
-    size_t i;
     if (!*m && !(*m = objc_map_create())) return -1;
     if (params > GPR_ARGS) params = -1;
     if (params < 0) snprintf(v, sizeof v, "-"); else snprintf(v, sizeof v, "%d", params);
     if (!(cur = objc_map_get(*m, key))) return objc_map_put(*m, key, v) < 0 ? -1 : 0;
     if (!strcmp(cur, "-") || (params >= 0 && params <= atoi(cur))) return 0;
-    i = map_slot(*m, key);
-    free((*m)->vals[i]);
-    return ((*m)->vals[i] = strdup(v)) ? 0 : -1;
+    return map_replace(*m, key, v);
 }
 
+static void recheck_reliance(ObjcAnalysis *a, const char *sel);
+
 int objc_note_selector_gprs(ObjcAnalysis *a, const char *sel, int params) {
-    return merge_max(&a->sel_gprs, sel, params) ? objc_fail(a, "out-of-memory", NULL, 0, "selector registers") : OBJC_OK;
+    if (merge_max(&a->sel_gprs, sel, params)) return objc_fail(a, "out-of-memory", NULL, 0, "selector registers");
+    recheck_reliance(a, sel);
+    return OBJC_OK;
 }
 
 /* Reads one catalog under references_dir into the table: a schema-2 signature file (SIGNATURES), or a
@@ -636,6 +648,40 @@ int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret) {
     return total <= GPR_ARGS ? total : -1;
 }
 
+/* The reader asks objc_selector_gprs while it reads the artifact's code, but a shipped image's methods
+ * (main.m "The shipped closure") are noted after that, and one may raise a selector's count. So each
+ * send the bound cleared of an entry point is remembered, as the most parameter GPRs the selector may
+ * have while that holds; a later declaration over it is cannot-measure at the earliest such send.
+ * A sel_relied value: "LIMIT\tREG\tSITE\tSLICE", LIMIT -1 once reported. */
+static void recheck_reliance(ObjcAnalysis *a, const char *sel) {
+    const char *v = a->sel_relied ? objc_map_get(a->sel_relied, sel) : NULL;
+    char reg[8], slice[64];
+    unsigned long long site;
+    int limit, now;
+    if (!v || sscanf(v, "%d\t%7[^\t]\t%llx\t%63[^\n]", &limit, reg, &site, slice) != 4 || limit < 0) return;
+    if ((now = stored_gprs(a->sel_gprs, sel)) >= 0 && now <= limit) return;
+    objc_fail(a, "indirect-objc-entry", slice, (uint64_t)site,
+              "objc entry point in %s is passed as an argument: a declaration of %s read after this send takes more argument registers",
+              reg, sel);
+    map_replace(a->sel_relied, sel, "-1\t-\t0\t-");
+}
+
+int objc_rely_selector_gprs(ObjcAnalysis *a, const char *sel, int stret, int reg_index, const char *reg,
+                            const char *slice, uint64_t site) {
+    char v[160];
+    const char *cur;
+    int limit = reg_index - 2 - (stret != 0), have = 0;
+    if (!sel || !strchr(sel, ':')) return OBJC_OK;   /* exact by Objective-C semantics, not by the table */
+    if (!a->sel_relied && !(a->sel_relied = objc_map_create())) return objc_fail(a, "out-of-memory", NULL, 0, "selector registers");
+    cur = objc_map_get(a->sel_relied, sel);
+    if (cur && (have = atoi(cur)) >= 0 && have <= limit) return OBJC_OK;
+    if (cur && have < 0) return OBJC_OK;
+    snprintf(v, sizeof v, "%d\t%s\t%llx\t%s", limit, reg, (unsigned long long)site, slice ? slice : "-");
+    if (cur ? map_replace(a->sel_relied, sel, v) : objc_map_put(a->sel_relied, sel, v))
+        return objc_fail(a, "out-of-memory", NULL, 0, "selector registers");
+    return OBJC_OK;
+}
+
 int objc_function_gprs(const ObjcAnalysis *a, const char *sym) {
     char name[1024];
     size_t n;
@@ -651,12 +697,16 @@ int objc_function_gprs(const ObjcAnalysis *a, const char *sym) {
  *
  * spec: the Objective-C runtime's type encodings, as clang writes method_list_t types: the result type,
  * the argument frame size, then each argument's type and frame offset, self ("@") and _cmd (":") first.
- * clang widens an argument under 4 bytes to 4 and passes a C array parameter as a pointer. Parameters
- * classify by the SysV x86_64 ABI: an integer or pointer takes a GPR, float and double none, an
- * aggregate over 16 bytes none (memory), and one of 16 bytes or less one GPR per eightbyte that holds
- * any integer or pointer member, its members laid out at their natural alignment. A union, bitfield,
- * long double, complex, vector or anything else unrecognised is -1. An argument's frame offset, when
- * given, must agree with that layout's size, or the encoding is not understood. */
+ * clang widens only a scalar (an enum encodes as its integer) under 4 bytes to 4 in the frame; a small
+ * struct keeps its own size. A C array parameter is passed as a pointer. Parameters classify by the
+ * SysV x86_64 ABI: an integer or pointer takes a GPR, float and double none, an aggregate over 16
+ * bytes none (memory), and one of 16 bytes or less one GPR per eightbyte that holds any integer or
+ * pointer member, its members laid out at their natural alignment. A union, bitfield, long double,
+ * complex, vector or anything else unrecognised is -1. Offsets are all or none (objc_encoding_gprs),
+ * and a struct or array argument needs them: its layout is otherwise a guess. spec: packed and aligned
+ * attributes do not appear in an encoding, so a natural layout is assumed; the offsets catch any
+ * change of size, and a same-size relayout only moves members between eightbytes, which can over-count
+ * GPRs but never under-count them. */
 
 enum { EB_NONE, EB_SSE, EB_INT };
 

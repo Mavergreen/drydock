@@ -10,14 +10,15 @@
  *   FORM 1  the register is also spilled to a frame slot (clang -O0 keeps every value there:
  *           shipyard's own updater, updater/main.m.in, spills objc_msgSend this way) and
  *           called from the reload: followed, five sends, as in FORM 0
- *   FORM 2  a copy of the register is passed as an argument to the send through it
+ *   FORM 2  a copy of the register is passed as the argument (rdx) of an isEqual: send through it
  *   FORM 3  on one path the register holds something else when the join calls through it
  *   FORM 4  as FORM 1, but the slot's own address escapes to a call (the callee may read it)
  *   FORM 5  as FORM 1, but one path stores another value to the slot before the reload's call
  *   FORM 6  as FORM 1, but the slot is also read into a vector register (a copy that escapes)
  *   FORM 7  the register is stored to a global
  *   FORM 8  the register is stored through another register (to the heap, say)
- *   FORM 9  as FORM 1, but a second reload of the slot is passed as an argument to the send
+ *   FORM 9  as FORM 1, but a second reload of the slot is passed as the argument (rdx) of an
+ *           isEqual: send
  *   FORM 10 as FORM 1, with an AVX-512 (EVEX) instruction before the reload, as BLAKE3's
  *           assembly in Codex has: decoded, so the function is read past it, five sends
  *   FORM 11 as FORM 1, but an EVEX store, vmovdqu32 %zmm0, -64(%rbp), overwrites the slot: its
@@ -29,12 +30,16 @@ L_sel_description:
 	.asciz "description"
 L_sel_hash:
 	.asciz "hash"
+L_sel_isEqual:
+	.asciz "isEqual:"
 	.section __DATA,__objc_selrefs,literal_pointers,no_dead_strip
 	.p2align 3
 L_selref_description:
 	.quad L_sel_description
 L_selref_hash:
 	.quad L_sel_hash
+L_selref_isEqual:
+	.quad L_sel_isEqual
 	.section __DATA,__objc_classrefs,regular,no_dead_strip
 	.p2align 3
 L_classref_NSObject:
@@ -88,7 +93,11 @@ _main:
 	.byte 0x62, 0xf1, 0x7e, 0x48, 0x7f, 0x45, 0xff   /* vmovdqu32 %zmm0, -64(%rbp) */
 #endif
 	movq L_classref_NSObject(%rip), %rdi
+#if FORM == 2 || FORM == 9
+	movq L_selref_isEqual(%rip), %rsi   /* one parameter: rdx is an argument (hash takes none) */
+#else
 	movq L_selref_hash(%rip), %rsi
+#endif
 #if FORM == 1 || FORM == 4 || FORM == 5 || FORM == 6 || FORM == 10 || FORM == 11
 	movq -24(%rbp), %rax
 	callq *%rax

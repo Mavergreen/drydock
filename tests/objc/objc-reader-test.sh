@@ -204,6 +204,59 @@ for e in 1 3; do
   done
 done
 
+# spec: src/objc/macho-reader.c header, "Argument registers" -- at a send whose selector the reader knows, only the
+#       first objc_selector_gprs of rdi, rsi, rdx, rcx, r8 and r9 are arguments (a _stret send's hidden result pointer
+#       shifts them); at a direct call to a C function the floor catalog knows, only its parameter registers. An entry
+#       point copied into a register no call reads is followed: Alacritty's -[RecaulkTabPSMTabBarControl setDelegate:]
+#       keeps objc_msgSend in rcx across a respondsToSelector: send (tests/objc/fixtures/entry-copy.S). Each twin that
+#       leaves it where the call may read it is cannot-measure at that call (entry-escape.S, entry-escape.m).
+REF="$ROOT/reference/objc"
+read_refs() { rc=0; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$1" --references "$REF" >"$T/out" 2>"$T/err" || rc=$?; }
+CLANG=${MAVERGREEN_OBJC_CLANG_PREFIX:-}
+if [ -z "$CLANG" ]; then
+  case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
+  version=$(tr -d '[:space:]' < "$ROOT/components/objc-reference-clang/version")
+  CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
+fi
+cc22() { env -i PATH=/usr/bin:/bin "$CLANG/bin/clang" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
+# spec: tests/objc/fixtures/entry-copy.m header -- the pinned clang22 reloads the GOT slot per block: measured either way.
+for o in Os O3; do
+  cc22 "-$o" "$FX/entry-copy.m" -o "$T/entry-copy-$o" -framework AppKit -framework Foundation
+  read_refs "$T/entry-copy-$o"; measured "entry-copy.m -$o"
+done
+art="$T/entry-copy"
+cc22 "$FX/entry-copy.S" -o "$art" -framework AppKit -framework Foundation -lobjc
+read_refs "$art"
+measured 'entry-copy'
+[ "$(awk -F '\t' '$2 == "dispatch-call" && $11 == "_set_delegate"' "$T/out" | wc -l | tr -d ' ')" = 9 ] ||
+  fail "entry-copy: $(awk -F '\t' '$2 == "dispatch-call" && $11 == "_set_delegate"' "$T/out" | wc -l | tr -d ' ') sends in _set_delegate, want 9"
+send _set_delegate result:- selref:respondsToSelector: selref:allowedDraggedTypesForTabView:
+send _responds classref:NSMutableArray selref:respondsToSelector: selref:allowedDraggedTypesForTabView:
+# spec: src/objc/macho-reader.c "Argument registers" -- site FUNCTION TEXT: the address of the first instruction of
+#       FUNCTION in $art whose otool line contains TEXT (otool -tV: a label line has no tab, an instruction line does).
+site() {
+  otool -tV "$art" | awk -v f="$1:" -v p="$2" '$0 == f { on = 1; next } on && !/\t/ { exit } on && index($0, p) { print $1; exit }' |
+    { read -r hex && printf '0x%x' "$((0x$hex))"; }
+}
+# spec: src/objc/macho-reader.c "Argument registers" -- passed_at FUNCTION TEXT: an indirect-objc-entry error naming rcx at that site.
+passed_at() {
+  ps=$(site "$1" "$2") || fail "$art: no '$2' in $1"
+  awk -F '\t' -v a="$ps" '$1 == "error" && $2 == "indirect-objc-entry" && $4 == a && $5 == "objc entry point in rcx is passed as an argument"' "$T/out" |
+    grep . >/dev/null || fail "$art: $1 is not refused at its call $ps"
+}
+art="$T/entry-escape"
+cc22 "$FX/entry-escape.S" -o "$art" -framework Foundation -lobjc
+read_refs "$art"
+refused 'entry-escape' indirect-objc-entry
+for twin in _unknown_colon _format _stret_shift; do passed_at "$twin" '*%rbx'; done
+passed_at _c_noreturn_params ___assert_rtn
+[ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 4 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
+art="$T/entry-escape-c"
+cc22 -Os "$FX/entry-escape.m" -o "$art" -framework Foundation
+read_refs "$art"
+refused 'entry-escape.m' indirect-objc-entry
+passed_at _sort_with_entry _qsort
+
 # spec: src/objc/macho-reader.c header -- An inline jump table in __text that no data-in-code entry marks (Apple clang 6
 #       -O0: tests/objc/fixtures/jump-table-entry.S) is data, and each case starts from the state at its jmp: an entry
 #       point held in a register or spilled across the switch is followed into every case. A table its bound does not

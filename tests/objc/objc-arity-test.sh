@@ -84,6 +84,20 @@ q 'fn	_write' | is c_fn_write 3 --references "$REF"
 q 'fn	_write$UNIX2003' | is c_suffix 3 --references "$REF"
 q 'fn	_realpath$DARWIN_EXTSN' | is c_suffix_extsn 2 --references "$REF"
 
+# rely: the reader measured a send with the entry point left out of its arguments by the selector's bound (index 3,
+# rcx, beyond a one-parameter send's rdi, rsi and rdx). A declaration noted later -- a shipped image's method list,
+# read after the artifact's code -- that raises the bound past rcx is indirect-objc-entry, reported once.
+q 'note	zzOne:	1' 'rely	zzOne:	0	3' 'note	zzOne:	1' | is rely_kept "$(printf '0\n0\n0')"
+q 'note	zzOne:	1' 'rely	zzOne:	0	3' 'note	zzOne:	2' 'note	zzOne:	3' | is rely_raised "$(printf '0\n0\n1\n1')"
+q 'note	zzOne:	1' 'rely	zzOne:	0	3' 'note	zzOne:	-1' | is rely_unbounded "$(printf '0\n0\n1')"
+# rely_stret: a _stret send's hidden result pointer shifts the limit: rcx (3) leaves room for no parameter.
+q 'rely	zzOne:	1	3' 'note	zzOne:	1' | is rely_stret "$(printf '0\n1')"
+# rely_no_colon: a selector without a colon takes no parameter whatever is declared; nothing is relied on.
+q 'rely	zzCount	0	2' 'note	zzCount	4' | is rely_no_colon "$(printf '0\n0')"
+rc=0; printf 'note\tzzOne:\t1\nrely\tzzOne:\t0\t3\nnote\tzzOne:\t2\n' | "$D" >"$T/out" 2>"$T/err" || rc=$?
+grep -F 'objc entry point in rcx is passed as an argument: a declaration of zzOne: read after this send' "$T/err" >/dev/null ||
+  fail 'rely_message: the raised bound is not reported at its send'
+
 # Encodings: parameter GPRs without self and _cmd.
 q 'enc	v32@0:8@16@24' | is enc_ids 2
 q 'enc	v40@0:8^S16{_NSRange=QQ}24' | is enc_range 3

@@ -2,7 +2,9 @@
  * row ending in its path conditions ("SITE:YES|NO" joined by commas, or "-") and, for one path of a call
  * read once per incoming path, that path's last instruction (else "-"); a send row ends in it too. Verdicts are the
  * analyzer's (tools/objc-compat/main.m); this harness never classifies.
- * With --close it also runs receiver/use closure over the loaded references.
+ * With --close it also runs receiver/use closure over the loaded references. --references DIR first
+ * loads DIR's argument-register catalogs alone (objc_load_gprs_catalogs), as the analyzer's reference
+ * set would, so the reader bounds a call's argument registers by them.
  * Exit 0 measured (and, with --close, every send closed), 4 cannot-measure, 2 usage. */
 #include "report.h"
 #include <stdio.h>
@@ -51,7 +53,7 @@ static int demangle(void) {
 }
 
 static int usage(void) {
-    fprintf(stderr, "usage: reader-driver --artifact FILE [--binding-receipt FILE] "
+    fprintf(stderr, "usage: reader-driver --artifact FILE [--references DIR] [--binding-receipt FILE] "
                     "[--close --signatures FILE [--sdk-facts FILE]]\n");
     return 2;
 }
@@ -60,10 +62,11 @@ int main(int argc, char **argv) {
     ObjcAnalysis *a;
     int i, rc, close = 0;
     size_t k;
-    const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL;
+    const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL, *refs = NULL;
     if (argc == 2 && !strcmp(argv[1], "--demangle")) return demangle();
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--artifact") && i + 1 < argc) artifact = argv[++i];
+        else if (!strcmp(argv[i], "--references") && i + 1 < argc) refs = argv[++i];
         else if (!strcmp(argv[i], "--binding-receipt") && i + 1 < argc) receipt = argv[++i];
         else if (!strcmp(argv[i], "--signatures") && i + 1 < argc) sigs = argv[++i];
         else if (!strcmp(argv[i], "--sdk-facts") && i + 1 < argc) facts = argv[++i];
@@ -73,8 +76,9 @@ int main(int argc, char **argv) {
     if (!artifact || ((sigs || facts) && !close)) return usage();
     if (!(a = objc_analysis_create()) || objc_set_string(&a->artifact_path, artifact) ||
         objc_set_string(&a->binding_receipt_path, receipt) || objc_set_string(&a->signatures_path, sigs) ||
-        objc_set_string(&a->facts_path, facts)) { fprintf(stderr, "out of memory\n"); return 4; }
-    rc = objc_load_references(a);
+        objc_set_string(&a->facts_path, facts) || objc_set_string(&a->references_dir, refs)) { fprintf(stderr, "out of memory\n"); return 4; }
+    rc = refs ? objc_load_gprs_catalogs(a) : 0;
+    if (rc == 0) rc = objc_load_references(a);
     if (rc == 0) rc = objc_collect_artifacts(a);
     if (rc == 0 && close) rc = objc_close_sends(a);
     if (rc == 0 && a->n_errors) rc = 4;   /* a stage can never report success past an error */

@@ -14,7 +14,7 @@
  *   FORM 1  as FORM 0, but the pad leaves through its own epilogue instead: three sends
  *   FORM 2  on one path r12 holds something else at the throwing call: the pad's call is not
  *           provably a send
- *   FORM 3  as FORM 1, but the pad passes a copy of r12 as an argument
+ *   FORM 3  as FORM 1, but the pad passes a copy of r12 as the argument (rdx) of an isEqual: send
  * FORMS 2 and 3 are cannot-measure.
  */
 #ifndef CSENC
@@ -25,12 +25,16 @@ L_sel_description:
 	.asciz "description"
 L_sel_hash:
 	.asciz "hash"
+L_sel_isEqual:
+	.asciz "isEqual:"
 	.section __DATA,__objc_selrefs,literal_pointers,no_dead_strip
 	.p2align 3
 L_selref_description:
 	.quad L_sel_description
 L_selref_hash:
 	.quad L_sel_hash
+L_selref_isEqual:
+	.quad L_sel_isEqual
 	.section __DATA,__objc_classrefs,regular,no_dead_strip
 	.p2align 3
 L_classref_NSObject:
@@ -84,9 +88,11 @@ Ltmp2:
 	movq %rax, %rdi
 	callq _objc_begin_catch
 	movq %rax, %rdi
-	movq L_selref_description(%rip), %rsi
 #if FORM == 3
+	movq L_selref_isEqual(%rip), %rsi   /* one parameter: rdx is an argument (description takes none) */
 	movq %r12, %rdx
+#else
+	movq L_selref_description(%rip), %rsi
 #endif
 	callq *%r12
 	callq _objc_end_catch
