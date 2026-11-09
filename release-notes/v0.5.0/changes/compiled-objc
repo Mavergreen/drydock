@@ -1,0 +1,1 @@
+drydock-objc now follows message sends through optimized compiled Objective-C, and classifies the runtime calls properties and lookups make.
