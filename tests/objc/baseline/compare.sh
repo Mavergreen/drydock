@@ -30,19 +30,20 @@
 #          is the authority on tables: the analyzer runs with DRYDOCK_OBJC_JUMP_TABLES=1 and lists each
 #          table it took apart on stderr (jt_settle), and only these are excused:
 #            - an indirect-objc-entry error whose detail ends "is called through where another path
-#              left a different value", inside a function holding a listed table whose cases it follows;
+#              left a different value", at an address from the jmp of a listed table whose cases it follows
+#              up to that table's bytes [jmp, T) (where its cases lie);
 #            - one that ends "is returned" or "is read other than to call through it (a spill, a copy or
 #              an escape)", or an undecodable-objc-reference error, at an address inside a listed
 #              table's bytes (the reader decoded that data as code before);
-#            - before the errors list, a fall in an artifact's "undecoded_code_bytes" of no more than
-#              the listed tables' bytes in all; nothing else there may change.
-#            - one that ends "is read other than to call through it (a spill, a copy or an escape)" inside a
-#              function holding a listed table whose cases it follows (a copy of a register such a table's
-#              cases started unknown in);
+#            - one that ends "is read other than to call through it (a spill, a copy or an escape)" in such
+#              a [jmp, T), at an instruction otool -tV shows as a 64-bit register copy `movq %R, %S` (a copy of a
+#              register such a table's cases started unknown in);
 #            - "objc entry point loaded in a function whose control flow is not followed" at the start of a
 #              function holding a listed table whose cases it follows (its table bytes were decoded as code);
-#            - one whose detail ends " address taken" at an instruction otool -tV shows as a `cmp $IMM` of a
-#              rip-relative slot (a weak import's check, src/objc/macho-reader.c scan_function);
+#            - "_SYMBOL address taken" at an instruction otool -tV shows as a `cmp $0x0` of a rip-relative
+#              slot (a weak import's check, src/objc/macho-reader.c scan_function);
+#            - before the errors list, a fall in an artifact's "undecoded_code_bytes" of no more than
+#              the listed tables' bytes in all; nothing else there may change.
 #          As a cross-check, otool -tV must show every listed table: a `cmp $N-1; ja` (or `cmp $N; jae`),
 #          a `leaq T(%rip)` and a `jmpq *reg` (the whole text, or else the table's function alone, as
 #          otool's linear sweep can lose step after data). Each artifact's line counts what it lost by
@@ -51,8 +52,9 @@
 #          its pattern (src/objc/macho-reader.c entry_escapes), and nothing else: the renamed error must be the
 #          baseline's at the same place with the same code, slice and address, its detail the baseline's plus
 #          one of these, each only after the detail it names:
-#            - "is passed as an argument": "this send's selector is not known on every path", "a declaration of
-#              SEL is variadic", "a declaration of SEL takes argument registers this reader does not count",
+#            - "is passed as an argument": "this send's selector is not known", "this send's selector is not
+#              known on every path", "a declaration of SEL is variadic", "a declaration of SEL takes more than six
+#              argument registers", "a declaration of SEL takes argument registers this reader does not count",
 #              "no declaration of SEL was known when this send was read";
 #            - "is returned": "the method's type encoding returns nothing in rax|rdx";
 #            - "is read other than to call through it (a spill, a copy or an escape)": "stored to memory at 0xADDR";
@@ -183,18 +185,18 @@ otool_tables() {
     }'
 }
 
-# reader_tables STDERR ART OUT: OUT gets "LO HI FLO FHI STATUS" per table the reader listed in STDERR (decimal: the
-# table's bytes, its function's extent, followed|data). 1, saying why, when otool does not show one of them.
+# reader_tables STDERR ART OUT: OUT gets "LO HI FLO FHI STATUS JMP" per table the reader listed in STDERR (decimal: the
+# table's bytes, its function's extent, followed|data, its jmp). 1, saying why, when otool does not show one of them.
 reader_tables() {
   awk -F '\t' '
     function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
       for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
       return x }
     # spec: src/objc/macho-reader.c jt_settle -- jmp, table, entries, function start, end, followed|data, name
-    $1 == "drydock-objc-jump-table" && NF == 8 { t = hex($3); printf "%.0f %.0f %.0f %.0f %s\n", t, t + 4 * $4, hex($5), hex($6), $7 }' "$1" > "$3"
+    $1 == "drydock-objc-jump-table" && NF == 8 { t = hex($3); printf "%.0f %.0f %.0f %.0f %s %.0f\n", t, t + 4 * $4, hex($5), hex($6), $7, hex($2) }' "$1" > "$3"
   [ -s "$3" ] || return 0
   otool -tV "$2" | otool_tables > "$3.otool" || { echo "compare.sh: otool cannot read $2" >&2; return 1; }
-  while read -r lo hi flo fhi st; do
+  while read -r lo hi flo fhi st jmp; do
     grep -qx "$lo $hi" "$3.otool" && continue
     fn=$(awk -F '\t' -v t="$lo" '
       function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
@@ -218,11 +220,18 @@ fewer_errors() {
     reader_tables "$3" "$4" "$1.tables" || return 1
     # spec: src/objc/macho-reader.c scan_function -- a weak import's check: the decimal address of each baseline
     #       "address taken" error that otool shows as a cmp of an immediate with a rip-relative slot
-    sed -n 's/^{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x\([0-9a-f]*\)", "detail": "[^"]* address taken"}$/\1/p' "$1.errs" > "$1.taken"
-    if [ -s "$1.taken" ]; then
-      otool -tV "$4" | awk 'NR == FNR { want[$1] = 1; next }
-        { a = $1; sub(/^0+/, "", a) } (a in want) && $2 ~ /^cmp[bwlq]$/ && $3 ~ /^\$/ && $4 ~ /\(%rip\)$/ { print a }' "$1.taken" - |
-        while read -r a; do printf '%.0f\n' "$((0x$a))"; done > "$1.cmps" || { echo "compare.sh: otool cannot read $4" >&2; return 1; }
+    sed -n 's/^{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x\([0-9a-f]*\)", "detail": "_[A-Za-z0-9_$.]* address taken"}$/\1/p' "$1.errs" > "$1.taken"
+    # spec: src/objc/macho-reader.c entry_escapes -- a "read other" error at a register copy in a table's cases
+    sed -n 's/^{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x\([0-9a-f]*\)", "detail": "objc entry point in [a-z0-9]* is read other than to call through it (a spill, a copy or an escape)"}$/\1/p' "$1.errs" > "$1.read"
+    : > "$1.movs"
+    if [ -s "$1.taken" ] || [ -s "$1.read" ]; then
+      otool -tV "$4" > "$1.otv" || { echo "compare.sh: otool cannot read $4" >&2; return 1; }
+      awk 'NR == FNR { want[$1] = 1; next }
+        { a = $1; sub(/^0+/, "", a) } (a in want) && $2 ~ /^cmp[bwlq]$/ && $3 == "$0x0," && $4 ~ /\(%rip\)$/ { print a }' "$1.taken" "$1.otv" |
+        while read -r a; do printf '%.0f\n' "$((0x$a))"; done > "$1.cmps"
+      awk 'NR == FNR { want[$1] = 1; next }
+        { a = $1; sub(/^0+/, "", a) } (a in want) && $2 == "movq" && $3 ~ /^%r[a-z0-9]+,$/ && $4 ~ /^%r[a-z0-9]+$/ && NF == 4 { print a }' "$1.read" "$1.otv" |
+        while read -r a; do printf '%.0f\n' "$((0x$a))"; done > "$1.movs"
     fi
     # spec: src/objc/main.m -- "undecoded_code_bytes" is the reader's limit_undecoded_bytes; a table read as
     #       data is no longer decoded as code, so it may fall, by at most the listed tables' bytes
@@ -244,16 +253,17 @@ fewer_errors() {
     diff "$1.head" "$2.head" | cut -c1-300 | head -40 >&2 || true
     return 1
   fi
-  awk -v mode="$MODE" -v renamed="$RENAMED" -v tables="$1.tables" -v cmps="$1.cmps" -v fell="$fell" '
-       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2]; flo[nt] = r[3]; fhi[nt] = r[4]; st[nt] = r[5] }
-               while ((getline l < cmps) > 0) cmp[l + 0] = 1 }
+  awk -v mode="$MODE" -v renamed="$RENAMED" -v tables="$1.tables" -v cmps="$1.cmps" -v movs="$1.movs" -v fell="$fell" '
+       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2]; flo[nt] = r[3]; fhi[nt] = r[4]; st[nt] = r[5]; tj[nt] = r[6] }
+               while ((getline l < cmps) > 0) cmp[l + 0] = 1
+               while ((getline l < movs) > 0) mov[l + 0] = 1 }
        function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
          for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
          return x }
        function addr(e) { return match(e, /"address": "0x[0-9a-f]+"/) ? hex(substr(e, RSTART + 12, RLENGTH - 13)) : -1 }
        function in_table(e,   a, i) { a = addr(e); for (i = 1; i <= nt; i++) if (tlo[i] + 0 <= a && a < thi[i] + 0) return 1; return 0 }
-       function in_function(e,   a, i) {
-         a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && flo[i] + 0 <= a && a < fhi[i] + 0) return 1; return 0 }
+       function in_cases(e,   a, i) {
+         a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && tj[i] + 0 <= a && a < tlo[i] + 0) return 1; return 0 }
        function in_start(e,   a, i) {
          a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && flo[i] + 0 == a) return 1; return 0 }
        # spec: src/objc/macho-reader.c entry_escapes -- the ": reason" each refusal may name, after its own detail
@@ -264,8 +274,9 @@ fewer_errors() {
          w = substr(d, 1, j - 1); r = substr(d, j + 2)
          if (w !~ /^objc entry point in [a-z0-9]+ (is passed as an argument|is returned|is read other than to call through it \(a spill, a copy or an escape\)|is called through where another path left a different value)$/) return e
          if (!(r == "in code reached only through an indirect jump this reader does not follow" ||
-               (w ~ / is passed as an argument$/ && (r == "this send\047s selector is not known on every path" ||
-                  r ~ /^a declaration of [^ ]+ (is variadic|takes argument registers this reader does not count)$/ ||
+               (w ~ / is passed as an argument$/ && (r == "this send\047s selector is not known" ||
+                  r == "this send\047s selector is not known on every path" ||
+                  r ~ /^a declaration of [^ ]+ (is variadic|takes more than six argument registers|takes argument registers this reader does not count)$/ ||
                   r ~ /^no declaration of [^ ]+ was known when this send was read$/)) ||
                (w ~ / is returned$/ && r ~ /^the method\047s type encoding returns nothing in (rax|rdx)$/) ||
                (w ~ / is read other than / && r ~ /^stored to memory at 0x[0-9a-f]+$/))) return e
@@ -274,16 +285,16 @@ fewer_errors() {
          if (mode == "identical") return ""
          if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is passed as an argument"}$/) return "passed"
          if (mode != "fewer-unmeasured") return ""
-         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is called through where another path left a different value"}$/ && in_function(e))
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is called through where another path left a different value"}$/ && in_cases(e))
            return "merged"
          if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "objc entry point loaded in a function whose control flow is not followed"}$/ && in_start(e))
            return "unfollowed"
-         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]* address taken"}$/ && ((addr(e) + 0) in cmp))
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "_[A-Za-z0-9_$.]+ address taken"}$/ && ((addr(e) + 0) in cmp))
            return "weak"
          if ((e ~ /^\{"code": "undecodable-objc-reference", / ||
               (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*(is returned|is read other than to call through it \(a spill, a copy or an escape\))"}$/)) && in_table(e))
            return "table"
-         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is read other than to call through it \(a spill, a copy or an escape\)"}$/ && in_function(e))
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is read other than to call through it \(a spill, a copy or an escape\)"}$/ && in_cases(e) && ((addr(e) + 0) in mov))
            return "copied"
          return "" }
        function drop(e,   k) { k = kind(e); if (k == "") { print "compare: lost error " e > "/dev/stderr"; bad = 1 } else lost[k]++ }
@@ -299,7 +310,7 @@ fewer_errors() {
              s = ""
              if (lost["passed"]) s = s ", " lost["passed"] " fewer \"is passed as an argument\" errors"
              if (lost["merged"]) s = s ", " lost["merged"] " fewer \"where another path left a different value\" errors"
-             if (lost["copied"]) s = s ", " lost["copied"] " fewer \"read other\" errors in a followed jump table\047s function"
+             if (lost["copied"]) s = s ", " lost["copied"] " fewer \"read other\" errors at a register copy in a followed jump table\047s cases"
              if (lost["unfollowed"]) s = s ", " lost["unfollowed"] " fewer functions whose control flow is not followed"
              if (lost["weak"]) s = s ", " lost["weak"] " fewer \"address taken\" errors at a weak import\047s check"
              if (lost["table"]) s = s ", " lost["table"] " fewer errors inside a jump table"
