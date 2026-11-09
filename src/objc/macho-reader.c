@@ -1852,16 +1852,43 @@ static int sse_flagless(const Ins *x) {
                            (op >= 0xC4 && op <= 0xC6) || op == 0xC2 || (op >= 0xD0 && op <= 0xFE && op != 0xF7));
 }
 
-/* A register-to-register mov of 32 or 64 bits: its destination then holds its source's value. */
+/* A register-to-register mov of 32 or 64 bits: its destination then holds its source's value, or
+ * (32 bits, no REX.W) its source's lower half, zero-extended. */
 static int rr_move(const Ins *x, int *dst, int *src) {
     if (!(x->map == 0 && (x->op == 0x89 || x->op == 0x8B) && x->modrm && x->mod == 3 && !x->p66)) return 0;
     *dst = x->op == 0x89 ? x->rm : x->reg; *src = x->op == 0x89 ? x->reg : x->rm;
     return 1;
 }
 
+/* spec: Intel SDM vol. 1 3.4.1.1 -- a 32-bit operand's write to a general-purpose register zeroes
+ * bits 32..63. Whether x is such a write to r, among the forms listed: mov (89, 8B, B8+r, C7 /0),
+ * lea (8D), movzx and movsx (0F B6/B7/BE/BF) and imul (0F AF, 69, 6B); the add, or, adc, sbb, and,
+ * sub and xor forms 01/03/05..33/35; 81/83 but /7 (cmp); shifts C1/D1/D3; F7 /2 and /3 (not, neg);
+ * FF /0 and /1 (inc, dec). No REX.W, no 66 prefix; anything else is not taken as one. */
+static int zx_write(const Ins *x, int r) {
+    int op = x->op;
+    if ((x->rex & 8) || x->p66) return 0;
+    if (x->map == 1) return (op == 0xB6 || op == 0xB7 || op == 0xBE || op == 0xBF || op == 0xAF) && x->modrm && x->reg == r;
+    if (x->map != 0) return 0;
+    if (op <= 0x35 && (op & 7) == 5) return r == REG_RAX && op != 0x3D;
+    if (op <= 0x33 && ((op & 7) == 1 || (op & 7) == 3)) return x->modrm && ((op & 7) == 1 ? x->mod == 3 && x->rm == r : x->reg == r);
+    switch (op) {
+    case 0x89: return x->modrm && x->mod == 3 && x->rm == r;
+    case 0x8B: case 0x8D: case 0x69: case 0x6B: return x->modrm && x->reg == r;
+    case 0xC7: return x->modrm && (x->reg & 7) == 0 && x->mod == 3 && x->rm == r;
+    case 0x81: case 0x83: return x->modrm && (x->reg & 7) != 7 && x->mod == 3 && x->rm == r;
+    case 0xC1: case 0xD1: case 0xD3: return x->modrm && x->mod == 3 && x->rm == r;
+    case 0xF7: return x->modrm && ((x->reg & 7) == 2 || (x->reg & 7) == 3) && x->mod == 3 && x->rm == r;
+    case 0xFF: return x->modrm && (x->reg & 7) <= 1 && x->mod == 3 && x->rm == r;
+    }
+    return op >= 0xB8 && op <= 0xBF && ((op & 7) | (x->rex & 1 ? 8 : 0)) == r;
+}
+
 /* Whether ins[j+1..b) -- from the bound's cmp at j through its ja, the lea at a, to the movsxd at b
- * -- keeps the bound on the table's index I. `bound` holds the compared register and any register
- * a mov copied it to just before the cmp. Before the lea each instruction must leave the flags:
+ * -- keeps the bound on the table's index I. `bound` holds each register whose whole 64 bits the
+ * bound holds; `low` (a superset) each whose lower 32 bits it holds. A 64-bit register copy carries
+ * both from its source; a 32-bit one makes its destination whole-bound when its source is low-bound
+ * (the upper half zeroed: zx_write). Before the lea each instruction must leave the flags:
  *   - a move (as -O0 writes them, or an immediate's, as -O3 sets a flag register there); one that
  *     writes a register makes that register bound only if it copies a bound one, so a move may
  *     overwrite R or D (the lea and movsxd write them again) but I only from the compared register
@@ -1869,8 +1896,8 @@ static int rr_move(const Ins *x, int *dst, int *src) {
  *   - or one that writes no flags (an sse_flagless instruction: -O3's arithmetic between the ja and
  *     the lea) and neither reads nor writes R, D, I or a bound register.
  * Between the lea and the movsxd, whatever jump_table_at let through (nothing writing R); any
- * write there to a bound register unbinds it. I must be bound at the movsxd. */
-static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, int R, int D, int B, uint16_t bound) {
+ * write there to a bound register unbinds it. I must be whole-bound at the movsxd. */
+static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, int R, int D, int B, uint16_t bound, uint16_t low) {
     int I = ins[b].sibindex;
     size_t k;
     for (k = j + 1; k < b; k++) {
@@ -1880,16 +1907,18 @@ static int bound_kept(const Ins *ins, size_t j, size_t ja, size_t a, size_t b, i
         if (k < a && !(x->map == 0 && (x->op == 0x88 || x->op == 0x89 || x->op == 0x8A || x->op == 0x8B || x->op == 0x8D ||
                                        x->op == 0xC6 || x->op == 0xC7 || x->op == 0x63 || (x->op >= 0xB0 && x->op <= 0xBF))) &&
             !(x->map == 1 && (x->op == 0xB6 || x->op == 0xB7 || x->op == 0xBE || x->op == 0xBF))) {
-            uint16_t keep = (uint16_t)(bound | (1u << R) | (1u << D) | (1u << B) | (1u << I));
+            uint16_t keep = (uint16_t)(low | (1u << R) | (1u << D) | (1u << B) | (1u << I));
             if (!sse_flagless(x) || (gpr_reads(x) & keep)) return 0;
             for (r = 0; r < 16; r++) if ((keep & (1u << r)) && may_write(x, r)) return 0;
             continue;
         }
         if (rr_move(x, &dst, &src)) {
-            if (bound & (1u << src)) bound |= (uint16_t)(1u << dst); else bound &= (uint16_t)~(1u << dst);
+            int whole = (x->rex & 8) ? (bound >> src) & 1 : (low >> src) & 1, half = (low >> src) & 1;
+            if (whole) bound |= (uint16_t)(1u << dst); else bound &= (uint16_t)~(1u << dst);
+            if (half) low |= (uint16_t)(1u << dst); else low &= (uint16_t)~(1u << dst);
             continue;
         }
-        for (r = 0; r < 16; r++) if (may_write(x, r)) bound &= (uint16_t)~(1u << r);
+        for (r = 0; r < 16; r++) if (may_write(x, r)) { bound &= (uint16_t)~(1u << r); low &= (uint16_t)~(1u << r); }
     }
     return (bound >> I) & 1;
 }
@@ -1914,9 +1943,9 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
     size_t a, b, c, d, e, j;
     for (a = 0; a < n; a++) {
         const Ins *l = &ins[a];
-        int R, D, B, ja = -1, C = -1, md, ms, sub = 0;
+        int R, D, B, ja = -1, C = -1, md, ms, sub = 0, w64 = 0, whole = 0;
         int64_t N = -1;
-        uint16_t bound, tb;
+        uint16_t bound, low, tb;
         size_t first;
         if (!(l->map == 0 && l->op == 0x8D && (l->rex & 8) && l->riprel && l->riptarget == t)) continue;
         R = l->reg;
@@ -1961,17 +1990,39 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
                 ((x->reg & 7) == 7 || (x->reg & 7) == 5) && x->imm >= 0) { C = x->rm; sub = (x->reg & 7) == 5; break; }
             if (x->map == 0 && x->op == 0x3D && x->imm >= 0) { C = REG_RAX; break; }
         }
-        if (C < 0) continue;
+        /* spec: Intel SDM vol. 2 -- with 66 the cmp is 16-bit and bounds only C's lowest 16 bits */
+        if (C < 0 || ins[j].p66) continue;
+        first = j;
+        /* spec: Intel SDM vol. 1 3.4.1.1 -- a 64-bit cmp bounds all of C; a 32-bit one bounds C's lower
+         * half, and all of it only when C's last write before the cmp was a 32-bit one (zx_write),
+         * found within six instructions with nothing that ends the flow or calls between. That
+         * write starts the sequence, so jt_settle refuses a path that enters after it. */
+        w64 = (ins[j].rex & 8) != 0;
+        whole = w64;
+        if (!w64) {
+            size_t k;
+            for (k = j; k-- > 0 && k + 7 > j; ) {
+                if (ends_flow(&ins[k]) || is_call_any(&ins[k])) break;
+                if (!may_write(&ins[k], C)) continue;
+                if (zx_write(&ins[k], C)) { whole = 1; first = k; }
+                break;
+            }
+        }
         /* After `sub C, imm` C holds the difference, not the bounded value: only a copy made before
          * the sub is bound. A cmp leaves C bound. */
-        bound = sub ? 0 : (uint16_t)(1u << C);
-        first = j;
+        bound = sub || !whole ? 0 : (uint16_t)(1u << C);
+        low = sub ? 0 : (uint16_t)(1u << C);
         if (j > 0 && rr_move(&ins[j - 1], &md, &ms) && (md == C || ms == C) && md != ms) {   /* mov I, C ; cmp C */
-            bound |= (uint16_t)(1u << (md == C ? ms : md));
-            first = j - 1;
+            int I = md == C ? ms : md;
+            /* mov C, I: I's lower half is C's, and all of it only through a 64-bit copy of a whole-bound C.
+             * mov I, C: I is whole-bound through a 64-bit copy of a whole-bound C, or a 32-bit copy of its
+             * bounded lower half. */
+            if (md == C ? (ins[j - 1].rex & 8) && whole : !(ins[j - 1].rex & 8) || whole) bound |= (uint16_t)(1u << I);
+            low |= (uint16_t)(1u << I);
+            if (j - 1 < first) first = j - 1;
         }
-        if (!bound) continue;
-        if (!bound_kept(ins, j, (size_t)ja, a, b, R, D, B, bound)) continue;
+        if (!low) continue;
+        if (!bound_kept(ins, j, (size_t)ja, a, b, R, D, B, bound, low)) continue;
         N = ins[j].imm + ((ins[ja].op == 0x77 || ins[ja].op == 0x87) ? 1 : 0);
         if (N < 1 || N > 4096 || (uint64_t)N * 4 > hi - t) continue;
         for (e = 0; e < (size_t)N; e++) {

@@ -41,6 +41,14 @@
  *              add through it: the copy drops the address's upper half: cannot-measure
  *   CLOBBER 14 as 0, with the first case copying r12 to rax (`movq %r12, %rax`), for
  *              tests/objc/objc-compare-test.sh's register copy in a table's cases: four sends
+ *   CLOBBER 15 the twin: `movl %r14d, %eax ; cmpl $2, %eax` and the load indexed by r14: the cmp bounds
+ *              r14's lower half only, its upper half is whatever it was: cannot-measure
+ *   CLOBBER 16 the twin: `movq %rdi, %r14 ; cmpl $2, %r14d` and the load indexed by r14: a 32-bit cmp
+ *              of a register whose last write did not zero-extend it: cannot-measure
+ *   CLOBBER 17 the twin: `movq %r14, %rax ; cmpl $2, %eax` and the load indexed by rax: the same, by a
+ *              64-bit copy: cannot-measure
+ *   CLOBBER 18 as 16, but `movl %edi, %r14d`, which zeroes r14's upper half: a table as in CLOBBER 0:
+ *              four sends
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -78,6 +86,19 @@ _main:
 	leaq Ltable(%rip), %rcx
 Lloop:
 #endif
+#if CLOBBER == 15
+	movl %r14d, %eax
+	cmpl $2, %eax
+#elif CLOBBER == 16
+	movq %rdi, %r14
+	cmpl $2, %r14d
+#elif CLOBBER == 17
+	movq %r14, %rax
+	cmpl $2, %eax
+#elif CLOBBER == 18
+	movl %edi, %r14d
+	cmpl $2, %r14d
+#else
 	movl %r14d, %eax
 #if CLOBBER == 3
 	subl $2, %eax
@@ -85,6 +106,7 @@ Lloop:
 	subl $2, %r14d
 #else
 	cmpl $2, %r14d
+#endif
 #endif
 	ja Ldefault
 	movapd %xmm0, %xmm2
@@ -124,7 +146,11 @@ Lloop:
 #if CLOBBER != 10
 	leaq Ltable(%rip), %rcx
 #endif
+#if CLOBBER == 15 || CLOBBER == 16 || CLOBBER == 18
+	movslq (%rcx,%r14,4), %rax
+#else
 	movslq (%rcx,%rax,4), %rax
+#endif
 	addq %rcx, %rax
 #endif
 #if CLOBBER != 9

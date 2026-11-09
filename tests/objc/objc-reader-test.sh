@@ -412,7 +412,7 @@ grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jt_sse: the table 
 for sel in objectForKey: description count allKeys allValues; do send "$pv" argument:- "selref:$sel"; done
 [ "$(awk -F '\t' -v f="$pv" '$2 == "dispatch-call" && $11 == f && $12 ~ /^argument:/' "$T/out" | wc -l | tr -d ' ')" = 6 ] ||
   fail "jt_sse: the cases do not all start from the state at the jmp"
-for c in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+for c in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
   cc22 -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt-clobber$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 read_artifact "$T/jt-clobber0"
@@ -431,7 +431,7 @@ measured 'jt_reject_clobber, a sub after the copy'
 #       does not use may stand between the ja and the lea (its -[PseudoTerminal canonicalizeWindowFrame]). A copy
 #       written again before the load, an immediate written into the index, or a load into the base's own register
 #       (the add then doubles the entry), is not such a table: cannot-measure.
-for c in 5 7 14; do
+for c in 5 7 14 18; do
   read_artifact "$T/jt-clobber$c"
   measured "jt_reject_clobber form $c"
   [ "$(count dispatch-call)" = 4 ] || fail "jt_reject_clobber form $c: $(count dispatch-call) sends, want 4"
@@ -446,6 +446,13 @@ otool -tV "$T/jt-clobber12" | grep -q 'movb	%bl, %ah' || fail 'jt_reject_clobber
 read_artifact "$T/jt-clobber11"; refused 'jt_reject_clobber, movb $1, %ah on the index' indirect-objc-entry
 read_artifact "$T/jt-clobber12"; refused 'jt_reject_clobber, movb %bl, %ah on the index' indirect-objc-entry
 read_artifact "$T/jt-clobber13"; refused 'jt_reject_clobber, a 32-bit copy of the base' indirect-objc-entry
+# spec: src/objc/macho-reader.c jump_table_at -- Intel SDM vol. 1 3.4.1.1: a 32-bit write zeroes its register's
+#       upper half, a 32-bit cmp compares the lower half only. The index is bound only as a whole: by a 64-bit cmp,
+#       or a 32-bit one of a register a 32-bit write made last, or a 32-bit copy of the compared half; a 32-bit copy
+#       the other way, or a 64-bit write before a 32-bit cmp, leaves the upper half unbound.
+read_artifact "$T/jt-clobber15"; refused 'jt_reject_clobber, the index the source of a 32-bit copy' indirect-objc-entry
+read_artifact "$T/jt-clobber16"; refused 'jt_reject_clobber, a 32-bit cmp after a 64-bit write' indirect-objc-entry
+read_artifact "$T/jt-clobber17"; refused 'jt_reject_clobber, a 32-bit cmp of a 64-bit copy' indirect-objc-entry
 # spec: src/objc/macho-reader.c entry_escapes -- a table whose lea is hoisted out of its loop (iTerm2 3.0.15's
 #       -[iTermTipCardViewController performLayoutForWidth:dry:origin:]) is not taken apart: each case's call is
 #       refused, and its detail names the indirect jump this reader does not follow.
