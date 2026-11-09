@@ -161,10 +161,10 @@ refused 'computed selector' unresolved-selector
 # spec: src/objc/binding.c header -- a call read once per incoming path (tests/objc/fixtures/merged-send.S)
 #       gives one send per path, each closed on its own; its result closes only when every path's result closes to the
 #       same class and kind. A send split by receiver alone stays one send per path, each with its own receiver.
-{ echo '# objc-signatures 1'
-  printf 'method\tNSArray\t+\tarray\tinstancetype\t-\tfixture.h:1\tinterface\n'
-  printf 'method\tNSArray\t+\tarrayWithObject:\tinstancetype\t-\tfixture.h:2\tinterface\n'
-  printf 'method\tNSDictionary\t+\tdictionary\tinstancetype\t-\tfixture.h:3\tinterface\n'
+{ echo '# objc-signatures 2'
+  printf 'method\tNSArray\t+\tarray\tinstancetype\t-\tfixture.h:1\tinterface\t0\t0\n'
+  printf 'method\tNSArray\t+\tarrayWithObject:\tinstancetype\t-\tfixture.h:2\tinterface\t1\t0\n'
+  printf 'method\tNSDictionary\t+\tdictionary\tinstancetype\t-\tfixture.h:3\tinterface\t0\t0\n'
 } >"$T/merged-sigs"
 merged() { cc -DFORM="$1" "$FX/merged-send.S" -o "$T/merged$1" -framework Foundation -lobjc
            bind --artifact "$T/merged$1" --close --signatures "$T/merged-sigs" --sdk-facts "$FACTS"; }
@@ -210,8 +210,17 @@ refused 'receipt on a shared helper' receipt-on-shared-helper
 tail -n +2 "$SIGS" >"$T/headless"
 bind --artifact "$T/closure" --close --signatures "$T/headless"; refused 'signatures without header' malformed-reference
 bind --artifact "$T/closure" --close --signatures "$T/missing"; refused 'missing signatures' unreadable-reference
-{ head -1 "$SIGS"; printf 'method\tNSX\t+\tx\tsometimes\t-\ts\tc\n'; } >"$T/badkind"
+{ head -1 "$SIGS"; printf 'method\tNSX\t+\tx\tsometimes\t-\ts\tc\t0\t0\n'; } >"$T/badkind"
 bind --artifact "$T/closure" --close --signatures "$T/badkind"; refused 'unknown result kind' malformed-reference
+# spec: tools/objc-sdk-inventory.c header -- schema 2 only: its header, ten columns, gprs a count or "-", variadic 0 or 1.
+{ echo '# objc-signatures 1'; tail -n +2 "$SIGS" | cut -f1-8; } >"$T/schema1"
+bind --artifact "$T/closure" --close --signatures "$T/schema1"; refused 'a schema-1 companion' malformed-reference
+{ head -1 "$SIGS"; tail -n +2 "$SIGS" | cut -f1-8; } >"$T/eightcol"
+bind --artifact "$T/closure" --close --signatures "$T/eightcol"; refused 'eight-column rows under schema 2' malformed-reference
+for bad in 'x	0' '	0' '1	2' '1	-' '01	0' '-1	0'; do
+  { head -1 "$SIGS"; printf 'method\tNSX\t+\tx\tid\t-\ts\tc\t%s\n' "$bad"; } >"$T/badgprs"
+  bind --artifact "$T/closure" --close --signatures "$T/badgprs"; refused "gprs and variadic '$bad'" malformed-reference
+done
 bind --artifact "$T/closure" --signatures "$SIGS"
 [ "$rc" = 2 ] || fail "references without --close exit $rc, want usage 2"
 

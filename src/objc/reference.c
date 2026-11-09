@@ -1,9 +1,11 @@
 /* reference.c -- load the SDK reference facts receiver closure consumes.
  *
  * Two inputs, both produced by tools/objc-sdk-inventory.c from one pinned SDK:
- *   - signatures_path: the --signature-output companion, schema 1 (its header line, then eight
+ *   - signatures_path: the --signature-output companion, schema 2 (its header line, then ten
  *     TAB-separated columns: record, owner, kind, selector, result kind, result class, source,
- *     container). Only declared results are loaded; nothing is inferred from an ABI encoding.
+ *     container, gprs -- a count, or "-" when unclassified -- and variadic, 0 or 1). Only declared
+ *     results are loaded; nothing is inferred from an ABI encoding. gprs and variadic are kept on
+ *     each signature, and nothing reads them yet.
  *   - facts_path: the eleven-column facts; only `class` rows are read, for each interface's
  *     declared superclass (column 5, "-" for a root).
  * Either may be absent; closure then leaves open whatever needed it. A present but unreadable,
@@ -17,6 +19,16 @@
 #include <string.h>
 
 #define LINE_MAX_BYTES 65536
+
+/* gprs: a decimal count with no leading zero, or "-" (-1). Returns 0, or -1 when malformed. */
+static int parse_gprs(const char *s, int *out) {
+    size_t i, n = strlen(s);
+    if (!strcmp(s, "-")) { *out = -1; return 0; }
+    if (!n || n > 3 || (s[0] == '0' && n > 1)) return -1;
+    for (i = 0; i < n; i++) if (s[i] < '0' || s[i] > '9') return -1;
+    *out = atoi(s);
+    return 0;
+}
 
 /* Splits `line` in place on TABs into at most `max` fields; returns the count. */
 static int split(char *line, char **f, int max) {
@@ -49,22 +61,24 @@ static int load_file(ObjcAnalysis *a, const char *path, int signatures) {
         }
         line[len - 1] = 0;
         if (signatures && lineno == 1) {
-            if (strcmp(line, "# objc-signatures 1"))
-                status = objc_fail(a, "malformed-reference", NULL, 0, "%s: missing schema-1 header", path);
+            if (strcmp(line, "# objc-signatures 2"))
+                status = objc_fail(a, "malformed-reference", NULL, 0, "%s: missing schema-2 header", path);
             continue;
         }
         n = split(line, col, 11);
         if (signatures) {
             ObjcSignature s;
-            if (n != 8 || (strcmp(col[2], "+") && strcmp(col[2], "-")) ||
+            if (n != 10 || (strcmp(col[2], "+") && strcmp(col[2], "-")) ||
                 (strcmp(col[4], "class") && strcmp(col[4], "instancetype") && strcmp(col[4], "id") &&
                  strcmp(col[4], "other") && strcmp(col[4], "unknown")) ||
-                (!strcmp(col[4], "class") == !strcmp(col[5], "-"))) {
-                status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu not a schema-1 signature", path, lineno);
+                (!strcmp(col[4], "class") == !strcmp(col[5], "-")) || parse_gprs(col[8], &s.gprs) ||
+                (strcmp(col[9], "0") && strcmp(col[9], "1"))) {
+                status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu not a schema-2 signature", path, lineno);
                 break;
             }
             s.record = col[0]; s.owner = col[1]; s.method_kind = col[2]; s.selector = col[3];
             s.result_kind = col[4]; s.result_class = !strcmp(col[5], "-") ? NULL : col[5]; s.source = col[6];
+            s.variadic = col[9][0] == '1';
             if (objc_add_signature(a, &s)) status = OBJC_CANNOT_MEASURE;
         } else {
             ObjcClassFact c;

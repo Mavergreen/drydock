@@ -26,3 +26,4 @@ __attribute__((availability(macos,introduced=10.8)))
 
 #include <stddef.h>
 typedef size_t RefSize;
+void RefLog(const char *format, ...);

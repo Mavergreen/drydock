@@ -234,6 +234,7 @@ int objc_add_signature(ObjcAnalysis *a, const ObjcSignature *src) {
         objc_fail(a, "out-of-memory", NULL, 0, "storing signature");
         return -1;
     }
+    s.gprs = src->gprs; s.variadic = src->variadic;
     a->signatures[a->n_signatures++] = s;
     return 0;
 }

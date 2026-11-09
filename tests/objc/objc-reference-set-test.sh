@@ -351,11 +351,22 @@ FIXTURES="--floor-header $FX/reference-floor.h --newer-header $FX/reference-newe
 # shellcheck disable=SC2086  # option list
 build --output "$T/ref" --runtime "$T/runtime" $FIXTURES
 [ "$rc" = 0 ] || fail "fixture reference build exits $rc"
-for f in manifest.json floor-sdk.tsv floor-signatures.tsv newer-sdk.tsv newer-signatures.tsv floor-runtime.tsv cluster-witnesses.json; do
+for f in manifest.json floor-sdk.tsv floor-signatures.tsv floor-functions.tsv newer-sdk.tsv newer-signatures.tsv floor-runtime.tsv cluster-witnesses.json; do
   [ -f "$T/ref/$f" ] || fail "reference lacks $f"
 done
-[ "$(ls -A "$T/ref" | wc -l | tr -d ' ')" = 7 ] || fail 'reference has unexpected files'
+[ "$(ls -A "$T/ref" | wc -l | tr -d ' ')" = 8 ] || fail 'reference has unexpected files'
 sh "$REFSET" verify "$T/ref" >"$T/out" 2>"$T/err" || fail 'a fresh reference does not verify'
+# spec: tools/objc-sdk-inventory.c header -- the signature companions are schema 2 (parameter GPRs and
+#       variadic); the floor side alone carries the C prototype catalog, schema 1.
+for s in floor newer; do
+  [ "$(head -1 "$T/ref/$s-signatures.tsv")" = '# objc-signatures 2' ] || fail "$s signatures are not schema 2"
+done
+[ ! -e "$T/ref/newer-functions.tsv" ] || fail 'the newer side has a function catalog'
+[ "$(head -1 "$T/ref/floor-functions.tsv")" = '# objc-functions 1' ] || fail 'the floor function catalog lacks its schema line'
+grep -Fx "$(printf 'RefLog\t1\t1\t0\tinput/1:29')" "$T/ref/floor-functions.tsv" >/dev/null || fail 'the fixture C prototype is not catalogued'
+grep -F '"functions": "floor-functions.tsv"' "$T/ref/manifest.json" >/dev/null || fail 'the floor SDK side does not name its function catalog'
+grep -F "{\"name\": \"floor-functions.tsv\", \"sha256\": \"$(shasum -a 256 "$T/ref/floor-functions.tsv" | cut -c1-64)\", \"rows\": $(($(wc -l <"$T/ref/floor-functions.tsv") - 1))}" "$T/ref/manifest.json" >/dev/null ||
+  fail 'function catalog identity or row count missing'
 # spec: scripts/objc-reference-set.sh header -- The manifest binds SDK archives, header trees, extractor, runtime identity and every file.
 M="$T/ref/manifest.json"
 mget() { sed -n "s/^ *\"$1\": \"\\([^\"]*\\)\",\\{0,1\\}\$/\\1/p" "$M"; }
@@ -590,7 +601,7 @@ rc=0; sh "$REFSET" build --output "$T/ref3" >"$T/out" 2>"$T/err" || rc=$?
 #       successful SDK side; no runtime is "not-captured".
 printf 'typedef int not_an_objc_api;\n' >"$T/empty.h"
 build --output "$T/ref3" --floor-header "$T/empty.h" --newer-header "$FX/reference-newer.h"
-[ "$rc" = 0 ] && [ ! -s "$T/ref3/floor-sdk.tsv" ] && [ "$(cat "$T/ref3/floor-signatures.tsv")" = '# objc-signatures 1' ] || fail "an empty header did not measure empty ($rc)"
+[ "$rc" = 0 ] && [ ! -s "$T/ref3/floor-sdk.tsv" ] && [ "$(cat "$T/ref3/floor-signatures.tsv")" = '# objc-signatures 2' ] && [ "$(cat "$T/ref3/floor-functions.tsv")" = '# objc-functions 1' ] || fail "an empty header did not measure empty ($rc)"
 grep -F '{"name": "floor-sdk.tsv", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "rows": 0}' "$T/ref3/manifest.json" >/dev/null ||
   fail 'the empty side is not recorded as zero rows'
 grep -F '"runtime_status": "not-captured",' "$T/ref3/manifest.json" >/dev/null && [ ! -e "$T/ref3/floor-runtime.tsv" ] || fail 'no runtime is not recorded as not-captured'
@@ -631,6 +642,16 @@ build --output "$T/regen" $runtime_args
 for f in "$REF/"* "$T/regen/"*; do
   cmp -s "$REF/$(basename "$f")" "$T/regen/$(basename "$f")" || fail "regenerated $(basename "$f") differs from the committed one"
 done
+# spec: tools/objc-sdk-inventory.c header -- the committed set carries schema-2 signatures and the floor's
+#       C prototypes, libobjc's among them: the 10.9 objc/message.h declares objc_msgSend variadic.
+for s in floor newer; do
+  [ "$(head -1 "$REF/$s-signatures.tsv")" = '# objc-signatures 2' ] || fail "the committed $s signatures are not schema 2"
+done
+grep -F '{"name": "floor-functions.tsv", ' "$REF/manifest.json" >/dev/null || fail 'the committed manifest does not list floor-functions.tsv'
+awk -F '\t' '$1 == "objc_msgSend" && $2 == 2 && $3 == 1 && $4 == 0 {f = 1} END {exit !f}' "$REF/floor-functions.tsv" ||
+  fail 'objc_msgSend is not catalogued as two GPRs, variadic, returning'
+awk -F '\t' '$1 == "NSLog" && $2 == 1 && $3 == 1 && $4 == 0 {f = 1} END {exit !f}' "$REF/floor-functions.tsv" ||
+  fail 'NSLog is not catalogued from Foundation'
 sh "$REFSET" lookup "$REF" NSWorkspace - "$OPEN" >"$T/out" 2>"$T/err" || fail 'openURLs lookup failed'
 grep -F "$(printf 'floor-sdk\tabsent\t')" "$T/out" >/dev/null || fail 'openURLs appears in the floor SDK'
 grep -F "$(printf 'newer-sdk\tdeclared\tNSWorkspace\t10.10\t')" "$T/out" >/dev/null || fail 'openURLs is not cataloged as a 10.10 NSWorkspace method'

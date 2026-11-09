@@ -1,8 +1,8 @@
-# objc-signatures 1
-method	NSObject	+	alloc	id	-	usr/include/objc/NSObject.h:61	interface
-method	NSObject	+	description	class	NSString	usr/include/objc/NSObject.h:89	interface
-method	NSObject	+	new	id	-	usr/include/objc/NSObject.h:59	interface
-method	NSPasteboard	+	generalPasteboard	class	NSPasteboard	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:64	interface
-method	NSPasteboard	-	pasteboardItems	class	NSArray	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:94	interface
-method	NSPropertyListSerialization	+	propertyListWithData:options:format:error:	id	-	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSPropertyList.h:43	interface
-method	NSWorkspace	+	sharedWorkspace	class	NSWorkspace	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSWorkspace.h:50	interface
+# objc-signatures 2
+method	NSObject	+	alloc	id	-	usr/include/objc/NSObject.h:61	interface	0	0
+method	NSObject	+	description	class	NSString	usr/include/objc/NSObject.h:89	interface	0	0
+method	NSObject	+	new	id	-	usr/include/objc/NSObject.h:59	interface	0	0
+method	NSPasteboard	+	generalPasteboard	class	NSPasteboard	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:64	interface	0	0
+method	NSPasteboard	-	pasteboardItems	class	NSArray	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSPasteboard.h:94	interface	0	0
+method	NSPropertyListSerialization	+	propertyListWithData:options:format:error:	id	-	System/Library/Frameworks/Foundation.framework/Versions/C/Headers/NSPropertyList.h:43	interface	4	0
+method	NSWorkspace	+	sharedWorkspace	class	NSWorkspace	System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSWorkspace.h:50	interface	0	0

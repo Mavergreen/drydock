@@ -130,9 +130,12 @@ typedef struct {
     char *detail;
 } ObjcError;
 
-/* A declared result, from the SDK signature companion (tools/objc-sdk-inventory.c header). */
+/* A declared result, from the SDK signature companion (tools/objc-sdk-inventory.c header), with
+ * schema 2's parameter facts: gprs, the declared parameters' SysV x86_64 GPR count without self,
+ * _cmd or a hidden result pointer (-1 for "-", unclassified), and variadic (0 or 1). */
 typedef struct {
     char *record, *owner, *method_kind, *selector, *result_kind, *result_class, *source;
+    int gprs, variadic;
 } ObjcSignature;
 
 /* An interface and its declared superclass ("-" for a root), from the eleven-column facts. */

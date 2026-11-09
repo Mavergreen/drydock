@@ -27,17 +27,21 @@
 #          tool (the tests drive it with fixtures). dyld-check applies capture's DYLD_* refusal
 #          to NAME=VALUE lines on stdin: a SIP host strips DYLD_* from any protected exec, /bin/sh
 #          included, so the tests show it an environment that way.
-#          build writes NEW_DIR/{floor-sdk.tsv,floor-signatures.tsv,newer-sdk.tsv,newer-signatures.tsv,
-#          manifest.json}, plus floor-runtime.tsv and cluster-witnesses.json when --runtime names a
-#          capture that is production, clean, from the floor identity and from the current tool source, whose
+#          build writes NEW_DIR/{floor-sdk.tsv,floor-signatures.tsv,floor-functions.tsv,newer-sdk.tsv,
+#          newer-signatures.tsv,manifest.json}, plus floor-runtime.tsv and cluster-witnesses.json when
+#          --runtime names a capture that is production, clean, from the floor identity and from the current tool source, whose
 #          classes changed by +initialize are exactly the reviewed INITIALIZE_CHANGES, and whose
 #          R1 witness exceptions are exactly the reviewed ROOT_EXCEPTIONS for every root selector and kind,
 #          but for the selectors and kinds of ROOT_SUBSETS, each held exactly to its own recorded set
 #          (the manifest records them as root_exceptions and root_subset_exceptions).
 #          Without --runtime the manifest says runtime "not-captured": the runtime facts, the R1 root
 #          witness among them, are then absent, and absent evidence cannot close anything. The headers
-#          default to each SDK's AppKit.h; the --*-header options replace that list (fixtures). Each SDK
-#          is identified by its pinned archive's SHA-256 (recomputed from the cached archive) and a digest
+#          default to each SDK's AppKit.h (AppKit, Foundation and the libSystem headers they include),
+#          with libobjc's C API headers (FLOOR_OBJC_HEADERS) added on the floor side; the --*-header
+#          options replace that list (fixtures). The signature companions are schema 2; the floor
+#          side alone also writes the C prototype catalog (floor-functions.tsv, "# objc-functions 1"):
+#          every function its parse declares, outside the compiler's own resource headers.
+#          Each SDK is identified by its pinned archive's SHA-256 (recomputed from the cached archive) and a digest
 #          of its extracted header tree, so a cache edited after extraction does not keep the pin's name.
 #          The extractor identity names, and digests, only the compiler resource headers the parse
 #          consumed (the producer reports them): host packages that ship different extra headers
@@ -337,7 +341,15 @@ tree_digest() {  # $1 directory; digest of every header-like file, by relative p
     LC_ALL=C sort | tr '\n' '\0' | xargs -0 shasum -a 256) | shasum -a 256 | cut -c1-64
 }
 
-sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: AppKit.h)
+# spec: tools/objc-sdk-inventory.c header -- AppKit.h does not include objc/runtime.h or objc/message.h,
+#       which declare objc_msgSend and the rest of libobjc's C API; adding them changes no fact or
+#       signature row, only the function catalog.
+FLOOR_OBJC_HEADERS='usr/include/objc/runtime.h
+usr/include/objc/message.h
+usr/include/objc/objc-exception.h
+usr/include/objc/objc-sync.h'
+
+sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: AppKit.h, plus FLOOR_OBJC_HEADERS on the floor)
   sf_arch=$1 sf_side=$2 sf_work=$3 sf_list=$4
   sf_pin=$(shipyard_sdk_pin "$sf_arch") || fail "no SDK pin for $sf_arch"
   sf_sha=$(printf '%s\n' "$sf_pin" | cut -d' ' -f2)
@@ -347,11 +359,14 @@ sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: A
   [ -r "$sf_archive" ] || fail "the pinned archive $sf_tarball is not beside $sf_sdk; it cannot be attested"
   [ "$(sha "$sf_archive")" = "$sf_sha" ] || fail "$sf_archive does not match its pin"
   if [ -s "$sf_list" ]; then cp "$sf_list" "$sf_work/$sf_side.args"
-  else printf '%s\n' "$sf_sdk/System/Library/Frameworks/AppKit.framework/Headers/AppKit.h" >"$sf_work/$sf_side.args"
+  else
+    printf '%s\n' "$sf_sdk/System/Library/Frameworks/AppKit.framework/Headers/AppKit.h" >"$sf_work/$sf_side.args"
+    [ "$sf_side" != floor ] || printf '%s\n' "$FLOOR_OBJC_HEADERS" | sed "s|^|$sf_sdk/|" >>"$sf_work/$sf_side.args"
   fi
   : >"$sf_work/$sf_side.headers"
   sf_n=0
   set -- --clang-prefix "$prefix" --sdk "$sf_sdk" --signature-output "$sf_work/$sf_side-signatures.tsv"
+  [ "$sf_side" != floor ] || set -- "$@" --function-output "$sf_work/floor-functions.tsv"
   while IFS= read -r sf_h; do
     sf_n=$((sf_n + 1))
     [ -r "$sf_h" ] && [ -f "$sf_h" ] || fail "unreadable header $sf_h"
@@ -420,7 +435,9 @@ build() {
       printf '  "%s_sdk": {\n' "$side"
       printf '    "archive": "%s",\n    "archive_sha256": "%s",\n    "header_tree_sha256": "%s",\n' "$archive" "$archive_sha" "$tree"
       printf '    "headers": [%s],\n' "$(json_list <"$work/$side.headers")"
-      printf '    "parsed_target": "%s",\n    "facts": "%s-sdk.tsv",\n    "signatures": "%s-signatures.tsv"\n  },\n' "$target" "$side" "$side"
+      printf '    "parsed_target": "%s",\n    "facts": "%s-sdk.tsv",\n    "signatures": "%s-signatures.tsv"' "$target" "$side" "$side"
+      [ "$side" != floor ] || printf ',\n    "functions": "floor-functions.tsv"'
+      printf '\n  },\n'
     done
     plain "$clang_version"; plain "$package"
     printf '  "extractor": {\n'
@@ -478,7 +495,7 @@ build() {
     fi
     printf '  "files": [\n'
     first=1
-    for f in cluster-witnesses.json floor-runtime.tsv floor-sdk.tsv floor-signatures.tsv newer-sdk.tsv newer-signatures.tsv; do
+    for f in cluster-witnesses.json floor-functions.tsv floor-runtime.tsv floor-sdk.tsv floor-signatures.tsv newer-sdk.tsv newer-signatures.tsv; do
       [ -f "$work/$f" ] || continue
       [ "$first" = 1 ] || printf ',\n'
       case "$f" in
@@ -515,7 +532,10 @@ verify() {
     esac
     [ "$got" = "$n" ] || fail "$d/$f has $got rows, the manifest says $n"
     case "$f" in
-      *-signatures.tsv) [ "$(head -1 "$d/$f")" = '# objc-signatures 1' ] || fail "$d/$f lacks its schema line" ;;
+      *-signatures.tsv) [ "$(head -1 "$d/$f")" = '# objc-signatures 2' ] || fail "$d/$f lacks its schema line" ;;
+      *-functions.tsv)
+        [ "$(head -1 "$d/$f")" = '# objc-functions 1' ] || fail "$d/$f lacks its schema line"
+        awk -F '\t' 'NR > 1 && NF != 5 {exit 1}' "$d/$f" || fail "$d/$f is not five-column functions" ;;
       *-sdk.tsv) awk -F '\t' 'NF != 11 {exit 1}' "$d/$f" || fail "$d/$f is not eleven-column facts" ;;
       floor-runtime.tsv) [ "$(head -1 "$d/$f")" = '# objc-runtime 1' ] || fail "$d/$f lacks its schema line" ;;
     esac
