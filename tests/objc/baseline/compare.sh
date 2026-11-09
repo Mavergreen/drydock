@@ -25,6 +25,16 @@
 #          that list must still be byte for byte the baseline's after the blanking above, the remaining errors must be the
 #          baseline's in the baseline's order, and no error may be new or changed. The exit status
 #          must still match. Each artifact's line then says how many such errors it lost.
+#          COMPARE_MODE=fewer-unmeasured is that mode with these too, and no other kind, allowed to vanish --
+#          what recognising -O3 jump tables may remove (src/objc/macho-reader.c jump_table_at): an
+#          indirect-objc-entry error whose detail ends "is called through where another path left a
+#          different value", anywhere; and one that ends "is returned" or "is read other than to call
+#          through it (a spill, a copy or an escape)", or an undecodable-objc-reference error, only at an
+#          address inside a jump table's bytes: the 4N bytes at T after a `cmp $N-1; ja` (or `cmp $N; jae`)
+#          and a `leaq T(%rip)` followed by a `jmpq *reg`, as otool -tV disassembles the artifact (the
+#          reader decoded that data as code before). Before the errors list, only each artifact's
+#          "undecoded_code_bytes" may change, and only fall, by no more than those tables' bytes in all.
+#          Each artifact's line counts the lost errors by kind.
 #          Exit 0 identical, 1 a difference, 2 usage, 4 a stale or missing baseline or input.
 #          Prints "compare: N of N identical apart from analyzer and reference identity" on success.
 set -eu
@@ -96,7 +106,7 @@ blank() {
 }
 
 MODE=${COMPARE_MODE:-identical}
-case $MODE in identical|fewer-passed-arguments) ;; *) fail "unknown COMPARE_MODE $MODE" ;; esac
+case $MODE in identical|fewer-passed-arguments|fewer-unmeasured) ;; *) fail "unknown COMPARE_MODE $MODE" ;; esac
 
 # split_errors REPORT HEAD ERRORS: HEAD gets REPORT up to and including the '"errors": [' that opens
 # its last key, ERRORS one error object per line. The writer puts each error after the first on its
@@ -121,24 +131,89 @@ split_errors() {
     }' "$1"
 }
 
-# fewer_passed BASE NEW: 0 when NEW's report differs from BASE's only by errors it lost whose detail ends
-# "is passed as an argument"; prints how many. Otherwise 1, with what differs on stderr.
-fewer_passed() {
+# jump_tables ART: "LO HI" per line, decimal: the bytes [LO, HI) of each jump table otool -tV shows in ART --
+# a `leaq T(%rip), reg` with a `jmpq *reg` at most six instructions on, after a `ja`/`jae` within twelve
+# instructions before it that follows a `cmp $IMM` within five: N = IMM + 1 (ja) or IMM (jae) entries at T.
+jump_tables() {
+  otool -tV "$1" | awk '
+    function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
+      for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
+      return x }
+    $1 ~ /^[0-9a-f]+$/ && NF >= 2 {
+      n++; ad[n] = hex($1); op[n] = $2; arg[n] = $3
+      if (pend && n == pend + 1) { t = ad[n] + off; pend = 0 }   # rip-relative: from the next instruction
+      if (op[n] == "leaq" && arg[n] ~ /^0x[0-9a-f]+\(%rip\),$/) { off = hex(substr(arg[n], 1, index(arg[n], "(") - 1)); pend = n; lea = n; t = -1 }
+      if (op[n] == "jmpq" && arg[n] ~ /^\*%r/ && t >= 0 && n - lea <= 6) {
+        N = -1
+        for (j = lea - 1; j > lea - 12 && j > 0; j--) if (op[j] == "ja" || op[j] == "jae") {
+          for (k = j - 1; k > j - 6 && k > 0; k--) if (op[k] ~ /^cmp[lq]$/ && arg[k] ~ /^\$0x[0-9a-f]+,$/) { N = hex(substr(arg[k], 2, length(arg[k]) - 2)) + (op[j] == "ja"); break }
+          break
+        }
+        if (N > 0) printf "%.0f %.0f\n", t, t + 4 * N
+        t = -1
+      }
+    }'
+}
+
+# fewer_errors BASE NEW ART: 0 when NEW's report differs from BASE's only by errors it lost of the kinds MODE allows
+# to vanish (the header); prints how many of each. Otherwise 1, with what differs on stderr.
+fewer_errors() {
   split_errors "$1" "$1.head" "$1.errs" && split_errors "$2" "$2.head" "$2.errs" ||
     { echo "compare.sh: $1 or $2 does not end in an errors list" >&2; return 1; }
+  : > "$1.tables"
+  if [ "$MODE" = fewer-unmeasured ]; then
+    jump_tables "$3" > "$1.tables" || { echo "compare.sh: otool cannot read $3" >&2; return 1; }
+    # spec: src/objc/main.m -- "undecoded_code_bytes" is the reader's limit_undecoded_bytes; a table read as
+    #       data is no longer decoded as code, so it may fall, by at most the bytes of the tables otool shows
+    grep -o '"undecoded_code_bytes": [0-9]*' "$1.head" | awk '{ print $2 }' > "$1.ub"
+    grep -o '"undecoded_code_bytes": [0-9]*' "$2.head" | awk '{ print $2 }' > "$2.ub"
+    if [ "$(wc -l < "$1.ub")" != "$(wc -l < "$2.ub")" ] ||
+       ! paste -d ' ' "$1.ub" "$2.ub" | awk -v tables="$1.tables" '
+           BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); room += r[2] - r[1] } }
+           $2 + 0 > $1 + 0 || $1 - $2 > room { bad = 1 } END { exit bad }'
+    then
+      echo "compare: undecoded_code_bytes rose, or fell by more than the jump tables hold:" $(cat "$1.ub") "->" $(cat "$2.ub") >&2
+      return 1
+    fi
+    sed 's/"undecoded_code_bytes": [0-9]*/"undecoded_code_bytes": 0/' "$1.head" > "$1.head.u" && mv "$1.head.u" "$1.head"
+    sed 's/"undecoded_code_bytes": [0-9]*/"undecoded_code_bytes": 0/' "$2.head" > "$2.head.u" && mv "$2.head.u" "$2.head"
+  fi
   if ! cmp -s "$1.head" "$2.head"; then
     echo "compare: reports differ before their errors:" >&2
     diff "$1.head" "$2.head" | cut -c1-300 | head -40 >&2 || true
     return 1
   fi
-  awk 'NR == FNR { base[++nb] = $0; next }
-       function drop(e) { return e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is passed as an argument"}$/ }
+  awk -v mode="$MODE" -v tables="$1.tables" '
+       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2] } }
+       function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
+         for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
+         return x }
+       function in_table(e,   a, i) {
+         if (!match(e, /"address": "0x[0-9a-f]+"/)) return 0
+         a = hex(substr(e, RSTART + 12, RLENGTH - 13))
+         for (i = 1; i <= nt; i++) if (tlo[i] + 0 <= a && a < thi[i] + 0) return 1
+         return 0 }
+       function kind(e) {
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is passed as an argument"}$/) return "passed"
+         if (mode != "fewer-unmeasured") return ""
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is called through where another path left a different value"}$/) return "merged"
+         if ((e ~ /^\{"code": "undecodable-objc-reference", / ||
+              (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*(is returned|is read other than to call through it \(a spill, a copy or an escape\))"}$/)) && in_table(e))
+           return "table"
+         return "" }
+       function drop(e,   k) { k = kind(e); if (k == "") { print "compare: lost error " e > "/dev/stderr"; bad = 1 } else lost[k]++ }
+       NR == FNR { base[++nb] = $0; next }
        { for (q = p + 1; q <= nb && base[q] != $0; q++) ;
          if (q > nb) { print "compare: new, changed or reordered error " $0 > "/dev/stderr"; bad = 1; next }
-         while (p + 1 < q) { if (!drop(base[++p])) { print "compare: lost error " base[p] > "/dev/stderr"; bad = 1 } else lost++ }
+         while (p + 1 < q) drop(base[++p])
          p = q }
-       END { while (p < nb) { if (!drop(base[++p])) { print "compare: lost error " base[p] > "/dev/stderr"; bad = 1 } else lost++ }
-             if (bad) exit 1; print lost + 0 }' "$1.errs" "$2.errs"
+       END { while (p < nb) drop(base[++p])
+             if (bad) exit 1
+             s = ""
+             if (lost["passed"]) s = s ", " lost["passed"] " \"is passed as an argument\""
+             if (lost["merged"]) s = s ", " lost["merged"] " \"where another path left a different value\""
+             if (lost["table"]) s = s ", " lost["table"] " inside a jump table"
+             print substr(s, 3) }' "$1.errs" "$2.errs"
 }
 
 status=0; total=0; same=0
@@ -160,8 +235,8 @@ check() {
     blank "$BASELINE_DIR/$name.objc-compat.json" "$WORK/$name.base" || ok=0
     blank "$WORK/$name.json" "$WORK/$name.new" || ok=0
     if [ -f "$WORK/$name.new" ] && ! cmp -s "$WORK/$name.base" "$WORK/$name.new"; then
-      if [ "$MODE" = fewer-passed-arguments ]; then
-        lost=$(fewer_passed "$WORK/$name.base" "$WORK/$name.new") || { echo "compare: $name: reports differ" >&2; ok=0; }
+      if [ "$MODE" != identical ]; then
+        lost=$(fewer_errors "$WORK/$name.base" "$WORK/$name.new" "$art") || { echo "compare: $name: reports differ" >&2; ok=0; }
       else
         echo "compare: $name: reports differ:" >&2
         diff "$WORK/$name.base" "$WORK/$name.new" | cut -c1-300 | head -40 >&2 || true
@@ -169,8 +244,8 @@ check() {
       fi
     fi
   fi
-  if [ "$ok" = 1 ] && [ "$lost" != 0 ]; then
-    same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity and $lost fewer \"is passed as an argument\" errors"
+  if [ "$ok" = 1 ] && [ -n "$lost" ] && [ "$lost" != 0 ]; then
+    same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity and fewer errors: $lost"
   elif [ "$ok" = 1 ]; then
     same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity"
   else
