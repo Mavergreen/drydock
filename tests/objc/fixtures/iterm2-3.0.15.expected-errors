@@ -1,0 +1,67 @@
+computed-class-producer	NSClassFromString argument is not a recognised literal	0x1000545b7
+computed-class-producer	NSClassFromString argument is not a recognised literal	0x10012f07d
+computed-class-producer	objc_getClass argument is not a recognised literal	0x1001f7372
+computed-class-producer	objc_getMetaClass argument is not a recognised literal	0x1001f73c7
+computed-class-producer	objc_getRequiredClass argument is not a recognised literal	0x1001f741c
+computed-class-producer	objc_lookUpClass argument is not a recognised literal	0x1001f7471
+computed-selector-producer	NSSelectorFromString argument is not a recognised literal	0x1000160fc
+computed-selector-producer	NSSelectorFromString argument is not a recognised literal	0x100041c3d
+computed-selector-producer	NSSelectorFromString argument is not a recognised literal	0x100122de3
+computed-selector-producer	NSSelectorFromString argument is not a recognised literal	0x10013a728
+computed-selector-producer	NSSelectorFromString argument is not a recognised literal	0x100181f69
+computed-selector-producer	sel_getUid argument is not a recognised literal	0x1001f75c0
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of brightnessOfCharBackground: takes argument registers this reader does not count	0x1001616a8
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10003d9fa
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a12f
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a212
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a2d2
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a3b2
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a498
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a57d
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a61d
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10013a82b
+indirect-objc-entry	objc entry point in r8 is passed as an argument: a declaration of stringWithFormat: is variadic	0x1001dcab3
+indirect-objc-entry	objc entry point in r9 is passed as an argument: a declaration of appendFormat: is variadic	0x10004cea2
+indirect-objc-entry	objc entry point in r9 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10008b007
+indirect-objc-entry	objc entry point in r9 is passed as an argument: a declaration of stringWithFormat: is variadic	0x1000c7546
+indirect-objc-entry	objc entry point in r9 is passed as an argument: a declaration of stringWithFormat: is variadic	0x10015f767
+indirect-objc-entry	objc entry point in r9 is passed as an argument: a declaration of stringWithFormat: is variadic	0x1001992e0
+indirect-objc-entry	objc entry point in r9 is passed as an argument: a declaration of stringWithFormat: is variadic	0x1001b7c9b
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd728	0x1001f69b6
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd730	0x1001f69e0
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd738	0x1001f6a0a
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd740	0x1001f6a34
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd748	0x1001f6a5e
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd750	0x1001f6a88
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd758	0x1001f6ab2
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd760	0x1001f6adc
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd768	0x1001f6b06
+indirect-objc-entry	objc entry point in rax is read other than to call through it (a spill, a copy or an escape): stored to memory at 0x1003bd770	0x1001f6b30
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x100078c1f
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x1000fd312
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x10015ab30
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x100196431
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x1001a3774
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x1001cbab2
+indirect-objc-entry	objc entry point in rax is returned: the method's type encoding returns nothing in rax	0x1001df74e
+indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e2129
+indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e2135
+indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e2174
+indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e2180
+indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e218c
+indirect-objc-entry	objc entry point in rbx is read other than to call through it (a spill, a copy or an escape): in code reached only through an indirect jump this reader does not follow	0x1001e3180
+indirect-objc-entry	objc entry point in rcx is passed as an argument: a declaration of stringWithFormat: is variadic	0x100089a2c
+indirect-objc-entry	objc entry point in rcx is passed as an argument: a declaration of stringWithFormat: is variadic	0x100089df2
+indirect-objc-entry	objc entry point in rcx is passed as an argument: this send's selector is not known on every path	0x1001058f2
+indirect-objc-entry	objc entry point in rdx is passed as an argument: this send's selector is not known on every path	0x1001b1772
+indirect-objc-entry	objc entry point in rdx is returned: the method's type encoding returns nothing in rdx	0x10005c5ea
+indirect-objc-entry	objc entry point in rdx is returned: the method's type encoding returns nothing in rdx	0x1000a0401
+indirect-objc-entry	objc entry point in rdx is returned: the method's type encoding returns nothing in rdx	0x1001d19f5
+indirect-objc-entry	objc entry point in rdx is returned: the method's type encoding returns nothing in rdx	0x1001da22b
+runtime-class-creation	_class_addProperty: a class changed at run time is not the class measured	0x1001f76ad
+runtime-class-creation	_class_addProtocol: a class changed at run time is not the class measured	0x1001f763e
+runtime-class-creation	_objc_initializeClassPair: a class made or reparented at run time has no measured root	0x1001f700d
+runtime-class-creation	_objc_initializeClassPair: a class made or reparented at run time has no measured root	0x1001f72d6
+runtime-class-creation	_objc_registerClassPair: a class made or reparented at run time has no measured root	0x1001f7233
+runtime-method-swizzle	_class_replaceMethod: a method implementation replaced at run time is not measured	0x1001f5d86
+runtime-method-swizzle	_method_setImplementation: a method implementation replaced at run time is not measured	0x1001f6ba6

@@ -392,21 +392,22 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity binding classification closure compare provider reader reference-set report sdk-inventory sdk-signatures cli)
+foreach(t arity binding classification closure compare provider reader reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)
   else()
     set(f objc-${t}-test.sh)
   endif()
-  if(t STREQUAL "reference-set")
+  if(t STREQUAL "reference-set" OR t STREQUAL "iterm2-acceptance")
     # platform: the reference-set test DYLD-inserts fixture dylibs into a system process, which CI's macOS 26 runner
     # refuses (an arm64 dylib into an arm64e process); in shipyard it was a maintainer test, run by hand on the 10.9
     # box and the modern Mac. It runs on Darwin 13 (10.9), or anywhere DRYDOCK_OBJC_MAINTAINER=1 asks; elsewhere
-    # it is a skip, exit 77.
+    # it is a skip, exit 77. The iTerm2 acceptance test is gated alike: it measures upstream iTerm2 3.0.15 from the
+    # cached zip and takes minutes, a maintainer's check.
     # Registered here, not through drydock_macos_test: its ARGN would split the script at each semicolon.
     if(APPLE)
-      add_test(NAME objc_${n} COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ] || [ \"\${DRYDOCK_OBJC_MAINTAINER:-}\" = 1 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: a maintainer test that inserts dylibs into system processes -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1\"; exit 77"
+      add_test(NAME objc_${n} COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ] || [ \"\${DRYDOCK_OBJC_MAINTAINER:-}\" = 1 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1\"; exit 77"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}" objc_${n})
       set_tests_properties(objc_${n} PROPERTIES SKIP_RETURN_CODE 77)
     else()
