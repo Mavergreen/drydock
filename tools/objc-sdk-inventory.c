@@ -18,20 +18,28 @@
  *
  * gprs is the number of general-purpose argument registers the declared parameters take under the
  * SysV x86_64 calling convention, not counting self and _cmd (a getter takes 0). Each parameter's
- * canonical type: a pointer, integer, enum, BOOL, block or Objective-C object takes 1 (an __int128
- * takes 2); float and double take 0; a struct of at most 16 bytes takes one per eightbyte holding
- * an integer or pointer (an NSRange takes 2, a struct of two doubles 0); a larger aggregate is
- * passed in memory and takes 0. Whatever this producer cannot classify with certainty (a union, a
- * bitfield, a misaligned field, long double, a vector, a complex, an unprototyped function) makes
+ * canonical type: a pointer, integer, BOOL, block or Objective-C object takes 1, as does an array
+ * or function parameter (C passes it as a pointer); __int128 takes 2; an enum takes 1 up to 8
+ * bytes and 2 at 16; float and double take 0; a struct of at most 16 bytes takes one per eightbyte
+ * holding an integer or pointer (an NSRange takes 2, a struct of two doubles 0); a larger aggregate
+ * is passed in memory and takes 0. Whatever this producer cannot classify with certainty (a union,
+ * a bitfield, a misaligned field, long double, a vector, a complex, an unprototyped function) makes
  * the whole count "-", which consumers read as unbounded. variadic is 1 for a "..." declaration.
+ * A memory-class result (an aggregate over 16 bytes) is returned through a hidden pointer in rdi.
+ * A method's gprs never count it: the compiler sends such a method through the _stret entry
+ * points, exactly when the result is memory-class, and the consumer adds it for those. A C
+ * function's gprs do count it (see --function-output).
  *
  * --function-output FILE: a catalog, schema 1, of the C function prototypes the parsed headers
  * declare (the SDK's and the explicit headers'; the compiler resource directory's are left out).
  * First line "# objc-functions 1", then one row per name, sorted:
- *   1 function (the C name as the source spells it, no Mach-O underscore) 2 gprs 3 variadic
- *   4 noreturn 5 source (of the first declaration in sorted order).
+ *   1 function (the C name as the source spells it, no Mach-O underscore) 2 gprs, including the
+ *   hidden result pointer of a memory-class result ("-" when the result cannot be classified with
+ *   certainty) 3 variadic 4 noreturn 5 source.
  * Redeclarations are merged: gprs is "-" unless every declaration agrees, and variadic or noreturn is
- * 1 if any declaration says so. It is exclusive and atomic, as the signature companion is.
+ * 1 if any declaration says so. source is that of the declaration whose whole row sorts first in
+ * byte order (by gprs, then variadic, then noreturn, then source text). It is exclusive and
+ * atomic, as the signature companion is.
  *
  * After a successful parse, stderr carries one "objc-sdk-inventory: resource-header PATH" line per
  * file included from below the compiler resource directory, PATH relative to it, sorted. */
@@ -254,6 +262,10 @@ static int parameter_gprs(CXType t) {
     if (t.kind == CXType_ConstantArray || t.kind == CXType_IncompleteArray || t.kind == CXType_VariableArray ||
         t.kind == CXType_FunctionProto || t.kind == CXType_FunctionNoProto) return 1;
     if (t.kind == CXType_Int128 || t.kind == CXType_UInt128) return 2;
+    if (t.kind == CXType_Enum) {
+        long long size = clang_Type_getSizeOf(t);
+        return size > 0 && size <= 8 ? 1 : size == 16 ? 2 : -1;
+    }
     if (t.kind == CXType_Record) {
         long long size = clang_Type_getSizeOf(t);
         struct layout layout = {{EB_NONE, EB_NONE}, 0};
@@ -266,9 +278,23 @@ static int parameter_gprs(CXType t) {
     }
     return scalar_class(t);
 }
-/* The declaration's parameter GPRs into out ("-" when unbounded) and whether it is variadic. */
-static int parameters(CXCursor c, char *out, size_t size) {
-    int n = clang_Cursor_getNumArguments(c), total = 0;
+/* 1 when a C function's result is memory-class and so takes a hidden pointer in rdi, 0 when it
+ * comes back in registers, -1 when this producer cannot tell. */
+static int hidden_result(CXType t) {
+    t = clang_getCanonicalType(t);
+    if (t.kind == CXType_Void || t.kind == CXType_Int128 || t.kind == CXType_UInt128 ||
+        t.kind == CXType_LongDouble || t.kind == CXType_Enum || scalar_class(t) >= 0) return 0;
+    if (t.kind == CXType_Record) {
+        long long size = clang_Type_getSizeOf(t);
+        if (size > 16) return 1;
+        return parameter_gprs(t) < 0 ? -1 : 0;
+    }
+    return -1;
+}
+/* The declaration's parameter GPRs into out ("-" when unbounded) and whether it is variadic. A C
+ * function (sret set) also counts the hidden pointer of a memory-class result. */
+static int parameters(CXCursor c, int sret, char *out, size_t size) {
+    int n = clang_Cursor_getNumArguments(c), total = sret ? hidden_result(clang_getCursorResultType(c)) : 0;
     if (n < 0 || clang_getCanonicalType(clang_getCursorType(c)).kind == CXType_FunctionNoProto) total = -1;
     for (int i = 0; i < n && total >= 0; ++i) {
         int g = parameter_gprs(clang_getCursorType(clang_Cursor_getArgument(c, (unsigned)i)));
@@ -300,7 +326,8 @@ static enum CXChildVisitResult noreturn_attribute(CXCursor c, CXCursor parent, C
  * __attribute__((noreturn)) (the SDK's __dead2) is part of the function type, so it shows only as
  * the canonical type spelling's " __attribute__((noreturn))" suffix -- unless the result type, a
  * pointer to a noreturn function, is what spells it. C11 _Noreturn is a declaration attribute that
- * libclang exposes only as an UnexposedAttr child, recognized by its token. */
+ * libclang exposes only as an UnexposedAttr child, recognized by its token. A missed noreturn is
+ * safe: it never changes a register count, and the argument-register bounds do not use it. */
 static int noreturn_function(CXCursor c) {
     static const char suffix[] = " __attribute__((noreturn))";
     char *type = type_name(clang_getCanonicalType(clang_getCursorType(c)));
@@ -321,7 +348,7 @@ static void signature(struct inventory *inventory, CXCursor c, const char *recor
     CXType t = property ? clang_getCursorType(c) : clang_getCursorResultType(c);
     result_of(t, &kind, &class_name);
     field(class_name);
-    if (!property) variadic = parameters(c, gprs, sizeof(gprs));
+    if (!property) variadic = parameters(c, 0, gprs, sizeof(gprs));
     size = strlen(record) + strlen(owner) + strlen(method_kind) + strlen(name) + strlen(kind) +
            strlen(class_name) + strlen(source) + strlen(container) + strlen(gprs) + 32;
     row = allocate(size);
@@ -365,7 +392,7 @@ static void function(struct inventory *inventory, CXCursor c) {
     if (!relative) return;
     name = cursor_name(c);
     field(name); field(relative);
-    int variadic = parameters(c, gprs, sizeof(gprs)), noreturn = noreturn_function(c);
+    int variadic = parameters(c, 1, gprs, sizeof(gprs)), noreturn = noreturn_function(c);
     size_t size = strlen(name) + strlen(gprs) + strlen(relative) + 64;
     row = allocate(size);
     snprintf(row, size, "%s\t%s\t%d\t%d\t%s:%u", name, gprs, variadic, noreturn, relative, line);
@@ -538,7 +565,8 @@ static char *companion(const char *dest, const char *header, char **rows, size_t
     pending[pending[0] ? 1 : 0] = temporary;
     return temporary;
 }
-/* Sorted function rows merged to one per name, as the header describes. */
+/* Sorted function rows merged to one per name, as the header describes: the source kept is the
+ * first row's, the declaration whose whole row sorts first. */
 static void merge_functions(struct inventory *inventory) {
     size_t kept = 0;
     for (size_t i = 0; i < inventory->nfns;) {

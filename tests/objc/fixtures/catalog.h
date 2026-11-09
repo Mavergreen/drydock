@@ -65,3 +65,26 @@ int dd_twice();
 int dd_twice(int a, int b);
 double dd_round(double x);
 void dd_none(void);
+
+/* Classifier cases: each parameter's GPRs, and a C function's hidden sret pointer. */
+typedef enum { DDRed, DDGreen } DDColor;
+typedef enum : __int128 { DDHuge = 1 } DDWideEnum;
+typedef struct { struct { int a; int b; } s; long c; } DDNested;
+typedef struct { double d; int i; } DDDoubleInt;
+typedef struct __attribute__((packed)) { char c; long l; } DDPacked;
+@interface Probe (Classes)
+- (void)flag:(_Bool)b;
+- (void)color:(DDColor)c;
+- (void)wideEnum:(DDWideEnum)e;
+- (void)i128:(__int128)i;
+- (void)block:(void (^)(int))b;
+- (void)array:(id [])objects;
+- (void)nested:(DDNested)n;
+- (void)doubleInt:(DDDoubleInt)d;
+- (void)packed:(DDPacked)p;
+- (DDTriple)bigResult:(int)n;
+@end
+struct big { long a; long b; long c; };
+struct big dd_big(int n);
+NSRange dd_range(void);
+void dd_array(int a[4]);

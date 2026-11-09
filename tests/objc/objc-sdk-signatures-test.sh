@@ -94,11 +94,28 @@ row 'method\tProbe\t-\twide:\tother\t-\tinput/1:55\tinterface\t-\t0'
 row 'method\tProbe\t-\to:at:count:flag:\tother\t-\tinput/1:56\tinterface\t5\t0'
 row 'property-get\tProbe\t-\tprobeReading\tother\t-\tinput/1:57\tinterface\t0\t0'
 row 'method\tOldBase\t-\tscalar:\tother\t-\tinput/1:6\tinterface\t1\t0'
+row 'method\tProbe\t-\tflag:\tother\t-\tinput/1:76\tcategory:Classes\t1\t0'
+row 'method\tProbe\t-\tcolor:\tother\t-\tinput/1:77\tcategory:Classes\t1\t0'
+row 'method\tProbe\t-\twideEnum:\tother\t-\tinput/1:78\tcategory:Classes\t2\t0'
+row 'method\tProbe\t-\ti128:\tother\t-\tinput/1:79\tcategory:Classes\t2\t0'
+row 'method\tProbe\t-\tblock:\tother\t-\tinput/1:80\tcategory:Classes\t1\t0'
+row 'method\tProbe\t-\tarray:\tother\t-\tinput/1:81\tcategory:Classes\t1\t0'
+row 'method\tProbe\t-\tnested:\tother\t-\tinput/1:82\tcategory:Classes\t2\t0'
+row 'method\tProbe\t-\tdoubleInt:\tother\t-\tinput/1:83\tcategory:Classes\t1\t0'
+row 'method\tProbe\t-\tpacked:\tother\t-\tinput/1:84\tcategory:Classes\t-\t0'
+# spec: tools/objc-sdk-inventory.c header -- a method's gprs exclude the hidden sret pointer of a
+#       memory-class result; the consumer adds it for the _stret send variants.
+row 'method\tProbe\t-\tbigResult:\tother\t-\tinput/1:85\tcategory:Classes\t1\t0'
 printf '# objc-functions 1\n' >"$T/fn.want"
+printf 'dd_array\t1\t0\t0\tinput/1:90\n' >>"$T/fn.want"
+# spec: tools/objc-sdk-inventory.c header -- a C function's gprs include the hidden sret pointer of a
+#       memory-class result (struct big is 24 bytes: 1 + the int).
+printf 'dd_big\t2\t0\t0\tinput/1:88\n' >>"$T/fn.want"
 printf 'dd_c11\t1\t0\t1\tinput/1:62\n' >>"$T/fn.want"
 printf 'dd_fatal\t2\t0\t1\tinput/1:60\n' >>"$T/fn.want"
 printf 'dd_log\t1\t1\t0\tinput/1:63\n' >>"$T/fn.want"
 printf 'dd_none\t0\t0\t0\tinput/1:67\n' >>"$T/fn.want"
+printf 'dd_range\t0\t0\t0\tinput/1:89\n' >>"$T/fn.want"
 printf 'dd_round\t0\t0\t0\tinput/1:66\n' >>"$T/fn.want"
 printf 'dd_twice\t-\t0\t0\tinput/1:64\n' >>"$T/fn.want"
 cmp -s "$T/fn" "$T/fn.want" || { diff "$T/fn.want" "$T/fn" >&2 || :; fail 'function catalog is not exactly the fixture prototypes'; }
