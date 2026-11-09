@@ -302,6 +302,7 @@ typedef struct {
     int have_floor_sel_gprs, have_newer_sel_gprs, have_fn_gprs;
     ObjcMap *fn_home;             /* C function -> the install-name prefix it lives under, "" none (reference.c note_home) */
     ObjcMap *sel_relied;          /* selector -> what the reader's sends of it rely on (objc_rely_selector_gprs) */
+    ObjcMap *sel_variadic;        /* selector -> "1": a signature catalog row declares it variadic */
 } ObjcAnalysis;
 
 ObjcAnalysis *objc_analysis_create(void);
@@ -373,6 +374,11 @@ int objc_load_gprs_catalogs(ObjcAnalysis *a);
  * selector without a colon needs no lookup. -1 when a declaration is variadic or unclassified, none is
  * known, a catalog is missing, or the total is over six. */
 int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret);
+/* Why objc_selector_gprs leaves colon selector SEL unbounded, for an error's detail: "variadic" when a
+ * signature catalog row declares it so, "undeclared" when nothing has declared it so far, "uncounted"
+ * for any other unbounded declaration; NULL when SEL is bounded, has no colon, or a catalog is
+ * missing. */
+const char *objc_selector_unbounded_why(const ObjcAnalysis *a, const char *sel);
 /* A direct call to import SYMBOL (leading "_", an asm label's "$SUFFIX" ignored): the floor function
  * catalog's GPRs, a hidden result pointer included; -1 when uncatalogued, variadic, unclassified or
  * over six. */

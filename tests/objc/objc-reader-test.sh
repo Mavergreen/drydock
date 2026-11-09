@@ -259,17 +259,21 @@ site() {
   otool -tV "$art" | awk -v f="$1:" -v p="$2" '$0 == f { on = 1; next } on && !/\t/ { exit } on && index($0, p) { print $1; exit }' |
     { read -r hex && printf '0x%x' "$((0x$hex))"; }
 }
-# spec: src/objc/macho-reader.c "Argument registers" -- passed_at FUNCTION TEXT: an indirect-objc-entry error naming rcx at that site.
+# spec: src/objc/macho-reader.c "Argument registers" -- passed_at FUNCTION TEXT [WHY]: an indirect-objc-entry error naming rcx at
+#       that site, its detail ending ": WHY" when a send's bound is unknown for that reason.
 passed_at() {
   ps=$(site "$1" "$2") || fail "$art: no '$2' in $1"
-  awk -F '\t' -v a="$ps" '$1 == "error" && $2 == "indirect-objc-entry" && $4 == a && $5 == "objc entry point in rcx is passed as an argument"' "$T/out" |
-    grep . >/dev/null || fail "$art: $1 is not refused at its call $ps"
+  awk -F '\t' -v a="$ps" -v w="${3:+: $3}" '$1 == "error" && $2 == "indirect-objc-entry" && $4 == a && $5 == "objc entry point in rcx is passed as an argument" w' "$T/out" |
+    grep . >/dev/null || fail "$art: $1 is not refused at its call $ps${3:+ with \"$3\"}"
 }
 art="$T/entry-escape"
 cc22 "$FX/entry-escape.S" -o "$art" -framework Foundation -lobjc
 read_refs "$art"
 refused 'entry-escape' indirect-objc-entry
-for twin in _unknown_colon _format _stret_shift; do passed_at "$twin" '*%rbx'; done
+# spec: src/objc/macho-reader.c call_arg_regs -- an unbounded send names why: no declaration, or a variadic one.
+passed_at _unknown_colon '*%rbx' 'no declaration of zzNoSuchSelector: was known when this send was read'
+passed_at _format '*%rbx' 'a declaration of stringWithFormat: is variadic'
+passed_at _stret_shift '*%rbx'
 passed_at _c_noreturn_params ___assert_rtn
 [ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 4 ] || fail "entry-escape: $(grep -c '^error	indirect-objc-entry	' "$T/out") refusals, want one per twin"
 # spec: src/objc/macho-reader.c "Argument registers" -- a catalogued name bound to a non-system library or by flat
@@ -455,6 +459,24 @@ for n in 0 1 2 3; do
     3) row_is "$(at _merged 0x41)" 2 "result:$(at _merged 0x1b):- selref:*:count $(at _merged 0x21)" \
                                      "result:$(at _merged 0x31):- selref:*:count $(at _merged 0x31)" ;;
   esac
+done
+# spec: src/objc/macho-reader.c entry_escapes -- at a merged send whose meet has no selector, the entry point's registers are
+#       weighed per incoming path against that path's own bound (tests/objc/fixtures/merged-send-arg.S, upstream iTerm2
+#       3.0.15's -[iTermEditKeyActionWindowController ok:]): a copy in rdx where every path's selector takes no parameter
+#       is measured; a path whose selector takes rdx, or whose selector the reader does not know, is cannot-measure.
+for n in 0 1 2; do
+  art="$T/merged-arg$n"
+  cc -DFORM="$n" "$FX/merged-send-arg.S" -o "$art" -framework Foundation -lobjc
+done
+art="$T/merged-arg0"; read_refs "$art"; measured 'merged send, an entry point copy in rdx'
+[ "$(count dispatch-call)" = 2 ] || fail "merged send, an entry point copy in rdx: $(count dispatch-call) sends, want 2"
+call=$(at _merged_arg 0x2e)
+for n in 1 2; do
+  art="$T/merged-arg$n"; read_refs "$art"; refused "merged send form $n, an entry point copy in rdx" indirect-objc-entry
+  case $n in 1) want='objc entry point in rdx is passed as an argument' ;;
+             2) want="objc entry point in rdx is passed as an argument: this send's selector is not known on every path" ;; esac
+  awk -F '\t' -v a="$call" -v w="$want" '$1 == "error" && $4 == a && $5 == w' "$T/out" | grep . >/dev/null ||
+    fail "merged send form $n, an entry point copy in rdx: not refused at $call as '$want'"
 done
 # spec: tests/objc/fixtures/open-urls-merge.S header -- open_urls_with_ops: the spilled selectors of lines 88, 63 and 65 are
 #       followed; line 97's merged send is two, +[NSMutableDictionary dictionary] from +0x76e and -autorelease of the

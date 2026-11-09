@@ -623,7 +623,14 @@ static int load_gprs_file(ObjcAnalysis *a, const char *name, int signatures, int
             status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu not a %s row", name, lineno, signatures ? "signature" : "function");
             break;
         }
-        if ((signatures ? c[9] : c[2])[0] == '1') gprs = -1;
+        if ((signatures ? c[9] : c[2])[0] == '1') {
+            gprs = -1;
+            if (signatures && ((!a->sel_variadic && !(a->sel_variadic = objc_map_create())) ||
+                               (!objc_map_get(a->sel_variadic, c[3]) && objc_map_put(a->sel_variadic, c[3], "1") < 0))) {
+                status = objc_fail(a, "out-of-memory", NULL, 0, "argument registers");
+                break;
+            }
+        }
         /* spec: scripts/objc-reference-set.sh header -- a builtin row never restates a declared function. */
         if (builtin && objc_map_get(a->fn_gprs, c[0])) {
             status = objc_fail(a, "malformed-reference", NULL, 0, "%s:%zu %s is already catalogued", name, lineno, c[0]);
@@ -667,6 +674,14 @@ int objc_selector_gprs(const ObjcAnalysis *a, const char *sel, int stret) {
     if (!a->have_floor_sel_gprs || !a->have_newer_sel_gprs || (params = stored_gprs(a->sel_gprs, sel)) < 0) return -1;
     total = 2 + stret + params;
     return total <= GPR_ARGS ? total : -1;
+}
+
+const char *objc_selector_unbounded_why(const ObjcAnalysis *a, const char *sel) {
+    if (!sel || !strchr(sel, ':') || !a->have_floor_sel_gprs || !a->have_newer_sel_gprs || objc_selector_gprs(a, sel, 0) >= 0)
+        return NULL;
+    if (a->sel_variadic && objc_map_get(a->sel_variadic, sel)) return "variadic";
+    if (!a->sel_gprs || !objc_map_get(a->sel_gprs, sel)) return "undeclared";
+    return "uncounted";
 }
 
 int objc_import_gprs(const ObjcAnalysis *a, const char *sym, const char *lib) {

@@ -2303,11 +2303,11 @@ static void operand_of(const Slice *s, int kd, uint64_t va, uint64_t def, ObjcVa
  * objc_function_gprs when the floor catalog knows it and the import binds to the system library its
  * declaration lives in (objc_import_gprs). Everything else, or an unbounded answer, is six. */
 static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip, const uint8_t *at,
-                         char *sel, size_t selsz, int *stret) {
+                         char *sel, size_t selsz, int *stret, char *why, size_t whysz) {
     uint64_t target;
     const Ptr *p;
     int recv, sr, arg, n;
-    *sel = 0; *stret = 0;
+    *sel = 0; *stret = 0; *why = 0;
     if (is_call_rel(x) || is_jmp_rel(x)) target = (uint64_t)rel_target(at, x, ip);
     else if ((is_ff(x, 2) || is_ff(x, 4)) && x->riprel) target = x->riptarget;
     else if ((is_ff(x, 2) || is_ff(x, 4)) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
@@ -2324,13 +2324,36 @@ static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip
         else if (v.form == OBJC_VAL_SEL_CACHE && (c = cache_at(s, v.ref)) && c->kind == 1 && c->literal &&
                  strlen(c->literal) < selsz)
             name = strcpy(sel, c->literal);
-        if (!name) { *sel = 0; return 6; }
+        if (!name) { *sel = 0; snprintf(why, whysz, "%s", "this send's selector is not known on every path"); return 6; }
         *stret = strstr(p->name, "_stret") != NULL;
         n = objc_selector_gprs(s->a, sel, *stret);
+        if (n < 0) {
+            const char *w = objc_selector_unbounded_why(s->a, sel);
+            if (w && !strcmp(w, "variadic")) snprintf(why, whysz, "a declaration of %s is variadic", sel);
+            else if (w && !strcmp(w, "undeclared")) snprintf(why, whysz, "no declaration of %s was known when this send was read", sel);
+        }
     } else
         n = objc_import_gprs(s->a, p->name, p->lib);
     if (n < 0) { *sel = 0; return 6; }
     return n;
+}
+
+/* At call or tail jump X in state ST, where LIVE may hold the entry point and THROUGH is the register
+ * called through: the index in rdi, rsi, rdx, rcx, r8, r9 of the first register that may carry it as an
+ * argument (call_arg_regs), with *why naming why a send's bound is unknown ("" when it is known or the
+ * callee is not a send); -1 when none may; -2 when a reliance it records fails the analysis. */
+static int arg_escape(Slice *s, const RS *st, uint16_t live, uint16_t through, const Ins *x, uint64_t ip,
+                      const uint8_t *at, char *why, size_t whysz) {
+    static const int args[] = { REG_RDI, REG_RSI, REG_RDX, REG_RCX, 8, 9 };
+    char sel[MAX_LITERAL];
+    int j, stret, nargs = call_arg_regs(s, st, x, ip, at, sel, sizeof sel, &stret, why, whysz);
+    for (j = 0; j < 6; j++)
+        if ((live & (1u << args[j])) && !(through & (1u << args[j]))) {
+            if (j < nargs) return j;
+            /* Left out by a selector's bound: a declaration noted later must not raise it. */
+            if (*sel && objc_rely_selector_gprs(s->a, sel, stret, j, REGNAME[args[j]], s->slice, ip)) return -2;
+        }
+    return -1;
 }
 
 static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_addr, uint64_t fn_start,
@@ -2350,6 +2373,8 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
             uint16_t live = st.me, through = 0, hit;
             int j, r = -1, was_exposed = exposed_entry_slot(f, &st) >= 0;
             const char *how = NULL;
+            char why[MAX_LITERAL + 96];
+            *why = 0;
             if (st.ms && x->modrm && x->mod != 3 && !x->riprel && !mem_write_only(x)) {
                 /* A spilled entry point leaves its slot only through a 64-bit reload into a register. */
                 int mb = x->sib ? x->sibbase : x->rm, mi = x->sib ? x->sibindex : -1, si = -1;
@@ -2399,23 +2424,28 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                 }
                 if (!how && (is_call_any(x) || (is_ff(x, 4) && !jt_has(s, ips[i])) || is_ff(x, 5) ||
                              (is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i)))) {
-                    char sel[MAX_LITERAL];
-                    int stret, nargs = call_arg_regs(s, &st, x, ips[i], base + (ips[i] - sect_addr), sel, sizeof sel, &stret);
-                    for (j = 0; j < 6 && !how; j++)
-                        if ((live & (1u << args[j])) && !(through & (1u << args[j]))) {
-                            if (j < nargs) { r = args[j]; how = "is passed as an argument"; }
-                            /* Left out by a selector's bound: a declaration noted later must not raise it. */
-                            else if (*sel && objc_rely_selector_gprs(s->a, sel, stret, j, REGNAME[args[j]], s->slice, ips[i]))
-                                { s->status = OBJC_CANNOT_MEASURE; return; }
-                        }
+                    const uint8_t *at = base + (ips[i] - sect_addr);
+                    j = arg_escape(s, &st, live, through, x, ips[i], at, why, sizeof why);
+                    if (j >= 0) {
+                        /* Merged calls: a send whose paths disagree on its selector is read once per
+                         * path, each path's entry-point registers against that path's own bound. */
+                        PathIn pin[NPATH];
+                        size_t np, q;
+                        if (path_states(s, f, base, sect_addr, ips, ins, n, i, pin, &np) < 0)
+                            { fail(s, "out-of-memory", ips[i], "%s", "flow"); return; }
+                        for (q = 0, j = np >= 2 ? -1 : j; q < np && np >= 2 && j < 0; q++)
+                            j = arg_escape(s, &pin[q].st, pin[q].st.me, through, x, ips[i], at, why, sizeof why);
+                    }
+                    if (j == -2) { s->status = OBJC_CANNOT_MEASURE; return; }
+                    if (j >= 0) { r = args[j]; how = "is passed as an argument"; } else *why = 0;
                 }
                 if (!how && x->map == 0 && (x->op == 0xC3 || x->op == 0xC2) && (live & ((1u << REG_RAX) | (1u << REG_RDX)))) {
                     r = live & (1u << REG_RAX) ? REG_RAX : REG_RDX; how = "is returned";
                 }
             }
             if (how) {
-                char msg[160];
-                snprintf(msg, sizeof msg, "objc entry point in %s %s", REGNAME[r], how);
+                char msg[MAX_LITERAL + 256];
+                snprintf(msg, sizeof msg, "objc entry point in %s %s%s%s", REGNAME[r], how, *why ? ": " : "", why);
                 fail(s, "indirect-objc-entry", ips[i], "%s", msg);
             }
             transfer(s, f, &st, x, ips[i], base + (ips[i] - sect_addr));
