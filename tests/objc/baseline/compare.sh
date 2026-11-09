@@ -26,15 +26,20 @@
 #          baseline's in the baseline's order, and no error may be new or changed. The exit status
 #          must still match. Each artifact's line then says how many such errors it lost.
 #          COMPARE_MODE=fewer-unmeasured is that mode with these too, and no other kind, allowed to vanish --
-#          what recognising -O3 jump tables may remove (src/objc/macho-reader.c jump_table_at): an
-#          indirect-objc-entry error whose detail ends "is called through where another path left a
-#          different value", anywhere; and one that ends "is returned" or "is read other than to call
-#          through it (a spill, a copy or an escape)", or an undecodable-objc-reference error, only at an
-#          address inside a jump table's bytes: the 4N bytes at T after a `cmp $N-1; ja` (or `cmp $N; jae`)
-#          and a `leaq T(%rip)` followed by a `jmpq *reg`, as otool -tV disassembles the artifact (the
-#          reader decoded that data as code before). Before the errors list, only each artifact's
-#          "undecoded_code_bytes" may change, and only fall, by no more than those tables' bytes in all.
-#          Each artifact's line counts the lost errors by kind.
+#          what recognising -O3 jump tables may remove (src/objc/macho-reader.c jump_table_at). The reader
+#          is the authority on tables: the analyzer runs with DRYDOCK_OBJC_JUMP_TABLES=1 and lists each
+#          table it took apart on stderr (jt_settle), and only these are excused:
+#            - an indirect-objc-entry error whose detail ends "is called through where another path
+#              left a different value", inside a function holding a listed table whose cases it follows;
+#            - one that ends "is returned" or "is read other than to call through it (a spill, a copy or
+#              an escape)", or an undecodable-objc-reference error, at an address inside a listed
+#              table's bytes (the reader decoded that data as code before);
+#            - before the errors list, a fall in an artifact's "undecoded_code_bytes" of no more than
+#              the listed tables' bytes in all; nothing else there may change.
+#          As a cross-check, otool -tV must show every listed table: a `cmp $N-1; ja` (or `cmp $N; jae`),
+#          a `leaq T(%rip)` and a `jmpq *reg` (the whole text, or else the table's function alone, as
+#          otool's linear sweep can lose step after data). Each artifact's line counts what it lost by
+#          kind, and names a fall in undecoded bytes.
 #          Exit 0 identical, 1 a difference, 2 usage, 4 a stale or missing baseline or input.
 #          Prints "compare: N of N identical apart from analyzer and reference identity" on success.
 set -eu
@@ -131,16 +136,18 @@ split_errors() {
     }' "$1"
 }
 
-# jump_tables ART: "LO HI" per line, decimal: the bytes [LO, HI) of each jump table otool -tV shows in ART --
-# a `leaq T(%rip), reg` with a `jmpq *reg` at most six instructions on, after a `ja`/`jae` within twelve
-# instructions before it that follows a `cmp $IMM` within five: N = IMM + 1 (ja) or IMM (jae) entries at T.
-jump_tables() {
-  otool -tV "$1" | awk '
+# otool_tables [STOP]: from otool -tV on stdin, "LO HI" per line, decimal: the bytes [LO, HI) of each jump table it
+# shows -- a `leaq T(%rip), reg` with a `jmpq *reg` at most six instructions on, after a `ja`/`jae` within twelve
+# instructions before it that follows a `cmp $IMM` within five: N = IMM + 1 (ja) or IMM (jae) entries at T. It
+# stops at the first instruction at or past STOP (decimal), when given.
+otool_tables() {
+  awk -v stop="${1:-}" '
     function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
       for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
       return x }
     $1 ~ /^[0-9a-f]+$/ && NF >= 2 {
       n++; ad[n] = hex($1); op[n] = $2; arg[n] = $3
+      if (stop != "" && ad[n] >= stop + 0) exit
       if (pend && n == pend + 1) { t = ad[n] + off; pend = 0 }   # rip-relative: from the next instruction
       if (op[n] == "leaq" && arg[n] ~ /^0x[0-9a-f]+\(%rip\),$/) { off = hex(substr(arg[n], 1, index(arg[n], "(") - 1)); pend = n; lea = n; t = -1 }
       if (op[n] == "jmpq" && arg[n] ~ /^\*%r/ && t >= 0 && n - lea <= 6) {
@@ -155,24 +162,49 @@ jump_tables() {
     }'
 }
 
-# fewer_errors BASE NEW ART: 0 when NEW's report differs from BASE's only by errors it lost of the kinds MODE allows
-# to vanish (the header); prints how many of each. Otherwise 1, with what differs on stderr.
+# reader_tables STDERR ART OUT: OUT gets "LO HI FLO FHI STATUS" per table the reader listed in STDERR (decimal: the
+# table's bytes, its function's extent, followed|data). 1, saying why, when otool does not show one of them.
+reader_tables() {
+  awk -F '\t' '
+    function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
+      for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
+      return x }
+    # spec: src/objc/macho-reader.c jt_settle -- jmp, table, entries, function start, end, followed|data, name
+    $1 == "drydock-objc-jump-table" && NF == 8 { t = hex($3); printf "%.0f %.0f %.0f %.0f %s\n", t, t + 4 * $4, hex($5), hex($6), $7 }' "$1" > "$3"
+  [ -s "$3" ] || return 0
+  otool -tV "$2" | otool_tables > "$3.otool" || { echo "compare.sh: otool cannot read $2" >&2; return 1; }
+  while read -r lo hi flo fhi st; do
+    grep -qx "$lo $hi" "$3.otool" && continue
+    fn=$(awk -F '\t' -v t="$lo" '
+      function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
+        for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
+        return x }
+      $1 == "drydock-objc-jump-table" && sprintf("%.0f", hex($3)) == t { print $8; exit }' "$1")
+    if [ -n "$fn" ] && [ "$fn" != - ] &&
+       otool -tV -p "$fn" "$2" | otool_tables "$fhi" | grep -qx "$lo $hi"; then continue; fi
+    echo "compare: otool does not show the jump table the reader listed at $lo ($fn)" >&2
+    return 1
+  done < "$3"
+}
+
+# fewer_errors BASE NEW STDERR ART: 0 when NEW's report differs from BASE's only by what MODE lets it lose (the
+# header); prints what it lost. Otherwise 1, with what differs on stderr.
 fewer_errors() {
   split_errors "$1" "$1.head" "$1.errs" && split_errors "$2" "$2.head" "$2.errs" ||
     { echo "compare.sh: $1 or $2 does not end in an errors list" >&2; return 1; }
-  : > "$1.tables"
+  : > "$1.tables"; fell=0
   if [ "$MODE" = fewer-unmeasured ]; then
-    jump_tables "$3" > "$1.tables" || { echo "compare.sh: otool cannot read $3" >&2; return 1; }
+    reader_tables "$3" "$4" "$1.tables" || return 1
     # spec: src/objc/main.m -- "undecoded_code_bytes" is the reader's limit_undecoded_bytes; a table read as
-    #       data is no longer decoded as code, so it may fall, by at most the bytes of the tables otool shows
+    #       data is no longer decoded as code, so it may fall, by at most the listed tables' bytes
     grep -o '"undecoded_code_bytes": [0-9]*' "$1.head" | awk '{ print $2 }' > "$1.ub"
     grep -o '"undecoded_code_bytes": [0-9]*' "$2.head" | awk '{ print $2 }' > "$2.ub"
+    room=$(awk '{ r += $2 - $1 } END { printf "%.0f", r }' "$1.tables")
     if [ "$(wc -l < "$1.ub")" != "$(wc -l < "$2.ub")" ] ||
-       ! paste -d ' ' "$1.ub" "$2.ub" | awk -v tables="$1.tables" '
-           BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); room += r[2] - r[1] } }
-           $2 + 0 > $1 + 0 || $1 - $2 > room { bad = 1 } END { exit bad }'
+       ! fell=$(paste -d ' ' "$1.ub" "$2.ub" | awk -v room="$room" '
+           $2 + 0 > $1 + 0 { bad = 1 } { f += $1 - $2 } END { if (bad || f > room + 0) exit 1; printf "%.0f", f }')
     then
-      echo "compare: undecoded_code_bytes rose, or fell by more than the jump tables hold:" $(cat "$1.ub") "->" $(cat "$2.ub") >&2
+      echo "compare: undecoded_code_bytes rose, or fell by more than the listed jump tables' $room bytes:" $(cat "$1.ub") "->" $(cat "$2.ub") >&2
       return 1
     fi
     sed 's/"undecoded_code_bytes": [0-9]*/"undecoded_code_bytes": 0/' "$1.head" > "$1.head.u" && mv "$1.head.u" "$1.head"
@@ -183,20 +215,20 @@ fewer_errors() {
     diff "$1.head" "$2.head" | cut -c1-300 | head -40 >&2 || true
     return 1
   fi
-  awk -v mode="$MODE" -v tables="$1.tables" '
-       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2] } }
+  awk -v mode="$MODE" -v tables="$1.tables" -v fell="$fell" '
+       BEGIN { while ((getline l < tables) > 0) { split(l, r, " "); nt++; tlo[nt] = r[1]; thi[nt] = r[2]; flo[nt] = r[3]; fhi[nt] = r[4]; st[nt] = r[5] } }
        function hex(v,   i, c, x) { v = tolower(v); sub(/^0x/, "", v); x = 0
          for (i = 1; i <= length(v); i++) { c = index("0123456789abcdef", substr(v, i, 1)); if (!c) return -1; x = x * 16 + c - 1 }
          return x }
-       function in_table(e,   a, i) {
-         if (!match(e, /"address": "0x[0-9a-f]+"/)) return 0
-         a = hex(substr(e, RSTART + 12, RLENGTH - 13))
-         for (i = 1; i <= nt; i++) if (tlo[i] + 0 <= a && a < thi[i] + 0) return 1
-         return 0 }
+       function addr(e) { return match(e, /"address": "0x[0-9a-f]+"/) ? hex(substr(e, RSTART + 12, RLENGTH - 13)) : -1 }
+       function in_table(e,   a, i) { a = addr(e); for (i = 1; i <= nt; i++) if (tlo[i] + 0 <= a && a < thi[i] + 0) return 1; return 0 }
+       function in_function(e,   a, i) {
+         a = addr(e); for (i = 1; i <= nt; i++) if (st[i] == "followed" && flo[i] + 0 <= a && a < fhi[i] + 0) return 1; return 0 }
        function kind(e) {
          if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is passed as an argument"}$/) return "passed"
          if (mode != "fewer-unmeasured") return ""
-         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is called through where another path left a different value"}$/) return "merged"
+         if (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*is called through where another path left a different value"}$/ && in_function(e))
+           return "merged"
          if ((e ~ /^\{"code": "undecodable-objc-reference", / ||
               (e ~ /^\{"code": "indirect-objc-entry", / && e ~ /"detail": "[^"]*(is returned|is read other than to call through it \(a spill, a copy or an escape\))"}$/)) && in_table(e))
            return "table"
@@ -210,9 +242,10 @@ fewer_errors() {
        END { while (p < nb) drop(base[++p])
              if (bad) exit 1
              s = ""
-             if (lost["passed"]) s = s ", " lost["passed"] " \"is passed as an argument\""
-             if (lost["merged"]) s = s ", " lost["merged"] " \"where another path left a different value\""
-             if (lost["table"]) s = s ", " lost["table"] " inside a jump table"
+             if (lost["passed"]) s = s ", " lost["passed"] " fewer \"is passed as an argument\" errors"
+             if (lost["merged"]) s = s ", " lost["merged"] " fewer \"where another path left a different value\" errors"
+             if (lost["table"]) s = s ", " lost["table"] " fewer errors inside a jump table"
+             if (fell + 0) s = s ", " fell " fewer undecoded bytes"
              print substr(s, 3) }' "$1.errs" "$2.errs"
 }
 
@@ -222,7 +255,8 @@ check() {
   total=$((total + 1))
   [ -f "$BASELINE_DIR/$name.objc-compat.json" ] || fail "no baseline report for $name"
   rc=0
-  "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$(dirname "$art")" --references "$REFS" \
+  # spec: src/objc/macho-reader.c jt_settle -- DRYDOCK_OBJC_JUMP_TABLES lists the reader's tables on stderr
+  DRYDOCK_OBJC_JUMP_TABLES=1 "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$(dirname "$art")" --references "$REFS" \
     --report "$WORK/$name.json" --mode strict "$@" 2> "$WORK/$name.stderr" || rc=$?
   was=$(cat "$BASELINE_DIR/$name.exit")
   ok=1; lost=0
@@ -236,7 +270,7 @@ check() {
     blank "$WORK/$name.json" "$WORK/$name.new" || ok=0
     if [ -f "$WORK/$name.new" ] && ! cmp -s "$WORK/$name.base" "$WORK/$name.new"; then
       if [ "$MODE" != identical ]; then
-        lost=$(fewer_errors "$WORK/$name.base" "$WORK/$name.new" "$art") || { echo "compare: $name: reports differ" >&2; ok=0; }
+        lost=$(fewer_errors "$WORK/$name.base" "$WORK/$name.new" "$WORK/$name.stderr" "$art") || { echo "compare: $name: reports differ" >&2; ok=0; }
       else
         echo "compare: $name: reports differ:" >&2
         diff "$WORK/$name.base" "$WORK/$name.new" | cut -c1-300 | head -40 >&2 || true
@@ -245,7 +279,7 @@ check() {
     fi
   fi
   if [ "$ok" = 1 ] && [ -n "$lost" ] && [ "$lost" != 0 ]; then
-    same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity and fewer errors: $lost"
+    same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity and $lost"
   elif [ "$ok" = 1 ]; then
     same=$((same + 1)); echo "compare: $name: exit $rc, identical apart from analyzer and reference identity"
   else
