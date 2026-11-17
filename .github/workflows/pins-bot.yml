@@ -1,0 +1,82 @@
+name: pins-bot
+
+# platform: a push made with GITHUB_TOKEN starts no workflow, and a run it dispatches does not count for the
+#           PR's required check: the push job pushes with a token of the Mavergreen pins-bot GitHub App
+#           (org variable PINS_BOT_CLIENT_ID, org secret PINS_BOT_PRIVATE_KEY; contents: write alone), whose
+#           push starts release.yml like any push. Its own GITHUB_TOKEN reads only.
+
+on:
+  push:
+    branches: ['renovate/**']
+
+permissions: {}
+
+# platform: cancel-in-progress cancels any run in the same group, so a newer push to the branch cancels
+#           a run still working on an older one. The run the bot's own push starts gets a group of its
+#           own, and its jobs are skipped: that push is the checked pin, so there is nothing to check,
+#           and it must not cancel the run that made it (which would show as cancelled).
+concurrency:
+  group: pins-bot-${{ github.ref }}${{ github.actor == 'mavergreen-pins-bot[bot]' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  pins:
+    if: github.actor != 'mavergreen-pins-bot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      linux_pin: ${{ steps.linux.outputs.linux_pin }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install mavericks-shipyard
+        uses: Mavergreen/shipyard/.github/actions/install@v1
+
+      - name: The Linux clang22 digest, if components/objc-receipt-clang/version moved and it is stale
+        id: linux
+        run: |
+          set -eu
+          linux_pin="$(sh scripts/pin-linux-clang.sh fill origin/main)"
+          echo "linux_pin=$linux_pin" >> "$GITHUB_OUTPUT"
+
+  push:
+    needs: pins
+    if: needs.pins.outputs.linux_pin != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: A pins-bot App token, contents write on this repository alone
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PINS_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PINS_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Install mavericks-shipyard
+        uses: Mavergreen/shipyard/.github/actions/install@v1
+
+      - name: Commit the digest to the branch, as the App, which starts release.yml on its new head
+        env:
+          LINUX_PIN: ${{ needs.pins.outputs.linux_pin }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -eu
+          sh scripts/pin-linux-clang.sh apply $LINUX_PIN
+          if git diff --quiet -- components/objc-receipt-clang/linux-sha256; then
+            echo "components/objc-receipt-clang/linux-sha256 already holds it"; exit 0
+          fi
+          git -c user.name='mavergreen-pins-bot[bot]' -c user.email='342268518+mavergreen-pins-bot[bot]@users.noreply.github.com' \
+            commit -q -m "chore(pins): the verified Linux clang22 digest for objc-receipt-clang" \
+            -m 'Written by .github/workflows/pins-bot.yml: its pins job verified the archive against the release'"'"'s SHA256SUMS.' \
+            components/objc-receipt-clang/linux-sha256
+          git push origin "HEAD:refs/heads/$BRANCH"

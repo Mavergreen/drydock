@@ -3,6 +3,9 @@
   "extends": [
     "github>Mavergreen/shipyard"
   ],
+  "gitIgnoredAuthors": [
+    "342268518+mavergreen-pins-bot[bot]@users.noreply.github.com"
+  ],
   "customManagers": [
     {
       "customType": "regex",
@@ -20,12 +23,12 @@
   ],
   "packageRules": [
     {
-      "description": "Renovate moves components/objc-receipt-clang/version and components/objc-reference-clang/version but cannot write the Linux archive's digest, so the Linux job fails on a bump until the linux-sha256 beside components/objc-receipt-clang names the new release's archive. components/objc-reference-clang has no linux-sha256, by design, and needs none.",
+      "description": "Renovate moves components/objc-receipt-clang/version and components/objc-reference-clang/version but cannot write the Linux archive's digest; .github/workflows/pins-bot.yml writes components/objc-receipt-clang/linux-sha256 on the bump's branch, verified against the new release's SHA256SUMS. components/objc-reference-clang has no linux-sha256, by design, and needs none.",
       "matchDepNames": [
         "Mavergreen/clang-22"
       ],
       "prBodyNotes": [
-        "Before this can merge, rewrite the linux-sha256 beside components/objc-receipt-clang (components/objc-reference-clang needs none) with the `clang22-<version>-linux-x86_64.tar.gz` line of the new release's SHA256SUMS: `gh release download <version> -R Mavergreen/clang-22 -p SHA256SUMS -O - | grep linux-x86_64.tar.gz > components/objc-receipt-clang/linux-sha256`. An objc-receipt-clang bump must also pass tests/objc-source-inventory-host-test.sh on Linux and a Mac."
+        "The pins bot commits the new release's Linux archive digest to components/objc-receipt-clang/linux-sha256 on this branch; the build runs again on that commit. An objc-receipt-clang bump must also pass tests/objc/objc-source-inventory-host-test.sh on Linux and a Mac."
       ]
     }
   ]

@@ -719,6 +719,10 @@ add_test(NAME installed_layout_test
 add_test(NAME release_workflow_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_workflow_test.sh")
 
+# The pins bot's script, against a file:// release; it finds shipyard's fetch helpers through build/msc.sh.
+add_test(NAME linux_pin_test COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux_pin_test.sh")
+set_tests_properties(linux_pin_test PROPERTIES ENVIRONMENT "SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}" SKIP_RETURN_CODE 77)
+
 # drydock-macho-rewrite's own CLI: --capabilities plus each verb it implements. Builds its own
 # fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
 # change_dylib_test.sh) rather than reading tests/fixture.macho, so no
