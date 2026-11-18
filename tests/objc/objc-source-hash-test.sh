@@ -159,6 +159,12 @@ ev2 "$C" "$T/ev-noroot" "$TREE" "$(guard2 g-noroot _guarded "$(cite crate:objc2-
 analyze "$C" "$T/ev-noroot" --source-root "$S"
 only noroot citation-unverifiable g-noroot crate:objc2-app-kit-0.3.1/src/generated/NSView.rs
 
+# No row is used against a tree nobody verified, even one that cites no tree: file.
+ev2 "$C" "$T/ev-notree" "$TREE" "$(guard2 g-notree _guarded "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")")" ''
+analyze "$C" "$T/ev-notree" --crate-sources "$CR"
+only notree source-tree-mismatch g-notree --source-root
+grep -F 'remaining schema-2 rules are pending' "$T/report" >/dev/null && fail 'notree: the row reached use without a verified tree'
+
 # A record no send uses is reported unused and fails nothing, whatever it cites.
 ev2 "$C" "$T/ev-unused" "$TREE" "$(guard2 g-unused _no_such_function "$(cite tree:tui/src/system_motion.rs "$STALE")")" ''
 # shellcheck disable=SC2046

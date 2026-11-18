@@ -51,7 +51,8 @@
  *     patches and features as `provenance` only. Crates are {name, version, checksum,
  *     disambiguator?}. The front end parses this strictly (an unknown key or a missing part is
  *     malformed-build-evidence). With --source-root, its digest must be source.tree_sha256
- *     (source-tree-mismatch). A row is checked when a send uses it: the analyzer hashes every cited
+ *     (source-tree-mismatch); a row in use without --source-root is source-tree-mismatch too, since
+ *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer hashes every cited
  *     file itself (source-hash.c). A file whose hash differs is guard-source-changed or
  *     position-source-changed, naming the cite and both hashes; a cite it cannot check (no root, no
  *     file, a path leaving its root) is citation-unverifiable. The rest of schema 2's validity rules
@@ -360,6 +361,9 @@ static int names_function(const char *fn, const char *symbol, char **symbols, si
 static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, size_t n, const char *changed) {
     size_t i;
     int status = OBJC_OK;
+    if (!a->source_root)
+        return objc_fail(a, "source-tree-mismatch", NULL, 0, "%s: no --source-root, so the tree the build evidence describes (%s) "
+                         "was not verified", id, a->be_tree_sha256);
     for (i = 0; i < n; i++) {
         char h[65];
         if (objc_cite_sha256(a, c[i].cite, h))
