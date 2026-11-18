@@ -82,6 +82,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
         ObjcTypeEvidence *t = &a->types[i];
         free(t->id); free(t->symbol); free(t->rust_type); free(t->position); free(t->kind); free(t->source);
         free_strv(t->selectors, t->nselectors);
+        free(t->path); free(t->note); free_strv(t->symbols, t->nsymbols); free_cites(t->sources, t->nsources);
     }
     free(a->types);
     for (i = 0; i < a->n_positions; i++) {

@@ -369,6 +369,27 @@ static int parse_position2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcPosit
     return OBJC_OK;
 }
 
+static int parse_type2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcTypeEvidence *g) {
+    char where[256];
+    if (has_text(c, @"id")) snprintf(where, sizeof where, "type evidence %.200s", S(c, @"id"));
+    else snprintf(where, sizeof where, "type evidence #%zu", i + 1);
+    if (only_keys(a, c, where, @[ @"id", @"path", @"symbol", @"symbols", @"rust_type", @"position", @"kind", @"selectors", @"sources", @"note" ]))
+        return OBJC_CANNOT_MEASURE;
+    if (!has_text(c, @"id") || !has_text(c, @"path") || !has_text(c, @"rust_type") || !has_text(c, @"position") ||
+        !has_text(c, @"kind") || ![arr(c, @"selectors") count] || !string_or_absent(c, @"note"))
+        return objc_fail(a, MBE, NULL, 0, "%s: id, path, rust_type, position, kind or selectors is missing", where);
+    if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->path, S(c, @"path")) ||
+        objc_set_string(&g->rust_type, S(c, @"rust_type")) || objc_set_string(&g->position, S(c, @"position")) ||
+        objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->note, S(c, @"note")))
+        return objc_fail(a, "out-of-memory", NULL, 0, "type evidence");
+    for (id s in arr(c, @"selectors"))
+        if (![s isKindOfClass:[NSString class]] || ![s length] || objc_strv_push(&g->selectors, &g->nselectors, cs(s)))
+            return objc_fail(a, MBE, NULL, 0, "%s: selectors", where);
+    if (parse_symbols(a, c, where, &g->symbol, &g->symbols, &g->nsymbols) || parse_cites(a, c, where, &g->sources, &g->nsources))
+        return OBJC_CANNOT_MEASURE;
+    return OBJC_OK;
+}
+
 /* Build evidence, schema 1 or 2: hand-reviewed (binding receipt, R2, guards) or written by
  * scripts/objc-build-evidence.sh (prestrip, link map, references, providers), or both. A recorded
  * reference manifest must be the one in use; provider records attach to --provider-prefix's
@@ -430,6 +451,10 @@ static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *ma
         if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->types, (a->n_types + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "type evidence");
         a->types = g; memset(&g[a->n_types], 0, sizeof *g); g = &g[a->n_types++];
+        if (two) {
+            if (parse_type2(a, c, a->n_types - 1, g)) return OBJC_CANNOT_MEASURE;
+            continue;
+        }
         if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->symbol, S(c, @"symbol")) ||
             objc_set_string(&g->rust_type, S(c, @"rust_type")) || objc_set_string(&g->position, S(c, @"position")) ||
             objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->source, S(c, @"source")))
@@ -1689,7 +1714,7 @@ static int resolve_main(int argc, char **argv) {
         }
         if ([b objectForKey:@"crates"]) [doc setObject:crates forKey:@"crates"];
     }
-    for (NSString *list in @[ @"guards", @"position_evidence" ]) {
+    for (NSString *list in @[ @"guards", @"position_evidence", @"type_evidence" ]) {
         NSMutableArray *out = [NSMutableArray array];
         i = 0;
         for (NSDictionary *r0 in arr(b, list) ?: @[]) {

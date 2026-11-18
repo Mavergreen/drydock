@@ -202,14 +202,16 @@ typedef struct { uint64_t addr, lo, hi; char *file; uint32_t line, col; } ObjcLi
 typedef struct { char *demangled, *selector, *receiver, *kind, *provenance; } ObjcReceiptRow;
 typedef struct { char *name, *version, *checksum, *disambiguator; } ObjcCrate;
 typedef struct { char *rust_type, *cls, *source; } ObjcTypeMap;
-typedef struct {
-    char *id, *symbol, *rust_type, *position, *kind, *source;
-    char **selectors; size_t nselectors;
-    int used;
-} ObjcTypeEvidence;
 /* Schema 2: a file a row rests on, and a guarded send a guard record covers. */
 typedef struct { char *cite, *sha256; } ObjcCite;
 typedef struct { char *selector; uint64_t count; } ObjcCover;
+typedef struct {
+    char *id, *symbol, *rust_type, *position, *kind, *source;
+    char **selectors; size_t nselectors;
+    char *path, *note; char **symbols; size_t nsymbols;     /* schema 2 */
+    ObjcCite *sources; size_t nsources;
+    int used, checked, valid;
+} ObjcTypeEvidence;
 /* R3: a reviewed positional row (build evidence `position_evidence`; source-evidence.c header). */
 typedef struct {
     char *id, *symbol, *kind, *cls, *form, *position_selector, *rust_type, *field, *source;

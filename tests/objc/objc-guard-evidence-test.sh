@@ -229,4 +229,63 @@ ev2 "$R3B" "$T/ev-pos-class" '' "$(pos2 p-class "$(sym "$FNR")" "$(cite tree:tui
 analyze "$R3B" "$T/ev-pos-class"
 only position_unknown_class unknown-class p-class NoSuchClass
 
+# R2 type evidence follows the same rule: named by path, resolved by drydock-objc resolve, its sources hashed at use.
+cc "$FX/r2.c" -o "$T/root/bin/r2" -lobjc
+R2B="$T/root/bin/r2"
+NSS=objc2_foundation::generated::__NSString::NSString
+FN2=__RNvXs1g_NtCs5hICDV8pRVn_4core3fmtRNtNtNtCsltbaDnwDLUa_16objc2_foundation9generated10___NSString8NSStringNtB6_5Debug3fmtBC_
+R2CRATES='{"name": "objc2", "version": "0.6.3", "checksum": "c1", "disambiguator": "2ucXwfqiSr7"}, {"name": "objc2_foundation", "version": "0.3.2", "checksum": "c2", "disambiguator": "ltbaDnwDLUa"}'
+R2MAP="{\"rust_type\": \"$NSS\", \"class\": \"NSString\", \"source\": \"objc2-foundation-0.3.2 src/generated/NSString.rs:126\"}"
+ev2r() {  # ev2r OUT TYPES: schema-2 evidence for the R2 fixture
+  cat >"$1" <<EOF
+{"schema": 2, "kind": "objc-build-evidence",
+ "artifact": {"path": "bin/x", "sha256": "$(sha "$R2B")"},
+ "source": {"tree_sha256": "$TREE", "revision": "new-revision", "patches_sha256": "new-patches", "features": "new-features"},
+ "crates": [$R2CRATES], "type_map": [$R2MAP], "type_evidence": [$2], "binding_receipt": [],
+ "position_evidence": [], "guards": []}
+EOF
+}
+type2() {  # type2 ID SYMBOL-JSON SOURCES [PATH]
+  printf '{"id": "%s", "path": "%s", %s"rust_type": "%s", "position": "self", "kind": "-", "selectors": ["UTF8String", "lengthOfBytesUsingEncoding:"], "sources": [%s], "note": "Debug for NSString sends to self"}' \
+    "$1" "${4:-<&objc2_foundation::generated::__NSString::NSString as core::fmt::Debug>::fmt}" "$2" "$NSS" "$3"
+}
+r2closed() { grep "\"function\": \"$FN2\"" "$T/report" | grep '"selector": "UTF8String"' | grep '"receiver_closure": "R2"'; }
+RUN_CITE=$(cite tree:tui/src/run.rs "$RUN")
+# resolve fills an R2 row's symbol, and the row then closes: its sources and note are the provenance.
+ev2r "$T/ev-r2-unresolved" "$(type2 r2-carries '' "$RUN_CITE")"
+"$DRYDOCK_OBJC" resolve --artifact "$R2B" --reviewed "$T/ev-r2-unresolved" --output "$T/ev-r2-resolved" 2>"$T/err" || fail "r2 resolve: exit $?"
+grep -F "\"symbol\": \"$FN2\"" "$T/ev-r2-resolved" >/dev/null || fail 'r2 resolve: the type evidence row has no symbol'
+analyze "$R2B" "$T/ev-r2-resolved"
+clean r2_carries 0
+r2closed | grep -F 'R2 r2-carries' | grep -F "tree:tui/src/run.rs sha256:$RUN" | grep -F 'Debug for NSString sends to self' >/dev/null ||
+  fail 'r2_carries: UTF8String was not closed by r2-carries with its sources and note'
+grep -F '"unused_type_evidence": []' "$T/report" >/dev/null || fail 'r2_carries: the row was not used'
+# Unresolved, a changed source, a symbol of another path: refused, and nothing closes.
+analyze "$R2B" "$T/ev-r2-unresolved"
+only r2_unresolved malformed-build-evidence r2-carries 'run drydock-objc resolve'
+r2closed >/dev/null && fail 'r2_unresolved: a send was closed'
+ev2r "$T/ev-r2-changed" "$(type2 r2-changed "$(sym $FN2)" "$(cite tree:tui/src/run.rs "$STALE")")"
+analyze "$R2B" "$T/ev-r2-changed"
+only r2_source_changed position-source-changed r2-changed tui/src/run.rs "$STALE" "$RUN"
+r2closed >/dev/null && fail 'r2_source_changed: a send was closed'
+ev2r "$T/ev-r2-elsewhere" "$(type2 r2-elsewhere "$(sym $FN2)" "$RUN_CITE" '<&objc2_foundation::generated::__NSString::NSString as core::fmt::Display>::fmt')"
+analyze "$R2B" "$T/ev-r2-elsewhere"
+only r2_symbol_elsewhere malformed-build-evidence r2-elsewhere "symbol $FN2 demangles to" 'as core::fmt::Display>::fmt;' 'run drydock-objc resolve'
+r2closed >/dev/null && fail 'r2_symbol_elsewhere: a send was closed'
+# The binary-side R2 checks still hold at use: a mapped type the symbol does not name.
+ev2r "$T/ev-r2-nottype" "$(type2 r2-nottype "$(sym $FN2)" "$RUN_CITE" | sed 's/"rust_type": "[^"]*"/"rust_type": "objc2_foundation::generated::__NSArray::NSArray"/')"
+sed 's|"type_map": \[|"type_map": [{"rust_type": "objc2_foundation::generated::__NSArray::NSArray", "class": "NSArray", "source": "s"}, |' \
+  "$T/ev-r2-nottype" >"$T/ev-r2-nottype2"
+analyze "$R2B" "$T/ev-r2-nottype2"
+only r2_not_in_symbol type-evidence-not-in-symbol r2-nottype NSArray
+r2closed >/dev/null && fail 'r2_not_in_symbol: a send was closed'
+# A schema-1 row (a prose source, no path) is not schema-2 type evidence; a row no send uses fails nothing.
+ev2r "$T/ev-r2-prose" "{\"id\": \"r2-prose\", \"symbol\": \"$FN2\", \"rust_type\": \"$NSS\", \"position\": \"self\", \"kind\": \"-\", \"selectors\": [\"UTF8String\"], \"source\": \"objc2-foundation-0.3.2 src/string.rs:222\"}"
+analyze "$R2B" "$T/ev-r2-prose"
+only r2_schema1_row malformed-build-evidence r2-prose
+ev2r "$T/ev-r2-unused" "$(type2 r2-unused "$(sym $FN2)" "$(cite tree:tui/src/run.rs "$STALE")" | sed 's/"UTF8String", "lengthOfBytesUsingEncoding:"/"count"/')"
+analyze "$R2B" "$T/ev-r2-unused"
+[ -z "$(codes)" ] || fail "r2_unused: errors '$(codes)'"
+grep -F '"unused_type_evidence": ["r2-unused"]' "$T/report" >/dev/null || fail 'r2_unused: r2-unused not reported unused'
+
 echo "PASS: objc-guard-evidence"

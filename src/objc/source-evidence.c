@@ -43,10 +43,10 @@
  *     feature list than the evidence's own is cannot-measure (guard-evidence-stale). Whether a
  *     record makes a send guarded is classify.c's decision: it also needs the measured guard.
  *   - Schema 2 keys reviews to the source they read, not to the revision. The evidence records
- *     source.tree_sha256, the prepared tree's digest. A guard or R3 row names its function by
+ *     source.tree_sha256, the prepared tree's digest. A guard, R2 or R3 row names its function by
  *     demangled `path` (plus the resolved `symbol`, or `symbols` for the copies of one generic
  *     instance), lists every file it rests on as `sources` [{cite, sha256}] -- a cite is
- *     tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH -- and an R3 row adds a free-text `note`. A
+ *     tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH -- and an R2 or R3 row adds a free-text `note`. A
  *     guard record also pins the guarded sends it `covers` [{selector, count}] and keeps revision,
  *     patches and features as `provenance` only. Crates are {name, version, checksum,
  *     disambiguator?}. The front end parses this strictly (an unknown key or a missing part is
@@ -54,7 +54,7 @@
  *     (source-tree-mismatch); a row in use without --source-root is source-tree-mismatch too, since
  *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer
  *     hashes every cited file itself (source-hash.c). A file whose hash differs is
- *     guard-source-changed or position-source-changed, naming the cite and both hashes; a cite it
+ *     guard-source-changed, or position-source-changed for an R2 or R3 row, naming the cite and both hashes; a cite it
  *     cannot check (no root, no file, a path leaving its root, a crate: cite whose NAME-VERSION no crates[]
  *     entry pins, an sdk: cite when --sdk-root's header
  *     digest is not the reference manifest's floor SDK's) is citation-unverifiable. A row matches a send by its resolved symbol(s)
@@ -64,7 +64,7 @@
  *     malformed-build-evidence (run drydock-objc resolve). A guard record holds only when, in each
  *     copy it names, the guarded sends classify.c measures, per selector and call site, are exactly
  *     its covers (guard-coverage-changed otherwise), and classify.c still needs the measured guard;
- *     any matching record that fails keeps the send unguarded. An R3 row then meets the schema-1
+ *     any matching record that fails keeps the send unguarded. An R2 or R3 row then meets the schema-1
  *     row checks for each symbol and closes as schema 1 does. Provenance is reported in the proof,
  *     never compared. A row no send uses is reported unused.
  *   - Source receipts (--source-receipt; tools/objc-source-inventory.c writes them with libclang,
@@ -206,6 +206,28 @@ static int check_position_row(ObjcAnalysis *a, ObjcPositionEvidence *t, const ch
     return OBJC_OK;
 }
 
+/* One R2 row, naming its function by `symbol`: complete, a v0 symbol whose impl self type holds the
+ * row's mapped Rust type, its crate roots agreeing with the pins. types and crates are TYPES_MAX scratch. */
+static int check_type_row(ObjcAnalysis *a, const ObjcTypeEvidence *t, const char *symbol, char *types, char *crates) {
+    size_t i = (size_t)(t - a->types), j;
+    char why[200];
+    if (!nonempty(t->id) || !nonempty(symbol) || !nonempty(t->rust_type) || (a->be_schema != 2 && !nonempty(t->source)) ||
+        !t->nselectors || !t->kind || (strcmp(t->kind, "+") && strcmp(t->kind, "-")) || !t->position ||
+        (strcmp(t->position, "self") && strcmp(t->position, "generic")))
+        return objc_fail(a, "malformed-build-evidence", NULL, 0, "type evidence %zu incomplete", i + 1);
+    for (j = 0; j < t->nselectors; j++)
+        if (!nonempty(t->selectors[j])) objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: empty selector", t->id);
+    if (strncmp(symbol, "__R", 3) && strncmp(symbol, "_R", 2))
+        return objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s is not a Rust v0 symbol", t->id, symbol);
+    if (objc_binding_symbol_types(symbol, types, TYPES_MAX, crates, TYPES_MAX, why, sizeof why))
+        return objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s", t->id, why);
+    if (!type_map(a, t->rust_type))
+        return objc_fail(a, "unmapped-rust-type", NULL, 0, "%s: %s has no declared Objective-C class in the type map", t->id, t->rust_type);
+    if (!types[0] || !has_type(types, t->rust_type))
+        return objc_fail(a, "type-evidence-not-in-symbol", NULL, 0, "%s: %s is not in the impl self type of %s", t->id, t->rust_type, symbol);
+    return crates_agree(a, crates, t->id);
+}
+
 int objc_check_build_evidence(ObjcAnalysis *a) {
     size_t i;
     int status = OBJC_OK;
@@ -248,36 +270,8 @@ int objc_check_build_evidence(ObjcAnalysis *a) {
             status = crates_agree(a, crates, sym[s]);
         }
     }
-    for (i = 0; i < a->n_types && status == OBJC_OK; i++) {
-        ObjcTypeEvidence *t = &a->types[i];
-        const ObjcTypeMap *m;
-        size_t j;
-        if (!nonempty(t->id) || !nonempty(t->symbol) || !nonempty(t->rust_type) || !nonempty(t->source) ||
-            !t->nselectors || !t->kind || (strcmp(t->kind, "+") && strcmp(t->kind, "-")) || !t->position ||
-            (strcmp(t->position, "self") && strcmp(t->position, "generic"))) {
-            status = objc_fail(a, "malformed-build-evidence", NULL, 0, "type evidence %zu incomplete", i + 1);
-            break;
-        }
-        for (j = 0; j < t->nselectors; j++)
-            if (!nonempty(t->selectors[j])) status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: empty selector", t->id);
-        if (strncmp(t->symbol, "__R", 3) && strncmp(t->symbol, "_R", 2)) {
-            status = objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s is not a Rust v0 symbol", t->id, t->symbol);
-            break;
-        }
-        if (objc_binding_symbol_types(t->symbol, types, TYPES_MAX, crates, TYPES_MAX, why, sizeof why)) {
-            status = objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s", t->id, why);
-            break;
-        }
-        if (!(m = type_map(a, t->rust_type))) {
-            status = objc_fail(a, "unmapped-rust-type", NULL, 0, "%s: %s has no declared Objective-C class in the type map", t->id, t->rust_type);
-            break;
-        }
-        if (!types[0] || !has_type(types, t->rust_type)) {
-            status = objc_fail(a, "type-evidence-not-in-symbol", NULL, 0, "%s: %s is not in the impl self type of %s", t->id, t->rust_type, t->symbol);
-            break;
-        }
-        status = crates_agree(a, crates, t->id);
-    }
+    for (i = 0; i < a->n_types && status == OBJC_OK && a->be_schema != 2; i++)
+        status = check_type_row(a, &a->types[i], a->types[i].symbol, types, crates);
     if (a->be_schema == 2) {
         char tree[65];
         if (a->source_root && objc_tree_digest(a->source_root, tree))
@@ -311,9 +305,47 @@ int objc_check_build_evidence(ObjcAnalysis *a) {
     return status;
 }
 
+static int names_function(const char *fn, const char *symbol, char **symbols, size_t n);
+static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, size_t n, const char *changed);
+static int unresolved(ObjcAnalysis *a, const char *id, const char *path);
+static int check_symbols(ObjcAnalysis *a, const char *id, const char *path, const char *symbol, char **symbols, size_t n);
+
 int objc_apply_type_evidence(ObjcAnalysis *a) {
     size_t i, j, k;
-    char fn[4096], row[4096];
+    char fn[4096];
+    if (a->be_schema == 2) {   /* every row an open send would use, checked as R3 rows are */
+        int status = OBJC_OK;
+        char *types = malloc(TYPES_MAX), *crates = malloc(TYPES_MAX);
+        if (!types || !crates) { free(types); free(crates); return objc_fail(a, "out-of-memory", NULL, 0, "R2"); }
+        for (i = 0; i < a->n_sends; i++) {
+            const ObjcSend *s = &a->sends[i];
+            const ObjcEvidence *e = &a->evidence[s->evidence];
+            if (s->origin != OBJC_ORIGIN_OPEN || !s->selector || !e->function) continue;
+            base_symbol(e->function, fn, sizeof fn);
+            for (j = 0; j < a->n_types; j++) {
+                ObjcTypeEvidence *t = &a->types[j];
+                int resolved = t->symbol || t->nsymbols;
+                if (resolved && !names_function(fn, t->symbol, t->symbols, t->nsymbols)) continue;
+                for (k = 0; k < t->nselectors && strcmp(t->selectors[k], s->selector); k++) ;
+                if (k == t->nselectors) continue;
+                t->used = 1;
+                if (!t->checked) {
+                    size_t c;
+                    t->checked = 1;
+                    if (!resolved) unresolved(a, t->id, t->path);
+                    else if (check_symbols(a, t->id, t->path, t->symbol, t->symbols, t->nsymbols) == OBJC_OK &&
+                             check_sources(a, t->id, t->sources, t->nsources, "position-source-changed") == OBJC_OK) {
+                        t->valid = 1;
+                        for (c = 0; c < (t->symbol ? 1 : t->nsymbols) && t->valid; c++)
+                            t->valid = check_type_row(a, t, t->symbol ? t->symbol : t->symbols[c], types, crates) == OBJC_OK;
+                    }
+                }
+                if (!t->valid) status = OBJC_CANNOT_MEASURE;
+            }
+        }
+        free(types); free(crates);
+        if (status) return status;
+    }
     for (i = 0; i < a->n_sends; i++) {
         ObjcSend *s = &a->sends[i];
         const ObjcEvidence *e = &a->evidence[s->evidence];
@@ -323,13 +355,18 @@ int objc_apply_type_evidence(ObjcAnalysis *a) {
             ObjcTypeEvidence *t = &a->types[j];
             const ObjcTypeMap *m = type_map(a, t->rust_type);
             char basis[2048], prov[2048];
-            base_symbol(t->symbol, row, sizeof row);
-            if (strcmp(fn, row) || !m) continue;
+            if (!names_function(fn, t->symbol, t->symbols, t->nsymbols) || !m) continue;
             for (k = 0; k < t->nselectors && strcmp(t->selectors[k], s->selector); k++) ;
             if (k == t->nselectors) continue;
             snprintf(basis, sizeof basis, "R2 %s: %s %s of %s, objc2 maps it to %s", t->id, t->position, t->rust_type,
                      e->function, m->cls);
-            snprintf(prov, sizeof prov, "%s; %s", t->source, m->source);
+            if (a->be_schema == 2) {
+                size_t at;
+                objc_cites_text(t->sources, t->nsources, prov, sizeof prov);
+                at = strlen(prov);
+                snprintf(prov + at, sizeof prov - at, "%s%s; %s", t->note ? "; note: " : "", t->note ? t->note : "", m->source);
+            } else
+                snprintf(prov, sizeof prov, "%s; %s", t->source, m->source);
             if (objc_set_string(&s->receiver, m->cls) || objc_set_string(&s->method_kind, t->kind) ||
                 objc_set_string(&s->basis, basis) || objc_set_string(&s->provenance, prov) ||
                 objc_set_string(&s->reason, NULL))
