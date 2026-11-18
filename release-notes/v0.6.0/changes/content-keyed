@@ -1,0 +1,1 @@
+drydock-objc reviews now hold while the code they cite is unchanged, not only at one revision, and its new resolve subcommand fills in each reviewed function's symbols.

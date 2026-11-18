@@ -58,7 +58,7 @@ See [drydock-macho-rewrite(1)](man/drydock-macho-rewrite.1) for script syntax, o
 Given an Objective-C binary built for Mavericks, report which of its message sends the Mavericks runtime and SDK can answer. It is shipyard's Objective-C analyzer, moved here so the tool that rewrites a Mach-O file and the tool that checks what it will do on 10.9 ship together. It has five subcommands:
 
 * `drydock-objc analyze`: analyze an artifact against the reference set and write a report.
-* `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against.
+* `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against, or with `--tree-digest-only` or `--sdk-digest-only` just print a digest of a source tree or an SDK.
 * `drydock-objc link-args`: print the link arguments for a provider prefix and link map.
 * `drydock-objc receipt`: write an Objective-C provider's source receipt: every Objective-C send in its verified prepared sources, with the identities of the clang (its libclang version), the SDK and the tool that took it.
 * `drydock-objc resolve`: fill reviewed schema-2 build evidence's symbols and crate disambiguators from an artifact, so a product's CI regenerates them on every build. A reviewed path names one function or the copies of one generic instance; anything else is refused as `resolve-ambiguous`.
@@ -66,6 +66,20 @@ Given an Objective-C binary built for Mavericks, report which of its message sen
 The first four's arguments and exit statuses are those of the shipyard scripts they replace; run `drydock-objc` with no arguments for the usage. It reads its reference set from `share/drydock/objc/reference`, found from where the real `drydock-objc` binary is, so a symlink to it works; `--references DIR` names another.
 
 `analyze`, `evidence`, `link-args` and `resolve` run on macOS only. On Linux, for now, the tarball's `drydock-objc` does `receipt` alone and those four exit 2: their front end is Foundation, which Linux lacks, until it is ported to C. `receipt` runs everywhere. It takes `--clang-prefix` and `--sdk`, and fetches nothing: you name the clang and the SDK, and it loads that clang's libclang at run time. On Linux, using `receipt` needs a host with glibc 2.35 or newer (Ubuntu 22.04+), because the pinned libclang.so needs it; `drydock-objc` itself stays within the archive's floor.
+
+### Build evidence, schema 2
+
+Reviewed build evidence is a JSON file a product keeps beside its source. Schema 2 keys each review to the code it was about, not to the revision it was made at. It names a prepared source tree by `source.tree_sha256`, which `drydock-objc evidence --tree-digest-only --source-root DIR` prints. Each guard record and each R3 position row lists the files it rests on, as `sources` (`{cite, sha256}`, a cite being `tree:PATH`, `crate:NAME-VERSION/PATH` or `sdk:PATH`), and a guard record also lists `covers`, the guarded sends it reviewed, per selector with a count. Its `revision`, `patches_sha256` and `features` are provenance only: they are carried into the report and never compared. A review holds while its files are unchanged.
+
+`analyze` takes the evidence with `--build-evidence FILE` and checks it itself: `--source-root DIR` is the prepared tree (needed for any row a send uses), `--crate-sources DIR` holds the crates as `NAME-VERSION/`, and `--sdk-root DIR` is the SDK, which an `sdk:` cite holds against only if its header digest (`drydock-objc evidence --sdk-digest-only --sdk-root DIR`) is the reference set's pinned floor SDK. The analyzer hashes every cited file, and refuses a path that leaves its root. Records no send uses fail nothing. These options need `--build-evidence`. The refusals, each exit 4:
+
+* `source-tree-mismatch`: the tree at `--source-root` is not the one `source.tree_sha256` names, or a row is in use with no `--source-root` to verify it.
+* `guard-source-changed`, `position-source-changed`: a cited file's hash is not the recorded one.
+* `guard-coverage-changed`: the guarded sends in the function copies a guard record names are no longer exactly its `covers`.
+* `citation-unverifiable`: a cite cannot be checked (no root, no such file, a path out of its root, an `sdk:` cite against an SDK that is not the pinned one).
+* `resolve-ambiguous`: from `resolve`, not `analyze`: a reviewed path names several functions that are not copies of one instance, or a crate's disambiguator cannot be told from the artifact.
+
+A row names its code by `path`; `symbol` or `symbols` (the copies of one generic instance) are what `analyze` matches, and `drydock-objc resolve` writes them. A row used while it has neither is `malformed-build-evidence`. Schema 1 evidence is accepted and judged as before, revision and all.
 
 Building Drydock now fetches the pinned clang22 at configure time, for its `clang-c` headers only (nothing of it ships), so a build needs network access or a warm cache.
 
