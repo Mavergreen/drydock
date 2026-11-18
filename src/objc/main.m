@@ -429,8 +429,9 @@ static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *ma
         if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->crates, (a->n_crates + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "crate %zu", i + 1);
         if (two && (only_keys(a, c, "crate", @[ @"name", @"version", @"checksum", @"disambiguator" ]) ||
-                    !has_text(c, @"name") || !has_text(c, @"version") || !has_text(c, @"checksum") || !string_or_absent(c, @"disambiguator")))
-            return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, MBE, NULL, 0, "crate %zu lacks name, version or checksum", i + 1);
+                    !has_text(c, @"name") || !has_text(c, @"version") || ([c objectForKey:@"checksum"] && !has_text(c, @"checksum")) ||
+                    !string_or_absent(c, @"disambiguator")))
+            return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, MBE, NULL, 0, "crate %zu lacks name or version, or has an empty checksum", i + 1);
         a->crates = g; memset(&g[a->n_crates], 0, sizeof *g); g = &g[a->n_crates++];
         if (objc_set_string(&g->name, S(c, @"name")) || objc_set_string(&g->version, S(c, @"version")) ||
             objc_set_string(&g->checksum, S(c, @"checksum")) || objc_set_string(&g->disambiguator, S(c, @"disambiguator")))

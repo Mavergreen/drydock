@@ -48,8 +48,8 @@
  *     instance), lists every file it rests on as `sources` [{cite, sha256}] -- a cite is
  *     tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH -- and an R2 or R3 row adds a free-text `note`. A
  *     guard record also pins the guarded sends it `covers` [{selector, count}] and keeps revision,
- *     patches and features as `provenance` only. Crates are {name, version, checksum,
- *     disambiguator?}. The front end parses this strictly (an unknown key or a missing part is
+ *     patches and features as `provenance` only. Crates are {name, version, checksum?,
+ *     disambiguator?}; a checksum (none for a workspace or path crate) is provenance, never compared. The front end parses this strictly (an unknown key or a missing part is
  *     malformed-build-evidence). With --source-root, its digest must be source.tree_sha256
  *     (source-tree-mismatch); a row in use without --source-root is source-tree-mismatch too, since
  *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer
@@ -152,7 +152,7 @@ static int crates_agree(ObjcAnalysis *a, const char *cbuf, const char *where) {
         memcpy(name, c, n); name[n] = 0;
         if ((p = pinned(a, name)) && strcmp(p->disambiguator, eq + 1))
             return objc_fail(a, "crate-revision-mismatch", NULL, 0, "%s: crate %s has disambiguator %s, the build evidence pins %s %s (%s)",
-                             where, name, eq + 1, p->version, p->disambiguator, p->checksum);
+                             where, name, eq + 1, p->version, p->disambiguator, p->checksum ? p->checksum : "no checksum");
     }
     return OBJC_OK;
 }
@@ -241,7 +241,7 @@ int objc_check_build_evidence(ObjcAnalysis *a) {
         return objc_fail(a, "out-of-memory", NULL, 0, "type evidence");
     }
     for (i = 0; i < a->n_crates; i++)
-        if (!nonempty(a->crates[i].name) || !nonempty(a->crates[i].version) || !nonempty(a->crates[i].checksum) ||
+        if (!nonempty(a->crates[i].name) || !nonempty(a->crates[i].version) || (a->be_schema != 2 && !nonempty(a->crates[i].checksum)) ||
             !nonempty(a->crates[i].disambiguator))
             status = objc_fail(a, "malformed-build-evidence", NULL, 0, "crate %zu lacks name, version, checksum or disambiguator", i + 1);
     for (i = 0; i < a->n_typemap; i++) {

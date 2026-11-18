@@ -105,6 +105,13 @@ want carries $GD $SEL guarded 'guard record g-carries' "tree:tui/src/system_moti
   'old-revision' 'old-patches' 'old-features' 'not compared' 'reviewed by A. Reviewer'
 grep -F '"unused_guard_records": []' "$T/report" >/dev/null || fail 'carries: the record was not used'
 
+# A workspace or path crate has no registry checksum: it is provenance only, so a pin without one holds.
+ev2 "$G" "$T/ev-workspace" "$(guard2 g-workspace "$(sym $GD)" "$MOTION_CITE" "$(cover $SEL 1)")" '' \
+  "$OBJC2, {\"name\": \"fixture\", \"version\": \"0.1.0\", \"disambiguator\": \"1Fx\"}"
+analyze "$G" "$T/ev-workspace"
+clean workspace_crate
+want workspace_crate $GD $SEL guarded 'guard record g-workspace'
+
 # sdk: cites hold under the pinned floor SDK (its header digest is the reference manifest's), not under
 # another SDK root holding the same file.
 HDR=System/Library/Frameworks/AppKit.framework/Headers/NSWorkspace.h
