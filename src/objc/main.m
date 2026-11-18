@@ -240,21 +240,149 @@ static int load_clusters(ObjcAnalysis *a, const char *dir) {
 
 #define S(d, k) cs(str(d, k))
 static int load_evidence_providers(ObjcAnalysis *a, NSArray *list);
-/* Build evidence, schema 1: hand-reviewed (binding receipt, R2, guards) or written by
+static int hex64(const char *s);
+static int exact_keys(NSDictionary *d, NSArray *keys);
+
+/* ---- build evidence schema 2: the parts schema 1 lacks (source-evidence.c header) -------------- */
+#define MBE "malformed-build-evidence"
+static int json_count(id x, uint64_t *out) {
+    if (![x isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)x) == CFBooleanGetTypeID() ||
+        CFNumberIsFloatType((CFNumberRef)x) || [x longLongValue] <= 0) return 0;
+    *out = (uint64_t)[x longLongValue];
+    return 1;
+}
+static int has_text(NSDictionary *d, NSString *k) { return [str(d, k) length] > 0; }
+static int string_or_absent(NSDictionary *d, NSString *k) { return ![d objectForKey:k] || str(d, k); }
+/* tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH. */
+static int cite_form(const char *c) {
+    const char *p, *slash, *dash;
+    if (!strncmp(c, "tree:", 5)) p = c + 5;
+    else if (!strncmp(c, "sdk:", 4)) p = c + 4;
+    else if (!strncmp(c, "crate:", 6)) {
+        c += 6;
+        if (!(slash = strchr(c, '/'))) return 0;
+        for (dash = slash; dash > c && dash[-1] != '-'; dash--) ;
+        if (dash - c < 2 || dash == slash || *dash < '0' || *dash > '9') return 0;
+        p = slash + 1;
+    } else return 0;
+    return *p && *p != '/';
+}
+static int parse_cites(ObjcAnalysis *a, NSDictionary *c, const char *where, ObjcCite **out, size_t *n) {
+    NSArray *l = arr(c, @"sources");
+    if (![l count]) return objc_fail(a, MBE, NULL, 0, "%s: sources is missing or empty", where);
+    for (NSDictionary *e in l) {
+        ObjcCite *v;
+        if (!exact_keys(e, @[ @"cite", @"sha256" ]) || !has_text(e, @"cite") || !hex64(S(e, @"sha256")))
+            return objc_fail(a, MBE, NULL, 0, "%s: a source is not exactly {cite, sha256} with a SHA-256", where);
+        if (!cite_form(S(e, @"cite")))
+            return objc_fail(a, MBE, NULL, 0, "%s: citation %s is not tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH", where, S(e, @"cite"));
+        if (!(v = realloc(*out, (*n + 1) * sizeof *v))) return objc_fail(a, "out-of-memory", NULL, 0, "sources");
+        *out = v; v = &v[(*n)++]; memset(v, 0, sizeof *v);
+        if (objc_set_string(&v->cite, S(e, @"cite")) || objc_set_string(&v->sha256, S(e, @"sha256")))
+            return objc_fail(a, "out-of-memory", NULL, 0, "sources");
+    }
+    return OBJC_OK;
+}
+/* A resolved function: `symbol`, or `symbols` for the copies of one generic instance; neither until resolved. */
+static int parse_symbols(ObjcAnalysis *a, NSDictionary *c, const char *where, char **symbol, char ***symbols, size_t *n) {
+    id one = [c objectForKey:@"symbol"], many = [c objectForKey:@"symbols"];
+    if (one && many) return objc_fail(a, MBE, NULL, 0, "%s: symbol and symbols are exclusive", where);
+    if (one && (!has_text(c, @"symbol") || objc_set_string(symbol, S(c, @"symbol"))))
+        return objc_fail(a, MBE, NULL, 0, "%s: symbol is not a non-empty string", where);
+    if (many && ![arr(c, @"symbols") count]) return objc_fail(a, MBE, NULL, 0, "%s: symbols is not a non-empty list", where);
+    for (id x in many ? arr(c, @"symbols") : @[])
+        if (![x isKindOfClass:[NSString class]] || ![x length] || objc_strv_push(symbols, n, cs(x)))
+            return objc_fail(a, MBE, NULL, 0, "%s: symbols is not a list of non-empty strings", where);
+    return OBJC_OK;
+}
+static int parse_guard2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcGuardRecord *g) {
+    NSDictionary *pv = obj(c, @"provenance"), *rv = obj(c, @"review");
+    NSArray *cv = arr(c, @"covers");
+    char where[256];
+    if (has_text(c, @"id")) snprintf(where, sizeof where, "guard %.200s", S(c, @"id"));
+    else snprintf(where, sizeof where, "guard #%zu", i + 1);
+    if (only_keys(a, c, where, @[ @"id", @"path", @"symbol", @"symbols", @"selector", @"guard", @"fallback", @"sources", @"covers",
+                                  @"provenance", @"review" ]) ||
+        (pv && only_keys(a, pv, where, @[ @"revision", @"patches_sha256", @"features" ])) ||
+        (rv && only_keys(a, rv, where, @[ @"status", @"reviewer", @"reason" ])))
+        return OBJC_CANNOT_MEASURE;
+    if (!has_text(c, @"id") || !has_text(c, @"path") || !has_text(c, @"selector") || !has_text(c, @"guard") || !has_text(c, @"fallback"))
+        return objc_fail(a, MBE, NULL, 0, "%s: id, path, selector, guard or fallback is missing", where);
+    if (!pv || !str(pv, @"revision") || !str(pv, @"patches_sha256") || !str(pv, @"features"))
+        return objc_fail(a, MBE, NULL, 0, "%s: provenance is not {revision, patches_sha256, features}", where);
+    if (!rv || !has_text(rv, @"status") || !string_or_absent(rv, @"reviewer") || !string_or_absent(rv, @"reason"))
+        return objc_fail(a, MBE, NULL, 0, "%s: review has no status", where);
+    if (![cv count]) return objc_fail(a, MBE, NULL, 0, "%s: covers is missing or empty", where);
+    if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->path, S(c, @"path")) ||
+        objc_set_string(&g->selector, S(c, @"selector")) || objc_set_string(&g->guard_selector, S(c, @"guard")) ||
+        objc_set_string(&g->fallback, S(c, @"fallback")) || objc_set_string(&g->source_revision, S(pv, @"revision")) ||
+        objc_set_string(&g->patches_sha256, S(pv, @"patches_sha256")) || objc_set_string(&g->features, S(pv, @"features")) ||
+        objc_set_string(&g->review_status, S(rv, @"status")) || objc_set_string(&g->reviewer, S(rv, @"reviewer")) ||
+        objc_set_string(&g->review_reason, S(rv, @"reason")))
+        return objc_fail(a, "out-of-memory", NULL, 0, "guard");
+    if (parse_symbols(a, c, where, &g->symbol, &g->symbols, &g->nsymbols) || parse_cites(a, c, where, &g->sources, &g->nsources))
+        return OBJC_CANNOT_MEASURE;
+    for (NSDictionary *e in cv) {
+        ObjcCover *v;
+        uint64_t count;
+        if (!exact_keys(e, @[ @"selector", @"count" ]) || !has_text(e, @"selector") || !json_count([e objectForKey:@"count"], &count))
+            return objc_fail(a, MBE, NULL, 0, "%s: a cover is not exactly {selector, count} with a positive count", where);
+        if (!(v = realloc(g->covers, (g->ncovers + 1) * sizeof *v))) return objc_fail(a, "out-of-memory", NULL, 0, "covers");
+        g->covers = v; v = &v[g->ncovers++]; memset(v, 0, sizeof *v);
+        v->count = count;
+        if (objc_set_string(&v->selector, S(e, @"selector"))) return objc_fail(a, "out-of-memory", NULL, 0, "covers");
+    }
+    return OBJC_OK;
+}
+static int parse_position2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcPositionEvidence *g) {
+    NSDictionary *pos = obj(c, @"position");
+    char where[256];
+    if (has_text(c, @"id")) snprintf(where, sizeof where, "position evidence %.200s", S(c, @"id"));
+    else snprintf(where, sizeof where, "position evidence #%zu", i + 1);
+    if (only_keys(a, c, where, @[ @"id", @"path", @"symbol", @"symbols", @"selectors", @"kind", @"class", @"position", @"sources", @"note" ]) ||
+        (pos && only_keys(a, pos, where, @[ @"form", @"selector", @"rust_type", @"field" ])))
+        return OBJC_CANNOT_MEASURE;
+    if (!has_text(c, @"id") || !has_text(c, @"path") || !has_text(c, @"kind") || !has_text(c, @"class") || !pos ||
+        ![arr(c, @"selectors") count] || !string_or_absent(c, @"note"))
+        return objc_fail(a, MBE, NULL, 0, "%s: id, path, selectors, kind, class or position is missing", where);
+    if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->path, S(c, @"path")) ||
+        objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->cls, S(c, @"class")) ||
+        objc_set_string(&g->note, S(c, @"note")) ||
+        objc_set_string(&g->form, S(pos, @"form")) || objc_set_string(&g->position_selector, S(pos, @"selector")) ||
+        objc_set_string(&g->rust_type, S(pos, @"rust_type")) || objc_set_string(&g->field, S(pos, @"field")))
+        return objc_fail(a, "out-of-memory", NULL, 0, "position evidence");
+    for (id s in arr(c, @"selectors"))
+        if (![s isKindOfClass:[NSString class]] || objc_strv_push(&g->selectors, &g->nselectors, cs(s)))
+            return objc_fail(a, MBE, NULL, 0, "%s: selectors", where);
+    if (parse_symbols(a, c, where, &g->symbol, &g->symbols, &g->nsymbols) || parse_cites(a, c, where, &g->sources, &g->nsources))
+        return OBJC_CANNOT_MEASURE;
+    return OBJC_OK;
+}
+
+/* Build evidence, schema 1 or 2: hand-reviewed (binding receipt, R2, guards) or written by
  * scripts/objc-build-evidence.sh (prestrip, link map, references, providers), or both. A recorded
  * reference manifest must be the one in use; provider records attach to --provider-prefix's
  * declarations (load them first). */
 static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *manifest_sha) {
     NSDictionary *b, *art, *src, *refs;
     size_t i;
+    uint64_t schema = 0;
+    int two;
     if (!(b = read_json(a, path, JSON_MAX, "build evidence"))) return OBJC_CANNOT_MEASURE;
     if (only_keys(a, b, "build evidence", @[ @"schema", @"kind", @"artifact", @"source", @"crates", @"type_map",
                                               @"type_evidence", @"position_evidence", @"binding_receipt", @"guards", @"prestrip", @"link_map",
                                               @"references", @"providers" ]))
         return OBJC_CANNOT_MEASURE;
-    if (![[b objectForKey:@"schema"] isEqual:@1] || ![str(b, @"kind") isEqualToString:@"objc-build-evidence"] ||
+    two = json_count([b objectForKey:@"schema"], &schema) && schema == 2;
+    if ((!two && ![[b objectForKey:@"schema"] isEqual:@1]) || ![str(b, @"kind") isEqualToString:@"objc-build-evidence"] ||
         !(art = obj(b, @"artifact")) || !str(art, @"sha256") || !(src = obj(b, @"source")))
-        return objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: not schema-1 objc build evidence", path);
+        return objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: not schema-1 or schema-2 objc build evidence", path);
+    if (two && (only_keys(a, src, "build evidence source", @[ @"tree_sha256", @"revision", @"patches_sha256", @"features" ]) ||
+                !string_or_absent(src, @"revision") || !string_or_absent(src, @"patches_sha256") || !string_or_absent(src, @"features")))
+        return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, MBE, NULL, 0, "%s: source provenance is not strings", path);
+    if (two && (!hex64(S(src, @"tree_sha256")) || objc_set_string(&a->be_tree_sha256, S(src, @"tree_sha256"))))
+        return objc_fail(a, MBE, NULL, 0, "%s: source.tree_sha256 is not a SHA-256", path);
+    a->be_schema = two ? 2 : 1;
     a->have_build_evidence = 1;
     if ((refs = obj(b, @"references")) && (!S(refs, @"manifest_sha256") || strcmp(S(refs, @"manifest_sha256"), manifest_sha)))
         return objc_fail(a, "stale-build-evidence", NULL, 0, "%s was made against reference manifest %s, not %s", path,
@@ -269,6 +397,9 @@ static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *ma
         ObjcCrate *g;
         if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->crates, (a->n_crates + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "crate %zu", i + 1);
+        if (two && (only_keys(a, c, "crate", @[ @"name", @"version", @"checksum", @"disambiguator" ]) ||
+                    !has_text(c, @"name") || !has_text(c, @"version") || !has_text(c, @"checksum") || !string_or_absent(c, @"disambiguator")))
+            return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, MBE, NULL, 0, "crate %zu lacks name, version or checksum", i + 1);
         a->crates = g; memset(&g[a->n_crates], 0, sizeof *g); g = &g[a->n_crates++];
         if (objc_set_string(&g->name, S(c, @"name")) || objc_set_string(&g->version, S(c, @"version")) ||
             objc_set_string(&g->checksum, S(c, @"checksum")) || objc_set_string(&g->disambiguator, S(c, @"disambiguator")))
@@ -303,6 +434,10 @@ static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *ma
         if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->positions, (a->n_positions + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "position evidence");
         a->positions = g; memset(&g[a->n_positions], 0, sizeof *g); g = &g[a->n_positions++];
+        if (two) {
+            if (parse_position2(a, c, a->n_positions - 1, g)) return OBJC_CANNOT_MEASURE;
+            continue;
+        }
         pos = obj(c, @"position");
         if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->symbol, S(c, @"symbol")) ||
             objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->cls, S(c, @"class")) ||
@@ -331,6 +466,10 @@ static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *ma
         if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->guards, (a->n_guards + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "guard");
         a->guards = g; memset(&g[a->n_guards], 0, sizeof *g); g = &g[a->n_guards++];
+        if (two) {
+            if (parse_guard2(a, c, a->n_guards - 1, g)) return OBJC_CANNOT_MEASURE;
+            continue;
+        }
         gs = obj(c, @"source") ?: @{}; rv = obj(c, @"review") ?: @{};
         line = [gs objectForKey:@"line"];
         g->source_line = [line isKindOfClass:[NSNumber class]] && [line longLongValue] > 0 ? (uint64_t)[line longLongValue] : 0;

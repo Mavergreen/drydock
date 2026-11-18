@@ -1,6 +1,6 @@
 /* source-evidence.c -- check reviewed build evidence against the artifact it claims to describe.
  *
- * Build evidence, schema 1, is parsed by the front end (main.m); this module decides what of it
+ * Build evidence, schema 1 or 2, is parsed by the front end (main.m); this module decides what of it
  * may close a send. Nothing here reads source files: the evidence records the prepared source's
  * revision, patch digest and features, and each row cites file:line plus the SHA-256 of that
  * file, so a reviewer (or a test with the prepared tree) can recompute every citation. What this
@@ -42,6 +42,16 @@
  *     review (status, reviewer, reason). A record reviewed under another revision, patch set or
  *     feature list than the evidence's own is cannot-measure (guard-evidence-stale). Whether a
  *     record makes a send guarded is classify.c's decision: it also needs the measured guard.
+ *   - Schema 2 keys reviews to the source they read, not to the revision. The evidence records
+ *     source.tree_sha256, the prepared tree's digest. A guard or R3 row names its function by
+ *     demangled `path` (plus the resolved `symbol`, or `symbols` for the copies of one generic
+ *     instance), lists every file it rests on as `sources` [{cite, sha256}] -- a cite is
+ *     tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH -- and an R3 row adds a free-text `note`. A
+ *     guard record also pins the guarded sends it `covers` [{selector, count}] and keeps revision,
+ *     patches and features as `provenance` only. Crates are {name, version, checksum,
+ *     disambiguator?}. The front end parses this strictly (an unknown key or a missing part is
+ *     malformed-build-evidence); this module does not yet hash cited files, so every schema-2 guard
+ *     or R3 row is cannot-measure (citation-unverifiable).
  *   - Source receipts (--source-receipt; tools/objc-source-inventory.c writes them with libclang,
  *     this module only reads them). They apply to an Objective-C provider's own code and nothing
  *     else: a send closes from a receipt only when it lies in an atom provider.c verified byte for
@@ -205,6 +215,14 @@ int objc_check_build_evidence(ObjcAnalysis *a) {
             break;
         }
         status = crates_agree(a, crates, t->id);
+    }
+    if (a->be_schema == 2) {
+        for (i = 0; i < a->n_positions; i++)
+            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: this analyzer does not verify schema-2 citations", a->positions[i].id);
+        for (i = 0; i < a->n_guards; i++)
+            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: this analyzer does not verify schema-2 citations", a->guards[i].id);
+        free(types); free(crates);
+        return status;
     }
     /* R3 rows: complete, a known form, a floor class, every non-toolchain crate root pinned and agreeing. */
     for (i = 0; i < a->n_positions && status == OBJC_OK; i++) {

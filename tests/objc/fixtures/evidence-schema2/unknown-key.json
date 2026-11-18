@@ -1,0 +1,20 @@
+{"schema": 2, "kind": "objc-build-evidence",
+ "artifact": {"path": "bin/plain", "sha256": "@ARTIFACT_SHA256@"},
+ "source": {"tree_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "revision": "0000000000000000000000000000000000000001", "patches_sha256": "p", "features": "f"},
+ "crates": [{"name": "objc2", "version": "0.6.1", "checksum": "c", "disambiguator": "s1_abc"},
+            {"name": "block2", "version": "0.6.1", "checksum": "d", "disambiguator": "s2_def"}],
+ "type_map": [],
+ "type_evidence": [],
+ "binding_receipt": [],
+ "position_evidence": [
+  {"id": "p-result", "path": "codex::tui::run", "symbol": "_RNvCs1_5codex3run", "selectors": ["count"], "kind": "-", "class": "NSArray",
+   "position": {"form": "result", "selector": "subviews"},
+   "sources": [{"cite": "tree:tui/src/run.rs", "sha256": "2222222222222222222222222222222222222222222222222222222222222222"}, {"cite": "crate:objc2-app-kit-0.3.1/src/generated/NSView.rs", "sha256": "3333333333333333333333333333333333333333333333333333333333333333"}],
+   "note": "subviews returns NSArray, lines 10-12"}],
+ "guards": [
+  {"id": "g-motion", "path": "codex::tui::system_motion::{closure#0}", "symbols": ["_RNvCs1_5codex6motion", "_RNvCs2_5codex6motion"],
+   "selector": "accessibilityDisplayShouldReduceMotion", "guard": "respondsToSelector:", "function": "_RNvCs1_5codex6motion", "fallback": "returns false",
+   "sources": [{"cite": "tree:tui/src/system_motion.rs", "sha256": "2222222222222222222222222222222222222222222222222222222222222222"}, {"cite": "sdk:System/Library/Frameworks/AppKit.framework/Headers/NSWorkspace.h", "sha256": "3333333333333333333333333333333333333333333333333333333333333333"}],
+   "covers": [{"selector": "accessibilityDisplayShouldReduceMotion", "count": 1}],
+   "provenance": {"revision": "0000000000000000000000000000000000000001", "patches_sha256": "p", "features": "f"},
+   "review": {"status": "reviewed", "reviewer": "A. Reviewer", "reason": "NO falls back to false"}}]}

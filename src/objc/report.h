@@ -207,10 +207,15 @@ typedef struct {
     char **selectors; size_t nselectors;
     int used;
 } ObjcTypeEvidence;
+/* Schema 2: a file a row rests on, and a guarded send a guard record covers. */
+typedef struct { char *cite, *sha256; } ObjcCite;
+typedef struct { char *selector; uint64_t count; } ObjcCover;
 /* R3: a reviewed positional row (build evidence `position_evidence`; source-evidence.c header). */
 typedef struct {
     char *id, *symbol, *kind, *cls, *form, *position_selector, *rust_type, *field, *source;
     char **selectors; size_t nselectors;
+    char *path, *note; char **symbols; size_t nsymbols;     /* schema 2 */
+    ObjcCite *sources; size_t nsources;
     int used;
 } ObjcPositionEvidence;
 typedef struct {
@@ -218,6 +223,9 @@ typedef struct {
     char *source_file, *source_sha256, *source_revision, *patches_sha256, *features;
     uint64_t source_line;
     char *review_status, *reviewer, *review_reason;
+    char *path; char **symbols; size_t nsymbols;            /* schema 2 */
+    ObjcCite *sources; size_t nsources;
+    ObjcCover *covers; size_t ncovers;
     int used;
 } ObjcGuardRecord;
 
@@ -277,9 +285,9 @@ typedef struct {
     char **root_selectors; size_t n_root_selectors;
     size_t n_witness;
     ObjcClusterProbe *probes; size_t n_probes;
-    /* Build evidence, schema 1 (NULL/0 when none was given). */
-    int have_build_evidence;
-    char *be_artifact_sha256, *be_source_revision, *be_patches_sha256, *be_features;
+    /* Build evidence, schema 1 or 2 (NULL/0 when none was given). */
+    int have_build_evidence, be_schema;
+    char *be_artifact_sha256, *be_source_revision, *be_patches_sha256, *be_features, *be_tree_sha256;
     char *artifact_sha256;        /* measured by the front end */
     ObjcReceiptRow *receipt; size_t n_receipt;
     ObjcCrate *crates; size_t n_crates;

@@ -1,0 +1,6 @@
+{"schema": 2, "kind": "objc-build-evidence",
+ "artifact": {"path": "bin/plain", "sha256": "@ARTIFACT_SHA256@"},
+ "source": {"tree_sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+ "crates": [{"name": "objc2", "version": "0.6.1", "checksum": "c", "disambiguator": "s1_abc"}],
+ "position_evidence": [],
+ "guards": []}

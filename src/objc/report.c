@@ -28,8 +28,14 @@ static void free_strv(char **v, size_t n) {
     free(v);
 }
 
-static void destroy_pipeline(ObjcAnalysis *a) {
+static void free_cites(ObjcCite *c, size_t n) {
     size_t i;
+    for (i = 0; i < n; i++) { free(c[i].cite); free(c[i].sha256); }
+    free(c);
+}
+
+static void destroy_pipeline(ObjcAnalysis *a) {
+    size_t i, j;
     for (i = 0; i < a->n_dylibs; i++) { free(a->dylibs[i].slice); free(a->dylibs[i].path); free(a->dylibs[i].how); }
     free(a->dylibs);
     for (i = 0; i < a->n_rt_classes; i++) {
@@ -59,6 +65,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
     free(a->probes);
     free(a->references_dir); free(a->runtime_os); free(a->runtime_build); free(a->runtime_arch);
     free(a->be_artifact_sha256); free(a->be_source_revision); free(a->be_patches_sha256); free(a->be_features);
+    free(a->be_tree_sha256);
     free(a->artifact_sha256);
     for (i = 0; i < a->n_receipt; i++) {
         ObjcReceiptRow *r = &a->receipt[i];
@@ -82,6 +89,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
         free(t->id); free(t->symbol); free(t->kind); free(t->cls); free(t->form); free(t->position_selector);
         free(t->rust_type); free(t->field); free(t->source);
         free_strv(t->selectors, t->nselectors);
+        free(t->path); free(t->note); free_strv(t->symbols, t->nsymbols); free_cites(t->sources, t->nsources);
     }
     free(a->positions);
     for (i = 0; i < a->n_guards; i++) {
@@ -89,6 +97,9 @@ static void destroy_pipeline(ObjcAnalysis *a) {
         free(g->id); free(g->symbol); free(g->selector); free(g->guard_selector); free(g->fallback);
         free(g->source_file); free(g->source_sha256); free(g->source_revision); free(g->patches_sha256);
         free(g->features); free(g->review_status); free(g->reviewer); free(g->review_reason);
+        free(g->path); free_strv(g->symbols, g->nsymbols); free_cites(g->sources, g->nsources);
+        for (j = 0; j < g->ncovers; j++) free(g->covers[j].selector);
+        free(g->covers);
     }
     free(a->guards);
     for (i = 0; i < a->n_src_inputs; i++) { free(a->src_inputs[i].label); free(a->src_inputs[i].sha256); }
