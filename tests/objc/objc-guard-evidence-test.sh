@@ -139,13 +139,24 @@ only coverage_selector_removed guard-coverage-changed g-gone-sel isVoiceOverEnab
 # A cover that names another selector than the guarded one leaves the guarded send uncovered.
 ev2 "$G" "$T/ev-other" "$(guard2 g-other "$(sym _guarded)" "$MOTION_CITE" "$(cover isVoiceOverEnabled 1)")" ''
 analyze "$G" "$T/ev-other"
+[ "$rc" = 4 ] || fail "coverage_uncovered: exit $rc, want 4"
 grep '"code": "guard-coverage-changed"' "$T/report" | grep -F g-other | grep -F $SEL >/dev/null ||
   fail "coverage_uncovered: errors '$(codes)'"
+want coverage_uncovered _guarded $SEL unresolved
 
 # Each copy of one generic instance is measured: a copy with another count is a coverage change.
 ev2 "$G" "$T/ev-copies" "$(guard2 g-copies '"symbols": ["_guarded", "_guarded_twice"], ' "$MOTION_CITE" "$(cover $SEL 1)")" ''
 analyze "$G" "$T/ev-copies"
 only copies guard-coverage-changed g-copies _guarded_twice 'measures 2'
+want copies _guarded $SEL unresolved
+want copies _guarded_twice $SEL unresolved
+# Copies that each measure the guard and the covered count close every send.
+ev2 "$G" "$T/ev-copies-ok" "$(guard2 g-copies-ok '"symbols": ["_guarded", "_guarded_again"], ' "$MOTION_CITE" "$(cover $SEL 1)")" ''
+analyze "$G" "$T/ev-copies-ok"
+clean copies_close
+want copies_close _guarded $SEL guarded 'guard record g-copies-ok'
+want copies_close _guarded_again $SEL guarded 'guard record g-copies-ok'
+grep -F '"unused_guard_records": []' "$T/report" >/dev/null || fail 'copies_close: the record was not used'
 
 # guard_gone: the binary no longer measures the guard: not guarded, as today, and the record goes unused.
 ev2 "$G" "$T/ev-gone" "$(guard2 g-gone "$(sym _unguarded)" "$MOTION_CITE" "$(cover $SEL 1)")" ''

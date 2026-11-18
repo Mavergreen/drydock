@@ -2,6 +2,7 @@
  * classify.c, so every receiver closes by measurement. Linked against the pinned 10.9 SDK, read
  * as bytes, never executed.
  *   guarded        one guarded send of a later method
+ *   guarded_again  the same, a second copy
  *   guarded_twice  two guarded sends of it in one function
  *   unguarded      the same send with no guard */
 #include <objc/runtime.h>
@@ -25,6 +26,11 @@ N long guarded(void) {
     if (ASK(ws, "respondsToSelector:", SEL_(LATER))) return (long)SEND0(ws, LATER);
     return 0;
 }
+N long guarded_again(void) {
+    obj_t ws = workspace();
+    if (ASK(ws, "respondsToSelector:", SEL_(LATER))) return (long)SEND0(ws, LATER);
+    return 0;
+}
 N long guarded_twice(void) {
     obj_t ws = workspace();
     long r = 0;
@@ -37,6 +43,6 @@ N long unguarded(void) { return (long)SEND0(workspace(), LATER); }
 
 int main(int argc, char **argv) {
     (void)argv;
-    if (argc > 99) return (int)(guarded() + guarded_twice() + unguarded());
+    if (argc > 99) return (int)(guarded() + guarded_again() + guarded_twice() + unguarded());
     return 0;
 }
