@@ -11,6 +11,7 @@
  *   objc-compat provider-link-args --prefix DIR --link-map FILE           (scripts/objc-provider-link-args.sh)
  *   objc-compat emit-build-evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE
  *               --provider-prefix DIR] --references REF_DIR --output NEW_FILE  (scripts/objc-build-evidence.sh)
+ *   objc-compat resolve --artifact FILE --reviewed FILE --output NEW_FILE   (resolve_main)
  *
  * --source-root, --crate-sources and --sdk-root are where schema-2 build evidence's cites resolve;
  * the analyzer hashes every cited file itself (source-hash.c).
@@ -47,10 +48,14 @@
  * capture did not load, each class or dependency that keeps R1 off, and whether R1 applies. */
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <limits.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+#include <mach-o/stab.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1512,6 +1517,261 @@ static int build_evidence_main(int argc, char **argv) {
     return rc;
 }
 
+/* ---- resolve ----------------------------------------------------------------------------------- */
+
+/* resolve --artifact FILE --reviewed FILE --output NEW_FILE: schema-2 reviewed evidence with every
+ * guard's and R3 row's `path` resolved to the artifact's function symbols and every crate's
+ * disambiguator read from the artifact's symbols. A path is the text objc_demangle_v0 gives a
+ * function symbol (in an instruction section) for its own path. Of the functions with that path,
+ * those naming a pinned crate under any other disambiguator than its pin are another version's,
+ * and are left out. What remains is one function -- `symbol` -- or the copies of one generic
+ * instance -- `symbols`, sorted --, which share their own path's mangling and differ only in
+ * instantiating crate or ".llvm.N" and ".cold" suffixes; anything else is resolve-ambiguous. A
+ * crate named under one disambiguator has it; under several, the one whose functions the debug
+ * map (N_SO stabs) places in a source directory NAME-VERSION (a "-" matching a "_"), and no other
+ * version's; else resolve-ambiguous. A path or crate the artifact lacks is stale-build-evidence.
+ * Everything else is copied unchanged; the output is the whole document with sorted keys. Exit 0
+ * written, 2 usage or an existing destination, 4 nothing written. */
+
+typedef struct { char *name; ObjcV0Function f; } RvFunction;
+typedef struct { char *crate, *dis, *where; } RvPlace;
+
+static int rv_component(const char *path, const char *name, const char *version, int any) {
+    size_t n = strlen(name), v = strlen(version);
+    const char *c = path, *e;
+    for (; *c; c = *e ? e + 1 : e) {
+        size_t i;
+        e = c + strcspn(c, "/");
+        if ((size_t)(e - c) <= n + 1 || c[n] != '-') continue;
+        for (i = 0; i < n && (c[i] == name[i] || (strchr("-_", c[i]) && strchr("-_", name[i]))); i++) ;
+        if (i < n) continue;
+        if (any ? c[n + 1] >= '0' && c[n + 1] <= '9' && ((size_t)(e - c) != n + 1 + v || strncmp(c + n + 1, version, v))
+                : (size_t)(e - c) == n + 1 + v && !strncmp(c + n + 1, version, v))
+            return 1;
+    }
+    return 0;
+}
+
+static int rv_copy_suffix(const char *s) {
+    while (*s) {
+        if (!strncmp(s, ".llvm.", 6) && isalnum((unsigned char)s[6])) for (s += 6; isalnum((unsigned char)*s); s++) ;
+        else if (!strncmp(s, ".cold", 5)) {
+            s += 5;
+            if (*s == '.' && isdigit((unsigned char)s[1])) for (s++; isdigit((unsigned char)*s); s++) ;
+        } else return 0;
+    }
+    return 1;
+}
+
+static int rv_sort(const void *x, const void *y) { return strcmp(*(char *const *)x, *(char *const *)y); }
+
+static void jvalue(Out *o, id v, int depth);
+static void jnl(Out *o, int depth) { int i; raw(o, "\n"); for (i = 0; i < depth; i++) raw(o, "  "); }
+static void jvalue(Out *o, id v, int depth) {
+    NSUInteger i = 0;
+    if ([v isKindOfClass:[NSDictionary class]]) {
+        NSArray *keys = [[v allKeys] sortedArrayUsingSelector:@selector(compare:)];
+        raw(o, "{");
+        for (NSString *k in keys) { raw(o, i++ ? "," : ""); jnl(o, depth + 1); jstr(o, cs(k)); raw(o, ": "); jvalue(o, [v objectForKey:k], depth + 1); }
+        if (i) jnl(o, depth);
+        raw(o, "}");
+    } else if ([v isKindOfClass:[NSArray class]]) {
+        raw(o, "[");
+        for (id x in v) { raw(o, i++ ? "," : ""); jnl(o, depth + 1); jvalue(o, x, depth + 1); }
+        if (i) jnl(o, depth);
+        raw(o, "]");
+    } else if ([v isKindOfClass:[NSString class]]) jstr(o, cs(v));
+    else if ([v isKindOfClass:[NSNull class]]) raw(o, "null");
+    else if ([v isKindOfClass:[NSNumber class]] && CFGetTypeID((CFTypeRef)v) == CFBooleanGetTypeID()) raw(o, [v boolValue] ? "true" : "false");
+    else if ([v isKindOfClass:[NSNumber class]] && !CFNumberIsFloatType((CFNumberRef)v)) fmt(o, "%lld", [v longLongValue]);
+    else { o->bad = 1; snprintf(o->why, sizeof o->why, "a number that is not an integer"); }
+}
+
+static int resolve_main(int argc, char **argv) {
+    static const char *NAMES[] = { "--artifact", "--reviewed", "--output" };
+    const char *v[3], *slash, *nm;
+    char dir[PATH_MAX], why[200], where[300];
+    struct stat st;
+    ObjcAnalysis *a;
+    ObjcImage *im = NULL;
+    NSDictionary *b;
+    NSMutableDictionary *doc = nil;
+    NSMutableDictionary *pins = [NSMutableDictionary dictionary];   /* crate name -> its pinned disambiguators */
+    RvFunction *fns = NULL;
+    RvPlace *places = NULL;
+    NSMutableArray *roots = [NSMutableArray array];                  /* "name=dis" of every v0 symbol's own path */
+    size_t nfns = 0, nplaces = 0, i, j;
+    uint64_t schema = 0, value;
+    uint8_t type;
+    char group[4 * PATH_MAX] = "";
+    int last_so = 0, rc = 0;
+    Out o;
+    if (pairs(argc, argv, NAMES, 3, v, "resolve") || !v[0] || !v[1] || !v[2]) {
+        fprintf(stderr, "usage: drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE\n");
+        return 2;
+    }
+    if (lstat(v[2], &st) == 0 || errno != ENOENT) { fprintf(stderr, "drydock-objc resolve: %s exists; it is never replaced\n", v[2]); return 2; }
+    slash = strrchr(v[2], '/');
+    if (slash) snprintf(dir, sizeof dir, "%.*s", (int)(slash - v[2]), v[2]); else snprintf(dir, sizeof dir, ".");
+    if (!*dir) snprintf(dir, sizeof dir, "/");
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) { fprintf(stderr, "drydock-objc resolve: %s is not a directory\n", dir); return 2; }
+    if (!(a = objc_analysis_create())) return 4;
+    if (!(b = read_json(a, v[1], JSON_MAX, "reviewed evidence"))) goto done;
+    if (!json_count([b objectForKey:@"schema"], &schema) || schema != 2 || ![str(b, @"kind") isEqualToString:@"objc-build-evidence"]) {
+        objc_fail(a, MBE, NULL, 0, "%s: not schema-2 objc build evidence", v[1]);
+        goto done;
+    }
+    if (objc_image_open(a, v[0], &im)) goto done;
+    for (i = 0; (nm = objc_image_nlist(im, i, &type, &value)); i++) {
+        ObjcV0Function f;
+        uint32_t flags = 0;
+        if (type == N_SO) {
+            if (!*nm) group[0] = 0;
+            else if (strlen(group) + strlen(nm) < sizeof group) { if (!last_so) group[0] = 0; strcat(group, nm); }
+            last_so = *nm != 0;
+            continue;
+        }
+        last_so = 0;
+        if (type == N_FUN && *nm && *group && !objc_v0_function(nm, &f, why, sizeof why)) {
+            RvPlace *g;
+            if (!f.instantiated) {
+                if (!(g = realloc(places, (nplaces + 1) * sizeof *g)) || !(places = g, g[nplaces].where = strdup(group))) {
+                    objc_v0_function_free(&f); objc_fail(a, "out-of-memory", NULL, 0, "debug map"); goto done;
+                }
+                g[nplaces].crate = f.crate; g[nplaces].dis = f.crate_dis;
+                f.crate = f.crate_dis = NULL;
+                nplaces++;
+            }
+            objc_v0_function_free(&f);
+            continue;
+        }
+        if ((type & N_STAB) || (type & N_TYPE) != N_SECT || objc_v0_function(nm, &f, why, sizeof why)) continue;
+        for (const char *r = f.roots; *r; r += strlen(r) + 1)
+            if (![roots containsObject:@(r)]) [roots addObject:@(r)];
+        if (objc_image_section_of(im, value, NULL, NULL, &flags) && (flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))) {
+            RvFunction *g = realloc(fns, (nfns + 1) * sizeof *g);
+            if (!g) { objc_v0_function_free(&f); objc_fail(a, "out-of-memory", NULL, 0, "functions"); goto done; }
+            fns = g; fns[nfns].name = strdup(nm); fns[nfns].f = f; nfns++;
+        } else objc_v0_function_free(&f);
+    }
+    doc = [[b mutableCopy] autorelease];
+    {
+        NSMutableArray *crates = [NSMutableArray array];
+        NSMutableDictionary *chosen = [NSMutableDictionary dictionary];
+        i = 0;
+        for (NSDictionary *c0 in arr(b, @"crates") ?: @[]) {
+            NSMutableDictionary *c;
+            NSMutableArray *dis = [NSMutableArray array], *ties = [NSMutableArray array];
+            NSString *name, *version;
+            i++;
+            if (![c0 isKindOfClass:[NSDictionary class]] || !has_text(c0, @"name") || !has_text(c0, @"version")) {
+                objc_fail(a, MBE, NULL, 0, "crate %zu lacks name or version", i);
+                continue;
+            }
+            c = [[c0 mutableCopy] autorelease]; [crates addObject:c];
+            name = str(c0, @"name"); version = str(c0, @"version");
+            for (NSString *r in roots) {
+                NSRange eq = [r rangeOfString:@"="];
+                if ([[r substringToIndex:eq.location] isEqualToString:name]) [dis addObject:[r substringFromIndex:eq.location + 1]];
+            }
+            for (NSString *d in dis) {
+                int mine = 0, other = 0;
+                for (j = 0; j < nplaces; j++) {
+                    if (strcmp(places[j].crate, cs(name)) || strcmp(places[j].dis, cs(d))) continue;
+                    mine |= rv_component(places[j].where, cs(name), cs(version), 0);
+                    other |= rv_component(places[j].where, cs(name), cs(version), 1);
+                }
+                if (mine && !other) [ties addObject:d];
+            }
+            if (![dis count]) objc_fail(a, "stale-build-evidence", NULL, 0, "crate %s %s: no symbol of %s names it", cs(name), cs(version), v[0]);
+            else if ([dis count] > 1 && [ties count] != 1)
+                objc_fail(a, "resolve-ambiguous", NULL, 0, "crate %s %s: %s names it with disambiguators %s, and its debug map ties %s to version %s",
+                          cs(name), cs(version), v[0], cs([dis componentsJoinedByString:@", "]),
+                          [ties count] ? cs([ties componentsJoinedByString:@" and "]) : "none of them", cs(version));
+            else {
+                NSString *d = [dis count] == 1 ? dis[0] : ties[0], *k = [NSString stringWithFormat:@"%@=%@", name, d];
+                if ([chosen objectForKey:k])
+                    objc_fail(a, "resolve-ambiguous", NULL, 0, "crate %s: versions %s and %s both resolve to disambiguator %s", cs(name),
+                              cs([chosen objectForKey:k]), cs(version), cs(d));
+                [chosen setObject:version forKey:k];
+                [c setObject:d forKey:@"disambiguator"];
+                if (![pins objectForKey:name]) [pins setObject:[NSMutableArray array] forKey:name];
+                [[pins objectForKey:name] addObject:d];
+            }
+        }
+        if ([b objectForKey:@"crates"]) [doc setObject:crates forKey:@"crates"];
+    }
+    for (NSString *list in @[ @"guards", @"position_evidence" ]) {
+        NSMutableArray *out = [NSMutableArray array];
+        i = 0;
+        for (NSDictionary *r0 in arr(b, list) ?: @[]) {
+            NSMutableDictionary *r;
+            NSString *path;
+            char **hit = NULL;
+            const char *own = NULL;
+            size_t nhit = 0, k;
+            int copies = 1;
+            i++;
+            if (![r0 isKindOfClass:[NSDictionary class]]) { objc_fail(a, MBE, NULL, 0, "%s %zu is not an object", cs(list), i); continue; }
+            r = [[r0 mutableCopy] autorelease]; [out addObject:r];
+            if (has_text(r0, @"id")) snprintf(where, sizeof where, "%.200s", S(r0, @"id")); else snprintf(where, sizeof where, "%s #%zu", cs(list), i);
+            if (!has_text(r0, @"path")) { objc_fail(a, MBE, NULL, 0, "%s: no path", where); continue; }
+            path = str(r0, @"path");
+            for (j = 0; j < nfns; j++) {
+                const char *x;
+                int other = 0;
+                if (strcmp(fns[j].f.path, cs(path))) continue;
+                for (x = fns[j].f.roots; *x && !other; x += strlen(x) + 1) {
+                    const char *eq = strchr(x, '=');
+                    NSArray *p = [pins objectForKey:[[[NSString alloc] initWithBytes:x length:(NSUInteger)(eq - x) encoding:NSUTF8StringEncoding] autorelease]];
+                    other = p && ![p containsObject:@(eq + 1)];
+                }
+                if (other) continue;
+                for (k = 0; k < nhit && strcmp(hit[k], fns[j].name); k++) ;
+                if (k < nhit) continue;
+                if (objc_strv_push(&hit, &nhit, fns[j].name)) { objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done; }
+                if (!own) own = fns[j].f.own;
+                copies &= !strcmp(own, fns[j].f.own) && rv_copy_suffix(fns[j].f.suffix);
+            }
+            qsort(hit, nhit, sizeof *hit, rv_sort);
+            if (!nhit) objc_fail(a, "stale-build-evidence", NULL, 0, "%s: no function of %s has path %s", where, v[0], cs(path));
+            else if (nhit > 1 && !copies) {
+                NSMutableArray *names = [NSMutableArray array];
+                for (k = 0; k < nhit; k++) [names addObject:@(hit[k])];
+                objc_fail(a, "resolve-ambiguous", NULL, 0, "%s: path %s names %zu functions of %s that are not copies of one instance: %s",
+                          where, cs(path), nhit, v[0], cs([names componentsJoinedByString:@", "]));
+            } else {
+                NSMutableArray *names = [NSMutableArray array];
+                for (k = 0; k < nhit; k++) [names addObject:@(hit[k])];
+                [r removeObjectForKey:@"symbol"]; [r removeObjectForKey:@"symbols"];
+                if (nhit == 1) [r setObject:names[0] forKey:@"symbol"]; else [r setObject:names forKey:@"symbols"];
+            }
+            for (k = 0; k < nhit; k++) free(hit[k]);
+            free(hit);
+        }
+        if ([b objectForKey:list]) [doc setObject:out forKey:list];
+    }
+done:
+    if (im) objc_image_close(im);
+    for (i = 0; i < nfns; i++) { free(fns[i].name); objc_v0_function_free(&fns[i].f); }
+    for (i = 0; i < nplaces; i++) { free(places[i].crate); free(places[i].dis); free(places[i].where); }
+    free(fns); free(places);
+    if (a->n_errors) {
+        for (i = 0; i < a->n_errors; i++)
+            fprintf(stderr, "drydock-objc resolve: %s: %s\n", a->errors[i].code, a->errors[i].detail ? a->errors[i].detail : "");
+        objc_analysis_destroy(a);
+        return 4;
+    }
+    objc_analysis_destroy(a);
+    memset(&o, 0, sizeof o);
+    jvalue(&o, doc, 0);
+    raw(&o, "\n");
+    if (o.bad) { fprintf(stderr, "drydock-objc resolve: %s\n", o.why); free(o.b); return 4; }
+    rc = publish(v[2], &o) ? 4 : 0;
+    free(o.b);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         const char *artifact = NULL, *root = NULL, *refs = NULL, *report = NULL, *evidence = NULL, *mode = "inventory";
@@ -1531,6 +1791,7 @@ int main(int argc, char **argv) {
                                      "--sdk-root" };
         if (argc > 1 && !strcmp(argv[1], "provider-link-args")) return link_args_main(argc - 1, argv + 1);
         if (argc > 1 && !strcmp(argv[1], "emit-build-evidence")) return build_evidence_main(argc - 1, argv + 1);
+        if (argc > 1 && !strcmp(argv[1], "resolve")) return resolve_main(argc - 1, argv + 1);
         for (i = 1; i < argc; i++) {
             int n;
             for (n = 0; n < 13 && strcmp(argv[i], OPT[n]); n++) ;

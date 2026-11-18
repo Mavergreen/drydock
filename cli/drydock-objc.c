@@ -25,18 +25,24 @@
  *                                    (src/objc/source-hash.c); 0, 2 usage, 4 unreadable
  *   drydock-objc link-args ARGS...   shipyard's scripts/objc-provider-link-args.sh:
  *                                    --prefix PREFIX --link-map FILE
+ *   drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE
+ *                                    schema-2 reviewed evidence with each record's
+ *                                    path resolved to FILE's function symbols and
+ *                                    each crate's disambiguator filled in
+ *                                    (src/objc/main.m resolve_main); 0, 2 usage, 4
+ *                                    unresolvable (resolve-ambiguous, a missing path)
  *   drydock-objc receipt ARGS...     shipyard's scripts/objc-source-inventory.sh, with the
  *                                    clang and the floor SDK named: --clang-prefix PREFIX
  *                                    --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR...]
  *                                    --unit LABEL [--unit LABEL...] [--include LABELDIR...]
  *                                    --output NEW_FILE
  *
- * DELEGATION: analyze, evidence and link-args call objc_compat_main -- src/objc/main.m, the
+ * DELEGATION: analyze, evidence, link-args and resolve call objc_compat_main -- src/objc/main.m, the
  * Foundation front end, compiled with -Dmain=objc_compat_main and otherwise
  * byte-identical to shipyard's -- with the arguments the shell wrapper passed
  * it. main.m validates every option, value, repeat and destination itself, as
  * it did behind the wrappers, so exits are unchanged: analyze 0/1/2/4,
- * evidence 0/2/4, link-args 0/2/4.
+ * evidence 0/2/4, link-args 0/2/4, resolve 0/2/4.
  *
  * TWO DEFAULTS are added, and only when the caller did not give the option:
  *   --analyzer-id (analyze only): DRYDOCK_OBJC_ANALYZER_ID, the release version
@@ -76,7 +82,7 @@
  * its own: a caller that needs a status should map death by signal to 4.
  *
  * ON LINUX drydock-objc holds receipt alone: main.m is Foundation, so analyze,
- * evidence and link-args say they are not built for Linux yet and exit 2.
+ * evidence, link-args and resolve say they are not built for Linux yet and exit 2.
  *
  * Nothing is fetched or executed: the analyzer and the receipt tool read their
  * inputs as data.
@@ -107,6 +113,7 @@ static void usage(void) {
             "       drydock-objc evidence --tree-digest-only --source-root DIR\n"
             "       drydock-objc evidence --sdk-digest-only --sdk-root DIR\n"
             "       drydock-objc link-args --prefix PREFIX --link-map FILE\n"
+            "       drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE\n"
             "       drydock-objc receipt --clang-prefix PREFIX --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR]..."
             " --unit LABEL [--unit LABEL]... [--include LABELDIR]... --output NEW_FILE\n");
 }
@@ -304,7 +311,10 @@ int main(int argc, char **argv) {
     /* objc-compat.sh accepted only option names in option positions, so main.m's
      * mode words never reached it there; they do not reach it through analyze. */
     if (!strcmp(argv[1], "analyze")) {
-        if (argc > 2 && (!strcmp(argv[2], "emit-build-evidence") || !strcmp(argv[2], "provider-link-args"))) { usage(); return 2; }
+        if (argc > 2 && (!strcmp(argv[2], "emit-build-evidence") || !strcmp(argv[2], "provider-link-args") || !strcmp(argv[2], "resolve"))) {
+            usage();
+            return 2;
+        }
         return run(NULL, argc - 2, argv + 2, 1, 1);
     }
     if (!strcmp(argv[1], "evidence")) {
@@ -315,8 +325,9 @@ int main(int argc, char **argv) {
         return run("emit-build-evidence", argc - 2, argv + 2, 1, 0);
     }
     if (!strcmp(argv[1], "link-args")) return run("provider-link-args", argc - 2, argv + 2, 0, 0);
+    if (!strcmp(argv[1], "resolve")) return run("resolve", argc - 2, argv + 2, 0, 0);
 #else
-    if (!strcmp(argv[1], "analyze") || !strcmp(argv[1], "evidence") || !strcmp(argv[1], "link-args")) {
+    if (!strcmp(argv[1], "analyze") || !strcmp(argv[1], "evidence") || !strcmp(argv[1], "link-args") || !strcmp(argv[1], "resolve")) {
         fprintf(stderr, "drydock-objc: %s is not built for Linux yet (the Foundation front end; see README)\n", argv[1]);
         return 2;
     }

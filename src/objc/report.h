@@ -347,6 +347,22 @@ int objc_bind_caches(ObjcAnalysis *a);
 /* Display demangling for diagnostics/tests; returns a malloc'd string or NULL. */
 char *objc_binding_demangle(const char *symbol, char *why, size_t whysz);
 
+/* demangle-v0.c: rustc-demangle's alternate ("{:#}") demangling of a v0 symbol, malloc'd, or NULL
+ * with why for one it refuses. */
+char *objc_demangle_v0(const char *symbol, char *why, size_t whysz);
+/* A v0 function symbol as drydock-objc resolve sees it. Copies of one generic instance have the same
+ * `own` bytes; they differ only past them. */
+typedef struct {
+    char *path;          /* objc_demangle_v0's text of the symbol's own path */
+    char *own;           /* the mangled bytes of that path */
+    char *suffix;        /* what follows the mangling: ".llvm.N", ".cold", ... */
+    int instantiated;    /* an instantiating-crate path follows the own path */
+    char *roots;         /* "name=dis\0" for every crate root the own path names, "" ending the list */
+    char *crate, *crate_dis;   /* the crate root the path is defined under */
+} ObjcV0Function;
+int objc_v0_function(const char *symbol, ObjcV0Function *f, char *why, size_t whysz);
+void objc_v0_function_free(ObjcV0Function *f);
+
 /* reference.c: loads signatures_path and facts_path when set. 0 = loaded (or nothing asked),
  * 4 = unreadable or malformed. */
 int objc_load_references(ObjcAnalysis *a);
@@ -478,6 +494,9 @@ const char *objc_image_import_lib_at(const ObjcImage *im, uint64_t va);
 const char *objc_image_bound_lib_at(const ObjcImage *im, uint64_t va);
 /* 1 when a defined symbol `name` is at `va`, else 0. */
 int objc_image_has_symbol(const ObjcImage *im, const char *name, uint64_t va);
+/* Symbol table entry i, in table order (stabs included): its name ("" for one outside the string
+ * table), n_type and n_value; NULL past the end. */
+const char *objc_image_nlist(const ObjcImage *im, size_t i, uint8_t *type, uint64_t *value);
 
 /* ---- providers (provider.c; main.m parses their JSON) ---- */
 typedef struct { char *member, *symbol; uint64_t address, size; } ObjcProviderAtom;

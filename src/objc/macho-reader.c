@@ -3428,6 +3428,14 @@ const char *objc_image_import_lib_at(const ObjcImage *im, uint64_t va) {
     return p ? p->lib : NULL;
 }
 
+const char *objc_image_nlist(const ObjcImage *im, size_t i, uint8_t *type, uint64_t *value) {
+    const struct nlist_64 *n;
+    if (i >= im->s.nsyms) return NULL;
+    n = &im->s.nl[i];
+    *type = n->n_type; *value = n->n_value;
+    return n->n_un.n_strx < im->s.strsize ? im->s.strtab + n->n_un.n_strx : "";
+}
+
 int objc_image_has_symbol(const ObjcImage *im, const char *name, uint64_t va) {
     size_t i;
     for (i = 0; i < im->s.nsym; i++)

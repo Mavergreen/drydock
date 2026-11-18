@@ -55,16 +55,17 @@ See [drydock-macho-rewrite(1)](man/drydock-macho-rewrite.1) for script syntax, o
 
 ## drydock-objc
 
-Given an Objective-C binary built for Mavericks, report which of its message sends the Mavericks runtime and SDK can answer. It is shipyard's Objective-C analyzer, moved here so the tool that rewrites a Mach-O file and the tool that checks what it will do on 10.9 ship together. It has four subcommands:
+Given an Objective-C binary built for Mavericks, report which of its message sends the Mavericks runtime and SDK can answer. It is shipyard's Objective-C analyzer, moved here so the tool that rewrites a Mach-O file and the tool that checks what it will do on 10.9 ship together. It has five subcommands:
 
 * `drydock-objc analyze`: analyze an artifact against the reference set and write a report.
 * `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against.
 * `drydock-objc link-args`: print the link arguments for a provider prefix and link map.
 * `drydock-objc receipt`: write an Objective-C provider's source receipt: every Objective-C send in its verified prepared sources, with the identities of the clang (its libclang version), the SDK and the tool that took it.
+* `drydock-objc resolve`: fill reviewed schema-2 build evidence's symbols and crate disambiguators from an artifact, so a product's CI regenerates them on every build. A reviewed path names one function or the copies of one generic instance; anything else is refused as `resolve-ambiguous`.
 
-Their arguments and exit statuses are those of the shipyard scripts they replace; run `drydock-objc` with no arguments for the usage. It reads its reference set from `share/drydock/objc/reference`, found from where the real `drydock-objc` binary is, so a symlink to it works; `--references DIR` names another.
+The first four's arguments and exit statuses are those of the shipyard scripts they replace; run `drydock-objc` with no arguments for the usage. It reads its reference set from `share/drydock/objc/reference`, found from where the real `drydock-objc` binary is, so a symlink to it works; `--references DIR` names another.
 
-`analyze`, `evidence` and `link-args` run on macOS only. On Linux, for now, the tarball's `drydock-objc` does `receipt` alone and those three exit 2: their front end is Foundation, which Linux lacks, until it is ported to C. `receipt` runs everywhere. It takes `--clang-prefix` and `--sdk`, and fetches nothing: you name the clang and the SDK, and it loads that clang's libclang at run time. On Linux, using `receipt` needs a host with glibc 2.35 or newer (Ubuntu 22.04+), because the pinned libclang.so needs it; `drydock-objc` itself stays within the archive's floor.
+`analyze`, `evidence`, `link-args` and `resolve` run on macOS only. On Linux, for now, the tarball's `drydock-objc` does `receipt` alone and those four exit 2: their front end is Foundation, which Linux lacks, until it is ported to C. `receipt` runs everywhere. It takes `--clang-prefix` and `--sdk`, and fetches nothing: you name the clang and the SDK, and it loads that clang's libclang at run time. On Linux, using `receipt` needs a host with glibc 2.35 or newer (Ubuntu 22.04+), because the pinned libclang.so needs it; `drydock-objc` itself stays within the archive's floor.
 
 Building Drydock now fetches the pinned clang22 at configure time, for its `clang-c` headers only (nothing of it ships), so a build needs network access or a warm cache.
 
