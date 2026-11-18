@@ -6,13 +6,19 @@
  *
  *   drydock-objc analyze ARGS...     shipyard's scripts/objc-compat.sh: --artifact FILE
  *                                    --root DIR --report NEW_FILE [--references DIR]
- *                                    [--build-evidence FILE] [--provider-prefix DIR
+ *                                    [--build-evidence FILE [--source-root DIR]
+ *                                    [--crate-sources DIR] [--sdk-root DIR]]
+ *                                    [--provider-prefix DIR
  *                                    [--source-receipt FILE]] [--mode inventory|strict]
  *                                    [--exceptions FILE] [--analyzer-id ID]
  *   drydock-objc evidence ARGS...    shipyard's scripts/objc-build-evidence.sh:
  *                                    --artifact FILE --prestrip FILE --source-root DIR
  *                                    [--link-map FILE --provider-prefix DIR]
  *                                    [--references DIR] --output NEW_FILE
+ *   drydock-objc evidence --tree-digest-only --source-root DIR
+ *                                    prints the prepared tree's digest, the
+ *                                    source.tree_sha256 evidence records
+ *                                    (src/objc/source-hash.c); 0, 2 usage, 4 unreadable
  *   drydock-objc link-args ARGS...   shipyard's scripts/objc-provider-link-args.sh:
  *                                    --prefix PREFIX --link-map FILE
  *   drydock-objc receipt ARGS...     shipyard's scripts/objc-source-inventory.sh, with the
@@ -94,6 +100,7 @@ static void usage(void) {
             "usage: drydock-objc analyze --artifact FILE --root DIR --report NEW_FILE [--references DIR] [option VALUE]...\n"
             "       drydock-objc evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE --provider-prefix DIR]"
             " [--references DIR] --output NEW_FILE\n"
+            "       drydock-objc evidence --tree-digest-only --source-root DIR\n"
             "       drydock-objc link-args --prefix PREFIX --link-map FILE\n"
             "       drydock-objc receipt --clang-prefix PREFIX --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR]..."
             " --unit LABEL [--unit LABEL]... [--include LABELDIR]... --output NEW_FILE\n");
@@ -107,6 +114,23 @@ static void usage(void) {
 #endif
 
 int objc_compat_main(int argc, char **argv);
+int objc_tree_digest(const char *root, char out[65]);
+
+/* evidence --tree-digest-only --source-root DIR: ARGS are the words after evidence. */
+static int tree_digest_only(int argc, char **argv) {
+    const char *root = NULL;
+    char out[65];
+    int i;
+    for (i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--tree-digest-only")) continue;
+        if (strcmp(argv[i], "--source-root") || root || i + 1 >= argc || !*argv[i + 1]) { usage(); return 2; }
+        root = argv[++i];
+    }
+    if (!root) { usage(); return 2; }
+    if (objc_tree_digest(root, out)) { fprintf(stderr, "drydock-objc: cannot digest the source root %s\n", root); return 4; }
+    printf("%s\n", out);
+    return fflush(stdout) || ferror(stdout) ? 4 : 0;
+}
 
 /* Whether OPT is one of ARGS' option names. Options and values alternate, as
  * main.m reads them; a malformed list is main.m's to refuse. */
@@ -276,7 +300,10 @@ int main(int argc, char **argv) {
         if (argc > 2 && (!strcmp(argv[2], "emit-build-evidence") || !strcmp(argv[2], "provider-link-args"))) { usage(); return 2; }
         return run(NULL, argc - 2, argv + 2, 1, 1);
     }
-    if (!strcmp(argv[1], "evidence")) return run("emit-build-evidence", argc - 2, argv + 2, 1, 0);
+    if (!strcmp(argv[1], "evidence")) {
+        if (has_option(argc - 2, argv + 2, "--tree-digest-only")) return tree_digest_only(argc - 2, argv + 2);
+        return run("emit-build-evidence", argc - 2, argv + 2, 1, 0);
+    }
     if (!strcmp(argv[1], "link-args")) return run("provider-link-args", argc - 2, argv + 2, 0, 0);
 #else
     if (!strcmp(argv[1], "analyze") || !strcmp(argv[1], "evidence") || !strcmp(argv[1], "link-args")) {

@@ -159,7 +159,7 @@ endif()
 # source-evidence.c requires a receipt's `tool` line to equal.
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c" OBJC_SOURCE_INVENTORY_SHA256)
 set(DRYDOCK_OBJC_SOURCES)
-foreach(m macho-reader binding reference report classify source-evidence provider)
+foreach(m macho-reader binding reference report classify source-evidence source-hash provider)
   list(APPEND DRYDOCK_OBJC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/${m}.c")
 endforeach()
 
@@ -167,7 +167,7 @@ endforeach()
 # release version plus the first 16 hex of a SHA-256 over the bytes
 # objc-compat-build.sh's sources() hashed, in its order, with its first line
 # (the Drydock pin's commit) replaced by drydock-VERSION, since the reader core
-# is now this tree's own: "analyzer", the seven modules, report.h, main.m, the
+# is now this tree's own: "analyzer", the eight modules, report.h, main.m, the
 # receipt tool, the thirteen reader-core modules it named, then every src/*.h in
 # byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
 # sources()). Each file is a configure dependency, so an edit reconfigures and
@@ -239,7 +239,7 @@ set_source_files_properties(cli/drydock-objc.c PROPERTIES COMPILE_OPTIONS "-Wext
 
 if(APPLE)
   enable_language(OBJC)
-  # The seven analyzer modules, shared by drydock-objc and the reader harness.
+  # The eight analyzer modules, shared by drydock-objc and the reader harness.
   add_library(drydock_objc_core OBJECT ${DRYDOCK_OBJC_SOURCES})
   target_include_directories(drydock_objc_core PRIVATE src/objc src)
   target_compile_definitions(drydock_objc_core PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
@@ -396,7 +396,7 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity binding classification closure compare evidence-schema2 provider reader reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
+foreach(t arity binding classification closure compare evidence-schema2 source-hash provider reader reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)

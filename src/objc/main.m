@@ -7,11 +7,13 @@
  *
  *   objc-compat --artifact FILE --root SHIPPED_ROOT --references REF_DIR --report NEW_FILE
  *               [--build-evidence FILE] [--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict]
- *               [--exceptions FILE] [--analyzer-id ID]
+ *               [--exceptions FILE] [--analyzer-id ID] [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR]
  *   objc-compat provider-link-args --prefix DIR --link-map FILE           (scripts/objc-provider-link-args.sh)
  *   objc-compat emit-build-evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE
  *               --provider-prefix DIR] --references REF_DIR --output NEW_FILE  (scripts/objc-build-evidence.sh)
  *
+ * --source-root, --crate-sources and --sdk-root are where schema-2 build evidence's cites resolve;
+ * the analyzer hashes every cited file itself (source-hash.c).
  * --provider-prefix loads a provider declaration (load_provider_prefix); its build-evidence record
  * and provider.c decide whether it is active. --source-receipt names the provider body's source receipt
  * (tools/objc-source-inventory.c); source-evidence.c maps it into verified provider code only. Every run recomputes the artifact, reference,
@@ -62,7 +64,8 @@
 
 static int usage(const char *why) {
     fprintf(stderr, "objc-compat: %s\nusage: objc-compat --artifact FILE --root SHIPPED_ROOT --references REF_DIR "
-                    "--report NEW_FILE [--build-evidence FILE] [--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict] [--exceptions FILE]\n", why);
+                    "--report NEW_FILE [--build-evidence FILE [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR]] "
+                    "[--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict] [--exceptions FILE]\n", why);
     return 2;
 }
 
@@ -261,8 +264,8 @@ static int cite_form(const char *c) {
     else if (!strncmp(c, "crate:", 6)) {
         c += 6;
         if (!(slash = strchr(c, '/'))) return 0;
-        for (dash = slash; dash > c && dash[-1] != '-'; dash--) ;
-        if (dash - c < 2 || dash == slash || *dash < '0' || *dash > '9') return 0;
+        for (dash = c + 1; dash < slash && !(dash[-1] == '-' && *dash >= '0' && *dash <= '9'); dash++) ;
+        if (dash - c < 2 || dash == slash) return 0;
         p = slash + 1;
     } else return 0;
     return *p && *p != '/';
@@ -1437,43 +1440,6 @@ static int link_args_main(int argc, char **argv) {
     return fflush(stdout) || ferror(stdout) ? 4 : 0;
 }
 
-/* The prepared source tree's identity: every entry under dir except .git, sorted, with file
- * contents' SHA-256 and symlink targets; any other file type is refused. */
-static int tree_digest(ObjcAnalysis *a, const char *dir, char out[65]) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *root = [NSString stringWithUTF8String:dir];
-    NSDirectoryEnumerator *en = [fm enumeratorAtPath:root];
-    NSMutableArray *entries = [NSMutableArray array];
-    NSString *rel;
-    CC_SHA256_CTX c;
-    unsigned char d[CC_SHA256_DIGEST_LENGTH];
-    int i;
-    if (!en) return objc_fail(a, "unreadable-input", NULL, 0, "source root %s", dir);
-    while ((rel = [en nextObject])) {
-        NSString *full = [root stringByAppendingPathComponent:rel];
-        struct stat st;
-        char h[65];
-        if ([[rel lastPathComponent] isEqualToString:@".git"]) { [en skipDescendants]; continue; }
-        if ([entries count] > 1000000) return objc_fail(a, "oversized-input", NULL, 0, "source root %s: over a million entries", dir);
-        if (lstat([full fileSystemRepresentation], &st) != 0) return objc_fail(a, "unreadable-input", NULL, 0, "%s", [full UTF8String]);
-        if (S_ISDIR(st.st_mode)) [entries addObject:[NSString stringWithFormat:@"d %@", rel]];
-        else if (S_ISLNK(st.st_mode)) {
-            NSString *t = [fm destinationOfSymbolicLinkAtPath:full error:NULL];
-            if (!t) return objc_fail(a, "unreadable-input", NULL, 0, "%s", [full UTF8String]);
-            [entries addObject:[NSString stringWithFormat:@"l %@ %@", rel, t]];
-        } else if (S_ISREG(st.st_mode)) {
-            if (sha256_file([full fileSystemRepresentation], h)) return objc_fail(a, "unreadable-input", NULL, 0, "%s", [full UTF8String]);
-            [entries addObject:[NSString stringWithFormat:@"f %@ %s", rel, h]];
-        } else return objc_fail(a, "unreadable-input", NULL, 0, "%s is not a file, directory or symlink", [full UTF8String]);
-    }
-    [entries sortUsingSelector:@selector(compare:)];
-    CC_SHA256_Init(&c);
-    for (NSString *e in entries) { const char *s = [e UTF8String]; CC_SHA256_Update(&c, s, (CC_LONG)strlen(s)); CC_SHA256_Update(&c, "\n", 1); }
-    CC_SHA256_Final(d, &c);
-    for (i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
-    return OBJC_OK;
-}
-
 /* emit-build-evidence (scripts/objc-build-evidence.sh): schema-1 evidence of what was linked. It
  * records identities and the provider link mapping it checked; it approves nothing -- the
  * analyzer re-verifies all of it against the artifact's bytes. */
@@ -1503,7 +1469,7 @@ static int build_evidence_main(int argc, char **argv) {
     else if (sha256_file(v[1], psha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "prestrip %s", v[1]);
     else if (v[3] && sha256_file(v[3], msha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "link map %s: %s", v[3], strerror(errno));
     if (!rc) rc = load_manifest(a, v[5], ref_inputs, manifest_sha);
-    if (!rc) rc = tree_digest(a, v[2], tsha);
+    if (!rc && objc_tree_digest(v[2], tsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "source root %s", v[2]);
     if (!rc && v[4]) rc = load_provider_prefix(a, v[4]);
     if (!rc && v[4]) rc = objc_map_provider_link(a, v[0], v[1], v[3]);
     if (rc || a->n_errors) { print_errors(a); objc_analysis_destroy(a); return 4; }
@@ -1555,16 +1521,17 @@ int main(int argc, char **argv) {
         int i, rc = OBJC_OK, blocking = 0;
         size_t k;
         Out o;
-        int seen[10] = {0};
-        const char *prefix = NULL, *receipt = NULL, *exceptions = NULL;
+        int seen[13] = {0};
+        const char *prefix = NULL, *receipt = NULL, *exceptions = NULL, *source_root = NULL, *crate_sources = NULL, *sdk_root = NULL;
         static const char *OPT[] = { "--artifact", "--root", "--references", "--report", "--build-evidence", "--mode", "--analyzer-id",
-                                     "--provider-prefix", "--source-receipt", "--exceptions" };
+                                     "--provider-prefix", "--source-receipt", "--exceptions", "--source-root", "--crate-sources",
+                                     "--sdk-root" };
         if (argc > 1 && !strcmp(argv[1], "provider-link-args")) return link_args_main(argc - 1, argv + 1);
         if (argc > 1 && !strcmp(argv[1], "emit-build-evidence")) return build_evidence_main(argc - 1, argv + 1);
         for (i = 1; i < argc; i++) {
             int n;
-            for (n = 0; n < 10 && strcmp(argv[i], OPT[n]); n++) ;
-            if (n == 10) return usage("unknown argument");
+            for (n = 0; n < 13 && strcmp(argv[i], OPT[n]); n++) ;
+            if (n == 13) return usage("unknown argument");
             if (i + 1 >= argc || !*argv[i + 1]) return usage("option without a value");
             if (seen[n]++) return usage("option given twice");
             switch (n) {
@@ -1577,12 +1544,17 @@ int main(int argc, char **argv) {
             case 6: analyzer_id = argv[++i]; break;
             case 7: prefix = argv[++i]; break;
             case 8: receipt = argv[++i]; break;
-            default: exceptions = argv[++i]; break;
+            case 9: exceptions = argv[++i]; break;
+            case 10: source_root = argv[++i]; break;
+            case 11: crate_sources = argv[++i]; break;
+            default: sdk_root = argv[++i]; break;
             }
         }
         if (!artifact || !root || !refs || !report) return usage("--artifact, --root, --references and --report are required");
         if (strcmp(mode, "inventory") && strcmp(mode, "strict")) return usage("--mode is inventory or strict");
         if (receipt && (!prefix || !evidence)) return usage("--source-receipt needs --provider-prefix and --build-evidence");
+        if ((source_root || crate_sources || sdk_root) && !evidence)
+            return usage("--source-root, --crate-sources and --sdk-root need --build-evidence");
         if (lstat(report, &st) == 0) return usage("the report destination already exists; it is never replaced");
         if (errno != ENOENT) return usage("the report destination's directory is not usable");
         {
@@ -1603,7 +1575,11 @@ int main(int argc, char **argv) {
         if (!realpath(refs, rrefs)) return usage("--references is not a directory");
         if (!utf8_ok((const unsigned char *)rart) || !utf8_ok((const unsigned char *)rrefs)) return usage("paths must be UTF-8");
 
-        if (!(a = objc_analysis_create()) || objc_set_string(&a->artifact_path, rart)) { fprintf(stderr, "objc-compat: out of memory\n"); return 4; }
+        if (!(a = objc_analysis_create()) || objc_set_string(&a->artifact_path, rart) || objc_set_string(&a->source_root, source_root) ||
+            objc_set_string(&a->crate_sources, crate_sources) || objc_set_string(&a->sdk_root, sdk_root)) {
+            fprintf(stderr, "objc-compat: out of memory\n");
+            return 4;
+        }
         {
             char h[65];
             if (sha256_file(rart, h)) rc = objc_fail(a, "unreadable-artifact", NULL, 0, "%s: %s", rart, strerror(errno));

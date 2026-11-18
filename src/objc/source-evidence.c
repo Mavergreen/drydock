@@ -50,8 +50,13 @@
  *     guard record also pins the guarded sends it `covers` [{selector, count}] and keeps revision,
  *     patches and features as `provenance` only. Crates are {name, version, checksum,
  *     disambiguator?}. The front end parses this strictly (an unknown key or a missing part is
- *     malformed-build-evidence); this module does not yet hash cited files, so every schema-2 guard
- *     or R3 row is cannot-measure (citation-unverifiable).
+ *     malformed-build-evidence). With --source-root, its digest must be source.tree_sha256
+ *     (source-tree-mismatch). A row is checked when a send uses it: the analyzer hashes every cited
+ *     file itself (source-hash.c). A file whose hash differs is guard-source-changed or
+ *     position-source-changed, naming the cite and both hashes; a cite it cannot check (no root, no
+ *     file, a path leaving its root) is citation-unverifiable. The rest of schema 2's validity rules
+ *     are pending, so even a row whose sources all verify closes nothing: it is citation-unverifiable
+ *     too, and says so. A row no send uses is reported unused.
  *   - Source receipts (--source-receipt; tools/objc-source-inventory.c writes them with libclang,
  *     this module only reads them). They apply to an Objective-C provider's own code and nothing
  *     else: a send closes from a receipt only when it lies in an atom provider.c verified byte for
@@ -217,10 +222,12 @@ int objc_check_build_evidence(ObjcAnalysis *a) {
         status = crates_agree(a, crates, t->id);
     }
     if (a->be_schema == 2) {
-        for (i = 0; i < a->n_positions; i++)
-            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: this analyzer does not verify schema-2 citations", a->positions[i].id);
-        for (i = 0; i < a->n_guards; i++)
-            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: this analyzer does not verify schema-2 citations", a->guards[i].id);
+        char tree[65];
+        if (a->source_root && objc_tree_digest(a->source_root, tree))
+            status = objc_fail(a, "unreadable-input", NULL, 0, "source root %s", a->source_root);
+        else if (a->source_root && strcmp(tree, a->be_tree_sha256))
+            status = objc_fail(a, "source-tree-mismatch", NULL, 0, "source root %s has digest %s; the build evidence describes %s",
+                               a->source_root, tree, a->be_tree_sha256);
         free(types); free(crates);
         return status;
     }
@@ -340,6 +347,33 @@ static int is_or_descends(const ObjcAnalysis *a, const char *cls, const char *ow
     return 0;
 }
 
+/* Whether a row naming `symbol` (or, in schema 2, `symbols`) names the function whose base is `fn`. */
+static int names_function(const char *fn, const char *symbol, char **symbols, size_t n) {
+    char row[4096];
+    size_t i;
+    if (symbol) { base_symbol(symbol, row, sizeof row); if (!strcmp(fn, row)) return 1; }
+    for (i = 0; i < n; i++) { base_symbol(symbols[i], row, sizeof row); if (!strcmp(fn, row)) return 1; }
+    return 0;
+}
+
+/* A schema-2 row in use: every cite hashed here, against the hash it records. */
+static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, size_t n, const char *changed) {
+    size_t i;
+    int status = OBJC_OK;
+    for (i = 0; i < n; i++) {
+        char h[65];
+        if (objc_cite_sha256(a, c[i].cite, h))
+            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: its root is not given, the file is "
+                               "missing or not a regular file, or its path leaves its root", id, c[i].cite);
+        else if (strcmp(h, c[i].sha256))
+            status = objc_fail(a, changed, NULL, 0, "%s: %s has sha256 %s; the record was reviewed at %s", id, c[i].cite, h, c[i].sha256);
+    }
+    if (status == OBJC_OK)
+        status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: its sources verify; the remaining schema-2 rules are pending, "
+                           "so it closes nothing", id);
+    return status;
+}
+
 /* R3, after receipts, R2, source receipts and downcast. A row names one function (suffix ignored),
  * its selectors and kind, a class and the receiver's position. On an open send it closes the send
  * when the reader's model of the receiver does not contradict the position: for `result`, a
@@ -351,6 +385,27 @@ static int is_or_descends(const ObjcAnalysis *a, const char *cls, const char *ow
 int objc_apply_position_evidence(ObjcAnalysis *a) {
     size_t i, j, k;
     char fn[4096], row[4096];
+    int status = OBJC_OK;
+    if (a->be_schema == 2) {
+        for (i = 0; i < a->n_sends; i++) {
+            const ObjcSend *s = &a->sends[i];
+            const ObjcEvidence *e = &a->evidence[s->evidence];
+            if (!s->selector || !e->function) continue;
+            base_symbol(e->function, fn, sizeof fn);
+            for (j = 0; j < a->n_positions; j++) {
+                ObjcPositionEvidence *u = &a->positions[j];
+                if (!names_function(fn, u->symbol, u->symbols, u->nsymbols)) continue;
+                for (k = 0; k < u->nselectors && strcmp(u->selectors[k], s->selector); k++) ;
+                if (k == u->nselectors) continue;
+                u->used = 1;
+                if (!u->checked) {
+                    u->checked = 1;
+                    if (check_sources(a, u->id, u->sources, u->nsources, "position-source-changed")) status = OBJC_CANNOT_MEASURE;
+                }
+            }
+        }
+        return status;
+    }
     for (i = 0; i < a->n_sends; i++) {
         ObjcSend *s = &a->sends[i];
         const ObjcEvidence *e = &a->evidence[s->evidence];
@@ -420,7 +475,7 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
 
 const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev) {
     const ObjcEvidence *e = &a->evidence[ev];
-    char fn[4096], row[4096];
+    char fn[4096];
     size_t i, s;
     const char *sel = NULL;
     for (s = 0; s < a->n_sends; s++) if (a->sends[s].evidence == ev) { sel = a->sends[s].selector; break; }
@@ -428,8 +483,13 @@ const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev) {
     base_symbol(e->function, fn, sizeof fn);
     for (i = 0; i < a->n_guards; i++) {
         ObjcGuardRecord *g = &a->guards[i];
-        base_symbol(g->symbol, row, sizeof row);
-        if (!strcmp(fn, row) && !strcmp(g->selector, sel)) { g->used = 1; return g; }
+        if (!names_function(fn, g->symbol, g->symbols, g->nsymbols) || strcmp(g->selector, sel)) continue;
+        g->used = 1;
+        if (a->be_schema != 2) return g;
+        if (!g->checked) {
+            g->checked = 1;
+            check_sources(a, g->id, g->sources, g->nsources, "guard-source-changed");
+        }
     }
     return NULL;
 }

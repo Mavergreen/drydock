@@ -216,7 +216,7 @@ typedef struct {
     char **selectors; size_t nselectors;
     char *path, *note; char **symbols; size_t nsymbols;     /* schema 2 */
     ObjcCite *sources; size_t nsources;
-    int used;
+    int used, checked;
 } ObjcPositionEvidence;
 typedef struct {
     char *id, *symbol, *selector, *guard_selector, *fallback;
@@ -226,7 +226,7 @@ typedef struct {
     char *path; char **symbols; size_t nsymbols;            /* schema 2 */
     ObjcCite *sources; size_t nsources;
     ObjcCover *covers; size_t ncovers;
-    int used;
+    int used, checked;
 } ObjcGuardRecord;
 
 typedef enum { OBJC_FLOOR_SUPPORTED, OBJC_PROVIDED, OBJC_GUARDED, OBJC_UNSUPPORTED, OBJC_UNRESOLVED } ObjcVerdict;
@@ -288,6 +288,7 @@ typedef struct {
     /* Build evidence, schema 1 or 2 (NULL/0 when none was given). */
     int have_build_evidence, be_schema;
     char *be_artifact_sha256, *be_source_revision, *be_patches_sha256, *be_features, *be_tree_sha256;
+    char *source_root, *crate_sources, *sdk_root;   /* where schema-2 cites resolve (source-hash.c) */
     char *artifact_sha256;        /* measured by the front end */
     ObjcReceiptRow *receipt; size_t n_receipt;
     ObjcCrate *crates; size_t n_crates;
@@ -429,6 +430,10 @@ typedef struct { uint64_t addr; char *file; uint32_t line, col; int end; } ObjcD
 int objc_dwarf_lines(const uint8_t *sect, size_t size, const uint8_t *line_str, size_t line_str_size,
                      int (*reloc)(void *ctx, uint64_t off, uint64_t *addr), void *ctx,
                      ObjcDwarfRow **rows, size_t *nrows, char *why, size_t whysz);
+/* source-hash.c: the prepared tree's digest, and the SHA-256 of the file a cite names. 0, or -1
+ * unreadable or uncheckable. */
+int objc_tree_digest(const char *root, char out[65]);
+int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]);
 /* The reviewed guard record for the dispatch evidence at index `ev` (its function and
  * selector), or NULL. */
 const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev);

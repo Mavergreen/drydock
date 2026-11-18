@@ -1,8 +1,8 @@
 #!/bin/sh
 # platform: macOS-only -- links an x86_64 fixture against the pinned 10.9 SDK, then analyzes it with build evidence
 # spec: src/objc/source-evidence.c header -- build evidence schema 2: guard and R3 rows name a function
-#       path and cite every file they rest on; guards pin what they cover. Parsed strictly; until the
-#       analyzer can hash the cited files, a schema-2 row that reaches use is citation-unverifiable.
+#       path and cite every file they rest on; guards pin what they cover. Parsed strictly; a row
+#       no send uses is reported unused (objc-source-hash-test.sh checks rows in use).
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
@@ -46,9 +46,14 @@ rc=0; "$DRYDOCK_OBJC" analyze --artifact "$P" --root "$T/root" --references "$RE
 analyze "$E2/no-records.json"
 [ "$rc" = 0 ] || fail "no-records: exit $rc, errors '$(codes)'"
 
-# Every record form parses; each row is refused at use, not as malformed.
-refused valid.json citation-unverifiable 'g-motion'
-grep -F 'p-result' "$T/report" >/dev/null || fail 'valid: the position row was not refused by id'
+# Every record form parses; rows no send uses fail nothing and are reported unused.
+analyze "$E2/valid.json"
+[ "$rc" = 0 ] || fail "valid: exit $rc, errors '$(codes)'"
+grep -F '"unused_position_evidence": ["p-result"], "unused_guard_records": ["g-motion"]' "$T/report" >/dev/null ||
+  fail 'valid: the rows were not reported unused'
+# A crate's version may carry a prerelease: it starts at the first dash before a digit.
+analyze "$E2/crate-prerelease.json"
+[ "$rc" = 0 ] || fail "crate-prerelease: exit $rc, errors '$(codes)'"
 
 # A crate's disambiguator is optional to parse (resolve writes it) and required to use.
 refused unresolved-crate.json malformed-build-evidence 'crate 1 lacks name, version, checksum or disambiguator'
@@ -58,6 +63,7 @@ refused position-missing-sources.json malformed-build-evidence 'position evidenc
 refused empty-covers.json malformed-build-evidence 'guard g-motion: covers is missing or empty'
 refused bad-cite.json malformed-build-evidence 'citation tui/src/system_motion.rs is not'
 refused bad-crate-cite.json malformed-build-evidence 'crate:objc2-app-kit/'
+refused bad-sha.json malformed-build-evidence 'position evidence p-result: a source is not exactly {cite, sha256} with a SHA-256'
 refused unknown-key.json malformed-build-evidence 'unknown key function'
 refused missing-tree.json malformed-build-evidence 'source.tree_sha256 is not a SHA-256'
 refused symbol-and-symbols.json malformed-build-evidence 'symbol and symbols are exclusive'
