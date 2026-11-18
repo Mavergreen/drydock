@@ -1,10 +1,10 @@
 /* source-evidence.c -- check reviewed build evidence against the artifact it claims to describe.
  *
  * Build evidence, schema 1 or 2, is parsed by the front end (main.m); this module decides what of it
- * may close a send. Nothing here reads source files: the evidence records the prepared source's
- * revision, patch digest and features, and each row cites file:line plus the SHA-256 of that
- * file, so a reviewer (or a test with the prepared tree) can recompute every citation. What this
- * module checks is the binding between those rows and the artifact's bytes:
+ * may close a send. Schema 1 evidence records the prepared source's revision, patch digest and
+ * features, and each row cites file:line plus the SHA-256 of that file, which nothing here reads;
+ * schema 2 cites are hashed by the analyzer itself (below). What this module checks is the binding
+ * between those rows and the artifact's bytes:
  *
  *   - The evidence names the artifact's SHA-256; any other artifact is cannot-measure
  *     (stale-build-evidence), never a partial reuse.
@@ -550,9 +550,9 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
             objc_cites_text(t->sources, t->nsources, prov, sizeof prov);
             at = strlen(prov);
             if (t->note) snprintf(prov + at, sizeof prov - at, "; note: %s", t->note);
-        } else snprintf(prov, sizeof prov, "%s", t->source);
+        }
         if (objc_set_string(&s->receiver, t->cls) || objc_set_string(&s->method_kind, t->kind) ||
-            objc_set_string(&s->basis, basis) || objc_set_string(&s->provenance, prov) ||
+            objc_set_string(&s->basis, basis) || objc_set_string(&s->provenance, a->be_schema == 2 ? prov : t->source) ||
             objc_set_string(&s->reason, NULL))
             return objc_fail(a, "out-of-memory", NULL, 0, "R3");
         s->origin = OBJC_ORIGIN_R3; s->exact = 0; s->allocated = 0;

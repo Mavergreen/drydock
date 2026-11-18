@@ -402,6 +402,11 @@ r3() { evidence "$R3B" "$T/ev-$1" '' '' "${3:-$C3}" "$M3" '' "$2"; analyze "$R3B
 r3 res "$RES"
 want "$FNR" UTF8String floor-supported; want "$FNR" lengthOfBytesUsingEncoding: floor-supported
 grep '"receiver_closure": "R3"' "$T/report" | grep '"source_provenance": "cite-res' >/dev/null || fail 'R3 closure lacks its citation'
+# A schema-1 row's citation is carried whole, however long.
+LONG=cite-long-$(awk 'BEGIN { while (n++ < 3000) printf "x" }')
+r3 longsource "$(prow res "$FNR" '"UTF8String"' NSString '{"form": "result", "selector": "description"}' | sed "s/\"cite-res\"/\"$LONG\"/")"
+grep '"receiver_closure": "R3"' "$T/report" | grep -F "\"source_provenance\": \"$LONG\"" >/dev/null ||
+  fail 'a 3000-byte schema-1 R3 citation was not carried whole'
 r3 contradicted "$(prow res "$FNR" '"UTF8String"' NSString '{"form": "result", "selector": "hash"}')"
 exit_is 4 'a result row naming another send'; error_is position-contradicted 'result of description, not hash'
 r3 fld "$FLD"
