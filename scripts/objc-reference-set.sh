@@ -45,7 +45,9 @@
 #          reference/objc and never generated: the reviewed runtime calls the compiler emits, which no
 #          header declares. A name in both catalogs is refused (verify, and the analyzer's loader).
 #          Each SDK is identified by its pinned archive's SHA-256 (recomputed from the cached archive) and a digest
-#          of its extracted header tree, so a cache edited after extraction does not keep the pin's name.
+#          of its extracted header tree, so a cache edited after extraction does not keep the pin's name. The digest
+#          is drydock-objc's (evidence --sdk-digest-only), the one analyze checks sdk: citations against; build
+#          runs the drydock-objc that DRYDOCK_OBJC names.
 #          The extractor identity names, and digests, only the compiler resource headers the parse
 #          consumed (the producer reports them): host packages that ship different extra headers
 #          (clang22-cross adds arm_*.h) are the same input, and an edit to a consumed one is not.
@@ -339,11 +341,6 @@ check_runtime() {  # $1 capture dir
   done; done
 }
 
-tree_digest() {  # $1 directory; digest of every header-like file, by relative path
-  (cd "$1" && find . -type f \( -path '*/Headers/*' -o -path './usr/include/*' -o -path './include/*' -o -name '*.modulemap' \) |
-    LC_ALL=C sort | tr '\n' '\0' | xargs -0 shasum -a 256) | shasum -a 256 | cut -c1-64
-}
-
 # spec: tools/objc-sdk-inventory.c header -- AppKit.h does not include objc/runtime.h or objc/message.h,
 #       which declare objc_msgSend and the rest of libobjc's C API; adding them changes no fact or
 #       signature row, only the function catalog.
@@ -382,7 +379,8 @@ sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: A
   sh "$HERE/objc-sdk-inventory.sh" "$@" >"$sf_work/$sf_side-sdk.tsv" 2>"$sf_work/$sf_side.log" ||
     { tail -5 "$sf_work/$sf_side.log" >&2; fail "the $sf_side SDK producer failed"; }
   sed -n 's/^objc-sdk-inventory: resource-header //p' "$sf_work/$sf_side.log" >"$sf_work/$sf_side.resources"
-  printf '%s %s %s\n' "$sf_tarball" "$sf_sha" "$(tree_digest "$sf_sdk")" >"$sf_work/$sf_side.identity"
+  sf_tree=$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$sf_sdk") || fail "cannot digest the $sf_side SDK's header tree"
+  printf '%s %s %s\n' "$sf_tarball" "$sf_sha" "$sf_tree" >"$sf_work/$sf_side.identity"
 }
 
 json_list() {  # lines on stdin -> "a", "b"
@@ -416,6 +414,7 @@ build() {
     shift 2
   done
   [ -n "$prefix" ] && [ -n "$out" ] || usage
+  [ -n "${DRYDOCK_OBJC:-}" ] && [ -x "$DRYDOCK_OBJC" ] || fail 'build needs DRYDOCK_OBJC, the built drydock-objc, to digest each SDK header tree'
   [ -z "$runtime" ] || check_runtime "$runtime"
   work=$(new_dir "$out")
   trap 'rm -rf "$tmpl" "$work"' EXIT

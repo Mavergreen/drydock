@@ -59,10 +59,11 @@ pos2() {  # pos2 ID SYMBOL-JSON SOURCES
   printf '{"id": "%s", "path": "<objc2::runtime::protocol_object::ProtocolObject<dyn objc2::runtime::nsobject::NSObjectProtocol> as core::fmt::Debug>::fmt", %s"selectors": ["UTF8String"], "kind": "-", "class": "NSString", "position": {"form": "result", "selector": "description"}, "sources": [%s], "note": "description returns an NSString"}' "$1" "$2" "$3"
 }
 n=0
-analyze() {  # analyze ARTIFACT EVIDENCE: rc, $T/report, $T/err
+analyze() {  # analyze ARTIFACT EVIDENCE [OPTION VALUE]...: rc, $T/report, $T/err
+  art=$1 ev=$2; shift 2
   n=$((n + 1))
-  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$1" --root "$T/root" --references "$REF" --report "$T/report.$n" \
-    --mode strict --build-evidence "$2" --source-root "$S" 2>"$T/err" || rc=$?
+  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$T/root" --references "$REF" --report "$T/report.$n" \
+    --mode strict --build-evidence "$ev" --source-root "$S" "$@" 2>"$T/err" || rc=$?
   ln -sf "$T/report.$n" "$T/report"
 }
 codes() { sed -n 's/.*"code": "\([^"]*\)".*/\1/p' "$T/report" | sort -u | tr '\n' ' '; }
@@ -96,6 +97,19 @@ clean carries
 want carries _guarded $SEL guarded 'guard record g-carries' "tree:tui/src/system_motion.rs sha256:$MOTION" \
   'old-revision' 'old-patches' 'old-features' 'not compared' 'reviewed by A. Reviewer'
 grep -F '"unused_guard_records": []' "$T/report" >/dev/null || fail 'carries: the record was not used'
+
+# sdk: cites hold under the pinned floor SDK (its header digest is the reference manifest's), not under
+# another SDK root holding the same file.
+HDR=System/Library/Frameworks/AppKit.framework/Headers/NSWorkspace.h
+SDK_CITE=$(cite "sdk:$HDR" "$(sha "$SDK/$HDR")")
+ev2 "$G" "$T/ev-sdk" "$(guard2 g-sdk "$(sym _guarded)" "$MOTION_CITE, $SDK_CITE" "$(cover $SEL 1)")" ''
+analyze "$G" "$T/ev-sdk" --sdk-root "$SDK"
+clean sdk_cite_match
+want sdk_cite_match _guarded $SEL guarded 'guard record g-sdk' "sdk:$HDR"
+mkdir -p "$T/othersdk/$(dirname "$HDR")"; cp "$SDK/$HDR" "$T/othersdk/$HDR"
+analyze "$G" "$T/ev-sdk" --sdk-root "$T/othersdk"
+only sdk_cite_mismatch citation-unverifiable g-sdk "sdk:$HDR" 'pinned floor SDK' "$T/othersdk"
+want sdk_cite_mismatch _guarded $SEL unresolved
 
 # source_changed: a cited file is not the one reviewed.
 ev2 "$G" "$T/ev-changed" "$(guard2 g-changed "$(sym _guarded)" "$(cite tree:tui/src/system_motion.rs "$STALE")" "$(cover $SEL 1)")" ''

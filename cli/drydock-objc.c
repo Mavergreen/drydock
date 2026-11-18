@@ -19,6 +19,10 @@
  *                                    prints the prepared tree's digest, the
  *                                    source.tree_sha256 evidence records
  *                                    (src/objc/source-hash.c); 0, 2 usage, 4 unreadable
+ *   drydock-objc evidence --sdk-digest-only --sdk-root DIR
+ *                                    prints the SDK's header tree digest, the
+ *                                    reference manifest's header_tree_sha256
+ *                                    (src/objc/source-hash.c); 0, 2 usage, 4 unreadable
  *   drydock-objc link-args ARGS...   shipyard's scripts/objc-provider-link-args.sh:
  *                                    --prefix PREFIX --link-map FILE
  *   drydock-objc receipt ARGS...     shipyard's scripts/objc-source-inventory.sh, with the
@@ -101,6 +105,7 @@ static void usage(void) {
             "       drydock-objc evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE --provider-prefix DIR]"
             " [--references DIR] --output NEW_FILE\n"
             "       drydock-objc evidence --tree-digest-only --source-root DIR\n"
+            "       drydock-objc evidence --sdk-digest-only --sdk-root DIR\n"
             "       drydock-objc link-args --prefix PREFIX --link-map FILE\n"
             "       drydock-objc receipt --clang-prefix PREFIX --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR]..."
             " --unit LABEL [--unit LABEL]... [--include LABELDIR]... --output NEW_FILE\n");
@@ -115,19 +120,21 @@ static void usage(void) {
 
 int objc_compat_main(int argc, char **argv);
 int objc_tree_digest(const char *root, char out[65]);
+int objc_sdk_header_digest(const char *root, char out[65]);
 
-/* evidence --tree-digest-only --source-root DIR: ARGS are the words after evidence. */
-static int tree_digest_only(int argc, char **argv) {
+/* evidence --tree-digest-only --source-root DIR, or --sdk-digest-only --sdk-root DIR: ARGS are the
+ * words after evidence. */
+static int digest_only(int argc, char **argv, const char *mode, const char *option, int (*digest)(const char *, char[65])) {
     const char *root = NULL;
     char out[65];
-    int i;
+    int i, modes = 0;
     for (i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--tree-digest-only")) continue;
-        if (strcmp(argv[i], "--source-root") || root || i + 1 >= argc || !*argv[i + 1]) { usage(); return 2; }
+        if (!strcmp(argv[i], mode)) { if (modes++) { usage(); return 2; } continue; }
+        if (strcmp(argv[i], option) || root || i + 1 >= argc || !*argv[i + 1]) { usage(); return 2; }
         root = argv[++i];
     }
     if (!root) { usage(); return 2; }
-    if (objc_tree_digest(root, out)) { fprintf(stderr, "drydock-objc: cannot digest the source root %s\n", root); return 4; }
+    if (digest(root, out)) { fprintf(stderr, "drydock-objc: cannot digest %s\n", root); return 4; }
     printf("%s\n", out);
     return fflush(stdout) || ferror(stdout) ? 4 : 0;
 }
@@ -301,7 +308,10 @@ int main(int argc, char **argv) {
         return run(NULL, argc - 2, argv + 2, 1, 1);
     }
     if (!strcmp(argv[1], "evidence")) {
-        if (has_option(argc - 2, argv + 2, "--tree-digest-only")) return tree_digest_only(argc - 2, argv + 2);
+        if (has_option(argc - 2, argv + 2, "--tree-digest-only"))
+            return digest_only(argc - 2, argv + 2, "--tree-digest-only", "--source-root", objc_tree_digest);
+        if (has_option(argc - 2, argv + 2, "--sdk-digest-only"))
+            return digest_only(argc - 2, argv + 2, "--sdk-digest-only", "--sdk-root", objc_sdk_header_digest);
         return run("emit-build-evidence", argc - 2, argv + 2, 1, 0);
     }
     if (!strcmp(argv[1], "link-args")) return run("provider-link-args", argc - 2, argv + 2, 0, 0);

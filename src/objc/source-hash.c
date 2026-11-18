@@ -7,6 +7,11 @@
  * root. The lines are sorted bytewise and each is hashed with a trailing newline. Any other file
  * type is refused.
  *
+ * The floor SDK's header digest (reference/objc/manifest.json floor_sdk.header_tree_sha256) lists
+ * the regular files under the SDK root -- symlinks not followed -- whose path holds /Headers/,
+ * lies under usr/include or include, or ends .modulemap, as ./PATH, sorted bytewise; each line is
+ * what `shasum -a 256 ./PATH` prints, and the digest is the SHA-256 of that listing.
+ *
  * A cite resolves tree:PATH under the source root, crate:NAME-VERSION/PATH under
  * <crate sources>/NAME-VERSION, sdk:PATH under the SDK root. It is uncheckable (-1) when the root
  * is not given or missing, the path has a .. component, its real path leaves its root, or it is not
@@ -50,23 +55,52 @@ static int file_sha256(const char *path, char out[65]) {
 
 typedef struct { char **v; size_t n, cap; } Lines;
 
-static int add_line(Lines *l, const char *kind, const char *rel, const char *extra) {
-    char *s;
-    size_t k = strlen(kind) + strlen(rel) + (extra ? strlen(extra) + 1 : 0) + 2;
-    if (l->n >= TREE_ENTRIES_MAX) return -1;
+static int push(Lines *l, char *s) {
+    if (!s || l->n >= TREE_ENTRIES_MAX) { free(s); return -1; }
     if (l->n == l->cap) {
         char **g = realloc(l->v, (l->cap = l->cap ? l->cap * 2 : 1024) * sizeof *g);
-        if (!g) return -1;
+        if (!g) { free(s); return -1; }
         l->v = g;
     }
-    if (!(s = malloc(k))) return -1;
-    if (extra) snprintf(s, k, "%s %s %s", kind, rel, extra);
-    else snprintf(s, k, "%s %s", kind, rel);
     l->v[l->n++] = s;
     return 0;
 }
 
-static int walk(const char *root, const char *rel, Lines *l) {
+static int add_line(Lines *l, const char *kind, const char *rel, const char *extra) {
+    size_t k = strlen(kind) + strlen(rel) + (extra ? strlen(extra) + 1 : 0) + 2;
+    char *s = malloc(k);
+    if (s && extra) snprintf(s, k, "%s %s %s", kind, rel, extra);
+    else if (s) snprintf(s, k, "%s %s", kind, rel);
+    return push(l, s);
+}
+
+/* sdk: the header tree's selection, files only: a path holding /Headers/, under usr/include or
+ * include, or a name ending .modulemap; nothing else is refused or listed, symlinks are not
+ * followed, and .git is not special. */
+static int sdk_header(const char *rel, const char *name) {
+    size_t k = strlen(name);
+    return strstr(rel, "/Headers/") || !strncmp(rel, "Headers/", 8) || !strncmp(rel, "usr/include/", 12) ||
+           !strncmp(rel, "include/", 8) || (k >= 10 && !strcmp(name + k - 10, ".modulemap"));
+}
+
+static int add_path(Lines *l, const char *rel) {
+    size_t k = strlen(rel) + 3;
+    char *s = malloc(k);
+    if (s) snprintf(s, k, "./%s", rel);
+    return push(l, s);
+}
+
+/* One file's line as `shasum -a 256 ./REL` prints it: a name holding a backslash is escaped and
+ * the line marked with a leading backslash. */
+static void sdk_hash(CC_SHA256_CTX *c, const char *h, const char *path) {
+    const char *p;
+    if (strchr(path, '\\')) CC_SHA256_Update(c, "\\", 1);
+    CC_SHA256_Update(c, h, 64);
+    CC_SHA256_Update(c, "  ", 2);
+    for (p = path; *p; p++) { if (*p == '\\') CC_SHA256_Update(c, "\\", 1); CC_SHA256_Update(c, p, 1); }
+}
+
+static int walk(const char *root, const char *rel, Lines *l, int sdk) {
     char dirpath[PATH_MAX];
     DIR *d;
     struct dirent *e;
@@ -76,12 +110,16 @@ static int walk(const char *root, const char *rel, Lines *l) {
     while (!rc && (e = readdir(d))) {
         char sub[PATH_MAX], full[PATH_MAX], h[65];
         struct stat st;
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || !strcmp(e->d_name, ".git")) continue;
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || (!sdk && !strcmp(e->d_name, ".git"))) continue;
         if ((size_t)snprintf(sub, sizeof sub, "%s%s%s", rel, *rel ? "/" : "", e->d_name) >= sizeof sub ||
-            (size_t)snprintf(full, sizeof full, "%s/%s", root, sub) >= sizeof full || lstat(full, &st) != 0) {
+            (size_t)snprintf(full, sizeof full, "%s/%s", root, sub) >= sizeof full || lstat(full, &st) != 0 ||
+            (sdk && strchr(sub, '\n'))) {
             rc = -1;
+        } else if (sdk) {
+            if (S_ISDIR(st.st_mode)) rc = walk(root, sub, l, sdk);
+            else if (S_ISREG(st.st_mode) && sdk_header(sub, e->d_name)) rc = add_path(l, sub);
         } else if (S_ISDIR(st.st_mode)) {
-            rc = add_line(l, "d", sub, NULL) || walk(root, sub, l) ? -1 : 0;
+            rc = add_line(l, "d", sub, NULL) || walk(root, sub, l, sdk) ? -1 : 0;
         } else if (S_ISLNK(st.st_mode)) {
             char target[PATH_MAX];
             ssize_t k = readlink(full, target, sizeof target - 1);
@@ -97,25 +135,34 @@ static int walk(const char *root, const char *rel, Lines *l) {
 
 static int by_bytes(const void *x, const void *y) { return strcmp(*(char *const *)x, *(char *const *)y); }
 
-int objc_tree_digest(const char *root, char out[65]) {
+static int digest(const char *root, int sdk, char out[65]) {
     Lines l = { NULL, 0, 0 };
     CC_SHA256_CTX c;
     unsigned char d[CC_SHA256_DIGEST_LENGTH];
     struct stat st;
     size_t i;
     int rc = -1;
-    if (root && stat(root, &st) == 0 && S_ISDIR(st.st_mode) && !walk(root, "", &l)) {
+    if (root && stat(root, &st) == 0 && S_ISDIR(st.st_mode) && !walk(root, "", &l, sdk)) {
         qsort(l.v, l.n, sizeof *l.v, by_bytes);
         CC_SHA256_Init(&c);
-        for (i = 0; i < l.n; i++) { CC_SHA256_Update(&c, l.v[i], (CC_LONG)strlen(l.v[i])); CC_SHA256_Update(&c, "\n", 1); }
-        CC_SHA256_Final(d, &c);
-        hex(d, out);
         rc = 0;
+        for (i = 0; i < l.n && !rc; i++) {
+            char full[PATH_MAX], h[65];
+            if (!sdk) CC_SHA256_Update(&c, l.v[i], (CC_LONG)strlen(l.v[i]));
+            else if ((size_t)snprintf(full, sizeof full, "%s/%s", root, l.v[i] + 2) >= sizeof full || file_sha256(full, h)) rc = -1;
+            else sdk_hash(&c, h, l.v[i]);
+            CC_SHA256_Update(&c, "\n", 1);
+        }
+        CC_SHA256_Final(d, &c);
+        if (!rc) hex(d, out);
     }
     for (i = 0; i < l.n; i++) free(l.v[i]);
     free(l.v);
     return rc;
 }
+
+int objc_tree_digest(const char *root, char out[65]) { return digest(root, 0, out); }
+int objc_sdk_header_digest(const char *root, char out[65]) { return digest(root, 1, out); }
 
 /* `rel` under `root`, into `real` (PATH_MAX): no .. component, and its real path inside root's. */
 static int inside(const char *root, const char *rel, char *real) {

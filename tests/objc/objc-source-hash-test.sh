@@ -69,6 +69,39 @@ rc=0; "$DRYDOCK_OBJC" evidence --tree-digest-only >/dev/null 2>&1 || rc=$?
   fail 'emit-build-evidence failed'
 grep -F "\"tree_sha256\": \"$TREE\"" "$T/emitted.json" >/dev/null || fail 'emit-build-evidence records another tree digest'
 
+# The SDK header digest: drydock-objc's, compared live with the formula the reference manifest's
+# header_tree_sha256 was first made with, and with a frozen value, on a tree that has every case.
+K="$T/sdk"
+mkdir -p "$K/System/Library/Frameworks/F.framework/Versions/A/Headers" "$K/usr/include/sub" "$K/include" "$K/usr/lib" \
+  "$K/HeadersX" "$K/.git/Headers" "$K/System/Library/Frameworks/F.framework/Modules"
+printf 'f\n' >"$K/System/Library/Frameworks/F.framework/Versions/A/Headers/F.h"
+ln -s A "$K/System/Library/Frameworks/F.framework/Versions/Current"
+ln -s Versions/Current/Headers "$K/System/Library/Frameworks/F.framework/Headers"
+printf 'module F {}\n' >"$K/System/Library/Frameworks/F.framework/Modules/module.modulemap"
+printf 'a\n' >"$K/usr/include/a.h"; printf 'b\n' >"$K/usr/include/sub/b.h"; printf 'h\n' >"$K/usr/include/.hidden.h"
+printf 's\n' >"$K/usr/include/with space.h"; printf 'k\n' >"$K/usr/include/back\\slash.h"
+printf 'B\n' >"$K/usr/include/B.h"; printf 'c\n' >"$K/include/c.h"; printf 'g\n' >"$K/.git/Headers/g.h"
+printf 'm\n' >"$K/usr/lib/x.modulemap"; printf 't\n' >"$K/usr/lib/libfoo.tbd"; printf 'p\n' >"$K/SDKSettings.plist"
+printf 'y\n' >"$K/HeadersX/y.h"; ln -s a.h "$K/usr/include/link.h"
+shell_sdk_digest() {
+  (cd "$1" && find . -type f \( -path '*/Headers/*' -o -path './usr/include/*' -o -path './include/*' -o -name '*.modulemap' \) |
+    LC_ALL=C sort | tr '\n' '\0' | xargs -0 shasum -a 256) | shasum -a 256 | cut -c1-64
+}
+SDKD=$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$K") || fail "--sdk-digest-only: exit $?"
+[ "$SDKD" = "$(shell_sdk_digest "$K")" ] || fail "--sdk-digest-only gave $SDKD, the shell formula $(shell_sdk_digest "$K")"
+[ "$SDKD" = 48a51e8e6382d038400903e8a49afc82a8ade699f5f70ef1218b076856a1aac4 ] || fail "--sdk-digest-only gave $SDKD, not the frozen value"
+printf 'changed\n' >"$K/usr/lib/libfoo.tbd"
+[ "$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$K")" = "$SDKD" ] || fail 'the SDK digest read an unselected file'
+printf 'changed\n' >"$K/usr/include/sub/b.h"
+[ "$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$K")" != "$SDKD" ] || fail 'the SDK digest missed a header'
+rc=0; "$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$T/none" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 4 ] || fail "--sdk-digest-only on a missing root: exit $rc, want 4"
+rc=0; "$DRYDOCK_OBJC" evidence --sdk-digest-only >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "--sdk-digest-only without --sdk-root: exit $rc, want 2"
+# The pinned floor SDK has the reference manifest's digest.
+[ "$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$SDK")" = "$(sed -n 's/.*"header_tree_sha256": "\([0-9a-f]*\)".*/\1/p' "$REF/manifest.json" | head -1)" ] ||
+  fail 'the pinned floor SDK does not have the manifest header_tree_sha256'
+
 # ev2 ARTIFACT OUT TREE GUARDS POSITIONS: schema-2 evidence bound to ARTIFACT.
 ev2() {
   cat >"$2" <<EOF
@@ -154,9 +187,13 @@ guard_case crate_cite "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs 
 guarded crate_cite
 guard_case crate_prerelease "$(cite crate:foo-1.0.0-beta.1/src/x.rs "$PRE")"
 guarded crate_prerelease
-# An sdk: cite verifies only against the pinned floor SDK, which the analyzer does not yet identify: refused.
+# An sdk: cite verifies under the pinned floor SDK, and is refused under any other SDK root.
 guard_case sdk_cite "$(cite "sdk:$HDR" "$WS")"
-only sdk_cite citation-unverifiable g-sdk_cite "sdk:$HDR" 'pinned floor SDK'
+guarded sdk_cite
+mkdir -p "$K/$(dirname "$HDR")"; cp "$SDK/$HDR" "$K/$HDR"
+ev2 "$C" "$T/ev-sdk-other" "$TREE" "$(guard2 g-sdk_other _guarded "$(cite "sdk:$HDR" "$WS")")" ''
+analyze "$C" "$T/ev-sdk-other" --source-root "$S" --sdk-root "$K"
+only sdk_other citation-unverifiable g-sdk_other "sdk:$HDR" 'pinned floor SDK' "$K"
 guard_case crate_changed "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$STALE")"
 only crate_changed guard-source-changed g-crate_changed "$STALE" "$VIEW"
 

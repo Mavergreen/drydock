@@ -65,7 +65,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
     free(a->probes);
     free(a->references_dir); free(a->runtime_os); free(a->runtime_build); free(a->runtime_arch);
     free(a->be_artifact_sha256); free(a->be_source_revision); free(a->be_patches_sha256); free(a->be_features);
-    free(a->be_tree_sha256); free(a->source_root); free(a->crate_sources); free(a->sdk_root);
+    free(a->be_tree_sha256); free(a->source_root); free(a->crate_sources); free(a->sdk_root); free(a->floor_sdk_header_tree_sha256);
     free(a->artifact_sha256);
     for (i = 0; i < a->n_receipt; i++) {
         ObjcReceiptRow *r = &a->receipt[i];

@@ -55,8 +55,8 @@
  *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer
  *     hashes every cited file itself (source-hash.c). A file whose hash differs is
  *     guard-source-changed or position-source-changed, naming the cite and both hashes; a cite it
- *     cannot check (no root, no file, a path leaving its root, any sdk: cite until the pinned floor
- *     SDK is identified) is citation-unverifiable. A row matches a send by its resolved symbol(s)
+ *     cannot check (no root, no file, a path leaving its root, an sdk: cite when --sdk-root's header
+ *     digest is not the reference manifest's floor SDK's) is citation-unverifiable. A row matches a send by its resolved symbol(s)
  *     (an LLVM suffix ignored); a row with none that a send's selector would use is
  *     malformed-build-evidence (run drydock-objc resolve). A guard record holds only when, in each
  *     copy it names, the guarded sends classify.c measures, per selector and call site, are exactly
@@ -367,6 +367,17 @@ void objc_cites_text(const ObjcCite *c, size_t n, char *buf, size_t bufsz) {
         at += (size_t)snprintf(buf + at, bufsz - at, "%s%s sha256:%s", i ? "; " : "", c[i].cite, c[i].sha256);
 }
 
+/* Whether --sdk-root is the pinned floor SDK: its header digest is the reference manifest's. */
+static int sdk_root_pinned(ObjcAnalysis *a) {
+    char h[65];
+    if (!a->sdk_root_checked) {
+        a->sdk_root_checked = 1;
+        a->sdk_root_pinned = a->sdk_root && a->floor_sdk_header_tree_sha256 && !objc_sdk_header_digest(a->sdk_root, h) &&
+                             !strcmp(h, a->floor_sdk_header_tree_sha256);
+    }
+    return a->sdk_root_pinned;
+}
+
 /* A schema-2 row in use: every cite hashed here, against the hash it records. */
 static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, size_t n, const char *changed) {
     size_t i;
@@ -376,9 +387,11 @@ static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, siz
                          "was not verified", id, a->be_tree_sha256);
     for (i = 0; i < n; i++) {
         char h[65];
-        if (!strncmp(c[i].cite, "sdk:", 4))
+        if (!strncmp(c[i].cite, "sdk:", 4) && !sdk_root_pinned(a))
             status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: an sdk: cite verifies only against "
-                               "the pinned floor SDK, which this analyzer does not yet identify", id, c[i].cite);
+                               "the pinned floor SDK, and --sdk-root %s is not it (its header digest is not the reference "
+                               "manifest's floor_sdk.header_tree_sha256 %s)", id, c[i].cite, a->sdk_root ? a->sdk_root : "(not given)",
+                               a->floor_sdk_header_tree_sha256 ? a->floor_sdk_header_tree_sha256 : "(none)");
         else if (objc_cite_sha256(a, c[i].cite, h))
             status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: its root is not given, the file is "
                                "missing or not a regular file, or its path leaves its root", id, c[i].cite);

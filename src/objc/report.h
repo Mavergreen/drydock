@@ -289,6 +289,8 @@ typedef struct {
     int have_build_evidence, be_schema;
     char *be_artifact_sha256, *be_source_revision, *be_patches_sha256, *be_features, *be_tree_sha256;
     char *source_root, *crate_sources, *sdk_root;   /* where schema-2 cites resolve (source-hash.c) */
+    char *floor_sdk_header_tree_sha256;            /* the reference manifest's; sdk: cites need --sdk-root to have it */
+    int sdk_root_checked, sdk_root_pinned;
     char *artifact_sha256;        /* measured by the front end */
     ObjcReceiptRow *receipt; size_t n_receipt;
     ObjcCrate *crates; size_t n_crates;
@@ -433,6 +435,7 @@ int objc_dwarf_lines(const uint8_t *sect, size_t size, const uint8_t *line_str, 
 /* source-hash.c: the prepared tree's digest, and the SHA-256 of the file a cite names. 0, or -1
  * unreadable or uncheckable. */
 int objc_tree_digest(const char *root, char out[65]);
+int objc_sdk_header_digest(const char *root, char out[65]);
 int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]);
 /* The reviewed guard record for the dispatch evidence at index `ev` (its function and
  * selector), or NULL. */

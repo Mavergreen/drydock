@@ -204,6 +204,9 @@ static int load_manifest(ObjcAnalysis *a, const char *dir, NSMutableArray *ref_i
         }
     if (str(rt, @"tool_source_sha256") && objc_set_string(&a->runtime_tool_sha256, cs(str(rt, @"tool_source_sha256"))))
         return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
+    if (str(obj(m, @"floor_sdk"), @"header_tree_sha256") &&
+        objc_set_string(&a->floor_sdk_header_tree_sha256, cs(str(obj(m, @"floor_sdk"), @"header_tree_sha256"))))
+        return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
     snprintf(path, sizeof path, "%s/floor-sdk.tsv", dir);
     if (objc_set_string(&a->facts_path, path)) return OBJC_CANNOT_MEASURE;
     snprintf(path, sizeof path, "%s/floor-signatures.tsv", dir);
