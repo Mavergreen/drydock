@@ -1,8 +1,14 @@
 {
+  "enabledPlugins": {
+    "mavergreen@mavergreen": true
+  },
   "extraKnownMarketplaces": {
     "mavergreen": {
-      "source": { "source": "github", "repo": "Mavergreen/shipyard" }
+      "source": {
+        "source": "github",
+        "repo": "Mavergreen/shipyard"
+      },
+      "autoUpdate": true
     }
-  },
-  "enabledPlugins": { "mavergreen@mavergreen": true }
+  }
 }
