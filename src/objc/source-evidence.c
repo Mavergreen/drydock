@@ -57,7 +57,9 @@
  *     guard-source-changed or position-source-changed, naming the cite and both hashes; a cite it
  *     cannot check (no root, no file, a path leaving its root, an sdk: cite when --sdk-root's header
  *     digest is not the reference manifest's floor SDK's) is citation-unverifiable. A row matches a send by its resolved symbol(s)
- *     (an LLVM suffix ignored); a row with none that a send's selector would use is
+ *     (an LLVM suffix ignored), which must be what drydock-objc resolve writes for its path -- each demangles to it,
+ *     several are copies of one instance, every non-toolchain crate they name is pinned under their disambiguator --
+ *     or the row is malformed-build-evidence, checked first; a row with none that a send's selector would use is
  *     malformed-build-evidence (run drydock-objc resolve). A guard record holds only when, in each
  *     copy it names, the guarded sends classify.c measures, per selector and call site, are exactly
  *     its covers (guard-coverage-changed otherwise), and classify.c still needs the measured guard;
@@ -406,6 +408,48 @@ static int unresolved(ObjcAnalysis *a, const char *id, const char *path) {
     return objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: unresolved path %s has no symbol; run drydock-objc resolve", id, path);
 }
 
+/* Otherwise the row would carry its review to another function. */
+static int check_symbols(ObjcAnalysis *a, const char *id, const char *path, const char *symbol, char **symbols, size_t n) {
+    ObjcV0Function first, f;
+    char why[200];
+    size_t c, k;
+    int status = OBJC_OK;
+    memset(&first, 0, sizeof first);
+    for (c = 0; c < (symbol ? 1 : n) && status == OBJC_OK; c++) {
+        const char *sym = symbol ? symbol : symbols[c], *r;
+        if (objc_v0_function(sym, &f, why, sizeof why)) {
+            status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: symbol %s does not demangle (%s), so it is not the record's "
+                               "path %s; run drydock-objc resolve", id, sym, why, path);
+            break;
+        }
+        if (strcmp(f.path, path))
+            status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: symbol %s demangles to %s, not the record's path %s; "
+                               "run drydock-objc resolve", id, sym, f.path, path);
+        else if (c && (strcmp(f.own, first.own) || !objc_v0_copy_suffix(first.suffix) || !objc_v0_copy_suffix(f.suffix)))
+            status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: symbols %s and %s are not copies of one instance of the "
+                               "record's path %s; run drydock-objc resolve", id, symbols[0], sym, path);
+        for (r = f.roots; *r && status == OBJC_OK; r += strlen(r) + 1) {
+            const char *eq = strchr(r, '=');
+            size_t len = (size_t)(eq - r);
+            int named = 0, agrees = 0;
+            if ((len == 4 && !strncmp(r, "core", 4)) || (len == 5 && !strncmp(r, "alloc", 5)) || (len == 3 && !strncmp(r, "std", 3)))
+                continue;
+            for (k = 0; k < a->n_crates; k++)
+                if (a->crates[k].name && strlen(a->crates[k].name) == len && !strncmp(a->crates[k].name, r, len)) {
+                    named = 1;
+                    agrees |= a->crates[k].disambiguator && !strcmp(a->crates[k].disambiguator, eq + 1);
+                }
+            if (!agrees)
+                status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: symbol %s names crate %.*s with disambiguator %s, which "
+                                   "the build evidence %s; run drydock-objc resolve", id, sym, (int)len, r, eq + 1,
+                                   named ? "pins under another disambiguator" : "does not pin");
+        }
+        if (c) objc_v0_function_free(&f); else first = f;
+    }
+    objc_v0_function_free(&first);
+    return status;
+}
+
 /* Schema 2: in each copy of the record's function, the guarded sends classify.c measures, per
  * selector and call site, must be exactly the ones `covers` lists. */
 static int check_coverage(ObjcAnalysis *a, const ObjcGuardRecord *g) {
@@ -477,7 +521,8 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
                     size_t c;
                     u->checked = 1;
                     if (!resolved) unresolved(a, u->id, u->path);
-                    else if (check_sources(a, u->id, u->sources, u->nsources, "position-source-changed") == OBJC_OK) {
+                    else if (check_symbols(a, u->id, u->path, u->symbol, u->symbols, u->nsymbols) == OBJC_OK &&
+                             check_sources(a, u->id, u->sources, u->nsources, "position-source-changed") == OBJC_OK) {
                         u->valid = 1;
                         for (c = 0; c < (u->symbol ? 1 : u->nsymbols) && u->valid; c++)
                             u->valid = check_position_row(a, u, u->symbol ? u->symbol : u->symbols[c], types, crates) == OBJC_OK;
@@ -584,7 +629,8 @@ const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev) {
         if (a->be_schema != 2) return g;
         if (!g->checked) {
             g->checked = 1;
-            g->valid = check_sources(a, g->id, g->sources, g->nsources, "guard-source-changed") == OBJC_OK &&
+            g->valid = check_symbols(a, g->id, g->path, g->symbol, g->symbols, g->nsymbols) == OBJC_OK &&
+                       check_sources(a, g->id, g->sources, g->nsources, "guard-source-changed") == OBJC_OK &&
                        check_coverage(a, g) == OBJC_OK;
         }
         if (!g->valid) refused = 1;

@@ -13,6 +13,7 @@
  * drydock-objc resolve needs of a function symbol. */
 #include "report.h"
 #include "demangle-v0.h"
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -628,6 +629,17 @@ char *objc_demangle_v0(const char *symbol, char *why, size_t whysz) {
     v0_release(&p);
     free(cut);
     return out;
+}
+
+int objc_v0_copy_suffix(const char *s) {
+    while (*s) {
+        if (!strncmp(s, ".llvm.", 6) && isalnum((unsigned char)s[6])) for (s += 6; isalnum((unsigned char)*s); s++) ;
+        else if (!strncmp(s, ".cold", 5)) {
+            s += 5;
+            if (*s == '.' && isdigit((unsigned char)s[1])) for (s++; isdigit((unsigned char)*s); s++) ;
+        } else return 0;
+    }
+    return 1;
 }
 
 void objc_v0_function_free(ObjcV0Function *f) {

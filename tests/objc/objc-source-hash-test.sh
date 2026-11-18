@@ -19,9 +19,10 @@ SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
 cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 mkdir -p "$T/root/bin"
-cc "$FX/classify.c" -o "$T/root/bin/classify" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use
+cc "$FX/guard-coverage.c" -o "$T/root/bin/gc" -lobjc -Wl,-U,_fixture_use
 cc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
-C="$T/root/bin/classify"
+C="$T/root/bin/gc"
+GD=__RNvCs1Fx_7fixture7guarded
 R3B="$T/root/bin/r3"
 
 # The prepared tree, with a .git the digest leaves out, a symlink that stays inside and one that leaves.
@@ -108,7 +109,7 @@ ev2() {
 {"schema": 2, "kind": "objc-build-evidence",
  "artifact": {"path": "bin/x", "sha256": "$(sha "$1")"},
  "source": {"tree_sha256": "$3"},
- "crates": [], "type_map": [], "type_evidence": [], "binding_receipt": [],
+ "crates": [{"name": "fixture", "version": "0.1.0", "checksum": "c0", "disambiguator": "1Fx"}, {"name": "objc2", "version": "0.6.3", "checksum": "c1", "disambiguator": "2WYrep5oUp8"}], "type_map": [], "type_evidence": [], "binding_receipt": [],
  "position_evidence": [$5],
  "guards": [$4]}
 EOF
@@ -119,7 +120,7 @@ guard2() {  # guard2 ID FUNCTION SOURCES
 }
 FNR=__RNvXs6_NtNtCs2WYrep5oUp8_5objc27runtime15protocol_objectINtB5_14ProtocolObjectDNtNtB7_8nsobject16NSObjectProtocolEL_ENtNtCs5hICDV8pRVn_4core3fmt5Debug3fmtCsdIImX2SWmg2_16objc2_foundation
 pos2() {  # pos2 ID SOURCES
-  printf '{"id": "%s", "path": "objc2::runtime::protocol_object::fmt", "symbol": "%s", "selectors": ["UTF8String"], "kind": "-", "class": "NSString", "position": {"form": "result", "selector": "description"}, "sources": [%s]}' "$1" "$FNR" "$2"
+  printf '{"id": "%s", "path": "<objc2::runtime::protocol_object::ProtocolObject<dyn objc2::runtime::nsobject::NSObjectProtocol> as core::fmt::Debug>::fmt", "symbol": "%s", "selectors": ["UTF8String"], "kind": "-", "class": "NSString", "position": {"form": "result", "selector": "description"}, "sources": [%s]}' "$1" "$FNR" "$2"
 }
 n=0
 analyze() {  # analyze ARTIFACT EVIDENCE [OPTION VALUE]...: rc, $T/report, $T/err
@@ -138,14 +139,14 @@ only() {  # only NAME CODE DETAIL...: exit 4, exactly CODE, one CODE error holdi
   grep "\"code\": \"$code\"" "$T/report" >"$T/lines"
   for d in "$@"; do grep -F -- "$d" "$T/lines" >"$T/lines.next" || fail "$name: no $code detail with '$d'"; mv "$T/lines.next" "$T/lines"; done
 }
-guarded() {  # guarded NAME: no error, _guarded guarded by its record (exit 1: the fixture's own unsupported sends)
+guarded() {  # guarded NAME: no error, fixture::guarded guarded by its record (exit 1: the fixture's own unguarded send)
   [ "$rc" = 1 ] || fail "$1: exit $rc, want 1, errors '$(codes)'"
   [ -z "$(codes)" ] || fail "$1: errors '$(codes)'"
-  grep '"function": "_guarded"' "$T/report" | grep '"verdict": "guarded"' | grep -F "guard record g-$1" >/dev/null ||
-    fail "$1: _guarded is not guarded by g-$1"
+  grep "\"function\": \"$GD\"" "$T/report" | grep '"verdict": "guarded"' | grep -F "guard record g-$1" >/dev/null ||
+    fail "$1: fixture::guarded is not guarded by g-$1"
 }
-guard_case() {  # guard_case NAME SOURCES [TREE]: the classify fixture, its _guarded send's record citing SOURCES
-  ev2 "$C" "$T/ev-$1" "${3:-$TREE}" "$(guard2 "g-$1" _guarded "$2")" ''
+guard_case() {  # guard_case NAME SOURCES [TREE]: the guard fixture, its fixture::guarded send's record citing SOURCES
+  ev2 "$C" "$T/ev-$1" "${3:-$TREE}" "$(guard2 "g-$1" "$GD" "$2")" ''
   # shellcheck disable=SC2046
   analyze "$C" "$T/ev-$1" $(ROOTS)
 }
@@ -161,7 +162,7 @@ only changed_file guard-source-changed g-changed_file tui/src/system_motion.rs "
 grep -F 'tui/src/run.rs' "$T/report" >/dev/null && fail 'changed_file: the unchanged file was reported'
 
 # Every record a send uses is checked, not only the first.
-ev2 "$C" "$T/ev-two" "$TREE" "$(guard2 g-first _guarded "$(cite tree:tui/src/system_motion.rs "$MOTION")"), $(guard2 g-second _guarded "$(cite tree:tui/src/run.rs "$STALE")")" ''
+ev2 "$C" "$T/ev-two" "$TREE" "$(guard2 g-first "$GD" "$(cite tree:tui/src/system_motion.rs "$MOTION")"), $(guard2 g-second "$GD" "$(cite tree:tui/src/run.rs "$STALE")")" ''
 # shellcheck disable=SC2046
 analyze "$C" "$T/ev-two" $(ROOTS)
 grep '"code": "guard-source-changed"' "$T/report" | grep -F g-second >/dev/null || fail 'two records: the second was not checked'
@@ -191,19 +192,19 @@ guarded crate_prerelease
 guard_case sdk_cite "$(cite "sdk:$HDR" "$WS")"
 guarded sdk_cite
 mkdir -p "$K/$(dirname "$HDR")"; cp "$SDK/$HDR" "$K/$HDR"
-ev2 "$C" "$T/ev-sdk-other" "$TREE" "$(guard2 g-sdk_other _guarded "$(cite "sdk:$HDR" "$WS")")" ''
+ev2 "$C" "$T/ev-sdk-other" "$TREE" "$(guard2 g-sdk_other "$GD" "$(cite "sdk:$HDR" "$WS")")" ''
 analyze "$C" "$T/ev-sdk-other" --source-root "$S" --sdk-root "$K"
 only sdk_other citation-unverifiable g-sdk_other "sdk:$HDR" 'pinned floor SDK' "$K"
 guard_case crate_changed "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$STALE")"
 only crate_changed guard-source-changed g-crate_changed "$STALE" "$VIEW"
 
 # A root not given leaves its cites uncheckable.
-ev2 "$C" "$T/ev-noroot" "$TREE" "$(guard2 g-noroot _guarded "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")")" ''
+ev2 "$C" "$T/ev-noroot" "$TREE" "$(guard2 g-noroot "$GD" "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")")" ''
 analyze "$C" "$T/ev-noroot" --source-root "$S"
 only noroot citation-unverifiable g-noroot crate:objc2-app-kit-0.3.1/src/generated/NSView.rs
 
 # No row is used against a tree nobody verified, even one that cites no tree: file.
-ev2 "$C" "$T/ev-notree" "$TREE" "$(guard2 g-notree _guarded "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")")" ''
+ev2 "$C" "$T/ev-notree" "$TREE" "$(guard2 g-notree "$GD" "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")")" ''
 analyze "$C" "$T/ev-notree" --crate-sources "$CR"
 only notree source-tree-mismatch g-notree --source-root
 grep '"verdict": "guarded"' "$T/report" >/dev/null && fail 'notree: the row closed a send without a verified tree'

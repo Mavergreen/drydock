@@ -48,7 +48,6 @@
  * capture did not load, each class or dependency that keeps R1 off, and whether R1 applies. */
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fnmatch.h>
@@ -1552,17 +1551,6 @@ static int rv_component(const char *path, const char *name, const char *version,
     return 0;
 }
 
-static int rv_copy_suffix(const char *s) {
-    while (*s) {
-        if (!strncmp(s, ".llvm.", 6) && isalnum((unsigned char)s[6])) for (s += 6; isalnum((unsigned char)*s); s++) ;
-        else if (!strncmp(s, ".cold", 5)) {
-            s += 5;
-            if (*s == '.' && isdigit((unsigned char)s[1])) for (s++; isdigit((unsigned char)*s); s++) ;
-        } else return 0;
-    }
-    return 1;
-}
-
 static int rv_sort(const void *x, const void *y) { return strcmp(*(char *const *)x, *(char *const *)y); }
 
 static void jvalue(Out *o, id v, int depth);
@@ -1731,7 +1719,7 @@ static int resolve_main(int argc, char **argv) {
                 if (k < nhit) continue;
                 if (objc_strv_push(&hit, &nhit, fns[j].name)) { objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done; }
                 if (!own) own = fns[j].f.own;
-                copies &= !strcmp(own, fns[j].f.own) && rv_copy_suffix(fns[j].f.suffix);
+                copies &= !strcmp(own, fns[j].f.own) && objc_v0_copy_suffix(fns[j].f.suffix);
             }
             qsort(hit, nhit, sizeof *hit, rv_sort);
             if (!nhit) objc_fail(a, "stale-build-evidence", NULL, 0, "%s: no function of %s has path %s", where, v[0], cs(path));

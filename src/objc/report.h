@@ -362,6 +362,9 @@ typedef struct {
 } ObjcV0Function;
 int objc_v0_function(const char *symbol, ObjcV0Function *f, char *why, size_t whysz);
 void objc_v0_function_free(ObjcV0Function *f);
+/* Whether a suffix past the mangling ("", ".llvm.N", ".cold", ".cold.N", in any sequence) is one copies of
+ * one generic instance may differ by. */
+int objc_v0_copy_suffix(const char *s);
 
 /* reference.c: loads signatures_path and facts_path when set. 0 = loaded (or nothing asked),
  * 4 = unreadable or malformed. */
