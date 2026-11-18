@@ -38,6 +38,10 @@ CR="$T/crates"
 mkdir -p "$CR/objc2-app-kit-0.3.1/src/generated" "$CR/foo-1.0.0-beta.1/src"
 printf 'pub fn subviews() {}\n' >"$CR/objc2-app-kit-0.3.1/src/generated/NSView.rs"
 printf 'pub fn x() {}\n' >"$CR/foo-1.0.0-beta.1/src/x.rs"
+# Another version of a pinned crate, and a crate nobody pins, each holding a file with the cited hash.
+mkdir -p "$CR/objc2-app-kit-0.3.0/src/generated" "$CR/stray-0.3.1/src/generated"
+cp "$CR/objc2-app-kit-0.3.1/src/generated/NSView.rs" "$CR/objc2-app-kit-0.3.0/src/generated/NSView.rs"
+cp "$CR/objc2-app-kit-0.3.1/src/generated/NSView.rs" "$CR/stray-0.3.1/src/generated/NSView.rs"
 HDR=System/Library/Frameworks/AppKit.framework/Headers/NSWorkspace.h
 [ -f "$SDK/$HDR" ] || fail "the pinned SDK has no $HDR"
 
@@ -103,13 +107,15 @@ rc=0; "$DRYDOCK_OBJC" evidence --sdk-digest-only >/dev/null 2>&1 || rc=$?
 [ "$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$SDK")" = "$(sed -n 's/.*"header_tree_sha256": "\([0-9a-f]*\)".*/\1/p' "$REF/manifest.json" | head -1)" ] ||
   fail 'the pinned floor SDK does not have the manifest header_tree_sha256'
 
+# A crate: cite holds only for a pinned crate's version; a name's "_" matches the directory's "-".
+CRATES='{"name": "fixture", "version": "0.1.0", "checksum": "c0", "disambiguator": "1Fx"}, {"name": "objc2", "version": "0.6.3", "checksum": "c1", "disambiguator": "2WYrep5oUp8"}, {"name": "objc2_app_kit", "version": "0.3.1", "checksum": "c2", "disambiguator": "3Ak"}, {"name": "foo", "version": "1.0.0-beta.1", "checksum": "c3", "disambiguator": "4Fo"}'
 # ev2 ARTIFACT OUT TREE GUARDS POSITIONS: schema-2 evidence bound to ARTIFACT.
 ev2() {
   cat >"$2" <<EOF
 {"schema": 2, "kind": "objc-build-evidence",
  "artifact": {"path": "bin/x", "sha256": "$(sha "$1")"},
  "source": {"tree_sha256": "$3"},
- "crates": [{"name": "fixture", "version": "0.1.0", "checksum": "c0", "disambiguator": "1Fx"}, {"name": "objc2", "version": "0.6.3", "checksum": "c1", "disambiguator": "2WYrep5oUp8"}], "type_map": [], "type_evidence": [], "binding_receipt": [],
+ "crates": [$CRATES], "type_map": [], "type_evidence": [], "binding_receipt": [],
  "position_evidence": [$5],
  "guards": [$4]}
 EOF
@@ -188,6 +194,11 @@ guard_case crate_cite "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs 
 guarded crate_cite
 guard_case crate_prerelease "$(cite crate:foo-1.0.0-beta.1/src/x.rs "$PRE")"
 guarded crate_prerelease
+# A crate directory the evidence does not pin is refused, even holding a file with the recorded hash.
+guard_case crate_unpinned_version "$(cite crate:objc2-app-kit-0.3.0/src/generated/NSView.rs "$VIEW")"
+only crate_unpinned_version citation-unverifiable g-crate_unpinned_version crate:objc2-app-kit-0.3.0/src/generated/NSView.rs 'pins no crate'
+guard_case crate_unpinned_name "$(cite crate:stray-0.3.1/src/generated/NSView.rs "$VIEW")"
+only crate_unpinned_name citation-unverifiable g-crate_unpinned_name crate:stray-0.3.1/src/generated/NSView.rs 'pins no crate'
 # An sdk: cite verifies under the pinned floor SDK, and is refused under any other SDK root.
 guard_case sdk_cite "$(cite "sdk:$HDR" "$WS")"
 guarded sdk_cite

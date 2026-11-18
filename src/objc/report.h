@@ -456,6 +456,8 @@ int objc_dwarf_lines(const uint8_t *sect, size_t size, const uint8_t *line_str, 
 int objc_tree_digest(const char *root, char out[65]);
 int objc_sdk_header_digest(const char *root, char out[65]);
 int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]);
+/* The crates[] entry a crate:NAME-VERSION/ cite names (a "-" in NAME matching a "_"), or NULL. */
+const ObjcCrate *objc_cite_crate(const ObjcAnalysis *a, const char *cite);
 /* The reviewed guard record for the dispatch evidence at index `ev` (its function and
  * selector), or NULL. */
 const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev);

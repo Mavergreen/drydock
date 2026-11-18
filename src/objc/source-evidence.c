@@ -55,7 +55,8 @@
  *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer
  *     hashes every cited file itself (source-hash.c). A file whose hash differs is
  *     guard-source-changed or position-source-changed, naming the cite and both hashes; a cite it
- *     cannot check (no root, no file, a path leaving its root, an sdk: cite when --sdk-root's header
+ *     cannot check (no root, no file, a path leaving its root, a crate: cite whose NAME-VERSION no crates[]
+ *     entry pins, an sdk: cite when --sdk-root's header
  *     digest is not the reference manifest's floor SDK's) is citation-unverifiable. A row matches a send by its resolved symbol(s)
  *     (an LLVM suffix ignored), which must be what drydock-objc resolve writes for its path -- each demangles to it,
  *     several are copies of one instance, every non-toolchain crate they name is pinned under their disambiguator --
@@ -394,6 +395,9 @@ static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, siz
                                "the pinned floor SDK, and --sdk-root %s is not it (its header digest is not the reference "
                                "manifest's floor_sdk.header_tree_sha256 %s)", id, c[i].cite, a->sdk_root ? a->sdk_root : "(not given)",
                                a->floor_sdk_header_tree_sha256 ? a->floor_sdk_header_tree_sha256 : "(none)");
+        else if (!strncmp(c[i].cite, "crate:", 6) && !objc_cite_crate(a, c[i].cite))
+            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: the build evidence pins no crate of "
+                               "that name and version", id, c[i].cite);
         else if (objc_cite_sha256(a, c[i].cite, h))
             status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: its root is not given, the file is "
                                "missing or not a regular file, or its path leaves its root", id, c[i].cite);

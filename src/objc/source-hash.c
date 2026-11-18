@@ -15,7 +15,7 @@
  * A cite resolves tree:PATH under the source root, crate:NAME-VERSION/PATH under
  * <crate sources>/NAME-VERSION, sdk:PATH under the SDK root. It is uncheckable (-1) when the root
  * is not given or missing, the path has a .. component, its real path leaves its root, or it is not
- * a regular file. */
+ * a regular file; a crate: cite also when no crates[] entry pins that NAME and VERSION. */
 /* platform: lstat, readlink and realpath under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE
@@ -180,6 +180,19 @@ static int inside(const char *root, const char *rel, char *real) {
     return !strncmp(real, rroot, k) && real[k] == '/' ? 0 : -1;
 }
 
+const ObjcCrate *objc_cite_crate(const ObjcAnalysis *a, const char *cite) {
+    const char *dir = cite + 6, *slash = strchr(dir, '/');
+    size_t i, k, n;
+    if (strncmp(cite, "crate:", 6) || !slash) return NULL;
+    for (i = 0; i < a->n_crates; i++) {
+        const ObjcCrate *c = &a->crates[i];
+        if (!c->name || !c->version || (n = strlen(c->name)) + 1 + strlen(c->version) != (size_t)(slash - dir) || dir[n] != '-') continue;
+        for (k = 0; k < n && (dir[k] == c->name[k] || (strchr("-_", dir[k]) && strchr("-_", c->name[k]))); k++) ;
+        if (k == n && !strncmp(dir + n + 1, c->version, strlen(c->version))) return c;
+    }
+    return NULL;
+}
+
 int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]) {
     char real[PATH_MAX], crate[PATH_MAX], dir[PATH_MAX];
     struct stat st;
@@ -190,7 +203,7 @@ int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]) {
     } else if (!strncmp(cite, "crate:", 6)) {
         const char *slash = strchr(cite + 6, '/');
         size_t n = slash ? (size_t)(slash - (cite + 6)) : 0;
-        if (!n || n >= sizeof crate) return -1;
+        if (!n || n >= sizeof crate || !objc_cite_crate(a, cite)) return -1;
         memcpy(crate, cite + 6, n); crate[n] = 0;
         if (inside(a->crate_sources, crate, dir) || inside(dir, slash + 1, real)) return -1;
     } else return -1;
