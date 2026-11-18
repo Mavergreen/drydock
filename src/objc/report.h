@@ -216,7 +216,7 @@ typedef struct {
     char **selectors; size_t nselectors;
     char *path, *note; char **symbols; size_t nsymbols;     /* schema 2 */
     ObjcCite *sources; size_t nsources;
-    int used, checked;
+    int used, checked, valid;
 } ObjcPositionEvidence;
 typedef struct {
     char *id, *symbol, *selector, *guard_selector, *fallback;
@@ -226,7 +226,7 @@ typedef struct {
     char *path; char **symbols; size_t nsymbols;            /* schema 2 */
     ObjcCite *sources; size_t nsources;
     ObjcCover *covers; size_t ncovers;
-    int used, checked;
+    int used, checked, valid;
 } ObjcGuardRecord;
 
 typedef enum { OBJC_FLOOR_SUPPORTED, OBJC_PROVIDED, OBJC_GUARDED, OBJC_UNSUPPORTED, OBJC_UNRESOLVED } ObjcVerdict;
@@ -437,10 +437,14 @@ int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]);
 /* The reviewed guard record for the dispatch evidence at index `ev` (its function and
  * selector), or NULL. */
 const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev);
+/* A schema-2 row's sources as "CITE sha256:HASH; ...". */
+void objc_cites_text(const ObjcCite *c, size_t n, char *buf, size_t bufsz);
 
 /* classify.c: closure (open sends become findings), R2, downcast refinement, then one verdict
  * per send. 0 measured, 4 cannot-measure. */
 int objc_classify_findings(ObjcAnalysis *a);
+/* Whether classify.c measures a respondsToSelector: guard of send `si`'s own selector. */
+int objc_send_guarded(ObjcAnalysis *a, size_t si);
 const char *objc_verdict_name(ObjcVerdict v);
 /* The floor capture's role for a dependency path (required, loaded, override...), or NULL when the
  * capture did not load it. */

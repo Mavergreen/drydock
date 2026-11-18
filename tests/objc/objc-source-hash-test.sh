@@ -105,16 +105,21 @@ only() {  # only NAME CODE DETAIL...: exit 4, exactly CODE, one CODE error holdi
   grep "\"code\": \"$code\"" "$T/report" >"$T/lines"
   for d in "$@"; do grep -F -- "$d" "$T/lines" >"$T/lines.next" || fail "$name: no $code detail with '$d'"; mv "$T/lines.next" "$T/lines"; done
 }
-PENDING='its sources verify; the remaining schema-2 rules are pending, so it closes nothing'
+guarded() {  # guarded NAME: no error, _guarded guarded by its record (exit 1: the fixture's own unsupported sends)
+  [ "$rc" = 1 ] || fail "$1: exit $rc, want 1, errors '$(codes)'"
+  [ -z "$(codes)" ] || fail "$1: errors '$(codes)'"
+  grep '"function": "_guarded"' "$T/report" | grep '"verdict": "guarded"' | grep -F "guard record g-$1" >/dev/null ||
+    fail "$1: _guarded is not guarded by g-$1"
+}
 guard_case() {  # guard_case NAME SOURCES [TREE]: the classify fixture, its _guarded send's record citing SOURCES
   ev2 "$C" "$T/ev-$1" "${3:-$TREE}" "$(guard2 "g-$1" _guarded "$2")" ''
   # shellcheck disable=SC2046
   analyze "$C" "$T/ev-$1" $(ROOTS)
 }
 
-# matches: every cited file has its recorded hash, so nothing but the pending rules keeps the record from use.
+# matches: every cited file has its recorded hash.
 guard_case matches "$(cite tree:tui/src/system_motion.rs "$MOTION")"
-only matches citation-unverifiable g-matches "$PENDING"
+guarded matches
 grep -F '"unused_guard_records": []' "$T/report" >/dev/null || fail 'matches: the record was not used'
 
 # changed_file: the cited file is not the one reviewed; the error names the cite and both hashes.
@@ -142,15 +147,16 @@ only escape_dotdot citation-unverifiable g-escape_dotdot tree:../outside/x.rs
 guard_case escape_symlink "$(cite tree:out/x.rs "$OUT")"
 only escape_symlink citation-unverifiable g-escape_symlink tree:out/x.rs
 guard_case inside_symlink "$(cite tree:inside/src/system_motion.rs "$MOTION")"
-only inside_symlink citation-unverifiable g-inside_symlink "$PENDING"
+guarded inside_symlink
 
-# crate_cite and sdk_cite resolve under --crate-sources and --sdk-root, and match.
+# crate_cite resolves under --crate-sources, and matches.
 guard_case crate_cite "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")"
-only crate_cite citation-unverifiable g-crate_cite "$PENDING"
+guarded crate_cite
 guard_case crate_prerelease "$(cite crate:foo-1.0.0-beta.1/src/x.rs "$PRE")"
-only crate_prerelease citation-unverifiable g-crate_prerelease "$PENDING"
+guarded crate_prerelease
+# An sdk: cite verifies only against the pinned floor SDK, which the analyzer does not yet identify: refused.
 guard_case sdk_cite "$(cite "sdk:$HDR" "$WS")"
-only sdk_cite citation-unverifiable g-sdk_cite "$PENDING"
+only sdk_cite citation-unverifiable g-sdk_cite "sdk:$HDR" 'pinned floor SDK'
 guard_case crate_changed "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$STALE")"
 only crate_changed guard-source-changed g-crate_changed "$STALE" "$VIEW"
 
@@ -163,7 +169,7 @@ only noroot citation-unverifiable g-noroot crate:objc2-app-kit-0.3.1/src/generat
 ev2 "$C" "$T/ev-notree" "$TREE" "$(guard2 g-notree _guarded "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")")" ''
 analyze "$C" "$T/ev-notree" --crate-sources "$CR"
 only notree source-tree-mismatch g-notree --source-root
-grep -F 'remaining schema-2 rules are pending' "$T/report" >/dev/null && fail 'notree: the row reached use without a verified tree'
+grep '"verdict": "guarded"' "$T/report" >/dev/null && fail 'notree: the row closed a send without a verified tree'
 
 # A record no send uses is reported unused and fails nothing, whatever it cites.
 ev2 "$C" "$T/ev-unused" "$TREE" "$(guard2 g-unused _no_such_function "$(cite tree:tui/src/system_motion.rs "$STALE")")" ''
@@ -181,7 +187,8 @@ only pos_changed position-source-changed p-changed tui/src/run.rs "$STALE" "$RUN
 ev2 "$R3B" "$T/ev-pos-match" "$TREE" '' "$(pos2 p-match "$(cite tree:tui/src/run.rs "$RUN")")"
 # shellcheck disable=SC2046
 analyze "$R3B" "$T/ev-pos-match" $(ROOTS)
-only pos_match citation-unverifiable p-match "$PENDING"
+# Its sources verify, so the row's binary-side checks run: this evidence pins no crate the symbol names.
+only pos_match unpinned-crate p-match
 grep '"receiver_closure": "R3"' "$T/report" >/dev/null && fail 'pos_match: a schema-2 row closed a send'
 
 # The roots belong to build evidence.

@@ -1,0 +1,42 @@
+/* Fixture: schema-2 guard coverage. Literal sel_registerName / objc_getClass producers, as in
+ * classify.c, so every receiver closes by measurement. Linked against the pinned 10.9 SDK, read
+ * as bytes, never executed.
+ *   guarded        one guarded send of a later method
+ *   guarded_twice  two guarded sends of it in one function
+ *   unguarded      the same send with no guard */
+#include <objc/runtime.h>
+#include <objc/message.h>
+
+typedef void *obj_t;
+typedef signed char BOOLish;
+extern void fixture_use(void *p);
+
+#define CLS(n) ((obj_t)objc_getClass(n))
+#define SEL_(n) sel_registerName(n)
+#define SEND0(r, s) ((obj_t (*)(obj_t, SEL))objc_msgSend)((r), SEL_(s))
+#define ASK(r, s, a) ((BOOLish (*)(obj_t, SEL, void *))objc_msgSend)((r), SEL_(s), (void *)(a))
+#define N __attribute__((noinline, used))
+#define LATER "accessibilityDisplayShouldReduceMotion"
+
+static inline __attribute__((always_inline)) obj_t workspace(void) { return SEND0(CLS("NSWorkspace"), "sharedWorkspace"); }
+
+N long guarded(void) {
+    obj_t ws = workspace();
+    if (ASK(ws, "respondsToSelector:", SEL_(LATER))) return (long)SEND0(ws, LATER);
+    return 0;
+}
+N long guarded_twice(void) {
+    obj_t ws = workspace();
+    long r = 0;
+    if (ASK(ws, "respondsToSelector:", SEL_(LATER))) r += (long)SEND0(ws, LATER);
+    fixture_use(&r);
+    if (ASK(ws, "respondsToSelector:", SEL_(LATER))) r += (long)SEND0(ws, LATER);
+    return r;
+}
+N long unguarded(void) { return (long)SEND0(workspace(), LATER); }
+
+int main(int argc, char **argv) {
+    (void)argv;
+    if (argc > 99) return (int)(guarded() + guarded_twice() + unguarded());
+    return 0;
+}

@@ -52,12 +52,18 @@
  *     disambiguator?}. The front end parses this strictly (an unknown key or a missing part is
  *     malformed-build-evidence). With --source-root, its digest must be source.tree_sha256
  *     (source-tree-mismatch); a row in use without --source-root is source-tree-mismatch too, since
- *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer hashes every cited
- *     file itself (source-hash.c). A file whose hash differs is guard-source-changed or
- *     position-source-changed, naming the cite and both hashes; a cite it cannot check (no root, no
- *     file, a path leaving its root) is citation-unverifiable. The rest of schema 2's validity rules
- *     are pending, so even a row whose sources all verify closes nothing: it is citation-unverifiable
- *     too, and says so. A row no send uses is reported unused.
+ *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer
+ *     hashes every cited file itself (source-hash.c). A file whose hash differs is
+ *     guard-source-changed or position-source-changed, naming the cite and both hashes; a cite it
+ *     cannot check (no root, no file, a path leaving its root, any sdk: cite until the pinned floor
+ *     SDK is identified) is citation-unverifiable. A row matches a send by its resolved symbol(s)
+ *     (an LLVM suffix ignored); a row with none that a send's selector would use is
+ *     malformed-build-evidence (run drydock-objc resolve). A guard record holds only when, in each
+ *     copy it names, the guarded sends classify.c measures, per selector and call site, are exactly
+ *     its covers (guard-coverage-changed otherwise), and classify.c still needs the measured guard;
+ *     any matching record that fails keeps the send unguarded. An R3 row then meets the schema-1
+ *     row checks for each symbol and closes as schema 1 does. Provenance is reported in the proof,
+ *     never compared. A row no send uses is reported unused.
  *   - Source receipts (--source-receipt; tools/objc-source-inventory.c writes them with libclang,
  *     this module only reads them). They apply to an Objective-C provider's own code and nothing
  *     else: a send closes from a receipt only when it lies in an atom provider.c verified byte for
@@ -150,6 +156,53 @@ static int crates_agree(ObjcAnalysis *a, const char *cbuf, const char *where) {
 
 static int nonempty(const char *s) { return s && *s; }
 
+/* One R3 row, naming its function by `symbol`: complete, a known form, a floor class, every
+ * non-toolchain crate root pinned and agreeing. types and crates are TYPES_MAX scratch buffers. */
+static int check_position_row(ObjcAnalysis *a, ObjcPositionEvidence *t, const char *symbol, char *types, char *crates) {
+    size_t i = (size_t)(t - a->positions);
+    const char *c;
+    char why[200];
+    size_t j;
+    int result, downcast, field, status = OBJC_OK;
+    if (!nonempty(t->id) || !nonempty(symbol) || !nonempty(t->cls) || (a->be_schema != 2 && !nonempty(t->source)) ||
+        !t->nselectors || !t->kind || (strcmp(t->kind, "+") && strcmp(t->kind, "-")) || !nonempty(t->form))
+        return objc_fail(a, "malformed-build-evidence", NULL, 0, "position evidence %zu incomplete", i + 1);
+    result = !strcmp(t->form, "result"); downcast = !strcmp(t->form, "downcast"); field = !strcmp(t->form, "field");
+    if ((!result && !downcast && !field) || (result && !nonempty(t->position_selector)) ||
+        ((downcast || field) && !nonempty(t->rust_type)) || (field && !nonempty(t->field)))
+        return objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: position form %s or its fields", t->id, t->form);
+    for (j = 0; j < t->nselectors; j++)
+        if (!nonempty(t->selectors[j])) status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: empty selector", t->id);
+    if (status) return status;
+    if (!objc_map_get(a->rt_class, t->cls))
+        return objc_fail(a, "unknown-class", NULL, 0, "%s: %s is not a class of the floor capture", t->id, t->cls);
+    if (strncmp(symbol, "__R", 3) && strncmp(symbol, "_R", 2))
+        return objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s is not a Rust v0 symbol", t->id, symbol);
+    if (objc_binding_symbol_types(symbol, types, TYPES_MAX, crates, TYPES_MAX, why, sizeof why))
+        return objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s", t->id, why);
+    for (c = crates; *c && status == OBJC_OK; c += strlen(c) + 1) {
+        char name[256];
+        const char *eq = strchr(c, '=');
+        size_t n = eq ? (size_t)(eq - c) : 0;
+        if (!eq || n >= sizeof name) continue;
+        memcpy(name, c, n); name[n] = 0;
+        /* the toolchain's crates have no registry checksum; the toolchain identity binds them */
+        if (strcmp(name, "core") && strcmp(name, "alloc") && strcmp(name, "std") && !pinned(a, name))
+            status = objc_fail(a, "unpinned-crate", NULL, 0, "%s: %s names crate %s, which the evidence does not pin", t->id, symbol, name);
+    }
+    if (status == OBJC_OK) status = crates_agree(a, crates, t->id);
+    if (status) return status;
+    if (downcast) {
+        const ObjcTypeMap *m = type_map(a, t->rust_type);
+        if (!m) return objc_fail(a, "unmapped-rust-type", NULL, 0, "%s: %s has no declared Objective-C class in the type map", t->id, t->rust_type);
+        if (strcmp(m->cls, t->cls))
+            return objc_fail(a, "position-contradicted", NULL, 0, "%s: a downcast to %s yields %s, not %s", t->id, t->rust_type, m->cls, t->cls);
+    }
+    if (field && !has_type(types, t->rust_type))
+        return objc_fail(a, "type-evidence-not-in-symbol", NULL, 0, "%s: %s is not in the impl self type of %s", t->id, t->rust_type, symbol);
+    return OBJC_OK;
+}
+
 int objc_check_build_evidence(ObjcAnalysis *a) {
     size_t i;
     int status = OBJC_OK;
@@ -233,58 +286,8 @@ int objc_check_build_evidence(ObjcAnalysis *a) {
         return status;
     }
     /* R3 rows: complete, a known form, a floor class, every non-toolchain crate root pinned and agreeing. */
-    for (i = 0; i < a->n_positions && status == OBJC_OK; i++) {
-        ObjcPositionEvidence *t = &a->positions[i];
-        const char *c;
-        size_t j;
-        int result, downcast, field;
-        if (!nonempty(t->id) || !nonempty(t->symbol) || !nonempty(t->cls) || !nonempty(t->source) || !t->nselectors ||
-            !t->kind || (strcmp(t->kind, "+") && strcmp(t->kind, "-")) || !nonempty(t->form)) {
-            status = objc_fail(a, "malformed-build-evidence", NULL, 0, "position evidence %zu incomplete", i + 1);
-            break;
-        }
-        result = !strcmp(t->form, "result"); downcast = !strcmp(t->form, "downcast"); field = !strcmp(t->form, "field");
-        if ((!result && !downcast && !field) || (result && !nonempty(t->position_selector)) ||
-            ((downcast || field) && !nonempty(t->rust_type)) || (field && !nonempty(t->field))) {
-            status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: position form %s or its fields", t->id, t->form);
-            break;
-        }
-        for (j = 0; j < t->nselectors; j++)
-            if (!nonempty(t->selectors[j])) status = objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: empty selector", t->id);
-        if (status) break;
-        if (!objc_map_get(a->rt_class, t->cls)) {
-            status = objc_fail(a, "unknown-class", NULL, 0, "%s: %s is not a class of the floor capture", t->id, t->cls);
-            break;
-        }
-        if (strncmp(t->symbol, "__R", 3) && strncmp(t->symbol, "_R", 2)) {
-            status = objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s is not a Rust v0 symbol", t->id, t->symbol);
-            break;
-        }
-        if (objc_binding_symbol_types(t->symbol, types, TYPES_MAX, crates, TYPES_MAX, why, sizeof why)) {
-            status = objc_fail(a, "unsupported-type-evidence", NULL, 0, "%s: %s", t->id, why);
-            break;
-        }
-        for (c = crates; *c && status == OBJC_OK; c += strlen(c) + 1) {
-            char name[256];
-            const char *eq = strchr(c, '=');
-            size_t n = eq ? (size_t)(eq - c) : 0;
-            if (!eq || n >= sizeof name) continue;
-            memcpy(name, c, n); name[n] = 0;
-            /* the toolchain's crates have no registry checksum; the toolchain identity binds them */
-            if (strcmp(name, "core") && strcmp(name, "alloc") && strcmp(name, "std") && !pinned(a, name))
-                status = objc_fail(a, "unpinned-crate", NULL, 0, "%s: %s names crate %s, which the evidence does not pin", t->id, t->symbol, name);
-        }
-        if (status == OBJC_OK) status = crates_agree(a, crates, t->id);
-        if (status) break;
-        if (downcast) {
-            const ObjcTypeMap *m = type_map(a, t->rust_type);
-            if (!m) status = objc_fail(a, "unmapped-rust-type", NULL, 0, "%s: %s has no declared Objective-C class in the type map", t->id, t->rust_type);
-            else if (strcmp(m->cls, t->cls))
-                status = objc_fail(a, "position-contradicted", NULL, 0, "%s: a downcast to %s yields %s, not %s", t->id, t->rust_type, m->cls, t->cls);
-        }
-        if (field && !has_type(types, t->rust_type))
-            status = objc_fail(a, "type-evidence-not-in-symbol", NULL, 0, "%s: %s is not in the impl self type of %s", t->id, t->rust_type, t->symbol);
-    }
+    for (i = 0; i < a->n_positions && status == OBJC_OK; i++)
+        status = check_position_row(a, &a->positions[i], a->positions[i].symbol, types, crates);
     for (i = 0; i < a->n_guards && status == OBJC_OK; i++) {
         const ObjcGuardRecord *g = &a->guards[i];
         if (!nonempty(g->id) || !nonempty(g->symbol) || !nonempty(g->selector) || !nonempty(g->guard_selector) ||
@@ -357,6 +360,13 @@ static int names_function(const char *fn, const char *symbol, char **symbols, si
     return 0;
 }
 
+void objc_cites_text(const ObjcCite *c, size_t n, char *buf, size_t bufsz) {
+    size_t i, at = 0;
+    if (bufsz) buf[0] = 0;
+    for (i = 0; i < n && at < bufsz; i++)
+        at += (size_t)snprintf(buf + at, bufsz - at, "%s%s sha256:%s", i ? "; " : "", c[i].cite, c[i].sha256);
+}
+
 /* A schema-2 row in use: every cite hashed here, against the hash it records. */
 static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, size_t n, const char *changed) {
     size_t i;
@@ -366,15 +376,60 @@ static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, siz
                          "was not verified", id, a->be_tree_sha256);
     for (i = 0; i < n; i++) {
         char h[65];
-        if (objc_cite_sha256(a, c[i].cite, h))
+        if (!strncmp(c[i].cite, "sdk:", 4))
+            status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: an sdk: cite verifies only against "
+                               "the pinned floor SDK, which this analyzer does not yet identify", id, c[i].cite);
+        else if (objc_cite_sha256(a, c[i].cite, h))
             status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: %s cannot be checked: its root is not given, the file is "
                                "missing or not a regular file, or its path leaves its root", id, c[i].cite);
         else if (strcmp(h, c[i].sha256))
             status = objc_fail(a, changed, NULL, 0, "%s: %s has sha256 %s; the record was reviewed at %s", id, c[i].cite, h, c[i].sha256);
     }
-    if (status == OBJC_OK)
-        status = objc_fail(a, "citation-unverifiable", NULL, 0, "%s: its sources verify; the remaining schema-2 rules are pending, "
-                           "so it closes nothing", id);
+    return status;
+}
+
+/* A row that names no resolved symbol: a send that would use it cannot, so the evidence is refused. */
+static int unresolved(ObjcAnalysis *a, const char *id, const char *path) {
+    return objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: unresolved path %s has no symbol; run drydock-objc resolve", id, path);
+}
+
+/* Schema 2: in each copy of the record's function, the guarded sends classify.c measures, per
+ * selector and call site, must be exactly the ones `covers` lists. */
+static int check_coverage(ObjcAnalysis *a, const ObjcGuardRecord *g) {
+    size_t c, k, i, j;
+    char fn[4096], other[4096], seen[4096];
+    int status = OBJC_OK;
+    for (c = 0; c < (g->symbol ? 1 : g->nsymbols) && status == OBJC_OK; c++) {
+        uint64_t *got;
+        base_symbol(g->symbol ? g->symbol : g->symbols[c], fn, sizeof fn);
+        for (k = 0; k < c; k++) { base_symbol(g->symbols[k], seen, sizeof seen); if (!strcmp(seen, fn)) break; }
+        if (k < c) continue;
+        if (!(got = calloc(g->ncovers + 1, sizeof *got))) return objc_fail(a, "out-of-memory", NULL, 0, "coverage");
+        for (i = 0; i < a->n_sends && status == OBJC_OK; i++) {
+            const ObjcSend *s = &a->sends[i];
+            const ObjcEvidence *e = &a->evidence[s->evidence];
+            if (!e->function || !s->selector) continue;
+            base_symbol(e->function, other, sizeof other);
+            if (strcmp(fn, other) || !objc_send_guarded(a, i)) continue;
+            for (j = 0; j < i; j++) {   /* one call site reached on several paths is one send */
+                const ObjcSend *t = &a->sends[j];
+                const ObjcEvidence *f = &a->evidence[t->evidence];
+                if (f->address == e->address && f->slice && e->slice && !strcmp(f->slice, e->slice) && t->selector && !strcmp(t->selector, s->selector) &&
+                    f->function && !strcmp(f->function, e->function) && objc_send_guarded(a, j)) break;
+            }
+            if (j < i) continue;
+            for (k = 0; k < g->ncovers && strcmp(g->covers[k].selector, s->selector); k++) ;
+            if (k == g->ncovers)
+                status = objc_fail(a, "guard-coverage-changed", e->slice, e->address, "%s: %s measures a guarded %s send the record does "
+                                   "not cover (measures 1 or more, covers 0)", g->id, fn, s->selector);
+            else got[k]++;
+        }
+        for (k = 0; k < g->ncovers && status == OBJC_OK; k++)
+            if (got[k] != g->covers[k].count)
+                status = objc_fail(a, "guard-coverage-changed", NULL, 0, "%s: %s measures %llu guarded %s sends; the record covers %llu",
+                                   g->id, fn, (unsigned long long)got[k], g->covers[k].selector, (unsigned long long)g->covers[k].count);
+        free(got);
+    }
     return status;
 }
 
@@ -388,9 +443,11 @@ static int check_sources(ObjcAnalysis *a, const char *id, const ObjcCite *c, siz
  * send another rule closed they are used when it names their class or a subclass, with their kind. */
 int objc_apply_position_evidence(ObjcAnalysis *a) {
     size_t i, j, k;
-    char fn[4096], row[4096];
+    char fn[4096];
     int status = OBJC_OK;
     if (a->be_schema == 2) {
+        char *types = malloc(TYPES_MAX), *crates = malloc(TYPES_MAX);
+        if (!types || !crates) { free(types); free(crates); return objc_fail(a, "out-of-memory", NULL, 0, "R3"); }
         for (i = 0; i < a->n_sends; i++) {
             const ObjcSend *s = &a->sends[i];
             const ObjcEvidence *e = &a->evidence[s->evidence];
@@ -398,23 +455,32 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
             base_symbol(e->function, fn, sizeof fn);
             for (j = 0; j < a->n_positions; j++) {
                 ObjcPositionEvidence *u = &a->positions[j];
-                if (!names_function(fn, u->symbol, u->symbols, u->nsymbols)) continue;
+                int resolved = u->symbol || u->nsymbols;
+                if (resolved && !names_function(fn, u->symbol, u->symbols, u->nsymbols)) continue;
                 for (k = 0; k < u->nselectors && strcmp(u->selectors[k], s->selector); k++) ;
                 if (k == u->nselectors) continue;
                 u->used = 1;
                 if (!u->checked) {
+                    size_t c;
                     u->checked = 1;
-                    if (check_sources(a, u->id, u->sources, u->nsources, "position-source-changed")) status = OBJC_CANNOT_MEASURE;
+                    if (!resolved) unresolved(a, u->id, u->path);
+                    else if (check_sources(a, u->id, u->sources, u->nsources, "position-source-changed") == OBJC_OK) {
+                        u->valid = 1;
+                        for (c = 0; c < (u->symbol ? 1 : u->nsymbols) && u->valid; c++)
+                            u->valid = check_position_row(a, u, u->symbol ? u->symbol : u->symbols[c], types, crates) == OBJC_OK;
+                    }
                 }
+                if (!u->valid) status = OBJC_CANNOT_MEASURE;
             }
         }
-        return status;
+        free(types); free(crates);
+        if (status) return status;
     }
     for (i = 0; i < a->n_sends; i++) {
         ObjcSend *s = &a->sends[i];
         const ObjcEvidence *e = &a->evidence[s->evidence];
         ObjcPositionEvidence *t = NULL;   /* the first matching row; every other must agree with it */
-        char basis[2048];
+        char basis[2048], prov[2048];
         const char *checked = "";
         if (!s->selector || !e->function) continue;
         base_symbol(e->function, fn, sizeof fn);
@@ -422,8 +488,7 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
          * or kind are refused, whichever comes first and even when one class descends from the other. */
         for (j = 0; j < a->n_positions; j++) {
             ObjcPositionEvidence *u = &a->positions[j];
-            base_symbol(u->symbol, row, sizeof row);
-            if (strcmp(fn, row)) continue;
+            if (!names_function(fn, u->symbol, u->symbols, u->nsymbols)) continue;
             for (k = 0; k < u->nselectors && strcmp(u->selectors[k], s->selector); k++) ;
             if (k == u->nselectors) continue;
             if (!t) { t = u; continue; }
@@ -456,8 +521,7 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
         }
         for (j = 0; j < a->n_positions; j++) {   /* every agreeing row is used */
             ObjcPositionEvidence *u = &a->positions[j];
-            base_symbol(u->symbol, row, sizeof row);
-            if (strcmp(fn, row)) continue;
+            if (!names_function(fn, u->symbol, u->symbols, u->nsymbols)) continue;
             for (k = 0; k < u->nselectors && strcmp(u->selectors[k], s->selector); k++) ;
             if (k < u->nselectors) u->used = 1;
         }
@@ -468,8 +532,14 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
             snprintf(basis, sizeof basis, "R3 %s: a downcast to %s in %s is %s%s", t->id, t->rust_type, e->function, t->cls, checked);
         else
             snprintf(basis, sizeof basis, "R3 %s: field %s of %s in %s is %s%s", t->id, t->field, t->rust_type, e->function, t->cls, checked);
+        if (a->be_schema == 2) {
+            size_t at;
+            objc_cites_text(t->sources, t->nsources, prov, sizeof prov);
+            at = strlen(prov);
+            if (t->note) snprintf(prov + at, sizeof prov - at, "; note: %s", t->note);
+        } else snprintf(prov, sizeof prov, "%s", t->source);
         if (objc_set_string(&s->receiver, t->cls) || objc_set_string(&s->method_kind, t->kind) ||
-            objc_set_string(&s->basis, basis) || objc_set_string(&s->provenance, t->source) ||
+            objc_set_string(&s->basis, basis) || objc_set_string(&s->provenance, prov) ||
             objc_set_string(&s->reason, NULL))
             return objc_fail(a, "out-of-memory", NULL, 0, "R3");
         s->origin = OBJC_ORIGIN_R3; s->exact = 0; s->allocated = 0;
@@ -479,23 +549,35 @@ int objc_apply_position_evidence(ObjcAnalysis *a) {
 
 const ObjcGuardRecord *objc_guard_record(ObjcAnalysis *a, size_t ev) {
     const ObjcEvidence *e = &a->evidence[ev];
+    const ObjcGuardRecord *hit = NULL;
     char fn[4096];
     size_t i, s;
+    int refused = 0;
     const char *sel = NULL;
     for (s = 0; s < a->n_sends; s++) if (a->sends[s].evidence == ev) { sel = a->sends[s].selector; break; }
     if (!e->function || !sel) return NULL;
     base_symbol(e->function, fn, sizeof fn);
     for (i = 0; i < a->n_guards; i++) {
         ObjcGuardRecord *g = &a->guards[i];
-        if (!names_function(fn, g->symbol, g->symbols, g->nsymbols) || strcmp(g->selector, sel)) continue;
+        if (strcmp(g->selector, sel)) continue;
+        if (a->be_schema == 2 && !g->symbol && !g->nsymbols) {
+            g->used = 1;
+            if (!g->checked) { g->checked = 1; unresolved(a, g->id, g->path); }
+            refused = 1;
+            continue;
+        }
+        if (!names_function(fn, g->symbol, g->symbols, g->nsymbols)) continue;
         g->used = 1;
         if (a->be_schema != 2) return g;
         if (!g->checked) {
             g->checked = 1;
-            check_sources(a, g->id, g->sources, g->nsources, "guard-source-changed");
+            g->valid = check_sources(a, g->id, g->sources, g->nsources, "guard-source-changed") == OBJC_OK &&
+                       check_coverage(a, g) == OBJC_OK;
         }
+        if (!g->valid) refused = 1;
+        else if (!hit) hit = g;
     }
-    return NULL;
+    return refused ? NULL : hit;
 }
 
 /* ---- DWARF .debug_line ------------------------------------------------------------------------ */

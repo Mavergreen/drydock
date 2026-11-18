@@ -376,6 +376,11 @@ static const ObjcEvidence *measured_guard(ObjcAnalysis *a, size_t ev, const char
     return NULL;
 }
 
+int objc_send_guarded(ObjcAnalysis *a, size_t si) {
+    const ObjcSend *s = &a->sends[si];
+    return s->selector && measured_guard(a, s->evidence, s->selector) != NULL;
+}
+
 static void absent_verdict(ObjcAnalysis *a, size_t ev, const ObjcSend *s, const char *chain, Verdict *o) {
     const ObjcEvidence *g = measured_guard(a, ev, s->selector);
     const char *sub = s->exact ? NULL : floor_subclass_with(a, s->receiver, s->method_kind, s->selector);
@@ -386,9 +391,21 @@ static void absent_verdict(ObjcAnalysis *a, size_t ev, const ObjcSend *s, const 
         const ObjcGuardRecord *r = objc_guard_record(a, ev);
         snprintf(buf, sizeof buf, "0x%llx", (unsigned long long)g->address);
         if (r && !strcmp(r->review_status, "reviewed") && r->reviewer && *r->reviewer && r->review_reason && *r->review_reason) {
-            char cite[1024];
-            snprintf(cite, sizeof cite, "%s:%llu sha256:%s; fallback: %s; reviewed by %s: %s", r->source_file,
-                     (unsigned long long)r->source_line, r->source_sha256, r->fallback, r->reviewer, r->review_reason);
+            char cite[2048];
+            if (a->be_schema == 2) {
+                char srcs[1024], cov[256];
+                size_t k, at = 0;
+                objc_cites_text(r->sources, r->nsources, srcs, sizeof srcs);
+                cov[0] = 0;
+                for (k = 0; k < r->ncovers && at < sizeof cov; k++)
+                    at += (size_t)snprintf(cov + at, sizeof cov - at, "%s%s x%llu", k ? ", " : "", r->covers[k].selector,
+                                           (unsigned long long)r->covers[k].count);
+                snprintf(cite, sizeof cite, "%s; covers %s; fallback: %s; reviewed by %s: %s; reviewed at revision %s, patches %s, "
+                         "features %s (provenance, not compared)", srcs, cov, r->fallback, r->reviewer, r->review_reason,
+                         r->source_revision, r->patches_sha256, r->features);
+            } else
+                snprintf(cite, sizeof cite, "%s:%llu sha256:%s; fallback: %s; reviewed by %s: %s", r->source_file,
+                         (unsigned long long)r->source_line, r->source_sha256, r->fallback, r->reviewer, r->review_reason);
             set(o, OBJC_GUARDED, later ? fw : NULL, "absent from the floor; respondsToSelector: at %s answers YES on every path here, for this receiver and selector; guard record %s: %s",
                 buf, r->id, cite);
             return;
