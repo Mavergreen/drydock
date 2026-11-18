@@ -50,6 +50,8 @@ target        10.9                  the one statement whose meaning depends on
                                     the binary; see \[dq]The \[ga]target\[ga] statement\[dq]
 symbol        rename    OLD NEW     relocatable objects only; see
                                     \[dq]Relocatable objects and archives\[dq]
+uuid          set       stamped     applied after the last statement; see
+                                    \[dq]Stamping the UUID\[dq]
 \fR
 .fi
 .PP
@@ -152,6 +154,8 @@ These are the statements that can match nothing:
 \fBimport redirect\fR (no bind of that symbol names that library)
 .IP \[bu] 2
 \fBsymbol rename\fR (no symbol of that name)
+.IP \[bu] 2
+\fBuuid set stamped\fR (no \fBLC_UUID\fR once the other statements have run)
 .PP
 On a fat file, a statement has matched if it matched in any selected
 slice.
@@ -175,6 +179,33 @@ exited 0 when an operation matched nothing: \fBchange_dylib\fR,
 \fBfix_macho\fR and \fBinsert_dylib\fR head their scripts with
 it.
 compat/README.md records why for each.
+.SS Stamping the UUID
+\fBuuid set stamped\fR replaces each selected slice\[aq]s
+\fBLC_UUID\fR with one a crash report or \fBinfo\fR shows was
+rewritten by Drydock:
+.IP
+.nf
+\f(CW
+DD0C0005-0F08-41F7-86BC-466EEFDF3D0F
+\fR
+.fi
+.PP
+\fBDD0C\fR marks it, the next two bytes are the Drydock version that
+wrote it (here 0.5), and the rest is derived from the UUID it replaced,
+so the same input always stamps the same way.
+The stamp is applied after the slice\[aq]s last statement, wherever it
+is written, and is derived from whatever UUID the other statements left,
+including a raise\[aq]s new one (see \[dq]Growing the header\[dq]).
+A script names it at most once.
+It never adds an \fBLC_UUID\fR: with none to replace in any selected
+slice, it has matched nothing.
+.PP
+Stamping costs a dSYM.
+A debugger or symbolicator pairs an image with its dSYM by UUID, and
+many statements, such as \fBdylib replace\fR or \fBminos\fR, move no
+address: without a stamp, the original\[aq]s dSYM still symbolicates
+their output.
+Stamp when telling a rewritten binary from the original matters more.
 .SS The \fBtarget\fR statement
 .IP
 .nf
@@ -546,6 +577,11 @@ slice in an \fBarch\fR column, and the header row names the columns.
 it passes an Objective-C image whose \fB__objc_\fR sections sit in
 \fB__DATA_CONST\fR, and that image dies at launch on 10.9.
 .PP
+\fBinfo\fR\[aq]s \fBuuid:\fR line prints the image\[aq]s UUID,
+adds \fB, stamped by drydock\fR and the version when
+\fBuuid set stamped\fR wrote it, and says \fBnone\fR when there is no
+\fBLC_UUID\fR.
+.PP
 \fBinfo\fR answers each of \fBtarget 10.9\fR\[aq]s three
 detections: an \fBLC[n]\fR line for
 \fBLC_DYLD_CHAINED_FIXUPS\fR, a \fBsectname=\fR line under
@@ -580,6 +616,7 @@ LC[8] LC_VERSION_MIN_MACOSX cmdsize=16
 LC[11] LC_LOAD_DYLIB cmdsize=56
   ordinal=1 path=/usr/lib/libSystem.B.dylib
 \&...
+uuid: 4C4C44F9-5555-3144-A174-8DF0494BAFAB
 swift-abi: no class records carry the stable-ABI tag
 header pad: 3112 bytes available (LC end=856, first sect=3968)
 slice i386: 32-bit; passed through unchanged

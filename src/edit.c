@@ -35,6 +35,7 @@
 #include "swift_retag.h"
 #include "declassify.h"
 #include "redirect.h"
+#include "uuid.h"
 #include "objc_abs.h"
 #include "atomic_write.h"
 #include "mach_compat.h"
@@ -329,7 +330,7 @@ static int me_view(uint8_t *buf, size_t size, mi_image *im, const char *path, FI
  * verdict comes right after the statement, as it always has. */
 typedef struct {
     mr_hits *hits;      /* this statement's counts, summed across slices */
-    int     *renamed;   /* this statement's segment-rename or import-redirect count, likewise */
+    int     *renamed;   /* this statement's segment-rename, import-redirect or stamp count, likewise */
     int      decide;    /* nonzero in the last selected slice */
     int      missed;    /* set when the verdict refused: it matched nothing */
     int      changed;   /* written by minos: whether it changed the slice */
@@ -779,6 +780,50 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
     return 0;
 }
 
+static int me_uuid_lc(const struct load_command *lc, void *ctx_) {
+    if (lc->cmd != LC_UUID) return 0;
+    *(uint8_t **)ctx_ = ((struct uuid_command *)lc)->uuid;
+    return 1;
+}
+
+/* `uuid set stamped`, after the slice's last statement: whatever UUID the
+ * statements left -- a raise's new one included -- is replaced by the stamp
+ * derived from it, so the marker cannot be overwritten by anything later in
+ * the script. Its count is summed across slices like a segment rename's, and
+ * an image with no LC_UUID in every selected slice is its miss. */
+static int me_stamp(uint8_t *buf, size_t size, const char *path, const ms_script *s,
+                    FILE *log, me_verdict *v) {
+    mi_image im;
+    uint8_t *u = NULL;
+    if (me_view(buf, size, &im, path, log) != 0) return MR_REFUSED;
+    mi_each_lc(&im, me_uuid_lc, &u);
+    if (u) {
+        char was[MUU_STRLEN], now[MUU_STRLEN];
+        muu_format(u, was);
+        muu_stamp(u, DRYDOCK_VERSION_MAJOR, DRYDOCK_VERSION_MINOR, u);
+        muu_format(u, now);
+        me_say(log, "      %s -> %s\n", was, now);
+        *v->renamed += 1;
+    }
+    if (!v->decide || *v->renamed > 0) return 0;
+    me_say(stderr, "drydock-macho-rewrite: uuid set stamped matched nothing (no LC_UUID)\n");
+    if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
+    return 0;
+}
+
+/* One statement's refusal or failure, said once for the loop and the stamp. */
+static int me_say_stopped(FILE *log, int rc, int i, const ms_script *s, const ms_stmt *stmt,
+                          const char *slice, int missed, const char *path, const char *out) {
+    if (rc != MR_REFUSED) rc = MR_FAIL;
+    me_say(log, "drydock-macho-rewrite edit: %s at statement %d of %d (line %d)",
+           rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line);
+    if (slice && missed) me_say(log, ": it matched nothing in any selected slice");
+    else if (slice)      me_say(log, " in slice %s", slice);
+    me_say(log, "; ");
+    me_say_left(log, path, out);
+    return rc;
+}
+
 /* Every statement, in order, against one image -- a thin file's, or one fat
  * slice's. `slice` is NULL for a thin file, else the slice's arch name, for
  * the refusal line. hits/renamed hold one entry per statement, shared by
@@ -798,9 +843,15 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
                          const ms_script *s, FILE *log,
                          mr_hits *hits, int *renamed, int decide, const char *slice,
                          unsigned *disturbed) {
+    int stamp = -1;
     for (int i = 0; i < s->n; i++) {
         const ms_stmt *stmt = &s->stmts[i];
         me_log_stmt(log, stmt);
+        if (stmt->kind == MS_UUID) {
+            me_say(log, "      applied after the last statement\n");
+            stamp = i;
+            continue;
+        }
         me_verdict v = { &hits[i], &renamed[i], decide, 0 };
         uint32_t first_before = mg_first_sect_off(*pbuf, *psize);
         /* `target` is not an operation, so it is not lowered to one: it
@@ -810,19 +861,19 @@ static int me_statements(uint8_t **pbuf, size_t *psize, const char *path, const 
         int rc = stmt->kind == MS_TARGET
             ? me_target(pbuf, psize, path, s, stmt, log, disturbed)
             : me_apply(pbuf, psize, path, s, stmt, log, &v);
-        if (rc != 0) {
-            if (rc != MR_REFUSED) rc = MR_FAIL;
-            me_say(log, "drydock-macho-rewrite edit: %s at statement %d of %d (line %d)",
-                   rc == MR_REFUSED ? "refused" : "failed", i + 1, s->n, stmt->line);
-            if (slice && v.missed) me_say(log, ": it matched nothing in any selected slice");
-            else if (slice)        me_say(log, " in slice %s", slice);
-            me_say(log, "; ");
-            me_say_left(log, path, out);
-            return rc;
-        }
+        if (rc != 0)
+            return me_say_stopped(log, rc, i, s, stmt, slice, v.missed, path, out);
         if (stmt->kind != MS_MINOS || v.changed)
             me_note_disturbed(disturbed, stmt, first_before,
                               mg_first_sect_off(*pbuf, *psize));
+    }
+    if (stamp >= 0) {
+        const ms_stmt *stmt = &s->stmts[stamp];
+        me_verdict v = { &hits[stamp], &renamed[stamp], decide, 0 };
+        me_log_stmt(log, stmt);
+        int rc = me_stamp(*pbuf, *psize, path, s, log, &v);
+        if (rc != 0)
+            return me_say_stopped(log, rc, stamp, s, stmt, slice, v.missed, path, out);
     }
     return 0;
 }

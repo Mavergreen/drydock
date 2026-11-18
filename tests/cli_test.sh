@@ -496,8 +496,8 @@ caps_rpath_ops=$(echo "$caps" | sed -n 's/^statement rpath \([a-z-]*\) [0-9]*$/\
 # tests/script_test.c checks the table itself.
 n_statements=$(echo "$caps" | grep -c '^statement ' || true)
 n_unique=$(echo "$caps" | grep '^statement ' | sort -u | wc -l | tr -d ' ')
-[ "$n_statements" -eq 20 ] && [ "$n_unique" -eq 20 ] \
-    && ok "capabilities: exactly 20 unique statement lines" \
+[ "$n_statements" -eq 21 ] && [ "$n_unique" -eq 21 ] \
+    && ok "capabilities: exactly 21 unique statement lines" \
     || bad "capabilities statement count" "got $n_statements line(s), $n_unique unique: $(echo "$caps" | grep '^statement')"
 if echo "$caps" | grep -qxF "statement minos at-most 1"; then
     if echo "$caps" | grep -qxF "statement minos set 1"; then
@@ -526,10 +526,12 @@ echo "$caps" | grep -q "statement dylib replace 2" \
     && ok "capabilities: statement table is advertised" \
     || bad "capabilities statements" "no 'statement dylib replace 2' line: $(echo "$caps" | grep '^statement')"
 echo "$caps" | grep -qxF "statement symbol rename 2" \
-    && ok "capabilities: symbol rename statement is advertised, last" \
+    && ok "capabilities: symbol rename statement is advertised" \
     || bad "capabilities: symbol rename" "no 'statement symbol rename 2' line: $(echo "$caps" | grep '^statement symbol')"
-[ "$(echo "$caps" | grep '^statement ' | tail -1)" = "statement symbol rename 2" ] \
-    || bad "capabilities: symbol rename" "not the last statement line, so existing lines moved"
+# A new statement is appended, so the lines before it keep their places.
+[ "$(echo "$caps" | grep '^statement ' | tail -2 | tr '\n' '|')" = "statement symbol rename 2|statement uuid set 1|" ] \
+    && ok "capabilities: uuid set is the last statement line, symbol rename the one before it" \
+    || bad "capabilities: statement order" "the last two statement lines are not symbol rename then uuid set, so existing lines moved: $(echo "$caps" | grep '^statement ' | tail -2)"
 echo "$caps" | grep -qxF "statement dylib retype 2" \
     && ok "capabilities: dylib retype statement is advertised" \
     || bad "capabilities: dylib retype" "no 'statement dylib retype 2' line: $(echo "$caps" | grep '^statement dylib retype')"

@@ -60,6 +60,7 @@
 #include "fat.h"
 #include "arch_names.h"
 #include "linkedit_order.h"
+#include "uuid.h"
 
 /* Exit codes: 0 ok; EX_REFUSED (1) when drydock-macho-rewrite examined FILE
  * and declined on purpose; EX_FAIL (2) when something went wrong running it.
@@ -360,6 +361,12 @@ static int info_cb(const struct load_command *lc, void *ctx_) {
 
 static int read_file(const char *verb, const char *path, uint8_t **out, size_t *outlen);
 
+static int info_uuid_cb(const struct load_command *lc, void *ctx_) {
+    if (lc->cmd != LC_UUID) return 0;
+    *(const uint8_t **)ctx_ = ((const struct uuid_command *)lc)->uuid;
+    return 1;
+}
+
 /* One image's report: the same lines for a thin file and for each slice of a
  * fat container, so there is one description of what info says and not two.
  * `label` heads it -- the path for a thin file, `slice NAME` for a slice. */
@@ -368,6 +375,22 @@ static void info_image(mi_image *im, const char *label) {
            label, im->size, im->hdr->ncmds, im->hdr->filetype);
     struct info_ctx ctx = { 0, 0 };
     mi_each_lc(im, info_cb, &ctx);
+
+    {
+        const uint8_t *u = NULL;
+        mi_each_lc(im, info_uuid_cb, &u);
+        if (!u) {
+            printf("uuid: none\n");
+        } else {
+            char text[MUU_STRLEN];
+            unsigned major, minor;
+            muu_format(u, text);
+            if (muu_stamped_by(u, &major, &minor))
+                printf("uuid: %s, stamped by drydock %u.%u\n", text, major, minor);
+            else
+                printf("uuid: %s\n", text);
+        }
+    }
 
     int tagged = mswift_stable_tagged_image(im);
     if (tagged == MSWIFT_CHAINED)

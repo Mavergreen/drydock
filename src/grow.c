@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 
+#include "uuid.h"
 #include "exports.h"
 #include "grow.h"
 #include "hdrref.h"
@@ -2507,8 +2508,7 @@ void mg_raised_uuid(const uint8_t old[16], uint64_t grow, uint8_t out[16]) {
     for (int i = 0; i < 8; i++) in[16 + i] = (uint8_t)(grow >> (8 * i));
     CC_SHA256(in, (CC_LONG)sizeof in, digest);
     memcpy(out, digest, 16);
-    out[6] = (uint8_t)((out[6] & 0x0f) | 0x40);
-    out[8] = (uint8_t)((out[8] & 0x3f) | 0x80);
+    muu_rfc4122_v4(out);
 }
 
 /* mg_grow_header's mi_each_lc callback for a raise's geometry: every segment

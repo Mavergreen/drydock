@@ -82,7 +82,10 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c src/linkedit_pack.c src/symrename.c src/archive.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c src/linkedit_pack.c src/symrename.c src/archive.c src/uuid.c)
+# The version `uuid set stamped` writes into bytes 2 and 3 of the UUID (src/uuid.h).
+target_compile_definitions(drydockcore PRIVATE
+  DRYDOCK_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} DRYDOCK_VERSION_MINOR=${PROJECT_VERSION_MINOR})
 target_include_directories(drydockcore PUBLIC src)
 target_compile_options(drydockcore PRIVATE -O2 -Wall)
 
@@ -465,6 +468,13 @@ target_compile_options(trie_test PRIVATE -O2 -Wall)
 target_link_libraries(trie_test PRIVATE drydockcore)
 add_test(NAME trie_test COMMAND trie_test)
 
+# Hermetic tests for src/uuid.c: the UUID `uuid set stamped` writes, against
+# values computed outside it, and how `info` recognizes one.
+add_executable(uuid_test tests/uuid_test.c)
+target_compile_options(uuid_test PRIVATE -O2 -Wall)
+target_link_libraries(uuid_test PRIVATE drydockcore)
+add_test(NAME uuid_test COMMAND uuid_test)
+
 # Hermetic tests for src/x86len.c's instruction-length decoder: hand-assembled
 # instructions and where their operands lie. tests/x86len_oracle_test.sh
 # checks the same decoder against otool over real images.
@@ -786,6 +796,9 @@ drydock_macos_test(import_redirect_test "Mach-O fixtures built with the host's c
 
 # `symbol rename` on objects built here, linked with the host's ld64 and run;
 # the object gate's refusals.
+drydock_macos_test(uuid_stamp_test "x86_64 Mach-O fixtures linked with the host's clang and ld64"
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/uuid_stamp_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
+
 drydock_macos_test(symbol_rename_test "objects built with the host's clang, linked by ld64 and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/symbol_rename_test.sh" "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
 

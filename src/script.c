@@ -131,7 +131,8 @@ int ms_split(char *line, char **argv, int max, char *err, size_t errsz) {
   R("minos",        MS_MINOS,        "at-most",  MS_AT_MOST,      1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("minos",        MS_MINOS,        "if-absent", MS_IF_ABSENT,   1, NULL,        0,             0, MREL_HEADER_PAD) \
   R("objc-methods", MS_OBJC_METHODS, "set",      MS_SET,          1, NULL,        0,             0, MREL_FILE_OFF) \
-  R("symbol",       MS_SYMBOL,       "rename",   MS_RENAME,       2, NULL,        0,             0, MREL_NONE)
+  R("symbol",       MS_SYMBOL,       "rename",   MS_RENAME,       2, NULL,        0,             0, MREL_NONE) \
+  R("uuid",         MS_UUID,         "set",      MS_SET,          1, NULL,        0,             0, MREL_NONE)
 
 static const struct { const char *kind; int k; const char *op; int o; int nargs;
                       const char *flag; unsigned modes; int ops_ord;
@@ -316,7 +317,7 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
      * which one gets reported depends on that order, not on source
      * position (they're all on the same line). */
     int n_stmts = 0;
-    int allow_unmatched = 0, seen_operation = 0, seen_target = 0;
+    int allow_unmatched = 0, seen_operation = 0, seen_target = 0, seen_stamp = 0;
     unsigned arch_mask = 0;
     size_t i = 0;
     int lineno = 0;
@@ -461,6 +462,20 @@ int ms_parse(const char *buf, size_t len, ms_script *out, char *err, size_t errs
                        strcmp(fields[2], "absolute") != 0) {
                 return ms_failf(stmts, text, out, err, errsz, lineno,
                     "objc-methods set accepts only 'absolute' (got '%s')", fields[2]);
+            } else if (kind == MS_UUID && op == MS_SET &&
+                       strcmp(fields[2], "stamped") != 0) {
+                return ms_failf(stmts, text, out, err, errsz, lineno,
+                    "uuid set accepts only 'stamped' (got '%s')", fields[2]);
+            }
+
+            /* The stamp is applied once, after the last statement, wherever
+             * it is written (see src/edit.c), so a second one would say
+             * nothing the first did not. */
+            if (kind == MS_UUID) {
+                if (seen_stamp)
+                    return ms_failf(stmts, text, out, err, errsz, lineno,
+                        "one uuid set stamped per script");
+                seen_stamp = 1;
             }
 
             /* One target per script. Two would each expand against the image

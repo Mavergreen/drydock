@@ -382,6 +382,7 @@ static void test_capabilities_table_round_trips(void) {
         else if (strcmp(kind, "swift-abi") == 0) a = "legacy";
         else if (strcmp(kind, "fixups") == 0) a = "classic";
         else if (strcmp(kind, "objc-methods") == 0) a = "absolute";
+        else if (strcmp(kind, "uuid") == 0) a = "stamped";
         else if (strcmp(kind, "dylib") == 0 && strcmp(op, "retype") == 0) b = "weak";
 
         if (nargs == 3)
@@ -410,7 +411,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 20, "the statement table has 20 rows (got %d)", n_rows);
+    CHECK(n_rows == 21, "the statement table has 21 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row. Each mask below was read out of
@@ -531,6 +532,32 @@ static void test_disturbs_matches_the_spec_table(void) {
      * repoints n_strx: no offset another structure records moves. */
     CHECK(ms_disturbs(MS_SYMBOL, MS_RENAME) == MREL_NONE,
           "symbol rename moves no offset another structure records; the string table is the file tail");
+
+    /* The stamp rewrites LC_UUID's 16 bytes where they lie: no load command
+     * changes size, and nothing moves. */
+    CHECK(ms_disturbs(MS_UUID, MS_SET) == MREL_NONE,
+          "uuid set stamped overwrites LC_UUID in place, and disturbs nothing");
+}
+
+static void test_uuid_set_takes_only_stamped(void) {
+    ms_script s; char err[256] = {0};
+    const char *ok = "uuid set stamped\n";
+    CHECK(ms_parse(ok, strlen(ok), &s, err, sizeof err) == 0, "uuid set stamped rejected: %s", err);
+    CHECK(s.n == 1 && s.stmts[0].kind == MS_UUID && s.stmts[0].op == MS_SET &&
+          strcmp(s.stmts[0].a, "stamped") == 0, "uuid set stamped: wrong kind, op or operand");
+    ms_free(&s);
+
+    const char *other = "uuid set random\n";
+    err[0] = 0;
+    CHECK(ms_parse(other, strlen(other), &s, err, sizeof err) == -1 &&
+          strstr(err, "uuid set accepts only 'stamped' (got 'random')") != NULL,
+          "uuid set random: %s", err);
+
+    const char *two = "uuid set stamped\nuuid set stamped\n";
+    err[0] = 0;
+    CHECK(ms_parse(two, strlen(two), &s, err, sizeof err) == -1 &&
+          strstr(err, "line 2") != NULL && strstr(err, "one uuid set stamped per script") != NULL,
+          "a second uuid set stamped: %s", err);
 }
 
 static void test_symbol_rename_refuses_an_empty_name(void) {
@@ -908,6 +935,7 @@ int main(void) {
     test_retired_minimum_statements_are_unknown();
     test_symbol_rename_refuses_an_empty_name();
     test_objc_methods_set_takes_only_absolute();
+    test_uuid_set_takes_only_stamped();
     test_no_statement_names_split_info();
     printf("script_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;
