@@ -147,6 +147,14 @@ exit_is 1 'reviewed guards'
 want _guarded accessibilityDisplayShouldReduceMotion guarded 'reviewed by A. Reviewer'
 want _wrong_selector accessibilityDisplayShouldReduceMotion unsupported unguarded
 want _ineffective accessibilityDisplayShouldReduceMotion unsupported unguarded
+# A schema-1 guard citation is cut at 1023 bytes in the proof, as it always was: schema-1 output is unchanged.
+LONG=$(awk 'BEGIN { for (i = 0; i < 1500; i++) printf "R" }')
+evidence "$C" "$T/ev-longreason" "$(guard _guarded accessibilityDisplayShouldReduceMotion reviewed | sed "s/NO falls back to 0/$LONG/")"
+analyze "$C" strict --build-evidence "$T/ev-longreason"
+want _guarded accessibilityDisplayShouldReduceMotion guarded 'reviewed by A. Reviewer: RRR'
+CITE1='x.c:7 sha256:s; fallback: returns 0; reviewed by A. Reviewer: '
+got=$(grep '"function": "_guarded"' "$T/report" | grep '"selector": "accessibilityDisplayShouldReduceMotion"' | head -1 | sed -n 's/.*reviewed by A\. Reviewer: \(R*\).*/\1/p' | tr -d '\n' | wc -c | tr -d ' ')
+[ "$got" = $((1023 - ${#CITE1})) ] || fail "a schema-1 guard citation is $((got + ${#CITE1})) bytes in the proof, want 1023"
 evidence "$C" "$T/ev-pending" "$(guard _guarded accessibilityDisplayShouldReduceMotion required)"
 analyze "$C" strict --build-evidence "$T/ev-pending"
 want _guarded accessibilityDisplayShouldReduceMotion unresolved 'its guard record is not reviewed'

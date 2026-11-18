@@ -455,6 +455,7 @@ int objc_dwarf_lines(const uint8_t *sect, size_t size, const uint8_t *line_str, 
                      ObjcDwarfRow **rows, size_t *nrows, char *why, size_t whysz);
 /* source-hash.c: the prepared tree's digest, and the SHA-256 of the file a cite names. 0, or -1
  * unreadable or uncheckable. */
+int objc_file_sha256(const char *path, char out[65]);
 int objc_tree_digest(const char *root, char out[65]);
 int objc_sdk_header_digest(const char *root, char out[65]);
 int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]);

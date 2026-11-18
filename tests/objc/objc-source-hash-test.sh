@@ -34,6 +34,7 @@ printf 'ref: refs/heads/main\n' >"$S/.git/HEAD"
 printf 'outside the tree\n' >"$T/outside/x.rs"
 ln -s tui "$S/inside"
 ln -s ../outside "$S/out"
+ln -s .git "$S/gitlink"
 CR="$T/crates"
 mkdir -p "$CR/objc2-app-kit-0.3.1/src/generated" "$CR/foo-1.0.0-beta.1/src"
 printf 'pub fn subviews() {}\n' >"$CR/objc2-app-kit-0.3.1/src/generated/NSView.rs"
@@ -188,6 +189,11 @@ guard_case escape_symlink "$(cite tree:out/x.rs "$OUT")"
 only escape_symlink citation-unverifiable g-escape_symlink tree:out/x.rs
 guard_case inside_symlink "$(cite tree:inside/src/system_motion.rs "$MOTION")"
 guarded inside_symlink
+# .git is not part of the tree's digest, so a cite into it, by name or through a symlink, is refused.
+guard_case tree_git "$(cite tree:.git/HEAD "$(sha "$S/.git/HEAD")")"
+only tree_git citation-unverifiable g-tree_git tree:.git/HEAD
+guard_case tree_gitlink "$(cite tree:gitlink/HEAD "$(sha "$S/.git/HEAD")")"
+only tree_gitlink citation-unverifiable g-tree_gitlink tree:gitlink/HEAD
 
 # crate_cite resolves under --crate-sources, and matches.
 guard_case crate_cite "$(cite crate:objc2-app-kit-0.3.1/src/generated/NSView.rs "$VIEW")"
@@ -202,6 +208,9 @@ only crate_unpinned_name citation-unverifiable g-crate_unpinned_name crate:stray
 # An sdk: cite verifies under the pinned floor SDK, and is refused under any other SDK root.
 guard_case sdk_cite "$(cite "sdk:$HDR" "$WS")"
 guarded sdk_cite
+# The pinned SDK's digest covers its headers only: a file outside that selection is not pinned by it.
+guard_case sdk_unselected "$(cite sdk:SDKSettings.plist "$(sha "$SDK/SDKSettings.plist")")"
+only sdk_unselected citation-unverifiable g-sdk_unselected sdk:SDKSettings.plist
 mkdir -p "$K/$(dirname "$HDR")"; cp "$SDK/$HDR" "$K/$HDR"
 ev2 "$C" "$T/ev-sdk-other" "$TREE" "$(guard2 g-sdk_other "$GD" "$(cite "sdk:$HDR" "$WS")")" ''
 analyze "$C" "$T/ev-sdk-other" --source-root "$S" --sdk-root "$K"

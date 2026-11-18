@@ -172,6 +172,22 @@ want copies_close $GD $SEL guarded 'guard record g-copies-ok'
 want copies_close $GA $SEL guarded 'guard record g-copies-ok'
 grep -F '"unused_guard_records": []' "$T/report" >/dev/null || fail 'copies_close: the record was not used'
 
+# A fat artifact: each x86_64 slice is measured on its own, so each must show the covered count.
+ccx() { env -i PATH=/usr/bin:/bin /usr/bin/clang -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+ccx -arch x86_64 -arch x86_64h "$FX/guard-coverage.c" -o "$T/root/bin/gc-fat" -lobjc -Wl,-U,_fixture_use
+ccx -arch x86_64h -DEXTRA_SEND "$FX/guard-coverage.c" -o "$T/gc-h-extra" -lobjc -Wl,-U,_fixture_use
+ccx -arch x86_64 "$FX/guard-coverage.c" -o "$T/gc-plain" -lobjc -Wl,-U,_fixture_use
+lipo -create "$T/gc-plain" "$T/gc-h-extra" -output "$T/root/bin/gc-fat-extra"
+ev2 "$T/root/bin/gc-fat" "$T/ev-fat" "$(guard2 g-fat "$(sym $GD)" "$MOTION_CITE" "$(cover $SEL 1)")" ''
+analyze "$T/root/bin/gc-fat" "$T/ev-fat"
+clean fat_carries
+[ "$(grep "\"function\": \"$GD\"" "$T/report" | grep '"verdict": "guarded"' | grep -F 'guard record g-fat' | sed -n 's/.*"slice": "\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' ')" = 'x86_64 x86_64h ' ] ||
+  fail 'fat_carries: fixture::guarded is not guarded in both slices'
+ev2 "$T/root/bin/gc-fat-extra" "$T/ev-fat-extra" "$(guard2 g-fat-extra "$(sym $GD)" "$MOTION_CITE" "$(cover $SEL 1)")" ''
+analyze "$T/root/bin/gc-fat-extra" "$T/ev-fat-extra"
+only fat_slice_differs guard-coverage-changed g-fat-extra 'measures 2' 'in x86_64h' 'covers 1'
+want fat_slice_differs $GD $SEL unresolved
+
 # guard_gone: the binary no longer measures the guard: not guarded, as today, and the record goes unused.
 ev2 "$G" "$T/ev-gone" "$(guard2 g-gone "$(sym $GU)" "$MOTION_CITE" "$(cover $SEL 1)" fixture::unguarded)" ''
 analyze "$G" "$T/ev-gone"

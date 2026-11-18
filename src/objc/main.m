@@ -73,24 +73,6 @@ static int usage(const char *why) {
     return 2;
 }
 
-/* ---- hashing ----------------------------------------------------------------------------- */
-
-static int sha256_file(const char *path, char out[65]) {
-    FILE *f = fopen(path, "rb");
-    CC_SHA256_CTX c;
-    unsigned char buf[1 << 16], d[CC_SHA256_DIGEST_LENGTH];
-    size_t n;
-    int i;
-    if (!f) return -1;
-    CC_SHA256_Init(&c);
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0) CC_SHA256_Update(&c, buf, (CC_LONG)n);
-    if (ferror(f)) { fclose(f); return -1; }
-    fclose(f);
-    CC_SHA256_Final(d, &c);
-    for (i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
-    return 0;
-}
-
 /* ---- JSON input --------------------------------------------------------------------------- */
 
 static id read_json(ObjcAnalysis *a, const char *path, unsigned max, const char *what) {
@@ -146,7 +128,7 @@ static int load_manifest(ObjcAnalysis *a, const char *dir, NSMutableArray *ref_i
     NSError *err = nil;
     snprintf(path, sizeof path, "%s/manifest.json", dir);
     if (!(m = read_json(a, path, MANIFEST_MAX, "manifest"))) return OBJC_CANNOT_MEASURE;
-    if (sha256_file(path, manifest_sha)) return objc_fail(a, "unreadable-reference", NULL, 0, "%s", path);
+    if (objc_file_sha256(path, manifest_sha)) return objc_fail(a, "unreadable-reference", NULL, 0, "%s", path);
     if (![[m objectForKey:@"schema"] isEqual:@1] || !(files = arr(m, @"files")))
         return objc_fail(a, "malformed-reference", NULL, 0, "%s: not a schema-1 manifest", path);
     for (NSDictionary *f in files) {
@@ -158,7 +140,7 @@ static int load_manifest(ObjcAnalysis *a, const char *dir, NSMutableArray *ref_i
             return objc_fail(a, "malformed-reference", NULL, 0, "%s: bad file entry", path);
         snprintf(fp, sizeof fp, "%s/%s", dir, cs(name));
         if (lstat(fp, &st) != 0 || !S_ISREG(st.st_mode)) return objc_fail(a, "unreadable-reference", NULL, 0, "%s missing or not a regular file", fp);
-        if (sha256_file(fp, got) || strcmp(got, cs(want))) return objc_fail(a, "reference-hash-mismatch", NULL, 0, "%s does not match the manifest", fp);
+        if (objc_file_sha256(fp, got) || strcmp(got, cs(want))) return objc_fail(a, "reference-hash-mismatch", NULL, 0, "%s does not match the manifest", fp);
         [listed addObject:name];
         [ref_inputs addObject:@{ @"name": name, @"sha256": want }];
     }
@@ -567,7 +549,7 @@ static int load_provider_prefix(ObjcAnalysis *a, const char *prefix) {
     if (!realpath(prefix, rp)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s: %s", prefix, strerror(errno));
     snprintf(decl, sizeof decl, "%s/share/recaulk/objc-providers.json", rp);
     if (!(d = read_json(a, decl, MANIFEST_MAX, "provider declaration"))) return OBJC_CANNOT_MEASURE;
-    if (sha256_file(decl, dsha)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s", decl);
+    if (objc_file_sha256(decl, dsha)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s", decl);
     if (!exact_keys(d, @[ @"schema", @"providers", @"build" ]) || !json_int1([d objectForKey:@"schema"]) ||
         !(ps = arr(d, @"providers")) || ![ps count] || !(b = obj(d, @"build")) ||
         !exact_keys(b, @[ @"archive_path", @"archive_sha256", @"architecture", @"artifact_role", @"minimum_macos",
@@ -585,7 +567,7 @@ static int load_provider_prefix(ObjcAnalysis *a, const char *prefix) {
     if (strcmp(rsha, S(b, @"source_inputs_sha256")))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: the source receipt does not hash to source_inputs_sha256", decl);
     snprintf(archive, sizeof archive, "%s/%s", rp, ap);
-    if (lstat(archive, &st) != 0 || !S_ISREG(st.st_mode) || sha256_file(archive, ash))
+    if (lstat(archive, &st) != 0 || !S_ISREG(st.st_mode) || objc_file_sha256(archive, ash))
         return objc_fail(a, "unreadable-provider", NULL, 0, "%s is missing or not a regular file", archive);
     if (strcmp(ash, S(b, @"archive_sha256")))
         return objc_fail(a, "stale-provider-archive", NULL, 0, "%s is %s; the declaration says %s", archive, ash, S(b, @"archive_sha256"));
@@ -743,7 +725,7 @@ static int add_shipped(ObjcAnalysis *a, size_t loader, const ObjcDylib *d, const
     if (!(g = realloc(a->shipped, (a->n_shipped + 1) * sizeof *g))) return objc_fail(a, "out-of-memory", NULL, 0, "shipped image");
     a->shipped = g; im = &g[a->n_shipped]; memset(im, 0, sizeof *im);
     im->loader = loader;
-    if (sha256_file(found, h)) return objc_fail(a, "unreadable-dependency", NULL, 0, "%s: %s", found, strerror(errno));
+    if (objc_file_sha256(found, h)) return objc_fail(a, "unreadable-dependency", NULL, 0, "%s: %s", found, strerror(errno));
     if (objc_set_string(&im->abs, found) || objc_set_string(&im->path, found + k + (strcmp(rroot, "/") ? 1 : 0)) ||
         objc_set_string(&im->sha256, h) || objc_set_string(&im->install, d->path) || objc_set_string(&im->how, d->how) ||
         objc_strv_push(&a->image_paths, &a->n_image_paths, im->path))
@@ -1035,7 +1017,7 @@ static int load_exceptions(ObjcAnalysis *a, const char *list) {
         memset(e, 0, sizeof *e);
         e->evidence = strdup(line); e->id = strdup(t1 + 1); e->reason = strdup(t2 + 1);
         if (!(doc = read_json(a, e->evidence, JSON_MAX, "objc-api evidence"))) { fclose(f); return OBJC_CANNOT_MEASURE; }
-        if (sha256_file(e->evidence, e->sha)) { fclose(f); return objc_fail(a, "unreadable-input", NULL, 0, "objc-api evidence %s", e->evidence); }
+        if (objc_file_sha256(e->evidence, e->sha)) { fclose(f); return objc_fail(a, "unreadable-input", NULL, 0, "objc-api evidence %s", e->evidence); }
         if (only_keys_as(a, "malformed-exception", doc, "objc-api evidence", @[ @"schema", @"kind", @"records" ])) { fclose(f); return OBJC_CANNOT_MEASURE; }
         if (![[doc objectForKey:@"schema"] isEqual:@1] || ![str(doc, @"kind") isEqualToString:@"objc-exceptions"] || !arr(doc, @"records")) {
             fclose(f); return objc_fail(a, "malformed-exception", NULL, 0, "%s: not schema-1 objc-exceptions", e->evidence);
@@ -1498,9 +1480,9 @@ static int build_evidence_main(int argc, char **argv) {
     if (!*dir) snprintf(dir, sizeof dir, "/");
     if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) { fprintf(stderr, "objc-compat emit-build-evidence: %s is not a directory\n", dir); return 2; }
     if (!(a = objc_analysis_create())) return 4;
-    if (sha256_file(v[0], fsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "artifact %s", v[0]);
-    else if (sha256_file(v[1], psha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "prestrip %s", v[1]);
-    else if (v[3] && sha256_file(v[3], msha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "link map %s: %s", v[3], strerror(errno));
+    if (objc_file_sha256(v[0], fsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "artifact %s", v[0]);
+    else if (objc_file_sha256(v[1], psha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "prestrip %s", v[1]);
+    else if (v[3] && objc_file_sha256(v[3], msha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "link map %s: %s", v[3], strerror(errno));
     if (!rc) rc = load_manifest(a, v[5], ref_inputs, manifest_sha);
     if (!rc && objc_tree_digest(v[2], tsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "source root %s", v[2]);
     if (!rc && v[4]) rc = load_provider_prefix(a, v[4]);
@@ -1544,19 +1526,9 @@ static int build_evidence_main(int argc, char **argv) {
 
 /* ---- resolve ----------------------------------------------------------------------------------- */
 
-/* resolve --artifact FILE --reviewed FILE --output NEW_FILE: schema-2 reviewed evidence with every
- * guard's and R3 row's `path` resolved to the artifact's function symbols and every crate's
- * disambiguator read from the artifact's symbols. A path is the text objc_demangle_v0 gives a
- * function symbol (in an instruction section) for its own path. Of the functions with that path,
- * those naming a pinned crate under any other disambiguator than its pin are another version's,
- * and are left out. What remains is one function -- `symbol` -- or the copies of one generic
- * instance -- `symbols`, sorted --, which share their own path's mangling and differ only in
- * instantiating crate or ".llvm.N" and ".cold" suffixes; anything else is resolve-ambiguous. A
- * crate named under one disambiguator has it; under several, the one whose functions the debug
- * map (N_SO stabs) places in a source directory NAME-VERSION (a "-" matching a "_"), and no other
- * version's; else resolve-ambiguous. A path or crate the artifact lacks is stale-build-evidence.
- * Everything else is copied unchanged; the output is the whole document with sorted keys. Exit 0
- * written, 2 usage or an existing destination, 4 nothing written. */
+/* Each reviewed path becomes the artifact's one function, or the copies of one generic instance,
+ * outside other versions of pinned crates; each crate's disambiguator comes from the symbols, tied
+ * to its version by the debug map when there are several. */
 
 typedef struct { char *name; ObjcV0Function f; } RvFunction;
 typedef struct { char *crate, *dis, *where; } RvPlace;
@@ -1860,14 +1832,14 @@ int main(int argc, char **argv) {
         }
         {
             char h[65];
-            if (sha256_file(rart, h)) rc = objc_fail(a, "unreadable-artifact", NULL, 0, "%s: %s", rart, strerror(errno));
+            if (objc_file_sha256(rart, h)) rc = objc_fail(a, "unreadable-artifact", NULL, 0, "%s: %s", rart, strerror(errno));
             else if (objc_set_string(&a->artifact_sha256, h)) rc = OBJC_CANNOT_MEASURE;
         }
         if (!rc) rc = load_manifest(a, rrefs, ref_inputs, manifest_sha);
         if (!rc) rc = load_clusters(a, rrefs);
         if (!rc && prefix) rc = load_provider_prefix(a, prefix);
         if (!rc && evidence) {
-            if (sha256_file(evidence, be_sha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "build evidence %s", evidence);
+            if (objc_file_sha256(evidence, be_sha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "build evidence %s", evidence);
             else rc = load_build_evidence(a, evidence, manifest_sha);
         }
         if (!rc && receipt) rc = objc_load_source_receipt(a, receipt);

@@ -15,7 +15,9 @@
  * A cite resolves tree:PATH under the source root, crate:NAME-VERSION/PATH under
  * <crate sources>/NAME-VERSION, sdk:PATH under the SDK root. It is uncheckable (-1) when the root
  * is not given or missing, the path has a .. component, its real path leaves its root, or it is not
- * a regular file; a crate: cite also when no crates[] entry pins that NAME and VERSION. */
+ * a regular file; a tree: cite also when it or its real path has a .git component (the digest
+ * leaves .git out), an sdk: cite when its real path is outside the header digest's selection, and
+ * a crate: cite when no crates[] entry pins that NAME and VERSION. */
 /* platform: lstat, readlink and realpath under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE
@@ -36,7 +38,7 @@ static void hex(const unsigned char *d, char out[65]) {
     for (i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
 }
 
-static int file_sha256(const char *path, char out[65]) {
+int objc_file_sha256(const char *path, char out[65]) {
     FILE *f = fopen(path, "rb");
     CC_SHA256_CTX c;
     unsigned char buf[65536], d[CC_SHA256_DIGEST_LENGTH];
@@ -126,7 +128,7 @@ static int walk(const char *root, const char *rel, Lines *l, int sdk) {
             if (k < 0) rc = -1;
             else { target[k] = 0; rc = add_line(l, "l", sub, target); }
         } else if (S_ISREG(st.st_mode)) {
-            rc = file_sha256(full, h) || add_line(l, "f", sub, h) ? -1 : 0;
+            rc = objc_file_sha256(full, h) || add_line(l, "f", sub, h) ? -1 : 0;
         } else rc = -1;
     }
     closedir(d);
@@ -149,7 +151,7 @@ static int digest(const char *root, int sdk, char out[65]) {
         for (i = 0; i < l.n && !rc; i++) {
             char full[PATH_MAX], h[65];
             if (!sdk) CC_SHA256_Update(&c, l.v[i], (CC_LONG)strlen(l.v[i]));
-            else if ((size_t)snprintf(full, sizeof full, "%s/%s", root, l.v[i] + 2) >= sizeof full || file_sha256(full, h)) rc = -1;
+            else if ((size_t)snprintf(full, sizeof full, "%s/%s", root, l.v[i] + 2) >= sizeof full || objc_file_sha256(full, h)) rc = -1;
             else sdk_hash(&c, h, l.v[i]);
             CC_SHA256_Update(&c, "\n", 1);
         }
@@ -164,19 +166,26 @@ static int digest(const char *root, int sdk, char out[65]) {
 int objc_tree_digest(const char *root, char out[65]) { return digest(root, 0, out); }
 int objc_sdk_header_digest(const char *root, char out[65]) { return digest(root, 1, out); }
 
-/* `rel` under `root`, into `real` (PATH_MAX): no .. component, and its real path inside root's. */
-static int inside(const char *root, const char *rel, char *real) {
-    char rroot[PATH_MAX], full[PATH_MAX];
+static int has_component(const char *rel, const char *name) {
     const char *p;
+    size_t k = strlen(name);
+    for (p = rel; *p; p += strcspn(p, "/"), p += *p == '/')
+        if (!strncmp(p, name, k) && (p[k] == '/' || !p[k])) return 1;
+    return 0;
+}
+
+/* `rel` under `root`, into `real` (PATH_MAX), `*within` its part under root's real path: no ..
+ * component, and its real path inside root's. */
+static int inside(const char *root, const char *rel, char *real, const char **within) {
+    char rroot[PATH_MAX], full[PATH_MAX];
     size_t k;
-    for (p = rel; *p; p += strcspn(p, "/"), p += *p == '/') {
-        if (!strncmp(p, "..", 2) && (p[2] == '/' || !p[2])) return -1;
-    }
+    if (has_component(rel, "..")) return -1;
     if (!root || !realpath(root, rroot) || (size_t)snprintf(full, sizeof full, "%s/%s", rroot, rel) >= sizeof full ||
         !realpath(full, real))
         return -1;
     k = strlen(rroot);
-    if (!strcmp(rroot, "/")) return 0;
+    if (!strcmp(rroot, "/")) { *within = real + 1; return 0; }
+    *within = real + k + 1;
     return !strncmp(real, rroot, k) && real[k] == '/' ? 0 : -1;
 }
 
@@ -195,18 +204,21 @@ const ObjcCrate *objc_cite_crate(const ObjcAnalysis *a, const char *cite) {
 
 int objc_cite_sha256(const ObjcAnalysis *a, const char *cite, char out[65]) {
     char real[PATH_MAX], crate[PATH_MAX], dir[PATH_MAX];
+    const char *rel, *base;
     struct stat st;
     if (!strncmp(cite, "tree:", 5)) {
-        if (inside(a->source_root, cite + 5, real)) return -1;
+        if (has_component(cite + 5, ".git") || inside(a->source_root, cite + 5, real, &rel) || has_component(rel, ".git")) return -1;
     } else if (!strncmp(cite, "sdk:", 4)) {
-        if (inside(a->sdk_root, cite + 4, real)) return -1;
+        if (inside(a->sdk_root, cite + 4, real, &rel)) return -1;
+        base = strrchr(rel, '/') ? strrchr(rel, '/') + 1 : rel;
+        if (!sdk_header(rel, base)) return -1;
     } else if (!strncmp(cite, "crate:", 6)) {
         const char *slash = strchr(cite + 6, '/');
         size_t n = slash ? (size_t)(slash - (cite + 6)) : 0;
         if (!n || n >= sizeof crate || !objc_cite_crate(a, cite)) return -1;
         memcpy(crate, cite + 6, n); crate[n] = 0;
-        if (inside(a->crate_sources, crate, dir) || inside(dir, slash + 1, real)) return -1;
+        if (inside(a->crate_sources, crate, dir, &rel) || inside(dir, slash + 1, real, &rel)) return -1;
     } else return -1;
     if (stat(real, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
-    return file_sha256(real, out);
+    return objc_file_sha256(real, out);
 }

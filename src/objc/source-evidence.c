@@ -44,29 +44,20 @@
  *     record makes a send guarded is classify.c's decision: it also needs the measured guard.
  *   - Schema 2 keys reviews to the source they read, not to the revision. The evidence records
  *     source.tree_sha256, the prepared tree's digest. A guard, R2 or R3 row names its function by
- *     demangled `path` (plus the resolved `symbol`, or `symbols` for the copies of one generic
- *     instance), lists every file it rests on as `sources` [{cite, sha256}] -- a cite is
- *     tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH -- and an R2 or R3 row adds a free-text `note`. A
- *     guard record also pins the guarded sends it `covers` [{selector, count}] and keeps revision,
- *     patches and features as `provenance` only. Crates are {name, version, checksum?,
- *     disambiguator?}; a checksum (none for a workspace or path crate) is provenance, never compared. The front end parses this strictly (an unknown key or a missing part is
- *     malformed-build-evidence). With --source-root, its digest must be source.tree_sha256
- *     (source-tree-mismatch); a row in use without --source-root is source-tree-mismatch too, since
- *     the tree it was reviewed in is unverified. A row is checked when a send uses it: the analyzer
- *     hashes every cited file itself (source-hash.c). A file whose hash differs is
- *     guard-source-changed, or position-source-changed for an R2 or R3 row, naming the cite and both hashes; a cite it
- *     cannot check (no root, no file, a path leaving its root, a crate: cite whose NAME-VERSION no crates[]
- *     entry pins, an sdk: cite when --sdk-root's header
- *     digest is not the reference manifest's floor SDK's) is citation-unverifiable. A row matches a send by its resolved symbol(s)
- *     (an LLVM suffix ignored), which must be what drydock-objc resolve writes for its path -- each demangles to it,
- *     several are copies of one instance, every non-toolchain crate they name is pinned under their disambiguator --
- *     or the row is malformed-build-evidence, checked first; a row with none that a send's selector would use is
- *     malformed-build-evidence (run drydock-objc resolve). A guard record holds only when, in each
- *     copy it names, the guarded sends classify.c measures, per selector and call site, are exactly
- *     its covers (guard-coverage-changed otherwise), and classify.c still needs the measured guard;
- *     any matching record that fails keeps the send unguarded. An R2 or R3 row then meets the schema-1
- *     row checks for each symbol and closes as schema 1 does. Provenance is reported in the proof,
- *     never compared. A row no send uses is reported unused.
+ *     demangled `path` and the `symbol` (or `symbols`, the copies of one generic instance) that
+ *     drydock-objc resolve writes, and lists every file it rests on as `sources` [{cite, sha256}]
+ *     (tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH); an R2 or R3 row adds a `note`, a guard
+ *     record its `covers` [{selector, count}] and `provenance`. Crates are {name, version,
+ *     checksum?, disambiguator?}; a checksum is provenance. A row is checked when a send uses it,
+ *     and any failure closes nothing: its symbols must demangle to its path, be copies of one
+ *     instance and name only pinned crates (else malformed-build-evidence, as is a row with no
+ *     symbol); the tree must be --source-root, whose digest is source.tree_sha256
+ *     (source-tree-mismatch); every cite is hashed here (source-hash.c): a different hash is
+ *     guard-source-changed (position-source-changed for R2 and R3), a cite source-hash.c cannot
+ *     check is citation-unverifiable, and so is an sdk: cite unless --sdk-root's header digest is
+ *     the reference manifest's floor SDK's. A guard record also needs, in each copy and slice, the
+ *     guarded sends classify.c measures to be exactly its covers (guard-coverage-changed); an R2
+ *     or R3 row then meets the schema-1 checks for each symbol. Provenance is never compared.
  *   - Source receipts (--source-receipt; tools/objc-source-inventory.c writes them with libclang,
  *     this module only reads them). They apply to an Objective-C provider's own code and nothing
  *     else: a send closes from a receipt only when it lies in an atom provider.c verified byte for
@@ -491,43 +482,55 @@ static int check_symbols(ObjcAnalysis *a, const char *id, const char *path, cons
     return status;
 }
 
-/* Schema 2: in each copy of the record's function, the guarded sends classify.c measures, per
- * selector and call site, must be exactly the ones `covers` lists. */
+/* Schema 2: in each copy of the record's function, in each slice, the guarded sends classify.c
+ * measures, per selector and call site, must be exactly the ones `covers` lists. */
 static int check_coverage(ObjcAnalysis *a, const ObjcGuardRecord *g) {
-    size_t c, k, i, j;
+    size_t c, k, i, j, sl, nslices = 0;
     char fn[4096], other[4096], seen[4096];
+    const char **slices;
     int status = OBJC_OK;
+    if (!(slices = malloc((a->n_sends + 1) * sizeof *slices))) return objc_fail(a, "out-of-memory", NULL, 0, "coverage");
+    for (i = 0; i < a->n_sends; i++) {
+        const char *x = a->evidence[a->sends[i].evidence].slice;
+        for (sl = 0; x && sl < nslices && strcmp(slices[sl], x); sl++) ;
+        if (x && sl == nslices) slices[nslices++] = x;
+    }
+    if (!nslices) status = objc_fail(a, "guard-coverage-changed", NULL, 0, "%s: no slice measures a send", g->id);
     for (c = 0; c < (g->symbol ? 1 : g->nsymbols) && status == OBJC_OK; c++) {
-        uint64_t *got;
         base_symbol(g->symbol ? g->symbol : g->symbols[c], fn, sizeof fn);
         for (k = 0; k < c; k++) { base_symbol(g->symbols[k], seen, sizeof seen); if (!strcmp(seen, fn)) break; }
         if (k < c) continue;
-        if (!(got = calloc(g->ncovers + 1, sizeof *got))) return objc_fail(a, "out-of-memory", NULL, 0, "coverage");
-        for (i = 0; i < a->n_sends && status == OBJC_OK; i++) {
-            const ObjcSend *s = &a->sends[i];
-            const ObjcEvidence *e = &a->evidence[s->evidence];
-            if (!e->function || !s->selector) continue;
-            base_symbol(e->function, other, sizeof other);
-            if (strcmp(fn, other) || !objc_send_guarded(a, i)) continue;
-            for (j = 0; j < i; j++) {   /* one call site reached on several paths is one send */
-                const ObjcSend *t = &a->sends[j];
-                const ObjcEvidence *f = &a->evidence[t->evidence];
-                if (f->address == e->address && f->slice && e->slice && !strcmp(f->slice, e->slice) && t->selector && !strcmp(t->selector, s->selector) &&
-                    f->function && !strcmp(f->function, e->function) && objc_send_guarded(a, j)) break;
+        for (sl = 0; sl < nslices && status == OBJC_OK; sl++) {
+            uint64_t *got;
+            if (!(got = calloc(g->ncovers + 1, sizeof *got))) { free(slices); return objc_fail(a, "out-of-memory", NULL, 0, "coverage"); }
+            for (i = 0; i < a->n_sends && status == OBJC_OK; i++) {
+                const ObjcSend *s = &a->sends[i];
+                const ObjcEvidence *e = &a->evidence[s->evidence];
+                if (!e->function || !s->selector || !e->slice || strcmp(e->slice, slices[sl])) continue;
+                base_symbol(e->function, other, sizeof other);
+                if (strcmp(fn, other) || !objc_send_guarded(a, i)) continue;
+                for (j = 0; j < i; j++) {   /* one call site reached on several paths is one send */
+                    const ObjcSend *t = &a->sends[j];
+                    const ObjcEvidence *f = &a->evidence[t->evidence];
+                    if (f->address == e->address && f->slice && !strcmp(f->slice, e->slice) && t->selector && !strcmp(t->selector, s->selector) &&
+                        f->function && !strcmp(f->function, e->function) && objc_send_guarded(a, j)) break;
+                }
+                if (j < i) continue;
+                for (k = 0; k < g->ncovers && strcmp(g->covers[k].selector, s->selector); k++) ;
+                if (k == g->ncovers)
+                    status = objc_fail(a, "guard-coverage-changed", e->slice, e->address, "%s: %s measures a guarded %s send the record does "
+                                       "not cover (measures 1 or more, covers 0)", g->id, fn, s->selector);
+                else got[k]++;
             }
-            if (j < i) continue;
-            for (k = 0; k < g->ncovers && strcmp(g->covers[k].selector, s->selector); k++) ;
-            if (k == g->ncovers)
-                status = objc_fail(a, "guard-coverage-changed", e->slice, e->address, "%s: %s measures a guarded %s send the record does "
-                                   "not cover (measures 1 or more, covers 0)", g->id, fn, s->selector);
-            else got[k]++;
+            for (k = 0; k < g->ncovers && status == OBJC_OK; k++)
+                if (got[k] != g->covers[k].count)
+                    status = objc_fail(a, "guard-coverage-changed", NULL, 0, "%s: %s measures %llu guarded %s sends in %s; the record covers %llu",
+                                       g->id, fn, (unsigned long long)got[k], g->covers[k].selector, slices[sl],
+                                       (unsigned long long)g->covers[k].count);
+            free(got);
         }
-        for (k = 0; k < g->ncovers && status == OBJC_OK; k++)
-            if (got[k] != g->covers[k].count)
-                status = objc_fail(a, "guard-coverage-changed", NULL, 0, "%s: %s measures %llu guarded %s sends; the record covers %llu",
-                                   g->id, fn, (unsigned long long)got[k], g->covers[k].selector, (unsigned long long)g->covers[k].count);
-        free(got);
     }
+    free(slices);
     return status;
 }
 

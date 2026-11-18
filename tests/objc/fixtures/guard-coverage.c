@@ -7,7 +7,8 @@
  *   guarded_more   another copy, instantiated in crate other2, with two guarded sends
  *   guarded_twice  fixture::guarded_twice, two guarded sends of it in one function
  *   unguarded      fixture::unguarded, the same send with no guard
- * and one C function, plain_guarded, a copy of guarded under a name that is no Rust symbol. */
+ * and one C function, plain_guarded, a copy of guarded under a name that is no Rust symbol.
+ * -DEXTRA_SEND gives guarded a second guarded send, for one slice of a fat fixture. */
 #include <objc/runtime.h>
 #include <objc/message.h>
 
@@ -32,6 +33,13 @@ static inline __attribute__((always_inline)) obj_t workspace(void) { return SEND
 
 N long guarded(void) {
     obj_t ws = workspace();
+#ifdef EXTRA_SEND
+    long r = 0;
+    if (ASK(ws, "respondsToSelector:", SEL_(LATER))) r += (long)SEND0(ws, LATER);
+    fixture_use(&r);
+    if (ASK(ws, "respondsToSelector:", SEL_(LATER))) r += (long)SEND0(ws, LATER);
+    return r;
+#endif
     if (ASK(ws, "respondsToSelector:", SEL_(LATER))) return (long)SEND0(ws, LATER);
     return 0;
 }

@@ -391,7 +391,7 @@ static void absent_verdict(ObjcAnalysis *a, size_t ev, const ObjcSend *s, const 
         const ObjcGuardRecord *r = objc_guard_record(a, ev);
         snprintf(buf, sizeof buf, "0x%llx", (unsigned long long)g->address);
         if (r && !strcmp(r->review_status, "reviewed") && r->reviewer && *r->reviewer && r->review_reason && *r->review_reason) {
-            char cite[2048];
+            char cite2[2048], cite1[1024], *cite = a->be_schema == 2 ? cite2 : cite1;
             if (a->be_schema == 2) {
                 char srcs[1024], cov[256];
                 size_t k, at = 0;
@@ -400,11 +400,11 @@ static void absent_verdict(ObjcAnalysis *a, size_t ev, const ObjcSend *s, const 
                 for (k = 0; k < r->ncovers && at < sizeof cov; k++)
                     at += (size_t)snprintf(cov + at, sizeof cov - at, "%s%s x%llu", k ? ", " : "", r->covers[k].selector,
                                            (unsigned long long)r->covers[k].count);
-                snprintf(cite, sizeof cite, "%s; covers %s; fallback: %s; reviewed by %s: %s; reviewed at revision %s, patches %s, "
+                snprintf(cite2, sizeof cite2, "%s; covers %s; fallback: %s; reviewed by %s: %s; reviewed at revision %s, patches %s, "
                          "features %s (provenance, not compared)", srcs, cov, r->fallback, r->reviewer, r->review_reason,
                          r->source_revision, r->patches_sha256, r->features);
             } else
-                snprintf(cite, sizeof cite, "%s:%llu sha256:%s; fallback: %s; reviewed by %s: %s", r->source_file,
+                snprintf(cite1, sizeof cite1, "%s:%llu sha256:%s; fallback: %s; reviewed by %s: %s", r->source_file,
                          (unsigned long long)r->source_line, r->source_sha256, r->fallback, r->reviewer, r->review_reason);
             set(o, OBJC_GUARDED, later ? fw : NULL, "absent from the floor; respondsToSelector: at %s answers YES on every path here, for this receiver and selector; guard record %s: %s",
                 buf, r->id, cite);
