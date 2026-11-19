@@ -166,8 +166,8 @@ sel_args() {
 }
 # spec: cli/drydock-objc.c header (link-args) -- sel_want NAME ARG...: $T/args is exactly the lines ARG...
 sel_want() {
-  n=$1; shift; printf '%s\n' "$@" >"$T/args.want"
-  cmp -s "$T/args" "$T/args.want" || fail "$n: got $(tr '\n' '|' <"$T/args"), want $(tr '\n' '|' <"$T/args.want")"
+  tname=$1; shift; printf '%s\n' "$@" >"$T/args.want"
+  cmp -s "$T/args" "$T/args.want" || fail "$tname: got $(tr '\n' '|' <"$T/args"), want $(tr '\n' '|' <"$T/args.want")"
 }
 sel_args 0 --provider "$LANG_ID"
 sel_want test_select_foundation "$MA" -Wl,-u,___fixture_objc_activate_foundation -framework Foundation -Xlinker -map -Xlinker "$M"
