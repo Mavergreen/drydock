@@ -192,6 +192,12 @@ for id in no.such.v1 "$LANG_ID" "$COUNTRY_ID" "$WS_ID"; do
 done
 sel_args 2 --provider ""
 [ ! -s "$T/args" ] || fail "test_empty_id: stdout not empty"
+sel_args 2 --provider
+[ ! -s "$T/args" ] || fail "test_trailing_provider: stdout not empty"
+sel_args 2 --provider "$(printf 'a\tb')"
+[ ! -s "$T/args" ] || fail "test_control_id: stdout not empty"
+sel_args 2 --provider "$(printf 'a\377b')"
+[ ! -s "$T/args" ] || fail "test_bad_utf8_id: stdout not empty"
 rm -rf "$T/multi-bad"; cp -R "$T/multi" "$T/multi-bad"
 sed 's/"archive_sha256" : "[0-9a-f]*"/"archive_sha256" : "0000000000000000000000000000000000000000000000000000000000000000"/' "$T/multi/share/recaulk/objc-providers.json" >"$T/multi-bad/share/recaulk/objc-providers.json"
 rc=0; "$DRYDOCK_OBJC" link-args --prefix "$T/multi-bad" --link-map "$M" --provider no.such.v1 >"$T/args" 2>"$T/err" || rc=$?

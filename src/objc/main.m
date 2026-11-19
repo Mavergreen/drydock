@@ -1433,7 +1433,8 @@ static int link_args_main(int argc, char **argv) {
                 free(rest);
                 return 2;
             }
-            if (![want containsObject:[NSString stringWithUTF8String:id]]) [want addObject:[NSString stringWithUTF8String:id]];
+            NSString *ids = [NSString stringWithUTF8String:id];
+            if (![want containsObject:ids]) [want addObject:ids];
             i0++;
         } else {
             rest[nrest++] = argv[i0];
