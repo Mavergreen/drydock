@@ -135,7 +135,7 @@ run "$T/out/truncated" --artifact "$T/root/bin/truncated" --root "$T/root" --ref
 exit_is 4 'truncated artifact'; complete_is false "$T/out/truncated" 'truncated'
 grep '"findings": \[\]' "$T/out/truncated" >/dev/null || fail 'a truncated artifact produced findings'
 if env -i PATH=/usr/bin:/bin "$CC_ARM64" -O1 "$FX/plain.c" -o "$T/root/bin/arm64-only" 2>/dev/null; then
-  "$LIPO" -info "$T/root/bin/arm64-only" 2>/dev/null | grep -q 'architecture: arm64$' || fail "$CC_ARM64 built no thin arm64 image"
+  "$LIPO" -info "$T/root/bin/arm64-only" 2>/dev/null | grep -q 'architecture: arm64 *$' || fail "$CC_ARM64 built no thin arm64 image"
   run "$T/out/arm64" --artifact "$T/root/bin/arm64-only" --root "$T/root" --references "$REF" --mode strict
   exit_is 4 'no x86_64 slice'; error_in no-x86_64-slice "$T/out/arm64" 'arm64 only'
 else
