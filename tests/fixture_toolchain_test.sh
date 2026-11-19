@@ -78,9 +78,28 @@ printf '#!/bin/sh\necho "clang22: already extracted" >&2\necho "%s"\n' "$TMP/stu
 printf '#!/bin/sh\necho ld64.lld\n' >"$TMP/stub/prefix/bin/clang"
 chmod +x "$TMP/stub/prefix/bin/clang"
 got=$(CLANG22= ROOT="$ROOT" SHIPYARD_SCRIPTS="$TMP/stub/scripts" TMPDIR="$TMP" sh -c '. "$ROOT/tests/lib/toolchain.sh" && printf "%s" "$CC"' 2>/dev/null)
-[ "$got" = "$TMP/stub/prefix/bin/clang" ] && [ -x "$got" ] &&
+[ -x "$got" ] && grep -F "exec \"$TMP/stub/prefix/bin/clang\"" "$got" >/dev/null &&
   echo "ok CLANG22 unset: the fetched prefix is fetch_clang22.sh's stdout, not its stderr" ||
-  fail "CLANG22 unset: CC resolved to '$got', expected $TMP/stub/prefix/bin/clang (stderr joined the path?)"
+  fail "CLANG22 unset: CC is '$got', which does not run $TMP/stub/prefix/bin/clang (stderr joined the path?)"
+
+# $CC and $CXX compile against shipyard's pinned 10.9 SDK, not the cfg's <prefix>/SDKs: in a fetched prefix that link
+# names a sibling the fetch never unpacks
+if (ROOT="$ROOT" sh -c '. "$ROOT/tests/lib/toolchain.sh"') >/dev/null 2>&1; then
+  sdk=$(sh "${SHIPYARD_SCRIPTS:-/usr/local/mavergreen/shipyard/share/cmake/MavericksShipyard/scripts}/fetch_sdk.sh" --arch x86_64)
+  printf '#include <dlfcn.h>\nint main(void) { return dlopen(0, 0) == 0; }\n' >"$TMP/sdk.c"
+  for v in CC CXX; do
+    l=c; [ "$v" = CXX ] && l=c++
+    got=$(ROOT="$ROOT" V=$v sh -c '. "$ROOT/tests/lib/toolchain.sh" && eval "\"\$$V\"" -### -x '"$l"' -c /dev/null -o /dev/null' 2>&1 |
+      grep '"-cc1"' | tr ' ' '\n' | grep -A1 -x '"-isysroot"' | tail -1 | tr -d '"')
+    [ "$got" = "$sdk" ] && echo "ok \$$v's sysroot is the pinned 10.9 SDK" ||
+      fail "\$$v's sysroot is '$got', expected the pinned $sdk"
+    ROOT="$ROOT" V=$v sh -c '. "$ROOT/tests/lib/toolchain.sh" && eval "\"\$$V\"" -x '"$l"' "$0" -o "$1"' "$TMP/sdk.c" "$TMP/sdk-$v" \
+      >"$TMP/sdk-$v.err" 2>&1 && echo "ok \$$v links <dlfcn.h> against it" ||
+      fail "\$$v cannot link <dlfcn.h>: $(head -3 "$TMP/sdk-$v.err")"
+  done
+else
+  echo "N/A pinned SDK rows: no clang22 here ($(ROOT="$ROOT" sh -c '. "$ROOT/tests/lib/toolchain.sh"' 2>&1 | tail -1))"
+fi
 
 found=$(hits "$ROOT")
 [ -z "$found" ] && echo "ok no test names a host compiler or binutil" ||

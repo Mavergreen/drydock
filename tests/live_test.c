@@ -46,8 +46,9 @@
  * to an unbounded walk fails loudly rather than merely "eventually" passing.
  *
  * Build (standalone):
- *   clang -O2 -Wall -Wextra -I src -o /tmp/livetest tests/live_test.c && /tmp/livetest
- * (run from the repo root: it shells out to clang22 (CC, else CLANG22) on tests/live_probe.c using
+ *   clang -O2 -Wall -Wextra -I src -o /tmp/livetest tests/live_test.c &&
+ *     ROOT=$PWD sh -c '. tests/lib/toolchain.sh && exec /tmp/livetest'
+ * (run from the repo root: it shells out to tests/lib/toolchain.sh's CC and NM on tests/live_probe.c using
  * a path relative to the current directory, same WORKING_DIRECTORY
  * convention image_test uses via CMakeLists.txt.)
  */
@@ -708,13 +709,10 @@ static char *slurp(const char *path) {
     return buf;
 }
 
-/* A tool from the environment (CC, NM), else from the clang22 prefix CLANG22 names; never the host's. */
-static const char *fixture_tool(char *buf, size_t n, const char *env, const char *name) {
-    const char *v = getenv(env), *prefix = getenv("CLANG22");
-    if (v && *v) return v;
-    if (!prefix || !*prefix) return NULL;
-    snprintf(buf, n, "%s/bin/%s", prefix, name);
-    return buf;
+/* A tool from tests/lib/toolchain.sh (CC, NM); never the host's, nor a bare clang22 prefix's, whose cfg names its own SDK. */
+static const char *fixture_tool(const char *env) {
+    const char *v = getenv(env);
+    return v && *v ? v : NULL;
 }
 
 static void test_probe_object_is_allocation_free(void) {
@@ -727,10 +725,9 @@ static void test_probe_object_is_allocation_free(void) {
     snprintf(nmpath, sizeof nmpath, "%s/live_probe.%ld.nm.log",
              getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (long)pid);
 
-    char ccbuf[1024], nmbuf[1024];
-    const char *cc = fixture_tool(ccbuf, sizeof ccbuf, "CC", "clang");
-    const char *nm = fixture_tool(nmbuf, sizeof nmbuf, "NM", "llvm-nm");
-    CHECK(cc && nm, "toolchain: no clang22 (neither CC and NM nor CLANG22 is set)");
+    const char *cc = fixture_tool("CC");
+    const char *nm = fixture_tool("NM");
+    CHECK(cc && nm, "toolchain: CC and NM are not both set (run under tests/lib/toolchain.sh)");
     if (!cc || !nm) return;
 
     /* -O0, deliberately: at -O2 a single unobserved malloc(16) call was

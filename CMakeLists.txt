@@ -963,7 +963,9 @@ if(APPLE)
   target_compile_options(live_test PRIVATE -O2 -Wall -Wextra)
   target_include_directories(live_test PRIVATE src)
 endif()
-drydock_macos_test(live_test "dyld's own loaded image" COMMAND live_test
+drydock_macos_test(live_test "dyld's own loaded image"
+  COMMAND sh -c "ROOT=\"\$0\"; . \"\$ROOT/tests/lib/toolchain.sh\" && exec \"\$1\"" "${CMAKE_CURRENT_SOURCE_DIR}"
+          "$<TARGET_FILE:live_test>"
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 if(TARGET tool_dir)
