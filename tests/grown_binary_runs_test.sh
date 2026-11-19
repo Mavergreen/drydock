@@ -13,18 +13,20 @@
 # two programs that find their own header: one RIP-relatively, whose grow must
 # repair that reference, and one through dyld, with nothing to repair; and
 # three that keep its address in data: ptr, whose pointer the grow must move,
-# inside, which points into the header and must be refused, and self, which
-# binds to its own __mh_execute_header and needs nothing.
+# inside, which points into the header and must be refused, and self and
+# selfimg, which bind to their own __mh_execute_header and need nothing.
 # Each gets enough distinct LC_RPATHs to outgrow its header pad, measured from
 # `drydock-macho-rewrite info` -- never a pad size this host's linker chose.
-# Fixtures are x86_64 with a 10.9 floor, which runs on 10.9 and under Rosetta.
+# Fixtures are x86_64 with a 10.9 floor, which runs on 10.9.
 set -u
 
 BIN="${1:?usage: grown_binary_runs_test.sh <bindir>}"
 BIN=$(cd "$BIN" && pwd)
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "grown_binary_runs_test: $DMR not found or not executable" >&2; exit 1; }
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
 FF="-arch x86_64 -mmacosx-version-min=10.9"
 
 fail=0
@@ -95,6 +97,7 @@ lowered() {
 # must agree on stdout, stderr and exit status.
 same() {
     name=$1 in=$2 out=$3; shift 3
+    gate_row x86_64 "$name: the grown binary behaves as the input does" || return 0
     irc=0; orc=0
     env -i PATH=/usr/bin:/bin GROW_PROBE=probe "$in" "$@" \
         >"$T/$name.in.out" 2>"$T/$name.in.err" || irc=$?
@@ -136,7 +139,7 @@ else
     : >"$T/sys.grow.err"
     if [ "$(od -An -tx1 -N4 "$sys" | tr -d ' \n')" = cafebabe ]; then
         sin=$T/sys.x86_64
-        lipo "$sys" -thin x86_64 -output "$sin" 2>"$T/sys.grow.err" || sin=
+        "$LIPO" "$sys" -thin x86_64 -output "$sin" 2>"$T/sys.grow.err" || sin=
     fi
     grc=1
     [ -n "$sin" ] && grow sys "$sin" "$T/sys.grown"
@@ -191,9 +194,11 @@ for p in hdr ctl; do
         || { echo "grown_binary_runs_test: could not link $p" >&2; exit 1; }
 done
 
-"$T/hdr" >"$T/hdr.run" 2>&1
-grep -q '__data found' "$T/hdr.run" \
-    && ok "hdr: the fixture finds its own __data" || bad "hdr: fixture" "$(cat "$T/hdr.run")"
+if gate_row x86_64 "hdr: the fixture finds its own __data"; then
+    "$T/hdr" >"$T/hdr.run" 2>&1
+    grep -q '__data found' "$T/hdr.run" \
+        && ok "hdr: the fixture finds its own __data" || bad "hdr: fixture" "$(cat "$T/hdr.run")"
+fi
 grow hdr "$T/hdr" "$T/hdr.grown"
 [ "$grc" -eq 0 ] && [ -e "$T/hdr.grown" ] && ok "hdr: the grow succeeds and writes its output" \
     || bad "hdr: grow" "exit $grc: $(cat "$T/hdr.grow.err")"
@@ -202,11 +207,13 @@ grep -q "^$T/hdr: grew the header pad by .*; repaired 1 reference to the header\
     && ok "hdr: ... repairing its one reference to the header, and saying so" \
     || bad "hdr: repaired" "$(cat "$T/hdr.grow.err")"
 same hdr "$T/hdr" "$T/hdr.grown"
-grep -q '__data found' "$T/hdr.out.out" \
-    && ok "hdr: ... and the grown binary finds its own __data" \
-    || bad "hdr: grown output" "$(cat "$T/hdr.out.out")"
+if gate_row x86_64 "hdr: ... and the grown binary finds its own __data"; then
+    grep -q '__data found' "$T/hdr.out.out" \
+        && ok "hdr: ... and the grown binary finds its own __data" \
+        || bad "hdr: grown output" "$(cat "$T/hdr.out.out")"
+fi
 
-sym=$(nm "$T/hdr.grown" | awk '$3 == "__mh_execute_header" { print $1; exit }')
+sym=$("$NM" "$T/hdr.grown" | awk '$3 == "__mh_execute_header" { print $1; exit }')
 base=$(text_vmaddr "$T/hdr.grown")
 [ -n "$sym" ] && [ -n "$base" ] && [ $((0x$sym)) -eq $((base)) ] \
     && ok "hdr: ... and its __mh_execute_header symbol names the header ($base)" \
@@ -220,9 +227,11 @@ rc=0; grep -q 'repaired' "$T/ctl.grow.err" || rc=$?
 [ "$rc" -eq 1 ] && ok "ctl: ... with nothing to repair (hdr's grep, above, finds its repair)" \
     || bad "ctl: repaired" "$(grep 'repaired' "$T/ctl.grow.err")"
 same ctl "$T/ctl" "$T/ctl.grown"
-grep -q '__data found' "$T/ctl.out.out" \
-    && ok "ctl: ... and the grown binary finds its own __data" \
-    || bad "ctl: grown output" "$(cat "$T/ctl.out.out")"
+if gate_row x86_64 "ctl: ... and the grown binary finds its own __data"; then
+    grep -q '__data found' "$T/ctl.out.out" \
+        && ok "ctl: ... and the grown binary finds its own __data" \
+        || bad "ctl: grown output" "$(cat "$T/ctl.out.out")"
+fi
 
 # ---- 4. data that points at its own header ----------------------------------
 # ptr keeps its own header's address in data, as crt1's __program_vars does in
@@ -230,9 +239,9 @@ grep -q '__data found' "$T/ctl.out.out" \
 # The grow must move it with the header, say so, and leave a binary that runs
 # as the original does. inside points 16 bytes into its header, which a grow
 # moves away from what follows it, so its grow refuses and writes nothing.
-# self takes the same address through -interposable, which this host's ld64
-# makes a bind to its own __mh_execute_header; dyld resolves that through the
-# export trie, which a grow keeps naming the header, so it runs too.
+# self takes the same address through -interposable, which ld64.lld makes a
+# flat-lookup bind of __mh_execute_header; dyld resolves that through the main
+# executable's export trie, which a grow keeps naming the header, so it runs too.
 cat >"$T/ptr.c" <<'EOF'
 #include <stdio.h>
 #include <mach-o/dyld.h>
@@ -255,9 +264,11 @@ EOF
   "$CC" $FF -Wl,-headerpad,0 -Wl,-interposable -o "$T/self" "$T/ptr.c"; } \
     || { echo "grown_binary_runs_test: could not link ptr, inside or self" >&2; exit 1; }
 
-"$T/ptr" >"$T/ptr.run" 2>&1
-grep -q 'data pointer names the header' "$T/ptr.run" \
-    && ok "ptr: the fixture's data pointer names its header" || bad "ptr: fixture" "$(cat "$T/ptr.run")"
+if gate_row x86_64 "ptr: the fixture's data pointer names its header"; then
+    "$T/ptr" >"$T/ptr.run" 2>&1
+    grep -q 'data pointer names the header' "$T/ptr.run" \
+        && ok "ptr: the fixture's data pointer names its header" || bad "ptr: fixture" "$(cat "$T/ptr.run")"
+fi
 grow ptr "$T/ptr" "$T/ptr.grown"
 [ "$grc" -eq 0 ] && [ -e "$T/ptr.grown" ] && ok "ptr: the grow succeeds and writes its output" \
     || bad "ptr: grow" "exit $grc: $(cat "$T/ptr.grow.err")"
@@ -266,9 +277,11 @@ grep -q "^$T/ptr: grew the header pad by .*; repaired 1 reference to the header\
     && ok "ptr: ... moving its one pointer to the header, and saying so" \
     || bad "ptr: repaired" "$(cat "$T/ptr.grow.err")"
 same ptr "$T/ptr" "$T/ptr.grown"
-grep -q 'data pointer names the header' "$T/ptr.out.out" \
-    && ok "ptr: ... and the grown binary's data pointer names its header" \
-    || bad "ptr: grown output" "$(cat "$T/ptr.out.out")"
+if gate_row x86_64 "ptr: ... and the grown binary's data pointer names its header"; then
+    grep -q 'data pointer names the header' "$T/ptr.out.out" \
+        && ok "ptr: ... and the grown binary's data pointer names its header" \
+        || bad "ptr: grown output" "$(cat "$T/ptr.out.out")"
+fi
 
 grow inside "$T/inside" "$T/inside.grown"
 [ "$grc" -eq 1 ] && [ ! -e "$T/inside.grown" ] \
@@ -278,22 +291,47 @@ grep -q 'between the header at .* and its first content at .*, which a grow move
     "$T/inside.grow.err" \
     && ok "inside: ... saying why" || bad "inside: why" "$(cat "$T/inside.grow.err")"
 
-DYLDINFO=/Library/Developer/CommandLineTools/usr/bin/dyldinfo
-if [ -x "$DYLDINFO" ]; then
-    "$DYLDINFO" -bind "$T/self" | grep -q 'this-image *__mh_execute_header$' \
-        && ok "self: the fixture binds its own __mh_execute_header" \
-        || bad "self: fixture" "$("$DYLDINFO" -bind "$T/self")"
-else
-    skip "self: the fixture's bind" "no $DYLDINFO to read it with"
-fi
-grow self "$T/self" "$T/self.grown"
-[ "$grc" -eq 0 ] && [ -e "$T/self.grown" ] && ok "self: the grow succeeds and writes its output" \
-    || bad "self: grow" "exit $grc: $(cat "$T/self.grow.err")"
-lowered self "$T/self" "$T/self.grown"
-same self "$T/self" "$T/self.grown"
-grep -q 'data pointer names the header' "$T/self.out.out" \
-    && ok "self: ... and the grown binary's bound pointer names its header" \
-    || bad "self: grown output" "$(cat "$T/self.out.out")"
+# selfimg is self with that bind spelled as ld64 links -interposable, to this
+# image (ordinal 0) rather than flat, written by tests/mkbindstream.c from
+# self's own bind table.
+OBJDUMP=${OBJDUMP:-$(dirname "$NM")/llvm-objdump}
+binds() { "$OBJDUMP" --macho --bind "$1"; }
+"$HOST_CC" -O2 -o "$T/mkbindstream" "$ROOT/tests/mkbindstream.c" \
+    || { echo "grown_binary_runs_test: could not build mkbindstream" >&2; exit 1; }
+"$DMR" info "$T/self" | awk '/^  segname=/ { n++ } /segname=__DATA / {
+    for (i = 1; i <= NF; i++) if ($i ~ /^vmaddr=/) { sub("vmaddr=", "", $i); print n - 1, $i; exit } }' >"$T/self.data"
+read dseg dvm <"$T/self.data"
+toks=
+binds "$T/self" | awk '$1 == "__DATA" { print $3, $6, $7 }' >"$T/self.binds"
+while read -r addr dylib sym; do
+    case $dylib in
+    flat-namespace) o=0 ;;
+    *) o=$("$DMR" info "$T/self" | awk -v n="/$dylib." 'index($0, "  ordinal=") == 1 && index($0, n) {
+           split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); print o; exit }') ;;
+    esac
+    toks="$toks ord:$o sym:$sym type:1 seg:$dseg:$(printf %x $((addr - dvm))) do"
+done <"$T/self.binds"
+"$T/mkbindstream" set "$T/self" "$T/selfimg" bind $toks done && chmod 755 "$T/selfimg" \
+    || { echo "grown_binary_runs_test: could not write selfimg" >&2; exit 1; }
+
+for s in self:flat-namespace selfimg:this-image; do
+    p=${s%%:*} kind=${s#*:}
+    binds "$T/$p" | grep -q "$kind *__mh_execute_header\$" \
+        && ok "$p: the fixture binds its own __mh_execute_header ($kind)" \
+        || bad "$p: fixture" "$(binds "$T/$p")"
+    grow $p "$T/$p" "$T/$p.grown"
+    [ "$grc" -eq 0 ] && [ -e "$T/$p.grown" ] && ok "$p: the grow succeeds and writes its output" \
+        || bad "$p: grow" "exit $grc: $(cat "$T/$p.grow.err")"
+    lowered $p "$T/$p" "$T/$p.grown"
+    "$DMR" verify "$T/$p.grown" >/dev/null 2>&1 \
+        && ok "$p: ... and the result verifies" || bad "$p: verify" "refused"
+    same $p "$T/$p" "$T/$p.grown"
+    if gate_row x86_64 "$p: ... and the grown binary's bound pointer names its header"; then
+        grep -q 'data pointer names the header' "$T/$p.out.out" \
+            && ok "$p: ... and the grown binary's bound pointer names its header" \
+            || bad "$p: grown output" "$(cat "$T/$p.out.out")"
+    fi
+done
 
 [ "$fail" -eq 0 ] || { echo "grown_binary_runs_test: $fail failure(s)"; exit 1; }
 echo "grown_binary_runs_test: all passed"

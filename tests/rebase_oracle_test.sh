@@ -11,12 +11,17 @@
 set -u
 
 BIN="${1:?usage: rebase_oracle_test.sh <bindir>}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
 ORACLE="$BIN/rebase_oracle"
 [ -x "$ORACLE" ] || { echo "rebase_oracle_test: $ORACLE not found or not executable" >&2; exit 1; }
 
-DYLDINFO=/Library/Developer/CommandLineTools/usr/bin/dyldinfo
-[ -x "$DYLDINFO" ] || { echo "SKIP: no $DYLDINFO here"; exit 77; }
-command -v lipo >/dev/null 2>&1 || { echo "SKIP: no lipo here"; exit 77; }
+DEV=$(xcode-select -p 2>/dev/null) || DEV=
+DYLDINFO=
+for d in "$DEV/usr/bin" "$DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin"; do
+    [ -n "$DEV" ] && [ -x "$d/dyldinfo" ] && { DYLDINFO=$d/dyldinfo; break; }
+done
+[ -n "$DYLDINFO" ] || { echo "SKIP: no dyldinfo here: no developer tools at '${DEV:-(none)}' (the 10.9 guest has none)"; exit 77; }
 [ -f /usr/lib/libSystem.B.dylib ] || { echo "SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own"; exit 77; }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/rebase-oracle.XXXXXX") || exit 1
@@ -35,9 +40,9 @@ fail=0 files=0 slots=0
 find /usr/lib -name "*.dylib" -type f >"$T/corpus"
 while read -r f; do
     [ -f "$f" ] || continue
-    lipo "$f" -verify_arch x86_64 2>/dev/null || continue
+    "$LIPO" "$f" -verify_arch x86_64 2>/dev/null || continue
     thin="$T/thin"
-    lipo "$f" -thin x86_64 -output "$thin" 2>/dev/null || cp "$f" "$thin"
+    "$LIPO" "$f" -thin x86_64 -output "$thin" 2>/dev/null || cp "$f" "$thin"
     theirs "$thin" >"$T/theirs"
     rc=0; "$ORACLE" "$thin" >"$T/ours" || rc=$?
     files=$((files + 1))
@@ -58,7 +63,7 @@ fi
 # The positive controls: with one of dyldinfo's rows gone, or two swapped, the
 # comparison fails.
 lib=/usr/lib/libz.1.dylib
-lipo "$lib" -thin x86_64 -output "$T/thin" 2>/dev/null || cp "$lib" "$T/thin"
+"$LIPO" "$lib" -thin x86_64 -output "$T/thin" 2>/dev/null || cp "$lib" "$T/thin"
 "$ORACLE" "$T/thin" >"$T/ours"
 theirs "$T/thin" | awk 'NR != 3' >"$T/theirs"
 if cmp -s "$T/theirs" "$T/ours"; then

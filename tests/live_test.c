@@ -47,7 +47,7 @@
  *
  * Build (standalone):
  *   clang -O2 -Wall -Wextra -I src -o /tmp/livetest tests/live_test.c && /tmp/livetest
- * (run from the repo root: it shells out to `cc` on tests/live_probe.c using
+ * (run from the repo root: it shells out to clang22 (CC, else CLANG22) on tests/live_probe.c using
  * a path relative to the current directory, same WORKING_DIRECTORY
  * convention image_test uses via CMakeLists.txt.)
  */
@@ -708,6 +708,15 @@ static char *slurp(const char *path) {
     return buf;
 }
 
+/* A tool from the environment (CC, NM), else from the clang22 prefix CLANG22 names; never the host's. */
+static const char *fixture_tool(char *buf, size_t n, const char *env, const char *name) {
+    const char *v = getenv(env), *prefix = getenv("CLANG22");
+    if (v && *v) return v;
+    if (!prefix || !*prefix) return NULL;
+    snprintf(buf, n, "%s/bin/%s", prefix, name);
+    return buf;
+}
+
 static void test_probe_object_is_allocation_free(void) {
     char objpath[256], logpath[256], nmpath[256];
     pid_t pid = getpid();
@@ -718,8 +727,11 @@ static void test_probe_object_is_allocation_free(void) {
     snprintf(nmpath, sizeof nmpath, "%s/live_probe.%ld.nm.log",
              getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (long)pid);
 
-    const char *cc = getenv("CC");
-    if (!cc || !*cc) cc = "cc";
+    char ccbuf[1024], nmbuf[1024];
+    const char *cc = fixture_tool(ccbuf, sizeof ccbuf, "CC", "clang");
+    const char *nm = fixture_tool(nmbuf, sizeof nmbuf, "NM", "llvm-nm");
+    CHECK(cc && nm, "toolchain: no clang22 (neither CC and NM nor CLANG22 is set)");
+    if (!cc || !nm) return;
 
     /* -O0, deliberately: at -O2 a single unobserved malloc(16) call was
      * confirmed (by hand, during this test's own development) to be
@@ -728,7 +740,7 @@ static void test_probe_object_is_allocation_free(void) {
      * what the source actually calls. */
     char cmd[1024];
     snprintf(cmd, sizeof cmd,
-             "%s -O0 -Wall -Wextra -I src -c tests/live_probe.c -o %s > %s 2>&1",
+             "\"%s\" -O0 -Wall -Wextra -I src -c tests/live_probe.c -o %s > %s 2>&1",
              cc, objpath, logpath);
     int rc = system(cmd);
     CHECK(rc == 0, "compiling tests/live_probe.c (a %s-only TU) succeeds (rc=%d)", "live.h", rc);
@@ -756,7 +768,7 @@ static void test_probe_object_is_allocation_free(void) {
      * that into what this check treats as "the undefined-symbol list"
      * would fail a perfectly clean object for a reason that has nothing to
      * do with live.h. rc==0 still confirms nm itself ran successfully. */
-    snprintf(cmd, sizeof cmd, "nm -u %s > %s 2>/dev/null", objpath, nmpath);
+    snprintf(cmd, sizeof cmd, "\"%s\" -u %s > %s 2>/dev/null", nm, objpath, nmpath);
     rc = system(cmd);
     CHECK(rc == 0, "nm -u on the probe object succeeds (rc=%d)", rc);
 
@@ -780,7 +792,7 @@ static void test_probe_object_is_allocation_free(void) {
      * for mlp_probe's own DEFINED symbol in a plain (non -u) listing --
      * proof `nm` actually inspected the object this test just built, not
      * nothing. */
-    snprintf(cmd, sizeof cmd, "nm %s > %s 2>/dev/null", objpath, nmpath);
+    snprintf(cmd, sizeof cmd, "\"%s\" %s > %s 2>/dev/null", nm, objpath, nmpath);
     rc = system(cmd);
     CHECK(rc == 0, "plain nm on the probe object succeeds (rc=%d)", rc);
     char *nm_all = slurp(nmpath);

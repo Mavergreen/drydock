@@ -1,7 +1,7 @@
 #!/bin/sh
-# platform: macOS-only -- objects built with the host's clang, linked by ld64 and run
+# platform: macOS-only -- objects built with clang22, linked by ld64.lld and run
 # tests/symbol_rename_test.sh -- `symbol rename OLD NEW` on relocatable
-# objects, linked with this host's ld64 and run; the object gate's refusals.
+# objects, linked with ld64.lld and run; the object gate's refusals.
 #
 #   sh tests/symbol_rename_test.sh <bindir>
 #
@@ -13,7 +13,9 @@ set -u
 BIN="${1:?usage: symbol_rename_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "symbol_rename_test: $DMR not found or not executable" >&2; exit 1; }
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
 FIXTURE_FLAGS="-arch x86_64 -mmacosx-version-min=10.9"
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/symbol_rename_test.XXXXXX") || exit 1
@@ -37,7 +39,7 @@ run() {
     printf '%s\n' "$@" | "$DMR" "$run_in" "$run_out" >"$T/run.out" 2>"$T/run.err" || run_rc=$?
 }
 said() { grep -qF -- "$1" "$T/run.err"; }
-has_sym() { nm -p "$1" | awk -v s="$2" '$NF == s { f = 1 } END { exit !f }'; }
+has_sym() { "$NM" -p "$1" | awk -v s="$2" '$NF == s { f = 1 } END { exit !f }'; }
 
 # ---- forwarding: the definition moves aside, a stub takes its name --------
 cat >"$T/impl.c" <<'EOF'
@@ -62,9 +64,12 @@ said "$T/impl.o: an object is not verified as an image" && ! said "disturbed not
     || bad "forwarding report" "$(cat "$T/run.err")"
 [ "$(cksum <"$T/impl.o")" = "$before" ] && ok "forwarding: the input is untouched" || bad "forwarding" "impl.o changed"
 has_sym "$T/impl_r.o" _impl_foo && ! has_sym "$T/impl_r.o" _foo \
-    && ok "forwarding: nm shows _impl_foo and no _foo" || bad "forwarding nm" "$(nm -p "$T/impl_r.o")"
+    && ok "forwarding: nm shows _impl_foo and no _foo" || bad "forwarding nm" "$("$NM" -p "$T/impl_r.o")"
 if link fwd "$T/main.o" "$T/stub.o" "$T/impl_r.o"; then
-    [ "$("$T/fwd")" = 43 ] && ok "forwarding: links and prints 43" || bad "forwarding run" "printed $("$T/fwd")"
+    if gate_row x86_64 "forwarding: links and prints 43"; then
+        [ "$("$T/fwd")" = 43 ] && ok "forwarding: links and prints 43" \
+            || bad "forwarding run" "printed $("$T/fwd")"
+    fi
 else
     bad "forwarding link" "$(cat "$T/link.err")"
 fi
@@ -82,7 +87,10 @@ cc_o caller; cc_o bar
 run "$T/caller.o" "$T/caller_r.o" 'symbol rename _foo _bar'
 [ "$run_rc" -eq 0 ] && ok "undefined: rename exits 0" || bad "undefined" "rc $run_rc: $(cat "$T/run.err")"
 if link undef "$T/caller_r.o" "$T/bar.o"; then
-    [ "$("$T/undef")" = 7 ] && ok "undefined: the call reaches _bar and prints 7" || bad "undefined run" "printed $("$T/undef")"
+    if gate_row x86_64 "undefined: the call reaches _bar and prints 7"; then
+        [ "$("$T/undef")" = 7 ] && ok "undefined: the call reaches _bar and prints 7" \
+            || bad "undefined run" "printed $("$T/undef")"
+    fi
 else
     bad "undefined link" "$(cat "$T/link.err")"
 fi
@@ -94,12 +102,15 @@ static int helper(void) { return 5; }
 int main(void) { printf("%d\n", helper()); return 0; }
 EOF
 cc_o local
-nm -p "$T/local.o" | grep -q ' t _helper$' || bad "local" "the fixture has no local _helper: $(nm -p "$T/local.o")"
+"$NM" -p "$T/local.o" | grep -q ' t _helper$' || bad "local" "the fixture has no local _helper: $("$NM" -p "$T/local.o")"
 run "$T/local.o" "$T/local_r.o" 'symbol rename _helper _kept_local'
-[ "$run_rc" -eq 0 ] && nm -p "$T/local_r.o" | grep -q ' t _kept_local$' && ! has_sym "$T/local_r.o" _helper \
-    && ok "local: nm shows the local symbol under NEW" || bad "local" "rc $run_rc: $(cat "$T/run.err"; nm -p "$T/local_r.o")"
+[ "$run_rc" -eq 0 ] && "$NM" -p "$T/local_r.o" | grep -q ' t _kept_local$' && ! has_sym "$T/local_r.o" _helper \
+    && ok "local: nm shows the local symbol under NEW" || bad "local" "rc $run_rc: $(cat "$T/run.err"; "$NM" -p "$T/local_r.o")"
 if link local "$T/local_r.o"; then
-    [ "$("$T/local")" = 5 ] && ok "local: links and prints 5" || bad "local run" "printed $("$T/local")"
+    if gate_row x86_64 "local: links and prints 5"; then
+        [ "$("$T/local")" = 5 ] && ok "local: links and prints 5" \
+            || bad "local run" "printed $("$T/local")"
+    fi
 else
     bad "local link" "$(cat "$T/link.err")"
 fi
@@ -117,7 +128,10 @@ run "$T/caller.o" "$T/caller_long.o" "symbol rename _foo $LONG"
 if [ "$r1" -eq 0 ] && [ "$run_rc" -eq 0 ]; then
     ok "long NEW: both renames exit 0"
     if link long "$T/caller_long.o" "$T/def_r.o"; then
-        [ "$("$T/long")" = 9 ] && ok "long NEW: links and prints 9" || bad "long NEW run" "printed $("$T/long")"
+        if gate_row x86_64 "long NEW: links and prints 9"; then
+            [ "$("$T/long")" = 9 ] && ok "long NEW: links and prints 9" \
+                || bad "long NEW run" "printed $("$T/long")"
+        fi
     else
         bad "long NEW link" "$(cat "$T/link.err")"
     fi
@@ -144,39 +158,50 @@ EOF
 cc_o sort; cc_o sortmain
 run "$T/sort.o" "$T/sort_r.o" 'symbol rename _zz _aa' 'symbol rename _zzz _aaa'
 [ "$run_rc" -eq 0 ] && ok "sort order: both renames exit 0" || bad "sort order" "rc $run_rc: $(cat "$T/run.err")"
-order=$(nm -p "$T/sort_r.o" | awk '$NF == "_sum_u" || $NF == "_aa" || $NF == "_mm_u" || $NF == "_aaa" { printf "%s ", $NF }')
+order=$("$NM" -p "$T/sort_r.o" | awk '$NF == "_sum_u" || $NF == "_aa" || $NF == "_mm_u" || $NF == "_aaa" { printf "%s ", $NF }')
 [ "$order" = "_sum_u _aa _mm_u _aaa " ] \
     && ok "sort order: _aa follows _sum_u and _aaa follows _mm_u in the table" \
     || bad "sort order" "the renamed names are not out of order, so this proves nothing: $order"
 if link sorted "$T/sortmain.o" "$T/sort_r.o"; then
-    [ "$("$T/sorted")" = 363 ] && ok "sort order: links and prints 363" || bad "sort order run" "printed $("$T/sorted")"
+    if gate_row x86_64 "sort order: links and prints 363"; then
+        [ "$("$T/sorted")" = 363 ] && ok "sort order: links and prints 363" \
+            || bad "sort order run" "printed $("$T/sorted")"
+    fi
 else
     bad "sort order link" "$(cat "$T/link.err")"
 fi
-if ld -r -arch x86_64 -o "$T/sort_lr.o" "$T/sort_r.o" >"$T/link.err" 2>&1 && link sorted2 "$T/sort_lr.o" "$T/sortmain.o"; then
-    [ "$("$T/sorted2")" = 363 ] && ok "sort order: ld -r takes it, and the result links and prints 363" \
-        || bad "sort order ld -r run" "printed $("$T/sorted2")"
+ROW="sort order: a relocatable ld64 wrote (tests/data) takes it, and the result links and prints 363"
+run "$ROOT/tests/data/symbol_rename_sort_ld64-241.o" "$T/sort_lr.o" 'symbol rename _zz _aa' 'symbol rename _zzz _aaa'
+if [ "$run_rc" -ne 0 ]; then
+    bad "sort order ld64 object" "rc $run_rc: $(cat "$T/run.err")"
+elif link sorted2 "$T/sort_lr.o" "$T/sortmain.o"; then
+    if gate_row x86_64 "$ROW"; then
+        [ "$("$T/sorted2")" = 363 ] && ok "$ROW" || bad "sort order ld64 object run" "printed $("$T/sorted2")"
+    fi
 else
-    bad "sort order ld -r" "$(cat "$T/link.err")"
+    bad "sort order ld64 object link" "$(cat "$T/link.err")"
 fi
 
 # ---- a fat object: the selected slice renamed, the other byte-identical ---
 if "$CC" -arch x86_64h -mmacosx-version-min=10.9 -c -o "$T/impl_h.o" "$T/impl.c" 2>"$T/h.err"; then
-    lipo -create -output "$T/fat.o" "$T/impl.o" "$T/impl_h.o" || exit 1
+    "$LIPO" -create -output "$T/fat.o" "$T/impl.o" "$T/impl_h.o" || exit 1
     run "$T/fat.o" "$T/fat_r.o" 'arch x86_64' 'symbol rename _foo _impl_foo'
     [ "$run_rc" -eq 0 ] && ok "fat: rename exits 0" || bad "fat" "rc $run_rc: $(cat "$T/run.err")"
     said "slice x86_64: an object is not verified as an image" && said "$T/fat.o: an object is not verified as an image" \
         && ! grep -q 'verified$' "$T/run.err" && ! said "disturbed nothing" \
         && ok "fat: the report says the object slice and the container are not verified" \
         || bad "fat report" "$(cat "$T/run.err")"
-    lipo -thin x86_64 -output "$T/fat_x.o" "$T/fat_r.o" && lipo -thin x86_64h -output "$T/fat_h.o" "$T/fat_r.o" \
+    "$LIPO" -thin x86_64 -output "$T/fat_x.o" "$T/fat_r.o" && "$LIPO" -thin x86_64h -output "$T/fat_h.o" "$T/fat_r.o" \
         || bad "fat" "lipo cannot split the output"
     has_sym "$T/fat_x.o" _impl_foo && ! has_sym "$T/fat_x.o" _foo \
-        && ok "fat: the x86_64 slice is renamed" || bad "fat x86_64" "$(nm -p "$T/fat_x.o")"
+        && ok "fat: the x86_64 slice is renamed" || bad "fat x86_64" "$("$NM" -p "$T/fat_x.o")"
     cmp -s "$T/fat_h.o" "$T/impl_h.o" \
         && ok "fat: the x86_64h slice is byte-identical" || bad "fat x86_64h" "the unselected slice changed"
     if link fatfwd "$T/main.o" "$T/stub.o" "$T/fat_x.o"; then
-        [ "$("$T/fatfwd")" = 43 ] && ok "fat: the renamed slice links and prints 43" || bad "fat run" "printed $("$T/fatfwd")"
+        if gate_row x86_64 "fat: the renamed slice links and prints 43"; then
+            [ "$("$T/fatfwd")" = 43 ] && ok "fat: the renamed slice links and prints 43" \
+                || bad "fat run" "printed $("$T/fatfwd")"
+        fi
     else
         bad "fat link" "$(cat "$T/link.err")"
     fi
@@ -184,20 +209,20 @@ else
     echo "SKIP fat: $CC cannot build an x86_64h object: $(head -1 "$T/h.err")"
 fi
 
-# ---- arm64: renamed, linked and run natively --------------------------------
-A64="-arch arm64 -mmacosx-version-min=11.0"
-if ! arch -arm64 /usr/bin/true >/dev/null 2>&1; then
-    echo "SKIP arm64: this host cannot run arm64 (arch -arm64 /usr/bin/true fails)"
-elif ! { "$CC" $A64 -c -o "$T/impl64.o" "$T/impl.c" && "$CC" $A64 -c -o "$T/stub64.o" "$T/stub.c" \
-         && "$CC" $A64 -c -o "$T/main64.o" "$T/main.c"; } 2>"$T/a64.err"; then
-    echo "SKIP arm64: $CC cannot build an arm64 object: $(head -1 "$T/a64.err")"
+# ---- arm64: renamed and linked everywhere, run where the hardware does ----
+if ! { "$CC_ARM64" -c -o "$T/impl64.o" "$T/impl.c" && "$CC_ARM64" -c -o "$T/stub64.o" "$T/stub.c" \
+         && "$CC_ARM64" -c -o "$T/main64.o" "$T/main.c"; } 2>"$T/a64.err"; then
+    echo "SKIP arm64: $CC_ARM64 cannot build an arm64 object: $(head -1 "$T/a64.err")"
 else
     run "$T/impl64.o" "$T/impl64_r.o" 'symbol rename _foo _impl_foo'
     [ "$run_rc" -eq 0 ] && said "symbol rename _foo -> _impl_foo: 1 entry" \
         && has_sym "$T/impl64_r.o" _impl_foo && ! has_sym "$T/impl64_r.o" _foo \
-        && ok "arm64: the object is renamed" || bad "arm64" "rc $run_rc: $(cat "$T/run.err"; nm -p "$T/impl64_r.o")"
-    if "$CC" $A64 -o "$T/fwd64" "$T/main64.o" "$T/stub64.o" "$T/impl64_r.o" >"$T/link.err" 2>&1; then
-        [ "$("$T/fwd64")" = 43 ] && ok "arm64: links and prints 43" || bad "arm64 run" "printed $("$T/fwd64")"
+        && ok "arm64: the object is renamed" || bad "arm64" "rc $run_rc: $(cat "$T/run.err"; "$NM" -p "$T/impl64_r.o")"
+    if "$CC_ARM64" -o "$T/fwd64" "$T/main64.o" "$T/stub64.o" "$T/impl64_r.o" >"$T/link.err" 2>&1; then
+        if gate_row arm64 "arm64: links and prints 43"; then
+            [ "$("$T/fwd64")" = 43 ] && ok "arm64: links and prints 43" \
+                || bad "arm64 run" "printed $("$T/fwd64")"
+        fi
     else
         bad "arm64 link" "$(cat "$T/link.err")"
     fi

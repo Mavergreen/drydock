@@ -26,7 +26,7 @@ BIN="${1:?usage: insert_dylib_test.sh <bindir>}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
-CC="${CC:-clang}"
+. "$ROOT/tests/lib/toolchain.sh"
 # platform: x86_64, which is what this toolkit targets, on every host: a
 # modern runner's clang builds arm64 by default, whose 16 KB pages the header
 # grow refuses.
@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
     return 127;
 }
 EOF
-"$CC" -O2 -o "$T/notty" "$T/notty.c" 2>"$T/notty_build.err"
+"$HOST_CC" -O2 -o "$T/notty" "$T/notty.c" 2>"$T/notty_build.err"
 cp "$FIXTURE" "$T/nt"
 if [ ! -x "$T/notty" ]; then
     skip "no tty, no --all-yes" "cannot build tests/notty helper: $(cat "$T/notty_build.err")"
@@ -259,7 +259,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 EOF
-"$CC" -O2 -o "$T/mk32" "$T/mk32.c" 2>"$T/mk32_build.err"
+"$HOST_CC" -O2 -o "$T/mk32" "$T/mk32.c" 2>"$T/mk32_build.err"
 if [ ! -x "$T/mk32" ]; then
     skip "32-bit refused" "cannot build a 32-bit fixture generator: $(cat "$T/mk32_build.err")"
 else
@@ -287,11 +287,10 @@ fi
 # case 15). `dylib append` goes through the same mo_map_build, so this
 # wrapper inherits the refusal with no code of its own.
 #
-# HOST PORTABILITY: `-lazy_library` is a legacy ld flag with no portability
-# guarantee across linkers, so this reads the fixture's OWN load commands
-# with a tiny C helper (never otool/nm text) to confirm LC_LAZY_LOAD_DYLIB
-# is really there before asserting anything -- same technique
-# tests/change_dylib_test.sh's case 15 uses, for the same reason.
+# FIXTURE: ld64.lld emits no LC_LAZY_LOAD_DYLIB, so tests/data/lazy_main_ld64-241
+# was linked once by Apple's ld64-241 (-lazy_library); this reads its OWN load
+# commands with a tiny C helper (never otool/nm text), so a replaced fixture
+# cannot pass vacuously.
 cat >"$T/has_lc.c" <<'EOF'
 #include <stdio.h>
 #include <stdint.h>
@@ -320,35 +319,23 @@ int main(int argc, char **argv) {
     return 1;
 }
 EOF
-"$CC" -O2 -o "$T/has_lc" "$T/has_lc.c" 2>"$T/has_lc_build.err"
-cat >"$T/lazy_a.c" <<'EOF'
-int lazy_a_sym(void) { return 77; }
-EOF
-cat >"$T/lazy_main.c" <<'EOF'
-int lazy_a_sym(void);
-int main(void) { return lazy_a_sym() == 77 ? 0 : 1; }
-EOF
+"$HOST_CC" -O2 -o "$T/has_lc" "$T/has_lc.c" 2>"$T/has_lc_build.err"
+cp "$ROOT/tests/data/lazy_main_ld64-241" "$T/lazy_main"
 if [ ! -x "$T/has_lc" ]; then
-    skip "unknown load command refused" "cannot build tests/has_lc helper: $(cat "$T/has_lc_build.err")"
+    bad "unknown load command refused" "cannot build tests/has_lc helper: $(cat "$T/has_lc_build.err")"
+elif ! "$T/has_lc" "$T/lazy_main" 0x20; then
+    bad "unknown load command refused" "tests/data/lazy_main_ld64-241 carries no LC_LAZY_LOAD_DYLIB, so this proves nothing"
 else
-    "$CC" -dynamiclib -O2 $FIXTURE_FLAGS -install_name "@loader_path/liblazy_a.dylib" \
-        "$T/lazy_a.c" -o "$T/liblazy_a.dylib" 2>"$T/lazy.err"
-    "$CC" -O2 $FIXTURE_FLAGS "$T/lazy_main.c" \
-        -Xlinker -lazy_library -Xlinker "$T/liblazy_a.dylib" -o "$T/lazy_main" 2>>"$T/lazy.err" || true
-    if [ ! -x "$T/lazy_main" ] || ! "$T/has_lc" "$T/lazy_main" 0x20; then
-        skip "unknown load command refused" "this host's linker did not produce an LC_LAZY_LOAD_DYLIB from -lazy_library ($(head -1 "$T/lazy.err" 2>/dev/null || echo "no diagnostic"))"
-    else
-        before=$(sha "$T/lazy_main")
-        ( cd "$T" && "$BIN/insert_dylib" --all-yes /usr/lib/libfoo.dylib lazy_main lazy_main.out ) \
-            >"$T/7.out" 2>"$T/7.err"
-        rc=$?
-        [ "$rc" -ne 0 ] \
-            && ok "unknown load command (LC_LAZY_LOAD_DYLIB): refuses" \
-            || bad "unknown load command" "exited 0 instead of refusing"
-        [ "$(sha "$T/lazy_main")" = "$before" ] \
-            && ok "unknown load command: input left untouched on refusal" \
-            || bad "unknown load command" "input was modified despite the refusal"
-    fi
+    before=$(sha "$T/lazy_main")
+    ( cd "$T" && "$BIN/insert_dylib" --all-yes /usr/lib/libfoo.dylib lazy_main lazy_main.out ) \
+        >"$T/7.out" 2>"$T/7.err"
+    rc=$?
+    [ "$rc" -ne 0 ] \
+        && ok "unknown load command (LC_LAZY_LOAD_DYLIB): refuses" \
+        || bad "unknown load command" "exited 0 instead of refusing"
+    [ "$(sha "$T/lazy_main")" = "$before" ] \
+        && ok "unknown load command: input left untouched on refusal" \
+        || bad "unknown load command" "input was modified despite the refusal"
 fi
 
 # ---- 8. --overwrite suppresses prompt 4 (OUT already exists) --------------

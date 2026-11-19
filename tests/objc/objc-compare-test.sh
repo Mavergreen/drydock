@@ -11,6 +11,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 COMPARE="$HERE/baseline/compare.sh"
@@ -20,20 +21,20 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/log" ] || tail -20 "$T/log" >&2; exit 1
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
 # spec: tests/objc/fixtures/jt-reject-clobber.S header -- CLOBBER 0 a followed table, CLOBBER 1 the refused twin
 # CLOBBER 14 is 0 with a register copy in its first case
 for c in 0 1 14; do
-  cc -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
+  fxcc -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 # spec: tests/objc/fixtures/weak-import-check.S header -- FORM 0 a weak import's check, measured
-cc -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClassPair
+fxcc --no-default-config -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClassPair
 # spec: tests/objc/fixtures/swizzle.m header -- FORM 1 method_setImplementation, FORM 4 class_addProtocol;
 #       tests/objc/fixtures/unsupported.c FORM 6 objc_allocateClassPair
-for f in 1 4; do cc -O1 -DFORM=$f "$FX/swizzle.m" -o "$T/sw$f" -framework Foundation -lobjc; done
-cc -O1 -DFORM=6 "$FX/unsupported.c" -o "$T/made" -lobjc
+for f in 1 4; do fxcc -O1 -DFORM=$f "$FX/swizzle.m" -o "$T/sw$f" -framework Foundation -lobjc; done
+fxcc -O1 -DFORM=6 "$FX/unsupported.c" -o "$T/made" -lobjc
 # spec: tests/objc/fixtures/imp-lookup.c header -- FORM 1 method_getImplementation
-cc -O1 -DFORM=1 "$FX/imp-lookup.c" -o "$T/imp" -lobjc
+fxcc -O1 -DFORM=1 "$FX/imp-lookup.c" -o "$T/imp" -lobjc
 sh "$HERE/baseline/record-artifacts.sh" "$DRYDOCK_OBJC" "$ROOT/reference/objc" "$T/base" \
   jt0 "$T/jt0" - jt1 "$T/jt1" - jt14 "$T/jt14" - weak "$T/weak" - sw1 "$T/sw1" - sw4 "$T/sw4" - made "$T/made" - imp "$T/imp" - 2>/dev/null
 
@@ -79,7 +80,7 @@ doctor jt1 "$FIRST" "$(err indirect-objc-entry "$fn" "$READ")"; refuses 'a lost 
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost table error outside any table: refused for another reason'
 # spec: tests/objc/baseline/compare.sh header -- a "read other" error may vanish only at a 64-bit register copy in a
 #       followed table's cases, [jmp, T)
-copy=$(otool -tV "$T/jt14" | awk '$2 == "movq" && $3 == "%r12," && $4 == "%rax" { print $1; exit }' | sed 's/^0*/0x/')
+copy=$("$OTOOL" -tV "$T/jt14" | awk '$2 == "movq" && $3 == "%r12," && $4 == "%rax" { print $1; exit }' | sed 's/^0*/0x/')
 [ -n "$copy" ] || fail 'jt14: no movq %r12, %rax'
 doctor jt14 "$ONLY" "$(err indirect-objc-entry "$copy" "$READ")"; passes 'a lost "read other" error at a register copy in a followed table'"'"'s cases'
 grep -q '1 fewer "read other" errors at a register copy' "$T/log" || fail 'a lost "read other" error at a copy: not counted'
@@ -94,12 +95,12 @@ grep -q '1 fewer functions whose control flow is not followed' "$T/log" || fail 
 doctor jt0 "$ONLY" "$(err indirect-objc-entry "$(printf '0x%x' $((fn + 1)))" "$NOTFOLLOWED")"
 refuses 'a lost "not followed" error off its function'"'"'s start'
 # spec: tests/objc/baseline/compare.sh header -- an "address taken" error may vanish only at a weak import's check
-check=$(otool -tV "$T/weak" | awk '$2 ~ /^cmpq$/ && $4 ~ /\(%rip\)$/ { printf "0x%s", $1; exit }' | sed 's/^0x0*/0x/')
+check=$("$OTOOL" -tV "$T/weak" | awk '$2 ~ /^cmpq$/ && $4 ~ /\(%rip\)$/ { printf "0x%s", $1; exit }' | sed 's/^0x0*/0x/')
 [ -n "$check" ] || fail 'weak: otool shows no cmpq of a rip-relative slot'
 doctor weak "$ONLY" "$(err indirect-objc-entry "$check" '_objc_readClassPair address taken')"; passes 'a lost "address taken" error at a weak import'"'"'s check'
 grep -q '1 fewer "address taken" errors at a weak import' "$T/log" || fail 'a lost "address taken" error at the check: not counted'
 refuses 'a lost "address taken" error at the check' fewer-passed-arguments
-wfn=$(nm "$T/weak" | awk '$3 == "_main" { print $1 }' | sed 's/^0*/0x/')
+wfn=$("$NM" "$T/weak" | awk '$3 == "_main" { print $1 }' | sed 's/^0*/0x/')
 doctor weak "$ONLY" "$(err indirect-objc-entry "$wfn" '_objc_readClassPair address taken')"; refuses 'a lost "address taken" error elsewhere'
 grep -q '^compare: lost error ' "$T/log" || fail 'a lost "address taken" error elsewhere: refused for another reason'
 doctor weak "$ONLY" "$(err indirect-objc-entry "$check" 'fetch function address taken')"; refuses 'a lost "fetch function address taken" error at the check'

@@ -8,6 +8,7 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 : "${DRYDOCK_OBJC_DEMANGLE_DRIVER:?names the built objc-demangle-driver (CTest sets it)}"
 FX="$HERE/fixtures/resolve"
@@ -43,18 +44,18 @@ awk 'BEGIN { s = "_RIC100000"; for (i = 0; i < 100000; i++) s = s "R"; print s "
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 # demo's own code, built with debug info in a registry-style NAME-VERSION directory per version: the debug
 # map is what ties a disambiguator to a version.
 for v in 1 2; do
   mkdir -p "$T/reg/demo-$v.0.0/src"
   cp "$FX/demo.c" "$T/reg/demo-$v.0.0/src/lib.c"
-  (cd "$T/reg/demo-$v.0.0" && cc -g -c src/lib.c -DDIS=${v}V$v -o lib.o)
+  (cd "$T/reg/demo-$v.0.0" && fxcc -g -c src/lib.c -DDIS=${v}V$v -o lib.o)
 done
 mkdir -p "$T/root/bin"
-cc -c "$FX/app.c" -o "$T/app.o"
-cc "$T/app.o" "$T/reg/demo-1.0.0/lib.o" "$T/reg/demo-2.0.0/lib.o" -o "$T/root/bin/r"
-cc "$T/app.o" "$T/reg/demo-1.0.0/lib.o" "$T/reg/demo-2.0.0/lib.o" -Wl,-S -o "$T/root/bin/r-nodebug"
+fxcc -c "$FX/app.c" -o "$T/app.o"
+fxcc "$T/app.o" "$T/reg/demo-1.0.0/lib.o" "$T/reg/demo-2.0.0/lib.o" -o "$T/root/bin/r"
+fxcc "$T/app.o" "$T/reg/demo-1.0.0/lib.o" "$T/reg/demo-2.0.0/lib.o" -Wl,-S -o "$T/root/bin/r-nodebug"
 A="$T/root/bin/r"
 
 mkdir -p "$T/src"

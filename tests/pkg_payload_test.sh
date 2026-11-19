@@ -14,6 +14,8 @@ usage='usage: pkg_payload_test.sh DRYDOCK.pkg CMAKE BUILD-X86_64 BUILD-ARM64'
 [ $# -eq 4 ] || { echo "$usage" >&2; exit 2; }
 pkg=$1 CMAKE=$2 BX=$3 BA=$4
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$REPO
+. "$ROOT/tests/lib/toolchain.sh"
 . "$REPO/build/msc.sh"
 tree=usr/local/mavergreen/drydock
 t=$(mktemp -d "${TMPDIR:-/tmp}/pkg-payload.XXXXXX")
@@ -54,10 +56,10 @@ diff -r "$t/drydock-updater.app" "$upd" \
 machos=0
 find "$got" -type f > "$t/files"
 while IFS= read -r f; do
-  lipo -info "$f" >/dev/null 2>&1 || continue
+  "$LIPO" -info "$f" >/dev/null 2>&1 || continue
   machos=$((machos + 1))
-  lipo "$f" -verify_arch x86_64 arm64 \
-    || { echo "FAIL: ${f#"$got"/} lacks a slice: $(lipo -info "$f" 2>&1 | sed 's/.*: //')"; exit 1; }
+  "$LIPO" "$f" -verify_arch x86_64 arm64 \
+    || { echo "FAIL: ${f#"$got"/} lacks a slice: $("$LIPO" -info "$f" 2>&1 | sed 's/.*: //')"; exit 1; }
 done < "$t/files"
 [ "$machos" -ge 3 ] || { echo "FAIL: only $machos Mach-O files in the payload; drydock-macho-rewrite, the updater and Sparkle at least"; exit 1; }
 
@@ -65,7 +67,7 @@ case "$(sw_vers -productVersion)" in
   10.*) echo "INFO: this codesign predates arm64; the arm64 slices' signatures are checked on 11 and later" ;;
   *)
     for f in "$got/$tree/bin/drydock-macho-rewrite" "$upd/Contents/MacOS/drydock-updater"; do
-      lipo "$f" -thin arm64 -output "$t/arm64-slice"
+      "$LIPO" "$f" -thin arm64 -output "$t/arm64-slice"
       codesign -v "$t/arm64-slice" \
         || { echo "FAIL: the arm64 slice of ${f#"$got"/} has no valid signature"; exit 1; }
       rm -f "$t/arm64-slice"

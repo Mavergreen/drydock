@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- MacPorts' libMacportsLegacySupport.a, linked by ld64 and run
+# platform: macOS-only -- MacPorts' libMacportsLegacySupport.a, linked by clang22's ld64.lld and run
 # tests/legacysupport_rename_test.sh -- `symbol rename` across a real static
 # archive, MacPorts' libMacportsLegacySupport.a: _clock_gettime becomes
 # ___recaulk_impl_clock_gettime, a stub defines clock_gettime on top of it,
@@ -14,9 +14,9 @@ set -u
 BIN="${1:?usage: legacysupport_rename_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "legacysupport_rename_test: $DMR not found or not executable" >&2; exit 1; }
-command -v ranlib >/dev/null 2>&1 && command -v lipo >/dev/null 2>&1 \
-    || { echo "SKIP: legacysupport_rename_test: no ranlib or lipo on this host"; exit 77; }
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
 ZERO_AR_DATE=1
 export ZERO_AR_DATE
 
@@ -41,13 +41,13 @@ fail=0
 ok()  { echo "PASS $1"; }
 bad() { echo "FAIL $1: $2"; fail=$((fail + 1)); }
 
-if lipo -info "$LIB" 2>/dev/null | grep -q '^Architectures in the fat file'; then
-    lipo -thin x86_64 -output "$T/in.a" "$LIB" 2>"$T/lipo.err" \
+if "$LIPO" -info "$LIB" 2>/dev/null | grep -q '^Architectures in the fat file'; then
+    "$LIPO" -thin x86_64 -output "$T/in.a" "$LIB" 2>"$T/lipo.err" \
         || { echo "SKIP: legacysupport_rename_test: $LIB has no x86_64 slice"; exit 77; }
 else
     cp "$LIB" "$T/in.a" || exit 1
 fi
-nm -gU "$T/in.a" 2>/dev/null | awk '$NF == "_clock_gettime" && $(NF-1) == "T" { f = 1 } END { exit !f }' \
+"$NM" -gU "$T/in.a" 2>/dev/null | awk '$NF == "_clock_gettime" && $(NF-1) == "T" { f = 1 } END { exit !f }' \
     || { echo "SKIP: legacysupport_rename_test: $LIB does not define _clock_gettime"; exit 77; }
 
 printf '%s\n' 'symbol rename _clock_gettime ___recaulk_impl_clock_gettime' \
@@ -55,8 +55,8 @@ printf '%s\n' 'symbol rename _clock_gettime ___recaulk_impl_clock_gettime' \
     && ok "rename exits 0" || bad "rename" "$(cat "$T/run.err")"
 grep -q 'symbol rename _clock_gettime -> ___recaulk_impl_clock_gettime: [1-9]' "$T/run.err" \
     && ok "rename reports entries" || bad "report" "$(cat "$T/run.err")"
-nm -gU "$T/out.a" 2>/dev/null | awk '$NF == "___recaulk_impl_clock_gettime" && $(NF-1) == "T" { d = 1 } $NF == "_clock_gettime" { o = 1 } END { exit !(d && !o) }' \
-    && ok "archive defines the new name and no longer the old" || bad "nm archive" "$(nm -gU "$T/out.a" 2>&1 | grep clock_gettime)"
+"$NM" -gU "$T/out.a" 2>/dev/null | awk '$NF == "___recaulk_impl_clock_gettime" && $(NF-1) == "T" { d = 1 } $NF == "_clock_gettime" { o = 1 } END { exit !(d && !o) }' \
+    && ok "archive defines the new name and no longer the old" || bad "nm archive" "$("$NM" -gU "$T/out.a" 2>&1 | grep clock_gettime)"
 
 cat >"$T/stub.c" <<'EOT'
 struct timespec;
@@ -82,11 +82,13 @@ EOT
     || { echo "legacysupport_rename_test: cannot compile the fixtures" >&2; exit 1; }
 if "$CC" -arch x86_64 -mmacosx-version-min=10.9 -o "$T/prog" "$T/main.o" "$T/stub.o" "$T/out.a" >"$T/link.err" 2>&1; then
     ok "links against the stub and the renamed archive"
-    sec=$("$T/prog") && [ "${sec:-0}" -gt 1600000000 ] \
-        && ok "runs and prints a plausible time ($sec)" || bad "run" "printed '${sec:-}'"
-    nm "$T/prog" | awk '$NF == "___recaulk_impl_clock_gettime" && $(NF-1) == "T" { a = 1 } $NF == "_clock_gettime" && $(NF-1) == "T" { b = 1 } END { exit !(a && b) }' \
+    if gate_row x86_64 "runs and prints a plausible time"; then
+        sec=$("$T/prog") && [ "${sec:-0}" -gt 1600000000 ] \
+            && ok "runs and prints a plausible time ($sec)" || bad "run" "printed '${sec:-}'"
+    fi
+    "$NM" "$T/prog" | awk '$NF == "___recaulk_impl_clock_gettime" && $(NF-1) == "T" { a = 1 } $NF == "_clock_gettime" && $(NF-1) == "T" { b = 1 } END { exit !(a && b) }' \
         && ok "the program defines the stub's _clock_gettime and legacy-support's implementation" \
-        || bad "nm program" "$(nm "$T/prog" | grep clock_gettime)"
+        || bad "nm program" "$("$NM" "$T/prog" | grep clock_gettime)"
 else
     bad "link" "$(cat "$T/link.err")"
 fi
@@ -120,7 +122,7 @@ index() {
         }'
 }
 
-cp "$T/out.a" "$T/ranlibbed.a" && ranlib "$T/ranlibbed.a" || exit 1
+cp "$T/out.a" "$T/ranlibbed.a" && "$RANLIB" "$T/ranlibbed.a" || exit 1
 MASK=0
 [ "$(uname -s)" = Darwin ] && [ "$(uname -r | cut -d. -f1)" = 13 ] && MASK=1
 index "$T/out.a" bytes >"$T/idx_ours" && index "$T/ranlibbed.a" bytes >"$T/idx_ranlib" \

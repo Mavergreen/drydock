@@ -1,7 +1,7 @@
-# platform: macOS-only -- libtool and the caller's pinned-SDK cc
+# platform: macOS-only -- $LIBTOOL and the caller's pinned-SDK fxcc
 # spec: tests/objc/fixtures/provider-register.c header -- the fixture Objective-C provider, shared by
 #       objc-provider-test.sh and objc-guard-test.sh; tests/lib/ is not itself run, since
-#       run-repo-tests.sh takes top-level tests only. The caller defines cc (the pinned-SDK compiler),
+#       run-repo-tests.sh takes top-level tests only. The caller defines fxcc (the pinned-SDK compiler),
 #       sha (a file's SHA-256), SDK, FX (tests/objc/fixtures) and T (its scratch directory).
 # spec: tests/objc/fixtures/provider-register.c header -- fixture_prefix DIR [CC-FLAGS]: the fixture provider at
 #       DIR, built with CC-FLAGS and declared as Recaulk's build declares its own.
@@ -9,9 +9,9 @@ fixture_prefix() {
   P=$1; shift
   mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
   for m in provider-register provider-impl; do
-    cc -Os -fPIC -Wall "$@" -c "$FX/$m.c" -o "$P.objects/$m.o"
+    fxcc -Os -fPIC -Wall "$@" -c "$FX/$m.c" -o "$P.objects/$m.o"
   done
-  /usr/bin/libtool -static -o "$P/lib/libfixture-objc.a" "$P.objects/provider-impl.o" "$P.objects/provider-register.o" 2>/dev/null
+  "$LIBTOOL" -static -o "$P/lib/libfixture-objc.a" "$P.objects/provider-impl.o" "$P.objects/provider-register.o" 2>/dev/null
   printf '%s  provider-register.c\n%s  provider-impl.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-impl.c")" >"$T/fixture-receipt"
   declare_prefix "$P" "$T/fixture-receipt"
 }
@@ -46,7 +46,7 @@ declare_prefix() {
     "artifact_role" : "shipping",
     "minimum_macos" : "10.9",
     "sdk_settings_sha256" : "$(sha "$SDK/SDKSettings.plist")",
-    "compiler_identity" : "$(/usr/bin/clang --version 2>&1 | head -1)",
+    "compiler_identity" : "$("$CC" --version 2>&1 | head -1)",
     "source_inputs_receipt" : "$(sed 's/$/\\n/' "$2" | tr -d '\n')",
     "source_inputs_sha256" : "$(sha "$2")"
   }

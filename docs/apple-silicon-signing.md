@@ -11,8 +11,9 @@ Measured 2026-10-05. Claims are tagged as in `docs/minimum-os-version.md`:
 
 The run's own scripts and logs were scratch and are not kept.
 `tests/apple_silicon_signing_test.sh` rebuilds the subjects and reruns the
-rows the guidance rests on; it runs on any Apple Silicon Mac with Rosetta,
-CI's macos-26 runner included, and skips elsewhere.
+arm64 rows the guidance rests on; it runs on any Apple Silicon Mac, CI's
+macos-26 runner included, and skips elsewhere. The x86_64 rows below were
+measured once, under Rosetta, and are no longer rerun.
 
 ## The host
 

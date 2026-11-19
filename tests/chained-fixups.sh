@@ -1,19 +1,19 @@
 #!/bin/sh
-# platform: macOS-only -- a linker that emits chained fixups, and otool
+# platform: macOS-only -- ld64.lld emitting chained fixups, then the rewrite tools
 # Cover patch_macho's conversion, which tests/fixture.macho cannot reach.
 #
 # That fixture was built on 10.9, whose linker predates chained fixups by a
 # decade, so it has none to convert -- leaving the heaviest transform in the
 # pipeline (94,900 rebases on a real binary) untested by the characterization.
-# This builds a binary that DOES use them, on a host that can emit them, and
-# runs the conversion over it.
-#
-# Exit 77 = SKIP where chained fixups cannot be produced, which includes 10.9
-# itself. That is the honest outcome: the check did not run, rather than passed.
+# This builds a binary that DOES use them -- ld64.lld emits them for a 12.0
+# deployment target given -fixup_chains, whatever the host -- and runs the
+# conversion over it. A link that leaves none is a failed precondition.
 set -eu
 BIN="${1:?usage: chained-fixups.sh <bindir>}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-SRC_DIR="$SCRIPT_DIR/../src"
+ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+SRC_DIR="$ROOT/src"
 T=$(mktemp -d /tmp/chained-fixups.XXXXXX)
 trap 'rm -rf "$T"' EXIT INT TERM
 
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     return 1;
 }
 CEOF
-"${CC:-cc}" -O2 -o "$T/has_lc" "$T/has_lc.c"
+"$HOST_CC" -O2 -o "$T/has_lc" "$T/has_lc.c"
 
 # The bug this replaced: LC_DYLD_INFO_ONLY was hand-typed here as 0x22,
 # dropping the LC_REQ_DYLD bit ((0x22|LC_REQ_DYLD) = 0x80000022) that
@@ -95,7 +95,7 @@ int main(void) {
     return 0;
 }
 CEOF
-"${CC:-cc}" -O2 -I "$SRC_DIR" -o "$T/lc_const" "$T/lc_const.c"
+"$HOST_CC" -O2 -I "$SRC_DIR" -o "$T/lc_const" "$T/lc_const.c"
 lc_const_out=$("$T/lc_const")
 LC_DYLD_CHAINED_FIXUPS=${lc_const_out%% *}
 LC_DYLD_INFO_ONLY=${lc_const_out##* }
@@ -117,26 +117,21 @@ LC_DYLD_INFO_ONLY=${lc_const_out##* }
 }
 
 # CMake exports SDKROOT / MACOSX_DEPLOYMENT_TARGET for the 10.9 cross build, and
-# inheriting those here would defeat the point: we want the HOST's own defaults,
-# which is what makes its linker choose chained fixups. Unset rather than
-# override, so the host decides.
+# inheriting those here would defeat the point: the fixture is linked for 12.0.
 unset SDKROOT MACOSX_DEPLOYMENT_TARGET CMAKE_OSX_SYSROOT CMAKE_OSX_DEPLOYMENT_TARGET 2>/dev/null || true
-if ! "${CC:-cc}" -O0 -o "$T/in" "$T/t.c" 2>/dev/null; then
-    echo "chained-fixups: host cc cannot build a plain binary — SKIP"
-    exit 77
+if ! "$CC" -O0 -mmacosx-version-min=12.0 -Wl,-fixup_chains -o "$T/in" "$T/t.c" 2>"$T/link.err"; then
+    echo "chained-fixups: FAIL -- cannot link the fixture: $(cat "$T/link.err")" >&2
+    exit 1
 fi
 if ! "$T/has_lc" "$T/in" "$LC_DYLD_CHAINED_FIXUPS"; then
-    echo "chained-fixups: host linker emitted no LC_DYLD_CHAINED_FIXUPS — SKIP"
-    exit 77
+    echo "chained-fixups: FAIL -- -fixup_chains left no LC_DYLD_CHAINED_FIXUPS in the fixture" >&2
+    exit 1
 fi
 
 # `set -e` means any bare command below that exits nonzero kills the WHOLE
 # script immediately, with no "chained-fixups: OK" and no explanation -- see
 # tests/cli_test.sh:133-145 for the pattern and the incident that motivated
-# it. Installed HERE, after both `exit 77` SKIPs above rather than at the
-# top: those are the deliberate, routine outcome on a host (10.9 included)
-# whose linker cannot emit chained fixups, and must not be reported as a
-# fatal abort. reached_end is set to 1 only right before the final "OK"
+# it. reached_end is set to 1 only right before the final "OK"
 # line, so an EXIT trap firing while it is still 0 means the conversion
 # pipeline below did NOT run to completion.
 reached_end=0

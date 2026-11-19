@@ -9,6 +9,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-source-inventory-host-test.XXXXXX")
@@ -20,13 +21,10 @@ sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasu
 
 # spec: CMakeLists.txt -- DRYDOCK_OBJC_ARCH is drydock-objc's own architecture (CTest sets it); a standalone run takes the shell's.
 ARCH=${DRYDOCK_OBJC_ARCH:-$(uname -m)}
-# platform: drydock-objc dlopens PREFIX's libclang, so it must carry drydock-objc's architecture. On a Mac newer than 10.9
-#           fetch_clang22.sh takes the clang22-cross pkg, whose libclang on Apple Silicon is arm64 alone; an x86_64
-#           drydock-objc there runs under Rosetta and takes the native clang22 pkg (CLANG22_HOST=mac109), whose libclang
-#           is x86_64 -- the pkg 10.9 itself takes. hw.optional.arm64 is 1 on Apple Silicon, under Rosetta too.
-host=
-if [ "$(uname -s)" = Darwin ] && [ "$ARCH" = x86_64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then host=mac109; fi
-CLANG=$(if [ -n "$host" ]; then CLANG22_HOST=$host; export CLANG22_HOST; fi; sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$ROOT/components/objc-receipt-clang") ||
+# platform: drydock-objc dlopens PREFIX's libclang, so the pkg fetch_clang22.sh takes follows drydock-objc's architecture;
+#           on a Mac it must also be able to run here, which the exec gate decides.
+if [ "$(uname -s)" = Darwin ]; then . "$ROOT/tests/lib/exec-arch.sh"; gate_test "$ARCH"; fi
+CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$ROOT/components/objc-receipt-clang") ||
   { echo 'FAIL: cannot fetch the pinned receipt clang'; exit 1; }
 # spec: tools/objc-source-inventory.c header -- the profile parses against the floor SDK Recaulk's build uses.
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64) || { echo 'FAIL: cannot fetch the pinned floor SDK'; exit 1; }
@@ -88,17 +86,14 @@ rc=0; receipt --clang-prefix "$T/stale" --sdk "$SDK" --output "$T/stale.receipt"
 
 # receipt_missing_symbol: a libclang that loads but exports only clang_getClangVersion is a prerequisite failure
 # naming the first clang_ function it lacks, exit 4, and writes nothing.
-# platform: the stub is a Mach-O dylib built with a pinned SDK and /usr/bin/clang, so this runs on a Mac only. It is
-#           drydock-objc's architecture, for drydock-objc to load: x86_64 against the floor SDK, arm64 against the
-#           arm64 SDK (the floor SDK has no arm64 libSystem).
+# platform: the stub is a Mach-O dylib built with clang22, so this runs on a Mac only. It is drydock-objc's
+#           architecture, for drydock-objc to load: x86_64 by $CC, against the floor SDK, arm64 by $CC_ARM64, against
+#           the arm64 SDK (the floor SDK has no arm64 libSystem).
 if [ "$(uname -s)" = Darwin ]; then
   mkdir -p "$T/stubprefix/lib/clang/22/include"
   printf 'int clang_getClangVersion(void) { return 0; }\n' >"$T/stub.c"
-  case "$ARCH" in
-    arm64) STUB_SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch arm64) || { echo 'FAIL: cannot fetch the pinned arm64 SDK'; exit 1; }; STUB_MIN=11.0 ;;
-    *) STUB_SDK=$SDK; STUB_MIN=10.9 ;;
-  esac
-  env -i PATH=/usr/bin:/bin /usr/bin/clang -arch "$ARCH" -mmacosx-version-min="$STUB_MIN" -dynamiclib -isysroot "$STUB_SDK" \
+  case "$ARCH" in arm64) STUB_CC=$CC_ARM64 ;; *) STUB_CC=$CC ;; esac
+  env -i PATH=/usr/bin:/bin "$STUB_CC" -dynamiclib \
     -o "$T/stubprefix/lib/libclang.dylib" "$T/stub.c" 2>"$T/err" ||
     { echo 'FAIL: cannot build the stub libclang'; cat "$T/err"; exit 1; }
   # spec: src/objc/libclang_shim.c -- the functions are resolved in the order DRYDOCK_LIBCLANG_FUNCTIONS lists them.

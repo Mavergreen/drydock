@@ -7,6 +7,7 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 E2="$FX/evidence-schema2"
@@ -17,7 +18,7 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1;
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixture away from the pinned SDK.
-env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 \
+env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 \
   "$FX/plain.c" -o "$T/plain"
 mkdir -p "$T/root/bin"; mv "$T/plain" "$T/root/bin/plain"
 P="$T/root/bin/plain"

@@ -26,7 +26,8 @@ case $(sw_vers -productVersion 2>/dev/null) in
     10.9|10.9.*) ;;
     *) echo "SKIP: these are 10.9's libraries and programs; this is not 10.9"; exit 77 ;;
 esac
-CXX=${CXX:-clang++}
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/raise-runs.XXXXXX") || exit 1
 T=$(cd "$T" && pwd -P)
@@ -59,15 +60,8 @@ int main() {
     return 0;
 }
 EOF
-# /usr/bin's compilers are stubs that offer to install the developer tools
-# when there are none: ask xcode-select first, which only answers.
 cxx=1
-case $(command -v "$CXX" 2>/dev/null) in
-    /usr/bin/*) xcode-select -p >/dev/null 2>&1 || cxx=0 ;;
-esac
-if [ "$cxx" -eq 0 ]; then
-    echo "SKIP c++: $CXX is /usr/bin's stub and no developer tools are installed, so the raised libc++ is not run"
-elif ! "$CXX" -arch x86_64 -mmacosx-version-min=10.9 -stdlib=libc++ -O1 "$T/in/x.cc" -o "$T/in/xx" >"$T/cxx.log" 2>&1; then
+if ! "$CXX" -arch x86_64 -mmacosx-version-min=10.9 -stdlib=libc++ -O1 "$T/in/x.cc" -o "$T/in/xx" >"$T/cxx.log" 2>&1; then
     cxx=0
     echo "SKIP c++: $CXX cannot build the x86_64 C++ driver for 10.9 here, so the raised libc++ is not run: $(head -3 "$T/cxx.log" | tr '\n' ' ')"
 fi
@@ -195,13 +189,6 @@ if [ -z "${RAISE_RUNS_NESTED:-}" ]; then
         ok "a C++ skip quotes why the driver did not build"
     else
         bad "a C++ skip quotes why" "exit $rc: $(grep -v '^PASS' "$T/why.out" | head -3 | tr '\n' ' ')"
-    fi
-    mkdir "$T/noclt" && printf '#!/bin/sh\nexit 2\n' >"$T/noclt/xcode-select" && chmod +x "$T/noclt/xcode-select"
-    rc=0; PATH="$T/noclt:$PATH" RAISE_RUNS_NESTED=1 CXX=/usr/bin/clang++ sh "$0" "$BIN" >"$T/noclt.out" 2>&1 || rc=$?
-    if [ "$rc" -eq 0 ] && grep -q "^SKIP c++: /usr/bin/clang++ is /usr/bin's stub" "$T/noclt.out"; then
-        ok "without developer tools: /usr/bin's clang++ is not run, and the libc++ run is skipped"
-    else
-        bad "without developer tools" "exit $rc: $(grep -v '^PASS' "$T/noclt.out" | head -3 | tr '\n' ' ')"
     fi
 fi
 

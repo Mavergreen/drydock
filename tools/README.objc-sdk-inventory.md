@@ -10,8 +10,8 @@ sh scripts/objc-sdk-inventory.sh --clang-prefix "$CLANG_PREFIX" \
 
 Repeat `--header` to import additional files. Headers must be readable files, not framework
 include spellings. The wrapper builds a temporary host executable below `MAVERICKS_BUILD_ROOT`
-(default `${TMPDIR:-/tmp}/mm-build`) and removes it on exit. Its native compiler is
-`/usr/bin/clang`, linked to the explicitly supplied prefix's libclang. The host build uses
+(default `${TMPDIR:-/tmp}/mm-build`) and removes it on exit. Its compiler is the supplied
+prefix's own `bin/clang`, run with `--no-default-config`, linked to that prefix's libclang. The host build uses
 shipyard's pinned host SDK: 10.9 for x86_64; 11.3 for arm64. The *parsed* target is always
 x86_64-apple-macos10.9, including when running natively on Apple Silicon. Ambient compiler include
 paths, `SDKROOT` and `CCC_OVERRIDE_OPTIONS` are cleared; they cannot silently change the measurement.

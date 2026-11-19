@@ -8,6 +8,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-arity-test.XXXXXX")
@@ -162,7 +163,7 @@ __attribute__((objc_root_class)) @interface Own @end
 int main(void) { return 0; }
 EOF
 # platform: env -i keeps CPATH and SDKROOT from steering the fixture away from the pinned SDK.
-env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 \
+env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 \
   "$T/own.m" -o "$T/own" -lobjc 2>"$T/err" || fail 'the own-encoding fixture did not build'
 q 'sel	two:args:	0' | is own_encoding 4 --references "$REF" --artifact "$T/own"
 q 'sel	zzOwnDouble:	1' | is own_encoding_stret 3 --references "$REF" --artifact "$T/own"

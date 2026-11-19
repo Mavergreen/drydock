@@ -7,6 +7,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 FX="$HERE/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-reference-set-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
@@ -23,11 +24,9 @@ OPEN='openURLs:withApplicationAtURL:options:configuration:error:'
 
 # spec: tools/objc-runtime-inventory.m header -- the capture tool, over fixture classes loaded into it.
 sh "$REFSET" capture-tool --output "$T/capture" 2>"$T/err" || fail 'capture tool did not build'
-case "$(uname -m)" in x86_64) HOST_SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64); HOST_MIN=10.9 ;;
-  arm64) HOST_SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch arm64); HOST_MIN=11.0 ;; esac
 fixture() {  # $1 output, then -D flags
   out=$1; shift
-  env -i PATH=/usr/bin:/bin /usr/bin/clang -arch "$(uname -m)" -isysroot "$HOST_SDK" -mmacosx-version-min="$HOST_MIN" -O1 \
+  env -i PATH=/usr/bin:/bin "$HOST_CC" -O1 \
     -Wno-objc-protocol-method-implementation "$@" -dynamiclib "$FX/runtime-roots.m" -framework Foundation -lobjc -o "$out" 2>"$T/err" ||
     fail "fixture $out did not build"
 }
@@ -67,7 +66,7 @@ LC_ALL=C sort -u "$T/body" | cmp -s - "$T/body" || fail 'runtime rows are not so
 row check mode - - diagnostic - -
 row check fixture-images - - present - -
 row check absent - mavergreenFixtureBackfill absent - -NSObject
-row image roots.dylib - - "$(otool -arch "$(uname -m)" -l "$T/roots.dylib" | awk '$1 == "uuid" {print $2}')" fixture not-checked
+row image roots.dylib - - "$("$OTOOL" -arch "$(uname -m)" -l "$T/roots.dylib" | awk '$1 == "uuid" {print $2}')" fixture not-checked
 # spec: tools/objc-runtime-inventory.m header -- R1: a root that is not NSObject answers nothing.
 for k in + -; do for s in description isKindOfClass: respondsToSelector:; do
   row witness MGBareRoot "$k" "$s" - - MGBareRoot

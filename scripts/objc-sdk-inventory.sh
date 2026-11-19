@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- native Apple compiler and libclang host library
+# platform: macOS-only -- the prefix's clang, without its config, builds a host producer against its libclang
 set -eu
 unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH SDKROOT CCC_OVERRIDE_OPTIONS
 fail() { echo "objc-sdk-inventory: $*" >&2; exit 4; }
@@ -37,7 +37,7 @@ root=${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}
 mkdir -p "$root" || fail 'cannot create build root'
 build=$(mktemp -d "$root/objc-sdk-inventory.XXXXXX") || fail 'cannot create build directory'
 trap 'rm -rf "$build"' EXIT
-/usr/bin/clang -std=c99 -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min="$floor" \
+"$prefix/bin/clang" --no-default-config -std=c99 -Wall -Wextra -Werror -arch "$arch" -mmacosx-version-min="$floor" \
   -isysroot "$host_sdk" -I"$prefix/include" "$HERE/../tools/objc-sdk-inventory.c" \
   -L"$prefix/lib" -Xlinker -rpath -Xlinker "$prefix/lib" -lclang -o "$build/objc-sdk-inventory" || fail 'host producer build failed'
 "$prefix/bin/clang" --version >&2 || fail 'cannot identify compiler'

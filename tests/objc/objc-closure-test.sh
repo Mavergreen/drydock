@@ -10,6 +10,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
@@ -19,7 +20,7 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1;
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@" 2>>"$T/cc.log"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@" 2>>"$T/cc.log"; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 n=0
 analyze() {
@@ -45,12 +46,12 @@ bundle() {
   fw="$d/App.app/Contents/Frameworks/MGShipped.framework"
   mkdir -p "$fw/Versions/A" "$d/App.app/Contents/MacOS"
   ln -s A "$fw/Versions/Current"; ln -s Versions/Current/MGShipped "$fw/MGShipped"
-  cc -dynamiclib "$FX/shipped-inner.m" -framework Foundation -install_name @loader_path/libMGInner.dylib -o "$fw/Versions/A/libMGInner.dylib" ||
+  fxcc -dynamiclib "$FX/shipped-inner.m" -framework Foundation -install_name @loader_path/libMGInner.dylib -o "$fw/Versions/A/libMGInner.dylib" ||
     fail 'inner dylib did not build'
   # shellcheck disable=SC2086  # ff is a flag list
-  cc -dynamiclib -DMG_INNER $ff "$FX/shipped-framework.m" -framework Foundation "$fw/Versions/A/libMGInner.dylib" \
+  fxcc -dynamiclib -DMG_INNER $ff "$FX/shipped-framework.m" -framework Foundation "$fw/Versions/A/libMGInner.dylib" \
     -install_name @rpath/MGShipped.framework/Versions/A/MGShipped -o "$fw/Versions/A/MGShipped" || fail 'framework did not build'
-  cc -DMG_INNER "$FX/shipped-app.m" -framework Foundation -F"$d/App.app/Contents/Frameworks" "$@" -o "$d/App.app/Contents/MacOS/App" ||
+  fxcc -DMG_INNER "$FX/shipped-app.m" -framework Foundation -F"$d/App.app/Contents/Frameworks" "$@" -o "$d/App.app/Contents/MacOS/App" ||
     fail 'app did not build'
 }
 FWREL=App.app/Contents/Frameworks/MGShipped.framework/Versions/A/MGShipped
@@ -89,7 +90,7 @@ grep -F '"closure_class_roots": {"defined_classes": 4, "roots": {"NSObject": 4, 
 # spec: src/objc/main.m "The shipped closure" -- a report of one image is unchanged: no image key,
 #       no shipped images, the old limit.
 mkdir -p "$T/one/bin"
-cc "$FX/classify.c" -o "$T/one/bin/app" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use || fail 'single-image fixture did not build'
+fxcc "$FX/classify.c" -o "$T/one/bin/app" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use || fail 'single-image fixture did not build'
 analyze "$T/one" "$T/one/bin/app"
 ! grep -F '"image": ' "$T/report" >/dev/null && ! grep -F '"shipped_images"' "$T/report" >/dev/null || fail 'a single-image report changed shape'
 grep -F '"the shipped closure is the artifact alone: a non-system dependency is cannot-measure"' "$T/report" >/dev/null ||

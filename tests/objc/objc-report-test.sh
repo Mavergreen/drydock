@@ -8,6 +8,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
@@ -17,10 +18,10 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1;
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 mkdir -p "$T/root/bin" "$T/out"
-cc "$FX/classify.c" -o "$T/root/bin/classify" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use
-cc "$FX/plain.c" -o "$T/root/bin/plain"
+fxcc "$FX/classify.c" -o "$T/root/bin/classify" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use
+fxcc "$FX/plain.c" -o "$T/root/bin/plain"
 C="$T/root/bin/classify"
 # spec: cli/drydock-objc.c header (analyze) -- run REPORT ARGS...: the wrapper with --report REPORT; rc set.
 run() { rep=$1; shift; rc=0; "$DRYDOCK_OBJC" analyze "$@" --report "$rep" 2>"$T/err" || rc=$?; }
@@ -60,7 +61,7 @@ done
 # spec: src/objc/classify.c objc_classify_findings -- one finding per path of a call read once per incoming path
 #       (tests/objc/fixtures/merged-send.S form 4: two -[NSArray count] at one call): the id and "incoming" carry the
 #       predecessor path's last instruction, so the two stay two findings; a call measured once has "incoming": null.
-cc -DFORM=4 "$FX/merged-send.S" -o "$T/root/bin/merged" -framework Foundation -lobjc
+fxcc -DFORM=4 "$FX/merged-send.S" -o "$T/root/bin/merged" -framework Foundation -lobjc
 run "$T/out/merged" --artifact "$T/root/bin/merged" --root "$T/root" --references "$REF" --mode strict
 exit_is 0 'two paths of one merged call'
 mids=$(sed -n 's/^  {"id": "\([^"]*\)".*/\1/p' "$T/out/merged")
@@ -95,7 +96,14 @@ usage_case() {  # usage_case WHY REPORT ARGS...
   rc=0; "$DRYDOCK_OBJC" analyze "$@" --report "$rep" 2>"$T/err" || rc=$?
   [ "$rc" = 2 ] || fail "$why: exit $rc, want 2"
 }
+# spec: cli/drydock-objc.c -- --references defaults to the set beside the real binary, as an installed one has;
+#       a copy alone in a bin/ has none.
+mkdir -p "$T/lone/bin" && cp "$DRYDOCK_OBJC" "$T/lone/bin/drydock-objc"
+objc=$DRYDOCK_OBJC DRYDOCK_OBJC=$T/lone/bin/drydock-objc
 usage_case 'missing --references' "$T/out/u1" --artifact "$C" --root "$T/root"
+grep -F -e "--artifact, --root, --references and --report are required" "$T/err" >/dev/null \
+  || fail "missing --references: not refused for want of --references"
+DRYDOCK_OBJC=$objc
 [ ! -e "$T/out/u1" ] || fail 'a usage error wrote a report'
 usage_case 'unknown option' "$T/out/u2" --artifact "$C" --root "$T/root" --references "$REF" --fast yes
 usage_case 'repeated option' "$T/out/u3" --artifact "$C" --root "$T/root" --references "$REF" --mode strict --mode strict
@@ -126,10 +134,12 @@ head -c 3000 "$C" >"$T/root/bin/truncated"
 run "$T/out/truncated" --artifact "$T/root/bin/truncated" --root "$T/root" --references "$REF" --mode strict
 exit_is 4 'truncated artifact'; complete_is false "$T/out/truncated" 'truncated'
 grep '"findings": \[\]' "$T/out/truncated" >/dev/null || fail 'a truncated artifact produced findings'
-cc -arch arm64 "$FX/plain.c" -o "$T/root/bin/arm64-only" 2>/dev/null || cp /usr/bin/true "$T/root/bin/arm64-only"
-if lipo -info "$T/root/bin/arm64-only" 2>/dev/null | grep -q 'architecture: arm64$'; then
+if env -i PATH=/usr/bin:/bin "$CC_ARM64" -O1 "$FX/plain.c" -o "$T/root/bin/arm64-only" 2>/dev/null; then
+  "$LIPO" -info "$T/root/bin/arm64-only" 2>/dev/null | grep -q 'architecture: arm64$' || fail "$CC_ARM64 built no thin arm64 image"
   run "$T/out/arm64" --artifact "$T/root/bin/arm64-only" --root "$T/root" --references "$REF" --mode strict
   exit_is 4 'no x86_64 slice'; error_in no-x86_64-slice "$T/out/arm64" 'arm64 only'
+else
+  echo "SKIP no x86_64 slice: $CC_ARM64 cannot build arm64 here"
 fi
 
 # spec: src/objc/main.m header -- malformed UTF-8: in an input it is cannot-measure; where the report would carry it, no report.
@@ -137,7 +147,7 @@ printf '{"schema": 1, "kind": "objc-build-evidence", "artifact": {"sha256": "\37
 run "$T/out/badutf8" --artifact "$C" --root "$T/root" --references "$REF" --mode strict --build-evidence "$T/bad-utf8.json"
 exit_is 4 'malformed UTF-8 evidence'; error_in malformed-input "$T/out/badutf8" 'malformed UTF-8 evidence'
 printf '#include <objc/runtime.h>\n#include <objc/message.h>\n__attribute__((used, noinline)) void *odd(void) __asm__("_odd\\377name");\nvoid *odd(void) { return ((void *(*)(void *, SEL))objc_msgSend)((void *)objc_getClass("NSObject"), sel_registerName("new")); }\nint main(int c, char **v) { (void)v; return c > 99 ? odd() != 0 : 0; }\n' >"$T/odd.c"
-cc "$T/odd.c" -o "$T/root/bin/odd" -lobjc
+fxcc "$T/odd.c" -o "$T/root/bin/odd" -lobjc
 run "$T/out/odd" --artifact "$T/root/bin/odd" --root "$T/root" --references "$REF" --mode strict
 exit_is 4 'a non-UTF-8 symbol'
 [ ! -e "$T/out/odd" ] || fail 'a report carrying malformed UTF-8 was written'

@@ -15,23 +15,24 @@
 # with "sig" for a signature the output could not hold where its load command
 # says. A fat file is compared slice by slice.
 #
-# Local only: it SKIPs, saying why, unless the codesign_allocate here is
-# cctools-862's (10.9's Command Line Tools). Any other tool's verdicts
-# legitimately differ.
+# Local only: with no codesign_allocate here it prints N/A and passes, and it
+# SKIPs, saying why, unless the one here is cctools-862's (10.9's Command Line
+# Tools). Any other tool's verdicts legitimately differ.
 set -u
 
 BIN="${1:?usage: codesign_order_test.sh <bindir>}"
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(cd "$HERE/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
 DMR="$BIN/drydock-macho-rewrite"
 MK="$BIN/mklinkedit"
 for x in "$DMR" "$MK" "$BIN/makefat"; do
     [ -x "$x" ] || { echo "codesign_order_test: $x not found or not executable" >&2; exit 1; }
 done
-CA=$(xcrun -f codesign_allocate 2>/dev/null) || CA=$(command -v codesign_allocate 2>/dev/null) || CA=
-[ -n "$CA" ] && [ -x "$CA" ] || { echo "SKIP: no codesign_allocate here"; exit 77; }
-strings "$CA" | grep -qx 'cctools-862' ||
+. "$ROOT/tests/lib/codesign-allocate.sh"
+CA=$(codesign_allocate_path) || { echo "N/A resign 10.9 against the oracle: no codesign_allocate on this host"; exit 0; }
+"$STRINGS" "$CA" | grep -qx 'cctools-862' ||
     { echo "SKIP: $CA is not cctools-862's, whose verdicts this test pins"; exit 77; }
-CC=${CC:-cc}
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/codesign-order.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT INT TERM
@@ -110,8 +111,8 @@ check() {
     fi
     if [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')" = cafebabe ]; then
         fat=$((fat + 1))
-        for a in $(lipo -info "$f" | sed 's/.*: //'); do
-            lipo -thin "$a" "$f" -output "$T/in.$a" && lipo -thin "$a" "$T/out" -output "$T/out.$a" &&
+        for a in $("$LIPO" -info "$f" | sed 's/.*: //'); do
+            "$LIPO" -thin "$a" "$f" -output "$T/in.$a" && "$LIPO" -thin "$a" "$T/out" -output "$T/out.$a" &&
                 check_thin "$T/in.$a" "$T/out.$a"
         done
     else
@@ -162,14 +163,14 @@ run() {   # run IN OUT STATEMENT...
     check "$r_in"
     check "$r_out"
 }
-"$CC" -O2 -I "$HERE/../src" -o "$T/mkchained" "$HERE/mkchained.c"
+"$HOST_CC" -O2 -I "$HERE/../src" -o "$T/mkchained" "$HERE/mkchained.c"
 "$T/mkchained" make-signable "$T/chained"
 run "$T/chained" "$T/chained.out" 'fixups set classic'
-"$CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
+"$HOST_CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
 "$T/mkrelmeth" make codesig+dysymtab "$T/relmeth"
 run "$T/relmeth" "$T/relmeth.out" 'objc-methods set absolute'
 # import_redirect_test.sh's grown bind stream
-"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+"$HOST_CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
 printf 'int a_data(void) { return 7; }\n' >"$T/a.c"
 printf 'int x(void) { return 1; }\n' >"$T/shim.c"
 printf 'int a_data(void);\nint (*p)(void) = a_data;\nint main(void) { return p(); }\n' >"$T/reg.c"

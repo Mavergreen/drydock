@@ -5,6 +5,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-inventory-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
@@ -75,9 +76,7 @@ printf 'typedef int not_an_objc_api;\n' >"$T/empty.h"
 run --sdk "$SDK" --header "$T/empty.h"
 [ "$rc" = 0 ] && [ ! -s "$T/out" ] || fail 'valid empty input treated as failure or invented facts'
 
-case "$(uname -m)" in x86_64) host_sdk=$SDK; host_floor=10.9 ;; arm64) host_sdk=$NEW_SDK; host_floor=11.0 ;; esac
-/usr/bin/clang -std=c99 -arch "$(uname -m)" -isysroot "$host_sdk" -mmacosx-version-min="$host_floor" \
-  -I"$PREFIX/include" "$ROOT/tools/objc-sdk-inventory.c" -L"$PREFIX/lib" \
+"$HOST_CC" -std=c99 -I"$PREFIX/include" "$ROOT/tools/objc-sdk-inventory.c" -L"$PREFIX/lib" \
   -Xlinker -rpath -Xlinker "$PREFIX/lib" -lclang -o "$T/producer"
 producer_failure() {
   want=$1; shift; rc=0

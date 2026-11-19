@@ -13,7 +13,8 @@ BIN="${1:?usage: uuid_stamp_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "uuid_stamp_test: $DMR not found" >&2; exit 1; }
 [ -x "$BIN/makefat" ] || { echo "uuid_stamp_test: need makefat in $BIN" >&2; exit 1; }
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 FF="-arch x86_64 -mmacosx-version-min=10.9"
 T=$(mktemp -d "${TMPDIR:-/tmp}/uuid_stamp_test.XXXXXX")

@@ -1,6 +1,6 @@
 #!/bin/sh
-# platform: macOS-only -- builds its Mach-O inputs with a Mac's clang, ar and libtool
-#   usage: equivalence.sh inputs DIR                 build the Mach-O inputs into DIR (needs a Mac's clang, ar and libtool)
+# platform: macOS-only -- builds its Mach-O inputs with clang22 and its llvm-ar and llvm-libtool-darwin
+#   usage: equivalence.sh inputs DIR                 build the Mach-O inputs into DIR (needs clang22)
 #          equivalence.sh produce BINDIR INPUTS OUT  run BINDIR's drydock-macho-rewrite and wrappers over INPUTS, into OUT
 #          equivalence.sh compare A B                every output in A is byte-identical to its namesake in B
 set -eu
@@ -17,6 +17,16 @@ int baz(void) { return 7; }
 EOF
 }
 
+chained_source() {
+  cat <<'EOF'
+#include <stdlib.h>
+int g = 5;
+int *rebased = &g;
+void *(*bound)(size_t) = malloc;
+int get(void) { return *rebased; }
+EOF
+}
+
 user_source() {
   cat <<'EOF'
 extern int foo(int);
@@ -24,23 +34,47 @@ int qux(int x) { return foo(x) + 3; }
 EOF
 }
 
+# has_lc FILE CMD: FILE is a thin 64-bit Mach-O carrying load command CMD, walked from its header, not read from otool
+has_lc() {
+  u32() { od -An -tu4 -j "$2" -N 4 "$1" | tr -d ' '; }
+  [ "$(u32 "$1" 0)" = $((0xfeedfacf)) ] || return 1
+  n=$(u32 "$1" 16) off=32 i=0
+  while [ "$i" -lt "$n" ]; do
+    [ "$(u32 "$1" "$off")" = $(($2)) ] && return 0
+    off=$((off + $(u32 "$1" $((off + 4))))) i=$((i + 1))
+  done
+  return 1
+}
+LC_DYLD_CHAINED_FIXUPS=0x80000034
+
 build_inputs() {
   dir=$1
   [ ! -e "$dir" ] || fail "$dir already exists"
+  ROOT=$(cd "$HERE/.." && pwd)
+  . "$ROOT/tests/lib/toolchain.sh"
   mkdir -p "$dir"
   cp "$HERE/fixture.macho" "$dir/fixture.macho"
   impl_source > "$dir/impl.c"
+  chained_source > "$dir/chained.c"
   user_source > "$dir/user.c"
   for s in impl user; do
-    clang -arch x86_64 -mmacosx-version-min=10.9 -O2 -c "$dir/$s.c" -o "$dir/$s.o" || fail "cannot compile $s.c"
+    "$CC" -arch x86_64 -mmacosx-version-min=10.9 -O2 -c "$dir/$s.c" -o "$dir/$s.o" || fail "cannot compile $s.c"
   done
-  clang -arch x86_64 -mmacosx-version-min=10.9 -O2 -dynamiclib -install_name @rpath/libimpl.dylib \
+  "$CC" -arch x86_64 -mmacosx-version-min=10.9 -O2 -dynamiclib -install_name @rpath/libimpl.dylib \
     "$dir/impl.c" -o "$dir/libimpl.dylib" || fail "cannot link libimpl.dylib"
-  clang -arch x86_64 -arch arm64 -mmacosx-version-min=11.0 -O2 -c "$dir/impl.c" -o "$dir/impl-fat.o" \
+  "$CC_ARM64" -arch x86_64 -O2 -c "$dir/impl.c" -o "$dir/impl-fat.o" \
     || fail "cannot compile a universal impl.o"
-  (cd "$dir" && ar rcs libimpl-ar.a impl.o user.o) || fail "ar failed"
-  (cd "$dir" && /usr/bin/libtool -static -o libimpl-libtool.a impl.o user.o) || fail "libtool failed"
-  rm -f "$dir/impl.c" "$dir/user.c"
+  for a in x86_64 arm64; do
+    case $a in x86_64) cc=$CC ;; arm64) cc=$CC_ARM64 ;; esac
+    "$cc" -mmacosx-version-min=12.0 -Wl,-fixup_chains -O2 -dynamiclib -install_name @rpath/libchained.dylib \
+      "$dir/chained.c" -o "$dir/chained-$a.dylib" || fail "cannot link chained-$a.dylib"
+    has_lc "$dir/chained-$a.dylib" "$LC_DYLD_CHAINED_FIXUPS" \
+      || fail "chained-$a.dylib carries no LC_DYLD_CHAINED_FIXUPS, so its rows would compare classic fixups"
+  done
+  ! has_lc "$dir/libimpl.dylib" "$LC_DYLD_CHAINED_FIXUPS" || fail "has_lc finds LC_DYLD_CHAINED_FIXUPS in a classic dylib"
+  (cd "$dir" && "$AR" rcs libimpl-ar.a impl.o user.o) || fail "ar failed"
+  (cd "$dir" && "$LIBTOOL" -static -o libimpl-libtool.a impl.o user.o) || fail "libtool failed"
+  rm -f "$dir/impl.c" "$dir/user.c" "$dir/chained.c"
 }
 
 recaulk_script() {
@@ -88,7 +122,7 @@ produce() {
   [ -x "$bin/drydock-macho-rewrite" ] || fail "no $bin/drydock-macho-rewrite"
   [ -d "$in" ] || fail "no inputs at $in"
   [ ! -e "$out" ] || fail "$out already exists"
-  for input in fixture.macho libimpl.dylib impl.o impl-fat.o user.o libimpl-ar.a libimpl-libtool.a; do
+  for input in fixture.macho libimpl.dylib impl.o impl-fat.o user.o chained-x86_64.dylib chained-arm64.dylib libimpl-ar.a libimpl-libtool.a; do
     [ -f "$in/$input" ] || fail "no $input in $in"
   done
   bin=$(cd "$bin" && pwd)
@@ -116,6 +150,11 @@ produce() {
   for v in info imports exports verify; do read_verb "fixture-$v" "$v" fixture.macho; done
   edit dylib-raise libimpl.dylib "rpath append @loader_path/$(printf '%04000d' 0)"
   for v in info exports verify; do read_verb "dylib-raise-$v" "$v" dylib-raise.out; done
+
+  for a in x86_64 arm64; do
+    edit chained-$a chained-$a.dylib 'fixups set classic'
+    read_verb chained-$a-verify verify chained-$a.out
+  done
 
   rs=$(recaulk_script)
   edit recaulk-impl.o impl.o "$rs"
@@ -149,7 +188,7 @@ compare() {
       bad=$((bad + 1))
     fi
   done
-  [ "$n" -ge 21 ] || fail "only $n outputs compared"
+  [ "$n" -ge 25 ] || fail "only $n outputs compared"
   [ "$bad" -eq 0 ] || fail "$bad of $n outputs differ between $a and $b"
   echo "equivalence: all $n outputs byte-identical ($a, $b)"
 }

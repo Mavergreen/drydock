@@ -18,7 +18,9 @@ BIN="${1:?usage: bake_mavericks_shim_test.sh <bindir>}"
 BIN=$(cd "$BIN" && pwd)
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
-CC="${CC:-clang}"
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
+CC_ARCH=$("$CC" -dumpmachine | sed 's/-.*//')
 FF="-mmacosx-version-min=10.9"
 # platform: a modern ld leaves 64 bytes of header pad by default, too few for
 # a shim path under $TMPDIR; 10.9's leaves thousands. Ask for room explicitly.
@@ -105,16 +107,18 @@ bake prog --shim "$SHIM"
 [ -x "$T/prog.selfcontained" ] && ok "bake: OUTPUT defaults to INPUT.selfcontained" \
     || bad "bake: default output" "no $T/prog.selfcontained"
 [ "$(sha "$T/prog")" = "$before" ] && ok "bake: INPUT is untouched" || bad "bake: input" "changed"
-run=$(env -i PATH=/usr/bin:/bin "$T/prog.selfcontained" 2>&1)
-set -- $run
-[ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
-    && ok "bake: the baked binary calls the shim's getpid, getppid and a_fn with no DYLD_* set" \
-    || bad "bake: runs" "printed '$run', wanted '4242 777 43'"
-run0=$(env -i PATH=/usr/bin:/bin "$T/prog" 2>&1)
-set -- $run0
-[ "${1:-}" != 4242 ] && [ "${2:-}" != 777 ] && [ "${3:-}" = 8 ] \
-    && ok "bake: ... where the input called libSystem's and liba's" \
-    || bad "bake: control" "the unbaked input printed '$run0'"
+if gate_row "$CC_ARCH" "bake: the baked binary calls the shim's functions, and the unbaked input does not"; then
+    run=$(env -i PATH=/usr/bin:/bin "$T/prog.selfcontained" 2>&1)
+    set -- $run
+    [ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
+        && ok "bake: the baked binary calls the shim's getpid, getppid and a_fn with no DYLD_* set" \
+        || bad "bake: runs" "printed '$run', wanted '4242 777 43'"
+    run0=$(env -i PATH=/usr/bin:/bin "$T/prog" 2>&1)
+    set -- $run0
+    [ "${1:-}" != 4242 ] && [ "${2:-}" != 777 ] && [ "${3:-}" = 8 ] \
+        && ok "bake: ... where the input called libSystem's and liba's" \
+        || bad "bake: control" "the unbaked input printed '$run0'"
+fi
 HI_LIB=/usr/lib/libSystem.B.dylib; export HI_LIB
 has_import "$T/prog.selfcontained" _printf \
     && ok "bake: ... and _printf, which the shim does not export, still binds to libSystem" \
@@ -137,7 +141,7 @@ grep -q 'bind data: regular table in place' "$T/b.out" \
     || bad "bake: in place" "$(cat "$T/b.out")"
 # The same program with a bind stream that has no room to grow in place:
 # _getppid shares libSystem's ordinal opcode with _malloc, which stays.
-"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+"$HOST_CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
 LS=$("$DMR" info "$T/prog" | awk 'index($0, "  ordinal=") == 1 && /libSystem/ {
     split($0, a, " path="); o = a[1]; sub("  ordinal=", "", o); print o; exit }')
 "$T/mkbindstream" set "$T/prog" "$T/bgrow" bind "ord:$LS" sym:_getppid type:1 seg:2:0 do sym:_malloc do done
@@ -173,8 +177,11 @@ n=$("$DMR" info "$T/reuse.selfcontained" | grep -c "^  ordinal=[0-9]* path=$SHIM
     || bad "reuse" "exit $brc, $n load commands: $(cat "$T/b.out" "$T/b.err")"
 
 # ---- 4. a signed INPUT ---------------------------------------------------
+. "$ROOT/tests/lib/codesign-allocate.sh"
 cp "$T/prog" "$T/signed"
-if codesign -s - "$T/signed" 2>"$T/cs.err" &&
+if ! codesign_allocate_path >/dev/null; then
+    echo "N/A signed: no codesign_allocate on this host, so codesign -s - cannot sign an input to strip"
+elif codesign -s - "$T/signed" 2>"$T/cs.err" &&
    "$DMR" info "$T/signed" | grep -q ' LC_CODE_SIGNATURE '; then
     bake signed --shim "$SHIM"
     [ "$brc" -eq 0 ] && grep -qx 'code signature: stripped' "$T/b.out" &&
@@ -206,48 +213,47 @@ bake --bogus prog
 
 # No room in the header for the shim's load command: the Python died with "no
 # room in the Mach-O header"; the wrapper grows the header, announced, and the
-# result runs (compat/README.md's bake-mavericks-shim table). These links
-# take the default pad, not $PAD, which is a floor. platform: the linker packs
-# __TEXT's sections against the end of a page, so filler costs the pad byte
-# for byte, less an alignment `k` measured from the first attempt, modulo the
-# page; the second attempt aims 40 bytes above the commands. platform: x86_64
-# however this host's clang defaults, with a shim and liba to match -- the
-# grow refuses arm64, whose pages are 16 KB.
+# result runs (compat/README.md's bake-mavericks-shim table). platform:
+# clang22's config links -headerpad_max_install_names, which keeps 1024 bytes
+# per dylib whatever else is in the image, so tight is linked through an
+# --ld-path that drops that one flag and leaves ld64.lld's default pad.
+# platform: x86_64 however this host's clang defaults, with a shim and liba to
+# match -- the grow refuses arm64, whose pages are 16 KB.
 XF="-arch x86_64 $FF"
 SHIMX="$T/libshim-x86_64.dylib" LIBAX="$T/liba-x86_64.dylib"
 "$CC" -dynamiclib $XF -install_name "$SHIMX" -o "$SHIMX" "$T/shim.c"
 "$CC" -dynamiclib $XF -install_name "$LIBAX" -o "$LIBAX" "$T/a.c"
 pad() { "$DMR" info "$1" | sed -n 's/^header pad: \([0-9]*\) bytes available.*/\1/p'; }
-tight() {
-    printf '__attribute__((used)) static const char filler[%d] = { 1 };\n' "$1" >"$T/filler.c"
-    "$CC" $XF -o "$T/tight" "$T/prog.c" "$T/filler.c" "$LIBAX"
-    pad "$T/tight"
-}
+LD=$("$CC" $XF -### -o "$T/tight" "$T/prog.c" 2>&1 | tail -1 | awk '{ print $1 }' | tr -d '"')
+cat >"$T/ld-nopad" <<NOPAD
+#!/bin/sh
+for a; do shift; [ "\$a" = -headerpad_max_install_names ] || set -- "\$@" "\$a"; done
+exec "$LD" "\$@"
+NOPAD
+chmod +x "$T/ld-nopad"
 "$CC" $XF -o "$T/loose" "$T/prog.c" "$LIBAX"
-p0=$(pad "$T/loose")
-fill=$((p0 - 40))
-p1=$(tight "$fill")
-k=$(( ((p0 - fill - p1) % 4096 + 4096) % 4096 ))
-fill=$((p0 - k - 40))
-[ "$fill" -gt 0 ] && p1=$(tight "$fill")
+"$CC" $XF --ld-path="$T/ld-nopad" -o "$T/tight" "$T/prog.c" "$LIBAX"
+p0=$(pad "$T/loose") p1=$(pad "$T/tight")
 need=$(( (24 + ${#SHIMX} + 1 + 7) / 8 * 8 ))
 if [ -n "$p1" ] && [ "$p1" -lt "$need" ]; then
     bake tight --shim "$SHIMX"
     [ "$brc" -eq 0 ] && grep -q ': grew the header pad by ' "$T/b.err" \
         && ok "grow: no header room for the shim ($p1 bytes, $need needed) -- the header grows, announced (0)" \
         || bad "grow: no room" "exit $brc: $(cat "$T/b.err")"
-    grc=0
-    run=$(env -i PATH=/usr/bin:/bin "$T/tight.selfcontained" 2>&1) || grc=$?
-    set -- $run
-    [ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
-        && ok "grow: ... and the grown, baked binary calls the shim's functions" \
-        || bad "grow: runs" "exit $grc, printed '$run', wanted '4242 777 43'; $(file "$T/tight.selfcontained")"
+    if gate_row x86_64 "grow: ... and the grown, baked binary calls the shim's functions"; then
+        grc=0
+        run=$(env -i PATH=/usr/bin:/bin "$T/tight.selfcontained" 2>&1) || grc=$?
+        set -- $run
+        [ "${1:-}" = 4242 ] && [ "${2:-}" = 777 ] && [ "${3:-}" = 43 ] \
+            && ok "grow: ... and the grown, baked binary calls the shim's functions" \
+            || bad "grow: runs" "exit $grc, printed '$run', wanted '4242 777 43'; $(file "$T/tight.selfcontained")"
+    fi
 else
     bad "grow: no room: precondition" "pad went from $p0 to ${p1:-unknown}; wanted under $need"
 fi
 
 # ---- 6. the weak-bind table ---------------------------------------------
-"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+"$HOST_CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
 "$T/mkbindstream" set "$T/prog" "$T/weak" weak sym:_getpid type:1 seg:2:0 do done
 bake weak --shim "$SHIM"
 [ "$brc" -eq 0 ] &&
@@ -280,7 +286,7 @@ nf=$("$DMR" imports "$T/fat.selfcontained" 2>/dev/null | awk -F'\t' 'NR==1 { for
     || bad "fat" "exit $brc, $nf slices: $(cat "$T/b.err")"
 
 # ---- 9. chained fixups, which the Python refuses -------------------------
-"$CC" -mmacosx-version-min=12.0 $PAD -o "$T/chained" "$T/prog.c" "$LIBA" 2>/dev/null
+"$CC" -mmacosx-version-min=12.0 -Wl,-fixup_chains $PAD -o "$T/chained" "$T/prog.c" "$LIBA" 2>/dev/null
 if [ -f "$T/chained" ] && "$DMR" info "$T/chained" 2>/dev/null | grep -q ' LC_DYLD_CHAINED_FIXUPS '; then
     bake chained --shim "$SHIM"
     [ "$brc" -eq 0 ] && has_import "$T/chained.selfcontained" _getpid &&
@@ -288,7 +294,7 @@ if [ -f "$T/chained" ] && "$DMR" info "$T/chained" 2>/dev/null | grep -q ' LC_DY
         && ok "chained: converted with fixups set classic, then baked (a divergence: the Python refuses)" \
         || bad "chained" "exit $brc: $(cat "$T/b.err")"
 else
-    skip "chained: converted, then baked" "this host's linker cannot emit chained fixups"
+    bad "chained: precondition" "-fixup_chains left no LC_DYLD_CHAINED_FIXUPS in $T/chained"
 fi
 
 echo "bake_mavericks_shim_test: $fail failure(s)"

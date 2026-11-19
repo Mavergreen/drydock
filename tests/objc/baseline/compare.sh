@@ -155,6 +155,10 @@ blank() {
 
 MODE=${COMPARE_MODE:-identical}
 case $MODE in identical|fewer-passed-arguments|fewer-unmeasured) ;; *) fail "unknown COMPARE_MODE $MODE" ;; esac
+if [ "$MODE" = fewer-unmeasured ]; then
+  ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
+  . "$ROOT/tests/lib/toolchain.sh"
+fi
 RENAMED=${COMPARE_RENAMED:-0}
 case $RENAMED in 0|1) ;; *) fail "COMPARE_RENAMED is 0 or 1, not $RENAMED" ;; esac
 
@@ -217,7 +221,7 @@ reader_tables() {
     # spec: src/objc/macho-reader.c jt_settle -- jmp, table, entries, function start, end, followed|data, name
     $1 == "drydock-objc-jump-table" && NF == 8 { t = hex($3); printf "%.0f %.0f %.0f %.0f %s %.0f\n", t, t + 4 * $4, hex($5), hex($6), $7, hex($2) }' "$1" > "$3"
   [ -s "$3" ] || return 0
-  otool -tV "$2" | otool_tables > "$3.otool" || { echo "compare.sh: otool cannot read $2" >&2; return 1; }
+  "$OTOOL" -tV "$2" | otool_tables > "$3.otool" || { echo "compare.sh: otool cannot read $2" >&2; return 1; }
   while read -r lo hi flo fhi st jmp; do
     grep -qx "$lo $hi" "$3.otool" && continue
     fn=$(awk -F '\t' -v t="$lo" '
@@ -226,7 +230,7 @@ reader_tables() {
         return x }
       $1 == "drydock-objc-jump-table" && sprintf("%.0f", hex($3)) == t { print $8; exit }' "$1")
     if [ -n "$fn" ] && [ "$fn" != - ] &&
-       otool -tV -p "$fn" "$2" | otool_tables "$fhi" | grep -qx "$lo $hi"; then continue; fi
+       "$OTOOL" -tV -p "$fn" "$2" | otool_tables "$fhi" | grep -qx "$lo $hi"; then continue; fi
     echo "compare: otool does not show the jump table the reader listed at $lo ($fn)" >&2
     return 1
   done < "$3"
@@ -247,7 +251,7 @@ fewer_errors() {
     sed -n 's/^{"code": "indirect-objc-entry", "slice": "[^"]*", "address": "0x\([0-9a-f]*\)", "detail": "objc entry point in [a-z0-9]* is read other than to call through it (a spill, a copy or an escape)"}$/\1/p' "$1.errs" > "$1.read"
     : > "$1.movs"
     if [ -s "$1.taken" ] || [ -s "$1.read" ]; then
-      otool -tV "$4" > "$1.otv" || { echo "compare.sh: otool cannot read $4" >&2; return 1; }
+      "$OTOOL" -tV "$4" > "$1.otv" || { echo "compare.sh: otool cannot read $4" >&2; return 1; }
       awk 'NR == FNR { want[$1] = 1; next }
         { a = $1; sub(/^0+/, "", a) } (a in want) && $2 ~ /^cmp[bwlq]$/ && $3 == "$0x0," && $4 ~ /\(%rip\)$/ { print a }' "$1.taken" "$1.otv" |
         while read -r a; do printf '%.0f\n' "$((0x$a))"; done > "$1.cmps"

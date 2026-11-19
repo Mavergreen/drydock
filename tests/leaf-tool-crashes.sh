@@ -63,7 +63,8 @@ BIN="${1:?usage: leaf-tool-crashes.sh <bindir>}"
 [ -x "$BIN/patch_macho" ] || { echo "leaf-tool-crashes: $BIN/patch_macho not found" >&2; exit 1; }
 [ -x "$BIN/drydock-macho-rewrite" ] || { echo "leaf-tool-crashes: $BIN/drydock-macho-rewrite not found" >&2; exit 1; }
 
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SRC_DIR="$SCRIPT_DIR/../src"
 T="${TMPDIR:-/tmp}/leaf-tool-crashes.$$"
@@ -204,7 +205,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 EOF
-"$CC" -O2 -o "$T/mkfixture" "$T/mkfixture.c"
+"$HOST_CC" -O2 -o "$T/mkfixture" "$T/mkfixture.c"
 
 "$T/mkfixture" nosect "$T/nosect.macho"
 "$T/mkfixture" oobsection "$T/oobsection.macho"
@@ -540,7 +541,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 EOF
-"$CC" -O2 -I "$SRC_DIR" -o "$T/mkmanylc" "$T/mkmanylc.c"
+"$HOST_CC" -O2 -I "$SRC_DIR" -o "$T/mkmanylc" "$T/mkmanylc.c"
 
 pm_manylc_case() {
     n="$1"; expect="$2"   # expect: "clean" (refuses/errors without crashing) or "cap" (refuses, names the cap)

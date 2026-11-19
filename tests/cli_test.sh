@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- Mach-O fixtures built with the host's clang and ld64, read with otool, nm, lipo and codesign_allocate
+# platform: macOS-only -- Mach-O fixtures built with clang22 and ld64.lld, read with otool, nm, lipo and codesign_allocate
 # tests/cli_test.sh — exercises the drydock-macho-rewrite CLI itself: --capabilities, the
 # three read-only verbs (verify, info, imports), and the bare `FILE OUT` form
 # that is the only way to change a binary.
@@ -55,7 +55,9 @@ DRYDOCK_MACHO_REWRITE="$BIN/drydock-macho-rewrite"
 # the property the requirement existed for, from the outside, instead of
 # taking it on trust.
 
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
 # This script's own directory, for the fixture-builder C sources that live
 # beside it (tests/strip_version_min.c).
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -182,7 +184,8 @@ build_main() {
 # with binds, or deleting it renumbers nothing and every count it reports is
 # a vacuous zero. libb gets no -install_name, so its install name is the path
 # it was linked from, "$T/libb.dylib" -- the path a script names to delete it.
-# The linker keeps an unreferenced dylib unless told to dead-strip them.
+# clang22 passes -dead_strip_dylibs, so libb, which nothing references, is
+# linked -needed_library to keep it.
 cat > "$T/b.c" <<'EOF'
 int b_sym(void) { return 22; }
 EOF
@@ -210,14 +213,15 @@ fixture_ordinals() {
     done
 }
 build_main_two_dylibs() {
-    "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" "$T/libb.dylib" "$T/liba.dylib" -o "$1"
+    "$CC" -O2 $FIXTURE_FLAGS "$T/main.c" -Xlinker -needed_library -Xlinker "$T/libb.dylib" \
+        "$T/liba.dylib" -o "$1"
     fixture_ordinals "$1" "ordinal=1 path=$T/libb.dylib" \
         "ordinal=2 path=@loader_path/liba.dylib" "ordinal=3 path=/usr/lib/libSystem.B.dylib"
 }
 # The same, with a third dylib that main also binds to after liba:
 # libb=1, liba=2, libc3=3, libSystem=4.
 build_main_three_dylibs() {
-    "$CC" -O2 $FIXTURE_FLAGS "$T/main3.c" "$T/libb.dylib" "$T/liba.dylib" \
+    "$CC" -O2 $FIXTURE_FLAGS "$T/main3.c" -Xlinker -needed_library -Xlinker "$T/libb.dylib" "$T/liba.dylib" \
         "$T/libc3.dylib" -o "$1"
     fixture_ordinals "$1" "ordinal=1 path=$T/libb.dylib" \
         "ordinal=2 path=@loader_path/liba.dylib" "ordinal=3 path=@loader_path/libc3.dylib" \
@@ -249,7 +253,7 @@ build_main_without_build_version() {
     # drydock-macho-rewrite, so a drydock-macho-rewrite defect cannot certify its own setup. Without this
     # the test would pass on 10.9 for the OLD reason (the linker never
     # emitted it) and silently stop testing anything the day it does.
-    if otool -l "$1" 2>/dev/null | grep -q LC_BUILD_VERSION; then
+    if "$OTOOL" -l "$1" 2>/dev/null | grep -q LC_BUILD_VERSION; then
         bad "fixture setup" "build_main_without_build_version left LC_BUILD_VERSION in $1"
     fi
 }
@@ -339,16 +343,23 @@ EOF
 "$CC" -O2 -o "$T/perturb_pad" "$T/perturb_pad.c"
 
 build_main "$T/signing_probe"
-if "$T/perturb_pad" "$T/signing_probe" >"$T/perturb.out" 2>&1; then
-    if (cd "$T" && ./signing_probe) >"$T/signing_probe.out" 2>&1; then
-        signing_probe_rc=0
-    else
-        signing_probe_rc=$?
-    fi
+signing_probe_rc=0
+if ! gate_row x86_64 "host probe: a trivially-perturbed binary still runs"; then
+    signing_probe_rc=skipped
 else
-    signing_probe_rc=$?   # 4 = no pad (fixture too tight -- treat as "can't determine")
+    if "$T/perturb_pad" "$T/signing_probe" >"$T/perturb.out" 2>&1; then
+        if (cd "$T" && ./signing_probe) >"$T/signing_probe.out" 2>&1; then
+            signing_probe_rc=0
+        else
+            signing_probe_rc=$?
+        fi
+    else
+        signing_probe_rc=$?   # 4 = no pad (fixture too tight -- treat as "can't determine")
+    fi
 fi
-if [ "$signing_probe_rc" -eq 0 ]; then
+if [ "$signing_probe_rc" = skipped ]; then
+    signing_enforced=0
+elif [ "$signing_probe_rc" -eq 0 ]; then
     signing_enforced=0
     ok "host probe: a trivially-perturbed binary still runs (drydock-macho-rewrite-independent)"
 elif [ "$signing_probe_rc" -eq 137 ]; then
@@ -676,7 +687,7 @@ mts "$T/vocab_fixture" "rpath reexport /no/such/path" >"$T/vocab_rpath_reexport.
 # reason -- `patch_macho`'s converting path -- and one copy of it is enough.
 # Same arrangement as tests/strip_version_min.c and tests/mkswift.c.
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../src" && pwd)
-"$CC" -O2 -I "$SRC_DIR" -o "$T/mkchained" "$HERE/mkchained.c"
+"$HOST_CC" -O2 -I "$SRC_DIR" -o "$T/mkchained" "$HERE/mkchained.c"
 "$T/mkchained" make "$T/chained.in"
 
 # dcl IN OUT  -- exactly what `drydock-macho-rewrite declassify IN OUT` was, in the only
@@ -958,7 +969,7 @@ dcl "$T/not-a-macho-in-cli-test" "$T/nope" >/dev/null 2>"$T/nm.err" && rc=0 || r
 # A linked image with NEITHER chained fixups NOR LC_DYLD_INFO_ONLY (mknobind's
 # dylib with no load commands) is not idempotent-pass-through material and
 # not convertible either. It must say so and refuse, not quietly copy.
-"$CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
+"$HOST_CC" -O2 -I "$SRC_DIR" -o "$T/mknobind" "$HERE/mknobind.c"
 "$T/mknobind" "$T/plain"
 dcl "$T/plain" "$T/plain.out" >/dev/null 2>"$T/plain.err" && rc=0 || rc=$?
 [ "$rc" -eq 1 ] && ok "declassify: refuses a Mach-O with no chained fixups and no LC_DYLD_INFO_ONLY" \
@@ -1357,9 +1368,9 @@ rc=0
 # ============================================================================
 # minos if-absent
 # ============================================================================
-"$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
+"$HOST_CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c"
 
-"$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c"
+"$HOST_CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c"
 
 build_main "$T/info_bv"
 "$T/mkminos" bv "$T/info_bv" 1 12.0 12.3 || bad "info build-version: fixture setup" "mkminos bv failed"
@@ -1679,6 +1690,8 @@ fi
 if [ "$signing_enforced" -eq 1 ]; then
     skip "lc: binary still runs after uuid deletion" \
         "this host SIGKILLs any binary modified since it was signed at link time (established independently of drydock-macho-rewrite by the host probe above); a host policy, not a drydock-macho-rewrite defect, and exercised for real on 10.9"
+elif ! gate_row x86_64 "lc: binary still runs after uuid deletion"; then
+    :
 else
     if (cd "$T" && ./lc_fixture) >"$T/lc_fixture_run.out" 2>&1; then
         ok "lc: binary still runs after uuid deletion"
@@ -2432,6 +2445,8 @@ empty_all=$(rpath_positions "$T/rpath_insert_empty" | sed 's/^[0-9]* //' | tr '\
 if [ "$signing_enforced" -eq 1 ]; then
     skip "rpath: -insert result still runs" \
         "this host SIGKILLs any binary modified since it was signed at link time (established independently of drydock-macho-rewrite by the host probe above)"
+elif ! gate_row x86_64 "rpath: -insert result still runs"; then
+    :
 elif (cd "$T" && ./rpath_insert_fixture) >"$T/rpath_insert_run.out" 2>&1; then
     ok "rpath: -insert result still runs"
 else
@@ -2573,7 +2588,7 @@ int main(int argc, char **argv) {
     return 2;
 }
 EOF
-"$CC" -O2 -o "$T/segread" "$T/segread.c"
+"$HOST_CC" -O2 -o "$T/segread" "$T/segread.c"
 
 # A fixture with a real __DATA segment whose sections therefore carry
 # "__DATA" in their own segname fields. It is built to have MORE THAN ONE
@@ -2764,6 +2779,8 @@ grep -q "^SEG __TEXT$" "$T/segs_after" && grep -q "^SECT __TEXT/__text$" "$T/seg
 if [ "$signing_enforced" -eq 1 ]; then
     skip "segment: the renamed binary still runs" \
         "this host SIGKILLs any binary modified since it was signed at link time (established independently of drydock-macho-rewrite by the host probe above)"
+elif ! gate_row x86_64 "segment: the renamed binary still runs"; then
+    :
 elif (cd "$T" && ./segment_fixture) >"$T/segment_run.out" 2>&1; then
     ok "segment: the renamed binary still runs"
 else
@@ -2856,7 +2873,7 @@ cmp -s "$T/segment_fat_blob" "$T/segment_fat_blob_after" \
 # refusals were also not the heuristic getting real dylibs wrong: it never ran
 # on them (see mkimplausible.c's header), so the scan would come up empty
 # today. The fixture trips the gate on its merits; its header says how.
-"$CC" -O2 -Wall -Wextra -I "$SRC_DIR" -o "$T/mkimplausible" "$SRC_DIR/../tests/mkimplausible.c"
+"$HOST_CC" -O2 -Wall -Wextra -I "$SRC_DIR" -o "$T/mkimplausible" "$SRC_DIR/../tests/mkimplausible.c"
 "$T/mkimplausible" "$T/implausible"
 
 # `|| true`: a refusal is the expected outcome and this suite runs under set -e.
@@ -3310,7 +3327,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 EOF
-"$CC" -O2 -o "$T/mk32" "$T/mk32.c"
+"$HOST_CC" -O2 -o "$T/mk32" "$T/mk32.c"
 "$T/mk32" "$T/slice32"
 # makefat rather than segread wrap, because this one needs slice 1's
 # cpusubtype too: declared arm64 (0x100000c/0), so the pass-through line names
@@ -3431,7 +3448,7 @@ int main(int argc, char **argv) {
     return 1;
 }
 EOF
-"$CC" -O2 -o "$T/retype16" "$T/retype16.c"
+"$HOST_CC" -O2 -o "$T/retype16" "$T/retype16.c"
 "$T/retype16" "$T/segment_fat_slice" "$T/short_lc"
 rc=0; "$DRYDOCK_MACHO_REWRITE" info "$T/short_lc" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] \
@@ -3623,7 +3640,7 @@ cmp -s "$T/nwi_noop" "$T/nwi_noop_out" \
 # The fixture builder is tests/mkswift.c, shared with tests/wrapper_test.sh
 # exactly the way tests/strip_version_min.c is -- both suites need a binary
 # with real Swift class records to retag, not fixture.macho's usual zero.
-"$CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c"
+"$HOST_CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c"
 "$T/mkswift" make "$T/swift_fixture"
 
 # ---- info: the Swift stable-ABI tag ---------------------------------------
@@ -3653,7 +3670,7 @@ mts "$T/swift_retagged" "swift-abi set legacy" >/dev/null 2>&1 \
 
 # ---- info: the objc-methods line ------------------------------------------
 # tests/mkrelmeth.c writes tests/relmeth_fixture.h's hand-built image.
-"$CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
+"$HOST_CC" -O2 -o "$T/mkrelmeth" "$HERE/mkrelmeth.c"
 for v in plain chained abscat oob; do "$T/mkrelmeth" make "$v" "$T/relmeth_$v"; done
 info_ml() { "$DRYDOCK_MACHO_REWRITE" info "$1" 2>/dev/null | grep '^objc-methods: ' || true; }
 
@@ -3894,12 +3911,12 @@ rm -f "$T/edit_fixture_out"
     && [ "$(stat -f %i "$T/edit_fixture")" = "$edit_fixture_ino" ] \
     && ok "edit FILE OUT: FILE is untouched, bytes and inode" \
     || bad "edit FILE OUT" "FILE changed"
-otool -l "$T/edit_fixture_out" 2>/dev/null | grep -q LC_UUID \
+"$OTOOL" -l "$T/edit_fixture_out" 2>/dev/null | grep -q LC_UUID \
     && bad "edit" "LC_UUID survived the edit script" \
     || ok "edit: applied the load-command delete"
-otool -L "$T/edit_fixture_out" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
+"$OTOOL" -L "$T/edit_fixture_out" 2>/dev/null | grep -q "@loader_path/../S.dylib" \
     && ok "edit: applied the dylib replace" \
-    || bad "edit" "the dylib replace did not land: $(otool -L "$T/edit_fixture_out")"
+    || bad "edit" "the dylib replace did not land: $("$OTOOL" -L "$T/edit_fixture_out")"
 
 # AN OUT THAT IS FILE IS REFUSED BEFORE THE SCRIPT IS EVEN READ -- bad_out,
 # before stdin is touched. stdin here is /dev/null, so a run that got as far as
@@ -4066,7 +4083,7 @@ printf 'load-command delete uuid\n' | "$DRYDOCK_MACHO_REWRITE" "$T/bare_in" "$T/
 # ... and the work happened. A run that IGNORED stdin would also exit 0 and
 # leave a faithful copy of FILE; this is the assertion that the statements
 # piped in were actually read and applied.
-otool -l "$T/bare_via_bare" 2>/dev/null | grep -q LC_UUID \
+"$OTOOL" -l "$T/bare_via_bare" 2>/dev/null | grep -q LC_UUID \
     && bad "bare form" "the statements piped in were not applied -- OUT still has the LC_UUID the script deletes, so a caller got an unchanged copy of FILE and an exit 0 saying it worked" \
     || ok "bare form: the statements on stdin are read and applied"
 
@@ -4617,7 +4634,7 @@ grep -qF "  target 10.9" "$T/tgt.err" \
 build_main_without_build_version "$T/tgt_empty"
 mts "$T/tgt_empty" "minos if-absent 10.9" >/dev/null 2>"$T/tgt_empty_minos.err" \
     || bad "target: fixture setup" "minos if-absent failed: $(cat "$T/tgt_empty_minos.err")"
-otool -l "$T/tgt_empty" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+"$OTOOL" -l "$T/tgt_empty" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     || bad "target: fixture setup" "tgt_empty has no LC_VERSION_MIN_MACOSX"
 tgt_run "$T/tgt_empty" "$T/tgt_empty.out" && tgt_empty_rc=0 || tgt_empty_rc=$?
 [ "$tgt_empty_rc" -eq 0 ] && [ -e "$T/tgt_empty.out" ] \
@@ -4685,21 +4702,21 @@ grep -A1 -xF '    minos at-most 10.9  (always)' "$T/tgt.err" \
 "$T/mkswift" make "$T/tgt_dc"
 mts "$T/tgt_dc" "segment rename __DATA __DATA_CONST" >/dev/null 2>"$T/tgt_seg.err" \
     || bad "target: fixture setup" "segment rename failed: $(cat "$T/tgt_seg.err")"
-otool -l "$T/tgt_dc" 2>/dev/null | grep -q "segname __DATA_CONST" \
-    && otool -l "$T/tgt_dc" 2>/dev/null | grep -q "sectname __objc_classlist" \
+"$OTOOL" -l "$T/tgt_dc" 2>/dev/null | grep -q "segname __DATA_CONST" \
+    && "$OTOOL" -l "$T/tgt_dc" 2>/dev/null | grep -q "sectname __objc_classlist" \
     || bad "target: fixture setup" "tgt_dc is not a __DATA_CONST carrying __objc_ sections"
 tgt_run "$T/tgt_dc" "$T/tgt_dc.out" || bad "target (__DATA_CONST)" "$(cat "$T/tgt.err")"
 grep -qF "    segment rename __DATA_CONST __DATA  (__DATA_CONST carries __objc_ sections)" \
     "$T/tgt.err" \
     && ok "target: a __DATA_CONST carrying __objc_ sections expands to the rename" \
     || bad "target (__DATA_CONST)" "no segment rename line: $(cat "$T/tgt.err")"
-otool -l "$T/tgt_dc.out" 2>/dev/null | grep -q "segname __DATA_CONST" \
+"$OTOOL" -l "$T/tgt_dc.out" 2>/dev/null | grep -q "segname __DATA_CONST" \
     && bad "target (__DATA_CONST)" "__DATA_CONST survived the expansion" \
     || ok "target: ... and the written image has no __DATA_CONST left"
 # The inverse: the same fixture before the rename has its __objc_ sections in
 # __DATA already, so there is nothing to rename.
 "$T/mkswift" make "$T/tgt_nodc"
-if otool -l "$T/tgt_nodc" 2>/dev/null | grep -q "segname __DATA_CONST"; then
+if "$OTOOL" -l "$T/tgt_nodc" 2>/dev/null | grep -q "segname __DATA_CONST"; then
     bad "target: fixture setup" "tgt_nodc unexpectedly has a __DATA_CONST"
 fi
 tgt_run "$T/tgt_nodc" "$T/tgt_nodc.out" || bad "target (no __DATA_CONST)" "$(cat "$T/tgt.err")"
@@ -4972,7 +4989,7 @@ tgt_left=$(vm_pad_of "$T/tgt_tight")
 cp "$T/tgt_tight" "$T/tgt_nopie"
 tgt_run "$T/tgt_tight" "$T/tgt_tight.out" \
     || bad "target (grow)" "expected 0: $(cat "$T/tgt.err")"
-otool -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
+"$OTOOL" -l "$T/tgt_tight.out" 2>/dev/null | grep -q LC_VERSION_MIN_MACOSX \
     && grep -q "^$T/tgt_tight: grew the header pad by " "$T/tgt.err" \
     && ok "target: a derived statement grows the header, announced, and lands" \
     || bad "target (grow)" "no announced grow, or no LC_VERSION_MIN_MACOSX: $(cat "$T/tgt.err")"
@@ -5226,7 +5243,7 @@ rc=0; printf 'dylib append /usr/lib/libz.1.dylib\n' \
 # tests/linkedit_fixture.h's variants, written by mklinkedit. `resign 10.9:`
 # is src/linkedit_order.h's verdict, which tests/codesign_order_test.sh holds
 # to 10.9's own codesign_allocate.
-"$CC" -O2 -o "$T/mklinkedit" "$HERE/mklinkedit.c"
+"$HOST_CC" -O2 -o "$T/mklinkedit" "$HERE/mklinkedit.c"
 resign() { "$DRYDOCK_MACHO_REWRITE" info "$1" 2>/dev/null | sed -n 's/^resign 10\.9: //p'; }
 for v in canonical bind-first note hole-16; do
     "$T/mklinkedit" make "$v" "$T/lk_$v"
@@ -5557,6 +5574,8 @@ cp "$T/raise_out" "$T/raise/libraise.dylib"
 if [ "$signing_enforced" -eq 1 ]; then
     skip "raise: a program loads the raised dylib and runs" \
         "this host SIGKILLs any binary modified since it was signed (established independently of drydock-macho-rewrite by the host probe above); exercised for real on 10.9"
+elif ! gate_row x86_64 "raise: a program loads the raised dylib and runs"; then
+    :
 else
     "$T/raise/driver" && ok "raise: a program loads the raised dylib and runs" \
         || bad "raise: run" "the driver failed"

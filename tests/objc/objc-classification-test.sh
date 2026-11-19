@@ -8,6 +8,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
@@ -17,7 +18,7 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1;
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 mkdir -p "$T/root/bin"
 n=0
 # spec: cli/drydock-objc.c header (analyze) -- analyze ARTIFACT MODE [options]: rc and $T/report; REFS, when set, replaces the reference set.
@@ -61,7 +62,7 @@ guard() {  # guard FUNCTION SELECTOR STATUS [SOURCE-IDENTITY]
     "$1" "$1" "$2" "${4:-$SRCID}" "$3" "$([ "$3" = reviewed ] && echo 'A. Reviewer' || echo '')" "$([ "$3" = reviewed ] && echo 'NO falls back to 0' || echo '')"
 }
 
-cc "$FX/classify.c" -o "$T/root/bin/classify" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use
+fxcc "$FX/classify.c" -o "$T/root/bin/classify" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use
 C="$T/root/bin/classify"
 
 # spec: src/objc/classify.c header -- exact class, kind and inheritance from the floor runtime capture.
@@ -172,7 +173,7 @@ exit_is 4 'evidence for another artifact'; error_is stale-build-evidence 'anothe
 
 # spec: src/objc/classify.c header -- the second, unguarded caller of a guarded shared objc2 cache is its own blocking finding.
 closure_fixture() {
-  cc "$FX/closure.c" -o "$1" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
+  fxcc "$FX/closure.c" -o "$1" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
     -Wl,-U,_fixture_use -Wl,-U,_objc_retainAutoreleasedReturnValue -Wl,-U,_objc_release
 }
 closure_fixture "$T/root/bin/closure"
@@ -183,8 +184,8 @@ want _voiceover_guarded isVoiceOverEnabled guarded
 want _voiceover_unguarded isVoiceOverEnabled unsupported 'introduced 10.13'
 
 # spec: src/objc/classify.c header -- application-defined ownership and R1 (a): root proof through the artifact's own classes.
-cc -c "$FX/classify-app.m" -o "$T/app.o" 2>/dev/null
-cc "$T/app.o" -o "$T/root/bin/app" -framework AppKit -framework Foundation -lobjc
+fxcc -c "$FX/classify-app.m" -o "$T/app.o" 2>/dev/null
+fxcc "$T/app.o" -o "$T/root/bin/app" -framework AppKit -framework Foundation -lobjc
 analyze "$T/root/bin/app" strict
 exit_is 1 'application classes'
 want _app_cases probe floor-supported "the artifact's own +Probe"
@@ -201,8 +202,8 @@ residual 'application classes'
 #       in the floor capture; the report records that fact and names whatever keeps R1 off.
 roots_fixture() {  # roots_fixture FORM OUTPUT [LINK-OPTIONS]
   f=$1 out=$2; shift 2
-  cc -DFORM="$f" -c "$FX/class-roots.m" -o "$T/roots$f.o" 2>/dev/null
-  cc "$T/roots$f.o" -o "$out" -framework Foundation -lobjc "$@"
+  fxcc -DFORM="$f" -c "$FX/class-roots.m" -o "$T/roots$f.o" 2>/dev/null
+  fxcc "$T/roots$f.o" -o "$out" -framework Foundation -lobjc "$@"
 }
 roots_fact() {  # roots_fact FRAGMENT: the closure_class_roots record contains it
   grep -o '"closure_class_roots": {[^}]*}[^}]*}' "$T/report" | grep -F -- "$1" >/dev/null ||
@@ -234,11 +235,12 @@ blocked 'a Swift-style root in another image' 'MGSwiftish: superclass SwiftObjec
 roots_fixture 3 "$T/root/bin/roots3" -Wl,-U,'_OBJC_CLASS_$_NSLeafProxy' -Wl,-U,'_OBJC_METACLASS_$_NSLeafProxy'
 analyze "$T/root/bin/roots3" strict
 blocked 'a floor superclass with another root' 'MGLeaf: floor superclass NSLeafProxy has root NSLeafProxy, not NSObject or NSProxy'
-roots_fixture 0 "$T/root/bin/roots0w" -framework WebKit
+roots_fixture 0 "$T/root/bin/roots0w" -Wl,-needed_framework,WebKit
+"$OTOOL" -L "$T/root/bin/roots0w" | grep -q /WebKit.framework/ || fail "roots0w: WebKit is not a dependency"
 analyze "$T/root/bin/roots0w" strict
 blocked 'a dependency outside the floor capture' 'dependency /System/Library/Frameworks/WebKit.framework/Versions/A/WebKit is not in the floor capture'
 # spec: src/objc/macho-reader.c header -- run-time class creation is cannot-measure, and the report counts it.
-cc -DFORM=6 "$FX/unsupported.c" -o "$T/root/bin/made" -lobjc
+fxcc -DFORM=6 "$FX/unsupported.c" -o "$T/root/bin/made" -lobjc
 analyze "$T/root/bin/made" strict
 exit_is 4 'objc_allocateClassPair'; error_is runtime-class-creation 'objc_allocateClassPair'
 roots_fact '"runtime_class_creation_sites": 1'
@@ -347,7 +349,7 @@ REFS="$T/badid"; analyze "$C" strict; REFS=
 exit_is 4 'runtime identity'; error_is reference-identity-mismatch 'runtime build'
 
 # spec: src/objc/source-evidence.c header -- R2: exact v0 symbol, mapped type in its self type, pinned crate revisions.
-cc "$FX/r2.c" -o "$T/root/bin/r2" -lobjc
+fxcc "$FX/r2.c" -o "$T/root/bin/r2" -lobjc
 R2="$T/root/bin/r2"
 NSS=objc2_foundation::generated::__NSString::NSString
 FN=__RNvXs1g_NtCs5hICDV8pRVn_4core3fmtRNtNtNtCsltbaDnwDLUa_16objc2_foundation9generated10___NSString8NSStringNtB6_5Debug3fmtBC_
@@ -378,8 +380,8 @@ sed 's/"rust_type": "objc2_foundation::generated::__NSString::NSString", "positi
   "$T/ev-r2nottype" >"$T/ev-r2nottype2"
 analyze "$R2" strict --build-evidence "$T/ev-r2nottype2"
 exit_is 4 'a mapped type the symbol does not name'; error_is type-evidence-not-in-symbol 'NSArray in an NSString impl'
-cc -DLOCAL_FN "$FX/r2.c" -o "$T/root/bin/r2-stripped" -lobjc
-strip -x "$T/root/bin/r2-stripped"
+fxcc -DLOCAL_FN "$FX/r2.c" -o "$T/root/bin/r2-stripped" -lobjc
+"$STRIP" -x "$T/root/bin/r2-stripped"
 evidence "$T/root/bin/r2-stripped" "$T/ev-r2strip" '' "$(row "$FN" "$NSS")" "$CRATES" "$MAP"
 analyze "$T/root/bin/r2-stripped" strict --build-evidence "$T/ev-r2strip"
 exit_is 1 'stripped artifact'
@@ -389,7 +391,7 @@ grep '"unused_type_evidence": \["r2"\]' "$T/report" >/dev/null || fail 'unused R
 # spec: src/objc/source-evidence.c header -- R3: a row names a function, its selectors, a class and the
 #       position the receiver comes from (result, downcast, field), with pinned crates; shipyard checks the
 #       position where the reader models the receiver and refuses a row the binary contradicts.
-cc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
+fxcc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
 R3B="$T/root/bin/r3"
 FNR=__RNvXs6_NtNtCs2WYrep5oUp8_5objc27runtime15protocol_objectINtB5_14ProtocolObjectDNtNtB7_8nsobject16NSObjectProtocolEL_ENtNtCs5hICDV8pRVn_4core3fmt5Debug3fmtCsdIImX2SWmg2_16objc2_foundation
 FNF=__RNvXs0_NtNtNtCs5hICDV8pRVn_4core4iter8adapters10filter_mapINtB5_9FilterMapINtNtCsdIImX2SWmg2_16objc2_foundation5array4IterNtNtCs2WYrep5oUp8_5objc27runtime9AnyObjectENCNCNCNvMs3_NtNtCsIwpAeRmYHq_7arboard8platform3osxNtB2P_3Get9file_list000ENtNtNtB9_6traits8iterator8Iterator4nextB2T_

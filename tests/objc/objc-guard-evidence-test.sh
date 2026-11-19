@@ -8,6 +8,7 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
@@ -18,10 +19,10 @@ sha() { shasum -a 256 "$1" | cut -c1-64; }
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 mkdir -p "$T/root/bin"
-cc "$FX/guard-coverage.c" -o "$T/root/bin/gc" -lobjc -Wl,-U,_fixture_use
-cc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
+fxcc "$FX/guard-coverage.c" -o "$T/root/bin/gc" -lobjc -Wl,-U,_fixture_use
+fxcc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
 G="$T/root/bin/gc"
 R3B="$T/root/bin/r3"
 
@@ -173,11 +174,18 @@ want copies_close $GA $SEL guarded 'guard record g-copies-ok'
 grep -F '"unused_guard_records": []' "$T/report" >/dev/null || fail 'copies_close: the record was not used'
 
 # A fat artifact: each x86_64 slice is measured on its own, so each must show the covered count.
-ccx() { env -i PATH=/usr/bin:/bin /usr/bin/clang -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
-ccx -arch x86_64 -arch x86_64h "$FX/guard-coverage.c" -o "$T/root/bin/gc-fat" -lobjc -Wl,-U,_fixture_use
-ccx -arch x86_64h -DEXTRA_SEND "$FX/guard-coverage.c" -o "$T/gc-h-extra" -lobjc -Wl,-U,_fixture_use
-ccx -arch x86_64 "$FX/guard-coverage.c" -o "$T/gc-plain" -lobjc -Wl,-U,_fixture_use
-lipo -create "$T/gc-plain" "$T/gc-h-extra" -output "$T/root/bin/gc-fat-extra"
+# hcc OUT ARGS: x86_64h code, linked by ld64.lld into an image it types CPU_SUBTYPE_X86_64_ALL, then typed x86_64h.
+hcc() {
+  out=$1; shift
+  env -i PATH=/usr/bin:/bin "$CC" -arch x86_64h -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@" -o "$out"
+  printf '\010\000\000\000' | dd of="$out" bs=1 seek=8 conv=notrunc 2>/dev/null
+  "$LIPO" -info "$out" | grep -q 'architecture: x86_64h *$' || fail "$out: not an x86_64h image"
+}
+fxcc "$FX/guard-coverage.c" -o "$T/gc-plain" -lobjc -Wl,-U,_fixture_use
+hcc "$T/gc-h" "$FX/guard-coverage.c" -lobjc -Wl,-U,_fixture_use
+hcc "$T/gc-h-extra" -DEXTRA_SEND "$FX/guard-coverage.c" -lobjc -Wl,-U,_fixture_use
+"$LIPO" -create "$T/gc-plain" "$T/gc-h" -output "$T/root/bin/gc-fat"
+"$LIPO" -create "$T/gc-plain" "$T/gc-h-extra" -output "$T/root/bin/gc-fat-extra"
 ev2 "$T/root/bin/gc-fat" "$T/ev-fat" "$(guard2 g-fat "$(sym $GD)" "$MOTION_CITE" "$(cover $SEL 1)")" ''
 analyze "$T/root/bin/gc-fat" "$T/ev-fat"
 clean fat_carries
@@ -253,7 +261,7 @@ analyze "$R3B" "$T/ev-pos-class"
 only position_unknown_class unknown-class p-class NoSuchClass
 
 # R2 type evidence follows the same rule: named by path, resolved by drydock-objc resolve, its sources hashed at use.
-cc "$FX/r2.c" -o "$T/root/bin/r2" -lobjc
+fxcc "$FX/r2.c" -o "$T/root/bin/r2" -lobjc
 R2B="$T/root/bin/r2"
 NSS=objc2_foundation::generated::__NSString::NSString
 FN2=__RNvXs1g_NtCs5hICDV8pRVn_4core3fmtRNtNtNtCsltbaDnwDLUa_16objc2_foundation9generated10___NSString8NSStringNtB6_5Debug3fmtBC_

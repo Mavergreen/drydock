@@ -7,6 +7,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 FX="$HERE/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-reader-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
@@ -15,7 +16,7 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/out" ] || tail -20 "$T/out" >&2; exit 1
 [ -x "${DRYDOCK_OBJC_READER_DRIVER:-}" ] || fail "reader harness: DRYDOCK_OBJC_READER_DRIVER names no built objc-reader-driver"
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 read_artifact() { rc=0; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$1" >"$T/out" 2>"$T/err" || rc=$?; }
 # spec: src/objc/macho-reader.c "Argument registers" -- read_refs FILE [ARGS...]: as read_artifact, with the reference
 #       set's argument-register catalogs loaded, so a call's argument registers are bounded by its declarations.
@@ -46,8 +47,8 @@ OPEN='openURLs:withApplicationAtURL:options:configuration:error:'
 # platform: ARC at compile time only. An ARC link below a 10.11 floor makes current clang drivers add
 #           libarclite_macosx.a, which current CommandLineTools no longer ship; the 10.9 driver adds none.
 #           -lobjc reproduces the runtime link -fobjc-arc implied, so the linked bytes are unchanged.
-cc -fobjc-arc -c "$FX/conventional.m" -o "$T/conventional.o"
-cc "$T/conventional.o" -o "$T/conventional" -framework AppKit -framework Foundation -lobjc
+fxcc -fobjc-arc -c "$FX/conventional.m" -o "$T/conventional.o"
+fxcc "$T/conventional.o" -o "$T/conventional" -framework AppKit -framework Foundation -lobjc
 read_artifact "$T/conventional"
 measured conventional
 has class 5=NSObject 8=Probe
@@ -67,7 +68,7 @@ has dispatch-call 8=objc_msgSend
   fail 'a declared-only later method became an implementation'
 
 # spec: src/objc/macho-reader.c header -- objc2 0.6: caches named by their v0 statics, literals from the fetch site, real consumers.
-cc "$FX/objc2-pattern.c" -o "$T/objc2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring
+fxcc "$FX/objc2-pattern.c" -o "$T/objc2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring
 read_artifact "$T/objc2"
 measured objc2
 has sel-cache 7="$OPEN"
@@ -97,7 +98,7 @@ send() {
 }
 sends_of() { awk -F '\t' -v s="$1" '$1 == "evidence" && $2 == "dispatch-call" { i = index($13, ":"); r = substr($13, i + 1); if (substr($13, 1, i - 1) ":" substr(r, index(r, ":") + 1) == s) print }' "$T/out"; }
 closure_fixture() {
-  cc -DOPEN_FORM="$1" "$FX/closure.c" -o "$2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
+  fxcc -DOPEN_FORM="$1" "$FX/closure.c" -o "$2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
     -Wl,-U,_fixture_use -Wl,-U,_objc_retainAutoreleasedReturnValue -Wl,-U,_objc_release
 }
 closure_fixture 0 "$T/closure"
@@ -134,13 +135,13 @@ for form in 3:_iter_next:unknown:-:sel-cache:countByEnumeratingWithState:objects
 done
 
 # spec: src/objc/macho-reader.c header -- A measured image without Objective-C: success with no observations at all.
-cc "$FX/plain.c" -o "$T/plain"
+fxcc "$FX/plain.c" -o "$T/plain"
 read_artifact "$T/plain"
 measured plain
 grep '^evidence' "$T/out" >/dev/null && fail 'plain C image invented Objective-C evidence'
 
 # spec: src/objc/macho-reader.c header -- The x86_64 slice of a fat file reads exactly like the thin image.
-lipo -create "$T/objc2" -output "$T/fat"
+"$LIPO" -create "$T/objc2" -output "$T/fat"
 read_artifact "$T/fat"
 measured fat
 grep '^evidence' "$T/out" >"$T/fat.ev"
@@ -159,26 +160,26 @@ read_artifact "$T"; refused directory unreadable-artifact
 cp "$T/fat" "$T/noslice"
 printf '\001\000\000\014' | dd of="$T/noslice" bs=1 seek=8 conv=notrunc 2>/dev/null
 read_artifact "$T/noslice"; refused noslice no-x86_64-slice
-cp "$T/objc2" "$T/stripped"; chmod u+w "$T/stripped"; strip "$T/stripped"
+cp "$T/objc2" "$T/stripped"; chmod u+w "$T/stripped"; "$STRIP" "$T/stripped"
 read_artifact "$T/stripped"; refused stripped computed-selector-producer
 # spec: src/objc/macho-reader.c header -- a call that makes a class at run time (objc_allocateClassPair) is runtime-class-creation.
 for form in 1:computed-selector-producer 2:computed-class-producer 3:runtime-imp-lookup \
             4:indirect-objc-entry 5:computed-selector-producer 6:runtime-class-creation; do
   n=${form%%:*}
-  cc -DFORM="$n" "$FX/unsupported.c" -o "$T/unsupported$n" -lobjc -Wl,-U,_NSSelectorFromString
+  fxcc -DFORM="$n" "$FX/unsupported.c" -o "$T/unsupported$n" -lobjc -Wl,-U,_NSSelectorFromString
   read_artifact "$T/unsupported$n"; refused "unsupported form $n" "${form#*:}"
 done
 # spec: src/objc/macho-reader.c ROLES -- the property, associated-object and introspection functions compiled
 #       Objective-C calls send no message an NSObject does not answer: measured, no unclassified import.
-cc -c "$FX/props.m" -o "$T/props.o"
-cc "$T/props.o" -o "$T/props" -framework Foundation -lobjc
+fxcc -c "$FX/props.m" -o "$T/props.o"
+fxcc "$T/props.o" -o "$T/props" -framework Foundation -lobjc
 for f in objc_getProperty objc_setProperty objc_setProperty_atomic objc_setProperty_nonatomic objc_setProperty_atomic_copy \
          objc_setProperty_nonatomic_copy objc_getAssociatedObject objc_setAssociatedObject objc_removeAssociatedObjects \
          class_respondsToSelector protocol_getMethodDescription class_getInstanceVariable class_getIvarLayout \
          property_copyAttributeList class_getInstanceMethod class_getClassMethod ivar_getOffset \
          objc_getProtocol protocol_getName class_conformsToProtocol object_getIvar object_setIvar ivar_getName \
          class_getInstanceSize objc_constructInstance objc_disposeClassPair; do
-  nm -u "$T/props" | grep -qx "_$f" || fail "props: does not import $f"
+  "$NM" -u "$T/props" | grep -qx "_$f" || fail "props: does not import $f"
 done
 read_artifact "$T/props"
 grep '^error	unclassified-objc-runtime-import	' "$T/out" >/dev/null && fail 'props: a classified runtime import is unclassified'
@@ -191,12 +192,12 @@ for form in 1:_method_setImplementation:runtime-method-swizzle 2:_method_exchang
             5:_class_addIvar:runtime-class-creation 6:_class_addProperty:runtime-class-creation \
             7:_objc_initializeClassPair:runtime-class-creation; do
   n=${form%%:*}; rest=${form#*:}; sym=${rest%%:*}; code=${rest#*:}
-  cc -DFORM="$n" "$FX/swizzle.m" -o "$T/swizzle$n" -framework Foundation -lobjc
+  fxcc -DFORM="$n" "$FX/swizzle.m" -o "$T/swizzle$n" -framework Foundation -lobjc
   read_artifact "$T/swizzle$n"; refused "swizzle form $n" "$code"
   grep "^error	$code	.*	$sym: " "$T/out" >/dev/null || fail "swizzle form $n: $code does not name $sym"
   grep '^error	unclassified-objc-runtime-import	' "$T/out" >/dev/null && fail "swizzle form $n: still unclassified"
 done
-cc -DFORM=8 "$FX/swizzle.m" -o "$T/swizzle8" -framework Foundation -lobjc
+fxcc -DFORM=8 "$FX/swizzle.m" -o "$T/swizzle8" -framework Foundation -lobjc
 read_artifact "$T/swizzle8"
 measured 'swizzle form 8 (class_addMethod)'
 has method-registration 8=class_addMethod
@@ -204,14 +205,14 @@ has method-registration 8=class_addMethod
 #       IMP whose call is a send this reader cannot see: runtime-imp-lookup.
 for form in 1:_method_getImplementation 2:_class_getMethodImplementation 3:_class_getMethodImplementation_stret; do
   n=${form%%:*}; sym=${form#*:}
-  cc -DFORM="$n" "$FX/imp-lookup.c" -o "$T/implookup$n" -lobjc
+  fxcc -DFORM="$n" "$FX/imp-lookup.c" -o "$T/implookup$n" -lobjc
   read_artifact "$T/implookup$n"; refused "imp lookup form $n" runtime-imp-lookup
   grep "^error	runtime-imp-lookup	.*	$sym: the implementation it returns may be called directly" "$T/out" >/dev/null ||
     fail "imp lookup form $n: runtime-imp-lookup does not name $sym"
   grep '^error	unclassified-objc-runtime-import	' "$T/out" >/dev/null && fail "imp lookup form $n: still unclassified"
 done
 # spec: src/objc/macho-reader.c role_of -- a libobjc import outside the table is still refused.
-cc "$FX/unlisted-runtime.S" -o "$T/unlisted" -lobjc -Wl,-U,_objc_setHook_getClass
+fxcc "$FX/unlisted-runtime.S" -o "$T/unlisted" -lobjc -Wl,-U,_objc_setHook_getClass
 read_artifact "$T/unlisted"; refused 'an unlisted runtime import' unclassified-objc-runtime-import
 grep '^error	unclassified-objc-runtime-import	.*	_objc_setHook_getClass$' "$T/out" >/dev/null ||
   fail 'an unlisted runtime import: not named'
@@ -223,7 +224,7 @@ grep '^error	unclassified-objc-runtime-import	.*	_objc_setHook_getClass$' "$T/ou
 #       something else, a slot whose address escapes, that another path overwrites or that is read some other way, or a
 #       store to a global or through another register is cannot-measure.
 for n in 0 1 10; do
-  cc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
+  fxcc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"
   measured "hoisted entry point form $n"
   [ "$(count dispatch-call)" = 5 ] || fail "hoisted entry point form $n: $(count dispatch-call) sends, want 5"
@@ -232,12 +233,12 @@ for n in 0 1 10; do
   [ "$(awk -F '\t' '$2 == "dispatch-call" {print $4}' "$T/out" | sort -u | wc -l | tr -d ' ')" = 5 ] || fail "hoisted entry point form $n: sends share a site"
 done
 for n in 2 3 4 5 6 7 8 9 11; do
-  cc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
+  fxcc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
 done
 # spec: src/objc/macho-reader.c entry_escapes -- a store to a global names the address it is stored to.
 read_artifact "$T/hoisted7"
-g=$(printf '0x%x' "$((0x$(nm "$T/hoisted7" | awk '$3 == "_hoisted_global" {print $1}')))")
+g=$(printf '0x%x' "$((0x$("$NM" "$T/hoisted7" | awk '$3 == "_hoisted_global" {print $1}')))")
 grep "^error	indirect-objc-entry	.*	objc entry point in r12 is read other than to call through it (a spill, a copy or an escape): stored to memory at $g\$" "$T/out" >/dev/null ||
   fail "hoisted entry point form 7: the store to the global at $g is not named"
 read_artifact "$T/hoisted8"
@@ -248,7 +249,7 @@ grep '^error	indirect-objc-entry	.*	objc entry point in r12 is read other than t
 #       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other
 #       read of the slot but a load is still "address taken".
 for n in 0 1; do
-  cc -DFORM="$n" "$FX/weak-import-check.S" -o "$T/weak$n" -lobjc -Wl,-U,_objc_readClassPair
+  fxcc --no-default-config -DFORM="$n" "$FX/weak-import-check.S" -o "$T/weak$n" -lobjc -Wl,-U,_objc_readClassPair
 done
 read_artifact "$T/weak0"; measured 'weak import check'
 [ "$(count dispatch-call)" = 1 ] || fail "weak import check: $(count dispatch-call) sends, want 1"
@@ -267,7 +268,7 @@ done
 #       argument in the pad, is cannot-measure.
 for e in 1 3; do
   for n in 0 1; do
-    cc -DFORM="$n" -DCSENC="$e" "$FX/landing-pad-entry.S" -o "$T/pad$e$n" -lobjc
+    fxcc -DFORM="$n" -DCSENC="$e" "$FX/landing-pad-entry.S" -o "$T/pad$e$n" -lobjc
     read_artifact "$T/pad$e$n"
     measured "landing pad form $n, call-site encoding $e"
     [ "$(count dispatch-call)" = 3 ] || fail "landing pad form $n, call-site encoding $e: $(count dispatch-call) sends, want 3"
@@ -275,7 +276,7 @@ for e in 1 3; do
     send _main classref:NSObject selref:hash
   done
   for n in 2 3; do
-    cc -DFORM="$n" -DCSENC="$e" "$FX/landing-pad-entry.S" -o "$T/pad$e$n" -lobjc
+    fxcc -DFORM="$n" -DCSENC="$e" "$FX/landing-pad-entry.S" -o "$T/pad$e$n" -lobjc
     read_artifact "$T/pad$e$n"; refused "landing pad form $n, call-site encoding $e" indirect-objc-entry
   done
   read_refs "$T/pad${e}3"; refused "landing pad form 3, call-site encoding $e, bounded" indirect-objc-entry
@@ -312,7 +313,7 @@ send _responds classref:NSMutableArray selref:respondsToSelector: selref:allowed
 # spec: src/objc/macho-reader.c "Argument registers" -- site FUNCTION TEXT: the address of the first instruction of
 #       FUNCTION in $art whose otool line contains TEXT (otool -tV: a label line has no tab, an instruction line does).
 site() {
-  otool -tV "$art" | awk -v f="$1:" -v p="$2" '$0 == f { on = 1; next } on && !/\t/ { exit } on && index($0, p) { print $1; exit }' |
+  "$OTOOL" -tV "$art" | awk -v f="$1:" -v p="$2" '$0 == f { on = 1; next } on && !/\t/ { exit } on && index($0, p) { print $1; exit }' |
     { read -r hex && printf '0x%x' "$((0x$hex))"; }
 }
 # spec: src/objc/macho-reader.c "Argument registers" -- passed_at FUNCTION TEXT [WHY]: an indirect-objc-entry error naming rcx at
@@ -337,7 +338,7 @@ passed_at _c_noreturn_params ___assert_rtn
 # spec: src/objc/macho-reader.c entry_escapes -- an entry point left in rax or rdx at a method's return stays refused; the
 #       detail names a register the method's own type encoding returns nothing in (tests/objc/fixtures/return-register.S).
 art="$T/return-register"
-cc "$FX/return-register.S" -o "$art" -framework Foundation -lobjc
+fxcc "$FX/return-register.S" -o "$art" -framework Foundation -lobjc
 read_refs "$art"; refused 'return register' indirect-objc-entry
 for want in 'tick: rax is returned: the method'"'"'s type encoding returns nothing in rax' \
             'rank rdx is returned: the method'"'"'s type encoding returns nothing in rdx' 'thing rax is returned'; do
@@ -387,25 +388,25 @@ passed_at _sort_with_entry _qsort
 #       point held in a register or spilled across the switch is followed into every case. A table its bound does not
 #       match is not taken apart: its cases stay reached only indirectly, cannot-measure.
 for n in 0 1; do
-  cc -DFORM="$n" "$FX/jump-table-entry.S" -o "$T/table$n" -lobjc
+  fxcc -DFORM="$n" "$FX/jump-table-entry.S" -o "$T/table$n" -lobjc
   read_artifact "$T/table$n"
   measured "jump table form $n"
   [ "$(count dispatch-call)" = 4 ] || fail "jump table form $n: $(count dispatch-call) sends, want 4"
   [ "$(sends_of selref:hash | wc -l | tr -d ' ')" = 2 ] || fail "jump table form $n: the cases' sends are missing"
   grep '^limit	undecoded-bytes	0$' "$T/out" >/dev/null || fail "jump table form $n: the table was decoded as code"
 done
-cc -DFORM=2 "$FX/jump-table-entry.S" -o "$T/table2" -lobjc
+fxcc -DFORM=2 "$FX/jump-table-entry.S" -o "$T/table2" -lobjc
 read_artifact "$T/table2"; refused 'jump table form 2' indirect-objc-entry
 # spec: src/objc/macho-reader.c jt_settle, flow_build -- a table entered past its bound is not followed, but its jmp
 #       still reaches each of its entries: one also reached by a direct branch starts from the state at the jmp too,
 #       so the entry point held there is followed into it (FORM 3). An unfollowed indirect jump carries an entry
 #       point its own block loads to the blocks reached only indirectly (FORM 4).
-cc -DFORM=3 "$FX/jump-table-entry.S" -o "$T/table3" -lobjc
+fxcc -DFORM=3 "$FX/jump-table-entry.S" -o "$T/table3" -lobjc
 read_artifact "$T/table3"; refused 'jump table form 3' indirect-objc-entry
-c0=$(otool -tV "$T/table3" | awk '$2 == "callq" && $3 == "*%r12" { n++; if (n == 2) { print $1; exit } }' | sed 's/^0*/0x/')
+c0=$("$OTOOL" -tV "$T/table3" | awk '$2 == "callq" && $3 == "*%r12" { n++; if (n == 2) { print $1; exit } }' | sed 's/^0*/0x/')
 grep "^error	indirect-objc-entry	x86_64	$c0	objc entry point in r12 is called through where another path left a different value\$" "$T/out" >/dev/null ||
   fail "jump table form 3: the direct-and-table case's call at $c0 is not refused"
-cc -DFORM=4 "$FX/jump-table-entry.S" -o "$T/table4" -lobjc
+fxcc -DFORM=4 "$FX/jump-table-entry.S" -o "$T/table4" -lobjc
 read_artifact "$T/table4"; refused 'jump table form 4' indirect-objc-entry
 [ "$(grep -c '^error	indirect-objc-entry	' "$T/out")" = 3 ] || fail "jump table form 4: the three cases are not refused"
 
@@ -419,7 +420,7 @@ read_artifact "$T/table4"; refused 'jump table form 4' indirect-objc-entry
 jt=$T/jt-sse
 cc22 -O3 "$FX/jt-sse.m" -o "$jt" -framework Foundation -Wl,-no_data_in_code_info
 pv='+[Probe preview:kind:a:b:]'
-otool -tV "$jt" | awk -v f="$pv:" '$0 == f { on = 1; next } on && !/\t/ { exit }
+"$OTOOL" -tV "$jt" | awk -v f="$pv:" '$0 == f { on = 1; next } on && !/\t/ { exit }
   on && $2 == "ja" { ja = 1; next } ja && $2 == "leaq" { exit !div } ja && $2 ~ /^div/ { div = 1 }
   END { if (!ja) exit 1 }' || fail "jt_sse: clang22 -O3 no longer puts SSE between the bound and the lea in $pv"
 read_artifact "$jt"
@@ -458,7 +459,7 @@ read_artifact "$T/jt-clobber8"; refused 'jt_reject_clobber, an immediate into th
 read_artifact "$T/jt-clobber9"; refused 'jt_reject_clobber, the load into the base itself' indirect-objc-entry
 # spec: src/objc/macho-reader.c byte_regs -- without REX, byte registers 4..7 are ah..bh: a write to ah writes the
 #       index eax. A 32-bit copy of the table's address is not the address.
-otool -tV "$T/jt-clobber12" | grep -q 'movb	%bl, %ah' || fail 'jt_reject_clobber form 12: no movb %bl, %ah'
+"$OTOOL" -tV "$T/jt-clobber12" | grep -q 'movb	%bl, %ah' || fail 'jt_reject_clobber form 12: no movb %bl, %ah'
 read_artifact "$T/jt-clobber11"; refused 'jt_reject_clobber, movb $1, %ah on the index' indirect-objc-entry
 read_artifact "$T/jt-clobber12"; refused 'jt_reject_clobber, movb %bl, %ah on the index' indirect-objc-entry
 read_artifact "$T/jt-clobber13"; refused 'jt_reject_clobber, a 32-bit copy of the base' indirect-objc-entry
@@ -483,7 +484,7 @@ read_artifact "$T/jt-clobber10"; refused 'jt_reject_clobber, the lea hoisted' in
 #       a write that reaches it, another value on some path, any other escape of a frame address, or a stack write
 #       through an rsp of unknown offset leaves the selector unknown -- in a provider body, cannot-measure.
 unknown_sels() { awk -F '\t' '$2 == "dispatch-call" && $13 ~ /^unknown:/' "$T/out" | wc -l | tr -d ' '; }
-cc -DFORM=0 "$FX/spilled-selector.S" -o "$T/spill0" -framework Foundation -lobjc
+fxcc -DFORM=0 "$FX/spilled-selector.S" -o "$T/spill0" -framework Foundation -lobjc
 read_artifact "$T/spill0"
 measured 'spilled selectors'
 [ "$(count dispatch-call)" = 30 ] || fail "spilled selectors: $(count dispatch-call) sends, want 30"
@@ -494,7 +495,7 @@ for sel in isFileURL addObject: absoluteString descriptorWithDescriptorType:data
 done
 for form in 1:2 2:1 3:1 4:5 5:5 6:0; do
   n=${form%%:*} want=${form#*:}
-  cc -DFORM="$n" "$FX/spilled-selector.S" -o "$T/spill$n" -framework Foundation -lobjc
+  fxcc -DFORM="$n" "$FX/spilled-selector.S" -o "$T/spill$n" -framework Foundation -lobjc
   read_artifact "$T/spill$n"
   measured "spilled selectors form $n"
   [ "$(unknown_sels)" = "$want" ] || fail "spilled selectors form $n: $(unknown_sels) sends without their selector, want $want"
@@ -505,7 +506,7 @@ done
 unknown_in() { awk -F '\t' -v fn="$1" '$2 == "dispatch-call" && $11 == fn && $13 ~ /^unknown:/' "$T/out" | wc -l | tr -d ' '; }
 for form in 0:0 1:2 2:2; do
   n=${form%%:*} want=${form#*:}
-  cc -DFORM="$n" "$FX/recents-loop.S" -o "$T/recents$n" -framework Foundation -framework CoreServices -lobjc
+  fxcc -DFORM="$n" "$FX/recents-loop.S" -o "$T/recents$n" -framework Foundation -framework CoreServices -lobjc
   read_artifact "$T/recents$n"
   measured "recents loop form $n"
   [ "$(unknown_in _note_recent_files)" = "$want" ] || fail "recents loop form $n: $(unknown_in _note_recent_files) sends without their selector, want $want"
@@ -520,7 +521,7 @@ done
 #       escapes other than to a call, keeps no slot (Recaulk workspace.m:129: tests/objc/fixtures/escaped-frame-slot.S).
 for form in 0:0 1:2 2:1 3:2 4:2; do
   n=${form%%:*} want=${form#*:}
-  cc -DFORM="$n" "$FX/escaped-frame-slot.S" -o "$T/escaped$n" -framework Foundation -lobjc
+  fxcc -DFORM="$n" "$FX/escaped-frame-slot.S" -o "$T/escaped$n" -framework Foundation -lobjc
   read_artifact "$T/escaped$n"
   measured "escaped frame slot form $n"
   [ "$(unknown_in _target_loop)" = "$want" ] || fail "escaped frame slot form $n: $(unknown_in _target_loop) sends without their selector, want $want"
@@ -537,7 +538,7 @@ read_artifact "$T/escaped2"
 #       its receiver: one dispatch row per path, with that path's operands and, in column 16, the address of the
 #       predecessor's last instruction (tests/objc/fixtures/merged-send.S). A path whose selector the reader does
 #       not model keeps the one row with the meet's operands, its selector unknown; a call measured once has "-" there.
-at() { b=$(nm "$art" | awk -v f="$1" '$3 == f {print $1}'); printf '0x%x' $((0x$b + $2)); }   # at FUNCTION OFFSET
+at() { b=$("$NM" "$art" | awk -v f="$1" '$3 == f {print $1}'); printf '0x%x' $((0x$b + $2)); }   # at FUNCTION OFFSET
 # spec: src/objc/macho-reader.c "Merged calls" -- rows_at ADDRESS: "receiver selector incoming" of each dispatch row at ADDRESS.
 rows_at() { awk -F '\t' -v a="$1" '$2 == "dispatch-call" && $4 == a {print $12, $13, $16}' "$T/out"; }
 # spec: src/objc/macho-reader.c "Merged calls" -- row_is ADDRESS N PATTERN...: exactly N rows at ADDRESS, and each PATTERN (a shell pattern) matches one of them.
@@ -553,7 +554,7 @@ row_is() {
 }
 for n in 0 1 2 3; do
   art="$T/merged$n"
-  cc -DFORM="$n" "$FX/merged-send.S" -o "$art" -framework Foundation -lobjc
+  fxcc -DFORM="$n" "$FX/merged-send.S" -o "$art" -framework Foundation -lobjc
   read_artifact "$art"
   measured "merged send form $n"
   case $n in
@@ -573,7 +574,7 @@ done
 #       is measured; a path whose selector takes rdx, or whose selector the reader does not know, is cannot-measure.
 for n in 0 1 2; do
   art="$T/merged-arg$n"
-  cc -DFORM="$n" "$FX/merged-send-arg.S" -o "$art" -framework Foundation -lobjc
+  fxcc -DFORM="$n" "$FX/merged-send-arg.S" -o "$art" -framework Foundation -lobjc
 done
 art="$T/merged-arg0"; read_refs "$art"; measured 'merged send, an entry point copy in rdx'
 [ "$(count dispatch-call)" = 2 ] || fail "merged send, an entry point copy in rdx: $(count dispatch-call) sends, want 2"
@@ -590,7 +591,7 @@ done
 #       mutableCopy result from +0x333; line 125's reload past escapes to callees, of frame addresses all above its slot, is
 #       setAttributeDescriptor:forKeyword:, and no send is unknown but the merged one's own.
 art="$T/openmerge"
-cc "$FX/open-urls-merge.S" -o "$art" -framework AppKit -framework Foundation -lobjc
+fxcc "$FX/open-urls-merge.S" -o "$art" -framework AppKit -framework Foundation -lobjc
 read_artifact "$art"
 measured 'open_urls_with_ops'
 for o in 0x254:isFileURL 0x566:raise:format: 0x6c6:raise:format:; do

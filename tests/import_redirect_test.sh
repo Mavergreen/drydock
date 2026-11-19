@@ -17,7 +17,10 @@ BIN="${1:?usage: import_redirect_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "import_redirect_test: $DMR not found" >&2; exit 1; }
 [ -x "$BIN/makefat" ] || { echo "import_redirect_test: need makefat in $BIN" >&2; exit 1; }
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
+CC_ARCH=$("$CC" -dumpmachine | sed 's/-.*//')
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 FF="-mmacosx-version-min=10.9"
 T=$(mktemp -d "${TMPDIR:-/tmp}/import_redirect_test.XXXXXX")
@@ -96,7 +99,9 @@ int main(void) { return a_fn() + a_fn2() + dup(); }
 EOF
 "$CC" $FF -Wl,-headerpad,0x400 -o "$T/reg" "$T/reg.c" "$LIBA"
 "$CC" $FF -Wl,-headerpad,0x400 -o "$T/lazy" "$T/lazy.c" "$LIBA"
-"$CC" $FF -Wl,-headerpad,0x400 -o "$T/two" "$T/two.c" "$LIBA" "$LIBB"
+# two binds dup from liba, so libb is linked -needed_library past clang22's
+# -dead_strip_dylibs: the dup case below binds from both.
+"$CC" $FF -Wl,-headerpad,0x400 -o "$T/two" "$T/two.c" "$LIBA" -Xlinker -needed_library -Xlinker "$LIBB"
 
 # ============================================================================
 # the regular bind stream, in place
@@ -124,10 +129,12 @@ has_import "$T/reg.out" _a_data "$SHIM" bind \
 grep -q "bind stream rewritten in place" "$T/run.err" \
     && ok "regular: ... and the report says so" \
     || bad "regular: report" "$(cat "$T/run.err")"
-rc=0; "$T/reg" || rc=$?; rc2=0; "$T/reg.out" || rc2=$?
-[ "$rc" -eq 7 ] && [ "$rc2" -eq 42 ] \
-    && ok "regular: ... and the program now calls the shim's a_data (7 before, 42 after)" \
-    || bad "regular: runs" "exit $rc before, $rc2 after"
+if gate_row "$CC_ARCH" "regular: ... and the program now calls the shim's a_data (7 before, 42 after)"; then
+    rc=0; "$T/reg" || rc=$?; rc2=0; "$T/reg.out" || rc2=$?
+    [ "$rc" -eq 7 ] && [ "$rc2" -eq 42 ] \
+        && ok "regular: ... and the program now calls the shim's a_data (7 before, 42 after)" \
+        || bad "regular: runs" "exit $rc before, $rc2 after"
+fi
 
 # ============================================================================
 # the lazy bind stream
@@ -143,9 +150,11 @@ run "$T/lazy" "$T/lazy.out" "dylib append $SHIM" "import redirect _a_fn $LIBA $S
     [ "$(field "$T/lazy" lazy 3)" = "$(field "$T/lazy.out" lazy 3)" ] \
     && ok "lazy: ... and the lazy stream did not move or change size" \
     || bad "lazy: in place" "lazy $(field "$T/lazy" lazy 2)+$(field "$T/lazy" lazy 3) -> $(field "$T/lazy.out" lazy 2)+$(field "$T/lazy.out" lazy 3)"
-rc=0; "$T/lazy.out" || rc=$?
-[ "$rc" -eq 43 ] && ok "lazy: ... and the program calls the shim's a_fn (exit 43)" \
-    || bad "lazy: runs" "exit $rc"
+if gate_row "$CC_ARCH" "lazy: ... and the program calls the shim's a_fn (exit 43)"; then
+    rc=0; "$T/lazy.out" || rc=$?
+    [ "$rc" -eq 43 ] && ok "lazy: ... and the program calls the shim's a_fn (exit 43)" \
+        || bad "lazy: runs" "exit $rc"
+fi
 
 # ============================================================================
 # a regular stream that has to grow
@@ -178,11 +187,11 @@ grep -q "bind stream grew from [0-9,]* to [0-9,]* bytes; it now lives at file of
 # ============================================================================
 # Sixteen libraries ahead of libSystem put the shim above 15, where only
 # SET_DYLIB_ORDINAL_ULEB can name it.
-i=1; libs=""; calls=""; decls=""
+i=1; libs=""; needed=""; calls=""; decls=""
 while [ "$i" -le 16 ]; do
     printf 'int f%d(void) { return %d; }\n' "$i" "$i" >"$T/f$i.c"
     "$CC" -dynamiclib $FF -install_name "$T/libf$i.dylib" -o "$T/libf$i.dylib" "$T/f$i.c"
-    libs="$libs $T/libf$i.dylib"; decls="$decls int f$i(void);"; calls="$calls + f$i()"
+    libs="$libs $T/libf$i.dylib"; needed="$needed -Xlinker -needed_library -Xlinker $T/libf$i.dylib"; decls="$decls int f$i(void);"; calls="$calls + f$i()"
     i=$((i + 1))
 done
 printf '%s\nint (*p)(void) = f1;\nint main(void) { return (p() %s) & 0; }\n' "$decls" "$calls" >"$T/many.c"
@@ -194,8 +203,10 @@ int f1(void); int f16(void);
 int (*p)(void) = f1;
 int main(void) { printf("%d %d\n", p(), f16()); return 0; }
 EOF
+# many_main calls two of them; clang22 passes -dead_strip_dylibs, so the rest are
+# linked -needed_library.
 # shellcheck disable=SC2086
-"$CC" $FF -Wl,-headerpad,0x400 -o "$T/many2" "$T/many_main.c" $libs
+"$CC" $FF -Wl,-headerpad,0x400 -o "$T/many2" "$T/many_main.c" $needed
 F16=$(ordinal_of "$T/many2" "$T/libf16.dylib")
 [ "${F16:-0}" -gt 15 ] && has_import "$T/many2" _f16 "$T/libf16.dylib" lazy \
     && ok "ordinal>15: precondition -- libf16 is ordinal $F16 and _f16 binds lazily" \
@@ -208,9 +219,11 @@ run "$T/many2" "$T/many2.out" "dylib append $SHIM" \
 has_import "$T/many2.out" _f16 "$SHIM" lazy && has_import "$T/many2.out" _f1 "$SHIM" bind \
     && ok "ordinal>15: ... a lazy and a regular bind both name it" \
     || bad "ordinal>15: binds" "$("$DMR" imports "$T/many2.out")"
-[ "$("$T/many2.out")" = "101 116" ] \
-    && ok "ordinal>15: ... and the program calls both of the shim's functions" \
-    || bad "ordinal>15: runs" "printed '$("$T/many2.out" 2>&1)', wanted '101 116'"
+if gate_row "$CC_ARCH" "ordinal>15: ... and the program calls both of the shim's functions"; then
+    [ "$("$T/many2.out")" = "101 116" ] \
+        && ok "ordinal>15: ... and the program calls both of the shim's functions" \
+        || bad "ordinal>15: runs" "printed '$("$T/many2.out" 2>&1)', wanted '101 116'"
+fi
 # A lazy program whose one-byte ordinal opcode cannot hold 16 or more: the
 # stub helpers address every lazy program by its offset, so it cannot grow.
 has_import "$T/many" _f2 "$T/libf2.dylib" lazy || bad "ordinal>15: precondition" "_f2 not lazy"
@@ -232,6 +245,7 @@ run "$T/shared" "$T/shared.out" "dylib append $SHIM" "import redirect _a_fn $LIB
 
 # _dup bound once from liba and once from libb: only liba's may move.
 B=$(ordinal_of "$T/two" "$LIBB")
+[ -n "$B" ] || bad "same name, other library: precondition" "two does not link libb: $("$DMR" info "$T/two")"
 "$MKB" set "$T/two" "$T/dup" bind "ord:$A" sym:_dup type:1 seg:2:0 do "ord:$B" sym:_dup do done
 run "$T/dup" "$T/dup.out" "dylib append $SHIM" "import redirect _dup $LIBA $SHIM"
 [ "$run_rc" -eq 0 ] && has_import "$T/dup.out" _dup "$SHIM" bind &&
@@ -279,7 +293,7 @@ run "$T/lazy" "$T/same.out" "import redirect _a_fn $LIBA $LIBA"
     || bad "parse: same lib" "exit $run_rc: $(cat "$T/run.err")"
 
 cc_chained_src="$HERE/mkchained.c"
-"$CC" -O2 -I "$HERE/../src" -o "$T/mkchained" "$cc_chained_src"
+"$HOST_CC" -O2 -I "$HERE/../src" -o "$T/mkchained" "$cc_chained_src"
 "$T/mkchained" make "$T/chained"
 run "$T/chained" "$T/chained.out" "import redirect _mkchained_sym /a /b"
 [ "$run_rc" -eq 1 ] && grep -q "put \`fixups set classic\` before this statement" "$T/run.err" \

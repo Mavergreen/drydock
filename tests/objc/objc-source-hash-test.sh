@@ -7,6 +7,8 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/tree-digest.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
@@ -17,10 +19,10 @@ sha() { shasum -a 256 "$1" | cut -c1-64; }
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 mkdir -p "$T/root/bin"
-cc "$FX/guard-coverage.c" -o "$T/root/bin/gc" -lobjc -Wl,-U,_fixture_use
-cc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
+fxcc "$FX/guard-coverage.c" -o "$T/root/bin/gc" -lobjc -Wl,-U,_fixture_use
+fxcc "$FX/r3.c" -o "$T/root/bin/r3" -lobjc
 C="$T/root/bin/gc"
 GD=__RNvCs1Fx_7fixture7guarded
 R3B="$T/root/bin/r3"
@@ -54,16 +56,8 @@ WS=$(sha "$SDK/$HDR")
 OUT=$(sha "$T/outside/x.rs")
 STALE=0000000000000000000000000000000000000000000000000000000000000000
 
-# The digest, computed here independently: every entry but .git, sorted bytewise, one line each.
-expect_digest() {
-  (cd "$1" && find . -name .git -prune -o -mindepth 1 -print | sed 's|^\./||' | while IFS= read -r p; do
-    if [ -L "$p" ]; then printf 'l %s %s\n' "$p" "$(readlink "$p")"
-    elif [ -d "$p" ]; then printf 'd %s\n' "$p"
-    else printf 'f %s %s\n' "$p" "$(sha "$p")"; fi
-  done | LC_ALL=C sort | shasum -a 256 | cut -c1-64)
-}
 TREE=$("$DRYDOCK_OBJC" evidence --tree-digest-only --source-root "$S") || fail "--tree-digest-only: exit $?"
-[ "$TREE" = "$(expect_digest "$S")" ] || fail "--tree-digest-only gave $TREE, the algorithm gives $(expect_digest "$S")"
+[ "$TREE" = "$(tree_digest "$S")" ] || fail "--tree-digest-only gave $TREE, the algorithm gives $(tree_digest "$S")"
 printf 'objects\n' >"$S/.git/HEAD"
 [ "$("$DRYDOCK_OBJC" evidence --tree-digest-only --source-root "$S")" = "$TREE" ] || fail 'the digest read .git'
 rc=0; "$DRYDOCK_OBJC" evidence --tree-digest-only --source-root "$T/none" >/dev/null 2>&1 || rc=$?

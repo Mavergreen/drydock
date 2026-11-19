@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- codesign and Rosetta on an Apple Silicon Mac
+# platform: macOS-only -- codesign on an Apple Silicon Mac
 # tests/apple_silicon_signing_test.sh -- what an Apple Silicon Mac does with
 # Drydock's edited outputs, where the kernel enforces code signing for every
 # process: the rows behind the per-arch re-signing rule in
@@ -8,21 +8,18 @@
 #   sh tests/apple_silicon_signing_test.sh <bindir>
 #
 # A dylib, a program linked against it and a program alone are built here for
-# arm64 and x86_64 with a 16 KB header pad, and each case edits a fresh copy
-# with `dylib append /usr/lib/libz.1.dylib`:
+# arm64 with a 16 KB header pad, and each case edits a fresh copy with
+# `dylib append /usr/lib/libz.1.dylib`:
 #
 # - arm64: left with its stale signature, the edit is SIGKILLed (137); with
 #   the signature removed by `load-command delete codesig`, it is refused,
 #   by SIGKILL or by dyld's abort (134); re-signed by `codesign -s - -f`, it
 #   runs. Linked dylib and program alike.
-# - x86_64 under Rosetta: stale, removed and re-signed all run in an
-#   ordinary process. A host signed `-o kill` SIGKILLs the stale dylib and
-#   runs the stripped and re-signed ones.
 # - Built without the pad (32 bytes is ld's), an arm64 dylib or program is
 #   refused by Drydock itself, saying why, and nothing is written.
 #
-# The unedited subjects must run on each arch, saying whether they were
-# translated, before any death is believed; each state's signature is
+# The unedited subjects must run, saying whether they were translated,
+# before any death is believed; each state's signature is
 # checked (stale: present and failing `codesign -v`; stripped: absent;
 # re-signed: valid) before its row is run.
 #
@@ -34,21 +31,21 @@
 # `csrutil status` and kern.bootargs.
 #
 # It SKIPs, saying why, except on an Apple Silicon Mac (CI's macos-26 runner
-# is one) with codesign and a compiler that builds both arches. Without
-# Rosetta, the x86_64 rows are skipped, or the whole test if Drydock is x86_64.
+# is one) with codesign and a compiler that builds arm64.
 set -u
 
 BIN="${1:?usage: apple_silicon_signing_test.sh <bindir>}"
 BIN=$(cd "$BIN" && pwd) || exit 1
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "apple_silicon_signing_test: $DMR not found or not executable" >&2; exit 1; }
-CC="${CC:-cc}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
 PAD=-Wl,-headerpad,0x4000
 APPEND='dylib append /usr/lib/libz.1.dylib'
 
 [ "$(uname -s)" = Darwin ] || { echo "SKIP: not macOS"; exit 77; }
-[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] ||
-    { echo "SKIP: not an Apple Silicon Mac (hw.optional.arm64 is not 1)"; exit 77; }
+gate_test arm64
 command -v codesign >/dev/null 2>&1 || { echo "SKIP: no codesign here"; exit 77; }
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/apple-silicon-signing.XXXXXX") || exit 1
@@ -57,15 +54,10 @@ trap 'rm -rf "$T"' EXIT INT TERM
 cd "$T" || exit 1
 
 printf 'int main(void) { return 0; }\n' >probe.c
-for a in arm64 x86_64; do
-    "$CC" -arch $a -o probe-$a probe.c >/dev/null 2>&1 ||
-        { echo "SKIP: $CC cannot build -arch $a"; exit 77; }
-done
+"$CC_ARM64" -o probe-arm64 probe.c >/dev/null 2>&1 ||
+    { echo "SKIP: $CC_ARM64 cannot build arm64"; exit 77; }
 
-rosetta=yes
-arch -x86_64 /usr/bin/true >/dev/null 2>&1 || rosetta=
 "$DMR" --capabilities >/dev/null 2>&1 || {
-    [ -n "$rosetta" ] || { echo "SKIP: no Rosetta, and $DMR needs it to run"; exit 77; }
     echo "apple_silicon_signing_test: $DMR does not run" >&2
     exit 1
 }
@@ -99,13 +91,13 @@ cat >self.c <<'EOF'
 int main(void) { say_translated(); printf("ok\n"); return 0; }
 EOF
 
-# build DIR ARCH [LDFLAGS]: libfoo.dylib, main (linked to it) and self
+# build DIR [LDFLAGS]: arm64 libfoo.dylib, main (linked to it) and self
 build() {
     mkdir -p "$1" &&
-    "$CC" -arch "$2" -O1 ${3:-} -dynamiclib \
+    "$CC_ARM64" -O1 ${2:-} -dynamiclib \
         -install_name @executable_path/libfoo.dylib -o "$1/libfoo.dylib" foo.c &&
-    "$CC" -arch "$2" -O1 ${3:-} -o "$1/main" main.c -L"$1" -lfoo &&
-    "$CC" -arch "$2" -O1 ${3:-} -o "$1/self" self.c
+    "$CC_ARM64" -O1 ${2:-} -o "$1/main" main.c -L"$1" -lfoo &&
+    "$CC_ARM64" -O1 ${2:-} -o "$1/self" self.c
 }
 
 fail=0 n=0
@@ -193,10 +185,10 @@ control() {
     grep -qx "translated=$2" "$d/stdout" || bad "$1 program, unedited" "expected translated=$2"
 }
 
-# The x86_64 linker leaves its output unsigned: sign it, so there is a
+# Sign the subjects if the linker left them unsigned, so there is a
 # signature for an edit to leave stale.
-for a in arm64 x86_64; do
-    build "$T/build/$a" $a "$PAD" || { echo "apple_silicon_signing_test: building the $a subjects failed" >&2; exit 1; }
+for a in arm64; do
+    build "$T/build/$a" "$PAD" || { echo "apple_silicon_signing_test: building the $a subjects failed" >&2; exit 1; }
     mkdir -p "$T/base/$a"
     for f in libfoo.dylib self; do
         cp "$T/build/$a/$f" "$T/base/$a/$f"
@@ -236,7 +228,7 @@ fi
 linked "arm64 linked, re-signed"   arm64 resigned runs
 alone  "arm64 program, re-signed"  arm64 resigned runs
 
-build "$T/build/arm64-nopad" arm64 || { echo "apple_silicon_signing_test: building the unpadded arm64 subjects failed" >&2; exit 1; }
+build "$T/build/arm64-nopad" || { echo "apple_silicon_signing_test: building the unpadded arm64 subjects failed" >&2; exit 1; }
 for f in libfoo.dylib:'only an x86_64 dylib or bundle can be grown' self:'which arm64 cannot load'; do
     name="arm64 ${f%%:*} without a header pad"
     n=$((n + 1)); mkdir -p "$T/case/$n" || exit 1
@@ -249,21 +241,6 @@ for f in libfoo.dylib:'only an x86_64 dylib or bundle can be grown' self:'which 
         bad "$name" "expected a refusal saying '${f#*:}' and no output: $(cat "$out.dd")"
     fi
 done
-
-if [ -z "$rosetta" ]; then
-    echo "SKIP x86_64: no Rosetta (arch -x86_64 /usr/bin/true fails)"
-else
-    control x86_64 1
-    linked "x86_64 linked, stale"       x86_64 stale    runs
-    alone  "x86_64 program, stale"      x86_64 stale    runs
-    linked "x86_64 linked, stripped"    x86_64 stripped runs
-    alone  "x86_64 program, stripped"   x86_64 stripped runs
-    linked "x86_64 linked, re-signed"   x86_64 resigned runs
-    alone  "x86_64 program, re-signed"  x86_64 resigned runs
-    linked "x86_64 kill host, re-signed" x86_64 resigned runs   kill
-    linked "x86_64 kill host, stale"    x86_64 stale    killed  kill
-    linked "x86_64 kill host, stripped" x86_64 stripped runs    kill
-fi
 
 [ "$fail" -eq 0 ] || { echo "$fail failed"; exit 1; }
 echo "all passed"

@@ -12,7 +12,7 @@
  *                      as when a compiler merges two sends into one call, and one of them a value the binary
  *                      does not name (an incoming argument): the call is not split per path (macho-reader.c),
  *                      and the binary gives no selector
- *   FIXTURE_LINE0      adds a send the line table attributes to line 0, as merged code is */
+ *   FIXTURE_LINE0      adds a send on each of two paths, merged into one call the line table puts at line 0 */
 #import <AppKit/AppKit.h>
 #include <objc/message.h>
 
@@ -24,7 +24,7 @@
 
 static NSUInteger counted(NSArray *urls) { return [urls count]; }
 #ifdef FIXTURE_LINE0
-static id line0(NSArray *urls);   /* at the end: nothing after its #line 0 needs renumbering */
+static id line0(NSArray *urls, NSUInteger options);   /* at the end, so no line before it moves */
 #endif
 
 id __fixture_objc_workspace_open_urls(id receiver, SEL command, NSArray *urls, NSURL *app, NSUInteger options,
@@ -47,14 +47,17 @@ id __fixture_objc_workspace_open_urls(id receiver, SEL command, NSArray *urls, N
     }
 #endif
 #ifdef FIXTURE_LINE0
-    if (!line0(urls)) return nil;
+    if (!line0(urls, options)) return nil;
 #endif
     if (environment) options |= NSWorkspaceLaunchNewInstance;
     return [[NSWorkspace sharedWorkspace] launchApplicationAtURL:app options:options configuration:configuration error:error];
 }
 #ifdef FIXTURE_LINE0
-__attribute__((noinline)) static id line0(NSArray *urls) {
-#line 0
-    return [urls lastObject];
+__attribute__((noinline)) static id line0(NSArray *urls, NSUInteger options) {
+    if (![urls count]) return nil;
+    id last;
+    if (options & 2) last = [urls lastObject];
+    else last = [urls lastObject];
+    return last;
 }
 #endif

@@ -17,12 +17,14 @@
 set -u
 
 BIN="${1:?usage: mantle_raise_test.sh <bindir>}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "mantle_raise_test: $DMR not found or not executable" >&2; exit 1; }
 
 SRC="$HOME/Downloads/OpenCode.app/Contents/Frameworks/Mantle.framework/Versions/A/Mantle"
 [ -f "$SRC" ] || { echo "SKIP: $SRC is absent"; exit 77; }
-case $(lipo -info "$SRC" 2>/dev/null) in
+case $("$LIPO" -info "$SRC" 2>/dev/null) in
     *x86_64*) ;;
     *) echo "SKIP: $SRC has no x86_64 slice"; exit 77 ;;
 esac

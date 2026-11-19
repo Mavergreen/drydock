@@ -8,6 +8,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 FX="$HERE/fixtures"
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-binding-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
@@ -15,10 +16,10 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/out" ] || tail -20 "$T/out" >&2; exit 1
 
 [ -x "${DRYDOCK_OBJC_READER_DRIVER:-}" ] || fail "binding harness: DRYDOCK_OBJC_READER_DRIVER names no built objc-reader-driver"
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@"; }
 objc2() {
   out=$1; shift
-  cc "$@" "$FX/objc2-pattern.c" -o "$out" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring
+  fxcc "$@" "$FX/objc2-pattern.c" -o "$out" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring
 }
 bind() { rc=0; "$DRYDOCK_OBJC_READER_DRIVER" "$@" >"$T/out" 2>"$T/err" || rc=$?; }
 refused() {
@@ -89,7 +90,7 @@ bind --artifact "$T/root-static"; refused 'unknown enclosing item' unsupported-b
 # spec: src/objc/binding.c header -- Receiver/use closure. send row: 1 tag 2 site 3 callee 4 selector 5 receiver 6 kind 7 closed|open 8 basis 9 reason. 10 incoming path (a merged call's) or -.
 SIGS="$FX/closure-signatures.tsv" FACTS="$FX/closure-facts.tsv"
 closure_fixture() {
-  cc -DOPEN_FORM="$1" "$FX/closure.c" -o "$2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
+  fxcc -DOPEN_FORM="$1" "$FX/closure.c" -o "$2" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_NSSelectorFromString -Wl,-U,_fixture_nsstring \
     -Wl,-U,_fixture_use -Wl,-U,_objc_retainAutoreleasedReturnValue -Wl,-U,_objc_release
 }
 close_sends() { art=$1; shift; bind --artifact "$art" "$@" --close --signatures "$SIGS" --sdk-facts "$FACTS"; }
@@ -166,7 +167,7 @@ refused 'computed selector' unresolved-selector
   printf 'method\tNSArray\t+\tarrayWithObject:\tinstancetype\t-\tfixture.h:2\tinterface\t1\t0\n'
   printf 'method\tNSDictionary\t+\tdictionary\tinstancetype\t-\tfixture.h:3\tinterface\t0\t0\n'
 } >"$T/merged-sigs"
-merged() { cc -DFORM="$1" "$FX/merged-send.S" -o "$T/merged$1" -framework Foundation -lobjc
+merged() { fxcc -DFORM="$1" "$FX/merged-send.S" -o "$T/merged$1" -framework Foundation -lobjc
            bind --artifact "$T/merged$1" --close --signatures "$T/merged-sigs" --sdk-facts "$FACTS"; }
 merged 0
 [ "$rc" = 0 ] && ! grep '^error' "$T/out" >/dev/null || fail "merged send form 0: exit $rc"

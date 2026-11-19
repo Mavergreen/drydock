@@ -15,6 +15,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 # spec: build/msc.sh -- SHIPYARD_SCRIPTS, where shipyard's fetchers are (CTest passes it; a standalone run finds it).
 . "$ROOT/build/msc.sh"
+. "$ROOT/tests/lib/toolchain.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 FX="$HERE/fixtures"
 REF="$ROOT/reference/objc"
@@ -24,7 +25,7 @@ fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -5 "$T/err" >&2; exit 1;
 
 SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 # platform: env -i keeps CPATH and SDKROOT from steering the fixtures away from the pinned SDK.
-cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
+fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 mkdir -p "$T/root/bin" "$T/maps" "$T/ev" "$T/out" "$T/src"
 
@@ -54,7 +55,7 @@ consumer() {
   link_args "$PFX" "$out.map"; [ "$rc" = 0 ] || fail "link args for $PFX: exit $rc"
   awk "$filter" "$T/args" >"$T/args.f"
   while IFS= read -r line; do set -- "$@" "$line"; done <"$T/args.f"
-  cc -O1 "$src" "$@" -o "$out" || fail "linking $out"
+  fxcc -O1 "$src" "$@" -o "$out" || fail "linking $out"
 }
 ALL='{print}'
 NO_ROOT='!/^-Wl,-u,/'
@@ -109,12 +110,12 @@ putn() {
 }
 # spec: src/objc/provider.c header -- fileoff FILE VA: the file offset of a mapped address.
 fileoff() {
-  otool -l "$1" | awk -v va="$2" '
+  "$OTOOL" -l "$1" | awk -v va="$2" '
     $1=="addr" {a=hx($2)} $1=="size" && a {s=hx($2)} $1=="offset" && a {
       if (va+0 >= a && va+0 < a+s) {print $2 + (va - a); exit} a=0 }
     function hx(h,  i,c,n) {n=0; h=tolower(h); sub(/^0x/,"",h); for(i=1;i<=length(h);i++){c=index("0123456789abcdef",substr(h,i,1))-1; n=n*16+c} return n}'
 }
-symaddr() { nm "$1" | awk -v s="$2" '$3==s {print "0x" $1; exit}'; }
+symaddr() { "$NM" "$1" | awk -v s="$2" '$3==s {print "0x" $1; exit}'; }
 
 # spec: cli/drydock-objc.c header (link-args) -- one argument per line from the validated declaration;
 #       a prefix with a space survives because nothing is word-split or evaluated.
@@ -230,7 +231,7 @@ consumer "$T/root/bin/lto" "$ALL" -flto -Wl,-dead_strip
 full "$T/root/bin/lto" "$T/root/bin/lto" "$T/root/bin/lto.map" lto
 positive 'rooted with consumer LTO'
 mv "$T/root/bin/rooted" "$T/rooted.prestrip"
-strip -o "$T/root/bin/rooted" "$T/rooted.prestrip"
+"$STRIP" -o "$T/root/bin/rooted" "$T/rooted.prestrip"
 full "$T/root/bin/rooted" "$T/rooted.prestrip" "$T/maps/rooted.map" stripped
 positive 'stripped final artifact with prestrip evidence'
 cp "$T/rooted.prestrip" "$T/root/bin/rooted"
@@ -267,7 +268,7 @@ reason_has 'binds to /usr/lib/libobjc.A.dylib, which is weakly linked' 'libobjc 
 # platform: ld64 ignores -upward_framework for an executable and current linkers drop -lazy_framework, so the
 #           late loads are made by rewriting AppKit's load command in place (the sections stay identical).
 lc_offset() {  # lc_offset FILE FRAMEWORK: the file offset of the dylib load command naming FRAMEWORK
-  otool -l "$1" | awk -v fw="/$2.framework/" '/^Load command/ {if (seen) off += size; seen = 1} $1 == "cmdsize" {size = $2}
+  "$OTOOL" -l "$1" | awk -v fw="/$2.framework/" '/^Load command/ {if (seen) off += size; seen = 1} $1 == "cmdsize" {size = $2}
     $1 == "name" && index($2, fw) {print 32 + off; exit}'
 }
 for late in upward:2147483683 lazy:32; do
@@ -281,7 +282,7 @@ done
 
 # spec: src/objc/provider.c header -- the root kept, its constructor dropped from the initializer table.
 cp "$T/root/bin/rooted" "$T/root/bin/noinit"
-off=$(otool -l "$T/root/bin/noinit" | awk '/sectname __mod_init_func/{f=1} f && $1=="offset" {print $2; exit}')
+off=$("$OTOOL" -l "$T/root/bin/noinit" | awk '/sectname __mod_init_func/{f=1} f && $1=="offset" {print $2; exit}')
 [ -n "$off" ] || fail 'the rooted consumer has no __mod_init_func'
 putn "$T/root/bin/noinit" "$off" "$(symaddr "$T/root/bin/noinit" _main)" 8
 symaddr "$T/root/bin/noinit" "_$ACTIVATE" | grep . >/dev/null || fail 'the root symbol is gone'
@@ -290,12 +291,12 @@ nonzero 'root present, constructor not in the initializer table'
 reason_has 'not in the final initializer table' 'constructor dropped'
 
 # spec: src/objc/provider.c header -- the registration's IMP reference retargeted by one byte.
-member=$(nm -A "$ARCHIVE" 2>/dev/null | awk -v s="_$ACTIVATE" '$NF==s && $(NF-1)=="T" {m=$1; sub(/:$/,"",m); if (m ~ /\(.*\)$/) {sub(/.*\(/,"",m); sub(/\)$/,"",m)} else sub(/.*:/,"",m); print m; exit}')
+member=$("$NM" -A "$ARCHIVE" 2>/dev/null | awk -v s="_$ACTIVATE" '$NF==s && $(NF-1)=="T" {m=$1; sub(/:$/,"",m); if (m ~ /\(.*\)$/) {sub(/.*\(/,"",m); sub(/\)$/,"",m)} else sub(/.*:/,"",m); print m; exit}')
 [ -n "$member" ] || fail "no archive member defines _$ACTIVATE"
-(cd "$T/src" && ar -x "$ARCHIVE" "$member") || fail "cannot extract $member"
-r=$(otool -rv "$T/src/$member" | awk -v s="_$IMPL" '$NF==s && $3=="long" {print $1; exit}')
+(cd "$T/src" && "$AR" x "$ARCHIVE" "$member") || fail "cannot extract $member"
+r=$("$OTOOL" -rv "$T/src/$member" | awk -v s="_$IMPL" '$NF==s && $3=="long" {print $1; exit}')
 [ -n "$r" ] || fail "$member has no reference to _$IMPL"
-atom=$(nm -n "$T/src/$member" | awk -v r="0x$r" 'function h(x, i,c,n){n=0;x=tolower(x);sub(/^0x/,"",x);for(i=1;i<=length(x);i++){c=index("0123456789abcdef",substr(x,i,1))-1;n=n*16+c}return n}
+atom=$("$NM" -n "$T/src/$member" | awk -v r="0x$r" 'function h(x, i,c,n){n=0;x=tolower(x);sub(/^0x/,"",x);for(i=1;i<=length(x);i++){c=index("0123456789abcdef",substr(x,i,1))-1;n=n*16+c}return n}
   $2 ~ /^[Tt]$/ && h($1) <= h(r) {name=$3; base=h($1)} END{print name, h(r) - base}')
 set -- $atom
 va=$(( $(symaddr "$T/root/bin/rooted" "$1") + $2 ))
@@ -336,8 +337,8 @@ printf '!<arch>\n' >"$T/pfx-stale/$(field archive_path)"
 analyze "$T/root/bin/rooted" --build-evidence "$T/ev/rooted.json" --provider-prefix "$T/pfx-stale"
 nonzero 'archive replaced'; exit_is 4 'archive replaced'
 rm -rf "$T/pfx-gone"; cp -R "$PFX" "$T/pfx-gone"
-(cd "$T/src" && ar -x "$ARCHIVE")
-ar -d "$T/pfx-gone/$(field archive_path)" "$member" 2>/dev/null && ranlib "$T/pfx-gone/$(field archive_path)" 2>/dev/null
+(cd "$T/src" && "$AR" x "$ARCHIVE")
+"$AR" d "$T/pfx-gone/$(field archive_path)" "$member" 2>/dev/null && "$RANLIB" "$T/pfx-gone/$(field archive_path)" 2>/dev/null
 sed "s/\"archive_sha256\" : \"[0-9a-f]*\"/\"archive_sha256\" : \"$(sha "$T/pfx-gone/$(field archive_path)")\"/" "$DECL" >"$T/pfx-gone/share/recaulk/objc-providers.json"
 evidence "$T/root/bin/omitted" "$T/root/bin/omitted" "$T/root/bin/omitted.map" "$T/ev/gone.json" "$T/pfx-gone"
 [ "$rc" = 0 ] && analyze "$T/root/bin/omitted" --build-evidence "$T/ev/gone.json" --provider-prefix "$T/pfx-gone"
@@ -349,7 +350,7 @@ nonzero 'evidence for another final binary'; exit_is 4 'evidence for another fin
 
 # spec: cli/drydock-objc.c header (evidence) -- an artifact that links no provider: neither --link-map nor
 #       --provider-prefix; evidence with no provider mapping. One without the other is a usage error.
-cc -O1 "$FX/plain.c" -o "$T/root/bin/plain-consumer"
+fxcc -O1 "$FX/plain.c" -o "$T/root/bin/plain-consumer"
 noprov() {
   rc=0; "$DRYDOCK_OBJC" evidence --artifact "$T/root/bin/plain-consumer" --prestrip "$T/root/bin/plain-consumer" \
     --source-root "$FX" --references "$REF" "$@" 2>"$T/err" || rc=$?
@@ -366,8 +367,9 @@ analyze "$T/root/bin/plain-consumer" --build-evidence "$T/ev/noprov.json"
 exit_is 0 'provider-less evidence analyzed with no prefix'
 # spec: src/objc/main.m "The shipped closure" -- a dependency inside the root is measured by its
 #       interface; one that loads from outside it is not, so nothing it might replace can be provided.
-cc -dynamiclib -O1 "$FX/plain.c" -o "$T/root/bin/libextra.dylib" -install_name /Library/Mavergreen/libextra.dylib
-consumer "$T/root/bin/extra-dep" "$ALL" "$T/root/bin/libextra.dylib"
+fxcc -dynamiclib -O1 "$FX/plain.c" -o "$T/root/bin/libextra.dylib" -install_name /Library/Mavergreen/libextra.dylib
+consumer "$T/root/bin/extra-dep" "$ALL" -Wl,-needed_library,"$T/root/bin/libextra.dylib"
+"$OTOOL" -L "$T/root/bin/extra-dep" | grep -q /Library/Mavergreen/libextra.dylib || fail "extra-dep: libextra.dylib is not a dependency"
 full "$T/root/bin/extra-dep" "$T/root/bin/extra-dep" "$T/root/bin/extra-dep.map" extra-dep
 nonzero 'a dependency outside the shipped root'; exit_is 4 'a dependency outside the shipped root'
 
@@ -423,18 +425,11 @@ old=$(sed -n 's/.*"inputs": {"artifact": {"path": "[^"]*", "sha256": "\([0-9a-f]
 #       call instruction by the archive member's own line table and the evidence's atom mapping; an `id` receiver stays
 #       open; a send added to the source is its own block; changed source, no line table, a send the receipt does not
 #       explain, or a malformed receipt is cannot-measure. The consumer's code is never closed by a provider's receipt.
-CLANG=${MAVERGREEN_OBJC_CLANG_PREFIX:-}
-if [ -z "$CLANG" ]; then
-  case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
-  version=$(tr -d '[:space:]' < "$ROOT/components/objc-reference-clang/version")
-  CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
-fi
 # spec: components/objc-receipt-clang -- `drydock-objc receipt` takes the receipt's own clang pin (the first clang22 whose
-#       libclang ships everywhere), not the analyzer's: CLANG above still builds the fixtures.
+#       libclang ships everywhere), not the analyzer's: $CC builds the fixtures.
 # platform: drydock-objc dlopens RECEIPT_CLANG's libclang, so it is picked by drydock-objc's architecture (DRYDOCK_OBJC_ARCH,
-#           which CTest sets; a standalone run takes the shell's), not the shell's: the x86_64 build's tests run on an
-#           Apple Silicon Mac under Rosetta, where the clang22-cross pkg's libclang is arm64 alone and the native
-#           clang22 pkg's is x86_64.
+#           which CTest sets; a standalone run takes the shell's), not the shell's: x86_64 takes 10.9's native clang22
+#           pkg, arm64 the clang22-cross pkg.
 RECEIPT_CLANG=${MAVERGREEN_OBJC_RECEIPT_CLANG_PREFIX:-${MAVERGREEN_OBJC_CLANG_PREFIX:-}}
 if [ -z "$RECEIPT_CLANG" ]; then
   case "${DRYDOCK_OBJC_ARCH:-$(uname -m)}" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
@@ -443,16 +438,24 @@ if [ -z "$RECEIPT_CLANG" ]; then
 fi
 
 # spec: src/objc/provider.c obj_target -- a provider's 8-byte literal is matched where the linker merged it:
-#       ld64 into __TEXT,__const, lld (which links Codex) into __TEXT,__literals.
+#       lld (which links Codex) into __TEXT,__literals, linked here; ld64 into __TEXT,__const, in a consumer ld64-241
+#       linked once (tests/data/objc_provider_literal_ld64-241, with its archive and link map; the commit that added
+#       it records the command), because no ld64 runs here.
 if [ "$real" = 0 ]; then
   PFX_MAIN=$PFX; PFX="$T/pfx-literal"; fixture_prefix "$PFX" -DFIXTURE_LITERAL
-  consumer "$T/root/bin/lit-ld64" "$ALL"
-  full "$T/root/bin/lit-ld64" "$T/root/bin/lit-ld64" "$T/root/bin/lit-ld64.map" lit-ld64; positive 'a literal, linked by ld64'
-  cc() { env -i PATH=/usr/bin:/bin "$CLANG/bin/clang" -fuse-ld=lld -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
   consumer "$T/root/bin/lit-lld" "$ALL"
-  cc() { env -i PATH=/usr/bin:/bin /usr/bin/clang -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
-  otool -l "$T/root/bin/lit-lld" | grep 'sectname __literals' >/dev/null || fail 'lld did not merge the literal into __TEXT,__literals'
+  "$OTOOL" -l "$T/root/bin/lit-lld" | grep 'sectname __literals' >/dev/null || fail 'lld did not merge the literal into __TEXT,__literals'
   full "$T/root/bin/lit-lld" "$T/root/bin/lit-lld" "$T/root/bin/lit-lld.map" lit-lld; positive 'a literal, linked by lld'
+  LD64=$ROOT/tests/data/objc_provider_literal_ld64-241
+  PFX="$T/pfx-literal-ld64"; mkdir -p "$PFX/lib" "$PFX/share/recaulk"
+  cp "$LD64/libfixture-objc.a" "$PFX/lib/"; cp "$LD64/lit-ld64" "$T/root/bin/lit-ld64"
+  sed -e "s|@SDK@|$SDK|g" -e "s|@PFX@|$PFX|g" -e "s|@OUT@|$T/root/bin/lit-ld64|" -e 's|@CONSUMER_O@|provider-consumer.o|' \
+    "$LD64/lit-ld64.map" >"$T/root/bin/lit-ld64.map"
+  printf '%s  provider-register.c\n%s  provider-impl.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-impl.c")" >"$T/ld64-receipt"
+  declare_prefix "$PFX" "$T/ld64-receipt"
+  "$OTOOL" -l "$T/root/bin/lit-ld64" | grep 'sectname __const' >/dev/null || fail 'the committed ld64 consumer has no __TEXT,__const'
+  ! "$OTOOL" -l "$T/root/bin/lit-ld64" | grep 'sectname __literals' >/dev/null || fail 'the committed ld64 consumer merged into __literals'
+  full "$T/root/bin/lit-ld64" "$T/root/bin/lit-ld64" "$T/root/bin/lit-ld64.map" lit-ld64; positive 'a literal, linked by ld64'
   PFX=$PFX_MAIN
 fi
 # spec: tests/objc/fixtures/provider-body.m header -- body_source DIR [DEFINE...]: the body, with each DEFINE turned on
@@ -467,9 +470,9 @@ body_source() {
 body_prefix() {
   P=$1 D=$2; shift 2
   rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
-  cc -Os -fPIC -Wall -fno-objc-arc "$@" -c "$D/provider-body.m" -o "$P.objects/provider-body.o" || fail "compiling $D/provider-body.m"
-  cc -Os -fPIC -Wall "$@" -c "$D/provider-register.c" -o "$P.objects/provider-register.o"
-  /usr/bin/libtool -static -o "$P/lib/libfixture-objc.a" "$P.objects/provider-body.o" "$P.objects/provider-register.o" 2>/dev/null
+  fxcc -Os -fPIC -Wall -fno-objc-arc "$@" -c "$D/provider-body.m" -o "$P.objects/provider-body.o" || fail "compiling $D/provider-body.m"
+  fxcc -Os -fPIC -Wall "$@" -c "$D/provider-register.c" -o "$P.objects/provider-register.o"
+  "$LIBTOOL" -static -o "$P/lib/libfixture-objc.a" "$P.objects/provider-body.o" "$P.objects/provider-register.o" 2>/dev/null
   printf '%s  provider-body.m\n%s  provider-register.c\n' "$(sha "$D/provider-body.m")" "$(sha "$D/provider-register.c")" >"$P.inputs"
   declare_prefix "$P" "$P.inputs"
   if [ "${RECEIPT:-1}" = 1 ]; then

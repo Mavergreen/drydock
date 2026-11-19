@@ -31,7 +31,7 @@ BIN="${1:?usage: wrapper_test.sh <bindir>}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 FIXTURE="$HERE/fixture.macho"
-CC="${CC:-clang}"
+. "$ROOT/tests/lib/toolchain.sh"
 
 pass=0; fail=0
 ok()   { echo "PASS $1"; pass=$((pass + 1)); }
@@ -91,7 +91,7 @@ unpie() {
 # assertion passes without the wrapper having done anything at all.
 strip_vm() {
     [ -x "$T/strip_version_min" ] \
-        || "$CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c" 2>"$T/strip_vm.out" \
+        || "$HOST_CC" -O2 -o "$T/strip_version_min" "$HERE/strip_version_min.c" 2>"$T/strip_vm.out" \
         || { bad "strip_vm" "cannot build $HERE/strip_version_min.c: $(cat "$T/strip_vm.out")"; return 1; }
     "$T/strip_version_min" "$1" >"$T/strip_vm.out" 2>&1 \
         || { bad "strip_vm" "$1: $(cat "$T/strip_vm.out")"; return 1; }
@@ -108,7 +108,7 @@ strip_vm() {
 # reason; built here on first use.
 mkswift_fixture() {
     [ -x "$T/mkswift" ] \
-        || "$CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c" 2>"$T/mkswift.out" \
+        || "$HOST_CC" -O2 -o "$T/mkswift" "$HERE/mkswift.c" 2>"$T/mkswift.out" \
         || { bad "mkswift_fixture" "cannot build $HERE/mkswift.c: $(cat "$T/mkswift.out")"; return 1; }
     "$T/mkswift" make "$1" >"$T/mkswift.out" 2>&1 \
         || { bad "mkswift_fixture" "$1: $(cat "$T/mkswift.out")"; return 1; }
@@ -130,7 +130,7 @@ mkswift_fixture() {
 # src/ on the include path (mach_compat.h) as cli_test's build of it does.
 mkchained_fixture() {
     [ -x "$T/mkchained" ] \
-        || "$CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" 2>"$T/mkchained.out" \
+        || "$HOST_CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" 2>"$T/mkchained.out" \
         || { bad "mkchained_fixture" "cannot build $HERE/mkchained.c: $(cat "$T/mkchained.out")"; return 1; }
     "$T/mkchained" make "$1" >"$T/mkchained.out" 2>&1 \
         || { bad "mkchained_fixture" "$1: $(cat "$T/mkchained.out")"; return 1; }
@@ -1060,7 +1060,7 @@ run add_version_min
 
 # A build-version-only binary ends with one version command, not the C tool's pair.
 mkminos_run() {
-    [ -x "$T/mkminos" ] || "$CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c" 2>"$T/mkminos.out" \
+    [ -x "$T/mkminos" ] || "$HOST_CC" -O2 -o "$T/mkminos" "$HERE/mkminos.c" 2>"$T/mkminos.out" \
         || { bad "mkminos_run" "cannot build $HERE/mkminos.c: $(cat "$T/mkminos.out")"; return 1; }
     "$T/mkminos" "$@"
 }
@@ -1330,7 +1330,7 @@ int main(int argc, char **argv) {
     return 1;
 }
 EOF
-"$CC" -O2 -o "$T/rs_has_lc" "$T/rs_has_lc.c"
+"$HOST_CC" -O2 -o "$T/rs_has_lc" "$T/rs_has_lc.c"
 
 cat > "$T/rs_lazy_a.c" <<'EOF'
 int rs_lazy_a_sym(void) { return 77; }
@@ -1464,7 +1464,7 @@ fi
 #
 # The input is tests/mkimplausible.c's committed fixture, built here. The
 # fixture is refused on its merits.
-"$CC" -O2 -Wall -Wextra -I "$ROOT/src" -o "$T/mkimplausible" "$HERE/mkimplausible.c"
+"$HOST_CC" -O2 -Wall -Wextra -I "$ROOT/src" -o "$T/mkimplausible" "$HERE/mkimplausible.c"
 "$T/mkimplausible" "$T/imp"
 
 # The pass below is narrow, not a hole: the gate still refuses THIS FIXTURE
@@ -2378,7 +2378,7 @@ run retag_swift_classes f
 # A chained Swift binary: drydock-macho-rewrite refuses swift-abi set legacy on
 # it (1), and this wrapper's exit-1 arm is its silent skip, so the caller gets
 # what the C tool gave -- exit 0, total 0, the file untouched.
-[ -x "$T/mkchained" ] || "$CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" \
+[ -x "$T/mkchained" ] || "$HOST_CC" -O2 -I "$ROOT/src" -o "$T/mkchained" "$HERE/mkchained.c" \
     || bad "retag_swift_classes chained: fixture setup" "cannot build $HERE/mkchained.c"
 "$T/mkchained" make-swift "$T/f" || bad "retag_swift_classes chained: fixture setup" "make-swift failed"
 ch_before=$(sha "$T/f")
@@ -2447,7 +2447,7 @@ int main(int argc, char **argv) {
     return 127;
 }
 EOF
-"$CC" -O2 -o "$T/idnotty" "$T/idnotty.c" 2>"$T/idnotty_build.err"
+"$HOST_CC" -O2 -o "$T/idnotty" "$T/idnotty.c" 2>"$T/idnotty_build.err"
 if [ ! -x "$T/idnotty" ]; then
     skip "insert_dylib fat prompt" "cannot build the notty helper: $(cat "$T/idnotty_build.err")"
 elif [ ! -x "$BIN/insert_dylib" ]; then

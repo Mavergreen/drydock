@@ -1,23 +1,22 @@
 #!/bin/sh
-# platform: macOS-only -- archives made by the host's libtool, ar and ranlib, linked by ld64 and run
+# platform: macOS-only -- archives made by clang22's llvm-libtool-darwin, llvm-ar and llvm-ranlib, linked by ld64.lld and run
 # tests/archive_rename_test.sh -- `symbol rename OLD NEW` across a static
-# archive made by this host's libtool, ar and ranlib: linked and run, the
+# archive made by clang22's llvm-libtool-darwin, llvm-ar and llvm-ranlib: linked and run, the
 # rebuilt index compared with ranlib's, and the archive-scope refusals.
 #
 #   sh tests/archive_rename_test.sh <bindir>
 #
-# Exits 77 where this host has no libtool. The bitcode and universal cases
-# print a SKIP line and go on where the compiler cannot make their fixture;
-# the moved-__data case skips its link, and its archive form, where this
-# host's ld or libtool refuses that object.
+# The bitcode and universal cases print a SKIP line and go on where the compiler
+# cannot make their fixture; the moved-__data case skips its link, and its archive
+# form, where ld64.lld or llvm-libtool-darwin refuses that object.
 set -u
 
 BIN="${1:?usage: archive_rename_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
 [ -x "$DMR" ] || { echo "archive_rename_test: $DMR not found or not executable" >&2; exit 1; }
-command -v libtool >/dev/null 2>&1 && command -v ranlib >/dev/null 2>&1 \
-    || { echo "SKIP: archive_rename_test: no libtool or ranlib on this host"; exit 77; }
-CC="${CC:-clang}"
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
 FIXTURE_FLAGS="-arch x86_64 -mmacosx-version-min=10.9"
 ZERO_AR_DATE=1
 export ZERO_AR_DATE
@@ -33,7 +32,7 @@ REFUSED=$("$DMR" --capabilities | sed -n 's/^exitcodes .*refused=\([0-9]*\).*/\1
 [ -n "$REFUSED" ] || { echo "archive_rename_test: no refused= in --capabilities' exitcodes line" >&2; exit 1; }
 
 src() { cat >"$T/$1.c"; "$CC" $FIXTURE_FLAGS -c -o "$T/$1.o" "$T/$1.c" || exit 1; }
-lib() { out=$1; shift; rm -f "$out"; libtool -static -o "$out" "$@" || exit 1; }
+lib() { out=$1; shift; rm -f "$out"; "$LIBTOOL" -static -o "$out" "$@" || exit 1; }
 
 # append ARCHIVE NAME FILE -- FILE as a member the way 10.9's libtool lays one
 # out (a #1/N name, '\n' padding inside the size to an 8-byte end), written
@@ -52,6 +51,21 @@ append() {
     } >>"$1"
 }
 
+# bsd_ar ARCHIVE FILE... -- an archive with no index, laid out as 10.9's `ar rcS`
+# does: each name in its header, the size exact, and an odd member padded to
+# even with one '\n' outside its size. llvm-ar pads every member to 8 inside
+# its size, so it cannot make this layout.
+bsd_ar() {
+    out=$1; shift
+    printf '!<arch>\n' >"$out"
+    for f; do
+        b_len=$(wc -c <"$f" | tr -d ' ')
+        printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' "${f##*/}" 0 0 0 100644 "$b_len" >>"$out"
+        cat "$f" >>"$out"
+        [ $((b_len % 2)) -eq 0 ] || printf '\n' >>"$out"
+    done
+}
+
 run() {
     run_in=$1 run_out=$2; shift 2
     rm -f "$run_out"
@@ -59,14 +73,15 @@ run() {
     printf '%s\n' "$@" | "$DMR" "$run_in" "$run_out" >"$T/run.out" 2>"$T/run.err" || run_rc=$?
 }
 said() { grep -qF -- "$1" "$T/run.err"; }
-member_has() { ar p "$1" "$2" >"$T/member.o" && nm -p "$T/member.o" | awk -v s="$3" -v t="$4" '$NF == s && $(NF-1) == t { f = 1 } END { exit !f }'; }
-member_lacks() { ar p "$1" "$2" >"$T/member.o" && ! nm -p "$T/member.o" | awk -v s="$3" '$NF == s { f = 1 } END { exit !f }'; }
+member_has() { "$AR" p "$1" "$2" >"$T/member.o" && "$NM" -p "$T/member.o" | awk -v s="$3" -v t="$4" '$NF == s && $(NF-1) == t { f = 1 } END { exit !f }'; }
+member_lacks() { "$AR" p "$1" "$2" >"$T/member.o" && ! "$NM" -p "$T/member.o" | awk -v s="$3" '$NF == s { f = 1 } END { exit !f }'; }
 
 # index ARCHIVE MODE -- the first member, a 32-bit __.SYMDEF*, one decimal
-# byte per line ("bytes", MASKed when set), "names" with each entry's offset,
-# or "padding": the offset of the string pool's last byte, if it is padding.
+# byte per line ("bytes"), "name": the member's own name,
+# "names" with each entry's offset, or "padding": the offset of the index
+# member's last byte, if it is padding, inside the string pool or after it.
 index() {
-    od -An -v -tu1 "$1" | awk -v mode="$2" -v mask="${MASK:-0}" '
+    od -An -v -tu1 "$1" | awk -v mode="$2" '
         { for (i = 1; i <= NF; i++) b[n++] = $i }
         function le(o) { return b[o] + 256 * (b[o+1] + 256 * (b[o+2] + 256 * b[o+3])) }
         function str(o,   s) { s = ""; while (b[o] != 0) s = s sprintf("%c", b[o++]); return s }
@@ -75,6 +90,7 @@ index() {
             nl = 0; for (i = 11; b[i] >= 48 && b[i] <= 57; i++) nl = nl * 10 + b[i] - 48
             sz = 0; for (i = 56; b[i] >= 48 && b[i] <= 57; i++) sz = sz * 10 + b[i] - 48
             if (str(68) !~ /^__\.SYMDEF/) { print "first member is not an index"; exit 1 }
+            if (mode == "name") { print str(68); exit 0 }
             body = 68 + nl; nb = le(body); pool = body + 8 + nb; strsize = le(body + 4 + nb)
             used = 0
             for (e = 0; e < nb / 8; e++) {
@@ -83,12 +99,9 @@ index() {
                 end = pool + x + length(str(pool + x)) + 1
                 if (end - pool > used) used = end - pool
             }
-            if (mode == "padding") { if (used < strsize) print pool + strsize - 1; exit 0 }
+            if (mode == "padding") { if (pool + used < 68 + sz) print 68 + sz - 1; exit 0 }
             if (mode != "bytes") exit 0
-            for (i = 8; i < 68 + sz; i++) {
-                if (mask && ((i >= 24 && i < 36) || (i >= pool + used && i < pool + strsize))) print "masked"
-                else print b[i]
-            }
+            for (i = 8; i < 68 + sz; i++) print b[i]
         }'
 }
 
@@ -117,13 +130,13 @@ mkdir "$T/in" "$T/out"
 # holding a member that is not Mach-O. libtx.a adds the odd-size text member,
 # with helper.o after it, both appended by hand; it is checked, never linked.
 lib "$T/in/libt.a" "$T/impl.o" "$T/other.o" "$T/helper.o"
-[ "$(ar t "$T/in/libt.a" | tr '\n' ' ')" = "__.SYMDEF SORTED impl.o other.o helper.o " ] \
-    || { echo "archive_rename_test: unexpected fixture layout: $(ar t "$T/in/libt.a")" >&2; exit 1; }
+[ "$(index "$T/in/libt.a" name) $("$AR" t "$T/in/libt.a" | tr '\n' ' ')" = "__.SYMDEF impl.o other.o helper.o " ] \
+    || { echo "archive_rename_test: unexpected fixture layout: $(index "$T/in/libt.a" name) $("$AR" t "$T/in/libt.a")" >&2; exit 1; }
 lib "$T/in/libtx.a" "$T/impl.o" "$T/other.o"
 append "$T/in/libtx.a" odd.txt "$T/odd.txt"
 append "$T/in/libtx.a" helper.o "$T/helper.o"
-[ "$(ar t "$T/in/libtx.a" | tr '\n' ' ')" = "__.SYMDEF SORTED impl.o other.o odd.txt helper.o " ] \
-    || { echo "archive_rename_test: unexpected fixture layout: $(ar t "$T/in/libtx.a")" >&2; exit 1; }
+[ "$(index "$T/in/libtx.a" name) $("$AR" t "$T/in/libtx.a" | tr '\n' ' ')" = "__.SYMDEF impl.o other.o odd.txt helper.o " ] \
+    || { echo "archive_rename_test: unexpected fixture layout: $(index "$T/in/libtx.a" name) $("$AR" t "$T/in/libtx.a")" >&2; exit 1; }
 
 # ---- forwarding through an archive ------------------------------------------
 run "$T/in/libt.a" "$T/out/libt.a" 'symbol rename _foo _impl_foo'
@@ -131,12 +144,14 @@ run "$T/in/libt.a" "$T/out/libt.a" 'symbol rename _foo _impl_foo'
 said "      impl.o: 1 entry" && said "      other.o: 1 entry" && said "symbol rename _foo -> _impl_foo: 2 entries" \
     && ok "forwarding: one line per changed member, then the total" || bad "forwarding report" "$(cat "$T/run.err")"
 member_has "$T/out/libt.a" impl.o _impl_foo T && member_lacks "$T/out/libt.a" impl.o _foo \
-    && ok "forwarding: impl.o defines _impl_foo and has no _foo" || bad "forwarding impl.o" "$(nm -p "$T/member.o")"
+    && ok "forwarding: impl.o defines _impl_foo and has no _foo" || bad "forwarding impl.o" "$("$NM" -p "$T/member.o")"
 member_has "$T/out/libt.a" other.o _impl_foo U && member_lacks "$T/out/libt.a" other.o _foo \
-    && ok "forwarding: other.o's undefined reference is renamed too" || bad "forwarding other.o" "$(nm -p "$T/member.o")"
+    && ok "forwarding: other.o's undefined reference is renamed too" || bad "forwarding other.o" "$("$NM" -p "$T/member.o")"
 if "$CC" $FIXTURE_FLAGS -o "$T/fwd" "$T/main.o" "$T/stub.o" -L"$T/out" -lt >"$T/link.err" 2>&1; then
-    [ "$("$T/fwd")" = "43 142" ] && ok "forwarding: links with -lt and prints the stub's 43" \
-        || bad "forwarding run" "printed $("$T/fwd")"
+    if gate_row x86_64 "forwarding: links with -lt and prints the stub's 43"; then
+        [ "$("$T/fwd")" = "43 142" ] && ok "forwarding: links with -lt and prints the stub's 43" \
+            || bad "forwarding run" "printed $("$T/fwd")"
+    fi
 else
     bad "forwarding link" "$(cat "$T/link.err")"
 fi
@@ -148,11 +163,11 @@ run "$T/in/libtx.a" "$T/out/libtx.a" 'symbol rename _foo _impl_foo'
 if said "helper.o:" || said "odd.txt:"; then bad "text member report" "names an unchanged member: $(cat "$T/run.err")"
 else ok "text member: unchanged members are not reported"; fi
 for m in odd.txt helper.o; do
-    ar p "$T/in/libtx.a" $m >"$T/m_in" && ar p "$T/out/libtx.a" $m >"$T/m_out" && cmp -s "$T/m_in" "$T/m_out" \
+    "$AR" p "$T/in/libtx.a" $m >"$T/m_in" && "$AR" p "$T/out/libtx.a" $m >"$T/m_out" && cmp -s "$T/m_in" "$T/m_out" \
         && ok "text member: $m is byte-identical, padding included" || bad "text member $m" "the unchanged member changed"
 done
-[ "$(ar p "$T/out/libtx.a" odd.txt | od -An -c | tr -d ' ')" = 'abcde\n\n\n' ] \
-    && ok "text member: odd.txt keeps its newline padding" || bad "text member padding" "$(ar p "$T/out/libtx.a" odd.txt | od -c)"
+[ "$("$AR" p "$T/out/libtx.a" odd.txt | od -An -c | tr -d ' ')" = 'abcde\n\n\n' ] \
+    && ok "text member: odd.txt keeps its newline padding" || bad "text member padding" "$("$AR" p "$T/out/libtx.a" odd.txt | od -c)"
 # helper.o is last and odd.txt is 80 bytes (as append lays them out), so the
 # headers sit where these say.
 h_len=$(wc -c <"$T/helper.o" | tr -d ' ')
@@ -164,29 +179,25 @@ odd_at=$((helper_at - 80))
     || bad "text member offsets" "odd.txt at $odd_at, helper.o at $helper_at"
 offsets=$(index "$T/out/libtx.a" names | awk '{ printf "%s@%s ", $1, $2 }')
 first=$(($(index "$T/out/libtx.a" bytes | wc -l) + 8))
-[ "$offsets" = "_helper@$helper_at _impl_foo@$first _other@$((first + 60 + 12 + $(ar p "$T/out/libtx.a" impl.o | wc -c))) " ] \
+[ "$offsets" = "_impl_foo@$first _other@$((first + 60 + 12 + $("$AR" p "$T/out/libtx.a" impl.o | wc -c))) _helper@$helper_at " ] \
     && ok "text member: the index points _helper past odd.txt, at helper.o's header" \
     || bad "text member index" "$offsets (helper.o at $helper_at, impl.o at $first)"
 
 # ---- the rebuilt index is ranlib's ------------------------------------------
-# 10.9's ranlib leaves the index string pool's padding uninitialised, so there
-# the date and that padding are masked; elsewhere the comparison is strict.
 names=$(index "$T/out/libt.a" names | awk '{ printf "%s ", $1 }')
-[ "$names" = "_helper _impl_foo _other " ] \
-    && ok "index: names _impl_foo, not _foo, sorted" || bad "index names" "$names"
-MASK=0
-[ "$(uname -s)" = Darwin ] && [ "$(uname -r | cut -d. -f1)" = 13 ] && MASK=1
+[ "$names" = "_impl_foo _other _helper " ] \
+    && ok "index: names _impl_foo, not _foo, in member order as __.SYMDEF is" || bad "index names" "$names"
 like_ranlib() {   # like_ranlib ARCHIVE LABEL
     cp "$1" "$T/ranlibbed.a"
-    ranlib "$T/ranlibbed.a" 2>"$T/ranlib.err" || { bad "$2" "ranlib failed: $(cat "$T/ranlib.err")"; return; }
-    if [ "$(ar t "$1")" != "$(ar t "$T/ranlibbed.a")" ]; then
-        echo "SKIP $2: this ranlib drops a member: $(ar t "$T/ranlibbed.a" | tr '\n' ' ')"
+    "$RANLIB" "$T/ranlibbed.a" 2>"$T/ranlib.err" || { bad "$2" "ranlib failed: $(cat "$T/ranlib.err")"; return; }
+    if [ "$("$AR" t "$1")" != "$("$AR" t "$T/ranlibbed.a")" ]; then
+        echo "SKIP $2: this ranlib drops a member: $("$AR" t "$T/ranlibbed.a" | tr '\n' ' ')"
         return
     fi
     index "$1" bytes >"$T/idx_ours" && index "$T/ranlibbed.a" bytes >"$T/idx_ranlib" \
         || bad "$2" "cannot read an index: $(cat "$T/idx_ours" "$T/idx_ranlib")"
     if cmp -s "$T/idx_ours" "$T/idx_ranlib"; then
-        ok "$2: the index is byte-identical to ranlib's $( [ $MASK = 1 ] && echo '(date and string padding masked)' || echo '(strict)')"
+        ok "$2: the index is byte-identical to ranlib's"
     else
         bad "$2" "the index differs from ranlib's: $(diff "$T/idx_ours" "$T/idx_ranlib" | head -5 | tr '\n' ' ')"
     fi
@@ -204,24 +215,26 @@ run "$T/in/libu.a" "$T/out/libu.a" 'symbol rename _foo _impl_foo'
     && ! said "matched nothing" \
     && ok "undefined only: renamed, counted, and not \"matched nothing\"" || bad "undefined only" "rc $run_rc: $(cat "$T/run.err")"
 member_has "$T/out/libu.a" other.o _impl_foo U \
-    && ok "undefined only: other.o references _impl_foo" || bad "undefined only nm" "$(nm -p "$T/member.o")"
+    && ok "undefined only: other.o references _impl_foo" || bad "undefined only nm" "$("$NM" -p "$T/member.o")"
 
 # ---- an archive with no index, odd member padded outside its size -----------
-rm -f "$T/in/libn.a"
-(cd "$T" && ar rcS "$T/in/libn.a" odd.txt impl.o) || exit 1
+bsd_ar "$T/in/libn.a" "$T/odd.txt" "$T/impl.o"
+[ "$(tail -c +75 "$T/in/libn.a" | head -c 6)" = impl.o ] \
+    || { echo "archive_rename_test: impl.o's header is not at 74 in libn.a" >&2; exit 1; }
 run "$T/in/libn.a" "$T/out/libn.a" 'symbol rename _foo _impl_foo'
 [ "$run_rc" -eq 0 ] && member_has "$T/out/libn.a" impl.o _impl_foo T \
     && ok "no index: impl.o renamed" || bad "no index" "rc $run_rc: $(cat "$T/run.err")"
-[ "$(ar t "$T/out/libn.a" | tr '\n' ' ')" = "odd.txt impl.o " ] \
-    && ok "no index: none is added" || bad "no index" "$(ar t "$T/out/libn.a")"
+[ "$("$AR" t "$T/out/libn.a" | tr '\n' ' ')" = "odd.txt impl.o " ] \
+    && ok "no index: none is added" || bad "no index" "$("$AR" t "$T/out/libn.a")"
 
 # ---- an object padded inside its size, where the layout is not 8-aligned ----
 cp "$T/impl.o" "$T/padded.o"
 printf '\n\n\n\n' >>"$T/padded.o"
-rm -f "$T/in/libp.a"
-(cd "$T" && ar rcS "$T/in/libp.a" odd.txt padded.o helper.o) || exit 1
+bsd_ar "$T/in/libp.a" "$T/odd.txt" "$T/padded.o" "$T/helper.o"
+"$AR" p "$T/in/libp.a" padded.o | cmp -s - "$T/padded.o" \
+    || { echo "archive_rename_test: libp.a's padded.o is not padded.o" >&2; exit 1; }
 run "$T/in/libp.a" "$T/out/libp.a" 'symbol rename _helper _h2'
-ar p "$T/out/libp.a" padded.o >"$T/m_out"
+"$AR" p "$T/out/libp.a" padded.o >"$T/m_out"
 [ "$run_rc" -eq 0 ] && cmp -s "$T/padded.o" "$T/m_out" \
     && ok "padded: an untouched object keeps its padding" || bad "padded untouched" "rc $run_rc: $(cat "$T/run.err")"
 run "$T/in/libp.a" "$T/out/libp.a" 'symbol rename _foo _impl_foo'
@@ -266,7 +279,7 @@ int main(int argc, char **argv) {
     return !f || fwrite(b, 1, n, f) != n || fclose(f) != 0;
 }
 EOF
-"$CC" -o "$T/movedata" "$T/movedata.c" || exit 1
+"$HOST_CC" -o "$T/movedata" "$T/movedata.c" || exit 1
 "$T/movedata" "$T/zdata.o" "$T/zd.o" || { echo "archive_rename_test: cannot move zdata.o's __data" >&2; exit 1; }
 cat >"$T/zmain.c" <<'EOF'
 #include <stdio.h>
@@ -277,8 +290,10 @@ EOF
 # The precondition, where this host's ld accepts the object: it links, and
 # reads z[0] as 0. macos-26's ld refuses it ("LINKEDIT overlap").
 if "$CC" $FIXTURE_FLAGS -o "$T/zrun" "$T/zmain.o" "$T/zd.o" >"$T/link.err" 2>&1; then
-    [ "$("$T/zrun")" = 0 ] && ok "moved __data: the hand-moved object links and prints 0" \
-        || bad "moved __data" "the fixture links but prints $("$T/zrun")"
+    if gate_row x86_64 "moved __data: the hand-moved object links and prints 0"; then
+        [ "$("$T/zrun")" = 0 ] && ok "moved __data: the hand-moved object links and prints 0" \
+            || bad "moved __data" "the fixture links but prints $("$T/zrun")"
+    fi
 else
     echo "SKIP moved __data link: this host's linker refuses the fixture: $(grep -m1 . "$T/link.err")"
 fi
@@ -286,7 +301,7 @@ run "$T/zd.o" "$T/x.o" 'symbol rename _foo _impl_foo'
 [ "$run_rc" -eq "$REFUSED" ] && [ ! -e "$T/x.o" ] && said "the string table is not the last thing in the file" \
     && ok "refused: a thin object whose __data lies past its string table" || bad "moved __data thin" "rc $run_rc: $(cat "$T/run.err")"
 rm -f "$T/in/libzd.a"
-if libtool -static -o "$T/in/libzd.a" "$T/zd.o" >"$T/libtool.err" 2>&1; then
+if "$LIBTOOL" -static -o "$T/in/libzd.a" "$T/zd.o" >"$T/libtool.err" 2>&1; then
     run "$T/in/libzd.a" "$T/x.a" 'symbol rename _foo _impl_foo'
     if [ "$run_rc" -eq "$REFUSED" ] && [ ! -e "$T/x.a" ] \
         && said "member zd.o: symbol rename _foo _impl_foo: the string table is not the last thing in the file"; then
@@ -295,7 +310,7 @@ if libtool -static -o "$T/in/libzd.a" "$T/zd.o" >"$T/libtool.err" 2>&1; then
         bad "moved __data in an archive" "rc $run_rc (want $REFUSED): $(cat "$T/run.err")"
     fi
 else
-    echo "SKIP moved __data in an archive: this host's libtool refuses the fixture: $(grep -m1 . "$T/libtool.err")"
+    echo "SKIP moved __data in an archive: llvm-libtool-darwin refuses the fixture: $(grep -m1 . "$T/libtool.err")"
 fi
 lib "$T/in/libz.a" "$T/zdata.o"
 run "$T/in/libz.a" "$T/out/libz.a" 'symbol rename _foo _impl_foo'
@@ -335,7 +350,7 @@ run "$T/in/libt.a" "$T/x.a" 'symbol rename _nosuch _other'
 refused "OLD in no member" "symbol rename _nosuch _other matched nothing (no symbol is named _nosuch)"
 
 pad=$(index "$T/in/libt.a" padding)
-[ -n "$pad" ] || { echo "archive_rename_test: the fixture's index has no string padding" >&2; exit 1; }
+[ -n "$pad" ] || { echo "archive_rename_test: the fixture's index has no padding" >&2; exit 1; }
 cp "$T/in/libt.a" "$T/in/libj.a"
 printf 'J' | dd of="$T/in/libj.a" bs=1 seek="$pad" conv=notrunc 2>/dev/null
 cmp -s "$T/in/libt.a" "$T/in/libj.a" && { echo "archive_rename_test: the junk byte did not land" >&2; exit 1; }
@@ -362,7 +377,7 @@ said "$left/trunc.a left unmodified" && ok "refused: truncated says what it left
 
 if "$CC" -arch x86_64 -flto -c -o "$T/bc.o" "$T/impl.c" 2>"$T/bc.err" \
     && [ "$(od -An -tx1 -N4 "$T/bc.o" | tr -d ' ')" = dec0170b ] \
-    && (cd "$T" && libtool -static -o "$T/in/libbc.a" helper.o bc.o) 2>>"$T/bc.err"; then
+    && (cd "$T" && "$LIBTOOL" -static -o "$T/in/libbc.a" helper.o bc.o) 2>>"$T/bc.err"; then
     run "$T/in/libbc.a" "$T/x.a" 'symbol rename _foo _impl_foo'
     refused "a bitcode member" "member bc.o is LLVM bitcode"
 else
@@ -371,17 +386,17 @@ fi
 
 # The second arch is arm64 where the compiler targets it (CI), else i386 (10.9).
 second=
-for a in "arm64 -mmacosx-version-min=11.0" "i386 -mmacosx-version-min=10.9"; do
-    if "$CC" -arch $a -c -o "$T/second.o" "$T/helper.c" 2>>"$T/second.err"; then second=${a%% *}; break; fi
-done
+if "$CC_ARM64" -c -o "$T/second.o" "$T/helper.c" 2>>"$T/second.err"; then second=arm64
+elif "$CC" -arch i386 -mmacosx-version-min=10.9 -c -o "$T/second.o" "$T/helper.c" 2>>"$T/second.err"; then second=i386
+fi
 if [ -n "$second" ]; then
     lib "$T/in/libsecond.a" "$T/second.o"
-    lipo -create -output "$T/in/fat.a" "$T/in/libt.a" "$T/in/libsecond.a" || exit 1
+    "$LIPO" -create -output "$T/in/fat.a" "$T/in/libt.a" "$T/in/libsecond.a" || exit 1
     run "$T/in/fat.a" "$T/x.a" 'symbol rename _foo _impl_foo'
     refused "a universal archive (x86_64 and $second)" \
         "$T/in/fat.a is a universal archive; thin it with lipo first; $left/fat.a left unmodified"
 else
-    echo "SKIP universal: $CC builds neither an arm64 nor an i386 object: $(head -1 "$T/second.err")"
+    echo "SKIP universal: neither $CC_ARM64 builds an arm64 object nor $CC an i386 one: $(head -1 "$T/second.err")"
 fi
 
 # A 32-bit object's mach_header (MH_MAGIC, x86, MH_OBJECT, no load commands),
@@ -392,7 +407,7 @@ printf '\000\000\000\000\000\000\000\000\000\000\000\000' >>"$T/i386.o"
     || { echo "archive_rename_test: the hand-written 32-bit header is wrong" >&2; exit 1; }
 cp "$T/in/libt.a" "$T/in/lib32.a"
 append "$T/in/lib32.a" i386.o "$T/i386.o"
-[ "$(ar t "$T/in/lib32.a" | tail -1)" = i386.o ] || { echo "archive_rename_test: i386.o was not appended" >&2; exit 1; }
+[ "$("$AR" t "$T/in/lib32.a" | tail -1)" = i386.o ] || { echo "archive_rename_test: i386.o was not appended" >&2; exit 1; }
 run "$T/in/lib32.a" "$T/x.a" 'symbol rename _foo _impl_foo'
 refused "a 32-bit member" "member i386.o is a 32-bit Mach-O"
 

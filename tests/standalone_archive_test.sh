@@ -10,13 +10,15 @@
 #          drydock-macho-rewrite first on PATH, the tool and every wrapper give the same results as
 #          the .pkg's own copies. A wrapper reached through a symlink asks for
 #          DRYDOCK_MACHO_REWRITE_COMPAT_DIR, and works once given it. Without a cc to build the bake
-#          shim it skips that one case, except under GitHub Actions. Uses only tools Mac OS X 10.9
-#          ships (tar, pkgutil, gzip, cpio, lipo, otool, shasum, stat).
+#          shim it skips that one case, except under GitHub Actions. Uses tools Mac OS X 10.9
+#          ships (tar, pkgutil, gzip, cpio, shasum, stat), and clang22's llvm-lipo and llvm-otool.
 set -eu
 usage='usage: standalone_archive_test.sh ARCHIVE DRYDOCK.pkg'
 [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
 archive=$1 pkg=$2
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$REPO
+. "$ROOT/tests/lib/toolchain.sh"
 fixture=$REPO/tests/fixture.macho
 tree=usr/local/mavergreen/drydock
 fail() { echo "FAIL: $*"; exit 1; }
@@ -73,18 +75,18 @@ diff "$t/modes-pkg" "$t/modes-archive" > "$t/diff" \
 machos=0
 find "$A" -type f > "$t/files"
 while IFS= read -r f; do
-  lipo -info "$f" >/dev/null 2>&1 || continue
+  "$LIPO" -info "$f" >/dev/null 2>&1 || continue
   machos=$((machos + 1))
   r=${f#"$A"/}
-  lipo "$f" -verify_arch x86_64 arm64 || fail "$r lacks a slice: $(lipo -info "$f" 2>&1 | sed 's/.*: //')"
-  otool -arch all -L "$f" | sed -n 's/^[[:space:]]\{1,\}\(.*\) (compatibility version .*/\1/p' > "$t/deps"
+  "$LIPO" "$f" -verify_arch x86_64 arm64 || fail "$r lacks a slice: $("$LIPO" -info "$f" 2>&1 | sed 's/.*: //')"
+  "$OTOOL" -arch all -L "$f" | sed -n 's/^[[:space:]]\{1,\}\(.*\) (compatibility version .*/\1/p' > "$t/deps"
   while IFS= read -r dep; do
     case "$dep" in
       /usr/lib/*|/System/Library/*|@loader_path/*|@executable_path/*|@rpath/*) ;;
       *) fail "$r loads $dep, outside the system and the archive" ;;
     esac
   done < "$t/deps"
-  otool -arch all -l "$f" | sed -n 's/^[[:space:]]*path \(.*\) (offset .*/\1/p' > "$t/rpaths"
+  "$OTOOL" -arch all -l "$f" | sed -n 's/^[[:space:]]*path \(.*\) (offset .*/\1/p' > "$t/rpaths"
   while IFS= read -r rp; do
     case "$rp" in /*) fail "$r has an absolute LC_RPATH $rp" ;; esac
   done < "$t/rpaths"
@@ -126,12 +128,12 @@ run_case rename_segment '"$1/rename_segment" f __DATA __DATB'
 run_case retag_swift_classes '"$1/retag_swift_classes" f'
 run_case insert_dylib '"$1/insert_dylib" --all-yes /usr/lib/libfoo.dylib f o'
 printf 'int printf(const char *f, ...) { return 0; }\n' > "$t/shim.c"
-if ${CC:-cc} -dynamiclib -arch x86_64 -mmacosx-version-min=10.9 -o "$t/shim.dylib" "$t/shim.c" 2>"$t/cc.err"; then
+if "$CC" -dynamiclib -arch x86_64 -mmacosx-version-min=10.9 -o "$t/shim.dylib" "$t/shim.c" 2>"$t/cc.err"; then
   run_case bake-mavericks-shim "\"\$1/bake-mavericks-shim\" f o --shim '$t/shim.dylib'"
 elif [ -n "${GITHUB_ACTIONS:-}" ]; then
-  fail "${CC:-cc} could not build the shim, so bake-mavericks-shim would go unproven: $(head -3 "$t/cc.err")"
+  fail "$CC could not build the shim, so bake-mavericks-shim would go unproven: $(head -3 "$t/cc.err")"
 else
-  echo "INFO: ${CC:-cc} could not build a shim here, so bake-mavericks-shim did not run from the archive"
+  echo "INFO: $CC could not build a shim here, so bake-mavericks-shim did not run from the archive"
 fi
 
 mkdir "$t/linkbin" "$t/run-link"

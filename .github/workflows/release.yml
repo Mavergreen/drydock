@@ -1,17 +1,15 @@
 name: release
 
 # Cross-builds the tools twice on a modern runner, x86_64 at a 10.9 floor and arm64
-# at 11.0, tests both, ships them merged into one universal .pkg, and proves the
-# x86_64 build equivalent to a native 10.9 one. Entry points:
+# at 11.0, and ships them merged into one universal .pkg. The runner executes arm64
+# only; x86_64 runs natively on Mac OS X 10.9, in the on-target job, which installs
+# the .pkg there and builds and tests the native preset. Entry points:
 #   - push to main / PR to main: build + gate, never publish (the PR build is the
 #     status check Renovate automerge waits on)
 #   - workflow_dispatch with release=true, on main: build, sign, then publish the .pkg and
 #     its feed as a GitHub Release through shipyard's publish-release.yml. Dispatch-only, because
 #     this repo is its own upstream -- there is no external bump to auto-cut on, so a
 #     release is deliberate
-#
-# There is no 10.9 runner here, or anywhere in the family. What makes that safe
-# is the "Prove build equivalence" step below, not optimism.
 
 on:
   push:
@@ -49,7 +47,7 @@ concurrency:
 jobs:
   build:
     name: build
-    runs-on: macos-26   # Apple Silicon; cross-builds both slices, runs x86_64 under Rosetta. Use macos-15 if 26 is unavailable.
+    runs-on: macos-26   # Apple Silicon; cross-builds both slices, runs only arm64. Use macos-15 if 26 is unavailable.
     outputs:
       version: ${{ steps.ver.outputs.full }}
       tag: ${{ steps.ver.outputs.tag }}
@@ -58,6 +56,20 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # the notes generator refuses a shallow clone
+
+      # Rosetta writes a translation under /var/db/oah for each x86_64 binary it runs, so a file that appears
+      # there between this step and this job's last is something the job ran translated. The last step names it.
+      - name: Snapshot Rosetta's translations, before this job runs anything
+        run: |
+          set -eu
+          sudo -n true || { echo "::error::sudo needs a password here, so /var/db/oah cannot be read"; exit 1; }
+          if ! sudo test -d /var/db/oah; then
+            echo "no /var/db/oah: Rosetta is not installed, so nothing this job runs can run translated"
+            : > "$RUNNER_TEMP/oah-absent"
+            exit 0
+          fi
+          sudo find /var/db/oah/ -type f > "$RUNNER_TEMP/oah.raw"
+          LC_ALL=C sort "$RUNNER_TEMP/oah.raw" > "$RUNNER_TEMP/oah-before"
 
       - name: Install mavericks-shipyard
         uses: Mavergreen/shipyard/.github/actions/install@v1
@@ -136,11 +148,8 @@ jobs:
 
       # The shared runner takes the whole suite, so a newly added test runs the
       # day it lands rather than when someone remembers a CI line. Includes
-      # `characterize`, which is the equivalence gate.
-      # The x86_64 build runs translated by Rosetta here (INGREDIENTS.md declares it).
-      - name: Run the repo's tests (x86_64)
-        run: sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross
-
+      # `characterize`, which is the equivalence gate. Its x86_64 rows skip here and
+      # run in on-target.
       - name: Run the repo's tests (arm64)
         run: sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross-arm64
 
@@ -148,22 +157,11 @@ jobs:
       # recorded from a NATIVE build on real 10.9 hardware; this compares the
       # cross build's pipeline output against it. Matching digests are the claim
       # "cross ≡ native" made checkable. These tools are deterministic file
-      # transformers, and each slice runs on this runner (x86_64 under Rosetta),
-      # which is what lets CI execute what it built.
+      # transformers; this runner executes the arm64 slice, and on-target the x86_64 one.
       # Run separately as well as under ctest. ctest hides a skipped test's
       # output, so a SKIP here would be indistinguishable from a pass -- exactly
       # the silent no-op this test exists to avoid. On a modern runner it must
       # actually run; a skip is a failure of the check, not of the tools.
-      - name: Cover patch_macho's chained-fixups conversion (x86_64)
-        run: |
-          set -eu
-          sh tests/chained-fixups.sh "$CROSS_BUILD_DIR" && rc=0 || rc=$?
-          if [ "$rc" = 77 ]; then
-            echo "::error::chained-fixups SKIPPED on a modern runner — it should be able to emit them"
-            exit 1
-          fi
-          exit "$rc"
-
       - name: Cover patch_macho's chained-fixups conversion (arm64)
         run: |
           set -eu
@@ -174,18 +172,8 @@ jobs:
           fi
           exit "$rc"
 
-      # The same reasoning as chained-fixups above: this runner is the arm64 Mac with
-      # Rosetta that the test needs, so a SKIP here means it measured nothing.
-      - name: Edited outputs on Apple Silicon (strip or re-sign, by arch; x86_64 Drydock)
-        run: |
-          set -eu
-          sh tests/apple_silicon_signing_test.sh "$CROSS_BUILD_DIR" && rc=0 || rc=$?
-          if [ "$rc" = 77 ]; then
-            echo "::error::apple_silicon_signing_test SKIPPED on the arm64 runner -- it should run here"
-            exit 1
-          fi
-          exit "$rc"
-
+      # The same reasoning as chained-fixups above: this runner is the arm64 Mac
+      # the test needs, so a SKIP here means it measured nothing.
       - name: Edited outputs on Apple Silicon (strip or re-sign, by arch; arm64 Drydock)
         run: |
           set -eu
@@ -195,12 +183,6 @@ jobs:
             exit 1
           fi
           exit "$rc"
-
-      - name: Prove build equivalence against the native 10.9 reference (x86_64)
-        run: |
-          set -eu
-          echo "reference digest (recorded natively on 10.9): $(cat tests/EXPECTED)"
-          sh tests/characterize.sh "$CROSS_BUILD_DIR" check
 
       # The arm64 slice must transform files exactly as 10.9's own build does.
       - name: Prove build equivalence against the native 10.9 reference (arm64)
@@ -239,14 +221,14 @@ jobs:
             "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz" \
             "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
 
-      - name: Equivalence inputs, and what each slice's drydock-macho-rewrite makes of them
+      # The inputs need a clang22 that builds arm64, which the 10.9 guest lacks: on-target makes
+      # its outputs from these same inputs, and the equivalence job compares the three.
+      - name: Equivalence inputs, and what the arm64 drydock-macho-rewrite makes of them
         run: |
           set -eu
           EQ="$RUNNER_TEMP/equivalence"
           sh tests/equivalence.sh inputs "$EQ/inputs"
-          sh tests/equivalence.sh produce "$CROSS_BUILD_DIR" "$EQ/inputs" "$EQ/macos-x86_64"
           sh tests/equivalence.sh produce "$ARM64_BUILD_DIR" "$EQ/inputs" "$EQ/macos-arm64"
-          sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/macos-arm64"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -299,6 +281,25 @@ jobs:
         run: |
           sh "$SHIPYARD_SCRIPTS/assert_appcast_upgradeable.sh" --appcast "$CROSS_BUILD_DIR/dist/drydock.xml" \
             --version '${{ steps.ver.outputs.tag }}' --tag-glob 'v*.*.*'
+
+      - name: Nothing this job ran was translated by Rosetta
+        if: always()
+        run: |
+          set -eu
+          if [ -f "$RUNNER_TEMP/oah-absent" ]; then
+            ! sudo test -d /var/db/oah || { echo "::error::/var/db/oah appeared during this job"; exit 1; }
+            echo "no /var/db/oah: Rosetta is not installed, so nothing this job ran ran translated"
+            exit 0
+          fi
+          [ -f "$RUNNER_TEMP/oah-before" ] || { echo "::error::no snapshot of /var/db/oah was taken before this job ran anything"; exit 1; }
+          sudo find /var/db/oah/ -type f > "$RUNNER_TEMP/oah.raw"
+          LC_ALL=C sort "$RUNNER_TEMP/oah.raw" > "$RUNNER_TEMP/oah-after"
+          LC_ALL=C comm -13 "$RUNNER_TEMP/oah-before" "$RUNNER_TEMP/oah-after" > "$RUNNER_TEMP/oah-new"
+          if [ -s "$RUNNER_TEMP/oah-new" ]; then
+            while IFS= read -r f; do echo "::error::Rosetta translated $f during this job"; done < "$RUNNER_TEMP/oah-new"
+            exit 1
+          fi
+          echo "/var/db/oah gained nothing: this job ran no x86_64 code"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -401,9 +402,230 @@ jobs:
           name: drydock-linux
           path: ${{ env.LINUX_DIST }}/*
 
+  # The x86_64 build, accepted where it runs: a Mac OS X 10.9.5 guest (Mavergreen/mavericks-vm). It
+  # installs this run's .pkg and runs every tool it ships at the installed version, builds the native
+  # preset and runs the suite with DRYDOCK_REQUIRE_EXEC=x86_64, so a row that would skip x86_64 fails,
+  # then runs the suite again on the installed tools (DRYDOCK_TOOL_DIR), the AppleClang-built ones the
+  # .pkg ships; it characterizes the native build and the installed tools, and makes equivalence's
+  # macos-x86_64 outputs from the installed tools. A skipped x86_64 row fails its test there. A whole
+  # test that does not run fails the job unless the guest's allow-list names it and its last SKIP line
+  # gives the reason the list states, and so does a 77 from the scripts run outside ctest. Any other row
+  # that says SKIP or N/A fails the job unless a second allow-list names it.
+  #
+  # The guest has no Command Line Tools: clang22 compiles the product (shipyard's AppleClang gate off)
+  # and the fixtures, and its llvm-* stand in for otool, nm, lipo and strings. The pkgs and the 10.9
+  # SDK are fetched and verified here and reach the guest with the workspace; only `longboat sdk
+  # install 10.9` fetches in the guest.
+  #
+  # The suite is run-repo-tests.sh native with a label filter, which run-repo-tests.sh does not take.
+  # -LE not-in-guest leaves out objc_reference_set and objc_iterm2_acceptance, maintainer tests that
+  # fetch SDKs and an iTerm2 zip and insert into system processes for up to an hour, run by hand on
+  # ultimate-hat; family_conventions, which checks repo policy, not x86_64 behaviour, and needs
+  # python3 and PyYAML, which 10.9 lacks; exec_arch_sweep_test, linux_pin_test and rosetta_free_test, which need git,
+  # and 10.9's git is a Command Line Tools stub (the runner and Linux run those); and mantle_raise_test, whose
+  # subject is an app in one maintainer's ~/Downloads, so it runs on that Mac alone.
+  on-target:
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write   # mavericks-vm's shared image cache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock-equivalence
+          path: eq
+
+      - name: Install mavericks-shipyard
+        uses: Mavergreen/shipyard/.github/actions/install@v1
+
+      # On Linux, install@v1 installs nothing and leaves SHIPYARD_SCRIPTS in its own checkout, whose
+      # components/cmake/version is the cmake its shipyard pkg requires.
+      - name: Stage shipyard's scripts, Longboat, cmake, shipyard, clang22, libcxx22, legacy-support and the 10.9 SDK
+        run: |
+          set -eu
+          cp -R "$SHIPYARD_SCRIPTS" .shipyard-scripts
+          fetch() { sh "$SHIPYARD_SCRIPTS/fetch-release-pkg.sh" "$@" deps; }
+          lb="$(tr -d '[:space:]' < components/longboat/version)"
+          fetch longboat "$lb" "longboat-$lb.pkg"
+          cm="$(tr -d '[:space:]' < "$SHIPYARD_SCRIPTS/../components/cmake/version")"
+          fetch cmake "$cm" "cmake-$cm.pkg"
+          sv="${SHIPYARD_VERSION:?install@v1 named no shipyard release}"
+          fetch shipyard "v$sv" "mavericks-shipyard-$sv.pkg"
+          c="$(tr -d '[:space:]' < components/objc-receipt-clang/version)"
+          fetch clang-22 "$c" "mavericks-clang-22-native-$c.pkg"
+          fetch clang-22 "$c" "libcxx22-$c.pkg"
+          mls="$(tr -d '[:space:]' < components/macports-legacy-support/version)"
+          fetch recaulk "$mls" "macports-legacy-support-$mls.pkg"
+          MAVERICKS_SDK_CACHE="$PWD/deps/mavericks-sdk" sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64
+          ls dist deps eq
+
+      - name: On Mac OS X 10.9, install the .pkg and run its tools, then build, test and characterize natively
+        uses: Mavergreen/mavericks-vm@v1
+        with:
+          image-key: ${{ secrets.MAVERICKS_VM_KEY }}
+          cpu: '4'
+          mem: '8192'
+          run: |
+            sw_vers
+            sudo -n true || { echo "the guest's user cannot sudo without a password, and installer needs root"; exit 1; }
+            for p in deps/longboat-*.pkg; do sudo installer -pkg "$p" -target /; done
+            sudo /usr/local/mavergreen/longboat/bin/longboat sdk install 10.9
+            for p in deps/mavericks-clang-22-native-*.pkg deps/libcxx22-*.pkg deps/cmake-*.pkg deps/mavericks-shipyard-*.pkg; do
+              sudo installer -pkg "$p" -target /
+            done
+            must() { status=0; "$@" || status=$?; [ "$status" -eq 0 ] || { echo "$* exited $status (77, a skip, is a failure here)"; exit 1; }; }
+            I=/usr/local/mavergreen
+            export PATH="$I/bin:$PATH" SHIPYARD_SCRIPTS="$PWD/.shipyard-scripts" MAVERICKS_SDK_CACHE="$PWD/deps/mavericks-sdk"
+            export CLANG22=$I/clang22
+            export NM=$CLANG22/bin/llvm-nm OTOOL=$CLANG22/bin/llvm-otool LIPO=$CLANG22/bin/llvm-lipo STRINGS=$CLANG22/bin/llvm-strings
+            TMPDIR="${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}"; export TMPDIR
+
+            V='${{ needs.build.outputs.version }}'
+            sudo installer -pkg "dist/drydock-$V.pkg" -target /
+            got="$(/usr/libexec/PlistBuddy -c 'Print :version' "$I/drydock/mavergreen.plist")"
+            [ "$got" = "$V" ] || { echo "the installed manifest says version $got, not $V"; exit 1; }
+            INSTALLED=$I/drydock/bin
+            # No tool takes --version. Run bare, each must start and answer with its usage.
+            for f in "$INSTALLED"/*; do
+              rc=0; "$f" < /dev/null > "$TMPDIR/bare.out" 2>&1 || rc=$?
+              case "$rc" in 1|2) [ -s "$TMPDIR/bare.out" ] || { echo "$f exited $rc saying nothing"; exit 1; } ;;
+                *) cat "$TMPDIR/bare.out"; echo "$f, run bare, exited $rc"; exit 1 ;; esac
+              echo "ran $f ($rc, its usage)"
+            done
+            must "$INSTALLED/drydock-macho-rewrite" --capabilities > /dev/null
+
+            # legacysupport_rename_test's MacPorts library, unpacked rather than installed.
+            mls="$TMPDIR/macports-legacy-support" pkg="$(ls "$PWD"/deps/macports-legacy-support-*.pkg)"
+            mkdir -p "$mls" && (cd "$mls" && xar -xf "$pkg" && gzip -dc macports-legacy-support-component.pkg/Payload | cpio -id 2>/dev/null)
+            export LEGACYSUPPORT_A="$mls/usr/local/mavergreen/legacysupport/lib/libMacportsLegacySupport.a"
+            [ -f "$LEGACYSUPPORT_A" ] || { echo "$pkg holds no usr/local/mavergreen/legacysupport/lib/libMacportsLegacySupport.a"; exit 1; }
+
+            shipyard-cmake --preset native -DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang" \
+              -DCMAKE_AR="$CLANG22/bin/llvm-ar" -DCMAKE_RANLIB="$CLANG22/bin/llvm-ranlib" \
+              -DCMAKE_INSTALL_NAME_TOOL="$CLANG22/bin/llvm-install-name-tool" -DDRYDOCK_CLANG22="$CLANG22"
+            shipyard-cmake --build --preset native
+            NATIVE="$TMPDIR/mm-build/$(basename "$PWD")-native"
+            # Allowed not to run here, each only for the reason its last SKIP line must give:
+            #   x86len_oracle_test: its oracle is cctools' otool, which needs the Command Line Tools
+            #   rebase_oracle_test: its oracle is the Command Line Tools' dyldinfo
+            #   apple_silicon_signing_test: it measures arm64 on Apple Silicon; the runner runs it
+            why() {
+              case "$1" in
+                x86len_oracle_test) echo "SKIP: no cctools otool here" ;;
+                rebase_oracle_test) echo "SKIP: no dyldinfo here" ;;
+                apple_silicon_signing_test) echo "SKIP: cannot execute arm64 on this host" ;;
+                *) return 1 ;;
+              esac
+            }
+            # Rows of tests that ran, allowed to say SKIP or N/A here, each by its name, for the reason given:
+            #   bake_mavericks_shim_test N/A signed, codesign_order_test N/A resign, insert_dylib_test SKIP --strip-codesig
+            #     and SKIP no tty: the guest has no codesign_allocate, so codesign -s - cannot sign
+            #   fixture_toolchain_test N/A positive control: 10.9's git is a stub; the runner and Linux run them
+            #   objc_report SKIP no x86_64 slice, symbol_rename_test SKIP arm64: the native clang22 builds no arm64;
+            #     the runner runs them
+            #   tool_dir_test N/A the installed tools: the native suite is handed none; the installed suite runs it
+            #   wrapper_test SKIP rename_segment: ld64.lld writes no LC_LAZY_LOAD_DYLIB, so no host runs it
+            row_allowed() {
+              case "$1" in
+                "bake_mavericks_shim_test: N/A signed"|"codesign_order_test: N/A resign 10.9 against the oracle") ;;
+                "insert_dylib_test: SKIP --strip-codesig"|"insert_dylib_test: SKIP no tty, no --all-yes") ;;
+                "fixture_toolchain_test: N/A positive control against ab41291") ;;
+                "fixture_toolchain_test: N/A positive control against c7c0f56") ;;
+                "objc_report: SKIP no x86_64 slice"|"symbol_rename_test: SKIP arm64") ;;
+                "tool_dir_test: N/A the installed tools"|"wrapper_test: SKIP rename_segment") ;;
+                *) return 1 ;;
+              esac
+            }
+            suite() {  # NAME [VAR=VALUE...]: the suite, in the environment given
+              name=$1; shift
+              log="$TMPDIR/ctest-$name.log" status=0
+              env DRYDOCK_REQUIRE_EXEC=x86_64 "$@" shipyard-ctest --preset native -LE not-in-guest --output-on-failure > "$log" 2>&1 || status=$?
+              cat "$log"
+              [ "$status" -eq 0 ] || { echo "the guest's $name suite failed (ctest exited $status)"; return 1; }
+              sed -n '/did not run:/,$s/^[[:space:]]*[0-9]* - \([^ ]*\) (.*/\1/p' "$log" > "$TMPDIR/skipped"
+              # The positive control: no Intel Mac runs arm64, so a parse that misses this has missed them all.
+              grep -qx apple_silicon_signing_test "$TMPDIR/skipped" \
+                || { echo "the $name suite's did-not-run list does not name apple_silicon_signing_test: has ctest's output changed?"; return 1; }
+              while read -r t; do
+                want="$(why "$t")" || { echo "$t did not run, and the guest allows that only of x86len_oracle_test, rebase_oracle_test and apple_silicon_signing_test"; return 1; }
+                said="$(awk -v t="$t" '$0 ~ "^[0-9]+/[0-9]+ Test: " t "$" { f = 1; next } f && /^<end of output>$/ { exit } f && /^SKIP/ { s = $0 } END { print s }' "$NATIVE/Testing/Temporary/LastTest.log")"
+                case "$said" in "$want"*) echo "did not run, as allowed: $t ($said)" ;;
+                  *) echo "$t did not run, saying '${said:-nothing}', not '$want'"; return 1 ;; esac
+              done < "$TMPDIR/skipped"
+              awk '/^[0-9]+\/[0-9]+ Test: / { t = $3; next } /^<end of output>$/ { t = "" }
+                t != "" && /^(SKIP|N\/A) / { r = $0; sub(/: .*/, "", r); print t ": " r }' \
+                "$NATIVE/Testing/Temporary/LastTest.log" | sort -u > "$TMPDIR/rows"
+              # The positive control: the native clang22 builds no arm64, so a parse that misses this row has missed them all.
+              grep -qx 'symbol_rename_test: SKIP arm64' "$TMPDIR/rows" \
+                || { echo "the $name suite's rows do not include symbol_rename_test's SKIP arm64: has LastTest.log changed?"; return 1; }
+              while IFS= read -r r; do
+                row_allowed "$r" || { echo "$r: a row did not run, and the guest does not allow that"; return 1; }
+                echo "row did not run, as allowed: $r"
+              done < "$TMPDIR/rows"
+            }
+            must suite native
+            # The installed tools: the suites are handed them, with this build's fixture helpers (tool_dir_test).
+            shipyard-cmake --preset native -DDRYDOCK_TOOL_DIR="$INSTALLED"
+            shipyard-cmake --build --preset native
+            must suite installed DRYDOCK_TOOL_DIR="$INSTALLED"
+            must sh tests/characterize.sh "$NATIVE" check
+            must sh tests/characterize.sh "$INSTALLED" check
+            must sh tests/equivalence.sh produce "$INSTALLED" eq/inputs out/macos-x86_64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: drydock-equivalence-x86_64
+          path: out/macos-x86_64
+
+  # The arm64 slice's acceptance (INGREDIENTS.md's arm64: deviation): the installed drydock-objc, run
+  # natively on Apple Silicon. The other tools ship x86_64 alone, and on-target runs those.
+  modern-smoke:
+    needs: [build]
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: drydock
+          path: dist
+
+      - name: Install the pkg, and run its arm64 drydock-objc
+        run: |
+          set -eu
+          [ "$(uname -m)" = arm64 ] && [ "$(arch)" = arm64 ] || { echo "::error::this runner is not running arm64 natively"; exit 1; }
+          V='${{ needs.build.outputs.version }}'
+          sudo installer -pkg "dist/drydock-$V.pkg" -target /
+          got="$(/usr/libexec/PlistBuddy -c 'Print :version' /usr/local/mavergreen/drydock/mavergreen.plist)"
+          [ "$got" = "$V" ] || { echo "::error::the installed manifest says version $got, not $V"; exit 1; }
+          OBJC=/usr/local/mavergreen/drydock/bin/drydock-objc
+          archs="$(lipo -info "$OBJC" | sed -n 's/.*: //p')"
+          case " $archs " in *" arm64 "*) ;; *) echo "::error::$OBJC carries $archs, no arm64"; exit 1 ;; esac
+          rc=0; "$OBJC" < /dev/null > bare.out 2>&1 || rc=$?
+          [ "$rc" -eq 2 ] && grep -q '^usage: drydock-objc' bare.out || { cat bare.out; echo "::error::$OBJC, run bare, exited $rc"; exit 1; }
+          digest="$("$OBJC" evidence --tree-digest-only --source-root tests/objc/fixtures)"
+          . tests/lib/tree-digest.sh && want="$(tree_digest tests/objc/fixtures)"
+          [ -n "$want" ] || { echo "::error::tree_digest gave no digest for tests/objc/fixtures"; exit 1; }
+          [ "$digest" = "$want" ] || { echo "::error::evidence --tree-digest-only gave '$digest', the algorithm gives $want"; exit 1; }
+          echo "drydock-objc $V ($archs) ran natively; tests/objc/fixtures digests to $digest"
+
   equivalence:
     name: equivalence (linux-x86_64 against macOS)
-    needs: [build, linux]
+    needs: [build, linux, on-target]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -417,6 +639,11 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
+          name: drydock-equivalence-x86_64
+          path: ${{ runner.temp }}/equivalence/macos-x86_64
+
+      - uses: actions/download-artifact@v8
+        with:
           name: drydock-linux
           path: ${{ runner.temp }}/linux
 
@@ -425,7 +652,7 @@ jobs:
           name: drydock
           path: ${{ runner.temp }}/macos
 
-      - name: The Linux drydock-macho-rewrite makes what both macOS slices make, byte for byte
+      - name: The Linux drydock-macho-rewrite and both macOS slices make the same files, byte for byte
         run: |
           set -eu
           V='${{ needs.build.outputs.version }}'
@@ -433,6 +660,7 @@ jobs:
           mkdir "$RUNNER_TEMP/unpacked"
           tar -xzf "$RUNNER_TEMP/linux/drydock-$V-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/unpacked"
           sh tests/equivalence.sh produce "$RUNNER_TEMP/unpacked/drydock-$V/bin" "$EQ/inputs" "$EQ/linux-x86_64"
+          sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/macos-arm64"
           sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/linux-x86_64"
           sh tests/equivalence.sh compare "$EQ/macos-arm64" "$EQ/linux-x86_64"
 
@@ -489,7 +717,7 @@ jobs:
   # The shared workflow regenerates SHA256SUMS, uses RELEASE_NOTES.md from the artifact as the
   # Release body, and fails if those notes are missing or empty.
   publish:
-    needs: [build, linux, equivalence, assemble, scan]
+    needs: [build, linux, on-target, modern-smoke, equivalence, assemble, scan]
     if: needs.build.outputs.publish == 'yes'
     permissions:
       contents: write
@@ -501,7 +729,7 @@ jobs:
   required:
     name: required (release)
     if: always()
-    needs: [build, linux, equivalence, assemble, scan, publish]
+    needs: [build, linux, on-target, modern-smoke, equivalence, assemble, scan, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: Mavergreen/shipyard/.github/actions/required-gate@v1
