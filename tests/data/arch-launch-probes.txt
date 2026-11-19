@@ -9,3 +9,6 @@ shipyard-ctest --preset cross --output-on-failure
 shipyard-ctest --preset cross-arm64 --output-on-failure
 sh x/equivalence.sh produce "$CROSS_BUILD_DIR"
 sh tests/chained-fixups.sh "$CROSS_BUILD_DIR"
+check_c_source_runs("int main(void) { return 0; }" PLANTED_RUNS)
+check_cxx_source_runs("int main() { return 0; }" PLANTED_CXX_RUNS)
+try_run(PLANTED_RUN PLANTED_COMPILE "${CMAKE_BINARY_DIR}" planted.c)

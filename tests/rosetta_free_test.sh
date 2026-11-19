@@ -13,6 +13,8 @@ installs='install-rosetta'
 rosetta_bullet='^- rosetta:'
 hw='hw\.optional\.arm64'
 cross_runs='run-repo-tests\.sh"?[[:space:]]+cross([[:space:]]|$)|ctest[[:space:]].*--preset[[:space:]]+cross([[:space:]"]|$)|(chained-fixups|apple_silicon_signing_test|characterize)\.sh"?[[:space:]]+"?\$\{?CROSS_BUILD_DIR|equivalence\.sh"?[[:space:]]+produce[[:space:]]+"?\$\{?CROSS_BUILD_DIR'
+configure_runs='check_(c|cxx|objc|objcxx)_source_runs|check_source_runs|try_run[[:space:]]*\('
+GATED=build/drydock-check-runs.cmake
 
 CODE_SPEC=":(glob)**/*.sh :(glob)**/*.yml :(glob)**/*.cmake CMakeLists.txt"
 OUTSIDE_TESTS="$CODE_SPEC :!tests/"
@@ -48,11 +50,19 @@ forbid "something installs Rosetta" "$installs" $CODE_SPEC
 forbid "hw.optional.arm64 is read outside tests/lib/exec-arch.sh, so something picks a path by Apple Silicon" "$hw" $OUTSIDE_EXEC_ARCH
 forbid "INGREDIENTS.md still declares a Rosetta use" "$rosetta_bullet" INGREDIENTS.md
 forbid "release.yml runs the x86_64 build's suite or proof on the arm64 runner" "$cross_runs" $YML
+if scan "$configure_runs" $CODE_SPEC; then
+  other=$(printf '%s\n' "$hits" | grep -v "^$GATED:" | grep . || true)
+  [ -z "$other" ] || say "a configure-time run bypasses $GATED, so an x86_64 configure on Apple Silicon runs under Rosetta: $other"
+  n=$(printf '%s\n' "$hits" | grep -c "^$GATED:" || true)
+  [ "$n" = 1 ] || say "$GATED's own check_c_source_runs: saw $n, expected 1"
+fi
+expect 1 "drydock_check_runs asks exec-arch.sh's can_exec before it runs anything" 'can_exec \\"\$2\\"' "$GATED"
 
 # Controls: each real pattern, through scan(), counts exactly its planted rows in the probe file.
 expect 2 "the launch scan sees both launches and not the commented one" "$launches" "$PROBES"
 expect 1 "the install scan sees the install" "$installs" "$PROBES"
 expect 1 "the INGREDIENTS scan sees a planted deviation" "$rosetta_bullet" "$PROBES"
+expect 3 "the configure-run scan sees check_c_source_runs, check_cxx_source_runs and try_run" "$configure_runs" "$PROBES"
 expect 4 "the cross scan sees run-repo-tests cross, ctest --preset cross, equivalence and chained-fixups, not cross-arm64" "$cross_runs" "$PROBES"
 
 # Controls: the pathspecs match what they are for, and exclude what they exclude.

@@ -481,6 +481,9 @@ drydock_add_test(NAME rosetta_free_test COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/t
 set_property(TEST rosetta_free_test APPEND PROPERTY LABELS not-in-guest)
 drydock_macos_test(exec_gate_rows_test "gated rows skip on an arm64-only host and fail in strict mode"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/exec_gate_rows_test.sh" "${DRYDOCK_BIN}")
+drydock_macos_test(check_runs_gate_test "a configure-time run happens only where can_exec allows"
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_runs_gate_test.sh" "${CMAKE_COMMAND}" "${CMAKE_C_COMPILER}"
+          "${CMAKE_OSX_SYSROOT}" "${DRYDOCK_TEST_ARCH}")
 
 # No test builds or inspects a fixture with the host's compiler or binutils.
 # platform: host-agnostic -- scans the tests' own sources.
@@ -662,12 +665,12 @@ set_tests_properties(archive_test PROPERTIES ENVIRONMENT MallocScribble=1)
 # archive_test again with src/archive.c itself under AddressSanitizer, where the
 # compiler has it (10.9's clang does not) and a sanitized binary runs on this host.
 include(CheckCCompilerFlag)
-include(CheckCSourceRuns)
+include("${CMAKE_CURRENT_SOURCE_DIR}/build/drydock-check-runs.cmake")
 set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address)
 check_c_compiler_flag(-fsanitize=address DRYDOCK_HAVE_ASAN)
 if(DRYDOCK_HAVE_ASAN)
   set(CMAKE_REQUIRED_FLAGS -fsanitize=address)
-  check_c_source_runs("int main(void) { return 0; }" DRYDOCK_ASAN_RUNS)
+  drydock_check_runs("int main(void) { return 0; }" DRYDOCK_ASAN_RUNS)
   unset(CMAKE_REQUIRED_FLAGS)
 endif()
 unset(CMAKE_REQUIRED_LINK_OPTIONS)
