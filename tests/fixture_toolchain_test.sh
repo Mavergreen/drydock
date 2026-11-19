@@ -77,7 +77,7 @@ mkdir -p "$TMP/stub/scripts" "$TMP/stub/prefix/bin" "$TMP/stub/root/components/o
 printf '#!/bin/sh\necho "clang22: already extracted" >&2\necho "%s"\n' "$TMP/stub/prefix" >"$TMP/stub/scripts/fetch_clang22.sh"
 printf '#!/bin/sh\necho ld64.lld\n' >"$TMP/stub/prefix/bin/clang"
 chmod +x "$TMP/stub/prefix/bin/clang"
-got=$(env -u CLANG22 ROOT="$ROOT" SHIPYARD_SCRIPTS="$TMP/stub/scripts" TMPDIR="$TMP" sh -c '. "$ROOT/tests/lib/toolchain.sh" && printf "%s" "$CC"' 2>/dev/null)
+got=$(CLANG22= ROOT="$ROOT" SHIPYARD_SCRIPTS="$TMP/stub/scripts" TMPDIR="$TMP" sh -c '. "$ROOT/tests/lib/toolchain.sh" && printf "%s" "$CC"' 2>/dev/null)
 [ "$got" = "$TMP/stub/prefix/bin/clang" ] && [ -x "$got" ] &&
   echo "ok CLANG22 unset: the fetched prefix is fetch_clang22.sh's stdout, not its stderr" ||
   fail "CLANG22 unset: CC resolved to '$got', expected $TMP/stub/prefix/bin/clang (stderr joined the path?)"
