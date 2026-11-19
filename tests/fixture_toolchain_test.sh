@@ -72,6 +72,16 @@ else
   echo "N/A positive control against c7c0f56: no git that can read it here (the synthetic control above still ran)"
 fi
 
+# toolchain.sh resolves a fetched prefix from fetch_clang22.sh's stdout alone; its stderr chatter must not join the path
+mkdir -p "$TMP/stub/scripts" "$TMP/stub/prefix/bin" "$TMP/stub/root/components/objc-receipt-clang"
+printf '#!/bin/sh\necho "clang22: already extracted" >&2\necho "%s"\n' "$TMP/stub/prefix" >"$TMP/stub/scripts/fetch_clang22.sh"
+printf '#!/bin/sh\necho ld64.lld\n' >"$TMP/stub/prefix/bin/clang"
+chmod +x "$TMP/stub/prefix/bin/clang"
+got=$(env -u CLANG22 ROOT="$ROOT" SHIPYARD_SCRIPTS="$TMP/stub/scripts" TMPDIR="$TMP" sh -c '. "$ROOT/tests/lib/toolchain.sh" && printf "%s" "$CC"' 2>/dev/null)
+[ "$got" = "$TMP/stub/prefix/bin/clang" ] && [ -x "$got" ] &&
+  echo "ok CLANG22 unset: the fetched prefix is fetch_clang22.sh's stdout, not its stderr" ||
+  fail "CLANG22 unset: CC resolved to '$got', expected $TMP/stub/prefix/bin/clang (stderr joined the path?)"
+
 found=$(hits "$ROOT")
 [ -z "$found" ] && echo "ok no test names a host compiler or binutil" ||
   fail "tests run the host's tools; use \$CC, \$AR, \$LIBTOOL, \$NM, \$OTOOL, \$LIPO, \$STRINGS, \$STRIP from tests/lib/toolchain.sh:

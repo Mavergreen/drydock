@@ -9,7 +9,7 @@
 _tc_scripts=${SHIPYARD_SCRIPTS:-/usr/local/mavergreen/shipyard/share/cmake/MavericksShipyard/scripts}
 _toolchain_prefix() {
   [ -n "${CLANG22:-}" ] && { printf '%s\n' "$CLANG22"; return; }
-  _tc_out=$(sh "$_tc_scripts/fetch_clang22.sh" "$ROOT/components/objc-receipt-clang" 2>&1) && {
+  _tc_out=$(sh "$_tc_scripts/fetch_clang22.sh" "$ROOT/components/objc-receipt-clang") && {
     printf '%s\n' "$_tc_out"; return; }
   echo "toolchain: no clang22 (fetch_clang22.sh: $_tc_out)" >&2
   return 1
