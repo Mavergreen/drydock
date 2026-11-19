@@ -203,13 +203,13 @@ got=$(runs "$TMP/runs.sh" | cut -d: -f1 | tr '\n' ' ')
 [ "$got" = "21 23 4 15 20 26 " ] && echo "ok control flags the ungated runs of what \$CC built, and its builds for arm64 or an unnamed arch, only" ||
   fail "runs control: flagged lines '$got', expected '21 23 4 15 20 26 '"
 
-if git -C "$ROOT" cat-file -e ab41291 2>/dev/null; then
-  mkdir "$TMP/ab" && git -C "$ROOT" archive ab41291 tests | tar -x -C "$TMP/ab"
+if git -C "$ROOT" cat-file -e abe8d68 2>/dev/null; then
+  mkdir "$TMP/ab" && git -C "$ROOT" archive abe8d68 tests | tar -x -C "$TMP/ab"
   n=$(unguarded "$TMP/ab" | wc -l | tr -d ' ')
-  [ "$n" -gt 0 ] && echo "ok positive control: $n unguarded runs of \$CC's programs in ab41291's tests" ||
-    fail "positive control: no unguarded runs in ab41291's tests, so the scan cannot be trusted"
+  [ "$n" -gt 0 ] && echo "ok positive control: $n unguarded runs of \$CC's programs in abe8d68's tests" ||
+    fail "positive control: no unguarded runs in abe8d68's tests, so the scan cannot be trusted"
 else
-  echo "N/A positive control against ab41291: no git that can read it here (the synthetic control above still ran)"
+  echo "N/A positive control against abe8d68: this clone lacks that commit, or its git cannot read it (the synthetic control above still ran)"
 fi
 
 found=$(unguarded "$ROOT")

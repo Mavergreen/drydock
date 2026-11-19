@@ -102,7 +102,7 @@ has "the row parse has a positive control: symbol_rename_test's arm64 row, which
   "grep -qx 'symbol_rename_test: SKIP arm64' \"\$TMPDIR/rows\""
 rows=$(printf '%s\n' "$vm" | awk '/^ *row_allowed\(\) \{/ { f = 1; next } f && /case "\$1" in/ { next } f && /^ *\*\) return 1 ;;/ { exit } f' |
   grep -o '"[^"]*"' | tr -d '"' | LC_ALL=C sort | tr '\n' '|')
-want_rows="bake_mavericks_shim_test: N/A signed|codesign_order_test: N/A resign 10.9 against the oracle|fixture_toolchain_test: N/A positive control against ab41291|fixture_toolchain_test: N/A positive control against c7c0f56|insert_dylib_test: SKIP --strip-codesig|insert_dylib_test: SKIP no tty, no --all-yes|objc_report: SKIP no x86_64 slice|symbol_rename_test: SKIP arm64|tool_dir_test: N/A the installed tools|wrapper_test: SKIP rename_segment|"
+want_rows="bake_mavericks_shim_test: N/A signed|codesign_order_test: N/A resign 10.9 against the oracle|fixture_toolchain_test: N/A positive control against abe8d68|fixture_toolchain_test: N/A positive control against c7c0f56|insert_dylib_test: SKIP --strip-codesig|insert_dylib_test: SKIP no tty, no --all-yes|objc_report: SKIP no x86_64 slice|symbol_rename_test: SKIP arm64|tool_dir_test: N/A the installed tools|wrapper_test: SKIP rename_segment|"
 [ "$rows" = "$want_rows" ] && ok "the guest allows exactly ten rows not to run" || bad "the guest's row allow-list is '$rows'"
 why_rows=$(printf '%s\n' "$vm" | awk '/^ *# Rows of tests that ran, allowed/ { f = 1 } f && !/^ *#/ { exit } f')
 for t in bake_mavericks_shim_test codesign_order_test insert_dylib_test fixture_toolchain_test objc_report symbol_rename_test tool_dir_test wrapper_test; do

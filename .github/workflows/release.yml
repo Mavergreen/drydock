@@ -540,7 +540,7 @@ jobs:
               case "$1" in
                 "bake_mavericks_shim_test: N/A signed"|"codesign_order_test: N/A resign 10.9 against the oracle") ;;
                 "insert_dylib_test: SKIP --strip-codesig"|"insert_dylib_test: SKIP no tty, no --all-yes") ;;
-                "fixture_toolchain_test: N/A positive control against ab41291") ;;
+                "fixture_toolchain_test: N/A positive control against abe8d68") ;;
                 "fixture_toolchain_test: N/A positive control against c7c0f56") ;;
                 "objc_report: SKIP no x86_64 slice"|"symbol_rename_test: SKIP arm64") ;;
                 "tool_dir_test: N/A the installed tools"|"wrapper_test: SKIP rename_segment") ;;
