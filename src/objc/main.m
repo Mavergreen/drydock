@@ -1410,17 +1410,42 @@ static void print_errors(ObjcAnalysis *a) {
     for (k = 0; k < a->n_errors; k++) fprintf(stderr, "objc-compat: %s: %s\n", a->errors[k].code, a->errors[k].detail ? a->errors[k].detail : "");
 }
 
-/* provider-link-args --prefix PREFIX --link-map FILE (scripts/objc-provider-link-args.sh). */
+/* provider-link-args --prefix PREFIX --link-map FILE [--provider ID]... (scripts/objc-provider-link-args.sh). */
 static int link_args_main(int argc, char **argv) {
     static const char *NAMES[] = { "--prefix", "--link-map" };
+    static const char USAGE[] = "usage: objc-compat provider-link-args --prefix PREFIX --link-map FILE [--provider ID]...\n";
     const char *v[2];
+    char **rest = calloc((size_t)argc + 1, sizeof *rest);
+    int nrest = 0, i0;
     ObjcAnalysis *a;
     NSMutableArray *out = [NSMutableArray array];
+    NSMutableArray *want = [NSMutableArray array];
+    NSMutableArray *fws = [NSMutableArray array];
+    BOOL *sel;
     size_t i, j;
-    if (pairs(argc, argv, NAMES, 2, v, "provider-link-args") || !v[0] || !v[1]) {
-        fprintf(stderr, "usage: objc-compat provider-link-args --prefix PREFIX --link-map FILE\n");
+    if (!rest) return 4;
+    rest[nrest++] = argv[0];
+    for (i0 = 1; i0 < argc; i0++) {
+        if (!strcmp(argv[i0], "--provider")) {
+            const char *id = i0 + 1 < argc ? argv[i0 + 1] : NULL;
+            if (!id || !*id || !control_free(id) || !utf8_ok((const unsigned char *)id)) {
+                fprintf(stderr, "objc-compat provider-link-args: --provider takes a non-empty provider ID without control characters\n%s", USAGE);
+                free(rest);
+                return 2;
+            }
+            if (![want containsObject:[NSString stringWithUTF8String:id]]) [want addObject:[NSString stringWithUTF8String:id]];
+            i0++;
+        } else {
+            rest[nrest++] = argv[i0];
+            if (i0 + 1 < argc) rest[nrest++] = argv[++i0];
+        }
+    }
+    if (pairs(nrest, rest, NAMES, 2, v, "provider-link-args") || !v[0] || !v[1]) {
+        fputs(USAGE, stderr);
+        free(rest);
         return 2;
     }
+    free(rest);
     if (!control_free(v[0]) || !control_free(v[1]) || !utf8_ok((const unsigned char *)v[0]) || !utf8_ok((const unsigned char *)v[1])) {
         fprintf(stderr, "objc-compat provider-link-args: a path with a control character (CR, LF, ...) or bad UTF-8 cannot be one argument per line\n");
         return 2;
@@ -1432,25 +1457,37 @@ static int link_args_main(int argc, char **argv) {
         objc_analysis_destroy(a);
         return 4;
     }
+    sel = calloc(a->n_providers, sizeof *sel);
+    if (!sel) { objc_analysis_destroy(a); return 4; }
+    {
+        NSMutableArray *declared = [NSMutableArray array];
+        BOOL missing = NO;
+        for (i = 0; i < a->n_providers; i++) [declared addObject:[NSString stringWithUTF8String:a->providers[i].provider_id]];
+        for (NSString *id in want)
+            if (![declared containsObject:id]) {
+                fprintf(stderr, "objc-compat provider-link-args: %s declares no provider ID %s; it declares: %s\n", v[0], [id UTF8String], [[declared componentsJoinedByString:@", "] UTF8String]);
+                missing = YES;
+            }
+        if (missing) { free(sel); objc_analysis_destroy(a); return 2; }
+        for (i = 0; i < a->n_providers; i++) sel[i] = ![want count] || [want containsObject:[declared objectAtIndex:i]];
+    }
     for (i = 0; i < a->n_providers; i++) {
         NSString *x = [NSString stringWithUTF8String:a->providers[i].archive];
-        if (!control_free(a->providers[i].archive)) { objc_analysis_destroy(a); return 2; }
+        if (!control_free(a->providers[i].archive)) { free(sel); objc_analysis_destroy(a); return 2; }
         if (![out containsObject:x]) [out addObject:x];
     }
     for (i = 0; i < a->n_providers; i++) {
         NSString *x = [NSString stringWithFormat:@"-Wl,-u,_%s", a->providers[i].root_symbol];
-        if (![out containsObject:x]) [out addObject:x];
+        if (sel[i] && ![out containsObject:x]) [out addObject:x];
     }
-    {
-        NSMutableArray *fws = [NSMutableArray array];
-        for (i = 0; i < a->n_providers; i++)
-            for (j = 0; j < a->providers[i].nframeworks; j++) {
-                NSString *f = [NSString stringWithUTF8String:a->providers[i].frameworks[j]];
-                if (![fws containsObject:f]) { [fws addObject:f]; [out addObject:@"-framework"]; [out addObject:f]; }
-            }
-    }
+    for (i = 0; i < a->n_providers; i++)
+        for (j = 0; sel[i] && j < a->providers[i].nframeworks; j++) {
+            NSString *f = [NSString stringWithUTF8String:a->providers[i].frameworks[j]];
+            if (![fws containsObject:f]) { [fws addObject:f]; [out addObject:@"-framework"]; [out addObject:f]; }
+        }
     [out addObjectsFromArray:@[ @"-Xlinker", @"-map", @"-Xlinker", [NSString stringWithUTF8String:v[1]] ]];
     for (NSString *x in out) printf("%s\n", [x UTF8String]);
+    free(sel);
     objc_analysis_destroy(a);
     return fflush(stdout) || ferror(stdout) ? 4 : 0;
 }

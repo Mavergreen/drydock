@@ -59,7 +59,7 @@ Given an Objective-C binary built for Mavericks, report which of its message sen
 
 * `drydock-objc analyze`: analyze an artifact against the reference set and write a report.
 * `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against, or with `--tree-digest-only` or `--sdk-digest-only` just print a digest of a source tree or an SDK.
-* `drydock-objc link-args`: print the link arguments for a provider prefix and link map.
+* `drydock-objc link-args`: print the link arguments for a provider prefix and link map; `--provider ID`, repeatable, limits them to the providers named, so a consumer roots and links only what it uses.
 * `drydock-objc receipt`: write an Objective-C provider's source receipt: every Objective-C send in its verified prepared sources, with the identities of the clang (its libclang version), the SDK and the tool that took it.
 * `drydock-objc resolve`: fill reviewed schema-2 build evidence's symbols and crate disambiguators from an artifact, so a product's CI regenerates them on every build. A reviewed path names one function or the copies of one generic instance; anything else is refused as `resolve-ambiguous`.
 

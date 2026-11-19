@@ -141,6 +141,61 @@ prefix/"
 link_args "$T/nl
 prefix" "$T/maps/nl.map"; [ "$rc" != 0 ] || fail 'a newline in the prefix path was accepted'
 
+
+fixture_prefix "$T/multi"
+EXTRA=',
+    { "provider_id" : "fixture.nslocale.language-code.v1", "class" : "NSLocale", "method_kind" : "-",
+      "selector" : "languageCode", "encoding" : "@16@0:8", "implementation_symbol" : "__fixture_objc_locale_language_code",
+      "activation_root" : "__fixture_objc_activate_foundation", "required_frameworks" : [ "Foundation" ],
+      "framework_policy" : "strong-linked-before-root" },
+    { "provider_id" : "fixture.nslocale.country-code.v1", "class" : "NSLocale", "method_kind" : "-",
+      "selector" : "countryCode", "encoding" : "@16@0:8", "implementation_symbol" : "__fixture_objc_locale_country_code",
+      "activation_root" : "__fixture_objc_activate_foundation", "required_frameworks" : [ "Foundation", "CoreFoundation" ],
+      "framework_policy" : "strong-linked-before-root" }'
+declare_prefix "$T/multi" "$T/fixture-receipt" "$EXTRA"
+MA=$(CDPATH= cd -- "$T/multi" && pwd -P)/lib/libfixture-objc.a
+M="$T/maps/m.map"
+LANG_ID=fixture.nslocale.language-code.v1
+COUNTRY_ID=fixture.nslocale.country-code.v1
+WS_ID=fixture.nsworkspace.open-urls.v1
+# spec: cli/drydock-objc.c header (link-args) -- sel_args WANT-RC [--provider ID]...: link-args on the three-provider prefix into $T/args.
+sel_args() {
+  want=$1; shift; rc=0
+  "$DRYDOCK_OBJC" link-args --prefix "$T/multi" --link-map "$M" "$@" >"$T/args" 2>"$T/err" || rc=$?
+  [ "$rc" = "$want" ] || fail "link-args $*: exit $rc, want $want"
+}
+# spec: cli/drydock-objc.c header (link-args) -- sel_want NAME ARG...: $T/args is exactly the lines ARG...
+sel_want() {
+  n=$1; shift; printf '%s\n' "$@" >"$T/args.want"
+  cmp -s "$T/args" "$T/args.want" || fail "$n: got $(tr '\n' '|' <"$T/args"), want $(tr '\n' '|' <"$T/args.want")"
+}
+sel_args 0 --provider "$LANG_ID"
+sel_want test_select_foundation "$MA" -Wl,-u,___fixture_objc_activate_foundation -framework Foundation -Xlinker -map -Xlinker "$M"
+sel_args 0 --provider "$COUNTRY_ID" --provider "$LANG_ID"
+sel_want test_shared_root_once "$MA" -Wl,-u,___fixture_objc_activate_foundation -framework Foundation -framework CoreFoundation -Xlinker -map -Xlinker "$M"
+sel_args 0 --provider "$WS_ID"
+sel_want test_select_workspace "$MA" -Wl,-u,___fixture_objc_activate -framework AppKit -framework Carbon -Xlinker -map -Xlinker "$M"
+sel_args 0
+sel_want test_all_equals_none "$MA" -Wl,-u,___fixture_objc_activate -Wl,-u,___fixture_objc_activate_foundation -framework AppKit -framework Carbon -framework Foundation -framework CoreFoundation -Xlinker -map -Xlinker "$M"
+cp "$T/args" "$T/args.none"
+sel_args 0 --provider "$WS_ID" --provider "$LANG_ID" --provider "$COUNTRY_ID"
+cmp -s "$T/args" "$T/args.none" || fail "test_all_equals_none: naming every provider differs from naming none"
+sel_args 0 --provider "$LANG_ID" --provider "$LANG_ID"
+sel_want test_repeat_is_once "$MA" -Wl,-u,___fixture_objc_activate_foundation -framework Foundation -Xlinker -map -Xlinker "$M"
+rc=0; "$DRYDOCK_OBJC" link-args --provider "$LANG_ID" --prefix "$T/multi" --link-map "$M" >"$T/args" 2>"$T/err" || rc=$?
+[ "$rc" = 0 ] || fail "test_order_free: exit $rc"
+sel_want test_order_free "$MA" -Wl,-u,___fixture_objc_activate_foundation -framework Foundation -Xlinker -map -Xlinker "$M"
+sel_args 2 --provider "$LANG_ID" --provider no.such.v1
+[ ! -s "$T/args" ] || fail "test_unknown_id: stdout not empty"
+for id in no.such.v1 "$LANG_ID" "$COUNTRY_ID" "$WS_ID"; do
+  grep -F "$id" "$T/err" >/dev/null || fail "test_unknown_id: stderr lacks $id"
+done
+sel_args 2 --provider ""
+[ ! -s "$T/args" ] || fail "test_empty_id: stdout not empty"
+rm -rf "$T/multi-bad"; cp -R "$T/multi" "$T/multi-bad"
+sed 's/"archive_sha256" : "[0-9a-f]*"/"archive_sha256" : "0000000000000000000000000000000000000000000000000000000000000000"/' "$T/multi/share/recaulk/objc-providers.json" >"$T/multi-bad/share/recaulk/objc-providers.json"
+rc=0; "$DRYDOCK_OBJC" link-args --prefix "$T/multi-bad" --link-map "$M" --provider no.such.v1 >"$T/args" 2>"$T/err" || rc=$?
+[ "$rc" = 4 ] || fail "test_invalid_decl_first: exit $rc, want 4"
 consumer "$T/root/bin/rooted" "$ALL"
 cp "$T/root/bin/rooted.map" "$T/maps/rooted.map"
 # spec: cli/drydock-objc.c header (link-args) -- the helper's own output never attests activation:

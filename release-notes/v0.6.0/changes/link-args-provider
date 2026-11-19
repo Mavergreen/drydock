@@ -1,0 +1,1 @@
+drydock-objc link-args takes --provider ID, repeatable, and prints only those providers' activation roots and frameworks, so a consumer of Recaulk's NSLocale methods no longer links AppKit and Carbon.

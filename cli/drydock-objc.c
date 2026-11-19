@@ -24,7 +24,8 @@
  *                                    reference manifest's header_tree_sha256
  *                                    (src/objc/source-hash.c); 0, 2 usage, 4 unreadable
  *   drydock-objc link-args ARGS...   shipyard's scripts/objc-provider-link-args.sh:
- *                                    --prefix PREFIX --link-map FILE
+ *                                    --prefix PREFIX --link-map FILE [--provider ID]...
+ *                                    only the named providers' roots and frameworks; none names every one
  *   drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE
  *                                    schema-2 reviewed evidence with each record's
  *                                    path resolved to FILE's function symbols and
@@ -112,7 +113,7 @@ static void usage(void) {
             " [--references DIR] --output NEW_FILE\n"
             "       drydock-objc evidence --tree-digest-only --source-root DIR\n"
             "       drydock-objc evidence --sdk-digest-only --sdk-root DIR\n"
-            "       drydock-objc link-args --prefix PREFIX --link-map FILE\n"
+            "       drydock-objc link-args --prefix PREFIX --link-map FILE [--provider ID]...\n"
             "       drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE\n"
             "       drydock-objc receipt --clang-prefix PREFIX --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR]..."
             " --unit LABEL [--unit LABEL]... [--include LABELDIR]... --output NEW_FILE\n");

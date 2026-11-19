@@ -15,8 +15,9 @@ fixture_prefix() {
   printf '%s  provider-register.c\n%s  provider-impl.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-impl.c")" >"$T/fixture-receipt"
   declare_prefix "$P" "$T/fixture-receipt"
 }
-# spec: tests/objc/fixtures/provider-register.c header -- declare_prefix DIR RECEIPT: the declaration of DIR's archive,
-#       whose prepared source RECEIPT (`SHA256  LABEL` lines) lists.
+# spec: tests/objc/fixtures/provider-register.c header -- declare_prefix DIR RECEIPT [EXTRA]: the declaration of DIR's archive,
+#       whose prepared source RECEIPT (`SHA256  LABEL` lines) lists;
+#       EXTRA, when given, is more provider entries (text starting with a comma) after the fixture's.
 declare_prefix() {
   P=$1
   cat >"$P/share/recaulk/objc-providers.json" <<EOF
@@ -36,7 +37,7 @@ declare_prefix() {
         "Carbon"
       ],
       "framework_policy" : "strong-linked-before-root"
-    }
+    }${3:-}
   ],
   "build" : {
     "archive_path" : "lib/libfixture-objc.a",
