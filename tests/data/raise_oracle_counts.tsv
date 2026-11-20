@@ -1,22 +1,22 @@
 # written by: sh tests/raise_oracle_counts_test.sh <bindir> update -- say in the commit why a row changed
 build	13F1911
-count	files	1557
+count	files	1556
 count	inits held	45
 count	inits skipped	0
-count	inits nothing	1512
-count	lazy held	1520
+count	inits nothing	1511
+count	lazy held	1519
 count	lazy skipped	0
 count	lazy nothing	37
-count	exports held	1532
+count	exports held	1531
 count	exports skipped	0
 count	exports nothing	25
-count	unwind held	1540
+count	unwind held	1539
 count	unwind skipped	0
 count	unwind nothing	17
-count	rebases held	1520
+count	rebases held	1528
 count	rebases skipped	0
 count	rebases nothing	28
-count	all five hold	1557
+count	all five hold	1556
 file	/System/Library/Frameworks/AGL.framework/Versions/A/AGL	e1f0d209d26439ccb63126e441e5b1c6d4e8ec5e94b59ddd68e195a23291cdfc	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation	0b873c8a7242f7e14e9145af803ed167ab0774c3f1833a40f14abaa3864593a3	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/AVFoundation.framework/Versions/A/Resources/libAVFAudio.dylib	53202644cfeb2a408449aa4ddd31cb8c430e4144a48ab3d88c6801971ac8a83b	inits=nothing lazy=held exports=held unwind=held rebases=held
@@ -172,7 +172,7 @@ file	/System/Library/Frameworks/InputMethodKit.framework/Versions/A/InputMethodK
 file	/System/Library/Frameworks/InstallerPlugins.framework/Versions/A/InstallerPlugins	ec134abf9682af4b0c665be8ad106dcc4f993e7e1a6c023a6b4ff75f53d05a55	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/InstantMessage.framework/Versions/A/InstantMessage	b11e0a55e6ec4573622a75cbb3f8b4962a5c3bf1262935353d974587c6b9686a	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/JavaFrameEmbedding.framework/Versions/A/JavaFrameEmbedding	2755e914f069512710f2c525f9815a548b6814468e570502c6bab2392fd199e2	inits=nothing lazy=held exports=held unwind=held rebases=held
-file	/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/JavaScriptCore	1e0a2690fe25c2a8f7a39b7ace3c4986901b2192fa404c868687610832252b31	inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/JavaScriptCore	1e0a2690fe25c2a8f7a39b7ace3c4986901b2192fa404c868687610832252b31	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaNativeFoundation.framework/Versions/A/JavaNativeFoundation	41173a74345ce52660d36ce33b47488256e182da8c59a54ae04ad456885078a4	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/JavaVM.framework/Versions/A/Frameworks/JavaRuntimeSupport.framework/Versions/A/JavaRuntimeSupport	9bb980814fea86ecdf52a3db3c9b4145facaff32e928239c6585dd75810e65f1	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/JavaVM.framework/Versions/A/JavaVM	2d3e027b39060764ae26785f1c9d23ef0bd13e1bc36fb0419e169de8834c1e5a	inits=held lazy=held exports=held unwind=held rebases=held
@@ -975,7 +975,6 @@ file	/System/Library/Frameworks/ScreenSaver.framework/Versions/A/Resources/iLife
 file	/System/Library/Frameworks/ScreenSaver.framework/Versions/A/ScreenSaver	390c0b1c63aa79d9a375c9fc09fae92734a306d292ec2d5e42ac0745ad61ab89	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/ScriptingBridge.framework/Versions/A/ScriptingBridge	8e18f41dcf8cd4e1ffe7507c709ebfeef025722f2b30f4e3424a8d9c548e7009	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/Security.framework/Versions/A/PlugIns/csparser.bundle/Contents/MacOS/csparser	11540f9acc3101e4f0f374ea65e86d5df6351820bc98260d73364f2fa8dee8de	inits=held lazy=held exports=held unwind=held rebases=held
-file	/System/Library/Frameworks/Security.framework/Versions/A/Security	8ed5bc28b19040387fe5f71ce018ffd6438f0372d883f7efba4e1c5fe50241b6	inits=nothing lazy=held exports=held unwind=held
 file	/System/Library/Frameworks/SecurityFoundation.framework/Versions/A/SecurityFoundation	f205799b17469910844f3009b8cda8193e2063c137f9204768ef8ee0d35c7fa7	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/SecurityInterface.framework/Versions/A/SecurityInterface	091cb528b97695907c3a044fb94c8732de8b56c5ab069d582fc2d1cf7d669569	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/ServiceManagement.framework/Versions/A/ServiceManagement	c2d1ff540a4d4ffc68a37832b9aed4d606a37404ebb105e75e5a22038054e8b4	inits=nothing lazy=held exports=held unwind=held rebases=held
@@ -990,9 +989,9 @@ file	/System/Library/Frameworks/Tcl.framework/Versions/8.5/Tcl	789bee19f006562be
 file	/System/Library/Frameworks/Tk.framework/Versions/8.5/Tk	6b2ab6fe9d157c4e90fb7442586b6acddf6508f043398263c18fd3d0a8f7341a	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/VideoDecodeAcceleration.framework/Versions/A/VideoDecodeAcceleration	29f96e29dce654ff8dc69cac334c392e4a2a9a2a9da621c70e91220b8082a1c0	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox	ffb3753f71ab5ebf0f56432ecdaaf79c5398fa1ea7e15f1dcd2aecad402091a4	inits=nothing lazy=held exports=held unwind=held rebases=held
-file	/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebCore.framework/Versions/A/WebCore	fd4009823b34b1107044f4b497c9907913a9f47d4778fb3c881efe3774a00492	inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit	831bd7b13de703260cc42a449c872cd5e53ce7fde20c1fa90cd23fc78bdd0a49	inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/Frameworks/WebKit.framework/WebKitPluginHost.app/Contents/MacOS/WebKitPluginHostShim.dylib	08d67844357e30803b1e30b24e5c35d05ce4037208772a31465918a5c065f231	inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebCore.framework/Versions/A/WebCore	fd4009823b34b1107044f4b497c9907913a9f47d4778fb3c881efe3774a00492	inits=nothing lazy=held exports=held unwind=held rebases=held
+file	/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit	831bd7b13de703260cc42a449c872cd5e53ce7fde20c1fa90cd23fc78bdd0a49	inits=nothing lazy=held exports=held unwind=held rebases=held
+file	/System/Library/Frameworks/WebKit.framework/WebKitPluginHost.app/Contents/MacOS/WebKitPluginHostShim.dylib	08d67844357e30803b1e30b24e5c35d05ce4037208772a31465918a5c065f231	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/AOSAccounts.framework/Versions/A/AOSAccounts	a21e1e56c31df22512109053b3a902437e6f080afb10941aaa077f68043b69a9	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/AOSKit.framework/Versions/A/AOSKit	7a1bd132d5862ece2ff578877d2b8cf44e740f93d6008dc2290d9a4163f7d0c8	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/AOSMigrate.framework/Versions/A/AOSMigrate	c13fa98f4cdf3f69f8d5e83bcd01bc91de7c1eb210033d729a98b03fb40d8a8c	inits=nothing lazy=held exports=held unwind=held rebases=held
@@ -1349,10 +1348,10 @@ file	/System/Library/PrivateFrameworks/WebContentAnalysis.framework/Versions/A/W
 file	/System/Library/PrivateFrameworks/WebFilterDNS.framework/Versions/A/WebFilterDNS	ffaf9e9310202ae798c416eb60163fdc0a99ea3ff4337d7caceabf42fc094e56	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/WebInspector.framework/Versions/A/WebInspector	c7c211634ac22bca542d478af3845e233bf46ceda8389293186d66e43f55b771	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/WebInspectorUI.framework/Versions/A/WebInspectorUI	cc4d193c5f3d007c88551f6d095376a0d4b86be770d00762284f65336dca751a	inits=nothing lazy=nothing exports=nothing unwind=nothing rebases=nothing
-file	/System/Library/PrivateFrameworks/WebKit2.framework/NetworkProcess.app/Contents/MacOS/SecItemShim.dylib	e8d191eb70234f3e7c14a0486e121264b9e6bce47928fdbcbca29306fcd9538c	inits=nothing lazy=nothing exports=held unwind=held
-file	/System/Library/PrivateFrameworks/WebKit2.framework/PluginProcess.app/Contents/MacOS/PluginProcessShim.dylib	84b1ff1c9017dc04ac6705a612f2b10c729f060f7c7b0b631cbcaf703a512b38	inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/PrivateFrameworks/WebKit2.framework/Versions/A/WebKit2	1cc490f55627b83c7678fd377a9949aa64bc0416e525078ed718a9b910422f27	inits=nothing lazy=held exports=held unwind=held
-file	/System/Library/PrivateFrameworks/WebKit2.framework/WebProcess.app/Contents/MacOS/WebProcessShim.dylib	b2ed95ac8e2647f6049c8ba1b3d9ec4d28c4a6ad8db40e29523071c51b52cd00	inits=nothing lazy=held exports=held unwind=held
+file	/System/Library/PrivateFrameworks/WebKit2.framework/NetworkProcess.app/Contents/MacOS/SecItemShim.dylib	e8d191eb70234f3e7c14a0486e121264b9e6bce47928fdbcbca29306fcd9538c	inits=nothing lazy=nothing exports=held unwind=held rebases=held
+file	/System/Library/PrivateFrameworks/WebKit2.framework/PluginProcess.app/Contents/MacOS/PluginProcessShim.dylib	84b1ff1c9017dc04ac6705a612f2b10c729f060f7c7b0b631cbcaf703a512b38	inits=nothing lazy=held exports=held unwind=held rebases=held
+file	/System/Library/PrivateFrameworks/WebKit2.framework/Versions/A/WebKit2	1cc490f55627b83c7678fd377a9949aa64bc0416e525078ed718a9b910422f27	inits=nothing lazy=held exports=held unwind=held rebases=held
+file	/System/Library/PrivateFrameworks/WebKit2.framework/WebProcess.app/Contents/MacOS/WebProcessShim.dylib	b2ed95ac8e2647f6049c8ba1b3d9ec4d28c4a6ad8db40e29523071c51b52cd00	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/WhitePages.framework/Versions/A/WhitePages	b17838ddc35f8da5aeb4929d0f11148b21c441e4254d1fcbab55d65b591ed12c	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/WiFiCloudSyncEngine.framework/Versions/A/WiFiCloudSyncEngine	e2a11da69b9ee57a118ee6f1d05e2ea3fee43a7193a17f37f30366b7cadb88ed	inits=nothing lazy=held exports=held unwind=held rebases=held
 file	/System/Library/PrivateFrameworks/WirelessDiagnosticsSupport.framework/Versions/A/WirelessDiagnosticsSupport	6dc9255b25c3955a9b3dc13c652b1e8b8a8baa8919f745e6be8ce2df6a49dc5a	inits=nothing lazy=held exports=held unwind=held rebases=held

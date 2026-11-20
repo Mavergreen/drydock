@@ -19,9 +19,9 @@
 # are compared, the counts compared are those of the matched rows, and a file
 # missing, added or changed is reported, not failed.
 #
-# Local only: it SKIPs, saying why, unless this is the 10.9 build the table
-# was measured on, and unless at least half the table's files are here with
-# the contents it was measured on.
+# It SKIPs, saying why, unless this is the 10.9 build the table was measured
+# on; there, fewer than FLOOR of the table's files here with the contents it
+# was measured on is a failure.
 set -u
 
 BIN="${1:?usage: raise_oracle_counts_test.sh <bindir> [update|recount]}"
@@ -30,6 +30,18 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TABLE="$HERE/data/raise_oracle_counts.tsv"
 RC="$BIN/raise_corpus"
 [ -x "$RC" ] || { echo "raise_oracle_counts_test: $RC not found or not executable" >&2; exit 1; }
+
+# short ROWS: the file rows that do not record all five oracles -- a row measured before one existed is not
+# comparable with a run, which always records five, and matches only on a host still holding those exact bytes
+short() {
+    awk -F'\t' '$1 == "file" { for (i = 0; i < 5; i++) if ($4 !~ ("(^| )" o[i] "=(held|skipped|nothing)( |$)")) { print $2; next } }
+        BEGIN { split("inits lazy exports unwind rebases", w, " "); for (i = 0; i < 5; i++) o[i] = w[i + 1] }' "$1"
+}
+printf 'file\t/a\t00\tinits=nothing lazy=held exports=held unwind=held rebases=held\nfile\t/b\t00\tinits=nothing lazy=held exports=held unwind=held\n' |
+    short /dev/stdin | grep -qx /b && [ "$(printf 'file\t/a\t00\tinits=nothing lazy=held exports=held unwind=held rebases=held\n' | short /dev/stdin)" = "" ] ||
+    { echo "FAIL the five-oracle control: a planted four-oracle row is not the one caught"; exit 1; }
+n4=$(short "$TABLE" | wc -l | tr -d ' ')
+[ "$n4" -eq 0 ] || { echo "FAIL the table: $n4 row(s) do not record all five oracles: $(short "$TABLE" | head -3 | tr '\n' ' ')"; exit 1; }
 [ -f /usr/lib/libSystem.B.dylib ] || { echo "SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own"; exit 77; }
 build=$(sw_vers -buildVersion 2>/dev/null)
 want=$(awk -F'\t' '$1 == "build" { print $2; exit }' "$TABLE" 2>/dev/null)
@@ -78,10 +90,15 @@ set -- $(tail -1 "$T/match")
 matched=$2 total=$4 missing=$8 added=${10} changed=${12}
 sed '$d' "$T/match"
 echo "INFO $(tail -1 "$T/match")"
-if [ $((matched * 2)) -lt "$total" ]; then
-    echo "SKIP: only $matched of the table's $total files are here with the contents it was measured on; below half, this is not its corpus"
-    exit 77
+# A file missing, added or changed here is not compared (INFO above), but the compared set is held to a floor: the
+# measuring Mac matches 1548 of the table's files and the CI guest's stock 10.9.5 image 1535.
+FLOOR=1500
+if [ "$matched" -lt "$FLOOR" ]; then
+    bad "the compared set" "only $matched of the table's $total files are here with the contents it was measured on, below the floor of $FLOOR"
+    echo "raise_oracle_counts_test: $fail failure(s)"
+    exit 1
 fi
+echo "PASS $matched of the table's $total files are compared, at least the floor of $FLOOR"
 table "$T/tm" >"$T/want"
 table "$T/rm" >"$T/got"
 if diff "$T/want" "$T/got" >"$T/diff"; then
