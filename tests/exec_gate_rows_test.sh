@@ -14,7 +14,11 @@ check "forced arm64: symbol_rename_test exits 0" 0 "$?"
 sites=$(grep -c 'gate_row x86_64' "$SUT")
 grep -q '^SKIP sort order ld -r' "$T/skip.out" && sites=$((sites - 1))
 check "forced arm64: one SKIP per x86_64 gate reached" "$sites" "$(grep -c '^SKIP .*: cannot execute x86_64' "$T/skip.out")"
-check "forced arm64: no fixture ran, so no row printed what one prints" 0 "$(grep -c -E '^PASS .*(links and prints|prints [0-9]+)' "$T/skip.out")"
+# ran FILE: how many x86_64 rows printed what only a fixture that ran prints (an arm64 row runs on arm64 hardware)
+ran() { grep -E '^PASS .*(links and prints|prints [0-9]+)' "$1" | grep -c -v '^PASS arm64:'; }
+printf '%s\n' 'PASS forwarding: links and prints 43' 'PASS arm64: links and prints 43' 'PASS undefined: the call reaches _bar and prints 7' >"$T/control.out"
+check "control: ran counts the x86_64 rows that ran, not the arm64 one" 2 "$(ran "$T/control.out")"
+check "forced arm64: no x86_64 fixture ran, so no row printed what one prints" 0 "$(ran "$T/skip.out")"
 
 env DRYDOCK_HOST_ARM64=1 DRYDOCK_REQUIRE_EXEC=x86_64 sh "$SUT" "$BIN" >"$T/strict.out" 2>&1
 check "strict: symbol_rename_test exits 1" 1 "$?"
