@@ -941,6 +941,8 @@ set_tests_properties(archive_rename_test PROPERTIES SKIP_RETURN_CODE 77)
 drydock_macos_test(legacysupport_rename_test "MacPorts' libMacportsLegacySupport.a, linked by ld64.lld and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/legacysupport_rename_test.sh" "${DRYDOCK_BIN}")
 set_tests_properties(legacysupport_rename_test PROPERTIES SKIP_RETURN_CODE 77)
+drydock_add_test(NAME macfuse_golden_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/macfuse_golden_test.sh" "${DRYDOCK_BIN}")
 
 # compat/bake-mavericks-shim.sh end to end, including a baked binary that runs
 # with the shim's implementation and no DYLD_* variables.

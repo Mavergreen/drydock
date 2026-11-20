@@ -146,6 +146,23 @@ jobs:
           shipyard-cmake --preset cross-arm64 -DDRYDOCK_BUILD_UPDATER=ON
           shipyard-cmake --build --preset cross-arm64
 
+      # macfuse_golden_test's input: upstream's debug tarball, pinned by sha256, outside the source tree
+      # (and in $HOME, not runner.temp, whose path a container job sees differently).
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/macfuse-debug
+          key: macfuse-debug-${{ hashFiles('components/macfuse-debug/sha256') }}
+
+      - name: Fetch and verify macFUSE's debug tarball, for macfuse_golden_test
+        run: |
+          set -eu
+          v="$(tr -d '[:space:]' < components/macfuse-debug/version)"
+          tbz="$HOME/.cache/macfuse-debug/macfuse-$v-debug.tbz"
+          mkdir -p "$(dirname "$tbz")"
+          [ -f "$tbz" ] || curl -fsSL -o "$tbz" "https://github.com/macfuse/macfuse/releases/download/macfuse-$v/macfuse-$v-debug.tbz"
+          echo "$(tr -d '[:space:]' < components/macfuse-debug/sha256)  $tbz" | shasum -a 256 -c
+          echo "MACFUSE_DEBUG_TBZ=$tbz" >> "$GITHUB_ENV"
+
       # The shared runner takes the whole suite, so a newly added test runs the
       # day it lands rather than when someone remembers a CI line. Includes
       # `characterize`, which is the equivalence gate. Its x86_64 rows skip here and
@@ -180,6 +197,17 @@ jobs:
           sh tests/apple_silicon_signing_test.sh "$ARM64_BUILD_DIR" && rc=0 || rc=$?
           if [ "$rc" = 77 ]; then
             echo "::error::apple_silicon_signing_test SKIPPED on the arm64 runner -- it should run here"
+            exit 1
+          fi
+          exit "$rc"
+
+      # The same again: this job fetched the tarball, so a SKIP means the golden went unchecked.
+      - name: macFUSE 5.5.0's kext, through vnodeop replace, is the golden one (arm64 Drydock)
+        run: |
+          set -eu
+          sh tests/macfuse_golden_test.sh "$ARM64_BUILD_DIR" && rc=0 || rc=$?
+          if [ "$rc" = 77 ]; then
+            echo "::error::macfuse_golden_test SKIPPED on the arm64 runner -- it should run here"
             exit 1
           fi
           exit "$rc"
@@ -315,7 +343,7 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            ca-certificates git curl xz-utils perl gcc libc6-dev make cmake binutils python3 python3-yaml bats
+            ca-certificates git curl xz-utils bzip2 perl gcc libc6-dev make cmake binutils python3 python3-yaml bats
 
       - uses: actions/checkout@v7
         with:
@@ -342,6 +370,21 @@ jobs:
           CM="$(command -v cmake)"
           "$CM" -S . -B "$LINUX_BUILD_DIR" -DCMAKE_C_FLAGS="-march=x86-64 -mtune=generic"
           "$CM" --build "$LINUX_BUILD_DIR" -j "$(nproc)"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/macfuse-debug
+          key: macfuse-debug-${{ hashFiles('components/macfuse-debug/sha256') }}
+
+      - name: Fetch and verify macFUSE's debug tarball, for macfuse_golden_test
+        run: |
+          set -eu
+          v="$(tr -d '[:space:]' < components/macfuse-debug/version)"
+          tbz="$HOME/.cache/macfuse-debug/macfuse-$v-debug.tbz"
+          mkdir -p "$(dirname "$tbz")"
+          [ -f "$tbz" ] || curl -fsSL -o "$tbz" "https://github.com/macfuse/macfuse/releases/download/macfuse-$v/macfuse-$v-debug.tbz"
+          echo "$(tr -d '[:space:]' < components/macfuse-debug/sha256)  $tbz" | shasum -a 256 -c
+          echo "MACFUSE_DEBUG_TBZ=$tbz" >> "$GITHUB_ENV"
 
       - name: Every test that does not need a Mac runs, and none skips
         run: |
@@ -523,11 +566,13 @@ jobs:
             #   x86len_oracle_test: its oracle is cctools' otool, which needs the Command Line Tools
             #   rebase_oracle_test: its oracle is the Command Line Tools' dyldinfo
             #   apple_silicon_signing_test: it measures arm64 on Apple Silicon; the runner runs it
+            #   macfuse_golden_test: the guest is handed no macFUSE tarball; the build and linux jobs fetch it and run it
             why() {
               case "$1" in
                 x86len_oracle_test) echo "SKIP: no cctools otool here" ;;
                 rebase_oracle_test) echo "SKIP: no dyldinfo here" ;;
                 apple_silicon_signing_test) echo "SKIP: cannot execute arm64 on this host" ;;
+                macfuse_golden_test) echo "SKIP: macfuse_golden_test: no MACFUSE_DEBUG_TBZ" ;;
                 *) return 1 ;;
               esac
             }
@@ -561,7 +606,7 @@ jobs:
               grep -qx apple_silicon_signing_test "$TMPDIR/skipped" \
                 || { echo "the $name suite's did-not-run list does not name apple_silicon_signing_test: has ctest's output changed?"; return 1; }
               while read -r t; do
-                want="$(why "$t")" || { echo "$t did not run, and the guest allows that only of x86len_oracle_test, rebase_oracle_test and apple_silicon_signing_test"; return 1; }
+                want="$(why "$t")" || { echo "$t did not run, and the guest allows that only of x86len_oracle_test, rebase_oracle_test, apple_silicon_signing_test and macfuse_golden_test"; return 1; }
                 said="$(awk -v t="$t" '$0 ~ "^[0-9]+/[0-9]+ Test: " t "$" { f = 1; next } f && /^<end of output>$/ { exit } f && /^SKIP/ { s = $0 } END { print s }' "$NATIVE/Testing/Temporary/LastTest.log")"
                 case "$said" in "$want"*) echo "did not run, as allowed: $t ($said)" ;;
                   *) echo "$t did not run, saying '${said:-nothing}', not '$want'"; return 1 ;; esac

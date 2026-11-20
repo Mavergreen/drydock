@@ -92,8 +92,9 @@ has "an allowed test must have skipped for its stated reason, its last SKIP line
 allowed=$(printf '%s\n' "$vm" | sed -n 's/^ *\([a-z0-9_]*\)) echo "\(SKIP: [^"]*\)" ;;$/\1: \2/p')
 want_allowed="x86len_oracle_test: SKIP: no cctools otool here
 rebase_oracle_test: SKIP: no dyldinfo here
-apple_silicon_signing_test: SKIP: cannot execute arm64 on this host"
-[ "$allowed" = "$want_allowed" ] && ok "the guest allows exactly three tests not to run, each for one reason" \
+apple_silicon_signing_test: SKIP: cannot execute arm64 on this host
+macfuse_golden_test: SKIP: macfuse_golden_test: no MACFUSE_DEBUG_TBZ"
+[ "$allowed" = "$want_allowed" ] && ok "the guest allows exactly four tests not to run, each for one reason" \
   || bad "the guest's allow-list is '$allowed'"
 has "a row that says SKIP or N/A in a test that ran fails the job unless allowed" "$vm" \
   'row_allowed "$r" || { echo "$r: a row did not run, and the guest does not allow that"; return 1; }'
@@ -108,7 +109,7 @@ why_rows=$(printf '%s\n' "$vm" | awk '/^ *# Rows of tests that ran, allowed/ { f
 for t in bake_mavericks_shim_test codesign_order_test insert_dylib_test fixture_toolchain_test objc_report symbol_rename_test tool_dir_test wrapper_test; do
   has "the guest says why $t's rows may not run" "$why_rows" "$t "
 done
-for t in x86len_oracle_test rebase_oracle_test apple_silicon_signing_test; do
+for t in x86len_oracle_test rebase_oracle_test apple_silicon_signing_test macfuse_golden_test; do
   has "the guest says why $t may not run" "$vm" "#   $t: "
 done
 lacks "legacysupport_rename_test must run in the guest" "$vm" "legacysupport_rename_test)"
@@ -120,6 +121,22 @@ has "the runner fetches the pinned legacy-support pkg from Mavergreen/recaulk" "
   || bad "no components/macports-legacy-support/version"
 grep -F '`components/macports-legacy-support/version`' "$HERE/../INGREDIENTS.md" | grep -q '❌ \*\*untrackable\*\*' \
   && ok "INGREDIENTS.md says why no bot moves the legacy-support pin" || bad "INGREDIENTS.md does not mark the legacy-support pin untrackable"
+for j in build linux; do
+  f=$(step "$j" "for macfuse_golden_test")
+  has "$j fetches macFUSE's pinned debug tarball" "$f" \
+    'https://github.com/macfuse/macfuse/releases/download/macfuse-$v/macfuse-$v-debug.tbz'
+  has "$j verifies it against components/macfuse-debug/sha256" "$f" \
+    '$(tr -d '"'[:space:]'"' < components/macfuse-debug/sha256)  $tbz" | shasum -a 256 -c'
+  has "$j hands it to the suite" "$f" 'echo "MACFUSE_DEBUG_TBZ=$tbz" >> "$GITHUB_ENV"'
+  has "$j caches it by its pin" "$(step "$j" actions/cache@)" "key: macfuse-debug-\${{ hashFiles('components/macfuse-debug/sha256') }}"
+done
+has "build fails if macfuse_golden_test skips" "$(step build "tests/macfuse_golden_test.sh")" \
+  'echo "::error::macfuse_golden_test SKIPPED on the arm64 runner -- it should run here"'
+for f in version sha256; do
+  [ -s "$HERE/../components/macfuse-debug/$f" ] && ok "components/macfuse-debug/$f pins it" || bad "no components/macfuse-debug/$f"
+done
+grep -F '`components/macfuse-debug/sha256`' "$HERE/../INGREDIENTS.md" | grep -q '❌ \*\*untrackable\*\*' \
+  && ok "INGREDIENTS.md says why no bot moves the macFUSE pin" || bad "INGREDIENTS.md does not mark the macFUSE pin untrackable"
 if printf %s "$vm" | grep -q 'drydock-updater'; then
   grep -q '^- on-target:updater: ' "$HERE/../INGREDIENTS.md" && bad "the guest runs the updater; drop INGREDIENTS.md's on-target:updater line" \
     || ok "the guest runs the updater"
