@@ -82,7 +82,7 @@ set(CMAKE_C_STANDARD_REQUIRED OFF)
 # the `drydock-macho-rewrite` CLI executable's target. It is deliberately NOT linked
 # into every tool: only what actually includes a header from src/ links it, so
 # a tool that gains a dependency does so visibly, in this file.
-add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c src/linkedit_pack.c src/symrename.c src/archive.c src/uuid.c)
+add_library(drydockcore STATIC src/uleb.c src/image.c src/ordinals.c src/fat.c src/trie.c src/lc_kinds.c src/atomic_write.c src/linkedit.c src/grow.c src/rewrite.c src/version_min.c src/segname.c src/swift_retag.c src/declassify.c src/script.c src/edit.c src/arch_names.c src/relations.c src/imports.c src/redirect.c src/exports.c src/objc_meth.c src/hdrref.c src/x86len.c src/rebase.c src/objc_abs.c src/linkedit_order.c src/linkedit_pack.c src/symrename.c src/vnodeop.c src/archive.c src/uuid.c)
 # The version `uuid set stamped` writes into bytes 2 and 3 of the UUID (src/uuid.h).
 target_compile_definitions(drydockcore PRIVATE
   DRYDOCK_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} DRYDOCK_VERSION_MINOR=${PROJECT_VERSION_MINOR})
@@ -655,6 +655,12 @@ target_compile_options(symrename_test PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(symrename_test PRIVATE drydockcore)
 drydock_add_test(NAME symrename_test COMMAND symrename_test)
 set_tests_properties(symrename_test PROPERTIES ENVIRONMENT MallocScribble=1)
+
+add_executable(vnodeop_test tests/vnodeop_test.c)
+target_compile_options(vnodeop_test PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(vnodeop_test PRIVATE drydockcore)
+drydock_add_test(NAME vnodeop_test COMMAND vnodeop_test)
+set_tests_properties(vnodeop_test PROPERTIES ENVIRONMENT MallocScribble=1)
 
 add_executable(archive_test tests/archive_test.c)
 target_compile_options(archive_test PRIVATE -O2 -Wall -Wextra)
