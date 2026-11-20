@@ -163,24 +163,60 @@ runs() {
         }
         if (other) print first ": " logical
       }
-      if (logical ~ /"\$(CC|CXX)"/ && match(logical, /-o[ \t]+"?[^ "]+"?/)) {
-        o = substr(logical, RSTART, RLENGTH); sub(/^-o[ \t]+/, "", o); gsub(/"/, "", o)
-        if (o ~ /\.(o|a|dylib|bundle)$/ || o ~ /^(\/dev\/null|\$[0-9@*])$/) next
-        if (loopvar != "" && index(o, "$" loopvar)) {
-          nw = split(loopwords, w, " ")
-          for (i = 1; i <= nw; i++) { e = o; gsub("\\$(" loopvar "|\\{" loopvar "\\})", w[i], e); built[e] = 1 }
-        } else built[o] = 1
+      if (match(logical, /^[ \t]*[A-Za-z_][A-Za-z_0-9]*[ \t]*\(\)/)) {
+        fn = substr(logical, RSTART, RLENGTH); gsub(/[ \t()]/, "", fn); argvar = ""
       }
+      if (fn != "" && match(logical, /(^|[ \t;{])[A-Za-z_][A-Za-z_0-9]*=["]?\$\{?1\}?["]?([ \t;]|$)/)) {
+        argvar = substr(logical, RSTART, RLENGTH); sub(/^[ \t;{]/, "", argvar); sub(/=.*/, "", argvar)
+      }
+      if (logical ~ /"\$(CC|CXX)"/ && match(logical, /-o([ \t]+|")"?[^ "]+"?/)) {
+        o = substr(logical, RSTART, RLENGTH); sub(/^-o[ \t]*/, "", o); gsub(/"/, "", o)
+        t = o
+        if (fn != "") {
+          gsub(/\$\{?1\}?/, "@ARG@", t)
+          if (argvar != "") gsub("\\$(" argvar "|\\{" argvar "\\})", "@ARG@", t)
+        }
+        if (t != o) tmpl[fn] = t
+        else if (o !~ /\.(o|a|dylib|bundle)$/ && o !~ /^(\/dev\/null|\$[0-9@*])$/) {
+          if (loopvar != "" && index(o, "$" loopvar)) {
+            nw = split(loopwords, w, " ")
+            for (i = 1; i <= nw; i++) { e = o; gsub("\\$(" loopvar "|\\{" loopvar "\\})", w[i], e); built[e] = 1 }
+          } else built[o] = 1
+        }
+      }
+      # a call of a function that builds to its first argument builds that argument
+      np = split(logical, piece, /[;&|]+|\$\(/)
+      for (k = 1; k <= np; k++) {
+        c = piece[k]; sub(/^[ \t!]*((if|then|do|else|elif|while|until)[ \t]+)*/, "", c)
+        split(c, cw, /[ \t]+/)
+        if ((cw[1] in tmpl) && cw[1] != fn && cw[2] != "") {
+          e = tmpl[cw[1]]; a1 = cw[2]; gsub(/"/, "", a1); gsub(/@ARG@/, a1, e)
+          if (e !~ /\.(o|a|dylib|bundle)$/ && e !~ /^\$[0-9@*]$/) built[e] = 1
+        }
+      }
+      # NAME=PATH, where PATH was built: "$NAME" runs it too
+      if (match(logical, /^[ \t]*[A-Za-z_][A-Za-z_0-9]*="?[^ "=]+"?[ \t]*$/)) {
+        nm = logical; sub(/^[ \t]*/, "", nm); v = nm; sub(/=.*/, "", nm); sub(/^[^=]*=/, "", v); gsub(/[ \t"]/, "", v)
+        if (v in built) built["$" nm] = 1
+      }
+      if (fn != "" && (logical ~ /^}/ || logical ~ /\}[ \t]*$/)) fn = ""
       next
     }
     {
       n++; text[n] = $0
       if ($0 ~ /^[ \t]*#/ || $0 ~ /^[ \t]*$/) next
+      # words, not text: single-quoted strings and double-quoted ones with a space (and no $( inside) become a space
+      m = $0; gsub(/\047[^\047]*\047/, " ", m); r = ""
+      while (match(m, /"[^"]*"/)) {
+        seg = substr(m, RSTART, RLENGTH); if (seg ~ / / && seg !~ /\$\(/) seg = " "
+        r = r substr(m, 1, RSTART - 1) seg; m = substr(m, RSTART + RLENGTH)
+      }
+      m = r m
       for (o in built) {
         q = o; gsub(/[][\\.$*+?(){}|^\/]/, "\\\\&", q)
         if (o !~ /\//) q = "(\\./)?" q
-        re = "(^|[;&|`!{]|\\([ \t]|\\$\\(|(then|do|else|if|elif|exec)[ \t])[ \t]*\"?" q "\"?([ \t]|$|[);<>])"
-        if ($0 ~ re && !gated(n)) { print FNR ": " $0; break }
+        re = "(^|[;&|`!{]|\\([ \t]|\\$\\(|(then|do|else|if|elif|exec)[ \t])[ \t]*((env[ \t]+)?([A-Za-z_][A-Za-z_0-9]*=[^ \t()`]*[ \t]+)+)?\"?" q "\"?([ \t]|$|[);<>])"
+        if (m ~ re && !gated(n)) { print FNR ": " $0; break }
       }
     }' "$1" "$1"
 }
@@ -217,10 +253,27 @@ x=$("$T/helper")
 "$CC" -arch x86_64 -arch i386 -c -o y.o y.c
 "$CC" -O2 -o stabs stabs.c
 ./stabs lib
+"$CC" -O2 -o "$T/mkb" mkb.c
+MKB="$T/mkb"
+"$MKB" out
+lnk() { out=$1; shift; "$CC" -o "$T/$out" "$@" >"$T/link.err" 2>&1; }
+if lnk prog a.o && [ "$("$T/prog")" = 1 ]; then :; fi
+bld() {
+    "$CC" -O1 -o"$1" "$2"
+}
+bld "$T/q" q.c
+"$T/q"
+cco() { "$CC" -c -o "$T/$1.o" "$T/$1.c"; }
+cco obj
+"$T/obj.o"
+grep -qF "$T/q left; $T/mkb untouched" "$T/err"
+DYLD_PRINT_LIBRARIES=1 "$T/q" 2>&1 | grep -q q
+env FOO=1 "$MKB" x
+before=$(sha "$T/q")
 CTL
 got=$(runs "$TMP/runs.sh" | cut -d: -f1 | tr '\n' ' ')
-[ "$got" = "21 23 4 15 20 26 " ] && echo "ok control flags the ungated runs of what \$CC built, and its builds for arm64 or an unnamed arch, only" ||
-  fail "runs control: flagged lines '$got', expected '21 23 4 15 20 26 '"
+[ "$got" = "21 23 4 15 20 26 29 31 36 41 42 " ] && echo "ok control flags the ungated runs of what \$CC built, directly, through a variable, through a function building to its argument or behind env and assignments, and its builds for arm64 or an unnamed arch, only" ||
+  fail "runs control: flagged lines '$got', expected '21 23 4 15 20 26 29 31 36 41 42 '"
 
 if git -C "$ROOT" cat-file -e abe8d68 2>/dev/null; then
   mkdir "$TMP/ab" && git -C "$ROOT" archive abe8d68 tests | tar -x -C "$TMP/ab"

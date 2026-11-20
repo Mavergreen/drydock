@@ -280,8 +280,11 @@ refused "target 10.9 after symbol rename on an object" \
 cp "$T/impl.o" "$T/padded.o"
 printf '\n\n\n\n\n\n\n\n\n\n\n\n' >>"$T/padded.o"
 run "$T/padded.o" "$T/padded-out.o" 'symbol rename _foo _impl_foo'
-if [ "$run_rc" -eq 0 ] && link padded "$T/main.o" "$T/stub.o" "$T/padded-out.o" && [ "$("$T/padded")" = 43 ]; then
-    ok "an object with archive padding after its string table renames, links and runs"
+if [ "$run_rc" -eq 0 ] && link padded "$T/main.o" "$T/stub.o" "$T/padded-out.o"; then
+    if gate_row x86_64 "archive padding: renames, links and prints 43"; then
+        [ "$("$T/padded")" = 43 ] && ok "archive padding: renames, links and prints 43" \
+            || bad "archive padding run" "printed $("$T/padded")"
+    fi
 else
     bad "archive padding" "rc $run_rc: $(cat "$T/run.err" "$T/link.err" 2>/dev/null)"
 fi

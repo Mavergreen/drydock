@@ -34,7 +34,7 @@ trap 'rc=$?; rm -rf "$T"; if [ "$reached_end" -eq 0 ]; then
     echo "import_redirect_test: FATAL -- aborted early (exit $rc); everything after the last PASS/FAIL line never ran" >&2
 fi' EXIT
 
-"$CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
+"$HOST_CC" -O2 -o "$T/mkbindstream" "$HERE/mkbindstream.c"
 MKB="$T/mkbindstream"
 
 # has_import FILE SYMBOL INSTALL_NAME STREAM -- does `imports` report that row?
