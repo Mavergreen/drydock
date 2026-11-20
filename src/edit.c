@@ -43,6 +43,7 @@
 #include "arch_names.h"
 #include "linkedit_order.h"
 #include "symrename.h"
+#include "vnodeop.h"
 #include "archive.h"
 
 /* Every line this module writes, to the log or to stderr, goes through here.
@@ -274,14 +275,9 @@ static void me_log_objc_methods(FILE *log, const mma_report *r) {
                me_count(c1, (long)r->zerofill));
 }
 
-/* msr_reason's text, with the statement's own names where it says OLD and NEW. */
-static void me_say_msr(FILE *f, int rc, const char *old, const char *new_) {
-    const char *p = msr_reason(rc);
+/* A reason's text, with the statement's own names where it says OLD and NEW. */
+static void me_say_names(FILE *f, const char *p, const char *old, const char *new_) {
     fflush(stdout);
-    if (rc == MSR_SAME) {
-        fprintf(f, "%s (%s)", p, old);
-        return;
-    }
     while (*p) {
         if (strncmp(p, "OLD", 3) == 0)      { fputs(old, f); p += 3; }
         else if (strncmp(p, "NEW", 3) == 0) { fputs(new_, f); p += 3; }
@@ -289,14 +285,60 @@ static void me_say_msr(FILE *f, int rc, const char *old, const char *new_) {
     }
 }
 
+static void me_say_msr(FILE *f, int rc, const char *old, const char *new_) {
+    if (rc == MSR_SAME) {
+        fflush(stdout);
+        fprintf(f, "%s (%s)", msr_reason(rc), old);
+        return;
+    }
+    me_say_names(f, msr_reason(rc), old, new_);
+}
+
 static int me_is_object(const uint8_t *buf, size_t size) {
     mi_image im;
     return mi_wrap((uint8_t *)buf, size, &im) == 0 && im.hdr->filetype == MH_OBJECT;
 }
 
-/* Before any statement runs: a relocatable object takes only `symbol rename`,
- * and a linked image takes anything but. */
-static int me_object_gate(const ms_script *s, int is_object, const char *path, FILE *log) {
+/* A script with `vnodeop replace` is not re-packed: its output keeps the
+ * input's __LINKEDIT layout, the zeroed nlist included. */
+static int me_has_vnodeop(const ms_script *s) {
+    for (int i = 0; i < s->n; i++)
+        if (s->stmts[i].kind == MS_VNODEOP) return 1;
+    return 0;
+}
+
+/* Before any statement runs, on each selected slice (buf NULL: an archive's
+ * members). A relocatable object takes only `symbol rename`, and a linked
+ * image takes anything but. `vnodeop replace` takes only an x86_64 kext, in a
+ * script of its own. `slice` names a fat file's slice; NULL on a thin file.
+ * `advise_arch`: suggest `arch x86_64`, for a fat file with an x86_64 kext
+ * slice and no arch directive. */
+static int me_object_gate(const ms_script *s, const uint8_t *buf, size_t size, const char *slice,
+                          int advise_arch, const char *path, FILE *log) {
+    if (me_has_vnodeop(s)) {
+        for (int i = 0; i < s->n; i++) {
+            const ms_stmt *st = &s->stmts[i];
+            if (st->kind == MS_VNODEOP) continue;
+            me_say(log, "drydock-macho-rewrite edit: %s: vnodeop replace takes a script of its own "
+                        "(only the arch and allow-unmatched directives beside it); line %d is `%s %s`\n",
+                   path, st->line, ms_kind_name(st->kind), ms_op_name(st->op));
+            return MR_REFUSED;
+        }
+        if (!buf || !mvn_is_x86_64_kext(buf, size)) {
+            if (slice && advise_arch)
+                me_say(log, "drydock-macho-rewrite edit: %s: vnodeop replace takes only x86_64 kexts "
+                            "(MH_KEXT_BUNDLE), and the %s slice is not one; select the kext's slice "
+                            "with `arch x86_64`\n", path, slice);
+            else if (slice)
+                me_say(log, "drydock-macho-rewrite edit: %s: vnodeop replace takes only x86_64 kexts "
+                            "(MH_KEXT_BUNDLE), and the selected %s slice is not one\n", path, slice);
+            else
+                me_say(log, "drydock-macho-rewrite edit: %s: vnodeop replace takes only x86_64 kexts "
+                            "(MH_KEXT_BUNDLE)\n", path);
+            return MR_REFUSED;
+        }
+    }
+    int is_object = !buf || me_is_object(buf, size);
     for (int i = 0; i < s->n; i++) {
         const ms_stmt *st = &s->stmts[i];
         if (is_object && st->kind != MS_SYMBOL) {
@@ -586,6 +628,34 @@ static int me_apply(uint8_t **pbuf, size_t *psize, const char *path,
         if (!v->decide || *v->renamed > 0) return 0;
         me_say(stderr, "drydock-macho-rewrite: symbol rename %s %s matched nothing (", st->a, st->b);
         me_say_msr(stderr, MSR_UNMATCHED, st->a, st->b);
+        fputs(")\n", stderr);
+        if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
+        return 0;
+    }
+
+    case MS_VNODEOP: {
+        mvn_report r = { 0, 0, 0 };
+        if (st->op != MS_REPLACE) goto unknown;
+        int rc = mvn_replace(*pbuf, *psize, st->a, st->b, &r);
+        if (rc == MVN_NOMEM) {
+            me_say(log, "drydock-macho-rewrite edit: %s: out of memory replacing %s\n", path, st->a);
+            return MR_FAIL;
+        }
+        if (rc != MVN_OK && rc != MVN_UNMATCHED) {
+            me_say(log, "drydock-macho-rewrite edit: %s: vnodeop replace %s %s: ", path, st->a, st->b);
+            me_say_names(log, mvn_reason(rc), st->a, st->b);
+            fputc('\n', log);
+            return MR_REFUSED;
+        }
+        if (rc == MVN_OK)
+            me_say(log, "      vnodeop replace %s -> %s: %u entr%s; removed undefined symbol #%u; "
+                        "%u external relocation%s renumbered\n", st->a, st->b,
+                   r.entries, r.entries == 1 ? "y" : "ies", r.removed_index,
+                   r.renumbered, r.renumbered == 1 ? "" : "s");
+        *v->renamed += (int)r.entries;
+        if (!v->decide || *v->renamed > 0) return 0;
+        me_say(stderr, "drydock-macho-rewrite: vnodeop replace %s %s matched nothing (", st->a, st->b);
+        me_say_names(stderr, mvn_reason(MVN_UNMATCHED), st->a, st->b);
         fputs(")\n", stderr);
         if (!s->allow_unmatched) { v->missed = 1; return MR_REFUSED; }
         return 0;
@@ -1087,7 +1157,7 @@ static int me_fat_slice(uint8_t **pbuf, size_t *psize, const mfat_arch *a,
     int rc = me_statements(pbuf, psize, c->path, c->out, c->s, c->log,
                            c->hits, c->renamed, index == c->last, name, &disturbed);
     int packed = 0;
-    if (rc == 0 && !is_object) {
+    if (rc == 0 && !is_object && !me_has_vnodeop(c->s)) {
         char label[48];
         snprintf(label, sizeof label, "slice %s", name);
         rc = me_pack(pbuf, psize, orig, osize, label, c->path, c->out, c->log, &packed);
@@ -1210,6 +1280,7 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     }
     char have[256] = "";
     int nselected = 0; uint32_t last = 0;
+    int x86_kext = 0;
     for (uint32_t j = 0; j < narch; j++) {
         mfat_arch a; mfat_get(buf, swap, j, &a);
         char name[32]; ma_describe(a.cputype, a.cpusubtype, name);
@@ -1221,8 +1292,10 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
         else if (!s->arch_mask) selected[j] = ME_SLICE_EDIT;
         else selected[j] = (row >= 0 && (s->arch_mask & (1u << row)))
                                ? ME_SLICE_EDIT : ME_SLICE_OTHER_ARCH;
+        if (row >= 0 && row == ma_lookup("x86_64") && mvn_is_x86_64_kext(buf + a.offset, a.size)) x86_kext = 1;
         if (selected[j] == ME_SLICE_EDIT) { nselected++; last = j; }
     }
+    int advise_arch = !s->arch_mask && x86_kext;
     int rc = 0;
     const char *rname; uint32_t rct, rcs;
     for (int r = 0; ma_row(r, &rname, &rct, &rcs); r++) {
@@ -1257,9 +1330,10 @@ static int me_run_fat(const char *path, const char *out, const ms_script *s,
     for (uint32_t j = 0; rc == 0 && j < narch; j++) {
         if (selected[j] != ME_SLICE_EDIT) continue;
         mfat_arch a; mfat_get(buf, swap, j, &a);
-        int is_object = me_is_object(buf + a.offset, a.size);
-        objects |= is_object;
-        if (me_object_gate(s, is_object, path, log) != 0) {
+        char sname[32];
+        ma_describe(a.cputype, a.cpusubtype, sname);
+        objects |= me_is_object(buf + a.offset, a.size);
+        if (me_object_gate(s, buf + a.offset, a.size, sname, advise_arch, path, log) != 0) {
             free(selected); free(hits); free(renamed); free(buf);
             return MR_REFUSED;
         }
@@ -1511,7 +1585,7 @@ static int me_run_archive(const char *path, const char *out, const ms_script *s,
     uint8_t *buf;
     size_t size;
     if (me_slurp(path, &buf, &size, log) != 0) return MR_FAIL;
-    if (me_object_gate(s, 1, path, log) != 0) { free(buf); return MR_REFUSED; }
+    if (me_object_gate(s, NULL, 0, NULL, 0, path, log) != 0) { free(buf); return MR_REFUSED; }
 
     mar_archive a;
     char why[256];
@@ -1640,7 +1714,7 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
         }
     }
     int is_object = me_is_object(im.buf, im.size);
-    if (me_object_gate(s, is_object, path, log) != 0) {
+    if (me_object_gate(s, im.buf, im.size, NULL, 0, path, log) != 0) {
         mi_close(&im);
         return MR_REFUSED;
     }
@@ -1674,7 +1748,8 @@ int me_run(const char *path, const char *out, const ms_script *s, const me_opts 
     int rc = me_statements(&buf, &size, path, out, s, log, hits, renamed, 1, NULL,
                            &disturbed);
     free(hits); free(renamed);
-    if (rc == 0 && !is_object) rc = me_pack(&buf, &size, orig, osize, path, path, out, log, &packed);
+    if (rc == 0 && !is_object && !me_has_vnodeop(s))
+        rc = me_pack(&buf, &size, orig, osize, path, path, out, log, &packed);
     free(orig);
     /* An object is not re-signed. */
     if (rc == 0 && !is_object) rc = me_resign(buf, size, path, out, s, packed, log);

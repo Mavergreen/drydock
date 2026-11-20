@@ -384,7 +384,7 @@ endif()
 # symlinks to it plus this build's fixture helpers (tests/lib/tool-dir.sh). Unit tests and the oracles still run
 # this build's own programs; tool_dir_test names them.
 set(DRYDOCK_TOOL_DIR "" CACHE PATH "an installed Drydock bin/ the suites run instead of this build's tools")
-set(DRYDOCK_TOOL_HELPERS makefat fatcheck mklinkedit raise_corpus)
+set(DRYDOCK_TOOL_HELPERS makefat fatcheck mklinkedit raise_corpus mkkext)
 if(DRYDOCK_TOOL_DIR STREQUAL "")
   set(DRYDOCK_BIN "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
   set(DRYDOCK_DMR "$<TARGET_FILE:drydock-macho-rewrite>")
@@ -816,6 +816,8 @@ add_executable(makefat tests/makefat.c)
 add_executable(fatcheck tests/fatcheck.c)
 target_compile_options(makefat PRIVATE -O2 -Wall -Wextra)
 target_compile_options(fatcheck PRIVATE -O2 -Wall -Wextra)
+add_executable(mkkext tests/mkkext.c)
+target_compile_options(mkkext PRIVATE -O2 -Wall -Wextra)
 
 # Builds real dylibs, rewrites a real executable, and RUNS it -- a wrong library
 # ordinal shows up as a dyld failure rather than a silent mis-binding. Now
@@ -926,6 +928,10 @@ drydock_macos_test(uuid_stamp_test "x86_64 Mach-O fixtures linked with clang22 a
 
 drydock_macos_test(symbol_rename_test "objects built with clang22, linked by ld64.lld and run"
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/symbol_rename_test.sh" "${DRYDOCK_BIN}")
+
+# platform: host-agnostic -- kexts from tests/mkkext.c; `vnodeop replace` and its gate.
+drydock_add_test(NAME vnodeop_replace_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/vnodeop_replace_test.sh" "${DRYDOCK_BIN}")
 
 # `symbol rename` across archives made by clang22's llvm-libtool-darwin, llvm-ar and llvm-ranlib:
 # linked and run, the rebuilt index compared with ranlib's.

@@ -50,6 +50,8 @@ target        10.9                  the one statement whose meaning depends on
                                     the binary; see \[dq]The \[ga]target\[ga] statement\[dq]
 symbol        rename    OLD NEW     relocatable objects only; see
                                     \[dq]Relocatable objects and archives\[dq]
+vnodeop       replace   OLD NEW     x86_64 kexts only; see
+                                    \[dq]Kext vnode-op tables\[dq]
 uuid          set       stamped     applied after the last statement; see
                                     \[dq]Stamping the UUID\[dq]
 \fR
@@ -156,6 +158,9 @@ These are the statements that can match nothing:
 \fBsymbol rename\fR (no symbol of that name)
 .IP \[bu] 2
 \fBuuid set stamped\fR (no \fBLC_UUID\fR once the other statements have run)
+.IP \[bu] 2
+\fBvnodeop replace\fR (no symbol named OLD; an OLD that no relocation names is
+refused, and \fBallow-unmatched\fR does not excuse it)
 .PP
 On a fat file, a statement has matched if it matched in any selected
 slice.
@@ -454,6 +459,87 @@ it is universal: thin it with \fBlipo\fR first.
 .PP
 A run that renames nothing, under \fBallow-unmatched\fR, writes the
 archive unchanged.
+.SS Kext vnode-op tables
+\fBvnodeop replace OLD NEW\fR rewrites an x86_64 kext (filetype
+\fBMH_KEXT_BUNDLE\fR) so that every vnode-op table entry naming the
+undefined symbol OLD as its descriptor becomes a copy of its table\[aq]s NEW
+entry, descriptor and implementation both, and then removes OLD from the
+symbol table.
+Each table holding OLD must hold exactly one NEW entry already, and the two
+entries\[aq] implementation slots must carry the same number and kind of
+relocations, which then name what the NEW entry\[aq]s name.
+.PP
+Its use is a kext built against a newer SDK than the Mac it will load on.
+10.9 has no \fBvnop_renamex_desc\fR.
+10.9\[aq]s \fBvfs_fsadd\fR stores each entry\[aq]s implementation at its descriptor\[aq]s
+\fBvdesc_offset\fR, so an unknown descriptor overwrites slot 0 of the
+operations vector, and kxld refuses an unresolved undefined symbol even
+when nothing references it.
+Replacing \fB_vnop_renamex_desc\fR with \fB_vnop_rename_desc\fR fixes both.
+.PP
+A script containing \fBvnodeop replace\fR holds only \fBvnodeop replace\fR
+statements and the \fBarch\fR and \fBallow-unmatched\fR directives.
+Any other statement is refused before anything runs, and so is any slice that
+is not an x86_64 kext; when a universal file has an x86_64 kext slice and
+the script has no \fBarch\fR directive, the message suggests \fBarch x86_64\fR.
+Thin the kext with \fBllvm-lipo\fR, or select its slice:
+.IP
+.nf
+\f(CW
+llvm-lipo -thin x86_64 in.kext.bin -output thin
+printf \[aq]arch x86_64\[rs]nvnodeop replace _vnop_renamex_desc _vnop_rename_desc\[rs]n\[aq] \[rs]
+    | drydock-macho-rewrite thin out
+\fR
+.fi
+.PP
+It reports one line per statement:
+.IP
+.nf
+\f(CW
+      vnodeop replace _vnop_renamex_desc -> _vnop_rename_desc: 2 entries; removed undefined symbol #2347; 42 external relocations renumbered
+\fR
+.fi
+.PP
+The undefined symbols above OLD move down one place, so the external
+relocations that name them are renumbered.
+.PP
+The statement is refused, and nothing is written, when:
+.IP \[bu] 2
+OLD or NEW does not name exactly one symbol, or either is not undefined, or
+the undefined symbols are not last in the symbol table;
+.IP \[bu] 2
+no relocation names OLD;
+.IP \[bu] 2
+a relocation naming OLD, or the one naming NEW in its table, is not an
+external \fBUNSIGNED\fR quad sitting alone at its entry\[aq]s descriptor slot;
+.IP \[bu] 2
+a relocation naming OLD is not at a 16-byte entry in a section with file
+contents, or its table reaches the end of its section without a
+{NULL, NULL} entry;
+.IP \[bu] 2
+a table holding OLD does not hold exactly one NEW entry, or the two
+entries\[aq] implementation slots carry a different number or kind of
+relocations;
+.IP \[bu] 2
+a local relocation names OLD, or a local relocation is external;
+.IP \[bu] 2
+the image has no \fBLC_DYSYMTAB\fR, or its table of contents, module
+table, external references or indirect symbols are not empty;
+.IP \[bu] 2
+a section has relocations, or there is an \fBLC_TWOLEVEL_HINTS\fR command,
+because both index the symbol table;
+.IP \[bu] 2
+the rewritten image fails its own check: no relocation names OLD, NEW\[aq]s
+count is as expected, and no other relocation\[aq]s symbol changed.
+.PP
+\fBallow-unmatched\fR excuses none of these.
+.PP
+Such a script skips the usual repacking of \fB__LINKEDIT\fR.
+The file is the same size, the removed symbol\[aq]s 16-byte nlist becomes a
+zeroed tail, and the string table is untouched.
+.PP
+A second run matches nothing, because OLD is gone: it exits 1, or exits 0
+with \fBallow-unmatched\fR and the bytes unchanged.
 .SS Growing the header
 A statement that needs more header pad than the image has makes room
 first, and says so:
@@ -637,3 +723,6 @@ Growing the header.
 \fBsymbol rename\fR renames only in relocatable objects and thin
 archives of them; a linked image, or a universal archive, is refused.
 It does not rewrite DWARF, so a debugger shows the old name.
+.IP \[bu] 2
+\fBvnodeop replace\fR takes only an x86_64 kext, in a script with no other
+statement; its output keeps the input\[aq]s size and \fB__LINKEDIT\fR layout.

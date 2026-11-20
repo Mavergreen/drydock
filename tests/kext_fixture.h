@@ -3,7 +3,8 @@
  *
  * Header-only, so tests/mkkext.c builds it standalone. Layout: __TEXT,__text
  * (0x40 bytes of ret) at file 0x200, __DATA,__data right after it, then
- * __LINKEDIT: external relocations, local relocations, symbols, strings.
+ * __LINKEDIT in ld64's order: local relocations, symbols, external
+ * relocations, strings.
  * Section addresses are base + file offset, and r_address is relative to base.
  *
  * Each table entry is {desc, impl}: an external UNSIGNED quad relocation to
@@ -92,8 +93,8 @@ static uint8_t *kf_build(const kf_spec *s, size_t *size) {
     if (s->impl_reloc_kind_differs) { nextrel++; nlocrel--; }
     int nsyms = s->ndefs + s->nundefs + (s->undef_not_last ? 1 : 0);
 
-    size_t extreloff = le_off, locreloff = extreloff + nextrel * 8;
-    size_t symoff = locreloff + nlocrel * 8, stroff = symoff + (size_t)nsyms * sizeof(struct nlist_64);
+    size_t locreloff = le_off, symoff = locreloff + nlocrel * 8;
+    size_t extreloff = symoff + (size_t)nsyms * sizeof(struct nlist_64), stroff = extreloff + nextrel * 8;
     size_t strsize = 2 + 16 * (size_t)(s->ndefs + 1);
     for (int i = 0; i < s->nundefs; i++) strsize += strlen(s->undefs[i]) + 1;
     strsize = (strsize + 7) & ~(size_t)7;
@@ -106,6 +107,7 @@ static uint8_t *kf_build(const kf_spec *s, size_t *size) {
     h->cputype = s->cputype ? (cpu_type_t)s->cputype : CPU_TYPE_X86_64;
     h->cpusubtype = 3;
     h->filetype = s->filetype ? s->filetype : MH_KEXT_BUNDLE;
+    h->flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL;   /* as ld64 writes a kext's */
     h->ncmds = 5; h->sizeofcmds = (uint32_t)lcs;
 
     uint8_t *p = b + sizeof *h;

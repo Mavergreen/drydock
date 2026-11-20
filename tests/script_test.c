@@ -411,7 +411,7 @@ static void test_capabilities_table_round_trips(void) {
         }
         n_rows++;
     }
-    CHECK(n_rows == 21, "the statement table has 21 rows (got %d)", n_rows);
+    CHECK(n_rows == 22, "the statement table has 22 rows (got %d)", n_rows);
 }
 
 /* One assertion per MS_TABLE row. Each mask below was read out of
@@ -537,6 +537,11 @@ static void test_disturbs_matches_the_spec_table(void) {
      * changes size, and nothing moves. */
     CHECK(ms_disturbs(MS_UUID, MS_SET) == MREL_NONE,
           "uuid set stamped overwrites LC_UUID in place, and disturbs nothing");
+
+    /* The replace rewrites relocations and nlists where they lie and zeroes
+     * the freed nlist: the file's size and every offset stay put. */
+    CHECK(ms_disturbs(MS_VNODEOP, MS_REPLACE) == MREL_NONE,
+          "vnodeop replace rewrites the symbol and relocation tables in place, and disturbs nothing");
 }
 
 static void test_uuid_set_takes_only_stamped(void) {
@@ -570,6 +575,27 @@ static void test_symbol_rename_refuses_an_empty_name(void) {
     const char *bad[][2] = { { "symbol rename _foo ''\n", "NEW is empty" },
                              { "symbol rename \"\" _foo\n", "OLD is empty" },
                              { "symbol rename '' ''\n", "OLD is empty" } };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        err[0] = 0;
+        CHECK(ms_parse(bad[i][0], strlen(bad[i][0]), &s, err, sizeof err) == -1 &&
+              strstr(err, bad[i][1]) != NULL, "%s: want \"%s\", got: %s", bad[i][0], bad[i][1], err);
+    }
+}
+
+static void test_vnodeop_replace_parses(void) {
+    ms_script s; char err[256] = {0};
+    const char *ok = "vnodeop replace _vnop_renamex_desc _vnop_rename_desc\n";
+    CHECK(ms_parse(ok, strlen(ok), &s, err, sizeof err) == 0 && s.n == 1 &&
+          s.stmts[0].kind == MS_VNODEOP && s.stmts[0].op == MS_REPLACE &&
+          strcmp(s.stmts[0].a, "_vnop_renamex_desc") == 0 && strcmp(s.stmts[0].b, "_vnop_rename_desc") == 0,
+          "vnodeop replace _vnop_renamex_desc _vnop_rename_desc rejected: %s", err);
+    ms_free(&s);
+    CHECK(strcmp(ms_kind_name(MS_VNODEOP), "vnodeop") == 0, "ms_kind_name(MS_VNODEOP) is %s", ms_kind_name(MS_VNODEOP));
+    const char *bad[][2] = { { "vnodeop replace _a ''\n", "vnodeop replace: NEW is empty" },
+                             { "vnodeop replace '' _b\n", "vnodeop replace: OLD is empty" },
+                             { "vnodeop replace _a _a\n", "vnodeop replace: OLD and NEW are both '_a'" },
+                             { "vnodeop replace _a\n", "vnodeop replace takes 2 arguments (got 1)" },
+                             { "vnodeop delete _a\n", "unknown statement 'vnodeop delete'" } };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
         err[0] = 0;
         CHECK(ms_parse(bad[i][0], strlen(bad[i][0]), &s, err, sizeof err) == -1 &&
@@ -934,6 +960,7 @@ int main(void) {
     test_minos_at_most_and_if_absent_take_a_version();
     test_retired_minimum_statements_are_unknown();
     test_symbol_rename_refuses_an_empty_name();
+    test_vnodeop_replace_parses();
     test_objc_methods_set_takes_only_absolute();
     test_uuid_set_takes_only_stamped();
     test_no_statement_names_split_info();
