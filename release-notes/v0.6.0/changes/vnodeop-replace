@@ -1,0 +1,1 @@
+drydock-macho-rewrite's new vnodeop replace OLD NEW statement retargets an x86_64 kext's vnode-op entries from a descriptor the target kernel lacks to one it has, and drops the old descriptor, so macFUSE 5.5.0's kext loads on 10.9.
