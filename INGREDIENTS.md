@@ -37,7 +37,6 @@ unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-up
 - macos-runner:release.yml:build: the cross presets compile the product with Apple's clang (shipyard's toolchain sets no compiler on macOS), and the arm64 suite runs natively there. Exit: when the product compiles with clang22-cross on Linux and the arm64 suite moves into modern-smoke.
 - macos-runner:release.yml:modern-smoke: it installs the run's pkg and runs its arm64 `drydock-objc`, which runs only on Apple Silicon macOS. Exit: none while `drydock-objc` ships an arm64 slice (check 37 puts this job on a macos-* runner).
 - interim:src/objc/main.m: the front end of `drydock-objc analyze`, `evidence`, `link-args` and `resolve` is Objective-C on Foundation, which Linux lacks, so the Linux archive's `drydock-objc` does `receipt` alone and the other four exit 2 there (the README says so). Retired when `src/objc/main.m` is ported to C and those four build on Linux.
-- on-target: no 10.9 acceptance job yet; exit: a release.yml job on Mavergreen/mavericks-vm@v1 that installs this run's pkg in the guest and runs what it ships, which publish needs
 - on-target:updater: `on-target` installs the pkg in the 10.9 guest and runs every tool in its `bin/`, but not `drydock-updater.app`: a GUI app with no non-GUI mode, so nothing there can run it and see it answer, and its x86_64 slice goes unexercised in CI. Reconsider when shipyard's updater gains a headless probe.
 
 ## Why there is no Renovate customManager for the own upstream
