@@ -32,6 +32,19 @@
       "depNameTemplate": "Mavergreen/longboat",
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "regex:^(?<major>\\d{8})\\.(?<minor>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Mavergreen's make, CI only: on-target installs it in the 10.9 guest, which has no Command Line Tools and so no working make. Nothing of it ships, so a bump re-runs CI and releases nothing.",
+      "managerFilePatterns": [
+        "/^components/make/version$/"
+      ],
+      "matchStrings": [
+        "^(?<currentValue>\\S+)\\s*$"
+      ],
+      "depNameTemplate": "Mavergreen/make",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-mavericks\\.(?<build>\\d+)$"
     }
   ],
   "packageRules": [

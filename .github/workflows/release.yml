@@ -412,7 +412,8 @@ jobs:
   # gives the reason the list states, and so does a 77 from the scripts run outside ctest. Any other row
   # that says SKIP or N/A fails the job unless a second allow-list names it.
   #
-  # The guest has no Command Line Tools: clang22 compiles the product (shipyard's AppleClang gate off)
+  # The guest has no Command Line Tools, so no make (its /usr/bin/make is a stub): Mavergreen's make is
+  # installed for CMake's Unix Makefiles generator. clang22 compiles the product (shipyard's AppleClang gate off)
   # and the fixtures, and its llvm-* stand in for otool, nm, lipo and strings. The pkgs and the 10.9
   # SDK are fetched and verified here and reach the guest with the workspace; only `longboat sdk
   # install 10.9` fetches in the guest.
@@ -451,13 +452,15 @@ jobs:
 
       # On Linux, install@v1 installs nothing and leaves SHIPYARD_SCRIPTS in its own checkout, whose
       # components/cmake/version is the cmake its shipyard pkg requires.
-      - name: Stage shipyard's scripts, Longboat, cmake, shipyard, clang22, libcxx22, legacy-support and the 10.9 SDK
+      - name: Stage shipyard's scripts, Longboat, make, cmake, shipyard, clang22, libcxx22, legacy-support and the 10.9 SDK
         run: |
           set -eu
           cp -R "$SHIPYARD_SCRIPTS" .shipyard-scripts
           fetch() { sh "$SHIPYARD_SCRIPTS/fetch-release-pkg.sh" "$@" deps; }
           lb="$(tr -d '[:space:]' < components/longboat/version)"
           fetch longboat "$lb" "longboat-$lb.pkg"
+          mk="$(tr -d '[:space:]' < components/make/version)"
+          fetch make "$mk" "make-$mk.pkg"
           cm="$(tr -d '[:space:]' < "$SHIPYARD_SCRIPTS/../components/cmake/version")"
           fetch cmake "$cm" "cmake-$cm.pkg"
           sv="${SHIPYARD_VERSION:?install@v1 named no shipyard release}"
@@ -481,7 +484,7 @@ jobs:
             sudo -n true || { echo "the guest's user cannot sudo without a password, and installer needs root"; exit 1; }
             for p in deps/longboat-*.pkg; do sudo installer -pkg "$p" -target /; done
             sudo /usr/local/mavergreen/longboat/bin/longboat sdk install 10.9
-            for p in deps/mavericks-clang-22-native-*.pkg deps/libcxx22-*.pkg deps/cmake-*.pkg deps/mavericks-shipyard-*.pkg; do
+            for p in deps/mavericks-clang-22-native-*.pkg deps/libcxx22-*.pkg deps/make-*.pkg deps/cmake-*.pkg deps/mavericks-shipyard-*.pkg; do
               sudo installer -pkg "$p" -target /
             done
             must() { status=0; "$@" || status=$?; [ "$status" -eq 0 ] || { echo "$* exited $status (77, a skip, is a failure here)"; exit 1; }; }
