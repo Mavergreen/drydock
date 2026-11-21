@@ -37,7 +37,7 @@ done
 
 "$CMAKE" --install "$BX" --prefix "$t/x86_64" >"$t/install.x86_64.log" 2>&1
 "$CMAKE" --install "$BA" --prefix "$t/arm64" >"$t/install.arm64.log" 2>&1
-sh "$SHIPYARD/lipo-merge-tree.sh" --a "$t/x86_64" --b "$t/arm64" --out "$t/want"
+env -u LIPO sh "$SHIPYARD/lipo-merge-tree.sh" --a "$t/x86_64" --b "$t/arm64" --out "$t/want"
 # Says how a differing binary differs, slice by slice, so a failure on a runner is diagnosable without its artifacts.
 explain() {   # explain WANT GOT
   for a in x86_64 arm64; do
@@ -67,7 +67,7 @@ done
 [ -f "$got/$tree/mavergreen.plist" ] || { echo "FAIL: the package has no manifest"; exit 1; }
 upd="$got/Library/Application Support/Mavergreen/drydock-updater.app"
 [ -d "$upd" ] || { echo "FAIL: the package has no drydock-updater.app"; exit 1; }
-sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b "$BA/drydock-updater.app" \
+env -u LIPO sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b "$BA/drydock-updater.app" \
   --out "$t/drydock-updater.app"
 diff -r "$t/drydock-updater.app" "$upd" \
   || { echo "FAIL: the package's drydock-updater.app is not the two builds' updaters merged"; exit 1; }
