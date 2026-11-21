@@ -69,7 +69,7 @@
 static int usage(const char *why) {
     fprintf(stderr, "objc-compat: %s\nusage: objc-compat --artifact FILE --root SHIPPED_ROOT --references REF_DIR "
                     "--report NEW_FILE [--build-evidence FILE [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR]] "
-                    "[--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict] [--exceptions FILE]\n", why);
+                    "[--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict] [--exceptions FILE] [--root-kind tree|volume]\n", why);
     return 2;
 }
 
@@ -657,7 +657,10 @@ static int load_evidence_providers(ObjcAnalysis *a, NSArray *list) {
  * against its own implementations and R1 counts its classes (classify.c); its system loads must be
  * in the floor capture like the artifact's. A class defined twice in the closure is cannot-measure
  * (ambiguous-class): which one the runtime uses is not measured. Its own code keeps the exemption
- * its pinned bytes give it, and the report lists each image's SHA-256 as a stated limit. */
+ * its pinned bytes give it, and the report lists each image's SHA-256 as a stated limit.
+ * With --root-kind volume, --root is a staged volume as installed at /: an absolute non-system load
+ * path, and every candidate, resolve inside it (rooted_resolve), so an absolute symlink restarts at
+ * the root and the host's own files are never consulted. */
 
 #define SHIPPED_MAX 64
 
@@ -679,13 +682,60 @@ static int under(char *out, size_t outsz, const char *dir, const char *rest) {
     return snprintf(out, outsz, "%s/%s", dir, rest) < (int)outsz ? 0 : -1;
 }
 
-/* Every path dyld would try for load path `p` of image k, into cands; 0, or 4 with an error. */
-static int candidates(ObjcAnalysis *a, size_t k, const char *p, char (*cands)[PATH_MAX], size_t *nc, size_t max) {
+/* The path of an image under rroot as installed at /: "" for rroot itself. */
+static const char *installed(const char *rroot, const char *abs) { return strcmp(rroot, "/") ? abs + strlen(rroot) : abs; }
+
+/* `path`, absolute as installed at /, resolved inside rroot following every symlink there: 0 with
+ * the host path in out; ENOENT, ELOOP past 32 links, EXDEV when `..` climbs above the root,
+ * ENAMETOOLONG. */
+static int rooted_resolve(const char *rroot, const char *path, char *out, size_t outsz) {
+    char rest[PATH_MAX], cur[PATH_MAX] = "", host[PATH_MAX], link[PATH_MAX], next[PATH_MAX];
+    const char *base = strcmp(rroot, "/") ? rroot : "";
+    int links = 0;
+    if (snprintf(rest, sizeof rest, "%s", path) >= (int)sizeof rest) return ENAMETOOLONG;
+    for (;;) {
+        char *c = rest, *e;
+        struct stat st;
+        ssize_t len;
+        size_t nc;
+        while (*c == '/') c++;
+        if (!*c) break;
+        for (e = c; *e && *e != '/'; e++) ;
+        nc = (size_t)(e - c);
+        if (nc == 1 && *c == '.') { memmove(rest, e, strlen(e) + 1); continue; }
+        if (nc == 2 && c[0] == '.' && c[1] == '.') {
+            char *slash = strrchr(cur, '/');
+            if (!slash) return EXDEV;
+            *slash = 0; memmove(rest, e, strlen(e) + 1); continue;
+        }
+        if (snprintf(host, sizeof host, "%s%s/%.*s", base, cur, (int)nc, c) >= (int)sizeof host) return ENAMETOOLONG;
+        if (lstat(host, &st) != 0) return errno == ENOTDIR ? ENOENT : errno;
+        if (S_ISLNK(st.st_mode)) {
+            if (++links > 32) return ELOOP;
+            if ((len = readlink(host, link, sizeof link - 1)) < 0) return errno;
+            link[len] = 0;
+            if (*link == '/') *cur = 0;
+            if (snprintf(next, sizeof next, "%s%s", link, e) >= (int)sizeof next) return ENAMETOOLONG;
+            memcpy(rest, next, sizeof rest);
+            continue;
+        }
+        if (e[strspn(e, "/")] && !S_ISDIR(st.st_mode)) return ENOENT;
+        if (snprintf(next, sizeof next, "%s/%.*s", cur, (int)nc, c) >= (int)sizeof next) return ENAMETOOLONG;
+        memcpy(cur, next, sizeof cur);
+        memmove(rest, e, strlen(e) + 1);
+    }
+    return snprintf(out, outsz, "%s%s", base, *base || *cur ? cur : "/") < (int)outsz ? 0 : ENAMETOOLONG;
+}
+
+/* Every path dyld would try for load path `p` of image k, into cands; 0, or 4 with an error. A
+ * volume's (vroot) candidates are paths as installed at /. */
+static int candidates(ObjcAnalysis *a, size_t k, const char *p, char (*cands)[PATH_MAX], size_t *nc, size_t max, const char *vroot) {
     char dir[PATH_MAX], exe[PATH_MAX];
-    dir_of(image_abs(a, k), dir, sizeof dir);
-    dir_of(a->artifact_path, exe, sizeof exe);
+    dir_of(vroot ? installed(vroot, image_abs(a, k)) : image_abs(a, k), dir, sizeof dir);
+    dir_of(vroot ? installed(vroot, a->artifact_path) : a->artifact_path, exe, sizeof exe);
     *nc = 0;
-    if (!strncmp(p, "@loader_path/", 13)) { if (under(cands[(*nc)++], PATH_MAX, dir, p + 13)) return objc_fail(a, "escaping-dependency", NULL, 0, "%s: too long", p); }
+    if (vroot && *p == '/') { if (snprintf(cands[(*nc)++], PATH_MAX, "%s", p) >= PATH_MAX) return objc_fail(a, "escaping-dependency", NULL, 0, "%s: too long", p); }
+    else if (!strncmp(p, "@loader_path/", 13)) { if (under(cands[(*nc)++], PATH_MAX, dir, p + 13)) return objc_fail(a, "escaping-dependency", NULL, 0, "%s: too long", p); }
     else if (!strncmp(p, "@executable_path/", 17)) { if (under(cands[(*nc)++], PATH_MAX, exe, p + 17)) return objc_fail(a, "escaping-dependency", NULL, 0, "%s: too long", p); }
     else if (!strncmp(p, "@rpath/", 7)) {
         size_t j = k;
@@ -693,7 +743,7 @@ static int candidates(ObjcAnalysis *a, size_t k, const char *p, char (*cands)[PA
             char **rp = j ? a->shipped[j - 1].rpaths : a->rpaths;
             size_t nrp = j ? a->shipped[j - 1].n_rpaths : a->n_rpaths, i;
             char jdir[PATH_MAX];
-            dir_of(image_abs(a, j), jdir, sizeof jdir);
+            dir_of(vroot ? installed(vroot, image_abs(a, j)) : image_abs(a, j), jdir, sizeof jdir);
             for (i = 0; i < nrp; i++) {
                 char base[PATH_MAX];
                 if (*nc == max) return objc_fail(a, "escaping-dependency", NULL, 0, "%s: more than %zu run paths", p, max);
@@ -761,7 +811,7 @@ static int add_shipped(ObjcAnalysis *a, size_t loader, const ObjcDylib *d, const
     return rc ? OBJC_CANNOT_MEASURE : OBJC_OK;
 }
 
-static int shipped_closure(ObjcAnalysis *a, const char *rroot, const char *rel) {
+static int shipped_closure(ObjcAnalysis *a, const char *rroot, const char *rel, int volume) {
     size_t k, i, j, nroot = strlen(rroot);
     int status = OBJC_OK;
     if (objc_strv_push(&a->image_paths, &a->n_image_paths, rel)) return objc_fail(a, "out-of-memory", NULL, 0, "image paths");
@@ -777,15 +827,24 @@ static int shipped_closure(ObjcAnalysis *a, const char *rroot, const char *rel) 
                                    d->path, d->how, d->how);
                 continue;
             }
-            if (candidates(a, k, d->path, cands, &nc, 32)) { status = OBJC_CANNOT_MEASURE; continue; }
+            if (candidates(a, k, d->path, cands, &nc, 32, volume ? rroot : NULL)) { status = OBJC_CANNOT_MEASURE; continue; }
             for (c = 0; c < nc; c++) {
                 struct stat st;
-                if (lstat(cands[c], &st) != 0) continue;
-                if (!realpath(cands[c], real)) continue;
-                if (strncmp(real, rroot, nroot) || (real[nroot] != '/' && strcmp(rroot, "/"))) {
-                    status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s is outside the shipped root", d->path, cands[c]);
-                    nfound = (size_t)-1;
-                    break;
+                if (volume) {
+                    int e = rooted_resolve(rroot, cands[c], real, sizeof real);
+                    if (e == ENOENT) continue;
+                    if (e) {
+                        status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s does not resolve inside the volume root: %s", d->path, cands[c], strerror(e));
+                        nfound = (size_t)-1;
+                        break;
+                    }
+                } else {
+                    if (lstat(cands[c], &st) != 0 || !realpath(cands[c], real)) continue;
+                    if (strncmp(real, rroot, nroot) || (real[nroot] != '/' && strcmp(rroot, "/"))) {
+                        status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s is outside the shipped root", d->path, cands[c]);
+                        nfound = (size_t)-1;
+                        break;
+                    }
                 }
                 if (stat(real, &st) != 0 || !S_ISREG(st.st_mode)) continue;
                 if (nfound && strcmp(found, real)) {
@@ -1086,11 +1145,12 @@ static void write_deviations(Out *o) {
 
 static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *artifact_rel,
                          const char *manifest_sha, NSArray *ref_inputs, const char *be_path,
-                         const char *be_sha, const char *analyzer_id, int complete) {
+                         const char *be_sha, const char *analyzer_id, int complete, int volume) {
     size_t i, j;
     size_t closed[7] = {0}, verdicts[5] = {0}, r1 = 0;
     raw(o, "{"); key(o, "schema", 1); raw(o, "1");
     kstr(o, "mode", mode, 0);
+    if (volume) kstr(o, "root_kind", "volume", 0);
     key(o, "complete_within_boundary", 0); raw(o, complete ? "true" : "false");
     kstr(o, "observation_boundary", BOUNDARY, 0);
     key(o, "limits", 0); raw(o, "[");
@@ -1101,6 +1161,7 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
             jstr(o, "the shipped closure is the artifact and the non-system images it loads, found inside the shipped root "
                     "through @rpath, @loader_path and @executable_path; one missing, outside the root, found twice, or loaded "
                     "weak, lazy or upward is cannot-measure");
+            if (volume) { raw(o, ", "); jstr(o, "absolute paths were resolved inside the root as installed at /"); }
             for (j = 0; j < a->n_shipped; j++) {
                 char buf[4096];
                 snprintf(buf, sizeof buf, "shipped image %s (sha256 %s) is measured by its interface: its classes, categories, "
@@ -1808,18 +1869,18 @@ int main(int argc, char **argv) {
         int i, rc = OBJC_OK, blocking = 0;
         size_t k;
         Out o;
-        int seen[13] = {0};
-        const char *prefix = NULL, *receipt = NULL, *exceptions = NULL, *source_root = NULL, *crate_sources = NULL, *sdk_root = NULL;
+        int seen[14] = {0}, volume = 0;
+        const char *root_kind = "tree", *prefix = NULL, *receipt = NULL, *exceptions = NULL, *source_root = NULL, *crate_sources = NULL, *sdk_root = NULL;
         static const char *OPT[] = { "--artifact", "--root", "--references", "--report", "--build-evidence", "--mode", "--analyzer-id",
                                      "--provider-prefix", "--source-receipt", "--exceptions", "--source-root", "--crate-sources",
-                                     "--sdk-root" };
+                                     "--sdk-root", "--root-kind" };
         if (argc > 1 && !strcmp(argv[1], "provider-link-args")) return link_args_main(argc - 1, argv + 1);
         if (argc > 1 && !strcmp(argv[1], "emit-build-evidence")) return build_evidence_main(argc - 1, argv + 1);
         if (argc > 1 && !strcmp(argv[1], "resolve")) return resolve_main(argc - 1, argv + 1);
         for (i = 1; i < argc; i++) {
             int n;
-            for (n = 0; n < 13 && strcmp(argv[i], OPT[n]); n++) ;
-            if (n == 13) return usage("unknown argument");
+            for (n = 0; n < 14 && strcmp(argv[i], OPT[n]); n++) ;
+            if (n == 14) return usage("unknown argument");
             if (i + 1 >= argc || !*argv[i + 1]) return usage("option without a value");
             if (seen[n]++) return usage("option given twice");
             switch (n) {
@@ -1835,11 +1896,13 @@ int main(int argc, char **argv) {
             case 9: exceptions = argv[++i]; break;
             case 10: source_root = argv[++i]; break;
             case 11: crate_sources = argv[++i]; break;
-            default: sdk_root = argv[++i]; break;
+            case 12: sdk_root = argv[++i]; break;
+            default: root_kind = argv[++i]; break;
             }
         }
         if (!artifact || !root || !refs || !report) return usage("--artifact, --root, --references and --report are required");
         if (strcmp(mode, "inventory") && strcmp(mode, "strict")) return usage("--mode is inventory or strict");
+        if (strcmp(root_kind, "tree") && !(volume = !strcmp(root_kind, "volume"))) return usage("--root-kind is tree or volume");
         if (receipt && (!prefix || !evidence)) return usage("--source-receipt needs --provider-prefix and --build-evidence");
         if ((source_root || crate_sources || sdk_root) && !evidence)
             return usage("--source-root, --crate-sources and --sdk-root need --build-evidence");
@@ -1885,7 +1948,7 @@ int main(int argc, char **argv) {
         if (!rc) rc = objc_load_references(a);
         if (!rc) rc = objc_load_reference_set(a);
         if (!rc) rc = objc_collect_artifacts(a);
-        if (!rc) rc = shipped_closure(a, rroot, rel);
+        if (!rc) rc = shipped_closure(a, rroot, rel, volume);
         if (!rc) {
             /* Providers first: a source receipt maps only into verified provider code. Sends are
              * classified even when verification fails, so the report still lists them. */
@@ -1899,7 +1962,7 @@ int main(int argc, char **argv) {
         for (k = 0; k < a->n_findings; k++)
             if ((a->findings[k].verdict == OBJC_UNSUPPORTED || a->findings[k].verdict == OBJC_UNRESOLVED) && !a->findings[k].deviation) blocking = 1;
         memset(&o, 0, sizeof o);
-        write_report(&o, a, mode, rel, manifest_sha, ref_inputs, evidence, evidence ? be_sha : NULL, analyzer_id, rc == OBJC_OK);
+        write_report(&o, a, mode, rel, manifest_sha, ref_inputs, evidence, evidence ? be_sha : NULL, analyzer_id, rc == OBJC_OK, volume);
         if (o.bad) {
             fprintf(stderr, "objc-compat: no report written: %s\n", o.why);
             free(o.b); objc_analysis_destroy(a);

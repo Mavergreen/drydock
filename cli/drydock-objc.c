@@ -11,6 +11,7 @@
  *                                    [--provider-prefix DIR
  *                                    [--source-receipt FILE]] [--mode inventory|strict]
  *                                    [--exceptions FILE] [--analyzer-id ID]
+ *                                    [--root-kind tree|volume]
  *   drydock-objc evidence ARGS...    shipyard's scripts/objc-build-evidence.sh:
  *                                    --artifact FILE --prestrip FILE --source-root DIR
  *                                    [--link-map FILE --provider-prefix DIR]
@@ -108,7 +109,7 @@ int objc_source_inventory_main(int argc, char **argv);
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: drydock-objc analyze --artifact FILE --root DIR --report NEW_FILE [--references DIR] [option VALUE]...\n"
+            "usage: drydock-objc analyze --artifact FILE --root DIR --report NEW_FILE [--references DIR] [--root-kind tree|volume] [option VALUE]...\n"
             "       drydock-objc evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE --provider-prefix DIR]"
             " [--references DIR] --output NEW_FILE\n"
             "       drydock-objc evidence --tree-digest-only --source-root DIR\n"

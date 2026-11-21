@@ -23,11 +23,12 @@ SDK=$(sh "$SHIPYARD_SCRIPTS/fetch_sdk.sh" --arch x86_64)
 fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 -O1 "$@" 2>>"$T/cc.log"; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 n=0
-analyze() {
-  n=$((n + 1)); rep="$T/report.$n"
-  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$2" --root "$1" --references "$REF" --report "$rep" --mode strict 2>"$T/err" || rc=$?
+analyze() {   # analyze ROOT ARTIFACT [OPTION VALUE]...
+  n=$((n + 1)); rep="$T/report.$n"; r=$1; art=$2; shift 2
+  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$r" --references "$REF" --report "$rep" --mode strict "$@" 2>"$T/err" || rc=$?
   ln -sf "$rep" "$T/report"
 }
+analyze_vol() { r=$1; art=$2; shift 2; analyze "$r" "$art" --root-kind volume "$@"; }
 exit_is() { [ "$rc" = "$1" ] || fail "$2: exit $rc, want $1"; }
 error_is() { grep "\"code\": \"$1\"" "$T/report" >/dev/null || fail "$2: no $1 error"; }
 finding() { grep "\"function\": \"$1\"" "$T/report" | grep "\"selector\": \"$2\""; }
@@ -120,4 +121,89 @@ grep -F '(weak)' "$T/report" >/dev/null || fail 'the weak load is not named'
 bundle "$T/dup" -DMG_DUPLICATE -- -framework MGShipped -Wl,-rpath,@executable_path/../Frameworks
 analyze "$T/dup" "$T/dup/App.app/Contents/MacOS/App"
 exit_is 4 'a class defined twice in the closure'; error_is ambiguous-class 'a class defined twice in the closure'
-echo "objc-closure: shipped images by interface, image-qualified findings, unchanged single-image reports and every refusal pass"
+# spec: src/objc/main.m "The shipped closure" -- with --root-kind volume, --root is a staged volume as
+#       installed at /: an absolute install name and every symlink resolve inside it, never on the host.
+#       The names are unique, so no pass can come from the host's /usr/local or /Library.
+VLIB=usr/local/mavergreen/mgp/lib/libMGShipped.dylib
+vol() {   # vol DIR: DIR/root holds the app, the dylib it loads by absolute install name, and the absolute link to it
+  v=$1/root; mkdir -p "$v/usr/local/mavergreen/mgp/lib" "$v/usr/local/mavergreen/mgp/bin" "$v/usr/local/lib"
+  fxcc -dynamiclib "$FX/shipped-framework.m" -framework Foundation -install_name /usr/local/lib/libMGShipped.dylib -o "$v/$VLIB" ||
+    fail 'volume dylib did not build'
+  ln -s /$VLIB "$v/usr/local/lib/libMGShipped.dylib"
+  fxcc "$FX/shipped-app.m" -framework Foundation "$v/$VLIB" -o "$v/usr/local/mavergreen/mgp/bin/App" || fail 'volume app did not build'
+}
+vol "$T/vol.1"
+analyze_vol "$T/vol.1/root" "$T/vol.1/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 1 'volume absolute install name'
+grep -F '"complete_within_boundary": true,' "$T/report" >/dev/null || fail "volume absolute install name: not measured: $(grep '"code"' "$T/report")"
+want _shipped_class sharedShipped floor-supported "$VLIB"
+grep -F '"root_kind": "volume"' "$T/report" >/dev/null || fail 'volume absolute install name: no root_kind'
+grep -F '"absolute paths were resolved inside the root as installed at /"' "$T/report" >/dev/null || fail 'volume absolute install name: no volume limit'
+analyze "$T/vol.1/root" "$T/vol.1/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'tree mode unchanged'; error_is escaping-dependency 'tree mode unchanged'
+grep -F 'a non-system path outside the shipped root' "$T/err" >/dev/null || fail 'tree mode unchanged: the refusal changed'
+! grep -F '"root_kind"' "$T/report" >/dev/null || fail 'tree mode unchanged: the report gained root_kind'
+analyze "$T/vol.1/root" "$T/vol.1/root/usr/local/mavergreen/mgp/bin/App" --root-kind tree
+exit_is 4 'explicit tree mode'; error_is escaping-dependency 'explicit tree mode'
+! grep -F '"root_kind"' "$T/report" >/dev/null || fail 'explicit tree mode: the report gained root_kind'
+# platform: every --root is under /, so / is a root: the host has no /usr/local/lib/libMGShipped.dylib.
+analyze_vol / "$T/vol.1/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'root slash'; error_is missing-dependency 'root slash'
+analyze "$T/vol.1/root" "$T/vol.1/root/usr/local/mavergreen/mgp/bin/App" --root-kind sysroot
+exit_is 2 'bad root kind'
+
+vol "$T/vol.2"; rm "$T/vol.2/root/$VLIB"
+analyze_vol "$T/vol.2/root" "$T/vol.2/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'volume missing'; error_is missing-dependency 'volume missing'
+vol "$T/vol.3"; rm "$T/vol.3/root/$VLIB"; mkdir "$T/vol.3/root/$VLIB"
+analyze_vol "$T/vol.3/root" "$T/vol.3/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'volume directory'; error_is missing-dependency 'volume directory'
+# The escaping file is both where the host would find it and where clamping `..` at the root would.
+vol "$T/vol.4"; rm "$T/vol.4/root/usr/local/lib/libMGShipped.dylib"
+ln -s /../../outside/libMGShipped.dylib "$T/vol.4/root/usr/local/lib/libMGShipped.dylib"
+mkdir -p "$T/outside" "$T/vol.4/root/outside"
+cp "$T/vol.4/root/$VLIB" "$T/outside/"; cp "$T/vol.4/root/$VLIB" "$T/vol.4/root/outside/"
+analyze_vol "$T/vol.4/root" "$T/vol.4/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'volume dotdot escape'; error_is escaping-dependency 'volume dotdot escape'
+vol "$T/vol.5"; rm "$T/vol.5/root/usr/local/lib/libMGShipped.dylib"
+ln -s /usr/local/lib/libMGLoopB.dylib "$T/vol.5/root/usr/local/lib/libMGShipped.dylib"
+ln -s /usr/local/lib/libMGShipped.dylib "$T/vol.5/root/usr/local/lib/libMGLoopB.dylib"
+analyze_vol "$T/vol.5/root" "$T/vol.5/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'volume loop'; error_is escaping-dependency 'volume loop'
+
+vfw() {   # vfw DIR INSTALL-NAME [APP FLAGS]...: MGShipped.framework staged in mgp, with libMGInner beside it
+  v=$1/root; inst=$2; shift 2
+  fw="$v/usr/local/mavergreen/mgp/Frameworks/MGShipped.framework"
+  mkdir -p "$fw/Versions/A" "$v/Library/Frameworks"
+  ln -s A "$fw/Versions/Current"; ln -s Versions/Current/MGShipped "$fw/MGShipped"
+  ln -s /usr/local/mavergreen/mgp/Frameworks/MGShipped.framework "$v/Library/Frameworks/MGShipped.framework"
+  fxcc -dynamiclib "$FX/shipped-inner.m" -framework Foundation -install_name @loader_path/libMGInner.dylib -o "$fw/Versions/A/libMGInner.dylib" ||
+    fail 'volume inner dylib did not build'
+  fxcc -dynamiclib -DMG_INNER "$FX/shipped-framework.m" -framework Foundation "$fw/Versions/A/libMGInner.dylib" \
+    -install_name "$inst" -o "$fw/Versions/A/MGShipped" || fail 'volume framework did not build'
+  fxcc -DMG_INNER "$FX/shipped-app.m" -framework Foundation -F"$v/usr/local/mavergreen/mgp/Frameworks" -framework MGShipped "$@" ||
+    fail 'volume framework app did not build'
+}
+VFW=usr/local/mavergreen/mgp/Frameworks/MGShipped.framework/Versions/A/MGShipped
+VIN=usr/local/mavergreen/mgp/Frameworks/MGShipped.framework/Versions/A/libMGInner.dylib
+mkdir -p "$T/vol.6/root/usr/local/mavergreen/mgp/bin"
+vfw "$T/vol.6" /Library/Frameworks/MGShipped.framework/Versions/A/MGShipped -o "$T/vol.6/root/usr/local/mavergreen/mgp/bin/App"
+analyze_vol "$T/vol.6/root" "$T/vol.6/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 1 'volume framework chain'
+grep -F '"complete_within_boundary": true,' "$T/report" >/dev/null || fail "volume framework chain: not measured: $(grep '"code"' "$T/report")"
+want _shipped_class sharedShipped floor-supported "$VFW"
+want _inner_inherited innerThing floor-supported "$VIN"
+# The app's product is mgapp; its ../Frameworks is an absolute link into mgp's, which only the volume can follow.
+mkdir -p "$T/vol.7/root/usr/local/mavergreen/mgapp/bin"
+ln -s /usr/local/mavergreen/mgp/Frameworks "$T/vol.7/root/usr/local/mavergreen/mgapp/Frameworks"
+vfw "$T/vol.7" @rpath/MGShipped.framework/Versions/A/MGShipped -Wl,-rpath,@executable_path/../Frameworks \
+  -o "$T/vol.7/root/usr/local/mavergreen/mgapp/bin/App"
+analyze_vol "$T/vol.7/root" "$T/vol.7/root/usr/local/mavergreen/mgapp/bin/App"
+exit_is 1 'volume loader_path through an absolute link'
+grep -F '"complete_within_boundary": true,' "$T/report" >/dev/null || fail "volume loader_path through an absolute link: not measured: $(grep '"code"' "$T/report")"
+want _shipped_class sharedShipped floor-supported "$VFW"
+want _inner_inherited innerThing floor-supported "$VIN"
+# On the host the absolute link dangles, so tree mode finds nothing.
+analyze "$T/vol.7/root" "$T/vol.7/root/usr/local/mavergreen/mgapp/bin/App"
+exit_is 4 'tree loader_path through an absolute link'; error_is missing-dependency 'tree loader_path through an absolute link'
+echo "objc-closure: shipped images by interface, image-qualified findings, unchanged single-image reports and every refusal pass, in a tree and in a volume"

@@ -1,0 +1,1 @@
+drydock-objc analyze --root-kind volume resolves absolute install names inside a staged volume root, following its symlinks there, so macFUSE's libraries are measured instead of refused.

@@ -57,7 +57,7 @@ See [drydock-macho-rewrite(1)](man/drydock-macho-rewrite.1) for script syntax, o
 
 Given an Objective-C binary built for Mavericks, report which of its message sends the Mavericks runtime and SDK can answer. It is shipyard's Objective-C analyzer, moved here so the tool that rewrites a Mach-O file and the tool that checks what it will do on 10.9 ship together. It has five subcommands:
 
-* `drydock-objc analyze`: analyze an artifact against the reference set and write a report.
+* `drydock-objc analyze`: analyze an artifact against the reference set and write a report. Non-system images the artifact loads are found inside `--root`. With `--root-kind volume`, `--root` is a staged volume as installed at `/`: an absolute install name such as `/usr/local/lib/libfuse.2.dylib` and every symlink resolve inside it, never on the host.
 * `drydock-objc evidence`: write the source-side evidence an artifact's analysis is checked against, or with `--tree-digest-only` or `--sdk-digest-only` just print a digest of a source tree or an SDK.
 * `drydock-objc link-args`: print the link arguments for a provider prefix and link map; `--provider ID`, repeatable, limits them to the providers named, so a consumer roots and links only what it uses.
 * `drydock-objc receipt`: write an Objective-C provider's source receipt: every Objective-C send in its verified prepared sources, with the identities of the clang (its libclang version), the SDK and the tool that took it.
