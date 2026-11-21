@@ -164,9 +164,12 @@ clean_attested() {
 }
 # variant NAME: the sweep-table.S variant's image, map, archive and evidence; IMG, WINDOW and REFUSAL name it.
 variant() {
-  (fixture_sweep "$T/v-$1" "$1" && printf '%s %s\n' "$SWEEP_WINDOW" "$SWEEP_TARGET" >"$T/v-$1/hit") || fail "the $1 fixture"
-  IMG=$T/v-$1; read -r WINDOW _target <"$IMG/hit"; REFUSAL="possible reference to $_target"
-  evidence "$IMG/root/bin/sweep" "$IMG/sweep.map" "$T/ev/$1.json"; exit_is 0 "evidence for the $1 fixture"
+  IMG=$T/v-$1
+  if [ ! -f "$IMG/hit" ]; then
+    (fixture_sweep "$IMG" "$1" && printf '%s %s\n' "$SWEEP_WINDOW" "$SWEEP_TARGET" >"$IMG/hit") || fail "the $1 fixture"
+    evidence "$IMG/root/bin/sweep" "$IMG/sweep.map" "$T/ev/$1.json"; exit_is 0 "evidence for the $1 fixture"
+  fi
+  read -r WINDOW _target <"$IMG/hit"; REFUSAL="possible reference to $_target"
 }
 base() { IMG=$SW; WINDOW=$SWEEP_WINDOW; REFUSAL="possible reference to $SWEEP_TARGET"; }
 
@@ -321,6 +324,33 @@ test_same_section() {
   base
 }
 
+# spec: src/objc/attest.c objc_attest_window -- condition 5 has two halves, each refusing alone. The map edited so
+#       the member also places the lazy pointer: outside where its __text would lie, inside an atom of its own.
+test_target_in_own_atom() {
+  t=$(printf '0x%X' "$((SWEEP_TARGET))")
+  sed "s/^$t\(	0x[0-9A-F]*	\)\[  3\] _method_getName\$/$t\1[  2] _method_getName/" "$SW/sweep.map" >"$SW/own.map"
+  [ "$(diff "$SW/sweep.map" "$SW/own.map" | grep -c '^>')" = 1 ] || fail 'the own map does not re-attribute the lazy pointer alone'
+  evidence "$SW/root/bin/sweep" "$SW/own.map" "$T/ev/own.json"; exit_is 0 'evidence for the own map'
+  mkdir -p "$T/dirs/own"; cp "$SW/obj/libsweep.a" "$T/dirs/own/"
+  attested own "$T/dirs/own" own own
+  refused_because "target inside the same object's section" 'a target in an atom the member places elsewhere'
+}
+
+# The same fixture's map edited so the fetch function is main.o's and _sweep_fn ends 8 bytes before it: no atom of
+# the member reaches the target, but the member's whole __text, placed where _sweep_fn starts, does.
+test_target_in_own_section_span() {
+  variant same
+  f=$(printf '0x%X' "$((WINDOW - 1))")
+  sed -e "s/^$f	0x00000010	\[  2\] _sweep_fn\$/$f	0x00000008	[  2] _sweep_fn/" \
+      -e 's/\[  2\] \(__RN.*CachedSel5fetch\)$/[  1] \1/' "$IMG/sweep.map" >"$IMG/span.map"
+  [ "$(diff "$IMG/sweep.map" "$IMG/span.map" | grep -c '^>')" = 2 ] || fail 'the span map does not edit _sweep_fn and the fetch atom'
+  evidence "$IMG/root/bin/sweep" "$IMG/span.map" "$T/ev/span.json"; exit_is 0 'evidence for the span map'
+  mkdir -p "$T/dirs/span"; cp "$IMG/obj/libsweep.a" "$T/dirs/span/"
+  attested span "$T/dirs/span" span span
+  refused_because "target inside the same object's section" 'a target in the member'"'"'s section past its atoms'
+  base
+}
+
 test_straddle() {
   variant straddle
   mkdir -p "$T/dirs/straddle"; cp "$IMG/obj/libsweep.a" "$T/dirs/straddle/"
@@ -396,6 +426,8 @@ test_changed_byte
 test_map_path_wins
 test_relocation
 test_same_section
+test_target_in_own_atom
+test_target_in_own_section_span
 test_straddle
 test_got_relax_opcode
 test_nested_atoms
