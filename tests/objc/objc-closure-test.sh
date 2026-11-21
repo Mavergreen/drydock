@@ -206,4 +206,22 @@ want _inner_inherited innerThing floor-supported "$VIN"
 # On the host the absolute link dangles, so tree mode finds nothing.
 analyze "$T/vol.7/root" "$T/vol.7/root/usr/local/mavergreen/mgapp/bin/App"
 exit_is 4 'tree loader_path through an absolute link'; error_is missing-dependency 'tree loader_path through an absolute link'
+# After the absolute link, relative ones resolve from each link's directory: lib/../Frameworks, then the
+# framework's MGShipped -> Versions/Current/MGShipped and Current -> A, as a versioned stage links them.
+vrel() {   # vrel DIR CURRENT: the framework reached by /usr/local/lib/libMGShippedFw.dylib, Versions/Current -> CURRENT
+  mkdir -p "$1/root/usr/local/mavergreen/mgp/bin" "$1/root/usr/local/mavergreen/mgp/lib" "$1/root/usr/local/lib"
+  vfw "$1" /usr/local/lib/libMGShippedFw.dylib -o "$1/root/usr/local/mavergreen/mgp/bin/App"
+  ln -s /usr/local/mavergreen/mgp/lib/libMGShippedFw.dylib "$1/root/usr/local/lib/libMGShippedFw.dylib"
+  ln -s ../Frameworks/MGShipped.framework/MGShipped "$1/root/usr/local/mavergreen/mgp/lib/libMGShippedFw.dylib"
+  ln -sfh "$2" "$1/root/usr/local/mavergreen/mgp/Frameworks/MGShipped.framework/Versions/Current"
+}
+vrel "$T/vol.8" A
+analyze_vol "$T/vol.8/root" "$T/vol.8/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 1 'volume relative links after an absolute one'
+grep -F '"complete_within_boundary": true,' "$T/report" >/dev/null || fail "volume relative links after an absolute one: not measured: $(grep '"code"' "$T/report")"
+want _shipped_class sharedShipped floor-supported "$VFW"
+want _inner_inherited innerThing floor-supported "$VIN"
+vrel "$T/vol.9" B
+analyze_vol "$T/vol.9/root" "$T/vol.9/root/usr/local/mavergreen/mgp/bin/App"
+exit_is 4 'volume relative link to nothing'; error_is missing-dependency 'volume relative link to nothing'
 echo "objc-closure: shipped images by interface, image-qualified findings, unchanged single-image reports and every refusal pass, in a tree and in a volume"
