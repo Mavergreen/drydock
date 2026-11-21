@@ -1,0 +1,1 @@
+drydock-objc evidence records a link map without any provider, so analyze can check that map before trusting it to clear undecodable code.

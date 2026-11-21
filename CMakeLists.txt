@@ -512,7 +512,7 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity attest binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
+foreach(t arity attest attest-codex binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)

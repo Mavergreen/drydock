@@ -83,6 +83,10 @@ A row names its code by `path`; `symbol` or `symbols` (the copies of one generic
 
 `drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE` reads schema-2 reviewed evidence and writes it again with every guard's, R2 row's and R3 row's `symbol` or `symbols`, and every crate's `disambiguator`, read from the artifact. Everything else, `artifact` and `source` included, is copied unchanged: the product's build stamps those. The output is the whole document with sorted keys and a 2-space indent. It exits 0 when it wrote the output; 2 for a usage error, or when `NEW_FILE` already exists (it never overwrites); 4 having written nothing, with each error on stderr: `stale-build-evidence` for a path no function of the artifact has or a crate no symbol names, `resolve-ambiguous` as above, `malformed-build-evidence` for evidence that is not schema 2.
 
+### Undecoded bytes in code
+
+Bytes in code that no instruction covers can hold a value that happens to land on a selector reference or lazy pointer, and `analyze` refuses such a window as `undecodable-objc-reference`. Constant tables in assembly (aws-lc's, for one) do this by chance. `drydock-objc evidence --link-map FILE` binds the link's map as `link_map.sha256`, with or without `--provider-prefix`. `analyze --link-map FILE`, which needs `--build-evidence` naming that map, clears a window only when the map places it in an object file whose bytes there match the image and carry no relocation, so the assembler fixed them and they can reach only that object's own section, and the address they would name lies outside it. The object comes from the map's path, or by its basename from exactly one `--object-dir DIR` (repeatable), for a build whose objects have moved. Both options are optional; a window that cannot be cleared still refuses, and its detail ends `(not attested: REASON)`. The report counts what was cleared as `undecoded_code_bytes_attested`.
+
 Building Drydock now fetches the pinned clang22 at configure time, for its `clang-c` headers only (nothing of it ships), so a build needs network access or a warm cache.
 
 ## Other related tools

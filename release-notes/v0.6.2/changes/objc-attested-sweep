@@ -1,0 +1,1 @@
+drydock-objc clears an undecodable code window only when the link map and its object file show the assembler fixed those bytes, so constant tables no longer refuse by chance.
