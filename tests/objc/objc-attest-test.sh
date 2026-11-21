@@ -235,7 +235,9 @@ test_unattested_member_absent() {
 
 test_unattested_not_x86_64() {
   mkdir -p "$T/dirs/i386/m"
-  fxcc -arch i386 -c "$FX/sweep-table.S" -o "$T/dirs/i386/m/sweep.o"
+  # One -arch only: fxcc's x86_64 plus i386 would make clang call lipo, which a guest without Xcode lacks.
+  env -i PATH=/usr/bin:/bin "$CC" -arch i386 -isysroot "$SDK" -mmacosx-version-min=10.9 -c "$FX/sweep-table.S" -o "$T/dirs/i386/m/sweep.o"
+  [ "$(od -An -tx1 -N8 "$T/dirs/i386/m/sweep.o" | tr -d ' \n')" = cefaedfe07000000 ] || fail 'the i386 member is not a thin i386 object'
   "$AR" rc "$T/dirs/i386/libsweep.a" "$T/dirs/i386/m/sweep.o"
   attested i386 "$T/dirs/i386"
   refused_because 'not an x86_64 object' 'an i386 member'
