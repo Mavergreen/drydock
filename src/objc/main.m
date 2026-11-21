@@ -64,13 +64,14 @@
 #include <unistd.h>
 #include "report.h"
 #include "linkmap.h"
+#include "attest.h"
 
 #define JSON_MAX (16u << 20)
 #define MANIFEST_MAX (1u << 20)
 
 static int usage(const char *why) {
     fprintf(stderr, "objc-compat: %s\nusage: objc-compat --artifact FILE --root SHIPPED_ROOT --references REF_DIR "
-                    "--report NEW_FILE [--build-evidence FILE [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR]] "
+                    "--report NEW_FILE [--build-evidence FILE [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR] [--link-map FILE [--object-dir DIR]...]] "
                     "[--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict] [--exceptions FILE] [--root-kind tree|volume]\n", why);
     return 2;
 }
@@ -402,6 +403,9 @@ static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *ma
     if ((refs = obj(b, @"references")) && (!S(refs, @"manifest_sha256") || strcmp(S(refs, @"manifest_sha256"), manifest_sha)))
         return objc_fail(a, "stale-build-evidence", NULL, 0, "%s was made against reference manifest %s, not %s", path,
                          S(refs, @"manifest_sha256") ? S(refs, @"manifest_sha256") : "(none)", manifest_sha);
+    if (obj(b, @"link_map") && hex64(S(obj(b, @"link_map"), @"sha256")) &&
+        objc_set_string(&a->be_link_map_sha256, S(obj(b, @"link_map"), @"sha256")))
+        return objc_fail(a, "out-of-memory", NULL, 0, "evidence");
     if ([b objectForKey:@"providers"] && (!arr(b, @"providers") || load_evidence_providers(a, arr(b, @"providers"))))
         return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: providers is not a list", path);
     if (objc_set_string(&a->be_artifact_sha256, S(art, @"sha256")) || objc_set_string(&a->be_source_revision, S(src, @"revision")) ||
@@ -1279,6 +1283,7 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
                    kstr(o, "features", a->be_features, 0); raw(o, "}"); }
     else raw(o, "null");
     if (a->src_sha256) { key(o, "source_receipt", 0); raw(o, "{"); kstr(o, "sha256", a->src_sha256, 1); raw(o, "}"); }
+    if (a->map) { key(o, "link_map", 0); raw(o, "{"); kstr(o, "sha256", a->link_map_sha256, 1); raw(o, "}"); }
     kstr(o, "analyzer", analyzer_id, 0);
     kstr(o, "reader_profile", "objc2-0.6 caches; objc_msgSend family; x86_64", 0);
     key(o, "providers", 0); raw(o, "[");
@@ -1864,6 +1869,17 @@ done:
     return rc;
 }
 
+/* --link-map: the map the build evidence recorded, parsed for the undecoded-bytes sweep (attest.c). */
+static int load_link_map(ObjcAnalysis *a, const char *path, const char *evidence) {
+    if (objc_file_sha256(path, a->link_map_sha256)) return objc_fail(a, "unreadable-input", NULL, 0, "link map %s: %s", path, strerror(errno));
+    if (!a->be_link_map_sha256) return objc_fail(a, "link-map-mismatch", NULL, 0, "build evidence %s records no link map", evidence);
+    if (strcmp(a->link_map_sha256, a->be_link_map_sha256))
+        return objc_fail(a, "link-map-mismatch", NULL, 0, "%s does not hash to the build evidence's link_map.sha256", path);
+    if (!(a->map = calloc(1, sizeof *a->map))) return objc_fail(a, "out-of-memory", NULL, 0, "%s", "link map");
+    if (objc_linkmap_read(a, path, a->map)) { free(a->map); a->map = NULL; return OBJC_CANNOT_MEASURE; }
+    return OBJC_OK;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         const char *artifact = NULL, *root = NULL, *refs = NULL, *report = NULL, *evidence = NULL, *mode = "inventory";
@@ -1876,20 +1892,23 @@ int main(int argc, char **argv) {
         int i, rc = OBJC_OK, blocking = 0;
         size_t k;
         Out o;
-        int seen[14] = {0}, volume = 0;
+        int seen[16] = {0}, volume = 0;
         const char *root_kind = "tree", *prefix = NULL, *receipt = NULL, *exceptions = NULL, *source_root = NULL, *crate_sources = NULL, *sdk_root = NULL;
+        const char *link_map = NULL;
+        char **object_dirs = NULL;
+        size_t n_object_dirs = 0;
         static const char *OPT[] = { "--artifact", "--root", "--references", "--report", "--build-evidence", "--mode", "--analyzer-id",
                                      "--provider-prefix", "--source-receipt", "--exceptions", "--source-root", "--crate-sources",
-                                     "--sdk-root", "--root-kind" };
+                                     "--sdk-root", "--root-kind", "--link-map", "--object-dir" };
         if (argc > 1 && !strcmp(argv[1], "provider-link-args")) return link_args_main(argc - 1, argv + 1);
         if (argc > 1 && !strcmp(argv[1], "emit-build-evidence")) return build_evidence_main(argc - 1, argv + 1);
         if (argc > 1 && !strcmp(argv[1], "resolve")) return resolve_main(argc - 1, argv + 1);
         for (i = 1; i < argc; i++) {
             int n;
-            for (n = 0; n < 14 && strcmp(argv[i], OPT[n]); n++) ;
-            if (n == 14) return usage("unknown argument");
+            for (n = 0; n < 16 && strcmp(argv[i], OPT[n]); n++) ;
+            if (n == 16) return usage("unknown argument");
             if (i + 1 >= argc || !*argv[i + 1]) return usage("option without a value");
-            if (seen[n]++) return usage("option given twice");
+            if (seen[n]++ && n != 15) return usage("option given twice");
             switch (n) {
             case 0: artifact = argv[++i]; break;
             case 1: root = argv[++i]; break;
@@ -1904,7 +1923,12 @@ int main(int argc, char **argv) {
             case 10: source_root = argv[++i]; break;
             case 11: crate_sources = argv[++i]; break;
             case 12: sdk_root = argv[++i]; break;
-            default: root_kind = argv[++i]; break;
+            case 13: root_kind = argv[++i]; break;
+            case 14: link_map = argv[++i]; break;
+            default:
+                if (stat(argv[++i], &st) != 0 || !S_ISDIR(st.st_mode)) return usage("--object-dir is not a directory");
+                if (objc_strv_push(&object_dirs, &n_object_dirs, argv[i])) { fprintf(stderr, "objc-compat: out of memory\n"); return 4; }
+                break;
             }
         }
         if (!artifact || !root || !refs || !report) return usage("--artifact, --root, --references and --report are required");
@@ -1913,6 +1937,8 @@ int main(int argc, char **argv) {
         if (receipt && (!prefix || !evidence)) return usage("--source-receipt needs --provider-prefix and --build-evidence");
         if ((source_root || crate_sources || sdk_root) && !evidence)
             return usage("--source-root, --crate-sources and --sdk-root need --build-evidence");
+        if (link_map && !evidence) return usage("--link-map needs --build-evidence");
+        if (n_object_dirs && !link_map) return usage("--object-dir needs --link-map");
         if (lstat(report, &st) == 0) return usage("the report destination already exists; it is never replaced");
         if (errno != ENOENT) return usage("the report destination's directory is not usable");
         {
@@ -1938,6 +1964,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "objc-compat: out of memory\n");
             return 4;
         }
+        a->object_dirs = object_dirs; a->n_object_dirs = n_object_dirs;
         {
             char h[65];
             if (objc_file_sha256(rart, h)) rc = objc_fail(a, "unreadable-artifact", NULL, 0, "%s: %s", rart, strerror(errno));
@@ -1950,6 +1977,7 @@ int main(int argc, char **argv) {
             if (objc_file_sha256(evidence, be_sha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "build evidence %s", evidence);
             else rc = load_build_evidence(a, evidence, manifest_sha);
         }
+        if (!rc && link_map) rc = load_link_map(a, link_map, evidence);
         if (!rc && receipt) rc = objc_load_source_receipt(a, receipt);
         if (!rc && exceptions) rc = load_exceptions(a, exceptions);
         if (!rc) rc = objc_load_references(a);

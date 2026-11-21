@@ -159,7 +159,7 @@ endif()
 # source-evidence.c requires a receipt's `tool` line to equal.
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c" OBJC_SOURCE_INVENTORY_SHA256)
 set(DRYDOCK_OBJC_SOURCES)
-foreach(m macho-reader binding demangle-v0 reference report classify source-evidence source-hash provider linkmap)
+foreach(m macho-reader binding demangle-v0 reference report classify source-evidence source-hash provider linkmap attest)
   list(APPEND DRYDOCK_OBJC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/${m}.c")
 endforeach()
 
@@ -167,7 +167,7 @@ endforeach()
 # release version plus the first 16 hex of a SHA-256 over the bytes
 # objc-compat-build.sh's sources() hashed, in its order, with its first line
 # (the Drydock pin's commit) replaced by drydock-VERSION, since the reader core
-# is now this tree's own: "analyzer", the ten modules, report.h, demangle-v0.h, linkmap.h, main.m, the
+# is now this tree's own: "analyzer", the eleven modules, report.h, demangle-v0.h, linkmap.h, attest.h, main.m, the
 # receipt tool, the thirteen reader-core modules it named, then every src/*.h in
 # byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
 # sources()). Each file is a configure dependency, so an edit reconfigures and
@@ -176,6 +176,7 @@ set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/report.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/demangle-v0.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/linkmap.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/attest.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/main.m"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c")
 foreach(m image fat x86len ordinals uleb rebase objc_meth arch_names grow exports hdrref linkedit trie)
@@ -241,7 +242,7 @@ set_source_files_properties(cli/drydock-objc.c PROPERTIES COMPILE_OPTIONS "-Wext
 
 if(APPLE)
   enable_language(OBJC)
-  # The nine analyzer modules, shared by drydock-objc and the reader harness.
+  # The eleven analyzer modules, shared by drydock-objc and the reader harness.
   add_library(drydock_objc_core OBJECT ${DRYDOCK_OBJC_SOURCES})
   target_include_directories(drydock_objc_core PRIVATE src/objc src)
   target_compile_definitions(drydock_objc_core PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")

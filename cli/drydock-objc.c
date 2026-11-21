@@ -7,7 +7,8 @@
  *   drydock-objc analyze ARGS...     shipyard's scripts/objc-compat.sh: --artifact FILE
  *                                    --root DIR --report NEW_FILE [--references DIR]
  *                                    [--build-evidence FILE [--source-root DIR]
- *                                    [--crate-sources DIR] [--sdk-root DIR]]
+ *                                    [--crate-sources DIR] [--sdk-root DIR]
+ *                                    [--link-map FILE [--object-dir DIR]...]]
  *                                    [--provider-prefix DIR
  *                                    [--source-receipt FILE]] [--mode inventory|strict]
  *                                    [--exceptions FILE] [--analyzer-id ID]

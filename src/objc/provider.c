@@ -47,12 +47,12 @@
  * objc_map_provider_link is the build side: the final and prestrip slices must carry identical
  * sections (strip touches only __LINKEDIT), the link map's Arch and Sections must be this link's,
  * and each atom it places from an archive member must be a symbol the member defines and the
- * prestrip image has at that address. Archives are read by a bounded BSD ar(5) reader here
- * (the pinned Drydock's archive module needs its rewrite modules); objects by the bounded
- * MH_OBJECT reader below. Nothing is executed or loaded. */
+ * prestrip image has at that address. Archives are read by a bounded BSD ar(5) reader
+ * (the pinned Drydock's archive module needs its rewrite modules) and objects by a bounded
+ * MH_OBJECT reader, both in attest.c. Nothing is executed or loaded. */
 #include "report.h"
 #include "linkmap.h"
-#include <CommonCrypto/CommonDigest.h>
+#include "attest.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -65,30 +65,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define ARCHIVE_MAX (256u << 20)
 #define DEPTH_MAX 8
 
-/* ---- objects and archives ----------------------------------------------------------------------- */
-
-typedef struct { char seg[17], sect[17], name[36]; uint64_t addr, size; uint32_t off, flags, reloff, nreloc; } OSect;
-typedef struct {
-    char name[256], sha[65];
-    const uint8_t *buf; size_t size;
-    OSect *sects; uint32_t nsects;
-    struct nlist_64 *nl; uint32_t nsyms;
-    const char *strtab; uint32_t strsize;
-} OMember;
-typedef struct { uint8_t *buf; size_t size; OMember *m; size_t n; } OArchive;
-
-static void hex_digest(const uint8_t *p, size_t n, char out[65]) {
-    unsigned char d[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256_CTX c;
-    int i;
-    CC_SHA256_Init(&c);
-    while (n) { CC_LONG k = n > (1u << 30) ? (1u << 30) : (CC_LONG)n; CC_SHA256_Update(&c, p, k); p += k; n -= k; }
-    CC_SHA256_Final(d, &c);
-    for (i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
-}
+/* ---- archives ---------------------------------------------------------------------------------- */
 
 int objc_read_file(ObjcAnalysis *a, const char *path, size_t max, uint8_t **buf, size_t *size, const char *what) {
     FILE *f;
@@ -108,140 +87,13 @@ int objc_read_file(ObjcAnalysis *a, const char *path, size_t max, uint8_t **buf,
     return OBJC_OK;
 }
 
-static const char *sym_name(const OMember *m, uint32_t i) {
-    uint32_t x = m->nl[i].n_un.n_strx;
-    return x < m->strsize ? m->strtab + x : "";
-}
-static int defined(const struct nlist_64 *n) { return !(n->n_type & N_STAB) && (n->n_type & N_TYPE) == N_SECT; }
-
-static int parse_object(ObjcAnalysis *a, OMember *m) {
-    struct mach_header_64 h;
-    size_t off;
-    uint32_t i;
-    int segs = 0;
-    if (m->size < sizeof h) return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s is too short", m->name);
-    memcpy(&h, m->buf, sizeof h);
-    if (h.magic != MH_MAGIC_64 || h.cputype != CPU_TYPE_X86_64 || h.filetype != MH_OBJECT)
-        return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s is not an x86_64 relocatable object", m->name);
-    if (h.sizeofcmds > m->size - sizeof h) return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: load commands past its end", m->name);
-    for (i = 0, off = sizeof h; i < h.ncmds; i++) {
-        struct load_command lc;
-        if (off + sizeof lc > sizeof h + h.sizeofcmds) return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: truncated load command", m->name);
-        memcpy(&lc, m->buf + off, sizeof lc);
-        if (lc.cmdsize < sizeof lc || lc.cmdsize > sizeof h + h.sizeofcmds - off)
-            return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: bad load command size", m->name);
-        if (lc.cmd == LC_SEGMENT_64) {
-            struct segment_command_64 sg;
-            uint32_t k;
-            if (segs++ || lc.cmdsize < sizeof sg) return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: unexpected segments", m->name);
-            memcpy(&sg, m->buf + off, sizeof sg);
-            if ((uint64_t)sg.nsects * sizeof(struct section_64) > lc.cmdsize - sizeof sg)
-                return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: sections past the command", m->name);
-            if (!(m->sects = calloc(sg.nsects + 1, sizeof *m->sects))) return objc_fail(a, "out-of-memory", NULL, 0, "sections");
-            for (k = 0; k < sg.nsects; k++) {
-                struct section_64 x;
-                OSect *o = &m->sects[k];
-                uint8_t type;
-                memcpy(&x, m->buf + off + sizeof sg + k * sizeof x, sizeof x);
-                memcpy(o->seg, x.segname, 16); memcpy(o->sect, x.sectname, 16);
-                snprintf(o->name, sizeof o->name, "%s,%s", o->seg, o->sect);
-                o->addr = x.addr; o->size = x.size; o->off = x.offset; o->flags = x.flags;
-                o->reloff = x.reloff; o->nreloc = x.nreloc;
-                type = x.flags & SECTION_TYPE;
-                if (type != S_ZEROFILL && type != S_GB_ZEROFILL && type != S_THREAD_LOCAL_ZEROFILL &&
-                    (x.offset > m->size || x.size > m->size - x.offset))
-                    return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: section %s past its end", m->name, o->name);
-                if (x.reloff > m->size || (uint64_t)x.nreloc * 8 > m->size - x.reloff)
-                    return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: relocations past its end", m->name);
-            }
-            m->nsects = sg.nsects;
-        } else if (lc.cmd == LC_SYMTAB) {
-            struct symtab_command st;
-            if (lc.cmdsize < sizeof st) return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: short LC_SYMTAB", m->name);
-            memcpy(&st, m->buf + off, sizeof st);
-            if (st.symoff > m->size || (uint64_t)st.nsyms * sizeof(struct nlist_64) > m->size - st.symoff ||
-                st.stroff > m->size || st.strsize > m->size - st.stroff || !st.strsize || m->buf[st.stroff + st.strsize - 1])
-                return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: symbol table past its end", m->name);
-            if (!(m->nl = malloc(((size_t)st.nsyms + 1) * sizeof *m->nl))) return objc_fail(a, "out-of-memory", NULL, 0, "symbols");
-            memcpy(m->nl, m->buf + st.symoff, (size_t)st.nsyms * sizeof *m->nl);
-            m->nsyms = st.nsyms; m->strtab = (const char *)m->buf + st.stroff; m->strsize = st.strsize;
-        }
-        off += lc.cmdsize;
-    }
-    for (i = 0; i < m->nsyms; i++)
-        if (defined(&m->nl[i]) && (m->nl[i].n_sect < 1 || m->nl[i].n_sect > m->nsects))
-            return objc_fail(a, "malformed-provider-archive", NULL, 0, "member %s: symbol %s in no section", m->name, sym_name(m, i));
-    return OBJC_OK;
-}
-
-static void archive_free(OArchive *ar) {
-    size_t i;
-    for (i = 0; i < ar->n; i++) { free(ar->m[i].sects); free(ar->m[i].nl); }
-    free(ar->m); free(ar->buf);
-    memset(ar, 0, sizeof *ar);
-}
-
-/* BSD ar(5): "!<arch>\n", 60-byte headers, "#1/N" long names, even padding; index members skipped. */
-static int archive_open(ObjcAnalysis *a, const char *path, OArchive *ar) {
-    size_t off = 8;
-    int rc;
-    memset(ar, 0, sizeof *ar);
-    if ((rc = objc_read_file(a, path, ARCHIVE_MAX, &ar->buf, &ar->size, "provider archive"))) return rc;
-    if (ar->size < 8 || memcmp(ar->buf, "!<arch>\n", 8)) return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s is not an ar archive", path);
-    while (off < ar->size) {
-        const uint8_t *h = ar->buf + off;
-        char field[17], name[256];
-        unsigned long long sz;
-        size_t data, len, nl = 0;
-        char *end;
-        OMember *g;
-        size_t i;
-        if (ar->size - off < 60 || h[58] != '`' || h[59] != '\n') return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: bad member header at %zu", path, off);
-        memcpy(field, h + 48, 10); field[10] = 0;
-        sz = strtoull(field, &end, 10);
-        if (end == field || (*end && *end != ' ') || sz > ar->size - off - 60) return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: bad member size at %zu", path, off);
-        data = off + 60; len = (size_t)sz;
-        memcpy(field, h, 16); field[16] = 0;
-        if (!strncmp(field, "#1/", 3)) {
-            nl = (size_t)strtoul(field + 3, &end, 10);
-            if (!nl || nl >= sizeof name || nl > len) return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: bad long name at %zu", path, off);
-            memcpy(name, ar->buf + data, nl); name[nl] = 0;
-            data += nl; len -= nl;
-        } else {
-            size_t k = 16;
-            while (k && field[k - 1] == ' ') k--;
-            if (k && field[k - 1] == '/') return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: GNU-style archive names are not supported", path);
-            memcpy(name, field, k); name[k] = 0;
-        }
-        name[strcspn(name, "\0")] = 0;
-        off = data + len + ((data + len) & 1);
-        if (!strncmp(name, "__.SYMDEF", 9)) continue;
-        if (!*name) return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: unnamed member", path);
-        for (i = 0; i < ar->n; i++)
-            if (!strcmp(ar->m[i].name, name)) return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: two members named %s", path, name);
-        if (!(g = realloc(ar->m, (ar->n + 1) * sizeof *g))) return objc_fail(a, "out-of-memory", NULL, 0, "members");
-        ar->m = g; g = &ar->m[ar->n++]; memset(g, 0, sizeof *g);
-        snprintf(g->name, sizeof g->name, "%s", name);
-        g->buf = ar->buf + data; g->size = len;
-        hex_digest(g->buf, g->size, g->sha);
-        if ((rc = parse_object(a, g))) return rc;
-    }
-    return OBJC_OK;
-}
-
-static OMember *member_named(OArchive *ar, const char *name) {
-    size_t i;
-    for (i = 0; i < ar->n; i++) if (!strcmp(ar->m[i].name, name)) return &ar->m[i];
-    return NULL;
-}
-
 /* The member and symbol index defining external `name`, or -1. */
 static int archive_defines(const OArchive *ar, const char *name, size_t *mi, uint32_t *si) {
     size_t i;
     uint32_t k;
     for (i = 0; i < ar->n; i++)
         for (k = 0; k < ar->m[i].nsyms; k++)
-            if (defined(&ar->m[i].nl[k]) && (ar->m[i].nl[k].n_type & N_EXT) && !strcmp(sym_name(&ar->m[i], k), name)) {
+            if (objc_obj_defined(&ar->m[i].nl[k]) && (ar->m[i].nl[k].n_type & N_EXT) && !strcmp(objc_obj_sym_name(&ar->m[i], k), name)) {
                 *mi = i; *si = k; return 0;
             }
     return -1;
@@ -254,7 +106,7 @@ static void atom_extent(const OMember *m, uint32_t si, uint64_t *lo, uint64_t *h
     uint32_t k;
     *lo = n->n_value; *hi = x->addr + x->size;
     for (k = 0; k < m->nsyms; k++)
-        if (defined(&m->nl[k]) && m->nl[k].n_sect == n->n_sect && m->nl[k].n_value > *lo && m->nl[k].n_value < *hi)
+        if (objc_obj_defined(&m->nl[k]) && m->nl[k].n_sect == n->n_sect && m->nl[k].n_value > *lo && m->nl[k].n_value < *hi)
             *hi = m->nl[k].n_value;
 }
 
@@ -263,7 +115,7 @@ static long covering(const OMember *m, uint8_t sect, uint64_t t) {
     long best = -1;
     uint32_t k;
     for (k = 0; k < m->nsyms; k++)
-        if (defined(&m->nl[k]) && m->nl[k].n_sect == sect && m->nl[k].n_value <= t &&
+        if (objc_obj_defined(&m->nl[k]) && m->nl[k].n_sect == sect && m->nl[k].n_value <= t &&
             (best < 0 || m->nl[k].n_value > m->nl[best].n_value))
             best = (long)k;
     return best;
@@ -368,7 +220,7 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
  * match, and it joins the work list. */
 static int internal_target(V *v, size_t mi, uint32_t si, uint64_t off, uint64_t T, uint64_t at) {
     const OMember *m = &v->ar->m[mi];
-    const char *name = sym_name(m, si);
+    const char *name = objc_obj_sym_name(m, si);
     const ObjcProviderAtom *e = evidence_atom(v->p, m->name, name);
     if (!e) return vfail(v, "provider-mapping-mismatch", at, "the evidence places no atom %s(%s)", m->name, name);
     if (T != e->address + off)
@@ -457,11 +309,11 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
                 const char *name;
                 size_t mi2; uint32_t si2;
                 if (!r.r_extern || r.r_symbolnum >= m->nsyms || c) { vfail(v, "unsupported-provider-relocation", at, "%s: GOT relocation shape", m->name); break; }
-                name = sym_name(m, r.r_symbolnum);
-                if (defined(&m->nl[r.r_symbolnum]) || !archive_defines(v->ar, name, &mi2, &si2)) {
+                name = objc_obj_sym_name(m, r.r_symbolnum);
+                if (objc_obj_defined(&m->nl[r.r_symbolnum]) || !archive_defines(v->ar, name, &mi2, &si2)) {
                     const ObjcProviderAtom *e;
-                    if (defined(&m->nl[r.r_symbolnum])) { mi2 = mi; si2 = r.r_symbolnum; }
-                    if (!(e = evidence_atom(v->p, v->ar->m[mi2].name, sym_name(&v->ar->m[mi2], si2)))) {
+                    if (objc_obj_defined(&m->nl[r.r_symbolnum])) { mi2 = mi; si2 = r.r_symbolnum; }
+                    if (!(e = evidence_atom(v->p, v->ar->m[mi2].name, objc_obj_sym_name(&v->ar->m[mi2], si2)))) {
                         vfail(v, "provider-mapping-mismatch", at, "the evidence places no atom %s(%s)", v->ar->m[mi2].name, name); break;
                     }
                     if (T == e->address && r.r_type == X86_64_RELOC_GOT_LOAD && field >= 2 && ob[field - 2] == 0x8b && fb[field - 2] == 0x8d)
@@ -484,8 +336,8 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
                 const char *name;
                 size_t mi2; uint32_t si2;
                 if (r.r_symbolnum >= m->nsyms) { vfail(v, "unsupported-provider-relocation", at, "%s: symbol index", m->name); break; }
-                name = sym_name(m, r.r_symbolnum);
-                if (defined(&m->nl[r.r_symbolnum])) {
+                name = objc_obj_sym_name(m, r.r_symbolnum);
+                if (objc_obj_defined(&m->nl[r.r_symbolnum])) {
                     obj_target(v, mi, m->nl[r.r_symbolnum].n_sect, m->nl[r.r_symbolnum].n_value + (uint64_t)(int64_t)c + (uint64_t)N, T, at, depth);
                 } else if (!archive_defines(v->ar, name, &mi2, &si2)) {
                     internal_target(v, mi2, si2, (uint64_t)(int64_t)c + (uint64_t)N, T, at);
@@ -512,8 +364,8 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
                 const char *name;
                 size_t mi2; uint32_t si2;
                 if (r.r_symbolnum >= m->nsyms) { vfail(v, "unsupported-provider-relocation", at, "%s: symbol index", m->name); break; }
-                name = sym_name(m, r.r_symbolnum);
-                if (defined(&m->nl[r.r_symbolnum])) obj_target(v, mi, m->nl[r.r_symbolnum].n_sect, m->nl[r.r_symbolnum].n_value + c, val, at, depth);
+                name = objc_obj_sym_name(m, r.r_symbolnum);
+                if (objc_obj_defined(&m->nl[r.r_symbolnum])) obj_target(v, mi, m->nl[r.r_symbolnum].n_sect, m->nl[r.r_symbolnum].n_value + c, val, at, depth);
                 else if (!archive_defines(v->ar, name, &mi2, &si2)) internal_target(v, mi2, si2, c, val, at);
                 else {
                     const char *b = objc_image_bound_at(v->im, at);
@@ -545,7 +397,7 @@ static int drain(V *v) {
     while (v->next < v->nwork && !v->status) {
         Ref r = v->work[v->next++];
         const OMember *m = &v->ar->m[r.m];
-        const char *name = sym_name(m, r.s);
+        const char *name = objc_obj_sym_name(m, r.s);
         const OSect *x = &m->sects[m->nl[r.s].n_sect - 1];
         const ObjcProviderAtom *e = evidence_atom(v->p, m->name, name);
         uint64_t lo, hi, w;
@@ -609,7 +461,7 @@ static int line_reloc(void *ctx, uint64_t off, uint64_t *addr) {
         if (r.r_type != X86_64_RELOC_UNSIGNED || r.r_length != 3 || r.r_pcrel || off + 8 > c->x->size) return -1;
         memcpy(&v, c->m->buf + c->x->off + off, 8);
         if (r.r_extern) {
-            if (r.r_symbolnum >= c->m->nsyms || !defined(&c->m->nl[r.r_symbolnum])) return -1;
+            if (r.r_symbolnum >= c->m->nsyms || !objc_obj_defined(&c->m->nl[r.r_symbolnum])) return -1;
             v += c->m->nl[r.r_symbolnum].n_value;
         } else if (!r.r_symbolnum || r.r_symbolnum > c->m->nsects ||
                    !(c->m->sects[r.r_symbolnum - 1].flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)))
@@ -632,7 +484,7 @@ static int line_cmp(const void *x, const void *y) {
 static int member_lines(ObjcAnalysis *a, ObjcProvider *p, OArchive *ar) {
     size_t i, r;
     for (i = 0; i < p->n_members; i++) {
-        OMember *m = member_named(ar, p->members[i].name);
+        OMember *m = objc_archive_member(ar, p->members[i].name);
         const OSect *dl = NULL, *ls = NULL;
         ObjcDwarfRow *rows = NULL;
         size_t nrows = 0;
@@ -656,7 +508,7 @@ static int member_lines(ObjcAnalysis *a, ObjcProvider *p, OArchive *ar) {
             long s = -1;
             for (k = 0; k < m->nsects && s < 0; k++)
                 if (w->addr >= m->sects[k].addr && w->addr < m->sects[k].addr + m->sects[k].size) s = covering(m, (uint8_t)(k + 1), w->addr);
-            if (w->end || s < 0 || !(at = evidence_atom(p, m->name, sym_name(m, (uint32_t)s)))) continue;
+            if (w->end || s < 0 || !(at = evidence_atom(p, m->name, objc_obj_sym_name(m, (uint32_t)s)))) continue;
             if (w->addr - m->nl[s].n_value >= at->size) continue;
             if (!(g = realloc(p->lines, (p->n_lines + 1) * sizeof *g))) { r = nrows; break; }
             p->lines = g; g = &g[p->n_lines];
@@ -693,26 +545,26 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     if (!(enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL) || strcmp(enc, p->encoding))
         return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s", p->provider_id, p->method_kind,
                          p->cls, p->selector, p->encoding, enc ? "declares " : "does not declare it", enc ? enc : "");
-    if ((rc = archive_open(a, p->archive, &ar))) { archive_free(&ar); return rc; }
+    if ((rc = objc_archive_open(a, p->archive, &ar))) { objc_archive_free(&ar); return rc; }
     for (i = 0; i < p->n_members; i++) {
-        const OMember *g = member_named(&ar, p->members[i].name);
+        const OMember *g = objc_archive_member(&ar, p->members[i].name);
         if (!g || strcmp(g->sha, p->members[i].sha256)) {
-            archive_free(&ar);
+            objc_archive_free(&ar);
             return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: archive member %s is not the one the evidence recorded", p->provider_id, p->members[i].name);
         }
     }
     snprintf(root, sizeof root, "_%s", p->root_symbol);
     snprintf(impl, sizeof impl, "_%s", p->impl_symbol);
     if (archive_defines(&ar, root, &rm, &rs) || archive_defines(&ar, impl, &i, &k)) {
-        archive_free(&ar);
+        objc_archive_free(&ar);
         return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: the archive does not define both %s and %s", p->provider_id, root, impl);
     }
     m = &ar.m[rm];
     snprintf(rootm, sizeof rootm, "%s", m->name);
     for (i = 0; i < p->n_members && strcmp(p->members[i].name, m->name); i++) ;
-    if (i == p->n_members) { archive_free(&ar); return set_reason(a, p, 0, "the activation root's member %s is not in the link", rootm); }
+    if (i == p->n_members) { objc_archive_free(&ar); return set_reason(a, p, 0, "the activation root's member %s is not in the link", rootm); }
     for (k = 0; k < m->nsects; k++) if ((m->sects[k].flags & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS) init = &m->sects[k];
-    if (!init || !init->nreloc) { archive_free(&ar); return objc_fail(a, "unsupported-provider", NULL, 0, "%s: member %s has no constructor", p->provider_id, rootm); }
+    if (!init || !init->nreloc) { objc_archive_free(&ar); return objc_fail(a, "unsupported-provider", NULL, 0, "%s: member %s has no constructor", p->provider_id, rootm); }
 
     memset(&v, 0, sizeof v);
     v.a = a; v.p = p; v.ar = &ar; v.im = im; v.collecting = 1;
@@ -722,7 +574,7 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
         long s;
         memcpy(&r, m->buf + init->reloff + (size_t)k * 8, 8);
         if (r.r_type != X86_64_RELOC_UNSIGNED || r.r_length != 3 || r.r_pcrel) { vfail(&v, "unsupported-provider", 0, "constructor entry shape"); break; }
-        if (r.r_extern) s = r.r_symbolnum < m->nsyms && defined(&m->nl[r.r_symbolnum]) ? (long)r.r_symbolnum : -1;
+        if (r.r_extern) s = r.r_symbolnum < m->nsyms && objc_obj_defined(&m->nl[r.r_symbolnum]) ? (long)r.r_symbolnum : -1;
         else {
             uint64_t t = rd64(m->buf + init->off + (uint32_t)r.r_address);
             s = covering(m, (uint8_t)r.r_symbolnum, t);
@@ -730,8 +582,8 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
         }
         if (s < 0) { vfail(&v, "unsupported-provider", 0, "constructor entry names no function of %s", m->name); break; }
         if (!p->constructor) {
-            const ObjcProviderAtom *e = evidence_atom(p, m->name, sym_name(m, (uint32_t)s));
-            if (!e) { vfail(&v, "provider-mapping-mismatch", 0, "the evidence places no constructor %s(%s)", m->name, sym_name(m, (uint32_t)s)); break; }
+            const ObjcProviderAtom *e = evidence_atom(p, m->name, objc_obj_sym_name(m, (uint32_t)s));
+            if (!e) { vfail(&v, "provider-mapping-mismatch", 0, "the evidence places no constructor %s(%s)", m->name, objc_obj_sym_name(m, (uint32_t)s)); break; }
             p->constructor = e->address;
         }
         enqueue(&v, rm, (uint32_t)s);
@@ -775,7 +627,7 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     }
     for (i = 0; i < v.nfacts; i++) free(v.facts[i]);
     for (i = 0; i < v.nbinds; i++) free(v.binds[i]);
-    free(v.facts); free(v.binds); free(v.work); archive_free(&ar);
+    free(v.facts); free(v.binds); free(v.work); objc_archive_free(&ar);
     if (rc) return OBJC_CANNOT_MEASURE;
 
     /* The constructor's final address must be an initializer. */
@@ -868,7 +720,7 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
     if ((rc = objc_linkmap_check_image(a, &map, final, prestrip))) goto out;
     if ((rc = objc_image_open(a, prestrip, &pi))) goto out;
     if (!(ars = calloc(a->n_providers + 1, sizeof *ars))) { rc = objc_fail(a, "out-of-memory", NULL, 0, "archives"); goto out; }
-    for (i = 0; i < a->n_providers; i++) if ((rc = archive_open(a, a->providers[i].archive, &ars[i]))) goto out;
+    for (i = 0; i < a->n_providers; i++) if ((rc = objc_archive_open(a, a->providers[i].archive, &ars[i]))) goto out;
     for (i = 0; i < a->n_providers; i++) {
         ObjcProvider *p = &a->providers[i];
         p->have_evidence = 1;
@@ -888,7 +740,7 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
             OMember *m;
             uint32_t k;
             if (!realpath(f->archive, rp) || strcmp(rp, p->archive)) continue;
-            if (!(m = member_named(ar, f->member))) {
+            if (!(m = objc_archive_member(ar, f->member))) {
                 rc = objc_fail(a, "link-map-mismatch", NULL, 0, "%s names member %s, which %s lacks", link_map, f->member, p->archive);
                 goto out;
             }
@@ -896,7 +748,7 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
                 uint64_t w;
                 ObjcProviderAtom *g;
                 size_t q;
-                if (!defined(&m->nl[k]) || strcmp(sym_name(m, k), name) || content_of(&m->sects[m->nl[k].n_sect - 1], &w) != C_ATOM) continue;
+                if (!objc_obj_defined(&m->nl[k]) || strcmp(objc_obj_sym_name(m, k), name) || content_of(&m->sects[m->nl[k].n_sect - 1], &w) != C_ATOM) continue;
                 if (!objc_image_has_symbol(pi, name, addr)) {
                     rc = objc_fail(a, "prestrip-mismatch", NULL, addr, "the prestrip image has no %s at 0x%llx, where the link map places %s(%s)", name, (unsigned long long)addr, f->member, name);
                     goto out;
@@ -921,7 +773,7 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
     }
     rc = OBJC_OK;
 out:
-    if (ars) for (i = 0; i < a->n_providers; i++) archive_free(&ars[i]);
+    if (ars) for (i = 0; i < a->n_providers; i++) objc_archive_free(&ars[i]);
     free(ars);
     objc_linkmap_free(&map);
     objc_image_close(pi);

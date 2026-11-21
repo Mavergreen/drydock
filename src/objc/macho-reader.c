@@ -91,6 +91,7 @@
  * respondsToSelector: guard or an isKindOfClass: downcast is made of; deciding that it is one is
  * classify.c's. The dylib load commands of the slice are recorded for the closure check. */
 #include "report.h"
+#include "attest.h"
 #include "image.h"
 #include "fat.h"
 #include "x86len.h"
@@ -2730,8 +2731,11 @@ static int sweep_undecodable(Slice *s, uint64_t lo, const uint8_t *code, uint64_
         for (t = 0; t < 4; t++) {
             uint64_t target = lo + i + 4 + (uint64_t)tails[t] + (uint64_t)(int64_t)d;
             if (interesting_target(s, target)) {
-                char msg[64];
-                snprintf(msg, sizeof msg, "0x%llx", (unsigned long long)target);
+                char msg[1024];
+                const char *why = NULL;
+                if (s->a->map && objc_attest_window(s->a, lo + i, &why)) return s->status = OBJC_CANNOT_MEASURE;
+                if (why) snprintf(msg, sizeof msg, "0x%llx (not attested: %s)", (unsigned long long)target, why);
+                else snprintf(msg, sizeof msg, "0x%llx", (unsigned long long)target);
                 return fail(s, "undecodable-objc-reference", lo + i, "possible reference to %s", msg);
             }
         }

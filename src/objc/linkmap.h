@@ -7,7 +7,7 @@ typedef struct { char *path; char *archive; char *member; } ObjcMapFile;
 typedef struct { uint64_t addr, size; char seg[17], sect[17]; } ObjcMapSect;
 /* Sorted by addr; file indexes ObjcLinkMap.files (-1 when the map lists no such object file). */
 typedef struct { uint64_t addr, size; long file; char *name; } ObjcMapAtom;
-typedef struct {
+typedef struct ObjcLinkMap {
     char arch[16];
     ObjcMapFile *files; size_t nfiles;
     ObjcMapSect *sects; size_t nsects;

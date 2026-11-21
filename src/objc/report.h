@@ -308,6 +308,13 @@ typedef struct {
     /* Providers (provider.c): declarations from --provider-prefix, their build evidence and what
      * verification found. */
     struct ObjcProvider *providers; size_t n_providers;
+    /* The undecoded-bytes sweep's attestation (attest.c): --link-map parsed, its sha256 and the one the build
+     * evidence records, the --object-dir list, and the objects found, by map file index. */
+    struct ObjcLinkMap *map;
+    char link_map_sha256[65];
+    char *be_link_map_sha256;
+    char **object_dirs; size_t n_object_dirs;
+    struct ObjcObjectSlot *objects;
     ObjcMap *nw_encoding;         /* newer SDK: "class\tkind\tselector" -> type encoding */
     /* Argument registers (reference.c): selector -> the most parameter GPRs any declaration takes, and C
      * function -> its GPRs; "-" unbounded. Each catalog flag says it loaded (objc_load_gprs_catalogs). */

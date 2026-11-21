@@ -1,5 +1,6 @@
 /* report.c -- storage lifetime for the records report.h declares. */
 #include "report.h"
+#include "attest.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,6 +165,7 @@ void objc_analysis_destroy(ObjcAnalysis *a) {
         free(d->rpaths);
     }
     free(a->shipped);
+    objc_attest_free(a);
     free(a);
 }
 

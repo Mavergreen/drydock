@@ -129,6 +129,135 @@ test_parse_stable_sort() {
   sed -n 's/^atom	.*	//p' "$T/parse" | diff "$T/ties.want" - >/dev/null || fail 'atoms at one address left the map'"'"'s order'
 }
 
+# spec: tests/objc/lib/objc_fixture_sweep.sh -- fixture_sweep DIR, SWEEP_WINDOW and SWEEP_TARGET.
+. "$HERE/lib/objc_fixture_sweep.sh"
+SW="$T/sweep"
+fixture_sweep "$SW"
+evidence "$SW/root/bin/sweep" "$SW/sweep.map" "$T/ev/sweep.json"
+exit_is 0 'evidence for the sweep fixture'
+# spec: src/objc/main.m usage -- analyze NAME [ARGS]: the sweep fixture, strict, its report at $T/out/NAME.json; rc set.
+mkdir -p "$T/out" "$T/dirs/empty"
+analyze() {
+  rep="$T/out/$1.json"; shift
+  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$SW/root/bin/sweep" --root "$SW/root" --references "$REF" --report "$rep" \
+    --mode strict --analyzer-id fixture "$@" 2>"$T/err" || rc=$?
+}
+attested() { analyze "$1" --build-evidence "$T/ev/${3:-sweep}.json" --link-map "$SW/${4:-sweep}.map" --object-dir "$2"; }
+# spec: src/objc/macho-reader.c sweep_undecodable -- the refusal, as the report's error and stderr carry it.
+REFUSAL="possible reference to $SWEEP_TARGET"
+refused_because() {
+  exit_is 4 "$2"
+  grep -F "{\"code\": \"undecodable-objc-reference\", \"slice\": \"x86_64\", \"address\": \"$SWEEP_WINDOW\", \"detail\": \"$REFUSAL (not attested: $1)\"}" "$rep" >/dev/null ||
+    fail "$2: the refusal does not say '(not attested: $1)'"
+  grep -xF "objc-compat: undecodable-objc-reference: $REFUSAL (not attested: $1)" "$T/err" >/dev/null || fail "$2: stderr does not name why"
+}
+
+test_link_map_needs_evidence() {
+  analyze needs-evidence --link-map "$SW/sweep.map"
+  exit_is 2 '--link-map without --build-evidence'
+  grep 'link-map needs --build-evidence' "$T/err" >/dev/null || fail '--link-map without evidence does not say why'
+}
+
+test_link_map_hash_mismatch() {
+  analyze hash-mismatch --build-evidence "$T/ev/sweep.json" --link-map "$T/maps/plain.map"
+  exit_is 4 'a link map the evidence did not record'
+  grep "link-map-mismatch: .*plain.map does not hash to the build evidence's link_map.sha256" "$T/err" >/dev/null ||
+    fail 'a link map the evidence did not record is not link-map-mismatch'
+}
+
+test_link_map_unrecorded() {
+  "$DRYDOCK_OBJC" evidence --artifact "$SW/root/bin/sweep" --prestrip "$SW/root/bin/sweep" --source-root "$FX" \
+    --references "$REF" --output "$T/ev/sweep-nomap.json" 2>"$T/err" || fail 'evidence without a link map'
+  analyze unrecorded --build-evidence "$T/ev/sweep-nomap.json" --link-map "$SW/sweep.map"
+  exit_is 4 'a link map when the evidence records none'
+  grep 'link-map-mismatch: .* records no link map' "$T/err" >/dev/null || fail 'evidence without a map is not link-map-mismatch'
+}
+
+test_object_dir_missing() {
+  analyze nope --build-evidence "$T/ev/sweep.json" --link-map "$SW/sweep.map" --object-dir "$T/nope"
+  exit_is 2 'a missing --object-dir'
+  grep -e '--object-dir is not a directory' "$T/err" >/dev/null || fail 'a missing --object-dir does not say why'
+  analyze file --build-evidence "$T/ev/sweep.json" --link-map "$SW/sweep.map" --object-dir "$SW/sweep.map"
+  exit_is 2 'an --object-dir naming a file'
+  analyze no-map --build-evidence "$T/ev/sweep.json" --object-dir "$T/dirs/empty"
+  exit_is 2 '--object-dir without --link-map'
+  analyze twice --build-evidence "$T/ev/sweep.json" --link-map "$SW/sweep.map" --link-map "$SW/sweep.map"
+  exit_is 2 '--link-map given twice'
+}
+
+test_unattested_reason_not_found() {
+  attested not-found "$T/dirs/empty"
+  refused_because 'libsweep.a not found in --object-dir' 'an archive in no --object-dir'
+}
+
+test_unattested_reason_ambiguous() {
+  mkdir -p "$T/dirs/a" "$T/dirs/b"
+  cp "$SW/obj/libsweep.a" "$T/dirs/a/"; cp "$SW/obj/libsweep.a" "$T/dirs/b/"
+  analyze ambiguous --build-evidence "$T/ev/sweep.json" --link-map "$SW/sweep.map" --object-dir "$T/dirs/a" --object-dir "$T/dirs/empty" --object-dir "$T/dirs/b"
+  refused_because 'libsweep.a found in 2 --object-dirs' 'an archive in two --object-dirs'
+}
+
+test_unattested_member_twice() {
+  mkdir -p "$T/dirs/twice"
+  "$AR" qc "$T/dirs/twice/libsweep.a" "$SW/obj/sweep.o"; "$AR" qc "$T/dirs/twice/libsweep.a" "$SW/obj/sweep.o"
+  attested twice "$T/dirs/twice"
+  refused_because 'sweep.o appears twice in libsweep.a' 'an archive with two members of that name'
+}
+
+test_unattested_member_absent() {
+  mkdir -p "$T/dirs/other"
+  cp "$SW/obj/main.o" "$T/dirs/other/sweep-other.o"
+  "$AR" rc "$T/dirs/other/libsweep.a" "$T/dirs/other/sweep-other.o"
+  attested absent "$T/dirs/other"
+  refused_because 'sweep.o is not a member of libsweep.a' 'an archive without that member'
+}
+
+test_unattested_not_x86_64() {
+  mkdir -p "$T/dirs/i386/m"
+  fxcc -arch i386 -c "$FX/sweep-table.S" -o "$T/dirs/i386/m/sweep.o"
+  "$AR" rc "$T/dirs/i386/libsweep.a" "$T/dirs/i386/m/sweep.o"
+  attested i386 "$T/dirs/i386"
+  refused_because 'not an x86_64 object' 'an i386 member'
+}
+
+# spec: src/objc/attest.h objc_attest_object -- a map atom from file 0 is the linker's own; one whose [N] has
+#       no Object files line has no object. The map is edited before the evidence records it.
+test_unattested_no_object() {
+  sed 's/\[  2\] _sweep_fn$/[  0] _sweep_fn/' "$SW/sweep.map" >"$SW/synth.map"
+  sed 's/\[  2\] _sweep_fn$/[ 77] _sweep_fn/' "$SW/sweep.map" >"$SW/nofile.map"
+  for m in synth nofile; do
+    ! cmp -s "$SW/sweep.map" "$SW/$m.map" || fail "the $m map is the fixture's"
+    evidence "$SW/root/bin/sweep" "$SW/$m.map" "$T/ev/$m.json"; exit_is 0 "evidence for the $m map"
+  done
+  mkdir -p "$T/dirs/synth"; cp "$SW/obj/libsweep.a" "$T/dirs/synth/"
+  attested synth "$T/dirs/synth" synth synth
+  refused_because 'linker synthesized' 'an atom the linker synthesized'
+  attested nofile "$T/dirs/synth" nofile nofile
+  refused_because 'no object file line' 'an atom with no object file line'
+}
+
+test_inputs_record_link_map() {
+  mkdir -p "$T/dirs/one"; cp "$SW/obj/libsweep.a" "$T/dirs/one/"
+  attested one "$T/dirs/one"
+  exit_is 4 'the sweep fixture with its archive found'
+  grep -F "\"link_map\": {\"sha256\": \"$(sha "$SW/sweep.map")\"}" "$rep" >/dev/null || fail 'inputs do not record the link map'
+  grep -F "$REFUSAL (not attested: " "$rep" >/dev/null || fail 'a found object attests nothing yet, but the refusal does not say so'
+  if grep -F 'not found in --object-dir' "$rep" >/dev/null; then fail 'the one --object-dir holding the archive was not searched'; fi
+}
+
+# spec: src/objc/main.m -- without --link-map the sweep's refusal is today's, byte for byte (what 433bed6 printed).
+test_no_inputs_identical() {
+  analyze plain-sweep
+  exit_is 4 'the sweep fixture without a link map'
+  printf 'objc-compat: undecodable-objc-reference: %s\n' "$REFUSAL" | diff - "$T/err" >&2 || fail 'stderr without a link map differs'
+  grep -F "{\"code\": \"undecodable-objc-reference\", \"slice\": \"x86_64\", \"address\": \"$SWEEP_WINDOW\", \"detail\": \"$REFUSAL\"}]}" "$rep" >/dev/null ||
+    fail 'the refusal without a link map differs'
+  if grep -e '"link_map"' -e 'not attested' -e 'bytes_attested' "$rep" >/dev/null; then fail 'a report without a link map mentions one'; fi
+  analyze plain-sweep-ev --build-evidence "$T/ev/sweep.json"
+  exit_is 4 'the sweep fixture with evidence that records a map, given none'
+  if grep -e '"link_map"' -e 'not attested' -e 'bytes_attested' "$rep" >/dev/null; then fail 'a report given no link map mentions one'; fi
+}
+
 test_evidence_link_map_alone
 test_evidence_link_map_wrong_image
 test_evidence_crlf_map
@@ -138,4 +267,16 @@ test_parse_paths
 test_parse_real_map
 test_parse_malformed
 test_parse_stable_sort
-echo "objc-attest: link-map parse and provider-less evidence pass"
+test_link_map_needs_evidence
+test_link_map_hash_mismatch
+test_link_map_unrecorded
+test_object_dir_missing
+test_unattested_reason_not_found
+test_unattested_reason_ambiguous
+test_unattested_member_twice
+test_unattested_member_absent
+test_unattested_not_x86_64
+test_unattested_no_object
+test_inputs_record_link_map
+test_no_inputs_identical
+echo "objc-attest: link-map parse, provider-less evidence and the sweep's object resolution pass"
