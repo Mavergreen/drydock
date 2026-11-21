@@ -1,0 +1,1 @@
+drydock-objc measures the loadWeak call clang emits for a block-captured weak variable, instead of refusing it as an unclassified runtime import.

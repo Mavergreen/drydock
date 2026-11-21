@@ -217,6 +217,13 @@ read_artifact "$T/unlisted"; refused 'an unlisted runtime import' unclassified-o
 grep '^error	unclassified-objc-runtime-import	.*	_objc_setHook_getClass$' "$T/out" >/dev/null ||
   fail 'an unlisted runtime import: not named'
 
+# spec: src/objc/macho-reader.c ROLES -- objc_loadWeak (objc4-551.1: objc_loadWeakRetained then objc_autorelease) is memory, not refused.
+fxcc "$FX/loadweak.S" -o "$T/loadweak" -lobjc
+"$NM" -u "$T/loadweak" | grep -qx _objc_loadWeak || fail 'loadweak: does not import _objc_loadWeak'
+read_artifact "$T/loadweak"
+[ "$rc" = 0 ] || fail "loadweak: exit $rc"
+grep '^error	' "$T/out" >/dev/null && fail 'loadweak: refused'
+
 # spec: src/objc/macho-reader.c header -- A GOT-loaded entry point held in a register and only ever called through
 #       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), copied to a register only jumped through, past a
 #       call that never returns, or spilled to a frame slot no escaped frame address reaches and reloaded only to be called

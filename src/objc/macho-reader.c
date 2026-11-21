@@ -150,6 +150,8 @@ static const struct { const char *name; ImportRole role; } ROLES[] = {
     { "_objc_claimAutoreleasedReturnValue", IMP_PASSTHROUGH },
     { "_objc_storeStrong", IMP_MEMORY }, { "_objc_retainBlock", IMP_MEMORY },
     { "_objc_autoreleasePoolPush", IMP_MEMORY }, { "_objc_autoreleasePoolPop", IMP_MEMORY },
+    /* spec: objc4-551.1 NSObject.mm objc_loadWeak = objc_loadWeakRetained then objc_autorelease, no message; SDK runtime.h:1467 */
+    { "_objc_loadWeak", IMP_MEMORY },
     { "_objc_loadWeakRetained", IMP_MEMORY }, { "_objc_initWeak", IMP_MEMORY },
     { "_objc_destroyWeak", IMP_MEMORY }, { "_objc_storeWeak", IMP_MEMORY },
     { "_objc_copyWeak", IMP_MEMORY }, { "_objc_moveWeak", IMP_MEMORY },
