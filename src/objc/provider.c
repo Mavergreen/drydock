@@ -430,7 +430,6 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
     const uint8_t *ob = m->buf + x->off + (lo - x->addr), *fb;
     uint64_t size = hi - lo, i;
     uint8_t *mask;
-    long relax = -1;
     uint32_t k;
     if (!(fb = objc_image_bytes(v->im, fin, size))) return vfail(v, "provider-mapping-mismatch", fin, "%s: no bytes at 0x%llx for %llu", m->name, (unsigned long long)fin, (unsigned long long)size);
     if (!(mask = calloc(size + 1, 1))) return vfail(v, "out-of-memory", fin, "mask");
@@ -466,7 +465,7 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
                         vfail(v, "provider-mapping-mismatch", at, "the evidence places no atom %s(%s)", v->ar->m[mi2].name, name); break;
                     }
                     if (T == e->address && r.r_type == X86_64_RELOC_GOT_LOAD && field >= 2 && ob[field - 2] == 0x8b && fb[field - 2] == 0x8d)
-                        relax = (long)(field - 2);   /* movq sym@GOTPCREL -> leaq sym: the target itself */
+                        mask[field - 2] = 1;   /* movq sym@GOTPCREL -> leaq sym: the target itself */
                     else if (!final_section_is(v, T, S_NON_LAZY_SYMBOL_POINTERS, NULL) || !objc_image_bytes(v->im, T, 8) ||
                              rd64(objc_image_bytes(v->im, T, 8)) != e->address) {
                         vfail(v, "provider-mapping-mismatch", at, "GOT load of %s does not reach it", name); break;
@@ -529,7 +528,7 @@ static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t
         }
     }
     for (i = 0; i < size && !v->status; i++)
-        if (!mask[i] && ob[i] != fb[i] && (long)i != relax)
+        if (!mask[i] && ob[i] != fb[i])
             vfail(v, "provider-mapping-mismatch", fin + i, "%s differs from the final image at 0x%llx", m->name, (unsigned long long)(fin + i));
     free(mask);
     return v->status ? -1 : 0;

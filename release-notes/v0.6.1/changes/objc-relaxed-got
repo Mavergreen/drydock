@@ -1,0 +1,1 @@
+drydock-objc accepts every linker-relaxed GOT load in a provider's code, not only one per function, so Recaulk's register code verifies.

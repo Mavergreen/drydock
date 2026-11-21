@@ -458,6 +458,34 @@ if [ "$real" = 0 ]; then
   full "$T/root/bin/lit-ld64" "$T/root/bin/lit-ld64" "$T/root/bin/lit-ld64.map" lit-ld64; positive 'a literal, linked by ld64'
   PFX=$PFX_MAIN
 fi
+# spec: src/objc/provider.c header, 2 -- every GOT load of a provider-defined symbol that lld relaxed in one atom
+#       is allowed (Recaulk's register.o has two), and an opcode byte changed any other way is still a mismatch.
+if [ "$real" = 0 ]; then
+  PFX_MAIN=$PFX; PFX="$T/pfx-two-got"; mkdir -p "$PFX/lib" "$PFX/share/recaulk" "$PFX.objects"
+  for m in provider-register provider-two-got; do fxcc -Os -fPIC -Wall -c "$FX/$m.c" -o "$PFX.objects/$m.o"; done
+  "$LIBTOOL" -static -o "$PFX/lib/libfixture-objc.a" "$PFX.objects/provider-two-got.o" "$PFX.objects/provider-register.o" 2>/dev/null
+  printf '%s  provider-register.c\n%s  provider-two-got.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-two-got.c")" >"$T/two-got-receipt"
+  declare_prefix "$PFX" "$T/two-got-receipt"
+  O="$PFX.objects/provider-two-got.o"
+  sites=$("$OTOOL" -rv "$O" | awk '$5=="GOT_LD" {print $1}')
+  [ "$(echo $sites | wc -w | tr -d ' ')" = 2 ] || fail "provider-two-got.o: GOT loads at '$sites', want two"
+  [ "$("$NM" "$O" | awk '$2=="T" {print $3}')" = "_$IMPL" ] || fail 'provider-two-got.o is not the one atom _'"$IMPL"
+  text=$("$OTOOL" -l "$O" | awk '/sectname __text/ {f=1} f && $1=="offset" {print $2; exit}')
+  consumer "$T/root/bin/two-got" "$ALL"
+  base=$(symaddr "$T/root/bin/two-got" "_$IMPL")
+  for r in $sites; do
+    [ "$(od -An -tx1 -j $((text + 0x$r - 2)) -N1 "$O" | tr -d ' ')" = 8b ] || fail "provider-two-got.o: no movq at 0x$r"
+    [ "$(od -An -tx1 -j "$(fileoff "$T/root/bin/two-got" $((base + 0x$r - 2)))" -N1 "$T/root/bin/two-got" | tr -d ' ')" = 8d ] ||
+      fail "two-got: lld did not relax the GOT load at 0x$r to leaq"
+  done
+  full "$T/root/bin/two-got" "$T/root/bin/two-got" "$T/root/bin/two-got.map" two-got
+  positive 'two relaxed GOT loads in one atom'
+  cp "$T/root/bin/two-got" "$T/root/bin/two-got-movl"
+  putn "$T/root/bin/two-got-movl" "$(fileoff "$T/root/bin/two-got-movl" $((base + 0x${sites%%[!0-9a-f]*} - 2)))" $((0x89)) 1
+  full "$T/root/bin/two-got-movl" "$T/root/bin/two-got-movl" "$T/root/bin/two-got.map" two-got-movl
+  nonzero 'a relaxed GOT load whose opcode is then changed'; error_is provider-mapping-mismatch 'a changed opcode byte'
+  PFX=$PFX_MAIN
+fi
 # spec: tests/objc/fixtures/provider-body.m header -- body_source DIR [DEFINE...]: the body, with each DEFINE turned on
 #       by a line added to the source itself (a different file, not a compiler flag), and the registration member beside it.
 body_source() {
