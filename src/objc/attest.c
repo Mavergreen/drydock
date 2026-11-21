@@ -84,6 +84,7 @@ int objc_obj_parse(OMember *m, char *why, size_t n) {
             m->nsects = sg.nsects;
         } else if (lc.cmd == LC_SYMTAB) {
             struct symtab_command st;
+            if (m->nl) return why_is(BAD, why, n, "member %s: two symbol tables", m->name);
             if (lc.cmdsize < sizeof st) return why_is(BAD, why, n, "member %s: short LC_SYMTAB", m->name);
             memcpy(&st, m->buf + off, sizeof st);
             if (st.symoff > m->size || (uint64_t)st.nsyms * sizeof(struct nlist_64) > m->size - st.symoff ||
@@ -213,17 +214,35 @@ static int locate(ObjcAnalysis *a, struct ObjcObjectSlot *s, const char *path, c
     return slot_why(a, s, "%s found in %zu --object-dirs", base, hits);
 }
 
+/* PATH's bytes, read as objc_read_file does, except that a file it cannot open or read, or one over
+ * OBJC_ARCHIVE_MAX, is the slot's reason and not an error. */
+static int read_object(ObjcAnalysis *a, struct ObjcObjectSlot *s, const char *path, const char *base, uint8_t **buf, size_t *size) {
+    FILE *f;
+    struct stat st;
+    *buf = NULL;
+    if (!(f = fopen(path, "rb")) || fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode)) {
+        if (f) fclose(f);
+        return slot_why(a, s, "%s unreadable", base);
+    }
+    if ((uint64_t)st.st_size > OBJC_ARCHIVE_MAX) { fclose(f); return slot_why(a, s, "%s too large to read", base); }
+    *size = (size_t)st.st_size;
+    if (!(*buf = malloc(*size + 1))) { fclose(f); return objc_fail(a, "out-of-memory", NULL, 0, "%s", "attestation"); }
+    if (fread(*buf, 1, *size, f) != *size) { fclose(f); free(*buf); *buf = NULL; return slot_why(a, s, "%s unreadable", base); }
+    fclose(f);
+    return OBJC_OK;
+}
+
 static int resolve(ObjcAnalysis *a, const ObjcMapFile *f, struct ObjcObjectSlot *s) {
     const char *path = f->archive ? f->archive : f->path;
     const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
     char found[PATH_MAX], why[PATH_MAX + 512];
-    uint8_t *buf = NULL;
+    uint8_t *buf = NULL, *shrunk;
     size_t size = 0;
     ObjcObject *o;
     int rc;
     if (!f->archive && !strcmp(f->path, "linker synthesized")) return slot_why(a, s, "linker synthesized");
     if ((rc = locate(a, s, path, found)) || !*found) return rc;
-    if ((rc = objc_read_file(a, found, OBJC_ARCHIVE_MAX, &buf, &size, f->archive ? "archive" : "object file"))) return rc;
+    if ((rc = read_object(a, s, found, base, &buf, &size)) || !buf) return rc;
     if (f->archive) {
         size_t off = 8, data = 0, len = 0, d, l, hits = 0;
         char name[256];
@@ -234,6 +253,7 @@ static int resolve(ObjcAnalysis *a, const ObjcMapFile *f, struct ObjcObjectSlot 
         if (hits != 1) { free(buf); return slot_why(a, s, hits ? "%s appears twice in %s" : "%s is not a member of %s", f->member, base); }
         memmove(buf, buf + data, len);
         size = len;
+        if ((shrunk = realloc(buf, len ? len : 1))) buf = shrunk;
     }
     if (!(o = calloc(1, sizeof *o))) { free(buf); return objc_fail(a, "out-of-memory", NULL, 0, "%s", "attestation"); }
     o->buf = buf;

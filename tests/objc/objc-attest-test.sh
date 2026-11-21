@@ -241,6 +241,38 @@ test_unattested_not_x86_64() {
   refused_because 'not an x86_64 object' 'an i386 member'
 }
 
+# spec: src/objc/attest.c objc_obj_parse -- a second LC_SYMTAB is a malformed object, refused before it allocates:
+#       the member's LC_DYSYMTAB rewritten as a copy of its LC_SYMTAB.
+test_unattested_two_symtabs() {
+  mkdir -p "$T/dirs/symtabs/m"
+  perl -0777 -e '$_ = <STDIN>; ($ncmds) = unpack("x16 V", $_); $off = 32;
+    for my $i (1 .. $ncmds) { ($cmd, $size) = unpack("V V", substr($_, $off, 8)); $st = $off if $cmd == 2; $dy = $off if $cmd == 11; $off += $size }
+    defined $st && defined $dy or die "no LC_SYMTAB and LC_DYSYMTAB";
+    substr($_, $dy, 4) = pack("V", 2); substr($_, $dy + 8, 16) = substr($_, $st + 8, 16); print' \
+    <"$SW/obj/sweep.o" >"$T/dirs/symtabs/m/sweep.o" || fail 'the object has no LC_SYMTAB and LC_DYSYMTAB to patch'
+  "$OTOOL" -l "$T/dirs/symtabs/m/sweep.o" 2>&1 | grep -F 'more than one LC_SYMTAB command' >/dev/null || fail 'llvm-otool does not see two LC_SYMTABs'
+  "$AR" rcS --format=darwin "$T/dirs/symtabs/libsweep.a" "$T/dirs/symtabs/m/sweep.o"
+  attested symtabs "$T/dirs/symtabs"
+  refused_because 'member sweep.o: two symbol tables' 'a member with two symbol tables'
+}
+
+# spec: src/objc/attest.c read_object -- an archive the sweep cannot read, or one too large to read, is the window's
+#       reason, not an error: rustc's rlibs run to 755 MB. A sparse file past OBJC_ARCHIVE_MAX (256 MiB) is never read.
+test_unattested_unreadable() {
+  if [ "$(id -u)" = 0 ]; then echo 'skip: root reads a mode-000 archive' >&2; return 0; fi
+  mkdir -p "$T/dirs/unreadable"; cp "$SW/obj/libsweep.a" "$T/dirs/unreadable/"; chmod 000 "$T/dirs/unreadable/libsweep.a"
+  attested unreadable "$T/dirs/unreadable"
+  refused_because 'libsweep.a unreadable' 'an archive the sweep cannot open'
+}
+test_unattested_oversized() {
+  mkdir -p "$T/dirs/oversized"
+  dd if=/dev/null of="$T/dirs/oversized/libsweep.a" bs=1 count=0 seek=268435457 2>/dev/null
+  [ "$(wc -c <"$T/dirs/oversized/libsweep.a" | tr -d ' ')" = 268435457 ] || fail 'the oversized archive is not 256 MiB + 1'
+  attested oversized "$T/dirs/oversized"
+  refused_because 'libsweep.a too large to read' 'an archive past the size cap'
+  rm -f "$T/dirs/oversized/libsweep.a"
+}
+
 # spec: src/objc/attest.h objc_attest_object -- a map atom from file 0 is the linker's own; one whose [N] has
 #       no Object files line has no object. The map is edited before the evidence records it.
 test_unattested_no_object() {
@@ -417,6 +449,9 @@ test_unattested_reason_ambiguous
 test_unattested_member_twice
 test_unattested_member_absent
 test_unattested_not_x86_64
+test_unattested_two_symtabs
+test_unattested_unreadable
+test_unattested_oversized
 test_unattested_no_object
 test_inputs_record_link_map
 test_no_inputs_identical
