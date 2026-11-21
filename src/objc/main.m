@@ -8,6 +8,7 @@
  *   objc-compat --artifact FILE --root SHIPPED_ROOT --references REF_DIR --report NEW_FILE
  *               [--build-evidence FILE] [--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict]
  *               [--exceptions FILE] [--analyzer-id ID] [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR]
+ *               [--root-kind tree|volume]
  *   objc-compat provider-link-args --prefix DIR --link-map FILE           (scripts/objc-provider-link-args.sh)
  *   objc-compat emit-build-evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE
  *               --provider-prefix DIR] --references REF_DIR --output NEW_FILE  (scripts/objc-build-evidence.sh)
@@ -834,7 +835,9 @@ static int shipped_closure(ObjcAnalysis *a, const char *rroot, const char *rel, 
                     int e = rooted_resolve(rroot, cands[c], real, sizeof real);
                     if (e == ENOENT) continue;
                     if (e) {
-                        status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s does not resolve inside the volume root: %s", d->path, cands[c], strerror(e));
+                        if (e == EXDEV) status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s climbs above the root", d->path, cands[c]);
+                        else if (e == ELOOP) status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s passes through more than 32 symbolic links", d->path, cands[c]);
+                        else status = objc_fail(a, "escaping-dependency", d->slice, 0, "%s: %s does not resolve inside the volume root: %s", d->path, cands[c], strerror(e));
                         nfound = (size_t)-1;
                         break;
                     }

@@ -167,11 +167,13 @@ mkdir -p "$T/outside" "$T/vol.4/root/outside"
 cp "$T/vol.4/root/$VLIB" "$T/outside/"; cp "$T/vol.4/root/$VLIB" "$T/vol.4/root/outside/"
 analyze_vol "$T/vol.4/root" "$T/vol.4/root/usr/local/mavergreen/mgp/bin/App"
 exit_is 4 'volume dotdot escape'; error_is escaping-dependency 'volume dotdot escape'
+grep -F 'climbs above the root' "$T/report" >/dev/null || fail 'volume dotdot escape: the reason is not the climb'
 vol "$T/vol.5"; rm "$T/vol.5/root/usr/local/lib/libMGShipped.dylib"
 ln -s /usr/local/lib/libMGLoopB.dylib "$T/vol.5/root/usr/local/lib/libMGShipped.dylib"
 ln -s /usr/local/lib/libMGShipped.dylib "$T/vol.5/root/usr/local/lib/libMGLoopB.dylib"
 analyze_vol "$T/vol.5/root" "$T/vol.5/root/usr/local/mavergreen/mgp/bin/App"
 exit_is 4 'volume loop'; error_is escaping-dependency 'volume loop'
+grep -F 'passes through more than 32 symbolic links' "$T/report" >/dev/null || fail 'volume loop: the reason is not the link limit'
 
 vfw() {   # vfw DIR INSTALL-NAME [APP FLAGS]...: MGShipped.framework staged in mgp, with libMGInner beside it
   v=$1/root; inst=$2; shift 2
