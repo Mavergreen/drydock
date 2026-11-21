@@ -348,8 +348,8 @@ nonzero 'archive without the root member'
 analyze "$T/root/bin/deadstrip" --build-evidence "$T/ev/rooted.json" --provider-prefix "$PFX"
 nonzero 'evidence for another final binary'; exit_is 4 'evidence for another final binary'
 
-# spec: cli/drydock-objc.c header (evidence) -- an artifact that links no provider: neither --link-map nor
-#       --provider-prefix; evidence with no provider mapping. One without the other is a usage error.
+# spec: cli/drydock-objc.c header (evidence) -- an artifact that links no provider: no --provider-prefix;
+#       evidence with no provider mapping. A link map alone must be this link's; a prefix needs a link map.
 fxcc -O1 "$FX/plain.c" -o "$T/root/bin/plain-consumer"
 noprov() {
   rc=0; "$DRYDOCK_OBJC" evidence --artifact "$T/root/bin/plain-consumer" --prestrip "$T/root/bin/plain-consumer" \
@@ -360,7 +360,7 @@ exit_is 0 'evidence for a binary that links no provider'
 grep '"providers": \[\]' "$T/ev/noprov.json" >/dev/null || fail 'provider-less evidence lists providers'
 grep "\"sha256\": \"$(sha "$T/root/bin/plain-consumer")\"" "$T/ev/noprov.json" >/dev/null || fail 'provider-less evidence does not name its artifact'
 noprov --link-map "$T/maps/rooted.map" --output "$T/ev/noprov-map.json"
-exit_is 2 'a link map without a provider prefix'
+exit_is 4 'another link'"'"'s map without a provider prefix'; grep link-map-mismatch "$T/err" >/dev/null || fail 'another link'"'"'s map is not link-map-mismatch'
 noprov --provider-prefix "$PFX" --output "$T/ev/noprov-pfx.json"
 exit_is 2 'a provider prefix without a link map'
 analyze "$T/root/bin/plain-consumer" --build-evidence "$T/ev/noprov.json"
@@ -395,7 +395,7 @@ exit_is 2 'an existing evidence destination'
 chmod 000 "$T/maps/rooted.map"
 evidence "$T/root/bin/rooted" "$T/root/bin/rooted" "$T/maps/rooted.map" "$T/ev/unreadable.json"
 exit_is 4 'an unreadable link map'; chmod 644 "$T/maps/rooted.map"
-# spec: src/objc/provider.c LINKMAP_MAX -- a real consumer's map (Codex's is 174 MB) is read up to 256 MiB;
+# spec: src/objc/linkmap.c LINKMAP_MAX -- a real consumer's map (Codex's is 174 MB) is read up to 256 MiB;
 #       past that it is refused before it is read.
 cp "$T/maps/rooted.map" "$T/maps/big.map"
 perl -e 'my $l = "#" . ("p" x 1022) . "\n"; print $l for 1 .. 65537' >>"$T/maps/big.map"

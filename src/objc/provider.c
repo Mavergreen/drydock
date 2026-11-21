@@ -51,6 +51,7 @@
  * (the pinned Drydock's archive module needs its rewrite modules); objects by the bounded
  * MH_OBJECT reader below. Nothing is executed or loaded. */
 #include "report.h"
+#include "linkmap.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <errno.h>
 #include <limits.h>
@@ -65,7 +66,6 @@
 #include <sys/stat.h>
 
 #define ARCHIVE_MAX (256u << 20)
-#define LINKMAP_MAX (256u << 20)  /* Codex 0.165's map is 174 MB; the same bound as ARCHIVE_MAX */
 #define DEPTH_MAX 8
 
 /* ---- objects and archives ----------------------------------------------------------------------- */
@@ -90,7 +90,7 @@ static void hex_digest(const uint8_t *p, size_t n, char out[65]) {
     for (i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(out + 2 * i, 3, "%02x", d[i]);
 }
 
-static int read_file(ObjcAnalysis *a, const char *path, size_t max, uint8_t **buf, size_t *size, const char *what) {
+int objc_read_file(ObjcAnalysis *a, const char *path, size_t max, uint8_t **buf, size_t *size, const char *what) {
     FILE *f;
     struct stat st;
     *buf = NULL;
@@ -186,7 +186,7 @@ static int archive_open(ObjcAnalysis *a, const char *path, OArchive *ar) {
     size_t off = 8;
     int rc;
     memset(ar, 0, sizeof *ar);
-    if ((rc = read_file(a, path, ARCHIVE_MAX, &ar->buf, &ar->size, "provider archive"))) return rc;
+    if ((rc = objc_read_file(a, path, ARCHIVE_MAX, &ar->buf, &ar->size, "provider archive"))) return rc;
     if (ar->size < 8 || memcmp(ar->buf, "!<arch>\n", 8)) return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s is not an ar archive", path);
     while (off < ar->size) {
         const uint8_t *h = ar->buf + off;
@@ -857,53 +857,16 @@ int objc_provide_findings(ObjcAnalysis *a) {
 
 /* ---- the build side ------------------------------------------------------------------------------ */
 
-static int same_sections(ObjcAnalysis *a, ObjcImage *f, ObjcImage *p) {
-    size_t n = objc_image_nsections(f), i;
-    if (n != objc_image_nsections(p)) return objc_fail(a, "prestrip-mismatch", NULL, 0, "the final and prestrip images have different sections");
-    for (i = 0; i < n; i++) {
-        uint64_t fa, fs, pa, ps;
-        uint32_t ff, pf;
-        char fname[40];
-        const uint8_t *fb, *pb;
-        uint8_t type;
-        snprintf(fname, sizeof fname, "%s", objc_image_section(f, i, &fa, &fs, &ff));
-        if (strcmp(fname, objc_image_section(p, i, &pa, &ps, &pf)) || fa != pa || fs != ps || ff != pf)
-            return objc_fail(a, "prestrip-mismatch", NULL, fa, "section %s differs in place or size between the final and prestrip images", fname);
-        type = ff & SECTION_TYPE;
-        if (!fs || type == S_ZEROFILL || type == S_GB_ZEROFILL || type == S_THREAD_LOCAL_ZEROFILL) continue;
-        fb = objc_image_bytes(f, fa, fs); pb = objc_image_bytes(p, pa, ps);
-        if (!fb || !pb || memcmp(fb, pb, fs)) return objc_fail(a, "prestrip-mismatch", NULL, fa, "section %s bytes differ between the final and prestrip images", fname);
-    }
-    return OBJC_OK;
-}
-
-typedef struct { long index; char path[PATH_MAX]; char member[256]; } MapFile;
-
-/* "[  N] text" -> N and text; -1 when the line is not one. */
-static long file_index(const char *s, const char **rest) {
-    char *end;
-    long n;
-    if (*s != '[') return -1;
-    n = strtol(s + 1, &end, 10);
-    if (end == s + 1 || *end != ']' || n < 0) return -1;
-    *rest = end + 1 + (end[1] == ' ');
-    return n;
-}
-
 int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prestrip, const char *link_map) {
-    ObjcImage *fi = NULL, *pi = NULL;
-    uint8_t *map = NULL;
-    size_t size, i, j;
-    MapFile *files = NULL;
+    ObjcImage *pi = NULL;
+    ObjcLinkMap map;
+    size_t i, j;
     OArchive *ars = NULL;
-    size_t nfiles = 0;
-    char *line, *save = NULL;
-    int rc, arch = 0, part = 0;
-    uint64_t sect_seen = 0;
-    if ((rc = objc_image_open(a, final, &fi)) || (rc = objc_image_open(a, prestrip, &pi))) goto out;
-    if ((rc = same_sections(a, fi, pi))) goto out;
-    if ((rc = read_file(a, link_map, LINKMAP_MAX, &map, &size, "link map"))) goto out;
-    if (memchr(map, 0, size)) { rc = objc_fail(a, "malformed-link-map", NULL, 0, "%s holds a NUL byte", link_map); goto out; }
+    int rc;
+    memset(&map, 0, sizeof map);
+    if ((rc = objc_linkmap_read(a, link_map, &map))) goto out;
+    if ((rc = objc_linkmap_check_image(a, &map, final, prestrip))) goto out;
+    if ((rc = objc_image_open(a, prestrip, &pi))) goto out;
     if (!(ars = calloc(a->n_providers + 1, sizeof *ars))) { rc = objc_fail(a, "out-of-memory", NULL, 0, "archives"); goto out; }
     for (i = 0; i < a->n_providers; i++) if ((rc = archive_open(a, a->providers[i].archive, &ars[i]))) goto out;
     for (i = 0; i < a->n_providers; i++) {
@@ -912,103 +875,55 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
         if (objc_set_string(&p->ev_declaration_sha256, p->declaration_sha256) || objc_set_string(&p->ev_archive_sha256, p->archive_sha256))
             { rc = objc_fail(a, "out-of-memory", NULL, 0, "provider"); goto out; }
     }
-    for (line = strtok_r((char *)map, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        const char *rest;
-        line[strcspn(line, "\r")] = 0;
-        if (!strncmp(line, "# Arch: ", 8)) { arch = !strcmp(line + 8, "x86_64") ? 1 : -1; continue; }
-        if (!strcmp(line, "# Object files:")) { part = 1; continue; }
-        if (!strcmp(line, "# Sections:")) { part = 2; continue; }
-        if (!strcmp(line, "# Symbols:")) { part = 3; continue; }
-        if (!strncmp(line, "# Dead Stripped Symbols:", 24)) { part = 4; continue; }
-        if (*line == '#' || !*line) continue;
-        if (part == 1) {
-            long n = file_index(line, &rest);
-            MapFile *g;
-            const char *open;
-            size_t len;
-            if (n < 0) { rc = objc_fail(a, "malformed-link-map", NULL, 0, "object file line: %.120s", line); goto out; }
-            len = strlen(rest);
-            if (!len || rest[len - 1] != ')' || !(open = strrchr(rest, '(')) || open == rest) continue;
-            if (!(g = realloc(files, (nfiles + 1) * sizeof *g))) { rc = objc_fail(a, "out-of-memory", NULL, 0, "map"); goto out; }
-            files = g; g = &files[nfiles];
-            if ((size_t)(open - rest) >= sizeof g->path || len - (size_t)(open - rest) - 2 >= sizeof g->member) continue;
-            snprintf(g->path, sizeof g->path, "%.*s", (int)(open - rest), rest);
-            snprintf(g->member, sizeof g->member, "%.*s", (int)(len - (size_t)(open - rest) - 2), open + 1);
-            g->index = n; nfiles++;
-        } else if (part == 2) {
-            char seg[64], sect[64], name[130];
-            unsigned long long addr, sz;
-            uint64_t fa, fs;
-            uint32_t ff;
-            size_t n = objc_image_nsections(pi);
-            if (sscanf(line, "%llx %llx %63s %63s", &addr, &sz, seg, sect) != 4) { rc = objc_fail(a, "malformed-link-map", NULL, 0, "section line: %.120s", line); goto out; }
-            snprintf(name, sizeof name, "%s,%s", seg, sect);
-            for (j = 0; j < n; j++) {
-                const char *s = objc_image_section(pi, j, &fa, &fs, &ff);
-                if (!strcmp(s, name) && fa == addr && fs == sz) break;
+    for (j = 0; j < map.natoms; j++) {
+        const ObjcMapAtom *t = &map.atoms[j];
+        const ObjcMapFile *f = t->file < 0 ? NULL : &map.files[t->file];
+        const char *name = t->name;
+        uint64_t addr = t->addr;
+        if (!f || !f->archive || strlen(f->archive) >= PATH_MAX || strlen(f->member) >= sizeof ars->m->name) continue;
+        for (i = 0; i < a->n_providers; i++) {
+            ObjcProvider *p = &a->providers[i];
+            char rp[PATH_MAX];
+            OArchive *ar = &ars[i];
+            OMember *m;
+            uint32_t k;
+            if (!realpath(f->archive, rp) || strcmp(rp, p->archive)) continue;
+            if (!(m = member_named(ar, f->member))) {
+                rc = objc_fail(a, "link-map-mismatch", NULL, 0, "%s names member %s, which %s lacks", link_map, f->member, p->archive);
+                goto out;
             }
-            if (j == n) { rc = objc_fail(a, "link-map-mismatch", NULL, addr, "%s: section %s at 0x%llx is not the prestrip image's", link_map, name, addr); goto out; }
-            sect_seen++;
-        } else if (part == 3) {
-            unsigned long long addr, sz;
-            char *end;
-            long n;
-            const char *name;
-            addr = strtoull(line, &end, 16);
-            if (end == line) { rc = objc_fail(a, "malformed-link-map", NULL, 0, "symbol line: %.120s", line); goto out; }
-            sz = strtoull(end, &end, 16);
-            while (*end == ' ' || *end == '\t') end++;
-            if ((n = file_index(end, &name)) < 0) { rc = objc_fail(a, "malformed-link-map", NULL, 0, "symbol line: %.120s", line); goto out; }
-            for (j = 0; j < nfiles && files[j].index != n; j++) ;
-            if (j == nfiles) continue;
-            for (i = 0; i < a->n_providers; i++) {
-                ObjcProvider *p = &a->providers[i];
-                char rp[PATH_MAX];
-                OArchive *ar = &ars[i];
-                OMember *m;
-                uint32_t k;
-                if (!realpath(files[j].path, rp) || strcmp(rp, p->archive)) continue;
-                if (!(m = member_named(ar, files[j].member))) {
-                   
-                    rc = objc_fail(a, "link-map-mismatch", NULL, 0, "%s names member %s, which %s lacks", link_map, files[j].member, p->archive);
+            for (k = 0; k < m->nsyms; k++) {
+                uint64_t w;
+                ObjcProviderAtom *g;
+                size_t q;
+                if (!defined(&m->nl[k]) || strcmp(sym_name(m, k), name) || content_of(&m->sects[m->nl[k].n_sect - 1], &w) != C_ATOM) continue;
+                if (!objc_image_has_symbol(pi, name, addr)) {
+                    rc = objc_fail(a, "prestrip-mismatch", NULL, addr, "the prestrip image has no %s at 0x%llx, where the link map places %s(%s)", name, (unsigned long long)addr, f->member, name);
                     goto out;
                 }
-                for (k = 0; k < m->nsyms; k++) {
-                    uint64_t w;
-                    ObjcProviderAtom *g;
-                    size_t q;
-                    if (!defined(&m->nl[k]) || strcmp(sym_name(m, k), name) || content_of(&m->sects[m->nl[k].n_sect - 1], &w) != C_ATOM) continue;
-                    if (!objc_image_has_symbol(pi, name, addr)) {
-                       
-                        rc = objc_fail(a, "prestrip-mismatch", NULL, addr, "the prestrip image has no %s at 0x%llx, where the link map places %s(%s)", name, addr, files[j].member, name);
-                        goto out;
-                    }
-                    for (q = 0; q < p->n_atoms; q++)
-                        if (!strcmp(p->atoms[q].member, m->name) && !strcmp(p->atoms[q].symbol, name)) break;
-                    if (q < p->n_atoms) { rc = objc_fail(a, "malformed-link-map", NULL, addr, "%s(%s) placed twice", m->name, name); goto out; }
-                    if (!(g = realloc(p->atoms, (p->n_atoms + 1) * sizeof *g))) { rc = objc_fail(a, "out-of-memory", NULL, 0, "atoms"); goto out; }
-                    p->atoms = g; g = &p->atoms[p->n_atoms++]; memset(g, 0, sizeof *g);
-                    g->address = addr; g->size = sz;
-                    if (objc_set_string(&g->member, m->name) || objc_set_string(&g->symbol, name)) { rc = objc_fail(a, "out-of-memory", NULL, 0, "atoms"); goto out; }
-                    for (q = 0; q < p->n_members && strcmp(p->members[q].name, m->name); q++) ;
-                    if (q == p->n_members) {
-                        ObjcProviderMember *mm = realloc(p->members, (p->n_members + 1) * sizeof *mm);
-                        if (!mm) { rc = objc_fail(a, "out-of-memory", NULL, 0, "members"); goto out; }
-                        p->members = mm; mm = &p->members[p->n_members++]; memset(mm, 0, sizeof *mm);
-                        if (objc_set_string(&mm->name, m->name) || objc_set_string(&mm->sha256, m->sha)) { rc = objc_fail(a, "out-of-memory", NULL, 0, "members"); goto out; }
-                    }
-                    break;
+                for (q = 0; q < p->n_atoms; q++)
+                    if (!strcmp(p->atoms[q].member, m->name) && !strcmp(p->atoms[q].symbol, name)) break;
+                if (q < p->n_atoms) { rc = objc_fail(a, "malformed-link-map", NULL, addr, "%s(%s) placed twice", m->name, name); goto out; }
+                if (!(g = realloc(p->atoms, (p->n_atoms + 1) * sizeof *g))) { rc = objc_fail(a, "out-of-memory", NULL, 0, "atoms"); goto out; }
+                p->atoms = g; g = &p->atoms[p->n_atoms++]; memset(g, 0, sizeof *g);
+                g->address = addr; g->size = t->size;
+                if (objc_set_string(&g->member, m->name) || objc_set_string(&g->symbol, name)) { rc = objc_fail(a, "out-of-memory", NULL, 0, "atoms"); goto out; }
+                for (q = 0; q < p->n_members && strcmp(p->members[q].name, m->name); q++) ;
+                if (q == p->n_members) {
+                    ObjcProviderMember *mm = realloc(p->members, (p->n_members + 1) * sizeof *mm);
+                    if (!mm) { rc = objc_fail(a, "out-of-memory", NULL, 0, "members"); goto out; }
+                    p->members = mm; mm = &p->members[p->n_members++]; memset(mm, 0, sizeof *mm);
+                    if (objc_set_string(&mm->name, m->name) || objc_set_string(&mm->sha256, m->sha)) { rc = objc_fail(a, "out-of-memory", NULL, 0, "members"); goto out; }
                 }
-               
+                break;
             }
         }
     }
-    if (arch != 1) { rc = objc_fail(a, "link-map-mismatch", NULL, 0, "%s is not an x86_64 link map", link_map); goto out; }
-    if (sect_seen != objc_image_nsections(pi)) { rc = objc_fail(a, "link-map-mismatch", NULL, 0, "%s lists %llu sections, the prestrip image has %zu", link_map, (unsigned long long)sect_seen, objc_image_nsections(pi)); goto out; }
     rc = OBJC_OK;
 out:
     if (ars) for (i = 0; i < a->n_providers; i++) archive_free(&ars[i]);
-    free(ars); free(files); free(map);
-    objc_image_close(fi); objc_image_close(pi);
+    free(ars);
+    objc_linkmap_free(&map);
+    objc_image_close(pi);
     return rc ? OBJC_CANNOT_MEASURE : OBJC_OK;
 }

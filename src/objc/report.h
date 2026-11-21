@@ -542,4 +542,6 @@ int objc_provide_findings(ObjcAnalysis *a);
  * against the prestrip image's symbols, after proving the final and prestrip images carry the
  * same section bytes. Fills members/atoms (none when the archive is not in the link). 0 or 4. */
 int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prestrip, const char *link_map);
+/* PATH, a regular file of at most MAX bytes, read NUL-terminated into *buf; WHAT names it in errors. 0 or 4. */
+int objc_read_file(ObjcAnalysis *a, const char *path, size_t max, uint8_t **buf, size_t *size, const char *what);
 #endif

@@ -11,7 +11,7 @@
  *               [--root-kind tree|volume]
  *   objc-compat provider-link-args --prefix DIR --link-map FILE           (scripts/objc-provider-link-args.sh)
  *   objc-compat emit-build-evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE
- *               --provider-prefix DIR] --references REF_DIR --output NEW_FILE  (scripts/objc-build-evidence.sh)
+ *               [--provider-prefix DIR]] --references REF_DIR --output NEW_FILE  (scripts/objc-build-evidence.sh)
  *   objc-compat resolve --artifact FILE --reviewed FILE --output NEW_FILE   (resolve_main)
  *
  * --source-root, --crate-sources and --sdk-root are where schema-2 build evidence's cites resolve;
@@ -63,6 +63,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "report.h"
+#include "linkmap.h"
 
 #define JSON_MAX (16u << 20)
 #define MANIFEST_MAX (1u << 20)
@@ -1558,8 +1559,8 @@ static int link_args_main(int argc, char **argv) {
 }
 
 /* emit-build-evidence (scripts/objc-build-evidence.sh): schema-1 evidence of what was linked. It
- * records identities and the provider link mapping it checked; it approves nothing -- the
- * analyzer re-verifies all of it against the artifact's bytes. */
+ * records identities, a link map it checked is this link's, and the provider link mapping it
+ * checked; it approves nothing -- the analyzer re-verifies all of it against the artifact's bytes. */
 static int build_evidence_main(int argc, char **argv) {
     static const char *NAMES[] = { "--artifact", "--prestrip", "--source-root", "--link-map", "--provider-prefix", "--references", "--output" };
     const char *v[7];
@@ -1574,8 +1575,7 @@ static int build_evidence_main(int argc, char **argv) {
     if (pairs(argc, argv, NAMES, 7, v, "emit-build-evidence")) return 2;
     for (i = 0; i < 7; i++)
         if (!v[i] && i != 3 && i != 4) { fprintf(stderr, "objc-compat emit-build-evidence: %s is required\n", NAMES[i]); return 2; }
-    /* No provider (neither flag): no link map to read and nothing to map. */
-    if (!v[3] != !v[4]) { fprintf(stderr, "objc-compat emit-build-evidence: --link-map and --provider-prefix go together\n"); return 2; }
+    if (v[4] && !v[3]) { fprintf(stderr, "objc-compat emit-build-evidence: --provider-prefix needs --link-map\n"); return 2; }
     if (lstat(v[6], &st) == 0 || errno != ENOENT) { fprintf(stderr, "objc-compat emit-build-evidence: %s exists; it is never replaced\n", v[6]); return 2; }
     slash = strrchr(v[6], '/');
     if (slash) snprintf(dir, sizeof dir, "%.*s", (int)(slash - v[6]), v[6]); else snprintf(dir, sizeof dir, ".");
@@ -1589,6 +1589,10 @@ static int build_evidence_main(int argc, char **argv) {
     if (!rc && objc_tree_digest(v[2], tsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "source root %s", v[2]);
     if (!rc && v[4]) rc = load_provider_prefix(a, v[4]);
     if (!rc && v[4]) rc = objc_map_provider_link(a, v[0], v[1], v[3]);
+    if (!rc && v[3] && !v[4]) {
+        ObjcLinkMap map;
+        if (!(rc = objc_linkmap_read(a, v[3], &map))) { rc = objc_linkmap_check_image(a, &map, v[0], v[1]); objc_linkmap_free(&map); }
+    }
     if (rc || a->n_errors) { print_errors(a); objc_analysis_destroy(a); return 4; }
     memset(&o, 0, sizeof o);
     raw(&o, "{"); key(&o, "schema", 1); raw(&o, "1"); kstr(&o, "kind", "objc-build-evidence", 0);

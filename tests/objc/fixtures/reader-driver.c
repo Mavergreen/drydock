@@ -7,8 +7,10 @@
  * set would, so the reader bounds a call's argument registers by them. --shipped FILE then reads FILE's
  * metadata alone and adds its method definitions, as src/objc/main.m add_shipped does for a shipped
  * image after the artifact's code has been read.
+ * --link-map prints objc_linkmap_read's parse instead (link_map below).
  * Exit 0 measured (and, with --close, every send closed), 4 cannot-measure, 2 usage. */
 #include "report.h"
+#include "linkmap.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +56,36 @@ static int demangle(void) {
     return rc;
 }
 
+/* --link-map MAP [VA]...: the parse as "arch", "file", "sect" and "atom" rows (file is -1 when unlisted), then
+ * "at VA ADDR NAME" for the atom objc_linkmap_atom_at finds, or "at VA -"; errors as "error" rows, exit 4. */
+static int link_map(int argc, char **argv) {
+    ObjcAnalysis *a = objc_analysis_create();
+    ObjcLinkMap m;
+    size_t k;
+    int i, rc;
+    if (!a) return 4;
+    if (!(rc = objc_linkmap_read(a, argv[0], &m))) {
+        printf("arch\t%s\n", m.arch);
+        for (k = 0; k < m.nfiles; k++)
+            printf("file\t%zu\t%s\t%s\t%s\n", k, s(m.files[k].path), s(m.files[k].archive), s(m.files[k].member));
+        for (k = 0; k < m.nsects; k++)
+            printf("sect\t0x%llx\t0x%llx\t%s\t%s\n", (unsigned long long)m.sects[k].addr, (unsigned long long)m.sects[k].size, m.sects[k].seg, m.sects[k].sect);
+        for (k = 0; k < m.natoms; k++)
+            printf("atom\t0x%llx\t0x%llx\t%ld\t%s\n", (unsigned long long)m.atoms[k].addr, (unsigned long long)m.atoms[k].size, m.atoms[k].file, m.atoms[k].name);
+        for (i = 1; i < argc; i++) {
+            const ObjcMapAtom *t = objc_linkmap_atom_at(&m, strtoull(argv[i], NULL, 16));
+            if (t) printf("at\t%s\t0x%llx\t%s\n", argv[i], (unsigned long long)t->addr, t->name);
+            else printf("at\t%s\t-\n", argv[i]);
+        }
+        objc_linkmap_free(&m);
+    }
+    for (k = 0; k < a->n_errors; k++)
+        printf("error\t%s\t%s\t0x%llx\t%s\n", s(a->errors[k].code), s(a->errors[k].slice),
+               (unsigned long long)a->errors[k].address, s(a->errors[k].detail));
+    objc_analysis_destroy(a);
+    return rc ? 4 : 0;
+}
+
 static int usage(void) {
     fprintf(stderr, "usage: reader-driver --artifact FILE [--references DIR] [--shipped FILE] [--binding-receipt FILE] "
                     "[--close --signatures FILE [--sdk-facts FILE]]\n");
@@ -66,6 +98,7 @@ int main(int argc, char **argv) {
     size_t k;
     const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL, *refs = NULL, *shipped = NULL;
     if (argc == 2 && !strcmp(argv[1], "--demangle")) return demangle();
+    if (argc >= 3 && !strcmp(argv[1], "--link-map")) return link_map(argc - 2, argv + 2);
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--artifact") && i + 1 < argc) artifact = argv[++i];
         else if (!strcmp(argv[i], "--references") && i + 1 < argc) refs = argv[++i];
