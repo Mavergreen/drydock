@@ -35,12 +35,31 @@ for pl in "$t"/x/*/Payload "$t"/x/Payload; do
 done
 [ "$found" -eq 1 ] || { echo "FAIL: $found of $n payloads in $pkg carry $tree (want exactly 1)"; exit 1; }
 
-"$CMAKE" --install "$BX" --prefix "$t/x86_64" >/dev/null
-"$CMAKE" --install "$BA" --prefix "$t/arm64" >/dev/null
+"$CMAKE" --install "$BX" --prefix "$t/x86_64" >"$t/install.x86_64.log" 2>&1
+"$CMAKE" --install "$BA" --prefix "$t/arm64" >"$t/install.arm64.log" 2>&1
 sh "$SHIPYARD/lipo-merge-tree.sh" --a "$t/x86_64" --b "$t/arm64" --out "$t/want"
+# Says how a differing binary differs, slice by slice, so a failure on a runner is diagnosable without its artifacts.
+explain() {   # explain WANT GOT
+  for a in x86_64 arm64; do
+    for side in want:"$1" pkg:"$2"; do
+      k=${side%%:*} f=${side#*:}
+      "$LIPO" "$f" -thin "$a" -output "$t/slice.$k" 2>/dev/null || { echo "  $a: no slice in $k"; continue; }
+      echo "  $a $k: $(wc -c <"$t/slice.$k" | tr -d ' ') bytes, sha256 $(shasum -a 256 "$t/slice.$k" | cut -c1-16)"
+      "$OTOOL" -l "$t/slice.$k" >"$t/lc.$k" 2>&1
+    done
+    [ -f "$t/lc.want" ] && [ -f "$t/lc.pkg" ] && { echo "  $a load commands, want vs pkg:"; diff "$t/lc.want" "$t/lc.pkg" | head -30; }
+    rm -f "$t/lc.want" "$t/lc.pkg"
+  done
+  echo "  first differing bytes (offset, want, pkg; octal):"; cmp -l "$1" "$2" | head -8
+  for a in x86_64 arm64; do echo "  $a install of it:"; grep -F "$(basename "$1")" "$t/install.$a.log"; done
+}
 for d in bin share/man; do
-  diff -r "$t/want/$d" "$got/$tree/$d" \
-    || { echo "FAIL: the package's $tree/$d is not the two builds' installs merged"; exit 1; }
+  if ! diff -r "$t/want/$d" "$got/$tree/$d"; then
+    for w in "$t/want/$d"/*; do
+      [ -f "$w" ] && ! cmp -s "$w" "$got/$tree/$d/$(basename "$w")" && { echo "how $(basename "$w") differs:"; explain "$w" "$got/$tree/$d/$(basename "$w")"; }
+    done
+    echo "FAIL: the package's $tree/$d is not the two builds' installs merged"; exit 1
+  fi
 done
 for f in LICENSE README.md PROVENANCE.md; do
   [ -f "$got/$tree/share/doc/drydock/$f" ] || { echo "FAIL: the package has no share/doc/drydock/$f"; exit 1; }
