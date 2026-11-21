@@ -480,10 +480,18 @@ if [ "$real" = 0 ]; then
   done
   full "$T/root/bin/two-got" "$T/root/bin/two-got" "$T/root/bin/two-got.map" two-got
   positive 'two relaxed GOT loads in one atom'
+  set -- $sites; site=$1   # either GOT load would do
   cp "$T/root/bin/two-got" "$T/root/bin/two-got-movl"
-  putn "$T/root/bin/two-got-movl" "$(fileoff "$T/root/bin/two-got-movl" $((base + 0x${sites%%[!0-9a-f]*} - 2)))" $((0x89)) 1
+  putn "$T/root/bin/two-got-movl" "$(fileoff "$T/root/bin/two-got-movl" $((base + 0x$site - 2)))" $((0x89)) 1
   full "$T/root/bin/two-got-movl" "$T/root/bin/two-got-movl" "$T/root/bin/two-got.map" two-got-movl
   nonzero 'a relaxed GOT load whose opcode is then changed'; error_is provider-mapping-mismatch 'a changed opcode byte'
+  cp "$T/root/bin/two-got" "$T/root/bin/two-got-rex"
+  rex=$(fileoff "$T/root/bin/two-got-rex" $((base + 0x$site - 3)))
+  [ "$(od -An -tx1 -j "$rex" -N1 "$T/root/bin/two-got-rex" | tr -d ' ')" = 48 ] || fail "two-got: no REX.W before the leaq at 0x$site"
+  putn "$T/root/bin/two-got-rex" "$rex" $((0x4c)) 1
+  full "$T/root/bin/two-got-rex" "$T/root/bin/two-got-rex" "$T/root/bin/two-got.map" two-got-rex
+  nonzero 'a changed byte neither masked nor relocated'; error_is provider-mapping-mismatch 'a changed REX byte'
+  grep -F 'differs from the final image' "$T/report" >/dev/null || fail 'a changed REX byte: not reported as differing from the final image'
   PFX=$PFX_MAIN
 fi
 # spec: tests/objc/fixtures/provider-body.m header -- body_source DIR [DEFINE...]: the body, with each DEFINE turned on
