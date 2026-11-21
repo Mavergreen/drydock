@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define LINKMAP_MAX (256u << 20)  /* Codex 0.165's map is 174 MB; the same bound as provider.c's ARCHIVE_MAX */
+#define LINKMAP_MAX (256u << 20)  /* Codex 0.165's map is 174 MB; the same bound as attest.h's OBJC_ARCHIVE_MAX */
 
 /* "[  N] text" -> N and text; -1 when the line is not one. */
 static long file_index(const char *s, const char **rest) {

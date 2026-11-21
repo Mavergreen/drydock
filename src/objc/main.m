@@ -8,7 +8,7 @@
  *   objc-compat --artifact FILE --root SHIPPED_ROOT --references REF_DIR --report NEW_FILE
  *               [--build-evidence FILE] [--provider-prefix DIR [--source-receipt FILE]] [--mode inventory|strict]
  *               [--exceptions FILE] [--analyzer-id ID] [--source-root DIR] [--crate-sources DIR] [--sdk-root DIR]
- *               [--root-kind tree|volume]
+ *               [--root-kind tree|volume] [--link-map FILE [--object-dir DIR]...]
  *   objc-compat provider-link-args --prefix DIR --link-map FILE           (scripts/objc-provider-link-args.sh)
  *   objc-compat emit-build-evidence --artifact FILE --prestrip FILE --source-root DIR [--link-map FILE
  *               [--provider-prefix DIR]] --references REF_DIR --output NEW_FILE  (scripts/objc-build-evidence.sh)
