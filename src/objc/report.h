@@ -252,6 +252,7 @@ typedef struct {
     char *signatures_path;        /* optional: companion signatures, schema 1 */
     char *facts_path;             /* optional: eleven-column SDK facts, for superclasses */
     uint64_t limit_undecoded_bytes; /* code bytes the decoder could not walk (sweep-checked) */
+    uint64_t limit_undecoded_attested; /* of those, the remainders that passed only through attest.c */
     ObjcEvidence *evidence; size_t n_evidence, cap_evidence;
     ObjcBinding *bindings;  size_t n_bindings, cap_bindings;
     ObjcError *errors;      size_t n_errors, cap_errors;

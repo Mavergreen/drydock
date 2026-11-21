@@ -2725,6 +2725,7 @@ static int interesting_target(Slice *s, uint64_t t) {
 static int sweep_undecodable(Slice *s, uint64_t lo, const uint8_t *code, uint64_t len) {
     uint64_t i;
     static const int tails[] = { 0, 1, 2, 4 };
+    int attested = 0;
     for (i = 0; i + 4 <= len; i++) {
         int32_t d; int t;
         memcpy(&d, code + i, 4);
@@ -2733,14 +2734,18 @@ static int sweep_undecodable(Slice *s, uint64_t lo, const uint8_t *code, uint64_
             if (interesting_target(s, target)) {
                 char msg[1024];
                 const char *why = NULL;
-                if (s->a->map && objc_attest_window(s->a, lo + i, &why)) return s->status = OBJC_CANNOT_MEASURE;
-                if (why) snprintf(msg, sizeof msg, "0x%llx (not attested: %s)", (unsigned long long)target, why);
-                else snprintf(msg, sizeof msg, "0x%llx", (unsigned long long)target);
+                if (s->a->map) {
+                    int ok = objc_attest_window(s->a, lo + i, code + i, target, &why);
+                    if (ok < 0) return s->status = OBJC_CANNOT_MEASURE;
+                    if (ok) { attested = 1; continue; }
+                    snprintf(msg, sizeof msg, "0x%llx (not attested: %s)", (unsigned long long)target, why);
+                } else snprintf(msg, sizeof msg, "0x%llx", (unsigned long long)target);
                 return fail(s, "undecodable-objc-reference", lo + i, "possible reference to %s", msg);
             }
         }
     }
     s->a->limit_undecoded_bytes += len;
+    if (attested) s->a->limit_undecoded_attested += len;
     return 0;
 }
 

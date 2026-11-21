@@ -1179,6 +1179,11 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
             }
         } else jstr(o, LIMITS[i]);
     }
+    if (a->map) {
+        raw(o, ", ");
+        jstr(o, "undecoded bytes are cleared only where their object file shows the assembler fixed them and they name "
+                "nothing outside that object's section");
+    }
     raw(o, "]");
     /* The R1 amendment's accepted residual risk, present whenever a reviewed witness loaded. */
     key(o, "accepted_residual_risk", 0); raw(o, "[");
@@ -1367,6 +1372,7 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
     for (i = 0, j = 0; i < a->n_guards; i++) if (!a->guards[i].used) { if (j++) raw(o, ", "); jstr(o, a->guards[i].id); }
     raw(o, "]");
     key(o, "undecoded_code_bytes", 0); fmt(o, "%llu", (unsigned long long)a->limit_undecoded_bytes);
+    if (a->map) { key(o, "undecoded_code_bytes_attested", 0); fmt(o, "%llu", (unsigned long long)a->limit_undecoded_attested); }
     raw(o, "}}");
     /* Each shipped image: what loads it and how, its own loads, and its classes; its code is not read. */
     for (i = 0; i < a->n_shipped; i++) {

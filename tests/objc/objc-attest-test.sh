@@ -137,20 +137,38 @@ evidence "$SW/root/bin/sweep" "$SW/sweep.map" "$T/ev/sweep.json"
 exit_is 0 'evidence for the sweep fixture'
 # spec: src/objc/main.m usage -- analyze NAME [ARGS]: the sweep fixture, strict, its report at $T/out/NAME.json; rc set.
 mkdir -p "$T/out" "$T/dirs/empty"
+# IMG is the fixture analyzed: $SW, or a variant's directory.
+IMG=$SW
 analyze() {
   rep="$T/out/$1.json"; shift
-  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$SW/root/bin/sweep" --root "$SW/root" --references "$REF" --report "$rep" \
+  rc=0; "$DRYDOCK_OBJC" analyze --artifact "$IMG/root/bin/sweep" --root "$IMG/root" --references "$REF" --report "$rep" \
     --mode strict --analyzer-id fixture "$@" 2>"$T/err" || rc=$?
 }
-attested() { analyze "$1" --build-evidence "$T/ev/${3:-sweep}.json" --link-map "$SW/${4:-sweep}.map" --object-dir "$2"; }
+attested() { analyze "$1" --build-evidence "$T/ev/${3:-sweep}.json" --link-map "$IMG/${4:-sweep}.map" --object-dir "$2"; }
 # spec: src/objc/macho-reader.c sweep_undecodable -- the refusal, as the report's error and stderr carry it.
+WINDOW=$SWEEP_WINDOW
 REFUSAL="possible reference to $SWEEP_TARGET"
 refused_because() {
   exit_is 4 "$2"
-  grep -F "{\"code\": \"undecodable-objc-reference\", \"slice\": \"x86_64\", \"address\": \"$SWEEP_WINDOW\", \"detail\": \"$REFUSAL (not attested: $1)\"}" "$rep" >/dev/null ||
+  grep -F "{\"code\": \"undecodable-objc-reference\", \"slice\": \"x86_64\", \"address\": \"$WINDOW\", \"detail\": \"$REFUSAL (not attested: $1)\"}" "$rep" >/dev/null ||
     fail "$2: the refusal does not say '(not attested: $1)'"
   grep -xF "objc-compat: undecodable-objc-reference: $REFUSAL (not attested: $1)" "$T/err" >/dev/null || fail "$2: stderr does not name why"
 }
+# spec: src/objc/main.m report -- a clean run's attested count, and the limit only a link map adds.
+LIMIT_ATTESTED="undecoded bytes are cleared only where their object file shows the assembler fixed them and they name nothing outside that object's section"
+clean_attested() {
+  exit_is 0 "$1"
+  n=$(sed -n 's/.*"undecoded_code_bytes_attested": \([0-9]*\).*/\1/p' "$rep")
+  [ -n "$n" ] && [ "$n" -gt 0 ] || fail "$1: undecoded_code_bytes_attested is '$n'"
+  grep -F "\"$LIMIT_ATTESTED\"" "$rep" >/dev/null || fail "$1: the limits do not say how undecoded bytes are cleared"
+}
+# variant NAME: the sweep-table.S variant's image, map, archive and evidence; IMG, WINDOW and REFUSAL name it.
+variant() {
+  (fixture_sweep "$T/v-$1" "$1" && printf '%s %s\n' "$SWEEP_WINDOW" "$SWEEP_TARGET" >"$T/v-$1/hit") || fail "the $1 fixture"
+  IMG=$T/v-$1; read -r WINDOW _target <"$IMG/hit"; REFUSAL="possible reference to $_target"
+  evidence "$IMG/root/bin/sweep" "$IMG/sweep.map" "$T/ev/$1.json"; exit_is 0 "evidence for the $1 fixture"
+}
+base() { IMG=$SW; WINDOW=$SWEEP_WINDOW; REFUSAL="possible reference to $SWEEP_TARGET"; }
 
 test_link_map_needs_evidence() {
   analyze needs-evidence --link-map "$SW/sweep.map"
@@ -239,10 +257,103 @@ test_unattested_no_object() {
 test_inputs_record_link_map() {
   mkdir -p "$T/dirs/one"; cp "$SW/obj/libsweep.a" "$T/dirs/one/"
   attested one "$T/dirs/one"
-  exit_is 4 'the sweep fixture with its archive found'
+  clean_attested 'the sweep fixture with its archive found'
   grep -F "\"link_map\": {\"sha256\": \"$(sha "$SW/sweep.map")\"}" "$rep" >/dev/null || fail 'inputs do not record the link map'
-  grep -F "$REFUSAL (not attested: " "$rep" >/dev/null || fail 'a found object attests nothing yet, but the refusal does not say so'
-  if grep -F 'not found in --object-dir' "$rep" >/dev/null; then fail 'the one --object-dir holding the archive was not searched'; fi
+}
+
+test_attested_clean() {
+  mkdir -p "$T/dirs/clean"; cp "$SW/obj/libsweep.a" "$T/dirs/clean/"
+  attested clean "$T/dirs/clean"
+  clean_attested 'the sweep fixture attested from its archive'
+  n=$(sed -n 's/.*"undecoded_code_bytes": \([0-9]*\).*/\1/p' "$rep")
+  [ "$n" = 16 ] || fail "undecoded_code_bytes is '$n', not _sweep_fn's 16"
+  if grep -F 'undecodable-objc-reference' "$rep" >/dev/null; then fail 'an attested window is still a finding'; fi
+}
+
+test_without_inputs_refuses() {
+  analyze without
+  exit_is 4 'the sweep fixture without a link map'
+  grep -F "\"detail\": \"$REFUSAL\"}" "$rep" >/dev/null || fail 'the sweep fixture without a link map is not undecodable-objc-reference'
+  if grep -e 'undecoded_code_bytes_attested' -e "$LIMIT_ATTESTED" "$rep" >/dev/null; then fail 'a report without a link map counts attested bytes'; fi
+}
+
+# spec: src/objc/attest.c objc_attest_window -- the window's bytes are the object's: one table byte flipped in the
+#       member refuses, as an object that is not the one linked would.
+flipped_archive() {
+  mkdir -p "$1"
+  K=$((SWEEP_TARGET - SWEEP_WINDOW - 4)) perl -0777 -pe 'BEGIN { $v = pack("l<", $ENV{K}) } s/\x06\Q$v\E/"\x06" . chr(ord(substr($v, 0, 1)) ^ 1) . substr($v, 1)/e == 1 or die "no table"' \
+    "$SW/obj/libsweep.a" >"$1/libsweep.a" || fail 'the table is not once in the archive'
+  ! cmp -s "$SW/obj/libsweep.a" "$1/libsweep.a" || fail 'the flipped archive is the fixture'"'"'s'
+}
+test_changed_byte() {
+  flipped_archive "$T/dirs/flipped"
+  attested flipped "$T/dirs/flipped"
+  refused_because 'bytes differ from the object' 'a member whose table byte differs from the image'
+}
+
+# spec: src/objc/attest.c locate -- an archive at the map's own path is used, with no --object-dir and ahead of
+#       one: it attests through its bytes, and a different file there refuses though --object-dir holds the right one.
+test_map_path_wins() {
+  mkdir -p "$SW/link"; cp "$SW/obj/libsweep.a" "$SW/link/libsweep.a"
+  analyze map-path --build-evidence "$T/ev/sweep.json" --link-map "$SW/sweep.map"
+  clean_attested 'the archive at the map'"'"'s own path'
+  flipped_archive "$T/dirs/flipped-link"
+  cp "$T/dirs/flipped-link/libsweep.a" "$SW/link/libsweep.a"
+  mkdir -p "$T/dirs/good"; cp "$SW/obj/libsweep.a" "$T/dirs/good/"
+  attested map-path-differs "$T/dirs/good"
+  refused_because 'bytes differ from the object' 'a different archive at the map'"'"'s own path'
+  rm -rf "$SW/link"
+}
+
+test_relocation() {
+  variant reloc
+  mkdir -p "$T/dirs/reloc"; cp "$IMG/obj/libsweep.a" "$T/dirs/reloc/"
+  attested reloc "$T/dirs/reloc" reloc
+  refused_because 'a relocation covers the window' 'a table entry the linker relocates'
+  base
+}
+
+test_same_section() {
+  variant same
+  mkdir -p "$T/dirs/same"; cp "$IMG/obj/libsweep.a" "$T/dirs/same/"
+  attested same "$T/dirs/same" same
+  refused_because "target inside the same object's section" 'a target in the member'"'"'s own section'
+  base
+}
+
+test_straddle() {
+  variant straddle
+  mkdir -p "$T/dirs/straddle"; cp "$IMG/obj/libsweep.a" "$T/dirs/straddle/"
+  attested straddle "$T/dirs/straddle" straddle
+  refused_because 'no single atom covers the window' 'a window across two atoms'
+  base
+}
+
+test_got_relax_opcode() {
+  variant relax
+  mkdir -p "$T/dirs/relax"; cp "$IMG/obj/libsweep.a" "$T/dirs/relax/"
+  attested relax "$T/dirs/relax" relax
+  refused_because 'bytes differ from the object' 'a window over a relaxed GOT load'"'"'s opcode'
+  base
+}
+
+# spec: src/objc/linkmap.h objc_linkmap_cover -- atoms nest in a map: a zero-size atom where the window starts
+#       hides nothing, and a sized atom of another file inside _sweep_fn leaves no single atom covering it.
+test_nested_atoms() {
+  w=$(printf '0x%X' "$((SWEEP_WINDOW))")
+  awk -v w="$w" '{ print } /\[  2\] _sweep_fn$/ { print w "\t0x00000000\t[  2] ltmp_nested" }' "$SW/sweep.map" >"$SW/zero.map"
+  awk -v w="$w" '{ print } /\[  2\] _sweep_fn$/ { print w "\t0x00000004\t[  1] _nested" }' "$SW/sweep.map" >"$SW/inner.map"
+  mkdir -p "$T/dirs/nest"; cp "$SW/obj/libsweep.a" "$T/dirs/nest/"
+  for m in zero inner; do
+    [ "$(wc -l <"$SW/$m.map")" -gt "$(wc -l <"$SW/sweep.map")" ] || fail "the $m map adds no atom"
+    evidence "$SW/root/bin/sweep" "$SW/$m.map" "$T/ev/$m.json"; exit_is 0 "evidence for the $m map"
+  done
+  "$DRYDOCK_OBJC_READER_DRIVER" --link-map "$SW/zero.map" "$w" | grep -x "at	$w	-" >/dev/null ||
+    fail 'objc_linkmap_atom_at no longer hides _sweep_fn behind a zero-size atom; this test no longer tests the widening'
+  attested zero "$T/dirs/nest" zero zero
+  clean_attested 'a zero-size atom where the window starts'
+  attested inner "$T/dirs/nest" inner inner
+  refused_because 'no single atom covers the window' 'a sized atom nested in _sweep_fn'
 }
 
 # spec: src/objc/main.m -- without --link-map the sweep's refusal is today's, byte for byte (what 433bed6 printed).
@@ -279,4 +390,13 @@ test_unattested_not_x86_64
 test_unattested_no_object
 test_inputs_record_link_map
 test_no_inputs_identical
-echo "objc-attest: link-map parse, provider-less evidence and the sweep's object resolution pass"
+test_attested_clean
+test_without_inputs_refuses
+test_changed_byte
+test_map_path_wins
+test_relocation
+test_same_section
+test_straddle
+test_got_relax_opcode
+test_nested_atoms
+echo "objc-attest: link-map parse, provider-less evidence, the sweep's object resolution and its windows attested pass"

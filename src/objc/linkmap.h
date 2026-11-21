@@ -12,12 +12,15 @@ typedef struct ObjcLinkMap {
     ObjcMapFile *files; size_t nfiles;
     ObjcMapSect *sects; size_t nsects;
     ObjcMapAtom *atoms; size_t natoms;
+    uint64_t *ends;   /* ends[i]: the furthest addr + size among atoms[0..i] */
     char *path;
 } ObjcLinkMap;
 
 int objc_linkmap_read(ObjcAnalysis *a, const char *path, ObjcLinkMap *out);
 void objc_linkmap_free(ObjcLinkMap *m);
 const ObjcMapAtom *objc_linkmap_atom_at(const ObjcLinkMap *m, uint64_t va);
+/* How many atoms of nonzero size overlap [lo, hi), however they nest; *last is one of them. */
+size_t objc_linkmap_cover(const ObjcLinkMap *m, uint64_t lo, uint64_t hi, const ObjcMapAtom **last);
 int objc_linkmap_check_image(ObjcAnalysis *a, const ObjcLinkMap *m, const char *final, const char *prestrip);
 
 #endif

@@ -1,6 +1,7 @@
 /* linkmap.c -- reads a link map's Arch, Object files, Sections and Symbols, and checks it is this link's. */
 #include "linkmap.h"
 #include <mach-o/loader.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +66,17 @@ static int sort_atoms(ObjcLinkMap *m) {
     qsort(s, m->natoms, sizeof *s, by_addr);
     for (i = 0; i < m->natoms; i++) m->atoms[i] = s[i].atom;
     free(s);
+    return 0;
+}
+
+static int furthest_ends(ObjcLinkMap *m) {
+    size_t i;
+    if (!(m->ends = malloc((m->natoms ? m->natoms : 1) * sizeof *m->ends))) return -1;
+    for (i = 0; i < m->natoms; i++) {
+        const ObjcMapAtom *t = &m->atoms[i];
+        uint64_t e = t->size > UINT64_MAX - t->addr ? UINT64_MAX : t->addr + t->size;
+        m->ends[i] = i && m->ends[i - 1] > e ? m->ends[i - 1] : e;
+    }
     return 0;
 }
 
@@ -151,6 +163,7 @@ int objc_linkmap_read(ObjcAnalysis *a, const char *path, ObjcLinkMap *out) {
     }
     if (!rc && resolve_files(out, num)) rc = objc_fail(a, "out-of-memory", NULL, 0, "map");
     if (!rc && sort_atoms(out)) rc = objc_fail(a, "out-of-memory", NULL, 0, "map");
+    if (!rc && furthest_ends(out)) rc = objc_fail(a, "out-of-memory", NULL, 0, "map");
     free(num); free(buf);
     if (rc) { objc_linkmap_free(out); return OBJC_CANNOT_MEASURE; }
     return OBJC_OK;
@@ -160,7 +173,7 @@ void objc_linkmap_free(ObjcLinkMap *m) {
     size_t i;
     for (i = 0; i < m->nfiles; i++) { free(m->files[i].path); free(m->files[i].archive); free(m->files[i].member); }
     for (i = 0; i < m->natoms; i++) free(m->atoms[i].name);
-    free(m->files); free(m->sects); free(m->atoms); free(m->path);
+    free(m->files); free(m->sects); free(m->atoms); free(m->ends); free(m->path);
     memset(m, 0, sizeof *m);
 }
 
@@ -170,6 +183,15 @@ const ObjcMapAtom *objc_linkmap_atom_at(const ObjcLinkMap *m, uint64_t va) {
     for (i = lo; i-- > 0 && m->atoms[i].addr == m->atoms[lo - 1].addr; )
         if (va - m->atoms[i].addr < m->atoms[i].size) return &m->atoms[i];
     return NULL;
+}
+
+size_t objc_linkmap_cover(const ObjcLinkMap *m, uint64_t lo, uint64_t hi, const ObjcMapAtom **last) {
+    size_t l = 0, h = m->natoms, i, n = 0;
+    *last = NULL;
+    while (l < h) { size_t mid = l + (h - l) / 2; if (m->atoms[mid].addr < hi) l = mid + 1; else h = mid; }
+    for (i = l; i-- > 0 && m->ends[i] > lo; )
+        if (m->atoms[i].size && (m->atoms[i].addr >= lo || lo - m->atoms[i].addr < m->atoms[i].size)) { n++; *last = &m->atoms[i]; }
+    return n;
 }
 
 static int same_sections(ObjcAnalysis *a, ObjcImage *f, ObjcImage *p) {

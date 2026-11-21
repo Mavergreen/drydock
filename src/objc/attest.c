@@ -5,6 +5,8 @@
 #include <CommonCrypto/CommonDigest.h>
 #include <limits.h>
 #include <mach-o/loader.h>
+#include <mach-o/reloc.h>
+#include <mach-o/x86_64/reloc.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -175,7 +177,7 @@ OMember *objc_archive_member(OArchive *ar, const char *name) {
 /* ---- the objects a link map names -------------------------------------------------------------- */
 
 struct ObjcObject { uint8_t *buf; OMember m; };
-struct ObjcObjectSlot { int done; ObjcObject *obj; char *why; };
+struct ObjcObjectSlot { int done; ObjcObject *obj; char *why, *msg; };
 
 static int slot_why(ObjcAnalysis *a, struct ObjcObjectSlot *s, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 static int slot_why(ObjcAnalysis *a, struct ObjcObjectSlot *s, const char *fmt, ...) {
@@ -262,14 +264,91 @@ int objc_attest_object(ObjcAnalysis *a, long file, const ObjcObject **out, const
     return OBJC_OK;
 }
 
-int objc_attest_window(ObjcAnalysis *a, uint64_t va, const char **why) {
-    const ObjcMapAtom *t = a->map ? objc_linkmap_atom_at(a->map, va) : NULL;
+/* The one defined symbol NAME in M: its section index (0-based) and value, or 0 when none or several. */
+static int defined_once(const OMember *m, const char *name, uint32_t *sect, uint64_t *value) {
+    uint32_t i, n = 0;
+    for (i = 0; i < m->nsyms; i++)
+        if (objc_obj_defined(&m->nl[i]) && !strcmp(objc_obj_sym_name(m, i), name)) {
+            *sect = m->nl[i].n_sect - 1u; *value = m->nl[i].n_value; n++;
+        }
+    return n == 1;
+}
+
+/* The window's bytes (at offset W of S) that some relocation of S writes: bit k for byte k. A scattered
+ * relocation, or one this reader does not know the shape of, writes them all. */
+static unsigned reloc_mask(const OMember *m, const OSect *x, uint64_t w) {
+    unsigned mask = 0;
+    uint32_t i;
+    for (i = 0; i < x->nreloc; i++) {
+        struct relocation_info r;
+        uint64_t lo, len;
+        unsigned k;
+        memcpy(&r, m->buf + x->reloff + 8u * i, sizeof r);
+        if ((uint32_t)r.r_address & R_SCATTERED) return 0xF;
+        if (r.r_type > X86_64_RELOC_TLV || (r.r_length != 2 && r.r_length != 3)) return 0xF;
+        lo = (uint32_t)r.r_address; len = 1u << r.r_length;
+        for (k = 0; k < 4; k++) if (w + k >= lo && w + k - lo < len) mask |= 1u << k;
+    }
+    return mask;
+}
+
+static const ObjcMapSect *sect_at(const ObjcLinkMap *m, uint64_t va) {
+    size_t i;
+    for (i = 0; i < m->nsects; i++) if (va >= m->sects[i].addr && va - m->sects[i].addr < m->sects[i].size) return &m->sects[i];
+    return NULL;
+}
+
+static int within(uint64_t t, uint64_t lo, uint64_t size) { return t >= lo && t - lo <= size; }
+
+int objc_attest_window(ObjcAnalysis *a, uint64_t va, const uint8_t *bytes, uint64_t target, const char **why) {
+    const ObjcMapAtom *t = NULL;
+    const ObjcMapSect *ts;
     const ObjcObject *o;
-    int rc;
-    if (!t || t->size < 4 || va - t->addr > t->size - 4) { *why = "no map atom covers the window"; return OBJC_OK; }
-    if ((rc = objc_attest_object(a, t->file, &o, why))) return rc;
-    if (o) *why = "the window's bytes are not checked against its object";
-    return OBJC_OK;
+    const OSect *x;
+    struct ObjcObjectSlot *s;
+    uint64_t value, off, w, base;
+    uint32_t sect;
+    unsigned mask, k;
+    size_t i, n;
+    *why = NULL;
+    if (!a->map || objc_linkmap_cover(a->map, va, va + 4, &t) != 1 || va < t->addr || t->size < 4 || va - t->addr > t->size - 4) {
+        *why = "no single atom covers the window"; return 0;
+    }
+    if (objc_attest_object(a, t->file, &o, why)) return -1;
+    if (!o) return 0;
+    s = &a->objects[t->file];
+    if (!defined_once(&o->m, t->name, &sect, &value)) {
+        char buf[1024];
+        snprintf(buf, sizeof buf, "symbol %s not defined in its object", t->name);
+        free(s->msg);
+        if (!(s->msg = strdup(buf))) { objc_fail(a, "out-of-memory", NULL, 0, "%s", "attestation"); return -1; }
+        *why = s->msg; return 0;
+    }
+    x = &o->m.sects[sect];
+    k = x->flags & SECTION_TYPE;
+    off = value - x->addr;
+    w = off + (va - t->addr);
+    if (k == S_ZEROFILL || k == S_GB_ZEROFILL || k == S_THREAD_LOCAL_ZEROFILL || value < x->addr || off > x->size ||
+        w > x->size || x->size - w < 4) {
+        *why = "bytes differ from the object"; return 0;
+    }
+    mask = reloc_mask(&o->m, x, w);
+    for (k = 0; k < 4; k++)
+        if (!(mask & (1u << k)) && o->m.buf[x->off + w + k] != bytes[k]) { *why = "bytes differ from the object"; return 0; }
+    if (mask) { *why = "a relocation covers the window"; return 0; }
+    /* The target: outside where S itself would lie were it placed whole, and outside every atom this object
+     * places in the target's section, ends included. */
+    if (!(ts = sect_at(a->map, target))) { *why = "target outside the map's sections"; return 0; }
+    base = t->addr - off;
+    if (t->addr < off || within(target, base, x->size)) { *why = "target inside the same object's section"; return 0; }
+    for (i = 0, n = a->map->natoms; i < n; ) { size_t mid = i + (n - i) / 2; if (a->map->atoms[mid].addr < ts->addr) i = mid + 1; else n = mid; }
+    for (; i < a->map->natoms && a->map->atoms[i].addr - ts->addr <= ts->size; i++) {
+        const ObjcMapAtom *u = &a->map->atoms[i];
+        if (u->file == t->file && within(target, u->addr, u->size)) {
+            *why = "target inside the same object's section"; return 0;
+        }
+    }
+    return 1;
 }
 
 void objc_attest_free(ObjcAnalysis *a) {
@@ -278,7 +357,7 @@ void objc_attest_free(ObjcAnalysis *a) {
         for (i = 0; i < a->map->nfiles; i++) {
             ObjcObject *o = a->objects[i].obj;
             if (o) { free(o->m.sects); free(o->m.nl); free(o->buf); free(o); }
-            free(a->objects[i].why);
+            free(a->objects[i].why); free(a->objects[i].msg);
         }
     free(a->objects); a->objects = NULL;
     if (a->map) { objc_linkmap_free(a->map); free(a->map); a->map = NULL; }

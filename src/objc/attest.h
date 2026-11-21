@@ -33,9 +33,10 @@ typedef struct ObjcObject ObjcObject;
  * short reason. A plain path or ARCHIVE that exists is used as is; otherwise its basename must be in exactly
  * one --object-dir. Cached per file index. Nonzero only for out-of-memory and I/O errors. */
 int objc_attest_object(ObjcAnalysis *a, long file, const ObjcObject **out, const char **why);
-/* Whether the 4 bytes at VA are attested: 0 with *why NULL when they are, or with *why saying why not;
- * nonzero only for out-of-memory and I/O errors. */
-int objc_attest_window(ObjcAnalysis *a, uint64_t va, const char **why);
+/* Whether the 4 image BYTES at VA, read as a reference to TARGET, were fixed by their object's assembler and
+ * name nothing of that object's section: 1 when they are; 0 with *why saying why not; -1 out of memory or an
+ * I/O error, recorded. */
+int objc_attest_window(ObjcAnalysis *a, uint64_t va, const uint8_t *bytes, uint64_t target, const char **why);
 /* Frees the link map, the object directories and every cached object. */
 void objc_attest_free(ObjcAnalysis *a);
 
