@@ -136,6 +136,8 @@ vol "$T/vol.1"
 analyze_vol "$T/vol.1/root" "$T/vol.1/root/usr/local/mavergreen/mgp/bin/App"
 exit_is 1 'volume absolute install name'
 grep -F '"complete_within_boundary": true,' "$T/report" >/dev/null || fail "volume absolute install name: not measured: $(grep '"code"' "$T/report")"
+# spec: mavergreen-shipyard scripts/assert_binary_compatible.sh accepts exit 0 only with this literal.
+grep -F '"mode": "strict", "complete_within_boundary": true,' "$T/report" >/dev/null || fail 'volume absolute install name: breaks the strict-report literal shipyard requires'
 want _shipped_class sharedShipped floor-supported "$VLIB"
 grep -F '"root_kind": "volume"' "$T/report" >/dev/null || fail 'volume absolute install name: no root_kind'
 grep -F '"absolute paths were resolved inside the root as installed at /"' "$T/report" >/dev/null || fail 'volume absolute install name: no volume limit'

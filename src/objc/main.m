@@ -1150,8 +1150,8 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
     size_t closed[7] = {0}, verdicts[5] = {0}, r1 = 0;
     raw(o, "{"); key(o, "schema", 1); raw(o, "1");
     kstr(o, "mode", mode, 0);
-    if (volume) kstr(o, "root_kind", "volume", 0);
     key(o, "complete_within_boundary", 0); raw(o, complete ? "true" : "false");
+    if (volume) kstr(o, "root_kind", "volume", 0);
     kstr(o, "observation_boundary", BOUNDARY, 0);
     key(o, "limits", 0); raw(o, "[");
     for (i = 0; i < sizeof LIMITS / sizeof *LIMITS; i++) {
