@@ -148,6 +148,21 @@ _q_halfspill:
 _q_viareg_follow:
 	callq	_q_addhoist
 	retq
+	.globl	_p_selreg                 // one sel_registerName site reached with a literal and with an unknown, one with a literal
+_p_selreg:
+	pushq	%rbx
+	movq	%rdi, %rbx
+	leaq	Lname(%rip), %rdi
+	callq	_p_selreg_one
+	movq	%rbx, %rdi
+	callq	_p_selreg_one
+	leaq	Lname(%rip), %rdi
+	callq	_sel_registerName
+	popq	%rbx
+	retq
+	.globl	_p_selreg_one
+_p_selreg_one:
+	jmp	_sel_registerName
 	.section	__TEXT,__text_other,regular,pure_instructions
 	.globl	_p_far
 _p_far:

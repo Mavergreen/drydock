@@ -2695,6 +2695,8 @@ static int producer_site(Slice *s, Flow *flow, const uint8_t *base, const Sect *
         for (i = 0; ok && i < def; i++) ok = p[i] >= 0x21 && p[i] <= 0x7e;
         if (ok) { memcpy(lit, p, def); lit[def] = 0; }
     }
+    if (!ok && role == IMP_SEL_PRODUCER && s->a->defer_computed_selectors)
+        return add_ev(s, OBJC_EV_SEL_COMPUTED, site, 0, NULL, NULL, NULL, callee, NULL) ? -1 : 0;
     if (!ok) {
         fail(s, sel ? "computed-selector-producer" : "computed-class-producer", site,
              "%s argument is not a recognised literal", callee);

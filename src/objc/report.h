@@ -36,7 +36,10 @@ typedef enum {
     OBJC_EV_DISPATCH_CALL,   /* call/jump at address to name=callee */
     /* A runtime method registration (class_addMethod) call at address; name=callee. It must lie
      * in code provider.c attests, or the artifact is cannot-measure. */
-    OBJC_EV_METHOD_REGISTRATION
+    OBJC_EV_METHOD_REGISTRATION,
+    /* A sel_registerName call at address whose argument is not a literal; name=callee. Recorded, instead of
+     * refused, only under defer_computed_selectors; provider.c refuses it unless a verified group explains it. */
+    OBJC_EV_SEL_COMPUTED
 } ObjcEvidenceKind;
 
 /* Where a register value at a dispatch site came from, as the reader's per-function value
@@ -263,6 +266,7 @@ typedef struct {
     /* Analyzer pipeline (main.m) only; the reader driver leaves these empty. */
     int findings_mode;            /* open sends become unresolved findings, not errors */
     int metadata_only;            /* read only load commands and Objective-C metadata, no code */
+    int defer_computed_selectors; /* a computed sel_registerName is OBJC_EV_SEL_COMPUTED, not refused (analyze, with providers) */
     char **rpaths; size_t n_rpaths;               /* the measured slice's LC_RPATHs */
     ObjcShipped *shipped; size_t n_shipped;       /* the shipped closure beyond the artifact (main.m) */
     char **image_paths; size_t n_image_paths;     /* 0 the artifact's path relative to the root, k shipped[k - 1]'s */
@@ -554,6 +558,9 @@ typedef struct ObjcProvider {
     uint64_t constructor;       /* final address of the attested constructor, or 0 */
     size_t verified;            /* atoms verified byte for byte */
     uint64_t *ranges; size_t n_ranges;   /* [lo, hi) pairs of verified provider code and data */
+    /* A group whose derived registration verified: its sel_registerName sites the executor reached, every arrival
+     * with a literal from the image (OBJC_EV_SEL_COMPUTED there is explained). */
+    uint64_t *literal_sel_sites; size_t n_literal_sel_sites;
     ObjcLine *lines; size_t n_lines;     /* line rows of the linked members, by final address (with a receipt) */
 } ObjcProvider;
 

@@ -17,7 +17,9 @@
  * mutators class_replaceMethod, method_setImplementation, method_exchangeImplementations, class_addProtocol,
  * objc_allocateClassPair, objc_registerClassPair, class_addIvar among them, and objc_msgSend, dispatch_once and
  * other callback-taking calls, which are never followed -- answers unknown and clobbers rax, rcx, rdx, rsi,
- * rdi, r8-r11 and the flags. Every mutator's call site on an explored path is recorded (mutator_sites).
+ * rdi, r8-r11 and the flags. Every mutator's call site on an explored path is recorded (mutator_sites), as is
+ * the target in the ranges of every call or tail jump there, followed or summarised (called), and each
+ * sel_registerName site with whether every arrival's argument was a literal read from the image (selreg).
  *
  * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
  * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
@@ -62,7 +64,7 @@ typedef struct { uint8_t k, pw; uint32_t sym; uint64_t v; } Val;
 enum { SY_CLASS, SY_META, SY_SEL, SY_OPAQUE, SY_IMPORT };   /* SY_IMPORT: the address an import's GOT slot holds */
 typedef struct { uint64_t a; uint8_t w, ret, push; Val v; } Cell;
 typedef struct { const char *cls; int meta; const char *sel; } Look;
-typedef struct { const char *cls; int meta; const char *sel, *imp, *types; uint64_t site; int ok; } Add;
+typedef struct { const char *cls; int meta; const char *sel, *imp, *types; uint64_t imp_va, site; int ok; } Add;
 typedef struct {
     Val r[16]; uint64_t rip;
     int fop, fw; Val fa, fb, fr;              /* flags, lazily: 0 unknown, 1 add, 2 sub, 3 logic, 4 inc, 5 dec */
@@ -78,7 +80,7 @@ typedef struct {
     const ObjcImage *im; ObjcRegBudget b; ObjcRegResult *out;
     uint64_t *rg; size_t nrg;                 /* sorted [lo, hi) pairs */
     size_t nfn; int8_t *reach;                /* per function start: 0 unknown, 1 summarised, 2 followed */
-    size_t npaths, ninsns, cappaths, capsites, capreads, capstores;
+    size_t npaths, ninsns, cappaths, capsites, capselreg, capcalled, capreads, capstores;
     struct { int kind; char *name; } *sym; size_t nsym, capsym;
     St **work; size_t nwork, capwork;
 } Ex;
@@ -416,7 +418,7 @@ static int complete(Ex *e, St *t) {
     for (i = 0; i < t->nadds; i++) {
         const Add *a = &t->adds[i]; ObjcRegAdd *d = &p->adds[i];
         d->cls = dup0(a->cls); d->meta = a->meta; d->sel = dup0(a->sel); d->imp = dup0(a->imp); d->types = dup0(a->types);
-        d->site = a->site; d->ok = a->ok;
+        d->imp_va = a->imp_va; d->site = a->site; d->ok = a->ok;
     }
     p->n_adds = t->nadds;
     return 0;
@@ -456,6 +458,20 @@ static int note_site(Ex *e, uint64_t site) {
     o->mutator_sites[o->n_sites++] = site;
     return 0;
 }
+static int note_selreg(Ex *e, uint64_t site, int lit) {
+    ObjcRegResult *o = e->out; size_t i;
+    for (i = 0; i < o->n_selreg; i++) if (o->selreg[i].site == site) { o->selreg[i].all_literal &= lit; return 0; }
+    if (grow((void **)&o->selreg, &e->capselreg, o->n_selreg + 1, sizeof *o->selreg)) return oom(e);
+    o->selreg[o->n_selreg].site = site; o->selreg[o->n_selreg].all_literal = lit; o->n_selreg++;
+    return 0;
+}
+static int note_called(Ex *e, uint64_t target) {
+    ObjcRegResult *o = e->out; size_t i;
+    for (i = 0; i < o->n_called; i++) if (o->called[i] == target) return 0;
+    if (grow((void **)&o->called, &e->capcalled, o->n_called + 1, sizeof *o->called)) return oom(e);
+    o->called[o->n_called++] = target;
+    return 0;
+}
 static uint32_t opaque(Ex *e) { return sym_new(e, SY_OPAQUE, NULL); }
 
 /* The import n's model at the call or jump at site; rax and the flags as it leaves them. */
@@ -483,7 +499,7 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
     }
     if (!strcmp(n, "sel_registerName")) {
         s1 = literal(e, t, rdi, site, b1, sizeof b1);
-        if (e->out->refused || (id = sym_new(e, SY_SEL, s1)) == UINT32_MAX) return -1;
+        if (e->out->refused || note_selreg(e, site, s1 != NULL) || (id = sym_new(e, SY_SEL, s1)) == UINT32_MAX) return -1;
         clobber(t); t->r[0] = S(id);
         return 0;
     }
@@ -507,7 +523,7 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
         cls_of(e, rdi, &a.cls, &a.meta);
         a.sel = sel_of(e, rsi);
         im = rdx.k == VC && !rdx.pw ? objc_image_symbol_at(e->im, rdx.v) : NULL;
-        a.imp = im;
+        a.imp = im; a.imp_va = rdx.k == VC && !rdx.pw ? rdx.v : 0;
         if ((s1 = literal(e, t, rcx, site, b2, sizeof b2))) {
             if ((id = sym_new(e, SY_OPAQUE, s1)) == UINT32_MAX) return -1;
             a.types = e->sym[id].name;
@@ -543,6 +559,7 @@ static int do_call(Ex *e, St *t, uint64_t site, uint64_t target, int tail, uint6
     if (!in_ranges(e, target))
         return refuse(e, "foreign-call", "a call at 0x%llx to 0x%llx, outside the provider's code and no import",
                       (unsigned long long)site, (unsigned long long)target);
+    if (note_called(e, target)) return -1;
     if (!follow(e, target)) { unknown_call(t); return tail ? do_ret(e, t, site) : 0; }
     if (!tail) {
         if (t->depth + 1 > e->b.max_depth)
@@ -835,6 +852,8 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
     for (i = 0; i < e.nsym; i++) free(e.sym[i].name);
     free(e.sym);
     qsort(out->mutator_sites, out->n_sites, sizeof *out->mutator_sites, cmp_range);
+    qsort(out->called, out->n_called, sizeof *out->called, cmp_range);
+    qsort(out->selreg, out->n_selreg, sizeof *out->selreg, cmp_range);
     uniq_reads(out);
     if (out->n_stores) {
         qsort(out->image_stores, out->n_stores, sizeof *out->image_stores, cmp_read);
@@ -852,6 +871,6 @@ void objc_reg_free(ObjcRegResult *r) {
         for (j = 0; j < p->n_adds; j++) { free(p->adds[j].cls); free(p->adds[j].sel); free(p->adds[j].imp); free(p->adds[j].types); }
         free(p->found); free(p->adds);
     }
-    free(r->paths); free(r->mutator_sites); free(r->const_reads); free(r->image_stores);
+    free(r->paths); free(r->mutator_sites); free(r->called); free(r->selreg); free(r->const_reads); free(r->image_stores);
     memset(r, 0, sizeof *r);
 }

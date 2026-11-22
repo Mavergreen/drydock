@@ -2080,6 +2080,7 @@ int main(int argc, char **argv) {
         if (!rc && exceptions) rc = load_exceptions(a, exceptions);
         if (!rc) rc = objc_load_references(a);
         if (!rc) rc = objc_load_reference_set(a);
+        a->defer_computed_selectors = a->n_providers != 0;   /* objc_verify_providers decides them */
         if (!rc) rc = objc_collect_artifacts(a);
         if (!rc) rc = shipped_closure(a, rroot, rel, volume);
         if (!rc) {

@@ -7,6 +7,8 @@
  *     found CLS|META SEL
  *     add CLS|META SEL IMP TYPES OK
  *   sites 0xSITE ...
+ *   called 0xTARGET ...
+ *   selreg 0xSITE:ALL_LITERAL ...
  *   reads 0xVA+LEN@0xSITE ...
  *   stores 0xVA+LEN@0xSITE ...
  * an unnamed value as "?"; or, refused, "refused CODE: why" alone. Exit 0 explored, 1 refused, 2 usage, 4 the
@@ -59,6 +61,10 @@ int main(int argc, char **argv) {
     }
     printf("sites");
     for (i = 0; i < r.n_sites; i++) printf(" 0x%llx", (unsigned long long)r.mutator_sites[i]);
+    printf("\ncalled");
+    for (i = 0; i < r.n_called; i++) printf(" 0x%llx", (unsigned long long)r.called[i]);
+    printf("\nselreg");
+    for (i = 0; i < r.n_selreg; i++) printf(" 0x%llx:%d", (unsigned long long)r.selreg[i].site, r.selreg[i].all_literal);
     printf("\nreads");
     for (i = 0; i < r.n_reads; i++)
         printf(" 0x%llx+%llu@0x%llx", (unsigned long long)r.const_reads[i].va, (unsigned long long)r.const_reads[i].len,

@@ -2,7 +2,8 @@
 // miniature: a const table of rows, an absent-only register function walked by its base and count, a root guarded by
 // a state global, and a constructor calling the root. Built with -fobjc-arc, as Recaulk's tabbing units are.
 // Each -D variant (REORDER, SHORT, NOGUARD, NOPARTIAL, RUNTIME_WRITE, INDIRECT, VIA_MSGSEND, SETIMP, EXTRA_ROW, WRONG_IMP,
-// WRONG_TYPES, KIND_SWAP, MANY, FRAME_ESCAPE) is a mutant tests/objc/objc-regexec-test.sh names.
+// WRONG_TYPES, KIND_SWAP, MANY, FRAME_ESCAPE) is a mutant tests/objc/objc-regexec-test.sh names; NULL_CLASS (the table
+// registered on objc_getClass's NULL too) is one tests/objc/objc-provider-test.sh names.
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -119,7 +120,9 @@ FixtureState (*volatile FixtureTabRegister)(Class, const FixtureTabMethod *, siz
 void __fixture_objc_activate_table(void) {
   if (state != FixtureNotRun) return;
   Class window = objc_getClass("NSWindow");
+#ifndef NULL_CLASS
   if (!window) { state = FixtureAddFailed; stateDetail = "NSWindow"; return; }
+#endif
 #ifdef FRAME_ESCAPE
   Class held = window;
   arc4random_buf(&held, 0);   // an import given a frame address: what it held may have changed

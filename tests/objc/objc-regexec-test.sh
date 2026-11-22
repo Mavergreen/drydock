@@ -73,6 +73,9 @@ pass 'objc_getClass forks: one path where it returns NULL, and nothing is added 
 [ "$(sed -n 's/^sites //p' "$T/out" | wc -w | tr -d ' ')" = 1 ] || fail "plain: $(grep '^sites' "$T/out"), want one mutator site"
 grep '^reads .*0x' "$T/out" >/dev/null || fail 'plain: no constant reads recorded'
 pass 'the one class_addMethod site and the table reads are recorded'
+root=$("$NM" "$T/plain-Os" | awk '$3 == "___fixture_objc_activate_table" {print "0x" $1}' | sed 's/0x0*/0x/')
+[ -n "$root" ] && grep "^called .*$root\( \|\$\)" "$T/out" >/dev/null || fail "plain: $(grep '^called' "$T/out"), want the root $root"
+pass "the constructor's call of the root is recorded (called)"
 
 build short -Os -DSHORT; run short; explored short
 [ "$(all_miss | head -1)" = 1 ] && [ "$(all_miss | grep -c '^  add ')" = 5 ] || fail "SHORT: want one all-miss path with 5 adds, got $(all_miss)"
@@ -150,6 +153,16 @@ run probe _q_viareg_follow; explored q_viareg_follow
 run probe _q_spill; explored q_spill
 grep '^  add ' "$T/out" >/dev/null || fail 'q_spill: an import address spilled and reloaded whole is no longer the import'
 pass 'class_addMethod through a hoisted or spilled GOT load is an add at its site, and its caller is followed'
+run probe _p_selreg; explored p_selreg
+one=$("$NM" "$T/probe" | awk '$3 == "_p_selreg_one" {print $1}' | sed 's/^0*//')
+sel=$(sed -n 's/^selreg //p' "$T/out")
+[ "$(echo $sel | wc -w | tr -d ' ')" = 2 ] || fail "p_selreg: $sel, want two sel_registerName sites"
+echo " $sel " | grep " 0x$one:0 " >/dev/null || fail "p_selreg: $sel, want the shared site 0x$one not all literal"
+echo "$sel" | tr ' ' '\n' | grep -v "^0x$one:" | grep ':1$' >/dev/null || fail "p_selreg: $sel, want the other site all literal"
+run plain-Os; explored plain-Os
+[ "$(sed -n 's/^selreg //p' "$T/out" | tr ' ' '\n' | grep -c ':1$')" -ge 1 ] && ! grep '^selreg .*:0' "$T/out" >/dev/null ||
+  fail "plain: $(grep '^selreg' "$T/out"), want every sel_registerName site all literal"
+pass 'each sel_registerName site records whether every arrival was a literal from the image (selreg)'
 for q in _q_arith _q_partial _q_halfspill; do run probe $q; refused $q indirect-call; done
 pass 'an import address changed, read in part, or reloaded in part is not that import: indirect-call'
 fxcc -c "$FX/regexec-weak.S" -o "$T/weak.o" || fail 'assembling regexec-weak.S'

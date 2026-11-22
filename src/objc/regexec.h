@@ -8,9 +8,10 @@
 
 /* A lookup that returned found. A NULL cls or sel is one the executor could not name: it may be any. */
 typedef struct { char *cls; int meta; char *sel; } ObjcRegLookup;
-/* One class_addMethod call. NULL fields are values the executor could not name. ok: the fork this path took
+/* One class_addMethod call. NULL fields are values the executor could not name. imp_va: the IMP's address, 0 when
+ * not a known address (imp is the image's symbol there, NULL in a stripped image). ok: the fork this path took
  * (1 the add succeeded, 0 it failed); site: the call instruction. */
-typedef struct { char *cls; int meta; char *sel, *imp, *types; uint64_t site; int ok; } ObjcRegAdd;
+typedef struct { char *cls; int meta; char *sel, *imp, *types; uint64_t imp_va, site; int ok; } ObjcRegAdd;
 /* class_null: objc_getClass returned NULL on it. trapped: it ended at int3 or ud2. unknown_forks: the branches,
  * setcc and cmov along it whose flags the executor did not know, each decided by forking (the path may be
  * infeasible when nonzero). */
@@ -23,6 +24,11 @@ typedef struct { size_t max_paths, max_depth, max_insns; } ObjcRegBudget;
 typedef struct {
     ObjcRegPath *paths; size_t n_paths;          /* every completed path, in exploration order */
     uint64_t *mutator_sites; size_t n_sites;      /* call sites of the spec's mutator list on explored paths, ascending */
+    /* Each sel_registerName call site on explored paths: all_literal 1 when every arrival's argument was a C string
+     * read from the image's initial bytes, 0 when any was not. Ascending, distinct. */
+    struct { uint64_t site; int all_literal; } *selreg; size_t n_selreg;
+    uint64_t *called; size_t n_called;            /* targets in the ranges of calls and tail jumps on explored paths,
+                                                   * followed or summarised; ascending, distinct */
     /* Image data read as initial values: [va, va+len) by the instruction at site (a load), or by the call at site
      * (a runtime model reading the C string at va, e.g. sel_registerName's literal: how 1). Sorted, distinct. */
     struct { uint64_t va, len, site; int how; } *const_reads; size_t n_reads;

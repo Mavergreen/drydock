@@ -270,8 +270,9 @@ s2consumer group
 [ "$(grep -c '"provider_id"' "$T/ev/s2-group.json")" = 2 ] || fail 'schema2: group plus legacy entry are not two evidence records'
 [ "$(grep -c '"provider_id": "fixture.nslocale.group.v1"' "$T/ev/s2-group.json")" = 1 ] || fail 'schema2: a group is not recorded exactly once'
 analyze "$T/root/bin/s2-group" --build-evidence "$T/ev/s2-group.json" --provider-prefix "$T/s2-group"
-exit_is 4 'schema2: a group before derived registration is built'; error_is unsupported-provider 'schema2 group'
-grep -F 'fixture.nslocale.group.v1: derived registration is not yet built' "$T/report" >/dev/null || fail 'schema2: the temporary refusal does not name the group'
+exit_is 4 'schema2: a group declaring +[NSLocale countryCode], which the newer SDK does not'
+error_is provider-abi-mismatch 'schema2: a group declaring +[NSLocale countryCode]'
+grep -F 'fixture.nslocale.group.v1: declared +NSLocale countryCode' "$T/report" >/dev/null || fail 'schema2: the ABI refusal does not name the group and member'
 link_args "$T/s2-group" "$T/maps/s2.map" ; rc=0
 "$DRYDOCK_OBJC" link-args --prefix "$T/s2-group" --link-map "$T/maps/s2.map" --provider fixture.nslocale.group.v1 >"$T/args" 2>"$T/err" || rc=$?
 [ "$rc" = 0 ] || fail "schema2: link-args for a group: exit $rc"
@@ -295,6 +296,117 @@ schema2 dup-in-group "$(printf '%s' "$G_LOC" | sed 's/"kind" : "+"/"kind" : "-"/
 s2_refused 'a selector claimed twice in a group' dup-in-group 'declared twice'
 schema2 dup-legacy "$(printf '%s' "$G_LOC" | sed 's/"class" : "NSLocale"/"class" : "NSWorkspace"/; s/"selector" : "languageCode"/"selector" : "'"$SEL"'"/')"
 s2_refused 'a selector claimed by a group and a legacy entry' dup-legacy 'declared twice'
+
+# spec: src/objc/provider.c header, "Groups" -- a schema-2 group is credited, as a whole, only from the registration
+#       its constructor derives (src/objc/regexec.c): the root reached, nothing added where a member was found, exactly
+#       the members added where nothing was, nothing else added anywhere, and that without a guess; every member absent
+#       from 10.9 and declared with the newer SDK's encoding. tests/objc/fixtures/table-provider.m is the provider.
+TAB_GROUP='{ "provider_id" : "fixture.nswindow.tabbing.v1", "class" : "NSWindow", "guard" : "absent-only",
+      "activation_root" : "__fixture_objc_activate_table", "required_frameworks" : [ "AppKit" ],
+      "framework_policy" : "strong-linked-before-root", "methods" : [
+        { "kind" : "-", "selector" : "tabbingIdentifier", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureTab_tabbingIdentifier" },
+        { "kind" : "-", "selector" : "setTabbingIdentifier:", "encoding" : "v24@0:8@16", "implementation_symbol" : "FixtureTab_setTabbingIdentifier" },
+        { "kind" : "-", "selector" : "tabbingMode", "encoding" : "q16@0:8", "implementation_symbol" : "FixtureTab_tabbingMode" },
+        { "kind" : "-", "selector" : "setTabbingMode:", "encoding" : "v24@0:8q16", "implementation_symbol" : "FixtureTab_setTabbingMode" },
+        { "kind" : "+", "selector" : "allowsAutomaticWindowTabbing", "encoding" : "c16@0:8", "implementation_symbol" : "FixtureTab_allowsAutomaticWindowTabbing" },
+        { "kind" : "+", "selector" : "setAllowsAutomaticWindowTabbing:", "encoding" : "v20@0:8c16", "implementation_symbol" : "FixtureTab_setAllowsAutomaticWindowTabbing" } ] }'
+TAB_SELS='tabbingIdentifier setTabbingIdentifier: tabbingMode setTabbingMode: allowsAutomaticWindowTabbing setAllowsAutomaticWindowTabbing:'
+# spec: src/objc/provider.c header, "Groups" -- group_prefix NAME [CC-FLAGS...]: table-provider.m built as Recaulk builds its
+#       tabbing units (ARC, -Os), archived at $T/g-NAME and declared in schema 2 with GROUP (default TAB_GROUP) its one group.
+group_prefix() {
+  P="$T/g-$1"; shift
+  rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
+  fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/table-provider.m" -o "$P.objects/table-provider.o" ||
+    fail "compiling table-provider.m $*"
+  "$LIBTOOL" -static -o "$P/lib/libfixture-objc.a" "$P.objects/table-provider.o" 2>/dev/null
+  printf '%s  table-provider.m\n' "$(sha "$FX/table-provider.m")" >"$P.inputs"
+  declare_prefix "$P" "$P.inputs"
+  awk -v g="$(printf '%s' "${GROUP:-$TAB_GROUP}" | tr '\n' ' ')" '
+    /"schema" : 1,/ { sub(/1,/, "2,") }
+    /"providers" : \[$/ { print "  \"providers\" : [ " g " ],"; skip = 1; next }
+    skip && /^  \],$/ { skip = 0; next }
+    !skip' "$P/share/recaulk/objc-providers.json" >"$P.decl" && mv "$P.decl" "$P/share/recaulk/objc-providers.json"
+}
+# spec: src/objc/provider.c header, "Groups" -- group NAME PREFIX [CC-FLAGS...]: tests/objc/fixtures/table-consumer.m (with
+#       CC-FLAGS) linked with $T/g-PREFIX at $T/root/bin/g-NAME, its build evidence, and a strict analysis.
+group() {
+  save=$PFX; PFX="$T/g-$2"; gn=$1; shift 2
+  SRC="$FX/table-consumer.m"; consumer "$T/root/bin/g-$gn" "$ALL" "$@"; unset SRC
+  evidence "$T/root/bin/g-$gn" "$T/root/bin/g-$gn" "$T/root/bin/g-$gn.map" "$T/ev/g-$gn.json"; [ "$rc" = 0 ] || fail "group $gn: build evidence exit $rc"
+  analyze "$T/root/bin/g-$gn" --build-evidence "$T/ev/g-$gn.json" --provider-prefix "$PFX"
+  PFX=$save
+}
+tab_verdict() { grep "\"selector\": \"$1\"" "$T/report" | grep '"function": "_main"' | sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' '; }
+tab_all() {  # tab_all VERDICT WHY: the consumer's send of each of the six members is VERDICT
+  for s in $TAB_SELS; do got=$(tab_verdict "$s"); [ "$got" = "$1 " ] || fail "$2: $s is '${got:-no finding}', want $1 (exit $rc)"; done
+}
+says() { grep -F -- "$1" "$T/report" >/dev/null || fail "$2: the report does not say '$1': $(grep -F '"code"' "$T/report" | head -3)"; }
+group_refused() {  # group_refused WHY CODE TEXT: cannot-measure with CODE saying TEXT, and no member provided
+  exit_is 4 "$1"; error_is "$2" "$1"; says "$3" "$1"; tab_all unsupported "$1"
+}
+
+group_prefix tab; group tab tab
+exit_is 0 'group: the table provider is provided, all six'; tab_all provided 'group: the table provider is provided, all six'
+grep '"status": "active"' "$T/report" >/dev/null || fail 'group: the table provider is not reported active'
+says 'registers its 6 methods on NSWindow (71 paths from the constructor, 1 registering without a guess' 'group: the table provider'
+group_prefix reorder -DREORDER; group reorder reorder
+exit_is 0 'group: REORDER provided'; tab_all provided 'group: REORDER provided'
+
+group_prefix short -DSHORT; group short short
+group_refused 'group: SHORT' provider-registration-mismatch 'missing +[NSWindow setAllowsAutomaticWindowTabbing:]'
+group_prefix extra -DEXTRA_ROW; group extra extra
+group_refused 'group: EXTRA_ROW' provider-registration-mismatch 'extra -[NSWindow tabbedWindows]'
+group_prefix wrongimp -DWRONG_IMP; group wrongimp wrongimp
+group_refused 'group: no member is provided when one check fails (WRONG_IMP)' provider-registration-mismatch \
+  '-[NSWindow tabbingMode] implemented by _FixtureTab_tabbedWindows, declared _FixtureTab_tabbingMode'
+group_prefix wrongtypes -DWRONG_TYPES; group wrongtypes wrongtypes
+group_refused 'group: WRONG_TYPES' provider-registration-mismatch '-[NSWindow tabbingMode] typed i16@0:8, declared q16@0:8'
+group_prefix kindswap -DKIND_SWAP; group kindswap kindswap
+group_refused 'group: KIND_SWAP' provider-registration-mismatch \
+  'missing +[NSWindow setAllowsAutomaticWindowTabbing:]; extra -[NSWindow setAllowsAutomaticWindowTabbing:]'
+for v in NOGUARD NOPARTIAL; do
+  group_prefix "$v" "-D$v"; group "$v" "$v"
+  group_refused "group: $v" provider-guard-violation 'times after these lookups were found: +[NSWindow setAllowsAutomaticWindowTabbing:]'
+done
+group_prefix indirect -DINDIRECT; group indirect indirect
+group_refused 'group: an executor refusal is cannot-measure' provider-unmeasurable 'fixture.nswindow.tabbing.v1: indirect-call: '
+
+GROUP=$(printf '%s' "$TAB_GROUP" | sed 's/} ] }$/}, { "kind" : "-", "selector" : "title", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureTab_tabbedWindows" } ] }/')
+group_prefix floor; unset GROUP; group floor floor
+group_refused 'group: a member present on 10.9' provider-present-on-floor '-[NSWindow title] is present on 10.9, answered by NSWindow'
+GROUP=$(printf '%s' "$TAB_GROUP" | sed 's/"q16@0:8"/"i16@0:8"/')
+group_prefix abi; unset GROUP; group abi abi
+group_refused 'group: a member declared with another encoding than the newer SDK' provider-abi-mismatch 'declared -NSWindow tabbingMode as i16@0:8'
+GROUP=$(printf '%s' "$TAB_GROUP" | sed 's/"__fixture_objc_activate_table"/"fixture_tabbing_activation_state"/')
+group_prefix noroot; unset GROUP; group noroot noroot
+group_refused 'group: a root the constructor never calls' provider-registration-mismatch 'the constructor never reaches fixture_tabbing_activation_state'
+
+group_prefix nullcls -DNULL_CLASS; group nullcls nullcls
+exit_is 0 'group: a NULL class path neither credits nor refuses'; tab_all provided 'group: a NULL class path neither credits nor refuses'
+says '1 registering without a guess, 1 with objc_getClass NULL' 'group: a NULL class path neither credits nor refuses'
+
+group compsel tab -DCOMPUTED_SEL
+exit_is 4 'group: a computed sel_registerName outside the group'; error_is computed-selector-producer 'group: a computed sel_registerName outside the group'
+says 'sel_registerName argument is not a recognised literal' 'group: a computed sel_registerName outside the group'
+grep '"status": "active"' "$T/report" >/dev/null || fail 'group: a computed sel_registerName outside the group: the group itself is not active'
+
+group cross tab -DKIND_CROSS
+exit_is 1 'group: kind decides which sends are provided'
+for s in tabbingMode allowsAutomaticWindowTabbing; do
+  got=$(tab_verdict "$s"); [ -n "$got" ] && [ "$got" != "provided " ] || fail "group: kind decides which sends are provided: $s is '${got:-no finding}'"
+done
+
+# spec: src/objc/provider.c header, "Groups" -- a universal consumer: its x86_64 slice is the one verified. The slices are
+#       built single-arch and joined by this repo's makefat (never lipo, which the guest lacks).
+# platform: the arm64 slice is built by $CC_ARM64 where clang22 targets arm64; elsewhere (10.9's clang22) it is an x86_64
+#           image under arm64's cputype, as objc-reader-test.sh's noslice is: only the x86_64 slice is ever read.
+"$HOST_CC" -O2 -o "$T/makefat" "$ROOT/tests/makefat.c" || fail 'building makefat'
+env -i PATH=/usr/bin:/bin "$CC_ARM64" -O1 "$FX/plain.c" -o "$T/arm64-slice" 2>/dev/null || fxcc -O1 "$FX/plain.c" -o "$T/arm64-slice"
+"$T/makefat" "$T/root/bin/g-fat" "$T/root/bin/g-tab" 0x1000007 3 12 "$T/arm64-slice" 0x100000c 0 14 >/dev/null || fail 'makefat'
+evidence "$T/root/bin/g-fat" "$T/root/bin/g-fat" "$T/root/bin/g-tab.map" "$T/ev/g-fat.json" "$T/g-tab"
+[ "$rc" = 0 ] || fail "group: a fat consumer's build evidence: exit $rc"
+analyze "$T/root/bin/g-fat" --build-evidence "$T/ev/g-fat.json" --provider-prefix "$T/g-tab"
+exit_is 0 'group: a fat consumer verifies its x86_64 slice'; tab_all provided 'group: a fat consumer verifies its x86_64 slice'
 
 consumer "$T/root/bin/omitted" "$NO_ROOT"
 full "$T/root/bin/omitted" "$T/root/bin/omitted" "$T/root/bin/omitted.map" omitted

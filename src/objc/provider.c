@@ -40,9 +40,30 @@
  * kind, on a receiver whose floor class chain includes its class, into `provided`. Its own body's
  * sends are classified like any others; nothing in the archive is exempt.
  *
+ * Groups (schema 2; legacy entries are checked as above). 1, 2 and 4 hold as for an entry, and 3's
+ * constructor is verified the same way, with every member's implementation verified too (a
+ * zerofill atom, which has no bytes, only where its final section is zerofill as well). Instead
+ * of 3's strings, each member must be declared with the newer SDK's encoding and be absent from
+ * the 10.9 floor on its class's chain (provider-abi-mismatch, provider-present-on-floor), and
+ * the registration is derived from the code: regexec.c runs from the constructor's final
+ * address over the verified ranges (its refusal is provider-unmeasurable). Over every path it
+ * completes, guessed or trapped ones included: the root is called on some path; no path where a
+ * lookup found a member -- or one whose class or selector is unnamed -- calls class_addMethod
+ * (provider-guard-violation); every path with its class named, nothing found and every add
+ * succeeding adds exactly the members (class, kind by metaclass, selector, implementation by
+ * final address, types); no succeeding add anywhere is outside them; and at least one such path
+ * has no guessed branch and no trap (else provider-registration-mismatch). A group is credited
+ * whole or not at all: an active group turns the unsupported findings of each member's selector
+ * and kind ("+" being a send to the class object) on a receiver whose floor chain includes its
+ * class into `provided`.
+ *
  * Every class_addMethod call the reader saw (OBJC_EV_METHOD_REGISTRATION) must lie in provider
  * code verified here, or the artifact is cannot-measure (unattested-method-registration): a
- * root symbol, a provider name or a link-argument list alone attests nothing.
+ * root symbol, a provider name or a link-argument list alone attests nothing. With providers
+ * declared, the reader records a sel_registerName of a non-literal (OBJC_EV_SEL_COMPUTED)
+ * instead of refusing it; it is refused here (computed-selector-producer) unless it lies in a
+ * group whose registration verified and the executor reached it with a literal from the image
+ * on every arrival.
  *
  * objc_map_provider_link is the build side: the final and prestrip slices must carry identical
  * sections (strip touches only __LINKEDIT), the link map's Arch and Sections must be this link's,
@@ -57,6 +78,7 @@
 #include "report.h"
 #include "linkmap.h"
 #include "attest.h"
+#include "regexec.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -234,7 +256,7 @@ static int internal_target(V *v, size_t mi, uint32_t si, uint64_t off, uint64_t 
     if (T != e->address + off)
         return vfail(v, "provider-mapping-mismatch", at, "reference to %s(%s)+%llu reaches 0x%llx, not 0x%llx", m->name, name,
                      (unsigned long long)off, (unsigned long long)T, (unsigned long long)(e->address + off));
-    if (!strcmp(name + (*name == '_'), v->p->impl_symbol)) fact(v, "atom", name);
+    if (v->p->legacy && !strcmp(name + (*name == '_'), v->p->impl_symbol)) fact(v, "atom", name);
     return enqueue(v, mi, si);
 }
 
@@ -401,6 +423,10 @@ static int add_range(V *v, uint64_t lo, uint64_t hi) {
     return 0;
 }
 
+static int zerofill(uint32_t flags) {
+    uint32_t t = flags & SECTION_TYPE;
+    return t == S_ZEROFILL || t == S_GB_ZEROFILL || t == S_THREAD_LOCAL_ZEROFILL;
+}
 static int drain(V *v) {
     while (v->next < v->nwork && !v->status) {
         Ref r = v->work[v->next++];
@@ -418,7 +444,12 @@ static int drain(V *v) {
                          (unsigned long long)(hi - lo), (unsigned long long)e->size);
         if (!(fs = objc_image_section_of(v->im, e->address, NULL, NULL, NULL)) || strcmp(fs, x->name))
             return vfail(v, "provider-mapping-mismatch", e->address, "%s(%s) is in %s, the final address in %s", m->name, name, x->name, fs ? fs : "no section");
-        if (compare_region(v, r.m, x, lo, hi, e->address, 0) || add_range(v, e->address, e->address + e->size)) return -1;
+        if (!v->p->legacy && zerofill(x->flags)) {   /* no bytes on either side: the final section must be zerofill too */
+            uint32_t ff = 0;
+            objc_image_section_of(v->im, e->address, NULL, NULL, &ff);
+            if (!zerofill(ff)) return vfail(v, "provider-mapping-mismatch", e->address, "%s(%s) is zerofill, its final section is not", m->name, name);
+            if (add_range(v, e->address, e->address + e->size)) return -1;
+        } else if (compare_region(v, r.m, x, lo, hi, e->address, 0) || add_range(v, e->address, e->address + e->size)) return -1;
         v->p->verified++;
     }
     return v->status ? -1 : 0;
@@ -532,6 +563,176 @@ static int member_lines(ObjcAnalysis *a, ObjcProvider *p, OArchive *ar) {
     return OBJC_OK;
 }
 
+/* ---- schema-2 groups ------------------------------------------------------------------------------ */
+
+/* The class on floor class cls's runtime chain that answers kind/sel (a root's instance methods answer class
+ * messages), or the first chain class the floor capture did not measure (*unmeasured 1), or NULL. */
+static const char *floor_answers(const ObjcAnalysis *a, const char *cls, const char *kind, const char *sel, int *unmeasured) {
+    int depth;
+    *unmeasured = 0;
+    for (depth = 0; cls && depth < 64; depth++) {
+        const char *i = objc_map_get(a->rt_class, cls), *role;
+        const ObjcRtClass *c;
+        char key[1024];
+        if (!i) return NULL;
+        c = &a->rt_classes[strtoul(i, NULL, 10)];
+        role = objc_map_get(a->rt_image_role, c->image);
+        if (!role || (strcmp(role, "required") && strcmp(role, "fixture"))) { *unmeasured = 1; return c->name; }
+        snprintf(key, sizeof key, "%s\t%s\t%s", c->name, kind, sel);
+        if (objc_map_get(a->rt_method, key)) return c->name;
+        snprintf(key, sizeof key, "%s\t-\t%s", c->name, sel);
+        if (!c->super && !strcmp(kind, "+") && objc_map_get(a->rt_method, key)) return c->name;
+        cls = c->super;
+    }
+    return NULL;
+}
+
+/* Every member declared with the newer SDK's encoding and absent from the 10.9 floor. */
+static int group_declared(ObjcAnalysis *a, const ObjcProvider *p) {
+    size_t i;
+    for (i = 0; i < p->n_methods; i++) {
+        const ObjcProviderMethod *m = &p->methods[i];
+        char key[1024];
+        const char *enc, *owner;
+        int unmeasured;
+        snprintf(key, sizeof key, "%s\t%s\t%s", p->cls, m->kind, m->selector);
+        if (!(enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL) || strcmp(enc, m->encoding))
+            return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s", p->provider_id, m->kind,
+                             p->cls, m->selector, m->encoding, enc ? "declares " : "does not declare it", enc ? enc : "");
+        if ((owner = floor_answers(a, p->cls, m->kind, m->selector, &unmeasured)))
+            return objc_fail(a, "provider-present-on-floor", NULL, 0, "%s: %s[%s %s] %s %s", p->provider_id, m->kind, p->cls, m->selector,
+                             unmeasured ? "may be present on 10.9: the floor capture does not measure" : "is present on 10.9, answered by", owner);
+    }
+    return OBJC_OK;
+}
+
+static void say(char *buf, size_t n, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static void say(char *buf, size_t n, const char *fmt, ...) {
+    size_t l = strlen(buf);
+    va_list ap;
+    if (l + 3 >= n) return;
+    if (l) { strcpy(buf + l, "; "); l += 2; }
+    va_start(ap, fmt); vsnprintf(buf + l, n - l, fmt, ap); va_end(ap);
+}
+static const char *nz(const char *s) { return s ? s : "?"; }
+static int add_names(const ObjcRegAdd *d, const ObjcProvider *p, const ObjcProviderMethod *m) {
+    return d->cls && d->sel && !strcmp(d->cls, p->cls) && d->meta == (m->kind[0] == '+') && !strcmp(d->sel, m->selector);
+}
+/* Whether add d registers member m exactly (impva: the final address of m's implementation). */
+static int add_is(const ObjcRegAdd *d, const ObjcProvider *p, const ObjcProviderMethod *m, uint64_t impva) {
+    return add_names(d, p, m) && d->imp_va == impva && d->types && !strcmp(d->types, m->encoding);
+}
+/* A found lookup that may be a member's: one of p's class, kind and a member's selector, or one whose class or
+ * selector the executor could not name. */
+static int lookup_declared(const ObjcRegLookup *l, const ObjcProvider *p) {
+    size_t i;
+    if (!l->cls || !l->sel) return 1;
+    for (i = 0; i < p->n_methods; i++)
+        if (!strcmp(l->cls, p->cls) && l->meta == (p->methods[i].kind[0] == '+') && !strcmp(l->sel, p->methods[i].selector)) return 1;
+    return 0;
+}
+static const char *imp_text(const ObjcRegAdd *d, char *buf, size_t n) {
+    if (d->imp) return d->imp;
+    snprintf(buf, n, d->imp_va ? "0x%llx" : "?", (unsigned long long)d->imp_va);
+    return buf;
+}
+
+/* The verdict on a group's derived registration (the header's "Groups"): the root reached; (a) no add on a path
+ * where a member's lookup was found; (b) every path that registers -- class named, nothing found, every add
+ * succeeded -- adds exactly the members; (c) no add anywhere outside them; (d) some path registers them without a
+ * guess. impva[i]: member i's implementation's final address. *clean: the paths of (d). */
+static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegResult *r, uint64_t root, const uint64_t *impva,
+                         size_t *clean) {
+    size_t i, j, k, l;
+    char buf[2048], ib[32];
+    *clean = 0;
+    for (i = 0; i < r->n_called && r->called[i] != root; i++) ;
+    if (i == r->n_called)
+        return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: the constructor never reaches %s", p->provider_id, p->root_symbol);
+    for (i = 0; i < r->n_paths; i++) {
+        const ObjcRegPath *q = &r->paths[i];
+        int guarded = 0;
+        for (j = 0; j < q->n_found; j++) guarded |= lookup_declared(&q->found[j], p);
+        if (!guarded || !q->n_adds) continue;
+        buf[0] = 0;
+        for (j = 0; j < q->n_found; j++) say(buf, sizeof buf, "%s[%s %s]", q->found[j].meta ? "+" : "-", nz(q->found[j].cls), nz(q->found[j].sel));
+        return objc_fail(a, "provider-guard-violation", NULL, 0, "%s: path %zu calls class_addMethod %zu times after these lookups were found: %s",
+                         p->provider_id, i, q->n_adds, buf);
+    }
+    for (i = 0; i < r->n_paths; i++) {
+        const ObjcRegPath *q = &r->paths[i];
+        int registers = !q->class_null && !q->n_found;
+        for (j = 0; j < q->n_adds && registers; j++) registers = q->adds[j].ok;
+        if (!registers) continue;
+        buf[0] = 0;
+        for (k = 0; k < p->n_methods; k++) {
+            const ObjcProviderMethod *m = &p->methods[k];
+            const ObjcRegAdd *h = NULL;
+            for (j = 0; j < q->n_adds && !h; j++) if (add_names(&q->adds[j], p, m)) h = &q->adds[j];
+            if (!h) { say(buf, sizeof buf, "missing %s[%s %s]", m->kind, p->cls, m->selector); continue; }
+            if (h->imp_va != impva[k])
+                say(buf, sizeof buf, "%s[%s %s] implemented by %s, declared _%s", m->kind, p->cls, m->selector, imp_text(h, ib, sizeof ib), m->impl_symbol);
+            if (!h->types || strcmp(h->types, m->encoding))
+                say(buf, sizeof buf, "%s[%s %s] typed %s, declared %s", m->kind, p->cls, m->selector, nz(h->types), m->encoding);
+        }
+        for (j = 0; j < q->n_adds; j++) {
+            const ObjcRegAdd *d = &q->adds[j];
+            for (k = 0; k < p->n_methods && !add_names(d, p, &p->methods[k]); k++) ;
+            for (l = 0; l < j && k < p->n_methods && !add_names(&q->adds[l], p, &p->methods[k]); l++) ;
+            if (k == p->n_methods || l < j) say(buf, sizeof buf, "extra %s[%s %s]", d->meta ? "+" : "-", nz(d->cls), nz(d->sel));
+        }
+        if (buf[0])
+            return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: path %zu registers other than the declaration: %s", p->provider_id, i, buf);
+        if (!q->unknown_forks && !q->trapped) (*clean)++;
+    }
+    for (i = 0; i < r->n_paths; i++)
+        for (j = 0; j < r->paths[i].n_adds; j++) {
+            const ObjcRegAdd *d = &r->paths[i].adds[j];
+            if (!d->ok) continue;   /* nothing added; its succeeding fork is a path of its own */
+            for (k = 0; k < p->n_methods && !add_is(d, p, &p->methods[k], impva[k]); k++) ;
+            if (k == p->n_methods)
+                return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: path %zu adds %s[%s %s] (%s, %s), which the group does not declare",
+                                 p->provider_id, i, d->meta ? "+" : "-", nz(d->cls), nz(d->sel), imp_text(d, ib, sizeof ib), nz(d->types));
+        }
+    if (!*clean) return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: no path registers the group without a guess", p->provider_id);
+    return OBJC_OK;
+}
+
+/* A group's registration, derived from its constructor over its verified code; what it found, for the reason. */
+static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const OArchive *ar, const char *rootm, char *what, size_t n) {
+    ObjcRegResult r;
+    uint64_t *impva, root;
+    const ObjcProviderAtom *e;
+    size_t i, mi, clean = 0, nulls = 0;
+    uint32_t si;
+    char sym[300];
+    int rc = OBJC_OK;
+    snprintf(sym, sizeof sym, "_%s", p->root_symbol);
+    if (!(e = evidence_atom(p, rootm, sym))) return objc_fail(a, "provider-mapping-mismatch", NULL, 0, "%s: the evidence places no %s", p->provider_id, sym);
+    root = e->address;
+    if (!(impva = calloc(p->n_methods, sizeof *impva))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    for (i = 0; i < p->n_methods; i++) {
+        snprintf(sym, sizeof sym, "_%s", p->methods[i].impl_symbol);
+        if (archive_defines(ar, sym, &mi, &si) || !(e = evidence_atom(p, ar->m[mi].name, sym))) {
+            free(impva);
+            return objc_fail(a, "provider-mapping-mismatch", NULL, 0, "%s: the evidence places no %s", p->provider_id, sym);
+        }
+        impva[i] = e->address;
+    }
+    if (objc_derive_registration(im, p->constructor, p->ranges, p->n_ranges, NULL, &r))
+        rc = objc_fail(a, "provider-unmeasurable", NULL, 0, "%s: %s: %s", p->provider_id, r.code, r.why);
+    else rc = group_verdict(a, p, &r, root, impva, &clean);
+    if (!rc && r.n_selreg && !(p->literal_sel_sites = calloc(r.n_selreg, sizeof *p->literal_sel_sites)))
+        rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    for (i = 0; !rc && i < r.n_selreg; i++)
+        if (r.selreg[i].all_literal) p->literal_sel_sites[p->n_literal_sel_sites++] = r.selreg[i].site;
+    for (i = 0; i < r.n_paths; i++) nulls += r.paths[i].class_null != 0;
+    snprintf(what, n, "%zu paths from the constructor, %zu registering without a guess, %zu with objc_getClass NULL", r.n_paths, clean, nulls);
+    objc_reg_free(&r);
+    free(impva);
+    return rc;
+}
+
 static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     OArchive ar;
     V v;
@@ -539,21 +740,23 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     uint32_t rs, k;
     const OMember *m;
     const OSect *init = NULL;
-    char root[300], impl[300], key[1024], fws[2048] = "", rootm[256], needwhy[1400] = "";
+    char root[300], impl[300], key[1024], fws[2048] = "", rootm[256], needwhy[1400] = "", derived[256] = "";
     const char *enc;
     int rc;
-    if (!p->legacy) return objc_fail(a, "unsupported-provider", NULL, 0, "%s: derived registration is not yet built", p->provider_id);
     if (!p->have_evidence) return set_reason(a, p, 0, "no build evidence names this provider");
     if (strcmp(p->ev_declaration_sha256, p->declaration_sha256))
         return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: the declaration is %s, the build evidence recorded %s", p->provider_id, p->declaration_sha256, p->ev_declaration_sha256);
     if (strcmp(p->ev_archive_sha256, p->archive_sha256))
         return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: the archive is %s, the build evidence recorded %s", p->provider_id, p->archive_sha256, p->ev_archive_sha256);
-    if (strcmp(p->method_kind, "-"))
-        return objc_fail(a, "unsupported-provider", NULL, 0, "%s: only instance-method providers registered on objc_getClass's class are supported", p->provider_id);
-    snprintf(key, sizeof key, "%s\t%s\t%s", p->cls, p->method_kind, p->selector);
-    if (!(enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL) || strcmp(enc, p->encoding))
-        return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s", p->provider_id, p->method_kind,
-                         p->cls, p->selector, p->encoding, enc ? "declares " : "does not declare it", enc ? enc : "");
+    if (!p->legacy) { if ((rc = group_declared(a, p))) return rc; }
+    else {
+        if (strcmp(p->method_kind, "-"))
+            return objc_fail(a, "unsupported-provider", NULL, 0, "%s: only instance-method providers registered on objc_getClass's class are supported", p->provider_id);
+        snprintf(key, sizeof key, "%s\t%s\t%s", p->cls, p->method_kind, p->selector);
+        if (!(enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL) || strcmp(enc, p->encoding))
+            return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s", p->provider_id, p->method_kind,
+                             p->cls, p->selector, p->encoding, enc ? "declares " : "does not declare it", enc ? enc : "");
+    }
     if ((rc = objc_archive_open(a, p->archive, &ar))) { objc_archive_free(&ar); return rc; }
     for (i = 0; i < p->n_members; i++) {
         const OMember *g = objc_archive_member(&ar, p->members[i].name);
@@ -563,10 +766,13 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
         }
     }
     snprintf(root, sizeof root, "_%s", p->root_symbol);
-    snprintf(impl, sizeof impl, "_%s", p->impl_symbol);
-    if (archive_defines(&ar, root, &rm, &rs) || archive_defines(&ar, impl, &i, &k)) {
-        objc_archive_free(&ar);
-        return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: the archive does not define both %s and %s", p->provider_id, root, impl);
+    for (i = 0; i < (p->legacy ? 1 : p->n_methods); i++) {
+        size_t mi;
+        snprintf(impl, sizeof impl, "_%s", p->legacy ? p->impl_symbol : p->methods[i].impl_symbol);
+        if (archive_defines(&ar, root, &rm, &rs) || archive_defines(&ar, impl, &mi, &k)) {
+            objc_archive_free(&ar);
+            return objc_fail(a, "malformed-provider-archive", NULL, 0, "%s: the archive does not define both %s and %s", p->provider_id, root, impl);
+        }
     }
     m = &ar.m[rm];
     snprintf(rootm, sizeof rootm, "%s", m->name);
@@ -600,8 +806,14 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     if (!v.status) drain(&v);
     v.collecting = 0;
     if (!v.status && !enqueue(&v, rm, rs)) drain(&v);
+    for (i = 0; i < p->n_methods && !v.status; i++) {   /* a group's implementations, verified wherever they are */
+        size_t mi;
+        snprintf(impl, sizeof impl, "_%s", p->methods[i].impl_symbol);
+        if (!archive_defines(&ar, impl, &mi, &k) && !enqueue(&v, mi, k)) drain(&v);
+    }
     rc = v.status;
-    if (!rc) {
+    if (!rc && !p->legacy) rc = group_derived(a, p, im, &ar, rootm, derived, sizeof derived);
+    else if (!rc) {
         static const char *NEED[] = { "_class_addMethod", "_sel_registerName", "_objc_getClass" };
         const char *strs[3];
         strs[0] = p->cls; strs[1] = p->selector; strs[2] = p->encoding;
@@ -656,6 +868,10 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
         if (!found) return set_reason(a, p, 0, "linked, but its constructor at 0x%llx is not in the final initializer table", (unsigned long long)p->constructor);
     }
     if (needwhy[0]) return set_reason(a, p, 0, "linked and constructed, but %s", needwhy);
+    if (!p->legacy)
+        return set_reason(a, p, 1, "archive sha256 %.12s..., member %s: constructor at 0x%llx in the initializer table, %zu atoms "
+                          "byte-verified, registers its %zu methods on %s (%s); %s strongly loaded", p->archive_sha256, rootm,
+                          (unsigned long long)p->constructor, p->verified, p->n_methods, p->cls, derived, fws);
     return set_reason(a, p, 1, "archive sha256 %.12s..., member %s: constructor at 0x%llx in the initializer table, %zu atoms "
                       "byte-verified, registers %s[%s %s] %s; %s strongly loaded", p->archive_sha256, rootm,
                       (unsigned long long)p->constructor, p->verified, p->method_kind, p->cls, p->selector, p->encoding, fws);
@@ -676,15 +892,24 @@ static int chain_includes(const ObjcAnalysis *a, const char *cls, const char *ow
 int objc_verify_providers(ObjcAnalysis *a) {
     ObjcImage *im = NULL;
     size_t i, j, k;
-    int rc;
+    int rc = OBJC_OK;
     if (a->n_providers && (rc = objc_image_open(a, a->artifact_path, &im))) return rc;
-    for (i = 0; i < a->n_providers; i++) {
-        if ((rc = verify_one(a, &a->providers[i], im))) { objc_image_close(im); return rc; }
-    }
+    for (i = 0; i < a->n_providers && !rc; i++) rc = verify_one(a, &a->providers[i], im);
     objc_image_close(im);
-    for (i = 0; i < a->n_evidence; i++) {
+    for (i = 0; i < a->n_evidence; i++) {   /* after a refusal, only the deferred selector producers: the reader's own */
         const ObjcEvidence *e = &a->evidence[i];
         int ok = 0;
+        if (rc && e->kind != OBJC_EV_SEL_COMPUTED) continue;
+        if (e->kind == OBJC_EV_SEL_COMPUTED) {
+            for (j = 0; !rc && j < a->n_providers && !ok; j++) {   /* after a refusal, nothing is explained */
+                const ObjcProvider *p = &a->providers[j];
+                int inside = 0;
+                for (k = 0; k < p->n_ranges && !inside; k++) inside = e->address >= p->ranges[2 * k] && e->address < p->ranges[2 * k + 1];
+                for (k = 0; inside && k < p->n_literal_sel_sites && !ok; k++) ok = p->literal_sel_sites[k] == e->address;
+            }
+            if (!ok) objc_fail(a, "computed-selector-producer", e->slice, e->address, "%s argument is not a recognised literal", e->name);
+            continue;
+        }
         if (e->kind != OBJC_EV_METHOD_REGISTRATION) continue;
         for (j = 0; j < a->n_providers && !ok; j++)
             for (k = 0; k < a->providers[j].n_ranges && !ok; k++)
@@ -693,7 +918,7 @@ int objc_verify_providers(ObjcAnalysis *a) {
                            "%s in %s lies outside every provider this analysis verified; a run-time method registration is not modelled",
                            e->name, e->function ? e->function : "an unnamed function");
     }
-    return a->n_errors ? OBJC_CANNOT_MEASURE : OBJC_OK;
+    return rc ? rc : a->n_errors ? OBJC_CANNOT_MEASURE : OBJC_OK;
 }
 
 int objc_provide_findings(ObjcAnalysis *a) {
@@ -704,9 +929,13 @@ int objc_provide_findings(ObjcAnalysis *a) {
         for (j = 0; j < a->n_providers; j++) {
             const ObjcProvider *p = &a->providers[j];
             char proof[2048];
-            if (!p->active || !p->legacy || f->verdict != OBJC_UNSUPPORTED || !s->selector || !s->method_kind || !s->receiver ||
-                strcmp(s->selector, p->selector) || strcmp(s->method_kind, p->method_kind) || !chain_includes(a, s->receiver, p->cls))
-                continue;
+            size_t k;
+            int named = 0;
+            if (!p->active || f->verdict != OBJC_UNSUPPORTED || !s->selector || !s->method_kind || !s->receiver) continue;
+            if (p->legacy) named = !strcmp(s->selector, p->selector) && !strcmp(s->method_kind, p->method_kind);
+            for (k = 0; k < p->n_methods && !named; k++)
+                named = !strcmp(s->selector, p->methods[k].selector) && !strcmp(s->method_kind, p->methods[k].kind);
+            if (!named || !chain_includes(a, s->receiver, p->cls)) continue;
             snprintf(proof, sizeof proof, "provided by %s: %s (was: %s)", p->provider_id, p->reason, f->proof ? f->proof : "-");
             if (objc_set_string(&f->proof, proof)) return objc_fail(a, "out-of-memory", NULL, 0, "proof");
             f->verdict = OBJC_PROVIDED;
