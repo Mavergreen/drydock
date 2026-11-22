@@ -4895,12 +4895,16 @@ tgt_o4=$(tgt_at "$T/tgt.err" "^    swift-abi set legacy  ")
     && ok "target: the four lines are derived in the edit script's order, minos at-most second" \
     || bad "target (all four)" "order '$tgt_o1' '$tgt_o2' '$tgt_o3' '$tgt_o4': $(cat "$T/tgt.err")"
 
-# THE PUBLISHED EDIT SCRIPT. README.md prints target 10.9's expansion as a script;
-# run by hand it must write target's own bytes, thin and fat. The thin image
-# needs all four lines; the fat one adds a plain chained slice, where the
-# rename and the retag are no-ops.
-printf 'fixups set classic\nminos at-most 10.9\nsegment rename __DATA_CONST __DATA\nswift-abi set legacy\n' \
-    >"$T/tgt_script.edits"
+# THE PUBLISHED EDIT SCRIPT. drydock-macho-rewrite(1) prints target 10.9's
+# expansion as a script; run by hand it must write target's own bytes, thin and
+# fat. The thin image needs four of its lines; the fat one adds a plain chained
+# slice, where the rename and the retag are no-ops.
+sed -n '/^It is this script/,/^\\fR$/p' "$ROOT/man/drydock-macho-rewrite.1" \
+    | sed -n '/^\\f(CW$/,/^\\fR$/{/^\\f/d;s/ *#.*//;p;}' >"$T/tgt_script.edits"
+[ "$(sed -n '1p;$p' "$T/tgt_script.edits" | tr '\n' '|')" = "fixups set classic|objc-methods set absolute|" ] \
+    && [ "$(wc -l <"$T/tgt_script.edits" | tr -d ' ')" -eq 5 ] \
+    && ok "target: the man page's edit script reads as five statements" \
+    || bad "target (man page script)" "[$(cat "$T/tgt_script.edits")]"
 rc=0; "$DRYDOCK_MACHO_REWRITE" "$T/tgt_all" "$T/tgt_all.hand" <"$T/tgt_script.edits" \
     >/dev/null 2>"$T/tgt_script.err" || rc=$?
 [ "$rc" -eq 0 ] && cmp -s "$T/tgt_all.hand" "$T/tgt_all.out" && ! cmp -s "$T/tgt_all" "$T/tgt_all.out" \
@@ -5268,6 +5272,14 @@ tg "$T/relmeth_shared.tgt" "$T/relmeth_shared.tgt2"
 [ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods' "$T/tg.err" && cmp -s "$T/relmeth_shared.tgt" "$T/relmeth_shared.tgt2" \
     && ok "target 10.9 is idempotent over its own output" \
     || bad "target 10.9 idempotent" "rc $tg_rc: $(cat "$T/tg.err")"
+rm -f "$T/relmeth_shared.hand"
+grep -v -e '^segment rename ' -e '^swift-abi ' "$T/tgt_script.edits" >"$T/tg_hand.edits"
+rc=0; "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_shared" "$T/relmeth_shared.hand" <"$T/tg_hand.edits" \
+    >/dev/null 2>"$T/tg_hand.err" || rc=$?
+grep -qx 'objc-methods set absolute' "$T/tg_hand.edits" \
+    && [ "$rc" -eq 0 ] && cmp -s "$T/relmeth_shared.hand" "$T/relmeth_shared.tgt" \
+    && ok "target 10.9: the man page's edit script, less the lines whose conditions fail, converts as target does" \
+    || bad "target 10.9 man page script" "rc $rc: $(cat "$T/tg_hand.err")"
 tg "$T/signing_probe" "$T/signing_probe.tgt"
 [ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods' "$T/tg.err" \
     && ok "target 10.9 leaves an image without method lists alone" \
