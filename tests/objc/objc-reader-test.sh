@@ -646,4 +646,15 @@ rebased() { "$DRYDOCK_OBJC_READER_DRIVER" --rebased "$T/rebased" "$1"; }
 [ "$(rebased "$(slot rebased_ptr)")" = 1 ] || fail 'a rebased pointer in __DATA,__const is not reported rebased'
 [ "$(rebased "$(slot unrebased_word)")" = 0 ] || fail 'an unrebased word in __DATA,__const is reported rebased'
 [ "$(rebased 0)" = 0 ] || fail 'an address outside every segment is reported rebased'
+# spec: src/objc/report.h objc_image_function -- ascending, no address twice.
+"$DRYDOCK_OBJC_READER_DRIVER" --functions "$T/rebased" >"$T/fns"
+[ "$(wc -l <"$T/fns")" -gt 0 ] || fail 'no function starts read from the fixture'
+awk 'NR > 1 && $1 <= prev { bad = 1 } { prev = $1 } END { exit bad }' "$T/fns" || fail 'function starts are not strictly ascending'
+# spec: src/objc/report.h objc_image_rebased -- only a rebase that slides all 8 bytes counts: the same slot rebased as a
+#       32-bit TEXT_ABSOLUTE32 (the stream's SET_TYPE_IMM byte 0x11 -> 0x12, hand-patched) is not a pointer.
+cp "$T/rebased" "$T/rebased32"
+roff=$("$OTOOL" -arch x86_64 -l "$T/rebased32" | awk '$1 == "rebase_off" { print $2; exit }')
+[ "$(od -An -tx1 -j "$roff" -N1 "$T/rebased32" | tr -d ' ')" = 11 ] || fail 'the rebase stream does not start with SET_TYPE_IMM(POINTER)'
+printf '\022' | dd of="$T/rebased32" bs=1 seek="$roff" conv=notrunc 2>/dev/null
+[ "$("$DRYDOCK_OBJC_READER_DRIVER" --rebased "$T/rebased32" "$(slot rebased_ptr)")" = 0 ] || fail 'a 32-bit absolute rebase is reported as a rebased pointer'
 echo 'objc-reader: conventional, objc2, plain, fat and cannot-measure fixtures pass'

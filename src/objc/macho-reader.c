@@ -288,6 +288,7 @@ typedef struct {
     uint64_t fetch_sel[8], fetch_class[8]; size_t nfetch_sel, nfetch_class;
     uint64_t wrap_sel[8], wrap_nsstr[8]; size_t nwrap_sel, nwrap_nsstr;   /* register_unchecked, from_str */
     uint64_t *starts; size_t nstarts;   /* function starts, sorted */
+    uint64_t *fstarts; size_t nfstarts;   /* LC_FUNCTION_STARTS alone, sorted, each once */
     struct { uint64_t lo, hi; } *dice; size_t ndice;
     uint64_t *fetch_arg_sites; size_t nfas, capfas;
     const char *cur_fn;                 /* symbol of the function being scanned, or NULL */
@@ -692,6 +693,15 @@ static int load_tables(Slice *s, LcCtx *c) {
         s->nstarts = 0;
         for (i = 0; i < n; i++)
             if (!s->nstarts || s->starts[s->nstarts - 1] != s->starts[i]) s->starts[s->nstarts++] = s->starts[i];
+    }
+
+    if (s->res.nstarts > 0) {
+        size_t n = (size_t)s->res.nstarts;
+        if (!(s->fstarts = malloc(n * sizeof *s->fstarts))) return fail(s, "out-of-memory", 0, "%s", "function starts");
+        memcpy(s->fstarts, s->res.starts, n * sizeof *s->fstarts);
+        qsort(s->fstarts, n, sizeof *s->fstarts, cmp_u64);
+        for (i = 0; i < n; i++)
+            if (!s->nfstarts || s->fstarts[s->nfstarts - 1] != s->fstarts[i]) s->fstarts[s->nfstarts++] = s->fstarts[i];
     }
 
     /* objc2 caches and fetch functions, by symbol. */
@@ -3148,7 +3158,7 @@ static void slice_close(Slice *s) {
     size_t i;
     if (s->res_open) mml_resolver_close(&s->res);
     for (i = 0; i < s->ncaches; i++) free(s->caches[i].literal);
-    free(s->jt); free(s->djt); free(s->caches); free(s->sects); free(s->syms); free(s->ptrs); free(s->binds); free(s->starts);
+    free(s->jt); free(s->djt); free(s->caches); free(s->sects); free(s->syms); free(s->ptrs); free(s->binds); free(s->starts); free(s->fstarts);
     free(s->dice); free(s->fetch_arg_sites); free(s->mret);
 }
 
@@ -3350,17 +3360,17 @@ int objc_image_has_symbol(const ObjcImage *im, const char *name, uint64_t va) {
 }
 
 /* The segment's file offset for the 8-byte slot at va, then the resolver's classic rebase set
- * (LC_DYLD_INFO[_ONLY] opcodes, decoded bounded when the image opened). An image with chained fixups
+ * (LC_DYLD_INFO[_ONLY] opcodes, decoded bounded when the image opened), for a REBASE_TYPE_POINTER, which slides all 8. An image with chained fixups
  * never opens here, so none is asked; one that did would answer 0 for every va. */
 int objc_image_rebased(const ObjcImage *im, uint64_t va) {
     const mml_resolver *r = &im->s.res;
     int si = mml_seg_of(r, va, 8);
-    return si >= 0 && mml_off_rebased(r, r->segs[si].fileoff + (va - r->segs[si].vmaddr));
+    return si >= 0 && mml_off_pointer_rebased(r, r->segs[si].fileoff + (va - r->segs[si].vmaddr));
 }
 
-size_t objc_image_nfunctions(const ObjcImage *im) { return im->s.res.nstarts > 0 ? (size_t)im->s.res.nstarts : 0; }
+size_t objc_image_nfunctions(const ObjcImage *im) { return im->s.nfstarts; }
 
-uint64_t objc_image_function(const ObjcImage *im, size_t i) { return i < objc_image_nfunctions(im) ? im->s.res.starts[i] : 0; }
+uint64_t objc_image_function(const ObjcImage *im, size_t i) { return i < im->s.nfstarts ? im->s.fstarts[i] : 0; }
 
 const char *objc_image_symbol_at(const ObjcImage *im, uint64_t va) {
     size_t lo = 0, hi = im->s.nsym;
