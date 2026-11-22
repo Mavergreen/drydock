@@ -126,4 +126,37 @@ run lim _lim_loop; refused lim_loop insn-budget
 run lim _lim_ret; refused lim_ret indirect-call
 pass 'an unrebased pointer, an unknown store, a foreign call, the depth and instruction budgets and a forged return each refuse by name'
 
+fxcc -c "$FX/regexec-probe.S" -o "$T/probe.o" || fail 'assembling regexec-probe.S'
+fxcc "$T/main.o" "$T/probe.o" -lobjc -o "$T/probe" || fail 'linking probe'
+run probe _p_xor; explored p_xor
+grep '^path .* null 0 ' "$T/out" >/dev/null && grep '^  add NSWindow|0 ' "$T/out" >/dev/null ||
+  fail 'p_xor: xor of a class with itself is not zero: the non-NULL path does not reach its add'
+pass 'xor of a symbol with itself is zero'
+run probe _p_storeread; explored p_storeread
+[ "$(sed -n 's/^paths //p' "$T/out")" = 1 ] || fail "p_storeread: $(head -1 "$T/out"), want one path (the stored value reads back)"
+grep '^stores 0x[0-9a-f]*+4@' "$T/out" >/dev/null || fail 'p_storeread: the store is not recorded'
+pass 'a value stored into image data reads back as stored, and the store is recorded'
+run probe _p_foreign; refused p_foreign foreign-call
+run probe _p_indirect; refused p_indirect indirect-call
+pass 'a callee reaching class_addMethod through foreign code or a computed jump is followed, and refuses'
+run probe _p_hoist; explored p_hoist
+grep '^  add ' "$T/out" >/dev/null || fail 'p_hoist: the add after a call through a hoisted objc_msgSend is not reached'
+pass 'a call through an import address loaded from its GOT slot is that import'
+run probe _p_cbw; explored p_cbw
+grep '^  add ' "$T/out" >/dev/null || fail 'p_cbw: cbw did not sign-extend al'
+pass 'cbw sign-extends al'
+run probe _p_uforks; explored p_uforks
+awk '/^path / && $10 >= 1 {f = 1} END {exit !f}' "$T/out" || fail 'p_uforks: the path past a guard on objc_msgSend does not count its unknown fork'
+pass 'a path decided by forking on unknown flags says so (uforks)'
+run probe _p_trap; explored p_trap
+grep '^path .* trapped 1$' "$T/out" >/dev/null || fail 'p_trap: the path ending at ud2 is not marked trapped'
+pass 'a path ending at a trap is marked trapped'
+run probe _p_clobber; explored p_clobber
+grep '^  add ?|0 ' "$T/out" >/dev/null && ! grep '^  add NSWindow' "$T/out" >/dev/null ||
+  fail 'p_clobber: rcx kept its class across a summarised callee'
+pass 'a summarised callee clobbers the caller-saved registers'
+run probe _p_chain; explored p_chain
+[ "$(sites)" = 1 ] && grep '^  add ' "$T/out" >/dev/null || fail 'p_chain: a mutator two direct calls down is not followed'
+pass 'a mutator two direct calls down is followed'
+
 echo 'objc-regexec: table providers at every opt level, their mutants and every refusal pass'

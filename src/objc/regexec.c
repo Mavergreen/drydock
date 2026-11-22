@@ -11,17 +11,20 @@
  *     object_getClass, objc_getClass, sel_getName, sel_registerName, and ARC, exception, associated-object and
  *     send entry points); the other three are the brief's. A lookup on a NULL class answers not found;
  *   - class_addMethod: success or failure, each recorded as an add (class, selector, IMP symbol, types, site);
- *   - a conditional branch, cmov or setcc whose flags are not known: both ways.
+ *   - a conditional branch, cmov or setcc whose flags are not known: both ways, each path counting it
+ *     (unknown_forks: such a path may be infeasible). A path ending at int3 or ud2 is complete and trapped.
  * object_getClass(Class(n)) is Meta(n); sel_registerName(literal) is Sel(literal). Any other import -- the
  * mutators class_replaceMethod, method_setImplementation, method_exchangeImplementations, class_addProtocol,
  * objc_allocateClassPair, objc_registerClassPair, class_addIvar among them, and objc_msgSend, dispatch_once and
  * other callback-taking calls, which are never followed -- answers unknown and clobbers rax, rcx, rdx, rsi,
  * rdi, r8-r11 and the flags. Every mutator's call site on an explored path is recorded (mutator_sites).
  *
- * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot, is the
+ * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
+ * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
  * import's model. A direct call into the given provider ranges is followed when a modelled import or a mutator
  * is reachable from its target by direct calls and jumps (a linear scan of each function, LC_FUNCTION_STARTS
- * bounding them; undecodable bytes count as reaching); otherwise it is summarised as an unknown import. A direct
+ * bounding them; undecodable bytes, a computed call or jump, and a direct target outside the ranges that is no
+ * import count as reaching, so execution meets and refuses them); otherwise it is summarised as an unknown import. A direct
  * target outside every range that is not an import refuses foreign-call, as does execution leaving the ranges;
  * any other indirect call or jump, and a return to an address not pushed by a followed call, refuses
  * indirect-call.
@@ -54,7 +57,7 @@
 
 enum { VU, VC, VS };
 typedef struct { uint8_t k, pw; uint32_t sym; uint64_t v; } Val;   /* pw: only the low pw bytes are known (0: all) */
-enum { SY_CLASS, SY_META, SY_SEL, SY_OPAQUE };
+enum { SY_CLASS, SY_META, SY_SEL, SY_OPAQUE, SY_IMPORT };   /* SY_IMPORT: the address an import's GOT slot holds */
 typedef struct { uint64_t a; uint8_t w, ret, push; Val v; } Cell;
 typedef struct { const char *cls; int meta; const char *sel; } Look;
 typedef struct { const char *cls; int meta; const char *sel, *imp, *types; uint64_t site; int ok; } Add;
@@ -66,7 +69,8 @@ typedef struct {
     size_t depth;
     Look *found; size_t nfound, capf;
     Add *adds; size_t nadds, capa;
-    int class_null;
+    int class_null, trapped;
+    size_t uforks;                            /* decisions forked on unknown flags */
 } St;
 typedef struct {
     const ObjcImage *im; ObjcRegBudget b; ObjcRegResult *out;
@@ -176,8 +180,10 @@ static int reaches(const Ex *e, uint64_t a, uint8_t *seen, int depth) {
         else if ((objc_x86_is_ff(&x, 2) || objc_x86_is_ff(&x, 4)) && x.riprel) { t = x.riptarget; has = 1; }
         if (has) {
             if ((n = import_name(e, t))) { if (listed(MUTATORS, n) || listed(MODELLED, n)) return 1; }
-            else if (in_ranges(e, t) && (t < a || t >= end) && reaches(e, t, seen, depth + 1)) return 1;
-        }
+            else if (!x.riprel && !in_ranges(e, t)) return 1;   /* foreign code: followed, so it refuses */
+            else if (x.riprel) return 1;                          /* through a slot no import names: likewise */
+            else if ((t < a || t >= end) && reaches(e, t, seen, depth + 1)) return 1;
+        } else if (objc_x86_is_ff(&x, 2) || objc_x86_is_ff(&x, 4)) return 1;   /* a computed call or jump */
         ip = x.next;
     }
     return 0;
@@ -253,6 +259,12 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
         return 0;
     }
     if (is_stack(a) || !(sn = objc_image_section_of(e->im, a, &sa, &ss, &fl)) || a + (uint64_t)w > sa + ss) return 0;
+    if (w == 8 && import_name(e, a)) {
+        uint32_t id = sym_new(e, SY_IMPORT, import_name(e, a));
+        if (id == UINT32_MAX) return -1;
+        *out = S(id);
+        return 0;
+    }
     if ((rel = relocated(e, a, w)) == 2) return 0;
     ty = (int)(fl & 0xff);
     if (ty == 0x1 || ty == 0xc) v = 0;
@@ -357,6 +369,7 @@ static Val alu(St *t, int op, Val a, Val b, int w) {   /* op: 0 add 1 or 4 and 5
                       case 5: case 7: z = x - y; break; case 6: z = x ^ y; break; }
         r = C(z & mask(w));
     }
+    if (op == 6 && same(a, b)) { r = C(0); a = b = r; }   /* a value xor itself, a symbol's too */
     flags(t, op == 0 ? 1 : (op == 5 || op == 7) ? 2 : 3, a, b, r, w);
     return r;
 }
@@ -391,7 +404,7 @@ static int complete(Ex *e, St *t) {
     ObjcRegResult *o = e->out; ObjcRegPath *p; size_t i;
     if (grow((void **)&o->paths, &e->cappaths, o->n_paths + 1, sizeof *o->paths)) return oom(e);
     p = &o->paths[o->n_paths++]; memset(p, 0, sizeof *p);
-    p->class_null = t->class_null;
+    p->class_null = t->class_null; p->trapped = t->trapped; p->unknown_forks = t->uforks;
     if ((t->nfound && !(p->found = calloc(t->nfound, sizeof *p->found))) || (t->nadds && !(p->adds = calloc(t->nadds, sizeof *p->adds)))) return oom(e);
     for (i = 0; i < t->nfound; i++) {
         p->found[i].cls = dup0(t->found[i].cls); p->found[i].meta = t->found[i].meta; p->found[i].sel = dup0(t->found[i].sel);
@@ -587,7 +600,7 @@ static int branch(Ex *e, St *t, int c, uint64_t taken) {
     St *u;
     if (c >= 0) { if (c) t->rip = taken; return 0; }
     if (!(u = fork_st(e, t))) return -1;
-    u->rip = taken;
+    u->rip = taken; u->uforks++; t->uforks++;
     return 0;
 }
 
@@ -699,8 +712,12 @@ static int step(Ex *e, St *t) {
             reg_set(t, x.reg, l.k == VC && !l.pw ? C((l.v * (uint64_t)x.imm) & mask(w)) : U(), w); t->fop = 0; return 0;
         }
         if (op == 0x90 && !(x.rex & 1)) return 0;
-        if (op == 0x98) { w = width(&x, 0); v = reg_get(t, 0, w / 2);
-            reg_set(t, 0, v.k == VC ? C((uint64_t)(w == 8 ? (int64_t)(int32_t)v.v : (int64_t)(int16_t)v.v) & mask(w)) : U(), w); return 0; }
+        if (op == 0x98) {   /* cbw, cwde, cdqe */
+            int64_t sx;
+            w = width(&x, 0); v = reg_get(t, 0, w / 2);
+            sx = w == 8 ? (int64_t)(int32_t)v.v : w == 4 ? (int64_t)(int16_t)v.v : (int64_t)(int8_t)v.v;
+            reg_set(t, 0, v.k == VC ? C((uint64_t)sx & mask(w)) : U(), w); return 0;
+        }
         if (op == 0x99) { w = width(&x, 0); v = reg_get(t, 0, w);
             reg_set(t, 2, v.k == VC ? C(v.v >> (w * 8 - 1) & 1 ? mask(w) : 0) : U(), w); return 0; }
         if (op == 0x87 && x.mod == 3) { w = width(&x, 0); l = reg_get(t, x.reg, w); v = reg_get(t, x.rm, w);
@@ -709,7 +726,7 @@ static int step(Ex *e, St *t) {
             t->r[4] = t->r[5];
             return pop(e, t, ip, &t->r[5]);
         }
-        if (op == 0xCC) return 1;   /* a trap: the path ends here */
+        if (op == 0xCC) { t->trapped = 1; return 1; }   /* a trap: the path ends here */
         if (op == 0xC3) return do_ret(e, t, ip);
         if (op == 0xE8) return do_call(e, t, ip, (uint64_t)objc_x86_rel_target(p, &x, ip), 0, x.next);
         if (op == 0xE9 || op == 0xEB) {
@@ -722,7 +739,9 @@ static int step(Ex *e, St *t) {
         }
         if (op >= 0x70 && op <= 0x7F) return branch(e, t, cond(t, op & 15), (uint64_t)objc_x86_rel_target(p, &x, ip));
         if (op == 0xFF && ((x.reg & 7) == 2 || (x.reg & 7) == 4)) {
-            const char *n = x.riprel ? import_name(e, x.riptarget) : NULL;
+            const char *n = NULL;
+            if (rm_get(e, t, &x, 8, ip, &v)) return -1;
+            if (v.k == VS && e->sym[v.sym].kind == SY_IMPORT) n = e->sym[v.sym].name;
             if (!n) return refuse(e, "indirect-call", "an indirect %s at 0x%llx", (x.reg & 7) == 2 ? "call" : "jump", (unsigned long long)ip);
             if (call_import(e, t, n, ip)) return -1;
             return (x.reg & 7) == 4 ? do_ret(e, t, ip) : 0;
@@ -731,7 +750,7 @@ static int step(Ex *e, St *t) {
     } else if (x.map == 1) {
         if (op >= 0x80 && op <= 0x8F) return branch(e, t, cond(t, op & 15), (uint64_t)objc_x86_rel_target(p, &x, ip));
         if (op == 0x1F) return 0;
-        if (op == 0x0B) return 1;   /* ud2: the path ends here */
+        if (op == 0x0B) { t->trapped = 1; return 1; }   /* ud2: the path ends here */
         if (op == 0xB6 || op == 0xB7 || op == 0xBE || op == 0xBF) {
             int sw = op == 0xB7 || op == 0xBF ? 2 : 1;
             if (rm_get(e, t, &x, sw, ip, &v)) return -1;
@@ -746,6 +765,7 @@ static int step(Ex *e, St *t) {
             St *u;
             if (c >= 0) return rm_set(e, t, &x, C((uint64_t)c), 1, ip);
             if (!(u = fork_st(e, t))) return -1;
+            u->uforks++; t->uforks++;
             if (rm_set(e, u, &x, C(1), 1, ip)) return -1;
             return rm_set(e, t, &x, C(0), 1, ip);
         }
@@ -754,7 +774,11 @@ static int step(Ex *e, St *t) {
             w = width(&x, 0);
             if (rm_get(e, t, &x, w, ip, &v)) return -1;
             l = reg_get(t, x.reg, w);
-            if (c < 0) { St *u = fork_st(e, t); if (!u) return -1; reg_set(u, x.reg, v, w); reg_set(t, x.reg, l, w); return 0; }
+            if (c < 0) {
+                St *u = fork_st(e, t);
+                if (!u) return -1;
+                u->uforks++; t->uforks++; reg_set(u, x.reg, v, w); reg_set(t, x.reg, l, w); return 0;
+            }
             reg_set(t, x.reg, c ? v : l, w);
             return 0;
         }

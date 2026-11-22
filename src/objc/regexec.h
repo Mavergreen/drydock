@@ -11,8 +11,11 @@ typedef struct { char *cls; int meta; char *sel; } ObjcRegLookup;
 /* One class_addMethod call. NULL fields are values the executor could not name. ok: the fork this path took
  * (1 the add succeeded, 0 it failed); site: the call instruction. */
 typedef struct { char *cls; int meta; char *sel, *imp, *types; uint64_t site; int ok; } ObjcRegAdd;
+/* class_null: objc_getClass returned NULL on it. trapped: it ended at int3 or ud2. unknown_forks: the branches,
+ * setcc and cmov along it whose flags the executor did not know, each decided by forking (the path may be
+ * infeasible when nonzero). */
 typedef struct { ObjcRegLookup *found; size_t n_found; ObjcRegAdd *adds; size_t n_adds;
-                 int class_null; } ObjcRegPath;          /* class_null: objc_getClass returned NULL on it */
+                 int class_null, trapped; size_t unknown_forks; } ObjcRegPath;
 typedef struct { size_t max_paths, max_depth, max_insns; } ObjcRegBudget;
 #define OBJC_REG_MAX_PATHS ((size_t)1 << 14)
 #define OBJC_REG_MAX_DEPTH ((size_t)16)
