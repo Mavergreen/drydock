@@ -5286,9 +5286,26 @@ tg_why='drydock-macho-rewrite: objc-methods set absolute: the image has 2 LC_DYL
     && ok "target 10.9 on a chained relmeth image declassifies, then refuses as the explicit statements do" \
     || bad "target 10.9 chained relative lists" "rc $tg_rc/$rc: $(cat "$T/tg.err")"
 tg "$T/relmeth_oob" "$T/relmeth_oob.tgt"
-[ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods' "$T/tg.err" \
-    && ok "target 10.9 derives nothing from method lists it cannot walk, and carries on" \
+[ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods set absolute' "$T/tg.err" \
+    && grep -q '^    objc-methods: not walked (.*runs past its segment); not converted$' "$T/tg.err" \
+    && ok "target 10.9 derives nothing from method lists it cannot walk, says so, and carries on" \
     || bad "target 10.9 unwalkable lists" "rc $tg_rc: $(cat "$T/tg.err")"
+# An arm64 slice keeps its relative lists (its runtime reads them), so only the
+# x86_64 slice converts, and a second run over the output has nothing to do.
+cp "$T/relmeth_shared" "$T/relmeth_arm64"
+printf '\014\000\000\001' | dd of="$T/relmeth_arm64" bs=1 seek=4 conv=notrunc 2>/dev/null
+[ "$(od -An -tx1 -j4 -N4 "$T/relmeth_arm64" | tr -d ' \n')" = 0c000001 ] \
+    || bad "target 10.9 fat relative lists: fixture setup" "the arm64 slice's cputype is not CPU_TYPE_ARM64"
+"$BIN/makefat" "$T/relmeth_fat" "$T/relmeth_shared" 0x1000007 3 12 "$T/relmeth_arm64" 0x100000c 0 12
+tg "$T/relmeth_fat" "$T/relmeth_fat.tgt"
+[ "$tg_rc" -eq 0 ] && [ "$(grep -c '^    objc-methods set absolute' "$T/tg.err")" -eq 1 ] \
+    && ok "target 10.9 on a fat file converts only the x86_64 slice's relative lists" \
+    || bad "target 10.9 fat relative lists" "rc $tg_rc: $(cat "$T/tg.err")"
+tg "$T/relmeth_fat.tgt" "$T/relmeth_fat.tgt2"
+[ "$tg_rc" -eq 0 ] && [ "$(grep -c '^    nothing to do: this binary already targets 10.9$' "$T/tg.err")" -eq 2 ] \
+    && ! grep -q 'objc-methods' "$T/tg.err" \
+    && ok "target 10.9: ... and a second run over that output has nothing to do in either slice" \
+    || bad "target 10.9 fat idempotent" "rc $tg_rc: $(cat "$T/tg.err")"
 
 # ---- __LINKEDIT in codesign_allocate's order ---------------------------------
 # tests/linkedit_fixture.h's variants, written by mklinkedit. `resign 10.9:`

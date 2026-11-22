@@ -737,7 +737,9 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
 /* One derived statement, and the finding that produced it -- the report
  * carries both, because "why is this script doing that?" is exactly the
  * question a profile line raises. */
-typedef struct { ms_stmt stmt; const char *why; } me_derived;
+/* `note`, set only when a step derives nothing, is a line the report still owes:
+ * a step that could not decide says so. */
+typedef struct { ms_stmt stmt; const char *why; char note[200]; } me_derived;
 
 /* What the load commands say about this image. */
 typedef struct { int chained, dataconst_objc; } me_seen;
@@ -801,10 +803,16 @@ static int me_expand_10_9(const mi_image *im, int step, me_derived *d, int line)
         d->why = "class records carry the stable-ABI Swift tag";
         return 1;
     case 4: {
-        /* After step 0, since the walk refuses chained images. A walk that
-         * fails derives nothing: the explicit statement reports why. */
+        /* After step 0, since the walk refuses chained images. Only x86_64,
+         * as the converter: an arm64 runtime reads relative lists. A walk
+         * that fails derives nothing, and the report says why. */
         mml_walk w;
-        int relative = mml_walk_image(im, &w) == MML_OK && w.relative > 0;
+        int rc, relative;
+        if (im->hdr->cputype != CPU_TYPE_X86_64) return 0;
+        rc = mml_walk_image(im, &w);
+        relative = rc == MML_OK && w.relative > 0;
+        if (rc != MML_OK)
+            snprintf(d->note, sizeof d->note, "objc-methods: not walked (%s); not converted", w.why);
         mml_walk_free(&w);
         if (!relative) return 0;
         d->stmt.kind = MS_OBJC_METHODS; d->stmt.op = MS_SET; d->stmt.a = "absolute";
@@ -844,7 +852,10 @@ static int me_target(uint8_t **pbuf, size_t *psize, const char *path,
         int renamed = 0, rc;
         me_verdict v;
         if (me_view(*pbuf, *psize, &im, path, log) != 0) return MR_REFUSED;
-        if (!me_expand_10_9(&im, step, &d, st->line)) continue;
+        if (!me_expand_10_9(&im, step, &d, st->line)) {
+            if (d.note[0]) me_say(log, "    %s\n", d.note);
+            continue;
+        }
         memset(&hits, 0, sizeof hits);
         v.hits = &hits; v.renamed = &renamed; v.decide = 0; v.missed = 0; v.changed = 1;
         me_log_derived(log, &d);
