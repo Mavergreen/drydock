@@ -95,6 +95,7 @@
 #include "image.h"
 #include "fat.h"
 #include "x86len.h"
+#include "x86.h"
 #include "ordinals.h"
 #include "objc_meth.h"
 #include "arch_names.h"
@@ -887,116 +888,11 @@ static int metadata(Slice *s) {
 
 /* ---- machine code ----------------------------------------------------------------------- */
 
-typedef struct {
-    int len, map, vexmap, rex, op, modrm, mod, reg, rm, riprel, f2, f3, p66;
-    int dispscaled;   /* an EVEX disp8: mdisp is the raw byte, the offset disp8*N for an unknown N */
-    int64_t disp, imm, mdisp;
-    int immlen, sib, sibbase, sibindex, sibscale;   /* sibbase -1: none (disp32); sibindex -1: none */
-    uint64_t next, riptarget;
-} Ins;
-
-static int decode(const uint8_t *code, size_t avail, uint64_t ip, Ins *o) {
-    mx_insn m;
-    int i = 0;
-    memset(o, 0, sizeof *o);
-    if (mx_decode_evex(code, avail, &m) != 1 || m.len <= 0) return -1;
-    o->len = m.len; o->next = ip + (uint64_t)m.len;
-    while (i < m.len) {
-        uint8_t b = code[i];
-        if (b == 0x66) o->p66 = 1;
-        else if (b == 0xF2) o->f2 = 1;
-        else if (b == 0xF3) o->f3 = 1;
-        else if (!(b == 0x67 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65 || b == 0xF0)) break;
-        i++;
-    }
-    if (i < m.len && code[i] >= 0x40 && code[i] <= 0x4F) o->rex = code[i++];
-    if (m.evex && i + 4 < m.len && code[i] == 0x62) {
-        /* map 5: no map 0..4 rule matches it, so every query below takes its conservative default.
-         * P0's inverted R, X and B and P1's W, as a REX would carry them, name the address registers. */
-        uint8_t p0 = code[i + 1], p1 = code[i + 2];
-        o->map = 5; o->vexmap = p0 & 7; o->op = code[i + 4];
-        o->rex = 0x40 | (p1 & 0x80 ? 8 : 0) | (p0 & 0x80 ? 0 : 4) | (p0 & 0x40 ? 0 : 2) | (p0 & 0x20 ? 0 : 1);
-        o->dispscaled = m.displen == 1;
-    } else if (i + 2 < m.len && code[i] == 0xC5) { o->map = 4; o->vexmap = 1; o->op = code[i + 2]; }
-    else if (i + 3 < m.len && code[i] == 0xC4) { o->map = 4; o->vexmap = code[i + 1] & 0x1F; o->op = code[i + 3]; }
-    else if (i < m.len && code[i] == 0x0F) {
-        i++;
-        if (i < m.len && code[i] == 0x38) { o->map = 2; i++; }
-        else if (i < m.len && code[i] == 0x3A) { o->map = 3; i++; }
-        else o->map = 1;
-        o->op = i < m.len ? code[i] : -1;
-    } else o->op = i < m.len ? code[i] : -1;
-    o->immlen = m.immlen;
-    if (m.immlen == 1) { int8_t v; memcpy(&v, code + m.len - 1, 1); o->imm = v; }
-    else if (m.immlen == 2) { int16_t v; memcpy(&v, code + m.len - 2, 2); o->imm = v; }
-    else if (m.immlen == 4) { int32_t v; memcpy(&v, code + m.len - 4, 4); o->imm = v; }
-    else if (m.immlen == 8) { int64_t v; memcpy(&v, code + m.len - 8, 8); o->imm = v; }
-    o->modrm = m.modrm >= 0;
-    if (o->modrm) {
-        uint8_t mr = code[m.modrm];
-        o->mod = mr >> 6;
-        o->reg = ((mr >> 3) & 7) | (o->rex & 4 ? 8 : 0);
-        o->rm = (mr & 7) | (o->rex & 1 ? 8 : 0);
-        o->sib = o->mod != 3 && (mr & 7) == 4;
-        if (o->sib && m.modrm + 1 < m.len) {
-            uint8_t sb = code[m.modrm + 1];
-            o->sibbase = (sb & 7) == 5 && o->mod == 0 ? -1 : (sb & 7) | (o->rex & 1 ? 8 : 0);
-            o->sibindex = ((sb >> 3) & 7) == 4 && !(o->rex & 2) ? -1 : ((sb >> 3) & 7) | (o->rex & 2 ? 8 : 0);
-            o->sibscale = sb >> 6;
-        }
-        if (m.disp >= 0 && m.displen == 1) { int8_t v; memcpy(&v, code + m.disp, 1); o->mdisp = v; }
-        else if (m.disp >= 0 && m.displen == 4) { int32_t v; memcpy(&v, code + m.disp, 4); o->mdisp = v; }
-        if (o->mod == 0 && (mr & 7) == 5 && !m.adsize && m.disp >= 0 && m.displen == 4) {
-            int32_t d;
-            memcpy(&d, code + m.disp, 4);
-            o->riprel = 1; o->disp = d;
-            o->riptarget = o->next + (uint64_t)(int64_t)d;
-        }
-    }
-    return 0;
-}
-
-static int is_call_rel(const Ins *x) { return x->map == 0 && x->op == 0xE8; }
-static int is_jmp_rel(const Ins *x) { return x->map == 0 && (x->op == 0xE9 || x->op == 0xEB); }
-static int is_jcc(const Ins *x) {
-    return (x->map == 0 && ((x->op >= 0x70 && x->op <= 0x7F) || x->op == 0xE3)) ||
-           (x->map == 1 && x->op >= 0x80 && x->op <= 0x8F);
-}
-static int is_ff(const Ins *x, int r) { return x->map == 0 && x->op == 0xFF && x->modrm && (x->reg & 7) == r; }
-
-static int64_t rel_target(const uint8_t *code, const Ins *x, uint64_t ip) {
-    int32_t d32; int8_t d8;
-    (void)ip;
-    if (x->map == 0 && (x->op == 0xEB || (x->op >= 0x70 && x->op <= 0x7F) || x->op == 0xE3)) {
-        memcpy(&d8, code + x->len - 1, 1);
-        return (int64_t)(x->next + (uint64_t)(int64_t)d8);
-    }
-    memcpy(&d32, code + x->len - 4, 4);
-    return (int64_t)(x->next + (uint64_t)(int64_t)d32);
-}
-
-/* spec: Intel SDM vol. 2, 2.1.5 (table 2-2) and 3.1.1.1 -- with no REX prefix, byte registers 4..7 are
- * ah, ch, dh and bh: bits 8..15 of rax, rcx, rdx and rbx, not spl, bpl, sil and dil. X's modrm fields
- * with any such byte register named by the register it is part of (an rm field only when mod is 3). */
-static Ins byte_regs(const Ins *x) {
-    Ins y = *x;
-    int op = x->op, both = 0, rmonly = 0;
-    if (x->rex || !x->modrm) return y;
-    if (x->map == 0) {
-        both = (op <= 0x3F && !(op & 1) && (op & 7) <= 3) || op == 0x84 || op == 0x86 || op == 0x88 || op == 0x8A;
-        rmonly = op == 0x80 || op == 0x82 || op == 0xC0 || op == 0xC6 || op == 0xD0 || op == 0xD2 || op == 0xF6 || op == 0xFE;
-    } else if (x->map == 1) {
-        both = op == 0xB0 || op == 0xC0;                                    /* cmpxchg, xadd r/m8, r8 */
-        rmonly = (op >= 0x90 && op <= 0x9F) || op == 0xB6 || op == 0xBE;     /* setcc; movzx/movsx from r/m8 */
-    }
-    if ((both || rmonly) && x->mod == 3 && y.rm >= 4 && y.rm <= 7) y.rm -= 4;
-    if (both && y.reg >= 4 && y.reg <= 7) y.reg -= 4;
-    return y;
-}
+typedef ObjcIns Ins;
 
 /* 0 only when this instruction provably does not write register r. */
 static int may_write(const Ins *x0, int r) {
-    Ins y = byte_regs(x0);
+    Ins y = objc_x86_byte_regs(x0);
     const Ins *x = &y;
     int op = x->op, low3 = op & 7, dst_rm = x->modrm && x->mod == 3 && x->rm == r;
     int dst_reg = x->modrm && x->reg == r, opreg = (op & 7) | (x->rex & 1 ? 8 : 0);
@@ -1233,7 +1129,6 @@ static int rs_meet(RS *into, const RS *from) {
     return changed;
 }
 
-static int64_t rel_target(const uint8_t *code, const Ins *x, uint64_t ip);
 static void dispatch_regs(const char *callee, int *recv, int *sel, int *arg);
 
 /* What a direct call's target is, for value tracking: 1 selector-from-C-string producer,
@@ -1477,14 +1372,14 @@ static void transfer_values(const Slice *s, const Flow *f, RS *r, const Ins *x, 
         r->k[d] = RS_IMM; r->va[d] = (uint64_t)x->imm; r->def[d] = 0;
         return;
     }
-    if (is_call_rel(x) || is_ff(x, 2) || is_ff(x, 3)) {
+    if (objc_x86_is_call_rel(x) || objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 3)) {
         static const int clobber[] = { 0, 1, 2, 6, 7, 8, 9, 10, 11 };
         int kind = 0, rk = RS_UNKNOWN, have = 0;
         uint64_t va = 0, def = 0, target = 0;
         const Ptr *p = NULL;
-        if (is_call_rel(x)) { target = (uint64_t)rel_target(at, x, ip); have = 1; }
-        else if (is_ff(x, 2) && x->riprel) { target = x->riptarget; have = 1; }
-        else if (is_ff(x, 2) && x->mod == 3 && r->k[x->rm] == RS_ENTRY) { target = r->va[x->rm]; have = 1; }
+        if (objc_x86_is_call_rel(x)) { target = (uint64_t)objc_x86_rel_target(at, x, ip); have = 1; }
+        else if (objc_x86_is_ff(x, 2) && x->riprel) { target = x->riptarget; have = 1; }
+        else if (objc_x86_is_ff(x, 2) && x->mod == 3 && r->k[x->rm] == RS_ENTRY) { target = r->va[x->rm]; have = 1; }
         if (have) { kind = call_kind(s, target); p = find_ptr(s->ptrs, s->nptrs, target); }
         if ((kind == 1 || kind == 2) && r->k[REG_RDI] == RS_CONST) {
             rk = kind == 1 ? RS_SELLIT : RS_CLASSLIT; va = r->va[REG_RDI];
@@ -1511,11 +1406,11 @@ static void transfer_values(const Slice *s, const Flow *f, RS *r, const Ins *x, 
         r->k[REG_RAX] = (uint8_t)rk; r->va[REG_RAX] = va; r->def[REG_RAX] = def;
         return;
     }
-    if (is_jmp_rel(x) || is_ff(x, 4) || is_ff(x, 5)) kill_exposed(f, r);   /* a tail call */
+    if (objc_x86_is_jmp_rel(x) || objc_x86_is_ff(x, 4) || objc_x86_is_ff(x, 5)) kill_exposed(f, r);   /* a tail call */
     for (i = 0; i < 16; i++) if (may_write(x, i)) r->k[i] = RS_UNKNOWN;
 }
 
-static int is_call_any(const Ins *x) { return is_call_rel(x) || is_ff(x, 2) || is_ff(x, 3); }
+static int is_call_any(const Ins *x) { return objc_x86_is_call_rel(x) || objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 3); }
 
 /* The values above, plus `me`: the registers that may hold a GOT-loaded objc entry point on SOME
  * path (rs_meet unions it), where k[] says what they hold on every path. A call keeps the
@@ -1552,7 +1447,7 @@ static void transfer(const Slice *s, const Flow *f, RS *r, const Ins *x, uint64_
  * register a `call/jmp *reg` transfers through (entry_escapes checks that one). An opcode this
  * table does not know reads every register: an entry point held across it is refused, not missed. */
 static uint16_t gpr_reads_ex(const Ins *x0, int mem) {   /* mem 0: not the memory operand's base and index */
-    Ins y = byte_regs(x0);   /* ah..bh read the register they are part of */
+    Ins y = objc_x86_byte_regs(x0);   /* ah..bh read the register they are part of */
     const Ins *x = &y;
     uint16_t m = 0;
     int op = x->op, low3 = op & 7, rm = x->modrm && x->mod == 3, opreg = (op & 7) | (x->rex & 1 ? 8 : 0);
@@ -1625,7 +1520,7 @@ static uint16_t gpr_reads_ex(const Ins *x0, int mem) {   /* mem 0: not the memor
 static uint16_t gpr_reads(const Ins *x) { return gpr_reads_ex(x, 1); }
 
 static int ends_flow(const Ins *x) {   /* no fallthrough successor */
-    return is_jmp_rel(x) || is_ff(x, 4) || is_ff(x, 5) ||
+    return objc_x86_is_jmp_rel(x) || objc_x86_is_ff(x, 4) || objc_x86_is_ff(x, 5) ||
            (x->map == 0 && (x->op == 0xC3 || x->op == 0xC2 || x->op == 0xCB || x->op == 0xCA || x->op == 0xF4)) ||
            (x->map == 1 && x->op == 0x0B);
 }
@@ -1650,7 +1545,7 @@ static void frame_setup(Flow *f, const Ins *ins, size_t n) {
     for (i = 2; i < n; i++) {
         const Ins *x = &ins[i];
         if (x->map == 0 && ((x->op == 0x5D && !(x->rex & 1)) || x->op == 0xC9 || x->op == 0xCC)) continue;
-        if (is_call_rel(x) || is_ff(x, 2) || is_ff(x, 3) || ends_flow(x)) continue;
+        if (objc_x86_is_call_rel(x) || objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 3) || ends_flow(x)) continue;
         if (may_write(x, 5)) return;
     }
     f->frame = 1;
@@ -1666,7 +1561,7 @@ static int writes_rsp(const Ins *x) {
     if (x->map == 0 && ((x->op >= 0x50 && x->op <= 0x5F) || x->op == 0x68 || x->op == 0x6A || x->op == 0x8F ||
                         x->op == 0x9C || x->op == 0x9D || x->op == 0xC8 || x->op == 0xC9))
         return 1;
-    if (is_ff(x, 6)) return 1;
+    if (objc_x86_is_ff(x, 6)) return 1;
     if (is_call_any(x) || ends_flow(x)) return 0;   /* a call returns with rsp as it was */
     return may_write(x, REG_RSP);
 }
@@ -1712,8 +1607,8 @@ static int no_fallthrough(const Slice *s, const uint8_t *base, uint64_t sect_add
     const Ptr *p = NULL;
     size_t k;
     if (ends_flow(x)) return 1;
-    if (is_call_rel(x)) p = find_ptr(s->ptrs, s->nptrs, (uint64_t)rel_target(base + (ips[i] - sect_addr), x, ips[i]));
-    else if (is_ff(x, 2) && x->riprel) p = find_ptr(s->ptrs, s->nptrs, x->riptarget);
+    if (objc_x86_is_call_rel(x)) p = find_ptr(s->ptrs, s->nptrs, (uint64_t)objc_x86_rel_target(base + (ips[i] - sect_addr), x, ips[i]));
+    else if (objc_x86_is_ff(x, 2) && x->riprel) p = find_ptr(s->ptrs, s->nptrs, x->riptarget);
     if (!p || !p->name) return 0;
     for (k = 0; k < sizeof NORETURN / sizeof *NORETURN; k++) if (!strcmp(p->name, NORETURN[k])) return 1;
     return 0;
@@ -1732,9 +1627,9 @@ static int enumeration_call(const Slice *s, Flow *f, const RS *st, const Ins *x,
     uint64_t target = 0, v;
     const Ptr *p;
     char name[64];
-    if (is_call_rel(x)) target = (uint64_t)rel_target(at, x, ip);
-    else if (is_ff(x, 2) && x->riprel) target = x->riptarget;
-    else if (is_ff(x, 2) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
+    if (objc_x86_is_call_rel(x)) target = (uint64_t)objc_x86_rel_target(at, x, ip);
+    else if (objc_x86_is_ff(x, 2) && x->riprel) target = x->riptarget;
+    else if (objc_x86_is_ff(x, 2) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
     else return 0;
     if (!(p = find_ptr(s->ptrs, s->nptrs, target)) || p->role != IMP_DISPATCH || !p->name || strcmp(p->name, "_objc_msgSend")) return 0;
     if (st->k[REG_RSI] != RS_SELREFV || read64(s, st->va[REG_RSI], &v) || literal_at(s, v, name, sizeof name) ||
@@ -1798,8 +1693,8 @@ static int frame_scan(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
                 if (st.k[src] == RS_FRAME) data &= (uint16_t)~(1u << src);   /* a copy: its uses are checked in turn */
             }
             if (data) wild = 1;
-            if ((is_ff(x, 2) || is_ff(x, 4)) && x->mod == 3 && (live & (1u << x->rm))) wild = 1;
-            if ((is_call_any(x) || is_ff(x, 4) || is_ff(x, 5) || (is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i))) &&
+            if ((objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 4)) && x->mod == 3 && (live & (1u << x->rm))) wild = 1;
+            if ((is_call_any(x) || objc_x86_is_ff(x, 4) || objc_x86_is_ff(x, 5) || (objc_x86_is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i))) &&
                 (live & ARG_REGS) && !(is_call_any(x) && enumeration_call(s, f, &st, x, ips[i], at))) {
                 /* Given to a callee: it may write at and above each address it is given, never below
                  * (the stated limit every slot rests on), so the lowest of them bounds it -- when each
@@ -1980,7 +1875,7 @@ static int64_t jump_table_at(Slice *s, uint64_t lo, uint64_t hi, uint64_t t, con
               ((ins[c].op == 0x01 && ins[c].reg == B && ins[c].rm == D) || (ins[c].op == 0x03 && ins[c].reg == D && ins[c].rm == B))))
             continue;
         d = c + 1;
-        if (!(d < n && is_ff(&ins[d], 4) && ins[d].mod == 3 && ins[d].rm == D)) continue;
+        if (!(d < n && objc_x86_is_ff(&ins[d], 4) && ins[d].mod == 3 && ins[d].rm == D)) continue;
         /* The bound: the nearest ja/jae before the lea, after a cmp/sub of an immediate (bound_kept). */
         for (j = a; j-- > 0 && j + 12 > a; ) {
             const Ins *x = &ins[j];
@@ -2151,8 +2046,8 @@ static int block_edges(const Slice *s, const Flow *f, const uint8_t *base, uint6
         if (taken_val >= 0) pred_add(&edge[ns], gsite, !taken_val, st->ls[li].k, st->ls[li].va);
         succ[ns++] = b + 1;
     }
-    if (is_jcc(x) || is_jmp_rel(x)) {
-        uint64_t t = (uint64_t)rel_target(base + (ips[last] - sect_addr), x, ips[last]);
+    if (objc_x86_is_jcc(x) || objc_x86_is_jmp_rel(x)) {
+        uint64_t t = (uint64_t)objc_x86_rel_target(base + (ips[last] - sect_addr), x, ips[last]);
         long j = t >= ips[0] && t < ins[n - 1].next ? index_of(ips, n, t) : -1;
         if (j >= 0) {
             edge[ns] = *st;
@@ -2175,16 +2070,16 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
     leader[0] = 1;
     for (i = 0; i < n; i++) {
         const Ins *x = &ins[i];
-        if (is_jcc(x) || is_jmp_rel(x)) {
-            uint64_t t = (uint64_t)rel_target(base + (ips[i] - sect_addr), x, ips[i]);
+        if (objc_x86_is_jcc(x) || objc_x86_is_jmp_rel(x)) {
+            uint64_t t = (uint64_t)objc_x86_rel_target(base + (ips[i] - sect_addr), x, ips[i]);
             if (t >= ips[0] && t < ins[n - 1].next) {
                 long j = index_of(ips, n, t);
                 if (j < 0) { free(leader); return 0; }
                 leader[j] = 1;
             }
         }
-        if (i + 1 < n && (is_jcc(x) || no_fallthrough(s, base, sect_addr, ips, ins, i))) leader[i + 1] = 1;
-        if ((is_ff(x, 4) || is_ff(x, 5)) && !x->riprel && !jt_has(s, ips[i])) f->ijump = 1;
+        if (i + 1 < n && (objc_x86_is_jcc(x) || no_fallthrough(s, base, sect_addr, ips, ins, i))) leader[i + 1] = 1;
+        if ((objc_x86_is_ff(x, 4) || objc_x86_is_ff(x, 5)) && !x->riprel && !jt_has(s, ips[i])) f->ijump = 1;
     }
     for (i = 0; i < s->njt; i++) {
         long j = index_of(ips, n, s->jt[i].target);
@@ -2213,8 +2108,8 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
     for (b = 0; b < f->nb; b++) rs_all(&f->in[b], RS_UNDEF, LO_NONE);
     for (i = 0; i < n; i++) {   /* blocks something reaches by a direct edge or fallthrough */
         const Ins *x = &ins[i];
-        if (is_jcc(x) || is_jmp_rel(x)) {
-            uint64_t t = (uint64_t)rel_target(base + (ips[i] - sect_addr), x, ips[i]);
+        if (objc_x86_is_jcc(x) || objc_x86_is_jmp_rel(x)) {
+            uint64_t t = (uint64_t)objc_x86_rel_target(base + (ips[i] - sect_addr), x, ips[i]);
             long j = t >= ips[0] && t < ins[n - 1].next ? index_of(ips, n, t) : -1;
             if (j >= 0) direct[f->blk[j]] = 1;
         }
@@ -2280,7 +2175,7 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
                 if (rs_meet(&f->in[succ[k]], &edge[k]) && !inq[succ[k]]) {
                     queue[qt] = succ[k]; qt = (qt + 1) % f->nb; qn++; inq[succ[k]] = 1;
                 }
-            if (is_ff(x, 4) && x->mod == 3) {   /* an inline jump table: every target gets the state at its jmp */
+            if (objc_x86_is_ff(x, 4) && x->mod == 3) {   /* an inline jump table: every target gets the state at its jmp */
                 size_t c;
                 for (c = 0; c < s->njt; c++) {
                     long j;
@@ -2308,7 +2203,7 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
     for (b = 0; b < f->nb; b++) {
         RS st = f->in[b];
         const Ins *x = &ins[f->bstart[b + 1] - 1];
-        if (!st.reached || !is_ff(x, 4) || x->riprel || jt_has(s, ips[f->bstart[b + 1] - 1])) continue;
+        if (!st.reached || !objc_x86_is_ff(x, 4) || x->riprel || jt_has(s, ips[f->bstart[b + 1] - 1])) continue;
         /* the state at the jump: an entry point the block itself loads is carried too */
         for (i = f->bstart[b]; i + 1 < f->bstart[b + 1]; i++) transfer(s, f, &st, &ins[i], ips[i], base + (ips[i] - sect_addr));
         if (!(st.me || st.ms) || (x->mod == 3 && st.k[x->rm] == RS_ENTRY)) continue;
@@ -2451,7 +2346,7 @@ static const char *REGNAME[16] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rs
 
 /* Whether the direct jump at i leaves the function. */
 static int tail_jump(const uint8_t *base, uint64_t sect_addr, const uint64_t *ips, const Ins *ins, size_t n, size_t i) {
-    uint64_t t = (uint64_t)rel_target(base + (ips[i] - sect_addr), &ins[i], ips[i]);
+    uint64_t t = (uint64_t)objc_x86_rel_target(base + (ips[i] - sect_addr), &ins[i], ips[i]);
     return t < ips[0] || t >= ins[n - 1].next;
 }
 
@@ -2525,9 +2420,9 @@ static int call_arg_regs(const Slice *s, const RS *st, const Ins *x, uint64_t ip
     const Ptr *p;
     int recv, sr, arg, n;
     *sel = 0; *stret = 0; *why = 0;
-    if (is_call_rel(x) || is_jmp_rel(x)) target = (uint64_t)rel_target(at, x, ip);
-    else if ((is_ff(x, 2) || is_ff(x, 4)) && x->riprel) target = x->riptarget;
-    else if ((is_ff(x, 2) || is_ff(x, 4)) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
+    if (objc_x86_is_call_rel(x) || objc_x86_is_jmp_rel(x)) target = (uint64_t)objc_x86_rel_target(at, x, ip);
+    else if ((objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 4)) && x->riprel) target = x->riptarget;
+    else if ((objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 4)) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
     else return 6;
     if (!(p = find_ptr(s->ptrs, s->nptrs, target)) || !p->name) return 6;
     if (p->role == IMP_DISPATCH) {
@@ -2632,7 +2527,7 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                 }
             }
             if (live) {
-                if (!how && (is_ff(x, 2) || is_ff(x, 4)) && x->mod == 3) {
+                if (!how && (objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 4)) && x->mod == 3) {
                     through = (uint16_t)(1u << x->rm);
                     if ((live & through) && st.k[x->rm] != RS_ENTRY) { r = x->rm; how = "is called through where another path left a different value"; }
                 }
@@ -2646,8 +2541,8 @@ static void entry_escapes(Slice *s, Flow *f, const uint8_t *base, uint64_t sect_
                     if (x->map == 0 && x->op == 0x89 && x->modrm && x->mod != 3 && x->riprel && x->reg == r)
                         snprintf(why, sizeof why, "stored to memory at 0x%llx", (unsigned long long)x->riptarget);
                 }
-                if (!how && (is_call_any(x) || (is_ff(x, 4) && !jt_has(s, ips[i])) || is_ff(x, 5) ||
-                             (is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i)))) {
+                if (!how && (is_call_any(x) || (objc_x86_is_ff(x, 4) && !jt_has(s, ips[i])) || objc_x86_is_ff(x, 5) ||
+                             (objc_x86_is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i)))) {
                     const uint8_t *at = base + (ips[i] - sect_addr);
                     j = arg_escape(s, &st, live, through, x, ips[i], at, why, sizeof why);
                     if (j >= 0) {
@@ -2911,8 +2806,8 @@ static int jt_settle(Slice *s, const Sect *x, const uint8_t *base, uint64_t lo, 
             if (pads.cs[i].pad > s->jt[g].first && pads.cs[i].pad <= s->jt[g].jmp) dead = 1;
         for (k = 0; k < n && !dead; k++) {
             uint64_t tg;
-            if (!is_jcc(&ins[k]) && !is_jmp_rel(&ins[k])) continue;
-            tg = (uint64_t)rel_target(base + (ips[k] - x->addr), &ins[k], ips[k]);
+            if (!objc_x86_is_jcc(&ins[k]) && !objc_x86_is_jmp_rel(&ins[k])) continue;
+            tg = (uint64_t)objc_x86_rel_target(base + (ips[k] - x->addr), &ins[k], ips[k]);
             if (tg > s->jt[g].first && tg <= s->jt[g].jmp) dead = 1;
         }
         if (trace && *trace)
@@ -2959,7 +2854,7 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
             if (t < 0) { free(cand); return fail(s, "out-of-memory", ip, "%s", "jump tables"); }
             if (t > 0) { ip += (uint64_t)t; continue; }
         }
-        if (decode(base + (ip - x->addr), (size_t)(hi - ip), ip, &in) != 0) {
+        if (objc_x86_decode(base + (ip - x->addr), (size_t)(hi - ip), ip, &in) != 0) {
             sweep_undecodable(s, ip, base + (ip - x->addr), hi - ip);
             break;
         }
@@ -2995,17 +2890,17 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
         uint64_t site = (*ipbuf)[k], target = 0;
         int call = 0, jump = 0, through_ptr = 0;
         const Ptr *p = NULL;
-        if (is_call_rel(in) || (in->map == 0 && in->op == 0xE9)) {
-            target = (uint64_t)rel_target(base + (site - x->addr), in, site);
-            call = is_call_rel(in); jump = !call;
-        } else if ((is_ff(in, 2) || is_ff(in, 4)) && in->riprel) {
-            target = in->riptarget; call = is_ff(in, 2); jump = !call; through_ptr = 1;
-        } else if ((is_ff(in, 2) || is_ff(in, 4)) && in->mod == 3) {
+        if (objc_x86_is_call_rel(in) || (in->map == 0 && in->op == 0xE9)) {
+            target = (uint64_t)objc_x86_rel_target(base + (site - x->addr), in, site);
+            call = objc_x86_is_call_rel(in); jump = !call;
+        } else if ((objc_x86_is_ff(in, 2) || objc_x86_is_ff(in, 4)) && in->riprel) {
+            target = in->riptarget; call = objc_x86_is_ff(in, 2); jump = !call; through_ptr = 1;
+        } else if ((objc_x86_is_ff(in, 2) || objc_x86_is_ff(in, 4)) && in->mod == 3) {
             uint64_t eva, edef;             /* call reg, reg loaded from an objc GOT slot */
             int ke = REG_VAL(in->rm, &eva, &edef);
             if (ke < 0) { flow_free(&flow); return fail(s, "out-of-memory", site, "%s", "flow"); }
             if (ke == RS_ENTRY) {
-                target = eva; call = is_ff(in, 2); jump = !call; through_ptr = 1;
+                target = eva; call = objc_x86_is_ff(in, 2); jump = !call; through_ptr = 1;
             }
         }
         if (call || jump) {
@@ -3452,4 +3347,23 @@ int objc_image_has_symbol(const ObjcImage *im, const char *name, uint64_t va) {
     for (i = 0; i < im->s.nsym; i++)
         if (im->s.syms[i].addr == va && !strcmp(im->s.syms[i].name, name)) return 1;
     return 0;
+}
+
+/* The segment's file offset for the 8-byte slot at va, then the resolver's classic rebase set
+ * (LC_DYLD_INFO[_ONLY] opcodes, decoded bounded when the image opened). An image with chained fixups
+ * never opens here, so none is asked; one that did would answer 0 for every va. */
+int objc_image_rebased(const ObjcImage *im, uint64_t va) {
+    const mml_resolver *r = &im->s.res;
+    int si = mml_seg_of(r, va, 8);
+    return si >= 0 && mml_off_rebased(r, r->segs[si].fileoff + (va - r->segs[si].vmaddr));
+}
+
+size_t objc_image_nfunctions(const ObjcImage *im) { return im->s.res.nstarts > 0 ? (size_t)im->s.res.nstarts : 0; }
+
+uint64_t objc_image_function(const ObjcImage *im, size_t i) { return i < objc_image_nfunctions(im) ? im->s.res.starts[i] : 0; }
+
+const char *objc_image_symbol_at(const ObjcImage *im, uint64_t va) {
+    size_t lo = 0, hi = im->s.nsym;
+    while (lo < hi) { size_t mid = lo + (hi - lo) / 2; if (im->s.syms[mid].addr < va) lo = mid + 1; else hi = mid; }
+    return lo < im->s.nsym && im->s.syms[lo].addr == va ? im->s.syms[lo].name : NULL;
 }

@@ -639,4 +639,11 @@ if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
     'sel-nsstring:accessibilityDisplayShouldReduceMotion sel-nsstring:isVoiceOverEnabled ' ] || fail 'guard queries are not the respondsToSelector: arguments'
   echo "objc-reader: real Codex 0.165.0 artifact read ($(count cache-fetch) fetch sites, $(count cache-use) cache uses, $(count dispatch-call) dispatch calls)"
 fi
+# spec: src/objc/report.h objc_image_rebased -- a pointer dyld rebases is covered, a word in the same section is not.
+fxcc "$FX/rebased.c" -o "$T/rebased"
+slot() { "$NM" -arch x86_64 "$T/rebased" | awk -v n="_$1" '$3 == n { print $1 }'; }
+rebased() { "$DRYDOCK_OBJC_READER_DRIVER" --rebased "$T/rebased" "$1"; }
+[ "$(rebased "$(slot rebased_ptr)")" = 1 ] || fail 'a rebased pointer in __DATA,__const is not reported rebased'
+[ "$(rebased "$(slot unrebased_word)")" = 0 ] || fail 'an unrebased word in __DATA,__const is reported rebased'
+[ "$(rebased 0)" = 0 ] || fail 'an address outside every segment is reported rebased'
 echo 'objc-reader: conventional, objc2, plain, fat and cannot-measure fixtures pass'

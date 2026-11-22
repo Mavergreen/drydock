@@ -510,6 +510,15 @@ const char *objc_image_import_lib_at(const ObjcImage *im, uint64_t va);
 const char *objc_image_bound_lib_at(const ObjcImage *im, uint64_t va);
 /* 1 when a defined symbol `name` is at `va`, else 0. */
 int objc_image_has_symbol(const ObjcImage *im, const char *name, uint64_t va);
+/* 1 when a classic rebase entry (LC_DYLD_INFO[_ONLY] opcodes) covers the 8-byte slot at va, else 0 (also
+ * for a va outside file-backed segments). An image with LC_DYLD_CHAINED_FIXUPS is refused when opened, so
+ * a view never answers for one. */
+int objc_image_rebased(const ObjcImage *im, uint64_t va);
+/* LC_FUNCTION_STARTS' addresses, ascending; none when the image lists none. */
+size_t objc_image_nfunctions(const ObjcImage *im);
+uint64_t objc_image_function(const ObjcImage *im, size_t i);
+/* A defined symbol at exactly va, or NULL. */
+const char *objc_image_symbol_at(const ObjcImage *im, uint64_t va);
 /* Symbol table entry i, in table order (stabs included): its name ("" for one outside the string
  * table), n_type and n_value; NULL past the end. */
 const char *objc_image_nlist(const ObjcImage *im, size_t i, uint8_t *type, uint64_t *value);

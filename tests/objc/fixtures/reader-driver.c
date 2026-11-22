@@ -8,6 +8,7 @@
  * metadata alone and adds its method definitions, as src/objc/main.m add_shipped does for a shipped
  * image after the artifact's code has been read.
  * --link-map prints objc_linkmap_read's parse instead (link_map below).
+ * --rebased FILE VA prints 1 or 0: whether objc_image_rebased says a rebase entry covers the slot at VA.
  * Exit 0 measured (and, with --close, every send closed), 4 cannot-measure, 2 usage. */
 #include "report.h"
 #include "linkmap.h"
@@ -86,6 +87,18 @@ static int link_map(int argc, char **argv) {
     return rc ? 4 : 0;
 }
 
+/* --rebased FILE VA: "1" or "0" from objc_image_rebased; exit 4 when FILE does not open as an image. */
+static int rebased(const char *file, const char *va) {
+    ObjcAnalysis *a = objc_analysis_create();
+    ObjcImage *im;
+    if (!a) return 4;
+    if (objc_image_open(a, file, &im)) { objc_analysis_destroy(a); return 4; }
+    printf("%d\n", objc_image_rebased(im, strtoull(va, NULL, 16)));
+    objc_image_close(im);
+    objc_analysis_destroy(a);
+    return 0;
+}
+
 static int usage(void) {
     fprintf(stderr, "usage: reader-driver --artifact FILE [--references DIR] [--shipped FILE] [--binding-receipt FILE] "
                     "[--close --signatures FILE [--sdk-facts FILE]]\n");
@@ -98,6 +111,7 @@ int main(int argc, char **argv) {
     size_t k;
     const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL, *refs = NULL, *shipped = NULL;
     if (argc == 2 && !strcmp(argv[1], "--demangle")) return demangle();
+    if (argc == 4 && !strcmp(argv[1], "--rebased")) return rebased(argv[2], argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "--link-map")) return link_map(argc - 2, argv + 2);
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--artifact") && i + 1 < argc) artifact = argv[++i];
