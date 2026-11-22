@@ -37,6 +37,7 @@
 #include "redirect.h"
 #include "uuid.h"
 #include "objc_abs.h"
+#include "objc_meth.h"
 #include "atomic_write.h"
 #include "mach_compat.h"
 #include "fat.h"
@@ -731,7 +732,7 @@ static void me_say_not_rechecked(FILE *log, const char *what, unsigned disturbed
  * not. None of them guesses, so the expansion is reproducible from the image
  * alone.
  */
-#define ME_TARGET_MAX 4   /* the steps of target 10.9's edit script */
+#define ME_TARGET_MAX 5   /* the steps of target 10.9's edit script */
 
 /* One derived statement, and the finding that produced it -- the report
  * carries both, because "why is this script doing that?" is exactly the
@@ -799,6 +800,17 @@ static int me_expand_10_9(const mi_image *im, int step, me_derived *d, int line)
         d->stmt.kind = MS_SWIFT_ABI; d->stmt.op = MS_SET; d->stmt.a = "legacy";
         d->why = "class records carry the stable-ABI Swift tag";
         return 1;
+    case 4: {
+        /* After step 0, since the walk refuses chained images. A walk that
+         * fails derives nothing: the explicit statement reports why. */
+        mml_walk w;
+        int relative = mml_walk_image(im, &w) == MML_OK && w.relative > 0;
+        mml_walk_free(&w);
+        if (!relative) return 0;
+        d->stmt.kind = MS_OBJC_METHODS; d->stmt.op = MS_SET; d->stmt.a = "absolute";
+        d->why = "relative method lists present";
+        return 1;
+    }
     }
     return 0;
 }

@@ -5239,6 +5239,57 @@ rc=0; printf 'dylib append /usr/lib/libz.1.dylib\n' \
     && ok "objc-methods then a grow: verify passes" \
     || bad "objc-methods then grow: verify" "$(cat "$T/om_gv.err")"
 
+# ---- target 10.9 and relative method lists -----------------------------------
+# 10.9's libobjc reads a relative list's two 32-bit offsets as one pointer and
+# crashes after the image loads, so the profile converts them wherever the walk
+# finds any, as the explicit statement would.
+tg() {   # tg IN OUT: run `target 10.9` on IN into OUT; stderr in tg.err
+    rm -f "$2"; tg_rc=0
+    printf 'target 10.9\n' | "$DRYDOCK_MACHO_REWRITE" "$1" "$2" >/dev/null 2>"$T/tg.err" || tg_rc=$?
+}
+tg_derived='    objc-methods set absolute  (relative method lists present)'
+tg "$T/relmeth_shared" "$T/relmeth_shared.tgt"
+[ "$tg_rc" -eq 0 ] && grep -qxF "$tg_derived" "$T/tg.err" \
+    && case "$(info_ml "$T/relmeth_shared.tgt")" in "objc-methods: 0 relative, "[1-9]*" absolute") true ;; *) false ;; esac \
+    && ok "target 10.9 converts relative method lists" \
+    || bad "target 10.9 relative lists" "rc $tg_rc, [$(info_ml "$T/relmeth_shared.tgt")]: $(cat "$T/tg.err")"
+sed -n 's/^\(.*disturbed.*\)$/\1/p' "$T/tg.err" | sed "s|$T/relmeth_shared|IN|" >"$T/tg.dist"
+rm -f "$T/relmeth_shared.exp"
+rc=0; printf 'minos at-most 10.9\nobjc-methods set absolute\n' \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_shared" "$T/relmeth_shared.exp" >/dev/null 2>"$T/tg_exp.err" || rc=$?
+sed -n 's/^\(.*disturbed.*\)$/\1/p' "$T/tg_exp.err" | sed "s|$T/relmeth_shared|IN|" >"$T/tg_exp.dist"
+[ "$rc" -eq 0 ] && cmp -s "$T/relmeth_shared.tgt" "$T/relmeth_shared.exp" \
+    && ok "target 10.9 converts as the explicit statements do, byte for byte" \
+    || bad "target 10.9 vs explicit" "rc $rc: $(cat "$T/tg_exp.err")"
+[ -s "$T/tg.dist" ] && cmp -s "$T/tg.dist" "$T/tg_exp.dist" \
+    && ok "target 10.9: ... and reports the same disturbance" \
+    || bad "target 10.9 disturbance" "[$(cat "$T/tg.dist")] vs [$(cat "$T/tg_exp.dist")]"
+tg "$T/relmeth_shared.tgt" "$T/relmeth_shared.tgt2"
+[ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods' "$T/tg.err" && cmp -s "$T/relmeth_shared.tgt" "$T/relmeth_shared.tgt2" \
+    && ok "target 10.9 is idempotent over its own output" \
+    || bad "target 10.9 idempotent" "rc $tg_rc: $(cat "$T/tg.err")"
+tg "$T/signing_probe" "$T/signing_probe.tgt"
+[ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods' "$T/tg.err" \
+    && ok "target 10.9 leaves an image without method lists alone" \
+    || bad "target 10.9 no lists" "rc $tg_rc: $(cat "$T/tg.err")"
+# relmeth's chained variant also carries an LC_DYLD_INFO, so after step 0 it has
+# two, and the converter refuses. target must refuse as the explicit statements do,
+# never writing an image that still has relative lists.
+tg "$T/relmeth_chained" "$T/relmeth_chained.tgt"
+rm -f "$T/relmeth_chained.exp"
+rc=0; printf 'fixups set classic\nminos at-most 10.9\nobjc-methods set absolute\n' \
+    | "$DRYDOCK_MACHO_REWRITE" "$T/relmeth_chained" "$T/relmeth_chained.exp" >/dev/null 2>"$T/tg_exp.err" || rc=$?
+tg_why='drydock-macho-rewrite: objc-methods set absolute: the image has 2 LC_DYLD_INFO commands, and only one rebase stream can be replaced; refusing'
+[ "$tg_rc" -eq 1 ] && [ "$rc" -eq 1 ] && [ ! -e "$T/relmeth_chained.tgt" ] \
+    && grep -qxF '    fixups set classic  (LC_DYLD_CHAINED_FIXUPS present)' "$T/tg.err" \
+    && grep -qxF "$tg_derived" "$T/tg.err" && grep -qxF "$tg_why" "$T/tg.err" && grep -qxF "$tg_why" "$T/tg_exp.err" \
+    && ok "target 10.9 on a chained relmeth image declassifies, then refuses as the explicit statements do" \
+    || bad "target 10.9 chained relative lists" "rc $tg_rc/$rc: $(cat "$T/tg.err")"
+tg "$T/relmeth_oob" "$T/relmeth_oob.tgt"
+[ "$tg_rc" -eq 0 ] && ! grep -q 'objc-methods' "$T/tg.err" \
+    && ok "target 10.9 derives nothing from method lists it cannot walk, and carries on" \
+    || bad "target 10.9 unwalkable lists" "rc $tg_rc: $(cat "$T/tg.err")"
+
 # ---- __LINKEDIT in codesign_allocate's order ---------------------------------
 # tests/linkedit_fixture.h's variants, written by mklinkedit. `resign 10.9:`
 # is src/linkedit_order.h's verdict, which tests/codesign_order_test.sh holds
