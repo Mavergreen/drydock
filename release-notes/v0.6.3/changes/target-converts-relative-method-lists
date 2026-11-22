@@ -1,0 +1,1 @@
+target 10.9 now converts relative Objective-C method lists, so modern closed binaries no longer load on 10.9 and then crash in its runtime.
