@@ -19,7 +19,8 @@
  * other callback-taking calls, which are never followed -- answers unknown and clobbers rax, rcx, rdx, rsi,
  * rdi, r8-r11 and the flags. Every mutator's call site on an explored path is recorded (mutator_sites), as is
  * the target in the ranges of every call or tail jump there, followed or summarised (called), and each
- * sel_registerName site with whether every arrival's argument was a literal read from the image (selreg).
+ * sel_registerName site with whether every arrival's argument was a literal read from the image (selreg), and
+ * every function an explored path executed in (explored).
  *
  * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
  * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
@@ -81,7 +82,8 @@ typedef struct {
     const ObjcImage *im; ObjcRegBudget b; ObjcRegResult *out;
     uint64_t *rg; size_t nrg;                 /* sorted [lo, hi) pairs */
     size_t nfn; int8_t *reach;                /* per function start: 0 unknown, 1 summarised, 2 followed */
-    size_t npaths, ninsns, cappaths, capsites, capselreg, capcalled, capreads, capstores;
+    size_t npaths, ninsns, cappaths, capsites, capselreg, capcalled, capreads, capstores, capexplored;
+    uint64_t last_lo, last_hi;                /* the explored function the last instruction was in */
     struct { int kind; char *name; } *sym; size_t nsym, capsym;
     St **work; size_t nwork, capwork;
 } Ex;
@@ -147,6 +149,21 @@ static uint64_t fn_end(const Ex *e, uint64_t a) {
     i = i == e->nfn ? 0 : i + 1;
     for (; i < e->nfn; i++) if ((n = objc_image_function(e->im, i)) > a) return n < end ? n : end;
     return end;
+}
+/* The function holding ip, as out->explored records it. */
+static int note_explored(Ex *e, uint64_t ip) {
+    ObjcRegResult *o = e->out; size_t i, lo = 0, hi = e->nrg, fi; uint64_t a, b;
+    if (ip >= e->last_lo && ip < e->last_hi) return 0;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; if (e->rg[2 * mid + 1] <= ip) lo = mid + 1; else hi = mid; }
+    if (lo == e->nrg || e->rg[2 * lo] > ip) return 0;   /* outside the ranges: execution refuses there */
+    a = e->rg[2 * lo];
+    if ((fi = fn_at(e, ip)) < e->nfn && objc_image_function(e->im, fi) > a) a = objc_image_function(e->im, fi);
+    b = fn_end(e, ip);
+    e->last_lo = a; e->last_hi = b;
+    for (i = 0; i < o->n_explored; i++) if (o->explored[2 * i] == a) return 0;
+    if (grow((void **)&o->explored, &e->capexplored, 2 * (o->n_explored + 1), sizeof *o->explored)) return oom(e);
+    o->explored[2 * o->n_explored] = a; o->explored[2 * o->n_explored + 1] = b; o->n_explored++;
+    return 0;
 }
 static int is_fn_start(const Ex *e, uint64_t a) { size_t i = fn_at(e, a); return i < e->nfn && objc_image_function(e->im, i) == a; }
 
@@ -848,7 +865,7 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
         int rc = 0;
         while (!rc) {
             if (++e.ninsns > e.b.max_insns) { refuse(&e, "insn-budget", "more than %zu instructions, at 0x%llx", e.b.max_insns, (unsigned long long)t->rip); rc = -1; break; }
-            rc = step(&e, t);
+            rc = note_explored(&e, t->rip) ? -1 : step(&e, t);
         }
         if (rc == 1 && complete(&e, t)) rc = -1;
         st_free(t);
@@ -861,6 +878,7 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
     free(e.sym);
     qsort(out->mutator_sites, out->n_sites, sizeof *out->mutator_sites, cmp_range);
     qsort(out->called, out->n_called, sizeof *out->called, cmp_range);
+    qsort(out->explored, out->n_explored, 2 * sizeof *out->explored, cmp_range);
     qsort(out->selreg, out->n_selreg, sizeof *out->selreg, cmp_range);
     uniq_reads(out);
     if (out->n_stores) {
@@ -871,6 +889,8 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
     return out->refused ? 1 : 0;
 }
 
+int objc_reg_mutator(const char *import) { return import && listed(MUTATORS, import + (import[0] == '_')); }
+
 void objc_reg_free(ObjcRegResult *r) {
     size_t i, j;
     for (i = 0; i < r->n_paths; i++) {
@@ -880,6 +900,6 @@ void objc_reg_free(ObjcRegResult *r) {
         for (j = 0; j < p->n_null_classes; j++) free(p->null_classes[j]);
         free(p->found); free(p->adds); free(p->null_classes);
     }
-    free(r->paths); free(r->mutator_sites); free(r->called); free(r->selreg); free(r->const_reads); free(r->image_stores);
+    free(r->paths); free(r->mutator_sites); free(r->called); free(r->explored); free(r->selreg); free(r->const_reads); free(r->image_stores);
     memset(r, 0, sizeof *r);
 }

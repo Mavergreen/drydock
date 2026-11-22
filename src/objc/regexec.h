@@ -29,6 +29,9 @@ typedef struct {
     struct { uint64_t site; int all_literal; } *selreg; size_t n_selreg;
     uint64_t *called; size_t n_called;            /* targets in the ranges of calls and tail jumps on explored paths,
                                                    * followed or summarised; ascending, distinct */
+    /* [lo, hi) pairs, ascending, distinct: each a function (bounded by LC_FUNCTION_STARTS and by the given range
+     * holding it) where some explored path executed an instruction. A summarised callee is in none. */
+    uint64_t *explored; size_t n_explored;
     /* Image data read as initial values: [va, va+len) by the instruction at site (a load), or by the call at site
      * (a runtime model reading the C string at va, e.g. sel_registerName's literal: how 1). Sorted, distinct. */
     struct { uint64_t va, len, site; int how; } *const_reads; size_t n_reads;
@@ -43,5 +46,7 @@ typedef struct {
 int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t *ranges, size_t n_ranges,
                              const ObjcRegBudget *b, ObjcRegResult *out);
 void objc_reg_free(ObjcRegResult *r);
+/* 1 when import (with or without its leading underscore) is one of the spec's mutators, which mutator_sites lists. */
+int objc_reg_mutator(const char *import);
 
 #endif

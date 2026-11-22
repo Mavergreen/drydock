@@ -5,8 +5,10 @@
 // WRONG_TYPES, KIND_SWAP, MANY, FRAME_ESCAPE) is a mutant tests/objc/objc-regexec-test.sh names; tests/objc/objc-provider-test.sh
 // names NULL_CLASS (the table registered on objc_getClass's NULL too), OTHER_NULL (the last three rows only when another
 // class exists), UNRELATED_EARLY (nothing registered when an unrelated method is found), FAIL_EXTRA (an undeclared add
-// after a failed one), GUESSED (a branch on an unknown value before registering), TRAPPED (a trap after registering) and
-// COMPUTED_SEL (a selector registered from a run-time string).
+// after a failed one), GUESSED (a branch on an unknown value before registering), TRAPPED (a trap after registering),
+// COMPUTED_SEL (a selector registered from a run-time string), ESCAPE (a function no path runs takes the table's
+// address), READ_TABLE (one only reads the table and the state) and UNEXPLORED_SEL (a run-time string registered in
+// a method reached only by a message send).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -119,6 +121,24 @@ __attribute__((noinline)) FixtureState FixtureTabRegisterTable(Class cls, const 
 @end
 #endif
 
+#ifdef UNEXPLORED_SEL
+@interface FixtureTabSel : NSObject
++ (void)touch:(const char *)name;
+@end
+@implementation FixtureTabSel
++ (void)touch:(const char *)name { (void)sel_registerName(name); }
+@end
+#endif
+
+#ifdef ESCAPE
+__attribute__((used)) const FixtureTabMethod *fixture_tab_rows(void) { return FixtureTabMethods; }
+#endif
+#ifdef READ_TABLE
+__attribute__((used)) BOOL fixture_tab_reads(void) {
+  return *(const volatile BOOL *)&FixtureTabMethods[4].classMethod && *(volatile FixtureState *)&state == FixtureRegistered;
+}
+#endif
+
 #ifdef INDIRECT
 FixtureState (*volatile FixtureTabRegister)(Class, const FixtureTabMethod *, size_t, const char **) = FixtureTabRegisterTable;
 #define REGISTER FixtureTabRegister
@@ -155,6 +175,9 @@ void __fixture_objc_activate_table(void) {
 #endif
 #ifdef VIA_MSGSEND
   if (state == FixtureRegistered) [FixtureTabExtra addExtra:window];
+#endif
+#ifdef UNEXPLORED_SEL
+  if (state == FixtureRegistered) [FixtureTabSel touch:getenv("FIXTURE_SEL")];
 #endif
 #ifdef SETIMP
   if (state == FixtureRegistered)

@@ -55,7 +55,15 @@
  * where objc_getClass of the group's own class returned NULL, a member's or an unnamed lookup
  * was found, or an add failed -- a found lookup of anything else exempts nothing; no succeeding
  * add anywhere is outside them; and at least one exact path has no guessed branch and no trap
- * (else provider-registration-mismatch). A group is credited
+ * (else provider-registration-mismatch). Coverage: no mutator but class_addMethod is called on an
+ * explored path (provider-registration-mismatch), and every call of one in the verified code is on an
+ * explored path, as is any other use of a mutator's stub or slot there but a load in an explored function
+ * (provider-unexplored-mutation). Over the whole image (objc_image_refs: code as the reader walks it,
+ * rebased pointers), nothing refers into a function an explored path ran in -- the explored functions --
+ * but a branch from one of them, or the constructor's initializer entry (provider-foreign-entry), and
+ * nothing refers to image data outside __TEXT the executor read as its initial value but a load, a
+ * reference from an explored function, or a pointer in such data or in __TEXT (provider-mutable-constant).
+ * A summarised callee is not explored. A group is credited
  * whole or not at all: an active group turns the unsupported findings of each member's selector
  * and kind ("+" being a send to the class object) on a receiver whose floor chain includes its
  * class into `provided`.
@@ -66,7 +74,8 @@
  * declared, the reader records a sel_registerName of a non-literal (OBJC_EV_SEL_COMPUTED)
  * instead of refusing it; it is refused here (computed-selector-producer) unless it lies in a
  * group whose registration verified and the executor reached it with a literal from the image
- * on every arrival -- and by no group once any provider refuses.
+ * on every arrival -- and by no group once any provider refuses; one in a group's code the
+ * executor never reached says so.
  *
  * objc_map_provider_link is the build side: the final and prestrip slices must carry identical
  * sections (strip touches only __LINKEDIT), the link map's Arch and Sections must be this link's,
@@ -706,6 +715,128 @@ static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegRe
     return OBJC_OK;
 }
 
+/* ---- a group's coverage: what the executor did not explore must not change what it derived ---------------------- */
+
+typedef struct {
+    ObjcAnalysis *a;
+    const ObjcProvider *p;
+    const ObjcImage *im;
+    const ObjcRegResult *r;
+    uint64_t *c; size_t nc;    /* [lo, hi): image data outside __TEXT the executor read as initial values, merged */
+    uint64_t *m; size_t nm;    /* [lo, lo+1): each stub or pointer slot of a mutator import */
+    int status;
+} Sweep;
+
+static int in_pairs(const uint64_t *r, size_t n, uint64_t a) {
+    size_t i;
+    for (i = 0; i < n; i++) if (a >= r[2 * i] && a < r[2 * i + 1]) return 1;
+    return 0;
+}
+static int pair_cmp(const void *x, const void *y) {
+    uint64_t a = *(const uint64_t *)x, b = *(const uint64_t *)y;
+    return a < b ? -1 : a > b;
+}
+static int push_pair(uint64_t **v, size_t *n, uint64_t lo, uint64_t hi) {
+    uint64_t *g = realloc(*v, (*n + 1) * 2 * sizeof *g);
+    if (!g) return -1;
+    *v = g; g[2 * *n] = lo; g[2 * *n + 1] = hi; (*n)++;
+    return 0;
+}
+/* Where va is, for a message: the function holding it (LC_FUNCTION_STARTS) by its symbol, else its section. */
+static const char *where(const ObjcImage *im, uint64_t va, char *buf, size_t n) {
+    size_t lo = 0, hi = objc_image_nfunctions(im);
+    uint32_t fl = 0;
+    const char *s = objc_image_section_of(im, va, NULL, NULL, &fl), *name = NULL;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; if (objc_image_function(im, mid) <= va) lo = mid + 1; else hi = mid; }
+    if (lo && s && (fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))) name = objc_image_symbol_at(im, objc_image_function(im, lo - 1));
+    snprintf(buf, n, "%s", name ? name : s ? s : "no section");
+    return buf;
+}
+static const char *const REF_KIND[] = { "branches to", "reads", "takes the address of", "writes or uses", "points to", "may encode" };
+
+static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
+    Sweep *w = ctx;
+    const ObjcRegResult *r = w->r;
+    int in_e = in_pairs(r->explored, r->n_explored, site);
+    uint32_t fl = 0;
+    const char *sn = objc_image_section_of(w->im, site, NULL, NULL, &fl);
+    char wb[300], tb[300];
+    size_t i;
+    if (in_pairs(w->m, w->nm, target) && in_pairs(w->p->ranges, w->p->n_ranges, site)) {
+        const char *imp = objc_image_import_at(w->im, target);
+        for (i = 0; kind == OBJC_REF_BRANCH && i < r->n_sites && r->mutator_sites[i] != site; i++) ;
+        if (kind == OBJC_REF_BRANCH ? i == r->n_sites : !(kind == OBJC_REF_LOAD && in_e))
+            return w->status = objc_fail(w->a, "provider-unexplored-mutation", NULL, site,
+                                         "%s: %s at 0x%llx (in %s), in the group's verified code, is on no path the executor explored",
+                                         w->p->provider_id, imp ? imp + (imp[0] == '_') : "a mutator", (unsigned long long)site,
+                                         where(w->im, site, wb, sizeof wb));
+    }
+    if (in_pairs(r->explored, r->n_explored, target) && !(in_e && kind == OBJC_REF_BRANCH) &&
+        !(kind == OBJC_REF_POINTER && (fl & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS && target == w->p->constructor))
+        return w->status = objc_fail(w->a, "provider-foreign-entry", NULL, site,
+                                     "%s: 0x%llx (in %s) %s 0x%llx (in %s), code the executor explored, from code or data it did not",
+                                     w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
+                                     (unsigned long long)target, where(w->im, target, tb, sizeof tb));
+    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !in_e &&
+        !(kind == OBJC_REF_POINTER && (in_pairs(w->c, w->nc, site) ||
+                                        (sn && !strncmp(sn, "__TEXT,", 7) && !(fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))))))
+        return w->status = objc_fail(w->a, "provider-mutable-constant", NULL, site,
+                                     "%s: 0x%llx (in %s) %s 0x%llx (in %s), which the executor read as its initial value",
+                                     w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
+                                     (unsigned long long)target, where(w->im, target, tb, sizeof tb));
+    return 0;
+}
+
+/* The header's "Coverage": no mutator but class_addMethod on an explored path; every mutator call in the verified code
+ * on one; and, over the whole image, no reference into an explored function from outside the explored functions but
+ * the constructor's initializer entry, and none to data read as a constant but a load, one from an explored function,
+ * or a pointer in such data or in __TEXT. */
+static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage *im, const ObjcRegResult *r) {
+    Sweep w;
+    uint64_t *all = NULL;
+    size_t i, j, k, nall = 0, ns = objc_image_nsections(im);
+    int rc;
+    char wb[300];
+    for (i = 0; i < r->n_sites; i++) {
+        int add = 0;
+        for (j = 0; j < r->n_paths && !add; j++)
+            for (k = 0; k < r->paths[j].n_adds && !add; k++) add = r->paths[j].adds[k].site == r->mutator_sites[i];
+        if (!add)
+            return objc_fail(a, "provider-registration-mismatch", NULL, r->mutator_sites[i], "%s: a run-time mutator other than class_addMethod is called at 0x%llx (in %s), on an explored path",
+                             p->provider_id, (unsigned long long)r->mutator_sites[i], where(im, r->mutator_sites[i], wb, sizeof wb));
+    }
+    memset(&w, 0, sizeof w);
+    w.a = a; w.p = p; w.im = im; w.r = r;
+    for (i = 0; i < r->n_reads; i++) {
+        const char *sn = objc_image_section_of(im, r->const_reads[i].va, NULL, NULL, NULL);
+        if (sn && strncmp(sn, "__TEXT,", 7) && push_pair(&w.c, &w.nc, r->const_reads[i].va, r->const_reads[i].va + r->const_reads[i].len)) goto oom;
+    }
+    if (w.nc) qsort(w.c, w.nc, 2 * sizeof *w.c, pair_cmp);
+    for (i = 1, j = 0; i < w.nc; i++)
+        if (w.c[2 * i] <= w.c[2 * j + 1]) { if (w.c[2 * i + 1] > w.c[2 * j + 1]) w.c[2 * j + 1] = w.c[2 * i + 1]; }
+        else { j++; w.c[2 * j] = w.c[2 * i]; w.c[2 * j + 1] = w.c[2 * i + 1]; }
+    if (w.nc) w.nc = j + 1;
+    for (i = 0; i < ns; i++) {
+        uint64_t addr, size, va;
+        uint32_t fl, t;
+        objc_image_section(im, i, &addr, &size, &fl);
+        t = fl & SECTION_TYPE;
+        if (t != S_SYMBOL_STUBS && t != S_NON_LAZY_SYMBOL_POINTERS && t != S_LAZY_SYMBOL_POINTERS) continue;
+        for (va = addr; va < addr + size; va++)
+            if (objc_reg_mutator(objc_image_import_at(im, va)) && push_pair(&w.m, &w.nm, va, va + 1)) goto oom;
+    }
+    for (i = 0; i < r->n_explored; i++) if (push_pair(&all, &nall, r->explored[2 * i], r->explored[2 * i + 1])) goto oom;
+    for (i = 0; i < w.nc; i++) if (push_pair(&all, &nall, w.c[2 * i], w.c[2 * i + 1])) goto oom;
+    for (i = 0; i < w.nm; i++) if (push_pair(&all, &nall, w.m[2 * i], w.m[2 * i + 1])) goto oom;
+    rc = objc_image_refs(im, all, nall, sweep_ref, &w);
+    if (rc < 0) rc = objc_fail(a, "unsupported-provider", NULL, 0, "%s: the image is not position-independent: references by absolute address are not swept", p->provider_id);
+    free(all); free(w.c); free(w.m);
+    return rc ? OBJC_CANNOT_MEASURE : OBJC_OK;
+oom:
+    free(all); free(w.c); free(w.m);
+    return objc_fail(a, "out-of-memory", NULL, 0, "provider sweep");
+}
+
 /* A group's registration, derived from its constructor over its verified code; what it found, for the reason. */
 static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const OArchive *ar, const char *rootm, char *what, size_t n) {
     ObjcRegResult r;
@@ -730,10 +861,14 @@ static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const 
     if (objc_derive_registration(im, p->constructor, p->ranges, p->n_ranges, NULL, &r))
         rc = objc_fail(a, "provider-unmeasurable", NULL, 0, "%s: %s: %s", p->provider_id, r.code, r.why);
     else rc = group_verdict(a, p, &r, root, impva, &clean);
-    if (!rc && r.n_selreg && !(p->literal_sel_sites = calloc(r.n_selreg, sizeof *p->literal_sel_sites)))
+    if (!rc) rc = group_covered(a, p, im, &r);
+    if (!rc && r.n_selreg && (!(p->literal_sel_sites = calloc(r.n_selreg, sizeof *p->literal_sel_sites)) ||
+                              !(p->sel_sites = calloc(r.n_selreg, sizeof *p->sel_sites))))
         rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
-    for (i = 0; !rc && i < r.n_selreg; i++)
+    for (i = 0; !rc && i < r.n_selreg; i++) {
+        p->sel_sites[p->n_sel_sites++] = r.selreg[i].site;
         if (r.selreg[i].all_literal) p->literal_sel_sites[p->n_literal_sel_sites++] = r.selreg[i].site;
+    }
     for (i = 0; i < r.n_paths; i++) nulls += r.paths[i].class_null != 0;
     snprintf(what, n, "%zu paths from the constructor, %zu registering without a guess, %zu with objc_getClass NULL", r.n_paths, clean, nulls);
     objc_reg_free(&r);
@@ -909,13 +1044,21 @@ int objc_verify_providers(ObjcAnalysis *a) {
         int ok = 0;
         if (rc && e->kind != OBJC_EV_SEL_COMPUTED) continue;
         if (e->kind == OBJC_EV_SEL_COMPUTED) {
+            const ObjcProvider *in = NULL;
+            int reached = 0;
             for (j = 0; !rc && j < a->n_providers && !ok; j++) {   /* after a refusal, nothing is explained */
                 const ObjcProvider *p = &a->providers[j];
                 int inside = 0;
                 for (k = 0; k < p->n_ranges && !inside; k++) inside = e->address >= p->ranges[2 * k] && e->address < p->ranges[2 * k + 1];
                 for (k = 0; inside && k < p->n_literal_sel_sites && !ok; k++) ok = p->literal_sel_sites[k] == e->address;
+                if (inside && !p->legacy && p->active) in = p;
+                for (k = 0; inside && k < p->n_sel_sites; k++) reached |= p->sel_sites[k] == e->address;
             }
-            if (!ok) objc_fail(a, "computed-selector-producer", e->slice, e->address, "%s argument is not a recognised literal", e->name);
+            if (ok) continue;
+            if (in && !reached)
+                objc_fail(a, "computed-selector-producer", e->slice, e->address, "%s argument is not a recognised literal: in %s's code, on no path the executor explored",
+                          e->name, in->provider_id);
+            else objc_fail(a, "computed-selector-producer", e->slice, e->address, "%s argument is not a recognised literal", e->name);
             continue;
         }
         if (e->kind != OBJC_EV_METHOD_REGISTRATION) continue;

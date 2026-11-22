@@ -3379,3 +3379,69 @@ const char *objc_image_symbol_at(const ObjcImage *im, uint64_t va) {
     while (lo < hi) { size_t mid = lo + (hi - lo) / 2; if (im->s.syms[mid].addr < va) lo = mid + 1; else hi = mid; }
     return lo < im->s.nsym && im->s.syms[lo].addr == va ? im->s.syms[lo].name : NULL;
 }
+
+static int in_pairs(const uint64_t *r, size_t n, uint64_t a) {
+    size_t i;
+    for (i = 0; i < n; i++) if (a >= r[2 * i] && a < r[2 * i + 1]) return 1;
+    return 0;
+}
+
+/* The code walk is the reader's (scan_function): each function of each code section decoded linearly, data in
+ * code skipped, undecodable bytes swept for every rel32 or rip-relative disp32 alignment (sweep_undecodable). */
+int objc_image_refs(const ObjcImage *im, const uint64_t *ranges, size_t n, ObjcRefFn fn, void *ctx) {
+    const Slice *s = &im->s;
+    size_t i, k;
+    int rc;
+    if (s->im.hdr->filetype == MH_EXECUTE && !(s->im.hdr->flags & MH_PIE)) return -1;
+    for (i = 0; i < s->nsects; i++) {
+        const Sect *x = &s->sects[i];
+        const uint8_t *base;
+        uint64_t ip, end;
+        if (!is_code_sect(x) || !(base = bytes_at(s, x->addr, x->size))) continue;
+        ip = x->addr; end = x->addr + x->size;
+        while (ip < end) {
+            size_t lo = 0, hi = s->nstarts;
+            uint64_t stop = end, skip;
+            ObjcIns in;
+            while (lo < hi) { size_t mid = lo + (hi - lo) / 2; if (s->starts[mid] <= ip) lo = mid + 1; else hi = mid; }
+            if (lo < s->nstarts && s->starts[lo] < end) stop = s->starts[lo];
+            while (ip < stop) {
+                uint64_t t = 0;
+                int kind = -1;
+                if ((skip = dice_end(s, ip))) { ip = skip < stop ? skip : stop; continue; }
+                if (objc_x86_decode(base + (ip - x->addr), (size_t)(stop - ip), ip, &in) != 0) {
+                    static const int tails[] = { 0, 1, 2, 4 };
+                    uint64_t j;
+                    int q;
+                    for (j = 0; ip + j + 4 <= stop; j++) {
+                        int32_t d;
+                        memcpy(&d, base + (ip + j - x->addr), 4);
+                        for (q = 0; q < 4; q++) {
+                            uint64_t tg = ip + j + 4 + (uint64_t)tails[q] + (uint64_t)(int64_t)d;
+                            if (in_pairs(ranges, n, tg) && (rc = fn(ctx, ip + j, tg, OBJC_REF_UNDECODED))) return rc;
+                        }
+                    }
+                    ip = stop;
+                    break;
+                }
+                if (objc_x86_is_call_rel(&in) || objc_x86_is_jmp_rel(&in) || objc_x86_is_jcc(&in)) {
+                    t = (uint64_t)objc_x86_rel_target(base + (ip - x->addr), &in, ip); kind = OBJC_REF_BRANCH;
+                } else if (in.riprel) {
+                    t = in.riptarget;
+                    kind = (objc_x86_is_ff(&in, 2) || objc_x86_is_ff(&in, 4)) ? OBJC_REF_BRANCH :
+                           in.map == 0 && in.op == 0x8D ? OBJC_REF_ADDR : objc_x86_reads_only(&in) ? OBJC_REF_LOAD : OBJC_REF_OTHER;
+                }
+                if (kind >= 0 && in_pairs(ranges, n, t) && (rc = fn(ctx, ip, t, kind))) return rc;
+                ip = in.next;
+            }
+        }
+    }
+    for (k = 0; k < s->res.rebases.n; k++) {
+        const mrb_slot *r = &s->res.rebases.v[k];
+        uint64_t va, v;
+        if (r->type != REBASE_TYPE_POINTER || r->seg >= s->res.nsegs) continue;
+        va = s->res.segs[r->seg].vmaddr + r->off;
+        if (read64(s, va, &v) == 0 && in_pairs(ranges, n, v) && (rc = fn(ctx, va, v, OBJC_REF_POINTER))) return rc;
+    }
+    return 0;
+}

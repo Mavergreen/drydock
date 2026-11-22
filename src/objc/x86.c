@@ -72,6 +72,23 @@ int objc_x86_is_jcc(const ObjcIns *x) {
 }
 int objc_x86_is_ff(const ObjcIns *x, int r) { return x->map == 0 && x->op == 0xFF && x->modrm && (x->reg & 7) == r; }
 
+int objc_x86_reads_only(const ObjcIns *x) {
+    int op = x->op, r = x->reg & 7;
+    if (!x->modrm || x->mod == 3) return 0;
+    if (x->map == 0) {
+        if (op <= 0x3F && (op & 7) >= 2 && (op & 7) <= 3) return 1;   /* add/or/adc/sbb/and/sub/xor/cmp r, r/m */
+        if (op == 0x38 || op == 0x39 || op == 0x84 || op == 0x85 || op == 0x8A || op == 0x8B || op == 0x63) return 1;
+        if ((op == 0x80 || op == 0x81 || op == 0x83) && r == 7) return 1;                  /* cmp r/m, imm */
+        if ((op == 0xF6 || op == 0xF7) && r <= 1) return 1;                                /* test r/m, imm */
+        if (op == 0xFF && r == 6) return 1;                                                /* push r/m */
+        return 0;
+    }
+    if (x->map == 1)
+        return op == 0xB6 || op == 0xB7 || op == 0xBE || op == 0xBF || (op >= 0x40 && op <= 0x4F) || op == 0xAF ||
+               op == 0x10 || op == 0x28 || op == 0x6F || op == 0x2E || op == 0x2F;
+    return 0;
+}
+
 int64_t objc_x86_rel_target(const uint8_t *code, const ObjcIns *x, uint64_t ip) {
     int32_t d32; int8_t d8;
     (void)ip;

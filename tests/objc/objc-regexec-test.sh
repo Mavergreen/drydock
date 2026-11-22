@@ -76,6 +76,18 @@ pass 'the one class_addMethod site and the table reads are recorded'
 root=$("$NM" "$T/plain-Os" | awk '$3 == "___fixture_objc_activate_table" {print "0x" $1}' | sed 's/0x0*/0x/')
 [ -n "$root" ] && grep "^called .*$root\( \|\$\)" "$T/out" >/dev/null || fail "plain: $(grep '^called' "$T/out"), want the root $root"
 pass "the constructor's call of the root is recorded (called)"
+in_explored() {   # in_explored IMAGE SYMBOL: 0 when SYMBOL's address starts one of the driver's explored functions
+  a=$("$NM" "$T/$1" | awk -v s="$2" '$3 == s {print "0x" $1}' | sed 's/0x0*/0x/')
+  [ -n "$a" ] || fail "$1: no symbol $2"
+  grep "^explored .*$a-" "$T/out" >/dev/null
+}
+for f in _fixture_tabbing_start ___fixture_objc_activate_table _FixtureTabRegisterTable; do
+  in_explored plain-Os "$f" || fail "plain: $f is not an explored function: $(grep '^explored' "$T/out")"
+done
+for f in _fixture_tabbing_activation_state _FixtureTab_tabbingMode; do
+  in_explored plain-Os "$f" && fail "plain: $f, which no path executes, is an explored function"
+done
+pass 'explored: the functions a path executed in, and none it did not'
 
 build short -Os -DSHORT; run short; explored short
 [ "$(all_miss | head -1)" = 1 ] && [ "$(all_miss | grep -c '^  add ')" = 5 ] || fail "SHORT: want one all-miss path with 5 adds, got $(all_miss)"

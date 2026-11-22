@@ -30,5 +30,10 @@ int objc_x86_is_jmp_rel(const ObjcIns *x);
 int objc_x86_is_jcc(const ObjcIns *x);
 /* 1 for opcode FF with modrm.reg == r (2: call r/m, 4: jmp r/m). */
 int objc_x86_is_ff(const ObjcIns *x, int r);
+/* 1 when x's memory operand is only read: a load, compare, test, or an operation whose result goes to a register
+ * (Intel SDM vol. 2's mov, movzx/movsx/movsxd, cmovcc, cmp, test, push r/m, the r <- r op r/m forms, and the SSE
+ * loads movups/movss/movsd, movaps, movdqa/movdqu/movq and ucomis/comis); 0 for every other form, writes among
+ * them -- conservatively, including forms that only read but are not listed. */
+int objc_x86_reads_only(const ObjcIns *x);
 
 #endif

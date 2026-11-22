@@ -408,6 +408,29 @@ GROUP="$TAB_GROUP, $(printf '%s' "$G_LOC" | sed 's/"__fixture_objc_activate"/"__
 group_prefix tworefuse; unset GROUP; group tworefuse tworefuse
 exit_is 4 'group: a verified group beside a refused provider'; error_is provider-abi-mismatch 'group: a verified group beside a refused provider'
 error_is computed-selector-producer "group: a verified group's literal sites once another provider refuses"
+# spec: src/objc/provider.c header, "Groups" -- every runtime mutator call in a group's verified code is on an explored
+#       path, and one other than class_addMethod there refuses; no code or data outside the explored functions writes or
+#       passes on what the executor read as a constant, or enters the functions it explored.
+group_prefix viamsg -DVIA_MSGSEND; group viamsg viamsg
+group_refused 'coverage: VIA_MSGSEND' provider-unexplored-mutation 'class_addMethod at 0x'
+says '+[FixtureTabExtra addExtra:]' 'coverage: VIA_MSGSEND names the function'
+group_prefix setimp -DSETIMP; group setimp setimp
+W='coverage: SETIMP (the reader refuses method_setImplementation anywhere, before providers)'
+exit_is 4 "$W"; error_is runtime-method-swizzle "$W"; says '_method_setImplementation' "$W"
+! grep '"verdict": "provided"' "$T/report" >/dev/null || fail "$W: a member is provided"
+group_prefix rtwrite -DRUNTIME_WRITE; group rtwrite rtwrite
+group_refused 'sweep: RUNTIME_WRITE' provider-unmeasurable 'image-store: '
+group_prefix escape -DESCAPE; group escape escape
+group_refused 'sweep: ESCAPE' provider-mutable-constant 'in _fixture_tab_rows'
+group_prefix readtab -DREAD_TABLE; group readtab readtab
+exit_is 0 'sweep: a function no path runs only reads the table and the state'
+tab_all provided 'sweep: a function no path runs only reads the table and the state'
+group_prefix unexsel -DUNEXPLORED_SEL; group unexsel unexsel
+exit_is 4 'coverage: a computed sel_registerName in group code no path explored'
+error_is computed-selector-producer 'coverage: a computed sel_registerName in group code no path explored'
+says 'on no path the executor explored' 'coverage: a computed sel_registerName in group code no path explored'
+group callreg tab -DCALL_REGISTER
+group_refused 'entry: a consumer calling the register function with its own table' provider-foreign-entry 'in _main'
 # spec: src/objc/provider.c drain -- a zerofill atom is accepted only inside a zerofill final section.
 cp "$T/root/bin/g-tab" "$T/root/bin/g-bss"
 perl -e 'open my $f, "+<", $ARGV[0] or die; binmode $f; read $f, my $h, 8192;

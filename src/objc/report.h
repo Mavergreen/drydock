@@ -528,6 +528,17 @@ const char *objc_image_symbol_at(const ObjcImage *im, uint64_t va);
  * table), n_type and n_value; NULL past the end. */
 const char *objc_image_nlist(const ObjcImage *im, size_t i, uint8_t *type, uint64_t *value);
 
+/* Every direct reference in the image to an address inside n [lo, hi) ranges, each reported once to fn by the
+ * referencing address (site), the address referred to, and its kind: a relative call, jump or jcc, or a call or
+ * jump through a rip-relative slot (BRANCH, the target or the slot); a rip-relative operand only read
+ * (objc_x86_reads_only: LOAD), taken by lea (ADDR), or used any other way (OTHER); a REBASE_TYPE_POINTER slot
+ * holding it (POINTER, site the slot); or undecodable bytes that may encode it as a rel32 or disp32 (UNDECODED,
+ * site the bytes' address). Code is walked as the reader scans it. 0; fn's nonzero return, which stops the walk;
+ * or -1 for an executable that is not position-independent, whose code may refer by absolute address. */
+enum { OBJC_REF_BRANCH, OBJC_REF_LOAD, OBJC_REF_ADDR, OBJC_REF_OTHER, OBJC_REF_POINTER, OBJC_REF_UNDECODED };
+typedef int (*ObjcRefFn)(void *ctx, uint64_t site, uint64_t target, int kind);
+int objc_image_refs(const ObjcImage *im, const uint64_t *ranges, size_t n, ObjcRefFn fn, void *ctx);
+
 /* ---- providers (provider.c; main.m parses their JSON) ---- */
 typedef struct { char *member, *symbol; uint64_t address, size; } ObjcProviderAtom;
 typedef struct { char *name, *sha256; } ObjcProviderMember;
@@ -561,6 +572,7 @@ typedef struct ObjcProvider {
     /* A group whose derived registration verified: its sel_registerName sites the executor reached, every arrival
      * with a literal from the image (OBJC_EV_SEL_COMPUTED there is explained). */
     uint64_t *literal_sel_sites; size_t n_literal_sel_sites;
+    uint64_t *sel_sites; size_t n_sel_sites;   /* every sel_registerName site the executor reached, literal or not */
     ObjcLine *lines; size_t n_lines;     /* line rows of the linked members, by final address (with a receipt) */
 } ObjcProvider;
 
