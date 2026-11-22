@@ -385,6 +385,46 @@ group_prefix nullcls -DNULL_CLASS; group nullcls nullcls
 exit_is 0 'group: a NULL class path neither credits nor refuses'; tab_all provided 'group: a NULL class path neither credits nor refuses'
 says '1 registering without a guess, 1 with objc_getClass NULL' 'group: a NULL class path neither credits nor refuses'
 
+# spec: src/objc/provider.c header, "Groups" -- only a path where the group's own class is NULL, a member (or an unnamed
+#       lookup) was found, or an add failed may add other than exactly the members; one that adds nothing is a mismatch.
+group_prefix othernull -DOTHER_NULL; group othernull othernull
+group_refused "group: another class's NULL path registers only some members" provider-registration-mismatch \
+  'registers other than the declaration: missing -[NSWindow setTabbingMode:]'
+group_prefix unrelated -DUNRELATED_EARLY; group unrelated unrelated
+group_refused 'group: a found non-member lookup that returns early' provider-registration-mismatch \
+  'registers other than the declaration: missing -[NSWindow tabbingIdentifier]'
+group_prefix failextra -DFAIL_EXTRA; group failextra failextra
+group_refused 'group: an undeclared add after a failed add' provider-registration-mismatch \
+  'adds -[NSWindow fixtureUndeclared] (_FixtureTab_'
+for v in GUESSED TRAPPED; do
+  group_prefix "$v" "-D$v"; group "$v" "$v"
+  group_refused "group: $v: every registering path guessed or trapped" provider-registration-mismatch 'no path registers the group without a guess'
+done
+# spec: src/objc/provider.c header -- a computed sel_registerName is explained only by a group whose registration verified
+#       and whose executor read a literal there on every arrival, and by nothing once any provider refuses.
+group_prefix gcompsel -DCOMPUTED_SEL; group gcompsel gcompsel
+exit_is 4 'group: a computed sel_registerName in group code'; error_is computed-selector-producer 'group: a computed sel_registerName in group code'
+GROUP="$TAB_GROUP, $(printf '%s' "$G_LOC" | sed 's/"__fixture_objc_activate"/"__fixture_objc_activate_table"/')"
+group_prefix tworefuse; unset GROUP; group tworefuse tworefuse
+exit_is 4 'group: a verified group beside a refused provider'; error_is provider-abi-mismatch 'group: a verified group beside a refused provider'
+error_is computed-selector-producer "group: a verified group's literal sites once another provider refuses"
+# spec: src/objc/provider.c drain -- a zerofill atom is accepted only inside a zerofill final section.
+cp "$T/root/bin/g-tab" "$T/root/bin/g-bss"
+perl -e 'open my $f, "+<", $ARGV[0] or die; binmode $f; read $f, my $h, 8192;
+  my $i = index($h, "__bss" . ("\0" x 11) . "__DATA"); die "no __bss" if $i < 0;
+  seek $f, $i + 64, 0; read $f, my $fl, 4; $fl = pack("V", unpack("V", $fl) & ~0xff); seek $f, $i + 64, 0; print $f $fl' \
+  "$T/root/bin/g-bss" || fail 'retyping __bss'
+evidence "$T/root/bin/g-bss" "$T/root/bin/g-bss" "$T/root/bin/g-tab.map" "$T/ev/g-bss.json" "$T/g-tab"
+[ "$rc" = 0 ] || fail "group: a zerofill atom in a regular section: build evidence exit $rc"
+analyze "$T/root/bin/g-bss" --build-evidence "$T/ev/g-bss.json" --provider-prefix "$T/g-tab"
+group_refused 'group: a zerofill atom whose final section is not zerofill' provider-mapping-mismatch 'is zerofill, its final section is not'
+# spec: src/objc/main.m (analyze) -- with schema-1 providers only, a computed sel_registerName stops the reader as before:
+#       no provider is verified.
+SRC="$FX/table-consumer.m"; consumer "$T/root/bin/s1-compsel" "$ALL" -DCOMPUTED_SEL; unset SRC
+full "$T/root/bin/s1-compsel" "$T/root/bin/s1-compsel" "$T/root/bin/s1-compsel.map" s1-compsel
+exit_is 4 'schema 1: a computed sel_registerName'; error_is computed-selector-producer 'schema 1: a computed sel_registerName'
+grep '"constructor": null' "$T/report" >/dev/null || fail 'schema 1: a computed sel_registerName: the provider was verified, the reader did not stop'
+
 group compsel tab -DCOMPUTED_SEL
 exit_is 4 'group: a computed sel_registerName outside the group'; error_is computed-selector-producer 'group: a computed sel_registerName outside the group'
 says 'sel_registerName argument is not a recognised literal' 'group: a computed sel_registerName outside the group'

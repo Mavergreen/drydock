@@ -4,7 +4,7 @@
  * Values are concrete integers (image addresses among them), symbols for runtime results -- Class(name),
  * Meta(name), Sel(name), an opaque non-NULL Method or IMP -- or unknown. Every path starts with every register
  * unknown but rsp, and the image's initial bytes as memory. Execution forks, and both outcomes are explored, at:
- *   - objc_getClass: Class(literal), or NULL (the path's class_null);
+ *   - objc_getClass: Class(literal), or NULL (the path's class_null, the literal in its null_classes);
  *   - the lookups (found, or not): class_getInstanceMethod, class_getClassMethod, class_respondsToSelector,
  *     class_getMethodImplementation (not found answers an opaque forwarding IMP). Recaulk's tabbing units import
  *     the first (llvm-nm -u of their archive: class_addMethod, class_getInstanceMethod, class_getName,
@@ -74,6 +74,7 @@ typedef struct {
     Look *found; size_t nfound, capf;
     Add *adds; size_t nadds, capa;
     int class_null, trapped;
+    const char **nulls; size_t nnull, capnull;   /* the classes objc_getClass returned NULL for (NULL: unnamed) */
     size_t uforks;                            /* decisions forked on unknown flags */
 } St;
 typedef struct {
@@ -389,18 +390,20 @@ static Val carry(St *t, int sub, Val a, Val b, int w) {
 }
 
 /* ---- paths ---- */
-static void st_free(St *t) { if (t) { free(t->m); free(t->found); free(t->adds); free(t); } }
+static void st_free(St *t) { if (t) { free(t->m); free(t->found); free(t->adds); free(t->nulls); free(t); } }
 static St *fork_st(Ex *e, St *t) {
     St *u;
     if (++e->npaths > e->b.max_paths) { refuse(e, "path-budget", "more than %zu paths, forking at 0x%llx", e->b.max_paths, (unsigned long long)t->rip); return NULL; }
     if (!(u = malloc(sizeof *u))) { oom(e); return NULL; }
-    *u = *t; u->m = NULL; u->found = NULL; u->adds = NULL;
+    *u = *t; u->m = NULL; u->found = NULL; u->adds = NULL; u->nulls = NULL;
     if ((t->nm && !(u->m = malloc(t->capm * sizeof *u->m))) || (t->nfound && !(u->found = malloc(t->capf * sizeof *u->found))) ||
+        (t->nnull && !(u->nulls = malloc(t->capnull * sizeof *u->nulls))) ||
         (t->nadds && !(u->adds = malloc(t->capa * sizeof *u->adds))) ||
         grow((void **)&e->work, &e->capwork, e->nwork + 1, sizeof *e->work)) { st_free(u); oom(e); return NULL; }
     if (t->nm) memcpy(u->m, t->m, t->nm * sizeof *u->m); else u->capm = 0;
     if (t->nfound) memcpy(u->found, t->found, t->nfound * sizeof *u->found); else u->capf = 0;
     if (t->nadds) memcpy(u->adds, t->adds, t->nadds * sizeof *u->adds); else u->capa = 0;
+    if (t->nnull) memcpy(u->nulls, t->nulls, t->nnull * sizeof *u->nulls); else u->capnull = 0;
     e->work[e->nwork++] = u;
     return u;
 }
@@ -410,7 +413,10 @@ static int complete(Ex *e, St *t) {
     if (grow((void **)&o->paths, &e->cappaths, o->n_paths + 1, sizeof *o->paths)) return oom(e);
     p = &o->paths[o->n_paths++]; memset(p, 0, sizeof *p);
     p->class_null = t->class_null; p->trapped = t->trapped; p->unknown_forks = t->uforks;
-    if ((t->nfound && !(p->found = calloc(t->nfound, sizeof *p->found))) || (t->nadds && !(p->adds = calloc(t->nadds, sizeof *p->adds)))) return oom(e);
+    if ((t->nfound && !(p->found = calloc(t->nfound, sizeof *p->found))) || (t->nadds && !(p->adds = calloc(t->nadds, sizeof *p->adds))) ||
+        (t->nnull && !(p->null_classes = calloc(t->nnull, sizeof *p->null_classes)))) return oom(e);
+    for (i = 0; i < t->nnull; i++) p->null_classes[i] = dup0(t->nulls[i]);
+    p->n_null_classes = t->nnull;
     for (i = 0; i < t->nfound; i++) {
         p->found[i].cls = dup0(t->found[i].cls); p->found[i].meta = t->found[i].meta; p->found[i].sel = dup0(t->found[i].sel);
     }
@@ -485,6 +491,8 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
         clobber(t); t->r[0] = S(id);
         if (!(u = fork_st(e, t))) return -1;
         u->r[0] = C(0); u->class_null = 1;
+        if (grow((void **)&u->nulls, &u->capnull, u->nnull + 1, sizeof *u->nulls)) return oom(e);
+        u->nulls[u->nnull++] = s1 ? e->sym[id].name : NULL;
         return 0;
     }
     if (!strcmp(n, "object_getClass")) {
@@ -869,7 +877,8 @@ void objc_reg_free(ObjcRegResult *r) {
         ObjcRegPath *p = &r->paths[i];
         for (j = 0; j < p->n_found; j++) { free(p->found[j].cls); free(p->found[j].sel); }
         for (j = 0; j < p->n_adds; j++) { free(p->adds[j].cls); free(p->adds[j].sel); free(p->adds[j].imp); free(p->adds[j].types); }
-        free(p->found); free(p->adds);
+        for (j = 0; j < p->n_null_classes; j++) free(p->null_classes[j]);
+        free(p->found); free(p->adds); free(p->null_classes);
     }
     free(r->paths); free(r->mutator_sites); free(r->called); free(r->selreg); free(r->const_reads); free(r->image_stores);
     memset(r, 0, sizeof *r);

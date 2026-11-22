@@ -12,11 +12,11 @@ typedef struct { char *cls; int meta; char *sel; } ObjcRegLookup;
  * not a known address (imp is the image's symbol there, NULL in a stripped image). ok: the fork this path took
  * (1 the add succeeded, 0 it failed); site: the call instruction. */
 typedef struct { char *cls; int meta; char *sel, *imp, *types; uint64_t imp_va, site; int ok; } ObjcRegAdd;
-/* class_null: objc_getClass returned NULL on it. trapped: it ended at int3 or ud2. unknown_forks: the branches,
+/* class_null: objc_getClass returned NULL on it; null_classes: for which literals (a NULL entry: one not named). trapped: it ended at int3 or ud2. unknown_forks: the branches,
  * setcc and cmov along it whose flags the executor did not know, each decided by forking (the path may be
  * infeasible when nonzero). */
 typedef struct { ObjcRegLookup *found; size_t n_found; ObjcRegAdd *adds; size_t n_adds;
-                 int class_null, trapped; size_t unknown_forks; } ObjcRegPath;
+                 int class_null, trapped; size_t unknown_forks; char **null_classes; size_t n_null_classes; } ObjcRegPath;
 typedef struct { size_t max_paths, max_depth, max_insns; } ObjcRegBudget;
 #define OBJC_REG_MAX_PATHS ((size_t)1 << 14)
 #define OBJC_REG_MAX_DEPTH ((size_t)16)

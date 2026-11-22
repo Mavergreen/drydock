@@ -2,8 +2,11 @@
 // miniature: a const table of rows, an absent-only register function walked by its base and count, a root guarded by
 // a state global, and a constructor calling the root. Built with -fobjc-arc, as Recaulk's tabbing units are.
 // Each -D variant (REORDER, SHORT, NOGUARD, NOPARTIAL, RUNTIME_WRITE, INDIRECT, VIA_MSGSEND, SETIMP, EXTRA_ROW, WRONG_IMP,
-// WRONG_TYPES, KIND_SWAP, MANY, FRAME_ESCAPE) is a mutant tests/objc/objc-regexec-test.sh names; NULL_CLASS (the table
-// registered on objc_getClass's NULL too) is one tests/objc/objc-provider-test.sh names.
+// WRONG_TYPES, KIND_SWAP, MANY, FRAME_ESCAPE) is a mutant tests/objc/objc-regexec-test.sh names; tests/objc/objc-provider-test.sh
+// names NULL_CLASS (the table registered on objc_getClass's NULL too), OTHER_NULL (the last three rows only when another
+// class exists), UNRELATED_EARLY (nothing registered when an unrelated method is found), FAIL_EXTRA (an undeclared add
+// after a failed one), GUESSED (a branch on an unknown value before registering), TRAPPED (a trap after registering) and
+// COMPUTED_SEL (a selector registered from a run-time string).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -90,8 +93,14 @@ __attribute__((noinline)) FixtureState FixtureTabRegisterTable(Class cls, const 
   count -= 1;
 #endif
   for (size_t i = 0; i < count; ++i) {
+#ifdef OTHER_NULL
+    if (i == 3 && !objc_getClass("NSPanel")) break;
+#endif
     Class c = table[i].classMethod ? object_getClass(cls) : cls;
     if (!class_addMethod(c, sel_registerName(table[i].selector), table[i].imp, table[i].types)) {
+#ifdef FAIL_EXTRA
+      class_addMethod(cls, sel_registerName("fixtureUndeclared"), table[i].imp, table[i].types);
+#endif
       *detail = table[i].selector;
       return FixtureAddFailed;
     }
@@ -131,7 +140,19 @@ void __fixture_objc_activate_table(void) {
 #ifdef RUNTIME_WRITE
   FixtureTabMethods[2].imp = (IMP)(void *)FixtureTab_tabbedWindows;
 #endif
+#ifdef UNRELATED_EARLY
+  if (class_getInstanceMethod(window, sel_registerName("fixtureUnrelated"))) return;
+#endif
+#ifdef GUESSED
+  if (arc4random() == 7) stateDetail = "seven";
+#endif
+#ifdef COMPUTED_SEL
+  (void)sel_registerName(getenv("FIXTURE_SEL"));
+#endif
   state = REGISTER(window, FixtureTabMethods, sizeof FixtureTabMethods / sizeof *FixtureTabMethods, &stateDetail);
+#ifdef TRAPPED
+  __builtin_trap();
+#endif
 #ifdef VIA_MSGSEND
   if (state == FixtureRegistered) [FixtureTabExtra addExtra:window];
 #endif

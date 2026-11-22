@@ -42,28 +42,31 @@
  *
  * Groups (schema 2; legacy entries are checked as above). 1, 2 and 4 hold as for an entry, and 3's
  * constructor is verified the same way, with every member's implementation verified too (a
- * zerofill atom, which has no bytes, only where its final section is zerofill as well). Instead
- * of 3's strings, each member must be declared with the newer SDK's encoding and be absent from
- * the 10.9 floor on its class's chain (provider-abi-mismatch, provider-present-on-floor), and
+ * zerofill atom, which has no bytes, only inside a final section that is zerofill as well).
+ * Instead of 3's strings, each member must be declared with the newer SDK's encoding and be
+ * absent from the 10.9 floor on its class's chain, a superclass the capture lacks counting as
+ * present (provider-abi-mismatch, provider-present-on-floor), and
  * the registration is derived from the code: regexec.c runs from the constructor's final
  * address over the verified ranges (its refusal is provider-unmeasurable). Over every path it
  * completes, guessed or trapped ones included: the root is called on some path; no path where a
  * lookup found a member -- or one whose class or selector is unnamed -- calls class_addMethod
- * (provider-guard-violation); every path with its class named, nothing found and every add
- * succeeding adds exactly the members (class, kind by metaclass, selector, implementation by
- * final address, types); no succeeding add anywhere is outside them; and at least one such path
- * has no guessed branch and no trap (else provider-registration-mismatch). A group is credited
+ * (provider-guard-violation); every path adds exactly the members (class, kind by metaclass,
+ * selector, implementation by final address, types), nothing being a mismatch too, except one
+ * where objc_getClass of the group's own class returned NULL, a member's or an unnamed lookup
+ * was found, or an add failed -- a found lookup of anything else exempts nothing; no succeeding
+ * add anywhere is outside them; and at least one exact path has no guessed branch and no trap
+ * (else provider-registration-mismatch). A group is credited
  * whole or not at all: an active group turns the unsupported findings of each member's selector
  * and kind ("+" being a send to the class object) on a receiver whose floor chain includes its
  * class into `provided`.
  *
  * Every class_addMethod call the reader saw (OBJC_EV_METHOD_REGISTRATION) must lie in provider
  * code verified here, or the artifact is cannot-measure (unattested-method-registration): a
- * root symbol, a provider name or a link-argument list alone attests nothing. With providers
+ * root symbol, a provider name or a link-argument list alone attests nothing. With a group
  * declared, the reader records a sel_registerName of a non-literal (OBJC_EV_SEL_COMPUTED)
  * instead of refusing it; it is refused here (computed-selector-producer) unless it lies in a
  * group whose registration verified and the executor reached it with a literal from the image
- * on every arrival.
+ * on every arrival -- and by no group once any provider refuses.
  *
  * objc_map_provider_link is the build side: the final and prestrip slices must carry identical
  * sections (strip touches only __LINKEDIT), the link map's Arch and Sections must be this link's,
@@ -445,9 +448,10 @@ static int drain(V *v) {
         if (!(fs = objc_image_section_of(v->im, e->address, NULL, NULL, NULL)) || strcmp(fs, x->name))
             return vfail(v, "provider-mapping-mismatch", e->address, "%s(%s) is in %s, the final address in %s", m->name, name, x->name, fs ? fs : "no section");
         if (!v->p->legacy && zerofill(x->flags)) {   /* no bytes on either side: the final section must be zerofill too */
+            uint64_t fa = 0, fz = 0;
             uint32_t ff = 0;
-            objc_image_section_of(v->im, e->address, NULL, NULL, &ff);
-            if (!zerofill(ff)) return vfail(v, "provider-mapping-mismatch", e->address, "%s(%s) is zerofill, its final section is not", m->name, name);
+            objc_image_section_of(v->im, e->address, &fa, &fz, &ff);
+            if (!zerofill(ff) || e->address + e->size > fa + fz) return vfail(v, "provider-mapping-mismatch", e->address, "%s(%s) is zerofill, its final section is not", m->name, name);
             if (add_range(v, e->address, e->address + e->size)) return -1;
         } else if (compare_region(v, r.m, x, lo, hi, e->address, 0) || add_range(v, e->address, e->address + e->size)) return -1;
         v->p->verified++;
@@ -574,7 +578,8 @@ static const char *floor_answers(const ObjcAnalysis *a, const char *cls, const c
         const char *i = objc_map_get(a->rt_class, cls), *role;
         const ObjcRtClass *c;
         char key[1024];
-        if (!i) return NULL;
+        if (!i && depth) { *unmeasured = 1; return cls; }   /* a superclass the capture lacks: it may answer */
+        if (!i) return NULL;                                /* the class itself: 4 finds it no floor class */
         c = &a->rt_classes[strtoul(i, NULL, 10)];
         role = objc_map_get(a->rt_image_role, c->image);
         if (!role || (strcmp(role, "required") && strcmp(role, "fixture"))) { *unmeasured = 1; return c->name; }
@@ -638,9 +643,10 @@ static const char *imp_text(const ObjcRegAdd *d, char *buf, size_t n) {
 }
 
 /* The verdict on a group's derived registration (the header's "Groups"): the root reached; (a) no add on a path
- * where a member's lookup was found; (b) every path that registers -- class named, nothing found, every add
- * succeeded -- adds exactly the members; (c) no add anywhere outside them; (d) some path registers them without a
- * guess. impva[i]: member i's implementation's final address. *clean: the paths of (d). */
+ * where a member's lookup was found; (b) every path adds exactly the members, except one where objc_getClass of the
+ * group's class returned NULL, a member's (or an unnamed) lookup was found, or an add failed; (c) no succeeding add
+ * anywhere outside them; (d) some path of (b) has no guess. impva[i]: member i's implementation's final address.
+ * *clean: the paths of (d). */
 static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegResult *r, uint64_t root, const uint64_t *impva,
                          size_t *clean) {
     size_t i, j, k, l;
@@ -661,9 +667,11 @@ static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegRe
     }
     for (i = 0; i < r->n_paths; i++) {
         const ObjcRegPath *q = &r->paths[i];
-        int registers = !q->class_null && !q->n_found;
-        for (j = 0; j < q->n_adds && registers; j++) registers = q->adds[j].ok;
-        if (!registers) continue;
+        int exempt = 0;
+        for (j = 0; j < q->n_null_classes && !exempt; j++) exempt = q->null_classes[j] && !strcmp(q->null_classes[j], p->cls);
+        for (j = 0; j < q->n_found && !exempt; j++) exempt = lookup_declared(&q->found[j], p);
+        for (j = 0; j < q->n_adds && !exempt; j++) exempt = !q->adds[j].ok;
+        if (exempt) continue;
         buf[0] = 0;
         for (k = 0; k < p->n_methods; k++) {
             const ObjcProviderMethod *m = &p->methods[k];

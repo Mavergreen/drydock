@@ -266,7 +266,7 @@ typedef struct {
     /* Analyzer pipeline (main.m) only; the reader driver leaves these empty. */
     int findings_mode;            /* open sends become unresolved findings, not errors */
     int metadata_only;            /* read only load commands and Objective-C metadata, no code */
-    int defer_computed_selectors; /* a computed sel_registerName is OBJC_EV_SEL_COMPUTED, not refused (analyze, with providers) */
+    int defer_computed_selectors; /* a computed sel_registerName is OBJC_EV_SEL_COMPUTED, not refused (analyze, with a group) */
     char **rpaths; size_t n_rpaths;               /* the measured slice's LC_RPATHs */
     ObjcShipped *shipped; size_t n_shipped;       /* the shipped closure beyond the artifact (main.m) */
     char **image_paths; size_t n_image_paths;     /* 0 the artifact's path relative to the root, k shipped[k - 1]'s */
