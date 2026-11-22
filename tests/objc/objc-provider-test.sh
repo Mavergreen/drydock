@@ -236,6 +236,66 @@ full "$T/root/bin/rooted" "$T/rooted.prestrip" "$T/maps/rooted.map" stripped
 positive 'stripped final artifact with prestrip evidence'
 cp "$T/rooted.prestrip" "$T/root/bin/rooted"
 
+# spec: src/objc/main.m (load_provider_prefix) -- schema 2: groups under `providers`, schema-1-shaped entries under
+#       `legacy_providers`, exact key sets, no (class, kind, selector) claimed twice; evidence records a group once.
+G_LOC='{ "provider_id" : "fixture.nslocale.group.v1", "class" : "NSLocale", "guard" : "absent-only",
+      "activation_root" : "__fixture_objc_activate", "required_frameworks" : [ "AppKit", "Foundation" ],
+      "framework_policy" : "strong-linked-before-root", "methods" : [
+        { "kind" : "-", "selector" : "languageCode", "encoding" : "@16@0:8", "implementation_symbol" : "__fixture_objc_locale_language_code" },
+        { "kind" : "+", "selector" : "countryCode", "encoding" : "@16@0:8", "implementation_symbol" : "__fixture_objc_locale_country_code" } ] }'
+schema2() {  # schema2 NAME GROUPS [SED]: a copy of the prefix whose declaration is schema 2, its entries legacy, GROUPS the groups
+  rm -rf "$T/s2-$1"; cp -R "$PFX" "$T/s2-$1"
+  sed -e 's/"schema" : 1,/"schema" : 2, "providers" : ['"$(printf '%s' "$2" | tr '\n' ' ' | sed 's/[&|\\]/\\&/g')"'],/' \
+      -e 's/"providers" : \[$/"legacy_providers" : [/' -e "${3:-s/@@@@//}" "$DECL" >"$T/s2-$1/share/recaulk/objc-providers.json"
+}
+s2_refused() {  # s2_refused WHY NAME: link-args refuses the prefix as a malformed declaration
+  link_args "$T/s2-$2" "$T/maps/s2.map"; [ "$rc" = 4 ] || fail "schema2: $1 accepted (exit $rc)"
+  grep -F malformed-provider "$T/err" >/dev/null || fail "schema2: $1 not refused as malformed-provider: $(tail -2 "$T/err")"
+  [ -z "${3:-}" ] || grep -F "$3" "$T/err" >/dev/null || fail "schema2: $1 refused for another reason: $(tail -2 "$T/err")"
+}
+schema2 legacy ''
+s2consumer() {  # s2consumer NAME: the rooted consumer linked against schema2 prefix s2-NAME, its evidence at $T/ev/s2-NAME.json
+  save=$PFX; PFX="$T/s2-$1"
+  consumer "$T/root/bin/s2-$1" "$ALL"
+  evidence "$T/root/bin/s2-$1" "$T/root/bin/s2-$1" "$T/root/bin/s2-$1.map" "$T/ev/s2-$1.json"
+  PFX=$save
+}
+s2consumer legacy; [ "$rc" = 0 ] || fail "schema2: evidence over a legacy entry: exit $rc"
+analyze "$T/root/bin/s2-legacy" --build-evidence "$T/ev/s2-legacy.json" --provider-prefix "$T/s2-legacy"
+positive 'schema2: the fixture'"'"'s provider as a legacy entry is still provided'
+[ "$(grep -c '"provider_id"' "$T/ev/s2-legacy.json")" = 1 ] || fail 'schema2: a legacy entry is not one evidence record'
+schema2 group "$G_LOC"
+s2consumer group
+[ "$rc" = 0 ] || fail "schema2: a group's build evidence: exit $rc"
+[ "$(grep -c '"provider_id"' "$T/ev/s2-group.json")" = 2 ] || fail 'schema2: group plus legacy entry are not two evidence records'
+[ "$(grep -c '"provider_id": "fixture.nslocale.group.v1"' "$T/ev/s2-group.json")" = 1 ] || fail 'schema2: a group is not recorded exactly once'
+analyze "$T/root/bin/s2-group" --build-evidence "$T/ev/s2-group.json" --provider-prefix "$T/s2-group"
+exit_is 4 'schema2: a group before derived registration is built'; error_is unsupported-provider 'schema2 group'
+grep -F 'fixture.nslocale.group.v1: derived registration is not yet built' "$T/report" >/dev/null || fail 'schema2: the temporary refusal does not name the group'
+link_args "$T/s2-group" "$T/maps/s2.map" ; rc=0
+"$DRYDOCK_OBJC" link-args --prefix "$T/s2-group" --link-map "$T/maps/s2.map" --provider fixture.nslocale.group.v1 >"$T/args" 2>"$T/err" || rc=$?
+[ "$rc" = 0 ] || fail "schema2: link-args for a group: exit $rc"
+S2A=$(CDPATH= cd -- "$T/s2-group" && pwd -P)/$(field archive_path)
+printf '%s\n' "$S2A" -Wl,-u,___fixture_objc_activate -framework AppKit -framework Foundation \
+  -Xlinker -map -Xlinker "$T/maps/s2.map" >"$T/args.want"
+cmp -s "$T/args" "$T/args.want" || fail "schema2: link-args for a group: got $(tr '\n' '|' <"$T/args")"
+schema2 unknown-key "$G_LOC" 's/"guard" : "absent-only"/"guard" : "absent-only", "extra" : 1/'
+s2_refused 'an unknown key' unknown-key
+schema2 unknown-method-key "$(printf '%s' "$G_LOC" | sed 's/"kind" : "+",/"kind" : "+", "extra" : 1,/')"
+s2_refused 'an unknown method key' unknown-method-key
+schema2 guard "$(printf '%s' "$G_LOC" | sed 's/"absent-only"/"always"/')"
+s2_refused 'a guard other than absent-only' guard 'provider group is not a valid'
+schema2 no-methods '{ "provider_id" : "fixture.nslocale.group.v1", "class" : "NSLocale", "guard" : "absent-only",
+      "activation_root" : "__fixture_objc_activate", "required_frameworks" : [ "AppKit" ],
+      "framework_policy" : "strong-linked-before-root", "methods" : [] }'
+s2_refused 'an empty methods list' no-methods 'provider group is not a valid'
+schema2 dup-groups "$G_LOC, $(printf '%s' "$G_LOC" | sed 's/group\.v1/other.v1/')"
+s2_refused 'a selector claimed by two groups' dup-groups 'declared twice'
+schema2 dup-in-group "$(printf '%s' "$G_LOC" | sed 's/"kind" : "+"/"kind" : "-"/; s/"selector" : "countryCode"/"selector" : "languageCode"/')"
+s2_refused 'a selector claimed twice in a group' dup-in-group 'declared twice'
+schema2 dup-legacy "$(printf '%s' "$G_LOC" | sed 's/"class" : "NSLocale"/"class" : "NSWorkspace"/; s/"selector" : "languageCode"/"selector" : "'"$SEL"'"/')"
+s2_refused 'a selector claimed by a group and a legacy entry' dup-legacy 'declared twice'
+
 consumer "$T/root/bin/omitted" "$NO_ROOT"
 full "$T/root/bin/omitted" "$T/root/bin/omitted" "$T/root/bin/omitted.map" omitted
 nonzero 'archive linked without the root'; want_verdict unsupported 'archive linked without the root'

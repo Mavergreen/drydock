@@ -527,8 +527,15 @@ const char *objc_image_nlist(const ObjcImage *im, size_t i, uint8_t *type, uint6
 /* ---- providers (provider.c; main.m parses their JSON) ---- */
 typedef struct { char *member, *symbol; uint64_t address, size; } ObjcProviderAtom;
 typedef struct { char *name, *sha256; } ObjcProviderMember;
+typedef struct ObjcProviderMethod { char *kind, *selector, *encoding, *impl_symbol; } ObjcProviderMethod;
 typedef struct ObjcProvider {
-    /* The validated declaration (PREFIX/share/recaulk/objc-providers.json). */
+    /* The validated declaration (PREFIX/share/recaulk/objc-providers.json). schema is the file's (1 or 2);
+     * legacy is 1 for a schema-1-shaped entry of either file schema (method_kind..impl_symbol below, no
+     * methods). A schema-2 group has guard "absent-only", methods, and no method_kind/selector/encoding/
+     * impl_symbol. */
+    int schema, legacy;
+    char *guard;
+    ObjcProviderMethod *methods; size_t n_methods;
     char *provider_id, *cls, *method_kind, *selector, *encoding, *impl_symbol, *root_symbol;
     char **frameworks; size_t nframeworks;
     char *archive;              /* PREFIX/build.archive_path, resolved */

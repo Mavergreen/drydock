@@ -542,6 +542,7 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     char root[300], impl[300], key[1024], fws[2048] = "", rootm[256], needwhy[1400] = "";
     const char *enc;
     int rc;
+    if (!p->legacy) return objc_fail(a, "unsupported-provider", NULL, 0, "%s: derived registration is not yet built", p->provider_id);
     if (!p->have_evidence) return set_reason(a, p, 0, "no build evidence names this provider");
     if (strcmp(p->ev_declaration_sha256, p->declaration_sha256))
         return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: the declaration is %s, the build evidence recorded %s", p->provider_id, p->declaration_sha256, p->ev_declaration_sha256);
@@ -703,7 +704,7 @@ int objc_provide_findings(ObjcAnalysis *a) {
         for (j = 0; j < a->n_providers; j++) {
             const ObjcProvider *p = &a->providers[j];
             char proof[2048];
-            if (!p->active || f->verdict != OBJC_UNSUPPORTED || !s->selector || !s->method_kind || !s->receiver ||
+            if (!p->active || !p->legacy || f->verdict != OBJC_UNSUPPORTED || !s->selector || !s->method_kind || !s->receiver ||
                 strcmp(s->selector, p->selector) || strcmp(s->method_kind, p->method_kind) || !chain_includes(a, s->receiver, p->cls))
                 continue;
             snprintf(proof, sizeof proof, "provided by %s: %s (was: %s)", p->provider_id, p->reason, f->proof ? f->proof : "-");

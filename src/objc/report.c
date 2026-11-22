@@ -119,7 +119,11 @@ static void destroy_pipeline(ObjcAnalysis *a) {
         ObjcProvider *p = &a->providers[i];
         size_t k;
         free(p->provider_id); free(p->cls); free(p->method_kind); free(p->selector); free(p->encoding);
-        free(p->impl_symbol); free(p->root_symbol); free_strv(p->frameworks, p->nframeworks);
+        free(p->impl_symbol); free(p->guard); free(p->root_symbol);
+        for (size_t m = 0; m < p->n_methods; m++) {
+            free(p->methods[m].kind); free(p->methods[m].selector); free(p->methods[m].encoding); free(p->methods[m].impl_symbol);
+        }
+        free(p->methods); free_strv(p->frameworks, p->nframeworks);
         free(p->archive); free(p->archive_sha256); free(p->declaration_sha256);
         free(p->ev_declaration_sha256); free(p->ev_archive_sha256);
         for (k = 0; k < p->n_members; k++) { free(p->members[k].name); free(p->members[k].sha256); }

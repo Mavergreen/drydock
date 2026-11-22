@@ -531,36 +531,138 @@ static int hex64(const char *s) {
     for (i = 0; i < 64; i++) if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) return 0;
     return 1;
 }
-static int json_int1(id x) {
+static int json_int(id x, int n) {
     return [x isKindOfClass:[NSNumber class]] && CFGetTypeID((CFTypeRef)x) != CFBooleanGetTypeID() &&
-           !CFNumberIsFloatType((CFNumberRef)x) && [x isEqual:@1];
+           !CFNumberIsFloatType((CFNumberRef)x) && [x isEqual:[NSNumber numberWithInt:n]];
 }
 static int exact_keys(NSDictionary *d, NSArray *keys) {
     return [d isKindOfClass:[NSDictionary class]] && [[NSSet setWithArray:[d allKeys]] isEqualToSet:[NSSet setWithArray:keys]];
 }
 
 /* PREFIX/share/recaulk/objc-providers.json, schema 1 as Recaulk's build/objc-provider-manifest.m
- * writes it: every key known, every identifier a plain identifier (nothing a linker or shell could
+ * writes it, or schema 2: `providers` are groups (one class, an absent-only guard, one activation
+ * root, a non-empty list of methods) and an optional `legacy_providers` carries schema-1-shaped
+ * entries, each verified by schema 1's rules; no (class, kind, selector) is claimed twice in a
+ * schema-2 file. One ObjcProvider per entry or group, so build evidence records a group once.
+ * Schema 1: every key known, every identifier a plain identifier (nothing a linker or shell could
  * read as more), a strong framework policy, a shipping x86_64 archive whose bytes hash to the
  * declared digest and a source receipt that hashes to its digest. */
+typedef struct {
+    const char *decl, *archive, *ash, *dsha, *receipt;
+    NSDictionary *build;
+    NSMutableSet *claimed;   /* schema 2: "class\tkind\tselector" of every method so far */
+} LoadCtx;
+
+static int claim(ObjcAnalysis *a, const LoadCtx *c, const char *cls, const char *kind, const char *sel) {
+    NSString *k = [NSString stringWithFormat:@"%s\t%s\t%s", cls, kind, sel];
+    if (!c->claimed) return OBJC_OK;
+    if ([c->claimed containsObject:k])
+        return objc_fail(a, "malformed-provider", NULL, 0, "%s: %s%s %s is declared twice", c->decl, kind, cls, sel);
+    [c->claimed addObject:k];
+    return OBJC_OK;
+}
+
+/* The fields every entry or group shares: frameworks, build record, measured digests. */
+static int fill_common(ObjcAnalysis *a, ObjcProvider *p, const LoadCtx *c, NSDictionary *q, NSArray *fws) {
+    for (id f in fws)
+        if (![f isKindOfClass:[NSString class]] || !charset(cs(f), 100, fw_first, c_rest) || objc_strv_push(&p->frameworks, &p->nframeworks, cs(f)))
+            return objc_fail(a, "malformed-provider", NULL, 0, "%s: required_frameworks holds a non-identifier", c->decl);
+    if (objc_set_string(&p->provider_id, S(q, @"provider_id")) || objc_set_string(&p->cls, S(q, @"class")) ||
+        objc_set_string(&p->root_symbol, S(q, @"activation_root")) || objc_set_string(&p->archive, c->archive) ||
+        objc_set_string(&p->archive_sha256, c->ash) || objc_set_string(&p->declaration_sha256, c->dsha) ||
+        objc_set_string(&p->sdk_settings_sha256, S(c->build, @"sdk_settings_sha256")) || objc_set_string(&p->source_inputs, c->receipt))
+        return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    return OBJC_OK;
+}
+
+static int method_ok(NSDictionary *q, const char **kind) {
+    return (*kind = S(q, @"method_kind")) && !(strcmp(*kind, "-") && strcmp(*kind, "+")) &&
+           charset(S(q, @"selector"), 400, c_first, sel_rest) && charset(S(q, @"encoding"), 200, enc_char, enc_char) &&
+           charset(S(q, @"implementation_symbol"), 200, c_first, c_rest);
+}
+
+/* A schema-1-shaped entry (a schema-1 file's, or a schema-2 file's legacy_providers). */
+static int load_entry(ObjcAnalysis *a, const LoadCtx *c, NSDictionary *q, int schema) {
+    ObjcProvider *p;
+    NSArray *fws;
+    const char *kind;
+    int rc;
+    if (!exact_keys(q, @[ @"provider_id", @"class", @"method_kind", @"selector", @"encoding", @"implementation_symbol",
+                          @"activation_root", @"required_frameworks", @"framework_policy" ]) ||
+        !charset(S(q, @"provider_id"), 200, id_first, id_rest) || !charset(S(q, @"class"), 200, c_first, c_rest) ||
+        !method_ok(q, &kind) || !charset(S(q, @"activation_root"), 200, c_first, c_rest) ||
+        ![str(q, @"framework_policy") isEqualToString:@"strong-linked-before-root"] ||
+        !(fws = arr(q, @"required_frameworks")) || ![fws count])
+        return objc_fail(a, "malformed-provider", NULL, 0, "%s: a provider entry is not a valid declaration", c->decl);
+    if ((rc = claim(a, c, S(q, @"class"), kind, S(q, @"selector")))) return rc;
+    if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;
+    p->schema = schema; p->legacy = 1;
+    if ((rc = fill_common(a, p, c, q, fws))) return rc;
+    if (objc_set_string(&p->method_kind, kind) || objc_set_string(&p->selector, S(q, @"selector")) ||
+        objc_set_string(&p->encoding, S(q, @"encoding")) || objc_set_string(&p->impl_symbol, S(q, @"implementation_symbol")))
+        return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    return OBJC_OK;
+}
+
+/* A schema-2 group: one class, one root, an absent-only guard, a non-empty list of methods. */
+static int load_group(ObjcAnalysis *a, const LoadCtx *c, NSDictionary *q) {
+    ObjcProvider *p;
+    NSArray *fws, *ms;
+    int rc;
+    if (!exact_keys(q, @[ @"provider_id", @"class", @"guard", @"activation_root", @"required_frameworks", @"framework_policy",
+                          @"methods" ]) ||
+        !charset(S(q, @"provider_id"), 200, id_first, id_rest) || !charset(S(q, @"class"), 200, c_first, c_rest) ||
+        ![str(q, @"guard") isEqualToString:@"absent-only"] || !charset(S(q, @"activation_root"), 200, c_first, c_rest) ||
+        ![str(q, @"framework_policy") isEqualToString:@"strong-linked-before-root"] ||
+        !(fws = arr(q, @"required_frameworks")) || ![fws count] || !(ms = arr(q, @"methods")) || ![ms count])
+        return objc_fail(a, "malformed-provider", NULL, 0, "%s: a provider group is not a valid declaration", c->decl);
+    for (NSDictionary *m in ms) {
+        const char *kind;
+        if (!exact_keys(m, @[ @"kind", @"selector", @"encoding", @"implementation_symbol" ]) ||
+            !(kind = S(m, @"kind")) || (strcmp(kind, "-") && strcmp(kind, "+")) ||
+            !charset(S(m, @"selector"), 400, c_first, sel_rest) || !charset(S(m, @"encoding"), 200, enc_char, enc_char) ||
+            !charset(S(m, @"implementation_symbol"), 200, c_first, c_rest))
+            return objc_fail(a, "malformed-provider", NULL, 0, "%s: a method of group %s is not a valid declaration", c->decl, S(q, @"provider_id"));
+        if ((rc = claim(a, c, S(q, @"class"), kind, S(m, @"selector")))) return rc;
+    }
+    if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;
+    p->schema = 2; p->legacy = 0;
+    if ((rc = fill_common(a, p, c, q, fws)) || objc_set_string(&p->guard, "absent-only")) return rc ? rc : objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    for (NSDictionary *m in ms) {
+        ObjcProviderMethod *g = realloc(p->methods, (p->n_methods + 1) * sizeof *g);
+        if (!g) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+        p->methods = g; g = &g[p->n_methods++]; memset(g, 0, sizeof *g);
+        if (objc_set_string(&g->kind, S(m, @"kind")) || objc_set_string(&g->selector, S(m, @"selector")) ||
+            objc_set_string(&g->encoding, S(m, @"encoding")) || objc_set_string(&g->impl_symbol, S(m, @"implementation_symbol")))
+            return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    }
+    return OBJC_OK;
+}
+
 static int load_provider_prefix(ObjcAnalysis *a, const char *prefix) {
     char rp[PATH_MAX], decl[PATH_MAX], dsha[65], ash[65], archive[PATH_MAX];
     NSDictionary *d, *b;
-    NSArray *ps;
+    NSArray *ps, *legacy = nil;
     struct stat st;
     unsigned char rd[CC_SHA256_DIGEST_LENGTH];
     char rsha[65];
     const char *receipt, *ap;
-    int i;
+    int i, schema, rc;
+    LoadCtx c;
     if (!realpath(prefix, rp)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s: %s", prefix, strerror(errno));
     snprintf(decl, sizeof decl, "%s/share/recaulk/objc-providers.json", rp);
     if (!(d = read_json(a, decl, MANIFEST_MAX, "provider declaration"))) return OBJC_CANNOT_MEASURE;
     if (objc_file_sha256(decl, dsha)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s", decl);
-    if (!exact_keys(d, @[ @"schema", @"providers", @"build" ]) || !json_int1([d objectForKey:@"schema"]) ||
-        !(ps = arr(d, @"providers")) || ![ps count] || !(b = obj(d, @"build")) ||
+    schema = [d isKindOfClass:[NSDictionary class]] ? json_int([d objectForKey:@"schema"], 1) ? 1 : json_int([d objectForKey:@"schema"], 2) ? 2 : 0 : 0;
+    if (schema == 2 && [d objectForKey:@"legacy_providers"] &&
+        (!(legacy = arr(d, @"legacy_providers")) || ![legacy count]))
+        return objc_fail(a, "malformed-provider", NULL, 0, "%s: legacy_providers is not a non-empty list", decl);
+    if (!schema || !exact_keys(d, schema == 2 && legacy ? @[ @"schema", @"providers", @"build", @"legacy_providers" ]
+                                                         : @[ @"schema", @"providers", @"build" ]) ||
+        !(ps = arr(d, @"providers")) || (![ps count] && !legacy) || !(b = obj(d, @"build")) ||
         !exact_keys(b, @[ @"archive_path", @"archive_sha256", @"architecture", @"artifact_role", @"minimum_macos",
                           @"sdk_settings_sha256", @"compiler_identity", @"source_inputs_receipt", @"source_inputs_sha256" ]))
-        return objc_fail(a, "malformed-provider", NULL, 0, "%s: not a schema-1 provider declaration with exactly the known keys", decl);
+        return objc_fail(a, "malformed-provider", NULL, 0, "%s: not a schema-1 or schema-2 provider declaration with exactly the known keys", decl);
     ap = S(b, @"archive_path");
     if (!ap || strncmp(ap, "lib/", 4) || !charset(ap + 4, 200, file_char, file_char) || strstr(ap, "..") ||
         strlen(ap) < 7 || strcmp(ap + strlen(ap) - 2, ".a") || ![str(b, @"architecture") isEqualToString:@"x86_64"] ||
@@ -577,30 +679,20 @@ static int load_provider_prefix(ObjcAnalysis *a, const char *prefix) {
         return objc_fail(a, "unreadable-provider", NULL, 0, "%s is missing or not a regular file", archive);
     if (strcmp(ash, S(b, @"archive_sha256")))
         return objc_fail(a, "stale-provider-archive", NULL, 0, "%s is %s; the declaration says %s", archive, ash, S(b, @"archive_sha256"));
-    for (NSDictionary *q in ps) {
-        ObjcProvider *p;
-        NSArray *fws;
-        const char *kind;
-        if (!exact_keys(q, @[ @"provider_id", @"class", @"method_kind", @"selector", @"encoding", @"implementation_symbol",
-                              @"activation_root", @"required_frameworks", @"framework_policy" ]) ||
-            !charset(S(q, @"provider_id"), 200, id_first, id_rest) || !charset(S(q, @"class"), 200, c_first, c_rest) ||
-            !(kind = S(q, @"method_kind")) || (strcmp(kind, "-") && strcmp(kind, "+")) ||
-            !charset(S(q, @"selector"), 400, c_first, sel_rest) || !charset(S(q, @"encoding"), 200, enc_char, enc_char) ||
-            !charset(S(q, @"implementation_symbol"), 200, c_first, c_rest) || !charset(S(q, @"activation_root"), 200, c_first, c_rest) ||
-            ![str(q, @"framework_policy") isEqualToString:@"strong-linked-before-root"] ||
-            !(fws = arr(q, @"required_frameworks")) || ![fws count])
-            return objc_fail(a, "malformed-provider", NULL, 0, "%s: a provider entry is not a valid declaration", decl);
-        if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;
-        for (id f in fws)
-            if (![f isKindOfClass:[NSString class]] || !charset(cs(f), 100, fw_first, c_rest) || objc_strv_push(&p->frameworks, &p->nframeworks, cs(f)))
-                return objc_fail(a, "malformed-provider", NULL, 0, "%s: required_frameworks holds a non-identifier", decl);
-        if (objc_set_string(&p->provider_id, S(q, @"provider_id")) || objc_set_string(&p->cls, S(q, @"class")) ||
-            objc_set_string(&p->method_kind, kind) || objc_set_string(&p->selector, S(q, @"selector")) ||
-            objc_set_string(&p->encoding, S(q, @"encoding")) || objc_set_string(&p->impl_symbol, S(q, @"implementation_symbol")) ||
-            objc_set_string(&p->root_symbol, S(q, @"activation_root")) || objc_set_string(&p->archive, archive) ||
-            objc_set_string(&p->archive_sha256, ash) || objc_set_string(&p->declaration_sha256, dsha) ||
-            objc_set_string(&p->sdk_settings_sha256, S(b, @"sdk_settings_sha256")) || objc_set_string(&p->source_inputs, receipt))
-            return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    memset(&c, 0, sizeof c);
+    c.decl = decl; c.archive = archive; c.ash = ash; c.dsha = dsha; c.receipt = receipt; c.build = b;
+    if (schema == 2) c.claimed = [NSMutableSet set];
+    for (NSDictionary *q in ps)
+        if ((rc = schema == 2 ? load_group(a, &c, q) : load_entry(a, &c, q, 1))) return rc;
+    for (NSDictionary *q in legacy)
+        if ((rc = load_entry(a, &c, q, 2))) return rc;
+    if (schema == 2) {
+        NSMutableSet *ids = [NSMutableSet set];
+        for (i = 0; i < (int)a->n_providers; i++) {
+            NSString *id_ = [NSString stringWithUTF8String:a->providers[i].provider_id];
+            if ([ids containsObject:id_]) return objc_fail(a, "malformed-provider", NULL, 0, "%s: provider_id %s is declared twice", decl, a->providers[i].provider_id);
+            [ids addObject:id_];
+        }
     }
     return OBJC_OK;
 }
