@@ -133,7 +133,8 @@ grep '^path .* null 0 ' "$T/out" >/dev/null && grep '^  add NSWindow|0 ' "$T/out
   fail 'p_xor: xor of a class with itself is not zero: the non-NULL path does not reach its add'
 pass 'xor of a symbol with itself is zero'
 run probe _p_storeread; explored p_storeread
-[ "$(sed -n 's/^paths //p' "$T/out")" = 1 ] || fail "p_storeread: $(head -1 "$T/out"), want one path (the stored value reads back)"
+[ "$(sed -n 's/^paths //p' "$T/out")" = 1 ] && grep '^  add ' "$T/out" >/dev/null ||
+  fail "p_storeread: want one path, reaching the add (the stored 5 reads back, not the initial 0)"
 grep '^stores 0x[0-9a-f]*+4@' "$T/out" >/dev/null || fail 'p_storeread: the store is not recorded'
 pass 'a value stored into image data reads back as stored, and the store is recorded'
 run probe _p_foreign; refused p_foreign foreign-call
@@ -142,6 +143,21 @@ pass 'a callee reaching class_addMethod through foreign code or a computed jump 
 run probe _p_hoist; explored p_hoist
 grep '^  add ' "$T/out" >/dev/null || fail 'p_hoist: the add after a call through a hoisted objc_msgSend is not reached'
 pass 'a call through an import address loaded from its GOT slot is that import'
+run probe _q_addhoist; explored q_addhoist
+[ "$(sites)" = 1 ] && grep '^  add ' "$T/out" >/dev/null || fail 'q_addhoist: class_addMethod called through r12 is not an add with its site'
+run probe _q_viareg_follow; explored q_viareg_follow
+[ "$(sites)" = 1 ] || fail 'q_viareg_follow: a callee calling class_addMethod only through a hoisted GOT load is not followed'
+run probe _q_spill; explored q_spill
+grep '^  add ' "$T/out" >/dev/null || fail 'q_spill: an import address spilled and reloaded whole is no longer the import'
+pass 'class_addMethod through a hoisted or spilled GOT load is an add at its site, and its caller is followed'
+for q in _q_arith _q_partial _q_halfspill; do run probe $q; refused $q indirect-call; done
+pass 'an import address changed, read in part, or reloaded in part is not that import: indirect-call'
+fxcc -c "$FX/regexec-weak.S" -o "$T/weak.o" || fail 'assembling regexec-weak.S'
+fxcc "$T/main.o" "$T/weak.o" -lobjc -o "$T/weak" || fail 'linking weak'
+run weak _q_weak; explored q_weak
+[ "$(sed -n 's/^paths //p' "$T/out")" = 2 ] && [ "$(grep -c '^path ' "$T/out")" = 1 ] ||
+  fail "q_weak: want two paths, the add on one: $(cat "$T/out")"
+pass 'a weak import tested for NULL is explored both ways'
 run probe _p_cbw; explored p_cbw
 grep '^  add ' "$T/out" >/dev/null || fail 'p_cbw: cbw did not sign-extend al'
 pass 'cbw sign-extends al'

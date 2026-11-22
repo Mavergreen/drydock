@@ -21,7 +21,7 @@
  *
  * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
  * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
- * import's model. A direct call into the given provider ranges is followed when a modelled import or a mutator
+ * import's model; that address may be NULL (a weak import absent), so a test of it forks. A direct call into the given provider ranges is followed when a modelled import or a mutator
  * is reachable from its target by direct calls and jumps (a linear scan of each function, LC_FUNCTION_STARTS
  * bounding them; undecodable bytes, a computed call or jump, and a direct target outside the ranges that is no
  * import count as reaching, so execution meets and refuses them); otherwise it is summarised as an unknown import. A direct
@@ -56,7 +56,9 @@
 #include <string.h>
 
 enum { VU, VC, VS };
-typedef struct { uint8_t k, pw; uint32_t sym; uint64_t v; } Val;   /* pw: only the low pw bytes are known (0: all) */
+/* pw: only the low pw bytes are known (0: all). A symbol (VS) is nonzero, except one with v 1: an import's address,
+ * which a weak import's absence makes NULL. */
+typedef struct { uint8_t k, pw; uint32_t sym; uint64_t v; } Val;
 enum { SY_CLASS, SY_META, SY_SEL, SY_OPAQUE, SY_IMPORT };   /* SY_IMPORT: the address an import's GOT slot holds */
 typedef struct { uint64_t a; uint8_t w, ret, push; Val v; } Cell;
 typedef struct { const char *cls; int meta; const char *sel; } Look;
@@ -90,6 +92,7 @@ static Val U(void) { Val x; memset(&x, 0, sizeof x); return x; }
 static Val C(uint64_t v) { Val x = U(); x.k = VC; x.v = v; return x; }
 static Val Cp(uint64_t v, int pw) { Val x = C(v & mask(pw)); x.pw = (uint8_t)pw; return x; }
 static Val S(uint32_t id) { Val x = U(); x.k = VS; x.sym = id; return x; }
+static int nonzero(Val a) { return a.k == VS && !a.v; }
 static int same(Val a, Val b) { return a.k == b.k && a.k != VU && a.pw == b.pw && (a.k == VC ? a.v == b.v : a.sym == b.sym); }
 
 static int grow(void **p, size_t *cap, size_t need, size_t sz) {
@@ -262,7 +265,7 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
     if (w == 8 && import_name(e, a)) {
         uint32_t id = sym_new(e, SY_IMPORT, import_name(e, a));
         if (id == UINT32_MAX) return -1;
-        *out = S(id);
+        *out = S(id); out->v = 1;
         return 0;
     }
     if ((rel = relocated(e, a, w)) == 2) return 0;
@@ -342,11 +345,11 @@ static void flagbits(const St *t, int *zfp, int *sfp, int *cfp, int *ofp) {
         else if (t->fop == 2) { cf = x < y; of = ((x ^ y) & (x ^ z) & sb) != 0; }
         else if (t->fop == 3) cf = of = 0;
         else of = t->fop == 4 ? z == sb : z == sb - 1;
-    } else if (t->fw == 8 && t->fop == 3 && a.k == VS && same(a, b)) { zf = 0; cf = of = 0; }
-    else if (t->fw == 8 && t->fop == 2 && a.k == VS && same(a, b)) { zf = 1; cf = of = sf = 0; }
-    else if (t->fw == 8 && t->fop == 2 && a.k == VS && b.k == VC && !b.pw && b.v == 0) { zf = 0; cf = of = 0; }
-    else if (t->fw == 8 && t->fop == 2 && a.k == VS && b.k == VC && !b.pw && b.v == 1) cf = 0;   /* a symbol is nonzero */
-    else if (t->fw == 8 && t->fop == 2 && b.k == VS && a.k == VC && !a.pw && a.v == 0) { zf = 0; cf = 1; }
+    } else if (t->fw == 8 && t->fop == 2 && a.k == VS && same(a, b)) { zf = 1; cf = of = sf = 0; }
+    else if (t->fw == 8 && t->fop == 3 && nonzero(a) && same(a, b)) { zf = 0; cf = of = 0; }
+    else if (t->fw == 8 && t->fop == 2 && nonzero(a) && b.k == VC && !b.pw && b.v == 0) { zf = 0; cf = of = 0; }
+    else if (t->fw == 8 && t->fop == 2 && nonzero(a) && b.k == VC && !b.pw && b.v == 1) cf = 0;
+    else if (t->fw == 8 && t->fop == 2 && nonzero(b) && a.k == VC && !a.pw && a.v == 0) { zf = 0; cf = 1; }
     *zfp = zf; *sfp = sf; *cfp = cf; *ofp = of;
 }
 static int cond(const St *t, int cc) {

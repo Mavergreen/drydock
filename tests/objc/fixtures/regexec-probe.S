@@ -17,13 +17,14 @@ _p_xor:
 Lne:
 	popq	%rbx
 	retq
-	.globl	_p_storeread              // a value stored into image data reads back as stored
+	.globl	_p_storeread              // a value stored into image data reads back as stored: the add is reached
 _p_storeread:
 	movl	$5, _g(%rip)
 	movl	_g(%rip), %eax
 	cmpl	$5, %eax
 	jne	Lsr
-	retq
+	xorl	%edi, %edi
+	callq	_class_addMethod
 Lsr:
 	retq
 	.globl	_p_foreign                // a callee reaching class_addMethod through code outside the ranges
@@ -101,6 +102,51 @@ _p_hoist:
 	xorl	%edi, %edi
 	callq	_class_addMethod
 	popq	%r12
+	retq
+	.globl	_q_addhoist              // class_addMethod hoisted into r12: add + site
+_q_addhoist:
+	pushq	%r12
+	movq	_class_addMethod@GOTPCREL(%rip), %r12
+	xorl	%edi, %edi
+	callq	*%r12
+	popq	%r12
+	retq
+	.globl	_q_arith                 // arithmetic on an import address: refuse
+_q_arith:
+	movq	_objc_msgSend@GOTPCREL(%rip), %rax
+	addq	$0, %rax
+	callq	*%rax
+	retq
+	.globl	_q_spill                 // stored and reloaded through the stack: still the import
+_q_spill:
+	subq	$24, %rsp
+	movq	_class_addMethod@GOTPCREL(%rip), %rax
+	movq	%rax, 8(%rsp)
+	xorl	%eax, %eax
+	movq	8(%rsp), %r11
+	xorl	%edi, %edi
+	callq	*%r11
+	addq	$24, %rsp
+	retq
+	.globl	_q_partial               // a 4-byte read of the slot, then a call: refuse
+_q_partial:
+	movq	_objc_msgSend@GOTPCREL(%rip), %rax
+	movl	(%rax), %ecx
+	movl	_objc_msgSend@GOTPCREL(%rip), %eax
+	callq	*%rax
+	retq
+	.globl	_q_halfspill             // stored 8, reloaded 4 then zero-extended: refuse
+_q_halfspill:
+	subq	$24, %rsp
+	movq	_objc_msgSend@GOTPCREL(%rip), %rax
+	movq	%rax, 8(%rsp)
+	movl	8(%rsp), %eax
+	callq	*%rax
+	addq	$24, %rsp
+	retq
+	.globl	_q_viareg_follow         // a callee whose only mutator call is through a hoisted GOT load: followed
+_q_viareg_follow:
+	callq	_q_addhoist
 	retq
 	.section	__TEXT,__text_other,regular,pure_instructions
 	.globl	_p_far
