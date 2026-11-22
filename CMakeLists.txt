@@ -159,7 +159,7 @@ endif()
 # source-evidence.c requires a receipt's `tool` line to equal.
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c" OBJC_SOURCE_INVENTORY_SHA256)
 set(DRYDOCK_OBJC_SOURCES)
-foreach(m x86 macho-reader binding demangle-v0 reference report classify source-evidence source-hash provider linkmap attest)
+foreach(m x86 macho-reader binding demangle-v0 reference report classify source-evidence source-hash provider linkmap attest regexec)
   list(APPEND DRYDOCK_OBJC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/${m}.c")
 endforeach()
 
@@ -167,7 +167,7 @@ endforeach()
 # release version plus the first 16 hex of a SHA-256 over the bytes
 # objc-compat-build.sh's sources() hashed, in its order, with its first line
 # (the Drydock pin's commit) replaced by drydock-VERSION, since the reader core
-# is now this tree's own: "analyzer", the thirteen modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, main.m, the
+# is now this tree's own: "analyzer", the modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, regexec.h, main.m, the
 # receipt tool, the thirteen reader-core modules it named, then every src/*.h in
 # byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
 # sources()). Each file is a configure dependency, so an edit reconfigures and
@@ -178,6 +178,7 @@ set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/linkmap.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/attest.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/x86.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/regexec.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/main.m"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c")
 foreach(m image fat x86len ordinals uleb rebase objc_meth arch_names grow exports hdrref linkedit trie)
@@ -243,7 +244,7 @@ set_source_files_properties(cli/drydock-objc.c PROPERTIES COMPILE_OPTIONS "-Wext
 
 if(APPLE)
   enable_language(OBJC)
-  # The eleven analyzer modules, shared by drydock-objc and the reader harness.
+  # The analyzer modules, shared by drydock-objc and the test harnesses.
   add_library(drydock_objc_core OBJECT ${DRYDOCK_OBJC_SOURCES})
   target_include_directories(drydock_objc_core PRIVATE src/objc src)
   target_compile_definitions(drydock_objc_core PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
@@ -269,6 +270,13 @@ if(APPLE)
   set_target_properties(objc-reader-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
   target_compile_options(objc-reader-driver PRIVATE -O2 -Wall)
   target_link_libraries(objc-reader-driver PRIVATE drydockcore)
+
+  # The registration executor's harness (objc-regexec-test.sh). A test tool, never installed.
+  add_executable(objc-regexec-driver tests/objc/fixtures/regexec-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
+  target_include_directories(objc-regexec-driver PRIVATE src/objc)
+  set_target_properties(objc-regexec-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(objc-regexec-driver PRIVATE -O2 -Wall)
+  target_link_libraries(objc-regexec-driver PRIVATE drydockcore)
 
   # The harness that answers argument-register queries (objc-arity-test.sh). A test tool, never installed.
   add_executable(objc-arity-driver tests/objc/fixtures/arity-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
@@ -507,13 +515,14 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
 # DRYDOCK_OBJC, the reader harness as DRYDOCK_OBJC_READER_DRIVER, the arity
 # harness as DRYDOCK_OBJC_ARITY_DRIVER, the v0 demangler's as
-# DRYDOCK_OBJC_DEMANGLE_DRIVER, this repo's Mach-O query tool as
+# DRYDOCK_OBJC_DEMANGLE_DRIVER, the registration executor's as
+# DRYDOCK_OBJC_REGEXEC_DRIVER, this repo's Mach-O query tool as
 # DRYDOCK_MACHO_REWRITE (its imports TSV: modern Xcode has no dyldinfo), and
 # shipyard's fetchers through SHIPYARD_SCRIPTS -- the directory build/msc.sh
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity attest attest-codex binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
+foreach(t arity attest attest-codex binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)
@@ -541,7 +550,7 @@ foreach(t arity attest attest-codex binding classification closure compare evide
   endif()
   if(APPLE)
     set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-      "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+      "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_OBJC_REGEXEC_DRIVER=$<TARGET_FILE:objc-regexec-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
   endif()
 endforeach()
 # Its input is codex's kept repro under one maintainer's ~/Library/Caches, so like mantle_raise_test it runs on
