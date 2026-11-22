@@ -494,6 +494,42 @@ if [ "$real" = 0 ]; then
   grep -F 'differs from the final image' "$T/report" >/dev/null || fail 'a changed REX byte: not reported as differing from the final image'
   PFX=$PFX_MAIN
 fi
+# spec: src/objc/provider.c header, build side -- an assembler-local atom (l_OBJC_LABEL_CLASS_$, l_switch.table.*), whose symbol the
+#       linker drops, is verified by its bytes in the prestrip image, not by name; a byte changed in one is prestrip-mismatch.
+#       tests/objc/fixtures/provider-locals.m is the member that has them (and l_OBJC_CLASSLIST_SUP_REFS_$_, a slot compared by content).
+if [ "$real" = 0 ]; then
+  PFX_MAIN=$PFX; PFX="$T/pfx-locals"; mkdir -p "$PFX/lib" "$PFX/share/recaulk" "$PFX.objects"
+  fxcc -Os -fPIC -Wall -fno-objc-arc -c "$FX/provider-locals.m" -o "$PFX.objects/provider-locals.o"
+  fxcc -Os -fPIC -Wall -c "$FX/provider-register.c" -o "$PFX.objects/provider-register.o"
+  "$LIBTOOL" -static -o "$PFX/lib/libfixture-objc.a" "$PFX.objects/provider-locals.o" "$PFX.objects/provider-register.o" 2>/dev/null
+  printf '%s  provider-locals.m\n%s  provider-register.c\n' "$(sha "$FX/provider-locals.m")" "$(sha "$FX/provider-register.c")" >"$T/locals-receipt"
+  declare_prefix "$PFX" "$T/locals-receipt"
+  for sym in 'l_OBJC_LABEL_CLASS_$' 'l_switch.table.' 'l_OBJC_CLASSLIST_SUP_REFS_$_'; do
+    "$NM" "$PFX.objects/provider-locals.o" | grep -F -- " s $sym" >/dev/null || fail "provider-locals.o has no $sym"
+  done
+  consumer "$T/root/bin/locals" "$ALL"
+  for sym in 'l_OBJC_LABEL_CLASS_$' 'l_switch.table.' 'l_OBJC_CLASSLIST_SUP_REFS_$_'; do
+    ! "$NM" "$T/root/bin/locals" | grep -F -- " $sym" >/dev/null || fail "locals: the linker kept $sym, so the prestrip image has it by name"
+  done
+  evidence "$T/root/bin/locals" "$T/root/bin/locals" "$T/root/bin/locals.map" "$T/ev/locals.json"
+  exit_is 0 'atoms: assembler-local atoms of a provider member'
+  for sym in 'l_OBJC_LABEL_CLASS_$' 'l_switch.table.'; do
+    grep -F "\"symbol\": \"$sym" "$T/ev/locals.json" >/dev/null || fail "atoms: $sym passes by bytes, but the evidence does not place it"
+  done
+  grep -F '"symbol": "l_OBJC_CLASSLIST_SUP_REFS_$_' "$T/ev/locals.json" >/dev/null &&
+    fail 'atoms: l_OBJC_CLASSLIST_SUP_REFS_$_ is a slot, not a placed atom'
+  sw=$(sed -n 's/.*"address": "\(0x[0-9a-f]*\)".*"symbol": "l_switch.table[^"]*".*/\1/p;s/.*"symbol": "l_switch.table[^"]*".*"address": "\(0x[0-9a-f]*\)".*/\1/p' "$T/ev/locals.json" | head -1)
+  [ -n "$sw" ] || fail 'atoms: no address for l_switch.table in the evidence'
+  cp "$T/root/bin/locals" "$T/root/bin/locals-flip"
+  off=$(fileoff "$T/root/bin/locals-flip" $((sw + 8)))
+  old=$(od -An -tu1 -j "$off" -N1 "$T/root/bin/locals-flip" | tr -d ' ')
+  putn "$T/root/bin/locals-flip" "$off" $(( (old + 1) % 256 )) 1
+  evidence "$T/root/bin/locals-flip" "$T/root/bin/locals-flip" "$T/root/bin/locals.map" "$T/ev/locals-flip.json"
+  exit_is 4 'atoms: a byte flipped in an l_ atom'
+  grep -F 'prestrip-mismatch' "$T/err" >/dev/null || fail 'atoms: a flipped l_ atom byte is not a prestrip-mismatch'
+  grep -F 'l_switch.table' "$T/err" >/dev/null || fail 'atoms: the refusal does not name the l_switch.table atom'
+  PFX=$PFX_MAIN
+fi
 # spec: tests/objc/fixtures/provider-body.m header -- body_source DIR [DEFINE...]: the body, with each DEFINE turned on
 #       by a line added to the source itself (a different file, not a compiler flag), and the registration member beside it.
 body_source() {

@@ -47,7 +47,11 @@
  * objc_map_provider_link is the build side: the final and prestrip slices must carry identical
  * sections (strip touches only __LINKEDIT), the link map's Arch and Sections must be this link's,
  * and each atom it places from an archive member must be a symbol the member defines and the
- * prestrip image has at that address. Archives are read by a bounded BSD ar(5) reader
+ * prestrip image has at that address. An assembler-local atom (l_, L or ltmp: the linker drops
+ * such symbols, so no image has them by name) the prestrip image lacks is instead verified by
+ * bytes, by the same walk as the attestation above run on the prestrip image: its bytes at the
+ * link-map address equal the member's, every relocated field resolved to what the object meant,
+ * any relocation that walk cannot resolve refused (prestrip-mismatch). Archives are read by a bounded BSD ar(5) reader
  * (the pinned Drydock's archive module needs its rewrite modules) and objects by a bounded
  * MH_OBJECT reader, both in attest.c. Nothing is executed or loaded. */
 #include "report.h"
@@ -147,6 +151,8 @@ typedef struct {
     OArchive *ar;
     ObjcImage *im;
     Ref *work; size_t nwork, capwork, next;
+    const char *mismatch;           /* the code a byte or mapping mismatch is reported as (default provider-mapping-mismatch) */
+    const char *atom;               /* the atom being verified at build time, named in what is reported */
     int collecting;                 /* the constructor's closure: registration facts count */
     char **facts; size_t nfacts;    /* "import:_sym", "string:text", "atom:_sym" */
     char **binds; size_t nbinds;    /* "_sym\tlibrary": what every verified import binds to (all code, not only the constructor's) */
@@ -158,7 +164,9 @@ static int vfail(V *v, const char *code, uint64_t at, const char *fmt, ...) {
     char msg[768];
     va_list ap;
     va_start(ap, fmt); vsnprintf(msg, sizeof msg, fmt, ap); va_end(ap);
-    v->status = objc_fail(v->a, code, "x86_64", at, "%s: %s", v->p->provider_id, msg);
+    if (v->mismatch && !strcmp(code, "provider-mapping-mismatch")) code = v->mismatch;
+    if (v->atom) v->status = objc_fail(v->a, code, "x86_64", at, "%s: atom %s: %s", v->p->provider_id, v->atom, msg);
+    else v->status = objc_fail(v->a, code, "x86_64", at, "%s: %s", v->p->provider_id, msg);
     return -1;
 }
 
@@ -709,11 +717,42 @@ int objc_provide_findings(ObjcAnalysis *a) {
 
 /* ---- the build side ------------------------------------------------------------------------------ */
 
+static int assembler_local(const char *name) {
+    return !strncmp(name, "l_", 2) || !strncmp(name, "ltmp", 4) || (name[0] == 'L' && name[1] != 0);
+}
+
+typedef struct { size_t provider, atom; const OMember *m; uint32_t k; } Local;
+
+/* Atom k of member m, placed at a.address in the prestrip image pi, equals the member's bytes there. */
+static int verify_local(ObjcAnalysis *a, ObjcProvider *p, OArchive *ar, ObjcImage *pi, const Local *l) {
+    const ObjcProviderAtom *g = &p->atoms[l->atom];
+    const OMember *m = l->m;
+    const OSect *x = &m->sects[m->nl[l->k].n_sect - 1];
+    uint64_t lo, hi;
+    const char *fs;
+    V v;
+    int rc;
+    memset(&v, 0, sizeof v);
+    v.a = a; v.p = p; v.ar = ar; v.im = pi; v.mismatch = "prestrip-mismatch"; v.atom = g->symbol;
+    atom_extent(m, l->k, &lo, &hi);
+    if (hi - lo != g->size)
+        rc = vfail(&v, "provider-mapping-mismatch", g->address, "%s(%s) is %llu bytes, the link map says %llu", m->name, g->symbol,
+                   (unsigned long long)(hi - lo), (unsigned long long)g->size);
+    else if (!(fs = objc_image_section_of(pi, g->address, NULL, NULL, NULL)) || strcmp(fs, x->name))
+        rc = vfail(&v, "provider-mapping-mismatch", g->address, "%s(%s) is in %s, the prestrip address in %s", m->name, g->symbol, x->name, fs ? fs : "no section");
+    else
+        rc = compare_region(&v, (size_t)(m - ar->m), x, lo, hi, g->address, 0);
+    free(v.work);
+    return rc;
+}
+
 int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prestrip, const char *link_map) {
     ObjcImage *pi = NULL;
     ObjcLinkMap map;
     size_t i, j;
     OArchive *ars = NULL;
+    Local *locals = NULL;
+    size_t nlocals = 0;
     int rc;
     memset(&map, 0, sizeof map);
     if ((rc = objc_linkmap_read(a, link_map, &map))) goto out;
@@ -749,7 +788,8 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
                 ObjcProviderAtom *g;
                 size_t q;
                 if (!objc_obj_defined(&m->nl[k]) || strcmp(objc_obj_sym_name(m, k), name) || content_of(&m->sects[m->nl[k].n_sect - 1], &w) != C_ATOM) continue;
-                if (!objc_image_has_symbol(pi, name, addr)) {
+                int local = !objc_image_has_symbol(pi, name, addr) && assembler_local(name);
+                if (!local && !objc_image_has_symbol(pi, name, addr)) {
                     rc = objc_fail(a, "prestrip-mismatch", NULL, addr, "the prestrip image has no %s at 0x%llx, where the link map places %s(%s)", name, (unsigned long long)addr, f->member, name);
                     goto out;
                 }
@@ -759,6 +799,11 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
                 if (!(g = realloc(p->atoms, (p->n_atoms + 1) * sizeof *g))) { rc = objc_fail(a, "out-of-memory", NULL, 0, "atoms"); goto out; }
                 p->atoms = g; g = &p->atoms[p->n_atoms++]; memset(g, 0, sizeof *g);
                 g->address = addr; g->size = t->size;
+                if (local) {
+                    Local *lg = realloc(locals, (nlocals + 1) * sizeof *lg);
+                    if (!lg) { rc = objc_fail(a, "out-of-memory", NULL, 0, "assembler-local atoms"); goto out; }
+                    locals = lg; locals[nlocals].provider = i; locals[nlocals].atom = p->n_atoms - 1; locals[nlocals].m = m; locals[nlocals].k = k; nlocals++;
+                }
                 if (objc_set_string(&g->member, m->name) || objc_set_string(&g->symbol, name)) { rc = objc_fail(a, "out-of-memory", NULL, 0, "atoms"); goto out; }
                 for (q = 0; q < p->n_members && strcmp(p->members[q].name, m->name); q++) ;
                 if (q == p->n_members) {
@@ -771,8 +816,11 @@ int objc_map_provider_link(ObjcAnalysis *a, const char *final, const char *prest
             }
         }
     }
+    for (j = 0; j < nlocals; j++)
+        if (verify_local(a, &a->providers[locals[j].provider], &ars[locals[j].provider], pi, &locals[j])) { rc = OBJC_CANNOT_MEASURE; goto out; }
     rc = OBJC_OK;
 out:
+    free(locals);
     if (ars) for (i = 0; i < a->n_providers; i++) objc_archive_free(&ars[i]);
     free(ars);
     objc_linkmap_free(&map);
