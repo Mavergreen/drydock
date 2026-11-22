@@ -59,7 +59,7 @@ done
 
 above() { awk -v job="$1" '/^  #/ { c = c $0 "\n"; next } $1 == job ":" && /^  [^ ]/ { printf "%s", c; exit } { c = "" }' "$W"; }
 gc=$(above on-target)
-NOT_IN_GUEST="exec_arch_sweep_test family_conventions linux_pin_test mantle_raise_test objc_iterm2_acceptance objc_reference_set rosetta_free_test"
+NOT_IN_GUEST="exec_arch_sweep_test family_conventions linux_pin_test mantle_raise_test objc_attest_codex objc_iterm2_acceptance objc_reference_set rosetta_free_test"
 for t in $NOT_IN_GUEST; do
   has "on-target's comment says why $t is not-in-guest" "$gc" "$t"
 done
