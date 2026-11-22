@@ -543,6 +543,9 @@ foreach(t arity attest attest-codex binding classification closure compare evide
       "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
   endif()
 endforeach()
+# Its input is codex's kept repro under one maintainer's ~/Library/Caches, so like mantle_raise_test it runs on
+# that Mac alone; elsewhere it skips, which the guest's suite would refuse.
+set_property(TEST objc_attest_codex APPEND PROPERTY LABELS not-in-guest)
 
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,
 # against synthetic images built in memory. -Wno-unused-function because

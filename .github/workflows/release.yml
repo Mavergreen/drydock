@@ -467,7 +467,8 @@ jobs:
   # ultimate-hat; family_conventions, which checks repo policy, not x86_64 behaviour, and needs
   # python3 and PyYAML, which 10.9 lacks; exec_arch_sweep_test, linux_pin_test and rosetta_free_test, which need git,
   # and 10.9's git is a Command Line Tools stub (the runner and Linux run those); and mantle_raise_test, whose
-  # subject is an app in one maintainer's ~/Downloads, so it runs on that Mac alone.
+  # subject is an app in one maintainer's ~/Downloads, so it runs on that Mac alone; and objc_attest_codex,
+  # whose input is codex's kept repro in that maintainer's ~/Library/Caches.
   on-target:
     needs: [build]
     runs-on: ubuntu-latest
