@@ -150,7 +150,9 @@ run lim _lim_foreign; refused lim_foreign foreign-call
 run lim _lim_depth; refused lim_depth depth-budget
 run lim _lim_loop; refused lim_loop insn-budget
 run lim _lim_ret; refused lim_ret indirect-call
-pass 'an unrebased pointer, an unknown store, a foreign call, the depth and instruction budgets and a forged return each refuse by name'
+run lim _lim_unkload; explored lim_unkload
+[ "$(sed -n 's/^paths //p' "$T/out")" = 2 ] || fail "lim_unkload: $(head -1 "$T/out"), want paths 2: a load at an unknown index is unknown"
+pass 'an unrebased pointer, an unknown store, a foreign call, the depth and instruction budgets and a forged return each refuse by name, and a load at an unknown index is unknown'
 
 fxcc -c "$FX/regexec-probe.S" -o "$T/probe.o" || fail 'assembling regexec-probe.S'
 fxcc "$T/main.o" "$T/probe.o" -lobjc -o "$T/probe" || fail 'linking probe'

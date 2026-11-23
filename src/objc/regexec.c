@@ -22,13 +22,16 @@
  * sel_registerName site with whether every arrival's argument was a literal read from the image (selreg), and
  * every function an explored path executed in (explored) and every instruction it executed (executed).
  *
- * Provenance: a value derived from an address of writable image data (any section outside __TEXT) is tainted --
- * by a lea of such an address, or an 8-byte load of a rebased pointer to one; a move, arithmetic or lea with a
- * tainted operand keeps it, even when the result is unknown; a load through a tainted pointer does not. A tainted
- * value escapes (escaped: the address it was derived from, the site, how) when it is in a modelled import's
- * declared argument registers, or in any of the 16 registers or any frame cell at an unknown import or a
- * summarised callee; when it is stored anywhere but a frame cell; and when it is returned from the entry or
- * from a function the entry called.
+ * Provenance: every value carries the set of writable image addresses (any section outside __TEXT) it derives
+ * from. A lea yielding such an address, or an 8-byte load of a rebased pointer to one, adds that address; a result
+ * carries the union of the sets of exactly the operands that flow into it, even when it is unknown -- a cmov the
+ * selected one's, an xchg each the other's, a shift by cl not rcx's; a load through a known pointer carries the
+ * cell's set, not the pointer's, and a load through an unknown address every frame cell's and the address
+ * registers'. More than 8 addresses is any (~0 in escaped). A value escapes (escaped: each address of its set, and
+ * itself when it points into writable image data; the site; how) when it is in a modelled import's declared
+ * argument registers, or in any of the 16 registers or any frame cell at an unknown import or a summarised callee;
+ * when it is stored anywhere but a frame cell; and when it is returned from the entry or a function it called.
+ * An instruction reading through an address no register makes known never touches a cell.
  *
  * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
  * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
@@ -69,17 +72,19 @@
 enum { VU, VC, VS };
 /* pw: only the low pw bytes are known (0: all). A symbol (VS) is nonzero, except one with v 1: an import's address,
  * which a weak import's absence makes NULL. */
-typedef struct { uint8_t k, pw; uint32_t sym; uint64_t v, tv; } Val;   /* tv: the tainting address; 0 untainted */
+typedef struct { uint8_t k, pw; uint32_t sym, ts; uint64_t v; } Val;   /* ts: its provenance set (Ex's ts); 0 none */
 enum { SY_CLASS, SY_META, SY_SEL, SY_OPAQUE, SY_IMPORT };   /* SY_IMPORT: the address an import's GOT slot holds */
 typedef struct { uint64_t a; uint8_t w, ret, push; Val v; } Cell;
 typedef struct { const char *cls; int meta; const char *sel; } Look;
 typedef struct { const char *cls; int meta; const char *sel, *imp, *types; uint64_t imp_va, site; int ok; } Add;
+struct Ex;
 typedef struct {
+    struct Ex *ex;
     Val r[16]; uint64_t rip;
     int fop, fw; Val fa, fb, fr;              /* flags, lazily: 0 unknown, 1 add, 2 sub, 3 logic, 4 inc, 5 dec */
     Cell *m; size_t nm, capm;
     uint64_t esc;                             /* lowest escaped frame address; 0 none */
-    uint64_t tin;                             /* the taint of what this instruction has read so far */
+    uint32_t tin;                             /* the provenance of what this instruction has read so far */
     size_t depth;
     Look *found; size_t nfound, capf;
     Add *adds; size_t nadds, capa;
@@ -87,8 +92,12 @@ typedef struct {
     const char **nulls; size_t nnull, capnull;   /* the classes objc_getClass returned NULL for (NULL: unnamed) */
     size_t uforks;                            /* decisions forked on unknown flags */
 } St;
-typedef struct {
+#define TS_CAP 8
+#define TS_ALL 1u                             /* more than TS_CAP bases: any writable address */
+typedef struct { uint8_t n; uint64_t b[TS_CAP]; } Tset;   /* ascending, distinct */
+typedef struct Ex {
     const ObjcImage *im; ObjcRegBudget b; ObjcRegResult *out;
+    Tset *ts; size_t nts, capts;              /* interned provenance sets: 0 empty, TS_ALL */
     uint64_t *rg; size_t nrg;                 /* sorted [lo, hi) pairs */
     size_t capescaped;
     size_t nfn; int8_t *reach;                /* per function start: 0 unknown, 1 summarised, 2 followed */
@@ -300,13 +309,43 @@ static int writable(const Ex *e, uint64_t a) {
     const char *sn;
     return !is_stack(a) && (sn = objc_image_section_of(e->im, a, NULL, NULL, NULL)) && strncmp(sn, "__TEXT,", 7);
 }
-static void taint(St *t, Val v) { if (v.tv && !t->tin) t->tin = v.tv; }
-static int escapes(Ex *e, uint64_t tv, uint64_t site, int how) {
-    ObjcRegResult *o = e->out; size_t i;
-    if (!tv) return 0;
-    for (i = 0; i < o->n_escaped; i++) if (o->escaped[i].va == tv && o->escaped[i].site == site && o->escaped[i].how == how) return 0;
-    if (grow((void **)&o->escaped, &e->capescaped, o->n_escaped + 1, sizeof *o->escaped)) return oom(e);
-    o->escaped[o->n_escaped].va = tv; o->escaped[o->n_escaped].site = site; o->escaped[o->n_escaped].how = how; o->n_escaped++;
+static uint32_t ts_intern(Ex *e, const Tset *s) {
+    size_t i;
+    if (!s->n) return 0;
+    for (i = 2; i < e->nts; i++) if (e->ts[i].n == s->n && !memcmp(e->ts[i].b, s->b, s->n * sizeof *s->b)) return (uint32_t)i;
+    if (e->nts < 2 || grow((void **)&e->ts, &e->capts, e->nts + 1, sizeof *e->ts)) { oom(e); return TS_ALL; }
+    e->ts[e->nts] = *s;
+    return (uint32_t)e->nts++;
+}
+static uint32_t ts_one(Ex *e, uint64_t a) { Tset s; memset(&s, 0, sizeof s); s.n = 1; s.b[0] = a; return ts_intern(e, &s); }
+static uint32_t ts_union(Ex *e, uint32_t x, uint32_t y) {
+    Tset s; const Tset *a, *b; size_t i = 0, j = 0;
+    if (!x || x == y) return y;
+    if (!y) return x;
+    if (x == TS_ALL || y == TS_ALL) return TS_ALL;
+    a = &e->ts[x]; b = &e->ts[y]; memset(&s, 0, sizeof s);
+    while (i < a->n || j < b->n) {
+        uint64_t v = j == b->n || (i < a->n && a->b[i] < b->b[j]) ? a->b[i++] : b->b[j++];
+        if (s.n && s.b[s.n - 1] == v) continue;
+        if (s.n == TS_CAP) return TS_ALL;
+        s.b[s.n++] = v;
+    }
+    return ts_intern(e, &s);
+}
+static void taint(St *t, Val v) { if (v.ts) t->tin = ts_union(t->ex, t->tin, v.ts); }
+/* v escapes at site: each base of its provenance, and v itself when it points into writable image data. */
+static int escapes(Ex *e, Val v, uint64_t site, int how) {
+    ObjcRegResult *o = e->out; size_t i, k; uint32_t ts = v.ts; const Tset *s;
+    if (v.k == VC && !v.pw && writable(e, v.v)) ts = ts_union(e, ts, ts_one(e, v.v));
+    if (!ts) return 0;
+    s = &e->ts[ts];
+    for (k = 0; k < (ts == TS_ALL ? 1 : s->n); k++) {
+        uint64_t va = ts == TS_ALL ? ~0ULL : s->b[k];
+        for (i = 0; i < o->n_escaped; i++) if (o->escaped[i].va == va && o->escaped[i].site == site && o->escaped[i].how == how) break;
+        if (i < o->n_escaped) continue;
+        if (grow((void **)&o->escaped, &e->capescaped, o->n_escaped + 1, sizeof *o->escaped)) return oom(e);
+        o->escaped[o->n_escaped].va = va; o->escaped[o->n_escaped].site = site; o->escaped[o->n_escaped].how = how; o->n_escaped++;
+    }
     return 0;
 }
 static void escape(St *t, Val v) { if (v.k == VC && !v.pw && is_stack(v.v) && (!t->esc || v.v < t->esc)) t->esc = v.v; }
@@ -318,7 +357,7 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
     if ((c = cell_over(t, a, w))) {
         if (c->a == a && c->w == w) { *out = c->v; if (out->k == VS && w != 8) *out = U(); }
         else if (c->v.k == VC && !c->v.pw && c->a <= a && a + (uint64_t)w <= c->a + c->w) *out = C((c->v.v >> (8 * (a - c->a))) & mask(w));
-        out->tv = c->v.tv; taint(t, *out);
+        out->ts = c->v.ts; taint(t, *out);
         return 0;
     }
     if (is_stack(a) || !(sn = objc_image_section_of(e->im, a, &sa, &ss, &fl)) || a + (uint64_t)w > sa + ss) return 0;
@@ -337,13 +376,13 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
         return refuse(e, "unverified-pointer", "the 8 bytes at 0x%llx (%s), read at 0x%llx, are no rebased pointer",
                       (unsigned long long)a, sn, (unsigned long long)site);
     *out = C(v);
-    if (rel == 1 && writable(e, v)) { out->tv = v; taint(t, *out); }
+    if (rel == 1 && writable(e, v)) { out->ts = ts_one(e, v); taint(t, *out); }
     return note_read(e, a, (uint64_t)w, site, 0);
 }
 static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val v, int push) {
     uint64_t sa, ss; uint32_t fl; const char *sn; size_t i; ObjcRegResult *o = e->out;
     if (!known) return refuse(e, "unknown-store", "a store through an unknown address at 0x%llx", (unsigned long long)site);
-    if (!v.tv) v.tv = t->tin;
+    v.ts = ts_union(e, v.ts, t->tin);
     if (is_stack(a)) {
         for (i = 0; i < t->nm; i++)
             if (t->m[i].ret && t->m[i].a < a + (uint64_t)w && a < t->m[i].a + 8)
@@ -357,7 +396,7 @@ static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val 
     if (!strncmp(sn, "__TEXT,", 7) || relocated(e, a, w))
         return refuse(e, "image-store", "a store to 0x%llx (%s%s) at 0x%llx", (unsigned long long)a, sn,
                       strncmp(sn, "__TEXT,", 7) ? ", a pointer slot dyld rewrites" : "", (unsigned long long)site);
-    if (escapes(e, v.tv, site, OBJC_ESC_STORE)) return -1;
+    if (escapes(e, v, site, OBJC_ESC_STORE)) return -1;
     if (w == 8) escape(t, v);
     if (grow((void **)&o->image_stores, &e->capstores, o->n_stores + 1, sizeof *o->image_stores)) return oom(e);
     o->image_stores[o->n_stores].va = a; o->image_stores[o->n_stores].len = (uint64_t)w; o->image_stores[o->n_stores].site = site;
@@ -379,20 +418,21 @@ static const char *literal(Ex *e, St *t, Val v, uint64_t site, char *buf, size_t
 
 /* ---- registers and flags ---- */
 static Val reg_get(St *t, int r, int w) {
-    Val v = t->r[r];
-    taint(t, v);
-    if (v.k == VC) { if (v.pw && w > v.pw) return U(); v.v &= mask(w); if (v.pw >= w) v.pw = 0; return v; }
-    return v.k == VS && w == 8 ? v : U();
+    Val v = t->r[r], u = U();
+    taint(t, v); u.ts = v.ts;
+    if (v.k == VC) { if (v.pw && w > v.pw) return u; v.v &= mask(w); if (v.pw >= w) v.pw = 0; return v; }
+    return v.k == VS && w == 8 ? v : u;
 }
+/* r = v (w bytes), its provenance the instruction's reads (t->tin), v's own, and for a 1- or 2-byte write the bytes kept. */
 static void reg_set(St *t, int r, Val v, int w) {
-    Val o = t->r[r]; uint64_t tv = t->tin ? t->tin : v.tv;
-    if (w < 4 && !tv) tv = o.tv;
+    Val o = t->r[r]; uint32_t ts = ts_union(t->ex, t->tin, v.ts);
+    if (w < 4) ts = ts_union(t->ex, ts, o.ts);
     if (w == 8) t->r[r] = v;
     else if (w == 4) { if (v.k == VC) { v.v &= 0xffffffffULL; v.pw = v.pw && v.pw < 4 ? v.pw : 0; t->r[r] = v; } else t->r[r] = U(); }
     else if (v.k != VC || (v.pw && v.pw < w)) t->r[r] = U();
     else if (o.k == VC) { o.v = (o.v & ~mask(w)) | (v.v & mask(w)); if (o.pw && o.pw < w) o.pw = (uint8_t)w; t->r[r] = o; }
     else t->r[r] = Cp(v.v, w);
-    t->r[r].tv = tv;
+    t->r[r].ts = ts;
 }
 static void flags(St *t, int op, Val a, Val b, Val r, int w) { t->fop = op; t->fw = w; t->fa = a; t->fb = b; t->fr = r; }
 static int t_or(int a, int b) { return a == 1 || b == 1 ? 1 : a == 0 && b == 0 ? 0 : -1; }
@@ -550,11 +590,11 @@ static int call_taint(Ex *e, St *t, int nargs, uint64_t site) {
     int i; size_t k;
     for (i = 0; i < (nargs < 0 ? 16 : nargs); i++) {
         int r = nargs < 0 ? i : args[i];
-        if (escapes(e, t->r[r].tv, site, OBJC_ESC_CALL)) return -1;
+        if (escapes(e, t->r[r], site, OBJC_ESC_CALL)) return -1;
     }
     if (nargs >= 0) return 0;
     for (k = 0; k < t->nm; k++)
-        if (is_stack(t->m[k].a) && !t->m[k].ret && escapes(e, t->m[k].v.tv, site, OBJC_ESC_CALL)) return -1;
+        if (is_stack(t->m[k].a) && !t->m[k].ret && escapes(e, t->m[k].v, site, OBJC_ESC_CALL)) return -1;
     return 0;
 }
 /* A modelled import's declared argument count; -1 for any other import. */
@@ -640,7 +680,7 @@ static int do_ret(Ex *e, St *t, uint64_t site) {
     Cell *c; uint64_t sp = t->r[4].v; size_t i, j = 0;
     if (t->r[4].k != VC || t->r[4].pw || !(c = cell_over(t, sp, 8)) || !c->ret || c->a != sp || c->v.k != VC)
         return refuse(e, "indirect-call", "a return at 0x%llx to an address no followed call pushed", (unsigned long long)site);
-    if ((c->v.v == SENTINEL || t->depth == 1) && escapes(e, t->r[0].tv, site, OBJC_ESC_RETURN)) return -1;
+    if ((c->v.v == SENTINEL || t->depth == 1) && escapes(e, t->r[0], site, OBJC_ESC_RETURN)) return -1;
     if (c->v.v == SENTINEL) return 1;
     t->rip = c->v.v; t->r[4] = C(sp + 8); t->depth--;
     for (i = 0; i < t->nm; i++) if (t->m[i].a >= sp + 8) t->m[j++] = t->m[i];
@@ -684,14 +724,25 @@ static int ea(const St *t, const ObjcIns *x, uint64_t *a) {
     *a = v + (uint64_t)x->mdisp;
     return 1;
 }
+/* A load from an unknown address: unknown, its provenance every frame cell's and the address registers'. */
+static Val unknown_load(St *t, const ObjcIns *x) {
+    Val u = U(); size_t i;
+    for (i = 0; i < t->nm; i++) if (is_stack(t->m[i].a) && !t->m[i].ret) u.ts = ts_union(t->ex, u.ts, t->m[i].v.ts);
+    if (x->sib) {
+        if (x->sibbase >= 0) u.ts = ts_union(t->ex, u.ts, t->r[x->sibbase].ts);
+        if (x->sibindex >= 0) u.ts = ts_union(t->ex, u.ts, t->r[x->sibindex].ts);
+    } else if (!x->riprel) u.ts = ts_union(t->ex, u.ts, t->r[x->rm].ts);
+    taint(t, u);
+    return u;
+}
 static int rm_get(Ex *e, St *t, const ObjcIns *x, int w, uint64_t site, Val *v) {
-    uint64_t a; int k;
+    uint64_t a = 0;
     if (x->mod == 3) { *v = reg_get(t, x->rm, w); return 0; }
-    k = ea(t, x, &a);
-    return load(e, t, site, k, a, w, v);
+    if (!ea(t, x, &a)) { *v = unknown_load(t, x); return 0; }
+    return load(e, t, site, 1, a, w, v);
 }
 static int rm_set(Ex *e, St *t, const ObjcIns *x, Val v, int w, uint64_t site) {
-    uint64_t a; int k;
+    uint64_t a = 0; int k;
     if (x->mod == 3) { reg_set(t, x->rm, v, w); return 0; }
     k = ea(t, x, &a);
     return store(e, t, site, k, a, w, v, 0);
@@ -723,7 +774,7 @@ static int branch(Ex *e, St *t, int c, uint64_t taken) {
 }
 
 static int step(Ex *e, St *t) {
-    uint64_t ip = t->rip, a; size_t av; const uint8_t *p; ObjcIns x0, x; int w, op, i, r;
+    uint64_t ip = t->rip, a = 0; size_t av; const uint8_t *p; ObjcIns x0, x; int w, op, i, r;
     Val v, l, z;
     if (!in_ranges(e, ip)) return refuse(e, "foreign-call", "execution reached 0x%llx, outside the provider's code", (unsigned long long)ip);
     if (!(p = code_at(e, ip, &av)) || objc_x86_decode(p, av, ip, &x0))
@@ -756,7 +807,7 @@ static int step(Ex *e, St *t) {
             w = width(&x, 0);
             if (x.sib) { if (x.sibbase >= 0) taint(t, t->r[x.sibbase]); if (x.sibindex >= 0) taint(t, t->r[x.sibindex]); }
             else if (!x.riprel) taint(t, t->r[x.rm]);
-            if (k && !t->tin && writable(e, a)) t->tin = a;
+            if (k && writable(e, a)) t->tin = ts_union(e, t->tin, ts_one(e, a));
             reg_set(t, x.reg, k ? C(a & mask(w)) : U(), w); return 0;
         }
         if (op == 0x63 && (x.rex & 8)) {
@@ -815,7 +866,8 @@ static int step(Ex *e, St *t) {
         }
         if ((op == 0xC0 || op == 0xC1 || op == 0xD0 || op == 0xD1 || op == 0xD2 || op == 0xD3) &&
             ((x.reg & 7) == 4 || (x.reg & 7) == 5 || (x.reg & 7) == 7)) {
-            int sh; Val cl = reg_get(t, 1, 1);
+            int sh; uint32_t kept = t->tin; Val cl = reg_get(t, 1, 1);
+            t->tin = kept;   /* the count does not flow into the result */
             w = width(&x, op == 0xC0 || op == 0xD0 || op == 0xD2);
             if (op == 0xD2 || op == 0xD3) { if (cl.k != VC) sh = -1; else sh = (int)(cl.v & (w == 8 ? 63 : 31)); }
             else sh = op == 0xD0 || op == 0xD1 ? 1 : (int)(x.imm & (w == 8 ? 63 : 31));
@@ -846,7 +898,7 @@ static int step(Ex *e, St *t) {
         if (op == 0x99) { w = width(&x, 0); v = reg_get(t, 0, w);
             reg_set(t, 2, v.k == VC ? C(v.v >> (w * 8 - 1) & 1 ? mask(w) : 0) : U(), w); return 0; }
         if (op == 0x87 && x.mod == 3) { w = width(&x, 0); l = reg_get(t, x.reg, w); v = reg_get(t, x.rm, w);
-            reg_set(t, x.reg, v, w); reg_set(t, x.rm, l, w); return 0; }
+            t->tin = v.ts; reg_set(t, x.reg, v, w); t->tin = l.ts; reg_set(t, x.rm, l, w); return 0; }
         if (op == 0xC9) {
             t->r[4] = t->r[5];
             return pop(e, t, ip, &t->r[5]);
@@ -902,8 +954,10 @@ static int step(Ex *e, St *t) {
             if (c < 0) {
                 St *u = fork_st(e, t);
                 if (!u) return -1;
-                u->uforks++; t->uforks++; reg_set(u, x.reg, v, w); reg_set(t, x.reg, l, w); return 0;
+                u->uforks++; t->uforks++;
+                u->tin = v.ts; reg_set(u, x.reg, v, w); t->tin = l.ts; reg_set(t, x.reg, l, w); return 0;
             }
+            t->tin = c ? v.ts : l.ts;   /* only the selected operand flows */
             reg_set(t, x.reg, c ? v : l, w);
             return 0;
         }
@@ -943,7 +997,9 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
     qsort(e.rg, n_ranges, 2 * sizeof *e.rg, cmp_range);
     for (i = 0, j = 0; i < n_ranges; i++) if (e.rg[2 * i] < e.rg[2 * i + 1]) { e.rg[2 * j] = e.rg[2 * i]; e.rg[2 * j + 1] = e.rg[2 * i + 1]; j++; }
     e.nrg = j;
-    t->r[4] = C(STACK_TOP); t->rip = entry; e.npaths = 1;
+    if (!(e.ts = calloc(2, sizeof *e.ts))) { free(e.rg); free(e.reach); free(t); oom(&e); return 1; }
+    e.nts = e.capts = 2;
+    t->ex = &e; t->r[4] = C(STACK_TOP); t->rip = entry; e.npaths = 1;
     if (!push(&e, t, entry, C(SENTINEL))) { t->m[t->nm - 1].ret = 1; t->m[t->nm - 1].push = 0; }
     while (!out->refused) {
         int rc = 0;
@@ -957,7 +1013,7 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
         t = e.work[--e.nwork];
     }
     while (e.nwork) st_free(e.work[--e.nwork]);
-    free(e.work); free(e.rg); free(e.reach);
+    free(e.work); free(e.rg); free(e.reach); free(e.ts);
     for (i = 0; i < e.nsym; i++) free(e.sym[i].name);
     free(e.sym);
     qsort(out->mutator_sites, out->n_sites, sizeof *out->mutator_sites, cmp_range);

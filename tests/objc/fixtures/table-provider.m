@@ -16,7 +16,9 @@
 // a message send), TWO_INIT (the constructor in the initializer table twice), UNK_OFF (the state's address plus an
 // unknown offset handed to a helper), ADJ (the address of a global next to one the root reads, handed to a helper)
 // MANY_ARGS (the state's address as a helper's fifteenth argument, on the stack), CLS_FIELD (the root branches on its
-// own class object's isa) and CLS_RO (on a field of its class's read-only data, in __objc_const).
+// own class object's isa), CLS_RO (on a field of its class's read-only data, in __objc_const), CMOV3 (a cmov,
+// its flags known, selects the state's address over another global's for a helper), UNK_LOAD (the state's address
+// loaded back from a frame array at an unknown index, for a helper) and XCHG (an xchg swaps the two addresses).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -98,6 +100,15 @@ __attribute__((noinline, used)) void fixture_many(long a, long b, long c, long d
   *p = FixtureNativePresent;
   __asm__ volatile("" : : "r"(a + b + c + d + e + f + g + h + i + j + k + l + m + n));
 }
+#endif
+#if defined(CMOV3) || defined(UNK_LOAD) || defined(XCHG)
+__attribute__((noinline, used)) void fixture_bumpx(FixtureState *p) { *p = FixtureNativePresent; }
+#endif
+#if defined(CMOV3) || defined(XCHG)
+FixtureState fixtureOther;
+#endif
+#ifdef CMOV3
+static volatile int fixtureSel1 = 1;
 #endif
 #ifdef PASS_TABLE
 __attribute__((noinline, used)) void fixture_note(const void *p) { __asm__ volatile("" : : "r"(p)); }
@@ -221,6 +232,32 @@ void __fixture_objc_activate_table(void) {
 #endif
 #ifdef CLS_RO
   if (((const volatile uint32_t *)((void *const *)FixtureTabOwnClass)[4])[1] == 0x7fffffff) return;
+#endif
+#ifdef CMOV3
+  {
+    FixtureState *p = fixtureSel1 ? &state : &fixtureOther;
+    fixture_bumpx(p);
+    if (state != FixtureNotRun) return;
+  }
+#endif
+#ifdef UNK_LOAD
+  {
+    FixtureState *volatile arr[2];
+    unsigned ui = arc4random_uniform(1);
+    arr[0] = &state; arr[1] = 0;
+    FixtureState *p = arr[ui];
+    arr[0] = 0; arr[1] = 0;
+    fixture_bumpx(p);
+    if (state != FixtureNotRun) return;
+  }
+#endif
+#ifdef XCHG
+  {
+    FixtureState *p = &fixtureOther, *q = &state;
+    __asm__ volatile(".byte 0x48, 0x87, 0xf8" : "+D"(p), "+a"(q));   // xchgq: reg rdi, r/m rax
+    fixture_bumpx(p);
+    if (state != FixtureNotRun) return;
+  }
 #endif
 #ifdef UNK_OFF
   fixture_bumpu((FixtureState *)((char *)&state + arc4random_uniform(1)));

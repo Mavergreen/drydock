@@ -447,6 +447,12 @@ group_prefix adj -DADJ; group adj adj
 group_refused 'sweep: ADJ (a global beside a read one handed to a helper)' provider-mutable-constant 'to code it does not follow'
 group_prefix manyargs -DMANY_ARGS -mllvm -no-x86-call-frame-opt; group manyargs manyargs
 group_refused 'sweep: MANY_ARGS (the state as a stack argument)' provider-mutable-constant 'to code it does not follow'
+group_prefix cmov3 -DCMOV3; group cmov3 cmov3
+group_refused 'sweep: CMOV3 (a cmov selects the state over another global)' provider-mutable-constant 'to code it does not follow'
+group_prefix unkload -DUNK_LOAD -fno-stack-protector; group unkload unkload
+group_refused 'sweep: UNK_LOAD (the state loaded back at an unknown index)' provider-mutable-constant 'to code it does not follow'
+group_prefix xchg -DXCHG; group xchg xchg
+group_refused 'sweep: XCHG (an xchg swaps the state and another global)' provider-mutable-constant 'to code it does not follow'
 # spec: src/objc/provider.c "Coverage" -- class metadata the runtime writes is never read as a constant.
 group_prefix clsfield -DCLS_FIELD; group clsfield clsfield
 group_refused 'sweep: CLS_FIELD (the root branches on its own class object)' provider-mutable-constant 'in __DATA,__objc_data), read at'

@@ -853,7 +853,7 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
     for (i = 0; i < r->n_escaped; i++) {
         static const char *const HOW[] = { "is passed to code it does not follow", "is stored outside the frame", "is returned from the root" };
         uint64_t b = r->escaped[i].va;
-        int hit = 0;
+        int hit = b == ~0ULL && w.nc;   /* derived from more addresses than regexec tracks */
         for (j = 0; j < w.nc && !hit; j++) {
             hit = b >= w.c[2 * j] && b < w.c[2 * j + 1];
             for (k = 0; k < p->n_atoms && !hit; k++) {

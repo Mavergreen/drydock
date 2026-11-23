@@ -24,6 +24,15 @@ _lim_loop:
 _lim_ret:
 	pushq	%rax
 	retq
+	.globl	_lim_unkload              // a load at an unknown index over a known cell: unknown, so its test forks
+_lim_unkload:
+	pushq	$1
+	movq	(%rsp,%rdi,8), %rax
+	popq	%rcx
+	testq	%rax, %rax
+	je	1f
+	ud2
+1:	retq
 	.section	__TEXT,__text_other,regular,pure_instructions
 	.globl	_lim_elsewhere
 _lim_elsewhere:
