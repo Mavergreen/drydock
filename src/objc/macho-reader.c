@@ -916,6 +916,7 @@ static int may_write(const Ins *x0, int r) {
         }
         switch (op) {
         case 0x88: case 0x89: return dst_rm;
+        case 0x86: case 0x87: return dst_reg || dst_rm;   /* xchg */
         case 0x8A: case 0x8B: case 0x8D: case 0x63: case 0x69: case 0x6B: return dst_reg;
         case 0xC6: case 0xC7: return (x->reg & 7) ? 1 : dst_rm;
         case 0x80: case 0x81: case 0x83: return (x->reg & 7) == 7 ? 0 : dst_rm;

@@ -252,6 +252,21 @@ read_artifact "$T/hoisted8"
 grep '^error	indirect-objc-entry	.*	objc entry point in r12 is read other than to call through it (a spill, a copy or an escape)$' "$T/out" >/dev/null ||
   fail 'hoisted entry point form 8: a store through a register is not refused as before'
 
+# spec: src/objc/macho-reader.c scan_function, may_write -- a CachedSel::fetch whose cache argument is one cache static on every
+#       path is a fetch site, however far back its lea is (rustc hoists it out of a loop: tests/objc/fixtures/hoisted-cache.S),
+#       and `xchg reg, mem` writes only reg. A register exchanged, overwritten on one path, or two caches merging is not.
+for n in 0 1 2 3 4 5 6 7; do
+  fxcc -DFORM="$n" "$FX/hoisted-cache.S" -o "$T/hcache$n" -lobjc -Wl,-U,_fixture_next -Wl,-U,_fixture_string
+done
+for n in 0 1 2; do
+  read_artifact "$T/hcache$n"; measured "hoisted cache form $n"
+  has cache-fetch 7=isEqual: 9=__RNvNvNtNtNtCs2WYrep5oUp8_5objc27runtime8nsobject16NSObjectProtocol7isEqual10CACHED_SEL
+  [ "$(count cache-fetch)" = 1 ] || fail "hoisted cache form $n: $(count cache-fetch) fetch sites, want 1"
+done
+for n in 3 4 5 6 7; do
+  read_artifact "$T/hcache$n"; refused "hoisted cache form $n" unrecognized-fetch-site
+done
+
 # spec: src/objc/macho-reader.c scan_function -- a weak import's check, `cmpq $0, GOT(_objc_readClassPair)` (libarclite in
 #       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other
 #       read of the slot but a load is still "address taken".
