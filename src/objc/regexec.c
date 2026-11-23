@@ -1,8 +1,11 @@
 /* regexec.c -- the registration executor: what a provider's activation code adds to the Objective-C runtime,
  * derived from the linked image's bytes by path-forking execution from an entry (a provider's constructor).
  *
- * Values are concrete integers (image addresses among them), symbols for runtime results -- Class(name),
- * Meta(name), Sel(name), an opaque non-NULL Method or IMP -- or unknown. Every path starts with every register
+ * Values are concrete integers, image addresses (relocatable: an address as linked, which dyld slides), symbols for
+ * runtime results -- Class(name), Meta(name), Sel(name), an opaque non-NULL Method or IMP -- or unknown. Only what no
+ * slide changes is known of an image address: it plus or minus a constant (an image address), its difference from or
+ * comparison with another, and that it is not NULL; any other operation on it (a compare with anything else, a shift,
+ * mask or multiply, a partial read) is unknown. Only an image address or a stack address is a known memory operand. Every path starts with every register
  * unknown but rsp, and the image's initial bytes as memory. Execution forks, and both outcomes are explored, at:
  *   - objc_getClass: Class(literal), or NULL (the path's class_null, the literal in its null_classes);
  *   - the lookups (found, or not): class_getInstanceMethod, class_getClassMethod, class_respondsToSelector,
@@ -23,15 +26,22 @@
  * every function an explored path executed in (explored) and every instruction it executed (executed).
  *
  * Provenance: every value carries the set of writable image addresses (any section outside __TEXT) it derives
- * from. A lea yielding such an address, or an 8-byte load of a rebased pointer to one, adds that address; a result
- * carries the union of the sets of exactly the operands that flow into it, even when it is unknown -- a cmov the
- * selected one's, an xchg each the other's, a shift by cl not rcx's; a load through a known pointer carries the
- * cell's set, not the pointer's, and a load through an unknown address every frame cell's and the address
- * registers'. More than 8 addresses is any (~0 in escaped). A value escapes (escaped: each address of its set, and
- * itself when it points into writable image data; the site; how) when it is in a modelled import's declared
- * argument registers, or in any of the 16 registers or any frame cell at an unknown import or a summarised callee;
- * when it is stored anywhere but a frame cell; and when it is returned from the entry or a function it called.
- * An instruction reading through an address no register makes known never touches a cell.
+ * from. A lea yielding such an address, or a load of a rebased pointer to one (or of part of it), adds that address; a
+ * result carries the union of the sets of the operands that flow into it, even when it is unknown -- a cmov the
+ * selected one's, an xchg each the other's, a shift its count's too. Flags carry the set of the operands that set
+ * them, and setcc, cmov and adc/sbb add it to their result; a fork on flags with a set adds it to the path's, and every
+ * escape on that path carries the path's too. A load through a known pointer carries the cell's set, not the
+ * pointer's: one cell's, or every overlapping cell's when it spans several. Every set stored to the stack joins the
+ * frame residue, which a return never drops; a stack load no one live cell holds (a dead frame, the red zone, bytes
+ * spanning cells), or a load through an unknown address, carries it, the latter with the address registers' -- but not
+ * a load through an import's address plus a constant, another image's memory. More than 8 addresses is any (~0 in
+ * escaped). A value escapes (escaped: each address of its set, and itself when it points into
+ * writable image data; the site; how) when it is in a modelled import's declared argument registers, or in any of
+ * the 16 registers or any frame cell at an unknown import or a summarised callee; when it is stored anywhere but a
+ * frame cell; and when it is returned from the entry or a function it called.
+ * An instruction reading through an address no register makes known never touches a cell. The threat model is
+ * good-faith compiled code: gadgets built by hand to launder an address are a stated limit, as is a callee that is
+ * not followed reading the dead stack below rsp.
  *
  * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
  * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
@@ -72,7 +82,8 @@
 enum { VU, VC, VS };
 /* pw: only the low pw bytes are known (0: all). A symbol (VS) is nonzero, except one with v 1: an import's address,
  * which a weak import's absence makes NULL. */
-typedef struct { uint8_t k, pw; uint32_t sym, ts; uint64_t v; } Val;   /* ts: its provenance set (Ex's ts); 0 none */
+/* rel: v is an image address as linked, which dyld slides at run time; ts: its provenance set (Ex's ts), 0 none. */
+typedef struct { uint8_t k, pw, rel; uint32_t sym, ts; uint64_t v; } Val;
 enum { SY_CLASS, SY_META, SY_SEL, SY_OPAQUE, SY_IMPORT };   /* SY_IMPORT: the address an import's GOT slot holds */
 typedef struct { uint64_t a; uint8_t w, ret, push; Val v; } Cell;
 typedef struct { const char *cls; int meta; const char *sel; } Look;
@@ -82,6 +93,9 @@ typedef struct {
     struct Ex *ex;
     Val r[16]; uint64_t rip;
     int fop, fw; Val fa, fb, fr;              /* flags, lazily: 0 unknown, 1 add, 2 sub, 3 logic, 4 inc, 5 dec */
+    uint32_t fts;                             /* the flags' provenance */
+    uint32_t pts;                             /* the path's: every set a fork on flags decided it by */
+    uint32_t res;                             /* the frame residue: every set ever stored to the stack */
     Cell *m; size_t nm, capm;
     uint64_t esc;                             /* lowest escaped frame address; 0 none */
     uint32_t tin;                             /* the provenance of what this instruction has read so far */
@@ -117,8 +131,10 @@ static Val U(void) { Val x; memset(&x, 0, sizeof x); return x; }
 static Val C(uint64_t v) { Val x = U(); x.k = VC; x.v = v; return x; }
 static Val Cp(uint64_t v, int pw) { Val x = C(v & mask(pw)); x.pw = (uint8_t)pw; return x; }
 static Val S(uint32_t id) { Val x = U(); x.k = VS; x.sym = id; return x; }
+static Val R(uint64_t v) { Val x = C(v); x.rel = 1; return x; }
+static int is0(Val a) { return a.k == VC && !a.pw && !a.rel && !a.v; }
 static int nonzero(Val a) { return a.k == VS && !a.v; }
-static int same(Val a, Val b) { return a.k == b.k && a.k != VU && a.pw == b.pw && (a.k == VC ? a.v == b.v : a.sym == b.sym); }
+static int same(Val a, Val b) { return a.k == b.k && a.k != VU && a.pw == b.pw && a.rel == b.rel && (a.k == VC ? a.v == b.v : a.sym == b.sym); }
 
 static int grow(void **p, size_t *cap, size_t need, size_t sz) {
     void *q; size_t c = *cap ? *cap : 16;
@@ -300,6 +316,7 @@ static int cell_put(Ex *e, St *t, uint64_t a, int w, Val v, int ret, int push) {
         if (!(t->m[i].a >= a && t->m[i].a + t->m[i].w <= a + (uint64_t)w)) t->m[j++] = t->m[i];
     t->nm = j;
     if (grow((void **)&t->m, &t->capm, t->nm + 1, sizeof *t->m)) return oom(e);
+    if (v.k == VC && w < 8 && v.rel) { uint32_t ts = v.ts; v = U(); v.ts = ts; }
     if (v.k == VC && w < 8) { v.v &= mask(w); if (v.pw >= w) v.pw = 0; }
     t->m[t->nm].a = a; t->m[t->nm].w = (uint8_t)w; t->m[t->nm].v = v;
     t->m[t->nm].ret = (uint8_t)ret; t->m[t->nm].push = (uint8_t)push; t->nm++;
@@ -333,9 +350,10 @@ static uint32_t ts_union(Ex *e, uint32_t x, uint32_t y) {
     return ts_intern(e, &s);
 }
 static void taint(St *t, Val v) { if (v.ts) t->tin = ts_union(t->ex, t->tin, v.ts); }
-/* v escapes at site: each base of its provenance, and v itself when it points into writable image data. */
-static int escapes(Ex *e, Val v, uint64_t site, int how) {
-    ObjcRegResult *o = e->out; size_t i, k; uint32_t ts = v.ts; const Tset *s;
+/* v escapes at site on t's path: each base of its provenance and of the path's, and v itself when it points into
+ * writable image data. */
+static int escapes(Ex *e, St *t, Val v, uint64_t site, int how) {
+    ObjcRegResult *o = e->out; size_t i, k; uint32_t ts = ts_union(e, v.ts, t->pts); const Tset *s;
     if (v.k == VC && !v.pw && writable(e, v.v)) ts = ts_union(e, ts, ts_one(e, v.v));
     if (!ts) return 0;
     s = &e->ts[ts];
@@ -348,26 +366,40 @@ static int escapes(Ex *e, Val v, uint64_t site, int how) {
     }
     return 0;
 }
-static void escape(St *t, Val v) { if (v.k == VC && !v.pw && is_stack(v.v) && (!t->esc || v.v < t->esc)) t->esc = v.v; }
+static void escape(St *t, Val v) { if (v.k == VC && !v.pw && !v.rel && is_stack(v.v) && (!t->esc || v.v < t->esc)) t->esc = v.v; }
 
 static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *out) {
     Cell *c; uint64_t sa, ss, v = 0; uint32_t fl; const char *sn; const uint8_t *p; int rel, ty;
     *out = U();
     if (!known) return 0;
     if ((c = cell_over(t, a, w))) {
+        uint32_t ts = c->v.ts; size_t i;
         if (c->a == a && c->w == w) { *out = c->v; if (out->k == VS && w != 8) *out = U(); }
-        else if (c->v.k == VC && !c->v.pw && c->a <= a && a + (uint64_t)w <= c->a + c->w) *out = C((c->v.v >> (8 * (a - c->a))) & mask(w));
-        out->ts = c->v.ts; taint(t, *out);
+        else if (c->a <= a && a + (uint64_t)w <= c->a + c->w) {   /* inside the newest cell: its bytes */
+            if (c->v.k == VC && !c->v.pw && !c->v.rel) *out = C((c->v.v >> (8 * (a - c->a))) & mask(w));
+        } else {   /* across cells: every one's, and on the stack the residue for bytes none covers */
+            for (i = 0; i < t->nm; i++) if (t->m[i].a < a + (uint64_t)w && a < t->m[i].a + t->m[i].w) ts = ts_union(e, ts, t->m[i].v.ts);
+            if (is_stack(a)) ts = ts_union(e, ts, t->res);
+        }
+        out->ts = ts; taint(t, *out);
         return 0;
     }
-    if (is_stack(a) || !(sn = objc_image_section_of(e->im, a, &sa, &ss, &fl)) || a + (uint64_t)w > sa + ss) return 0;
+    if (is_stack(a)) { out->ts = t->res; taint(t, *out); return 0; }   /* a dead, red-zone or unwritten slot */
+    if (!(sn = objc_image_section_of(e->im, a, &sa, &ss, &fl)) || a + (uint64_t)w > sa + ss) return 0;
     if (w == 8 && import_name(e, a)) {
         uint32_t id = sym_new(e, SY_IMPORT, import_name(e, a));
         if (id == UINT32_MAX) return -1;
         *out = S(id); out->v = 1;
         return 0;
     }
-    if ((rel = relocated(e, a, w)) == 2) return 0;
+    if ((rel = relocated(e, a, w)) == 2) {   /* part of a pointer dyld rewrites: unknown, carrying what it points to */
+        uint64_t o, q;
+        for (o = a >= 7 ? a - 7 : 0; o < a + (uint64_t)w; o++)
+            if (objc_image_rebased(e->im, o) && (p = objc_image_bytes(e->im, o, 8)) && (memcpy(&q, p, 8), writable(e, q)))
+                out->ts = ts_union(e, out->ts, ts_one(e, q));
+        taint(t, *out);
+        return 0;
+    }
     ty = (int)(fl & 0xff);
     if (ty == 0x1 || ty == 0xc) v = 0;
     else if (ty == 0x12 || !(p = objc_image_bytes(e->im, a, (uint64_t)w))) return 0;
@@ -375,7 +407,7 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
     if (w == 8 && v && !rel)
         return refuse(e, "unverified-pointer", "the 8 bytes at 0x%llx (%s), read at 0x%llx, are no rebased pointer",
                       (unsigned long long)a, sn, (unsigned long long)site);
-    *out = C(v);
+    *out = rel == 1 && v ? R(v) : C(v);
     if (rel == 1 && writable(e, v)) { out->ts = ts_one(e, v); taint(t, *out); }
     return note_read(e, a, (uint64_t)w, site, 0);
 }
@@ -384,6 +416,7 @@ static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val 
     if (!known) return refuse(e, "unknown-store", "a store through an unknown address at 0x%llx", (unsigned long long)site);
     v.ts = ts_union(e, v.ts, t->tin);
     if (is_stack(a)) {
+        t->res = ts_union(e, t->res, v.ts);
         for (i = 0; i < t->nm; i++)
             if (t->m[i].ret && t->m[i].a < a + (uint64_t)w && a < t->m[i].a + 8)
                 return refuse(e, "unknown-store", "a store over a return address at 0x%llx", (unsigned long long)site);
@@ -396,7 +429,7 @@ static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val 
     if (!strncmp(sn, "__TEXT,", 7) || relocated(e, a, w))
         return refuse(e, "image-store", "a store to 0x%llx (%s%s) at 0x%llx", (unsigned long long)a, sn,
                       strncmp(sn, "__TEXT,", 7) ? ", a pointer slot dyld rewrites" : "", (unsigned long long)site);
-    if (escapes(e, v, site, OBJC_ESC_STORE)) return -1;
+    if (escapes(e, t, v, site, OBJC_ESC_STORE)) return -1;
     if (w == 8) escape(t, v);
     if (grow((void **)&o->image_stores, &e->capstores, o->n_stores + 1, sizeof *o->image_stores)) return oom(e);
     o->image_stores[o->n_stores].va = a; o->image_stores[o->n_stores].len = (uint64_t)w; o->image_stores[o->n_stores].site = site;
@@ -407,7 +440,7 @@ static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val 
 /* A C string at a concrete image address no path store covers, as the runtime would read it; NULL otherwise. */
 static const char *literal(Ex *e, St *t, Val v, uint64_t site, char *buf, size_t n) {
     uint64_t sa, ss; uint32_t fl; const uint8_t *p; size_t i, max;
-    if (v.k != VC || v.pw || !objc_image_section_of(e->im, v.v, &sa, &ss, &fl) || (fl & 0xff) == 0x1 || (fl & 0xff) == 0xc) return NULL;
+    if (v.k != VC || v.pw || !v.rel || !objc_image_section_of(e->im, v.v, &sa, &ss, &fl) || (fl & 0xff) == 0x1 || (fl & 0xff) == 0xc) return NULL;
     max = sa + ss - v.v < n ? (size_t)(sa + ss - v.v) : n;
     if (!(p = objc_image_bytes(e->im, v.v, max))) return NULL;
     for (i = 0; i < max && p[i]; i++) {}
@@ -420,7 +453,7 @@ static const char *literal(Ex *e, St *t, Val v, uint64_t site, char *buf, size_t
 static Val reg_get(St *t, int r, int w) {
     Val v = t->r[r], u = U();
     taint(t, v); u.ts = v.ts;
-    if (v.k == VC) { if (v.pw && w > v.pw) return u; v.v &= mask(w); if (v.pw >= w) v.pw = 0; return v; }
+    if (v.k == VC) { if ((v.pw && w > v.pw) || (v.rel && w < 8)) return u; v.v &= mask(w); if (v.pw >= w) v.pw = 0; return v; }
     return v.k == VS && w == 8 ? v : u;
 }
 /* r = v (w bytes), its provenance the instruction's reads (t->tin), v's own, and for a 1- or 2-byte write the bytes kept. */
@@ -428,23 +461,33 @@ static void reg_set(St *t, int r, Val v, int w) {
     Val o = t->r[r]; uint32_t ts = ts_union(t->ex, t->tin, v.ts);
     if (w < 4) ts = ts_union(t->ex, ts, o.ts);
     if (w == 8) t->r[r] = v;
-    else if (w == 4) { if (v.k == VC) { v.v &= 0xffffffffULL; v.pw = v.pw && v.pw < 4 ? v.pw : 0; t->r[r] = v; } else t->r[r] = U(); }
-    else if (v.k != VC || (v.pw && v.pw < w)) t->r[r] = U();
-    else if (o.k == VC) { o.v = (o.v & ~mask(w)) | (v.v & mask(w)); if (o.pw && o.pw < w) o.pw = (uint8_t)w; t->r[r] = o; }
+    else if (w == 4) { if (v.k == VC && !v.rel) { v.v &= 0xffffffffULL; v.pw = v.pw && v.pw < 4 ? v.pw : 0; t->r[r] = v; } else t->r[r] = U(); }
+    else if (v.k != VC || v.rel || (v.pw && v.pw < w)) t->r[r] = U();
+    else if (o.k == VC && !o.rel) { o.v = (o.v & ~mask(w)) | (v.v & mask(w)); if (o.pw && o.pw < w) o.pw = (uint8_t)w; t->r[r] = o; }
     else t->r[r] = Cp(v.v, w);
     t->r[r].ts = ts;
 }
-static void flags(St *t, int op, Val a, Val b, Val r, int w) { t->fop = op; t->fw = w; t->fa = a; t->fb = b; t->fr = r; }
+static void flags(St *t, int op, Val a, Val b, Val r, int w) {
+    t->fop = op; t->fw = w; t->fa = a; t->fb = b; t->fr = r;
+    t->fts = ts_union(t->ex, ts_union(t->ex, t->tin, a.ts), b.ts);
+}
+/* Flags no model decides, set from what this instruction read (and, for adc and sbb, the carry it consumed). */
+static void flags_unknown(St *t) { t->fop = 0; t->fts = ts_union(t->ex, t->fts, t->tin); }
 static int t_or(int a, int b) { return a == 1 || b == 1 ? 1 : a == 0 && b == 0 ? 0 : -1; }
 static int t_not(int a) { return a < 0 ? -1 : !a; }
 static int t_ne(int a, int b) { return a < 0 || b < 0 ? -1 : a != b; }
-/* Condition cc: 1, 0, or -1 when the flags do not decide it. */
+/* A value no slide makes NULL: a non-NULL symbol, or an image address inside the image. */
+static int nz(const St *t, Val a) {
+    return nonzero(a) || (a.k == VC && a.rel && !a.pw && objc_image_section_of(t->ex->im, a.v, NULL, NULL, NULL));
+}
+/* Condition cc: 1, 0, or -1 when the flags do not decide it. An image address compared with another decides them; with
+ * NULL, only that it is not; with anything else, nothing. */
 static void flagbits(const St *t, int *zfp, int *sfp, int *cfp, int *ofp) {
     int zf = -1, sf = -1, cf = -1, of = -1;
     Val a = t->fa, b = t->fb;
     *zfp = *sfp = *cfp = *ofp = -1;
     if (!t->fop) return;
-    if (a.k == VC && b.k == VC && t->fr.k == VC && !a.pw && !b.pw) {
+    if (a.k == VC && b.k == VC && t->fr.k == VC && !a.pw && !b.pw && (a.rel == b.rel ? !a.rel || t->fop == 2 : 0)) {
         uint64_t m = mask(t->fw), x = a.v & m, y = b.v & m, z = t->fr.v & m, sb = 1ULL << (t->fw * 8 - 1);
         zf = z == 0; sf = (z & sb) != 0;
         if (t->fop == 1) { cf = z < x; of = (~(x ^ y) & (x ^ z) & sb) != 0; }
@@ -452,10 +495,10 @@ static void flagbits(const St *t, int *zfp, int *sfp, int *cfp, int *ofp) {
         else if (t->fop == 3) cf = of = 0;
         else of = t->fop == 4 ? z == sb : z == sb - 1;
     } else if (t->fw == 8 && t->fop == 2 && a.k == VS && same(a, b)) { zf = 1; cf = of = sf = 0; }
-    else if (t->fw == 8 && t->fop == 3 && nonzero(a) && same(a, b)) { zf = 0; cf = of = 0; }
-    else if (t->fw == 8 && t->fop == 2 && nonzero(a) && b.k == VC && !b.pw && b.v == 0) { zf = 0; cf = of = 0; }
-    else if (t->fw == 8 && t->fop == 2 && nonzero(a) && b.k == VC && !b.pw && b.v == 1) cf = 0;
-    else if (t->fw == 8 && t->fop == 2 && nonzero(b) && a.k == VC && !a.pw && a.v == 0) { zf = 0; cf = 1; }
+    else if (t->fw == 8 && t->fop == 3 && nz(t, a) && same(a, b)) { zf = 0; cf = of = 0; }
+    else if (t->fw == 8 && t->fop == 2 && nz(t, a) && is0(b)) { zf = 0; cf = of = 0; }
+    else if (t->fw == 8 && t->fop == 2 && nonzero(a) && b.k == VC && !b.pw && !b.rel && b.v == 1) cf = 0;
+    else if (t->fw == 8 && t->fop == 2 && nz(t, b) && is0(a)) { zf = 0; cf = 1; }
     *zfp = zf; *sfp = sf; *cfp = cf; *ofp = of;
 }
 static int cond(const St *t, int cc) {
@@ -472,23 +515,29 @@ static int cond(const St *t, int cc) {
 }
 static Val alu(St *t, int op, Val a, Val b, int w) {   /* op: 0 add 1 or 4 and 5 sub 6 xor 7 cmp */
     Val r = U();
-    if (a.k == VC && b.k == VC && !a.pw && !b.pw) {
+    if (a.k == VC && b.k == VC && !a.pw && !b.pw && !a.rel && !b.rel) {
         uint64_t x = a.v, y = b.v, z = 0;
         switch (op) { case 0: z = x + y; break; case 1: z = x | y; break; case 4: z = x & y; break;
                       case 5: case 7: z = x - y; break; case 6: z = x ^ y; break; }
         r = C(z & mask(w));
+    } else if (a.k == VC && b.k == VC && !a.pw && !b.pw && w == 8) {   /* an image address: only what no slide changes */
+        if (op == 0 && a.rel != b.rel) r = R(a.v + b.v);
+        else if ((op == 5 || op == 7) && a.rel && !b.rel) r = R(a.v - b.v);
+        else if ((op == 5 || op == 7) && a.rel && b.rel) r = C(a.v - b.v);
     }
     if (op == 6 && same(a, b)) { r = C(0); a = b = r; }   /* a value xor itself, a symbol's too */
     flags(t, op == 0 ? 1 : (op == 5 || op == 7) ? 2 : 3, a, b, r, w);
     return r;
 }
 
-/* adc (sbb: sub) of a and b with the carry flag; unknown when the carry is. The flags after it are not modelled. */
+/* adc (sbb: sub) of a and b with the carry flag, carrying the flags' provenance; unknown when the carry is. The flags
+ * after it are not modelled. */
 static Val carry(St *t, int sub, Val a, Val b, int w) {
     int zf, sf, cf, of;
     flagbits(t, &zf, &sf, &cf, &of);
-    t->fop = 0;
-    if (cf < 0 || a.k != VC || b.k != VC || a.pw || b.pw) return U();
+    t->tin = ts_union(t->ex, t->tin, t->fts);
+    flags_unknown(t);
+    if (cf < 0 || a.k != VC || b.k != VC || a.pw || b.pw || a.rel || b.rel) return U();
     return C((sub ? a.v - b.v - (uint64_t)cf : a.v + b.v + (uint64_t)cf) & mask(w));
 }
 
@@ -537,7 +586,7 @@ static int complete(Ex *e, St *t) {
 static void clobber(St *t) {
     static const int cs[] = { 0, 1, 2, 6, 7, 8, 9, 10, 11 }; size_t i;
     for (i = 0; i < sizeof cs / sizeof *cs; i++) t->r[cs[i]] = U();
-    t->fop = 0;
+    t->fop = 0; t->fts = 0;
 }
 static void unknown_call(St *t) {
     static const int args[] = { 7, 6, 2, 1, 8, 9 }; size_t i;
@@ -590,11 +639,11 @@ static int call_taint(Ex *e, St *t, int nargs, uint64_t site) {
     int i; size_t k;
     for (i = 0; i < (nargs < 0 ? 16 : nargs); i++) {
         int r = nargs < 0 ? i : args[i];
-        if (escapes(e, t->r[r], site, OBJC_ESC_CALL)) return -1;
+        if (escapes(e, t, t->r[r], site, OBJC_ESC_CALL)) return -1;
     }
     if (nargs >= 0) return 0;
     for (k = 0; k < t->nm; k++)
-        if (is_stack(t->m[k].a) && !t->m[k].ret && escapes(e, t->m[k].v, site, OBJC_ESC_CALL)) return -1;
+        if (is_stack(t->m[k].a) && !t->m[k].ret && escapes(e, t, t->m[k].v, site, OBJC_ESC_CALL)) return -1;
     return 0;
 }
 /* A modelled import's declared argument count; -1 for any other import. */
@@ -623,7 +672,7 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
     }
     if (!strcmp(n, "object_getClass")) {
         cls_of(e, rdi, &cn, &meta);
-        if (rdi.k == VC && !rdi.pw && rdi.v == 0) ret = C(0);
+        if (is0(rdi)) ret = C(0);
         else if (rdi.k == VS && e->sym[rdi.sym].kind == SY_CLASS) {
             if ((id = sym_new(e, SY_META, cn)) == UINT32_MAX) return -1;
             ret = S(id);
@@ -643,7 +692,7 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
         cls_of(e, rdi, &cn, &meta);
         if (!strcmp(n, "class_getClassMethod")) { if (meta) cn = NULL; meta = 1; }
         clobber(t);
-        if (rdi.k == VC && !rdi.pw && rdi.v == 0) { t->r[0] = bool_ ? Cp(0, 1) : C(0); return 0; }
+        if (is0(rdi)) { t->r[0] = bool_ ? Cp(0, 1) : C(0); return 0; }
         if (imp) { if ((id = opaque(e)) == UINT32_MAX) return -1; t->r[0] = S(id); }
         else t->r[0] = bool_ ? Cp(0, 1) : C(0);
         if (!(u = fork_st(e, t))) return -1;
@@ -656,14 +705,14 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
         memset(&a, 0, sizeof a);
         cls_of(e, rdi, &a.cls, &a.meta);
         a.sel = sel_of(e, rsi);
-        im = rdx.k == VC && !rdx.pw ? objc_image_symbol_at(e->im, rdx.v) : NULL;
-        a.imp = im; a.imp_va = rdx.k == VC && !rdx.pw ? rdx.v : 0;
+        im = rdx.k == VC && !rdx.pw && rdx.rel ? objc_image_symbol_at(e->im, rdx.v) : NULL;
+        a.imp = im; a.imp_va = rdx.k == VC && !rdx.pw && rdx.rel ? rdx.v : 0;
         if ((s1 = literal(e, t, rcx, site, b2, sizeof b2))) {
             if ((id = sym_new(e, SY_OPAQUE, s1)) == UINT32_MAX) return -1;
             a.types = e->sym[id].name;
         }
         if (e->out->refused) return -1;
-        a.site = site; a.ok = !(rdi.k == VC && !rdi.pw && rdi.v == 0);
+        a.site = site; a.ok = !is0(rdi);
         if (grow((void **)&t->adds, &t->capa, t->nadds + 1, sizeof *t->adds)) return oom(e);
         t->adds[t->nadds++] = a;
         clobber(t); t->r[0] = Cp(a.ok, 1);
@@ -680,7 +729,7 @@ static int do_ret(Ex *e, St *t, uint64_t site) {
     Cell *c; uint64_t sp = t->r[4].v; size_t i, j = 0;
     if (t->r[4].k != VC || t->r[4].pw || !(c = cell_over(t, sp, 8)) || !c->ret || c->a != sp || c->v.k != VC)
         return refuse(e, "indirect-call", "a return at 0x%llx to an address no followed call pushed", (unsigned long long)site);
-    if ((c->v.v == SENTINEL || t->depth == 1) && escapes(e, t->r[0], site, OBJC_ESC_RETURN)) return -1;
+    if ((c->v.v == SENTINEL || t->depth == 1) && escapes(e, t, t->r[0], site, OBJC_ESC_RETURN)) return -1;
     if (c->v.v == SENTINEL) return 1;
     t->rip = c->v.v; t->r[4] = C(sp + 8); t->depth--;
     for (i = 0; i < t->nm; i++) if (t->m[i].a >= sp + 8) t->m[j++] = t->m[i];
@@ -714,20 +763,29 @@ static int do_call(Ex *e, St *t, uint64_t site, uint64_t target, int tail, uint6
 
 /* ---- instructions ---- */
 static int width(const ObjcIns *x, int bytewide) { return bytewide ? 1 : (x->rex & 8) ? 8 : x->p66 ? 2 : 4; }
-static int ea(const St *t, const ObjcIns *x, uint64_t *a) {
-    uint64_t v = 0;
-    if (x->riprel) { *a = x->riptarget; return 1; }
-    if (x->sib) {
-        if (x->sibbase >= 0) { if (t->r[x->sibbase].k != VC || t->r[x->sibbase].pw) return 0; v = t->r[x->sibbase].v; }
-        if (x->sibindex >= 0) { if (t->r[x->sibindex].k != VC || t->r[x->sibindex].pw) return 0; v += t->r[x->sibindex].v << x->sibscale; }
-    } else { if (t->r[x->rm].k != VC || t->r[x->rm].pw) return 0; v = t->r[x->rm].v; }
+/* The operand's address, and in *rel whether it is an image address; 0 when unknown, as when it adds two image
+ * addresses or scales one. */
+static int ea_rel(const St *t, const ObjcIns *x, uint64_t *a, int *rel) {
+    uint64_t v = 0; const Val *b = NULL, *i = NULL;
+    *rel = 0;
+    if (x->riprel) { *a = x->riptarget; *rel = 1; return 1; }
+    if (x->sib) { if (x->sibbase >= 0) b = &t->r[x->sibbase]; if (x->sibindex >= 0) i = &t->r[x->sibindex]; }
+    else b = &t->r[x->rm];
+    if (b) { if (b->k != VC || b->pw) return 0; v = b->v; *rel += b->rel; }
+    if (i) { if (i->k != VC || i->pw || (i->rel && x->sibscale)) return 0; v += i->v << x->sibscale; *rel += i->rel; }
     *a = v + (uint64_t)x->mdisp;
-    return 1;
+    return *rel <= 1;
 }
-/* A load from an unknown address: unknown, its provenance every frame cell's and the address registers'. */
+/* A memory operand's address: known when it is an image address or on the stack. */
+static int ea(const St *t, const ObjcIns *x, uint64_t *a) {
+    int rel;
+    return ea_rel(t, x, a, &rel) && (rel || is_stack(*a));
+}
+/* A load from an unknown address: unknown, its provenance the frame residue and the address registers'; through an
+ * import's address plus a constant (a field of another image's object, never the stack), the address register's only. */
 static Val unknown_load(St *t, const ObjcIns *x) {
-    Val u = U(); size_t i;
-    for (i = 0; i < t->nm; i++) if (is_stack(t->m[i].a) && !t->m[i].ret) u.ts = ts_union(t->ex, u.ts, t->m[i].v.ts);
+    Val u = U(); int b = x->riprel ? -1 : x->sib ? (x->sibindex < 0 ? x->sibbase : -1) : x->rm;
+    u.ts = b >= 0 && t->r[b].k == VS && t->r[b].v == 1 && t->ex->sym[t->r[b].sym].kind == SY_IMPORT ? 0 : t->res;
     if (x->sib) {
         if (x->sibbase >= 0) u.ts = ts_union(t->ex, u.ts, t->r[x->sibbase].ts);
         if (x->sibindex >= 0) u.ts = ts_union(t->ex, u.ts, t->r[x->sibindex].ts);
@@ -768,6 +826,7 @@ static int unsupported(Ex *e, uint64_t ip, const ObjcIns *x, const uint8_t *p, c
 static int branch(Ex *e, St *t, int c, uint64_t taken) {
     St *u;
     if (c >= 0) { if (c) t->rip = taken; return 0; }
+    t->pts = ts_union(e, t->pts, t->fts);
     if (!(u = fork_st(e, t))) return -1;
     u->rip = taken; u->uforks++; t->uforks++;
     return 0;
@@ -803,12 +862,12 @@ static int step(Ex *e, St *t) {
         }
         if (op >= 0xB8 && op <= 0xBF) { w = width(&x, 0); reg_set(t, (op & 7) | (x.rex & 1 ? 8 : 0), C((uint64_t)x.imm & mask(w)), w); return 0; }
         if (op == 0x8D && x.mod != 3) {
-            int k = ea(t, &x, &a);
+            int rel, k = ea_rel(t, &x, &a, &rel);
             w = width(&x, 0);
             if (x.sib) { if (x.sibbase >= 0) taint(t, t->r[x.sibbase]); if (x.sibindex >= 0) taint(t, t->r[x.sibindex]); }
             else if (!x.riprel) taint(t, t->r[x.rm]);
             if (k && writable(e, a)) t->tin = ts_union(e, t->tin, ts_one(e, a));
-            reg_set(t, x.reg, k ? C(a & mask(w)) : U(), w); return 0;
+            reg_set(t, x.reg, !k || (rel && w < 8) ? U() : rel ? R(a) : C(a & mask(w)), w); return 0;
         }
         if (op == 0x63 && (x.rex & 8)) {
             if (rm_get(e, t, &x, 4, ip, &v)) return -1;
@@ -835,7 +894,7 @@ static int step(Ex *e, St *t) {
             if (dir) { l = reg_get(t, x.reg, w); if (rm_get(e, t, &x, w, ip, &v)) return -1; }
             else { if (rm_get(e, t, &x, w, ip, &l)) return -1; v = reg_get(t, x.reg, w); }
             z = alu(t, k, l, v, w);
-            if ((k == 6 || k == 5) && x.mod == 3 && x.reg == x.rm) { z = C(0); flags(t, 3, z, z, z, w); t->tin = 0; }
+            if ((k == 6 || k == 5) && x.mod == 3 && x.reg == x.rm) { z = C(0); t->tin = 0; flags(t, 3, z, z, z, w); }
             if (k == 7) return 0;
             if (dir) { reg_set(t, x.reg, z, w); return 0; }
             return rm_set(e, t, &x, z, w, ip);
@@ -853,7 +912,7 @@ static int step(Ex *e, St *t) {
             w = width(&x, op == 0xF6);
             if (rm_get(e, t, &x, w, ip, &l)) return -1;
             if ((x.reg & 7) == 0) { alu(t, 4, l, C((uint64_t)x.imm & mask(w)), w); return 0; }
-            if ((x.reg & 7) == 2) return rm_set(e, t, &x, l.k == VC && !l.pw ? C(~l.v & mask(w)) : U(), w, ip);
+            if ((x.reg & 7) == 2) return rm_set(e, t, &x, l.k == VC && !l.pw && !l.rel ? C(~l.v & mask(w)) : U(), w, ip);
             z = alu(t, 5, C(0), l, w);
             return rm_set(e, t, &x, z, w, ip);
         }
@@ -861,32 +920,32 @@ static int step(Ex *e, St *t) {
             w = width(&x, op == 0xFE);
             if (rm_get(e, t, &x, w, ip, &l)) return -1;
             z = l.k == VC && !l.pw ? C((l.v + ((x.reg & 7) ? ~0ULL : 1)) & mask(w)) : U();
+            z.rel = l.k == VC && !l.pw && l.rel;
             flags(t, (x.reg & 7) ? 5 : 4, l, C(1), z, w);
             return rm_set(e, t, &x, z, w, ip);
         }
         if ((op == 0xC0 || op == 0xC1 || op == 0xD0 || op == 0xD1 || op == 0xD2 || op == 0xD3) &&
             ((x.reg & 7) == 4 || (x.reg & 7) == 5 || (x.reg & 7) == 7)) {
-            int sh; uint32_t kept = t->tin; Val cl = reg_get(t, 1, 1);
-            t->tin = kept;   /* the count does not flow into the result */
+            int sh; Val cl = reg_get(t, 1, 1);   /* read for every form: a count by cl flows into the result */
             w = width(&x, op == 0xC0 || op == 0xD0 || op == 0xD2);
             if (op == 0xD2 || op == 0xD3) { if (cl.k != VC) sh = -1; else sh = (int)(cl.v & (w == 8 ? 63 : 31)); }
             else sh = op == 0xD0 || op == 0xD1 ? 1 : (int)(x.imm & (w == 8 ? 63 : 31));
             if (rm_get(e, t, &x, w, ip, &l)) return -1;
             z = U();
-            if (sh >= 0 && l.k == VC && !l.pw) {
+            if (sh >= 0 && l.k == VC && !l.pw && !l.rel) {
                 uint64_t q = l.v & mask(w);
                 if ((x.reg & 7) == 4) q <<= sh;
                 else if ((x.reg & 7) == 5) q >>= sh;
                 else q = (uint64_t)(((int64_t)(q << (64 - w * 8)) >> (64 - w * 8)) >> sh);
                 z = C(q & mask(w));
             }
-            if (sh) t->fop = 0;
+            if (sh) flags_unknown(t);
             return rm_set(e, t, &x, z, w, ip);
         }
         if (op == 0x69 || op == 0x6B) {
             w = width(&x, 0);
             if (rm_get(e, t, &x, w, ip, &l)) return -1;
-            reg_set(t, x.reg, l.k == VC && !l.pw ? C((l.v * (uint64_t)x.imm) & mask(w)) : U(), w); t->fop = 0; return 0;
+            reg_set(t, x.reg, l.k == VC && !l.pw && !l.rel ? C((l.v * (uint64_t)x.imm) & mask(w)) : U(), w); flags_unknown(t); return 0;
         }
         if (op == 0x90 && !(x.rex & 1)) return 0;
         if (op == 0x98) {   /* cbw, cwde, cdqe */
@@ -896,7 +955,7 @@ static int step(Ex *e, St *t) {
             reg_set(t, 0, v.k == VC ? C((uint64_t)sx & mask(w)) : U(), w); return 0;
         }
         if (op == 0x99) { w = width(&x, 0); v = reg_get(t, 0, w);
-            reg_set(t, 2, v.k == VC ? C(v.v >> (w * 8 - 1) & 1 ? mask(w) : 0) : U(), w); return 0; }
+            reg_set(t, 2, v.k == VC && !v.rel ? C(v.v >> (w * 8 - 1) & 1 ? mask(w) : 0) : U(), w); return 0; }
         if (op == 0x87 && x.mod == 3) { w = width(&x, 0); l = reg_get(t, x.reg, w); v = reg_get(t, x.rm, w);
             t->tin = v.ts; reg_set(t, x.reg, v, w); t->tin = l.ts; reg_set(t, x.rm, l, w); return 0; }
         if (op == 0xC9) {
@@ -940,7 +999,9 @@ static int step(Ex *e, St *t) {
         if (op >= 0x90 && op <= 0x9F) {
             int c = cond(t, op & 15);
             St *u;
+            t->tin = ts_union(e, t->tin, t->fts);
             if (c >= 0) return rm_set(e, t, &x, C((uint64_t)c), 1, ip);
+            t->pts = ts_union(e, t->pts, t->fts);
             if (!(u = fork_st(e, t))) return -1;
             u->uforks++; t->uforks++;
             if (rm_set(e, u, &x, C(1), 1, ip)) return -1;
@@ -952,19 +1013,21 @@ static int step(Ex *e, St *t) {
             if (rm_get(e, t, &x, w, ip, &v)) return -1;
             l = reg_get(t, x.reg, w);
             if (c < 0) {
-                St *u = fork_st(e, t);
-                if (!u) return -1;
+                St *u;
+                t->pts = ts_union(e, t->pts, t->fts);
+                if (!(u = fork_st(e, t))) return -1;
                 u->uforks++; t->uforks++;
-                u->tin = v.ts; reg_set(u, x.reg, v, w); t->tin = l.ts; reg_set(t, x.reg, l, w); return 0;
+                u->tin = ts_union(e, v.ts, t->fts); reg_set(u, x.reg, v, w);
+                t->tin = ts_union(e, l.ts, t->fts); reg_set(t, x.reg, l, w); return 0;
             }
-            t->tin = c ? v.ts : l.ts;   /* only the selected operand flows */
+            t->tin = ts_union(e, c ? v.ts : l.ts, t->fts);   /* the selected operand flows, and the flags that chose it */
             reg_set(t, x.reg, c ? v : l, w);
             return 0;
         }
         if (op == 0xAF) {
             w = width(&x, 0); l = reg_get(t, x.reg, w);
             if (rm_get(e, t, &x, w, ip, &v)) return -1;
-            reg_set(t, x.reg, l.k == VC && v.k == VC && !l.pw && !v.pw ? C((l.v * v.v) & mask(w)) : U(), w); t->fop = 0;
+            reg_set(t, x.reg, l.k == VC && v.k == VC && !l.pw && !v.pw && !l.rel && !v.rel ? C((l.v * v.v) & mask(w)) : U(), w); flags_unknown(t);
             return 0;
         }
     }

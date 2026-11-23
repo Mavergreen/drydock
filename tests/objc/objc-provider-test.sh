@@ -453,6 +453,14 @@ group_prefix unkload -DUNK_LOAD -fno-stack-protector; group unkload unkload
 group_refused 'sweep: UNK_LOAD (the state loaded back at an unknown index)' provider-mutable-constant 'to code it does not follow'
 group_prefix xchg -DXCHG; group xchg xchg
 group_refused 'sweep: XCHG (an xchg swaps the state and another global)' provider-mutable-constant 'to code it does not follow'
+# spec: src/objc/regexec.c header, "Provenance" -- an image address is relocatable: an operation inspecting its bits is
+#       unknown at analysis time and carries its provenance, flags included.
+group_prefix shcl -DSHCL; group shcl shcl
+group_refused 'sweep: SHCL (the state rebuilt through a shift count)' provider-mutable-constant 'to code it does not follow'
+group_prefix sbbv -DSBBV; group sbbv sbbv
+group_refused 'sweep: SBBV (the state rebuilt through the carry flag)' provider-mutable-constant 'to code it does not follow'
+group_prefix walkend -DWALK_END; group walkend walkend
+exit_is 0 'group: WALK_END (a row pointer compared to the table end) provided'; tab_all provided 'group: WALK_END provided'
 # spec: src/objc/provider.c "Coverage" -- class metadata the runtime writes is never read as a constant.
 group_prefix clsfield -DCLS_FIELD; group clsfield clsfield
 group_refused 'sweep: CLS_FIELD (the root branches on its own class object)' provider-mutable-constant 'in __DATA,__objc_data), read at'

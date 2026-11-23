@@ -18,7 +18,9 @@
 // MANY_ARGS (the state's address as a helper's fifteenth argument, on the stack), CLS_FIELD (the root branches on its
 // own class object's isa), CLS_RO (on a field of its class's read-only data, in __objc_const), CMOV3 (a cmov,
 // its flags known, selects the state's address over another global's for a helper), UNK_LOAD (the state's address
-// loaded back from a frame array at an unknown index, for a helper) and XCHG (an xchg swaps the two addresses).
+// loaded back from a frame array at an unknown index, for a helper), XCHG (an xchg swaps the two addresses),
+// SHCL and SBBV (the state's address plus an unknown zero, rebuilt bit by bit through a shift count or the carry flag,
+// for a helper) and WALK_END (the register function walks the table by comparing a row pointer to its end).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -101,7 +103,7 @@ __attribute__((noinline, used)) void fixture_many(long a, long b, long c, long d
   __asm__ volatile("" : : "r"(a + b + c + d + e + f + g + h + i + j + k + l + m + n));
 }
 #endif
-#if defined(CMOV3) || defined(UNK_LOAD) || defined(XCHG)
+#if defined(CMOV3) || defined(UNK_LOAD) || defined(XCHG) || defined(SHCL) || defined(SBBV)
 __attribute__((noinline, used)) void fixture_bumpx(FixtureState *p) { *p = FixtureNativePresent; }
 #endif
 #if defined(CMOV3) || defined(XCHG)
@@ -154,6 +156,16 @@ __attribute__((noinline)) FixtureState FixtureTabRegisterTable(Class cls, const 
 #ifdef SHORT
   count -= 1;
 #endif
+#ifdef WALK_END
+  for (const FixtureTabMethod *row = table, *end = table + count; row != end; ++row) {
+    __asm__("" : "+r"(row));   // keeps the walk on the row pointer, not an index
+    Class c = row->classMethod ? object_getClass(cls) : cls;
+    if (!class_addMethod(c, sel_registerName(row->selector), row->imp, row->types)) {
+      *detail = row->selector;
+      return FixtureAddFailed;
+    }
+  }
+#else
   for (size_t i = 0; i < count; ++i) {
 #ifdef OTHER_NULL
     if (i == 3 && !objc_getClass("NSPanel")) break;
@@ -167,6 +179,7 @@ __attribute__((noinline)) FixtureState FixtureTabRegisterTable(Class cls, const 
       return FixtureAddFailed;
     }
   }
+#endif
   return FixtureRegistered;
 }
 
@@ -255,6 +268,47 @@ void __fixture_objc_activate_table(void) {
   {
     FixtureState *p = &fixtureOther, *q = &state;
     __asm__ volatile(".byte 0x48, 0x87, 0xf8" : "+D"(p), "+a"(q));   // xchgq: reg rdi, r/m rax
+    fixture_bumpx(p);
+    if (state != FixtureNotRun) return;
+  }
+#endif
+#if defined(SHCL) || defined(SBBV)
+  {
+    FixtureState *p; void *sp_ = &state;
+    unsigned long z = arc4random_uniform(1);
+    __asm__ volatile(
+      "addq %%rdx, %%rsi\n\t"
+      "xorl %%edi, %%edi\n\t"
+      "xorl %%r9d, %%r9d\n"
+      "1:\n\t"
+      "movq %%r9, %%rcx\n\t"
+      "movq %%rsi, %%rax\n\t"
+      "shrq %%cl, %%rax\n\t"
+      "andl $1, %%eax\n\t"
+#if defined(SHCL)
+      "movl %%eax, %%ecx\n\t"
+      "movl $1, %%r8d\n\t"
+      "shlq %%cl, %%r8\n\t"
+      "decq %%r8\n\t"
+      "movq %%r9, %%rcx\n\t"
+#else
+      "movl $0, %%r8d\n\t"
+      "cmpq $1, %%rax\n\t"
+      "sbbq %%r8, %%r8\n\t"
+      "incq %%r8\n\t"
+#endif
+      "shlq %%cl, %%r8\n\t"
+      "orq %%r8, %%rdi\n\t"
+      "incq %%r9\n\t"
+      "cmpq $64, %%r9\n\t"
+      "jne 1b\n\t"
+      "xorl %%esi, %%esi\n\t"
+      "xorl %%eax, %%eax\n\t"
+      "xorl %%ecx, %%ecx\n\t"
+      "xorl %%edx, %%edx\n\t"
+      "xorl %%r8d, %%r8d\n\t"
+      "xorl %%r9d, %%r9d\n\t"
+      : "=D"(p), "+S"(sp_), "+d"(z) : : "rax", "rcx", "r8", "r9", "memory");
     fixture_bumpx(p);
     if (state != FixtureNotRun) return;
   }

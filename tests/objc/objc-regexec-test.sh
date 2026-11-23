@@ -154,6 +154,21 @@ run lim _lim_unkload; explored lim_unkload
 [ "$(sed -n 's/^paths //p' "$T/out")" = 2 ] || fail "lim_unkload: $(head -1 "$T/out"), want paths 2: a load at an unknown index is unknown"
 pass 'an unrebased pointer, an unknown store, a foreign call, the depth and instruction budgets and a forged return each refuse by name, and a load at an unknown index is unknown'
 
+fxcc -c "$FX/regexec-launder.S" -o "$T/launder.o" || fail 'assembling regexec-launder.S'
+fxcc "$T/main.o" "$T/launder.o" -lobjc -o "$T/launder" || fail 'linking launder'
+ls_va=$("$NM" "$T/launder" | awk '$3 == "_ls" {print "0x" $1}' | sed 's/0x0*/0x/')
+for q in _l_base _l_shcl _l_sbb _l_setcc _l_ctl _l_overlap _l_dead _l_dead2 _l_impidx; do
+  run launder $q; explored $q
+  grep -E "^escaped .*($ls_va|0xffffffffffffffff)@" "$T/out" >/dev/null || fail "$q: bits of _ls ($ls_va) reach a helper not followed, not escaped: $(grep '^escaped' "$T/out")"
+done
+pass 'an image address copied through a shift count, the carry, setcc, a branch, an overlapped or a dead frame cell escapes'
+run launder _l_import; explored l_import
+grep '^escaped .*@' "$T/out" >/dev/null && fail "l_import: an imported datum read through its GOT slot carries the dead frame: $(grep '^escaped' "$T/out")"
+pass 'an imported datum read at a constant offset from its address is another image'"'"'s memory, not the dead frame'
+run launder _l_walk; explored l_walk
+[ "$(sed -n 's/^paths //p' "$T/out")" = 1 ] || fail "l_walk: $(head -1 "$T/out"), want paths 1: a row pointer compared to the table's end, or to NULL, is known"
+pass 'a walk comparing a row pointer to the table end, testing it non-NULL, is decided'
+
 fxcc -c "$FX/regexec-probe.S" -o "$T/probe.o" || fail 'assembling regexec-probe.S'
 fxcc "$T/main.o" "$T/probe.o" -lobjc -o "$T/probe" || fail 'linking probe'
 run probe _p_xor; explored p_xor
