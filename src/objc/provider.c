@@ -63,8 +63,12 @@
  * rebased pointers), nothing refers into a function an explored path ran in -- the explored functions --
  * but a branch from one of them, or the constructor's one initializer entry (provider-foreign-entry);
  * nothing refers to image data outside __TEXT the executor read as its initial value but a load, an
- * instruction a path executed, or a pointer in __TEXT; and no address inside such data's atom escapes to
- * code the executor does not follow (regexec's escaped) (provider-mutable-constant). An explored function
+ * instruction a path executed, or a pointer in __TEXT; and no value derived from an address of writable
+ * image data inside data read as initial values -- a range read, or any atom overlapping one -- reaches code
+ * the executor does not follow, is stored outside the frame, or is returned from the constructor or the root
+ * (regexec's escaped, by the address each was derived from), and nothing read as an initial value lies in
+ * class metadata the runtime writes (__objc_data, __objc_const, __objc_ivar; selector, class and super
+ * references it rewrites only to equal values) (provider-mutable-constant). An explored function
  * with an LSDA is provider-unmeasurable (exceptional control flow). A summarised callee is not explored.
  * A group is credited
  * whole or not at all: an active group turns the unsupported findings of each member's selector
@@ -834,22 +838,39 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
                                    p->provider_id, where(im, f, wb, sizeof wb), (unsigned long long)f);
         if (l) goto out;
     }
-    for (i = 0; i < r->n_escaped; i++)
-        for (j = 0; j < w.nc; j++) {
-            uint64_t lo = w.c[2 * j], hi = w.c[2 * j + 1];
-            for (k = 0; k < p->n_atoms; k++)
-                if (w.c[2 * j] >= p->atoms[k].address && w.c[2 * j] < p->atoms[k].address + p->atoms[k].size) {
-                    lo = p->atoms[k].address; hi = lo + p->atoms[k].size; break;
-                }
-            if (r->escaped[i].va >= lo && r->escaped[i].va < hi) {
-                char tb[300];
-                rc = objc_fail(a, "provider-mutable-constant", NULL, r->escaped[i].site,
-                               "%s: 0x%llx (in %s), whose bytes the executor read as initial values, escapes at 0x%llx (in %s) to code it does not follow",
-                               p->provider_id, (unsigned long long)r->escaped[i].va, where(im, r->escaped[i].va, tb, sizeof tb),
-                               (unsigned long long)r->escaped[i].site, where(im, r->escaped[i].site, wb, sizeof wb));
+    for (i = 0; i < r->n_reads; i++) {
+        static const char *const META[] = { "__objc_data", "__objc_const", "__objc_ivar" };
+        const char *sn = objc_image_section_of(im, r->const_reads[i].va, NULL, NULL, NULL), *c = sn ? strchr(sn, ',') : NULL;
+        for (j = 0; c && j < sizeof META / sizeof *META; j++)
+            if (!strcmp(c + 1, META[j])) {
+                rc = objc_fail(a, "provider-mutable-constant", NULL, r->const_reads[i].site,
+                               "%s: 0x%llx (in %s), read at 0x%llx as its initial value, is Objective-C runtime metadata, never a constant",
+                               p->provider_id, (unsigned long long)r->const_reads[i].va, where(im, r->const_reads[i].va, wb, sizeof wb),
+                               (unsigned long long)r->const_reads[i].site);
                 goto out;
             }
+    }
+    for (i = 0; i < r->n_escaped; i++) {
+        static const char *const HOW[] = { "is passed to code it does not follow", "is stored outside the frame", "is returned from the root" };
+        uint64_t b = r->escaped[i].va;
+        int hit = 0;
+        for (j = 0; j < w.nc && !hit; j++) {
+            hit = b >= w.c[2 * j] && b < w.c[2 * j + 1];
+            for (k = 0; k < p->n_atoms && !hit; k++) {
+                uint64_t lo = p->atoms[k].address, hi = lo + p->atoms[k].size;
+                hit = lo < w.c[2 * j + 1] && w.c[2 * j] < hi && b >= lo && b < hi;
+            }
         }
+        if (hit) {
+            char tb[300];
+            rc = objc_fail(a, "provider-mutable-constant", NULL, r->escaped[i].site,
+                           "%s: a value derived from 0x%llx (in %s), data the executor read as initial values, %s at 0x%llx (in %s)",
+                           p->provider_id, (unsigned long long)b, where(im, b, tb, sizeof tb),
+                           r->escaped[i].how >= 0 && r->escaped[i].how < 3 ? HOW[r->escaped[i].how] : "escapes",
+                           (unsigned long long)r->escaped[i].site, where(im, r->escaped[i].site, wb, sizeof wb));
+            goto out;
+        }
+    }
     for (i = 0; i < objc_image_nbinds(im); i++) {
         uint64_t va = 0;
         if (objc_reg_mutator(objc_image_bind(im, i, &va)) && push_pair(&w.m, &w.nm, va, va + 1)) goto oom;

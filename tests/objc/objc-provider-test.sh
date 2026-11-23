@@ -439,6 +439,19 @@ group_prefix bump -DBUMP; group bump bump
 group_refused 'sweep: BUMP (the state handed to a helper no path follows)' provider-mutable-constant 'to code it does not follow'
 group_prefix passtab -DPASS_TABLE; group passtab passtab
 group_refused 'sweep: PASS_TABLE (the table handed to a helper no path follows)' provider-mutable-constant 'to code it does not follow'
+# spec: src/objc/provider.c "Coverage" -- a value derived from data read as initial values (the range, or any atom
+#       overlapping it) must not reach a call the executor does not follow (any register or frame cell).
+group_prefix unkoff -DUNK_OFF; group unkoff unkoff
+group_refused 'sweep: UNK_OFF (the state plus an unknown offset handed to a helper)' provider-mutable-constant 'to code it does not follow'
+group_prefix adj -DADJ; group adj adj
+group_refused 'sweep: ADJ (a global beside a read one handed to a helper)' provider-mutable-constant 'to code it does not follow'
+group_prefix manyargs -DMANY_ARGS -mllvm -no-x86-call-frame-opt; group manyargs manyargs
+group_refused 'sweep: MANY_ARGS (the state as a stack argument)' provider-mutable-constant 'to code it does not follow'
+# spec: src/objc/provider.c "Coverage" -- class metadata the runtime writes is never read as a constant.
+group_prefix clsfield -DCLS_FIELD; group clsfield clsfield
+group_refused 'sweep: CLS_FIELD (the root branches on its own class object)' provider-mutable-constant 'in __DATA,__objc_data), read at'
+group_prefix clsro -DCLS_RO; group clsro clsro
+group_refused 'sweep: CLS_RO (the root branches on its class read-only data)' provider-mutable-constant 'in __DATA,__objc_const), read at'
 group_prefix cfgptr -DCFG_PTR; group cfgptr cfgptr
 group_refused 'sweep: CFG_PTR (a constant pointer to a constant, written through elsewhere)' provider-mutable-constant 'points to'
 group_prefix prunedw -DPRUNED_WRITE; group prunedw prunedw

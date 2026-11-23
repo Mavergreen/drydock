@@ -33,10 +33,10 @@ typedef struct {
      * holding it) where some explored path executed an instruction. A summarised callee is in none. */
     uint64_t *explored; size_t n_explored;
     uint64_t *executed; size_t n_executed;        /* every instruction an explored path executed; ascending, distinct */
-    /* Concrete addresses into image data outside __TEXT that escape on an explored path: passed (an argument
-     * register, or a stack cell a callee may read) to a call not followed -- any import, a summarised callee --
-     * stored outside the frame, or pushed. va: the address; site: the instruction. Sorted, distinct. */
-    struct { uint64_t va, site; } *escaped; size_t n_escaped;
+    /* Escapes of a value derived from writable image data (regexec.c's provenance): va, the address it was derived
+     * from; site, the instruction; how: OBJC_ESC_CALL (at a call not followed), OBJC_ESC_STORE (stored outside the
+     * frame), OBJC_ESC_RETURN (returned from the entry or a function it called). Sorted, distinct. */
+    struct { uint64_t va, site; int how; } *escaped; size_t n_escaped;
     /* Image data read as initial values: [va, va+len) by the instruction at site (a load), or by the call at site
      * (a runtime model reading the C string at va, e.g. sel_registerName's literal: how 1). Sorted, distinct. */
     struct { uint64_t va, len, site; int how; } *const_reads; size_t n_reads;
@@ -52,6 +52,7 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
                              const ObjcRegBudget *b, ObjcRegResult *out);
 void objc_reg_free(ObjcRegResult *r);
 /* 1 when import (with or without its leading underscore) is one of the spec's mutators, which mutator_sites lists. */
+enum { OBJC_ESC_CALL, OBJC_ESC_STORE, OBJC_ESC_RETURN };
 int objc_reg_mutator(const char *import);
 
 #endif

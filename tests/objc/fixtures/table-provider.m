@@ -13,7 +13,10 @@
 // written through by a function no path runs), PRUNED_WRITE (a state write on a branch no path takes), PRUNED_CALL
 // (class_addMethod's GOT slot loaded on an explored path, called through a register on a branch no path takes), TRY
 // (the root catches exceptions), BOUND_ADD (class_addMethod through a bound data pointer, in a method reached only by
-// a message send) and TWO_INIT (the constructor in the initializer table twice).
+// a message send), TWO_INIT (the constructor in the initializer table twice), UNK_OFF (the state's address plus an
+// unknown offset handed to a helper), ADJ (the address of a global next to one the root reads, handed to a helper)
+// MANY_ARGS (the state's address as a helper's fifteenth argument, on the stack), CLS_FIELD (the root branches on its
+// own class object's isa) and CLS_RO (on a field of its class's read-only data, in __objc_const).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -80,6 +83,21 @@ static const char *stateDetail;
 
 #ifdef BUMP
 __attribute__((noinline, used)) void fixture_bump(FixtureState *p) { *p = FixtureNativePresent; }
+#endif
+#ifdef UNK_OFF
+__attribute__((noinline, used)) void fixture_bumpu(FixtureState *p) { *p = FixtureNativePresent; }
+#endif
+#ifdef ADJ
+int fixtureA = 1;
+int fixtureB = 2;
+__attribute__((noinline, used)) void fixture_bumpl(int *p) { *p = 3; }
+#endif
+#ifdef MANY_ARGS
+__attribute__((noinline, used)) void fixture_many(long a, long b, long c, long d, long e, long f, long g, long h, long i,
+                                                  long j, long k, long l, long m, long n, FixtureState *p) {
+  *p = FixtureNativePresent;
+  __asm__ volatile("" : : "r"(a + b + c + d + e + f + g + h + i + j + k + l + m + n));
+}
 #endif
 #ifdef PASS_TABLE
 __attribute__((noinline, used)) void fixture_note(const void *p) { __asm__ volatile("" : : "r"(p)); }
@@ -152,6 +170,14 @@ __attribute__((noinline)) FixtureState FixtureTabRegisterTable(Class cls, const 
 @end
 #endif
 
+#if defined(CLS_FIELD) || defined(CLS_RO)
+@interface FixtureTabOwn : NSObject
+@end
+@implementation FixtureTabOwn
+@end
+extern char FixtureTabOwnClass[] __asm__("_OBJC_CLASS_$_FixtureTabOwn");
+#endif
+
 #ifdef UNEXPLORED_SEL
 @interface FixtureTabSel : NSObject
 + (void)touch:(const char *)name;
@@ -189,6 +215,25 @@ void __fixture_objc_activate_table(void) {
 #endif
 #ifdef PASS_TABLE
   fixture_note(FixtureTabMethods);
+#endif
+#ifdef CLS_FIELD
+  if (!((void *volatile *)FixtureTabOwnClass)[0]) return;
+#endif
+#ifdef CLS_RO
+  if (((const volatile uint32_t *)((void *const *)FixtureTabOwnClass)[4])[1] == 0x7fffffff) return;
+#endif
+#ifdef UNK_OFF
+  fixture_bumpu((FixtureState *)((char *)&state + arc4random_uniform(1)));
+  if (state != FixtureNotRun) return;
+#endif
+#ifdef ADJ
+  if (fixtureA != 1) return;
+  fixture_bumpl(&fixtureB);
+  if (fixtureB != 2) return;
+#endif
+#ifdef MANY_ARGS
+  fixture_many(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, &state);
+  if (state != FixtureNotRun) return;
 #endif
 #ifdef CFG_PTR
   if (*fixture_cfgp) return;
