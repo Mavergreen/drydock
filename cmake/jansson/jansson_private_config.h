@@ -1,0 +1,8 @@
+#define HAVE_STDINT_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_FCNTL_H 1
+#define HAVE_SYS_TIME_H 1
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_GETTIMEOFDAY 1
+#define USE_URANDOM 1
+#define HAVE_ATOMIC_BUILTINS 1

@@ -1,0 +1,4 @@
+REPO=https://github.com/akheron/jansson.git
+REF=v2.15.1
+DIGEST=dbb5fb3636e155fccfce4cd215de752779bd6971
+SHA256=65084e4e43de9840d66a0604c8d9d9c499b2fc0db52c05730e3b6ac3c11ed66f

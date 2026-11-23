@@ -149,6 +149,43 @@ if(APPLE)
   mavericks_assert_binary_compatible(drydock-macho-rewrite)
 endif()
 
+set(DRYDOCK_JANSSON_PIN "${CMAKE_CURRENT_SOURCE_DIR}/components/jansson/version")
+file(STRINGS "${DRYDOCK_JANSSON_PIN}" DRYDOCK_JANSSON_PIN_LINES REGEX "^(REPO|DIGEST|SHA256)=")
+foreach(l IN LISTS DRYDOCK_JANSSON_PIN_LINES)
+  string(REGEX REPLACE "^([A-Z0-9]+)=(.*)$" "\\1" k "${l}")
+  string(REGEX REPLACE "^([A-Z0-9]+)=(.*)$" "\\2" v "${l}")
+  set(DRYDOCK_JANSSON_${k} "${v}")
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${DRYDOCK_JANSSON_PIN}")
+# platform: the tree's path names its commit, so a bump compiles fresh objects; the tarball's mtimes are the
+# commit's, older than any object built before, and a fixed path would leave Make keeping the old ones.
+set(DRYDOCK_JANSSON_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/jansson-${DRYDOCK_JANSSON_DIGEST}")
+execute_process(COMMAND sh "${MavericksShipyard_SCRIPTS}/fetch_pinned_source.sh" "${DRYDOCK_JANSSON_REPO}"
+    "${DRYDOCK_JANSSON_DIGEST}" "${DRYDOCK_JANSSON_SHA256}" "${DRYDOCK_JANSSON_SOURCE_DIR}"
+  ERROR_VARIABLE DRYDOCK_JANSSON_ERR RESULT_VARIABLE DRYDOCK_JANSSON_RC)
+if(NOT DRYDOCK_JANSSON_RC EQUAL 0 OR NOT EXISTS "${DRYDOCK_JANSSON_SOURCE_DIR}/src/jansson.h")
+  message(FATAL_ERROR "drydock-objc parses JSON with the Jansson pinned in components/jansson/version "
+    "(REPO '${DRYDOCK_JANSSON_REPO}', DIGEST '${DRYDOCK_JANSSON_DIGEST}', SHA256 '${DRYDOCK_JANSSON_SHA256}'): "
+    "fetch_pinned_source.sh exited ${DRYDOCK_JANSSON_RC} and said: ${DRYDOCK_JANSSON_ERR}")
+endif()
+message(STATUS "Drydock: Jansson ${DRYDOCK_JANSSON_DIGEST} in ${DRYDOCK_JANSSON_SOURCE_DIR}")
+set(DRYDOCK_JANSSON_SOURCES)
+foreach(m dump error hashtable hashtable_seed load memory pack_unpack strbuffer strconv utf value version)
+  list(APPEND DRYDOCK_JANSSON_SOURCES "${DRYDOCK_JANSSON_SOURCE_DIR}/src/${m}.c")
+endforeach()
+add_library(drydock_jansson OBJECT ${DRYDOCK_JANSSON_SOURCES})
+target_include_directories(drydock_jansson PUBLIC "${DRYDOCK_JANSSON_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/jansson")
+target_compile_definitions(drydock_jansson PRIVATE HAVE_CONFIG_H)
+set_target_properties(drydock_jansson PROPERTIES C_STANDARD 99)
+target_compile_options(drydock_jansson PRIVATE -O2 -w)
+install(FILES "${DRYDOCK_JANSSON_SOURCE_DIR}/LICENSE" DESTINATION share/doc/drydock RENAME LICENSE-jansson)
+
+add_executable(objc-jansson-driver tests/objc/fixtures/jansson-driver.c)
+set_target_properties(objc-jansson-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(objc-jansson-driver PRIVATE -O2 -Wall)
+target_link_libraries(objc-jansson-driver PRIVATE drydock_jansson)
+
 # drydock-objc: the Objective-C send analyzer imported from shipyard
 # (PROVENANCE.md), its sources byte-identical to shipyard's. Its front end,
 # src/objc/main.m, is Foundation, so analyze, evidence and link-args are
@@ -170,7 +207,7 @@ endforeach()
 # is now this tree's own: "analyzer", the modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, regexec.h, main.m, the
 # receipt tool, the thirteen reader-core modules it named, then every src/*.h in
 # byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
-# sources()). Each file is a configure dependency, so an edit reconfigures and
+# sources()), then the Jansson pin. Each file is a configure dependency, so an edit reconfigures and
 # the identity follows it.
 set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/report.h"
@@ -185,7 +222,7 @@ foreach(m image fat x86len ordinals uleb rebase objc_meth arch_names grow export
   list(APPEND DRYDOCK_OBJC_ID_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/${m}.c")
 endforeach()
 file(GLOB DRYDOCK_CORE_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
-list(APPEND DRYDOCK_OBJC_ID_FILES ${DRYDOCK_CORE_HEADERS})
+list(APPEND DRYDOCK_OBJC_ID_FILES ${DRYDOCK_CORE_HEADERS} "${DRYDOCK_JANSSON_PIN}")
 set(DRYDOCK_OBJC_ID_INPUT "${CMAKE_CURRENT_BINARY_DIR}/drydock-objc-id-input")
 file(WRITE "${DRYDOCK_OBJC_ID_INPUT}" "drydock-${MAVERICKS_VERSION}\nanalyzer\n")
 foreach(f IN LISTS DRYDOCK_OBJC_ID_FILES)
@@ -510,6 +547,9 @@ drydock_add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR
 drydock_add_test(NAME objc_source_inventory_host COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-source-inventory-host-test.sh)
 set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONMENT
   "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+
+drydock_add_test(NAME objc_jansson COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/jansson-test.sh)
+set_tests_properties(objc_jansson PROPERTIES ENVIRONMENT "DRYDOCK_OBJC_JANSSON_DRIVER=$<TARGET_FILE:objc-jansson-driver>")
 
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
