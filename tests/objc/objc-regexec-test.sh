@@ -162,6 +162,14 @@ for o in -O1 -Os -O2; do
     fail "pusharg$o: the add after a helper changed a local through a pushed argument is decided: $(grep '^path ' "$T/out")"
 done
 pass 'a frame address passed as a pushed stack argument to a helper not followed escapes (-O1 -Os -O2)'
+for o in -Os -Oz; do
+  fxcc "$o" -c "$FX/regexec-sibcall.c" -o "$T/sibcall.o" || fail "compiling regexec-sibcall.c $o"
+  fxcc "$T/main.o" "$T/sibcall.o" -lobjc -o "$T/sibcall$o" || fail "linking sibcall$o"
+  run "sibcall$o" _sibcall_start; explored "sibcall$o"
+  awk '/^path / && $10 >= 1 {f = 1} /^path / && $10 == 0 {z = 1} END {exit !(f && !z)}' "$T/out" ||
+    fail "sibcall$o: the add after a helper reached by a tail call changed a local through a forwarded stack argument is decided: $(grep '^path ' "$T/out")"
+done
+pass 'a frame address forwarded as a stack argument by a tail call to a helper not followed escapes (-Os -Oz)'
 fxcc -c "$FX/regexec-launder.S" -o "$T/launder.o" || fail 'assembling regexec-launder.S'
 fxcc "$T/main.o" "$T/launder.o" -lobjc -o "$T/launder" || fail 'linking launder'
 ls_va=$("$NM" "$T/launder" | awk '$3 == "_ls" {print "0x" $1}' | sed 's/0x0*/0x/')

@@ -592,7 +592,7 @@ static void unknown_call(St *t) {
     static const int args[] = { 7, 6, 2, 1, 8, 9 }; size_t i; uint64_t sp = t->r[4].v, top = 0;
     for (i = 0; i < 6; i++) escape(t, t->r[args[i]]);
     if (t->r[4].k == VC && !t->r[4].pw) {   /* the stack arguments: every cell from rsp up to the return address above it */
-        for (i = 0; i < t->nm; i++) if (t->m[i].ret && t->m[i].a >= sp && (!top || t->m[i].a < top)) top = t->m[i].a;
+        for (i = 0; i < t->nm; i++) if (t->m[i].ret && t->m[i].a > sp && (!top || t->m[i].a < top)) top = t->m[i].a;
         for (i = 0; i < t->nm; i++) if (is_stack(t->m[i].a) && t->m[i].a >= sp && (!top || t->m[i].a < top)) escape(t, t->m[i].v);
     }
     for (i = 0; i < t->nm; i++) {
