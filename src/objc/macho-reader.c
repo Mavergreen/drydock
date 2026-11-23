@@ -1172,6 +1172,13 @@ static int frame_operand(const Flow *f, const Ins *x) {
     return x->sibbase == 5 && x->sibindex == -1;
 }
 
+/* The base register of a memory operand addressing base + disp with no index -- with no SIB byte, or a
+ * SIB byte naming no index, which an r12 or rsp base always takes -- or -1. */
+static int base_disp_reg(const Ins *x) {
+    if (!x->modrm || x->mod == 3 || x->riprel) return -1;
+    return !x->sib ? x->rm : x->sibindex < 0 ? x->sibbase : -1;
+}
+
 static int slot_of(const Flow *f, int64_t d) {
     size_t i;
     for (i = 0; i < f->nslot; i++) if (f->slot[i] == d) return (int)i;
@@ -1331,9 +1338,9 @@ static void transfer_values(const Slice *s, const Flow *f, RS *r, const Ins *x, 
     }
     if (x->map == 0 && x->op == 0x8B && x->modrm && (x->rex & 8) && x->mod != 3) {   /* 64-bit load */
         uint64_t addr = 0;
-        int known = 0, d = x->reg;
+        int known = 0, d = x->reg, b = base_disp_reg(x);
         if (x->riprel) { addr = x->riptarget; known = 1; }
-        else if (!x->sib && r->k[x->rm] == RS_CONST) { addr = r->va[x->rm] + (uint64_t)x->mdisp; known = 1; }
+        else if (b >= 0 && r->k[b] == RS_CONST) { addr = r->va[b] + (uint64_t)x->mdisp; known = 1; }
         if (known) {
             const Ptr *p = find_ptr(s->ptrs, s->nptrs, addr);
             const Sect *t = sect_of(s, addr);
@@ -1360,9 +1367,9 @@ static void transfer_values(const Slice *s, const Flow *f, RS *r, const Ins *x, 
         /* An inlined fetch storing its producer's result: the register now holds what the
          * cache holds (cache_store checks the literal against the cache's other fetches). */
         uint64_t addr = 0;
-        int known = 0;
+        int known = 0, b = base_disp_reg(x);
         if (x->riprel) { addr = x->riptarget; known = 1; }
-        else if (!x->sib && r->k[x->rm] == RS_CONST) { addr = r->va[x->rm] + (uint64_t)x->mdisp; known = 1; }
+        else if (b >= 0 && r->k[b] == RS_CONST) { addr = r->va[b] + (uint64_t)x->mdisp; known = 1; }
         if (known && cache_at(s, addr)) {
             /* Every copy of the same producer result now equals the cache's content too. */
             int k0 = r->k[x->reg];
@@ -3037,9 +3044,9 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
             }
             if (!through_ptr) continue;
         }
-        if (touches_cache && in->map == 0 && in->op == 0x89 && (in->rex & 8) && in->modrm && in->mod != 3 && !in->riprel && !in->sib) {
+        if (touches_cache && in->map == 0 && in->op == 0x89 && (in->rex & 8) && base_disp_reg(in) >= 0) {
             uint64_t bva, bdef;          /* mov [reg+disp], src where reg holds a cache's address */
-            int kb = REG_VAL(in->rm, &bva, &bdef);
+            int kb = REG_VAL(base_disp_reg(in), &bva, &bdef);
             Cache *c;
             if (kb < 0) { flow_free(&flow); return fail(s, "out-of-memory", site, "%s", "flow"); }
             if (kb == RS_CONST && (c = find_cache(s, bva + (uint64_t)in->mdisp))) {

@@ -266,6 +266,25 @@ done
 for n in 3 4 5 6 7; do
   read_artifact "$T/hcache$n"; refused "hoisted cache form $n" unrecognized-fetch-site
 done
+# spec: src/objc/macho-reader.c base_disp_reg -- a SIB byte with no index (r12 and rsp bases always take one) addresses
+#       base + disp, as no SIB byte does: a cache's selector is loaded, and a store into a cache is checked, through it
+#       (tests/objc/fixtures/sib-cache.S). A real index is not followed.
+for n in 0 1 2 3 4 5; do
+  fxcc -DFORM="$n" "$FX/sib-cache.S" -o "$T/sib$n" -lobjc
+done
+sib_sel() { awk -F '\t' '$1 == "evidence" && $2 == "dispatch-call" && $11 == "_is_equal" { i = index($13, ":"); r = substr($13, i + 1); print substr($13, 1, i - 1) ":" substr(r, index(r, ":") + 1) }' "$T/out"; }
+read_artifact "$T/sib0"; measured 'sib cache form 0'
+[ "$(sib_sel)" = sel-cache:isEqual: ] || fail "sib cache form 0: the send's selector is $(sib_sel), want sel-cache:isEqual:"
+read_artifact "$T/sib1"; measured 'sib cache form 1'
+[ "$(sib_sel)" = unknown:- ] || fail "sib cache form 1: an indexed load gave the send's selector $(sib_sel)"
+for n in 2 3; do
+  read_artifact "$T/sib$n"; refused "sib cache form $n" unrecognized-cache-store
+done
+for n in 4 5; do
+  read_artifact "$T/sib$n"; measured "sib cache form $n"
+  has cache-fetch 7=isEqual: 9=__RNvNvNtNtNtCs2WYrep5oUp8_5objc27runtime8nsobject16NSObjectProtocol7isEqual10CACHED_SEL
+  [ "$(sib_sel | sort -u)" = sel-cache:isEqual: ] || fail "sib cache form $n: the send's selector is $(sib_sel | tr '\n' ' '), want sel-cache:isEqual:"
+done
 
 # spec: src/objc/macho-reader.c scan_function -- a weak import's check, `cmpq $0, GOT(_objc_readClassPair)` (libarclite in
 #       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other
