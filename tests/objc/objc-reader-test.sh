@@ -285,6 +285,21 @@ for n in 4 5; do
   has cache-fetch 7=isEqual: 9=__RNvNvNtNtNtCs2WYrep5oUp8_5objc27runtime8nsobject16NSObjectProtocol7isEqual10CACHED_SEL
   [ "$(sib_sel | sort -u)" = sel-cache:isEqual: ] || fail "sib cache form $n: the send's selector is $(sib_sel | tr '\n' ' '), want sel-cache:isEqual:"
 done
+# spec: src/objc/macho-reader.c enumeration_call, sel_kept -- objc2's countByEnumeratingWithState:objects:count: (its
+#       CACHED_SEL fetched with that literal in the same function) writes only its state and object buffers, when both are
+#       known frame addresses and the count an immediate: any slot outside them survives it, when no other frame address
+#       escapes on the way (tests/objc/fixtures/enum-slot.S). A slot inside, an unknown count, any other escape, or
+#       another selector keeps every exposed slot dying.
+for n in 0 1 2 3 4 5; do
+  fxcc -DFORM="$n" "$FX/enum-slot.S" -o "$T/enum$n" -framework Foundation -lobjc -Wl,-U,_fixture_use
+done
+enum_recv() { awk -F '\t' '$1 == "evidence" && $2 == "dispatch-call" && $11 == "_enumerate" && $13 !~ /:array$/ { split($12, v, ":"); print v[1] }' "$T/out" | sort -u; }
+read_artifact "$T/enum0"; measured 'enumeration slot form 0'
+[ "$(enum_recv)" = result ] || fail "enumeration slot form 0: the loop send's receiver is $(enum_recv), want the spilled result"
+for n in 1 2 3 4 5; do
+  read_artifact "$T/enum$n"; measured "enumeration slot form $n"
+  [ "$(enum_recv)" = unknown ] || fail "enumeration slot form $n: the loop send's receiver is $(enum_recv), want unknown"
+done
 
 # spec: src/objc/macho-reader.c scan_function -- a weak import's check, `cmpq $0, GOT(_objc_readClassPair)` (libarclite in
 #       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other

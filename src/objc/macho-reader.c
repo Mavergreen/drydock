@@ -1016,7 +1016,9 @@ static int may_write(const Ins *x0, int r) {
  * a frame address (a lea of [rbp+d], tracked as RS_FRAME and by `mf` on some path) is used. Bounded
  * uses: a base at a constant offset, a register copy, or the state (rdx, 64 bytes) and buffer (rcx,
  * 8 x the immediate count in r8) of an objc_msgSend of exactly that selector -- the NSFastEnumeration
- * contract says the callee writes those extents and nothing else of the caller's frame. Any other
+ * contract says the callee writes those extents and nothing else of the caller's frame. The
+ * selector is a selector reference, or an objc2 CACHED_SEL this function fetches with that literal;
+ * a function with such a call is bounded even when it spills no selector reference. Any other
  * use (frame_scan's list) is unbounded. A frame address given to another callee is bounded below:
  * by the stated limit above, the callee writes at or above the lowest address it was given, never
  * below. Every other unbounded use (stored, combined, derived, returned, made from rsp) reaches
@@ -1027,8 +1029,9 @@ static int may_write(const Ins *x0, int r) {
  * rsp's offset from rbp and only epilogues move it, kill only the slots they reach. So a reload
  * gives the selector exactly when the one store reaching it on every path is still intact; another
  * value on some path, a write that reaches the slot, the slot's own address or one below it
- * escaping, or an unbounded escape that may reach anywhere leaves it unknown. Other slot values
- * keep the general rule above. */
+ * escaping, or an unbounded escape that may reach anywhere leaves it unknown. A slot holding any
+ * other value is kept the same way only while no escape but the enumeration contract's lies behind
+ * it on any path; otherwise it keeps the general rule above. */
 enum { RS_UNDEF, RS_CONST, RS_IMM, RS_SELLIT, RS_CLASSLIT, RS_NSSTR, RS_ENTRY, RS_CACHEVAL, RS_SELREFV,
        RS_CLASSREFV, RS_SELNS, RS_SEND, RS_ARG, RS_BOOL, RS_FRAME, RS_UNKNOWN };
 #define NSLOT 48
@@ -1190,12 +1193,13 @@ static void kill_range(const Flow *f, RS *r, int64_t lo, int64_t hi, int keep) {
     for (i = 0; i < f->nslot; i++)
         if ((int)i != keep && f->slot[i] + 8 > lo && f->slot[i] < hi) r->k[16 + i] = RS_UNKNOWN;
 }
-/* A bounded frame's selector slot: a selector reference spilled where no escaped extent reaches,
- * wholly below every frame address an unbounded escape behind it on any path may have passed on.
- * What reaches only the extents leaves it alone. */
+/* A bounded frame's kept slot: one no escaped extent reaches, holding a selector reference wholly
+ * below every frame address an unbounded escape behind it on any path may have passed on, or any
+ * other value when no such escape lies behind it on any path. What reaches only the extents leaves it alone. */
 static int sel_kept(const Flow *f, const RS *r, size_t i) {
     size_t e;
-    if (!f->bounded || r->k[16 + i] != RS_SELREFV || (int64_t)f->slot[i] + 8 > (int64_t)r->wlo) return 0;
+    if (!f->bounded) return 0;
+    if (r->k[16 + i] == RS_SELREFV ? (int64_t)f->slot[i] + 8 > (int64_t)r->wlo : r->wlo != LO_NONE) return 0;
     for (e = 0; e < f->next; e++) if (f->slot[i] + 8 > f->ext[e][0] && f->slot[i] < f->ext[e][1]) return 0;
     return 1;
 }
@@ -1640,20 +1644,48 @@ static int tail_jump(const uint8_t *base, uint64_t sect_addr, const uint64_t *ip
  * state (rdx, an NSFastEnumerationState: 64 bytes) and the buffer (rcx, count objects; count an
  * immediate in r8) on the frame. The callee writes those and nothing else of the caller's frame;
  * their extents are recorded. Any other frame address in an argument register: 0. */
-static int enumeration_call(const Slice *s, Flow *f, const RS *st, const Ins *x, uint64_t ip, const uint8_t *at) {
+#define ENUM_SEL "countByEnumeratingWithState:objects:count:"
+/* Whether some CachedSel::fetch in this function passes `cache` and the literal ENUM_SEL: the selector
+ * an objc2 cache holds, as this function itself fetches it (rustc inlines each fetch's slow path into
+ * the function that sends), so the answer does not depend on which functions were read before. */
+static int local_enum_fetch(const Slice *s, const Flow *f, const uint8_t *base, uint64_t sect_addr,
+                            const uint64_t *ips, const Ins *ins, uint64_t cache) {
+    size_t b, i;
+    char lit[64];
+    for (b = 0; b < f->nb; b++) {
+        RS st = f->in[b];
+        if (!st.reached) continue;
+        for (i = f->bstart[b]; i < f->bstart[b + 1]; i++) {
+            const Ins *x = &ins[i];
+            const uint8_t *at = base + (ips[i] - sect_addr);
+            if (objc_x86_is_call_rel(x) && is_fetch(s, (uint64_t)objc_x86_rel_target(at, x, ips[i])) == OBJC_FETCH_SEL &&
+                st.k[REG_RDI] == RS_CONST && st.va[REG_RDI] == cache && st.k[REG_RSI] == RS_CONST &&
+                !literal_at(s, st.va[REG_RSI], lit, sizeof lit) && !strcmp(lit, ENUM_SEL))
+                return 1;
+            transfer(s, f, &st, x, ips[i], at);
+        }
+    }
+    return 0;
+}
+
+static int enumeration_call(const Slice *s, Flow *f, const RS *st, const Ins *x, uint64_t ip, const uint8_t *at,
+                            const uint8_t *base, uint64_t sect_addr, const uint64_t *ips, const Ins *ins) {
     uint16_t live = st->mf & ARG_REGS;
     uint64_t target = 0, v;
     const Ptr *p;
+    const Cache *c;
     char name[64];
     if (objc_x86_is_call_rel(x)) target = (uint64_t)objc_x86_rel_target(at, x, ip);
     else if (objc_x86_is_ff(x, 2) && x->riprel) target = x->riptarget;
     else if (objc_x86_is_ff(x, 2) && x->mod == 3 && st->k[x->rm] == RS_ENTRY) target = st->va[x->rm];
     else return 0;
     if (!(p = find_ptr(s->ptrs, s->nptrs, target)) || p->role != IMP_DISPATCH || !p->name || strcmp(p->name, "_objc_msgSend")) return 0;
-    if (st->k[REG_RSI] != RS_SELREFV || read64(s, st->va[REG_RSI], &v) || literal_at(s, v, name, sizeof name) ||
-        strcmp(name, "countByEnumeratingWithState:objects:count:"))
-        return 0;
     if (live & ~((1u << REG_RDX) | (1u << REG_RCX))) return 0;
+    if (st->k[REG_RSI] == RS_SELREFV) {
+        if (read64(s, st->va[REG_RSI], &v) || literal_at(s, v, name, sizeof name) || strcmp(name, ENUM_SEL)) return 0;
+    } else if (st->k[REG_RSI] != RS_CACHEVAL || !(c = cache_at(s, st->va[REG_RSI])) || c->kind != 1 ||
+               !local_enum_fetch(s, f, base, sect_addr, ips, ins, c->addr))
+        return 0;
     if (f->next + 2 > NEXT) return 0;
     if (live & (1u << REG_RDX)) {
         if (st->k[REG_RDX] != RS_FRAME) return 0;
@@ -1713,7 +1745,7 @@ static int frame_scan(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
             if (data) wild = 1;
             if ((objc_x86_is_ff(x, 2) || objc_x86_is_ff(x, 4)) && x->mod == 3 && (live & (1u << x->rm))) wild = 1;
             if ((is_call_any(x) || objc_x86_is_ff(x, 4) || objc_x86_is_ff(x, 5) || (objc_x86_is_jmp_rel(x) && tail_jump(base, sect_addr, ips, ins, n, i))) &&
-                (live & ARG_REGS) && !(is_call_any(x) && enumeration_call(s, f, &st, x, ips[i], at))) {
+                (live & ARG_REGS) && !(is_call_any(x) && enumeration_call(s, f, &st, x, ips[i], at, base, sect_addr, ips, ins))) {
                 /* Given to a callee: it may write at and above each address it is given, never below
                  * (the stated limit every slot rests on), so the lowest of them bounds it -- when each
                  * argument register that may hold a frame address holds a known one on every path. */
@@ -2260,7 +2292,7 @@ static int flow_build(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
     {   /* the frame's escapes, from this solution; only spilled selectors are worth a second one */
         int spills = 0;
         if (frame_scan(s, f, base, sect_addr, ips, ins, n, &spills) < 0) { free(leader); free(direct); free(inq); free(queue); return -1; }
-        if (!spills) break;
+        if (!spills && !f->next) break;
         f->bounded = 1;
     }
     }
