@@ -1,1 +1,1 @@
-drydock-objc analyze follows an objc2 selector cache kept in a register across a loop, reads through r12, and keeps a fast-enumeration receiver across the loop, so codex-cli 0.171 no longer stops with unrecognized-fetch-site.
+drydock-objc analyze follows an objc2 selector cache held in a register across a loop, so codex-cli 0.171 no longer stops with unrecognized-fetch-site.

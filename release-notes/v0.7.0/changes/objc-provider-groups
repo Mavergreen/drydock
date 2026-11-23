@@ -1,1 +1,1 @@
-drydock-objc analyze accepts provider manifest schema 2: a group of instance and class methods, credited only when the analyzer proves its registration by executing the compiled code, with every runtime mutation, constant and entry into it accounted for. Schema-1 providers are unchanged.
+drydock-objc analyze credits a schema-2 provider group of instance and class methods only when it proves the compiled code registers all of them.
