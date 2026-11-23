@@ -1030,8 +1030,7 @@ static int may_write(const Ins *x0, int r) {
  * gives the selector exactly when the one store reaching it on every path is still intact; another
  * value on some path, a write that reaches the slot, the slot's own address or one below it
  * escaping, or an unbounded escape that may reach anywhere leaves it unknown. A slot holding any
- * other value is kept the same way only while no escape but the enumeration contract's lies behind
- * it on any path; otherwise it keeps the general rule above. */
+ * other value is kept the same way. */
 enum { RS_UNDEF, RS_CONST, RS_IMM, RS_SELLIT, RS_CLASSLIT, RS_NSSTR, RS_ENTRY, RS_CACHEVAL, RS_SELREFV,
        RS_CLASSREFV, RS_SELNS, RS_SEND, RS_ARG, RS_BOOL, RS_FRAME, RS_UNKNOWN };
 #define NSLOT 48
@@ -1193,13 +1192,11 @@ static void kill_range(const Flow *f, RS *r, int64_t lo, int64_t hi, int keep) {
     for (i = 0; i < f->nslot; i++)
         if ((int)i != keep && f->slot[i] + 8 > lo && f->slot[i] < hi) r->k[16 + i] = RS_UNKNOWN;
 }
-/* A bounded frame's kept slot: one no escaped extent reaches, holding a selector reference wholly
- * below every frame address an unbounded escape behind it on any path may have passed on, or any
- * other value when no such escape lies behind it on any path. What reaches only the extents leaves it alone. */
+/* A bounded frame's kept slot: one no escaped extent reaches, wholly below every frame address an
+ * unbounded escape behind it on any path may have passed on. What reaches only the extents leaves it alone. */
 static int sel_kept(const Flow *f, const RS *r, size_t i) {
     size_t e;
-    if (!f->bounded) return 0;
-    if (r->k[16 + i] == RS_SELREFV ? (int64_t)f->slot[i] + 8 > (int64_t)r->wlo : r->wlo != LO_NONE) return 0;
+    if (!f->bounded || (int64_t)f->slot[i] + 8 > (int64_t)r->wlo) return 0;
     for (e = 0; e < f->next; e++) if (f->slot[i] + 8 > f->ext[e][0] && f->slot[i] < f->ext[e][1]) return 0;
     return 1;
 }
@@ -1706,14 +1703,15 @@ static int by_va(const void *x, const void *y) {
 /* Frame addresses, once the first solution of a conventional frame is in: every instruction that
  * forms or passes one is either bounded -- a lea of [rbp+d] used as a base at a constant offset,
  * copied register to register, or given to an enumeration_call -- or it is recorded in f->wild with
- * the lowest frame offset it may reach, after which, on that path, only selector slots wholly below
+ * the lowest frame offset it may reach, after which, on that path, only slots wholly below
  * that offset are kept (wlo in RS). A frame address given to any other callee (in an argument
  * register at a call or tail jump) reaches the lowest such address, when every argument register
  * that may hold one holds a known one; everything else reaches any offset (LO_ALL). Recorded: a frame address read
  * as data (stored, combined, compared), used as an index, or as a base where some path left
  * another value; one in an argument register at any other call or tail jump, or returned; an
  * address formed from rsp, or from rbp other than as [rbp+d]; rsp or rbp copied or read as data.
- * *spills is set when some path spills a selector reference to a slot (else nothing to keep). */
+ * *spills is set when some path spills a selector reference to a slot; with no spill and no
+ * enumeration_call there is nothing to keep. */
 static int frame_scan(const Slice *s, Flow *f, const uint8_t *base, uint64_t sect_addr, const uint64_t *ips, const Ins *ins, size_t n, int *spills) {
     size_t b, i;
     (void)n;

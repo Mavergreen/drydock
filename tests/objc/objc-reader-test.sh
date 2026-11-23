@@ -287,16 +287,18 @@ for n in 4 5; do
 done
 # spec: src/objc/macho-reader.c enumeration_call, sel_kept -- objc2's countByEnumeratingWithState:objects:count: (its
 #       CACHED_SEL fetched with that literal in the same function) writes only its state and object buffers, when both are
-#       known frame addresses and the count an immediate: any slot outside them survives it, when no other frame address
-#       escapes on the way (tests/objc/fixtures/enum-slot.S). A slot inside, an unknown count, any other escape, or
-#       another selector keeps every exposed slot dying.
-for n in 0 1 2 3 4 5; do
+#       known frame addresses and the count an immediate: any slot outside them survives it, and survives another callee
+#       given a frame address above it (tests/objc/fixtures/enum-slot.S). A slot inside, an unknown count, an escape at
+#       or below the slot, or another selector keeps every exposed slot dying.
+for n in 0 1 2 3 4 5 6; do
   fxcc -DFORM="$n" "$FX/enum-slot.S" -o "$T/enum$n" -framework Foundation -lobjc -Wl,-U,_fixture_use
 done
 enum_recv() { awk -F '\t' '$1 == "evidence" && $2 == "dispatch-call" && $11 == "_enumerate" && $13 !~ /:array$/ { split($12, v, ":"); print v[1] }' "$T/out" | sort -u; }
-read_artifact "$T/enum0"; measured 'enumeration slot form 0'
-[ "$(enum_recv)" = result ] || fail "enumeration slot form 0: the loop send's receiver is $(enum_recv), want the spilled result"
-for n in 1 2 3 4 5; do
+for n in 0 4; do
+  read_artifact "$T/enum$n"; measured "enumeration slot form $n"
+  [ "$(enum_recv)" = result ] || fail "enumeration slot form $n: the loop send's receiver is $(enum_recv), want the spilled result"
+done
+for n in 1 2 3 5 6; do
   read_artifact "$T/enum$n"; measured "enumeration slot form $n"
   [ "$(enum_recv)" = unknown ] || fail "enumeration slot form $n: the loop send's receiver is $(enum_recv), want unknown"
 done

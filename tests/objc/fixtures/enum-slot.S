@@ -11,10 +11,10 @@
  *   FORM 2  the count is a register (the incoming rcx), not an immediate: the extent is unknown, every
  *           exposed slot dies
  *   FORM 3  before the loop, the address of a slot below the receiver's (-0x100) goes to another callee
- *   FORM 4  before the loop, the address of a slot above the receiver's (-0x20) goes to another callee:
- *           any other escape still kills a slot that holds no selector reference, though a callee is
- *           held to write only upward
- *   FORM 5  the same send shape with isEqual:'s cache: not the enumeration contract, every exposed slot dies */
+ *   FORM 4  before the loop, the address of a slot above the receiver's (-0x20) goes to another callee,
+ *           which writes only at and above it: the receiver survives, as in FORM 0
+ *   FORM 5  the same send shape with isEqual:'s cache: not the enumeration contract, every exposed slot dies
+ *   FORM 6  before the loop, the receiver slot's own address (-0x30) goes to another callee: it may write it */
 #if FORM == 1
 #define RSLOT -0x50
 #else
@@ -86,6 +86,9 @@ _enumerate:
 	callq	_fixture_use
 #elif FORM == 4
 	leaq	-0x20(%rbp), %rdi
+	callq	_fixture_use
+#elif FORM == 6
+	leaq	-0x30(%rbp), %rdi
 	callq	_fixture_use
 #endif
 	xorl	%ebx, %ebx
