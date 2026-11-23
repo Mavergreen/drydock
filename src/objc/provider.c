@@ -90,8 +90,9 @@
  * prestrip image has at that address. An assembler-local atom (l_, L or ltmp: the linker drops
  * such symbols, so no image has them by name) the prestrip image lacks is instead verified by
  * bytes, by the same walk as the attestation above run on the prestrip image: its bytes at the
- * link-map address equal the member's, every relocated field resolved to what the object meant,
- * any relocation that walk cannot resolve refused (prestrip-mismatch). Archives are read by a bounded BSD ar(5) reader
+ * link-map address equal the member's, every relocated field resolved to what the object meant: a byte or mapping
+ * difference refuses prestrip-mismatch, and a relocation that walk cannot resolve keeps its own code
+ * (unsupported-provider-relocation). Archives are read by a bounded BSD ar(5) reader
  * (the pinned Drydock's archive module needs its rewrite modules) and objects by a bounded
  * MH_OBJECT reader, both in attest.c. Nothing is executed or loaded. */
 #include "report.h"

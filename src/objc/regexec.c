@@ -28,7 +28,7 @@
  * Provenance: every value carries the set of writable image addresses (any section outside __TEXT) it derives
  * from. A lea yielding such an address, or a load of a rebased pointer to one (or of part of it), adds that address; a
  * result carries the union of the sets of the operands that flow into it, even when it is unknown -- a cmov the
- * selected one's, an xchg each the other's, a shift its count's too. Flags carry the set of the operands that set
+ * selected one's, an xchg each the other's, a shift by cl its count's too. Flags carry the set of the operands that set
  * them, and setcc, cmov and adc/sbb add it to their result; a fork on flags with a set adds it to the path's, and every
  * escape on that path carries the path's too. A load through a known pointer carries the cell's set, not the
  * pointer's: one cell's, or every overlapping cell's when it spans several. Every set stored to the stack joins the
@@ -61,8 +61,8 @@
  * address, to any other address, or over a pushed return address refuses unknown-store; a store into __TEXT or
  * over a rebased, bound or imported slot refuses image-store (a table written at run time); other stores into
  * image data are recorded (image_stores). Frame addresses follow src/objc/macho-reader.c's frame-slot rule: one
- * that escapes -- in an argument register at an unknown call or summarised callee, or stored anywhere but by a
- * push -- exposes every stack cell at or above the lowest such address, and every later unknown call makes the
+ * that escapes -- in an argument register or a stack argument (any cell from rsp up to the nearest return address)
+ * at an unknown call or summarised callee, or stored anywhere but by a push -- exposes every stack cell at or above the lowest such address, and every later unknown call makes the
  * exposed cells unknown. Stated limit, as there: code holding a frame address writes nothing below it, and no
  * callee writes a pushed register or return address. Every unknown call also makes the path's image-data
  * cells unknown (a summarised callee may write any global); initial bytes such a callee may write are what
@@ -589,8 +589,12 @@ static void clobber(St *t) {
     t->fop = 0; t->fts = 0;
 }
 static void unknown_call(St *t) {
-    static const int args[] = { 7, 6, 2, 1, 8, 9 }; size_t i;
+    static const int args[] = { 7, 6, 2, 1, 8, 9 }; size_t i; uint64_t sp = t->r[4].v, top = 0;
     for (i = 0; i < 6; i++) escape(t, t->r[args[i]]);
+    if (t->r[4].k == VC && !t->r[4].pw) {   /* the stack arguments: every cell from rsp up to the return address above it */
+        for (i = 0; i < t->nm; i++) if (t->m[i].ret && t->m[i].a >= sp && (!top || t->m[i].a < top)) top = t->m[i].a;
+        for (i = 0; i < t->nm; i++) if (is_stack(t->m[i].a) && t->m[i].a >= sp && (!top || t->m[i].a < top)) escape(t, t->m[i].v);
+    }
     for (i = 0; i < t->nm; i++) {
         Cell *c = &t->m[i];
         if (is_stack(c->a) ? !c->ret && !c->push && t->esc && c->a + c->w > t->esc : 1) c->v = U();
@@ -926,7 +930,7 @@ static int step(Ex *e, St *t) {
         }
         if ((op == 0xC0 || op == 0xC1 || op == 0xD0 || op == 0xD1 || op == 0xD2 || op == 0xD3) &&
             ((x.reg & 7) == 4 || (x.reg & 7) == 5 || (x.reg & 7) == 7)) {
-            int sh; Val cl = reg_get(t, 1, 1);   /* read for every form: a count by cl flows into the result */
+            int sh; Val cl = op == 0xD2 || op == 0xD3 ? reg_get(t, 1, 1) : U();   /* a count by cl flows into the result */
             w = width(&x, op == 0xC0 || op == 0xD0 || op == 0xD2);
             if (op == 0xD2 || op == 0xD3) { if (cl.k != VC) sh = -1; else sh = (int)(cl.v & (w == 8 ? 63 : 31)); }
             else sh = op == 0xD0 || op == 0xD1 ? 1 : (int)(x.imm & (w == 8 ? 63 : 31));

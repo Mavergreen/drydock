@@ -178,6 +178,18 @@ _lf:	leaq	_ls(%rip), %rax
 	retq
 	callq	_objc_getClass          // never run: makes _lf a function the executor follows
 
+	.globl	_l_shimm                // an index scaled by an immediate shift while rcx holds an address: no escape
+_l_shimm:
+	leaq	_ls(%rip), %rcx
+	movl	$5, %eax
+	shlq	$3, %rax
+	xorl	%ecx, %ecx
+	movq	%rax, %rdi
+	xorl	%eax, %eax
+	callq	_lh
+	xorl	%eax, %eax
+	retq
+
 	.globl	_l_walk                 // rows walked to the table's end, each tested non-NULL: one path
 _l_walk:
 	leaq	_lt(%rip), %rbx

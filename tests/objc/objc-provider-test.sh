@@ -459,6 +459,9 @@ group_prefix shcl -DSHCL; group shcl shcl
 group_refused 'sweep: SHCL (the state rebuilt through a shift count)' provider-mutable-constant 'to code it does not follow'
 group_prefix sbbv -DSBBV; group sbbv sbbv
 group_refused 'sweep: SBBV (the state rebuilt through the carry flag)' provider-mutable-constant 'to code it does not follow'
+# spec: src/objc/regexec.c header, "Memory" -- a frame address among a call's stack arguments escapes like one in rdi.
+group_prefix pusharg -DPUSH_ARG; group pusharg pusharg
+exit_is 4 'group: PUSH_ARG (the row count trimmed through a pushed argument)'; tab_all unsupported 'group: PUSH_ARG'
 group_prefix walkend -DWALK_END; group walkend walkend
 exit_is 0 'group: WALK_END (a row pointer compared to the table end) provided'; tab_all provided 'group: WALK_END provided'
 # spec: src/objc/provider.c "Coverage" -- class metadata the runtime writes is never read as a constant.

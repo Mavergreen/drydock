@@ -20,7 +20,8 @@
 // its flags known, selects the state's address over another global's for a helper), UNK_LOAD (the state's address
 // loaded back from a frame array at an unknown index, for a helper), XCHG (an xchg swaps the two addresses),
 // SHCL and SBBV (the state's address plus an unknown zero, rebuilt bit by bit through a shift count or the carry flag,
-// for a helper) and WALK_END (the register function walks the table by comparing a row pointer to its end).
+// for a helper), WALK_END (the register function walks the table by comparing a row pointer to its end) and PUSH_ARG
+// (the row count, a local, trimmed by a helper that takes its address as a pushed eighth argument).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -111,6 +112,12 @@ FixtureState fixtureOther;
 #endif
 #ifdef CMOV3
 static volatile int fixtureSel1 = 1;
+#endif
+#ifdef PUSH_ARG
+__attribute__((noinline, used)) void fixture_trim(long a, long b, long c, long d, long e, long f, long g, size_t *rows) {
+  __asm__ volatile("" : : "r"(a + b + c + d + e + f + g));
+  *rows = *rows - 1;
+}
 #endif
 #ifdef PASS_TABLE
 __attribute__((noinline, used)) void fixture_note(const void *p) { __asm__ volatile("" : : "r"(p)); }
@@ -357,14 +364,21 @@ void __fixture_objc_activate_table(void) {
 #ifdef COMPUTED_SEL
   (void)sel_registerName(getenv("FIXTURE_SEL"));
 #endif
+#ifdef PUSH_ARG
+  size_t rows = sizeof FixtureTabMethods / sizeof *FixtureTabMethods;
+  fixture_trim(1, 2, 3, 4, 5, 6, 7, &rows);
+#define ROWS rows
+#else
+#define ROWS (sizeof FixtureTabMethods / sizeof *FixtureTabMethods)
+#endif
 #ifdef TRY
   @try {
-    state = REGISTER(window, FixtureTabMethods, sizeof FixtureTabMethods / sizeof *FixtureTabMethods, &stateDetail);
+    state = REGISTER(window, FixtureTabMethods, ROWS, &stateDetail);
   } @catch (id e) {
     state = FixtureAddFailed;
   }
 #else
-  state = REGISTER(window, FixtureTabMethods, sizeof FixtureTabMethods / sizeof *FixtureTabMethods, &stateDetail);
+  state = REGISTER(window, FixtureTabMethods, ROWS, &stateDetail);
 #endif
 #ifdef TRAPPED
   __builtin_trap();
