@@ -538,6 +538,12 @@ const char *objc_image_nlist(const ObjcImage *im, size_t i, uint8_t *type, uint6
 enum { OBJC_REF_BRANCH, OBJC_REF_LOAD, OBJC_REF_ADDR, OBJC_REF_OTHER, OBJC_REF_POINTER, OBJC_REF_UNDECODED };
 typedef int (*ObjcRefFn)(void *ctx, uint64_t site, uint64_t target, int kind);
 int objc_image_refs(const ObjcImage *im, const uint64_t *ranges, size_t n, ObjcRefFn fn, void *ctx);
+/* Bound data slot i (in address order): its symbol, and its address in *va; NULL past the end. */
+size_t objc_image_nbinds(const ObjcImage *im);
+const char *objc_image_bind(const ObjcImage *im, size_t i, uint64_t *va);
+/* 1 when a function with an LSDA (__unwind_info's LSDA index, or an __eh_frame FDE's LSDA pointer) starts in (or, for
+ * an FDE, overlaps) one of n [lo, hi) ranges, its start in *fn; 0 when none; -1 when the unwind tables do not read. */
+int objc_image_lsda(const ObjcImage *im, const uint64_t *ranges, size_t n, uint64_t *fn);
 
 /* ---- providers (provider.c; main.m parses their JSON) ---- */
 typedef struct { char *member, *symbol; uint64_t address, size; } ObjcProviderAtom;
@@ -573,6 +579,7 @@ typedef struct ObjcProvider {
      * with a literal from the image (OBJC_EV_SEL_COMPUTED there is explained). */
     uint64_t *literal_sel_sites; size_t n_literal_sel_sites;
     uint64_t *sel_sites; size_t n_sel_sites;   /* every sel_registerName site the executor reached, literal or not */
+    uint64_t *mutator_sites; size_t n_mutator_sites;   /* a verified group's: the executor's mutator call sites */
     ObjcLine *lines; size_t n_lines;     /* line rows of the linked members, by final address (with a receipt) */
 } ObjcProvider;
 

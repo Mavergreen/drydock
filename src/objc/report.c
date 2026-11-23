@@ -128,7 +128,7 @@ static void destroy_pipeline(ObjcAnalysis *a) {
         free(p->ev_declaration_sha256); free(p->ev_archive_sha256);
         for (k = 0; k < p->n_members; k++) { free(p->members[k].name); free(p->members[k].sha256); }
         for (k = 0; k < p->n_atoms; k++) { free(p->atoms[k].member); free(p->atoms[k].symbol); }
-        free(p->members); free(p->atoms); free(p->reason); free(p->ranges); free(p->literal_sel_sites); free(p->sel_sites);
+        free(p->members); free(p->atoms); free(p->reason); free(p->ranges); free(p->literal_sel_sites); free(p->sel_sites); free(p->mutator_sites);
         free(p->sdk_settings_sha256); free(p->source_inputs);
         for (k = 0; k < p->n_lines; k++) free(p->lines[k].file);
         free(p->lines);

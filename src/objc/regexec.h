@@ -32,6 +32,11 @@ typedef struct {
     /* [lo, hi) pairs, ascending, distinct: each a function (bounded by LC_FUNCTION_STARTS and by the given range
      * holding it) where some explored path executed an instruction. A summarised callee is in none. */
     uint64_t *explored; size_t n_explored;
+    uint64_t *executed; size_t n_executed;        /* every instruction an explored path executed; ascending, distinct */
+    /* Concrete addresses into image data outside __TEXT that escape on an explored path: passed (an argument
+     * register, or a stack cell a callee may read) to a call not followed -- any import, a summarised callee --
+     * stored outside the frame, or pushed. va: the address; site: the instruction. Sorted, distinct. */
+    struct { uint64_t va, site; } *escaped; size_t n_escaped;
     /* Image data read as initial values: [va, va+len) by the instruction at site (a load), or by the call at site
      * (a runtime model reading the C string at va, e.g. sel_registerName's literal: how 1). Sorted, distinct. */
     struct { uint64_t va, len, site; int how; } *const_reads; size_t n_reads;

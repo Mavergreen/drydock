@@ -3445,3 +3445,114 @@ int objc_image_refs(const ObjcImage *im, const uint64_t *ranges, size_t n, ObjcR
     }
     return 0;
 }
+
+size_t objc_image_nbinds(const ObjcImage *im) { return im->s.nbinds; }
+const char *objc_image_bind(const ObjcImage *im, size_t i, uint64_t *va) {
+    if (i >= im->s.nbinds) return NULL;
+    *va = im->s.binds[i].addr;
+    return im->s.binds[i].name;
+}
+
+/* A DWARF EH pointer of encoding enc at p (bounded by end), its value at address va; 0, or -1 unsupported. */
+static int eh_ptr(const uint8_t **p, const uint8_t *end, uint8_t enc, uint64_t va, uint64_t *out) {
+    uint64_t v = 0;
+    size_t w;
+    if (enc == 0xff) { *out = 0; return 0; }   /* DW_EH_PE_omit */
+    switch (enc & 0x0f) {
+    case 0x00: case 0x04: case 0x0c: w = 8; break;   /* absptr, udata8, sdata8 */
+    case 0x03: case 0x0b: w = 4; break;              /* udata4, sdata4 */
+    case 0x02: case 0x0a: w = 2; break;              /* udata2, sdata2 */
+    default: return -1;
+    }
+    if ((size_t)(end - *p) < w) return -1;
+    memcpy(&v, *p, w);
+    if ((enc & 0x0f) == 0x0b) v = (uint64_t)(int64_t)(int32_t)v;
+    else if ((enc & 0x0f) == 0x0a) v = (uint64_t)(int64_t)(int16_t)v;
+    if ((enc & 0x70) == 0x10) v += va;              /* pcrel */
+    else if (enc & 0x70) return -1;
+    *p += w; *out = v;
+    return 0;
+}
+static int eh_uleb(const uint8_t **p, const uint8_t *end, uint64_t *out) {
+    uint64_t v = 0; int sh = 0;
+    while (*p < end && sh < 64) { uint8_t b = *(*p)++; v |= (uint64_t)(b & 0x7f) << sh; sh += 7; if (!(b & 0x80)) { *out = v; return 0; } }
+    return -1;
+}
+
+/* spec: Apple's compact_unwind_encoding.h (unwind_info_section_header, its first-level index and LSDA index) and the
+ * LSB's .eh_frame (CIE augmentation 'z', 'P', 'L', 'R'; FDE pc_begin, pc_range, LSDA pointer). */
+int objc_image_lsda(const ObjcImage *im, const uint64_t *ranges, size_t n, uint64_t *fn) {
+    const Slice *s = &im->s;
+    const struct segment_command_64 *text = mi_find_segment(&s->im, "__TEXT");
+    size_t i;
+    for (i = 0; i < s->nsects; i++) {
+        const Sect *x = &s->sects[i];
+        const uint8_t *b;
+        if (strcmp(x->seg, "__TEXT")) continue;
+        if (!strcmp(x->sect, "__unwind_info")) {
+            uint32_t h[7], e0[3], el[3], k;
+            if (!text || x->size < 28 || !(b = bytes_at(s, x->addr, x->size))) return -1;
+            memcpy(h, b, 28);
+            if (!h[6]) continue;
+            if (h[5] > x->size || (uint64_t)h[6] * 12 > x->size - h[5]) return -1;
+            memcpy(e0, b + h[5], 12); memcpy(el, b + h[5] + (size_t)(h[6] - 1) * 12, 12);
+            if (e0[2] > el[2] || el[2] > x->size) return -1;
+            for (k = e0[2]; k + 8 <= el[2]; k += 8) {
+                uint32_t off;
+                memcpy(&off, b + k, 4);
+                if (in_pairs(ranges, n, text->vmaddr + off)) { *fn = text->vmaddr + off; return 1; }
+            }
+        } else if (!strcmp(x->sect, "__eh_frame")) {
+            const uint8_t *p, *end;
+            uint64_t o = 0;
+            if (!(b = bytes_at(s, x->addr, x->size))) return -1;
+            while (o + 8 <= x->size) {
+                uint32_t len, id;
+                memcpy(&len, b + o, 4);
+                if (!len) break;
+                if (len == 0xffffffffu || len > x->size - o - 4) return -1;
+                memcpy(&id, b + o + 4, 4);
+                if (id) {   /* an FDE: its CIE at (o + 4) - id */
+                    uint64_t cie = o + 4 - id, beg, range, augl, lsda = 0;
+                    uint32_t clen;
+                    uint8_t renc = 0, lenc = 0xff;
+                    int hasz = 0;
+                    const uint8_t *q, *qend;
+                    if (id > o + 4 || cie + 8 > x->size) return -1;
+                    memcpy(&clen, b + cie, 4);
+                    if (clen > x->size - cie - 4 || clen < 5) return -1;
+                    q = b + cie + 9; qend = b + cie + 4 + clen;   /* past length, id, version */
+                    {
+                        const char *aug = (const char *)q, *a;
+                        uint64_t tmp;
+                        while (q < qend && *q) q++;
+                        if (q >= qend) return -1;
+                        q++;
+                        if (eh_uleb(&q, qend, &tmp) || eh_uleb(&q, qend, &tmp)) return -1;   /* code, data alignment */
+                        if (eh_uleb(&q, qend, &tmp)) return -1;                              /* return register (v1: a byte; uleb reads it the same below 128) */
+                        for (a = aug; *a; a++) {
+                            if (*a == 'z') { if (eh_uleb(&q, qend, &tmp)) return -1; hasz = 1; }
+                            else if (*a == 'R') { if (q >= qend) return -1; renc = *q++; }
+                            else if (*a == 'L') { if (q >= qend) return -1; lenc = *q++; }
+                            else if (*a == 'P') { uint64_t pv; uint8_t penc; if (q >= qend) return -1; penc = *q++;
+                                                  if (eh_ptr(&q, qend, penc, x->addr + (uint64_t)(q - b), &pv)) return -1; }
+                            else if (*a != 'S') return -1;
+                        }
+                    }
+                    if (lenc == 0xff) { o += 4 + len; continue; }
+                    if (!hasz) return -1;
+                    p = b + o + 8; end = b + o + 4 + len;
+                    if (eh_ptr(&p, end, renc, x->addr + (uint64_t)(p - b), &beg) || eh_ptr(&p, end, renc & 0x0f, 0, &range) ||
+                        eh_uleb(&p, end, &augl) || eh_ptr(&p, end, lenc, x->addr + (uint64_t)(p - b), &lsda)) return -1;
+                    if (lsda) {
+                        uint64_t k;
+                        for (k = 0; k < n; k++)
+                            if (beg < ranges[2 * k + 1] && ranges[2 * k] < beg + range) { *fn = beg; return 1; }
+                    }
+                }
+                o += 4 + len;
+            }
+        }
+    }
+    return 0;
+}

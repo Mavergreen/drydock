@@ -57,13 +57,16 @@
  * add anywhere is outside them; and at least one exact path has no guessed branch and no trap
  * (else provider-registration-mismatch). Coverage: no mutator but class_addMethod is called on an
  * explored path (provider-registration-mismatch), and every call of one in the verified code is on an
- * explored path, as is any other use of a mutator's stub or slot there but a load in an explored function
+ * explored path, as is any other use of a mutator's stub, pointer or bound data slot there but a load a
+ * path executed, and every class_addMethod call the reader saw there, through a register included
  * (provider-unexplored-mutation). Over the whole image (objc_image_refs: code as the reader walks it,
  * rebased pointers), nothing refers into a function an explored path ran in -- the explored functions --
- * but a branch from one of them, or the constructor's initializer entry (provider-foreign-entry), and
- * nothing refers to image data outside __TEXT the executor read as its initial value but a load, a
- * reference from an explored function, or a pointer in such data or in __TEXT (provider-mutable-constant).
- * A summarised callee is not explored. A group is credited
+ * but a branch from one of them, or the constructor's one initializer entry (provider-foreign-entry);
+ * nothing refers to image data outside __TEXT the executor read as its initial value but a load, an
+ * instruction a path executed, or a pointer in __TEXT; and no address inside such data's atom escapes to
+ * code the executor does not follow (regexec's escaped) (provider-mutable-constant). An explored function
+ * with an LSDA is provider-unmeasurable (exceptional control flow). A summarised callee is not explored.
+ * A group is credited
  * whole or not at all: an active group turns the unsupported findings of each member's selector
  * and kind ("+" being a send to the class object) on a receiver whose floor chain includes its
  * class into `provided`.
@@ -723,7 +726,8 @@ typedef struct {
     const ObjcImage *im;
     const ObjcRegResult *r;
     uint64_t *c; size_t nc;    /* [lo, hi): image data outside __TEXT the executor read as initial values, merged */
-    uint64_t *m; size_t nm;    /* [lo, lo+1): each stub or pointer slot of a mutator import */
+    uint64_t *m; size_t nm;    /* [lo, lo+1): each stub, pointer slot or bound data slot of a mutator import */
+    int inits;                 /* initializer slots holding the constructor */
     int status;
 } Sweep;
 
@@ -752,34 +756,39 @@ static const char *where(const ObjcImage *im, uint64_t va, char *buf, size_t n) 
     snprintf(buf, n, "%s", name ? name : s ? s : "no section");
     return buf;
 }
+static int executed(const ObjcRegResult *r, uint64_t ip) {
+    size_t lo = 0, hi = r->n_executed;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; if (r->executed[mid] < ip) lo = mid + 1; else hi = mid; }
+    return lo < r->n_executed && r->executed[lo] == ip;
+}
 static const char *const REF_KIND[] = { "branches to", "reads", "takes the address of", "writes or uses", "points to", "may encode" };
 
 static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
     Sweep *w = ctx;
     const ObjcRegResult *r = w->r;
-    int in_e = in_pairs(r->explored, r->n_explored, site);
+    int in_e = in_pairs(r->explored, r->n_explored, site), ran = executed(r, site);
     uint32_t fl = 0;
     const char *sn = objc_image_section_of(w->im, site, NULL, NULL, &fl);
     char wb[300], tb[300];
     size_t i;
     if (in_pairs(w->m, w->nm, target) && in_pairs(w->p->ranges, w->p->n_ranges, site)) {
         const char *imp = objc_image_import_at(w->im, target);
+        if (!imp) imp = objc_image_bound_at(w->im, target);
         for (i = 0; kind == OBJC_REF_BRANCH && i < r->n_sites && r->mutator_sites[i] != site; i++) ;
-        if (kind == OBJC_REF_BRANCH ? i == r->n_sites : !(kind == OBJC_REF_LOAD && in_e))
+        if (kind == OBJC_REF_BRANCH ? i == r->n_sites : !(kind == OBJC_REF_LOAD && ran))
             return w->status = objc_fail(w->a, "provider-unexplored-mutation", NULL, site,
                                          "%s: %s at 0x%llx (in %s), in the group's verified code, is on no path the executor explored",
                                          w->p->provider_id, imp ? imp + (imp[0] == '_') : "a mutator", (unsigned long long)site,
                                          where(w->im, site, wb, sizeof wb));
     }
     if (in_pairs(r->explored, r->n_explored, target) && !(in_e && kind == OBJC_REF_BRANCH) &&
-        !(kind == OBJC_REF_POINTER && (fl & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS && target == w->p->constructor))
+        !(kind == OBJC_REF_POINTER && (fl & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS && target == w->p->constructor && w->inits == 1))
         return w->status = objc_fail(w->a, "provider-foreign-entry", NULL, site,
                                      "%s: 0x%llx (in %s) %s 0x%llx (in %s), code the executor explored, from code or data it did not",
                                      w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
                                      (unsigned long long)target, where(w->im, target, tb, sizeof tb));
-    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !in_e &&
-        !(kind == OBJC_REF_POINTER && (in_pairs(w->c, w->nc, site) ||
-                                        (sn && !strncmp(sn, "__TEXT,", 7) && !(fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))))))
+    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !ran &&
+        !(kind == OBJC_REF_POINTER && sn && !strncmp(sn, "__TEXT,", 7) && !(fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))))
         return w->status = objc_fail(w->a, "provider-mutable-constant", NULL, site,
                                      "%s: 0x%llx (in %s) %s 0x%llx (in %s), which the executor read as its initial value",
                                      w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
@@ -795,7 +804,7 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
     Sweep w;
     uint64_t *all = NULL;
     size_t i, j, k, nall = 0, ns = objc_image_nsections(im);
-    int rc;
+    int rc = 0;
     char wb[300];
     for (i = 0; i < r->n_sites; i++) {
         int add = 0;
@@ -816,11 +825,45 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
         if (w.c[2 * i] <= w.c[2 * j + 1]) { if (w.c[2 * i + 1] > w.c[2 * j + 1]) w.c[2 * j + 1] = w.c[2 * i + 1]; }
         else { j++; w.c[2 * j] = w.c[2 * i]; w.c[2 * j + 1] = w.c[2 * i + 1]; }
     if (w.nc) w.nc = j + 1;
+    {
+        uint64_t f = 0;
+        int l = objc_image_lsda(im, r->explored, r->n_explored, &f);
+        if (l)
+            rc = l < 0 ? objc_fail(a, "provider-unmeasurable", NULL, 0, "%s: exceptional control flow: the unwind tables do not read", p->provider_id)
+                       : objc_fail(a, "provider-unmeasurable", NULL, f, "%s: exceptional control flow: %s at 0x%llx, a function the executor explored, has an LSDA",
+                                   p->provider_id, where(im, f, wb, sizeof wb), (unsigned long long)f);
+        if (l) goto out;
+    }
+    for (i = 0; i < r->n_escaped; i++)
+        for (j = 0; j < w.nc; j++) {
+            uint64_t lo = w.c[2 * j], hi = w.c[2 * j + 1];
+            for (k = 0; k < p->n_atoms; k++)
+                if (w.c[2 * j] >= p->atoms[k].address && w.c[2 * j] < p->atoms[k].address + p->atoms[k].size) {
+                    lo = p->atoms[k].address; hi = lo + p->atoms[k].size; break;
+                }
+            if (r->escaped[i].va >= lo && r->escaped[i].va < hi) {
+                char tb[300];
+                rc = objc_fail(a, "provider-mutable-constant", NULL, r->escaped[i].site,
+                               "%s: 0x%llx (in %s), whose bytes the executor read as initial values, escapes at 0x%llx (in %s) to code it does not follow",
+                               p->provider_id, (unsigned long long)r->escaped[i].va, where(im, r->escaped[i].va, tb, sizeof tb),
+                               (unsigned long long)r->escaped[i].site, where(im, r->escaped[i].site, wb, sizeof wb));
+                goto out;
+            }
+        }
+    for (i = 0; i < objc_image_nbinds(im); i++) {
+        uint64_t va = 0;
+        if (objc_reg_mutator(objc_image_bind(im, i, &va)) && push_pair(&w.m, &w.nm, va, va + 1)) goto oom;
+    }
     for (i = 0; i < ns; i++) {
         uint64_t addr, size, va;
         uint32_t fl, t;
         objc_image_section(im, i, &addr, &size, &fl);
         t = fl & SECTION_TYPE;
+        if (t == S_MOD_INIT_FUNC_POINTERS)
+            for (va = addr; va + 8 <= addr + size; va += 8) {
+                const uint8_t *b = objc_image_bytes(im, va, 8);
+                w.inits += b && rd64(b) == p->constructor;
+            }
         if (t != S_SYMBOL_STUBS && t != S_NON_LAZY_SYMBOL_POINTERS && t != S_LAZY_SYMBOL_POINTERS) continue;
         for (va = addr; va < addr + size; va++)
             if (objc_reg_mutator(objc_image_import_at(im, va)) && push_pair(&w.m, &w.nm, va, va + 1)) goto oom;
@@ -830,6 +873,7 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
     for (i = 0; i < w.nm; i++) if (push_pair(&all, &nall, w.m[2 * i], w.m[2 * i + 1])) goto oom;
     rc = objc_image_refs(im, all, nall, sweep_ref, &w);
     if (rc < 0) rc = objc_fail(a, "unsupported-provider", NULL, 0, "%s: the image is not position-independent: references by absolute address are not swept", p->provider_id);
+out:
     free(all); free(w.c); free(w.m);
     return rc ? OBJC_CANNOT_MEASURE : OBJC_OK;
 oom:
@@ -865,6 +909,10 @@ static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const 
     if (!rc && r.n_selreg && (!(p->literal_sel_sites = calloc(r.n_selreg, sizeof *p->literal_sel_sites)) ||
                               !(p->sel_sites = calloc(r.n_selreg, sizeof *p->sel_sites))))
         rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    if (!rc && r.n_sites) {
+        if (!(p->mutator_sites = malloc(r.n_sites * sizeof *p->mutator_sites))) rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+        else { memcpy(p->mutator_sites, r.mutator_sites, r.n_sites * sizeof *p->mutator_sites); p->n_mutator_sites = r.n_sites; }
+    }
     for (i = 0; !rc && i < r.n_selreg; i++) {
         p->sel_sites[p->n_sel_sites++] = r.selreg[i].site;
         if (r.selreg[i].all_literal) p->literal_sel_sites[p->n_literal_sel_sites++] = r.selreg[i].site;
@@ -1062,9 +1110,23 @@ int objc_verify_providers(ObjcAnalysis *a) {
             continue;
         }
         if (e->kind != OBJC_EV_METHOD_REGISTRATION) continue;
-        for (j = 0; j < a->n_providers && !ok; j++)
-            for (k = 0; k < a->providers[j].n_ranges && !ok; k++)
-                ok = e->address >= a->providers[j].ranges[2 * k] && e->address < a->providers[j].ranges[2 * k + 1];
+        {
+            const ObjcProvider *g = NULL;
+            for (j = 0; j < a->n_providers && !ok; j++) {
+                const ObjcProvider *p = &a->providers[j];
+                int inside = 0;
+                for (k = 0; k < p->n_ranges && !inside; k++) inside = e->address >= p->ranges[2 * k] && e->address < p->ranges[2 * k + 1];
+                if (!inside) continue;
+                if (p->legacy) { ok = 1; continue; }
+                for (k = 0; k < p->n_mutator_sites && !ok; k++) ok = p->mutator_sites[k] == e->address;
+                if (!ok) g = p;
+            }
+            if (!ok && g) {
+                objc_fail(a, "provider-unexplored-mutation", e->slice, e->address, "%s: %s at 0x%llx (in %s), in the group's verified code, is on no path the executor explored",
+                          g->provider_id, e->name, (unsigned long long)e->address, e->function ? e->function : "an unnamed function");
+                continue;
+            }
+        }
         if (!ok) objc_fail(a, "unattested-method-registration", e->slice, e->address,
                            "%s in %s lies outside every provider this analysis verified; a run-time method registration is not modelled",
                            e->name, e->function ? e->function : "an unnamed function");

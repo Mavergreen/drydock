@@ -431,6 +431,26 @@ error_is computed-selector-producer 'coverage: a computed sel_registerName in gr
 says 'on no path the executor explored' 'coverage: a computed sel_registerName in group code no path explored'
 group callreg tab -DCALL_REGISTER
 group_refused 'entry: a consumer calling the register function with its own table' provider-foreign-entry 'in _main'
+# spec: src/objc/provider.c header, "Groups" -- an address the executor read as a constant must not escape to code it
+#       does not follow, nor be pointed to from writable data; a reference counts as explored only where a path
+#       executed it; every class_addMethod site the reader sees in group code, through a register or a bound pointer
+#       too, is an explored one; an explored function catches no exception; the constructor is one initializer entry.
+group_prefix bump -DBUMP; group bump bump
+group_refused 'sweep: BUMP (the state handed to a helper no path follows)' provider-mutable-constant 'to code it does not follow'
+group_prefix passtab -DPASS_TABLE; group passtab passtab
+group_refused 'sweep: PASS_TABLE (the table handed to a helper no path follows)' provider-mutable-constant 'to code it does not follow'
+group_prefix cfgptr -DCFG_PTR; group cfgptr cfgptr
+group_refused 'sweep: CFG_PTR (a constant pointer to a constant, written through elsewhere)' provider-mutable-constant 'points to'
+group_prefix prunedw -DPRUNED_WRITE; group prunedw prunedw
+group_refused 'sweep: PRUNED_WRITE (a state write on a branch no path takes)' provider-mutable-constant 'writes or uses'
+group_prefix prunedc -DPRUNED_CALL; group prunedc prunedc
+group_refused 'coverage: PRUNED_CALL (class_addMethod through a register on a branch no path takes)' provider-unexplored-mutation 'class_addMethod at 0x'
+group_prefix try -DTRY; group try try
+group_refused 'coverage: TRY (an explored function with an LSDA)' provider-unmeasurable 'exceptional control flow'
+group_prefix boundadd -DBOUND_ADD; group boundadd boundadd
+group_refused 'coverage: BOUND_ADD (class_addMethod through a bound pointer)' provider-unexplored-mutation 'class_addMethod at 0x'
+group_prefix twoinit -DTWO_INIT; group twoinit twoinit
+group_refused 'entry: TWO_INIT (the constructor twice in the initializer table)' provider-foreign-entry '__DATA,__mod_init_func'
 # spec: src/objc/provider.c drain -- a zerofill atom is accepted only inside a zerofill final section.
 cp "$T/root/bin/g-tab" "$T/root/bin/g-bss"
 perl -e 'open my $f, "+<", $ARGV[0] or die; binmode $f; read $f, my $h, 8192;

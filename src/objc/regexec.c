@@ -20,7 +20,10 @@
  * rdi, r8-r11 and the flags. Every mutator's call site on an explored path is recorded (mutator_sites), as is
  * the target in the ranges of every call or tail jump there, followed or summarised (called), and each
  * sel_registerName site with whether every arrival's argument was a literal read from the image (selreg), and
- * every function an explored path executed in (explored).
+ * every function an explored path executed in (explored) and every instruction it executed (executed). A concrete
+ * address into image data outside __TEXT escapes (escaped) when passed to a call not followed -- in an argument
+ * register (an import's own count for the modelled ones, all six otherwise) or, for an unknown callee, in a stack
+ * cell it may read -- stored outside the frame, or pushed.
  *
  * Calls: a direct call or tail jump to an import stub, or a call or jump through an import's GOT slot or through
  * the address an 8-byte load of that slot gave (clang hoists objc_msgSend into a callee-saved register), is the
@@ -84,6 +87,8 @@ typedef struct {
     size_t nfn; int8_t *reach;                /* per function start: 0 unknown, 1 summarised, 2 followed */
     size_t npaths, ninsns, cappaths, capsites, capselreg, capcalled, capreads, capstores, capexplored;
     uint64_t last_lo, last_hi;                /* the explored function the last instruction was in */
+    uint64_t *exec; size_t capexec, nexec;    /* open-addressed set of executed instructions (0: empty) */
+    size_t capescaped;
     struct { int kind; char *name; } *sym; size_t nsym, capsym;
     St **work; size_t nwork, capwork;
 } Ex;
@@ -150,9 +155,24 @@ static uint64_t fn_end(const Ex *e, uint64_t a) {
     for (; i < e->nfn; i++) if ((n = objc_image_function(e->im, i)) > a) return n < end ? n : end;
     return end;
 }
+static int note_executed(Ex *e, uint64_t ip) {
+    size_t i, h;
+    if (2 * (e->nexec + 1) > e->capexec) {
+        size_t c = e->capexec ? 2 * e->capexec : 4096; uint64_t *g = calloc(c, sizeof *g);
+        if (!g) return oom(e);
+        for (i = 0; i < e->capexec; i++)
+            if (e->exec[i]) { for (h = (size_t)(e->exec[i] * 0x9E3779B97F4A7C15ULL) & (c - 1); g[h]; h = (h + 1) & (c - 1)) {} g[h] = e->exec[i]; }
+        free(e->exec); e->exec = g; e->capexec = c;
+    }
+    for (h = (size_t)(ip * 0x9E3779B97F4A7C15ULL) & (e->capexec - 1); e->exec[h]; h = (h + 1) & (e->capexec - 1))
+        if (e->exec[h] == ip) return 0;
+    e->exec[h] = ip; e->nexec++;
+    return 0;
+}
 /* The function holding ip, as out->explored records it. */
 static int note_explored(Ex *e, uint64_t ip) {
     ObjcRegResult *o = e->out; size_t i, lo = 0, hi = e->nrg, fi; uint64_t a, b;
+    if (note_executed(e, ip)) return -1;
     if (ip >= e->last_lo && ip < e->last_hi) return 0;
     while (lo < hi) { size_t mid = (lo + hi) / 2; if (e->rg[2 * mid + 1] <= ip) lo = mid + 1; else hi = mid; }
     if (lo == e->nrg || e->rg[2 * lo] > ip) return 0;   /* outside the ranges: execution refuses there */
@@ -270,6 +290,15 @@ static int cell_put(Ex *e, St *t, uint64_t a, int w, Val v, int ret, int push) {
     t->m[t->nm].ret = (uint8_t)ret; t->m[t->nm].push = (uint8_t)push; t->nm++;
     return 0;
 }
+/* v, when a concrete address into image data outside __TEXT, escapes at site (out->escaped). */
+static int image_escape(Ex *e, Val v, uint64_t site) {
+    ObjcRegResult *o = e->out; const char *sn; size_t i;
+    if (v.k != VC || v.pw || is_stack(v.v) || !(sn = objc_image_section_of(e->im, v.v, NULL, NULL, NULL)) || !strncmp(sn, "__TEXT,", 7)) return 0;
+    for (i = 0; i < o->n_escaped; i++) if (o->escaped[i].va == v.v && o->escaped[i].site == site) return 0;
+    if (grow((void **)&o->escaped, &e->capescaped, o->n_escaped + 1, sizeof *o->escaped)) return oom(e);
+    o->escaped[o->n_escaped].va = v.v; o->escaped[o->n_escaped].site = site; o->n_escaped++;
+    return 0;
+}
 static void escape(St *t, Val v) { if (v.k == VC && !v.pw && is_stack(v.v) && (!t->esc || v.v < t->esc)) t->esc = v.v; }
 
 static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *out) {
@@ -307,6 +336,7 @@ static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val 
             if (t->m[i].ret && t->m[i].a < a + (uint64_t)w && a < t->m[i].a + 8)
                 return refuse(e, "unknown-store", "a store over a return address at 0x%llx", (unsigned long long)site);
         if (!push && w == 8) escape(t, v);
+        if (push && image_escape(e, v, site)) return -1;
         return cell_put(e, t, a, w, v, 0, push);
     }
     if (!(sn = objc_image_section_of(e->im, a, &sa, &ss, &fl)) || a + (uint64_t)w > sa + ss)
@@ -316,6 +346,7 @@ static int store(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val 
         return refuse(e, "image-store", "a store to 0x%llx (%s%s) at 0x%llx", (unsigned long long)a, sn,
                       strncmp(sn, "__TEXT,", 7) ? ", a pointer slot dyld rewrites" : "", (unsigned long long)site);
     if (w == 8) escape(t, v);
+    if (w == 8 && image_escape(e, v, site)) return -1;
     if (grow((void **)&o->image_stores, &e->capstores, o->n_stores + 1, sizeof *o->image_stores)) return oom(e);
     o->image_stores[o->n_stores].va = a; o->image_stores[o->n_stores].len = (uint64_t)w; o->image_stores[o->n_stores].site = site;
     o->n_stores++;
@@ -498,9 +529,31 @@ static int note_called(Ex *e, uint64_t target) {
 static uint32_t opaque(Ex *e) { return sym_new(e, SY_OPAQUE, NULL); }
 
 /* The import n's model at the call or jump at site; rax and the flags as it leaves them. */
+/* A call at site not followed, of nargs arguments (6: unknown, and then also any stack cell it may read: its first
+ * stack arguments, or one an escaped frame address exposes): image addresses among them escape. */
+static int call_escapes(Ex *e, St *t, int nargs, uint64_t site) {
+    static const int args[] = { 7, 6, 2, 1, 8, 9 }; int i; size_t k;
+    for (i = 0; i < nargs; i++) if (image_escape(e, t->r[args[i]], site)) return -1;
+    if (nargs < 6) return 0;
+    for (k = 0; k < t->nm; k++) {
+        const Cell *c = &t->m[k];
+        if (!is_stack(c->a) || c->ret || c->w != 8) continue;
+        if (((t->r[4].k == VC && !t->r[4].pw && c->a >= t->r[4].v && c->a < t->r[4].v + 64) || (t->esc && c->a + c->w > t->esc)) &&
+            image_escape(e, c->v, site)) return -1;
+    }
+    return 0;
+}
+static int import_arity(const char *n) {
+    if (!strcmp(n, "objc_getClass") || !strcmp(n, "object_getClass") || !strcmp(n, "sel_registerName")) return 1;
+    if (!strcmp(n, "class_getInstanceMethod") || !strcmp(n, "class_getClassMethod") || !strcmp(n, "class_respondsToSelector") ||
+        !strcmp(n, "class_getMethodImplementation")) return 2;
+    if (!strcmp(n, "class_addMethod")) return 4;
+    return 6;
+}
 static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
     Val rdi = t->r[7], rsi = t->r[6], rdx = t->r[2], rcx = t->r[1], ret = U();
     char b1[256], b2[256]; const char *s1, *cn; int meta; uint32_t id; St *u;
+    if (call_escapes(e, t, import_arity(n), site)) return -1;
     if (listed(MUTATORS, n) && note_site(e, site)) return -1;
     if (!strcmp(n, "objc_getClass")) {
         s1 = literal(e, t, rdi, site, b1, sizeof b1);
@@ -585,7 +638,10 @@ static int do_call(Ex *e, St *t, uint64_t site, uint64_t target, int tail, uint6
         return refuse(e, "foreign-call", "a call at 0x%llx to 0x%llx, outside the provider's code and no import",
                       (unsigned long long)site, (unsigned long long)target);
     if (note_called(e, target)) return -1;
-    if (!follow(e, target)) { unknown_call(t); return tail ? do_ret(e, t, site) : 0; }
+    if (!follow(e, target)) {
+        if (call_escapes(e, t, 6, site)) return -1;
+        unknown_call(t); return tail ? do_ret(e, t, site) : 0;
+    }
     if (!tail) {
         if (t->depth + 1 > e->b.max_depth)
             return refuse(e, "depth-budget", "a call at 0x%llx deeper than %zu followed calls", (unsigned long long)site, e->b.max_depth);
@@ -838,6 +894,10 @@ static int step(Ex *e, St *t) {
     return r;
 }
 
+static int cmp_read2(const void *a, const void *b) {
+    const uint64_t *x = a, *y = b;
+    return x[0] != y[0] ? (x[0] < y[0] ? -1 : 1) : x[1] < y[1] ? -1 : x[1] > y[1];
+}
 static int cmp_range(const void *a, const void *b) {
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
@@ -879,6 +939,12 @@ int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t
     qsort(out->mutator_sites, out->n_sites, sizeof *out->mutator_sites, cmp_range);
     qsort(out->called, out->n_called, sizeof *out->called, cmp_range);
     qsort(out->explored, out->n_explored, 2 * sizeof *out->explored, cmp_range);
+    if (e.nexec && (out->executed = malloc(e.nexec * sizeof *out->executed))) {
+        for (i = 0; i < e.capexec; i++) if (e.exec[i]) out->executed[out->n_executed++] = e.exec[i];
+        qsort(out->executed, out->n_executed, sizeof *out->executed, cmp_range);
+    } else if (e.nexec) oom(&e);
+    free(e.exec);
+    if (out->n_escaped) qsort(out->escaped, out->n_escaped, sizeof *out->escaped, cmp_read2);
     qsort(out->selreg, out->n_selreg, sizeof *out->selreg, cmp_range);
     uniq_reads(out);
     if (out->n_stores) {
@@ -900,6 +966,6 @@ void objc_reg_free(ObjcRegResult *r) {
         for (j = 0; j < p->n_null_classes; j++) free(p->null_classes[j]);
         free(p->found); free(p->adds); free(p->null_classes);
     }
-    free(r->paths); free(r->mutator_sites); free(r->called); free(r->explored); free(r->selreg); free(r->const_reads); free(r->image_stores);
+    free(r->paths); free(r->mutator_sites); free(r->called); free(r->explored); free(r->executed); free(r->escaped); free(r->selreg); free(r->const_reads); free(r->image_stores);
     memset(r, 0, sizeof *r);
 }

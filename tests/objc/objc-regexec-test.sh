@@ -88,6 +88,17 @@ for f in _fixture_tabbing_activation_state _FixtureTab_tabbingMode; do
   in_explored plain-Os "$f" && fail "plain: $f, which no path executes, is an explored function"
 done
 pass 'explored: the functions a path executed in, and none it did not'
+escaped_has() {   # escaped_has IMAGE SYMBOL: 0 when SYMBOL's address is among the driver's escaped addresses
+  a=$("$NM" "$T/$1" | awk -v s="$2" '$3 == s {print "0x" $1}' | sed 's/0x0*/0x/')
+  [ -n "$a" ] || fail "$1: no symbol $2"
+  grep "^escaped .*$a@" "$T/out" >/dev/null
+}
+for f in _state _FixtureTabMethods; do escaped_has plain-Os "$f" && fail "plain: $f escapes: $(grep '^escaped' "$T/out")"; done
+build bump -Os -DBUMP; run bump; explored BUMP
+escaped_has bump _state || fail "BUMP: the state's address, handed to a summarised helper, is not escaped: $(grep '^escaped' "$T/out")"
+build passtab -Os -DPASS_TABLE; run passtab; explored PASS_TABLE
+escaped_has passtab _FixtureTabMethods || fail "PASS_TABLE: the table's address is not escaped: $(grep '^escaped' "$T/out")"
+pass 'escaped: an image address handed to a call not followed, and none on the plain provider'
 
 build short -Os -DSHORT; run short; explored short
 [ "$(all_miss | head -1)" = 1 ] && [ "$(all_miss | grep -c '^  add ')" = 5 ] || fail "SHORT: want one all-miss path with 5 adds, got $(all_miss)"

@@ -7,8 +7,13 @@
 // class exists), UNRELATED_EARLY (nothing registered when an unrelated method is found), FAIL_EXTRA (an undeclared add
 // after a failed one), GUESSED (a branch on an unknown value before registering), TRAPPED (a trap after registering),
 // COMPUTED_SEL (a selector registered from a run-time string), ESCAPE (a function no path runs takes the table's
-// address), READ_TABLE (one only reads the table and the state) and UNEXPLORED_SEL (a run-time string registered in
-// a method reached only by a message send).
+// address), READ_TABLE (one only reads the table and the state), UNEXPLORED_SEL (a run-time string registered in
+// a method reached only by a message send), BUMP (the state's address handed to a helper no path follows, which
+// writes it), PASS_TABLE (the table's address handed to one), CFG_PTR (a pointer the root reads, to a field it reads,
+// written through by a function no path runs), PRUNED_WRITE (a state write on a branch no path takes), PRUNED_CALL
+// (class_addMethod's GOT slot loaded on an explored path, called through a register on a branch no path takes), TRY
+// (the root catches exceptions), BOUND_ADD (class_addMethod through a bound data pointer, in a method reached only by
+// a message send) and TWO_INIT (the constructor in the initializer table twice).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -72,6 +77,32 @@ const FixtureTabMethod FixtureTabMethods[] = {
 typedef enum { FixtureNotRun, FixtureRegistered, FixtureNativePresent, FixturePartialRefused, FixtureAddFailed } FixtureState;
 static FixtureState state = FixtureNotRun;
 static const char *stateDetail;
+
+#ifdef BUMP
+__attribute__((noinline, used)) void fixture_bump(FixtureState *p) { *p = FixtureNativePresent; }
+#endif
+#ifdef PASS_TABLE
+__attribute__((noinline, used)) void fixture_note(const void *p) { __asm__ volatile("" : : "r"(p)); }
+#endif
+#ifdef CFG_PTR
+int fixture_cfg_field;
+int *fixture_cfgp = &fixture_cfg_field;
+__attribute__((used)) void fixture_cfg_set(void) { *fixture_cfgp = 1; }
+#endif
+#if defined(PRUNED_WRITE) || defined(PRUNED_CALL)
+static volatile int fixturePruned;   // reads 0 on every path: what it guards is never run
+#endif
+#ifdef BOUND_ADD
+static BOOL (*const volatile fixtureAdd)(Class, SEL, IMP, const char *) = class_addMethod;
+@interface FixtureTabBound : NSObject
++ (void)addExtra:(Class)cls;
+@end
+@implementation FixtureTabBound
++ (void)addExtra:(Class)cls {
+  fixtureAdd(cls, sel_registerName("tabbedWindows"), (IMP)(void *)FixtureTab_tabbedWindows, "@16@0:8");
+}
+@end
+#endif
 
 static BOOL ownsSelector(Class c, SEL sel) { return class_getInstanceMethod(c, sel) != NULL; }
 
@@ -152,6 +183,27 @@ void __fixture_objc_activate_table(void) {
 #ifndef NULL_CLASS
   if (!window) { state = FixtureAddFailed; stateDetail = "NSWindow"; return; }
 #endif
+#ifdef BUMP
+  fixture_bump(&state);
+  if (state != FixtureNotRun) return;
+#endif
+#ifdef PASS_TABLE
+  fixture_note(FixtureTabMethods);
+#endif
+#ifdef CFG_PTR
+  if (*fixture_cfgp) return;
+#endif
+#ifdef PRUNED_WRITE
+  if (fixturePruned) state = FixtureNativePresent;
+#endif
+#ifdef PRUNED_CALL
+  __asm__ volatile("movq _class_addMethod@GOTPCREL(%%rip), %%rbx\n\t"
+                   "cmpl $0, %0\n\t"
+                   "je 1f\n\t"
+                   "call *%%rbx\n"
+                   "1:"
+                   : : "m"(fixturePruned) : "rbx", "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "memory", "cc");
+#endif
 #ifdef FRAME_ESCAPE
   Class held = window;
   arc4random_buf(&held, 0);   // an import given a frame address: what it held may have changed
@@ -169,7 +221,15 @@ void __fixture_objc_activate_table(void) {
 #ifdef COMPUTED_SEL
   (void)sel_registerName(getenv("FIXTURE_SEL"));
 #endif
+#ifdef TRY
+  @try {
+    state = REGISTER(window, FixtureTabMethods, sizeof FixtureTabMethods / sizeof *FixtureTabMethods, &stateDetail);
+  } @catch (id e) {
+    state = FixtureAddFailed;
+  }
+#else
   state = REGISTER(window, FixtureTabMethods, sizeof FixtureTabMethods / sizeof *FixtureTabMethods, &stateDetail);
+#endif
 #ifdef TRAPPED
   __builtin_trap();
 #endif
@@ -178,6 +238,9 @@ void __fixture_objc_activate_table(void) {
 #endif
 #ifdef UNEXPLORED_SEL
   if (state == FixtureRegistered) [FixtureTabSel touch:getenv("FIXTURE_SEL")];
+#endif
+#ifdef BOUND_ADD
+  if (state == FixtureRegistered) [FixtureTabBound addExtra:window];
 #endif
 #ifdef SETIMP
   if (state == FixtureRegistered)
@@ -192,3 +255,7 @@ FixtureState fixture_tabbing_activation_state(const char **detail) {
 }
 
 __attribute__((constructor)) static void fixture_tabbing_start(void) { __fixture_objc_activate_table(); }
+#ifdef TWO_INIT
+__attribute__((used, section("__DATA,__mod_init_func,mod_init_funcs"))) static void (*const fixtureSecondInit)(void) =
+    fixture_tabbing_start;
+#endif
