@@ -1,0 +1,1 @@
+drydock-objc now refuses some JSON input that 0.6 accepted, such as duplicate keys and out-of-range numbers, as cannot-measure instead of reading it loosely.
