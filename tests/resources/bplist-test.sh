@@ -89,6 +89,11 @@ for w in 255:1:2 256:2:2; do
     && pass "bplist_minimal_sizes: $((n + 1)) objects take $r-byte refs, $(size "$T/wide.bplist") bytes $o-byte offsets" \
     || fail "bplist_minimal_sizes: $((n + 1)) objects: trailer '$got', wanted $o-byte offsets, $r-byte refs"
 done
+run build --xml-safe --only "long data" "$T/long.bplist" 2>"$T/err" || fail "bplist_minimal_sizes: build --only exit $?"
+set -- $(trailer "$T/long.bplist")
+[ "$2" = 2 ] && [ "$6" -gt 255 ] && [ "$(be "$T/long.bplist" $(($6 + 2 * 2)) 2)" -lt 256 ] \
+  && pass "bplist_minimal_sizes: a $6-byte object region takes 2-byte offsets though every offset fits in one" \
+  || fail "bplist_minimal_sizes: offsets must reach the offset table, as CoreFoundation checks: trailer '$*'"
 
 for f in "$FIX"/nib-10.9/*.nib/keyedobjects.nib "$FIX"/nib/Main.storyboardc/Info.plist; do
   name=${f#"$FIX"/}
@@ -140,6 +145,7 @@ printf 'a20102\n1001\n5161\n' | mk 0 1 | refused refsize trailer
 printf '%s\n' "$GOOD" | sed 's/00000000000000030000000000000000000000000000000f$/00000000000000040000000000000000000000000000000f/' \
   | refused offsettable 'offset table'
 printf '%s\n' "$GOOD" | sed 's/000000000000000f$/0000000000000004/' | refused tablelow 'offset table'
+printf 'a101\n4f110100%0512d\n' 0 | mk 1 1 | refused offsetsnarrow 'offset table'
 printf 'a20105\n1001\n5161\n' | mk 1 1 | refused ref ref
 printf '%s\n' "$GOOD" | sed 's/080b0d\(000000000000\)/080b0f\1/' | refused offset offset
 printf '%s\n' "$GOOD" | sed 's/080b0d\(000000000000\)/080b07\1/' | refused offsetlow offset

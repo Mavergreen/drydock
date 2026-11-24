@@ -1,5 +1,6 @@
 /* Test-only harness for bplist.c:
  *   resources-bplist-driver build [--xml-safe|--small|--wide N] OUT   writes a built tree with bp_write
+ *   resources-bplist-driver build --xml-safe --only KEY OUT          writes a dict of just the xml-safe tree's KEY
  *   resources-bplist-driver rewrite IN OUT                           bp_read, then bp_write
  *   resources-bplist-driver dump [--as-xml] IN                       bp_read, then one line per node; --as-xml
  *                                                                    drops what an XML plist loses: dict entry
@@ -200,8 +201,8 @@ int main(int argc, char **argv) {
     size_t n;
     int rc;
     if (argc >= 3 && !strcmp(argv[1], "build")) {
-        const char *mode = argc == 4 ? argv[2] : argc == 5 ? argv[2] : "";
-        if (!strcmp(mode, "--small")) {
+        const char *mode = argc >= 4 ? argv[2] : "";
+        if (argc == 4 && !strcmp(mode, "--small")) {
             ok = 1;
             root = chk(bp_dict());
             set(root, "a", chk(bp_int(1)));
@@ -216,6 +217,13 @@ int main(int argc, char **argv) {
         } else if (argc == 3 || (argc == 4 && !strcmp(mode, "--xml-safe"))) {
             if ((rc = refusals())) return rc;
             root = build(argc == 4);
+        } else if (argc == 6 && !strcmp(mode, "--xml-safe") && !strcmp(argv[3], "--only")) {
+            BpNode *all = build(1), *v = all ? bp_get(all, argv[4]) : NULL;
+            if (all && !v) { bp_free(all); fprintf(stderr, "no entry \"%s\"\n", argv[4]); return 2; }
+            ok = 1;
+            if (v) { root = chk(bp_dict()); set(root, argv[4], bp_retain(v)); }
+            bp_free(all);
+            if (!ok) { bp_free(root); root = NULL; }
         } else goto usage;
         if (!root || bp_write(root, &out, &n)) { bp_free(root); fprintf(stderr, "out of memory\n"); return 2; }
         bp_free(root);
@@ -281,7 +289,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 usage:
-    fprintf(stderr, "usage: resources-bplist-driver build [--xml-safe|--small|--wide N] OUT | rewrite IN OUT | "
-                    "dump [--as-xml] IN | graft IN | summary IN\n");
+    fprintf(stderr, "usage: resources-bplist-driver build [--xml-safe [--only KEY]|--small|--wide N] OUT | "
+                    "rewrite IN OUT | dump [--as-xml] IN | graft IN | summary IN\n");
     return 2;
 }

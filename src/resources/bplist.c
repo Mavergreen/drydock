@@ -396,7 +396,7 @@ int bp_read(const uint8_t *buf, size_t n, BpNode **root, char *why, size_t whysz
         bad(&r, "trailer", n - 32);
         return 4;
     }
-    if (table < 9 || table > n - 32 || r.n_objs > (n - 32 - table) / r.osz) {
+    if (table < 9 || table > n - 32 || r.n_objs > (n - 32 - table) / r.osz || (r.osz < 8 && table >> (8 * r.osz))) {
         bad(&r, "offset table", n - 32);
         return 4;
     }
@@ -594,7 +594,6 @@ int bp_write(const BpNode *root, uint8_t **out, size_t *nout) {
     Buf b;
     size_t *canon = NULL, *idx = NULL, *num = NULL, *rep = NULL, *offs = NULL, i, j, nu = 0, nobj = 0, table;
     unsigned rsz, osz;
-    uint64_t maxoff = 0;
     int rc = -1;
     memset(&w, 0, sizeof w);
     memset(&b, 0, sizeof b);
@@ -628,9 +627,8 @@ int bp_write(const BpNode *root, uint8_t **out, size_t *nout) {
         offs[i] = b.n;
         put_obj(&b, &w, rep[i], num, rsz);
     }
-    maxoff = offs[nobj - 1];
-    osz = width(maxoff);
     table = b.n;
+    osz = width(table);
     for (i = 0; i < nobj; i++) put_be(&b, offs[i], osz);
     put(&b, "\0\0\0\0\0\0", 6);
     put_be(&b, osz, 1);
