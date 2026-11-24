@@ -179,6 +179,12 @@ target_include_directories(drydock_jansson PUBLIC "${DRYDOCK_JANSSON_SOURCE_DIR}
 target_compile_definitions(drydock_jansson PRIVATE HAVE_CONFIG_H)
 set_target_properties(drydock_jansson PROPERTIES C_STANDARD 99)
 target_compile_options(drydock_jansson PRIVATE -O2 -w)
+if(NOT APPLE)
+  # platform: Jansson defines _GNU_SOURCE, which from glibc 2.38 binds strtoll to __isoc23_strtoll, above the
+  # archive's 2.34 floor. Reading glibc's features.h first, before that define, fixes the feature set as
+  # drydock-macho-rewrite's: C99 with POSIX 2008, no C23. Jansson parses integers in base 10, where both agree.
+  target_compile_options(drydock_jansson PRIVATE "SHELL:-include features.h")
+endif()
 install(FILES "${DRYDOCK_JANSSON_SOURCE_DIR}/LICENSE" DESTINATION share/doc/drydock RENAME LICENSE-jansson)
 
 add_executable(objc-jansson-driver tests/objc/fixtures/jansson-driver.c)
