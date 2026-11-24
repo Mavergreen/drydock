@@ -266,7 +266,7 @@ static ImportRole role_of(const char *sym, const char *dylib) {
 /* ---- slice model ------------------------------------------------------------------------ */
 
 typedef struct { uint64_t addr; const char *name; } Sym;
-typedef struct { uint64_t addr; const char *name; ImportRole role; const char *lib; } Ptr;  /* stub/GOT/bind; lib: lib_of */
+typedef struct { uint64_t addr; const char *name; ImportRole role; const char *lib; size_t seq; } Ptr;  /* stub/GOT/bind; lib: lib_of; seq: read order */
 typedef struct { uint64_t addr, size, off; uint32_t flags; char seg[17], sect[17]; } Sect;
 typedef struct {
     uint64_t addr; const char *symbol; int kind;   /* 1 selector, 2 class */
@@ -368,21 +368,23 @@ static int cmp_sym(const void *x, const void *y) {
 }
 static int cmp_ptr(const void *x, const void *y) {
     const Ptr *a = x, *b = y;
-    return a->addr < b->addr ? -1 : a->addr > b->addr;
+    if (a->addr != b->addr) return a->addr < b->addr ? -1 : 1;
+    return a->seq < b->seq ? -1 : a->seq > b->seq;
 }
 static int cmp_cache(const void *x, const void *y) {
     const Cache *a = x, *b = y;
-    return a->addr < b->addr ? -1 : a->addr > b->addr;
+    if (a->addr != b->addr) return a->addr < b->addr ? -1 : 1;
+    return strcmp(a->symbol, b->symbol);
 }
 
+/* The first entry at addr in v's (addr, seq) order: the one read first. */
 static const Ptr *find_ptr(const Ptr *v, size_t n, uint64_t addr) {
     size_t lo = 0, hi = n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (v[mid].addr == addr) return &v[mid];
         if (v[mid].addr < addr) lo = mid + 1; else hi = mid;
     }
-    return NULL;
+    return lo < n && v[lo].addr == addr ? &v[lo] : NULL;
 }
 static Cache *find_cache(Slice *s, uint64_t addr) {
     size_t lo = 0, hi = s->ncaches;
@@ -567,7 +569,8 @@ static void bind_cb(const mo_bind_state *st, void *ctx_) {
             if (!g) { b->oom = 1; return; }
             s->binds = g;
         }
-        p = &s->binds[s->nbinds++];
+        p = &s->binds[s->nbinds];
+        p->seq = s->nbinds++;
         p->addr = seg_va + st->offset + k * (8 + st->skip);
         p->name = st->symbol;
         p->role = role_of(st->symbol, ordinal_dylib(b->c, st->ordinal));
@@ -643,7 +646,8 @@ static int load_tables(Slice *s, LcCtx *c) {
                     if (!g) return fail(s, "out-of-memory", 0, "%s", "stubs");
                     s->ptrs = g;
                 }
-                p = &s->ptrs[s->nptrs++];
+                p = &s->ptrs[s->nptrs];
+                p->seq = s->nptrs++;
                 p->addr = x->addr + k * stride; p->name = name;
                 p->role = role_of(name, ordinal_dylib(c, ord));
                 p->lib = lib_of(c, ord);
@@ -654,14 +658,23 @@ static int load_tables(Slice *s, LcCtx *c) {
 
     /* Data slots bound to symbols: external class references, among others. */
     if (c->di) {
-        BindCtx b; b.s = s; b.c = c; b.cap = 0; b.oom = 0;
-        if ((c->di->bind_size && (!mo_fits(c->di->bind_off, c->di->bind_size, s->im.size) ||
-             mo_bind_observe(s->im.buf + c->di->bind_off, c->di->bind_size, "bind", bind_cb, &b))) ||
-            (c->di->weak_bind_size && (!mo_fits(c->di->weak_bind_off, c->di->weak_bind_size, s->im.size) ||
-             mo_bind_observe(s->im.buf + c->di->weak_bind_off, c->di->weak_bind_size, "weak bind", bind_cb, &b))))
+        BindCtx b;
+        size_t nbound, out;
+        b.s = s; b.c = c; b.cap = 0; b.oom = 0;
+        if (c->di->bind_size && (!mo_fits(c->di->bind_off, c->di->bind_size, s->im.size) ||
+             mo_bind_observe(s->im.buf + c->di->bind_off, c->di->bind_size, "bind", bind_cb, &b)))
+            return fail(s, "malformed-macho", 0, "%s", "bind stream does not decode");
+        nbound = s->nbinds;
+        if (c->di->weak_bind_size && (!mo_fits(c->di->weak_bind_off, c->di->weak_bind_size, s->im.size) ||
+             mo_bind_observe(s->im.buf + c->di->weak_bind_off, c->di->weak_bind_size, "weak bind", bind_cb, &b)))
             return fail(s, "malformed-macho", 0, "%s", "bind stream does not decode");
         if (b.oom) return fail(s, "out-of-memory", 0, "%s", "binds");
         qsort(s->binds, s->nbinds, sizeof *s->binds, cmp_ptr);
+        /* A weak bind names no library; on a slot something already binds, it only adds coalescing. */
+        for (i = out = 0; i < s->nbinds; i++)
+            if (s->binds[i].seq < nbound || !out || s->binds[out - 1].addr != s->binds[i].addr)
+                s->binds[out++] = s->binds[i];
+        s->nbinds = out;
     }
 
     if (c->dice && c->dice->datasize) {

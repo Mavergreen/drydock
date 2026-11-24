@@ -10,6 +10,7 @@
  * --link-map prints objc_linkmap_read's parse instead (link_map below).
  * --functions FILE prints objc_image_function's answers, one per line.
  * --rebased FILE VA prints 1 or 0: whether objc_image_rebased says a rebase entry covers the slot at VA.
+ * --bound-lib FILE VA prints objc_image_bound_lib_at's library for the slot at VA, or "-".
  * Exit 0 measured (and, with --close, every send closed), 4 cannot-measure, 2 usage. */
 #include "report.h"
 #include "linkmap.h"
@@ -100,6 +101,18 @@ static int rebased(const char *file, const char *va) {
     return 0;
 }
 
+/* --bound-lib FILE VA: the library objc_image_bound_lib_at names for VA, or "-"; exit 4 when FILE does not open. */
+static int bound_lib(const char *file, const char *va) {
+    ObjcAnalysis *a = objc_analysis_create();
+    ObjcImage *im;
+    if (!a) return 4;
+    if (objc_image_open(a, file, &im)) { objc_analysis_destroy(a); return 4; }
+    printf("%s\n", s(objc_image_bound_lib_at(im, strtoull(va, NULL, 16))));
+    objc_image_close(im);
+    objc_analysis_destroy(a);
+    return 0;
+}
+
 /* --functions FILE: one decimal VA per objc_image_function, in the order it answers; exit 4 when FILE does not open. */
 static int functions(const char *file) {
     ObjcAnalysis *a = objc_analysis_create();
@@ -127,6 +140,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--demangle")) return demangle();
     if (argc == 3 && !strcmp(argv[1], "--functions")) return functions(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "--rebased")) return rebased(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "--bound-lib")) return bound_lib(argv[2], argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "--link-map")) return link_map(argc - 2, argv + 2);
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--artifact") && i + 1 < argc) artifact = argv[++i];

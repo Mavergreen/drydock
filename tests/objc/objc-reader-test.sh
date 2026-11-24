@@ -703,4 +703,19 @@ roff=$("$OTOOL" -arch x86_64 -l "$T/rebased32" | awk '$1 == "rebase_off" { print
 [ "$(od -An -tx1 -j "$roff" -N1 "$T/rebased32" | tr -d ' ')" = 11 ] || fail 'the rebase stream does not start with SET_TYPE_IMM(POINTER)'
 printf '\022' | dd of="$T/rebased32" bs=1 seek="$roff" conv=notrunc 2>/dev/null
 [ "$("$DRYDOCK_OBJC_READER_DRIVER" --rebased "$T/rebased32" "$(slot rebased_ptr)")" = 0 ] || fail 'a 32-bit absolute rebase is reported as a rebased pointer'
+# spec: src/objc/macho-reader.c load_tables -- two caches at one address are cache-alias, naming the later symbol in strcmp
+#       order whatever order the host's qsort leaves ties in (tests/objc/fixtures/cache-alias.S).
+fxcc "$FX/cache-alias.S" -o "$T/cache-alias"
+read_artifact "$T/cache-alias"; refused 'aliased caches' cache-alias
+grep '^error	cache-alias	.*	__RNvNvNtNtNtCs2WYrep5oUp8_5objc27runtime8nsobject16NSObjectProtocol7isEqual10CACHED_SEL$' "$T/out" >/dev/null ||
+  fail 'aliased caches: the detail is not the later symbol in strcmp order'
+# spec: src/objc/report.h objc_image_bound_lib_at -- a slot bound to a dylib's weak definition has a bind and a weak bind
+#       (no ordinal, so "(this image)"); the bind's library is the answer on every host, and a weak-bind-only slot keeps its own.
+fxcc -dynamiclib "$FX/weak-bind-lib.c" -o "$T/libweakdef.dylib" -install_name @rpath/libweakdef.dylib
+fxcc "$FX/weak-bind.c" -o "$T/weak-bind" -L"$T" -lweakdef
+wslot() { "$NM" -arch x86_64 "$T/weak-bind" | awk -v n="_$1" '$3 == n { print $1 }'; }
+lib=$("$DRYDOCK_OBJC_READER_DRIVER" --bound-lib "$T/weak-bind" "$(wslot lib_slot)")
+[ "$lib" = @rpath/libweakdef.dylib ] || fail "a slot with a bind and a weak bind is bound to $lib, not its bind's library"
+lib=$("$DRYDOCK_OBJC_READER_DRIVER" --bound-lib "$T/weak-bind" "$(wslot own_slot)")
+[ "$lib" = '(this image)' ] || fail "a slot only the weak-bind stream binds is bound to $lib, not (this image)"
 echo 'objc-reader: conventional, objc2, plain, fat and cannot-measure fixtures pass'
