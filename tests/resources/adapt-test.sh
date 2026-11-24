@@ -27,14 +27,14 @@ build() {  # NAME TEXT ARG...: builds TEXT to $T/NAME.nib and dumps it to $T/NAM
 rc() { cat "$T/$1.rc"; }
 err() { head -3 "$T/$1.err"; }
 # spec: one line per view a constraint names: "CLASS STATE", STATE the view's NSDoNotTranslateAutoresizingMask (or
-#   "absent"), and "content" for a window's or a box's content view.
+#   "absent"), prefixed "content:" for a window's or a box's content view.
 views() {
   awk '
     /^@[0-9]+ / { o = $1; cls[o] = $2; next }
     $1 == "NSFirstItem" || $1 == "NSSecondItem" { item[$4] = 1 }
     $1 == "NSWindowView" || $1 == "NSContentView" { content[$4] = 1 }
     $1 == "NSDoNotTranslateAutoresizingMask" { dnt[o] = $3 }
-    END { for (v in item) print cls[v], (v in content) ? "content" : (v in dnt) ? dnt[v] : "absent" }' "$1" | sort
+    END { for (v in item) print cls[v], ((v in content) ? "content:" : "") ((v in dnt) ? dnt[v] : "absent") }' "$1" | sort
 }
 label() {  # the NSTextField's NSPreferredMaxLayoutWidth line, and its NSFrame's width minus 4
   awk '
@@ -48,31 +48,35 @@ label() {  # the NSTextField's NSPreferredMaxLayoutWidth line, and its NSFrame's
 dump "$FIX/nib/layout.nib" > "$T/layout.rez"
 in_obj 17 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' "$T/layout.rez" \
   | in_obj 21 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' \
-  | in_obj 50 '/^  NSDoNotTranslateAutoresizingMask = true$/d' > "$T/untranslated.rez"
+  | in_obj 50 '/^  NSDoNotTranslateAutoresizingMask = true$/d' \
+  | in_obj 15 's/^  NSvFlags = i16 256$/  NSvFlags = i16 256\
+  NSDoNotTranslateAutoresizingMask = false/' \
+  | in_obj 19 's/^  NSvFlags = i16 274$/  NSvFlags = i16 274\
+  NSDoNotTranslateAutoresizingMask = false/' > "$T/untranslated.rez"
 build plain "$T/untranslated.rez" --no-adapt
-printf '%s\n' 'NSBox false' 'NSButton absent' 'NSButton true' 'NSButton true' 'NSTextField false' 'NSView content' 'NSView content' > "$T/want.before"
+printf '%s\n' 'NSBox false' 'NSButton absent' 'NSButton true' 'NSButton true' 'NSTextField false' 'NSView content:false' 'NSView content:false' > "$T/want.before"
 views "$T/plain.out" > "$T/got.before"
-cmp -s "$T/want.before" "$T/got.before" && pass "adapt_layout: --no-adapt keeps the edited views false and absent" \
+cmp -s "$T/want.before" "$T/got.before" && pass "adapt_layout: --no-adapt keeps the edited views false and absent, both content views false" \
   || fail "adapt_layout: --no-adapt: exit $(rc plain), $(err plain) $(diff "$T/want.before" "$T/got.before" | tr '\n' '|')"
 [ ! -s "$T/plain.log" ] && [ "$(label "$T/plain.out")" = "|1426" ] \
   && pass "adapt_layout: --no-adapt logs nothing and leaves the label without a preferred width" \
   || fail "adapt_layout: --no-adapt: log $(head -2 "$T/plain.log"), label $(label "$T/plain.out")"
 
 build on "$T/untranslated.rez" --resource-references "$RES"
-printf '%s\n' 'NSBox true' 'NSButton true' 'NSButton true' 'NSButton true' 'NSTextField true' 'NSView content' 'NSView content' > "$T/want.after"
+printf '%s\n' 'NSBox true' 'NSButton absent' 'NSButton true' 'NSButton true' 'NSTextField true' 'NSView content:false' 'NSView content:false' > "$T/want.after"
 views "$T/on.out" > "$T/got.after"
 [ "$(rc on)" = 0 ] && cmp -s "$T/want.after" "$T/got.after" \
-  && pass "adapt_layout: build sets NSDoNotTranslateAutoresizingMask = true on every constrained view, false or absent, but no content view" \
+  && pass "adapt_layout: build turns NSDoNotTranslateAutoresizingMask false into true on constrained views, leaves true and absent alone, and no content view" \
   || fail "adapt_layout: translate-autoresizing: exit $(rc on), $(err on) $(diff "$T/want.after" "$T/got.after" | tr '\n' '|')"
-[ "$(sed -n '/^@[0-9]* NSView$/,/^$/p' "$T/on.out" | grep -c NSDoNotTranslateAutoresizingMask)" = 0 ] \
-  && pass "adapt_layout: neither content view gets the key" || fail "adapt_layout: a content view got NSDoNotTranslateAutoresizingMask"
+[ "$(grep -c '^NSView content:false$' "$T/got.after")" = 2 ] && [ "$(grep -c '^NSButton absent$' "$T/got.after")" = 1 ] \
+  && pass "adapt_layout: the window's and the box's content views stay false, and an absent key stays absent" \
+  || fail "adapt_layout: content views or absent key changed: $(tr '\n' '|' < "$T/got.after")"
 [ "$(label "$T/on.out")" = "  NSPreferredMaxLayoutWidth = f64 0x1.648p+10  # 1426|1426" ] \
   && pass "adapt_layout: the wrapping label gets NSPreferredMaxLayoutWidth = f64 its NSFrame width - 4" \
   || fail "adapt_layout: wrapping-width: $(label "$T/on.out")"
 printf '%s\n' "$T/untranslated.rez: adapted: translate-autoresizing (@17 NSDoNotTranslateAutoresizingMask)" \
   "$T/untranslated.rez: adapted: translate-autoresizing (@21 NSDoNotTranslateAutoresizingMask)" \
-  "$T/untranslated.rez: adapted: wrapping-width (@21 NSPreferredMaxLayoutWidth)" \
-  "$T/untranslated.rez: adapted: translate-autoresizing (@50 NSDoNotTranslateAutoresizingMask)" > "$T/want.log"
+  "$T/untranslated.rez: adapted: wrapping-width (@21 NSPreferredMaxLayoutWidth)" > "$T/want.log"
 cmp -s "$T/want.log" "$T/on.log" && pass "adapt_layout: every rewrite is logged in object order, rule and object and key" \
   || fail "adapt_layout: log: $(diff "$T/want.log" "$T/on.log" | tr '\n' '|')"
 build again "$T/untranslated.rez" --resource-references "$RES"

@@ -50,27 +50,40 @@ check apple "$FIX/nib-10.9/layout.nib"
   && pass "findings_layout: Apple's 10.9 compile is no NIBArchive, and its wrapping label has no preferred width either" \
   || fail "findings_layout: Apple's 10.9 layout.nib: exit $(rc apple), $(head -3 "$T/apple") $(cat "$T/apple.err")"
 
-# spec: views 17, 21, 37 and 45 say false, 50 has no key; 15 (the window's content view) and 19 (the box's) are items too.
+# spec: views 17, 21, 37 and 45 say false, 50 has no key; 15 (the window's content view) and 19 (the box's) are items
+#   too, and say false.
 in_obj 17 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' "$T/layout.rez" \
   | in_obj 21 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' \
   | in_obj 37 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' \
   | in_obj 45 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' \
-  | in_obj 50 '/^  NSDoNotTranslateAutoresizingMask = true$/d' > "$T/untranslated.rez"
+  | in_obj 50 '/^  NSDoNotTranslateAutoresizingMask = true$/d' \
+  | in_obj 15 's/^  NSvFlags = i16 256$/  NSvFlags = i16 256\
+  NSDoNotTranslateAutoresizingMask = false/' \
+  | in_obj 19 's/^  NSvFlags = i16 274$/  NSvFlags = i16 274\
+  NSDoNotTranslateAutoresizingMask = false/' > "$T/untranslated.rez"
+[ "$(grep -c '^  NSDoNotTranslateAutoresizingMask = false$' "$T/untranslated.rez")" = 6 ] || fail "findings_layout: the edit did not apply"
 check off --no-adapt "$T/untranslated.rez"
 grep ': translate-autoresizing ' "$T/off" | sed 's/.*: \(finding\): translate-autoresizing \([^ ]*\) (\(@[0-9]*\) NSDoNotTranslateAutoresizingMask \([a-z]*\))$/\1 \2 \3 \4/' > "$T/off.ta"
 printf '%s\n' 'finding NSBox @17 false' 'finding NSTextField @21 false' 'finding NSButton @37 false' \
-  'finding NSButton @45 false' 'finding NSButton @50 absent' > "$T/want.ta"
+  'finding NSButton @45 false' > "$T/want.ta"
 cmp -s "$T/off.ta" "$T/want.ta" \
-  && pass "findings_layout: --no-adapt reports every constrained view whose key is false or absent, and no content view" \
+  && pass "findings_layout: --no-adapt reports every constrained view whose key is false, not one without the key, and no content view" \
   || fail "findings_layout: translate-autoresizing: $(diff "$T/want.ta" "$T/off.ta" | tr '\n' '|') $(cat "$T/off.err")"
 check on "$T/untranslated.rez"
-[ "$(lines on ': will-adapt: translate-autoresizing ')" = 5 ] && [ "$(lines on ': finding: translate-autoresizing ')" = 0 ] \
-  && pass "findings_layout: with adaptation on, the same five will adapt" \
+[ "$(lines on ': will-adapt: translate-autoresizing ')" = 4 ] && [ "$(lines on ': finding: translate-autoresizing ')" = 0 ] \
+  && pass "findings_layout: with adaptation on, the same four will adapt" \
   || fail "findings_layout: adapting translate-autoresizing: $(grep translate "$T/on" | head -3)"
 check one --no-adapt=wrapping-width "$T/untranslated.rez"
-[ "$(lines one ': will-adapt: translate-autoresizing ')" = 5 ] && [ "$(lines one ': finding: wrapping-width ')" = 1 ] \
+[ "$(lines one ': will-adapt: translate-autoresizing ')" = 4 ] && [ "$(lines one ': finding: wrapping-width ')" = 1 ] \
   && pass "findings_layout: --no-adapt=wrapping-width turns only that rule into a finding" \
   || fail "findings_layout: --no-adapt=wrapping-width: $(grep -e translate -e wrapping "$T/one" | head -3)"
+[ "$(lines off ' (@50 ')" = 0 ] && [ "$(lines on ' (@50 ')" = 0 ] \
+  && pass "findings_layout: a constrained view without the key (@50) is no finding, with or without --no-adapt" \
+  || fail "findings_layout: @50 absent: $(grep '(@50 ' "$T/off" "$T/on")"
+check scene "$FIX/nib/Main.storyboardc"
+[ "$(lines scene 'translate-autoresizing')" = 0 ] \
+  && pass "findings_layout: a storyboard scene's root view, with no key, is no translate-autoresizing finding" \
+  || fail "findings_layout: scene: $(grep translate "$T/scene")"
 
 dump "$FIX/nib/values.nib" | in_obj 14 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' > "$T/swapper.rez"
 check swapper "$T/swapper.rez"

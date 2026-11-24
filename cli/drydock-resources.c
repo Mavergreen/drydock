@@ -306,7 +306,12 @@ static int check(const char *arg, const char *refdir, const char *resrefs, const
     }
     one[0] = (char *)arg;
     if (len > 12 && !strcmp(arg + len - 12, ".storyboardc") && stat(arg, &st) == 0 && S_ISDIR(st.st_mode)) {
-        if ((rc = rf_storyboard(r, arg, "10.9", &f)) || (rc = storyboard_nibs(arg, &nibs, &n))) worst = 4;
+        n = 0;
+        if (rf_storyboard(r, arg, "10.9", &f)) {
+            fprintf(stderr, "drydock-resources: out of memory\n");
+            worst = 4;
+        } else if (storyboard_nibs(arg, &nibs, &n))
+            worst = 4;
     } else
         nibs = one;
     for (i = 0; !worst && i < n; i++) {

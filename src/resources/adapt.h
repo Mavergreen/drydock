@@ -1,7 +1,8 @@
 /* adapt.h -- the named Auto Layout adaptation rules: mechanical rewrites of values an older AppKit takes literally.
  *
- *   translate-autoresizing: NSDoNotTranslateAutoresizingMask = true on every view a constraint names, where it is
- *     false or absent; not on a window's content view or a box's content view, which their container sizes.
+ *   translate-autoresizing: NSDoNotTranslateAutoresizingMask = true on every view a constraint names where it is
+ *     false; never where it is absent (a view IB leaves translating), nor on a window's or a box's content view,
+ *     which their container sizes.
  *   wrapping-width: an NSTextField a constraint names, whose cell wraps on 10.9, with no or a zero
  *     NSPreferredMaxLayoutWidth, gets f64 (NSFrame width - 4). A frame that cannot be read is a finding.
  *

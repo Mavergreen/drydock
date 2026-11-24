@@ -251,10 +251,10 @@ static int scan(const RGraph *g, const int rules[N_RULES], Wants *out) {
         if (!(mark[i] & ITEM) || g->objs[i].bare || !is_a(g, cls, "NSView")) continue;
         if (rules[TRANSLATE] && !(mark[i] & CONTENT)) {
             v = rg_get(g, o, DNT);
-            if (!v || v->type == RV_FALSE || (is_int(v) && !v->u.i)) {
-                snprintf(why, sizeof why, "%s", v ? "false" : "absent");
+            if (v && (v->type == RV_FALSE || (is_int(v) && !v->u.i))) {
+                snprintf(why, sizeof why, "false");
                 if (want(out, TRANSLATE, o, 1, 0, why)) goto oom;
-            } else if (v->type != RV_TRUE && !is_int(v)) {
+            } else if (v && v->type != RV_TRUE && !is_int(v)) {
                 snprintf(why, sizeof why, "is not a boolean");
                 if (want(out, TRANSLATE, o, 0, 0, why)) goto oom;
             }
