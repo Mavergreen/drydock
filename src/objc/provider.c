@@ -534,7 +534,12 @@ static int line_reloc(void *ctx, uint64_t off, uint64_t *addr) {
 
 static int line_cmp(const void *x, const void *y) {
     const ObjcLine *a = x, *b = y;
-    return a->addr < b->addr ? -1 : a->addr > b->addr;
+    if (a->addr != b->addr) return a->addr < b->addr ? -1 : 1;
+    return a->seq < b->seq ? -1 : a->seq > b->seq;
+}
+
+void objc_sort_lines(ObjcLine *lines, size_t n) {
+    if (n > 1) qsort(lines, n, sizeof *lines, line_cmp);
 }
 
 /* Each linked member's __DWARF,__debug_line rows, carried to final addresses through the evidence's
@@ -573,14 +578,14 @@ static int member_lines(ObjcAnalysis *a, ObjcProvider *p, OArchive *ar) {
             if (!(g = realloc(p->lines, (p->n_lines + 1) * sizeof *g))) { r = nrows; break; }
             p->lines = g; g = &g[p->n_lines];
             g->addr = at->address + (w->addr - m->nl[s].n_value); g->lo = at->address; g->hi = at->address + at->size;
-            g->line = w->line; g->col = w->col;
+            g->line = w->line; g->col = w->col; g->seq = p->n_lines;
             if (!(g->file = strdup(w->file))) break;
             p->n_lines++;
         }
         for (r = 0; r < nrows; r++) free(rows[r].file);
         free(rows);
     }
-    if (p->n_lines > 1) qsort(p->lines, p->n_lines, sizeof *p->lines, line_cmp);
+    objc_sort_lines(p->lines, p->n_lines);
     return OBJC_OK;
 }
 

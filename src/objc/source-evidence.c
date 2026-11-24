@@ -1058,12 +1058,12 @@ static int covers(const ObjcSourceRow *r, uint32_t line, uint32_t col) {
     return 0;
 }
 
-static const ObjcLine *line_at(const ObjcProvider *p, uint64_t va) {
-    size_t lo = 0, hi = p->n_lines;
+const ObjcLine *objc_line_at(const ObjcLine *lines, size_t n, uint64_t va) {
+    size_t lo = 0, hi = n;
     const ObjcLine *best = NULL;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (p->lines[mid].addr <= va) { best = &p->lines[mid]; lo = mid + 1; } else hi = mid;
+        if (lines[mid].addr <= va) { best = &lines[mid]; lo = mid + 1; } else hi = mid;
     }
     return best && va >= best->lo && va < best->hi ? best : NULL;
 }
@@ -1099,7 +1099,7 @@ int objc_apply_source_receipt(ObjcAnalysis *a) {
                 if (e->address >= a->providers[j].ranges[2 * k] && e->address < a->providers[j].ranges[2 * k + 1]) { p = &a->providers[j]; break; }
         if (!p) continue;
         if (!p->n_lines) { status = objc_fail(a, "no-line-table", e->slice, e->address, "%s: the linked archive members carry no line table to map this send to its source", p->provider_id); continue; }
-        if (!(ln = line_at(p, e->address))) {
+        if (!(ln = objc_line_at(p->lines, p->n_lines, e->address))) {
             status = objc_fail(a, "unmapped-source-send", e->slice, e->address, "%s: the line table has no row for this send", p->provider_id);
             continue;
         }

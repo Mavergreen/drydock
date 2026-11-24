@@ -198,8 +198,13 @@ typedef struct {
     uint32_t sl, sc, el, ec;            /* the expression's extent */
     uint32_t *anchors; size_t nanchors; /* line, column pairs of enclosing statement starts */
 } ObjcSourceRow;
-/* One row of an archive member's line table at its final address, inside the verified atom [lo, hi). */
-typedef struct { uint64_t addr, lo, hi; char *file; uint32_t line, col; } ObjcLine;
+/* One row of an archive member's line table at its final address, inside the verified atom [lo, hi); seq is its
+ * place in the order the members' line tables emitted their rows. */
+typedef struct { uint64_t addr, lo, hi; char *file; uint32_t line, col; size_t seq; } ObjcLine;
+/* Sort rows by address, rows at one address in emission order, so the last row emitted at an address is the one that
+ * governs it, as in a DWARF line table, on every host; and the row governing va inside its atom, or NULL. */
+void objc_sort_lines(ObjcLine *lines, size_t n);
+const ObjcLine *objc_line_at(const ObjcLine *lines, size_t n, uint64_t va);
 
 /* ---- build evidence (main.m parses it, source-evidence.c checks it) ---- */
 typedef struct { char *demangled, *selector, *receiver, *kind, *provenance; } ObjcReceiptRow;

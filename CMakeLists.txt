@@ -293,8 +293,8 @@ endif()
 
 # Test tools, never installed: the reader/binding harness (objc-compat-build.sh --reader-driver), the
 # registration executor's (objc-regexec-test.sh), the argument-register one (objc-arity-test.sh), the v0
-# demangler's (objc-resolve-test.sh) and json.c's (objc-json-test.sh).
-foreach(d reader regexec arity demangle json)
+# demangler's (objc-resolve-test.sh), json.c's (objc-json-test.sh) and the line-row order's (objc-line-order-test.sh).
+foreach(d reader regexec arity demangle json lines)
   add_executable(objc-${d}-driver tests/objc/fixtures/${d}-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
   target_include_directories(objc-${d}-driver PRIVATE src/objc)
   set_target_properties(objc-${d}-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
@@ -551,7 +551,7 @@ set_tests_properties(objc_strict_input PROPERTIES ENVIRONMENT "DRYDOCK_OBJC=${DR
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity attest binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec report report-parity gh-acceptance sdk-inventory sdk-signatures cli)
+foreach(t arity attest binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec report report-parity gh-acceptance line-order sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)
@@ -560,7 +560,7 @@ foreach(t arity attest binding classification closure compare evidence-schema2 s
   endif()
   drydock_add_test(NAME objc_${n} COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
   set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-    "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_OBJC_REGEXEC_DRIVER=$<TARGET_FILE:objc-regexec-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};DRYDOCK_MAKEFAT=$<TARGET_FILE:makefat>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS};DRYDOCK_BUILD_DIR=${CMAKE_BINARY_DIR};DRYDOCK_CTEST=${CMAKE_CTEST_COMMAND}")
+    "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_OBJC_REGEXEC_DRIVER=$<TARGET_FILE:objc-regexec-driver>;DRYDOCK_OBJC_LINES_DRIVER=$<TARGET_FILE:objc-lines-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};DRYDOCK_MAKEFAT=$<TARGET_FILE:makefat>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS};DRYDOCK_BUILD_DIR=${CMAKE_BINARY_DIR};DRYDOCK_CTEST=${CMAKE_CTEST_COMMAND}")
 endforeach()
 # platform: the halves of these two that compile and run the Mach-O libclang semantic reader (objc-sdk-inventory.sh builds
 # it with the pinned clang22 and runs it) have no Linux form; the argument checks that need no compiler stay above.
