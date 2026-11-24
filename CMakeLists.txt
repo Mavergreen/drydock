@@ -508,6 +508,8 @@ set_property(TEST family_conventions APPEND PROPERTY LABELS not-in-guest)
 
 # platform: host-agnostic -- the Linux archive's ISA/glibc measurement is exercised with a stub readelf.
 drydock_add_test(NAME elf_needs_all COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_needs_all_test.sh)
+# platform: host-agnostic -- the committed nib fixtures still match the XIBs they were compiled from.
+drydock_add_test(NAME resources_fixtures_current COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/fixtures-current-test.sh)
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).
