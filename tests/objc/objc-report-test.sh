@@ -168,7 +168,7 @@ exit_is 4 'unknown evidence key'; error_in malformed-build-evidence "$T/out/extr
 run "$T/notadir/report" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
 exit_is 2 'destination under a regular file'
 [ ! -e "$T/notadir/report" ] || fail 'a report was written under a regular file'
-if [ "$(id -u)" != 0 ]; then
+if [ "$(id -u)" = 0 ]; then echo 'skip: root writes into a read-only directory' >&2; else
   mkdir -p "$T/ro"; chmod a-w "$T/ro"
   run "$T/ro/report" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
   exit_is 4 'unwritable destination'

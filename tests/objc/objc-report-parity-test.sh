@@ -78,7 +78,7 @@ fi
 CORPUS='body:0 classify:0 merged:0 r2:0 closure:0 guard-coverage:0 provider:4 sweep:0 table-provider:4 launder:4'
 
 for f in objects.tsv digests.tsv; do
-  [ "$(wc -l <"$PAR/$f" | tr -d ' ')" = 10 ] || fail "$P/$f has not one row for each of the 10 fixtures"
+  [ "$(wc -l <"$PAR/$f" | tr -d ' ')" = 10 ] || fail "$PAR/$f has not one row for each of the 10 fixtures"
 done
 bad=0
 for e in $CORPUS; do
