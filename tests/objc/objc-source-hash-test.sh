@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then analyzes them with schema-2 evidence
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then analyzes them with schema-2 evidence
 # spec: src/objc/source-evidence.c header -- a schema-2 guard or R3 row that a send uses has every cited file
 #       hashed by the analyzer itself, under --source-root, --crate-sources or --sdk-root; the source root's
 #       digest must be the evidence's source.tree_sha256. A record no send uses is reported unused, not checked.

@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then analyzes them with schema-2 evidence
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then analyzes them with schema-2 evidence
 # spec: src/objc/source-evidence.c header -- a schema-2 guard or R3 row closes a send only while every file
 #       it cites hashes as recorded, its function is the send's resolved symbol, and (a guard) the guarded
 #       sends classify.c measures in that function are exactly the ones it covers and the guard is measured.

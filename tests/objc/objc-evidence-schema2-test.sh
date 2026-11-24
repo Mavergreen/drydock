@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links an x86_64 fixture against the pinned 10.9 SDK, then analyzes it with build evidence
+# platform: host-agnostic -- links an x86_64 fixture against the pinned 10.9 SDK, then analyzes it with build evidence
 # spec: src/objc/source-evidence.c header -- build evidence schema 2: guard and R3 rows name a function
 #       path and cite every file they rest on; guards pin what they cover. Parsed strictly; a row
 #       no send uses is reported unused (objc-source-hash-test.sh checks rows in use).

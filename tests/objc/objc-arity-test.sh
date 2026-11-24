@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links an x86_64 fixture against the pinned 10.9 SDK, then reads its method lists
+# platform: host-agnostic -- links an x86_64 fixture against the pinned 10.9 SDK, then reads its method lists
 # spec: src/objc/reference.c "argument registers" -- how many argument GPRs a call may use: a send by its
 #       selector's declarations (both signature catalogs and the artifact's own method encodings), a C call
 #       by the floor function catalog, an encoding by SysV x86_64 classification; -1 means unbounded.

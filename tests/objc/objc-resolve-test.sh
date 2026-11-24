@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then resolves reviewed evidence against them
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then resolves reviewed evidence against them
 # spec: src/objc/main.c resolve_main -- drydock-objc resolve fills each schema-2 record's symbol(s) and each
 #       crate's disambiguator from the artifact: one function, or the copies of one generic instance; any other
 #       repeated path, or a crate the debug map cannot tie to its version, is resolve-ambiguous; a missing path

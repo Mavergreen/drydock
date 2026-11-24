@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 objc2-shaped fixtures against the pinned 10.9 SDK, then binds them
+# platform: host-agnostic -- links x86_64 objc2-shaped fixtures against the pinned 10.9 SDK, then binds them
 # spec: src/objc/binding.c header -- binding
 #       forms from exact v0 symbols and fetch-site bytes, never selector spellings guessed from
 #       Rust underscores; receiver/kind only from an explicit receipt; unknown forms cannot-measure.

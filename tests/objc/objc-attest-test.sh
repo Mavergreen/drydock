@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK with a link map, then reads them as bytes
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK with a link map, then reads them as bytes
 # spec: src/objc/linkmap.c header -- one link-map parser for the provider mapping and the sweep's attestation;
 #       emit-build-evidence binds a link map to this link without a provider. Nothing built here is executed.
 set -eu

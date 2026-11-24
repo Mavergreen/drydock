@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 table providers against the pinned 10.9 SDK with clang22 and lld, then reads them as bytes
+# platform: host-agnostic -- links x86_64 table providers against the pinned 10.9 SDK with clang22 and lld, then reads them as bytes
 # spec: src/objc/regexec.c header -- the registration executor derives a provider's class_addMethod calls from its
 #       code: every path, each add's class, selector, implementation and types, the lookups found on each path, and
 #       a named refusal for every limit. Nothing built here is executed.

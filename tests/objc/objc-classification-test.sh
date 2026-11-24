@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then classifies their sends
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then classifies their sends
 # spec: src/objc/classify.c header -- one verdict per send from measured receivers, the
 #       versioned 10.9.5 reference set and reviewed build-bound evidence; R1, R2 and downcast
 #       refinement close only what they prove; no denylist anywhere.
