@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reads their bytes
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then reads their bytes
 # spec: src/objc/macho-reader.c header -- the real reader over real fixture bytes, on
 #       either host arch; every unsupported shape is cannot-measure.
 set -eu
@@ -307,7 +307,7 @@ done
 #       upstream iTerm2 3.0.15: tests/objc/fixtures/weak-import-check.S), writes only the flags: measured. Any other
 #       read of the slot but a load is still "address taken".
 for n in 0 1; do
-  fxcc --no-default-config -DFORM="$n" "$FX/weak-import-check.S" -o "$T/weak$n" -lobjc -Wl,-U,_objc_readClassPair
+  fxcc --no-default-config --target=x86_64-apple-macos10.9 -fuse-ld=lld -DFORM="$n" "$FX/weak-import-check.S" -o "$T/weak$n" -lobjc -Wl,-U,_objc_readClassPair
 done
 read_artifact "$T/weak0"; measured 'weak import check'
 [ "$(count dispatch-call)" = 1 ] || fail "weak import check: $(count dispatch-call) sends, want 1"
@@ -348,13 +348,8 @@ done
 #       point copied into a register no call reads is followed: Alacritty's -[RecaulkTabPSMTabBarControl setDelegate:]
 #       keeps objc_msgSend in rcx across a respondsToSelector: send (tests/objc/fixtures/entry-copy.S). Each twin that
 #       leaves it where the call may read it is cannot-measure at that call (entry-escape.S, entry-escape.m).
-CLANG=${MAVERGREEN_OBJC_CLANG_PREFIX:-}
-if [ -z "$CLANG" ]; then
-  case "$(uname -m)" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
-  version=$(tr -d '[:space:]' < "$ROOT/components/objc-reference-clang/version")
-  CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_product_pkg.sh" --asset "mavericks-clang-22-$flavor-$version.pkg" "$short" "$version" "${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/objc-reference-$short-$version")
-fi
-cc22() { env -i PATH=/usr/bin:/bin "$CLANG/bin/clang" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
+# platform: the same clang22 as fxcc, without its -O1: the reference and receipt pins are one version.
+cc22() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-version-min=10.9 "$@"; }
 # spec: tests/objc/fixtures/entry-copy.m header -- the pinned clang22 reloads the GOT slot per block: measured either way.
 for o in Os O3; do
   cc22 "-$o" "$FX/entry-copy.m" -o "$T/entry-copy-$o" -framework AppKit -framework Foundation

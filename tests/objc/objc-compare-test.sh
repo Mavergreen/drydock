@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then runs compare.sh over doctored baselines
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then runs compare.sh over doctored baselines
 # spec: tests/objc/baseline/compare.sh header -- COMPARE_MODE=fewer-unmeasured lets a report lose only the error kinds
 #       it names, table-byte errors only inside a table the reader lists, "different value" and "read other" errors
 #       only in a function holding one it follows, "not followed" only at such a function's start, "address taken"
@@ -28,7 +28,7 @@ for c in 0 1 14; do
   fxcc -DCLOBBER=$c "$FX/jt-reject-clobber.S" -o "$T/jt$c" -framework Foundation -lobjc -Wl,-no_data_in_code_info
 done
 # spec: tests/objc/fixtures/weak-import-check.S header -- FORM 0 a weak import's check, measured
-fxcc --no-default-config -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClassPair
+fxcc --no-default-config --target=x86_64-apple-macos10.9 -fuse-ld=lld -DFORM=0 "$FX/weak-import-check.S" -o "$T/weak" -lobjc -Wl,-U,_objc_readClassPair
 # spec: tests/objc/fixtures/swizzle.m header -- FORM 1 method_setImplementation, FORM 4 class_addProtocol;
 #       tests/objc/fixtures/unsupported.c FORM 6 objc_allocateClassPair
 for f in 1 4; do fxcc -O1 -DFORM=$f "$FX/swizzle.m" -o "$T/sw$f" -framework Foundation -lobjc; done
