@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="22505" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" customObjectInstantitationMethod="direct">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="22505"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <objects>
+        <customObject id="-2" userLabel="File's Owner"/>
+        <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
+        <customObject id="-3" userLabel="Application" customClass="NSObject"/>
+        <window title="Values" allowsToolTipsWhenApplicationIsInactive="NO" autorecalculatesKeyViewLoop="NO" releasedWhenClosed="NO" visibleAtLaunch="NO" animationBehavior="default" id="Vw1-aa-001">
+            <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
+            <windowPositionMask key="initialPositionMask" leftStrut="YES" rightStrut="YES" topStrut="YES" bottomStrut="YES"/>
+            <rect key="contentRect" x="196.5" y="240.25" width="480" height="300"/>
+            <rect key="screenRect" x="0.0" y="0.0" width="1920" height="1055"/>
+            <view key="contentView" id="Vv1-aa-002">
+                <rect key="frame" x="0.0" y="0.0" width="480" height="300"/>
+                <autoresizingMask key="autoresizingMask"/>
+                <subviews>
+                    <customView translatesAutoresizingMaskIntoConstraints="NO" id="Vcv-aa-003" customClass="DDFixtureView">
+                        <rect key="frame" x="20.5" y="200.25" width="100.75" height="80.125"/>
+                    </customView>
+                    <customView hidden="YES" translatesAutoresizingMaskIntoConstraints="NO" id="Vhv-aa-004">
+                        <rect key="frame" x="140" y="200" width="40" height="40"/>
+                    </customView>
+                    <button tag="7" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vb1-aa-005">
+                        <rect key="frame" x="13" y="153" width="90" height="32"/>
+                        <buttonCell key="cell" type="push" title="Tag 7" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Vc1-aa-006">
+                            <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
+                            <font key="font" metaFont="system"/>
+                        </buttonCell>
+                    </button>
+                    <button tag="300" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vb2-aa-007">
+                        <rect key="frame" x="113" y="153" width="90" height="32"/>
+                        <buttonCell key="cell" type="push" title="Tag 300" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Vc2-aa-008">
+                            <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
+                            <font key="font" metaFont="system"/>
+                        </buttonCell>
+                    </button>
+                    <button tag="70000" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vb3-aa-009">
+                        <rect key="frame" x="213" y="153" width="100" height="32"/>
+                        <buttonCell key="cell" type="push" title="Tag 70000" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Vc3-aa-010">
+                            <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
+                            <font key="font" metaFont="system"/>
+                        </buttonCell>
+                    </button>
+                    <button tag="5000000000" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vb4-aa-011">
+                        <rect key="frame" x="323" y="153" width="140" height="32"/>
+                        <buttonCell key="cell" type="push" title="Tag 5000000000" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Vc4-aa-012">
+                            <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
+                            <font key="font" metaFont="system"/>
+                        </buttonCell>
+                    </button>
+                    <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vck-aa-013">
+                        <rect key="frame" x="18" y="119" width="100" height="18"/>
+                        <buttonCell key="cell" type="check" title="On" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="Vcc-aa-014">
+                            <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
+                            <font key="font" metaFont="system"/>
+                        </buttonCell>
+                    </button>
+                    <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vtf-aa-015">
+                        <rect key="frame" x="18" y="80" width="200" height="22"/>
+                        <textFieldCell key="cell" lineBreakMode="clipping" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" title="Helvetica 15.25" drawsBackground="YES" id="Vtc-aa-016">
+                            <font key="font" size="15.25" name="Helvetica"/>
+                            <color key="textColor" red="0.5" green="0.25" blue="0.75" alpha="1" colorSpace="calibratedRGB"/>
+                            <color key="backgroundColor" white="0.9" alpha="1" colorSpace="calibratedWhite"/>
+                        </textFieldCell>
+                    </textField>
+                    <slider verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vsl-aa-017">
+                        <rect key="frame" x="18" y="40" width="200" height="28"/>
+                        <sliderCell key="cell" state="on" alignment="left" minValue="-2.5" maxValue="100.125" doubleValue="37.5" tickMarkPosition="above" sliderType="linear" id="Vsc-aa-018"/>
+                    </slider>
+                </subviews>
+                <constraints>
+                    <constraint firstItem="Vcv-aa-003" firstAttribute="top" secondItem="Vv1-aa-002" secondAttribute="top" constant="19.75" id="Vk1-aa-019"/>
+                    <constraint firstItem="Vcv-aa-003" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20.5" id="Vk2-aa-020"/>
+                    <constraint firstItem="Vcv-aa-003" firstAttribute="width" constant="100.75" id="Vk3-aa-021"/>
+                    <constraint firstItem="Vcv-aa-003" firstAttribute="height" constant="80.125" id="Vk4-aa-022"/>
+                    <constraint firstItem="Vhv-aa-004" firstAttribute="top" secondItem="Vcv-aa-003" secondAttribute="top" id="Vk5-aa-023"/>
+                    <constraint firstItem="Vhv-aa-004" firstAttribute="leading" secondItem="Vcv-aa-003" secondAttribute="trailing" constant="19.25" id="Vk6-aa-024"/>
+                    <constraint firstItem="Vb1-aa-005" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20" id="Vk7-aa-025"/>
+                    <constraint firstItem="Vb1-aa-005" firstAttribute="top" secondItem="Vcv-aa-003" secondAttribute="bottom" constant="20" id="Vk8-aa-026"/>
+                    <constraint firstItem="Vb2-aa-007" firstAttribute="leading" secondItem="Vb1-aa-005" secondAttribute="trailing" constant="12" id="Vk9-aa-027"/>
+                    <constraint firstItem="Vb2-aa-007" firstAttribute="firstBaseline" secondItem="Vb1-aa-005" secondAttribute="firstBaseline" id="Vka-aa-028"/>
+                    <constraint firstItem="Vb3-aa-009" firstAttribute="leading" secondItem="Vb2-aa-007" secondAttribute="trailing" constant="12" id="Vkb-aa-029"/>
+                    <constraint firstItem="Vb3-aa-009" firstAttribute="firstBaseline" secondItem="Vb1-aa-005" secondAttribute="firstBaseline" id="Vkc-aa-030"/>
+                    <constraint firstItem="Vb4-aa-011" firstAttribute="leading" secondItem="Vb3-aa-009" secondAttribute="trailing" constant="12" id="Vkd-aa-031"/>
+                    <constraint firstItem="Vb4-aa-011" firstAttribute="firstBaseline" secondItem="Vb1-aa-005" secondAttribute="firstBaseline" id="Vke-aa-032"/>
+                    <constraint firstItem="Vck-aa-013" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20" id="Vkf-aa-033"/>
+                    <constraint firstItem="Vck-aa-013" firstAttribute="top" secondItem="Vb1-aa-005" secondAttribute="bottom" constant="24" id="Vkg-aa-034"/>
+                    <constraint firstItem="Vtf-aa-015" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20" id="Vkh-aa-035"/>
+                    <constraint firstItem="Vtf-aa-015" firstAttribute="top" secondItem="Vck-aa-013" secondAttribute="bottom" constant="18" id="Vki-aa-036"/>
+                    <constraint firstItem="Vtf-aa-015" firstAttribute="width" constant="200" id="Vkj-aa-037"/>
+                    <constraint firstItem="Vsl-aa-017" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20" id="Vkk-aa-038"/>
+                    <constraint firstItem="Vsl-aa-017" firstAttribute="top" secondItem="Vtf-aa-015" secondAttribute="bottom" constant="14" id="Vkl-aa-039"/>
+                    <constraint firstItem="Vsl-aa-017" firstAttribute="width" constant="200" id="Vkm-aa-040"/>
+                    <constraint firstAttribute="bottom" relation="greaterThanOrEqual" secondItem="Vsl-aa-017" secondAttribute="bottom" constant="20" id="Vkn-aa-041"/>
+                </constraints>
+            </view>
+            <connections>
+                <outlet property="initialFirstResponder" destination="Vtf-aa-015" id="Vo1-aa-042"/>
+            </connections>
+            <point key="canvasLocation" x="139" y="147"/>
+        </window>
+    </objects>
+</document>

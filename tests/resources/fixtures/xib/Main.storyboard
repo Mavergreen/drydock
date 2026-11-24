@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.Storyboard.XIB" version="3.0" toolsVersion="22505" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" initialViewController="Svc-aa-001">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="22505"/>
+    </dependencies>
+    <scenes>
+        <scene sceneID="Ssc-aa-002">
+            <objects>
+                <viewController storyboardIdentifier="DDFixtureScene" id="Svc-aa-001" sceneMemberID="viewController">
+                    <view key="view" id="Svw-aa-003">
+                        <rect key="frame" x="0.0" y="0.0" width="320" height="120"/>
+                        <autoresizingMask key="autoresizingMask"/>
+                        <subviews>
+                            <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Stf-aa-004">
+                                <rect key="frame" x="18" y="52" width="284" height="16"/>
+                                <textFieldCell key="cell" lineBreakMode="clipping" title="DDFixtureStoryboardLabel" id="Stc-aa-005">
+                                    <font key="font" metaFont="system"/>
+                                    <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog"/>
+                                    <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
+                                </textFieldCell>
+                            </textField>
+                        </subviews>
+                        <constraints>
+                            <constraint firstItem="Stf-aa-004" firstAttribute="leading" secondItem="Svw-aa-003" secondAttribute="leading" constant="20" id="Sk1-aa-006"/>
+                            <constraint firstAttribute="trailing" secondItem="Stf-aa-004" secondAttribute="trailing" constant="20" id="Sk2-aa-007"/>
+                            <constraint firstItem="Stf-aa-004" firstAttribute="centerY" secondItem="Svw-aa-003" secondAttribute="centerY" id="Sk3-aa-008"/>
+                        </constraints>
+                    </view>
+                </viewController>
+                <customObject id="Sfr-aa-009" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
+            </objects>
+            <point key="canvasLocation" x="75" y="250"/>
+        </scene>
+    </scenes>
+</document>

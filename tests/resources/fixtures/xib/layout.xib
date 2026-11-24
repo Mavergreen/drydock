@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="22505" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" customObjectInstantitationMethod="direct">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="22505"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <objects>
+        <customObject id="-2" userLabel="File's Owner"/>
+        <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
+        <customObject id="-3" userLabel="Application" customClass="NSObject"/>
+        <window title="Layout" allowsToolTipsWhenApplicationIsInactive="NO" autorecalculatesKeyViewLoop="NO" releasedWhenClosed="NO" visibleAtLaunch="NO" animationBehavior="default" id="Lw1-aa-001">
+            <windowStyleMask key="styleMask" titled="YES" closable="YES"/>
+            <windowPositionMask key="initialPositionMask" leftStrut="YES" rightStrut="YES" topStrut="YES" bottomStrut="YES"/>
+            <rect key="contentRect" x="196" y="240" width="668" height="200"/>
+            <rect key="screenRect" x="0.0" y="0.0" width="1920" height="1055"/>
+            <view key="contentView" id="Lv1-aa-002">
+                <rect key="frame" x="0.0" y="0.0" width="668" height="200"/>
+                <autoresizingMask key="autoresizingMask"/>
+                <subviews>
+                    <box title="Description" translatesAutoresizingMaskIntoConstraints="NO" id="Lbx-aa-003">
+                        <rect key="frame" x="17" y="16" width="634" height="168"/>
+                        <view key="contentView" id="Lbv-aa-004">
+                            <rect key="frame" x="4" y="5" width="626" height="148"/>
+                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                            <subviews>
+                                <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Ltf-aa-005">
+                                    <rect key="frame" x="14" y="76" width="598" height="64"/>
+                                    <textFieldCell key="cell" lineBreakMode="wordWrapping" selectable="YES" title="DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText DDFixtureLongText" id="Ltc-aa-006">
+                                        <font key="font" metaFont="system"/>
+                                        <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog"/>
+                                        <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog"/>
+                                    </textFieldCell>
+                                </textField>
+                                <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Lb1-aa-007">
+                                    <rect key="frame" x="9" y="7" width="110" height="32"/>
+                                    <buttonCell key="cell" type="check" title="Enable" bezelStyle="regularSquare" imagePosition="left" inset="2" id="Lc1-aa-008">
+                                        <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
+                                        <font key="font" metaFont="system"/>
+                                    </buttonCell>
+                                </button>
+                                <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Lb2-aa-009">
+                                    <rect key="frame" x="402" y="7" width="104" height="32"/>
+                                    <buttonCell key="cell" type="push" title="Uninstall" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Lc2-aa-010">
+                                        <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
+                                        <font key="font" metaFont="system"/>
+                                    </buttonCell>
+                                </button>
+                                <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Lb3-aa-011">
+                                    <rect key="frame" x="506" y="7" width="110" height="32"/>
+                                    <buttonCell key="cell" type="push" title="Update" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Lc3-aa-012">
+                                        <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
+                                        <font key="font" metaFont="system"/>
+                                    </buttonCell>
+                                </button>
+                            </subviews>
+                            <constraints>
+                                <constraint firstItem="Ltf-aa-005" firstAttribute="top" secondItem="Lbv-aa-004" secondAttribute="top" constant="8" id="Lk1-aa-013"/>
+                                <constraint firstItem="Ltf-aa-005" firstAttribute="leading" secondItem="Lbv-aa-004" secondAttribute="leading" constant="16" id="Lk2-aa-014"/>
+                                <constraint firstAttribute="trailing" secondItem="Ltf-aa-005" secondAttribute="trailing" constant="16" id="Lk3-aa-015"/>
+                                <constraint firstItem="Lb1-aa-007" firstAttribute="top" relation="greaterThanOrEqual" secondItem="Ltf-aa-005" secondAttribute="bottom" constant="20" id="Lk4-aa-016"/>
+                                <constraint firstItem="Lb1-aa-007" firstAttribute="leading" secondItem="Lbv-aa-004" secondAttribute="leading" constant="16" id="Lk5-aa-017"/>
+                                <constraint firstAttribute="bottom" secondItem="Lb1-aa-007" secondAttribute="bottom" constant="14" id="Lk6-aa-018"/>
+                                <constraint firstItem="Lb2-aa-009" firstAttribute="firstBaseline" secondItem="Lb1-aa-007" secondAttribute="firstBaseline" id="Lk7-aa-019"/>
+                                <constraint firstItem="Lb3-aa-011" firstAttribute="leading" secondItem="Lb2-aa-009" secondAttribute="trailing" constant="12" id="Lk8-aa-020"/>
+                                <constraint firstItem="Lb3-aa-011" firstAttribute="firstBaseline" secondItem="Lb2-aa-009" secondAttribute="firstBaseline" id="Lk9-aa-021"/>
+                                <constraint firstAttribute="trailing" secondItem="Lb3-aa-011" secondAttribute="trailing" constant="16" id="Lka-aa-022"/>
+                                <constraint firstItem="Lb2-aa-009" firstAttribute="leading" relation="greaterThanOrEqual" secondItem="Lb1-aa-007" secondAttribute="trailing" constant="12" id="Lkb-aa-023"/>
+                            </constraints>
+                        </view>
+                    </box>
+                </subviews>
+                <constraints>
+                    <constraint firstItem="Lbx-aa-003" firstAttribute="top" secondItem="Lv1-aa-002" secondAttribute="top" constant="16" id="Lkc-aa-024"/>
+                    <constraint firstItem="Lbx-aa-003" firstAttribute="leading" secondItem="Lv1-aa-002" secondAttribute="leading" constant="20" id="Lkd-aa-025"/>
+                    <constraint firstAttribute="trailing" secondItem="Lbx-aa-003" secondAttribute="trailing" constant="20" id="Lke-aa-026"/>
+                    <constraint firstAttribute="bottom" secondItem="Lbx-aa-003" secondAttribute="bottom" constant="20" id="Lkf-aa-027"/>
+                </constraints>
+            </view>
+            <point key="canvasLocation" x="139" y="147"/>
+        </window>
+    </objects>
+</document>

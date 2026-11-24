@@ -1,0 +1,113 @@
+name: nib-fixtures
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nib-fixtures-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Select the newest Xcode in /Applications
+        run: |
+          set -eu
+          best=""
+          for app in /Applications/Xcode*.app; do
+            v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null)" || continue
+            key="$(printf '%s\n' "$v" | awk -F. '{ printf "%05d%05d%05d", $1, $2, $3 }')"
+            printf '%s\t%s\t%s\n' "$key" "$v" "$app"
+          done | LC_ALL=C sort > "$RUNNER_TEMP/xcodes.tsv"
+          cat "$RUNNER_TEMP/xcodes.tsv"
+          best="$(tail -1 "$RUNNER_TEMP/xcodes.tsv")"
+          [ -n "$best" ] || { echo "::error::no Xcode under /Applications"; exit 1; }
+          app="$(printf '%s\n' "$best" | cut -f3)"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$app/Contents/version.plist")"
+          echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+          echo "XCODE_VERSION=$(printf '%s\n' "$best" | cut -f2) ($build)" >> "$GITHUB_ENV"
+          echo "selected: $app"
+
+      - name: Show the Xcode and ibtool that compile the fixtures
+        run: |
+          set -eu
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+          echo "XCODE_VERSION=$XCODE_VERSION"
+          xcode-select -p
+          xcodebuild -version
+          xcrun ibtool --version
+
+      - name: Compile every XIB at 12.0, and try 10.9, recording each ibtool's output
+        run: |
+          set -eu
+          logs="$RUNNER_TEMP/ibtool-logs"
+          mkdir -p "$logs"
+          : > "$RUNNER_TEMP/failed-12.0"
+          cd tests/resources/fixtures
+          rm -rf nib nib-10.9 MANIFEST.tsv
+          mkdir -p nib nib-10.9
+          sha() { shasum -a 256 < "$1" | cut -d' ' -f1; }
+          row() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$(sha "$1")" "$2" "$3" "$XCODE_VERSION" "$4" >> MANIFEST.tsv; }
+          printf 'xib_path\txib_sha256\toutput_path\toutput_sha256\txcode_version\tibtool_args\n' > MANIFEST.tsv
+          for xib in xib/*.xib xib/*.storyboard; do
+            base="${xib##*/}"; stem="${base%.*}"
+            case "$base" in *.storyboard) ext=storyboardc ;; *) ext=nib ;; esac
+            for target in 12.0 10.9; do
+              if [ "$target" = 12.0 ]; then dir=nib; else dir=nib-10.9; fi
+              out="$dir/$stem.$ext"
+              log="$logs/$stem-$target.log"
+              args="--minimum-deployment-target $target --compile"
+              rc=0
+              xcrun ibtool --errors --warnings --notices --output-format human-readable-text \
+                --minimum-deployment-target "$target" --compile "$out" "$xib" > "$log" 2>&1 || rc=$?
+              echo "::group::ibtool $args $xib (exit $rc)"
+              cat "$log"
+              echo "::endgroup::"
+              if [ "$rc" -eq 0 ] && [ -e "$out" ] && ! grep -q ': error:' "$log"; then
+                find "$out" -type f | LC_ALL=C sort > "$RUNNER_TEMP/outs"
+                while IFS= read -r f; do row "$xib" "$f" "$(sha "$f")" "$args"; done < "$RUNNER_TEMP/outs"
+              else
+                rm -rf "$out"
+                if [ "$target" = 12.0 ]; then
+                  echo "::error::ibtool could not compile $xib at 12.0 (exit $rc); its output is in the nib-fixtures-logs artifact"
+                  echo "$xib" >> "$RUNNER_TEMP/failed-12.0"
+                else
+                  echo "::warning::ibtool refused $xib at 10.9 (exit $rc)"
+                  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$xib" "$(sha "$xib")" "$out" refused "$XCODE_VERSION" "$args" >> MANIFEST.tsv
+                fi
+              fi
+            done
+          done
+          rmdir nib-10.9 2>/dev/null || true
+          cat MANIFEST.tsv
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nib-fixtures-logs
+          path: ${{ runner.temp }}/ibtool-logs/
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nib-fixtures
+          path: tests/resources/fixtures/
+          if-no-files-found: error
+
+      - name: Fail if any XIB did not compile at 12.0
+        run: |
+          set -eu
+          if [ -s "$RUNNER_TEMP/failed-12.0" ]; then
+            echo "::error::these did not compile at 12.0: $(tr '\n' ' ' < "$RUNNER_TEMP/failed-12.0")"
+            exit 1
+          fi
+          echo "every XIB compiled at 12.0"
