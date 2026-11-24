@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
 # spec: src/objc/main.c header -- the schema-1 report and the command contract: canonical
 #       bytes, deterministic IDs, exit 0/1/2/4, exclusive atomic output, bounded inputs and no
 #       partial clean report.
@@ -162,11 +162,19 @@ run "$T/out/extrakey" --artifact "$C" --root "$T/root" --references "$REF" --mod
 exit_is 4 'unknown evidence key'; error_in malformed-build-evidence "$T/out/extrakey" 'unknown key'
 
 # spec: src/objc/main.c header -- an unwritable destination directory: 4, nothing left behind.
-mkdir -p "$T/ro"; chmod a-w "$T/ro"
-run "$T/ro/report" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
-exit_is 4 'unwritable destination'
-[ -z "$(ls -A "$T/ro")" ] || fail 'a failed write left something behind'
-chmod u+w "$T/ro"
+# platform: root writes through a directory's mode bits, so the mode-bit case (4) runs for any other user. A
+#           destination under a regular file is main.c's usage error (2) for every user, root included.
+: >"$T/notadir"
+run "$T/notadir/report" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
+exit_is 2 'destination under a regular file'
+[ ! -e "$T/notadir/report" ] || fail 'a report was written under a regular file'
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$T/ro"; chmod a-w "$T/ro"
+  run "$T/ro/report" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
+  exit_is 4 'unwritable destination'
+  [ -z "$(ls -A "$T/ro")" ] || fail 'a failed write left something behind'
+  chmod u+w "$T/ro"
+fi
 
 # spec: src/objc/main.c header -- a run killed mid-analysis leaves no report (the large real artifact gives time to kill it).
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
