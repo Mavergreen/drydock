@@ -45,13 +45,6 @@
                             <font key="font" metaFont="system"/>
                         </buttonCell>
                     </button>
-                    <button tag="5000000000" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vb4-aa-011">
-                        <rect key="frame" x="323" y="153" width="140" height="32"/>
-                        <buttonCell key="cell" type="push" title="Tag 5000000000" bezelStyle="rounded" alignment="center" borderStyle="border" imageScaling="proportionallyDown" inset="2" id="Vc4-aa-012">
-                            <behavior key="behavior" pushIn="YES" lightByBackground="YES" lightByGray="YES"/>
-                            <font key="font" metaFont="system"/>
-                        </buttonCell>
-                    </button>
                     <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="Vck-aa-013">
                         <rect key="frame" x="18" y="119" width="100" height="18"/>
                         <buttonCell key="cell" type="check" title="On" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="Vcc-aa-014">
@@ -85,8 +78,6 @@
                     <constraint firstItem="Vb2-aa-007" firstAttribute="firstBaseline" secondItem="Vb1-aa-005" secondAttribute="firstBaseline" id="Vka-aa-028"/>
                     <constraint firstItem="Vb3-aa-009" firstAttribute="leading" secondItem="Vb2-aa-007" secondAttribute="trailing" constant="12" id="Vkb-aa-029"/>
                     <constraint firstItem="Vb3-aa-009" firstAttribute="firstBaseline" secondItem="Vb1-aa-005" secondAttribute="firstBaseline" id="Vkc-aa-030"/>
-                    <constraint firstItem="Vb4-aa-011" firstAttribute="leading" secondItem="Vb3-aa-009" secondAttribute="trailing" constant="12" id="Vkd-aa-031"/>
-                    <constraint firstItem="Vb4-aa-011" firstAttribute="firstBaseline" secondItem="Vb1-aa-005" secondAttribute="firstBaseline" id="Vke-aa-032"/>
                     <constraint firstItem="Vck-aa-013" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20" id="Vkf-aa-033"/>
                     <constraint firstItem="Vck-aa-013" firstAttribute="top" secondItem="Vb1-aa-005" secondAttribute="bottom" constant="24" id="Vkg-aa-034"/>
                     <constraint firstItem="Vtf-aa-015" firstAttribute="leading" secondItem="Vv1-aa-002" secondAttribute="leading" constant="20" id="Vkh-aa-035"/>

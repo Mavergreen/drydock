@@ -7,34 +7,35 @@ permissions:
   contents: read
 
 concurrency:
-  group: nib-fixtures-${{ github.run_id }}
+  group: nib-fixtures
   cancel-in-progress: false
 
 jobs:
   compile:
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Select the newest Xcode in /Applications
+      - name: Select the newest non-beta Xcode in /Applications
         run: |
           set -eu
-          best=""
           for app in /Applications/Xcode*.app; do
+            case "$app" in *[Bb]eta*|*_RC*|*Release_Candidate*) echo "skipped, a prerelease by name: $app" >&2; continue ;; esac
             v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null)" || continue
+            b="$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$app/Contents/version.plist" 2>/dev/null)" || continue
+            case "$b" in *[a-z]) echo "skipped, a prerelease build $b: $app" >&2; continue ;; esac
             key="$(printf '%s\n' "$v" | awk -F. '{ printf "%05d%05d%05d", $1, $2, $3 }')"
-            printf '%s\t%s\t%s\n' "$key" "$v" "$app"
+            printf '%s\t%s\t%s\t%s\n' "$key" "$v" "$b" "$app"
           done | LC_ALL=C sort > "$RUNNER_TEMP/xcodes.tsv"
           cat "$RUNNER_TEMP/xcodes.tsv"
           best="$(tail -1 "$RUNNER_TEMP/xcodes.tsv")"
-          [ -n "$best" ] || { echo "::error::no Xcode under /Applications"; exit 1; }
-          app="$(printf '%s\n' "$best" | cut -f3)"
-          build="$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$app/Contents/version.plist")"
+          [ -n "$best" ] || { echo "::error::no released Xcode under /Applications"; exit 1; }
+          app="$(printf '%s\n' "$best" | cut -f4)"
           echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
-          echo "XCODE_VERSION=$(printf '%s\n' "$best" | cut -f2) ($build)" >> "$GITHUB_ENV"
+          echo "XCODE_VERSION=$(printf '%s\n' "$best" | cut -f2) ($(printf '%s\n' "$best" | cut -f3))" >> "$GITHUB_ENV"
           echo "selected: $app"
 
       - name: Show the Xcode and ibtool that compile the fixtures
@@ -42,6 +43,7 @@ jobs:
           set -eu
           echo "DEVELOPER_DIR=$DEVELOPER_DIR"
           echo "XCODE_VERSION=$XCODE_VERSION"
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           xcode-select -p
           xcodebuild -version
           xcrun ibtool --version
