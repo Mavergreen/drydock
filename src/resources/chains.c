@@ -239,6 +239,8 @@ static void free_chain(RChain *c) {
     free(c->chain);
     free(c->cls);
     free(c->newer);
+    for (j = 0; j < c->n_hints; j++) free(c->hints[j]);
+    free(c->hints);
 }
 
 /* ib_ok: the name is an object's own class, never a swapper's, so an unlisted IB* name is nib-internal. */

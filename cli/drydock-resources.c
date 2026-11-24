@@ -5,10 +5,14 @@
  *     prints NIB (a NIBArchive file, or a nib directory's keyedobjects.nib) as Rez-style text a person can read,
  *     diff and edit. Superclass chains come from the reference set: --references DIR, else
  *     <realpath(this binary)>/../../share/drydock/objc/reference when it exists; with neither, the
- *     chains are marked unresolved.
+ *     chains are marked unresolved. A keyed-archive nib dumps with the chains its archive holds.
  *
- * Every verb takes --target, and 10.9 is the only target. Exit 0; 2 usage; 4 a nib or reference set that cannot be
- * read, or out of memory.
+ *   drydock-resources build [--target 10.9] [--no-adapt[=RULE]] TEXT -o NIB
+ *     writes the dump TEXT as a keyed-archive nib, replacing NIB whole or leaving it as it was. No adaptation rules
+ *     exist yet, so build always behaves as --no-adapt.
+ *
+ * Every verb takes --target, and 10.9 is the only target. Exit 0; 1 findings (a dump build cannot encode); 2 usage;
+ * 4 a nib, dump or reference set that cannot be read or written, or out of memory.
  */
 /* platform: realpath and readlink under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
 #define _XOPEN_SOURCE 700
@@ -19,7 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "atomic_write.h"
 #include "chains.h"
+#include "keyed.h"
 #include "nibarchive.h"
 #include "rez.h"
 
@@ -34,7 +40,8 @@
 static int usage(void) {
     fprintf(stderr,
             "usage: drydock-resources check|convert|dump|build [--target 10.9] ...\n"
-            "       drydock-resources dump [--target 10.9] [--references DIR] NIB\n");
+            "       drydock-resources dump [--target 10.9] [--references DIR] NIB\n"
+            "       drydock-resources build [--target 10.9] [--no-adapt[=RULE]] TEXT -o NIB\n");
     return 2;
 }
 
@@ -110,6 +117,12 @@ static int dump(const char *arg, const char *refdir) {
         arg = path;
     }
     if (!(buf = read_nib(arg, &n))) return 4;
+    if (n >= 8 && !memcmp(buf, "bplist00", 8)) {
+        rc = ka_read(buf, n, &g, why, sizeof why);
+        free(buf);
+        if (rc) { fprintf(stderr, "drydock-resources: %s: %s\n", arg, why); return rc; }
+        goto write;
+    }
     if (n < 10 || memcmp(buf, "NIBArchive", 10)) {
         fprintf(stderr, "drydock-resources: %s: unsupported format\n", arg);
         free(buf);
@@ -132,6 +145,7 @@ static int dump(const char *arg, const char *refdir) {
         rg_free(&g);
         return 4;
     }
+write:
     if (rez_write(&g, &text, &textn, why, sizeof why)) {
         fprintf(stderr, "drydock-resources: %s: %s\n", arg, why);
         rg_free(&g);
@@ -144,14 +158,43 @@ static int dump(const char *arg, const char *refdir) {
     return rc;
 }
 
+/* The dump at path as a keyed archive at out: 0; 1 unencodable; 2 out is path; 4 unreadable, malformed or unwritable. */
+static int build(const char *path, const char *out) {
+    char why[512];
+    uint8_t *text, *nib;
+    size_t n;
+    RGraph g;
+    BpNode *archive;
+    int rc;
+    if (!(text = read_nib(path, &n))) return 4;
+    rc = rez_parse((const char *)text, n, &g, why, sizeof why);
+    free(text);
+    if (rc) { fprintf(stderr, "drydock-resources: %s: %s\n", path, why); return 4; }
+    rc = ka_from_graph(&g, &archive, why, sizeof why);
+    rg_free(&g);
+    if (rc) { fprintf(stderr, "drydock-resources: %s: %s\n", path, why); return rc; }
+    rc = bp_write(archive, &nib, &n);
+    bp_free(archive);
+    if (rc) { fprintf(stderr, "drydock-resources: out of memory\n"); return 4; }
+    rc = wa_write_new(path, out, nib, n);
+    free(nib);
+    return rc == WA_IS_INPUT ? 2 : rc ? 4 : 0;
+}
+
 int main(int argc, char **argv) {
-    const char *verb, *refdir = NULL, **args;
+    const char *verb, *refdir = NULL, *out = NULL, **args;
     int i, n = 0, rc;
     if (argc < 2) return usage();
     verb = argv[1];
     if (strcmp(verb, "check") && strcmp(verb, "convert") && strcmp(verb, "dump") && strcmp(verb, "build")) return usage();
     if (!(args = calloc((size_t)argc, sizeof *args))) { fprintf(stderr, "drydock-resources: out of memory\n"); return 4; }
     for (i = 2; i < argc; i++) {
+        if (strcmp(verb, "dump") && (!strcmp(argv[i], "--no-adapt") || !strncmp(argv[i], "--no-adapt=", 11))) continue;
+        if (!strcmp(verb, "build") && !strcmp(argv[i], "-o")) {
+            if (out || i + 1 >= argc || !*argv[i + 1]) { free(args); return usage(); }
+            out = argv[++i];
+            continue;
+        }
         if (!strcmp(argv[i], "--target") || !strcmp(argv[i], "--references")) {
             if (i + 1 >= argc || !*argv[i + 1]) { free(args); return usage(); }
             if (argv[i][2] == 'r') refdir = argv[++i];
@@ -166,7 +209,9 @@ int main(int argc, char **argv) {
         } else
             args[n++] = argv[i];
     }
-    if (strcmp(verb, "dump")) {
+    if (!strcmp(verb, "build"))
+        rc = n != 1 || !out ? usage() : build(args[0], out);
+    else if (strcmp(verb, "dump")) {
         fprintf(stderr, "drydock-resources: %s is not implemented yet\n", verb);
         rc = 2;
     } else if (n != 1)

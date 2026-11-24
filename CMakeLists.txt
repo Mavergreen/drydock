@@ -319,7 +319,7 @@ target_compile_options(drydock_resources_core PRIVATE -O2 -Wall -Wextra -Werror)
 if(NOT APPLE)
   target_compile_definitions(drydock_resources_core PRIVATE _XOPEN_SOURCE=700)
 endif()
-foreach(d graph chains rez bplist)
+foreach(d graph chains rez bplist keyed)
   add_executable(resources-${d}-driver tests/resources/fixtures/${d}-driver.c $<TARGET_OBJECTS:drydock_resources_core>
                  $<TARGET_OBJECTS:drydock_objc_core>)
   target_include_directories(resources-${d}-driver PRIVATE src/resources)
@@ -586,6 +586,15 @@ if(APPLE)
   set_tests_properties(resources_bplist_plutil PROPERTIES ENVIRONMENT
     "DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-driver>")
 endif()
+# platform: host-agnostic -- keyed archives built from dumps of committed nibs, and Apple's own 10.9 compiles read.
+set(DRYDOCK_RESOURCES_KEYED_ENV "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};DRYDOCK_RESOURCES_KEYED_DRIVER=$<TARGET_FILE:resources-keyed-driver>;DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-driver>")
+drydock_add_test(NAME resources_keyed COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/keyed-test.sh)
+set_tests_properties(resources_keyed PROPERTIES ENVIRONMENT "${DRYDOCK_RESOURCES_KEYED_ENV}")
+if(APPLE)
+  # platform: Apple only -- guard malloc, where ASan is absent (10.9), under hostile and hand-edited archives.
+  drydock_add_test(NAME resources_keyed_gmalloc COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/keyed-test.sh)
+  set_tests_properties(resources_keyed_gmalloc PROPERTIES ENVIRONMENT "${DRYDOCK_RESOURCES_KEYED_ENV};DRYDOCK_RESOURCES_GMALLOC=1")
+endif()
 # platform: host-agnostic -- the command line, on committed nibs.
 drydock_add_test(NAME resources_cli COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/cli-test.sh)
 set_tests_properties(resources_cli PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
@@ -839,7 +848,7 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   target_compile_options(archive_asan_test PRIVATE -O1 -g -fsanitize=address -fno-omit-frame-pointer)
   target_link_options(archive_asan_test PRIVATE -fsanitize=address)
   drydock_add_test(NAME archive_asan_test COMMAND archive_asan_test)
-  foreach(d graph chains rez bplist)
+  foreach(d graph chains rez bplist keyed)
     add_executable(resources-${d}-asan-driver tests/resources/fixtures/${d}-driver.c ${DRYDOCK_RESOURCES_SOURCES}
                    $<TARGET_OBJECTS:drydock_objc_core>)
     target_include_directories(resources-${d}-asan-driver PRIVATE src/resources src/objc)
@@ -863,6 +872,9 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   drydock_add_test(NAME resources_rez_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/rez-test.sh)
   set_tests_properties(resources_rez_asan PROPERTIES ENVIRONMENT
     "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};DRYDOCK_RESOURCES_REZ_DRIVER=$<TARGET_FILE:resources-rez-asan-driver>")
+  drydock_add_test(NAME resources_keyed_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/keyed-test.sh)
+  set_tests_properties(resources_keyed_asan PROPERTIES ENVIRONMENT
+    "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};DRYDOCK_RESOURCES_KEYED_DRIVER=$<TARGET_FILE:resources-keyed-asan-driver>;DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-driver>")
 endif()
 
 # Hermetic tests for src/linkedit.c's ml_bump_all: a synthetic

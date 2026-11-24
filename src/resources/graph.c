@@ -27,6 +27,8 @@ void rg_free(RGraph *g) {
         free(g->chains[i].chain);
         free(g->chains[i].cls);
         free(g->chains[i].newer);
+        for (j = 0; j < g->chains[i].n_hints; j++) free(g->chains[i].hints[j]);
+        free(g->chains[i].hints);
     }
     free(g->chains);
     for (i = 0; i < g->n_strs; i++) free(g->strs[i]);
@@ -52,6 +54,7 @@ int rg_add_object(RGraph *g, const char *cls) {
     o[g->n_objs].cls = cls;
     o[g->n_objs].vals = NULL;
     o[g->n_objs].n_vals = 0;
+    o[g->n_objs].bare = 0;
     return (int)g->n_objs++;
 }
 

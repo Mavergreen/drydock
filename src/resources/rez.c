@@ -217,11 +217,14 @@ int rez_write(const RGraph *g, char **out, size_t *outn, char *why, size_t whysz
         else
             for (j = 1; j < c->n_chain; j++) { puts_(&b, " : "); put_name(&b, c->chain[j]); }
         if (c->resolved && c->newer) { puts_(&b, " newer "); put_name(&b, c->newer); }
+        if (c->n_hints) puts_(&b, " hints");
+        for (j = 0; j < c->n_hints; j++) { puts_(&b, " "); put_name(&b, c->hints[j]); }
         puts_(&b, "\n");
     }
     for (i = 0; i < g->n_objs; i++) {
         putf(&b, "\n@%lu ", (unsigned long)i);
         put_name(&b, g->objs[i].cls);
+        if (g->objs[i].bare) puts_(&b, " bare");
         puts_(&b, "\n");
         for (j = 0; j < g->objs[i].n_vals; j++) {
             const RValue *v = &g->objs[i].vals[j];
@@ -693,6 +696,22 @@ static int value_line(P *p, const Tok *keytok) {
     return rg_add_value(p->g, (uint32_t)(p->g->n_objs - 1), &v) ? oom(p) : 0;
 }
 
+/* The names after a chain's `hints`, to the end of the line. */
+static int hint_names(P *p, RChain *cs) {
+    Tok t;
+    if (p->g->format == RF_NIBARCHIVE) return fail(p, "hints are only for keyed dumps");
+    for (;;) {
+        char *s, **more;
+        if (lex(p, &t)) return -1;
+        if (t.kind == T_END) break;
+        if (name(p, &t, NULL, &s)) return -1;
+        if (!(more = realloc(cs->hints, (cs->n_hints + 1) * sizeof *more))) { free(s); return oom(p); }
+        cs->hints = more;
+        cs->hints[cs->n_hints++] = s;
+    }
+    return cs->n_hints ? 0 : fail(p, "hints needs a name");
+}
+
 static int chain_line(P *p) {
     RChain c, *cs;
     Tok t;
@@ -726,9 +745,9 @@ static int chain_line(P *p) {
     }
     if (is_word(&t, "newer")) {
         if (lex(p, &t)) return -1;
-        if (name(p, &t, NULL, &cs->newer)) return -1;
-        return need_end(p);
+        if (name(p, &t, NULL, &cs->newer) || lex(p, &t)) return -1;
     }
+    if (is_word(&t, "hints")) return hint_names(p, cs);
     return t.kind == T_END ? 0 : fail(p, "unexpected '%s'", SHOW(&t));
 oom_:
     free(c.chain[0]);
@@ -808,7 +827,13 @@ static int line(P *p) {
         p->state = 3;
         p->gen++;
         p->keys_n = 0;
-        return need_end(p);
+        if (lex(p, &b)) return -1;
+        if (is_word(&b, "bare")) {
+            if (p->g->format == RF_NIBARCHIVE) return fail(p, "bare is not a NIBArchive form");
+            p->g->objs[p->g->n_objs - 1].bare = 1;
+            return need_end(p);
+        }
+        return b.kind == T_END ? 0 : fail(p, "unexpected '%s'", SHOW(&b));
     }
 header:
     return fail(p, "expected 'drydock-resources dump 1'");

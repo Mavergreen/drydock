@@ -11,9 +11,13 @@ typedef enum { RV_I8, RV_I16, RV_I32, RV_I64, RV_FALSE, RV_TRUE, RV_F32, RV_F64,
 /* An RV_F32 is its 32 raw bits in f32, never widened to a double, which would quiet a signalling NaN. */
 typedef struct { const char *key; RvType type; union { int64_t i; double f; uint32_t f32; struct { uint8_t *p; size_t n; } d;
                  uint32_t ref; struct { uint32_t *v; size_t n; } refs; } u; } RValue;
-typedef struct { const char *cls; RValue *vals; size_t n_vals; } RObject;
-typedef struct { char *cls; char **chain; size_t n_chain; int resolved; char *newer; } RChain;   /* chain[0] == cls; newer: the
-                * newest newer-sdk.tsv version past the target the chain needed ("?" unstated), or NULL */
+/* bare: a keyed archive's plain string, number or data in $objects rather than a dict with a $class; only keyed
+ * graphs have them. */
+typedef struct { const char *cls; RValue *vals; size_t n_vals; int bare; } RObject;
+typedef struct { char *cls; char **chain; size_t n_chain; int resolved; char *newer; char **hints; size_t n_hints; } RChain;
+                /* chain[0] == cls; newer: the newest newer-sdk.tsv version past the target the chain needed ("?"
+                 * unstated), or NULL; hints: a keyed archive's $classhints, the classes to decode as when cls is
+                 * missing */
 typedef enum { RF_NIBARCHIVE, RF_KEYED } RFormat;
 typedef struct { RFormat format; uint32_t na_header[2]; RObject *objs; size_t n_objs;
                  RChain *chains; size_t n_chains; char **strs; size_t n_strs; } RGraph;

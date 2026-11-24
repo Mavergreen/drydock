@@ -198,19 +198,25 @@ format nibarchive 1 10
   v = nil
 EOF
 
-{ printf 'drydock-resources dump 1\nformat keyed\nchain A : B newer 10.11\nchain C\nchain "a b" ?\n\n@0 C\n'
-  printf '  s = string "x"\n  u = uids @0 @0\n  e = uids\n'; } > "$T/keyed.rez"
-reparsed keyed "rez_keyed: keyed format, chains with newer, strings and uids" <<'EOF'
+{ printf 'drydock-resources dump 1\nformat keyed\nchain A : B newer 10.11   hints "x y" Z\nchain C hints D\nchain "a b" ?\n\n@0 C\n'
+  printf '  s = string "x"\n  u = uids @0 @0\n  e = uids\n@1 NSString   bare  # a plain string in $objects\n'
+  printf '  NS.bytes = string "y"\n@2 bare\n'; } > "$T/keyed.rez"
+reparsed keyed "rez_keyed: keyed format, chains with newer and hints, strings, uids and bare objects" <<'EOF'
 drydock-resources dump 1
 format keyed
-chain A : B newer 10.11
-chain C
+chain A : B newer 10.11 hints "x y" Z
+chain C hints D
 chain "a b" ?
 
 @0 C
   s = string "x"
   u = uids @0 @0
   e = uids
+
+@1 NSString bare
+  NS.bytes = string "y"
+
+@2 bare
 EOF
 
 le32() { printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $(($1 & 255)) $(($1 >> 8 & 255)) $(($1 >> 16 & 255)) $(($1 >> 24 & 255)))"; }
@@ -298,6 +304,9 @@ printf '%s  x = f64 1.5x\n' "$BODY" | bad f64junk 9 'f64 1.5x is not a number'
 printf '%s  x = f64 0X1p3\n' "$BODY" | bad f64hexdecimal 9 'f64 0X1p3 is not a number'
 printf '%s  x = data "\\\033[31m"\n' "$BODY" | bad escctl 9 'unknown escape \\x1b'
 printf '%s  "a\033" = i8 1\n  "a\033" = i8 2\n' "$BODY" | bad dupesc 10 'duplicate key a\x1b'
+printf '%s' "$BODY" | sed 's/^@2 NSString$/@2 NSString bare/' | bad barenib 7 'bare is not a NIBArchive form'
+printf 'drydock-resources dump 1\nformat keyed\n@0 A bare x\n' > "$T/bareextra.rez"; refused bareextra 3 "unexpected 'x'"
+printf '%s' "$BODY" | sed 's/^@2 NSString$/@2 NSString x/' | bad objextra 7 "unexpected 'x'"
 printf '%s  x = f64 .5\n' "$BODY" | bad f64dot 9 'f64 .5 is not a number'
 printf '%s  x = f64 infinity\n' "$BODY" | bad f64infinity 9 'f64 infinity is not a number'
 printf '%s  x = f64 nan(0x7ff0000000000000)\n' "$BODY" | bad f64notnan 9 'f64 nan(0x7ff0000000000000) is not a NaN'
@@ -311,6 +320,10 @@ printf '%s    "piece"\n' "$BODY" | sed 's/^  NS.bytes.*/  n = i8 1/' | bad piece
 printf '%schain A ?\n' "$BODY" | bad lateChain 9 'chain after the first object'
 { printf 'drydock-resources dump 1\nformat keyed\nchain B\nchain A\n'; } > "$T/chainorder.rez"; refused chainorder 4 'chain A is out of order or repeated'
 { printf 'drydock-resources dump 1\nformat keyed\nchain A ? newer 10.11\n'; } > "$T/chainq.rez"; refused chainq 3 "unexpected 'newer'"
+{ printf 'drydock-resources dump 1\nformat keyed\nchain A ? hints B\n'; } > "$T/hintsq.rez"; refused hintsq 3 "unexpected 'hints'"
+{ printf 'drydock-resources dump 1\nformat keyed\nchain A hints\n'; } > "$T/hintsnone.rez"; refused hintsnone 3 'hints needs a name'
+{ printf 'drydock-resources dump 1\nformat keyed\nchain A hints B :\n'; } > "$T/hintscolon.rez"; refused hintscolon 3 "expected a name, not ':'"
+{ printf 'drydock-resources dump 1\nformat nibarchive 1 10\nchain A hints B\n'; } > "$T/hintsnib.rez"; refused hintsnib 3 'hints are only for keyed dumps'
 { printf 'drydock-resources dump 1\nformat keyed\nchain A : \n'; } > "$T/chainend.rez"; refused chainend 3 "a name must follow ':'"
 printf 'drydock-resources dump 2\n' > "$T/version.rez"; refused version 1 'unsupported dump version 2'
 printf '# only a comment\n\n' > "$T/empty.rez"; refused empty 2 "expected 'drydock-resources dump 1'"
