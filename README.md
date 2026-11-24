@@ -78,6 +78,8 @@ Every JSON input (the reference manifest and cluster witnesses, build evidence, 
 * a `schema` other than the integer `1` (or `2` where schema 2 exists): `1.0` and `true` are no longer schema 1;
 * a schema-1 guard's `source.line`, or a provider atom's `size`, that is a real number or a boolean, which 0.6 read as an integer (`12.5` as 12, `true` as 1; an absent or non-numeric `source.line` still records 0).
 
+One input is laxer than 0.6's Foundation reading: a real too small for a double, such as `1e-400`, which 10.9 refused, now parses as 0.0. It cannot reach a verdict, because every number `drydock-objc` reads must be an integer.
+
 Nesting deeper than 513 levels is refused, as 10.9's Foundation refused it. A parse failure is `malformed-input`, its detail naming the line and column. An unknown key is named in document order: the first one the document holds.
 
 ### Build evidence, schema 2
