@@ -62,7 +62,7 @@ else()
   include(MavericksFetch)
   mavericks_fetch_sdk(DRYDOCK_MACH_SDK ARCH x86_64)
   set(DRYDOCK_MACH_HEADERS "${CMAKE_BINARY_DIR}/mach-headers")
-  foreach(h mach-o/loader.h mach-o/fat.h mach-o/nlist.h mach-o/reloc.h mach-o/stab.h
+  foreach(h mach-o/loader.h mach-o/fat.h mach-o/nlist.h mach-o/reloc.h mach-o/x86_64/reloc.h mach-o/stab.h
             mach-o/compact_unwind_encoding.h mach/machine.h mach/vm_prot.h)
     get_filename_component(d "${h}" DIRECTORY)
     file(COPY "${DRYDOCK_MACH_SDK}/usr/include/${h}" DESTINATION "${DRYDOCK_MACH_HEADERS}/${d}")
@@ -196,7 +196,7 @@ target_link_libraries(objc-jansson-driver PRIVATE drydock_jansson)
 # source-evidence.c requires a receipt's `tool` line to equal.
 file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c" OBJC_SOURCE_INVENTORY_SHA256)
 set(DRYDOCK_OBJC_SOURCES)
-foreach(m x86 macho-reader binding demangle-v0 reference report classify source-evidence source-hash provider linkmap attest regexec)
+foreach(m x86 macho-reader binding demangle-v0 reference report classify source-evidence source-hash provider linkmap attest regexec json)
   list(APPEND DRYDOCK_OBJC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/${m}.c")
 endforeach()
 
@@ -204,7 +204,7 @@ endforeach()
 # release version plus the first 16 hex of a SHA-256 over the bytes
 # objc-compat-build.sh's sources() hashed, in its order, with its first line
 # (the Drydock pin's commit) replaced by drydock-VERSION, since the reader core
-# is now this tree's own: "analyzer", the modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, regexec.h, main.m, the
+# is now this tree's own: "analyzer", the modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, regexec.h, json.h, main.m, the
 # receipt tool, the thirteen reader-core modules it named, then every src/*.h in
 # byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
 # sources()), then the Jansson pin. Each file is a configure dependency, so an edit reconfigures and
@@ -216,6 +216,7 @@ set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/attest.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/x86.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/regexec.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/json.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/main.m"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c")
 foreach(m image fat x86len ordinals uleb rebase objc_meth arch_names grow exports hdrref linkedit trie)
@@ -279,15 +280,34 @@ endif()
 # The CLI is ours to fix, so it holds the same warnings as the shim, on every host.
 set_source_files_properties(cli/drydock-objc.c PROPERTIES COMPILE_OPTIONS "-Wextra;-Werror")
 
+# The analyzer modules, shared by drydock-objc and the test harnesses, on every host.
+add_library(drydock_objc_core OBJECT ${DRYDOCK_OBJC_SOURCES})
+target_include_directories(drydock_objc_core PRIVATE src/objc src)
+target_compile_definitions(drydock_objc_core PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
+set_target_properties(drydock_objc_core PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(drydock_objc_core PRIVATE -O2 -Wall)
+target_link_libraries(drydock_objc_core PRIVATE drydock_jansson)
+if(NOT APPLE)
+  # platform: under -std=c99 glibc hides POSIX's strdup and fileno, which a Mac's headers show anyway.
+  target_compile_definitions(drydock_objc_core PRIVATE _XOPEN_SOURCE=700)
+endif()
+
+# Test tools, never installed: the reader/binding harness (objc-compat-build.sh --reader-driver), the
+# registration executor's (objc-regexec-test.sh), the argument-register one (objc-arity-test.sh), the v0
+# demangler's (objc-resolve-test.sh) and json.c's (objc-json-test.sh).
+foreach(d reader regexec arity demangle json)
+  add_executable(objc-${d}-driver tests/objc/fixtures/${d}-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
+  target_include_directories(objc-${d}-driver PRIVATE src/objc)
+  set_target_properties(objc-${d}-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(objc-${d}-driver PRIVATE -O2 -Wall)
+  target_link_libraries(objc-${d}-driver PRIVATE drydockcore drydock_jansson)
+  if(NOT APPLE)
+    target_compile_definitions(objc-${d}-driver PRIVATE _XOPEN_SOURCE=700)
+  endif()
+endforeach()
+
 if(APPLE)
   enable_language(OBJC)
-  # The analyzer modules, shared by drydock-objc and the test harnesses.
-  add_library(drydock_objc_core OBJECT ${DRYDOCK_OBJC_SOURCES})
-  target_include_directories(drydock_objc_core PRIVATE src/objc src)
-  target_compile_definitions(drydock_objc_core PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
-  set_target_properties(drydock_objc_core PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-  target_compile_options(drydock_objc_core PRIVATE -O2 -Wall)
-
   add_executable(drydock-objc cli/drydock-objc.c src/objc/main.m $<TARGET_OBJECTS:drydock_objc_core>
     $<TARGET_OBJECTS:drydock_objc_receipt>)
   set_source_files_properties(src/objc/main.m PROPERTIES COMPILE_DEFINITIONS main=objc_compat_main)
@@ -297,37 +317,8 @@ if(APPLE)
     DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}")
   set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF OBJC_STANDARD 99 OBJC_EXTENSIONS OFF)
   target_compile_options(drydock-objc PRIVATE -O2 -Wall)
-  target_link_libraries(drydock-objc PRIVATE drydockcore "-framework Foundation" ${CMAKE_DL_LIBS})
+  target_link_libraries(drydock-objc PRIVATE drydockcore drydock_jansson "-framework Foundation" ${CMAKE_DL_LIBS})
   mavericks_assert_binary_compatible(drydock-objc)
-
-  # The harness that prints the reader's and binding's records
-  # (objc-compat-build.sh --reader-driver). A test tool, never installed.
-  add_executable(objc-reader-driver tests/objc/fixtures/reader-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
-  target_include_directories(objc-reader-driver PRIVATE src/objc)
-  set_target_properties(objc-reader-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-  target_compile_options(objc-reader-driver PRIVATE -O2 -Wall)
-  target_link_libraries(objc-reader-driver PRIVATE drydockcore)
-
-  # The registration executor's harness (objc-regexec-test.sh). A test tool, never installed.
-  add_executable(objc-regexec-driver tests/objc/fixtures/regexec-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
-  target_include_directories(objc-regexec-driver PRIVATE src/objc)
-  set_target_properties(objc-regexec-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-  target_compile_options(objc-regexec-driver PRIVATE -O2 -Wall)
-  target_link_libraries(objc-regexec-driver PRIVATE drydockcore)
-
-  # The harness that answers argument-register queries (objc-arity-test.sh). A test tool, never installed.
-  add_executable(objc-arity-driver tests/objc/fixtures/arity-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
-  target_include_directories(objc-arity-driver PRIVATE src/objc)
-  set_target_properties(objc-arity-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-  target_compile_options(objc-arity-driver PRIVATE -O2 -Wall)
-  target_link_libraries(objc-arity-driver PRIVATE drydockcore)
-
-  # The harness that demangles one v0 symbol per line (objc-resolve-test.sh). A test tool, never installed.
-  add_executable(objc-demangle-driver tests/objc/fixtures/demangle-driver.c $<TARGET_OBJECTS:drydock_objc_core>)
-  target_include_directories(objc-demangle-driver PRIVATE src/objc)
-  set_target_properties(objc-demangle-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-  target_compile_options(objc-demangle-driver PRIVATE -O2 -Wall)
-  target_link_libraries(objc-demangle-driver PRIVATE drydockcore)
 else()
   # platform: Linux has no Foundation, so drydock-objc holds receipt alone until the front end is not Foundation.
   add_executable(drydock-objc cli/drydock-objc.c $<TARGET_OBJECTS:drydock_objc_receipt>)
@@ -550,6 +541,8 @@ set_tests_properties(objc_source_inventory_host PROPERTIES TIMEOUT 3600 ENVIRONM
 
 drydock_add_test(NAME objc_jansson COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/jansson-test.sh)
 set_tests_properties(objc_jansson PROPERTIES ENVIRONMENT "DRYDOCK_OBJC_JANSSON_DRIVER=$<TARGET_FILE:objc-jansson-driver>")
+drydock_add_test(NAME objc_json COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-json-test.sh)
+set_tests_properties(objc_json PROPERTIES ENVIRONMENT "DRYDOCK_OBJC_JSON_DRIVER=$<TARGET_FILE:objc-json-driver>")
 
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as
