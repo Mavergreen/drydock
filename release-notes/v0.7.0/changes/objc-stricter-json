@@ -1,1 +1,1 @@
-drydock-objc now refuses some JSON input that 0.6 accepted, such as duplicate keys and out-of-range numbers, as cannot-measure instead of reading it loosely.
+drydock-objc refuses, as cannot-measure, JSON that 0.6 read loosely: duplicate keys, integers beyond 64 bits, \u0000, UTF-16 or a BOM, and reals or booleans where an integer belongs.

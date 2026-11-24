@@ -1,1 +1,1 @@
-drydock-objc analyze, evidence, link-args, resolve and receipt now run on Linux and give the same report as on macOS.
+drydock-objc analyze, evidence, link-args and resolve now run on Linux, and analyze writes byte-identical reports there and on macOS.
