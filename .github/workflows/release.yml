@@ -641,6 +641,7 @@ jobs:
   # natively on Apple Silicon. The other tools ship x86_64 alone, and on-target runs those.
   modern-smoke:
     needs: [build]
+    if: needs.build.outputs.publish == 'yes'
     runs-on: macos-26
     timeout-minutes: 20
     steps:
