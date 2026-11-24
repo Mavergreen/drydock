@@ -27,6 +27,7 @@ jobs:
       contents: read
     outputs:
       linux_pin: ${{ steps.linux.outputs.linux_pin }}
+      jansson_pin: ${{ steps.jansson.outputs.jansson_pin }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,9 +44,16 @@ jobs:
           linux_pin="$(sh scripts/pin-linux-clang.sh fill origin/main)"
           echo "linux_pin=$linux_pin" >> "$GITHUB_OUTPUT"
 
+      - name: The Jansson tarball digest, if components/jansson/version moved and it is stale
+        id: jansson
+        run: |
+          set -eu
+          jansson_pin="$(sh scripts/pin-jansson.sh fill origin/main)"
+          echo "jansson_pin=$jansson_pin" >> "$GITHUB_OUTPUT"
+
   push:
     needs: pins
-    if: needs.pins.outputs.linux_pin != ''
+    if: needs.pins.outputs.linux_pin != '' || needs.pins.outputs.jansson_pin != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -65,18 +73,20 @@ jobs:
       - name: Install mavericks-shipyard
         uses: Mavergreen/shipyard/.github/actions/install@v1
 
-      - name: Commit the digest to the branch, as the App, which starts release.yml on its new head
+      - name: Commit the digests to the branch, as the App, which starts release.yml on its new head
         env:
           LINUX_PIN: ${{ needs.pins.outputs.linux_pin }}
+          JANSSON_PIN: ${{ needs.pins.outputs.jansson_pin }}
           BRANCH: ${{ github.ref_name }}
         run: |
           set -eu
-          sh scripts/pin-linux-clang.sh apply $LINUX_PIN
-          if git diff --quiet -- components/objc-receipt-clang/linux-sha256; then
-            echo "components/objc-receipt-clang/linux-sha256 already holds it"; exit 0
+          [ -z "$LINUX_PIN" ] || sh scripts/pin-linux-clang.sh apply $LINUX_PIN
+          [ -z "$JANSSON_PIN" ] || sh scripts/pin-jansson.sh apply "$JANSSON_PIN"
+          if git diff --quiet -- components/objc-receipt-clang/linux-sha256 components/jansson/version; then
+            echo "components/objc-receipt-clang/linux-sha256 and components/jansson/version already hold them"; exit 0
           fi
           git -c user.name='mavergreen-pins-bot[bot]' -c user.email='342268518+mavergreen-pins-bot[bot]@users.noreply.github.com' \
-            commit -q -m "chore(pins): the verified Linux clang22 digest for objc-receipt-clang" \
-            -m 'Written by .github/workflows/pins-bot.yml: its pins job verified the archive against the release'"'"'s SHA256SUMS.' \
-            components/objc-receipt-clang/linux-sha256
+            commit -q -m "chore(pins): the verified digests for objc-receipt-clang and Jansson" \
+            -m 'Written by .github/workflows/pins-bot.yml: its pins job verified the clang22 archive against the release'"'"'s SHA256SUMS, and the Jansson tarball against its commit'"'"'s tree.' \
+            components/objc-receipt-clang/linux-sha256 components/jansson/version
           git push origin "HEAD:refs/heads/$BRANCH"

@@ -45,6 +45,17 @@
       "depNameTemplate": "Mavergreen/make",
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-mavericks\\.(?<build>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Jansson, fetched at configure time as GitHub's tarball of the pinned commit and compiled into drydock-objc.",
+      "managerFilePatterns": [
+        "/^components/jansson/version$/"
+      ],
+      "matchStrings": [
+        "REPO=(?<packageName>\\S+?)\\.git\\s+REF=(?<currentValue>\\S+)\\s+DIGEST=(?<currentDigest>[0-9a-f]{40})"
+      ],
+      "datasourceTemplate": "git-refs"
     }
   ],
   "packageRules": [
@@ -55,6 +66,15 @@
       ],
       "prBodyNotes": [
         "The pins bot commits the new release's Linux archive digest to components/objc-receipt-clang/linux-sha256 on this branch; the build runs again on that commit. An objc-receipt-clang bump must also pass tests/objc/objc-source-inventory-host-test.sh on Linux and a Mac."
+      ]
+    },
+    {
+      "description": "Renovate moves REF and DIGEST in components/jansson/version but cannot write SHA256, the digest of GitHub's tarball of that commit; .github/workflows/pins-bot.yml writes SHA256 on the bump's branch, after checking that the tarball holds exactly the commit's tree.",
+      "matchPackageNames": [
+        "https://github.com/akheron/jansson"
+      ],
+      "prBodyNotes": [
+        "The pins bot commits the new tarball's SHA256 to components/jansson/version on this branch; the build runs again on that commit."
       ]
     }
   ]

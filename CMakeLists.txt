@@ -915,6 +915,11 @@ drydock_add_test(NAME linux_pin_test COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tes
 set_property(TEST linux_pin_test APPEND PROPERTY LABELS not-in-guest)
 set_tests_properties(linux_pin_test PROPERTIES ENVIRONMENT "SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}" SKIP_RETURN_CODE 77)
 
+# The same bot's Jansson step, against a file:// codeload tree and a scratch git upstream.
+drydock_add_test(NAME jansson_pin_test COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/jansson_pin_test.sh")
+set_property(TEST jansson_pin_test APPEND PROPERTY LABELS not-in-guest)
+set_tests_properties(jansson_pin_test PROPERTIES ENVIRONMENT "SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}" SKIP_RETURN_CODE 77)
+
 # drydock-macho-rewrite's own CLI: --capabilities plus each verb it implements. Builds its own
 # fixtures (FIXTURE_FLAGS = -mmacosx-version-min=10.9, same reasoning as
 # change_dylib_test.sh) rather than reading tests/fixture.macho, so no

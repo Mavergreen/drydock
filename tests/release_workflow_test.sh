@@ -59,7 +59,7 @@ done
 
 above() { awk -v job="$1" '/^  #/ { c = c $0 "\n"; next } $1 == job ":" && /^  [^ ]/ { printf "%s", c; exit } { c = "" }' "$W"; }
 gc=$(above on-target)
-NOT_IN_GUEST="exec_arch_sweep_test family_conventions linux_pin_test mantle_raise_test objc_attest_codex objc_iterm2_acceptance objc_reference_set rosetta_free_test"
+NOT_IN_GUEST="exec_arch_sweep_test family_conventions jansson_pin_test linux_pin_test mantle_raise_test objc_attest_codex objc_iterm2_acceptance objc_reference_set rosetta_free_test"
 for t in $NOT_IN_GUEST; do
   has "on-target's comment says why $t is not-in-guest" "$gc" "$t"
 done
@@ -209,6 +209,14 @@ has "modern-smoke requires the installed drydock-objc's digest to equal it" "$ms
 has "modern-smoke refuses an empty digest, which two failures would agree on" "$ms" '[ -n "$want" ] ||'
 lacks "modern-smoke does not settle for a digest's format" "$ms" "{64}"
 lacks "modern-smoke runs nothing x86_64" "$ms" "x86_64"
+
+PB=${PINS_BOT:-$HERE/../.github/workflows/pins-bot.yml}
+pb=$(cat "$PB")
+has "pins-bot's pins job runs the Jansson fill against origin/main" "$pb" 'sh scripts/pin-jansson.sh fill origin/main'
+has "pins-bot's pins job exports a jansson_pin output" "$pb" 'jansson_pin: ${{ steps.jansson.outputs.jansson_pin }}'
+has "pins-bot's push job runs when the Jansson digest moved" "$pb" "|| needs.pins.outputs.jansson_pin != ''"
+has "pins-bot's push job applies the Jansson digest" "$pb" 'sh scripts/pin-jansson.sh apply "$JANSSON_PIN"'
+has "pins-bot's push job commits components/jansson/version" "$pb" 'components/objc-receipt-clang/linux-sha256 components/jansson/version'
 
 echo "release_workflow_test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
