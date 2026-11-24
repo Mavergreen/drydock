@@ -22,16 +22,32 @@ for f in full safe wide values; do
     *) fail "bplist_plutil: plutil -lint on the $f tree: $out" ;;
   esac
 done
+roundtrip() {
+  if plutil -convert xml1 -o - "$1" | plutil -convert binary1 -o "$T/apple.bplist" - \
+     && "$D" dump --as-xml "$1" > "$T/ours.txt" && "$D" dump --as-xml "$T/apple.bplist" > "$T/apple.txt"; then
+    cmp -s "$T/ours.txt" "$T/apple.txt" && pass "bplist_plutil: $2 reads the same after plutil's XML round trip" \
+      || fail "bplist_plutil: $2 differs after plutil's XML round trip: $(diff "$T/ours.txt" "$T/apple.txt" | head -5)"
+  else
+    fail "bplist_plutil: $2: plutil or dump failed"
+  fi
+}
 for f in "$T/safe.bplist" "$T/wide.bplist" "$T/values.bplist" "$FIX"/nib-10.9/*.nib/keyedobjects.nib; do
   name=${f#"$FIX"/}; name=${name#"$T"/}
-  if plutil -convert xml1 -o - "$f" | plutil -convert binary1 -o "$T/apple.bplist" - \
-     && "$D" dump --as-xml "$f" > "$T/ours.txt" && "$D" dump --as-xml "$T/apple.bplist" > "$T/apple.txt"; then
-    cmp -s "$T/ours.txt" "$T/apple.txt" && pass "bplist_plutil: $name reads the same after plutil's XML round trip" \
-      || fail "bplist_plutil: $name differs after plutil's XML round trip: $(diff "$T/ours.txt" "$T/apple.txt" | head -5)"
-  else
-    fail "bplist_plutil: $name: plutil or dump failed"
-  fi
+  roundtrip "$f" "$name"
 done
+"$D" dump "$T/safe.bplist" > "$T/safe.txt" || fail "bplist_plutil: dump of the safe tree exit $?"
+sed -n 's/^  "\(.*\)" = .*/\1/p' "$T/safe.txt" > "$T/keys"
+[ "$(wc -l < "$T/keys" | tr -d ' ')" = "$(sed -n '1s/^dict //p' "$T/safe.txt")" ] \
+  || fail "bplist_plutil: not every root key of the safe tree reads back as plain text"
+i=0
+while IFS= read -r k; do
+  i=$((i + 1))
+  if "$D" build --xml-safe --only "$k" "$T/entry$i.bplist"; then
+    roundtrip "$T/entry$i.bplist" "safe tree entry \"$k\""
+  else
+    fail "bplist_plutil: safe tree entry \"$k\": build --only exit $?"
+  fi
+done < "$T/keys"
 
 [ -s "$T/failed" ] && { echo "$(wc -l < "$T/failed" | tr -d ' ') failed"; exit 1; }
 echo "all passed"
