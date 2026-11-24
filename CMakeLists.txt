@@ -551,39 +551,55 @@ set_tests_properties(objc_strict_input PROPERTIES ENVIRONMENT "DRYDOCK_OBJC=${DR
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity attest attest-codex binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec reference-set iterm2-acceptance report sdk-inventory sdk-signatures cli)
+foreach(t arity attest binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec report sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)
   else()
     set(f objc-${t}-test.sh)
   endif()
-  if(t STREQUAL "reference-set" OR t STREQUAL "iterm2-acceptance")
-    # platform: the reference-set test DYLD-inserts fixture dylibs into a system process, which CI's macOS 26 runner
-    # refuses (an arm64 dylib into an arm64e process); in shipyard it was a maintainer test, run by hand on the 10.9
-    # box and the modern Mac. It runs on Darwin 13 (10.9), or anywhere DRYDOCK_OBJC_MAINTAINER=1 asks; elsewhere
-    # it is a skip, exit 77. The iTerm2 acceptance test is gated alike: it measures upstream iTerm2 3.0.15 from the
-    # cached zip and takes minutes, a maintainer's check.
-    # Registered here, not through drydock_macos_test: its ARGN would split the script at each semicolon.
-    if(APPLE)
-      drydock_add_test(NAME objc_${n} COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ] || [ \"\${DRYDOCK_OBJC_MAINTAINER:-}\" = 1 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1\"; exit 77"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}" objc_${n})
-      set_tests_properties(objc_${n} PROPERTIES SKIP_RETURN_CODE 77)
-    else()
-      drydock_macos_test(objc_${n} "the analyzer front end is Foundation")
-    endif()
-    set_property(TEST objc_${n} APPEND PROPERTY LABELS not-in-guest)
-  else()
-    drydock_macos_test(objc_${n} "the analyzer front end is Foundation"
-      COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
-  endif()
-  if(APPLE)
-    set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
-      "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_OBJC_REGEXEC_DRIVER=$<TARGET_FILE:objc-regexec-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
-  endif()
+  drydock_add_test(NAME objc_${n} COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}")
+  set_tests_properties(objc_${n} PROPERTIES TIMEOUT 3600 ENVIRONMENT
+    "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_OBJC_READER_DRIVER=$<TARGET_FILE:objc-reader-driver>;DRYDOCK_OBJC_ARITY_DRIVER=$<TARGET_FILE:objc-arity-driver>;DRYDOCK_OBJC_DEMANGLE_DRIVER=$<TARGET_FILE:objc-demangle-driver>;DRYDOCK_OBJC_REGEXEC_DRIVER=$<TARGET_FILE:objc-regexec-driver>;DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};DRYDOCK_MAKEFAT=$<TARGET_FILE:makefat>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS};DRYDOCK_BUILD_DIR=${CMAKE_BINARY_DIR};DRYDOCK_CTEST=${CMAKE_CTEST_COMMAND}")
 endforeach()
-# Its input is codex's kept repro under one maintainer's ~/Library/Caches, so like mantle_raise_test it runs on
-# that Mac alone; elsewhere it skips, which the guest's suite would refuse.
+# platform: the halves of these two that compile and run the Mach-O libclang semantic reader (objc-sdk-inventory.sh builds
+# it with the pinned clang22 and runs it) have no Linux form; the argument checks that need no compiler stay above.
+foreach(t sdk-inventory sdk-signatures)
+  string(REPLACE "-" "_" n "${t}")
+  drydock_macos_test(objc_${n}_macos "the wrapper builds and runs a Mach-O libclang reader"
+    COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-${t}-macos-test.sh")
+  set_tests_properties(objc_${n}_macos PROPERTIES TIMEOUT 3600 ENVIRONMENT
+    "DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+endforeach()
+# platform: its input is codex's kept repro under one maintainer's ~/Library/Caches, so it runs on that Mac alone and
+# skips (77) wherever the repro is absent; on Linux it is macos-only.
+if(APPLE)
+  drydock_add_test(NAME objc_attest_codex COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-attest-codex-test.sh")
+  set_tests_properties(objc_attest_codex PROPERTIES TIMEOUT 3600 ENVIRONMENT
+    "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+else()
+  drydock_macos_test(objc_attest_codex "a maintainer test: it measures codex's kept repro under one Mac's ~/Library/Caches")
+endif()
+# platform: the reference-set test DYLD-inserts fixture dylibs into a system process, which CI's macOS 26 runner
+# refuses (an arm64 dylib into an arm64e process); in shipyard it was a maintainer test, run by hand on the 10.9
+# box and the modern Mac. It runs on Darwin 13 (10.9), or anywhere DRYDOCK_OBJC_MAINTAINER=1 asks; elsewhere it
+# is a skip, exit 77. The iTerm2 acceptance test is gated alike: it measures upstream iTerm2 3.0.15 from the
+# cached zip and takes minutes, a maintainer's check. On Linux they are macos-only.
+foreach(t reference-set iterm2-acceptance)
+  string(REPLACE "-" "_" n "${t}")
+  set(f objc-${t}-test.sh)
+  if(APPLE)
+    # Registered by hand, not through drydock_macos_test: its ARGN would split the script at each semicolon.
+    drydock_add_test(NAME objc_${n} COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ] || [ \"\${DRYDOCK_OBJC_MAINTAINER:-}\" = 1 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1\"; exit 77"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/${f}" objc_${n})
+    set_tests_properties(objc_${n} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 3600 ENVIRONMENT
+      "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE};DRYDOCK_OBJC_ARCH=${CMAKE_OSX_ARCHITECTURES};DRYDOCK_OBJC_ANALYZER_ID=${DRYDOCK_OBJC_ANALYZER_ID};DRYDOCK_MACHO_REWRITE=${DRYDOCK_DMR};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+  else()
+    drydock_macos_test(objc_${n} "a maintainer test: it DYLD-inserts into a system process, or measures a cached upstream app")
+  endif()
+  set_property(TEST objc_${n} APPEND PROPERTY LABELS not-in-guest)
+endforeach()
+# platform: that repro is on one maintainer's Mac alone; elsewhere the test skips, which the guest's suite would refuse.
 set_property(TEST objc_attest_codex APPEND PROPERTY LABELS not-in-guest)
 
 # Hermetic: the grow, every base-relative re-baser, mg_verify and mg_plausible,

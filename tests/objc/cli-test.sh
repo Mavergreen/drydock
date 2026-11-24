@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links an x86_64 fixture against the pinned 10.9 SDK, then runs drydock-objc on it
+# platform: host-agnostic -- links an x86_64 fixture against the pinned 10.9 SDK with clang22, then runs drydock-objc on it
 # spec: cli/drydock-objc.c header -- the defaults drydock-objc adds and nothing else: --references from the binary's
 #       real path (an installed tree, and nothing else), --analyzer-id from the compiled-in
 #       identity unless the caller names one, and usage (exit 2) for no subcommand or an unknown one.
@@ -77,4 +77,22 @@ rc=0; "$DRYDOCK_OBJC" analyze --artifact "$T/root/bin/plain" --root "$T/root" --
 grep -F "\"analyzer\": \"$DRYDOCK_OBJC_ANALYZER_ID\"" "$T/out/default" >/dev/null ||
   fail "default_id: the report names $(grep -o '"analyzer": "[^"]*"' "$T/out/default")"
 echo 'PASS: default_id'
-echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override and default_id pass'
+# spec: tests/README.md (objc_*) -- off macOS, `ctest -L macos-only` names only the halves of split tests (objc_*_macos) and the
+#       maintainer-gated three; any other objc_ test listed there is a test that could run on Linux and does not.
+if [ -n "${DRYDOCK_BUILD_DIR:-}" ]; then
+  "${DRYDOCK_CTEST:-ctest}" --test-dir "$DRYDOCK_BUILD_DIR" -N -L macos-only >"$T/macos-only" 2>&1 || fail 'ctest -N -L macos-only failed'
+  sed -n 's/^ *Test *#[0-9]*: //p' "$T/macos-only" | grep '^objc_' >"$T/macos-objc" || :
+  stray=$(grep -Ev '^objc_.*_macos$|^objc_(reference_set|iterm2_acceptance|attest_codex)$' "$T/macos-objc" || :)
+  [ -z "$stray" ] || fail "macos_only_honest: these objc_ tests are labelled macos-only but are not a _macos half or a maintainer test: $(echo $stray)"
+  if [ "$(uname -s)" = Darwin ]; then
+    [ ! -s "$T/macos-objc" ] || fail "macos_only_honest: a Mac lists macos-only objc_ tests: $(echo $(cat "$T/macos-objc"))"
+  else
+    for want in objc_reference_set objc_iterm2_acceptance objc_attest_codex objc_sdk_inventory_macos objc_sdk_signatures_macos; do
+      grep -x "$want" "$T/macos-objc" >/dev/null || fail "macos_only_honest: positive control: $want is not listed as macos-only, so the listing is not being read"
+    done
+  fi
+  echo 'PASS: macos_only_honest'
+else
+  echo 'N/A macos_only_honest: no DRYDOCK_BUILD_DIR (ctest passes it)'
+fi
+echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override, default_id and macos_only_honest pass'
