@@ -12,7 +12,7 @@
 #define QUOTED_PIECE 64
 #define UIDS_PIECE 16
 
-static const char *const type_names[] = { "i8", "i16", "i32", "i64", "true", "false", "f32", "f64",
+static const char *const type_names[] = { "i8", "i16", "i32", "i64", "false", "true", "f32", "f64",
                                           "data", "nil", "ref", "string", "uids" };
 
 static void *grown(void *p, size_t n, size_t size) {

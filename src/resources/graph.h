@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum { RV_I8, RV_I16, RV_I32, RV_I64, RV_TRUE, RV_FALSE, RV_F32, RV_F64,
+typedef enum { RV_I8, RV_I16, RV_I32, RV_I64, RV_FALSE, RV_TRUE, RV_F32, RV_F64,
                RV_DATA, RV_NIL, RV_REF, RV_STRING, RV_UID_ARRAY } RvType;   /* order = NIBArchive type codes 0..10, then keyed-only */
 /* An RV_F32 is its 32 raw bits in f32, never widened to a double, which would quiet a signalling NaN. */
 typedef struct { const char *key; RvType type; union { int64_t i; double f; uint32_t f32; struct { uint8_t *p; size_t n; } d;

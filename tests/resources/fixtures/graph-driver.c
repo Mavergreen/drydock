@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *const type_names[] = { "i8", "i16", "i32", "i64", "true", "false", "f32", "f64",
+static const char *const type_names[] = { "i8", "i16", "i32", "i64", "false", "true", "f32", "f64",
                                           "data", "nil", "ref", "string", "uids" };
 
 static void print_bytes(const uint8_t *p, size_t n) {

@@ -48,10 +48,10 @@ chain NSWindowTemplate : NSObject
   NS.bytes = data "NSObject"
 
 @4 NSMutableSet
-  NSInlinedValue = false
+  NSInlinedValue = true
 
 @5 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @6
 
 @6 NSNibOutletConnector
@@ -73,7 +73,7 @@ chain NSWindowTemplate : NSObject
   NSWindowView = ref @12
   NSScreenRect = ref @80
   NSMaxSize = ref @81
-  NSWindowIsRestorable = false
+  NSWindowIsRestorable = true
   NSMinFullScreenContentSize = ref @82
   NSMaxFullScreenContentSize = ref @82
 
@@ -95,14 +95,14 @@ chain NSWindowTemplate : NSObject
   NSvFlags = i16 256
   NSSubviews = ref @13
   NSFrameSize = ref @57
-  NSViewWantsBestResolutionOpenGLSurface = false
+  NSViewWantsBestResolutionOpenGLSurface = true
   NSViewConstraints = ref @58
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
 
 @13 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @14
   UINibEncoderEmptyKey = ref @18
   UINibEncoderEmptyKey = ref @20
@@ -120,8 +120,8 @@ chain NSWindowTemplate : NSObject
   NSvFlags = i16 268
   NSFrame = ref @17
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
@@ -143,8 +143,8 @@ chain NSWindowTemplate : NSObject
   NSvFlags = i64 -2147483380
   NSFrame = ref @19
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
@@ -159,19 +159,19 @@ chain NSWindowTemplate : NSObject
   NSSubviews = ref @21
   NSFrame = ref @22
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
   NSTag = i8 7
-  NSEnabled = false
+  NSEnabled = true
   NSCell = ref @23
-  NSAllowsLogicalLayoutDirection = true
+  NSAllowsLogicalLayoutDirection = false
   NSControlSize = i8 0
-  NSControlContinuous = true
-  NSControlRefusesFirstResponder = true
-  NSControlUsesSingleLineMode = true
+  NSControlContinuous = false
+  NSControlRefusesFirstResponder = false
+  NSControlUsesSingleLineMode = false
   NSControlTextAlignment = i8 1
   NSControlLineBreakMode = i8 0
   NSControlWritingDirection = i64 -1
@@ -179,7 +179,7 @@ chain NSWindowTemplate : NSObject
   IBNSShadowedSymbolConfiguration = nil
 
 @21 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
 
 @22 NSString
   NS.bytes = data "{{20, 156}, {57, 24}}"
@@ -217,19 +217,19 @@ chain NSWindowTemplate : NSObject
   NSSubviews = ref @28
   NSFrame = ref @29
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
   NSTag = i16 300
-  NSEnabled = false
+  NSEnabled = true
   NSCell = ref @30
-  NSAllowsLogicalLayoutDirection = true
+  NSAllowsLogicalLayoutDirection = false
   NSControlSize = i8 0
-  NSControlContinuous = true
-  NSControlRefusesFirstResponder = true
-  NSControlUsesSingleLineMode = true
+  NSControlContinuous = false
+  NSControlRefusesFirstResponder = false
+  NSControlUsesSingleLineMode = false
   NSControlTextAlignment = i8 1
   NSControlLineBreakMode = i8 0
   NSControlWritingDirection = i64 -1
@@ -237,7 +237,7 @@ chain NSWindowTemplate : NSObject
   IBNSShadowedSymbolConfiguration = nil
 
 @28 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
 
 @29 NSString
   NS.bytes = data "{{89, 156}, {74, 24}}"
@@ -267,19 +267,19 @@ chain NSWindowTemplate : NSObject
   NSSubviews = ref @33
   NSFrame = ref @34
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
   NSTag = i32 70000
-  NSEnabled = false
+  NSEnabled = true
   NSCell = ref @35
-  NSAllowsLogicalLayoutDirection = true
+  NSAllowsLogicalLayoutDirection = false
   NSControlSize = i8 0
-  NSControlContinuous = true
-  NSControlRefusesFirstResponder = true
-  NSControlUsesSingleLineMode = true
+  NSControlContinuous = false
+  NSControlRefusesFirstResponder = false
+  NSControlUsesSingleLineMode = false
   NSControlTextAlignment = i8 1
   NSControlLineBreakMode = i8 0
   NSControlWritingDirection = i64 -1
@@ -287,7 +287,7 @@ chain NSWindowTemplate : NSObject
   IBNSShadowedSymbolConfiguration = nil
 
 @33 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
 
 @34 NSString
   NS.bytes = data "{{175, 156}, {89, 24}}"
@@ -317,19 +317,19 @@ chain NSWindowTemplate : NSObject
   NSSubviews = ref @38
   NSFrame = ref @39
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   NSHuggingPriority = ref @40
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
-  NSEnabled = false
+  NSEnabled = true
   NSCell = ref @41
-  NSAllowsLogicalLayoutDirection = true
+  NSAllowsLogicalLayoutDirection = false
   NSControlSize = i8 0
-  NSControlContinuous = true
-  NSControlRefusesFirstResponder = true
-  NSControlUsesSingleLineMode = true
+  NSControlContinuous = false
+  NSControlRefusesFirstResponder = false
+  NSControlUsesSingleLineMode = false
   NSControlTextAlignment = i8 4
   NSControlLineBreakMode = i8 0
   NSControlWritingDirection = i64 -1
@@ -337,7 +337,7 @@ chain NSWindowTemplate : NSObject
   IBNSShadowedSymbolConfiguration = nil
 
 @38 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
 
 @39 NSString
   NS.bytes = data "{{20, 116}, {40, 16}}"
@@ -376,27 +376,27 @@ chain NSWindowTemplate : NSObject
   NSvFlags = i16 268
   NSFrame = ref @46
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   NSHuggingPriority = ref @47
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
-  NSEnabled = false
+  NSEnabled = true
   NSCell = ref @48
-  NSAllowsLogicalLayoutDirection = true
+  NSAllowsLogicalLayoutDirection = false
   NSControlSize = i8 0
-  NSControlContinuous = true
-  NSControlRefusesFirstResponder = true
-  NSControlUsesSingleLineMode = true
+  NSControlContinuous = false
+  NSControlRefusesFirstResponder = false
+  NSControlUsesSingleLineMode = false
   NSControlTextAlignment = i8 4
   NSControlLineBreakMode = i8 2
   NSControlWritingDirection = i64 -1
   NSControlSendActionMask = i8 4
   NSTextFieldAlignmentRectInsetsVersion = i8 2
-  NSAllowsWritingTools = false
-  NSTextFieldAllowsWritingToolsAffordance = true
-  NS.resolvesNaturalAlignmentWithBaseWritingDirection = true
+  NSAllowsWritingTools = true
+  NSTextFieldAllowsWritingToolsAffordance = false
+  NS.resolvesNaturalAlignmentWithBaseWritingDirection = false
 
 @46 NSString
   NS.bytes = data "{{20, 79}, {200, 19}}"
@@ -410,7 +410,7 @@ chain NSWindowTemplate : NSObject
   NSContents = ref @49
   NSSupport = ref @50
   NSControlView = ref @45
-  NSDrawsBackground = false
+  NSDrawsBackground = true
   NSBackgroundColor = ref @52
   NSTextColor = ref @53
 
@@ -439,18 +439,18 @@ chain NSWindowTemplate : NSObject
   NSvFlags = i16 268
   NSFrame = ref @55
   NSSuperview = ref @12
-  NSViewWantsBestResolutionOpenGLSurface = false
-  NSDoNotTranslateAutoresizingMask = false
+  NSViewWantsBestResolutionOpenGLSurface = true
+  NSDoNotTranslateAutoresizingMask = true
   IBNSSafeAreaLayoutGuide = nil
   IBNSLayoutMarginsGuide = nil
   IBNSClipsToBounds = i8 0
-  NSEnabled = false
+  NSEnabled = true
   NSCell = ref @56
-  NSAllowsLogicalLayoutDirection = true
+  NSAllowsLogicalLayoutDirection = false
   NSControlSize = i8 0
-  NSControlContinuous = true
-  NSControlRefusesFirstResponder = true
-  NSControlUsesSingleLineMode = true
+  NSControlContinuous = false
+  NSControlRefusesFirstResponder = false
+  NSControlUsesSingleLineMode = false
   NSControlTextAlignment = i8 0
   NSControlLineBreakMode = i8 0
   NSControlWritingDirection = i64 -1
@@ -469,14 +469,14 @@ chain NSWindowTemplate : NSObject
   NSAltIncValue = f64 0x0p+0  # 0
   NSNumberOfTickMarks = i8 0
   NSTickMarkPosition = i8 1
-  NSAllowsTickMarkValuesOnly = true
-  NSVertical = true
+  NSAllowsTickMarkValuesOnly = false
+  NSVertical = false
 
 @57 NSString
   NS.bytes = data "{480, 300}"
 
 @58 NSArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @59
   UINibEncoderEmptyKey = ref @60
   UINibEncoderEmptyKey = ref @61
@@ -507,7 +507,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 5
   NSSecondAttribute = i8 5
   NSConstantV2 = f64 0x1.48p+4  # 20.5
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.48p+4  # 20.5
 
 @60 NSLayoutConstraint
@@ -515,7 +515,7 @@ chain NSWindowTemplate : NSObject
   NSFirstAttributeV2 = i8 7
   NSFirstAttribute = i8 7
   NSConstantV2 = f64 0x1.93p+6  # 100.75
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.93p+6  # 100.75
 
 @61 NSLayoutConstraint
@@ -526,7 +526,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 3
   NSSecondAttribute = i8 3
   NSConstantV2 = f64 0x1.3cp+4  # 19.75
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.3cp+4  # 19.75
 
 @62 NSLayoutConstraint
@@ -534,7 +534,7 @@ chain NSWindowTemplate : NSObject
   NSFirstAttributeV2 = i8 8
   NSFirstAttribute = i8 8
   NSConstantV2 = f64 0x1.408p+6  # 80.125
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.408p+6  # 80.125
 
 @63 NSLayoutConstraint
@@ -545,7 +545,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 5
   NSSecondAttribute = i8 5
   NSConstantV2 = f64 0x1.4p+4  # 20
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.4p+4  # 20
 
 @64 NSLayoutConstraint
@@ -556,7 +556,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 4
   NSSecondAttribute = i8 4
   NSConstantV2 = f64 0x1.4p+4  # 20
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.4p+4  # 20
 
 @65 NSLayoutConstraint
@@ -567,7 +567,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 6
   NSSecondAttribute = i8 6
   NSConstantV2 = f64 0x1.34p+4  # 19.25
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.34p+4  # 19.25
 
 @66 NSLayoutConstraint
@@ -577,7 +577,7 @@ chain NSWindowTemplate : NSObject
   NSSecondItem = ref @14
   NSSecondAttributeV2 = i8 3
   NSSecondAttribute = i8 3
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
 
 @67 NSLayoutConstraint
   NSFirstItem = ref @27
@@ -587,7 +587,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 6
   NSSecondAttribute = i8 6
   NSConstantV2 = f64 0x1.8p+3  # 12
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.8p+3  # 12
 
 @68 NSLayoutConstraint
@@ -597,7 +597,7 @@ chain NSWindowTemplate : NSObject
   NSSecondItem = ref @20
   NSSecondAttributeV2 = i8 12
   NSSecondAttribute = i8 12
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
 
 @69 NSLayoutConstraint
   NSFirstItem = ref @37
@@ -607,7 +607,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 5
   NSSecondAttribute = i8 5
   NSConstantV2 = f64 0x1.4p+4  # 20
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.4p+4  # 20
 
 @70 NSLayoutConstraint
@@ -618,7 +618,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 4
   NSSecondAttribute = i8 4
   NSConstantV2 = f64 0x1.8p+4  # 24
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.8p+4  # 24
 
 @71 NSLayoutConstraint
@@ -629,7 +629,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 5
   NSSecondAttribute = i8 5
   NSConstantV2 = f64 0x1.4p+4  # 20
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.4p+4  # 20
 
 @72 NSLayoutConstraint
@@ -637,7 +637,7 @@ chain NSWindowTemplate : NSObject
   NSFirstAttributeV2 = i8 7
   NSFirstAttribute = i8 7
   NSConstantV2 = f64 0x1.9p+7  # 200
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.9p+7  # 200
 
 @73 NSLayoutConstraint
@@ -648,7 +648,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 4
   NSSecondAttribute = i8 4
   NSConstantV2 = f64 0x1.2p+4  # 18
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.2p+4  # 18
 
 @74 NSLayoutConstraint
@@ -659,7 +659,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 5
   NSSecondAttribute = i8 5
   NSConstantV2 = f64 0x1.4p+4  # 20
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.4p+4  # 20
 
 @75 NSLayoutConstraint
@@ -667,7 +667,7 @@ chain NSWindowTemplate : NSObject
   NSFirstAttributeV2 = i8 7
   NSFirstAttribute = i8 7
   NSConstantV2 = f64 0x1.9p+7  # 200
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.9p+7  # 200
 
 @76 NSLayoutConstraint
@@ -679,7 +679,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 4
   NSSecondAttribute = i8 4
   NSConstantV2 = f64 0x1.4p+4  # 20
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.4p+4  # 20
 
 @77 NSLayoutConstraint
@@ -690,7 +690,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 4
   NSSecondAttribute = i8 4
   NSConstantV2 = f64 0x1.cp+3  # 14
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.cp+3  # 14
 
 @78 NSLayoutConstraint
@@ -701,7 +701,7 @@ chain NSWindowTemplate : NSObject
   NSSecondAttributeV2 = i8 6
   NSSecondAttribute = i8 6
   NSConstantV2 = f64 0x1.8p+3  # 12
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
   NSConstant = f64 0x1.8p+3  # 12
 
 @79 NSLayoutConstraint
@@ -711,7 +711,7 @@ chain NSWindowTemplate : NSObject
   NSSecondItem = ref @20
   NSSecondAttributeV2 = i8 12
   NSSecondAttribute = i8 12
-  NSShouldBeArchived = false
+  NSShouldBeArchived = true
 
 @80 NSString
   NS.bytes = data "{{0, 0}, {1920, 1055}}"
@@ -726,7 +726,7 @@ chain NSWindowTemplate : NSObject
   NS.bytes = data "initialFirstResponder"
 
 @84 NSArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @85
   UINibEncoderEmptyKey = ref @7
   UINibEncoderEmptyKey = ref @12
@@ -779,7 +779,7 @@ chain NSWindowTemplate : NSObject
   NS.bytes = data "NSApplication"
 
 @88 NSArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @2
   UINibEncoderEmptyKey = ref @2
   UINibEncoderEmptyKey = ref @7
@@ -820,7 +820,7 @@ chain NSWindowTemplate : NSObject
   UINibEncoderEmptyKey = ref @12
 
 @89 NSArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @2
   UINibEncoderEmptyKey = ref @85
   UINibEncoderEmptyKey = ref @7
@@ -863,7 +863,7 @@ chain NSWindowTemplate : NSObject
   UINibEncoderEmptyKey = ref @6
 
 @90 NSArray
-  NSInlinedValue = false
+  NSInlinedValue = true
   UINibEncoderEmptyKey = ref @91
   UINibEncoderEmptyKey = ref @92
   UINibEncoderEmptyKey = ref @93
@@ -1026,7 +1026,7 @@ chain NSWindowTemplate : NSObject
   NS.intval = i8 40
 
 @131 NSMutableArray
-  NSInlinedValue = false
+  NSInlinedValue = true
 
 @132 NSArray
-  NSInlinedValue = false
+  NSInlinedValue = true

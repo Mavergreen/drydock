@@ -32,6 +32,11 @@ fi
 for t in i8 i16 i32 i64 true false f64 data nil ref; do
   grep -q "^  [^ ]* = $t\( \|\$\)" "$GOLDEN" && pass "rez_golden: type $t appears" || fail "rez_golden: type $t never appears"
 done
+xib_no=$(grep -c 'translatesAutoresizingMaskIntoConstraints="NO"' "$ROOT/tests/resources/fixtures/xib/values.xib")
+nib_true=$(grep -c '^  NSDoNotTranslateAutoresizingMask = true$' "$GOLDEN")
+[ "$xib_no" -ge 1 ] && [ "$nib_true" = "$xib_no" ] && ! grep -q '^  NSDoNotTranslateAutoresizingMask = false$' "$GOLDEN" \
+  && pass "rez_golden: each of the $xib_no views the XIB keeps out of autoresizing translation dumps as true" \
+  || fail "rez_golden: $xib_no XIB views say translatesAutoresizingMaskIntoConstraints=NO, $nib_true dump as true"
 grep -q '^chain NSButton : NSControl : NSView : NSResponder : NSObject$' "$GOLDEN" \
   && pass "rez_golden: a resolved chain" || fail "rez_golden: no resolved NSButton chain"
 grep -q '^chain DDFixtureView ?$' "$GOLDEN" && pass "rez_golden: an unresolved chain" || fail "rez_golden: DDFixtureView is not unresolved"
