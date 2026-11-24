@@ -3,7 +3,7 @@
 # spec: README.md (drydock-objc input strictness) -- a duplicate key, an integer past long long, \u0000, a UTF-16
 #       document, a schema that is not the integer 1, and a real source line or probe size are cannot-measure (exit 4)
 #       with a malformed-* code, from analyze and link-args alike; the same inputs with the value written as an
-#       integer are taken.
+#       integer are taken. Of several files a reference manifest does not list, the strcmp-least is the one named.
 set -u
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
@@ -49,6 +49,11 @@ if command -v iconv >/dev/null 2>&1; then
   analyze --references "$T/ref"; refused "strict_utf16: a UTF-16 manifest" malformed-input
   cp "$ROOT/reference/objc/manifest.json" "$T/ref/manifest.json"
 else echo "SKIP: strict_utf16: no iconv"; fi
+
+# strict_unlisted_order: of several files the manifest does not list, the strcmp-least is named, whatever readdir's order.
+printf 'x\n' > "$T/ref/a.extra"; printf 'x\n' > "$T/ref/B.extra"
+analyze --references "$T/ref"; refused "strict_unlisted_order: B.extra before a.extra" malformed-reference "/B.extra is not in the manifest"
+rm -f "$T/ref/a.extra" "$T/ref/B.extra"
 
 # strict_schema_real: schema 1.0 or true is not the integer 1.
 exc() { printf '{"schema":%s,"kind":"objc-exceptions","records":[{"id":"r"}]}\n' "$1" > "$T/exc.json"

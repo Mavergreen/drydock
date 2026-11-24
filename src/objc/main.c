@@ -177,13 +177,23 @@ static int manifest_from(ObjcAnalysis *a, const char *dir, char *path, const jso
     }
     if (!(dd = opendir(dir)))
         return objc_fail(a, "unreadable-reference", NULL, 0, "%s: cannot list", dir);
-    while ((de = readdir(dd)))
-        if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && strcmp(de->d_name, "manifest.json") && !strv_has(listed, de->d_name)) {
-            int rc = objc_fail(a, "malformed-reference", NULL, 0, "%s/%s is not in the manifest", dir, de->d_name);
-            closedir(dd);
+    {
+        char *least = NULL;
+        int rc = 0;
+        while ((de = readdir(dd)))
+            if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && strcmp(de->d_name, "manifest.json") && !strv_has(listed, de->d_name) &&
+                (!least || strcmp(de->d_name, least) < 0)) {
+                free(least);
+                if (!(least = strdup(de->d_name))) { rc = -1; break; }
+            }
+        closedir(dd);
+        if (rc) return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
+        if (least) {
+            rc = objc_fail(a, "malformed-reference", NULL, 0, "%s/%s is not in the manifest", dir, least);
+            free(least);
             return rc;
         }
-    closedir(dd);
+    }
     for (fi = 0; fi < sizeof NEED / sizeof *NEED; fi++)
         if (!strv_has(listed, NEED[fi])) return objc_fail(a, "incomplete-reference", NULL, 0, "%s lacks %s", dir, NEED[fi]);
     if (!is(m, "runtime_status", "captured") || !(rt = obj(m, "runtime")))
