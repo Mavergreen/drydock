@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
+# platform: host-agnostic -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
 # spec: src/objc/main.c "The shipped closure" -- a non-system image the artifact loads is
 #       found inside --root and measured by its interface: its classes and methods close the
 #       artifact's sends into it, its own code stays exempt by its pinned bytes, and anything that
@@ -217,7 +217,7 @@ vrel() {   # vrel DIR CURRENT: the framework reached by /usr/local/lib/libMGShip
   vfw "$1" /usr/local/lib/libMGShippedFw.dylib -o "$1/root/usr/local/mavergreen/mgp/bin/App"
   ln -s /usr/local/mavergreen/mgp/lib/libMGShippedFw.dylib "$1/root/usr/local/lib/libMGShippedFw.dylib"
   ln -s ../Frameworks/MGShipped.framework/MGShipped "$1/root/usr/local/mavergreen/mgp/lib/libMGShippedFw.dylib"
-  ln -sfh "$2" "$1/root/usr/local/mavergreen/mgp/Frameworks/MGShipped.framework/Versions/Current"
+  ln -sfn "$2" "$1/root/usr/local/mavergreen/mgp/Frameworks/MGShipped.framework/Versions/Current"
 }
 vrel "$T/vol.8" A
 analyze_vol "$T/vol.8/root" "$T/vol.8/root/usr/local/mavergreen/mgp/bin/App"
