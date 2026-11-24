@@ -43,10 +43,10 @@
  * Groups (schema 2; legacy entries are checked as above). 1, 2 and 4 hold as for an entry, and 3's
  * constructor is verified the same way, with every member's implementation verified too (a
  * zerofill atom, which has no bytes, only inside a final section that is zerofill as well).
- * Instead of 3's strings, each member must be declared with the newer SDK's encoding -- on its class,
- * or as a required method of a protocol the class adopts there (itself or by a superclass, directly or
- * through an inherited protocol; an optional one, which the class need not implement, does not count,
- * and two such declarations that disagree are a mismatch) -- and be
+ * The newer SDK declares a method on a class when it declares it on the class itself, or as a required
+ * method of a protocol the class adopts there: by itself or a superclass, directly or by inheritance.
+ * An optional protocol method is not declared. Two declarations with different encodings are a mismatch.
+ * Instead of 3's strings, each member must be declared with the newer SDK's encoding and be
  * absent from the 10.9 floor on its class's chain, a superclass the capture lacks counting as
  * present (provider-abi-mismatch, provider-present-on-floor), and
  * the registration is derived from the code: regexec.c runs from the constructor's final
@@ -630,9 +630,6 @@ static int push_protocol(const char ***v, size_t *n, const char *p) {
     *v = g; g[(*n)++] = p;
     return 0;
 }
-/* The encoding the newer SDK gives kind/sel as a required method of a protocol cls adopts there -- itself or by a
- * superclass, directly or through the protocols those inherit -- in *enc and that protocol in *proto, both NULL when
- * none declares it. Two adopted protocols declaring it differently is provider-abi-mismatch. */
 static int adopted_encoding(ObjcAnalysis *a, const ObjcProvider *p, const ObjcProviderMethod *m, const char **enc, const char **proto) {
     const char **ps = NULL, *c = p->cls, *e;
     char sup[256], key[1024];
@@ -665,8 +662,7 @@ oom:
     return objc_fail(a, "out-of-memory", NULL, 0, "adopted protocols");
 }
 
-/* Every member declared with the newer SDK's encoding -- on its class, or by a protocol the class adopts there -- and
- * absent from the 10.9 floor. */
+/* Every member declared with the newer SDK's encoding and absent from the 10.9 floor. */
 static int group_declared(ObjcAnalysis *a, const ObjcProvider *p) {
     size_t i;
     for (i = 0; i < p->n_methods; i++) {

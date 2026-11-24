@@ -399,17 +399,29 @@ says 'registers its 2 methods on NSView' 'protocol: NSView adopts NSAccessibilit
 GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/"class" : "NSView"/"class" : "NSControl"/')
 a11y control 'protocol: NSControl adopts NSAccessibility through NSView' '-DA11Y_CLASS="NSControl"'
 says 'registers its 2 methods on NSControl' 'protocol: NSControl adopts NSAccessibility through NSView'
-# A reference where NSView reaches NSAccessibility only through NSAccessibilityElement, which inherits it.
-mkdir -p "$T/ref-inherit"; cp "$REF"/* "$T/ref-inherit"/
-awk -F '\t' 'BEGIN { OFS = "\t" }
-  $1 == "conformance" && $3 == "NSView" && $5 == "NSAccessibility" { $3 = "FixtureNotAClass"; n++ }
+# spec: src/objc/reference.c load_sdk -- ref_with NAME AWK: $T/ref-NAME, the reference with newer-sdk.tsv rewritten by
+#       the awk program AWK (tab-separated in and out) and its manifest digest recomputed.
+ref_with() {
+  rm -rf "$T/ref-$1"; mkdir -p "$T/ref-$1"; cp "$REF"/* "$T/ref-$1"/
+  awk -F '\t' "BEGIN { OFS = \"\\t\" } $2" "$REF/newer-sdk.tsv" >"$T/ref-$1/newer-sdk.tsv" || fail "ref_with $1: rewriting newer-sdk.tsv"
+  ! cmp -s "$REF/newer-sdk.tsv" "$T/ref-$1/newer-sdk.tsv" || fail "ref_with $1: newer-sdk.tsv is unchanged"
+  sed "s|\(\"name\": \"newer-sdk.tsv\", \"sha256\": \"\)[0-9a-f]*|\1$(sha "$T/ref-$1/newer-sdk.tsv")|" "$REF/manifest.json" >"$T/ref-$1/manifest.json"
+  ! cmp -s "$REF/manifest.json" "$T/ref-$1/manifest.json" || fail "ref_with $1: the manifest was not re-hashed"
+}
+ref_with inherit '$1 == "conformance" && $3 == "NSView" && $5 == "NSAccessibility" { $3 = "FixtureNotAClass"; n++ }
   $1 == "protocol-inherits" && $3 == "NSAccessibilityElement" && $5 == "NSObject" { $5 = "NSAccessibility"; n++ }
-  { print } END { if (n != 2) exit 1 }' "$REF/newer-sdk.tsv" >"$T/ref-inherit/newer-sdk.tsv" || fail 'protocol: rewriting the reference'
-sed "s|\(\"name\": \"newer-sdk.tsv\", \"sha256\": \"\)[0-9a-f]*|\1$(sha "$T/ref-inherit/newer-sdk.tsv")|" "$REF/manifest.json" >"$T/ref-inherit/manifest.json"
-! cmp -s "$REF/manifest.json" "$T/ref-inherit/manifest.json" || fail 'protocol: the manifest was not re-hashed'
+  { print } END { if (n != 2) exit 1 }'
 REF_SAVE=$REF; REF="$T/ref-inherit"
-a11y inherit 'protocol: NSView adopts NSAccessibility through an inherited protocol'
+a11y inherit 'protocol: NSView adopts NSAccessibility only through NSAccessibilityElement, which inherits it'
 REF=$REF_SAVE
+ref_with clsproto '{ print } END { print "method", "AppKit", "NSView", "-", "setAccessibilityLabel:", "v24@0:8q16", "-", "-", "0", "fixture.h:1", "interface" }'
+REF_SAVE=$REF; REF="$T/ref-clsproto"; GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/"v24@0:8@16"/"v24@0:8q16"/'); group_prefix clsproto; unset GROUP; group clsproto clsproto; REF=$REF_SAVE
+group_refused 'protocol: the class and an adopted protocol declare different encodings' provider-abi-mismatch \
+  '-NSView setAccessibilityLabel:: the newer SDK declares it as v24@0:8q16 on the class and as v24@0:8@16 in protocol NSAccessibility'
+ref_with protoproto '{ print } END { print "protocol-method", "AppKit", "NSAccessibilityElement", "-", "setAccessibilityLabel:", "v24@0:8q16", "-", "-", "0", "fixture.h:1", "protocol:required" }'
+REF_SAVE=$REF; REF="$T/ref-protoproto"; GROUP=$A11Y_GROUP; group_prefix protoproto; unset GROUP; group protoproto protoproto; REF=$REF_SAVE
+group_refused 'protocol: two adopted protocols declare different encodings' provider-abi-mismatch \
+  'the newer SDK declares it as v24@0:8@16 in protocol NSAccessibility and as v24@0:8q16 in protocol NSAccessibilityElement'
 GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/"class" : "NSView"/"class" : "NSResponder"/')
 group_prefix notadopted; unset GROUP; group notadopted notadopted
 group_refused 'protocol: a class that does not adopt the protocol' provider-abi-mismatch \
