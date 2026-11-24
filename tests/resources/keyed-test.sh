@@ -36,7 +36,7 @@ for f in "$FIX"/nib/*.nib "$FIX"/nib-10.9/*.nib/keyedobjects-101300.nib; do
     && run build "$T/t3" > "$T/y3" 2>>"$T/err" || { fail "keyed_fixed_point_dump: $b: $(err)"; continue; }
   if cmp -s "$T/t2" "$T/t3" && cmp -s "$T/y2" "$T/y3"; then n=$((n + 1))
   else fail "keyed_fixed_point_dump: $b: $(diff "$T/t2" "$T/t3" | head -4)"; fi
-  "$R" build "$T/t1" -o "$T/cli.nib" 2>"$T/err" && cmp -s "$T/cli.nib" "$T/y" \
+  "$R" build --no-adapt "$T/t1" -o "$T/cli.nib" 2>"$T/err" && cmp -s "$T/cli.nib" "$T/y" \
     || fail "keyed_fixed_point_dump: $b: drydock-resources build differs from the driver's: $(err)"
   "$R" dump "$T/cli.nib" > "$T/cli.rez" 2>"$T/err" && cmp -s "$T/cli.rez" "$T/t2" \
     || fail "keyed_fixed_point_dump: $b: drydock-resources dump of keyed input differs from the driver's: $(err)"
@@ -147,11 +147,11 @@ sed -n '/^@86 NSMutableArray$/,/^$/p' "$T/c.keyed" | grep -q '^  NS.objects = ui
   && pass "keyed_rules: an empty array dumps back as empty uids" || fail "keyed_rules: @86 is $(sed -n '/^@86 /,/^$/p' "$T/c.keyed")"
 { sed -n 1,2p "$T/c.rez"; { grep '^chain ' "$T/c.rez"; echo 'chain NSSet : NSObject'; } | sort
   sed -n '/^$/,$p' "$T/c.rez" | sed 's/^@4 NSMutableSet$/@4 NSSet/'; } > "$T/set.rez"
-"$R" build "$T/set.rez" -o "$T/set.nib" 2>"$T/err" && run read "$T/set.nib" > "$T/set.keyed" \
+"$R" build --no-adapt "$T/set.rez" -o "$T/set.nib" 2>"$T/err" && run read "$T/set.nib" > "$T/set.keyed" \
   && sed -n '/^@4 NSSet$/,/^$/p' "$T/set.keyed" | grep -q '^  NS.objects = uids @5$' \
   && pass "keyed_rules: an NSSet's members become NS.objects" || fail "keyed_rules: NSSet: $(err) $(sed -n '/^@4 /,/^$/p' "$T/set.keyed")"
 dump "$FIX/nib/collections-alt.nib" > "$T/alt.rez"
-"$R" build "$T/alt.rez" -o "$T/alt.nib" 2>"$T/err" && run read "$T/alt.nib" > "$T/alt.keyed" \
+"$R" build --no-adapt "$T/alt.rez" -o "$T/alt.nib" 2>"$T/err" && run read "$T/alt.nib" > "$T/alt.keyed" \
   && grep -q '^  NSStackViewSpacing = f32 0x1p+3  # 8$' "$T/alt.keyed" && "$B" dump "$T/alt.nib" | grep -q '"NSStackViewSpacing" = real32 41000000$' \
   && [ "$(grep -c ' = f32 ' "$T/alt.rez")" = "$(grep -c ' = f32 ' "$T/alt.keyed")" ] \
   && pass "keyed_rules: an f32 stays a 4-byte real through the archive and back" || fail "keyed_rules: f32: $(err) $(grep Spacing "$T/alt.keyed")"
@@ -159,7 +159,7 @@ dump "$FIX/nib/collections-alt.nib" > "$T/alt.rez"
   && pass "keyed_rules: an NSMutableString is a dict with an NS.string, as Apple's 10.9 archive has it" \
   || fail "keyed_rules: NSMutableString: $(sed -n '/NSMutableString$/,/^$/p' "$T/alt.keyed")"
 dump "$FIX/nib/int64.nib" > "$T/i64.rez"
-"$R" build "$T/i64.rez" -o "$T/i64.nib" 2>"$T/err" && run read "$T/i64.nib" | grep -q ' = i64 5000000000$' \
+"$R" build --no-adapt "$T/i64.rez" -o "$T/i64.nib" 2>"$T/err" && run read "$T/i64.nib" | grep -q ' = i64 5000000000$' \
   && pass "keyed_rules: a 64-bit integer survives" || fail "keyed_rules: int64: $(err)"
 
 { cat <<'EOF'
@@ -277,15 +277,15 @@ unencodable() {  # NAME WHAT: $T/NAME.rez exits 1 from the driver with "unencoda
 edit() { sed "$2" "$T/small.rez" > "$T/$1.rez"; unencodable "$1" "$3"; }
 dump "$FIX/nib/values.nib" > "$T/values.rez"
 echo old > "$T/kept.nib"
-"$R" build "$T/values.rez" -o "$T/kept.nib" > "$T/out" 2>"$T/err"; rc=$?
+"$R" build --no-adapt "$T/values.rez" -o "$T/kept.nib" > "$T/out" 2>"$T/err"; rc=$?
 [ "$rc:$(err)" = "1:drydock-resources: $T/values.rez: unencodable: unresolved chain for DDFixtureView" ] \
   && [ "$(cat "$T/kept.nib")" = old ] && [ ! -s "$T/out" ] && [ "$(ls "$T" | grep -c '^kept')" = 1 ] \
   && pass "keyed_unencodable: DDFixtureView's unresolved chain exits 1 and leaves the output as it was" \
   || fail "keyed_unencodable: DDFixtureView: exit $rc, $(err), output now '$(head -c 20 "$T/kept.nib")'"
-"$R" build "$T/values.rez" -o "$T/none.nib" 2>/dev/null; [ -e "$T/none.nib" ] \
+"$R" build --no-adapt "$T/values.rez" -o "$T/none.nib" 2>/dev/null; [ -e "$T/none.nib" ] \
   && fail "keyed_unencodable: an unencodable dump wrote its output" || pass "keyed_unencodable: an unencodable dump writes nothing"
 grep -v '^  UINibEncoderEmptyKey = ref @64$' "$T/c.rez" > "$T/odd.rez"
-"$R" build "$T/odd.rez" -o "$T/odd.nib" > "$T/out" 2>"$T/err"; rc=$?
+"$R" build --no-adapt "$T/odd.rez" -o "$T/odd.nib" > "$T/out" 2>"$T/err"; rc=$?
 [ "$rc:$(err)" = "1:drydock-resources: $T/odd.rez: unencodable: @35 NSMutableDictionary has an odd number (37) of UINibEncoderEmptyKey values" ] \
   && [ ! -e "$T/odd.nib" ] && pass "keyed_unencodable: an odd dictionary exits 1 and writes nothing" \
   || fail "keyed_unencodable: odd dictionary: exit $rc, $(err)"
@@ -571,15 +571,15 @@ cli "-o needs a path" 2 "$USAGE" build "$T/small.rez" -o
 cli "-o twice" 2 "$USAGE" build "$T/small.rez" -o "$T/x.nib" -o "$T/y.nib"
 cli "--no-adapt is build's" 2 "$USAGE" dump --no-adapt "$FIX/nib/values.nib"
 cli "-o is build's" 2 "$USAGE" dump -o "$T/x.nib" "$FIX/nib/values.nib"
-cli "--no-adapt=RULE" 0 '' build --no-adapt=wrapping-width "$T/small.rez" -o "$T/x.nib"
+cli "--no-adapt=RULE" 0 '' build --resource-references "$ROOT/reference/resources" --no-adapt=wrapping-width "$T/small.rez" -o "$T/x.nib"
 cli "--target 10.9" 0 '' build --target 10.9 --no-adapt "$T/small.rez" -o "$T/x.nib"
 cmp -s "$T/x.nib" "$T/small.nib" && pass "keyed_cli: build writes the driver's bytes" || fail "keyed_cli: build's output differs"
-cli "build over its own input" 2 "*small.rez: the output is the input; refusing to write it" build "$T/small.rez" -o "$T/small.rez"
+cli "build over its own input" 2 "*small.rez: the output is the input; refusing to write it" build --no-adapt "$T/small.rez" -o "$T/small.rez"
 printf 'drydock-resources dump 1\nformat keyed\n@0 NSObject\n  x = i8 300\n' > "$T/baddump.rez"
-cli "a malformed dump" 4 "drydock-resources: $T/baddump.rez: malformed-dump: line 4: i8 300 is out of range" build "$T/baddump.rez" -o "$T/bad.nib"
+cli "a malformed dump" 4 "drydock-resources: $T/baddump.rez: malformed-dump: line 4: i8 300 is out of range" build --no-adapt "$T/baddump.rez" -o "$T/bad.nib"
 [ -e "$T/bad.nib" ] && fail "keyed_cli: a malformed dump wrote its output" || pass "keyed_cli: a malformed dump writes nothing"
-cli "a missing dump" 4 "drydock-resources: $T/missing.rez: cannot read: *" build "$T/missing.rez" -o "$T/bad.nib"
-cli "an unwritable output" 4 "*" build "$T/small.rez" -o "$T/no/such/dir/x.nib"
+cli "a missing dump" 4 "drydock-resources: $T/missing.rez: cannot read: *" build --no-adapt "$T/missing.rez" -o "$T/bad.nib"
+cli "an unwritable output" 4 "*" build --no-adapt "$T/small.rez" -o "$T/no/such/dir/x.nib"
 cli "dump of a keyed nib" 0 '' dump "$FIX/nib-10.9/values.nib"
 grep -q '^format keyed$' "$T/out" && pass "keyed_cli: a nib directory's keyed archive dumps as keyed" || fail "keyed_cli: keyed dump: $(head -2 "$T/out")"
 cli "dump of a malformed keyed nib" 4 "drydock-resources: $T/pastend.nib: malformed-keyed: \$objects\[1\] NSRoot: uid 99999 is past the last object, *" dump "$T/pastend.nib"

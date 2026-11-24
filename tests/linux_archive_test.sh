@@ -62,6 +62,8 @@ done
   && ok "drydock-macho-rewrite runs from the unpacked archive" || bad "drydock-macho-rewrite --capabilities"
 [ -f "$T/a dir/drydock-$V/share/drydock/objc/reference/manifest.json" ] \
   && ok "the archive carries the objc reference set" || bad "no share/drydock/objc/reference/manifest.json"
+[ -f "$T/a dir/drydock-$V/share/drydock/resources/reference/keys-10.9.tsv" ] && [ -f "$T/a dir/drydock-$V/share/drydock/resources/reference/adapt.tsv" ] \
+  && ok "the archive carries the resources reference data" || bad "no share/drydock/resources/reference/{keys-10.9,adapt}.tsv"
 [ -s "$T/a dir/drydock-$V/share/doc/drydock/LICENSE-jansson" ] \
   && ok "the archive carries Jansson's licence" || bad "no share/doc/drydock/LICENSE-jansson"
 # platform: drydock-objc runs on Linux; receipt with no arguments is a usage error, exit 2.

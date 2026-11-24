@@ -1,0 +1,4 @@
+# resources-adapt 1
+# rule	applies_below	note
+translate-autoresizing	10.10	assumed: the macOS version where AppKit stopped needing NSDoNotTranslateAutoresizingMask on constrained views is unknown, and 10.9 is the only target
+wrapping-width	10.11	AppKit release notes, OS X 10.11: automatic preferredMaxLayoutWidth for wrapping text, for apps linked against 10.11

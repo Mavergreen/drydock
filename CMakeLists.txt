@@ -417,10 +417,12 @@ install(PROGRAMS "compat/drydock-macho-rewrite-compat.sh" DESTINATION bin)
 install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewrite-translate.sh)
 install(FILES "man/drydock-macho-rewrite.1" DESTINATION share/man/man1)
 
-# drydock-objc finds its reference set at realpath(binary)/../../share/drydock/objc/reference.
+# drydock-objc finds its reference set at realpath(binary)/../../share/drydock/objc/reference, and
+# drydock-resources finds that and its own at realpath(binary)/../../share/drydock/resources/reference.
 install(TARGETS drydock-objc RUNTIME DESTINATION bin)
 install(TARGETS drydock-resources RUNTIME DESTINATION bin)
 install(DIRECTORY "reference/objc/" DESTINATION share/drydock/objc/reference)
+install(DIRECTORY "reference/resources/" DESTINATION share/drydock/resources/reference)
 
 option(DRYDOCK_BUILD_UPDATER "Build the Sparkle updater the .pkg ships (fetches Sparkle at configure time)" OFF)
 if(DRYDOCK_BUILD_UPDATER)
@@ -598,6 +600,10 @@ endif()
 # platform: host-agnostic -- the command line, on committed nibs.
 drydock_add_test(NAME resources_cli COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/cli-test.sh)
 set_tests_properties(resources_cli PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
+drydock_add_test(NAME resources_findings COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/findings-test.sh)
+set_tests_properties(resources_findings PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
+drydock_add_test(NAME resources_adapt COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/adapt-test.sh)
+set_tests_properties(resources_adapt PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).

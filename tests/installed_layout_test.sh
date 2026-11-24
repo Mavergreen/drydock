@@ -28,6 +28,9 @@ trap 'rm -rf "$t"' EXIT
 # spec: drydock-objc finds its references at realpath(binary)/../../share/drydock/objc/reference.
 diff -r "$here/../reference/objc" "$t/tree/share/drydock/objc/reference" >/dev/null \
   || { echo "FAIL: the installed reference set is not reference/objc/, byte for byte"; exit 1; }
+# spec: drydock-resources finds its own at realpath(binary)/../../share/drydock/resources/reference.
+diff -r "$here/../reference/resources" "$t/tree/share/drydock/resources/reference" >/dev/null \
+  || { echo "FAIL: the installed resources reference is not reference/resources/, byte for byte"; exit 1; }
 mkdir "$t/farm"
 for f in "$t/tree/bin/"*; do ln -s "$f" "$t/farm/${f##*/}"; done
 
