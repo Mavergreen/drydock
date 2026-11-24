@@ -259,7 +259,7 @@ fewer_errors() {
         { a = $1; sub(/^0+/, "", a) } (a in want) && $2 == "movq" && $3 ~ /^%r[a-z0-9]+,$/ && $4 ~ /^%r[a-z0-9]+$/ && NF == 4 { print a }' "$1.read" "$1.otv" |
         while read -r a; do printf '%.0f\n' "$((0x$a))"; done > "$1.movs"
     fi
-    # spec: src/objc/main.m -- "undecoded_code_bytes" is the reader's limit_undecoded_bytes; a table read as
+    # spec: src/objc/main.c -- "undecoded_code_bytes" is the reader's limit_undecoded_bytes; a table read as
     #       data is no longer decoded as code, so it may fall, by at most the listed tables' bytes
     grep -o '"undecoded_code_bytes": [0-9]*' "$1.head" | awk '{ print $2 }' > "$1.ub"
     grep -o '"undecoded_code_bytes": [0-9]*' "$2.head" | awk '{ print $2 }' > "$2.ub"
@@ -279,7 +279,7 @@ fewer_errors() {
     sed 's/"undecoded_code_bytes": [0-9]*/"undecoded_code_bytes": 0/' "$2.head" > "$2.head.u" && mv "$2.head.u" "$2.head"
   fi
   if [ "$RENAMED" = 1 ]; then
-    # spec: src/objc/main.m -- "runtime_class_creation_sites" counts the report's runtime-class-creation errors; it
+    # spec: src/objc/main.c -- "runtime_class_creation_sites" counts the report's runtime-class-creation errors; it
     #       may rise by exactly the runtime-class-creation errors gained, each of which the errors check below must
     #       map back to a baseline unclassified-objc-runtime-import error, and by no more than those that name an
     #       import this piece made runtime-class-creation

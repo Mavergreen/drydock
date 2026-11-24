@@ -65,7 +65,20 @@ Given an Objective-C binary built for Mavericks, report which of its message sen
 
 `analyze`, `evidence`, `link-args` and `receipt` take the arguments and exit statuses of the shipyard scripts they replace; `resolve` is new, and described below. Run `drydock-objc` with no arguments for the usage. It reads its reference set from `share/drydock/objc/reference`, found from where the real `drydock-objc` binary is, so a symlink to it works; `--references DIR` names another.
 
-`analyze`, `evidence`, `link-args` and `resolve` run on macOS only. On Linux, for now, the tarball's `drydock-objc` does `receipt` alone and those four exit 2: their front end is Foundation, which Linux lacks, until it is ported to C. `receipt` runs everywhere. It takes `--clang-prefix` and `--sdk`, and fetches nothing: you name the clang and the SDK, and it loads that clang's libclang at run time. On Linux, using `receipt` needs a host with glibc 2.35 or newer (Ubuntu 22.04+), because the pinned libclang.so needs it; `drydock-objc` itself stays within the archive's floor.
+All five subcommands run on macOS and on Linux, with the same arguments and exit statuses. `receipt` takes `--clang-prefix` and `--sdk`, and fetches nothing: you name the clang and the SDK, and it loads that clang's libclang at run time. On Linux, using `receipt` needs a host with glibc 2.35 or newer (Ubuntu 22.04+), because the pinned libclang.so needs it; `drydock-objc` itself stays within the archive's floor.
+
+### Input strictness
+
+Every JSON input (the reference manifest and cluster witnesses, build evidence, a provider declaration, objc-api exception evidence, reviewed evidence for `resolve`) must be one UTF-8 JSON object. From 0.7.0 these are refused as cannot-measure (exit 4), where 0.6 took them:
+
+* a duplicate key in an object;
+* an integer outside a 64-bit signed integer;
+* `\u0000` in a string;
+* a UTF-16 or UTF-32 document, or a UTF-8 byte-order mark;
+* a `schema` other than the integer `1` (or `2` where schema 2 exists): `1.0` and `true` are no longer schema 1;
+* a schema-1 guard's `source.line`, or a provider atom's `size`, that is a real number or a boolean, which 0.6 read as an integer (`12.5` as 12, `true` as 1; an absent or non-numeric `source.line` still records 0).
+
+Nesting deeper than 513 levels is refused, as 10.9's Foundation refused it. A parse failure is `malformed-input`, its detail naming the line and column. An unknown key is named in document order: the first one the document holds.
 
 ### Build evidence, schema 2
 
@@ -82,7 +95,7 @@ Reviewed build evidence is a JSON file a product keeps beside its source. Schema
 
 A row names its code by `path`; `symbol` or `symbols` (the copies of one generic instance) are what `analyze` matches, and `drydock-objc resolve` writes them. A row used while it has neither, or whose symbols are not its path's, is `malformed-build-evidence`. Schema 1 evidence is accepted and judged as before, revision and all.
 
-`drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE` reads schema-2 reviewed evidence and writes it again with every guard's, R2 row's and R3 row's `symbol` or `symbols`, and every crate's `disambiguator`, read from the artifact. Everything else, `artifact` and `source` included, is copied unchanged: the product's build stamps those. The output is the whole document with sorted keys and a 2-space indent. It exits 0 when it wrote the output; 2 for a usage error, or when `NEW_FILE` already exists (it never overwrites); 4 having written nothing, with each error on stderr: `stale-build-evidence` for a path no function of the artifact has or a crate no symbol names, `resolve-ambiguous` as above, `malformed-build-evidence` for evidence that is not schema 2.
+`drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE` reads schema-2 reviewed evidence and writes it again with every guard's, R2 row's and R3 row's `symbol` or `symbols`, and every crate's `disambiguator`, read from the artifact. Everything else, `artifact` and `source` included, is copied unchanged: the product's build stamps those. The output is the whole document with its keys sorted by Unicode code point (byte order of their UTF-8, so a non-ASCII key sorts after every ASCII one) and a 2-space indent. It exits 0 when it wrote the output; 2 for a usage error, or when `NEW_FILE` already exists (it never overwrites); 4 having written nothing, with each error on stderr: `stale-build-evidence` for a path no function of the artifact has or a crate no symbol names, `resolve-ambiguous` as above, `malformed-build-evidence` for evidence that is not schema 2.
 
 ### Undecoded bytes in code
 

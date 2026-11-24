@@ -5,7 +5,7 @@
  * With --close it also runs receiver/use closure over the loaded references. --references DIR first
  * loads DIR's argument-register catalogs alone (objc_load_gprs_catalogs), as the analyzer's reference
  * set would, so the reader bounds a call's argument registers by them. --shipped FILE then reads FILE's
- * metadata alone and adds its method definitions, as src/objc/main.m add_shipped does for a shipped
+ * metadata alone and adds its method definitions, as src/objc/main.c add_shipped does for a shipped
  * image after the artifact's code has been read.
  * --link-map prints objc_linkmap_read's parse instead (link_map below).
  * --functions FILE prints objc_image_function's answers, one per line.

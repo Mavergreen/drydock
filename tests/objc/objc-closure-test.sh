@@ -1,6 +1,6 @@
 #!/bin/sh
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
-# spec: src/objc/main.m "The shipped closure" -- a non-system image the artifact loads is
+# spec: src/objc/main.c "The shipped closure" -- a non-system image the artifact loads is
 #       found inside --root and measured by its interface: its classes and methods close the
 #       artifact's sends into it, its own code stays exempt by its pinned bytes, and anything that
 #       cannot be found exactly once inside the root, or is loaded weak, lazy or upward, is
@@ -58,7 +58,7 @@ bundle() {
 FWREL=App.app/Contents/Frameworks/MGShipped.framework/Versions/A/MGShipped
 INREL=App.app/Contents/Frameworks/MGShipped.framework/Versions/A/libMGInner.dylib
 
-# spec: src/objc/main.m "The shipped closure" -- @rpath and @loader_path resolve inside the root; the
+# spec: src/objc/main.c "The shipped closure" -- @rpath and @loader_path resolve inside the root; the
 #       artifact's sends into the framework close against the framework's own implementations.
 bundle "$T/ok" -- -framework MGShipped -Wl,-rpath,@executable_path/../Frameworks
 APP="$T/ok/App.app/Contents/MacOS/App"
@@ -70,11 +70,11 @@ want _shipped_missing notShipped unsupported -
 want _shipped_inherited description floor-supported - 'floor'
 want _shipped_category mgShippedHello floor-supported "$FWREL" "implemented by shipped image $FWREL on floor class NSObject (a category)"
 want _inner_inherited innerThing floor-supported "$INREL" "implemented by shipped image $INREL's own +MGInner"
-# spec: src/objc/main.m "The shipped closure" -- a finding closed in a shipped image names it in its id.
+# spec: src/objc/main.c "The shipped closure" -- a finding closed in a shipped image names it in its id.
 finding _shipped_class sharedShipped | grep -F "\"id\": \"x86_64@0x" | grep -F ":+[MGShipped sharedShipped]@$FWREL\"" >/dev/null ||
   fail "the framework's finding id is not image-qualified: $(finding _shipped_class sharedShipped)"
 finding _shipped_missing notShipped | grep -F ':+[MGShipped notShipped]", ' >/dev/null || fail 'a finding closed nowhere gained an image in its id'
-# spec: src/objc/main.m "The shipped closure" -- every image is hashed into the report, and each one's
+# spec: src/objc/main.c "The shipped closure" -- every image is hashed into the report, and each one's
 #       own code is listed as exempt by those bytes.
 for p in "$FWREL" "$INREL"; do
   s=$(sha "$T/ok/$p")
@@ -88,7 +88,7 @@ grep -F "{\"path\": \"$INREL\", \"sha256\": \"$(sha "$T/ok/$INREL")\", \"slices\
 grep -F '"closure_class_roots": {"defined_classes": 4, "roots": {"NSObject": 4, "NSProxy": 0}, "runtime_class_creation_sites": 0, "uncaptured_dependencies": [], "blocking": [], "r1_unknown_receivers": true}' \
   "$T/report" >/dev/null || fail "the shipped classes are not in the class roots: $(grep -o '"closure_class_roots": {[^}]*}[^}]*}' "$T/report")"
 
-# spec: src/objc/main.m "The shipped closure" -- a report of one image is unchanged: no image key,
+# spec: src/objc/main.c "The shipped closure" -- a report of one image is unchanged: no image key,
 #       no shipped images, the old limit.
 mkdir -p "$T/one/bin"
 fxcc "$FX/classify.c" -o "$T/one/bin/app" -lobjc -Wl,-U,_objc_alloc -Wl,-U,_fixture_use || fail 'single-image fixture did not build'
@@ -97,7 +97,7 @@ analyze "$T/one" "$T/one/bin/app"
 grep -F '"the shipped closure is the artifact alone: a non-system dependency is cannot-measure"' "$T/report" >/dev/null ||
   fail 'a single-image report lost its limit'
 
-# spec: src/objc/main.m "The shipped closure" -- missing, ambiguous, escaping, weak and duplicate-class closures are cannot-measure.
+# spec: src/objc/main.c "The shipped closure" -- missing, ambiguous, escaping, weak and duplicate-class closures are cannot-measure.
 bundle "$T/missing" -- -framework MGShipped -Wl,-rpath,@executable_path/../Frameworks
 rm "$T/missing/$INREL"
 analyze "$T/missing" "$T/missing/App.app/Contents/MacOS/App"
@@ -121,7 +121,7 @@ grep -F '(weak)' "$T/report" >/dev/null || fail 'the weak load is not named'
 bundle "$T/dup" -DMG_DUPLICATE -- -framework MGShipped -Wl,-rpath,@executable_path/../Frameworks
 analyze "$T/dup" "$T/dup/App.app/Contents/MacOS/App"
 exit_is 4 'a class defined twice in the closure'; error_is ambiguous-class 'a class defined twice in the closure'
-# spec: src/objc/main.m "The shipped closure" -- with --root-kind volume, --root is a staged volume as
+# spec: src/objc/main.c "The shipped closure" -- with --root-kind volume, --root is a staged volume as
 #       installed at /: an absolute install name and every symlink resolve inside it, never on the host.
 #       The names are unique, so no pass can come from the host's /usr/local or /Library.
 VLIB=usr/local/mavergreen/mgp/lib/libMGShipped.dylib

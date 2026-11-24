@@ -187,9 +187,8 @@ target_compile_options(objc-jansson-driver PRIVATE -O2 -Wall)
 target_link_libraries(objc-jansson-driver PRIVATE drydock_jansson)
 
 # drydock-objc: the Objective-C send analyzer imported from shipyard
-# (PROVENANCE.md), its sources byte-identical to shipyard's. Its front end,
-# src/objc/main.m, is Foundation, so analyze, evidence and link-args are
-# macOS-only for now (the interim deviation in the move's design); main.m's main
+# (PROVENANCE.md). Its front end, src/objc/main.c, is C on Jansson (json.c) and
+# builds on every host; main.c's main
 # becomes objc_compat_main on its own compile line alone, and cli/drydock-objc.c
 # dispatches to it. The flags are the ones shipyard's objc-compat-build.sh used
 # (-std=c99 -O2 -Wall), plus the receipt tool's identity, which
@@ -204,10 +203,10 @@ endforeach()
 # release version plus the first 16 hex of a SHA-256 over the bytes
 # objc-compat-build.sh's sources() hashed, in its order, with its first line
 # (the Drydock pin's commit) replaced by drydock-VERSION, since the reader core
-# is now this tree's own: "analyzer", the modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, regexec.h, json.h, main.m, the
+# is now this tree's own: "analyzer", the modules, report.h, demangle-v0.h, linkmap.h, attest.h, x86.h, regexec.h, json.h, main.c, the
 # receipt tool, the thirteen reader-core modules it named, then every src/*.h in
 # byte order (file(GLOB) sorts byte-wise in any locale, as LC_ALL=C did for
-# sources()), then the Jansson pin. Each file is a configure dependency, so an edit reconfigures and
+# sources()), then the Jansson pin and its jansson_config.h (the parser's depth limit). Each file is a configure dependency, so an edit reconfigures and
 # the identity follows it.
 set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/report.h"
@@ -217,13 +216,13 @@ set(DRYDOCK_OBJC_ID_FILES ${DRYDOCK_OBJC_SOURCES}
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/x86.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/regexec.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/json.h"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/main.m"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/objc/main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/objc-source-inventory.c")
 foreach(m image fat x86len ordinals uleb rebase objc_meth arch_names grow exports hdrref linkedit trie)
   list(APPEND DRYDOCK_OBJC_ID_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/${m}.c")
 endforeach()
 file(GLOB DRYDOCK_CORE_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
-list(APPEND DRYDOCK_OBJC_ID_FILES ${DRYDOCK_CORE_HEADERS} "${DRYDOCK_JANSSON_PIN}")
+list(APPEND DRYDOCK_OBJC_ID_FILES ${DRYDOCK_CORE_HEADERS} "${DRYDOCK_JANSSON_PIN}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/jansson/jansson_config.h")
 set(DRYDOCK_OBJC_ID_INPUT "${CMAKE_CURRENT_BINARY_DIR}/drydock-objc-id-input")
 file(WRITE "${DRYDOCK_OBJC_ID_INPUT}" "drydock-${MAVERICKS_VERSION}\nanalyzer\n")
 foreach(f IN LISTS DRYDOCK_OBJC_ID_FILES)
@@ -306,27 +305,22 @@ foreach(d reader regexec arity demangle json)
   endif()
 endforeach()
 
+add_executable(drydock-objc cli/drydock-objc.c src/objc/main.c $<TARGET_OBJECTS:drydock_objc_core>
+  $<TARGET_OBJECTS:drydock_objc_receipt>)
+set_source_files_properties(src/objc/main.c PROPERTIES COMPILE_DEFINITIONS main=objc_compat_main)
+if(NOT APPLE)
+  # platform: under -std=c99 glibc hides POSIX's strdup, realpath and fsync, which a Mac's headers show anyway.
+  set_property(SOURCE src/objc/main.c APPEND PROPERTY COMPILE_DEFINITIONS _XOPEN_SOURCE=700)
+endif()
+target_include_directories(drydock-objc PRIVATE src/objc)
+target_compile_definitions(drydock-objc PRIVATE
+  OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}"
+  DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}")
+set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(drydock-objc PRIVATE -O2 -Wall)
+target_link_libraries(drydock-objc PRIVATE drydockcore drydock_jansson ${CMAKE_DL_LIBS})
 if(APPLE)
-  enable_language(OBJC)
-  add_executable(drydock-objc cli/drydock-objc.c src/objc/main.m $<TARGET_OBJECTS:drydock_objc_core>
-    $<TARGET_OBJECTS:drydock_objc_receipt>)
-  set_source_files_properties(src/objc/main.m PROPERTIES COMPILE_DEFINITIONS main=objc_compat_main)
-  target_include_directories(drydock-objc PRIVATE src/objc)
-  target_compile_definitions(drydock-objc PRIVATE
-    OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}"
-    DRYDOCK_OBJC_ANALYZER_ID="${DRYDOCK_OBJC_ANALYZER_ID}")
-  set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF OBJC_STANDARD 99 OBJC_EXTENSIONS OFF)
-  target_compile_options(drydock-objc PRIVATE -O2 -Wall)
-  target_link_libraries(drydock-objc PRIVATE drydockcore drydock_jansson "-framework Foundation" ${CMAKE_DL_LIBS})
   mavericks_assert_binary_compatible(drydock-objc)
-else()
-  # platform: Linux has no Foundation, so drydock-objc holds receipt alone until the front end is not Foundation.
-  add_executable(drydock-objc cli/drydock-objc.c $<TARGET_OBJECTS:drydock_objc_receipt>)
-  target_include_directories(drydock-objc PRIVATE src/objc)
-  target_compile_definitions(drydock-objc PRIVATE OBJC_SOURCE_INVENTORY_SHA256="${OBJC_SOURCE_INVENTORY_SHA256}")
-  set_target_properties(drydock-objc PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
-  target_compile_options(drydock-objc PRIVATE -O2 -Wall)
-  target_link_libraries(drydock-objc PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 # Stage the wrappers and the two files they source NEXT TO drydock-macho-rewrite in the build
@@ -531,8 +525,7 @@ drydock_add_test(NAME fixture_toolchain_test COMMAND sh ${CMAKE_CURRENT_SOURCE_D
 # The imported Objective-C analyzer is byte-identical to shipyard's.
 drydock_add_test(NAME objc_import_identity COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/import_identity_test.sh)
 
-# platform: host-agnostic -- drydock-objc receipt, on every host (drydock-objc is built on Linux too,
-# with the receipt producer alone). It fetches the pinned clang22 and floor SDK.
+# platform: host-agnostic -- drydock-objc receipt, on every host. It fetches the pinned clang22 and floor SDK.
 # DRYDOCK_OBJC_ARCH is drydock-objc's own architecture, so a test that has it dlopen a libclang fetches one that
 # carries that architecture, not the shell's.
 drydock_add_test(NAME objc_source_inventory_host COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-source-inventory-host-test.sh)
@@ -543,6 +536,9 @@ drydock_add_test(NAME objc_jansson COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/
 set_tests_properties(objc_jansson PROPERTIES ENVIRONMENT "DRYDOCK_OBJC_JANSSON_DRIVER=$<TARGET_FILE:objc-jansson-driver>")
 drydock_add_test(NAME objc_json COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-json-test.sh)
 set_tests_properties(objc_json PROPERTIES ENVIRONMENT "DRYDOCK_OBJC_JSON_DRIVER=$<TARGET_FILE:objc-json-driver>")
+# platform: host-agnostic -- drydock-objc's front end is C on every host; its inputs are JSON written by the test.
+drydock_add_test(NAME objc_strict_input COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/objc/objc-strict-input-test.sh)
+set_tests_properties(objc_strict_input PROPERTIES ENVIRONMENT "DRYDOCK_OBJC=${DRYDOCK_OBJC_EXE}")
 
 # The analyzer's tests, moved from shipyard (tests/objc/objc-*-test.sh), plus
 # drydock-objc's own defaults (cli-test.sh). They reach the analyzer as

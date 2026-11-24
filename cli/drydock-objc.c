@@ -32,7 +32,7 @@
  *                                    schema-2 reviewed evidence with each record's
  *                                    path resolved to FILE's function symbols and
  *                                    each crate's disambiguator filled in
- *                                    (src/objc/main.m resolve_main); 0, 2 usage, 4
+ *                                    (src/objc/main.c resolve_main); 0, 2 usage, 4
  *                                    unresolvable (resolve-ambiguous, a missing path)
  *   drydock-objc receipt ARGS...     shipyard's scripts/objc-source-inventory.sh, with the
  *                                    clang and the floor SDK named: --clang-prefix PREFIX
@@ -40,10 +40,9 @@
  *                                    --unit LABEL [--unit LABEL...] [--include LABELDIR...]
  *                                    --output NEW_FILE
  *
- * DELEGATION: analyze, evidence, link-args and resolve call objc_compat_main -- src/objc/main.m, the
- * Foundation front end, compiled with -Dmain=objc_compat_main and otherwise
- * byte-identical to shipyard's -- with the arguments the shell wrapper passed
- * it. main.m validates every option, value, repeat and destination itself, as
+ * DELEGATION: analyze, evidence, link-args and resolve call objc_compat_main -- src/objc/main.c, the
+ * C front end on every host, compiled with -Dmain=objc_compat_main -- with the arguments the shell
+ * wrapper passed it. main.c validates every option, value, repeat and destination itself, as
  * it did behind the wrappers, so exits are unchanged: analyze 0/1/2/4,
  * evidence 0/2/4, link-args 0/2/4, resolve 0/2/4.
  *
@@ -56,7 +55,7 @@
  *     <realpath(this binary)>/../../share/drydock/objc/reference, resolved from
  *     the real path so a symlinked or unpacked copy still finds its own. There
  *     is no other fallback: without that directory (a build tree, or a copy
- *     moved away from its share/) and without --references, main.m refuses
+ *     moved away from its share/) and without --references, main.c refuses
  *     the missing option (exit 2). No build-machine path is compiled in.
  *     link-args takes no reference set.
  *
@@ -83,9 +82,6 @@
  * exit status the producer returns is 4. The producer runs in this process, so
  * a crash inside libclang kills drydock-objc with a signal and no status of
  * its own: a caller that needs a status should map death by signal to 4.
- *
- * ON LINUX drydock-objc holds receipt alone: main.m is Foundation, so analyze,
- * evidence, link-args and resolve say they are not built for Linux yet and exit 2.
  *
  * Nothing is fetched or executed: the analyzer and the receipt tool read their
  * inputs as data.
@@ -123,6 +119,9 @@ static void usage(void) {
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#else
+#include <unistd.h>
+#endif
 
 #ifndef DRYDOCK_OBJC_ANALYZER_ID
 #error "DRYDOCK_OBJC_ANALYZER_ID is computed by CMakeLists.txt"
@@ -150,7 +149,7 @@ static int digest_only(int argc, char **argv, const char *mode, const char *opti
 }
 
 /* Whether OPT is one of ARGS' option names. Options and values alternate, as
- * main.m reads them; a malformed list is main.m's to refuse. */
+ * main.c reads them; a malformed list is main.c's to refuse. */
 static int has_option(int argc, char **argv, const char *opt) {
     int i;
     for (i = 0; i < argc; i += 2)
@@ -159,14 +158,21 @@ static int has_option(int argc, char **argv, const char *opt) {
 }
 
 /* The reference set beside the real binary; NULL when it is not a directory
- * (main.m then says --references is required). */
+ * (main.c then says --references is required). */
 static const char *default_references(char *out, size_t outlen) {
     char self[PATH_MAX], real[PATH_MAX];
-    uint32_t len = sizeof self;
     struct stat st;
     char *slash;
-    int up;
-    if (_NSGetExecutablePath(self, &len) == 0 && realpath(self, real)) {
+    int up, found;
+#ifdef __APPLE__
+    uint32_t len = sizeof self;
+    found = _NSGetExecutablePath(self, &len) == 0;
+#else
+    /* platform: Linux names the running binary in /proc. */
+    ssize_t len = readlink("/proc/self/exe", self, sizeof self - 1);
+    if ((found = len > 0)) self[len] = 0;
+#endif
+    if (found && realpath(self, real)) {
         for (up = 0; up < 2; up++) {
             if (!(slash = strrchr(real, '/'))) break;
             *slash = '\0';
@@ -178,7 +184,7 @@ static const char *default_references(char *out, size_t outlen) {
     return NULL;
 }
 
-/* objc_compat_main(MODE?, ARGS..., defaults...). MODE is main.m's own word for
+/* objc_compat_main(MODE?, ARGS..., defaults...). MODE is main.c's own word for
  * the subcommand, or NULL for its default (analysis) mode. */
 static int run(const char *mode, int argc, char **argv, int want_refs, int want_id) {
     char refs[PATH_MAX];
@@ -201,7 +207,6 @@ static int run(const char *mode, int argc, char **argv, int want_refs, int want_
     v[n] = NULL;
     return objc_compat_main(n, v);
 }
-#endif
 
 static int receipt_fail(const char *what) {
     fprintf(stderr, "drydock-objc: %s\n", what);
@@ -310,8 +315,7 @@ static int receipt(int argc, char **argv) {
 int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 2; }
     if (!strcmp(argv[1], "receipt")) return receipt(argc - 2, argv + 2);
-#ifdef __APPLE__
-    /* objc-compat.sh accepted only option names in option positions, so main.m's
+    /* objc-compat.sh accepted only option names in option positions, so main.c's
      * mode words never reached it there; they do not reach it through analyze. */
     if (!strcmp(argv[1], "analyze")) {
         if (argc > 2 && (!strcmp(argv[2], "emit-build-evidence") || !strcmp(argv[2], "provider-link-args") || !strcmp(argv[2], "resolve"))) {
@@ -329,12 +333,6 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(argv[1], "link-args")) return run("provider-link-args", argc - 2, argv + 2, 0, 0);
     if (!strcmp(argv[1], "resolve")) return run("resolve", argc - 2, argv + 2, 0, 0);
-#else
-    if (!strcmp(argv[1], "analyze") || !strcmp(argv[1], "evidence") || !strcmp(argv[1], "link-args") || !strcmp(argv[1], "resolve")) {
-        fprintf(stderr, "drydock-objc: %s is not built for Linux yet (the Foundation front end; see README)\n", argv[1]);
-        return 2;
-    }
-#endif
     usage();
     return 2;
 }

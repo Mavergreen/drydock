@@ -21,8 +21,8 @@ printf '%s' '{"n":9223372036854775808}' > "$T/in"; expect "LLONG_MAX + 1 is refu
 printf '%s' '{"s":"\u0000"}' > "$T/in"; expect "\\u0000 is refused" error
 printf '\357\273\277{}' > "$T/in"; expect "a UTF-8 BOM is refused" error
 printf '{\000}\000' > "$T/in"; expect "UTF-16LE is refused" error
-nest 2048 > "$T/in"; expect "2048 levels of nesting are taken" "ok array"
-nest 2049 > "$T/in"; expect "2049 levels of nesting are refused" error
+nest 513 > "$T/in"; expect "513 levels of nesting are taken (10.9's Foundation took them)" "ok array"
+nest 514 > "$T/in"; expect "514 levels of nesting are refused (10.9's Foundation refused them)" error
 printf '{"k":"\303\251"}' > "$T/in"; expect "UTF-8 in a string is taken" "ok object"
 printf '%s' '[]' > "$T/in"; expect "a top-level array is the caller's to refuse" "ok array"
 

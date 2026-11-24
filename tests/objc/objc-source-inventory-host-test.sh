@@ -105,11 +105,4 @@ else
   echo "SKIP: receipt_missing_symbol: needs a Mac to build the stub dylib ($(uname -s))"
 fi
 
-# linux_analyze_refused: the Foundation front end is not built for Linux.
-if [ "$(uname -s)" = Linux ]; then
-  rc=0; "$DRYDOCK_OBJC" analyze --artifact /bin/sh --root / --report "$T/report" 2>"$T/err" || rc=$?
-  [ "$rc" = 2 ] && grep -Fxq 'drydock-objc: analyze is not built for Linux yet (the Foundation front end; see README)' "$T/err" &&
-    pass 'linux_analyze_refused: analyze exits 2 and says why' || fail "linux_analyze_refused: exit $rc"
-fi
-
 [ "$fails" = 0 ] && echo 'objc-source-inventory-host-test: all passed' || { echo "objc-source-inventory-host-test: $fails failed"; exit 1; }

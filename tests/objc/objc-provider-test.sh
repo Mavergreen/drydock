@@ -236,7 +236,7 @@ full "$T/root/bin/rooted" "$T/rooted.prestrip" "$T/maps/rooted.map" stripped
 positive 'stripped final artifact with prestrip evidence'
 cp "$T/rooted.prestrip" "$T/root/bin/rooted"
 
-# spec: src/objc/main.m (load_provider_prefix) -- schema 2: groups under `providers`, schema-1-shaped entries under
+# spec: src/objc/main.c (load_provider_prefix) -- schema 2: groups under `providers`, schema-1-shaped entries under
 #       `legacy_providers`, exact key sets, no (class, kind, selector) claimed twice; evidence records a group once.
 G_LOC='{ "provider_id" : "fixture.nslocale.group.v1", "class" : "NSLocale", "guard" : "absent-only",
       "activation_root" : "__fixture_objc_activate", "required_frameworks" : [ "AppKit", "Foundation" ],
@@ -491,7 +491,7 @@ evidence "$T/root/bin/g-bss" "$T/root/bin/g-bss" "$T/root/bin/g-tab.map" "$T/ev/
 [ "$rc" = 0 ] || fail "group: a zerofill atom in a regular section: build evidence exit $rc"
 analyze "$T/root/bin/g-bss" --build-evidence "$T/ev/g-bss.json" --provider-prefix "$T/g-tab"
 group_refused 'group: a zerofill atom whose final section is not zerofill' provider-mapping-mismatch 'is zerofill, its final section is not'
-# spec: src/objc/main.m (analyze) -- with schema-1 providers only, a computed sel_registerName stops the reader as before:
+# spec: src/objc/main.c (analyze) -- with schema-1 providers only, a computed sel_registerName stops the reader as before:
 #       no provider is verified.
 SRC="$FX/table-consumer.m"; consumer "$T/root/bin/s1-compsel" "$ALL" -DCOMPUTED_SEL; unset SRC
 full "$T/root/bin/s1-compsel" "$T/root/bin/s1-compsel" "$T/root/bin/s1-compsel.map" s1-compsel
@@ -629,7 +629,7 @@ evidence "$T/root/bin/omitted" "$T/root/bin/omitted" "$T/root/bin/omitted.map" "
 [ "$rc" = 0 ] && analyze "$T/root/bin/omitted" --build-evidence "$T/ev/gone.json" --provider-prefix "$T/pfx-gone"
 nonzero 'archive without the root member'
 
-# spec: src/objc/main.m header -- a changed final binary or dependency after the evidence.
+# spec: src/objc/main.c header -- a changed final binary or dependency after the evidence.
 analyze "$T/root/bin/deadstrip" --build-evidence "$T/ev/rooted.json" --provider-prefix "$PFX"
 nonzero 'evidence for another final binary'; exit_is 4 'evidence for another final binary'
 
@@ -650,7 +650,7 @@ noprov --provider-prefix "$PFX" --output "$T/ev/noprov-pfx.json"
 exit_is 2 'a provider prefix without a link map'
 analyze "$T/root/bin/plain-consumer" --build-evidence "$T/ev/noprov.json"
 exit_is 0 'provider-less evidence analyzed with no prefix'
-# spec: src/objc/main.m "The shipped closure" -- a dependency inside the root is measured by its
+# spec: src/objc/main.c "The shipped closure" -- a dependency inside the root is measured by its
 #       interface; one that loads from outside it is not, so nothing it might replace can be provided.
 fxcc -dynamiclib -O1 "$FX/plain.c" -o "$T/root/bin/libextra.dylib" -install_name /Library/Mavergreen/libextra.dylib
 consumer "$T/root/bin/extra-dep" "$ALL" -Wl,-needed_library,"$T/root/bin/libextra.dylib"
@@ -696,7 +696,7 @@ SRC="$FX/provider-impostor.c"; consumer "$T/root/bin/impostor" "$ALL"; SRC=
 full "$T/root/bin/impostor" "$T/root/bin/impostor" "$T/root/bin/impostor.map" impostor
 nonzero 'an impostor root and its own registration'; error_is unattested-method-registration 'impostor'
 
-# spec: src/objc/main.m header -- removal after an earlier successful report: the old report is no token.
+# spec: src/objc/main.c header -- removal after an earlier successful report: the old report is no token.
 consumer "$T/root/bin/rooted" "$NO_ARCHIVE"
 analyze "$T/root/bin/rooted" --build-evidence "$T/ev/rooted.json" --provider-prefix "$PFX"
 nonzero 'provider removed, earlier evidence reused'; exit_is 4 'provider removed, earlier evidence reused'

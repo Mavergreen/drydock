@@ -1,6 +1,6 @@
 #!/bin/sh
 # platform: macOS-only -- links x86_64 fixtures against the pinned 10.9 SDK, then reports on them
-# spec: src/objc/main.m header -- the schema-1 report and the command contract: canonical
+# spec: src/objc/main.c header -- the schema-1 report and the command contract: canonical
 #       bytes, deterministic IDs, exit 0/1/2/4, exclusive atomic output, bounded inputs and no
 #       partial clean report.
 set -eu
@@ -31,14 +31,14 @@ complete_is() { grep "\"complete_within_boundary\": $1," "$2" >/dev/null || fail
 error_in() { grep "\"code\": \"$1\"" "$2" >/dev/null || fail "$3: no $1 error in the report"; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 
-# spec: src/objc/main.m header -- a measured artifact without Objective-C passes strict; prose is no finding.
+# spec: src/objc/main.c header -- a measured artifact without Objective-C passes strict; prose is no finding.
 run "$T/out/plain" --artifact "$T/root/bin/plain" --root "$T/root" --references "$REF" --mode strict
 exit_is 0 'plain C strict'
 complete_is true "$T/out/plain" 'plain C'
 grep '"findings": \[\]' "$T/out/plain" >/dev/null || fail 'prose became a finding'
 grep '"path": "bin/plain"' "$T/out/plain" >/dev/null || fail 'the artifact is not named relative to the root'
 
-# spec: src/objc/main.m header -- inventory reports without failing; strict fails on blocking findings.
+# spec: src/objc/main.c header -- inventory reports without failing; strict fails on blocking findings.
 run "$T/out/inventory" --artifact "$C" --root "$T/root" --references "$REF"
 exit_is 0 'inventory'
 grep '"mode": "inventory"' "$T/out/inventory" >/dev/null && grep '"verdict": "unsupported"' "$T/out/inventory" >/dev/null ||
@@ -46,7 +46,7 @@ grep '"mode": "inventory"' "$T/out/inventory" >/dev/null && grep '"verdict": "un
 run "$T/out/strict1" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
 exit_is 1 'strict with blocking findings'
 
-# spec: src/objc/main.m header -- deterministic bytes and IDs: two runs, one report.
+# spec: src/objc/main.c header -- deterministic bytes and IDs: two runs, one report.
 run "$T/out/strict2" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
 exit_is 1 'second strict run'
 cmp -s "$T/out/strict1" "$T/out/strict2" || fail 'two runs over the same inputs differ'
@@ -70,7 +70,7 @@ mids=$(sed -n 's/^  {"id": "\([^"]*\)".*/\1/p' "$T/out/merged")
 [ "$(grep -c '"incoming": "0x[0-9a-f]*"' "$T/out/merged")" = 2 ] && grep '"incoming": null' "$T/out/merged" >/dev/null ||
   fail 'findings do not say which incoming path they are'
 
-# spec: src/objc/main.m header -- host-independent bytes: the same artifact, references and
+# spec: src/objc/main.c header -- host-independent bytes: the same artifact, references and
 #       evidence under other absolute paths (another host's clone and temp dirs) give one report, which
 #       names no absolute path and identifies the analyzer by its sources, not this host's build.
 mkdir -p "$T/hostA/root/bin" "$T/host B/root/bin" "$T/hostA/refs" "$T/host B/refs"
@@ -90,7 +90,7 @@ cmp -s "$T/out/cross-hostA" "$T/out/cross-hostB" || fail 'reports differ only by
 : "${DRYDOCK_OBJC_ANALYZER_ID:?names the analyzer id CMakeLists.txt computed (CTest sets it)}"
 grep -F "\"analyzer\": \"$DRYDOCK_OBJC_ANALYZER_ID\"" "$T/out/cross-hostA" >/dev/null || fail 'inputs.analyzer is not the source identity'
 
-# spec: src/objc/main.m header -- misuse is 2 and writes nothing.
+# spec: src/objc/main.c header -- misuse is 2 and writes nothing.
 usage_case() {  # usage_case WHY REPORT ARGS...
   why=$1 rep=$2; shift 2
   rc=0; "$DRYDOCK_OBJC" analyze "$@" --report "$rep" 2>"$T/err" || rc=$?
@@ -111,7 +111,7 @@ usage_case 'bad mode' "$T/out/u4" --artifact "$C" --root "$T/root" --references 
 usage_case 'artifact outside the root' "$T/out/u5" --artifact "$FX/classify.c" --root "$T/root" --references "$REF"
 usage_case 'missing destination directory' "$T/out/no/such/report" --artifact "$C" --root "$T/root" --references "$REF"
 
-# spec: src/objc/main.m header -- an existing destination in any form is refused and left alone.
+# spec: src/objc/main.c header -- an existing destination in any form is refused and left alone.
 echo keep >"$T/out/existing"
 ln -s "$T/out/existing" "$T/out/symlink"
 ln -s "$T/out/nowhere" "$T/out/dangling"
@@ -121,7 +121,7 @@ for d in existing symlink dangling hardlink; do
 done
 [ "$(cat "$T/out/existing")" = keep ] && [ ! -e "$T/out/nowhere" ] || fail 'a refused destination was written through'
 
-# spec: src/objc/main.m header -- cannot-measure is 4 with an incomplete report naming the error, never a clean one.
+# spec: src/objc/main.c header -- cannot-measure is 4 with an incomplete report naming the error, never a clean one.
 mkdir -p "$T/refs-tampered"; cp "$REF"/* "$T/refs-tampered"/
 printf 'class\tAppKit\tNSFake\t-\tNSObject\t-\t-\t-\t0\tx.h:1\t-\n' >>"$T/refs-tampered/floor-sdk.tsv"
 run "$T/out/tampered" --artifact "$C" --root "$T/root" --references "$T/refs-tampered" --mode strict
@@ -142,7 +142,7 @@ else
   echo "SKIP no x86_64 slice: $CC_ARM64 cannot build arm64 here"
 fi
 
-# spec: src/objc/main.m header -- malformed UTF-8: in an input it is cannot-measure; where the report would carry it, no report.
+# spec: src/objc/main.c header -- malformed UTF-8: in an input it is cannot-measure; where the report would carry it, no report.
 printf '{"schema": 1, "kind": "objc-build-evidence", "artifact": {"sha256": "\377"}, "source": {}}\n' >"$T/bad-utf8.json"
 run "$T/out/badutf8" --artifact "$C" --root "$T/root" --references "$REF" --mode strict --build-evidence "$T/bad-utf8.json"
 exit_is 4 'malformed UTF-8 evidence'; error_in malformed-input "$T/out/badutf8" 'malformed UTF-8 evidence'
@@ -153,7 +153,7 @@ exit_is 4 'a non-UTF-8 symbol'
 [ ! -e "$T/out/odd" ] || fail 'a report carrying malformed UTF-8 was written'
 grep 'malformed UTF-8' "$T/err" >/dev/null || fail 'the malformed UTF-8 refusal is not explained'
 
-# spec: src/objc/main.m header -- oversized inputs are refused before they are parsed.
+# spec: src/objc/main.c header -- oversized inputs are refused before they are parsed.
 { printf '{"schema": 1, "pad": "'; head -c 17000000 /dev/zero | tr '\0' 'a'; printf '"}\n'; } >"$T/huge.json"
 run "$T/out/huge" --artifact "$C" --root "$T/root" --references "$REF" --mode strict --build-evidence "$T/huge.json"
 exit_is 4 'oversized build evidence'; error_in oversized-input "$T/out/huge" 'oversized'
@@ -161,14 +161,14 @@ exit_is 4 'oversized build evidence'; error_in oversized-input "$T/out/huge" 'ov
 run "$T/out/extrakey" --artifact "$C" --root "$T/root" --references "$REF" --mode strict --build-evidence "$T/extra.json"
 exit_is 4 'unknown evidence key'; error_in malformed-build-evidence "$T/out/extrakey" 'unknown key'
 
-# spec: src/objc/main.m header -- an unwritable destination directory: 4, nothing left behind.
+# spec: src/objc/main.c header -- an unwritable destination directory: 4, nothing left behind.
 mkdir -p "$T/ro"; chmod a-w "$T/ro"
 run "$T/ro/report" --artifact "$C" --root "$T/root" --references "$REF" --mode strict
 exit_is 4 'unwritable destination'
 [ -z "$(ls -A "$T/ro")" ] || fail 'a failed write left something behind'
 chmod u+w "$T/ro"
 
-# spec: src/objc/main.m header -- a run killed mid-analysis leaves no report (the large real artifact gives time to kill it).
+# spec: src/objc/main.c header -- a run killed mid-analysis leaves no report (the large real artifact gives time to kill it).
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   mkdir -p "$T/root/codex" "$T/killed"
   ln "$MAVERGREEN_OBJC_CODEX_ARTIFACT" "$T/root/codex/codex" 2>/dev/null || cp "$MAVERGREEN_OBJC_CODEX_ARTIFACT" "$T/root/codex/codex"

@@ -1,6 +1,6 @@
-/* main.m -- the objc-compat analyzer front end: arguments, JSON inputs, the stage pipeline and
- * the schema-1 report. Foundation is used only to parse JSON (manifest, cluster witnesses, build
- * evidence); the report is written by hand so its bytes are canonical on every host. It names no
+/* main.c -- the objc-compat analyzer front end: arguments, JSON inputs, the stage pipeline and
+ * the schema-1 report. JSON inputs (manifest, cluster witnesses, build evidence) are read strictly
+ * through json.c; the report is written by hand so its bytes are canonical on every host. It names no
  * absolute path (the artifact is named relative to the root; references and evidence by hash) and
  * identifies the analyzer by its sources (--analyzer-id), so the same inputs give the same bytes on a
  * Mavericks and an arm64 host.
@@ -47,8 +47,8 @@
  * closure_class_roots records the measured fact R1 on receivers of unknown class rests on: how many
  * classes the artifact defines and their roots, run-time class creation sites, dependencies the floor
  * capture did not load, each class or dependency that keeps R1 off, and whether R1 applies. */
-#import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fnmatch.h>
@@ -65,6 +65,7 @@
 #include "report.h"
 #include "linkmap.h"
 #include "attest.h"
+#include "json.h"
 
 #define JSON_MAX (16u << 20)
 #define MANIFEST_MAX (1u << 20)
@@ -78,176 +79,245 @@ static int usage(const char *why) {
 
 /* ---- JSON input --------------------------------------------------------------------------- */
 
-static id read_json(ObjcAnalysis *a, const char *path, unsigned max, const char *what) {
-    struct stat st;
-    NSData *d;
-    NSError *err = nil;
-    id v;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) { objc_fail(a, "unreadable-input", NULL, 0, "%s %s: %s", what, path, strerror(errno ? errno : EINVAL)); return nil; }
-    if ((unsigned long long)st.st_size > max) { objc_fail(a, "oversized-input", NULL, 0, "%s %s: %lld bytes, limit %u", what, path, (long long)st.st_size, max); return nil; }
-    if (!(d = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:path] options:0 error:&err]) || [d length] != (NSUInteger)st.st_size) {
-        objc_fail(a, "unreadable-input", NULL, 0, "%s %s: read failed", what, path); return nil;
-    }
-    if (!(v = [NSJSONSerialization JSONObjectWithData:d options:0 error:&err]) || ![v isKindOfClass:[NSDictionary class]]) {
-        objc_fail(a, "malformed-input", NULL, 0, "%s %s: not a JSON object (%s)", what, path,
-                  err ? [[err localizedDescription] UTF8String] : "wrong type");
-        return nil;
-    }
-    return v;
+static json_t *read_json(ObjcAnalysis *a, const char *path, unsigned max, const char *what) {
+    return objc_read_json(a, path, max, what);
 }
 
-static NSString *str(NSDictionary *d, NSString *k) {
-    id v = [d objectForKey:k];
-    return [v isKindOfClass:[NSString class]] ? v : nil;
+static const char *str(const json_t *d, const char *k) { return objc_jstr(d, k); }
+static json_t *arr(const json_t *d, const char *k) { return objc_jarr(d, k); }
+static json_t *obj(const json_t *d, const char *k) { return objc_jobj(d, k); }
+/* D's member K, present (of any type, null included) or NULL. */
+static json_t *member(const json_t *d, const char *k) { return json_is_object(d) ? json_object_get(d, k) : NULL; }
+/* D's member K is the string WANT. */
+static int is(const json_t *d, const char *k, const char *want) { const char *s = str(d, k); return s && !strcmp(s, want); }
+/* A key list for only_keys, only_keys_as and exact_keys: the keys, then how many. */
+#define KEYS(...) (const char *const[]){ __VA_ARGS__ }, sizeof((const char *const[]){ __VA_ARGS__ }) / sizeof(const char *)
+
+/* Working sets: strings in the order they were added. */
+typedef struct { char **v; size_t n; } Strv;
+static int strv_has(const Strv *s, const char *x) {
+    size_t i;
+    for (i = 0; i < s->n; i++) if (!strcmp(s->v[i], x)) return 1;
+    return 0;
 }
-static NSArray *arr(NSDictionary *d, NSString *k) {
-    id v = [d objectForKey:k];
-    return [v isKindOfClass:[NSArray class]] ? v : nil;
+static int strv_add(Strv *s, const char *x) { return objc_strv_push(&s->v, &s->n, x); }
+static void strv_free(Strv *s) {
+    size_t i;
+    for (i = 0; i < s->n; i++) free(s->v[i]);
+    free(s->v);
+    s->v = NULL; s->n = 0;
 }
-static NSDictionary *obj(NSDictionary *d, NSString *k) {
-    id v = [d objectForKey:k];
-    return [v isKindOfClass:[NSDictionary class]] ? v : nil;
+/* S's strings joined by SEP, in a new string (NULL when out of memory). */
+static char *strv_join(const Strv *s, const char *sep) {
+    size_t i, len = 1;
+    char *j;
+    for (i = 0; i < s->n; i++) len += strlen(s->v[i]) + (i ? strlen(sep) : 0);
+    if (!(j = malloc(len))) return NULL;
+    *j = 0;
+    for (i = 0; i < s->n; i++) { if (i) strcat(j, sep); strcat(j, s->v[i]); }
+    return j;
 }
-static const char *cs(NSString *s) { return s ? [s UTF8String] : NULL; }
+static int str_cmp(const void *x, const void *y) { return strcmp(*(char *const *)x, *(char *const *)y); }
 
 /* Only these keys may appear; anything else is a newer or mistaken schema, not ignored. */
-static int only_keys_as(ObjcAnalysis *a, const char *code, NSDictionary *d, const char *where, NSArray *allowed) {
-    for (id k in d)
-        if (![allowed containsObject:k]) return objc_fail(a, code, NULL, 0, "%s: unknown key %s", where, [[k description] UTF8String]);
+static int only_keys_as(ObjcAnalysis *a, const char *code, const json_t *d, const char *where, const char *const *allowed, size_t n) {
+    const char *k = objc_jfirst_unknown(d, allowed, n);
+    if (k) return objc_fail(a, code, NULL, 0, "%s: unknown key %s", where, k);
     return OBJC_OK;
 }
-static int only_keys(ObjcAnalysis *a, NSDictionary *d, const char *where, NSArray *allowed) {
-    return only_keys_as(a, "malformed-build-evidence", d, where, allowed);
+static int only_keys(ObjcAnalysis *a, const json_t *d, const char *where, const char *const *allowed, size_t n) {
+    return only_keys_as(a, "malformed-build-evidence", d, where, allowed, n);
+}
+
+/* The reference files a run used, in the manifest's order: their names and SHA-256s. */
+typedef struct { Strv name, sha256; } RefInputs;
+
+/* Unicode white space and line breaks (Z*, U+0009-U+000D, U+0085, and U+180E, which the 10.9 floor's Unicode
+ * still counted as a space): a reviewed exception name holds none of them. */
+static int has_space(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned c = *p, cp, n, i;
+        if (c < 0x80) { n = 0; cp = c; }
+        else if (c >= 0xC0 && c <= 0xDF) { n = 1; cp = c & 0x1F; }
+        else if (c >= 0xE0 && c <= 0xEF) { n = 2; cp = c & 0x0F; }
+        else { n = 3; cp = c & 0x07; }
+        for (i = 1; i <= n && p[i]; i++) cp = (cp << 6) | (p[i] & 0x3F);
+        if ((cp >= 0x09 && cp <= 0x0D) || cp == 0x20 || cp == 0x85 || cp == 0xA0 || cp == 0x1680 || cp == 0x180E ||
+            (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000)
+            return 1;
+        p += i;
+    }
+    return 0;
 }
 
 /* The versioned reference set: manifest schema 1, every listed file present (not a symlink) with
  * its SHA-256, nothing unlisted, a captured floor runtime. */
-static int load_manifest(ObjcAnalysis *a, const char *dir, NSMutableArray *ref_inputs, char manifest_sha[65]) {
-    char path[PATH_MAX];
-    NSDictionary *m, *rt;
-    NSArray *files;
-    NSMutableSet *listed = [NSMutableSet set];
-    NSArray *present;
-    NSError *err = nil;
-    snprintf(path, sizeof path, "%s/manifest.json", dir);
-    if (!(m = read_json(a, path, MANIFEST_MAX, "manifest"))) return OBJC_CANNOT_MEASURE;
+static int manifest_from(ObjcAnalysis *a, const char *dir, char *path, const json_t *m, Strv *listed, RefInputs *ref_inputs, char manifest_sha[65]) {
+    const json_t *rt, *files, *f, *r, *e;
+    DIR *dd;
+    struct dirent *de;
+    size_t fi, ri;
+    static const char *const NEED[] = { "floor-sdk.tsv", "floor-signatures.tsv", "newer-sdk.tsv", "floor-runtime.tsv", "cluster-witnesses.json" };
     if (objc_file_sha256(path, manifest_sha)) return objc_fail(a, "unreadable-reference", NULL, 0, "%s", path);
-    if (![[m objectForKey:@"schema"] isEqual:@1] || !(files = arr(m, @"files")))
+    if (!objc_jis_int(member(m, "schema"), 1) || !(files = arr(m, "files")))
         return objc_fail(a, "malformed-reference", NULL, 0, "%s: not a schema-1 manifest", path);
-    for (NSDictionary *f in files) {
-        NSString *name, *want;
+    json_array_foreach(files, fi, f) {
+        const char *name, *want;
         char fp[PATH_MAX], got[65];
         struct stat st;
-        if (![f isKindOfClass:[NSDictionary class]] || !(name = str(f, @"name")) || !(want = str(f, @"sha256")) ||
-            [name rangeOfString:@"/"].location != NSNotFound || [name hasPrefix:@"."])
+        if (!json_is_object(f) || !(name = str(f, "name")) || !(want = str(f, "sha256")) ||
+            strchr(name, '/') || *name == '.')
             return objc_fail(a, "malformed-reference", NULL, 0, "%s: bad file entry", path);
-        snprintf(fp, sizeof fp, "%s/%s", dir, cs(name));
+        snprintf(fp, sizeof fp, "%s/%s", dir, name);
         if (lstat(fp, &st) != 0 || !S_ISREG(st.st_mode)) return objc_fail(a, "unreadable-reference", NULL, 0, "%s missing or not a regular file", fp);
-        if (objc_file_sha256(fp, got) || strcmp(got, cs(want))) return objc_fail(a, "reference-hash-mismatch", NULL, 0, "%s does not match the manifest", fp);
-        [listed addObject:name];
-        [ref_inputs addObject:@{ @"name": name, @"sha256": want }];
+        if (objc_file_sha256(fp, got) || strcmp(got, want)) return objc_fail(a, "reference-hash-mismatch", NULL, 0, "%s does not match the manifest", fp);
+        if (strv_add(listed, name) || strv_add(&ref_inputs->name, name) || strv_add(&ref_inputs->sha256, want))
+            return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
     }
-    if (!(present = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:[NSString stringWithUTF8String:dir] error:&err]))
+    if (!(dd = opendir(dir)))
         return objc_fail(a, "unreadable-reference", NULL, 0, "%s: cannot list", dir);
-    for (NSString *p in present)
-        if (![p isEqualToString:@"manifest.json"] && ![listed containsObject:p])
-            return objc_fail(a, "malformed-reference", NULL, 0, "%s/%s is not in the manifest", dir, cs(p));
-    for (NSString *need in @[ @"floor-sdk.tsv", @"floor-signatures.tsv", @"newer-sdk.tsv", @"floor-runtime.tsv", @"cluster-witnesses.json" ])
-        if (![listed containsObject:need]) return objc_fail(a, "incomplete-reference", NULL, 0, "%s lacks %s", dir, cs(need));
-    if (![str(m, @"runtime_status") isEqualToString:@"captured"] || !(rt = obj(m, @"runtime")))
+    while ((de = readdir(dd)))
+        if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..") && strcmp(de->d_name, "manifest.json") && !strv_has(listed, de->d_name)) {
+            int rc = objc_fail(a, "malformed-reference", NULL, 0, "%s/%s is not in the manifest", dir, de->d_name);
+            closedir(dd);
+            return rc;
+        }
+    closedir(dd);
+    for (fi = 0; fi < sizeof NEED / sizeof *NEED; fi++)
+        if (!strv_has(listed, NEED[fi])) return objc_fail(a, "incomplete-reference", NULL, 0, "%s lacks %s", dir, NEED[fi]);
+    if (!is(m, "runtime_status", "captured") || !(rt = obj(m, "runtime")))
         return objc_fail(a, "incomplete-reference", NULL, 0, "%s: the floor runtime is not captured", dir);
-    if (objc_set_string(&a->runtime_os, cs(str(rt, @"os"))) || objc_set_string(&a->runtime_build, cs(str(rt, @"build"))) ||
-        objc_set_string(&a->runtime_arch, cs(str(rt, @"arch"))))
+    if (objc_set_string(&a->runtime_os, str(rt, "os")) || objc_set_string(&a->runtime_build, str(rt, "build")) ||
+        objc_set_string(&a->runtime_arch, str(rt, "arch")))
         return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
-    for (id r in arr(rt, @"root_selectors") ?: @[])
-        if (![r isKindOfClass:[NSString class]] || objc_strv_push(&a->manifest_roots, &a->n_manifest_roots, cs(r)))
+    json_array_foreach(arr(rt, "root_selectors"), ri, r)
+        if (!json_is_string(r) || objc_strv_push(&a->manifest_roots, &a->n_manifest_roots, json_string_value(r)))
             return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_selectors");
     /* The R1 amendment's reviewed residual risk; reference.c holds the witness to it exactly. */
-    if ((a->have_manifest_exceptions = arr(rt, @"root_exceptions") != nil))
-        for (id r in arr(rt, @"root_exceptions"))
-            if (![r isKindOfClass:[NSString class]] || objc_strv_push(&a->manifest_exceptions, &a->n_manifest_exceptions, cs(r)))
+    if ((a->have_manifest_exceptions = arr(rt, "root_exceptions") != NULL))
+        json_array_foreach(arr(rt, "root_exceptions"), ri, r)
+            if (!json_is_string(r) || objc_strv_push(&a->manifest_exceptions, &a->n_manifest_exceptions, json_string_value(r)))
                 return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_exceptions");
     /* The R1 selector set's per-selector records: a selector whose measured exception set is a strict
      * subset of root_exceptions, its reviewed kinds and that set; reference.c holds each kind to it. */
-    if ((a->have_manifest_subsets = arr(rt, @"root_subset_exceptions") != nil))
-        for (id e in arr(rt, @"root_subset_exceptions")) {
-            NSString *sel = [e isKindOfClass:[NSDictionary class]] && [e count] == 3 ? str(e, @"selector") : nil;
-            NSArray *kinds = sel ? arr(e, @"kinds") : nil, *exc = kinds ? arr(e, @"exceptions") : nil;
-            NSMutableString *row = [NSMutableString string], *k = [NSMutableString string];
-            if (!exc || [sel rangeOfString:@"\t"].location != NSNotFound)
+    if ((a->have_manifest_subsets = arr(rt, "root_subset_exceptions") != NULL))
+        json_array_foreach(arr(rt, "root_subset_exceptions"), ri, e) {
+            const char *sel = json_is_object(e) && json_object_size(e) == 3 ? str(e, "selector") : NULL;
+            const json_t *kinds = sel ? arr(e, "kinds") : NULL, *exc = kinds ? arr(e, "exceptions") : NULL, *x;
+            char k[3] = "";
+            Strv row = { NULL, 0 };
+            char *joined;
+            size_t xi, kl = 0;
+            int rc;
+            if (!exc || strchr(sel, '\t'))
                 return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions");
-            for (id x in kinds)
-                if (![x isKindOfClass:[NSString class]]) return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions kinds");
-                else [k appendString:x];
-            if (![k isEqualToString:@"+-"] && ![k isEqualToString:@"+"] && ![k isEqualToString:@"-"])
-                return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions kinds for %s", cs(sel));
-            [row appendFormat:@"%@\t%@\t", sel, k];
-            for (NSUInteger i = 0; i < [exc count]; i++) {
-                id x = [exc objectAtIndex:i];
-                if (![x isKindOfClass:[NSString class]] || ![x length] || [x rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location != NSNotFound)
-                    return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions for %s", cs(sel));
-                [row appendFormat:@"%s%@", i ? " " : "", x];
+            json_array_foreach(kinds, xi, x)
+                if (!json_is_string(x)) return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions kinds");
+                else if (kl + strlen(json_string_value(x)) < sizeof k) { strcpy(k + kl, json_string_value(x)); kl += strlen(json_string_value(x)); }
+                else kl = sizeof k;
+            if (kl == sizeof k || (strcmp(k, "+-") && strcmp(k, "+") && strcmp(k, "-")))
+                return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions kinds for %s", sel);
+            json_array_foreach(exc, xi, x)
+                if (!json_is_string(x) || !*json_string_value(x) || has_space(json_string_value(x))) {
+                    strv_free(&row);
+                    return objc_fail(a, "malformed-reference", NULL, 0, "manifest root_subset_exceptions for %s", sel);
+                } else if (strv_add(&row, json_string_value(x))) { strv_free(&row); return objc_fail(a, "out-of-memory", NULL, 0, "manifest"); }
+            joined = strv_join(&row, " ");
+            strv_free(&row);
+            if (!joined) return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
+            {
+                char *line = malloc(strlen(sel) + strlen(k) + strlen(joined) + 3);
+                rc = !line;
+                if (line) { sprintf(line, "%s\t%s\t%s", sel, k, joined); rc = objc_strv_push(&a->manifest_subsets, &a->n_manifest_subsets, line); }
+                free(line);
             }
-            if (objc_strv_push(&a->manifest_subsets, &a->n_manifest_subsets, cs(row)))
-                return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
+            free(joined);
+            if (rc) return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
         }
-    if (str(rt, @"tool_source_sha256") && objc_set_string(&a->runtime_tool_sha256, cs(str(rt, @"tool_source_sha256"))))
+    if (str(rt, "tool_source_sha256") && objc_set_string(&a->runtime_tool_sha256, str(rt, "tool_source_sha256")))
         return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
-    if (str(obj(m, @"floor_sdk"), @"header_tree_sha256") &&
-        objc_set_string(&a->floor_sdk_header_tree_sha256, cs(str(obj(m, @"floor_sdk"), @"header_tree_sha256"))))
+    if (str(obj(m, "floor_sdk"), "header_tree_sha256") &&
+        objc_set_string(&a->floor_sdk_header_tree_sha256, str(obj(m, "floor_sdk"), "header_tree_sha256")))
         return objc_fail(a, "out-of-memory", NULL, 0, "manifest");
-    snprintf(path, sizeof path, "%s/floor-sdk.tsv", dir);
+    snprintf(path, PATH_MAX, "%s/floor-sdk.tsv", dir);
     if (objc_set_string(&a->facts_path, path)) return OBJC_CANNOT_MEASURE;
-    snprintf(path, sizeof path, "%s/floor-signatures.tsv", dir);
+    snprintf(path, PATH_MAX, "%s/floor-signatures.tsv", dir);
     if (objc_set_string(&a->signatures_path, path) || objc_set_string(&a->references_dir, dir)) return OBJC_CANNOT_MEASURE;
     return OBJC_OK;
 }
-
-static int load_clusters(ObjcAnalysis *a, const char *dir) {
+static int load_manifest(ObjcAnalysis *a, const char *dir, RefInputs *ref_inputs, char manifest_sha[65]) {
     char path[PATH_MAX];
-    NSDictionary *c;
-    snprintf(path, sizeof path, "%s/cluster-witnesses.json", dir);
-    if (!(c = read_json(a, path, JSON_MAX, "cluster witnesses"))) return OBJC_CANNOT_MEASURE;
-    if (![[c objectForKey:@"schema"] isEqual:@1] || !arr(c, @"probes")) return objc_fail(a, "malformed-reference", NULL, 0, "%s: not schema 1", path);
-    for (NSDictionary *p in arr(c, @"probes")) {
+    json_t *m;
+    Strv listed = { NULL, 0 };
+    int rc;
+    snprintf(path, sizeof path, "%s/manifest.json", dir);
+    if (!(m = read_json(a, path, MANIFEST_MAX, "manifest"))) return OBJC_CANNOT_MEASURE;
+    rc = manifest_from(a, dir, path, m, &listed, ref_inputs, manifest_sha);
+    strv_free(&listed);
+    json_decref(m);
+    return rc;
+}
+
+static int clusters_from(ObjcAnalysis *a, const char *path, const json_t *c) {
+    const json_t *p;
+    size_t pi;
+    if (!objc_jis_int(member(c, "schema"), 1) || !arr(c, "probes")) return objc_fail(a, "malformed-reference", NULL, 0, "%s: not schema 1", path);
+    json_array_foreach(arr(c, "probes"), pi, p) {
         ObjcClusterProbe q;
         char *chain[64], *below[4096];
-        NSArray *steps;
-        size_t i = 0;
+        const json_t *steps, *x;
+        Strv words = { NULL, 0 };
+        size_t i = 0, xi;
         int rc;
         memset(&q, 0, sizeof q);
-        if (![p isKindOfClass:[NSDictionary class]] || !str(p, @"id") || !str(p, @"class") || !str(p, @"concrete") ||
-            !(steps = arr(p, @"construction")) || !arr(p, @"chain") || !arr(p, @"below"))
+        if (!json_is_object(p) || !str(p, "id") || !str(p, "class") || !str(p, "concrete") ||
+            !(steps = arr(p, "construction")) || !arr(p, "chain") || !arr(p, "below"))
             return objc_fail(a, "malformed-reference", NULL, 0, "%s: bad probe", path);
-        q.id = (char *)cs(str(p, @"id")); q.cls = (char *)cs(str(p, @"class")); q.concrete = (char *)cs(str(p, @"concrete"));
-        q.construction = (char *)cs([steps componentsJoinedByString:@" "]);
-        for (NSString *x in arr(p, @"chain")) { if (i == 64 || ![x isKindOfClass:[NSString class]]) return objc_fail(a, "malformed-reference", NULL, 0, "%s: chain", path); chain[i++] = (char *)cs(x); }
+        q.id = (char *)str(p, "id"); q.cls = (char *)str(p, "class"); q.concrete = (char *)str(p, "concrete");
+        /* A step that is not a string can never make the construction "+alloc", the one classify.c matches. */
+        json_array_foreach(steps, xi, x)
+            if (strv_add(&words, json_is_string(x) ? json_string_value(x) : "?")) { strv_free(&words); return objc_fail(a, "out-of-memory", NULL, 0, "probe"); }
+        q.construction = strv_join(&words, " ");
+        strv_free(&words);
+        if (!q.construction) return objc_fail(a, "out-of-memory", NULL, 0, "probe");
+        json_array_foreach(arr(p, "chain"), xi, x) {
+            if (i == 64 || !json_is_string(x)) { free(q.construction); return objc_fail(a, "malformed-reference", NULL, 0, "%s: chain", path); }
+            chain[i++] = (char *)json_string_value(x);
+        }
         q.chain = chain; q.nchain = i; i = 0;
-        for (NSDictionary *b in arr(p, @"below")) {
-            if (i == 4096 || ![b isKindOfClass:[NSDictionary class]] || !str(b, @"selector")) return objc_fail(a, "malformed-reference", NULL, 0, "%s: below", path);
-            below[i++] = (char *)cs(str(b, @"selector"));
+        json_array_foreach(arr(p, "below"), xi, x) {
+            if (i == 4096 || !json_is_object(x) || !str(x, "selector")) { free(q.construction); return objc_fail(a, "malformed-reference", NULL, 0, "%s: below", path); }
+            below[i++] = (char *)str(x, "selector");
         }
         q.below = below; q.nbelow = i;
-        if ((rc = objc_add_probe(a, &q))) return rc;
+        rc = objc_add_probe(a, &q);
+        free(q.construction);
+        if (rc) return rc;
     }
     return OBJC_OK;
 }
+static int load_clusters(ObjcAnalysis *a, const char *dir) {
+    char path[PATH_MAX];
+    json_t *c;
+    int rc;
+    snprintf(path, sizeof path, "%s/cluster-witnesses.json", dir);
+    if (!(c = read_json(a, path, JSON_MAX, "cluster witnesses"))) return OBJC_CANNOT_MEASURE;
+    rc = clusters_from(a, path, c);
+    json_decref(c);
+    return rc;
+}
 
-#define S(d, k) cs(str(d, k))
-static int load_evidence_providers(ObjcAnalysis *a, NSArray *list);
+#define S(d, k) str(d, k)
+static int load_evidence_providers(ObjcAnalysis *a, const json_t *list);
 static int hex64(const char *s);
-static int exact_keys(NSDictionary *d, NSArray *keys);
+static int exact_keys(const json_t *d, const char *const *keys, size_t n);
 
 /* ---- build evidence schema 2: the parts schema 1 lacks (source-evidence.c header) -------------- */
 #define MBE "malformed-build-evidence"
-static int json_count(id x, uint64_t *out) {
-    if (![x isKindOfClass:[NSNumber class]] || CFGetTypeID((CFTypeRef)x) == CFBooleanGetTypeID() ||
-        CFNumberIsFloatType((CFNumberRef)x) || [x longLongValue] <= 0) return 0;
-    *out = (uint64_t)[x longLongValue];
-    return 1;
-}
-static int has_text(NSDictionary *d, NSString *k) { return [str(d, k) length] > 0; }
-static int string_or_absent(NSDictionary *d, NSString *k) { return ![d objectForKey:k] || str(d, k); }
+static int json_count(const json_t *x, uint64_t *out) { return objc_jcount(x, out); }
+static int has_text(const json_t *d, const char *k) { const char *s = str(d, k); return s && *s; }
+static int string_or_absent(const json_t *d, const char *k) { return !member(d, k) || str(d, k); }
 /* tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH. */
 static int cite_form(const char *c) {
     const char *p, *slash, *dash;
@@ -262,113 +332,118 @@ static int cite_form(const char *c) {
     } else return 0;
     return *p && *p != '/';
 }
-static int parse_cites(ObjcAnalysis *a, NSDictionary *c, const char *where, ObjcCite **out, size_t *n) {
-    NSArray *l = arr(c, @"sources");
-    if (![l count]) return objc_fail(a, MBE, NULL, 0, "%s: sources is missing or empty", where);
-    for (NSDictionary *e in l) {
+static int parse_cites(ObjcAnalysis *a, const json_t *c, const char *where, ObjcCite **out, size_t *n) {
+    const json_t *l = arr(c, "sources"), *e;
+    size_t ei;
+    if (!json_array_size(l)) return objc_fail(a, MBE, NULL, 0, "%s: sources is missing or empty", where);
+    json_array_foreach(l, ei, e) {
         ObjcCite *v;
-        if (!exact_keys(e, @[ @"cite", @"sha256" ]) || !has_text(e, @"cite") || !hex64(S(e, @"sha256")))
+        if (!exact_keys(e, KEYS("cite", "sha256")) || !has_text(e, "cite") || !hex64(S(e, "sha256")))
             return objc_fail(a, MBE, NULL, 0, "%s: a source is not exactly {cite, sha256} with a SHA-256", where);
-        if (!cite_form(S(e, @"cite")))
-            return objc_fail(a, MBE, NULL, 0, "%s: citation %s is not tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH", where, S(e, @"cite"));
+        if (!cite_form(S(e, "cite")))
+            return objc_fail(a, MBE, NULL, 0, "%s: citation %s is not tree:PATH, crate:NAME-VERSION/PATH or sdk:PATH", where, S(e, "cite"));
         if (!(v = realloc(*out, (*n + 1) * sizeof *v))) return objc_fail(a, "out-of-memory", NULL, 0, "sources");
         *out = v; v = &v[(*n)++]; memset(v, 0, sizeof *v);
-        if (objc_set_string(&v->cite, S(e, @"cite")) || objc_set_string(&v->sha256, S(e, @"sha256")))
+        if (objc_set_string(&v->cite, S(e, "cite")) || objc_set_string(&v->sha256, S(e, "sha256")))
             return objc_fail(a, "out-of-memory", NULL, 0, "sources");
     }
     return OBJC_OK;
 }
 /* A resolved function: `symbol`, or `symbols` for the copies of one generic instance; neither until resolved. */
-static int parse_symbols(ObjcAnalysis *a, NSDictionary *c, const char *where, char **symbol, char ***symbols, size_t *n) {
-    id one = [c objectForKey:@"symbol"], many = [c objectForKey:@"symbols"];
+static int parse_symbols(ObjcAnalysis *a, const json_t *c, const char *where, char **symbol, char ***symbols, size_t *n) {
+    const json_t *one = member(c, "symbol"), *many = member(c, "symbols"), *x;
+    size_t xi;
     if (one && many) return objc_fail(a, MBE, NULL, 0, "%s: symbol and symbols are exclusive", where);
-    if (one && (!has_text(c, @"symbol") || objc_set_string(symbol, S(c, @"symbol"))))
+    if (one && (!has_text(c, "symbol") || objc_set_string(symbol, S(c, "symbol"))))
         return objc_fail(a, MBE, NULL, 0, "%s: symbol is not a non-empty string", where);
-    if (many && ![arr(c, @"symbols") count]) return objc_fail(a, MBE, NULL, 0, "%s: symbols is not a non-empty list", where);
-    for (id x in many ? arr(c, @"symbols") : @[])
-        if (![x isKindOfClass:[NSString class]] || ![x length] || objc_strv_push(symbols, n, cs(x)))
+    if (many && !json_array_size(arr(c, "symbols"))) return objc_fail(a, MBE, NULL, 0, "%s: symbols is not a non-empty list", where);
+    json_array_foreach(many ? arr(c, "symbols") : NULL, xi, x)
+        if (!json_is_string(x) || !*json_string_value(x) || objc_strv_push(symbols, n, json_string_value(x)))
             return objc_fail(a, MBE, NULL, 0, "%s: symbols is not a list of non-empty strings", where);
     return OBJC_OK;
 }
-static int parse_guard2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcGuardRecord *g) {
-    NSDictionary *pv = obj(c, @"provenance"), *rv = obj(c, @"review");
-    NSArray *cv = arr(c, @"covers");
+static int parse_guard2(ObjcAnalysis *a, const json_t *c, size_t i, ObjcGuardRecord *g) {
+    const json_t *pv = obj(c, "provenance"), *rv = obj(c, "review");
+    const json_t *cv = arr(c, "covers"), *e;
+    size_t ei;
     char where[256];
-    if (has_text(c, @"id")) snprintf(where, sizeof where, "guard %.200s", S(c, @"id"));
+    if (has_text(c, "id")) snprintf(where, sizeof where, "guard %.200s", S(c, "id"));
     else snprintf(where, sizeof where, "guard #%zu", i + 1);
-    if (only_keys(a, c, where, @[ @"id", @"path", @"symbol", @"symbols", @"selector", @"guard", @"fallback", @"sources", @"covers",
-                                  @"provenance", @"review" ]) ||
-        (pv && only_keys(a, pv, where, @[ @"revision", @"patches_sha256", @"features" ])) ||
-        (rv && only_keys(a, rv, where, @[ @"status", @"reviewer", @"reason" ])))
+    if (only_keys(a, c, where, KEYS("id", "path", "symbol", "symbols", "selector", "guard", "fallback", "sources", "covers", "provenance", "review")) ||
+        (pv && only_keys(a, pv, where, KEYS("revision", "patches_sha256", "features"))) ||
+        (rv && only_keys(a, rv, where, KEYS("status", "reviewer", "reason"))))
         return OBJC_CANNOT_MEASURE;
-    if (!has_text(c, @"id") || !has_text(c, @"path") || !has_text(c, @"selector") || !has_text(c, @"guard") || !has_text(c, @"fallback"))
+    if (!has_text(c, "id") || !has_text(c, "path") || !has_text(c, "selector") || !has_text(c, "guard") || !has_text(c, "fallback"))
         return objc_fail(a, MBE, NULL, 0, "%s: id, path, selector, guard or fallback is missing", where);
-    if (!pv || !str(pv, @"revision") || !str(pv, @"patches_sha256") || !str(pv, @"features"))
+    if (!pv || !str(pv, "revision") || !str(pv, "patches_sha256") || !str(pv, "features"))
         return objc_fail(a, MBE, NULL, 0, "%s: provenance is not {revision, patches_sha256, features}", where);
-    if (!rv || !has_text(rv, @"status") || !string_or_absent(rv, @"reviewer") || !string_or_absent(rv, @"reason"))
+    if (!rv || !has_text(rv, "status") || !string_or_absent(rv, "reviewer") || !string_or_absent(rv, "reason"))
         return objc_fail(a, MBE, NULL, 0, "%s: review has no status", where);
-    if (![cv count]) return objc_fail(a, MBE, NULL, 0, "%s: covers is missing or empty", where);
-    if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->path, S(c, @"path")) ||
-        objc_set_string(&g->selector, S(c, @"selector")) || objc_set_string(&g->guard_selector, S(c, @"guard")) ||
-        objc_set_string(&g->fallback, S(c, @"fallback")) || objc_set_string(&g->source_revision, S(pv, @"revision")) ||
-        objc_set_string(&g->patches_sha256, S(pv, @"patches_sha256")) || objc_set_string(&g->features, S(pv, @"features")) ||
-        objc_set_string(&g->review_status, S(rv, @"status")) || objc_set_string(&g->reviewer, S(rv, @"reviewer")) ||
-        objc_set_string(&g->review_reason, S(rv, @"reason")))
+    if (!json_array_size(cv)) return objc_fail(a, MBE, NULL, 0, "%s: covers is missing or empty", where);
+    if (objc_set_string(&g->id, S(c, "id")) || objc_set_string(&g->path, S(c, "path")) ||
+        objc_set_string(&g->selector, S(c, "selector")) || objc_set_string(&g->guard_selector, S(c, "guard")) ||
+        objc_set_string(&g->fallback, S(c, "fallback")) || objc_set_string(&g->source_revision, S(pv, "revision")) ||
+        objc_set_string(&g->patches_sha256, S(pv, "patches_sha256")) || objc_set_string(&g->features, S(pv, "features")) ||
+        objc_set_string(&g->review_status, S(rv, "status")) || objc_set_string(&g->reviewer, S(rv, "reviewer")) ||
+        objc_set_string(&g->review_reason, S(rv, "reason")))
         return objc_fail(a, "out-of-memory", NULL, 0, "guard");
     if (parse_symbols(a, c, where, &g->symbol, &g->symbols, &g->nsymbols) || parse_cites(a, c, where, &g->sources, &g->nsources))
         return OBJC_CANNOT_MEASURE;
-    for (NSDictionary *e in cv) {
+    json_array_foreach(cv, ei, e) {
         ObjcCover *v;
         uint64_t count;
-        if (!exact_keys(e, @[ @"selector", @"count" ]) || !has_text(e, @"selector") || !json_count([e objectForKey:@"count"], &count))
+        if (!exact_keys(e, KEYS("selector", "count")) || !has_text(e, "selector") || !json_count(member(e, "count"), &count))
             return objc_fail(a, MBE, NULL, 0, "%s: a cover is not exactly {selector, count} with a positive count", where);
         if (!(v = realloc(g->covers, (g->ncovers + 1) * sizeof *v))) return objc_fail(a, "out-of-memory", NULL, 0, "covers");
         g->covers = v; v = &v[g->ncovers++]; memset(v, 0, sizeof *v);
         v->count = count;
-        if (objc_set_string(&v->selector, S(e, @"selector"))) return objc_fail(a, "out-of-memory", NULL, 0, "covers");
+        if (objc_set_string(&v->selector, S(e, "selector"))) return objc_fail(a, "out-of-memory", NULL, 0, "covers");
     }
     return OBJC_OK;
 }
-static int parse_position2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcPositionEvidence *g) {
-    NSDictionary *pos = obj(c, @"position");
+static int parse_position2(ObjcAnalysis *a, const json_t *c, size_t i, ObjcPositionEvidence *g) {
+    const json_t *pos = obj(c, "position"), *s;
+    size_t si;
     char where[256];
-    if (has_text(c, @"id")) snprintf(where, sizeof where, "position evidence %.200s", S(c, @"id"));
+    if (has_text(c, "id")) snprintf(where, sizeof where, "position evidence %.200s", S(c, "id"));
     else snprintf(where, sizeof where, "position evidence #%zu", i + 1);
-    if (only_keys(a, c, where, @[ @"id", @"path", @"symbol", @"symbols", @"selectors", @"kind", @"class", @"position", @"sources", @"note" ]) ||
-        (pos && only_keys(a, pos, where, @[ @"form", @"selector", @"rust_type", @"field" ])))
+    if (only_keys(a, c, where, KEYS("id", "path", "symbol", "symbols", "selectors", "kind", "class", "position", "sources", "note")) ||
+        (pos && only_keys(a, pos, where, KEYS("form", "selector", "rust_type", "field"))))
         return OBJC_CANNOT_MEASURE;
-    if (!has_text(c, @"id") || !has_text(c, @"path") || !has_text(c, @"kind") || !has_text(c, @"class") || !pos ||
-        ![arr(c, @"selectors") count] || !string_or_absent(c, @"note"))
+    if (!has_text(c, "id") || !has_text(c, "path") || !has_text(c, "kind") || !has_text(c, "class") || !pos ||
+        !json_array_size(arr(c, "selectors")) || !string_or_absent(c, "note"))
         return objc_fail(a, MBE, NULL, 0, "%s: id, path, selectors, kind, class or position is missing", where);
-    if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->path, S(c, @"path")) ||
-        objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->cls, S(c, @"class")) ||
-        objc_set_string(&g->note, S(c, @"note")) ||
-        objc_set_string(&g->form, S(pos, @"form")) || objc_set_string(&g->position_selector, S(pos, @"selector")) ||
-        objc_set_string(&g->rust_type, S(pos, @"rust_type")) || objc_set_string(&g->field, S(pos, @"field")))
+    if (objc_set_string(&g->id, S(c, "id")) || objc_set_string(&g->path, S(c, "path")) ||
+        objc_set_string(&g->kind, S(c, "kind")) || objc_set_string(&g->cls, S(c, "class")) ||
+        objc_set_string(&g->note, S(c, "note")) ||
+        objc_set_string(&g->form, S(pos, "form")) || objc_set_string(&g->position_selector, S(pos, "selector")) ||
+        objc_set_string(&g->rust_type, S(pos, "rust_type")) || objc_set_string(&g->field, S(pos, "field")))
         return objc_fail(a, "out-of-memory", NULL, 0, "position evidence");
-    for (id s in arr(c, @"selectors"))
-        if (![s isKindOfClass:[NSString class]] || objc_strv_push(&g->selectors, &g->nselectors, cs(s)))
+    json_array_foreach(arr(c, "selectors"), si, s)
+        if (!json_is_string(s) || objc_strv_push(&g->selectors, &g->nselectors, json_string_value(s)))
             return objc_fail(a, MBE, NULL, 0, "%s: selectors", where);
     if (parse_symbols(a, c, where, &g->symbol, &g->symbols, &g->nsymbols) || parse_cites(a, c, where, &g->sources, &g->nsources))
         return OBJC_CANNOT_MEASURE;
     return OBJC_OK;
 }
 
-static int parse_type2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcTypeEvidence *g) {
+static int parse_type2(ObjcAnalysis *a, const json_t *c, size_t i, ObjcTypeEvidence *g) {
+    const json_t *s;
+    size_t si;
     char where[256];
-    if (has_text(c, @"id")) snprintf(where, sizeof where, "type evidence %.200s", S(c, @"id"));
+    if (has_text(c, "id")) snprintf(where, sizeof where, "type evidence %.200s", S(c, "id"));
     else snprintf(where, sizeof where, "type evidence #%zu", i + 1);
-    if (only_keys(a, c, where, @[ @"id", @"path", @"symbol", @"symbols", @"rust_type", @"position", @"kind", @"selectors", @"sources", @"note" ]))
+    if (only_keys(a, c, where, KEYS("id", "path", "symbol", "symbols", "rust_type", "position", "kind", "selectors", "sources", "note")))
         return OBJC_CANNOT_MEASURE;
-    if (!has_text(c, @"id") || !has_text(c, @"path") || !has_text(c, @"rust_type") || !has_text(c, @"position") ||
-        !has_text(c, @"kind") || ![arr(c, @"selectors") count] || !string_or_absent(c, @"note"))
+    if (!has_text(c, "id") || !has_text(c, "path") || !has_text(c, "rust_type") || !has_text(c, "position") ||
+        !has_text(c, "kind") || !json_array_size(arr(c, "selectors")) || !string_or_absent(c, "note"))
         return objc_fail(a, MBE, NULL, 0, "%s: id, path, rust_type, position, kind or selectors is missing", where);
-    if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->path, S(c, @"path")) ||
-        objc_set_string(&g->rust_type, S(c, @"rust_type")) || objc_set_string(&g->position, S(c, @"position")) ||
-        objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->note, S(c, @"note")))
+    if (objc_set_string(&g->id, S(c, "id")) || objc_set_string(&g->path, S(c, "path")) ||
+        objc_set_string(&g->rust_type, S(c, "rust_type")) || objc_set_string(&g->position, S(c, "position")) ||
+        objc_set_string(&g->kind, S(c, "kind")) || objc_set_string(&g->note, S(c, "note")))
         return objc_fail(a, "out-of-memory", NULL, 0, "type evidence");
-    for (id s in arr(c, @"selectors"))
-        if (![s isKindOfClass:[NSString class]] || ![s length] || objc_strv_push(&g->selectors, &g->nselectors, cs(s)))
+    json_array_foreach(arr(c, "selectors"), si, s)
+        if (!json_is_string(s) || !*json_string_value(s) || objc_strv_push(&g->selectors, &g->nselectors, json_string_value(s)))
             return objc_fail(a, MBE, NULL, 0, "%s: selectors", where);
     if (parse_symbols(a, c, where, &g->symbol, &g->symbols, &g->nsymbols) || parse_cites(a, c, where, &g->sources, &g->nsources))
         return OBJC_CANNOT_MEASURE;
@@ -379,134 +454,141 @@ static int parse_type2(ObjcAnalysis *a, NSDictionary *c, size_t i, ObjcTypeEvide
  * scripts/objc-build-evidence.sh (prestrip, link map, references, providers), or both. A recorded
  * reference manifest must be the one in use; provider records attach to --provider-prefix's
  * declarations (load them first). */
-static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *manifest_sha) {
-    NSDictionary *b, *art, *src, *refs;
-    size_t i;
+static int build_evidence_from(ObjcAnalysis *a, const char *path, const char *manifest_sha, const json_t *b) {
+    const json_t *art, *src, *refs, *c, *s;
+    size_t i, ci, si;
     uint64_t schema = 0;
     int two;
-    if (!(b = read_json(a, path, JSON_MAX, "build evidence"))) return OBJC_CANNOT_MEASURE;
-    if (only_keys(a, b, "build evidence", @[ @"schema", @"kind", @"artifact", @"source", @"crates", @"type_map",
-                                              @"type_evidence", @"position_evidence", @"binding_receipt", @"guards", @"prestrip", @"link_map",
-                                              @"references", @"providers" ]))
+    if (only_keys(a, b, "build evidence", KEYS("schema", "kind", "artifact", "source", "crates", "type_map", "type_evidence", "position_evidence", "binding_receipt", "guards", "prestrip", "link_map", "references", "providers")))
         return OBJC_CANNOT_MEASURE;
-    two = json_count([b objectForKey:@"schema"], &schema) && schema == 2;
-    if ((!two && ![[b objectForKey:@"schema"] isEqual:@1]) || ![str(b, @"kind") isEqualToString:@"objc-build-evidence"] ||
-        !(art = obj(b, @"artifact")) || !str(art, @"sha256") || !(src = obj(b, @"source")))
+    two = json_count(member(b, "schema"), &schema) && schema == 2;
+    if ((!two && !objc_jis_int(member(b, "schema"), 1)) || !is(b, "kind", "objc-build-evidence") ||
+        !(art = obj(b, "artifact")) || !str(art, "sha256") || !(src = obj(b, "source")))
         return objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: not schema-1 or schema-2 objc build evidence", path);
-    if (two && (only_keys(a, src, "build evidence source", @[ @"tree_sha256", @"revision", @"patches_sha256", @"features" ]) ||
-                !string_or_absent(src, @"revision") || !string_or_absent(src, @"patches_sha256") || !string_or_absent(src, @"features")))
+    if (two && (only_keys(a, src, "build evidence source", KEYS("tree_sha256", "revision", "patches_sha256", "features")) ||
+                !string_or_absent(src, "revision") || !string_or_absent(src, "patches_sha256") || !string_or_absent(src, "features")))
         return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, MBE, NULL, 0, "%s: source provenance is not strings", path);
-    if (two && (!hex64(S(src, @"tree_sha256")) || objc_set_string(&a->be_tree_sha256, S(src, @"tree_sha256"))))
+    if (two && (!hex64(S(src, "tree_sha256")) || objc_set_string(&a->be_tree_sha256, S(src, "tree_sha256"))))
         return objc_fail(a, MBE, NULL, 0, "%s: source.tree_sha256 is not a SHA-256", path);
     a->be_schema = two ? 2 : 1;
     a->have_build_evidence = 1;
-    if ((refs = obj(b, @"references")) && (!S(refs, @"manifest_sha256") || strcmp(S(refs, @"manifest_sha256"), manifest_sha)))
+    if ((refs = obj(b, "references")) && (!S(refs, "manifest_sha256") || strcmp(S(refs, "manifest_sha256"), manifest_sha)))
         return objc_fail(a, "stale-build-evidence", NULL, 0, "%s was made against reference manifest %s, not %s", path,
-                         S(refs, @"manifest_sha256") ? S(refs, @"manifest_sha256") : "(none)", manifest_sha);
-    if (obj(b, @"link_map") && hex64(S(obj(b, @"link_map"), @"sha256")) &&
-        objc_set_string(&a->be_link_map_sha256, S(obj(b, @"link_map"), @"sha256")))
+                         S(refs, "manifest_sha256") ? S(refs, "manifest_sha256") : "(none)", manifest_sha);
+    if (obj(b, "link_map") && hex64(S(obj(b, "link_map"), "sha256")) &&
+        objc_set_string(&a->be_link_map_sha256, S(obj(b, "link_map"), "sha256")))
         return objc_fail(a, "out-of-memory", NULL, 0, "evidence");
-    if ([b objectForKey:@"providers"] && (!arr(b, @"providers") || load_evidence_providers(a, arr(b, @"providers"))))
+    if (member(b, "providers") && (!arr(b, "providers") || load_evidence_providers(a, arr(b, "providers"))))
         return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, "malformed-build-evidence", NULL, 0, "%s: providers is not a list", path);
-    if (objc_set_string(&a->be_artifact_sha256, S(art, @"sha256")) || objc_set_string(&a->be_source_revision, S(src, @"revision")) ||
-        objc_set_string(&a->be_patches_sha256, S(src, @"patches_sha256")) || objc_set_string(&a->be_features, S(src, @"features")))
+    if (objc_set_string(&a->be_artifact_sha256, S(art, "sha256")) || objc_set_string(&a->be_source_revision, S(src, "revision")) ||
+        objc_set_string(&a->be_patches_sha256, S(src, "patches_sha256")) || objc_set_string(&a->be_features, S(src, "features")))
         return objc_fail(a, "out-of-memory", NULL, 0, "evidence");
     i = 0;
-    for (NSDictionary *c in arr(b, @"crates") ?: @[]) {
+    json_array_foreach(arr(b, "crates"), ci, c) {
         ObjcCrate *g;
-        if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->crates, (a->n_crates + 1) * sizeof *g)))
+        if (!json_is_object(c) || !(g = realloc(a->crates, (a->n_crates + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "crate %zu", i + 1);
-        if (two && (only_keys(a, c, "crate", @[ @"name", @"version", @"checksum", @"disambiguator" ]) ||
-                    !has_text(c, @"name") || !has_text(c, @"version") || ([c objectForKey:@"checksum"] && !has_text(c, @"checksum")) ||
-                    !string_or_absent(c, @"disambiguator")))
+        a->crates = g;
+        if (two && (only_keys(a, c, "crate", KEYS("name", "version", "checksum", "disambiguator")) ||
+                    !has_text(c, "name") || !has_text(c, "version") || (member(c, "checksum") && !has_text(c, "checksum")) ||
+                    !string_or_absent(c, "disambiguator")))
             return a->n_errors ? OBJC_CANNOT_MEASURE : objc_fail(a, MBE, NULL, 0, "crate %zu lacks name or version, or has an empty checksum", i + 1);
-        a->crates = g; memset(&g[a->n_crates], 0, sizeof *g); g = &g[a->n_crates++];
-        if (objc_set_string(&g->name, S(c, @"name")) || objc_set_string(&g->version, S(c, @"version")) ||
-            objc_set_string(&g->checksum, S(c, @"checksum")) || objc_set_string(&g->disambiguator, S(c, @"disambiguator")))
+        memset(&g[a->n_crates], 0, sizeof *g); g = &g[a->n_crates++];
+        if (objc_set_string(&g->name, S(c, "name")) || objc_set_string(&g->version, S(c, "version")) ||
+            objc_set_string(&g->checksum, S(c, "checksum")) || objc_set_string(&g->disambiguator, S(c, "disambiguator")))
             return objc_fail(a, "out-of-memory", NULL, 0, "crate");
         i++;
     }
-    for (NSDictionary *c in arr(b, @"type_map") ?: @[]) {
+    json_array_foreach(arr(b, "type_map"), ci, c) {
         ObjcTypeMap *g;
-        if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->typemap, (a->n_typemap + 1) * sizeof *g)))
+        if (!json_is_object(c) || !(g = realloc(a->typemap, (a->n_typemap + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "type map");
         a->typemap = g; memset(&g[a->n_typemap], 0, sizeof *g); g = &g[a->n_typemap++];
-        if (objc_set_string(&g->rust_type, S(c, @"rust_type")) || objc_set_string(&g->cls, S(c, @"class")) ||
-            objc_set_string(&g->source, S(c, @"source")))
+        if (objc_set_string(&g->rust_type, S(c, "rust_type")) || objc_set_string(&g->cls, S(c, "class")) ||
+            objc_set_string(&g->source, S(c, "source")))
             return objc_fail(a, "out-of-memory", NULL, 0, "type map");
     }
-    for (NSDictionary *c in arr(b, @"type_evidence") ?: @[]) {
+    json_array_foreach(arr(b, "type_evidence"), ci, c) {
         ObjcTypeEvidence *g;
-        if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->types, (a->n_types + 1) * sizeof *g)))
+        if (!json_is_object(c) || !(g = realloc(a->types, (a->n_types + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "type evidence");
         a->types = g; memset(&g[a->n_types], 0, sizeof *g); g = &g[a->n_types++];
         if (two) {
             if (parse_type2(a, c, a->n_types - 1, g)) return OBJC_CANNOT_MEASURE;
             continue;
         }
-        if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->symbol, S(c, @"symbol")) ||
-            objc_set_string(&g->rust_type, S(c, @"rust_type")) || objc_set_string(&g->position, S(c, @"position")) ||
-            objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->source, S(c, @"source")))
+        if (objc_set_string(&g->id, S(c, "id")) || objc_set_string(&g->symbol, S(c, "symbol")) ||
+            objc_set_string(&g->rust_type, S(c, "rust_type")) || objc_set_string(&g->position, S(c, "position")) ||
+            objc_set_string(&g->kind, S(c, "kind")) || objc_set_string(&g->source, S(c, "source")))
             return objc_fail(a, "out-of-memory", NULL, 0, "type evidence");
-        for (id s in arr(c, @"selectors") ?: @[])
-            if (![s isKindOfClass:[NSString class]] || objc_strv_push(&g->selectors, &g->nselectors, cs(s)))
+        json_array_foreach(arr(c, "selectors"), si, s)
+            if (!json_is_string(s) || objc_strv_push(&g->selectors, &g->nselectors, json_string_value(s)))
                 return objc_fail(a, "malformed-build-evidence", NULL, 0, "type evidence selectors");
     }
-    for (NSDictionary *c in arr(b, @"position_evidence") ?: @[]) {
+    json_array_foreach(arr(b, "position_evidence"), ci, c) {
         ObjcPositionEvidence *g;
-        NSDictionary *pos;
-        if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->positions, (a->n_positions + 1) * sizeof *g)))
+        const json_t *pos;
+        if (!json_is_object(c) || !(g = realloc(a->positions, (a->n_positions + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "position evidence");
         a->positions = g; memset(&g[a->n_positions], 0, sizeof *g); g = &g[a->n_positions++];
         if (two) {
             if (parse_position2(a, c, a->n_positions - 1, g)) return OBJC_CANNOT_MEASURE;
             continue;
         }
-        pos = obj(c, @"position");
-        if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->symbol, S(c, @"symbol")) ||
-            objc_set_string(&g->kind, S(c, @"kind")) || objc_set_string(&g->cls, S(c, @"class")) ||
-            objc_set_string(&g->source, S(c, @"source")) ||
-            (pos && (objc_set_string(&g->form, S(pos, @"form")) || objc_set_string(&g->position_selector, S(pos, @"selector")) ||
-                     objc_set_string(&g->rust_type, S(pos, @"rust_type")) || objc_set_string(&g->field, S(pos, @"field")))))
+        pos = obj(c, "position");
+        if (objc_set_string(&g->id, S(c, "id")) || objc_set_string(&g->symbol, S(c, "symbol")) ||
+            objc_set_string(&g->kind, S(c, "kind")) || objc_set_string(&g->cls, S(c, "class")) ||
+            objc_set_string(&g->source, S(c, "source")) ||
+            (pos && (objc_set_string(&g->form, S(pos, "form")) || objc_set_string(&g->position_selector, S(pos, "selector")) ||
+                     objc_set_string(&g->rust_type, S(pos, "rust_type")) || objc_set_string(&g->field, S(pos, "field")))))
             return objc_fail(a, "out-of-memory", NULL, 0, "position evidence");
-        for (id s in arr(c, @"selectors") ?: @[])
-            if (![s isKindOfClass:[NSString class]] || objc_strv_push(&g->selectors, &g->nselectors, cs(s)))
+        json_array_foreach(arr(c, "selectors"), si, s)
+            if (!json_is_string(s) || objc_strv_push(&g->selectors, &g->nselectors, json_string_value(s)))
                 return objc_fail(a, "malformed-build-evidence", NULL, 0, "position evidence selectors");
     }
-    for (NSDictionary *c in arr(b, @"binding_receipt") ?: @[]) {
+    json_array_foreach(arr(b, "binding_receipt"), ci, c) {
         ObjcReceiptRow *g;
-        if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->receipt, (a->n_receipt + 1) * sizeof *g)))
+        if (!json_is_object(c) || !(g = realloc(a->receipt, (a->n_receipt + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "receipt");
         a->receipt = g; memset(&g[a->n_receipt], 0, sizeof *g); g = &g[a->n_receipt++];
-        if (objc_set_string(&g->demangled, S(c, @"cache")) || objc_set_string(&g->selector, S(c, @"selector")) ||
-            objc_set_string(&g->receiver, S(c, @"receiver")) || objc_set_string(&g->kind, S(c, @"kind")) ||
-            objc_set_string(&g->provenance, S(c, @"source")))
+        if (objc_set_string(&g->demangled, S(c, "cache")) || objc_set_string(&g->selector, S(c, "selector")) ||
+            objc_set_string(&g->receiver, S(c, "receiver")) || objc_set_string(&g->kind, S(c, "kind")) ||
+            objc_set_string(&g->provenance, S(c, "source")))
             return objc_fail(a, "out-of-memory", NULL, 0, "receipt");
     }
-    for (NSDictionary *c in arr(b, @"guards") ?: @[]) {
+    json_array_foreach(arr(b, "guards"), ci, c) {
         ObjcGuardRecord *g;
-        NSDictionary *gs, *rv;
-        id line;
-        if (![c isKindOfClass:[NSDictionary class]] || !(g = realloc(a->guards, (a->n_guards + 1) * sizeof *g)))
+        const json_t *gs, *rv, *line;
+        if (!json_is_object(c) || !(g = realloc(a->guards, (a->n_guards + 1) * sizeof *g)))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "guard");
         a->guards = g; memset(&g[a->n_guards], 0, sizeof *g); g = &g[a->n_guards++];
         if (two) {
             if (parse_guard2(a, c, a->n_guards - 1, g)) return OBJC_CANNOT_MEASURE;
             continue;
         }
-        gs = obj(c, @"source") ?: @{}; rv = obj(c, @"review") ?: @{};
-        line = [gs objectForKey:@"line"];
-        g->source_line = [line isKindOfClass:[NSNumber class]] && [line longLongValue] > 0 ? (uint64_t)[line longLongValue] : 0;
-        if (objc_set_string(&g->id, S(c, @"id")) || objc_set_string(&g->symbol, S(c, @"function")) ||
-            objc_set_string(&g->selector, S(c, @"selector")) || objc_set_string(&g->guard_selector, S(c, @"guard")) ||
-            objc_set_string(&g->fallback, S(c, @"fallback")) || objc_set_string(&g->source_file, S(gs, @"file")) ||
-            objc_set_string(&g->source_sha256, S(gs, @"sha256")) || objc_set_string(&g->source_revision, S(gs, @"revision")) ||
-            objc_set_string(&g->patches_sha256, S(gs, @"patches_sha256")) || objc_set_string(&g->features, S(gs, @"features")) ||
-            objc_set_string(&g->review_status, S(rv, @"status")) || objc_set_string(&g->reviewer, S(rv, @"reviewer")) ||
-            objc_set_string(&g->review_reason, S(rv, @"reason")))
+        gs = obj(c, "source"); rv = obj(c, "review");
+        line = member(gs, "line");
+        if (json_is_real(line) || json_is_boolean(line))
+            return objc_fail(a, MBE, NULL, 0, "guard %zu: its source line is not an integer", a->n_guards);
+        g->source_line = json_is_integer(line) && json_integer_value(line) > 0 ? (uint64_t)json_integer_value(line) : 0;
+        if (objc_set_string(&g->id, S(c, "id")) || objc_set_string(&g->symbol, S(c, "function")) ||
+            objc_set_string(&g->selector, S(c, "selector")) || objc_set_string(&g->guard_selector, S(c, "guard")) ||
+            objc_set_string(&g->fallback, S(c, "fallback")) || objc_set_string(&g->source_file, S(gs, "file")) ||
+            objc_set_string(&g->source_sha256, S(gs, "sha256")) || objc_set_string(&g->source_revision, S(gs, "revision")) ||
+            objc_set_string(&g->patches_sha256, S(gs, "patches_sha256")) || objc_set_string(&g->features, S(gs, "features")) ||
+            objc_set_string(&g->review_status, S(rv, "status")) || objc_set_string(&g->reviewer, S(rv, "reviewer")) ||
+            objc_set_string(&g->review_reason, S(rv, "reason")))
             return objc_fail(a, "out-of-memory", NULL, 0, "guard");
     }
     return OBJC_OK;
+}
+static int load_build_evidence(ObjcAnalysis *a, const char *path, const char *manifest_sha) {
+    json_t *b;
+    int rc;
+    if (!(b = read_json(a, path, JSON_MAX, "build evidence"))) return OBJC_CANNOT_MEASURE;
+    rc = build_evidence_from(a, path, manifest_sha, b);
+    json_decref(b);
+    return rc;
 }
 
 /* ---- provider declarations (provider.c header) ------------------------------------------------- */
@@ -531,13 +613,8 @@ static int hex64(const char *s) {
     for (i = 0; i < 64; i++) if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) return 0;
     return 1;
 }
-static int json_int(id x, int n) {
-    return [x isKindOfClass:[NSNumber class]] && CFGetTypeID((CFTypeRef)x) != CFBooleanGetTypeID() &&
-           !CFNumberIsFloatType((CFNumberRef)x) && [x isEqual:[NSNumber numberWithInt:n]];
-}
-static int exact_keys(NSDictionary *d, NSArray *keys) {
-    return [d isKindOfClass:[NSDictionary class]] && [[NSSet setWithArray:[d allKeys]] isEqualToSet:[NSSet setWithArray:keys]];
-}
+static int json_int(const json_t *x, int n) { return objc_jis_int(x, n); }
+static int exact_keys(const json_t *d, const char *const *keys, size_t n) { return objc_jexact_keys(d, keys, n); }
 
 /* PREFIX/share/recaulk/objc-providers.json, schema 1 as Recaulk's build/objc-provider-manifest.m
  * writes it, or schema 2: `providers` are groups (one class, an absent-only guard, one activation
@@ -549,190 +626,212 @@ static int exact_keys(NSDictionary *d, NSArray *keys) {
  * declared digest and a source receipt that hashes to its digest. */
 typedef struct {
     const char *decl, *archive, *ash, *dsha, *receipt;
-    NSDictionary *build;
-    NSMutableSet *claimed;   /* schema 2: "class\tkind\tselector" of every method so far */
+    const json_t *build;
+    Strv *claimed;   /* schema 2: "class\tkind\tselector" of every method so far, sorted by strcmp */
 } LoadCtx;
 
 static int claim(ObjcAnalysis *a, const LoadCtx *c, const char *cls, const char *kind, const char *sel) {
-    NSString *k = [NSString stringWithFormat:@"%s\t%s\t%s", cls, kind, sel];
+    char *k, **g;
+    size_t lo = 0, hi;
     if (!c->claimed) return OBJC_OK;
-    if ([c->claimed containsObject:k])
+    if (!(k = malloc(strlen(cls) + strlen(kind) + strlen(sel) + 3))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    sprintf(k, "%s\t%s\t%s", cls, kind, sel);
+    if (bsearch(&k, c->claimed->v, c->claimed->n, sizeof *c->claimed->v, str_cmp)) {
+        free(k);
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: %s%s %s is declared twice", c->decl, kind, cls, sel);
-    [c->claimed addObject:k];
+    }
+    for (hi = c->claimed->n; lo < hi; ) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (strcmp(c->claimed->v[mid], k) < 0) lo = mid + 1; else hi = mid;
+    }
+    if (!(g = realloc(c->claimed->v, (c->claimed->n + 1) * sizeof *g))) { free(k); return objc_fail(a, "out-of-memory", NULL, 0, "provider"); }
+    memmove(g + lo + 1, g + lo, (c->claimed->n - lo) * sizeof *g);
+    g[lo] = k;
+    c->claimed->v = g; c->claimed->n++;
     return OBJC_OK;
 }
 
 /* The fields every entry or group shares: frameworks, build record, measured digests. */
-static int fill_common(ObjcAnalysis *a, ObjcProvider *p, const LoadCtx *c, NSDictionary *q, NSArray *fws) {
-    for (id f in fws)
-        if (![f isKindOfClass:[NSString class]] || !charset(cs(f), 100, fw_first, c_rest) || objc_strv_push(&p->frameworks, &p->nframeworks, cs(f)))
+static int fill_common(ObjcAnalysis *a, ObjcProvider *p, const LoadCtx *c, const json_t *q, const json_t *fws) {
+    const json_t *f;
+    size_t fi;
+    json_array_foreach(fws, fi, f)
+        if (!json_is_string(f) || !charset(json_string_value(f), 100, fw_first, c_rest) || objc_strv_push(&p->frameworks, &p->nframeworks, json_string_value(f)))
             return objc_fail(a, "malformed-provider", NULL, 0, "%s: required_frameworks holds a non-identifier", c->decl);
-    if (objc_set_string(&p->provider_id, S(q, @"provider_id")) || objc_set_string(&p->cls, S(q, @"class")) ||
-        objc_set_string(&p->root_symbol, S(q, @"activation_root")) || objc_set_string(&p->archive, c->archive) ||
+    if (objc_set_string(&p->provider_id, S(q, "provider_id")) || objc_set_string(&p->cls, S(q, "class")) ||
+        objc_set_string(&p->root_symbol, S(q, "activation_root")) || objc_set_string(&p->archive, c->archive) ||
         objc_set_string(&p->archive_sha256, c->ash) || objc_set_string(&p->declaration_sha256, c->dsha) ||
-        objc_set_string(&p->sdk_settings_sha256, S(c->build, @"sdk_settings_sha256")) || objc_set_string(&p->source_inputs, c->receipt))
+        objc_set_string(&p->sdk_settings_sha256, S(c->build, "sdk_settings_sha256")) || objc_set_string(&p->source_inputs, c->receipt))
         return objc_fail(a, "out-of-memory", NULL, 0, "provider");
     return OBJC_OK;
 }
 
-static int method_ok(NSDictionary *q, const char **kind) {
-    return (*kind = S(q, @"method_kind")) && !(strcmp(*kind, "-") && strcmp(*kind, "+")) &&
-           charset(S(q, @"selector"), 400, c_first, sel_rest) && charset(S(q, @"encoding"), 200, enc_char, enc_char) &&
-           charset(S(q, @"implementation_symbol"), 200, c_first, c_rest);
+static int method_ok(const json_t *q, const char **kind) {
+    return (*kind = S(q, "method_kind")) && !(strcmp(*kind, "-") && strcmp(*kind, "+")) &&
+           charset(S(q, "selector"), 400, c_first, sel_rest) && charset(S(q, "encoding"), 200, enc_char, enc_char) &&
+           charset(S(q, "implementation_symbol"), 200, c_first, c_rest);
 }
 
 /* A schema-1-shaped entry (a schema-1 file's, or a schema-2 file's legacy_providers). */
-static int load_entry(ObjcAnalysis *a, const LoadCtx *c, NSDictionary *q, int schema) {
+static int load_entry(ObjcAnalysis *a, const LoadCtx *c, const json_t *q, int schema) {
     ObjcProvider *p;
-    NSArray *fws;
+    const json_t *fws;
     const char *kind;
     int rc;
-    if (!exact_keys(q, @[ @"provider_id", @"class", @"method_kind", @"selector", @"encoding", @"implementation_symbol",
-                          @"activation_root", @"required_frameworks", @"framework_policy" ]) ||
-        !charset(S(q, @"provider_id"), 200, id_first, id_rest) || !charset(S(q, @"class"), 200, c_first, c_rest) ||
-        !method_ok(q, &kind) || !charset(S(q, @"activation_root"), 200, c_first, c_rest) ||
-        ![str(q, @"framework_policy") isEqualToString:@"strong-linked-before-root"] ||
-        !(fws = arr(q, @"required_frameworks")) || ![fws count])
+    if (!exact_keys(q, KEYS("provider_id", "class", "method_kind", "selector", "encoding", "implementation_symbol", "activation_root", "required_frameworks", "framework_policy")) ||
+        !charset(S(q, "provider_id"), 200, id_first, id_rest) || !charset(S(q, "class"), 200, c_first, c_rest) ||
+        !method_ok(q, &kind) || !charset(S(q, "activation_root"), 200, c_first, c_rest) ||
+        !is(q, "framework_policy", "strong-linked-before-root") ||
+        !(fws = arr(q, "required_frameworks")) || !json_array_size(fws))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: a provider entry is not a valid declaration", c->decl);
-    if ((rc = claim(a, c, S(q, @"class"), kind, S(q, @"selector")))) return rc;
+    if ((rc = claim(a, c, S(q, "class"), kind, S(q, "selector")))) return rc;
     if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;
     p->schema = schema; p->legacy = 1;
     if ((rc = fill_common(a, p, c, q, fws))) return rc;
-    if (objc_set_string(&p->method_kind, kind) || objc_set_string(&p->selector, S(q, @"selector")) ||
-        objc_set_string(&p->encoding, S(q, @"encoding")) || objc_set_string(&p->impl_symbol, S(q, @"implementation_symbol")))
+    if (objc_set_string(&p->method_kind, kind) || objc_set_string(&p->selector, S(q, "selector")) ||
+        objc_set_string(&p->encoding, S(q, "encoding")) || objc_set_string(&p->impl_symbol, S(q, "implementation_symbol")))
         return objc_fail(a, "out-of-memory", NULL, 0, "provider");
     return OBJC_OK;
 }
 
 /* A schema-2 group: one class, one root, an absent-only guard, a non-empty list of methods. */
-static int load_group(ObjcAnalysis *a, const LoadCtx *c, NSDictionary *q) {
+static int load_group(ObjcAnalysis *a, const LoadCtx *c, const json_t *q) {
     ObjcProvider *p;
-    NSArray *fws, *ms;
+    const json_t *fws, *ms, *m;
+    size_t mi;
     int rc;
-    if (!exact_keys(q, @[ @"provider_id", @"class", @"guard", @"activation_root", @"required_frameworks", @"framework_policy",
-                          @"methods" ]) ||
-        !charset(S(q, @"provider_id"), 200, id_first, id_rest) || !charset(S(q, @"class"), 200, c_first, c_rest) ||
-        ![str(q, @"guard") isEqualToString:@"absent-only"] || !charset(S(q, @"activation_root"), 200, c_first, c_rest) ||
-        ![str(q, @"framework_policy") isEqualToString:@"strong-linked-before-root"] ||
-        !(fws = arr(q, @"required_frameworks")) || ![fws count] || !(ms = arr(q, @"methods")) || ![ms count])
+    if (!exact_keys(q, KEYS("provider_id", "class", "guard", "activation_root", "required_frameworks", "framework_policy", "methods")) ||
+        !charset(S(q, "provider_id"), 200, id_first, id_rest) || !charset(S(q, "class"), 200, c_first, c_rest) ||
+        !is(q, "guard", "absent-only") || !charset(S(q, "activation_root"), 200, c_first, c_rest) ||
+        !is(q, "framework_policy", "strong-linked-before-root") ||
+        !(fws = arr(q, "required_frameworks")) || !json_array_size(fws) || !(ms = arr(q, "methods")) || !json_array_size(ms))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: a provider group is not a valid declaration", c->decl);
-    for (NSDictionary *m in ms) {
+    json_array_foreach(ms, mi, m) {
         const char *kind;
-        if (!exact_keys(m, @[ @"kind", @"selector", @"encoding", @"implementation_symbol" ]) ||
-            !(kind = S(m, @"kind")) || (strcmp(kind, "-") && strcmp(kind, "+")) ||
-            !charset(S(m, @"selector"), 400, c_first, sel_rest) || !charset(S(m, @"encoding"), 200, enc_char, enc_char) ||
-            !charset(S(m, @"implementation_symbol"), 200, c_first, c_rest))
-            return objc_fail(a, "malformed-provider", NULL, 0, "%s: a method of group %s is not a valid declaration", c->decl, S(q, @"provider_id"));
-        if ((rc = claim(a, c, S(q, @"class"), kind, S(m, @"selector")))) return rc;
+        if (!exact_keys(m, KEYS("kind", "selector", "encoding", "implementation_symbol")) ||
+            !(kind = S(m, "kind")) || (strcmp(kind, "-") && strcmp(kind, "+")) ||
+            !charset(S(m, "selector"), 400, c_first, sel_rest) || !charset(S(m, "encoding"), 200, enc_char, enc_char) ||
+            !charset(S(m, "implementation_symbol"), 200, c_first, c_rest))
+            return objc_fail(a, "malformed-provider", NULL, 0, "%s: a method of group %s is not a valid declaration", c->decl, S(q, "provider_id"));
+        if ((rc = claim(a, c, S(q, "class"), kind, S(m, "selector")))) return rc;
     }
     if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;
     p->schema = 2; p->legacy = 0;
     if ((rc = fill_common(a, p, c, q, fws)) || objc_set_string(&p->guard, "absent-only")) return rc ? rc : objc_fail(a, "out-of-memory", NULL, 0, "provider");
-    for (NSDictionary *m in ms) {
+    json_array_foreach(ms, mi, m) {
         ObjcProviderMethod *g = realloc(p->methods, (p->n_methods + 1) * sizeof *g);
         if (!g) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
         p->methods = g; g = &g[p->n_methods++]; memset(g, 0, sizeof *g);
-        if (objc_set_string(&g->kind, S(m, @"kind")) || objc_set_string(&g->selector, S(m, @"selector")) ||
-            objc_set_string(&g->encoding, S(m, @"encoding")) || objc_set_string(&g->impl_symbol, S(m, @"implementation_symbol")))
+        if (objc_set_string(&g->kind, S(m, "kind")) || objc_set_string(&g->selector, S(m, "selector")) ||
+            objc_set_string(&g->encoding, S(m, "encoding")) || objc_set_string(&g->impl_symbol, S(m, "implementation_symbol")))
             return objc_fail(a, "out-of-memory", NULL, 0, "provider");
     }
     return OBJC_OK;
 }
 
-static int load_provider_prefix(ObjcAnalysis *a, const char *prefix) {
-    char rp[PATH_MAX], decl[PATH_MAX], dsha[65], ash[65], archive[PATH_MAX];
-    NSDictionary *d, *b;
-    NSArray *ps, *legacy = nil;
+static int provider_prefix_from(ObjcAnalysis *a, const char *rp, const char *decl, const json_t *d, Strv *claimed) {
+    char dsha[65], ash[65], archive[PATH_MAX];
+    const json_t *b, *q;
+    const json_t *ps, *legacy = NULL;
     struct stat st;
     unsigned char rd[CC_SHA256_DIGEST_LENGTH];
     char rsha[65];
     const char *receipt, *ap;
-    int i, schema, rc;
+    size_t qi;
+    int i, j, schema, rc;
     LoadCtx c;
-    if (!realpath(prefix, rp)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s: %s", prefix, strerror(errno));
-    snprintf(decl, sizeof decl, "%s/share/recaulk/objc-providers.json", rp);
-    if (!(d = read_json(a, decl, MANIFEST_MAX, "provider declaration"))) return OBJC_CANNOT_MEASURE;
     if (objc_file_sha256(decl, dsha)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s", decl);
-    schema = [d isKindOfClass:[NSDictionary class]] ? json_int([d objectForKey:@"schema"], 1) ? 1 : json_int([d objectForKey:@"schema"], 2) ? 2 : 0 : 0;
-    if (schema == 2 && [d objectForKey:@"legacy_providers"] &&
-        (!(legacy = arr(d, @"legacy_providers")) || ![legacy count]))
+    schema = json_is_object(d) ? json_int(member(d, "schema"), 1) ? 1 : json_int(member(d, "schema"), 2) ? 2 : 0 : 0;
+    if (schema == 2 && member(d, "legacy_providers") &&
+        (!(legacy = arr(d, "legacy_providers")) || !json_array_size(legacy)))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: legacy_providers is not a non-empty list", decl);
-    if (!schema || !exact_keys(d, schema == 2 && legacy ? @[ @"schema", @"providers", @"build", @"legacy_providers" ]
-                                                         : @[ @"schema", @"providers", @"build" ]) ||
-        !(ps = arr(d, @"providers")) || (![ps count] && !legacy) || !(b = obj(d, @"build")) ||
-        !exact_keys(b, @[ @"archive_path", @"archive_sha256", @"architecture", @"artifact_role", @"minimum_macos",
-                          @"sdk_settings_sha256", @"compiler_identity", @"source_inputs_receipt", @"source_inputs_sha256" ]))
+    if (!schema || !(schema == 2 && legacy ? exact_keys(d, KEYS("schema", "providers", "build", "legacy_providers"))
+                                            : exact_keys(d, KEYS("schema", "providers", "build"))) ||
+        !(ps = arr(d, "providers")) || (!json_array_size(ps) && !legacy) || !(b = obj(d, "build")) ||
+        !exact_keys(b, KEYS("archive_path", "archive_sha256", "architecture", "artifact_role", "minimum_macos", "sdk_settings_sha256", "compiler_identity", "source_inputs_receipt", "source_inputs_sha256")))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: not a schema-1 or schema-2 provider declaration with exactly the known keys", decl);
-    ap = S(b, @"archive_path");
+    ap = S(b, "archive_path");
     if (!ap || strncmp(ap, "lib/", 4) || !charset(ap + 4, 200, file_char, file_char) || strstr(ap, "..") ||
-        strlen(ap) < 7 || strcmp(ap + strlen(ap) - 2, ".a") || ![str(b, @"architecture") isEqualToString:@"x86_64"] ||
-        ![str(b, @"artifact_role") isEqualToString:@"shipping"] || ![str(b, @"minimum_macos") isEqualToString:@"10.9"] ||
-        !hex64(S(b, @"archive_sha256")) || !hex64(S(b, @"sdk_settings_sha256")) || !hex64(S(b, @"source_inputs_sha256")) ||
-        ![str(b, @"compiler_identity") length] || !(receipt = S(b, @"source_inputs_receipt")) || !*receipt)
+        strlen(ap) < 7 || strcmp(ap + strlen(ap) - 2, ".a") || !is(b, "architecture", "x86_64") ||
+        !is(b, "artifact_role", "shipping") || !is(b, "minimum_macos", "10.9") ||
+        !hex64(S(b, "archive_sha256")) || !hex64(S(b, "sdk_settings_sha256")) || !hex64(S(b, "source_inputs_sha256")) ||
+        !has_text(b, "compiler_identity") || !(receipt = S(b, "source_inputs_receipt")) || !*receipt)
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: build is not a shipping x86_64 10.9 archive record", decl);
     CC_SHA256(receipt, (CC_LONG)strlen(receipt), rd);
     for (i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) snprintf(rsha + 2 * i, 3, "%02x", rd[i]);
-    if (strcmp(rsha, S(b, @"source_inputs_sha256")))
+    if (strcmp(rsha, S(b, "source_inputs_sha256")))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: the source receipt does not hash to source_inputs_sha256", decl);
     snprintf(archive, sizeof archive, "%s/%s", rp, ap);
     if (lstat(archive, &st) != 0 || !S_ISREG(st.st_mode) || objc_file_sha256(archive, ash))
         return objc_fail(a, "unreadable-provider", NULL, 0, "%s is missing or not a regular file", archive);
-    if (strcmp(ash, S(b, @"archive_sha256")))
-        return objc_fail(a, "stale-provider-archive", NULL, 0, "%s is %s; the declaration says %s", archive, ash, S(b, @"archive_sha256"));
+    if (strcmp(ash, S(b, "archive_sha256")))
+        return objc_fail(a, "stale-provider-archive", NULL, 0, "%s is %s; the declaration says %s", archive, ash, S(b, "archive_sha256"));
     memset(&c, 0, sizeof c);
     c.decl = decl; c.archive = archive; c.ash = ash; c.dsha = dsha; c.receipt = receipt; c.build = b;
-    if (schema == 2) c.claimed = [NSMutableSet set];
-    for (NSDictionary *q in ps)
+    if (schema == 2) c.claimed = claimed;
+    json_array_foreach(ps, qi, q)
         if ((rc = schema == 2 ? load_group(a, &c, q) : load_entry(a, &c, q, 1))) return rc;
-    for (NSDictionary *q in legacy)
+    json_array_foreach(legacy, qi, q)
         if ((rc = load_entry(a, &c, q, 2))) return rc;
-    if (schema == 2) {
-        NSMutableSet *ids = [NSMutableSet set];
-        for (i = 0; i < (int)a->n_providers; i++) {
-            NSString *id_ = [NSString stringWithUTF8String:a->providers[i].provider_id];
-            if ([ids containsObject:id_]) return objc_fail(a, "malformed-provider", NULL, 0, "%s: provider_id %s is declared twice", decl, a->providers[i].provider_id);
-            [ids addObject:id_];
-        }
-    }
+    if (schema == 2)
+        for (i = 0; i < (int)a->n_providers; i++)
+            for (j = 0; j < i; j++)
+                if (!strcmp(a->providers[j].provider_id, a->providers[i].provider_id))
+                    return objc_fail(a, "malformed-provider", NULL, 0, "%s: provider_id %s is declared twice", decl, a->providers[i].provider_id);
     return OBJC_OK;
+}
+static int load_provider_prefix(ObjcAnalysis *a, const char *prefix) {
+    char rp[PATH_MAX], decl[PATH_MAX];
+    json_t *d;
+    Strv claimed = { NULL, 0 };
+    int rc;
+    if (!realpath(prefix, rp)) return objc_fail(a, "unreadable-provider", NULL, 0, "%s: %s", prefix, strerror(errno));
+    snprintf(decl, sizeof decl, "%s/share/recaulk/objc-providers.json", rp);
+    if (!(d = read_json(a, decl, MANIFEST_MAX, "provider declaration"))) return OBJC_CANNOT_MEASURE;
+    rc = provider_prefix_from(a, rp, decl, d, &claimed);
+    strv_free(&claimed);
+    json_decref(d);
+    return rc;
 }
 
 /* The build evidence's provider records, attached to the declarations of the same id. */
-static int load_evidence_providers(ObjcAnalysis *a, NSArray *list) {
-    for (NSDictionary *c in list) {
+static int load_evidence_providers(ObjcAnalysis *a, const json_t *list) {
+    const json_t *c, *m;
+    size_t ci, mi;
+    json_array_foreach(list, ci, c) {
         ObjcProvider *p = NULL;
         size_t i;
-        if (!exact_keys(c, @[ @"provider_id", @"declaration_sha256", @"archive_sha256", @"members", @"atoms" ]) ||
-            !arr(c, @"members") || !arr(c, @"atoms"))
+        if (!exact_keys(c, KEYS("provider_id", "declaration_sha256", "archive_sha256", "members", "atoms")) ||
+            !arr(c, "members") || !arr(c, "atoms"))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "a provider record lacks or adds keys");
-        for (i = 0; i < a->n_providers; i++) if (S(c, @"provider_id") && !strcmp(a->providers[i].provider_id, S(c, @"provider_id"))) p = &a->providers[i];
+        for (i = 0; i < a->n_providers; i++) if (S(c, "provider_id") && !strcmp(a->providers[i].provider_id, S(c, "provider_id"))) p = &a->providers[i];
         if (!p) continue;   /* no --provider-prefix declares it: nothing to verify against */
         if (p->have_evidence) return objc_fail(a, "malformed-build-evidence", NULL, 0, "provider %s recorded twice", p->provider_id);
         p->have_evidence = 1;
-        if (!hex64(S(c, @"declaration_sha256")) || !hex64(S(c, @"archive_sha256")) ||
-            objc_set_string(&p->ev_declaration_sha256, S(c, @"declaration_sha256")) || objc_set_string(&p->ev_archive_sha256, S(c, @"archive_sha256")))
+        if (!hex64(S(c, "declaration_sha256")) || !hex64(S(c, "archive_sha256")) ||
+            objc_set_string(&p->ev_declaration_sha256, S(c, "declaration_sha256")) || objc_set_string(&p->ev_archive_sha256, S(c, "archive_sha256")))
             return objc_fail(a, "malformed-build-evidence", NULL, 0, "provider %s digests", p->provider_id);
-        for (NSDictionary *m in arr(c, @"members")) {
+        json_array_foreach(arr(c, "members"), mi, m) {
             ObjcProviderMember *g;
-            if (!exact_keys(m, @[ @"name", @"sha256" ]) || !str(m, @"name") || !hex64(S(m, @"sha256")) ||
+            if (!exact_keys(m, KEYS("name", "sha256")) || !str(m, "name") || !hex64(S(m, "sha256")) ||
                 !(g = realloc(p->members, (p->n_members + 1) * sizeof *g)))
                 return objc_fail(a, "malformed-build-evidence", NULL, 0, "provider %s member", p->provider_id);
             p->members = g; g = &g[p->n_members++]; memset(g, 0, sizeof *g);
-            if (objc_set_string(&g->name, S(m, @"name")) || objc_set_string(&g->sha256, S(m, @"sha256"))) return objc_fail(a, "out-of-memory", NULL, 0, "member");
+            if (objc_set_string(&g->name, S(m, "name")) || objc_set_string(&g->sha256, S(m, "sha256"))) return objc_fail(a, "out-of-memory", NULL, 0, "member");
         }
-        for (NSDictionary *m in arr(c, @"atoms")) {
+        json_array_foreach(arr(c, "atoms"), mi, m) {
             ObjcProviderAtom *g;
-            id size = [m objectForKey:@"size"];
-            const char *addr = S(m, @"address");
+            uint64_t size = 0;
+            const char *addr = S(m, "address");
             char *end = NULL;
             unsigned long long va = addr && !strncmp(addr, "0x", 2) ? strtoull(addr + 2, &end, 16) : 0;
-            if (!exact_keys(m, @[ @"member", @"symbol", @"address", @"size" ]) || !str(m, @"member") || !str(m, @"symbol") ||
-                !end || *end || ![size isKindOfClass:[NSNumber class]] || [size longLongValue] <= 0 ||
+            if (!exact_keys(m, KEYS("member", "symbol", "address", "size")) || !str(m, "member") || !str(m, "symbol") ||
+                !end || *end || !json_count(member(m, "size"), &size) ||
                 !(g = realloc(p->atoms, (p->n_atoms + 1) * sizeof *g)))
                 return objc_fail(a, "malformed-build-evidence", NULL, 0, "provider %s atom", p->provider_id);
             p->atoms = g; g = &g[p->n_atoms++]; memset(g, 0, sizeof *g);
-            g->address = va; g->size = (uint64_t)[size longLongValue];
-            if (objc_set_string(&g->member, S(m, @"member")) || objc_set_string(&g->symbol, S(m, @"symbol"))) return objc_fail(a, "out-of-memory", NULL, 0, "atom");
+            g->address = va; g->size = size;
+            if (objc_set_string(&g->member, S(m, "member")) || objc_set_string(&g->symbol, S(m, "symbol"))) return objc_fail(a, "out-of-memory", NULL, 0, "atom");
         }
     }
     return OBJC_OK;
@@ -1105,51 +1204,70 @@ static ObjcException *g_exc;
 static size_t g_nexc;
 static int g_have_exceptions;
 
-static char *dup_or_null(NSString *s) { return s ? strdup([s UTF8String]) : NULL; }
+static char *dup_or_null(const char *s) { return s ? strdup(s) : NULL; }
 static int has_wildcard(const char *s) { return strpbrk(s, "*?[") != NULL; }
-static int nonempty(NSDictionary *d, NSString *k) { NSString *s = str(d, k); return s && [s length] > 0; }
+static int nonempty(const json_t *d, const char *k) { const char *s = str(d, k); return s && *s; }
 /* A JSON string, or null when null_ok: 1 when well-formed, the value in *out (NULL for null). */
-static int str_or_null(NSDictionary *d, NSString *k, int null_ok, NSString **out) {
-    id v = [d objectForKey:k];
-    *out = nil;
-    if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) { *out = v; return 1; }
-    return null_ok && v == [NSNull null];
+static int str_or_null(const json_t *d, const char *k, int null_ok, const char **out) {
+    const json_t *v = member(d, k);
+    *out = NULL;
+    if (json_is_string(v) && *json_string_value(v)) { *out = json_string_value(v); return 1; }
+    return null_ok && json_is_null(v);
 }
 static int same(const char *x, const char *y) { return (!x && !y) || (x && y && !strcmp(x, y)); }
 
-static int load_exception(ObjcAnalysis *a, ObjcException *e, NSDictionary *r) {
-    NSDictionary *fd, *ev, *ba;
-    NSString *cls, *kind, *fn, *besha, *srcrev, *patches;
+static int load_exception(ObjcAnalysis *a, ObjcException *e, const json_t *r) {
+    const json_t *fd, *ev, *ba;
+    const char *cls, *kind, *fn, *besha, *srcrev, *patches;
     const char *g;
-    if (only_keys_as(a, "malformed-exception", r, "objc-api exception record", @[ @"id", @"artifact_glob", @"class", @"kind", @"selector", @"finding",
-                                                         @"evidence", @"basis", @"reviewer", @"review_reason", @"retire_when" ]))
+    if (only_keys_as(a, "malformed-exception", r, "objc-api exception record", KEYS("id", "artifact_glob", "class", "kind", "selector", "finding", "evidence", "basis", "reviewer", "review_reason", "retire_when")))
         return OBJC_CANNOT_MEASURE;
-    if (!nonempty(r, @"artifact_glob") || !nonempty(r, @"selector") || !nonempty(r, @"reviewer") || !nonempty(r, @"review_reason") ||
-        !nonempty(r, @"retire_when") || !str_or_null(r, @"class", 1, &cls) || !str_or_null(r, @"kind", 1, &kind) ||
-        !(fd = obj(r, @"finding")) || !(ev = obj(r, @"evidence")) || !(ba = obj(r, @"basis")))
+    if (!nonempty(r, "artifact_glob") || !nonempty(r, "selector") || !nonempty(r, "reviewer") || !nonempty(r, "review_reason") ||
+        !nonempty(r, "retire_when") || !str_or_null(r, "class", 1, &cls) || !str_or_null(r, "kind", 1, &kind) ||
+        !(fd = obj(r, "finding")) || !(ev = obj(r, "evidence")) || !(ba = obj(r, "basis")))
         return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: a required field is missing, empty or of the wrong type", e->evidence, e->id);
-    if (only_keys_as(a, "malformed-exception", fd, "objc-api exception finding", @[ @"id", @"site", @"function" ]) ||
-        only_keys_as(a, "malformed-exception", ev, "objc-api exception evidence", @[ @"artifact_sha256", @"build_evidence_sha256", @"source_revision", @"patches_sha256" ]) ||
-        only_keys_as(a, "malformed-exception", ba, "objc-api exception basis", @[ @"kind", @"proof" ]))
+    if (only_keys_as(a, "malformed-exception", fd, "objc-api exception finding", KEYS("id", "site", "function")) ||
+        only_keys_as(a, "malformed-exception", ev, "objc-api exception evidence", KEYS("artifact_sha256", "build_evidence_sha256", "source_revision", "patches_sha256")) ||
+        only_keys_as(a, "malformed-exception", ba, "objc-api exception basis", KEYS("kind", "proof")))
         return OBJC_CANNOT_MEASURE;
-    if (!nonempty(fd, @"id") || !nonempty(fd, @"site") || !str_or_null(fd, @"function", 1, &fn) || !nonempty(ev, @"artifact_sha256") ||
-        !str_or_null(ev, @"build_evidence_sha256", 1, &besha) || !str_or_null(ev, @"source_revision", 1, &srcrev) ||
-        !str_or_null(ev, @"patches_sha256", 1, &patches) || !nonempty(ba, @"kind") || !nonempty(ba, @"proof"))
+    if (!nonempty(fd, "id") || !nonempty(fd, "site") || !str_or_null(fd, "function", 1, &fn) || !nonempty(ev, "artifact_sha256") ||
+        !str_or_null(ev, "build_evidence_sha256", 1, &besha) || !str_or_null(ev, "source_revision", 1, &srcrev) ||
+        !str_or_null(ev, "patches_sha256", 1, &patches) || !nonempty(ba, "kind") || !nonempty(ba, "proof"))
         return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: its finding, evidence or basis is incomplete", e->evidence, e->id);
-    if (strcmp(S(ba, @"kind"), "guard") && strcmp(S(ba, @"kind"), "fallback") && strcmp(S(ba, @"kind"), "false-positive"))
-        return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: basis %s is not guard, fallback or false-positive", e->evidence, e->id, S(ba, @"kind"));
-    if (kind && strcmp(cs(kind), "+") && strcmp(cs(kind), "-"))
-        return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: kind %s is not + or -", e->evidence, e->id, cs(kind));
-    g = S(r, @"artifact_glob");
-    if (strspn(g, "*?[]/") == strlen(g) || has_wildcard(S(r, @"selector")) || (cls && has_wildcard(cs(cls))))
+    if (strcmp(S(ba, "kind"), "guard") && strcmp(S(ba, "kind"), "fallback") && strcmp(S(ba, "kind"), "false-positive"))
+        return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: basis %s is not guard, fallback or false-positive", e->evidence, e->id, S(ba, "kind"));
+    if (kind && strcmp(kind, "+") && strcmp(kind, "-"))
+        return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: kind %s is not + or -", e->evidence, e->id, kind);
+    g = S(r, "artifact_glob");
+    if (strspn(g, "*?[]/") == strlen(g) || has_wildcard(S(r, "selector")) || (cls && has_wildcard(cls)))
         return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: a wildcard scope or API; a record names one artifact and one finding", e->evidence, e->id);
-    if (strcmp(S(r, @"review_reason"), e->reason))
+    if (strcmp(S(r, "review_reason"), e->reason))
         return objc_fail(a, "malformed-exception", NULL, 0, "%s#%s: its review_reason is not the declared reason \"%s\"", e->evidence, e->id, e->reason);
-    e->glob = strdup(g); e->cls = dup_or_null(cls); e->kind = dup_or_null(kind); e->sel = dup_or_null(str(r, @"selector"));
-    e->fid = dup_or_null(str(fd, @"id")); e->site = dup_or_null(str(fd, @"site")); e->fn = dup_or_null(fn);
-    e->asha = dup_or_null(str(ev, @"artifact_sha256")); e->besha = dup_or_null(besha); e->srcrev = dup_or_null(srcrev);
-    e->patches = dup_or_null(patches); e->basis = dup_or_null(str(ba, @"kind")); e->proof = dup_or_null(str(ba, @"proof"));
-    e->reviewer = dup_or_null(str(r, @"reviewer")); e->retire = dup_or_null(str(r, @"retire_when"));
+    e->glob = strdup(g); e->cls = dup_or_null(cls); e->kind = dup_or_null(kind); e->sel = dup_or_null(str(r, "selector"));
+    e->fid = dup_or_null(str(fd, "id")); e->site = dup_or_null(str(fd, "site")); e->fn = dup_or_null(fn);
+    e->asha = dup_or_null(str(ev, "artifact_sha256")); e->besha = dup_or_null(besha); e->srcrev = dup_or_null(srcrev);
+    e->patches = dup_or_null(patches); e->basis = dup_or_null(str(ba, "kind")); e->proof = dup_or_null(str(ba, "proof"));
+    e->reviewer = dup_or_null(str(r, "reviewer")); e->retire = dup_or_null(str(r, "retire_when"));
+    return OBJC_OK;
+}
+
+/* E's record, from the evidence document DOC its line names. */
+static int exception_from(ObjcAnalysis *a, ObjcException *e, const json_t *doc) {
+    const json_t *r, *rec = NULL;
+    size_t ri;
+    if (objc_file_sha256(e->evidence, e->sha)) return objc_fail(a, "unreadable-input", NULL, 0, "objc-api evidence %s", e->evidence);
+    if (only_keys_as(a, "malformed-exception", doc, "objc-api evidence", KEYS("schema", "kind", "records"))) return OBJC_CANNOT_MEASURE;
+    if (!objc_jis_int(member(doc, "schema"), 1) || !is(doc, "kind", "objc-exceptions") || !arr(doc, "records"))
+        return objc_fail(a, "malformed-exception", NULL, 0, "%s: not schema-1 objc-exceptions", e->evidence);
+    json_array_foreach(arr(doc, "records"), ri, r) {
+        if (!json_is_object(r) || !str(r, "id")) return objc_fail(a, "malformed-exception", NULL, 0, "%s: a record without an id", e->evidence);
+        if (!strcmp(S(r, "id"), e->id)) {
+            if (rec) return objc_fail(a, "malformed-exception", NULL, 0, "%s: record %s appears twice", e->evidence, e->id);
+            rec = r;
+        }
+    }
+    if (!rec) return objc_fail(a, "malformed-exception", NULL, 0, "%s has no record %s", e->evidence, e->id);
+    if (load_exception(a, e, rec)) return OBJC_CANNOT_MEASURE;
     return OBJC_OK;
 }
 
@@ -1161,8 +1279,8 @@ static int load_exceptions(ObjcAnalysis *a, const char *list) {
     while (fgets(line, sizeof line, f)) {
         char *t1, *t2, *nl;
         ObjcException *e;
-        NSDictionary *doc;
-        NSDictionary *rec = nil;
+        json_t *doc;
+        int rc;
         size_t n = strlen(line);
         if (!n || line[n - 1] != '\n' || !(t1 = strchr(line, '\t')) || !(t2 = strchr(t1 + 1, '\t')) || strchr(t2 + 1, '\t')) {
             fclose(f); return objc_fail(a, "malformed-input", NULL, 0, "exceptions %s: a line is not EVIDENCE<TAB>ID<TAB>REASON", list);
@@ -1176,20 +1294,9 @@ static int load_exceptions(ObjcAnalysis *a, const char *list) {
         memset(e, 0, sizeof *e);
         e->evidence = strdup(line); e->id = strdup(t1 + 1); e->reason = strdup(t2 + 1);
         if (!(doc = read_json(a, e->evidence, JSON_MAX, "objc-api evidence"))) { fclose(f); return OBJC_CANNOT_MEASURE; }
-        if (objc_file_sha256(e->evidence, e->sha)) { fclose(f); return objc_fail(a, "unreadable-input", NULL, 0, "objc-api evidence %s", e->evidence); }
-        if (only_keys_as(a, "malformed-exception", doc, "objc-api evidence", @[ @"schema", @"kind", @"records" ])) { fclose(f); return OBJC_CANNOT_MEASURE; }
-        if (![[doc objectForKey:@"schema"] isEqual:@1] || ![str(doc, @"kind") isEqualToString:@"objc-exceptions"] || !arr(doc, @"records")) {
-            fclose(f); return objc_fail(a, "malformed-exception", NULL, 0, "%s: not schema-1 objc-exceptions", e->evidence);
-        }
-        for (id r in arr(doc, @"records")) {
-            if (![r isKindOfClass:[NSDictionary class]] || !str(r, @"id")) { fclose(f); return objc_fail(a, "malformed-exception", NULL, 0, "%s: a record without an id", e->evidence); }
-            if (!strcmp(S(r, @"id"), e->id)) {
-                if (rec) { fclose(f); return objc_fail(a, "malformed-exception", NULL, 0, "%s: record %s appears twice", e->evidence, e->id); }
-                rec = r;
-            }
-        }
-        if (!rec) { fclose(f); return objc_fail(a, "malformed-exception", NULL, 0, "%s has no record %s", e->evidence, e->id); }
-        if (load_exception(a, e, rec)) { fclose(f); return OBJC_CANNOT_MEASURE; }
+        rc = exception_from(a, e, doc);
+        json_decref(doc);
+        if (rc) { fclose(f); return rc; }
     }
     if (ferror(f)) { fclose(f); return objc_fail(a, "unreadable-input", NULL, 0, "exceptions %s", list); }
     fclose(f);
@@ -1244,7 +1351,7 @@ static void write_deviations(Out *o) {
 }
 
 static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *artifact_rel,
-                         const char *manifest_sha, NSArray *ref_inputs, const char *be_path,
+                         const char *manifest_sha, const RefInputs *ref_inputs, const char *be_path,
                          const char *be_sha, const char *analyzer_id, int complete, int volume) {
     size_t i, j;
     size_t closed[7] = {0}, verdicts[5] = {0}, r1 = 0;
@@ -1281,9 +1388,9 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
     key(o, "accepted_residual_risk", 0); raw(o, "[");
     if (a->n_r1_exceptions) {
         const char *frs = NULL;
-        for (i = 0; i < [ref_inputs count]; i++)
-            if ([str([ref_inputs objectAtIndex:i], @"name") isEqualToString:@"floor-runtime.tsv"])
-                frs = cs(str([ref_inputs objectAtIndex:i], @"sha256"));
+        for (i = 0; i < ref_inputs->name.n; i++)
+            if (!strcmp(ref_inputs->name.v[i], "floor-runtime.tsv"))
+                frs = ref_inputs->sha256.v[i];
         raw(o, "{"); kstr(o, "kind", "r1-root-method-witness", 1);
         key(o, "witness", 0); raw(o, "{");
         kstr(o, "os", a->runtime_os, 1); kstr(o, "build", a->runtime_build, 0); kstr(o, "arch", a->runtime_arch, 0);
@@ -1368,10 +1475,9 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
      * and clones, while the artifact path relative to the root and every hash do not. */
     key(o, "references", 0); raw(o, "{"); kstr(o, "manifest_sha256", manifest_sha[0] ? manifest_sha : NULL, 1);
     key(o, "files", 0); raw(o, "[");
-    for (i = 0; i < [ref_inputs count]; i++) {
-        NSDictionary *f = [ref_inputs objectAtIndex:i];
+    for (i = 0; i < ref_inputs->name.n; i++) {
         if (i) raw(o, ", ");
-        raw(o, "{"); kstr(o, "name", cs(str(f, @"name")), 1); kstr(o, "sha256", cs(str(f, @"sha256")), 0); raw(o, "}");
+        raw(o, "{"); kstr(o, "name", ref_inputs->name.v[i], 1); kstr(o, "sha256", ref_inputs->sha256.v[i], 0); raw(o, "}");
     }
     raw(o, "]}");
     key(o, "build_evidence", 0);
@@ -1584,12 +1690,10 @@ static int link_args_main(int argc, char **argv) {
     static const char USAGE[] = "usage: objc-compat provider-link-args --prefix PREFIX --link-map FILE [--provider ID]...\n";
     const char *v[2];
     char **rest = calloc((size_t)argc + 1, sizeof *rest);
-    int nrest = 0, i0;
-    ObjcAnalysis *a;
-    NSMutableArray *out = [NSMutableArray array];
-    NSMutableArray *want = [NSMutableArray array];
-    NSMutableArray *fws = [NSMutableArray array];
-    BOOL *sel;
+    int nrest = 0, i0, rc = 4;
+    ObjcAnalysis *a = NULL;
+    Strv out = { NULL, 0 }, want = { NULL, 0 }, fws = { NULL, 0 }, declared = { NULL, 0 };
+    unsigned char *sel = NULL;
     size_t i, j;
     if (!rest) return 4;
     rest[nrest++] = argv[0];
@@ -1599,10 +1703,10 @@ static int link_args_main(int argc, char **argv) {
             if (!id || !*id || !control_free(id) || !utf8_ok((const unsigned char *)id)) {
                 fprintf(stderr, "objc-compat provider-link-args: --provider takes a non-empty provider ID without control characters\n%s", USAGE);
                 free(rest);
+                strv_free(&want);
                 return 2;
             }
-            NSString *ids = [NSString stringWithUTF8String:id];
-            if (![want containsObject:ids]) [want addObject:ids];
+            if (!strv_has(&want, id) && strv_add(&want, id)) { free(rest); strv_free(&want); return 4; }
             i0++;
         } else {
             rest[nrest++] = argv[i0];
@@ -1612,53 +1716,63 @@ static int link_args_main(int argc, char **argv) {
     if (pairs(nrest, rest, NAMES, 2, v, "provider-link-args") || !v[0] || !v[1]) {
         fputs(USAGE, stderr);
         free(rest);
+        strv_free(&want);
         return 2;
     }
     free(rest);
     if (!control_free(v[0]) || !control_free(v[1]) || !utf8_ok((const unsigned char *)v[0]) || !utf8_ok((const unsigned char *)v[1])) {
         fprintf(stderr, "objc-compat provider-link-args: a path with a control character (CR, LF, ...) or bad UTF-8 cannot be one argument per line\n");
+        strv_free(&want);
         return 2;
     }
-    if (!(a = objc_analysis_create())) return 4;
+    if (!(a = objc_analysis_create())) { strv_free(&want); return 4; }
     if (load_provider_prefix(a, v[0]) || !a->n_providers) {
         print_errors(a);
         if (!a->n_errors) fprintf(stderr, "objc-compat provider-link-args: %s declares no provider\n", v[0]);
-        objc_analysis_destroy(a);
-        return 4;
+        goto done;
     }
-    sel = calloc(a->n_providers, sizeof *sel);
-    if (!sel) { objc_analysis_destroy(a); return 4; }
+    if (!(sel = calloc(a->n_providers, sizeof *sel))) goto done;
     {
-        NSMutableArray *declared = [NSMutableArray array];
-        BOOL missing = NO;
-        for (i = 0; i < a->n_providers; i++) [declared addObject:[NSString stringWithUTF8String:a->providers[i].provider_id]];
-        for (NSString *id in want)
-            if (![declared containsObject:id]) {
-                fprintf(stderr, "objc-compat provider-link-args: %s declares no provider ID %s; it declares: %s\n", v[0], [id UTF8String], [[declared componentsJoinedByString:@", "] UTF8String]);
-                missing = YES;
+        int missing = 0;
+        char *list;
+        for (i = 0; i < a->n_providers; i++) if (strv_add(&declared, a->providers[i].provider_id)) goto done;
+        if (!(list = strv_join(&declared, ", "))) goto done;
+        for (i = 0; i < want.n; i++)
+            if (!strv_has(&declared, want.v[i])) {
+                fprintf(stderr, "objc-compat provider-link-args: %s declares no provider ID %s; it declares: %s\n", v[0], want.v[i], list);
+                missing = 1;
             }
-        if (missing) { free(sel); objc_analysis_destroy(a); return 2; }
-        for (i = 0; i < a->n_providers; i++) sel[i] = ![want count] || [want containsObject:[declared objectAtIndex:i]];
+        free(list);
+        if (missing) { rc = 2; goto done; }
+        for (i = 0; i < a->n_providers; i++) sel[i] = !want.n || strv_has(&want, declared.v[i]);
     }
     for (i = 0; i < a->n_providers; i++) {
-        NSString *x = [NSString stringWithUTF8String:a->providers[i].archive];
-        if (!control_free(a->providers[i].archive)) { free(sel); objc_analysis_destroy(a); return 2; }
-        if (![out containsObject:x]) [out addObject:x];
+        const char *x = a->providers[i].archive;
+        if (!control_free(x)) { rc = 2; goto done; }
+        if (!strv_has(&out, x) && strv_add(&out, x)) goto done;
     }
     for (i = 0; i < a->n_providers; i++) {
-        NSString *x = [NSString stringWithFormat:@"-Wl,-u,_%s", a->providers[i].root_symbol];
-        if (sel[i] && ![out containsObject:x]) [out addObject:x];
+        char *x = malloc(strlen(a->providers[i].root_symbol) + 9);
+        int bad;
+        if (!x) goto done;
+        sprintf(x, "-Wl,-u,_%s", a->providers[i].root_symbol);
+        bad = sel[i] && !strv_has(&out, x) && strv_add(&out, x);
+        free(x);
+        if (bad) goto done;
     }
     for (i = 0; i < a->n_providers; i++)
         for (j = 0; sel[i] && j < a->providers[i].nframeworks; j++) {
-            NSString *f = [NSString stringWithUTF8String:a->providers[i].frameworks[j]];
-            if (![fws containsObject:f]) { [fws addObject:f]; [out addObject:@"-framework"]; [out addObject:f]; }
+            const char *f = a->providers[i].frameworks[j];
+            if (!strv_has(&fws, f) && (strv_add(&fws, f) || strv_add(&out, "-framework") || strv_add(&out, f))) goto done;
         }
-    [out addObjectsFromArray:@[ @"-Xlinker", @"-map", @"-Xlinker", [NSString stringWithUTF8String:v[1]] ]];
-    for (NSString *x in out) printf("%s\n", [x UTF8String]);
+    if (strv_add(&out, "-Xlinker") || strv_add(&out, "-map") || strv_add(&out, "-Xlinker") || strv_add(&out, v[1])) goto done;
+    for (i = 0; i < out.n; i++) printf("%s\n", out.v[i]);
+    rc = fflush(stdout) || ferror(stdout) ? 4 : 0;
+done:
     free(sel);
+    strv_free(&out); strv_free(&want); strv_free(&fws); strv_free(&declared);
     objc_analysis_destroy(a);
-    return fflush(stdout) || ferror(stdout) ? 4 : 0;
+    return rc;
 }
 
 /* emit-build-evidence (scripts/objc-build-evidence.sh): schema-1 evidence of what was linked. It
@@ -1671,7 +1785,7 @@ static int build_evidence_main(int argc, char **argv) {
     const char *slash;
     struct stat st;
     ObjcAnalysis *a;
-    NSMutableArray *ref_inputs = [NSMutableArray array];
+    RefInputs ref_inputs = { { NULL, 0 }, { NULL, 0 } };
     Out o;
     size_t i, j;
     int rc = OBJC_OK;
@@ -1688,7 +1802,8 @@ static int build_evidence_main(int argc, char **argv) {
     if (objc_file_sha256(v[0], fsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "artifact %s", v[0]);
     else if (objc_file_sha256(v[1], psha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "prestrip %s", v[1]);
     else if (v[3] && objc_file_sha256(v[3], msha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "link map %s: %s", v[3], strerror(errno));
-    if (!rc) rc = load_manifest(a, v[5], ref_inputs, manifest_sha);
+    if (!rc) rc = load_manifest(a, v[5], &ref_inputs, manifest_sha);
+    strv_free(&ref_inputs.name); strv_free(&ref_inputs.sha256);
     if (!rc && objc_tree_digest(v[2], tsha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "source root %s", v[2]);
     if (!rc && v[4]) rc = load_provider_prefix(a, v[4]);
     if (!rc && v[4]) rc = objc_map_provider_link(a, v[0], v[1], v[3]);
@@ -1760,42 +1875,65 @@ static int rv_component(const char *path, const char *name, const char *version,
 
 static int rv_sort(const void *x, const void *y) { return strcmp(*(char *const *)x, *(char *const *)y); }
 
-static void jvalue(Out *o, id v, int depth);
+static void jvalue(Out *o, const json_t *v, int depth);
 static void jnl(Out *o, int depth) { int i; raw(o, "\n"); for (i = 0; i < depth; i++) raw(o, "  "); }
-static void jvalue(Out *o, id v, int depth) {
-    NSUInteger i = 0;
-    if ([v isKindOfClass:[NSDictionary class]]) {
-        NSArray *keys = [[v allKeys] sortedArrayUsingSelector:@selector(compare:)];
+static void jvalue(Out *o, const json_t *v, int depth) {
+    size_t i = 0;
+    if (json_is_object(v)) {
+        size_t n = json_object_size(v), k;
+        const char **keys = malloc((n ? n : 1) * sizeof *keys);
+        void *it;
+        if (!keys) { o->bad = 1; snprintf(o->why, sizeof o->why, "out of memory"); return; }
+        for (k = 0, it = json_object_iter((json_t *)v); it && k < n; it = json_object_iter_next((json_t *)v, it)) keys[k++] = json_object_iter_key(it);
+        qsort(keys, k, sizeof *keys, rv_sort);
         raw(o, "{");
-        for (NSString *k in keys) { raw(o, i++ ? "," : ""); jnl(o, depth + 1); jstr(o, cs(k)); raw(o, ": "); jvalue(o, [v objectForKey:k], depth + 1); }
+        for (n = k, k = 0; k < n; k++) { raw(o, i++ ? "," : ""); jnl(o, depth + 1); jstr(o, keys[k]); raw(o, ": "); jvalue(o, json_object_get(v, keys[k]), depth + 1); }
         if (i) jnl(o, depth);
         raw(o, "}");
-    } else if ([v isKindOfClass:[NSArray class]]) {
+        free(keys);
+    } else if (json_is_array(v)) {
+        const json_t *x;
+        size_t xi;
         raw(o, "[");
-        for (id x in v) { raw(o, i++ ? "," : ""); jnl(o, depth + 1); jvalue(o, x, depth + 1); }
+        json_array_foreach(v, xi, x) { raw(o, i++ ? "," : ""); jnl(o, depth + 1); jvalue(o, x, depth + 1); }
         if (i) jnl(o, depth);
         raw(o, "]");
-    } else if ([v isKindOfClass:[NSString class]]) jstr(o, cs(v));
-    else if ([v isKindOfClass:[NSNull class]]) raw(o, "null");
-    else if ([v isKindOfClass:[NSNumber class]] && CFGetTypeID((CFTypeRef)v) == CFBooleanGetTypeID()) raw(o, [v boolValue] ? "true" : "false");
-    else if ([v isKindOfClass:[NSNumber class]] && !CFNumberIsFloatType((CFNumberRef)v)) fmt(o, "%lld", [v longLongValue]);
+    } else if (json_is_string(v)) jstr(o, json_string_value(v));
+    else if (json_is_null(v)) raw(o, "null");
+    else if (json_is_boolean(v)) raw(o, json_is_true(v) ? "true" : "false");
+    else if (json_is_integer(v)) fmt(o, "%lld", (long long)json_integer_value(v));
     else { o->bad = 1; snprintf(o->why, sizeof o->why, "a number that is not an integer"); }
+}
+
+/* A crate's pinned disambiguators, one (name, disambiguator) pair per entry. */
+typedef struct { Strv name, dis; } RvPins;
+static int rv_pinned(const RvPins *p, const char *name, size_t len) {
+    size_t i;
+    for (i = 0; i < p->name.n; i++) if (strlen(p->name.v[i]) == len && !strncmp(p->name.v[i], name, len)) return 1;
+    return 0;
+}
+static int rv_pins(const RvPins *p, const char *name, size_t len, const char *dis) {
+    size_t i;
+    for (i = 0; i < p->name.n; i++)
+        if (strlen(p->name.v[i]) == len && !strncmp(p->name.v[i], name, len) && !strcmp(p->dis.v[i], dis)) return 1;
+    return 0;
 }
 
 static int resolve_main(int argc, char **argv) {
     static const char *NAMES[] = { "--artifact", "--reviewed", "--output" };
+    static const char *const LISTS[] = { "guards", "position_evidence", "type_evidence" };
     const char *v[3], *slash, *nm;
     char dir[PATH_MAX], why[200], where[300];
     struct stat st;
     ObjcAnalysis *a;
     ObjcImage *im = NULL;
-    NSDictionary *b;
-    NSMutableDictionary *doc = nil;
-    NSMutableDictionary *pins = [NSMutableDictionary dictionary];   /* crate name -> its pinned disambiguators */
+    json_t *b = NULL;
+    RvPins pins = { { NULL, 0 }, { NULL, 0 } };    /* crate name -> its pinned disambiguators */
+    Strv chosen = { NULL, 0 }, chosen_version = { NULL, 0 };   /* "name=dis" -> the version that chose it */
     RvFunction *fns = NULL;
     RvPlace *places = NULL;
-    NSMutableArray *roots = [NSMutableArray array];                  /* "name=dis" of every v0 symbol's own path */
-    size_t nfns = 0, nplaces = 0, i, j;
+    Strv roots = { NULL, 0 };                        /* "name=dis" of every v0 symbol's own path */
+    size_t nfns = 0, nplaces = 0, i, j, li, ci;
     uint64_t schema = 0, value;
     uint8_t type;
     char group[4 * PATH_MAX] = "";
@@ -1812,7 +1950,7 @@ static int resolve_main(int argc, char **argv) {
     if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) { fprintf(stderr, "drydock-objc resolve: %s is not a directory\n", dir); return 2; }
     if (!(a = objc_analysis_create())) return 4;
     if (!(b = read_json(a, v[1], JSON_MAX, "reviewed evidence"))) goto done;
-    if (!json_count([b objectForKey:@"schema"], &schema) || schema != 2 || ![str(b, @"kind") isEqualToString:@"objc-build-evidence"]) {
+    if (!json_count(member(b, "schema"), &schema) || schema != 2 || !is(b, "kind", "objc-build-evidence")) {
         objc_fail(a, MBE, NULL, 0, "%s: not schema-2 objc build evidence", v[1]);
         goto done;
     }
@@ -1820,6 +1958,7 @@ static int resolve_main(int argc, char **argv) {
     for (i = 0; (nm = objc_image_nlist(im, i, &type, &value)); i++) {
         ObjcV0Function f;
         uint32_t flags = 0;
+        const char *r;
         if (type == N_SO) {
             if (!*nm) group[0] = 0;
             else if (strlen(group) + strlen(nm) < sizeof group) { if (!last_so) group[0] = 0; strcat(group, nm); }
@@ -1841,85 +1980,94 @@ static int resolve_main(int argc, char **argv) {
             continue;
         }
         if ((type & N_STAB) || (type & N_TYPE) != N_SECT || objc_v0_function(nm, &f, why, sizeof why)) continue;
-        for (const char *r = f.roots; *r; r += strlen(r) + 1)
-            if (![roots containsObject:@(r)]) [roots addObject:@(r)];
+        for (r = f.roots; *r; r += strlen(r) + 1)
+            if (!strv_has(&roots, r) && strv_add(&roots, r)) { objc_v0_function_free(&f); objc_fail(a, "out-of-memory", NULL, 0, "functions"); goto done; }
         if (objc_image_section_of(im, value, NULL, NULL, &flags) && (flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))) {
             RvFunction *g = realloc(fns, (nfns + 1) * sizeof *g);
             if (!g) { objc_v0_function_free(&f); objc_fail(a, "out-of-memory", NULL, 0, "functions"); goto done; }
             fns = g; fns[nfns].name = strdup(nm); fns[nfns].f = f; nfns++;
         } else objc_v0_function_free(&f);
     }
-    doc = [[b mutableCopy] autorelease];
+    /* The reviewed evidence is rewritten in place: each crate gains its disambiguator, each record its symbols. */
     {
-        NSMutableArray *crates = [NSMutableArray array];
-        NSMutableDictionary *chosen = [NSMutableDictionary dictionary];
+        json_t *c0;
         i = 0;
-        for (NSDictionary *c0 in arr(b, @"crates") ?: @[]) {
-            NSMutableDictionary *c;
-            NSMutableArray *dis = [NSMutableArray array], *ties = [NSMutableArray array];
-            NSString *name, *version;
+        json_array_foreach(arr(b, "crates"), ci, c0) {
+            Strv dis = { NULL, 0 }, ties = { NULL, 0 };
+            const char *name, *version;
             i++;
-            if (![c0 isKindOfClass:[NSDictionary class]] || !has_text(c0, @"name") || !has_text(c0, @"version")) {
+            if (!json_is_object(c0) || !has_text(c0, "name") || !has_text(c0, "version")) {
                 objc_fail(a, MBE, NULL, 0, "crate %zu lacks name or version", i);
                 continue;
             }
-            c = [[c0 mutableCopy] autorelease]; [crates addObject:c];
-            name = str(c0, @"name"); version = str(c0, @"version");
-            for (NSString *r in roots) {
-                NSRange eq = [r rangeOfString:@"="];
-                if ([[r substringToIndex:eq.location] isEqualToString:name]) [dis addObject:[r substringFromIndex:eq.location + 1]];
+            name = str(c0, "name"); version = str(c0, "version");
+            for (j = 0; j < roots.n; j++) {
+                const char *eq = strchr(roots.v[j], '=');
+                if (eq && (size_t)(eq - roots.v[j]) == strlen(name) && !strncmp(roots.v[j], name, strlen(name)) && strv_add(&dis, eq + 1)) {
+                    objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done;
+                }
             }
-            for (NSString *d in dis) {
+            for (li = 0; li < dis.n; li++) {
+                const char *d = dis.v[li];
                 int mine = 0, other = 0;
                 for (j = 0; j < nplaces; j++) {
-                    if (strcmp(places[j].crate, cs(name)) || strcmp(places[j].dis, cs(d))) continue;
-                    mine |= rv_component(places[j].where, cs(name), cs(version), 0);
-                    other |= rv_component(places[j].where, cs(name), cs(version), 1);
+                    if (strcmp(places[j].crate, name) || strcmp(places[j].dis, d)) continue;
+                    mine |= rv_component(places[j].where, name, version, 0);
+                    other |= rv_component(places[j].where, name, version, 1);
                 }
-                if (mine && !other) [ties addObject:d];
+                if (mine && !other && strv_add(&ties, d)) { objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done; }
             }
-            if (![dis count]) objc_fail(a, "stale-build-evidence", NULL, 0, "crate %s %s: no symbol of %s names it", cs(name), cs(version), v[0]);
-            else if ([dis count] > 1 && [ties count] != 1)
+            if (!dis.n) objc_fail(a, "stale-build-evidence", NULL, 0, "crate %s %s: no symbol of %s names it", name, version, v[0]);
+            else if (dis.n > 1 && ties.n != 1) {
+                char *dl = strv_join(&dis, ", "), *tl = strv_join(&ties, " and ");
                 objc_fail(a, "resolve-ambiguous", NULL, 0, "crate %s %s: %s names it with disambiguators %s, and its debug map ties %s to version %s",
-                          cs(name), cs(version), v[0], cs([dis componentsJoinedByString:@", "]),
-                          [ties count] ? cs([ties componentsJoinedByString:@" and "]) : "none of them", cs(version));
-            else {
-                NSString *d = [dis count] == 1 ? dis[0] : ties[0], *k = [NSString stringWithFormat:@"%@=%@", name, d];
-                if ([chosen objectForKey:k])
-                    objc_fail(a, "resolve-ambiguous", NULL, 0, "crate %s: versions %s and %s both resolve to disambiguator %s", cs(name),
-                              cs([chosen objectForKey:k]), cs(version), cs(d));
-                [chosen setObject:version forKey:k];
-                [c setObject:d forKey:@"disambiguator"];
-                if (![pins objectForKey:name]) [pins setObject:[NSMutableArray array] forKey:name];
-                [[pins objectForKey:name] addObject:d];
+                          name, version, v[0], dl ? dl : "", ties.n ? (tl ? tl : "") : "none of them", version);
+                free(dl); free(tl);
+            } else {
+                const char *d = dis.n == 1 ? dis.v[0] : ties.v[0];
+                char *k = malloc(strlen(name) + strlen(d) + 2);
+                size_t ki;
+                if (!k) { objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done; }
+                sprintf(k, "%s=%s", name, d);
+                for (ki = 0; ki < chosen.n && strcmp(chosen.v[ki], k); ki++) ;
+                if (ki < chosen.n) {
+                    objc_fail(a, "resolve-ambiguous", NULL, 0, "crate %s: versions %s and %s both resolve to disambiguator %s", name,
+                              chosen_version.v[ki], version, d);
+                    free(chosen_version.v[ki]);
+                    chosen_version.v[ki] = strdup(version);
+                } else if (strv_add(&chosen, k) || strv_add(&chosen_version, version)) { free(k); objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done; }
+                free(k);
+                if (strv_add(&pins.name, name) || strv_add(&pins.dis, d) ||
+                    json_object_set_new(c0, "disambiguator", json_string_nocheck(d))) {
+                    objc_fail(a, "out-of-memory", NULL, 0, "resolve"); goto done;
+                }
             }
+            strv_free(&dis); strv_free(&ties);
         }
-        if ([b objectForKey:@"crates"]) [doc setObject:crates forKey:@"crates"];
+        if (member(b, "crates") && !arr(b, "crates")) json_object_set_new(b, "crates", json_array());
     }
-    for (NSString *list in @[ @"guards", @"position_evidence", @"type_evidence" ]) {
-        NSMutableArray *out = [NSMutableArray array];
+    for (li = 0; li < sizeof LISTS / sizeof *LISTS; li++) {
+        const char *list = LISTS[li];
+        json_t *r0;
         i = 0;
-        for (NSDictionary *r0 in arr(b, list) ?: @[]) {
-            NSMutableDictionary *r;
-            NSString *path;
+        json_array_foreach(arr(b, list), ci, r0) {
+            const char *path;
             char **hit = NULL;
             const char *own = NULL;
             size_t nhit = 0, k;
             int copies = 1;
             i++;
-            if (![r0 isKindOfClass:[NSDictionary class]]) { objc_fail(a, MBE, NULL, 0, "%s %zu is not an object", cs(list), i); continue; }
-            r = [[r0 mutableCopy] autorelease]; [out addObject:r];
-            if (has_text(r0, @"id")) snprintf(where, sizeof where, "%.200s", S(r0, @"id")); else snprintf(where, sizeof where, "%s #%zu", cs(list), i);
-            if (!has_text(r0, @"path")) { objc_fail(a, MBE, NULL, 0, "%s: no path", where); continue; }
-            path = str(r0, @"path");
+            if (!json_is_object(r0)) { objc_fail(a, MBE, NULL, 0, "%s %zu is not an object", list, i); continue; }
+            if (has_text(r0, "id")) snprintf(where, sizeof where, "%.200s", S(r0, "id")); else snprintf(where, sizeof where, "%s #%zu", list, i);
+            if (!has_text(r0, "path")) { objc_fail(a, MBE, NULL, 0, "%s: no path", where); continue; }
+            path = str(r0, "path");
             for (j = 0; j < nfns; j++) {
                 const char *x;
                 int other = 0;
-                if (strcmp(fns[j].f.path, cs(path))) continue;
+                if (strcmp(fns[j].f.path, path)) continue;
                 for (x = fns[j].f.roots; *x && !other; x += strlen(x) + 1) {
                     const char *eq = strchr(x, '=');
-                    NSArray *p = [pins objectForKey:[[[NSString alloc] initWithBytes:x length:(NSUInteger)(eq - x) encoding:NSUTF8StringEncoding] autorelease]];
-                    other = p && ![p containsObject:@(eq + 1)];
+                    other = rv_pinned(&pins, x, (size_t)(eq - x)) && !rv_pins(&pins, x, (size_t)(eq - x), eq + 1);
                 }
                 if (other) continue;
                 for (k = 0; k < nhit && strcmp(hit[k], fns[j].name); k++) ;
@@ -1929,37 +2077,43 @@ static int resolve_main(int argc, char **argv) {
                 copies &= !strcmp(own, fns[j].f.own) && objc_v0_copy_suffix(fns[j].f.suffix);
             }
             qsort(hit, nhit, sizeof *hit, rv_sort);
-            if (!nhit) objc_fail(a, "stale-build-evidence", NULL, 0, "%s: no function of %s has path %s", where, v[0], cs(path));
+            if (!nhit) objc_fail(a, "stale-build-evidence", NULL, 0, "%s: no function of %s has path %s", where, v[0], path);
             else if (nhit > 1 && !copies) {
-                NSMutableArray *names = [NSMutableArray array];
-                for (k = 0; k < nhit; k++) [names addObject:@(hit[k])];
+                Strv names = { hit, nhit };
+                char *nl = strv_join(&names, ", ");
                 objc_fail(a, "resolve-ambiguous", NULL, 0, "%s: path %s names %zu functions of %s that are not copies of one instance: %s",
-                          where, cs(path), nhit, v[0], cs([names componentsJoinedByString:@", "]));
+                          where, path, nhit, v[0], nl ? nl : "");
+                free(nl);
             } else {
-                NSMutableArray *names = [NSMutableArray array];
-                for (k = 0; k < nhit; k++) [names addObject:@(hit[k])];
-                [r removeObjectForKey:@"symbol"]; [r removeObjectForKey:@"symbols"];
-                if (nhit == 1) [r setObject:names[0] forKey:@"symbol"]; else [r setObject:names forKey:@"symbols"];
+                json_t *names = nhit == 1 ? json_string_nocheck(hit[0]) : json_array();
+                for (k = 0; nhit > 1 && names && k < nhit; k++)
+                    if (json_array_append_new(names, json_string_nocheck(hit[k]))) { json_decref(names); names = NULL; }
+                json_object_del(r0, "symbol"); json_object_del(r0, "symbols");
+                if (!names || json_object_set_new(r0, nhit == 1 ? "symbol" : "symbols", names))
+                    objc_fail(a, "out-of-memory", NULL, 0, "resolve");
             }
             for (k = 0; k < nhit; k++) free(hit[k]);
             free(hit);
         }
-        if ([b objectForKey:list]) [doc setObject:out forKey:list];
+        if (member(b, list) && !arr(b, list)) json_object_set_new(b, list, json_array());
     }
 done:
     if (im) objc_image_close(im);
     for (i = 0; i < nfns; i++) { free(fns[i].name); objc_v0_function_free(&fns[i].f); }
     for (i = 0; i < nplaces; i++) { free(places[i].crate); free(places[i].dis); free(places[i].where); }
     free(fns); free(places);
+    strv_free(&roots); strv_free(&chosen); strv_free(&chosen_version); strv_free(&pins.name); strv_free(&pins.dis);
     if (a->n_errors) {
         for (i = 0; i < a->n_errors; i++)
             fprintf(stderr, "drydock-objc resolve: %s: %s\n", a->errors[i].code, a->errors[i].detail ? a->errors[i].detail : "");
         objc_analysis_destroy(a);
+        json_decref(b);
         return 4;
     }
     objc_analysis_destroy(a);
     memset(&o, 0, sizeof o);
-    jvalue(&o, doc, 0);
+    jvalue(&o, b, 0);
+    json_decref(b);
     raw(&o, "\n");
     if (o.bad) { fprintf(stderr, "drydock-objc resolve: %s\n", o.why); free(o.b); return 4; }
     rc = publish(v[2], &o) ? 4 : 0;
@@ -1979,142 +2133,140 @@ static int load_link_map(ObjcAnalysis *a, const char *path, const char *evidence
 }
 
 int main(int argc, char **argv) {
-    @autoreleasepool {
-        const char *artifact = NULL, *root = NULL, *refs = NULL, *report = NULL, *evidence = NULL, *mode = "inventory";
-        const char *analyzer_id = "unidentified";
-        char rart[PATH_MAX], rroot[PATH_MAX], rrefs[PATH_MAX], manifest_sha[65] = "", be_sha[65] = "";
-        const char *rel;
-        struct stat st;
-        ObjcAnalysis *a;
-        NSMutableArray *ref_inputs = [NSMutableArray array];
-        int i, rc = OBJC_OK, blocking = 0;
-        size_t k;
-        Out o;
-        int seen[16] = {0}, volume = 0;
-        const char *root_kind = "tree", *prefix = NULL, *receipt = NULL, *exceptions = NULL, *source_root = NULL, *crate_sources = NULL, *sdk_root = NULL;
-        const char *link_map = NULL;
-        char **object_dirs = NULL;
-        size_t n_object_dirs = 0;
-        static const char *OPT[] = { "--artifact", "--root", "--references", "--report", "--build-evidence", "--mode", "--analyzer-id",
-                                     "--provider-prefix", "--source-receipt", "--exceptions", "--source-root", "--crate-sources",
-                                     "--sdk-root", "--root-kind", "--link-map", "--object-dir" };
-        if (argc > 1 && !strcmp(argv[1], "provider-link-args")) return link_args_main(argc - 1, argv + 1);
-        if (argc > 1 && !strcmp(argv[1], "emit-build-evidence")) return build_evidence_main(argc - 1, argv + 1);
-        if (argc > 1 && !strcmp(argv[1], "resolve")) return resolve_main(argc - 1, argv + 1);
-        for (i = 1; i < argc; i++) {
-            int n;
-            for (n = 0; n < 16 && strcmp(argv[i], OPT[n]); n++) ;
-            if (n == 16) return usage("unknown argument");
-            if (i + 1 >= argc || !*argv[i + 1]) return usage("option without a value");
-            if (seen[n]++ && n != 15) return usage("option given twice");
-            switch (n) {
-            case 0: artifact = argv[++i]; break;
-            case 1: root = argv[++i]; break;
-            case 2: refs = argv[++i]; break;
-            case 3: report = argv[++i]; break;
-            case 4: evidence = argv[++i]; break;
-            case 5: mode = argv[++i]; break;
-            case 6: analyzer_id = argv[++i]; break;
-            case 7: prefix = argv[++i]; break;
-            case 8: receipt = argv[++i]; break;
-            case 9: exceptions = argv[++i]; break;
-            case 10: source_root = argv[++i]; break;
-            case 11: crate_sources = argv[++i]; break;
-            case 12: sdk_root = argv[++i]; break;
-            case 13: root_kind = argv[++i]; break;
-            case 14: link_map = argv[++i]; break;
-            default:
-                if (stat(argv[++i], &st) != 0 || !S_ISDIR(st.st_mode)) return usage("--object-dir is not a directory");
-                if (objc_strv_push(&object_dirs, &n_object_dirs, argv[i])) { fprintf(stderr, "objc-compat: out of memory\n"); return 4; }
-                break;
-            }
+    const char *artifact = NULL, *root = NULL, *refs = NULL, *report = NULL, *evidence = NULL, *mode = "inventory";
+    const char *analyzer_id = "unidentified";
+    char rart[PATH_MAX], rroot[PATH_MAX], rrefs[PATH_MAX], manifest_sha[65] = "", be_sha[65] = "";
+    const char *rel;
+    struct stat st;
+    ObjcAnalysis *a;
+    RefInputs ref_inputs = { { NULL, 0 }, { NULL, 0 } };
+    int i, rc = OBJC_OK, blocking = 0;
+    size_t k;
+    Out o;
+    int seen[16] = {0}, volume = 0;
+    const char *root_kind = "tree", *prefix = NULL, *receipt = NULL, *exceptions = NULL, *source_root = NULL, *crate_sources = NULL, *sdk_root = NULL;
+    const char *link_map = NULL;
+    char **object_dirs = NULL;
+    size_t n_object_dirs = 0;
+    static const char *OPT[] = { "--artifact", "--root", "--references", "--report", "--build-evidence", "--mode", "--analyzer-id",
+                                 "--provider-prefix", "--source-receipt", "--exceptions", "--source-root", "--crate-sources",
+                                 "--sdk-root", "--root-kind", "--link-map", "--object-dir" };
+    if (argc > 1 && !strcmp(argv[1], "provider-link-args")) return link_args_main(argc - 1, argv + 1);
+    if (argc > 1 && !strcmp(argv[1], "emit-build-evidence")) return build_evidence_main(argc - 1, argv + 1);
+    if (argc > 1 && !strcmp(argv[1], "resolve")) return resolve_main(argc - 1, argv + 1);
+    for (i = 1; i < argc; i++) {
+        int n;
+        for (n = 0; n < 16 && strcmp(argv[i], OPT[n]); n++) ;
+        if (n == 16) return usage("unknown argument");
+        if (i + 1 >= argc || !*argv[i + 1]) return usage("option without a value");
+        if (seen[n]++ && n != 15) return usage("option given twice");
+        switch (n) {
+        case 0: artifact = argv[++i]; break;
+        case 1: root = argv[++i]; break;
+        case 2: refs = argv[++i]; break;
+        case 3: report = argv[++i]; break;
+        case 4: evidence = argv[++i]; break;
+        case 5: mode = argv[++i]; break;
+        case 6: analyzer_id = argv[++i]; break;
+        case 7: prefix = argv[++i]; break;
+        case 8: receipt = argv[++i]; break;
+        case 9: exceptions = argv[++i]; break;
+        case 10: source_root = argv[++i]; break;
+        case 11: crate_sources = argv[++i]; break;
+        case 12: sdk_root = argv[++i]; break;
+        case 13: root_kind = argv[++i]; break;
+        case 14: link_map = argv[++i]; break;
+        default:
+            if (stat(argv[++i], &st) != 0 || !S_ISDIR(st.st_mode)) return usage("--object-dir is not a directory");
+            if (objc_strv_push(&object_dirs, &n_object_dirs, argv[i])) { fprintf(stderr, "objc-compat: out of memory\n"); return 4; }
+            break;
         }
-        if (!artifact || !root || !refs || !report) return usage("--artifact, --root, --references and --report are required");
-        if (strcmp(mode, "inventory") && strcmp(mode, "strict")) return usage("--mode is inventory or strict");
-        if (strcmp(root_kind, "tree") && !(volume = !strcmp(root_kind, "volume"))) return usage("--root-kind is tree or volume");
-        if (receipt && (!prefix || !evidence)) return usage("--source-receipt needs --provider-prefix and --build-evidence");
-        if ((source_root || crate_sources || sdk_root) && !evidence)
-            return usage("--source-root, --crate-sources and --sdk-root need --build-evidence");
-        if (link_map && !evidence) return usage("--link-map needs --build-evidence");
-        if (n_object_dirs && !link_map) return usage("--object-dir needs --link-map");
-        if (lstat(report, &st) == 0) return usage("the report destination already exists; it is never replaced");
-        if (errno != ENOENT) return usage("the report destination's directory is not usable");
-        {
-            char dir[PATH_MAX];
-            const char *slash = strrchr(report, '/');
-            if (slash) snprintf(dir, sizeof dir, "%.*s", (int)(slash - report), report); else snprintf(dir, sizeof dir, ".");
-            if (!*dir) snprintf(dir, sizeof dir, "/");
-            if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return usage("the report destination's directory does not exist");
-        }
-        if (!realpath(root, rroot) || stat(rroot, &st) != 0 || !S_ISDIR(st.st_mode)) return usage("--root is not a directory");
-        if (!realpath(artifact, rart)) {
-            fprintf(stderr, "objc-compat: %s: %s\n", artifact, strerror(errno));
-            return errno == ENOENT ? usage("--artifact does not exist") : 4;
-        }
-        k = strlen(rroot);
-        if (strncmp(rart, rroot, k) || (rart[k] != '/' && strcmp(rroot, "/"))) return usage("--artifact is not inside --root");
-        rel = rart + k + (strcmp(rroot, "/") ? 1 : 0);
-        if (!realpath(refs, rrefs)) return usage("--references is not a directory");
-        if (!utf8_ok((const unsigned char *)rart) || !utf8_ok((const unsigned char *)rrefs)) return usage("paths must be UTF-8");
-
-        if (!(a = objc_analysis_create()) || objc_set_string(&a->artifact_path, rart) || objc_set_string(&a->source_root, source_root) ||
-            objc_set_string(&a->crate_sources, crate_sources) || objc_set_string(&a->sdk_root, sdk_root)) {
-            fprintf(stderr, "objc-compat: out of memory\n");
-            return 4;
-        }
-        a->object_dirs = object_dirs; a->n_object_dirs = n_object_dirs;
-        {
-            char h[65];
-            if (objc_file_sha256(rart, h)) rc = objc_fail(a, "unreadable-artifact", NULL, 0, "%s: %s", rart, strerror(errno));
-            else if (objc_set_string(&a->artifact_sha256, h)) rc = OBJC_CANNOT_MEASURE;
-        }
-        if (!rc) rc = load_manifest(a, rrefs, ref_inputs, manifest_sha);
-        if (!rc) rc = load_clusters(a, rrefs);
-        if (!rc && prefix) rc = load_provider_prefix(a, prefix);
-        if (!rc && evidence) {
-            if (objc_file_sha256(evidence, be_sha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "build evidence %s", evidence);
-            else rc = load_build_evidence(a, evidence, manifest_sha);
-        }
-        if (!rc && link_map) rc = load_link_map(a, link_map, evidence);
-        if (!rc && receipt) rc = objc_load_source_receipt(a, receipt);
-        if (!rc && exceptions) rc = load_exceptions(a, exceptions);
-        if (!rc) rc = objc_load_references(a);
-        if (!rc) rc = objc_load_reference_set(a);
-        for (k = 0; k < a->n_providers; k++) if (!a->providers[k].legacy) a->defer_computed_selectors = 1;   /* objc_verify_providers decides them */
-        if (!rc) rc = objc_collect_artifacts(a);
-        if (!rc) rc = shipped_closure(a, rroot, rel, volume);
-        if (!rc) {
-            /* Providers first: a source receipt maps only into verified provider code. Sends are
-             * classified even when verification fails, so the report still lists them. */
-            int rv = objc_verify_providers(a);
-            rc = objc_classify_findings(a);
-            if (!rc) rc = rv;
-            if (!rc) rc = objc_provide_findings(a);
-        }
-        if (!rc && exceptions) rc = apply_exceptions(a, rel, evidence ? be_sha : NULL);
-        if (a->n_errors) rc = OBJC_CANNOT_MEASURE;
-        for (k = 0; k < a->n_findings; k++)
-            if ((a->findings[k].verdict == OBJC_UNSUPPORTED || a->findings[k].verdict == OBJC_UNRESOLVED) && !a->findings[k].deviation) blocking = 1;
-        memset(&o, 0, sizeof o);
-        write_report(&o, a, mode, rel, manifest_sha, ref_inputs, evidence, evidence ? be_sha : NULL, analyzer_id, rc == OBJC_OK, volume);
-        if (o.bad) {
-            fprintf(stderr, "objc-compat: no report written: %s\n", o.why);
-            free(o.b); objc_analysis_destroy(a);
-            return 4;
-        }
-        if (publish(report, &o)) { free(o.b); objc_analysis_destroy(a); return 4; }
-        free(o.b);
-        /* Strict names what blocks it, so a caller (scripts/assert_binary_compatible.sh) can say why
-         * without parsing the report. */
-        if (!strcmp(mode, "strict"))
-            for (k = 0; k < a->n_findings; k++)
-                if ((a->findings[k].verdict == OBJC_UNSUPPORTED || a->findings[k].verdict == OBJC_UNRESOLVED) && !a->findings[k].deviation)
-                    fprintf(stderr, "objc-compat: blocking: %s %s: %s\n", a->findings[k].id, objc_verdict_name(a->findings[k].verdict),
-                            a->findings[k].proof ? a->findings[k].proof : "");
-        for (k = 0; k < a->n_errors; k++)
-            fprintf(stderr, "objc-compat: %s: %s\n", a->errors[k].code, a->errors[k].detail ? a->errors[k].detail : "");
-        objc_analysis_destroy(a);
-        if (rc) return 4;
-        return !strcmp(mode, "strict") && blocking ? 1 : 0;
     }
+    if (!artifact || !root || !refs || !report) return usage("--artifact, --root, --references and --report are required");
+    if (strcmp(mode, "inventory") && strcmp(mode, "strict")) return usage("--mode is inventory or strict");
+    if (strcmp(root_kind, "tree") && !(volume = !strcmp(root_kind, "volume"))) return usage("--root-kind is tree or volume");
+    if (receipt && (!prefix || !evidence)) return usage("--source-receipt needs --provider-prefix and --build-evidence");
+    if ((source_root || crate_sources || sdk_root) && !evidence)
+        return usage("--source-root, --crate-sources and --sdk-root need --build-evidence");
+    if (link_map && !evidence) return usage("--link-map needs --build-evidence");
+    if (n_object_dirs && !link_map) return usage("--object-dir needs --link-map");
+    if (lstat(report, &st) == 0) return usage("the report destination already exists; it is never replaced");
+    if (errno != ENOENT) return usage("the report destination's directory is not usable");
+    {
+        char dir[PATH_MAX];
+        const char *slash = strrchr(report, '/');
+        if (slash) snprintf(dir, sizeof dir, "%.*s", (int)(slash - report), report); else snprintf(dir, sizeof dir, ".");
+        if (!*dir) snprintf(dir, sizeof dir, "/");
+        if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) return usage("the report destination's directory does not exist");
+    }
+    if (!realpath(root, rroot) || stat(rroot, &st) != 0 || !S_ISDIR(st.st_mode)) return usage("--root is not a directory");
+    if (!realpath(artifact, rart)) {
+        fprintf(stderr, "objc-compat: %s: %s\n", artifact, strerror(errno));
+        return errno == ENOENT ? usage("--artifact does not exist") : 4;
+    }
+    k = strlen(rroot);
+    if (strncmp(rart, rroot, k) || (rart[k] != '/' && strcmp(rroot, "/"))) return usage("--artifact is not inside --root");
+    rel = rart + k + (strcmp(rroot, "/") ? 1 : 0);
+    if (!realpath(refs, rrefs)) return usage("--references is not a directory");
+    if (!utf8_ok((const unsigned char *)rart) || !utf8_ok((const unsigned char *)rrefs)) return usage("paths must be UTF-8");
+
+    if (!(a = objc_analysis_create()) || objc_set_string(&a->artifact_path, rart) || objc_set_string(&a->source_root, source_root) ||
+        objc_set_string(&a->crate_sources, crate_sources) || objc_set_string(&a->sdk_root, sdk_root)) {
+        fprintf(stderr, "objc-compat: out of memory\n");
+        return 4;
+    }
+    a->object_dirs = object_dirs; a->n_object_dirs = n_object_dirs;
+    {
+        char h[65];
+        if (objc_file_sha256(rart, h)) rc = objc_fail(a, "unreadable-artifact", NULL, 0, "%s: %s", rart, strerror(errno));
+        else if (objc_set_string(&a->artifact_sha256, h)) rc = OBJC_CANNOT_MEASURE;
+    }
+    if (!rc) rc = load_manifest(a, rrefs, &ref_inputs, manifest_sha);
+    if (!rc) rc = load_clusters(a, rrefs);
+    if (!rc && prefix) rc = load_provider_prefix(a, prefix);
+    if (!rc && evidence) {
+        if (objc_file_sha256(evidence, be_sha)) rc = objc_fail(a, "unreadable-input", NULL, 0, "build evidence %s", evidence);
+        else rc = load_build_evidence(a, evidence, manifest_sha);
+    }
+    if (!rc && link_map) rc = load_link_map(a, link_map, evidence);
+    if (!rc && receipt) rc = objc_load_source_receipt(a, receipt);
+    if (!rc && exceptions) rc = load_exceptions(a, exceptions);
+    if (!rc) rc = objc_load_references(a);
+    if (!rc) rc = objc_load_reference_set(a);
+    for (k = 0; k < a->n_providers; k++) if (!a->providers[k].legacy) a->defer_computed_selectors = 1;   /* objc_verify_providers decides them */
+    if (!rc) rc = objc_collect_artifacts(a);
+    if (!rc) rc = shipped_closure(a, rroot, rel, volume);
+    if (!rc) {
+        /* Providers first: a source receipt maps only into verified provider code. Sends are
+         * classified even when verification fails, so the report still lists them. */
+        int rv = objc_verify_providers(a);
+        rc = objc_classify_findings(a);
+        if (!rc) rc = rv;
+        if (!rc) rc = objc_provide_findings(a);
+    }
+    if (!rc && exceptions) rc = apply_exceptions(a, rel, evidence ? be_sha : NULL);
+    if (a->n_errors) rc = OBJC_CANNOT_MEASURE;
+    for (k = 0; k < a->n_findings; k++)
+        if ((a->findings[k].verdict == OBJC_UNSUPPORTED || a->findings[k].verdict == OBJC_UNRESOLVED) && !a->findings[k].deviation) blocking = 1;
+    memset(&o, 0, sizeof o);
+    write_report(&o, a, mode, rel, manifest_sha, &ref_inputs, evidence, evidence ? be_sha : NULL, analyzer_id, rc == OBJC_OK, volume);
+    if (o.bad) {
+        fprintf(stderr, "objc-compat: no report written: %s\n", o.why);
+        free(o.b); objc_analysis_destroy(a);
+        return 4;
+    }
+    if (publish(report, &o)) { free(o.b); objc_analysis_destroy(a); return 4; }
+    free(o.b);
+    /* Strict names what blocks it, so a caller (scripts/assert_binary_compatible.sh) can say why
+     * without parsing the report. */
+    if (!strcmp(mode, "strict"))
+        for (k = 0; k < a->n_findings; k++)
+            if ((a->findings[k].verdict == OBJC_UNSUPPORTED || a->findings[k].verdict == OBJC_UNRESOLVED) && !a->findings[k].deviation)
+                fprintf(stderr, "objc-compat: blocking: %s %s: %s\n", a->findings[k].id, objc_verdict_name(a->findings[k].verdict),
+                        a->findings[k].proof ? a->findings[k].proof : "");
+    for (k = 0; k < a->n_errors; k++)
+        fprintf(stderr, "objc-compat: %s: %s\n", a->errors[k].code, a->errors[k].detail ? a->errors[k].detail : "");
+    objc_analysis_destroy(a);
+    if (rc) return 4;
+    return !strcmp(mode, "strict") && blocking ? 1 : 0;
 }

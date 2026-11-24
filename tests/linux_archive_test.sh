@@ -64,7 +64,7 @@ done
   && ok "the archive carries the objc reference set" || bad "no share/drydock/objc/reference/manifest.json"
 [ -s "$T/a dir/drydock-$V/share/doc/drydock/LICENSE-jansson" ] \
   && ok "the archive carries Jansson's licence" || bad "no share/doc/drydock/LICENSE-jansson"
-# platform: the Linux drydock-objc does receipt alone; receipt with no arguments is a usage error, exit 2.
+# platform: drydock-objc runs on Linux; receipt with no arguments is a usage error, exit 2.
 "$BIN/drydock-objc" receipt >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 2 ] && ok "drydock-objc receipt without arguments exits 2" || bad "drydock-objc receipt without arguments exited $rc, not 2"
 (cd / && sh "$HERE/characterize.sh" "$BIN" check) && ok "the unpacked archive's tools match the 10.9 reference digest" \

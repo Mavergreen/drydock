@@ -38,8 +38,8 @@ cp "$T/cap.json" "$T/in.json"; answer "exactly 16 MiB is read" ok read
 printf ' ' >> "$T/cap.json"
 refused "16 MiB + 1 byte is oversized" "$T/cap.json" oversized-input "16777217 bytes, limit 16777216"
 rm -f "$T/cap.json"
-nest 2048 > "$T/in.json"; answer "2048 levels of nesting are read" ok read
-nest 2049 > "$T/in.json"; refused "2049 levels of nesting are malformed" "$T/in.json" malformed-input "line 1 column"
+nest 513 > "$T/in.json"; answer "513 levels of nesting are read (10.9's Foundation read them)" ok read
+nest 514 > "$T/in.json"; refused "514 levels of nesting are malformed (10.9's Foundation refused them)" "$T/in.json" malformed-input "maximum parsing depth"
 
 # json_schema_real
 put '{"schema":1.0}'; answer "schema 1.0 is not the integer 1" 0 is_int schema 1

@@ -135,7 +135,7 @@ SW="$T/sweep"
 fixture_sweep "$SW"
 evidence "$SW/root/bin/sweep" "$SW/sweep.map" "$T/ev/sweep.json"
 exit_is 0 'evidence for the sweep fixture'
-# spec: src/objc/main.m usage -- analyze NAME [ARGS]: the sweep fixture, strict, its report at $T/out/NAME.json; rc set.
+# spec: src/objc/main.c usage -- analyze NAME [ARGS]: the sweep fixture, strict, its report at $T/out/NAME.json; rc set.
 mkdir -p "$T/out" "$T/dirs/empty"
 # IMG is the fixture analyzed: $SW, or a variant's directory.
 IMG=$SW
@@ -154,7 +154,7 @@ refused_because() {
     fail "$2: the refusal does not say '(not attested: $1)'"
   grep -xF "objc-compat: undecodable-objc-reference: $REFUSAL (not attested: $1)" "$T/err" >/dev/null || fail "$2: stderr does not name why"
 }
-# spec: src/objc/main.m report -- a clean run's attested count, and the limit only a link map adds.
+# spec: src/objc/main.c report -- a clean run's attested count, and the limit only a link map adds.
 LIMIT_ATTESTED="undecoded bytes are cleared only where their object file shows the assembler fixed them and they name nothing outside that object's section"
 clean_attested() {
   exit_is 0 "$1"
@@ -420,7 +420,7 @@ test_nested_atoms() {
   refused_because 'no single atom covers the window' 'a sized atom nested in _sweep_fn'
 }
 
-# spec: src/objc/main.m -- without --link-map the sweep's refusal is today's, byte for byte (what 433bed6 printed).
+# spec: src/objc/main.c -- without --link-map the sweep's refusal is today's, byte for byte (what 433bed6 printed).
 test_no_inputs_identical() {
   analyze plain-sweep
   exit_is 4 'the sweep fixture without a link map'

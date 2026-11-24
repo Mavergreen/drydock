@@ -28,7 +28,7 @@ analyze() {
   rc=0; "$DRYDOCK_OBJC" analyze --artifact "$art" --root "$T/root" --references "${REFS:-$REF}" --report "$rep" --mode "$mode" "$@" 2>"$T/err" || rc=$?
   ln -sf "$rep" "$T/report"
 }
-# spec: src/objc/main.m header -- verdict FUNCTION SELECTOR: the verdicts of that function's sends of SELECTOR, one per line.
+# spec: src/objc/main.c header -- verdict FUNCTION SELECTOR: the verdicts of that function's sends of SELECTOR, one per line.
 verdicts() {
   grep "\"function\": \"$1\"" "$T/report" | grep "\"selector\": \"$2\"" | sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p'
 }
@@ -124,14 +124,14 @@ want _vended_autorelease autorelease floor-supported 'accepted residual risk: _N
 #       unknown class, which could be sent either kind, closes class with both kinds' sets as the residual risk.
 want _vended_class class floor-supported 'R1: receiver vended by -[NSDictionary'
 want _vended_class class floor-supported 'accepted residual risk: NSLeafProxy Object _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder'
-# spec: src/objc/main.m header -- every report lists the measured non-implementing floor classes as an
+# spec: src/objc/main.c header -- every report lists the measured non-implementing floor classes as an
 #       accepted residual risk, with the witness identity.
 residual() {
   grep -F '"accepted_residual_risk": [{"kind": "r1-root-method-witness", ' "$T/report" >/dev/null &&
     grep -F "\"witness\": {\"os\": \"10.9.5\", \"build\": \"13F1911\", \"arch\": \"x86_64\", \"floor_runtime_sha256\": \"$(sha "${REFS:-$REF}/floor-runtime.tsv")\", \"tool_source_sha256\": \"" "$T/report" >/dev/null &&
     grep -F '"root_selectors": ["autorelease", "class", "conformsToProtocol:", "description", "hash", "isEqual:", "isKindOfClass:", "isMemberOfClass:", "performSelector:", "release", "respondsToSelector:", "retain", "self"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]' "$T/report" >/dev/null ||
     fail "$1: the report does not list the R1 residual risk with the witness identity"
-  # spec: src/objc/main.m header -- and each root selector's own non-implementing classes, with its reviewed kinds.
+  # spec: src/objc/main.c header -- and each root selector's own non-implementing classes, with its reviewed kinds.
   grep -F '"per_selector": [{"selector": "autorelease", "kinds": ["+", "-"], "non_implementing_floor_classes": ["_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "class", "kinds": ["+"], "non_implementing_floor_classes": ["NSLeafProxy", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "class", "kinds": ["-"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "conformsToProtocol:", "kinds": ["+", "-"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, ' "$T/report" >/dev/null &&
     grep -F '{"selector": "release", "kinds": ["+", "-"], "non_implementing_floor_classes": ["_NSZombie_", "__NSAtom", "__NSMessageBuilder"]}, {"selector": "respondsToSelector:", "kinds": ["+", "-"], "non_implementing_floor_classes": ["NSLeafProxy", "Object", "_NSZombie_", "__NSAtom", "__NSGenericDeallocHandler", "__NSMessageBuilder"]}, {"selector": "retain", "kinds": ["+", "-"], "non_implementing_floor_classes": ["_NSZombie_", "__NSAtom", "__NSMessageBuilder"]}, {"selector": "self", ' "$T/report" >/dev/null ||
     fail "$1: the report does not list each root selector's own exception set"
@@ -473,7 +473,7 @@ r3 fldnote "$FLD"
 grep "\"function\": \"$FNF.llvm.1\"" "$T/report" | grep 'position not checked' >/dev/null || fail 'a field closure does not say its position was not checked'
 r3 dwnnote "$DWN"
 grep "\"function\": \"$FND\"" "$T/report" | grep 'position not checked' >/dev/null || fail 'a downcast closure does not say its position was not checked'
-# spec: src/objc/main.m build-evidence parser -- Evidence with no position_evidence reads as before.
+# spec: src/objc/main.c build-evidence parser -- Evidence with no position_evidence reads as before.
 evidence "$R3B" "$T/ev-none" '' '' "$C3" "$M3"
 analyze "$R3B" strict --build-evidence "$T/ev-none"
 want "$FNR" UTF8String unresolved

@@ -48,7 +48,7 @@ rc=0; "$T/link/drydock-objc" analyze --artifact "$T/root/bin/plain" --root "$T/r
 echo 'PASS: references_from_symlink'
 
 # spec: cli/drydock-objc.c header -- no_shipped_references: a copy with no share/drydock/objc/reference beside it, and no
-#       --references, falls back to nothing; main.m refuses the missing option and writes no report.
+#       --references, falls back to nothing; main.c refuses the missing option and writes no report.
 mkdir -p "$T/bare/bin"
 cp "$DRYDOCK_OBJC" "$T/bare/bin/drydock-objc"
 rc=0; "$T/bare/bin/drydock-objc" analyze --artifact "$T/root/bin/plain" --root "$T/root" --report "$T/out/bare" 2>"$T/err" || rc=$?

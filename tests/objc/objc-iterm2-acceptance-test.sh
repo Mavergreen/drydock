@@ -1,7 +1,7 @@
 #!/bin/sh
 # platform: macOS-only -- runs the built drydock-objc on upstream iTerm2 3.0.15's x86_64 binary, a maintainer test
 #       (it needs the cached upstream zip; it skips with exit 77 where that is absent).
-# spec: src/objc/main.m header -- inventory reports every error and exits 4 when the artifact is not measured
+# spec: src/objc/main.c header -- inventory reports every error and exits 4 when the artifact is not measured
 #       completely. The residue is exactly tests/objc/fixtures/iterm2-3.0.15.expected-errors, one
 #       code<TAB>detail<TAB>address line per error, sorted: a new error and a vanished one both fail.
 #       Every line is a computed producer, run-time class creation, swizzling or an IMP lookup, or a named
@@ -31,7 +31,7 @@ rc=0
   --report "$T/report" 2>"$T/err" || rc=$?
 [ "$rc" = 4 ] || { tail -5 "$T/err" >&2; fail "inventory exits $rc, want 4 (not measured completely)"; }
 
-# spec: src/objc/main.m header -- the report's errors list is its last key, one error per line.
+# spec: src/objc/main.c header -- the report's errors list is its last key, one error per line.
 tab=$(printf '\t')
 sed -n 's/^ *{"code": "\([^"]*\)", "slice": [^,]*, "address": "\([^"]*\)", "detail": "\(.*\)"}[],}]*$/\1'"$tab"'\3'"$tab"'\2/p' "$T/report" |
   LC_ALL=C sort >"$T/got"
