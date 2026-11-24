@@ -43,7 +43,10 @@
  * Groups (schema 2; legacy entries are checked as above). 1, 2 and 4 hold as for an entry, and 3's
  * constructor is verified the same way, with every member's implementation verified too (a
  * zerofill atom, which has no bytes, only inside a final section that is zerofill as well).
- * Instead of 3's strings, each member must be declared with the newer SDK's encoding and be
+ * Instead of 3's strings, each member must be declared with the newer SDK's encoding -- on its class,
+ * or as a required method of a protocol the class adopts there (itself or by a superclass, directly or
+ * through an inherited protocol; an optional one, which the class need not implement, does not count,
+ * and two such declarations that disagree are a mismatch) -- and be
  * absent from the 10.9 floor on its class's chain, a superclass the capture lacks counting as
  * present (provider-abi-mismatch, provider-present-on-floor), and
  * the registration is derived from the code: regexec.c runs from the constructor's final
@@ -614,18 +617,74 @@ static const char *floor_answers(const ObjcAnalysis *a, const char *cls, const c
     return NULL;
 }
 
-/* Every member declared with the newer SDK's encoding and absent from the 10.9 floor. */
+/* Whether row ("NAME\tOTHER") names name first. */
+static int row_of(const char *row, const char *name) {
+    size_t n = strlen(name);
+    return !strncmp(row, name, n) && row[n] == '\t';
+}
+static int push_protocol(const char ***v, size_t *n, const char *p) {
+    const char **g;
+    size_t i;
+    for (i = 0; i < *n; i++) if (!strcmp((*v)[i], p)) return 0;
+    if (!(g = realloc(*v, (*n + 1) * sizeof *g))) return -1;
+    *v = g; g[(*n)++] = p;
+    return 0;
+}
+/* The encoding the newer SDK gives kind/sel as a required method of a protocol cls adopts there -- itself or by a
+ * superclass, directly or through the protocols those inherit -- in *enc and that protocol in *proto, both NULL when
+ * none declares it. Two adopted protocols declaring it differently is provider-abi-mismatch. */
+static int adopted_encoding(ObjcAnalysis *a, const ObjcProvider *p, const ObjcProviderMethod *m, const char **enc, const char **proto) {
+    const char **ps = NULL, *c = p->cls, *e;
+    char sup[256], key[1024];
+    size_t np = 0, i, j;
+    int depth, rc = OBJC_OK;
+    *enc = *proto = NULL;
+    for (depth = 0; c && depth < 64; depth++) {
+        const char *v = objc_map_get(a->nw_class, c), *t;
+        for (i = 0; i < a->n_nw_conforms; i++)
+            if (row_of(a->nw_conforms[i], c) && push_protocol(&ps, &np, strchr(a->nw_conforms[i], '\t') + 1)) goto oom;
+        if (!v || !(t = strchr(v, '\t')) || (size_t)(t - v) >= sizeof sup) break;
+        snprintf(sup, sizeof sup, "%.*s", (int)(t - v), v);
+        c = strcmp(sup, "-") ? sup : NULL;
+    }
+    for (j = 0; j < np; j++)
+        for (i = 0; i < a->n_nw_inherits; i++)
+            if (row_of(a->nw_inherits[i], ps[j]) && push_protocol(&ps, &np, strchr(a->nw_inherits[i], '\t') + 1)) goto oom;
+    for (j = 0; j < np && rc == OBJC_OK; j++) {
+        snprintf(key, sizeof key, "%s\t%s\t%s", ps[j], m->kind, m->selector);
+        if (!(e = objc_map_get(a->nw_proto_encoding, key))) continue;
+        if (*enc && strcmp(*enc, e))
+            rc = objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: %s%s %s: the newer SDK declares it as %s in protocol %s and as %s in protocol %s",
+                           p->provider_id, m->kind, p->cls, m->selector, *enc, *proto, e, ps[j]);
+        else if (!*enc) { *enc = e; *proto = ps[j]; }
+    }
+    free(ps);
+    return rc;
+oom:
+    free(ps);
+    return objc_fail(a, "out-of-memory", NULL, 0, "adopted protocols");
+}
+
+/* Every member declared with the newer SDK's encoding -- on its class, or by a protocol the class adopts there -- and
+ * absent from the 10.9 floor. */
 static int group_declared(ObjcAnalysis *a, const ObjcProvider *p) {
     size_t i;
     for (i = 0; i < p->n_methods; i++) {
         const ObjcProviderMethod *m = &p->methods[i];
         char key[1024];
-        const char *enc, *owner;
-        int unmeasured;
+        const char *enc, *penc, *proto, *owner;
+        int unmeasured, rc;
         snprintf(key, sizeof key, "%s\t%s\t%s", p->cls, m->kind, m->selector);
-        if (!(enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL) || strcmp(enc, m->encoding))
-            return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s", p->provider_id, m->kind,
-                             p->cls, m->selector, m->encoding, enc ? "declares " : "does not declare it", enc ? enc : "");
+        enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL;
+        if ((rc = adopted_encoding(a, p, m, &penc, &proto))) return rc;
+        if (enc && penc && strcmp(enc, penc))
+            return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: %s%s %s: the newer SDK declares it as %s on the class and as %s in protocol %s",
+                             p->provider_id, m->kind, p->cls, m->selector, enc, penc, proto);
+        if (enc) proto = NULL; else enc = penc;
+        if (!enc || strcmp(enc, m->encoding))
+            return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s%s%s", p->provider_id, m->kind,
+                             p->cls, m->selector, m->encoding, enc ? "declares " : "does not declare it", enc ? enc : "",
+                             proto ? " in protocol " : "", proto ? proto : "");
         if ((owner = floor_answers(a, p->cls, m->kind, m->selector, &unmeasured)))
             return objc_fail(a, "provider-present-on-floor", NULL, 0, "%s: %s[%s %s] %s %s", p->provider_id, m->kind, p->cls, m->selector,
                              unmeasured ? "may be present on 10.9: the floor capture does not measure" : "is present on 10.9, answered by", owner);

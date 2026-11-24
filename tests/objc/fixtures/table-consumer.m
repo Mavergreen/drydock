@@ -2,7 +2,8 @@
  * as declared -- four to an NSWindow instance, two to the class -- and naming no provider symbol. KIND_CROSS sends
  * instead one instance member to the class and one class member to an instance; COMPUTED_SEL also registers a
  * selector named by its argument, outside any provider; CALL_REGISTER calls the provider's FixtureTabRegisterTable
- * with a table of its own. Built for x86_64 against the
+ * with a table of its own; VIEW_A11Y sends instead the newer SDK's -setAccessibilityLabel: and -accessibilityLabel
+ * (NSAccessibility protocol) to an NSButton, an NSControl. Built for x86_64 against the
  * pinned 10.9 SDK (MRC); read as bytes, never executed. */
 #import <AppKit/AppKit.h>
 #include <objc/runtime.h>
@@ -19,6 +20,13 @@
 - (BOOL)allowsAutomaticWindowTabbing;
 #endif
 @end
+
+#ifdef VIEW_A11Y
+@interface NSView (LaterAccessibility)
+- (void)setAccessibilityLabel:(NSString *)label;
+- (NSString *)accessibilityLabel;
+@end
+#endif
 
 #ifdef CALL_REGISTER
 typedef struct { const char *selector; const char *types; BOOL classMethod; IMP imp; } ConsumerTabMethod;
@@ -37,7 +45,11 @@ int main(int argc, char **argv) {
         if (sel_registerName(argv[1]) == NULL) return 2;
 #endif
         NSWindow *w = [[NSApplication sharedApplication] keyWindow];
-#ifdef KIND_CROSS
+#if defined(VIEW_A11Y)
+        NSButton *c = [w standardWindowButton:NSWindowCloseButton];
+        [c setAccessibilityLabel:@"fixture"];
+        return [c accessibilityLabel] != nil;
+#elif defined(KIND_CROSS)
         return (int)[NSWindow tabbingMode] + [w allowsAutomaticWindowTabbing];
 #else
         [w setTabbingIdentifier:@"fixture"];

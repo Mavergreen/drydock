@@ -326,6 +326,9 @@ typedef struct {
     char **object_dirs; size_t n_object_dirs;
     struct ObjcObjectSlot *objects;
     ObjcMap *nw_encoding;         /* newer SDK: "class\tkind\tselector" -> type encoding */
+    ObjcMap *nw_proto_encoding;   /* newer SDK: "protocol\tkind\tselector" -> type encoding, required methods only */
+    char **nw_conforms; size_t n_nw_conforms;   /* newer SDK: "class\tprotocol", each adoption */
+    char **nw_inherits; size_t n_nw_inherits;   /* newer SDK: "protocol\tprotocol it inherits" */
     /* Argument registers (reference.c): selector -> the most parameter GPRs any declaration takes, and C
      * function -> its GPRs; "-" unbounded. Each catalog flag says it loaded (objc_load_gprs_catalogs). */
     ObjcMap *sel_gprs, *fn_gprs;

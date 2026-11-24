@@ -475,6 +475,12 @@ static int load_sdk(ObjcAnalysis *a, const char *name, ObjcMap *methods, ObjcMap
         } else if (!strcmp(c[0], "class")) {
             snprintf(v, sizeof v, "%s\t%s\t%s", c[4], c[6], c[1]);
             if (objc_map_put(classes, c[2], v) < 0) status = objc_fail(a, "out-of-memory", NULL, 0, "sdk class");
+        } else if (methods == a->nw_method && !strcmp(c[0], "protocol-method")) {
+            if (!strcmp(c[10], "protocol:required")) status = map_put3(a, a->nw_proto_encoding, c[2], c[3], c[4], c[5]);
+        } else if (methods == a->nw_method && (!strcmp(c[0], "conformance") || !strcmp(c[0], "protocol-inherits"))) {
+            snprintf(v, sizeof v, "%s\t%s", c[2], c[4]);
+            if (objc_strv_push(c[0][0] == 'c' ? &a->nw_conforms : &a->nw_inherits, c[0][0] == 'c' ? &a->n_nw_conforms : &a->n_nw_inherits, v))
+                status = objc_fail(a, "out-of-memory", NULL, 0, "sdk conformance");
         }
     }
     if (status == OBJC_OK && ferror(f)) status = objc_fail(a, "unreadable-reference", NULL, 0, "%s: read error", name);
@@ -511,7 +517,8 @@ int objc_load_reference_set(ObjcAnalysis *a) {
         !(a->rt_image_role = objc_map_create()) || !(a->rt_override = objc_map_create()) ||
         !(a->nw_method = objc_map_create()) || !(a->nw_class = objc_map_create()) ||
         !(a->fl_method = objc_map_create()) || !(a->fl_class = objc_map_create()) ||
-        !(a->nw_later_sel = objc_map_create()) || !(a->nw_encoding = objc_map_create()))
+        !(a->nw_later_sel = objc_map_create()) || !(a->nw_encoding = objc_map_create()) ||
+        !(a->nw_proto_encoding = objc_map_create()))
         return objc_fail(a, "out-of-memory", NULL, 0, "reference maps");
     if ((rc = load_runtime(a))) return rc;
     if ((rc = load_sdk(a, "newer-sdk.tsv", a->nw_method, a->nw_class))) return rc;

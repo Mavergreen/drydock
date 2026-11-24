@@ -377,6 +377,55 @@ group_refused 'group: a member present on 10.9' provider-present-on-floor '-[NSW
 GROUP=$(printf '%s' "$TAB_GROUP" | sed 's/"q16@0:8"/"i16@0:8"/')
 group_prefix abi; unset GROUP; group abi abi
 group_refused 'group: a member declared with another encoding than the newer SDK' provider-abi-mismatch 'declared -NSWindow tabbingMode as i16@0:8'
+# spec: src/objc/provider.c header, "Groups" -- a member the newer SDK declares as a required method of a protocol its class
+#       adopts there (itself or by a superclass, directly or through an inherited protocol) is declared with that
+#       protocol's encoding: NSView and NSCell adopt NSAccessibility, whose 10.10 methods Recaulk back-fills. A protocol
+#       the class does not adopt, an optional method, another encoding or a method on the 10.9 floor is still refused.
+A11Y_GROUP='{ "provider_id" : "fixture.nsview.accessibility.v1", "class" : "NSView", "guard" : "absent-only",
+      "activation_root" : "__fixture_objc_activate_table", "required_frameworks" : [ "AppKit" ],
+      "framework_policy" : "strong-linked-before-root", "methods" : [
+        { "kind" : "-", "selector" : "setAccessibilityLabel:", "encoding" : "v24@0:8@16", "implementation_symbol" : "FixtureA11y_setAccessibilityLabel" },
+        { "kind" : "-", "selector" : "accessibilityLabel", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureA11y_accessibilityLabel" } ] }'
+a11y_all() {  # a11y_all VERDICT WHY: the consumer's send of each NSAccessibility member, to an NSButton, is VERDICT
+  for s in setAccessibilityLabel: accessibilityLabel; do got=$(tab_verdict "$s"); [ "$got" = "$1 " ] || fail "$2: $s is '${got:-no finding}', want $1 (exit $rc)"; done
+}
+a11y() {  # a11y NAME WHY [CC-FLAGS...]: GROUP (default A11Y_GROUP) from table-provider.m's VIEW_A11Y, provided
+  a_n=$1 a_w=$2; shift 2
+  GROUP=${GROUP:-$A11Y_GROUP}; group_prefix "$a_n" -DVIEW_A11Y "$@"; unset GROUP; group "$a_n" "$a_n" -DVIEW_A11Y
+  exit_is 0 "$a_w"; a11y_all provided "$a_w"
+}
+a11y view 'protocol: NSView adopts NSAccessibility'
+says 'registers its 2 methods on NSView' 'protocol: NSView adopts NSAccessibility'
+GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/"class" : "NSView"/"class" : "NSControl"/')
+a11y control 'protocol: NSControl adopts NSAccessibility through NSView' '-DA11Y_CLASS="NSControl"'
+says 'registers its 2 methods on NSControl' 'protocol: NSControl adopts NSAccessibility through NSView'
+# A reference where NSView reaches NSAccessibility only through NSAccessibilityElement, which inherits it.
+mkdir -p "$T/ref-inherit"; cp "$REF"/* "$T/ref-inherit"/
+awk -F '\t' 'BEGIN { OFS = "\t" }
+  $1 == "conformance" && $3 == "NSView" && $5 == "NSAccessibility" { $3 = "FixtureNotAClass"; n++ }
+  $1 == "protocol-inherits" && $3 == "NSAccessibilityElement" && $5 == "NSObject" { $5 = "NSAccessibility"; n++ }
+  { print } END { if (n != 2) exit 1 }' "$REF/newer-sdk.tsv" >"$T/ref-inherit/newer-sdk.tsv" || fail 'protocol: rewriting the reference'
+sed "s|\(\"name\": \"newer-sdk.tsv\", \"sha256\": \"\)[0-9a-f]*|\1$(sha "$T/ref-inherit/newer-sdk.tsv")|" "$REF/manifest.json" >"$T/ref-inherit/manifest.json"
+! cmp -s "$REF/manifest.json" "$T/ref-inherit/manifest.json" || fail 'protocol: the manifest was not re-hashed'
+REF_SAVE=$REF; REF="$T/ref-inherit"
+a11y inherit 'protocol: NSView adopts NSAccessibility through an inherited protocol'
+REF=$REF_SAVE
+GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/"class" : "NSView"/"class" : "NSResponder"/')
+group_prefix notadopted; unset GROUP; group notadopted notadopted
+group_refused 'protocol: a class that does not adopt the protocol' provider-abi-mismatch \
+  'declared -NSResponder setAccessibilityLabel: as v24@0:8@16; the newer SDK does not declare it'
+GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/"v24@0:8@16"/"v24@0:8q16"/')
+group_prefix protoabi; unset GROUP; group protoabi protoabi
+group_refused 'protocol: a member declared with another encoding than the protocol' provider-abi-mismatch \
+  'declared -NSView setAccessibilityLabel: as v24@0:8q16; the newer SDK declares v24@0:8@16 in protocol NSAccessibility'
+GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/} ] }$/}, { "kind" : "-", "selector" : "wantsPeriodicDraggingUpdates", "encoding" : "c16@0:8", "implementation_symbol" : "FixtureTab_tabbedWindows" } ] }/')
+group_prefix protoopt; unset GROUP; group protoopt protoopt
+group_refused "protocol: an optional method of NSDraggingDestination, which NSView adopts" provider-abi-mismatch \
+  'declared -NSView wantsPeriodicDraggingUpdates as c16@0:8; the newer SDK does not declare it'
+GROUP=$(printf '%s' "$A11Y_GROUP" | sed 's/} ] }$/}, { "kind" : "-", "selector" : "identifier", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureTab_tabbedWindows" } ] }/')
+group_prefix protofloor; unset GROUP; group protofloor protofloor
+group_refused 'protocol: a member of NSUserInterfaceItemIdentification present on 10.9' provider-present-on-floor \
+  '-[NSView identifier] is present on 10.9, answered by NSView'
 GROUP=$(printf '%s' "$TAB_GROUP" | sed 's/"__fixture_objc_activate_table"/"fixture_tabbing_activation_state"/')
 group_prefix noroot; unset GROUP; group noroot noroot
 group_refused 'group: a root the constructor never calls' provider-registration-mismatch 'the constructor never reaches fixture_tabbing_activation_state'

@@ -21,7 +21,9 @@
 // loaded back from a frame array at an unknown index, for a helper), XCHG (an xchg swaps the two addresses),
 // SHCL and SBBV (the state's address plus an unknown zero, rebuilt bit by bit through a shift count or the carry flag,
 // for a helper), WALK_END (the register function walks the table by comparing a row pointer to its end) and PUSH_ARG
-// (the row count, a local, trimmed by a helper that takes its address as a pushed eighth argument).
+// (the row count, a local, trimmed by a helper that takes its address as a pushed eighth argument). VIEW_A11Y registers
+// instead two rows of the newer SDK's NSAccessibility protocol, setAccessibilityLabel: and accessibilityLabel, on
+// A11Y_CLASS (default NSView).
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -42,6 +44,8 @@ static BOOL allowsAutomatic = YES;
 BOOL FixtureTab_allowsAutomaticWindowTabbing(void *cls, SEL _cmd) { (void)cls; (void)_cmd; return allowsAutomatic; }
 void FixtureTab_setAllowsAutomaticWindowTabbing(void *cls, SEL _cmd, BOOL allow) { (void)cls; (void)_cmd; allowsAutomatic = allow; }
 void *FixtureTab_tabbedWindows(void *self, SEL _cmd) { (void)self; (void)_cmd; return 0; }
+void *FixtureA11y_accessibilityLabel(void *self, SEL _cmd) { (void)self; (void)_cmd; return 0; }
+void FixtureA11y_setAccessibilityLabel(void *self, SEL _cmd, void *label) { (void)self; (void)_cmd; (void)label; }
 
 #ifdef WRONG_IMP
 #define MODE_IMP FixtureTab_tabbedWindows
@@ -67,11 +71,24 @@ void *FixtureTab_tabbedWindows(void *self, SEL _cmd) { (void)self; (void)_cmd; r
   ROW("allowsAutomaticWindowTabbing", "c16@0:8", YES, FixtureTab_allowsAutomaticWindowTabbing), \
   ROW("setAllowsAutomaticWindowTabbing:", "v20@0:8c16", SET_ALLOWS_KIND, FixtureTab_setAllowsAutomaticWindowTabbing)
 
+#ifdef VIEW_A11Y
+#define TABLE_ROWS \
+  ROW("setAccessibilityLabel:", "v24@0:8@16", NO, FixtureA11y_setAccessibilityLabel), \
+  ROW("accessibilityLabel", "@16@0:8", NO, FixtureA11y_accessibilityLabel)
+#ifndef A11Y_CLASS
+#define A11Y_CLASS "NSView"
+#endif
+#define TABLE_CLASS A11Y_CLASS
+#else
+#define TABLE_ROWS SIX_ROWS
+#define TABLE_CLASS "NSWindow"
+#endif
+
 #ifdef RUNTIME_WRITE
-FixtureTabMethod FixtureTabMethods[] = { SIX_ROWS };   // writable: the root patches a row before registering
+FixtureTabMethod FixtureTabMethods[] = { TABLE_ROWS };   // writable: the root patches a row before registering
 #else
 const FixtureTabMethod FixtureTabMethods[] = {
-  SIX_ROWS,
+  TABLE_ROWS,
 #ifdef EXTRA_ROW
   ROW("tabbedWindows", "@16@0:8", NO, FixtureTab_tabbedWindows),
 #endif
@@ -236,9 +253,9 @@ FixtureState (*volatile FixtureTabRegister)(Class, const FixtureTabMethod *, siz
 
 void __fixture_objc_activate_table(void) {
   if (state != FixtureNotRun) return;
-  Class window = objc_getClass("NSWindow");
+  Class window = objc_getClass(TABLE_CLASS);
 #ifndef NULL_CLASS
-  if (!window) { state = FixtureAddFailed; stateDetail = "NSWindow"; return; }
+  if (!window) { state = FixtureAddFailed; stateDetail = TABLE_CLASS; return; }
 #endif
 #ifdef BUMP
   fixture_bump(&state);
