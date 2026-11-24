@@ -311,6 +311,22 @@ foreach(d reader regexec arity demangle json lines)
   endif()
 endforeach()
 
+file(GLOB DRYDOCK_RESOURCES_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/resources/*.c")
+add_library(drydock_resources_core OBJECT ${DRYDOCK_RESOURCES_SOURCES})
+target_include_directories(drydock_resources_core PRIVATE src/resources)
+set_target_properties(drydock_resources_core PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(drydock_resources_core PRIVATE -O2 -Wall -Wextra -Werror)
+if(NOT APPLE)
+  target_compile_definitions(drydock_resources_core PRIVATE _XOPEN_SOURCE=700)
+endif()
+add_executable(resources-graph-driver tests/resources/fixtures/graph-driver.c $<TARGET_OBJECTS:drydock_resources_core>)
+target_include_directories(resources-graph-driver PRIVATE src/resources)
+set_target_properties(resources-graph-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(resources-graph-driver PRIVATE -O2 -Wall -Wextra -Werror)
+if(NOT APPLE)
+  target_compile_definitions(resources-graph-driver PRIVATE _XOPEN_SOURCE=700)
+endif()
+
 add_executable(drydock-objc cli/drydock-objc.c src/objc/main.c $<TARGET_OBJECTS:drydock_objc_core>
   $<TARGET_OBJECTS:drydock_objc_receipt>)
 set_source_files_properties(src/objc/main.c PROPERTIES COMPILE_DEFINITIONS main=objc_compat_main)
@@ -510,6 +526,15 @@ set_property(TEST family_conventions APPEND PROPERTY LABELS not-in-guest)
 drydock_add_test(NAME elf_needs_all COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/elf_needs_all_test.sh)
 # platform: host-agnostic -- the committed nib fixtures still match the XIBs they were compiled from.
 drydock_add_test(NAME resources_fixtures_current COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/fixtures-current-test.sh)
+# platform: host-agnostic -- NIBArchive nibs are read as bytes on every host.
+drydock_add_test(NAME resources_nibarchive COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/nibarchive-test.sh)
+set_tests_properties(resources_nibarchive PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES_GRAPH_DRIVER=$<TARGET_FILE:resources-graph-driver>")
+if(APPLE)
+  # platform: Apple only -- guard malloc, where ASan is absent (10.9), catches a read past the nib's last byte.
+  drydock_add_test(NAME resources_nibarchive_gmalloc COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/nibarchive-test.sh)
+  set_tests_properties(resources_nibarchive_gmalloc PROPERTIES ENVIRONMENT
+    "DRYDOCK_RESOURCES_GRAPH_DRIVER=$<TARGET_FILE:resources-graph-driver>;DRYDOCK_RESOURCES_GMALLOC=1")
+endif()
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).
@@ -760,6 +785,17 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   target_compile_options(archive_asan_test PRIVATE -O1 -g -fsanitize=address -fno-omit-frame-pointer)
   target_link_options(archive_asan_test PRIVATE -fsanitize=address)
   drydock_add_test(NAME archive_asan_test COMMAND archive_asan_test)
+  add_executable(resources-graph-asan-driver tests/resources/fixtures/graph-driver.c ${DRYDOCK_RESOURCES_SOURCES})
+  target_include_directories(resources-graph-asan-driver PRIVATE src/resources)
+  set_target_properties(resources-graph-asan-driver PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+  target_compile_options(resources-graph-asan-driver PRIVATE -O1 -g -fsanitize=address -fno-omit-frame-pointer)
+  target_link_options(resources-graph-asan-driver PRIVATE -fsanitize=address)
+  if(NOT APPLE)
+    target_compile_definitions(resources-graph-asan-driver PRIVATE _XOPEN_SOURCE=700)
+  endif()
+  drydock_add_test(NAME resources_nibarchive_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/nibarchive-test.sh)
+  set_tests_properties(resources_nibarchive_asan PROPERTIES
+    ENVIRONMENT "DRYDOCK_RESOURCES_GRAPH_DRIVER=$<TARGET_FILE:resources-graph-asan-driver>")
 endif()
 
 # Hermetic tests for src/linkedit.c's ml_bump_all: a synthetic
