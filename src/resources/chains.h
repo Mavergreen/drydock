@@ -9,7 +9,7 @@
 typedef struct RChainSrc RChainSrc;
 
 /* refdir holds floor-runtime.tsv and newer-sdk.tsv (share/drydock/objc/reference); NULL if either is unreadable
- * or a class row is malformed, or out of memory. */
+ * or a class row is malformed, or out of memory. A NULL refdir reads no tables, so only the binaries resolve. */
 RChainSrc *rc_open(const char *refdir, const char *target);
 /* 0; 1 with why set when the reader refuses the binary (no x86_64 slice, malformed, unreadable); -1 out of memory.
  * A readable binary that defines no classes adds nothing. */

@@ -51,15 +51,14 @@ static int section(Cur *c, uint32_t count, uint32_t off, size_t min_record, cons
     return 0;
 }
 
-typedef struct { uint32_t key; RvType type; int64_t i; double f; const uint8_t *p; size_t len; uint32_t ref; } RawValue;
+typedef struct { uint32_t key; RvType type; int64_t i; double f; uint32_t f32; const uint8_t *p; size_t len; uint32_t ref; }
+    RawValue;
 
 static int read_value(Cur *c, uint32_t n_keys, uint32_t n_objs, RawValue *v) {
     size_t at = c->pos;
     uint64_t k, len;
     uint8_t t;
-    float f32;
     double f64;
-    uint32_t u32;
     uint64_t u64;
     static const size_t width[] = { 1, 2, 4, 8, 0, 0, 4, 8 };
     if (varint(c, &k)) return -1;
@@ -80,7 +79,7 @@ static int read_value(Cur *c, uint32_t n_keys, uint32_t n_objs, RawValue *v) {
     case RV_I16: v->i = (int16_t)(uint16_t)(c->b[c->pos] | c->b[c->pos + 1] << 8); break;
     case RV_I32: v->i = (int32_t)le32(c->b + c->pos); break;
     case RV_I64: v->i = (int64_t)le64(c->b + c->pos); break;
-    case RV_F32: u32 = le32(c->b + c->pos); memcpy(&f32, &u32, 4); v->f = f32; break;
+    case RV_F32: v->f32 = le32(c->b + c->pos); break;
     case RV_F64: u64 = le64(c->b + c->pos); memcpy(&f64, &u64, 8); v->f = f64; break;
     case RV_DATA:
         if (varint(c, &len)) return -1;
@@ -170,7 +169,8 @@ int na_read(const uint8_t *buf, size_t n, RGraph *out, char *why, size_t whysz) 
             memset(&v, 0, sizeof v);
             v.key = keys[r->key];
             v.type = r->type;
-            if (r->type == RV_F32 || r->type == RV_F64) v.u.f = r->f;
+            if (r->type == RV_F32) v.u.f32 = r->f32;
+            else if (r->type == RV_F64) v.u.f = r->f;
             else if (r->type == RV_DATA) { v.u.d.p = (uint8_t *)r->p; v.u.d.n = r->len; }
             else if (r->type == RV_REF) v.u.ref = r->ref;
             else v.u.i = r->i;

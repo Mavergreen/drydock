@@ -1,0 +1,1032 @@
+drydock-resources dump 1
+format nibarchive 1 10
+chain DDFixtureView ?
+chain IBClassReference : NSObject
+chain NSArray : NSObject
+chain NSButton : NSControl : NSView : NSResponder : NSObject
+chain NSButtonCell : NSActionCell : NSCell : NSObject
+chain NSButtonImageSource : NSObject
+chain NSClassSwapper : NSObject
+chain NSColor : NSObject
+chain NSCustomObject : NSObject
+chain NSFont : NSObject
+chain NSIBObjectData : NSObject
+chain NSLayoutConstraint : NSObject
+chain NSMutableArray : NSArray : NSObject
+chain NSMutableSet : NSSet : NSObject
+chain NSNibOutletConnector : NSNibConnector : NSObject
+chain NSNumber : NSValue : NSObject
+chain NSObject
+chain NSSlider : NSControl : NSView : NSResponder : NSObject
+chain NSSliderCell : NSActionCell : NSCell : NSObject
+chain NSString : NSObject
+chain NSTextField : NSControl : NSView : NSResponder : NSObject
+chain NSTextFieldCell : NSActionCell : NSCell : NSObject
+chain NSView : NSResponder : NSObject
+chain NSWindowTemplate : NSObject
+
+@0 NSObject
+  IB.objectdata = ref @1
+  IB.systemFontUpdateVersion = i8 1
+
+@1 NSIBObjectData
+  NSRoot = ref @2
+  NSVisibleWindows = ref @4
+  NSConnections = ref @5
+  NSObjectsKeys = ref @84
+  NSObjectsValues = ref @88
+  NSOidsKeys = ref @89
+  NSOidsValues = ref @90
+  NSAccessibilityConnectors = ref @131
+  NSAccessibilityOidsKeys = ref @132
+  NSAccessibilityOidsValues = ref @132
+
+@2 NSCustomObject
+  NSClassName = ref @3
+
+@3 NSString
+  NS.bytes = data "NSObject"
+
+@4 NSMutableSet
+  NSInlinedValue = false
+
+@5 NSMutableArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @6
+
+@6 NSNibOutletConnector
+  NSSource = ref @7
+  NSDestination = ref @45
+  NSLabel = ref @83
+  NSChildControllerCreationSelectorName = nil
+
+@7 NSWindowTemplate
+  NSWindowStyleMask = i8 15
+  NSWindowBacking = i8 2
+  NSWindowRect = ref @8
+  NSWTFlags = i32 1618477056
+  NSWindowTitle = ref @9
+  NSWindowSubtitle = ref @10
+  NSWindowClass = ref @11
+  NSViewClass = nil
+  NSUserInterfaceItemIdentifier = nil
+  NSWindowView = ref @12
+  NSScreenRect = ref @80
+  NSMaxSize = ref @81
+  NSWindowIsRestorable = false
+  NSMinFullScreenContentSize = ref @82
+  NSMaxFullScreenContentSize = ref @82
+
+@8 NSString
+  NS.bytes = data "{{196.5, 240.25}, {480, 300}}"
+
+@9 NSString
+  NS.bytes = data "Values"
+
+@10 NSString
+  NS.bytes = data ""
+
+@11 NSString
+  NS.bytes = data "NSWindow"
+
+@12 NSView
+  NSNextResponder = nil
+  NSNibTouchBar = nil
+  NSvFlags = i16 256
+  NSSubviews = ref @13
+  NSFrameSize = ref @57
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSViewConstraints = ref @58
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+
+@13 NSMutableArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @14
+  UINibEncoderEmptyKey = ref @18
+  UINibEncoderEmptyKey = ref @20
+  UINibEncoderEmptyKey = ref @27
+  UINibEncoderEmptyKey = ref @32
+  UINibEncoderEmptyKey = ref @37
+  UINibEncoderEmptyKey = ref @45
+  UINibEncoderEmptyKey = ref @54
+
+@14 NSClassSwapper
+  NSClassName = ref @15
+  NSOriginalClassName = ref @16
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSFrame = ref @17
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+
+@15 NSString
+  NS.bytes = data "DDFixtureView"
+
+@16 NSString
+  NS.bytes = data "NSView"
+
+@17 NSString
+  NS.bytes = data "{{21, 200}, {100, 80}}"
+
+@18 NSClassSwapper
+  NSClassName = ref @16
+  NSOriginalClassName = ref @16
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i64 -2147483380
+  NSFrame = ref @19
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+
+@19 NSString
+  NS.bytes = data "{{140, 200}, {40, 40}}"
+
+@20 NSButton
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSSubviews = ref @21
+  NSFrame = ref @22
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+  NSTag = i8 7
+  NSEnabled = false
+  NSCell = ref @23
+  NSAllowsLogicalLayoutDirection = true
+  NSControlSize = i8 0
+  NSControlContinuous = true
+  NSControlRefusesFirstResponder = true
+  NSControlUsesSingleLineMode = true
+  NSControlTextAlignment = i8 1
+  NSControlLineBreakMode = i8 0
+  NSControlWritingDirection = i64 -1
+  NSControlSendActionMask = i8 4
+  IBNSShadowedSymbolConfiguration = nil
+
+@21 NSMutableArray
+  NSInlinedValue = false
+
+@22 NSString
+  NS.bytes = data "{{20, 156}, {57, 24}}"
+
+@23 NSButtonCell
+  NSCellFlags = i32 67108864
+  NSCellFlags2 = i32 134217728
+  NSContents = ref @24
+  NSSupport = ref @25
+  NSControlView = ref @20
+  NSButtonFlags = i64 -2038415360
+  NSButtonFlags2 = i16 129
+  NSBezelStyle = i8 1
+  NSAlternateContents = ref @10
+  NSKeyEquivalent = ref @10
+  NSPeriodicDelay = i16 400
+  NSPeriodicInterval = i8 75
+  NSAuxButtonType = i8 7
+
+@24 NSString
+  NS.bytes = data "Tag 7"
+
+@25 NSFont
+  NSName = ref @26
+  NSSize = f64 0x1.ap+3  # 13
+  NSfFlags = i16 1044
+
+@26 NSString
+  NS.bytes = data ".AppleSystemUIFont"
+
+@27 NSButton
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSSubviews = ref @28
+  NSFrame = ref @29
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+  NSTag = i16 300
+  NSEnabled = false
+  NSCell = ref @30
+  NSAllowsLogicalLayoutDirection = true
+  NSControlSize = i8 0
+  NSControlContinuous = true
+  NSControlRefusesFirstResponder = true
+  NSControlUsesSingleLineMode = true
+  NSControlTextAlignment = i8 1
+  NSControlLineBreakMode = i8 0
+  NSControlWritingDirection = i64 -1
+  NSControlSendActionMask = i8 4
+  IBNSShadowedSymbolConfiguration = nil
+
+@28 NSMutableArray
+  NSInlinedValue = false
+
+@29 NSString
+  NS.bytes = data "{{89, 156}, {74, 24}}"
+
+@30 NSButtonCell
+  NSCellFlags = i32 67108864
+  NSCellFlags2 = i32 134217728
+  NSContents = ref @31
+  NSSupport = ref @25
+  NSControlView = ref @27
+  NSButtonFlags = i64 -2038415360
+  NSButtonFlags2 = i16 129
+  NSBezelStyle = i8 1
+  NSAlternateContents = ref @10
+  NSKeyEquivalent = ref @10
+  NSPeriodicDelay = i16 400
+  NSPeriodicInterval = i8 75
+  NSAuxButtonType = i8 7
+
+@31 NSString
+  NS.bytes = data "Tag 300"
+
+@32 NSButton
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSSubviews = ref @33
+  NSFrame = ref @34
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+  NSTag = i32 70000
+  NSEnabled = false
+  NSCell = ref @35
+  NSAllowsLogicalLayoutDirection = true
+  NSControlSize = i8 0
+  NSControlContinuous = true
+  NSControlRefusesFirstResponder = true
+  NSControlUsesSingleLineMode = true
+  NSControlTextAlignment = i8 1
+  NSControlLineBreakMode = i8 0
+  NSControlWritingDirection = i64 -1
+  NSControlSendActionMask = i8 4
+  IBNSShadowedSymbolConfiguration = nil
+
+@33 NSMutableArray
+  NSInlinedValue = false
+
+@34 NSString
+  NS.bytes = data "{{175, 156}, {89, 24}}"
+
+@35 NSButtonCell
+  NSCellFlags = i32 67108864
+  NSCellFlags2 = i32 134217728
+  NSContents = ref @36
+  NSSupport = ref @25
+  NSControlView = ref @32
+  NSButtonFlags = i64 -2038415360
+  NSButtonFlags2 = i16 129
+  NSBezelStyle = i8 1
+  NSAlternateContents = ref @10
+  NSKeyEquivalent = ref @10
+  NSPeriodicDelay = i16 400
+  NSPeriodicInterval = i8 75
+  NSAuxButtonType = i8 7
+
+@36 NSString
+  NS.bytes = data "Tag 70000"
+
+@37 NSButton
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSSubviews = ref @38
+  NSFrame = ref @39
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  NSHuggingPriority = ref @40
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+  NSEnabled = false
+  NSCell = ref @41
+  NSAllowsLogicalLayoutDirection = true
+  NSControlSize = i8 0
+  NSControlContinuous = true
+  NSControlRefusesFirstResponder = true
+  NSControlUsesSingleLineMode = true
+  NSControlTextAlignment = i8 4
+  NSControlLineBreakMode = i8 0
+  NSControlWritingDirection = i64 -1
+  NSControlSendActionMask = i8 4
+  IBNSShadowedSymbolConfiguration = nil
+
+@38 NSMutableArray
+  NSInlinedValue = false
+
+@39 NSString
+  NS.bytes = data "{{20, 116}, {40, 16}}"
+
+@40 NSString
+  NS.bytes = data "{250, 750}"
+
+@41 NSButtonCell
+  NSCellFlags = i64 -2080374784
+  NSCellFlags2 = i32 268435456
+  NSContents = ref @42
+  NSSupport = ref @25
+  NSControlView = ref @37
+  NSButtonFlags = i32 1211650304
+  NSButtonFlags2 = i8 2
+  NSBezelStyle = i8 2
+  NSAlternateImage = ref @43
+  NSAlternateContents = ref @10
+  NSKeyEquivalent = ref @10
+  NSPeriodicDelay = i16 400
+  NSPeriodicInterval = i8 75
+  NSAuxButtonType = i8 3
+
+@42 NSString
+  NS.bytes = data "On"
+
+@43 NSButtonImageSource
+  NSImageName = ref @44
+
+@44 NSString
+  NS.bytes = data "NSSwitch"
+
+@45 NSTextField
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSFrame = ref @46
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  NSHuggingPriority = ref @47
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+  NSEnabled = false
+  NSCell = ref @48
+  NSAllowsLogicalLayoutDirection = true
+  NSControlSize = i8 0
+  NSControlContinuous = true
+  NSControlRefusesFirstResponder = true
+  NSControlUsesSingleLineMode = true
+  NSControlTextAlignment = i8 4
+  NSControlLineBreakMode = i8 2
+  NSControlWritingDirection = i64 -1
+  NSControlSendActionMask = i8 4
+  NSTextFieldAlignmentRectInsetsVersion = i8 2
+  NSAllowsWritingTools = false
+  NSTextFieldAllowsWritingToolsAffordance = true
+  NS.resolvesNaturalAlignmentWithBaseWritingDirection = true
+
+@46 NSString
+  NS.bytes = data "{{20, 79}, {200, 19}}"
+
+@47 NSString
+  NS.bytes = data "{251, 750}"
+
+@48 NSTextFieldCell
+  NSCellFlags = i32 337641537
+  NSCellFlags2 = i32 272630784
+  NSContents = ref @49
+  NSSupport = ref @50
+  NSControlView = ref @45
+  NSDrawsBackground = false
+  NSBackgroundColor = ref @52
+  NSTextColor = ref @53
+
+@49 NSString
+  NS.bytes = data "Helvetica 15.25"
+
+@50 NSFont
+  NSName = ref @51
+  NSSize = f64 0x1.e8p+3  # 15.25
+  NSfFlags = i8 16
+
+@51 NSString
+  NS.bytes = data "Helvetica"
+
+@52 NSColor
+  NSColorSpace = i8 3
+  NSWhite = data x"302e3900"
+
+@53 NSColor
+  NSColorSpace = i8 1
+  NSRGB = data x"302e3520302e323520302e373500"
+
+@54 NSSlider
+  NSNextResponder = ref @12
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSFrame = ref @55
+  NSSuperview = ref @12
+  NSViewWantsBestResolutionOpenGLSurface = false
+  NSDoNotTranslateAutoresizingMask = false
+  IBNSSafeAreaLayoutGuide = nil
+  IBNSLayoutMarginsGuide = nil
+  IBNSClipsToBounds = i8 0
+  NSEnabled = false
+  NSCell = ref @56
+  NSAllowsLogicalLayoutDirection = true
+  NSControlSize = i8 0
+  NSControlContinuous = true
+  NSControlRefusesFirstResponder = true
+  NSControlUsesSingleLineMode = true
+  NSControlTextAlignment = i8 0
+  NSControlLineBreakMode = i8 0
+  NSControlWritingDirection = i64 -1
+  NSControlSendActionMask = i8 4
+
+@55 NSString
+  NS.bytes = data "{{20, 49}, {200, 16}}"
+
+@56 NSSliderCell
+  NSCellFlags = i64 -2147483648
+  NSCellFlags2 = i8 0
+  NSControlView = ref @54
+  NSMaxValue = f64 0x1.908p+6  # 100.125
+  NSMinValue = f64 -0x1.4p+1  # -2.5
+  NSValue = f64 0x1.2cp+5  # 37.5
+  NSAltIncValue = f64 0x0p+0  # 0
+  NSNumberOfTickMarks = i8 0
+  NSTickMarkPosition = i8 1
+  NSAllowsTickMarkValuesOnly = true
+  NSVertical = true
+
+@57 NSString
+  NS.bytes = data "{480, 300}"
+
+@58 NSArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @59
+  UINibEncoderEmptyKey = ref @60
+  UINibEncoderEmptyKey = ref @61
+  UINibEncoderEmptyKey = ref @62
+  UINibEncoderEmptyKey = ref @63
+  UINibEncoderEmptyKey = ref @64
+  UINibEncoderEmptyKey = ref @65
+  UINibEncoderEmptyKey = ref @66
+  UINibEncoderEmptyKey = ref @67
+  UINibEncoderEmptyKey = ref @68
+  UINibEncoderEmptyKey = ref @69
+  UINibEncoderEmptyKey = ref @70
+  UINibEncoderEmptyKey = ref @71
+  UINibEncoderEmptyKey = ref @72
+  UINibEncoderEmptyKey = ref @73
+  UINibEncoderEmptyKey = ref @74
+  UINibEncoderEmptyKey = ref @75
+  UINibEncoderEmptyKey = ref @76
+  UINibEncoderEmptyKey = ref @77
+  UINibEncoderEmptyKey = ref @78
+  UINibEncoderEmptyKey = ref @79
+
+@59 NSLayoutConstraint
+  NSFirstItem = ref @14
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @12
+  NSSecondAttributeV2 = i8 5
+  NSSecondAttribute = i8 5
+  NSConstantV2 = f64 0x1.48p+4  # 20.5
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.48p+4  # 20.5
+
+@60 NSLayoutConstraint
+  NSFirstItem = ref @14
+  NSFirstAttributeV2 = i8 7
+  NSFirstAttribute = i8 7
+  NSConstantV2 = f64 0x1.93p+6  # 100.75
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.93p+6  # 100.75
+
+@61 NSLayoutConstraint
+  NSFirstItem = ref @14
+  NSFirstAttributeV2 = i8 3
+  NSFirstAttribute = i8 3
+  NSSecondItem = ref @12
+  NSSecondAttributeV2 = i8 3
+  NSSecondAttribute = i8 3
+  NSConstantV2 = f64 0x1.3cp+4  # 19.75
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.3cp+4  # 19.75
+
+@62 NSLayoutConstraint
+  NSFirstItem = ref @14
+  NSFirstAttributeV2 = i8 8
+  NSFirstAttribute = i8 8
+  NSConstantV2 = f64 0x1.408p+6  # 80.125
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.408p+6  # 80.125
+
+@63 NSLayoutConstraint
+  NSFirstItem = ref @20
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @12
+  NSSecondAttributeV2 = i8 5
+  NSSecondAttribute = i8 5
+  NSConstantV2 = f64 0x1.4p+4  # 20
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.4p+4  # 20
+
+@64 NSLayoutConstraint
+  NSFirstItem = ref @20
+  NSFirstAttributeV2 = i8 3
+  NSFirstAttribute = i8 3
+  NSSecondItem = ref @14
+  NSSecondAttributeV2 = i8 4
+  NSSecondAttribute = i8 4
+  NSConstantV2 = f64 0x1.4p+4  # 20
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.4p+4  # 20
+
+@65 NSLayoutConstraint
+  NSFirstItem = ref @18
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @14
+  NSSecondAttributeV2 = i8 6
+  NSSecondAttribute = i8 6
+  NSConstantV2 = f64 0x1.34p+4  # 19.25
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.34p+4  # 19.25
+
+@66 NSLayoutConstraint
+  NSFirstItem = ref @18
+  NSFirstAttributeV2 = i8 3
+  NSFirstAttribute = i8 3
+  NSSecondItem = ref @14
+  NSSecondAttributeV2 = i8 3
+  NSSecondAttribute = i8 3
+  NSShouldBeArchived = false
+
+@67 NSLayoutConstraint
+  NSFirstItem = ref @27
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @20
+  NSSecondAttributeV2 = i8 6
+  NSSecondAttribute = i8 6
+  NSConstantV2 = f64 0x1.8p+3  # 12
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.8p+3  # 12
+
+@68 NSLayoutConstraint
+  NSFirstItem = ref @27
+  NSFirstAttributeV2 = i8 12
+  NSFirstAttribute = i8 12
+  NSSecondItem = ref @20
+  NSSecondAttributeV2 = i8 12
+  NSSecondAttribute = i8 12
+  NSShouldBeArchived = false
+
+@69 NSLayoutConstraint
+  NSFirstItem = ref @37
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @12
+  NSSecondAttributeV2 = i8 5
+  NSSecondAttribute = i8 5
+  NSConstantV2 = f64 0x1.4p+4  # 20
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.4p+4  # 20
+
+@70 NSLayoutConstraint
+  NSFirstItem = ref @37
+  NSFirstAttributeV2 = i8 3
+  NSFirstAttribute = i8 3
+  NSSecondItem = ref @20
+  NSSecondAttributeV2 = i8 4
+  NSSecondAttribute = i8 4
+  NSConstantV2 = f64 0x1.8p+4  # 24
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.8p+4  # 24
+
+@71 NSLayoutConstraint
+  NSFirstItem = ref @45
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @12
+  NSSecondAttributeV2 = i8 5
+  NSSecondAttribute = i8 5
+  NSConstantV2 = f64 0x1.4p+4  # 20
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.4p+4  # 20
+
+@72 NSLayoutConstraint
+  NSFirstItem = ref @45
+  NSFirstAttributeV2 = i8 7
+  NSFirstAttribute = i8 7
+  NSConstantV2 = f64 0x1.9p+7  # 200
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.9p+7  # 200
+
+@73 NSLayoutConstraint
+  NSFirstItem = ref @45
+  NSFirstAttributeV2 = i8 3
+  NSFirstAttribute = i8 3
+  NSSecondItem = ref @37
+  NSSecondAttributeV2 = i8 4
+  NSSecondAttribute = i8 4
+  NSConstantV2 = f64 0x1.2p+4  # 18
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.2p+4  # 18
+
+@74 NSLayoutConstraint
+  NSFirstItem = ref @54
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @12
+  NSSecondAttributeV2 = i8 5
+  NSSecondAttribute = i8 5
+  NSConstantV2 = f64 0x1.4p+4  # 20
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.4p+4  # 20
+
+@75 NSLayoutConstraint
+  NSFirstItem = ref @54
+  NSFirstAttributeV2 = i8 7
+  NSFirstAttribute = i8 7
+  NSConstantV2 = f64 0x1.9p+7  # 200
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.9p+7  # 200
+
+@76 NSLayoutConstraint
+  NSFirstItem = ref @12
+  NSFirstAttributeV2 = i8 4
+  NSFirstAttribute = i8 4
+  NSRelation = i8 1
+  NSSecondItem = ref @54
+  NSSecondAttributeV2 = i8 4
+  NSSecondAttribute = i8 4
+  NSConstantV2 = f64 0x1.4p+4  # 20
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.4p+4  # 20
+
+@77 NSLayoutConstraint
+  NSFirstItem = ref @54
+  NSFirstAttributeV2 = i8 3
+  NSFirstAttribute = i8 3
+  NSSecondItem = ref @45
+  NSSecondAttributeV2 = i8 4
+  NSSecondAttribute = i8 4
+  NSConstantV2 = f64 0x1.cp+3  # 14
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.cp+3  # 14
+
+@78 NSLayoutConstraint
+  NSFirstItem = ref @32
+  NSFirstAttributeV2 = i8 5
+  NSFirstAttribute = i8 5
+  NSSecondItem = ref @27
+  NSSecondAttributeV2 = i8 6
+  NSSecondAttribute = i8 6
+  NSConstantV2 = f64 0x1.8p+3  # 12
+  NSShouldBeArchived = false
+  NSConstant = f64 0x1.8p+3  # 12
+
+@79 NSLayoutConstraint
+  NSFirstItem = ref @32
+  NSFirstAttributeV2 = i8 12
+  NSFirstAttribute = i8 12
+  NSSecondItem = ref @20
+  NSSecondAttributeV2 = i8 12
+  NSSecondAttribute = i8 12
+  NSShouldBeArchived = false
+
+@80 NSString
+  NS.bytes = data "{{0, 0}, {1920, 1055}}"
+
+@81 NSString
+  NS.bytes = data "{10000000000000, 10000000000000}"
+
+@82 NSString
+  NS.bytes = data "{0, 0}"
+
+@83 NSString
+  NS.bytes = data "initialFirstResponder"
+
+@84 NSArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @85
+  UINibEncoderEmptyKey = ref @7
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @14
+  UINibEncoderEmptyKey = ref @18
+  UINibEncoderEmptyKey = ref @20
+  UINibEncoderEmptyKey = ref @23
+  UINibEncoderEmptyKey = ref @27
+  UINibEncoderEmptyKey = ref @30
+  UINibEncoderEmptyKey = ref @32
+  UINibEncoderEmptyKey = ref @35
+  UINibEncoderEmptyKey = ref @37
+  UINibEncoderEmptyKey = ref @41
+  UINibEncoderEmptyKey = ref @45
+  UINibEncoderEmptyKey = ref @48
+  UINibEncoderEmptyKey = ref @54
+  UINibEncoderEmptyKey = ref @56
+  UINibEncoderEmptyKey = ref @59
+  UINibEncoderEmptyKey = ref @60
+  UINibEncoderEmptyKey = ref @61
+  UINibEncoderEmptyKey = ref @62
+  UINibEncoderEmptyKey = ref @63
+  UINibEncoderEmptyKey = ref @64
+  UINibEncoderEmptyKey = ref @65
+  UINibEncoderEmptyKey = ref @66
+  UINibEncoderEmptyKey = ref @67
+  UINibEncoderEmptyKey = ref @68
+  UINibEncoderEmptyKey = ref @69
+  UINibEncoderEmptyKey = ref @70
+  UINibEncoderEmptyKey = ref @71
+  UINibEncoderEmptyKey = ref @72
+  UINibEncoderEmptyKey = ref @73
+  UINibEncoderEmptyKey = ref @74
+  UINibEncoderEmptyKey = ref @75
+  UINibEncoderEmptyKey = ref @76
+  UINibEncoderEmptyKey = ref @77
+  UINibEncoderEmptyKey = ref @78
+  UINibEncoderEmptyKey = ref @79
+
+@85 NSCustomObject
+  IBClassReference = ref @86
+  NSClassName = ref @87
+
+@86 IBClassReference
+  IBClassName = ref @3
+  IBModuleName = nil
+  IBModuleProvider = nil
+
+@87 NSString
+  NS.bytes = data "NSApplication"
+
+@88 NSArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @2
+  UINibEncoderEmptyKey = ref @2
+  UINibEncoderEmptyKey = ref @7
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @20
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @27
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @32
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @37
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @45
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @54
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @12
+
+@89 NSArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @2
+  UINibEncoderEmptyKey = ref @85
+  UINibEncoderEmptyKey = ref @7
+  UINibEncoderEmptyKey = ref @12
+  UINibEncoderEmptyKey = ref @14
+  UINibEncoderEmptyKey = ref @18
+  UINibEncoderEmptyKey = ref @20
+  UINibEncoderEmptyKey = ref @23
+  UINibEncoderEmptyKey = ref @27
+  UINibEncoderEmptyKey = ref @30
+  UINibEncoderEmptyKey = ref @32
+  UINibEncoderEmptyKey = ref @35
+  UINibEncoderEmptyKey = ref @37
+  UINibEncoderEmptyKey = ref @41
+  UINibEncoderEmptyKey = ref @45
+  UINibEncoderEmptyKey = ref @48
+  UINibEncoderEmptyKey = ref @54
+  UINibEncoderEmptyKey = ref @56
+  UINibEncoderEmptyKey = ref @59
+  UINibEncoderEmptyKey = ref @60
+  UINibEncoderEmptyKey = ref @61
+  UINibEncoderEmptyKey = ref @62
+  UINibEncoderEmptyKey = ref @63
+  UINibEncoderEmptyKey = ref @64
+  UINibEncoderEmptyKey = ref @65
+  UINibEncoderEmptyKey = ref @66
+  UINibEncoderEmptyKey = ref @67
+  UINibEncoderEmptyKey = ref @68
+  UINibEncoderEmptyKey = ref @69
+  UINibEncoderEmptyKey = ref @70
+  UINibEncoderEmptyKey = ref @71
+  UINibEncoderEmptyKey = ref @72
+  UINibEncoderEmptyKey = ref @73
+  UINibEncoderEmptyKey = ref @74
+  UINibEncoderEmptyKey = ref @75
+  UINibEncoderEmptyKey = ref @76
+  UINibEncoderEmptyKey = ref @77
+  UINibEncoderEmptyKey = ref @78
+  UINibEncoderEmptyKey = ref @79
+  UINibEncoderEmptyKey = ref @6
+
+@90 NSArray
+  NSInlinedValue = false
+  UINibEncoderEmptyKey = ref @91
+  UINibEncoderEmptyKey = ref @92
+  UINibEncoderEmptyKey = ref @93
+  UINibEncoderEmptyKey = ref @94
+  UINibEncoderEmptyKey = ref @95
+  UINibEncoderEmptyKey = ref @96
+  UINibEncoderEmptyKey = ref @97
+  UINibEncoderEmptyKey = ref @98
+  UINibEncoderEmptyKey = ref @99
+  UINibEncoderEmptyKey = ref @100
+  UINibEncoderEmptyKey = ref @101
+  UINibEncoderEmptyKey = ref @102
+  UINibEncoderEmptyKey = ref @103
+  UINibEncoderEmptyKey = ref @104
+  UINibEncoderEmptyKey = ref @105
+  UINibEncoderEmptyKey = ref @106
+  UINibEncoderEmptyKey = ref @107
+  UINibEncoderEmptyKey = ref @108
+  UINibEncoderEmptyKey = ref @109
+  UINibEncoderEmptyKey = ref @110
+  UINibEncoderEmptyKey = ref @111
+  UINibEncoderEmptyKey = ref @112
+  UINibEncoderEmptyKey = ref @113
+  UINibEncoderEmptyKey = ref @114
+  UINibEncoderEmptyKey = ref @115
+  UINibEncoderEmptyKey = ref @116
+  UINibEncoderEmptyKey = ref @117
+  UINibEncoderEmptyKey = ref @118
+  UINibEncoderEmptyKey = ref @119
+  UINibEncoderEmptyKey = ref @120
+  UINibEncoderEmptyKey = ref @121
+  UINibEncoderEmptyKey = ref @122
+  UINibEncoderEmptyKey = ref @123
+  UINibEncoderEmptyKey = ref @124
+  UINibEncoderEmptyKey = ref @125
+  UINibEncoderEmptyKey = ref @126
+  UINibEncoderEmptyKey = ref @127
+  UINibEncoderEmptyKey = ref @128
+  UINibEncoderEmptyKey = ref @129
+  UINibEncoderEmptyKey = ref @130
+
+@91 NSNumber
+  NS.intval = i8 1
+
+@92 NSNumber
+  NS.intval = i8 2
+
+@93 NSNumber
+  NS.intval = i8 3
+
+@94 NSNumber
+  NS.intval = i8 4
+
+@95 NSNumber
+  NS.intval = i8 5
+
+@96 NSNumber
+  NS.intval = i8 6
+
+@97 NSNumber
+  NS.intval = i8 7
+
+@98 NSNumber
+  NS.intval = i8 8
+
+@99 NSNumber
+  NS.intval = i8 9
+
+@100 NSNumber
+  NS.intval = i8 10
+
+@101 NSNumber
+  NS.intval = i8 11
+
+@102 NSNumber
+  NS.intval = i8 12
+
+@103 NSNumber
+  NS.intval = i8 13
+
+@104 NSNumber
+  NS.intval = i8 14
+
+@105 NSNumber
+  NS.intval = i8 15
+
+@106 NSNumber
+  NS.intval = i8 16
+
+@107 NSNumber
+  NS.intval = i8 17
+
+@108 NSNumber
+  NS.intval = i8 18
+
+@109 NSNumber
+  NS.intval = i8 19
+
+@110 NSNumber
+  NS.intval = i8 20
+
+@111 NSNumber
+  NS.intval = i8 21
+
+@112 NSNumber
+  NS.intval = i8 22
+
+@113 NSNumber
+  NS.intval = i8 23
+
+@114 NSNumber
+  NS.intval = i8 24
+
+@115 NSNumber
+  NS.intval = i8 25
+
+@116 NSNumber
+  NS.intval = i8 26
+
+@117 NSNumber
+  NS.intval = i8 27
+
+@118 NSNumber
+  NS.intval = i8 28
+
+@119 NSNumber
+  NS.intval = i8 29
+
+@120 NSNumber
+  NS.intval = i8 30
+
+@121 NSNumber
+  NS.intval = i8 31
+
+@122 NSNumber
+  NS.intval = i8 32
+
+@123 NSNumber
+  NS.intval = i8 33
+
+@124 NSNumber
+  NS.intval = i8 34
+
+@125 NSNumber
+  NS.intval = i8 35
+
+@126 NSNumber
+  NS.intval = i8 36
+
+@127 NSNumber
+  NS.intval = i8 37
+
+@128 NSNumber
+  NS.intval = i8 38
+
+@129 NSNumber
+  NS.intval = i8 39
+
+@130 NSNumber
+  NS.intval = i8 40
+
+@131 NSMutableArray
+  NSInlinedValue = false
+
+@132 NSArray
+  NSInlinedValue = false

@@ -119,12 +119,14 @@ static int version_cmp(const char *a, const char *b) {
 RChainSrc *rc_open(const char *refdir, const char *target) {
     RChainSrc *s;
     char path[4096];
-    if (!refdir || !target || !version_ok(target) || !(s = calloc(1, sizeof *s))) return NULL;
+    if (!target || !version_ok(target) || !(s = calloc(1, sizeof *s))) return NULL;
     if (!(s->target = malloc(strlen(target) + 1))) { free(s); return NULL; }
     strcpy(s->target, target);
-    if (snprintf(path, sizeof path, "%s/floor-runtime.tsv", refdir) >= (int)sizeof path || !(s->floor_buf = slurp(path)) ||
-        snprintf(path, sizeof path, "%s/newer-sdk.tsv", refdir) >= (int)sizeof path || !(s->newer_buf = slurp(path)) ||
-        load(s, s->floor_buf, SRC_FLOOR) || load(s, s->newer_buf, SRC_NEWER)) {
+    if (refdir && (snprintf(path, sizeof path, "%s/floor-runtime.tsv", refdir) >= (int)sizeof path
+                   || !(s->floor_buf = slurp(path))
+                   || snprintf(path, sizeof path, "%s/newer-sdk.tsv", refdir) >= (int)sizeof path
+                   || !(s->newer_buf = slurp(path))
+                   || load(s, s->floor_buf, SRC_FLOOR) || load(s, s->newer_buf, SRC_NEWER))) {
         rc_close(s);
         return NULL;
     }

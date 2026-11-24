@@ -48,7 +48,7 @@ top=$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$glibc" | sort -t. -k1,1n -k2,2n -k3,3n 
 [ -n "$glibc" ] && [ "$top" = "$GLIBC_FLOOR" ] \
   && ok "no executable in bin/ needs glibc above $GLIBC_FLOOR (highest: $glibc)" \
   || bad "bin/ needs glibc ${glibc:-unknown}, above the archive's stated floor $GLIBC_FLOOR"
-for exe in drydock-macho-rewrite drydock-objc; do
+for exe in drydock-macho-rewrite drydock-objc drydock-resources; do
   one=$(sh "$HERE/../packaging/elf-needs.sh" "$BIN/$exe") || one=
   oi=$(printf '%s\n' "$one" | sed -n 's/^isa-needed=//p')
   og=$(printf '%s\n' "$one" | sed -n 's/^glibc-needed=//p')
@@ -87,11 +87,11 @@ if [ -n "$M" ]; then
     [ -f "$b" ] || continue
     [ "$(ls -ld "$a" | cut -c1-10)" = "$(ls -ld "$b" | cut -c1-10)" ] || { bad "$p: mode differs"; continue; }
     # spec: README -- the executables are built per host (ELF here, Mach-O there); every other file is shared
-    case "$p" in "drydock-$V/bin/drydock-macho-rewrite"|"drydock-$V/bin/drydock-objc") continue ;; esac
+    case "$p" in "drydock-$V/bin/drydock-macho-rewrite"|"drydock-$V/bin/drydock-objc"|"drydock-$V/bin/drydock-resources") continue ;; esac
     if cmp -s "$a" "$b"; then same=$((same + 1)); else differ=$((differ + 1)); bad "$p differs from the macOS archive's"; fi
   done < "$T/linux.list"
   [ "$same" -ge 10 ] && [ "$differ" -eq 0 ] \
-    && ok "every file but the two executables is the macOS archive's, byte for byte ($same files)" \
+    && ok "every file but the three executables is the macOS archive's, byte for byte ($same files)" \
     || bad "$same files the same, $differ different"
 fi
 

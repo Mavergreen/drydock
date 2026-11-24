@@ -8,8 +8,9 @@
 
 typedef enum { RV_I8, RV_I16, RV_I32, RV_I64, RV_TRUE, RV_FALSE, RV_F32, RV_F64,
                RV_DATA, RV_NIL, RV_REF, RV_STRING, RV_UID_ARRAY } RvType;   /* order = NIBArchive type codes 0..10, then keyed-only */
-typedef struct { const char *key; RvType type; union { int64_t i; double f; struct { uint8_t *p; size_t n; } d; uint32_t ref;
-                 struct { uint32_t *v; size_t n; } refs; } u; } RValue;
+/* An RV_F32 is its 32 raw bits in f32, never widened to a double, which would quiet a signalling NaN. */
+typedef struct { const char *key; RvType type; union { int64_t i; double f; uint32_t f32; struct { uint8_t *p; size_t n; } d;
+                 uint32_t ref; struct { uint32_t *v; size_t n; } refs; } u; } RValue;
 typedef struct { const char *cls; RValue *vals; size_t n_vals; } RObject;
 typedef struct { char *cls; char **chain; size_t n_chain; int resolved; char *newer; } RChain;   /* chain[0] == cls; newer: the
                 * newest newer-sdk.tsv version past the target the chain needed ("?" unstated), or NULL */

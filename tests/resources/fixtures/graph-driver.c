@@ -74,7 +74,8 @@ int main(int argc, char **argv) {
             case RV_I8: case RV_I16: case RV_I32: case RV_I64: printf("%lld", (long long)v->u.i); break;
             case RV_TRUE: printf("true"); break;
             case RV_FALSE: printf("false"); break;
-            case RV_F32: case RV_F64: printf("%.17g", v->u.f); break;
+            case RV_F32: { float f; memcpy(&f, &v->u.f32, 4); printf("%.17g", (double)f); break; }
+            case RV_F64: printf("%.17g", v->u.f); break;
             case RV_DATA: case RV_STRING: print_bytes(v->u.d.p, v->u.d.n); break;
             case RV_NIL: printf("nil"); break;
             case RV_REF: printf("@%lu<%s>", (unsigned long)v->u.ref, g.objs[v->u.ref].cls); break;

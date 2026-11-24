@@ -319,7 +319,7 @@ target_compile_options(drydock_resources_core PRIVATE -O2 -Wall -Wextra -Werror)
 if(NOT APPLE)
   target_compile_definitions(drydock_resources_core PRIVATE _XOPEN_SOURCE=700)
 endif()
-foreach(d graph chains)
+foreach(d graph chains rez)
   add_executable(resources-${d}-driver tests/resources/fixtures/${d}-driver.c $<TARGET_OBJECTS:drydock_resources_core>
                  $<TARGET_OBJECTS:drydock_objc_core>)
   target_include_directories(resources-${d}-driver PRIVATE src/resources)
@@ -347,6 +347,16 @@ target_compile_options(drydock-objc PRIVATE -O2 -Wall)
 target_link_libraries(drydock-objc PRIVATE drydockcore drydock_jansson ${CMAKE_DL_LIBS})
 if(APPLE)
   mavericks_assert_binary_compatible(drydock-objc)
+endif()
+
+add_executable(drydock-resources cli/drydock-resources.c $<TARGET_OBJECTS:drydock_resources_core>
+  $<TARGET_OBJECTS:drydock_objc_core>)
+target_include_directories(drydock-resources PRIVATE src/resources)
+set_target_properties(drydock-resources PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+target_compile_options(drydock-resources PRIVATE -O2 -Wall -Wextra -Werror)
+target_link_libraries(drydock-resources PRIVATE drydockcore drydock_jansson ${CMAKE_DL_LIBS})
+if(APPLE)
+  mavericks_assert_binary_compatible(drydock-resources)
 endif()
 
 # Stage the wrappers and the two files they source NEXT TO drydock-macho-rewrite in the build
@@ -409,6 +419,7 @@ install(FILES "man/drydock-macho-rewrite.1" DESTINATION share/man/man1)
 
 # drydock-objc finds its reference set at realpath(binary)/../../share/drydock/objc/reference.
 install(TARGETS drydock-objc RUNTIME DESTINATION bin)
+install(TARGETS drydock-resources RUNTIME DESTINATION bin)
 install(DIRECTORY "reference/objc/" DESTINATION share/drydock/objc/reference)
 
 option(DRYDOCK_BUILD_UPDATER "Build the Sparkle updater the .pkg ships (fetches Sparkle at configure time)" OFF)
@@ -448,10 +459,12 @@ if(DRYDOCK_TOOL_DIR STREQUAL "")
   set(DRYDOCK_BIN "$<TARGET_FILE_DIR:drydock-macho-rewrite>")
   set(DRYDOCK_DMR "$<TARGET_FILE:drydock-macho-rewrite>")
   set(DRYDOCK_OBJC_EXE "$<TARGET_FILE:drydock-objc>")
+  set(DRYDOCK_RESOURCES_EXE "$<TARGET_FILE:drydock-resources>")
 else()
   set(DRYDOCK_BIN "${CMAKE_BINARY_DIR}/tool-dir")
   set(DRYDOCK_DMR "${DRYDOCK_BIN}/drydock-macho-rewrite")
   set(DRYDOCK_OBJC_EXE "${DRYDOCK_BIN}/drydock-objc")
+  set(DRYDOCK_RESOURCES_EXE "${DRYDOCK_BIN}/drydock-resources")
   set(helpers "")
   foreach(h IN LISTS DRYDOCK_TOOL_HELPERS)
     list(APPEND helpers "$<TARGET_FILE:${h}>")
@@ -548,11 +561,23 @@ if(APPLE)
   drydock_add_test(NAME resources_chains_gmalloc COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/chains-test.sh)
   set_tests_properties(resources_chains_gmalloc PROPERTIES ENVIRONMENT "${DRYDOCK_RESOURCES_CHAINS_ENV};DRYDOCK_RESOURCES_GMALLOC=1")
 endif()
+# platform: host-agnostic -- dumps committed nibs and parses hand-written dumps as bytes on every host.
+set(DRYDOCK_RESOURCES_REZ_ENV "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};DRYDOCK_RESOURCES_REZ_DRIVER=$<TARGET_FILE:resources-rez-driver>")
+drydock_add_test(NAME resources_rez COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/rez-test.sh)
+set_tests_properties(resources_rez PROPERTIES ENVIRONMENT "${DRYDOCK_RESOURCES_REZ_ENV}")
+if(APPLE)
+  # platform: Apple only -- guard malloc, where ASan is absent (10.9), under hand-written and malformed dumps.
+  drydock_add_test(NAME resources_rez_gmalloc COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/rez-test.sh)
+  set_tests_properties(resources_rez_gmalloc PROPERTIES ENVIRONMENT "${DRYDOCK_RESOURCES_REZ_ENV};DRYDOCK_RESOURCES_GMALLOC=1")
+endif()
+# platform: host-agnostic -- the command line, on committed nibs.
+drydock_add_test(NAME resources_cli COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/cli-test.sh)
+set_tests_properties(resources_cli PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).
   drydock_add_test(NAME linux_glibc_floor_test COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/linux_glibc_floor_test.sh
-    "${DRYDOCK_DMR}" "${DRYDOCK_OBJC_EXE}")
+    "${DRYDOCK_DMR}" "${DRYDOCK_OBJC_EXE}" "${DRYDOCK_RESOURCES_EXE}")
 endif()
 
 # The hardware gate every test is launched through.
@@ -798,7 +823,7 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   target_compile_options(archive_asan_test PRIVATE -O1 -g -fsanitize=address -fno-omit-frame-pointer)
   target_link_options(archive_asan_test PRIVATE -fsanitize=address)
   drydock_add_test(NAME archive_asan_test COMMAND archive_asan_test)
-  foreach(d graph chains)
+  foreach(d graph chains rez)
     add_executable(resources-${d}-asan-driver tests/resources/fixtures/${d}-driver.c ${DRYDOCK_RESOURCES_SOURCES}
                    $<TARGET_OBJECTS:drydock_objc_core>)
     target_include_directories(resources-${d}-asan-driver PRIVATE src/resources src/objc)
@@ -816,6 +841,9 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   drydock_add_test(NAME resources_chains_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/chains-test.sh)
   set_tests_properties(resources_chains_asan PROPERTIES ENVIRONMENT
     "DRYDOCK_RESOURCES_CHAINS_DRIVER=$<TARGET_FILE:resources-chains-asan-driver>;DRYDOCK_RESOURCES_GRAPH_DRIVER=$<TARGET_FILE:resources-graph-asan-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+  drydock_add_test(NAME resources_rez_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/rez-test.sh)
+  set_tests_properties(resources_rez_asan PROPERTIES ENVIRONMENT
+    "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};DRYDOCK_RESOURCES_REZ_DRIVER=$<TARGET_FILE:resources-rez-asan-driver>")
 endif()
 
 # Hermetic tests for src/linkedit.c's ml_bump_all: a synthetic

@@ -18,7 +18,7 @@ bad() { echo "FAIL $1"; fail=$((fail + 1)); }
 # A stub of every installed name, each exiting 99: run through a farm of it, the suites must fail.
 mkdir "$T/stub" "$T/helper"
 stub() { printf '#!/bin/sh\necho "stub $0" >&2\nexit 99\n' >"$T/stub/$1" && chmod +x "$T/stub/$1"; }
-stub drydock-macho-rewrite; stub drydock-objc; stub drydock-macho-rewrite-compat.sh; stub drydock-macho-rewrite-translate.sh
+stub drydock-macho-rewrite; stub drydock-objc; stub drydock-resources; stub drydock-macho-rewrite-compat.sh; stub drydock-macho-rewrite-translate.sh
 for w in "$ROOT"/compat/*.sh; do
   case ${w##*/} in translate.sh|drydock-macho-rewrite-compat.sh) ;; *) n=${w##*/}; stub "${n%.sh}" ;; esac
 done
@@ -71,7 +71,7 @@ else
   [ "$n" -ge 10 ] && ok "each of $TOOLDIR's $n tools is the one in $BIN" || bad "$TOOLDIR holds $n tools"
   got=$(tests_with " \"$BUILD_BIN\"" | tr '\n' ' ')
   [ "$got" = "$BUILD_ONLY " ] && ok "only $BUILD_ONLY are handed this build's bindir" || bad "handed this build's bindir: '$got', not '$BUILD_ONLY '"
-  for t in drydock-macho-rewrite drydock-objc; do
+  for t in drydock-macho-rewrite drydock-objc drydock-resources; do
     if [ -n "$(tests_with " \"$BUILD_BIN/$t\"")" ] || grep -F -e "=$BUILD_BIN/$t;" -e "=$BUILD_BIN/$t\"" "$CTESTFILE" >/dev/null; then
       bad "a test still runs $BUILD_BIN/$t"
     else
