@@ -319,7 +319,7 @@ target_compile_options(drydock_resources_core PRIVATE -O2 -Wall -Wextra -Werror)
 if(NOT APPLE)
   target_compile_definitions(drydock_resources_core PRIVATE _XOPEN_SOURCE=700)
 endif()
-foreach(d graph chains rez)
+foreach(d graph chains rez bplist)
   add_executable(resources-${d}-driver tests/resources/fixtures/${d}-driver.c $<TARGET_OBJECTS:drydock_resources_core>
                  $<TARGET_OBJECTS:drydock_objc_core>)
   target_include_directories(resources-${d}-driver PRIVATE src/resources)
@@ -569,6 +569,22 @@ if(APPLE)
   # platform: Apple only -- guard malloc, where ASan is absent (10.9), under hand-written and malformed dumps.
   drydock_add_test(NAME resources_rez_gmalloc COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/rez-test.sh)
   set_tests_properties(resources_rez_gmalloc PROPERTIES ENVIRONMENT "${DRYDOCK_RESOURCES_REZ_ENV};DRYDOCK_RESOURCES_GMALLOC=1")
+endif()
+# platform: host-agnostic -- binary plists are written, read and rewritten as bytes on every host.
+drydock_add_test(NAME resources_bplist COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/bplist-test.sh)
+set_tests_properties(resources_bplist PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-driver>")
+if(APPLE)
+  # platform: Apple only -- guard malloc, where ASan is absent (10.9), under truncated and hostile plists.
+  drydock_add_test(NAME resources_bplist_gmalloc COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/bplist-test.sh)
+  set_tests_properties(resources_bplist_gmalloc PROPERTIES ENVIRONMENT
+    "DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-driver>;DRYDOCK_RESOURCES_GMALLOC=1")
+endif()
+# platform: macOS-only -- Apple's plutil checks and re-encodes the writer's output.
+drydock_macos_test(resources_bplist_plutil "plutil judges the writer's output"
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/bplist-plutil-test.sh)
+if(APPLE)
+  set_tests_properties(resources_bplist_plutil PROPERTIES ENVIRONMENT
+    "DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-driver>")
 endif()
 # platform: host-agnostic -- the command line, on committed nibs.
 drydock_add_test(NAME resources_cli COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/cli-test.sh)
@@ -823,7 +839,7 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   target_compile_options(archive_asan_test PRIVATE -O1 -g -fsanitize=address -fno-omit-frame-pointer)
   target_link_options(archive_asan_test PRIVATE -fsanitize=address)
   drydock_add_test(NAME archive_asan_test COMMAND archive_asan_test)
-  foreach(d graph chains rez)
+  foreach(d graph chains rez bplist)
     add_executable(resources-${d}-asan-driver tests/resources/fixtures/${d}-driver.c ${DRYDOCK_RESOURCES_SOURCES}
                    $<TARGET_OBJECTS:drydock_objc_core>)
     target_include_directories(resources-${d}-asan-driver PRIVATE src/resources src/objc)
@@ -841,6 +857,9 @@ if(DRYDOCK_HAVE_ASAN AND DRYDOCK_ASAN_RUNS)
   drydock_add_test(NAME resources_chains_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/chains-test.sh)
   set_tests_properties(resources_chains_asan PROPERTIES ENVIRONMENT
     "DRYDOCK_RESOURCES_CHAINS_DRIVER=$<TARGET_FILE:resources-chains-asan-driver>;DRYDOCK_RESOURCES_GRAPH_DRIVER=$<TARGET_FILE:resources-graph-asan-driver>;SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+  drydock_add_test(NAME resources_bplist_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/bplist-test.sh)
+  set_tests_properties(resources_bplist_asan PROPERTIES
+    ENVIRONMENT "DRYDOCK_RESOURCES_BPLIST_DRIVER=$<TARGET_FILE:resources-bplist-asan-driver>")
   drydock_add_test(NAME resources_rez_asan COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/rez-test.sh)
   set_tests_properties(resources_rez_asan PROPERTIES ENVIRONMENT
     "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};DRYDOCK_RESOURCES_REZ_DRIVER=$<TARGET_FILE:resources-rez-asan-driver>")
