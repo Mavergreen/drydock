@@ -551,7 +551,7 @@ set_tests_properties(objc_strict_input PROPERTIES ENVIRONMENT "DRYDOCK_OBJC=${DR
 # resolves, which is find_package(MavericksShipyard)'s scripts. They fetch the
 # pinned SDKs and clang22, and the reference-set test regenerates the set, so
 # they take minutes.
-foreach(t arity attest binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec report sdk-inventory sdk-signatures cli)
+foreach(t arity attest binding classification closure compare evidence-schema2 source-hash guard-evidence resolve provider reader regexec report report-parity gh-acceptance sdk-inventory sdk-signatures cli)
   string(REPLACE "-" "_" n "${t}")
   if(t STREQUAL "cli")
     set(f cli-test.sh)
