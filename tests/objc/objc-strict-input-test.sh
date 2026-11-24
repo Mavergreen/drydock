@@ -70,15 +70,17 @@ ev 1; analyze --references "$T/ref" --build-evidence "$T/ev.json"; taken "strict
 # strict_bigint: an integer past long long is malformed, not wrapped.
 ev 18446744073709551617; analyze --references "$T/ref" --build-evidence "$T/ev.json"; refused "strict_bigint: schema 2^64+1" malformed-input 'too big'
 
-# strict_source_line: a schema-1 guard's source line is an integer; a real is refused, not truncated.
+# strict_source_line: a schema-1 guard's source line is an integer; a real or a boolean is refused, not truncated.
 ev 1 ',"guards":[{"id":"g","source":{"line":12.5}}]'
 analyze --references "$T/ref" --build-evidence "$T/ev.json"; refused "strict_source_line: source line 12.5" malformed-build-evidence 'source line is not an integer'
+ev 1 ',"guards":[{"id":"g","source":{"line":true}}]'
+analyze --references "$T/ref" --build-evidence "$T/ev.json"; refused "strict_source_line: source line true" malformed-build-evidence 'source line is not an integer'
 ev 1 ',"guards":[{"id":"g","source":{"line":12}}]'
 analyze --references "$T/ref" --build-evidence "$T/ev.json"; taken "strict_source_line: source line 12 is taken" malformed-build-evidence
 ev 1 ',"guards":[{"id":"g","source":{}}]'
 analyze --references "$T/ref" --build-evidence "$T/ev.json"; taken "strict_source_line: an absent source line is taken" malformed-build-evidence
 
-# strict_probe_size: a provider atom's size is an integer; a real is refused, not truncated.
+# strict_probe_size: a provider atom's size is an integer; a real or a boolean is refused, not truncated.
 P="$T/prefix"; mkdir -p "$P/share/recaulk" "$P/lib"
 printf 'archive\n' > "$P/lib/libp.a"; printf 'r' > "$T/receipt"
 decl() { printf '{"schema":1,"providers":[{"provider_id":"%s","class":"Foo","method_kind":"-","selector":"bar","encoding":"v16@0:8","implementation_symbol":"foo_bar","activation_root":"foo_root","required_frameworks":["Foundation"],"framework_policy":"strong-linked-before-root"}],"build":{"archive_path":"lib/libp.a","archive_sha256":"%s","architecture":"x86_64","artifact_role":"shipping","minimum_macos":"10.9","sdk_settings_sha256":"%s","compiler_identity":"cc","source_inputs_receipt":"r","source_inputs_sha256":"%s"}}\n' \
@@ -87,6 +89,8 @@ decl p.one
 atom() { ev 1 ",\"providers\":[{\"provider_id\":\"p.one\",\"declaration_sha256\":\"$H\",\"archive_sha256\":\"$H\",\"members\":[],\"atoms\":[{\"member\":\"m.o\",\"symbol\":\"_s\",\"address\":\"0x10\",\"size\":$1}]}]"; }
 atom 12.5; analyze --references "$T/ref" --provider-prefix "$P" --build-evidence "$T/ev.json"
 refused "strict_probe_size: atom size 12.5" malformed-build-evidence 'provider p.one atom'
+atom true; analyze --references "$T/ref" --provider-prefix "$P" --build-evidence "$T/ev.json"
+refused "strict_probe_size: atom size true" malformed-build-evidence 'provider p.one atom'
 atom 12; analyze --references "$T/ref" --provider-prefix "$P" --build-evidence "$T/ev.json"
 taken "strict_probe_size: atom size 12 is taken" malformed-build-evidence
 
