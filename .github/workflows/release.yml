@@ -554,7 +554,7 @@ jobs:
 
             # legacysupport_rename_test's MacPorts library, unpacked rather than installed.
             mls="$TMPDIR/macports-legacy-support" pkg="$(ls "$PWD"/deps/macports-legacy-support-*.pkg)"
-            mkdir -p "$mls" && (cd "$mls" && xar -xf "$pkg" && gzip -dc macports-legacy-support-component.pkg/Payload | cpio -id 2>/dev/null)
+            mkdir -p "$mls" && (cd "$mls" && xar -xf "$pkg" && gzip -dc macports-legacy-support-component.pkg/Payload | cpio -id 2>/dev/null) || exit 1
             export LEGACYSUPPORT_A="$mls/usr/local/mavergreen/legacysupport/lib/libMacportsLegacySupport.a"
             [ -f "$LEGACYSUPPORT_A" ] || { echo "$pkg holds no usr/local/mavergreen/legacysupport/lib/libMacportsLegacySupport.a"; exit 1; }
 
