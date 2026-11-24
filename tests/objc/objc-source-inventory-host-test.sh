@@ -34,6 +34,7 @@ lib=libclang.dylib; [ "$(uname -s)" = Darwin ] || lib=libclang.so
 mkdir -p "$T/src"
 cp "$FX/provider-body.m" "$FX/provider-register.c" "$T/src/"
 printf '%s  provider-body.m\n%s  provider-register.c\n' "$(sha "$T/src/provider-body.m")" "$(sha "$T/src/provider-register.c")" >"$T/inputs"
+umask 022
 receipt() { "$DRYDOCK_OBJC" receipt "$@" --inputs "$T/inputs" --root "$T/src" --unit provider-body.m --unit provider-register.c; }
 
 tool=$(awk '$2 == "tools/objc-source-inventory.c" { print $1 }' "$HERE/IMPORTED.sha256")
@@ -49,6 +50,11 @@ if [ "$rc" = 0 ]; then
     fail "the receipt's libclang line: $(grep '^libclang' "$T/fetched.receipt")"
   [ -n "$tool" ] && grep -Fxq "$(printf 'tool\t%s' "$tool")" "$T/fetched.receipt" &&
     pass "the receipt's tool line is IMPORTED.sha256's tools/objc-source-inventory.c" || fail "the receipt's tool line: $(grep '^tool' "$T/fetched.receipt")"
+  [ "$(ls -ln "$T/fetched.receipt" | cut -c1-10)" = -rw-r--r-- ] && pass "receipt_mode: under umask 022 the receipt is 0644, readable by every consumer" ||
+    fail "receipt_mode: under umask 022 the receipt is $(ls -ln "$T/fetched.receipt" | cut -c1-10), not -rw-r--r--"
+  rc=0; ( umask 027; receipt --clang-prefix "$CLANG" --sdk "$SDK" --output "$T/masked.receipt" ) 2>"$T/err" || rc=$?
+  [ "$rc" = 0 ] && [ "$(ls -ln "$T/masked.receipt" | cut -c1-10)" = -rw-r----- ] && pass "receipt_mode_umask: under umask 027 the receipt is 0640" ||
+    fail "receipt_mode_umask: exit $rc, mode $(ls -ln "$T/masked.receipt" 2>/dev/null | cut -c1-10)"
 else
   fail "receipt with the fetched clang exits $rc"
 fi

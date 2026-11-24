@@ -253,7 +253,7 @@ static int receipt(int argc, char **argv) {
     static const char *const names[] = {"--clang-prefix", "--sdk", "--inputs", "--root", "--unit", "--include", "--output", NULL};
     static const char *const scrub[] = {"CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "SDKROOT",
                                         "CCC_OVERRIDE_OPTIONS", NULL};
-    const char *prefix = NULL, *sdk = NULL;
+    const char *prefix = NULL, *sdk = NULL, *output = NULL;
     char lib[PATH_MAX], resource[PATH_MAX], why[2 * PATH_MAX + 512], version[256], want[16];
     const char *base;
     char **v;
@@ -302,11 +302,17 @@ static int receipt(int argc, char **argv) {
     v[n++] = OBJC_SOURCE_INVENTORY_SHA256;
     for (i = 0; i < argc; i += 2) {
         if (!strcmp(argv[i], "--clang-prefix") || !strcmp(argv[i], "--sdk")) continue;
+        if (!strcmp(argv[i], "--output")) output = argv[i + 1];
         v[n++] = argv[i];
         v[n++] = argv[i + 1];
     }
     v[n] = NULL;
     rc = objc_source_inventory_main(n, v);
+    if (rc == 0 && output) {
+        mode_t mask = umask(0);
+        umask(mask);
+        if (chmod(output, 0666 & ~mask)) return receipt_fail("cannot make the receipt readable");
+    }
     if (rc == 0 || rc == 2 || rc == 4) return rc;
     snprintf(why, sizeof why, "the receipt producer failed (exit %d)", rc);
     return receipt_fail(why);
