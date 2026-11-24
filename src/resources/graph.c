@@ -26,6 +26,7 @@ void rg_free(RGraph *g) {
         for (j = 0; j < g->chains[i].n_chain; j++) free(g->chains[i].chain[j]);
         free(g->chains[i].chain);
         free(g->chains[i].cls);
+        free(g->chains[i].newer);
     }
     free(g->chains);
     for (i = 0; i < g->n_strs; i++) free(g->strs[i]);
@@ -82,9 +83,8 @@ const RValue *rg_get(const RGraph *g, uint32_t obj, const char *key) {
     return NULL;
 }
 
+static int chain_key(const void *k, const void *c) { return strcmp(k, ((const RChain *)c)->cls); }
+
 const RChain *rg_chain(const RGraph *g, const char *cls) {
-    size_t i;
-    for (i = 0; i < g->n_chains; i++)
-        if (!strcmp(g->chains[i].cls, cls)) return &g->chains[i];
-    return NULL;
+    return g->n_chains ? bsearch(cls, g->chains, g->n_chains, sizeof *g->chains, chain_key) : NULL;
 }
