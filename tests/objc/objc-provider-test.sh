@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- links x86_64 consumers of an Objective-C provider archive against the pinned 10.9 SDK, then reads them as bytes
+# platform: host-agnostic -- clang22 links x86_64 consumers of an Objective-C provider archive against the pinned 10.9 SDK, then reads them as bytes
 # spec: src/objc/provider.c header -- a send is `provided` only when the provider's attested
 #       archive member is linked into the final artifact byte for byte, its constructor is in the
 #       initializer table, its registration names the declared class, selector and ABI, and its
@@ -318,7 +318,7 @@ group_prefix() {
   rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
   fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/table-provider.m" -o "$P.objects/table-provider.o" ||
     fail "compiling table-provider.m $*"
-  "$LIBTOOL" -static -o "$P/lib/libfixture-objc.a" "$P.objects/table-provider.o" 2>/dev/null
+  static_lib "$P/lib/libfixture-objc.a" "$P.objects/table-provider.o"
   printf '%s  table-provider.m\n' "$(sha "$FX/table-provider.m")" >"$P.inputs"
   declare_prefix "$P" "$P.inputs"
   awk -v g="$(printf '%s' "${GROUP:-$TAB_GROUP}" | tr '\n' ' ')" '
@@ -513,7 +513,9 @@ done
 #       built single-arch and joined by this repo's makefat (never lipo, which the guest lacks).
 # platform: the arm64 slice is built by $CC_ARM64 where clang22 targets arm64; elsewhere (10.9's clang22) it is an x86_64
 #           image under arm64's cputype, as objc-reader-test.sh's noslice is: only the x86_64 slice is ever read.
-"$HOST_CC" -O2 -o "$T/makefat" "$ROOT/tests/makefat.c" || fail 'building makefat'
+# platform: makefat runs here, so CTest hands over this build's (DRYDOCK_MAKEFAT); a standalone run builds it with HOST_CC.
+if [ -x "${DRYDOCK_MAKEFAT:-}" ]; then cp "$DRYDOCK_MAKEFAT" "$T/makefat"
+else "$HOST_CC" -O2 -o "$T/makefat" "$ROOT/tests/makefat.c" || fail 'building makefat'; fi
 env -i PATH=/usr/bin:/bin "$CC_ARM64" -O1 "$FX/plain.c" -o "$T/arm64-slice" 2>/dev/null || fxcc -O1 "$FX/plain.c" -o "$T/arm64-slice"
 "$T/makefat" "$T/root/bin/g-fat" "$T/root/bin/g-tab" 0x1000007 3 12 "$T/arm64-slice" 0x100000c 0 14 >/dev/null || fail 'makefat'
 evidence "$T/root/bin/g-fat" "$T/root/bin/g-fat" "$T/root/bin/g-tab.map" "$T/ev/g-fat.json" "$T/g-tab"
@@ -677,9 +679,11 @@ analyze "$T/root/bin/rooted" --build-evidence "$T/ev/forged.json" --provider-pre
 nonzero 'atom addresses that are not where the evidence says'; exit_is 4 'forged atom addresses'
 evidence "$T/root/bin/rooted" "$T/root/bin/rooted" "$T/maps/rooted.map" "$T/ev/rooted.json"
 exit_is 2 'an existing evidence destination'
-chmod 000 "$T/maps/rooted.map"
-evidence "$T/root/bin/rooted" "$T/root/bin/rooted" "$T/maps/rooted.map" "$T/ev/unreadable.json"
-exit_is 4 'an unreadable link map'; chmod 644 "$T/maps/rooted.map"
+if [ "$(id -u)" = 0 ]; then echo 'skip: root reads a mode-000 link map' >&2; else
+  chmod 000 "$T/maps/rooted.map"
+  evidence "$T/root/bin/rooted" "$T/root/bin/rooted" "$T/maps/rooted.map" "$T/ev/unreadable.json"
+  exit_is 4 'an unreadable link map'; chmod 644 "$T/maps/rooted.map"
+fi
 # spec: src/objc/linkmap.c LINKMAP_MAX -- a real consumer's map (Codex's is 174 MB) is read up to 256 MiB;
 #       past that it is refused before it is read.
 cp "$T/maps/rooted.map" "$T/maps/big.map"
@@ -716,6 +720,10 @@ old=$(sed -n 's/.*"inputs": {"artifact": {"path": "[^"]*", "sha256": "\([0-9a-f]
 #           which CTest sets; a standalone run takes the shell's), not the shell's: x86_64 takes 10.9's native clang22
 #           pkg, arm64 the clang22-cross pkg.
 RECEIPT_CLANG=${MAVERGREEN_OBJC_RECEIPT_CLANG_PREFIX:-${MAVERGREEN_OBJC_CLANG_PREFIX:-}}
+if [ -z "$RECEIPT_CLANG" ] && [ "$(uname -s)" != Darwin ]; then
+  # platform: off Darwin the pinned clang22's libclang is the Linux archive's libclang.so, whatever DRYDOCK_OBJC_ARCH says.
+  RECEIPT_CLANG=$(sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$ROOT/components/objc-receipt-clang") || fail 'cannot fetch the pinned receipt clang'
+fi
 if [ -z "$RECEIPT_CLANG" ]; then
   case "${DRYDOCK_OBJC_ARCH:-$(uname -m)}" in x86_64) short=clang22; flavor=native ;; arm64) short=clang22-cross; flavor=cross ;; *) exit 4 ;; esac
   version=$(tr -d '[:space:]' < "$ROOT/components/objc-receipt-clang/version")
@@ -748,7 +756,7 @@ fi
 if [ "$real" = 0 ]; then
   PFX_MAIN=$PFX; PFX="$T/pfx-two-got"; mkdir -p "$PFX/lib" "$PFX/share/recaulk" "$PFX.objects"
   for m in provider-register provider-two-got; do fxcc -Os -fPIC -Wall -c "$FX/$m.c" -o "$PFX.objects/$m.o"; done
-  "$LIBTOOL" -static -o "$PFX/lib/libfixture-objc.a" "$PFX.objects/provider-two-got.o" "$PFX.objects/provider-register.o" 2>/dev/null
+  static_lib "$PFX/lib/libfixture-objc.a" "$PFX.objects/provider-two-got.o" "$PFX.objects/provider-register.o"
   printf '%s  provider-register.c\n%s  provider-two-got.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-two-got.c")" >"$T/two-got-receipt"
   declare_prefix "$PFX" "$T/two-got-receipt"
   O="$PFX.objects/provider-two-got.o"
@@ -786,7 +794,7 @@ if [ "$real" = 0 ]; then
   PFX_MAIN=$PFX; PFX="$T/pfx-locals"; mkdir -p "$PFX/lib" "$PFX/share/recaulk" "$PFX.objects"
   fxcc -Os -fPIC -Wall -fno-objc-arc -c "$FX/provider-locals.m" -o "$PFX.objects/provider-locals.o"
   fxcc -Os -fPIC -Wall -c "$FX/provider-register.c" -o "$PFX.objects/provider-register.o"
-  "$LIBTOOL" -static -o "$PFX/lib/libfixture-objc.a" "$PFX.objects/provider-locals.o" "$PFX.objects/provider-register.o" 2>/dev/null
+  static_lib "$PFX/lib/libfixture-objc.a" "$PFX.objects/provider-locals.o" "$PFX.objects/provider-register.o"
   printf '%s  provider-locals.m\n%s  provider-register.c\n' "$(sha "$FX/provider-locals.m")" "$(sha "$FX/provider-register.c")" >"$T/locals-receipt"
   declare_prefix "$PFX" "$T/locals-receipt"
   for sym in 'l_OBJC_LABEL_CLASS_$' 'l_switch.table.' 'l_OBJC_CLASSLIST_SUP_REFS_$_'; do
@@ -829,7 +837,7 @@ body_prefix() {
   rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
   fxcc -Os -fPIC -Wall -fno-objc-arc "$@" -c "$D/provider-body.m" -o "$P.objects/provider-body.o" || fail "compiling $D/provider-body.m"
   fxcc -Os -fPIC -Wall "$@" -c "$D/provider-register.c" -o "$P.objects/provider-register.o"
-  "$LIBTOOL" -static -o "$P/lib/libfixture-objc.a" "$P.objects/provider-body.o" "$P.objects/provider-register.o" 2>/dev/null
+  static_lib "$P/lib/libfixture-objc.a" "$P.objects/provider-body.o" "$P.objects/provider-register.o"
   printf '%s  provider-body.m\n%s  provider-register.c\n' "$(sha "$D/provider-body.m")" "$(sha "$D/provider-register.c")" >"$P.inputs"
   declare_prefix "$P" "$P.inputs"
   if [ "${RECEIPT:-1}" = 1 ]; then

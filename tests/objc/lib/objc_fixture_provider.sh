@@ -1,8 +1,16 @@
-# platform: macOS-only -- $LIBTOOL and the caller's pinned-SDK fxcc
+# platform: host-agnostic -- $LIBTOOL, or llvm-ar where clang22 has none, and the caller's pinned-SDK fxcc
 # spec: tests/objc/fixtures/provider-register.c header -- the fixture Objective-C provider, shared by
 #       objc-provider-test.sh and objc-guard-test.sh; tests/lib/ is not itself run, since
 #       run-repo-tests.sh takes top-level tests only. The caller defines fxcc (the pinned-SDK compiler),
 #       sha (a file's SHA-256), SDK, FX (tests/objc/fixtures) and T (its scratch directory).
+# platform: clang22's Linux archive has no llvm-libtool-darwin; llvm-ar writes the same Mach-O archive format.
+# static_lib OUT OBJECT...: the archive of OBJECTs, by $LIBTOOL where it exists, else by $AR.
+static_lib() {
+  _out=$1; shift
+  rm -f "$_out"
+  if [ -x "$LIBTOOL" ]; then "$LIBTOOL" -static -o "$_out" "$@" 2>/dev/null
+  else "$AR" --format=darwin rcs "$_out" "$@"; fi
+}
 # spec: tests/objc/fixtures/provider-register.c header -- fixture_prefix DIR [CC-FLAGS]: the fixture provider at
 #       DIR, built with CC-FLAGS and declared as Recaulk's build declares its own.
 fixture_prefix() {
@@ -11,7 +19,7 @@ fixture_prefix() {
   for m in provider-register provider-impl; do
     fxcc -Os -fPIC -Wall "$@" -c "$FX/$m.c" -o "$P.objects/$m.o"
   done
-  "$LIBTOOL" -static -o "$P/lib/libfixture-objc.a" "$P.objects/provider-impl.o" "$P.objects/provider-register.o" 2>/dev/null
+  static_lib "$P/lib/libfixture-objc.a" "$P.objects/provider-impl.o" "$P.objects/provider-register.o"
   printf '%s  provider-register.c\n%s  provider-impl.c\n' "$(sha "$FX/provider-register.c")" "$(sha "$FX/provider-impl.c")" >"$T/fixture-receipt"
   declare_prefix "$P" "$T/fixture-receipt"
 }
