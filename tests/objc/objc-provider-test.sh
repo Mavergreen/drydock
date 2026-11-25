@@ -306,7 +306,7 @@ OWN_GROUP='{ "provider_id" : "fixture.bridge.accessibility.v1", "guard" : "own-a
         { "kind" : "-", "selector" : "accessibilityAttributeNames", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureBridge_attributeNames" },
         { "kind" : "-", "selector" : "accessibilityAttributeValue:", "encoding" : "@24@0:8@16", "implementation_symbol" : "FixtureBridge_attributeValue" },
         { "kind" : "-", "selector" : "accessibilityIsIgnored", "encoding" : "c16@0:8", "implementation_symbol" : "FixtureBridge_isIgnored" } ],
-      "super_fallbacks" : [ { "implementation_symbol" : "FixtureBridge_attributeValue", "selector" : "accessibilityAttributeValue:" } ] }'
+      "super_fallbacks" : [ { "implementation_symbol" : "FixtureBridge_attributeNames", "selector" : "accessibilityAttributeNames" }, { "implementation_symbol" : "FixtureBridge_isIgnored", "selector" : "accessibilityIsIgnored" }, { "implementation_symbol" : "FixtureBridge_attributeValue", "selector" : "accessibilityAttributeValue:" } ] }'
 own_sed() { printf '%s' "$OWN_GROUP" | sed "$1"; }
 schema2 own "$OWN_GROUP"
 link_args "$T/s2-own" "$T/maps/s2.map"
@@ -335,6 +335,8 @@ schema2 own-fallback-sel "$(own_sed 's/"selector" : "accessibilityAttributeValue
 s2_refused "own-absent: a super_fallbacks record for another member's selector" own-fallback-sel super_fallbacks
 schema2 own-fallback-shared "$(own_sed 's/"implementation_symbol" : "FixtureBridge_attributeNames"/"implementation_symbol" : "FixtureBridge_attributeValue"/')"
 s2_refused 'own-absent: a super_fallbacks record whose IMP implements two members' own-fallback-shared super_fallbacks
+schema2 own-fallback-dup "$(own_sed 's/} ] }$/}, { "implementation_symbol" : "FixtureBridge_attributeValue", "selector" : "accessibilityAttributeValue:" } ] }/')"
+s2_refused 'own-absent: a super_fallbacks record declared twice' own-fallback-dup 'super_fallbacks record FixtureBridge_attributeValue accessibilityAttributeValue: is declared twice'
 schema2 own-dup "$OWN_GROUP, $(own_sed 's/accessibility\.v1/other.v1/')"
 s2_refused 'own-absent: a selector claimed by two own-absent groups' own-dup 'declared twice'
 schema2 own-and-absent "$OWN_GROUP, $(printf '%s' "$A11Y_ABSENT" | sed 's/} ] }$/}, { "kind" : "-", "selector" : "accessibilityAttributeNames", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureA11y_accessibilityLabel" } ] }/')"
@@ -418,6 +420,7 @@ group_prefix tab; group tab tab
 exit_is 0 'group: the table provider is provided, all six'; tab_all provided 'group: the table provider is provided, all six'
 grep '"status": "active"' "$T/report" >/dev/null || fail 'group: the table provider is not reported active'
 says 'registers its 6 methods on NSWindow (71 paths from the constructor, 1 registering without a guess' 'group: the table provider'
+! grep -F unused_super_fallbacks "$T/report" >/dev/null || fail 'report: unused_super_fallbacks without an own-absent group'
 group_prefix reorder -DREORDER; group reorder reorder
 exit_is 0 'group: REORDER provided'; tab_all provided 'group: REORDER provided'
 
@@ -616,8 +619,7 @@ group_refused 'entry: TWO_INIT (the constructor twice in the initializer table)'
 #       the class and its app ancestors, present on its floor ancestor's 10.9 chain with that ancestor's encoding; no
 #       lookup, no store but the class into its table, no entry but the call sites; nothing is provided.
 bridge plain -
-exit_is 1 "bridge: two classes, four sites (its IMPs' own sends block)"
-only_imps_block 'bridge: two classes, four sites'
+exit_is 0 'bridge: two classes, four sites'
 grep '"status": "active"' "$T/report" >/dev/null || fail 'bridge: two classes, four sites: the group is not reported active'
 says 'bridges 2 classes from 4 call sites' 'bridge: two classes, four sites'
 no_provided 'bridge: two classes, four sites'
@@ -625,10 +627,29 @@ no_provided 'bridge: two classes, four sites'
 #       bridged class: a send to it answers when every bridged class does, else a respondsToSelector: guard closes it.
 imp_sends accessibilityRole floor-supported 'every bridged class answers -accessibilityRole (' 'bridge: a getter every bridged class implements'
 imp_sends respondsToSelector: floor-supported 'FixtureBridgedCell: floor -NSObject' 'bridge: a getter every bridged class implements'
+# spec: src/objc/provider.c header, "Groups" (own-absent (6)) -- a super send of an IMP's own selector, a literal or its
+#       _cmd, is excused by the group's super_fallbacks record for that IMP; no other send is, and an unused record is listed.
+super_send() {  # super_send IMP: the verdict of the IMP's objc_msgSendSuper* send
+  grep "\"function\": \"_$1\"" "$T/report" | grep '"evidence_kind": "objc_msgSendSuper' | sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p' | tr '\n' ' '
+}
+[ "$(super_send FixtureBridge_attributeValue)" = 'floor-supported ' ] || fail "bridge: the super fallback is excused: $(super_send FixtureBridge_attributeValue)"
+says 'super fallback record fixture.bridge.accessibility.v1/FixtureBridge_attributeValue: -accessibilityAttributeValue: is on every bridged class' \
+  'bridge: the super fallback is excused'
+says '"unused_super_fallbacks": []' 'bridge: the super fallback is excused'
 ! grep '"function": "_FixtureBridge_' "$T/report" | grep '"verdict": "unresolved"' | grep 'incoming argument 0' >/dev/null ||
   fail 'bridge: a getter every bridged class implements: an argument-0 send is unresolved'
+bridge nofallback NO_FALLBACK
+exit_is 0 'bridge: a super_fallbacks record that excuses nothing'
+says '"unused_super_fallbacks": ["FixtureBridge_attributeValue:accessibilityAttributeValue:"]' 'bridge: a super_fallbacks record that excuses nothing'
+GROUP=$(own_sed '/"super_fallbacks"/d; s/} ],$/} ] }/')
+bridge norecord -
+exit_is 1 'bridge: no record, the super send blocks'; only_imps_block 'bridge: no record, the super send blocks'
+[ "$(super_send FixtureBridge_attributeValue)" = 'unresolved ' ] || fail "bridge: no record, the super send blocks: $(super_send FixtureBridge_attributeValue)"
+bridge superother SUPER_OTHER
+exit_is 1 'bridge: a super send of another member'; only_imps_block 'bridge: a super send of another member'
+[ "$(super_send FixtureBridge_attributeValue)" = 'unresolved ' ] || fail "bridge: a super send of another member: $(super_send FixtureBridge_attributeValue)"
 bridge lacks - -DBRIDGE_CELL_LACKS
-exit_is 1 'bridge: a getter one class lacks, guarded'; only_imps_block 'bridge: a getter one class lacks, guarded'
+exit_is 0 'bridge: a getter one class lacks, guarded'
 imp_sends accessibilityRole guarded 'guards it; FixtureBridgedCell lacks it' 'bridge: a getter one class lacks, guarded'
 bridge unguarded UNGUARDED -DBRIDGE_CELL_LACKS
 exit_is 1 'bridge: a getter one class lacks, unguarded'

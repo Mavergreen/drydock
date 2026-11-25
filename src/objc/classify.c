@@ -487,6 +487,37 @@ static int bridge_verdict(ObjcAnalysis *a, const ObjcSend *s, Verdict *o) {
     return 1;
 }
 
+/* A super send of member k's own selector, as a literal or as its implementation's incoming _cmd, inside k's
+ * implementation in an active own-absent group, excused by the group's super_fallbacks record for that
+ * implementation (provider.c header, own-absent (6)). 1 with *o set and the record used, or 0. */
+static int super_fallback(ObjcAnalysis *a, const ObjcSend *s, Verdict *o) {
+    const ObjcEvidence *e = &a->evidence[s->evidence];
+    size_t k, i, at;
+    const ObjcProvider *p = objc_bridge_imp_at(a, e->address, &k);
+    ObjcSuperFallback *f = NULL;
+    const char *sel, *imp;
+    char buf[2048];
+    if (!p || p->dormant || !p->active || !e->name || !strstr(e->name, "Super")) return 0;
+    sel = p->methods[k].selector; imp = p->methods[k].impl_symbol;
+    if (!(s->selector ? !strcmp(s->selector, sel) :
+          e->sel.form == OBJC_VAL_ARGUMENT && e->sel.ref == 1 && !strstr(e->name, "stret") &&
+          e->function && e->function[0] == '_' && !strcmp(e->function + 1, imp)))
+        return 0;
+    for (i = 0; i < p->n_fallbacks; i++) if (!strcmp(p->fallbacks[i].impl_symbol, imp)) f = &a->providers[p - a->providers].fallbacks[i];
+    if (!f) return 0;
+    f->used = 1;
+    at = (size_t)snprintf(buf, sizeof buf, "super fallback record %s/%s: -%s is on every bridged class's floor ancestor's 10.9 chain (",
+                          p->provider_id, imp, sel);
+    for (i = 0; i < p->n_bridged; i++) {
+        size_t j;
+        for (j = 0; j < i && strcmp(p->bridged_floor[j], p->bridged_floor[i]); j++) {}
+        if (j == i && at < sizeof buf) at += (size_t)snprintf(buf + at, sizeof buf - at, "%s%s", i ? ", " : "", p->bridged_floor[i]);
+    }
+    if (at < sizeof buf) snprintf(buf + at, sizeof buf - at, ")");
+    set(o, OBJC_FLOOR_SUPPORTED, NULL, "%s", buf, NULL, NULL);
+    return 1;
+}
+
 static void verdict_of(ObjcAnalysis *a, size_t si, Verdict *o) {
     ObjcSend *s = &a->sends[si];
     const ObjcEvidence *e = &a->evidence[s->evidence];
@@ -495,6 +526,7 @@ static void verdict_of(ObjcAnalysis *a, size_t si, Verdict *o) {
     int r, artifact;
     memset(o, 0, sizeof *o);
     if (bridge_verdict(a, s, o)) return;
+    if (super_fallback(a, s, o)) return;
     if (!s->selector) { set(o, OBJC_UNRESOLVED, NULL, "selector not recovered: %s", s->reason, NULL, NULL); return; }
     if (!s->receiver) {
         /* R1 (b): a receiver of unknown class, not a super send. */

@@ -720,6 +720,10 @@ static int load_fallbacks(ObjcAnalysis *a, const LoadCtx *c, ObjcProvider *p, co
         if (n != 1 || strcmp(p->methods[owner].selector, sel))
             return objc_fail(a, "malformed-provider", NULL, 0, "%s: group %s's super_fallbacks record %s %s does not name one member's IMP and its selector",
                              c->decl, p->provider_id, imp, sel);
+        for (mi = 0; mi < p->n_fallbacks; mi++)
+            if (!strcmp(p->fallbacks[mi].impl_symbol, imp))
+                return objc_fail(a, "malformed-provider", NULL, 0, "%s: group %s's super_fallbacks record %s %s is declared twice",
+                                 c->decl, p->provider_id, imp, sel);
         if (!(g = realloc(p->fallbacks, (p->n_fallbacks + 1) * sizeof *g))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
         p->fallbacks = g; g = &g[p->n_fallbacks++]; memset(g, 0, sizeof *g);
         if (objc_set_string(&g->impl_symbol, imp) || objc_set_string(&g->selector, sel)) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
@@ -1612,6 +1616,22 @@ static void write_report(Out *o, ObjcAnalysis *a, const char *mode, const char *
     key(o, "unused_guard_records", 0); raw(o, "[");
     for (i = 0, j = 0; i < a->n_guards; i++) if (!a->guards[i].used) { if (j++) raw(o, ", "); jstr(o, a->guards[i].id); }
     raw(o, "]");
+    for (i = 0, j = 0; i < a->n_providers; i++) j |= a->providers[i].own_absent;
+    if (j) {
+        key(o, "unused_super_fallbacks", 0); raw(o, "[");
+        for (i = 0, j = 0; i < a->n_providers; i++) {
+            const ObjcProvider *p = &a->providers[i];
+            size_t k;
+            for (k = 0; k < p->n_fallbacks; k++) {
+                char buf[1024];
+                if (p->fallbacks[k].used) continue;
+                if (j++) raw(o, ", ");
+                snprintf(buf, sizeof buf, "%s:%s", p->fallbacks[k].impl_symbol, p->fallbacks[k].selector);
+                jstr(o, buf);
+            }
+        }
+        raw(o, "]");
+    }
     key(o, "undecoded_code_bytes", 0); fmt(o, "%llu", (unsigned long long)a->limit_undecoded_bytes);
     if (a->map) { key(o, "undecoded_code_bytes_attested", 0); fmt(o, "%llu", (unsigned long long)a->limit_undecoded_attested); }
     raw(o, "}}");

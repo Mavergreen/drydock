@@ -6,7 +6,8 @@
 // TABLE_ELSEWHERE (cls also into FixtureBridgeLast), LOOKUP (class_getInstanceMethod before the adds), REPLACE
 // (class_replaceMethod for one member), UNGUARDED (the getter sent without its respondsToSelector:), IMP_ELSEWHERE
 // (FixtureBridgeLeak returns a member IMP's address, FixtureBridgeLeakMasked and FixtureBridgeLeakSlot it, from a lea and
-// from a pointer in data, xor an argument), IMP_LEA (FixtureBridgeLeak alone), NO_FALLBACK (no super send in _attributeValue) and
+// from a pointer in data, xor an argument), IMP_LEA (FixtureBridgeLeak alone), NO_FALLBACK (no super send in _attributeValue), SUPER_OTHER
+// (_attributeValue super-sends accessibilityAttributeNames, not its own selector) and
 // EXTRA_MEMBER (a fourth add, accessibilityRole).
 #import <Foundation/Foundation.h>
 #include <objc/message.h>
@@ -30,7 +31,8 @@ static Class FixtureBridge_superOf(id self) {
   return Nil;
 }
 
-static id FixtureBridge_super(id self, SEL _cmd) {
+// Inlined, so that each super send is inside its IMP, in every variant.
+static inline __attribute__((always_inline)) id FixtureBridge_super(id self, SEL _cmd) {
   struct objc_super sup;
   sup.receiver = self;
   sup.super_class = FixtureBridge_superOf(self);
@@ -58,7 +60,12 @@ id FixtureBridge_attributeValue(id self, SEL _cmd, id attribute) {
     struct objc_super sup;
     sup.receiver = self;
     sup.super_class = FixtureBridge_superOf(self);
+#ifdef SUPER_OTHER
+    (void)_cmd;
+    return sup.super_class ? ((id (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, @selector(accessibilityAttributeNames), attribute) : nil;
+#else
     return sup.super_class ? ((id (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, _cmd, attribute) : nil;
+#endif
   }
 #endif
 }

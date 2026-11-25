@@ -101,7 +101,11 @@
  * whole image, every reference into an implementation is a load or address a run executed in a function it explored,
  * or a branch inside that implementation to anywhere but its entry. A pointer in data is no such reference, even one
  * a run read. For a dormant group the same holds with the root itself in place of the runs: nothing reaches its
- * implementations, and every send in them is floor-supported. Otherwise their sends keep their verdicts.
+ * implementations, and every send in them is floor-supported. Otherwise their sends keep their verdicts. (6) In an
+ * active group whose argument 0 is so typed, a super send in member k's implementation of k's own selector -- a literal,
+ * or the implementation's incoming argument 1 (its _cmd; never through a _stret entry) -- is floor-supported by the
+ * group's super_fallbacks record for that implementation, as (3) put k on every floor ancestor's chain; no other send
+ * is. A record that excuses no send is listed in the report's unused_super_fallbacks.
  *
  * Every class_addMethod call the reader saw (OBJC_EV_METHOD_REGISTRATION) must lie in provider
  * code verified here, or the artifact is cannot-measure (unattested-method-registration): a
