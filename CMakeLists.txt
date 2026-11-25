@@ -612,6 +612,17 @@ set_tests_properties(resources_walkup PROPERTIES ENVIRONMENT
   "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
 drydock_add_test(NAME resources_check COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/check-test.sh)
 set_tests_properties(resources_check PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
+# platform: 10.9 only -- converted nibs instantiated by AppKit on the floor; elsewhere a skip, exit 77. Not in the
+# guest: its ctest has no window server session, and its did-not-run allowlist would refuse the skip.
+if(APPLE)
+  drydock_add_test(NAME resources_instantiate COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: AppKit on 10.9\"; exit 77"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/instantiate-test.sh" resources_instantiate)
+  set_tests_properties(resources_instantiate PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT
+    "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+else()
+  drydock_macos_test(resources_instantiate "AppKit on 10.9")
+endif()
+set_property(TEST resources_instantiate APPEND PROPERTY LABELS not-in-guest)
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).
