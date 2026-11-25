@@ -82,17 +82,20 @@ while IFS= read -r f; do
   machos=$((machos + 1))
   r=${f#"$A"/}
   "$LIPO" "$f" -verify_arch x86_64 arm64 || fail "$r lacks a slice: $("$LIPO" -info "$f" 2>&1 | sed 's/.*: //')"
-  "$OTOOL" -arch all -L "$f" | sed -n 's/^[[:space:]]\{1,\}\(.*\) (compatibility version .*/\1/p' > "$t/deps"
-  while IFS= read -r dep; do
-    case "$dep" in
-      /usr/lib/*|/System/Library/*|@loader_path/*|@executable_path/*|@rpath/*) ;;
-      *) fail "$r loads $dep, outside the system and the archive" ;;
-    esac
-  done < "$t/deps"
-  "$OTOOL" -arch all -l "$f" | sed -n 's/^[[:space:]]*path \(.*\) (offset .*/\1/p' > "$t/rpaths"
-  while IFS= read -r rp; do
-    case "$rp" in /*) fail "$r has an absolute LC_RPATH $rp" ;; esac
-  done < "$t/rpaths"
+  for a in $("$LIPO" -archs "$f"); do
+    "$LIPO" "$f" -thin "$a" -output "$t/slice"
+    "$OTOOL" -L "$t/slice" | sed -n 's/^[[:space:]]\{1,\}\(.*\) (compatibility version .*/\1/p' > "$t/deps"
+    while IFS= read -r dep; do
+      case "$dep" in
+        /usr/lib/*|/System/Library/*|@loader_path/*|@executable_path/*|@rpath/*) ;;
+        *) fail "$r ($a) loads $dep, outside the system and the archive" ;;
+      esac
+    done < "$t/deps"
+    "$OTOOL" -l "$t/slice" | sed -n 's/^[[:space:]]*path \(.*\) (offset .*/\1/p' > "$t/rpaths"
+    while IFS= read -r rp; do
+      case "$rp" in /*) fail "$r ($a) has an absolute LC_RPATH $rp" ;; esac
+    done < "$t/rpaths"
+  done
 done < "$t/files"
 [ "$machos" -ge 1 ] || fail "no Mach-O in $top/"
 
