@@ -1016,6 +1016,7 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     char root[300], impl[300], key[1024], fws[2048] = "", rootm[256], needwhy[1400] = "", derived[256] = "";
     const char *enc;
     int rc;
+    if (p->own_absent) return objc_fail(a, "unsupported-provider", NULL, 0, "%s: own-absent groups are not verified yet", p->provider_id);
     if (!p->have_evidence) return set_reason(a, p, 0, "no build evidence names this provider");
     if (strcmp(p->ev_declaration_sha256, p->declaration_sha256))
         return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: the declaration is %s, the build evidence recorded %s", p->provider_id, p->declaration_sha256, p->ev_declaration_sha256);
@@ -1226,7 +1227,7 @@ int objc_provide_findings(ObjcAnalysis *a) {
             char proof[2048];
             size_t k;
             int named = 0;
-            if (!p->active || f->verdict != OBJC_UNSUPPORTED || !s->selector || !s->method_kind || !s->receiver) continue;
+            if (!p->active || p->own_absent || f->verdict != OBJC_UNSUPPORTED || !s->selector || !s->method_kind || !s->receiver) continue;
             if (p->legacy) named = !strcmp(s->selector, p->selector) && !strcmp(s->method_kind, p->method_kind);
             for (k = 0; k < p->n_methods && !named; k++)
                 named = !strcmp(s->selector, p->methods[k].selector) && !strcmp(s->method_kind, p->methods[k].kind);

@@ -125,6 +125,10 @@ static void destroy_pipeline(ObjcAnalysis *a) {
             free(p->methods[m].kind); free(p->methods[m].selector); free(p->methods[m].encoding); free(p->methods[m].impl_symbol);
         }
         free(p->methods); free_strv(p->frameworks, p->nframeworks);
+        free(p->class_table);
+        for (k = 0; k < p->n_fallbacks; k++) { free(p->fallbacks[k].impl_symbol); free(p->fallbacks[k].selector); }
+        free(p->fallbacks); free_strv(p->bridged, p->n_bridged); free_strv(p->bridged_floor, p->n_bridged);
+        free(p->imp_lo); free(p->imp_hi);
         free(p->archive); free(p->archive_sha256); free(p->declaration_sha256);
         free(p->ev_declaration_sha256); free(p->ev_archive_sha256);
         for (k = 0; k < p->n_members; k++) { free(p->members[k].name); free(p->members[k].sha256); }

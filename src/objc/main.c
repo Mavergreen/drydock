@@ -627,10 +627,12 @@ static int json_int(const json_t *x, int n) { return objc_jis_int(x, n); }
 static int exact_keys(const json_t *d, const char *const *keys, size_t n) { return objc_jexact_keys(d, keys, n); }
 
 /* PREFIX/share/recaulk/objc-providers.json, schema 1 as Recaulk's build/objc-provider-manifest.m
- * writes it, or schema 2: `providers` are groups (one class, an absent-only guard, one activation
- * root, a non-empty list of methods) and an optional `legacy_providers` carries schema-1-shaped
- * entries, each verified by schema 1's rules; no (class, kind, selector) is claimed twice in a
- * schema-2 file. One ObjcProvider per entry or group, so build evidence records a group once.
+ * writes it, or schema 2: `providers` are groups (one activation root, a non-empty list of methods,
+ * and a guard: absent-only, naming one class, or own-absent, naming none, its classes the literal
+ * classes the app calls the root with, its members instance methods, with an optional class_table
+ * data symbol and optional super_fallbacks) and an optional `legacy_providers` carries
+ * schema-1-shaped entries, each verified by schema 1's rules; no (class, kind, selector) is claimed
+ * twice in a schema-2 file, an own-absent member's class being "(own-absent)". One ObjcProvider per entry or group, so build evidence records a group once.
  * Schema 1: every key known, every identifier a plain identifier (nothing a linker or shell could
  * read as more), a strong framework policy, a shipping x86_64 archive whose bytes hash to the
  * declared digest and a source receipt that hashes to its digest. */
@@ -704,30 +706,61 @@ static int load_entry(ObjcAnalysis *a, const LoadCtx *c, const json_t *q, int sc
     return OBJC_OK;
 }
 
-/* A schema-2 group: one class, one root, an absent-only guard, a non-empty list of methods. */
+/* A group's super_fallbacks: each record names exactly one member's IMP, and that member's selector. */
+static int load_fallbacks(ObjcAnalysis *a, const LoadCtx *c, ObjcProvider *p, const json_t *fs) {
+    const json_t *f;
+    size_t fi, mi, owner, n;
+    json_array_foreach(fs, fi, f) {
+        const char *imp = S(f, "implementation_symbol"), *sel = S(f, "selector");
+        ObjcSuperFallback *g;
+        if (!exact_keys(f, KEYS("implementation_symbol", "selector")) || !charset(imp, 200, c_first, c_rest) || !charset(sel, 400, c_first, sel_rest))
+            return objc_fail(a, "malformed-provider", NULL, 0, "%s: a super_fallbacks record of group %s is not a valid declaration", c->decl, p->provider_id);
+        for (mi = n = owner = 0; mi < p->n_methods; mi++)
+            if (!strcmp(p->methods[mi].impl_symbol, imp)) { owner = mi; n++; }
+        if (n != 1 || strcmp(p->methods[owner].selector, sel))
+            return objc_fail(a, "malformed-provider", NULL, 0, "%s: group %s's super_fallbacks record %s %s does not name one member's IMP and its selector",
+                             c->decl, p->provider_id, imp, sel);
+        if (!(g = realloc(p->fallbacks, (p->n_fallbacks + 1) * sizeof *g))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+        p->fallbacks = g; g = &g[p->n_fallbacks++]; memset(g, 0, sizeof *g);
+        if (objc_set_string(&g->impl_symbol, imp) || objc_set_string(&g->selector, sel)) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    }
+    return OBJC_OK;
+}
+
+/* A schema-2 group: one root, a non-empty list of methods, and an absent-only guard with one class or an own-absent
+ * guard with none, its members instance methods, and optionally a class_table and super_fallbacks. */
 static int load_group(ObjcAnalysis *a, const LoadCtx *c, const json_t *q) {
     ObjcProvider *p;
-    const json_t *fws, *ms, *m;
-    size_t mi;
-    int rc;
-    if (!exact_keys(q, KEYS("provider_id", "class", "guard", "activation_root", "required_frameworks", "framework_policy", "methods")) ||
-        !charset(S(q, "provider_id"), 200, id_first, id_rest) || !charset(S(q, "class"), 200, c_first, c_rest) ||
-        !is(q, "guard", "absent-only") || !charset(S(q, "activation_root"), 200, c_first, c_rest) ||
+    const json_t *fws, *ms, *m, *fs = member(q, "super_fallbacks");
+    const char *keys[9] = { "provider_id", "guard", "activation_root", "required_frameworks", "framework_policy", "methods" };
+    size_t mi, nk = 6;
+    int own = is(q, "guard", "own-absent"), rc;
+    if (!own) keys[nk++] = "class";
+    else {
+        if (member(q, "class_table")) keys[nk++] = "class_table";
+        if (fs) keys[nk++] = "super_fallbacks";
+    }
+    if (!exact_keys(q, keys, nk) ||
+        !charset(S(q, "provider_id"), 200, id_first, id_rest) || (!own && !charset(S(q, "class"), 200, c_first, c_rest)) ||
+        !(own || is(q, "guard", "absent-only")) || !charset(S(q, "activation_root"), 200, c_first, c_rest) ||
+        (member(q, "class_table") && !charset(S(q, "class_table"), 200, c_first, c_rest)) ||
+        (fs && (!json_is_array(fs) || !json_array_size(fs))) ||
         !is(q, "framework_policy", "strong-linked-before-root") ||
         !(fws = arr(q, "required_frameworks")) || !json_array_size(fws) || !(ms = arr(q, "methods")) || !json_array_size(ms))
         return objc_fail(a, "malformed-provider", NULL, 0, "%s: a provider group is not a valid declaration", c->decl);
     json_array_foreach(ms, mi, m) {
         const char *kind;
         if (!exact_keys(m, KEYS("kind", "selector", "encoding", "implementation_symbol")) ||
-            !(kind = S(m, "kind")) || (strcmp(kind, "-") && strcmp(kind, "+")) ||
+            !(kind = S(m, "kind")) || (strcmp(kind, "-") && (own || strcmp(kind, "+"))) ||
             !charset(S(m, "selector"), 400, c_first, sel_rest) || !charset(S(m, "encoding"), 200, enc_char, enc_char) ||
             !charset(S(m, "implementation_symbol"), 200, c_first, c_rest))
             return objc_fail(a, "malformed-provider", NULL, 0, "%s: a method of group %s is not a valid declaration", c->decl, S(q, "provider_id"));
-        if ((rc = claim(a, c, S(q, "class"), kind, S(m, "selector")))) return rc;
+        if ((rc = claim(a, c, own ? "(own-absent)" : S(q, "class"), kind, S(m, "selector")))) return rc;
     }
     if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;
-    p->schema = 2; p->legacy = 0;
-    if ((rc = fill_common(a, p, c, q, fws)) || objc_set_string(&p->guard, "absent-only")) return rc ? rc : objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    p->schema = 2; p->legacy = 0; p->own_absent = own;
+    if ((rc = fill_common(a, p, c, q, fws)) || objc_set_string(&p->guard, S(q, "guard")) || objc_set_string(&p->class_table, S(q, "class_table")))
+        return rc ? rc : objc_fail(a, "out-of-memory", NULL, 0, "provider");
     json_array_foreach(ms, mi, m) {
         ObjcProviderMethod *g = realloc(p->methods, (p->n_methods + 1) * sizeof *g);
         if (!g) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
@@ -736,7 +769,7 @@ static int load_group(ObjcAnalysis *a, const LoadCtx *c, const json_t *q) {
             objc_set_string(&g->encoding, S(m, "encoding")) || objc_set_string(&g->impl_symbol, S(m, "implementation_symbol")))
             return objc_fail(a, "out-of-memory", NULL, 0, "provider");
     }
-    return OBJC_OK;
+    return fs ? load_fallbacks(a, c, p, fs) : OBJC_OK;
 }
 
 static int provider_prefix_from(ObjcAnalysis *a, const char *rp, const char *decl, const json_t *d, Strv *claimed) {
@@ -1766,7 +1799,7 @@ static int link_args_main(int argc, char **argv) {
         int bad;
         if (!x) goto done;
         sprintf(x, "-Wl,-u,_%s", a->providers[i].root_symbol);
-        bad = sel[i] && !strv_has(&out, x) && strv_add(&out, x);
+        bad = sel[i] && !a->providers[i].own_absent && !strv_has(&out, x) && strv_add(&out, x);
         free(x);
         if (bad) goto done;
     }

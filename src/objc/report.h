@@ -557,14 +557,21 @@ int objc_image_lsda(const ObjcImage *im, const uint64_t *ranges, size_t n, uint6
 typedef struct { char *member, *symbol; uint64_t address, size; } ObjcProviderAtom;
 typedef struct { char *name, *sha256; } ObjcProviderMember;
 typedef struct ObjcProviderMethod { char *kind, *selector, *encoding, *impl_symbol; } ObjcProviderMethod;
+typedef struct { char *impl_symbol, *selector; int used; } ObjcSuperFallback;
 typedef struct ObjcProvider {
     /* The validated declaration (PREFIX/share/recaulk/objc-providers.json). schema is the file's (1 or 2);
      * legacy is 1 for a schema-1-shaped entry of either file schema (method_kind..impl_symbol below, no
-     * methods). A schema-2 group has guard "absent-only", methods, and no method_kind/selector/encoding/
-     * impl_symbol. */
-    int schema, legacy;
+     * methods). A schema-2 group has guard "absent-only" or "own-absent", methods, and no method_kind/
+     * selector/encoding/impl_symbol. An own-absent group (own_absent 1) has no cls: its classes are the
+     * literal classes its root is called with; it may name a class_table data symbol and super_fallbacks. */
+    int schema, legacy, own_absent;
     char *guard;
     ObjcProviderMethod *methods; size_t n_methods;
+    char *class_table;
+    ObjcSuperFallback *fallbacks; size_t n_fallbacks;
+    char **bridged, **bridged_floor; size_t n_bridged;
+    uint64_t *imp_lo, *imp_hi;
+    int receiver_known, dormant;
     char *provider_id, *cls, *method_kind, *selector, *encoding, *impl_symbol, *root_symbol;
     char **frameworks; size_t nframeworks;
     char *archive;              /* PREFIX/build.archive_path, resolved */

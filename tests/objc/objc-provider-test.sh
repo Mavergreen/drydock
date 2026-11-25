@@ -297,6 +297,50 @@ s2_refused 'a selector claimed twice in a group' dup-in-group 'declared twice'
 schema2 dup-legacy "$(printf '%s' "$G_LOC" | sed 's/"class" : "NSLocale"/"class" : "NSWorkspace"/; s/"selector" : "languageCode"/"selector" : "'"$SEL"'"/')"
 s2_refused 'a selector claimed by a group and a legacy entry' dup-legacy 'declared twice'
 
+# spec: src/objc/main.c (load_group) -- an own-absent group names no class (its classes come from the root's call
+#       sites), only instance members, an optional class_table data symbol and optional super_fallbacks records, each
+#       naming one member's IMP and that member's selector; link-args roots nothing for it.
+OWN_GROUP='{ "provider_id" : "fixture.bridge.accessibility.v1", "guard" : "own-absent",
+      "activation_root" : "FixtureBridge", "required_frameworks" : [ "AppKit" ],
+      "framework_policy" : "strong-linked-before-root", "class_table" : "FixtureBridgeClasses", "methods" : [
+        { "kind" : "-", "selector" : "accessibilityAttributeNames", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureBridge_attributeNames" },
+        { "kind" : "-", "selector" : "accessibilityAttributeValue:", "encoding" : "@24@0:8@16", "implementation_symbol" : "FixtureBridge_attributeValue" },
+        { "kind" : "-", "selector" : "accessibilityIsIgnored", "encoding" : "c16@0:8", "implementation_symbol" : "FixtureBridge_isIgnored" } ],
+      "super_fallbacks" : [ { "implementation_symbol" : "FixtureBridge_attributeValue", "selector" : "accessibilityAttributeValue:" } ] }'
+own_sed() { printf '%s' "$OWN_GROUP" | sed "$1"; }
+schema2 own "$OWN_GROUP"
+link_args "$T/s2-own" "$T/maps/s2.map"
+[ "$rc" = 0 ] || fail "own-absent: link-args: exit $rc: $(tail -2 "$T/err")"
+! grep -x -- '-Wl,-u,_FixtureBridge' "$T/args" >/dev/null || fail 'own-absent: link-args roots the bridge'
+grep -x -- "-Wl,-u,_$ACTIVATE" "$T/args" >/dev/null || fail 'own-absent: link-args no longer roots the legacy entry beside it'
+grep -x -- "$(CDPATH= cd -- "$T/s2-own" && pwd -P)/$(field archive_path)" "$T/args" >/dev/null || fail 'own-absent: link-args roots nothing but names no archive'
+awk 'p && $0 == "AppKit" { f = 1 } { p = $0 == "-framework" } END { exit !f }' "$T/args" || fail 'own-absent: link-args roots nothing but loads no AppKit'
+schema2 own-class "$(own_sed 's/"guard" : "own-absent",/"guard" : "own-absent", "class" : "NSView",/')"
+s2_refused 'own-absent: a group that names a class' own-class 'provider group is not a valid'
+schema2 absent-noclass "$(own_sed 's/"own-absent"/"absent-only"/; /"super_fallbacks"/d; s/, "class_table" : "FixtureBridgeClasses"//; s/} ],$/} ] }/')"
+s2_refused 'absent-only: a group that names no class' absent-noclass 'provider group is not a valid'
+schema2 own-classmethod "$(own_sed 's/"kind" : "-", "selector" : "accessibilityIsIgnored"/"kind" : "+", "selector" : "accessibilityIsIgnored"/')"
+s2_refused 'own-absent: a class-method member' own-classmethod 'a method of group'
+A11Y_ABSENT='{ "provider_id" : "fixture.nsview.a11y.v1", "class" : "NSView", "guard" : "absent-only",
+      "activation_root" : "__fixture_objc_activate_table", "required_frameworks" : [ "AppKit" ],
+      "framework_policy" : "strong-linked-before-root", "methods" : [
+        { "kind" : "-", "selector" : "accessibilityLabel", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureA11y_accessibilityLabel" } ] }'
+schema2 absent-fallbacks "$(printf '%s' "$A11Y_ABSENT" | sed 's/} ] }$/} ], "super_fallbacks" : [ { "implementation_symbol" : "FixtureA11y_accessibilityLabel", "selector" : "accessibilityLabel" } ] }/')"
+s2_refused 'absent-only: super_fallbacks' absent-fallbacks 'provider group is not a valid'
+schema2 absent-table "$(printf '%s' "$A11Y_ABSENT" | sed 's/"guard" : "absent-only",/"guard" : "absent-only", "class_table" : "FixtureBridgeClasses",/')"
+s2_refused 'absent-only: class_table' absent-table 'provider group is not a valid'
+schema2 own-badtable "$(own_sed 's/"FixtureBridgeClasses"/"Fixture-Bridge"/')"
+s2_refused 'own-absent: a class_table that is not an identifier' own-badtable 'provider group is not a valid'
+schema2 own-fallback-sel "$(own_sed 's/"selector" : "accessibilityAttributeValue:" } ]/"selector" : "accessibilityIsIgnored" } ]/')"
+s2_refused "own-absent: a super_fallbacks record for another member's selector" own-fallback-sel super_fallbacks
+schema2 own-fallback-shared "$(own_sed 's/"implementation_symbol" : "FixtureBridge_attributeNames"/"implementation_symbol" : "FixtureBridge_attributeValue"/')"
+s2_refused 'own-absent: a super_fallbacks record whose IMP implements two members' own-fallback-shared super_fallbacks
+schema2 own-dup "$OWN_GROUP, $(own_sed 's/accessibility\.v1/other.v1/')"
+s2_refused 'own-absent: a selector claimed by two own-absent groups' own-dup 'declared twice'
+schema2 own-and-absent "$OWN_GROUP, $(printf '%s' "$A11Y_ABSENT" | sed 's/} ] }$/}, { "kind" : "-", "selector" : "accessibilityAttributeNames", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureA11y_accessibilityLabel" } ] }/')"
+link_args "$T/s2-own-and-absent" "$T/maps/s2.map"
+[ "$rc" = 0 ] || fail "own-absent and absent-only may name the same selector: exit $rc: $(tail -2 "$T/err")"
+
 # spec: src/objc/provider.c header, "Groups" -- a schema-2 group is credited, as a whole, only from the registration
 #       its constructor derives (src/objc/regexec.c): the root reached, nothing added where a member was found, exactly
 #       the members added where nothing was, nothing else added anywhere, and that without a guess; every member absent
