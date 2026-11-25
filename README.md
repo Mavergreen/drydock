@@ -118,7 +118,7 @@ Every subcommand takes `--target 10.9`, the only target. `check` and `convert` t
 
 ### Strict by default
 
-`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose classes it cannot resolve, and still exits 1. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was.
+`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose objects' classes it cannot resolve, and still exits 1. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was.
 
 ### Adaptation rules
 
@@ -173,7 +173,7 @@ and from the keyed archive `convert` writes of it, where the label has gained it
   NSPreferredMaxLayoutWidth = f64 0x1.108p+9  # 545
 ```
 
-The types are `i8`, `i16`, `i32` and `i64`; `true` and `false`; `f32` and `f64`, written exactly in hexadecimal with the decimal after `#`; `data`, quoted with escapes, or as hexadecimal `x"..."` pieces for bytes that are not text; `nil`; and `ref @N`. A chain of `?` is a class neither the reference set nor the bundle's own binaries define, and a nib holding one cannot be built.
+The types are `i8`, `i16`, `i32` and `i64`; `true` and `false`; `f32` and `f64`, written exactly in hexadecimal with the decimal after `#`; `data`, quoted with escapes, or as hexadecimal `x"..."` pieces for bytes that are not text; `nil`; and `ref @N`. A chain of `?` is a class neither the reference set nor the bundle's own binaries define. A nib with an object of that class cannot be built; a class only an `NSClassSwapper` names is a `finding`, since the keyed archive never stores its chain.
 
 A NIBArchive dump and a keyed-archive dump differ as their formats do:
 

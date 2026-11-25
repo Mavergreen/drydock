@@ -412,7 +412,7 @@ static int classes(W *w) {
         const RObject *o = &g->objs[i];
         const RChain *ch;
         if (is_scalar(w, o)) continue;
-        if (!(ch = rg_chain(g, o->cls))) {
+        if (!(ch = rg_chain(g, o->cls)) || !ch->resolved) {
             unencodable(w, "unresolved chain for %s", show(w->sb, o->cls));
             return -1;
         }
@@ -424,6 +424,7 @@ static int classes(W *w) {
     w->nsarray = g->n_chains;
     if (synth) {
         const RChain *ch = rg_chain(g, "NSArray");
+        if (ch && !ch->resolved) { unencodable(w, "unresolved chain for NSArray"); return -1; }
         if (ch) w->nsarray = (size_t)(ch - g->chains);
         if (w->entry_of[w->nsarray] == SIZE_MAX) { w->entry_of[w->nsarray] = w->n_classes; w->order[w->n_classes++] = w->nsarray; }
     }
@@ -465,6 +466,14 @@ static BpNode *class_entry(W *w, size_t c) {
     return d;
 }
 
+int ka_stores(const RGraph *g, uint32_t obj) {
+    W w;
+    memset(&w, 0, sizeof w);
+    w.g = g;
+    w.nib = g->format == RF_NIBARCHIVE;
+    return obj > 0 && obj < g->n_objs && !is_scalar(&w, &g->objs[obj]);
+}
+
 int ka_from_graph(const RGraph *g, BpNode **archive, char *why, size_t whysz) {
     W w;
     BpNode *root = NULL, *objs;
@@ -474,8 +483,6 @@ int ka_from_graph(const RGraph *g, BpNode **archive, char *why, size_t whysz) {
     w.nib = g->format == RF_NIBARCHIVE;
     *archive = NULL;
     if (!g->n_objs) { unencodable(&w, "the graph has no objects"); goto done; }
-    for (i = 0; i < g->n_chains; i++)
-        if (!g->chains[i].resolved) { unencodable(&w, "unresolved chain for %s", show(w.sb, g->chains[i].cls)); goto done; }
     if (strcmp(g->objs[0].cls, "NSObject") || g->objs[0].bare) {
         unencodable(&w, "@0 is %s%s, but a keyed archive's top is a plain NSObject", g->objs[0].bare ? "a bare " : "",
                     show(w.sb, g->objs[0].cls));

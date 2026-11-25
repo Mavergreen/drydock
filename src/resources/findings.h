@@ -21,7 +21,9 @@ typedef struct RfRefs RfRefs;
 RfRefs *rf_open(const char *refdir_resources, const char *refdir_objc);
 void rf_close(RfRefs *r);
 /* Appends every finding for g, a nib at nib_relpath, on target, with adapt saying which rules will rewrite what:
- * 0, or 4 out of memory. g's chains are used as they are (rc_resolve's, a dump's, or a keyed archive's own). */
+ * 0, or 4 out of memory. g's chains are used as they are (rc_resolve's, a dump's, or a keyed archive's own). An
+ * unresolved chain blocks writing when an object the keyed archive stores has its class (ka_stores); one only an
+ * NSClassSwapper names is an ordinary finding, since the archive never carries it. */
 int rf_check(const RfRefs *r, const RGraph *g, const char *nib_relpath, const char *target, const RAdaptSet *adapt,
              RFindings *out);
 /* Appends the storyboard finding for a .storyboardc at relpath when the target has no NSStoryboard: 0, or 4. */

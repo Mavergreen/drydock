@@ -285,13 +285,19 @@ unencodable() {  # NAME WHAT: $T/NAME.rez exits 1 from the driver with "unencoda
 }
 edit() { sed "$2" "$T/small.rez" > "$T/$1.rez"; unencodable "$1" "$3"; }
 dump "$FIX/nib/values.nib" > "$T/values.rez"
+custom < "$T/values.rez" > "$T/values-custom.rez"
+"$R" build --no-adapt "$T/values.rez" -o "$T/swapper.nib" > "$T/out" 2>"$T/err"; rc=$?
+"$R" build --no-adapt "$T/values-custom.rez" -o "$T/swapper-custom.nib" 2>>"$T/err"
+[ "$rc" = 0 ] && grep -q '^chain DDFixtureView ?$' "$T/values.rez" && cmp -s "$T/swapper.nib" "$T/swapper-custom.nib" \
+  && pass "keyed_swapper_target: DDFixtureView, unresolved and only an NSClassSwapper's target, builds the same bytes as with its chain" \
+  || fail "keyed_swapper_target: exit $rc, $(err), $(cmp "$T/swapper.nib" "$T/swapper-custom.nib" 2>&1)"
 echo old > "$T/kept.nib"
-"$R" build --no-adapt "$T/values.rez" -o "$T/kept.nib" > "$T/out" 2>"$T/err"; rc=$?
-[ "$rc:$(err)" = "1:drydock-resources: $T/values.rez: unencodable: unresolved chain for DDFixtureView" ] \
+"$R" build --no-adapt "$T/scene" -o "$T/kept.nib" > "$T/out" 2>"$T/err"; rc=$?
+[ "$rc:$(err)" = "1:drydock-resources: $T/scene: unencodable: unresolved chain for NSNibExternalObjectPlaceholder" ] \
   && [ "$(cat "$T/kept.nib")" = old ] && [ ! -s "$T/out" ] && [ "$(ls "$T" | grep -c '^kept')" = 1 ] \
-  && pass "keyed_unencodable: DDFixtureView's unresolved chain exits 1 and leaves the output as it was" \
-  || fail "keyed_unencodable: DDFixtureView: exit $rc, $(err), output now '$(head -c 20 "$T/kept.nib")'"
-"$R" build --no-adapt "$T/values.rez" -o "$T/none.nib" 2>/dev/null; [ -e "$T/none.nib" ] \
+  && pass "keyed_unencodable: an object's unresolved chain exits 1 and leaves the output as it was" \
+  || fail "keyed_unencodable: NSNibExternalObjectPlaceholder: exit $rc, $(err), output now '$(head -c 20 "$T/kept.nib")'"
+"$R" build --no-adapt "$T/scene" -o "$T/none.nib" 2>/dev/null; [ -e "$T/none.nib" ] \
   && fail "keyed_unencodable: an unencodable dump wrote its output" || pass "keyed_unencodable: an unencodable dump writes nothing"
 grep -v '^  UINibEncoderEmptyKey = ref @64$' "$T/c.rez" > "$T/odd.rez"
 "$R" build --no-adapt "$T/odd.rez" -o "$T/odd.nib" > "$T/out" 2>"$T/err"; rc=$?

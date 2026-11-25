@@ -79,7 +79,7 @@ if [ "$(id -u)" != 0 ]; then
   run unreadable check --report "$T/unreadable.json" "$T/locked"
   [ "$(rc unreadable)" = 4 ] && grep -q 'layout.nib: cannot read' "$T/unreadable.err" \
     && grep -q '"path":"layout.nib","format":null,"sha256_in":null' "$T/unreadable.json" \
-    && grep -q '^values.nib: blocks-write: unresolved-chain DDFixtureView ' "$T/unreadable" \
+    && grep -q '^values.nib: finding: unresolved-chain DDFixtureView ' "$T/unreadable" \
     && pass "check: a nib that cannot be read exits 4, its report entry empty, and the next nib is still checked" \
     || fail "check: unreadable: exit $(rc unreadable), $(err unreadable)"
 fi

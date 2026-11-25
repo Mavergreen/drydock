@@ -307,19 +307,28 @@ int rf_check(const RfRefs *r, const RGraph *g, const char *nib_relpath, const ch
     size_t i;
     char why[512];
     BpNode *archive = NULL;
+    unsigned char *stored;
     int rc;
     if (strcmp(target, "10.9")) return 2;
     if (g->format == RF_NIBARCHIVE
         && rf_add(out, "nibarchive-format", nib_relpath, "NIBArchive", RF_WILL_ADAPT, "converts to a keyed archive"))
         return 4;
+    if (!(stored = calloc(g->n_chains ? g->n_chains : 1, 1))) return 4;
+    for (i = 1; i < g->n_objs; i++) {
+        const RChain *c = ka_stores(g, (uint32_t)i) ? rg_chain(g, g->objs[i].cls) : NULL;
+        if (c) stored[c - g->chains] = 1;
+    }
     for (i = 0; i < g->n_chains; i++) {
         const RChain *c = &g->chains[i];
         if (!c->resolved) {
-            if (rf_add(out, "unresolved-chain", nib_relpath, c->cls, RF_BLOCK_WRITE, "no superclass chain to a root"))
-                return 4;
+            if (rf_add(out, "unresolved-chain", nib_relpath, c->cls, stored[i] ? RF_BLOCK_WRITE : RF_FINDING, "%s",
+                       stored[i] ? "no superclass chain to a root" : "no superclass chain to a root; no object stores it"))
+                break;
         } else if (c->newer && rf_add(out, "class-missing", nib_relpath, c->cls, RF_FINDING, "%s", c->newer))
-            return 4;
+            break;
     }
+    free(stored);
+    if (i < g->n_chains) return 4;
     if (keys_and_colors(r, g, nib_relpath, out)) return 4;
     if (adapt && ra_check(adapt, g, nib_relpath, out)) return 4;
     rc = ka_from_graph(g, &archive, why, sizeof why);

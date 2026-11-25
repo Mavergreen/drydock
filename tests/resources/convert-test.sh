@@ -96,15 +96,33 @@ convert strict --exceptions "$T/lc" --report "$T/strict.json" "$T/strict.app"
   && pass "convert_strict_blocks: the report and stdout say why, that nothing was written, and that nothing was adapted" \
   || fail "convert_strict_blocks: report: $(grep '"path"' "$T/strict.json")"
 
+cp "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$S/scene.nib"
 cp "$FIX/nib/values.nib" "$S/values.nib"
 convert loose --no-strict --report "$T/loose.json" "$T/strict.app"
-[ "$(rc loose)" = 1 ] && keyed "$S/Base.lproj/layout.nib" && keyed "$S/bad.nib" && cmp -s "$FIX/nib/values.nib" "$S/values.nib" \
-  && pass "convert_no_strict: what can be encoded is written, an unresolved chain's nib is left byte-unchanged, exit 1" \
+[ "$(rc loose)" = 1 ] && keyed "$S/Base.lproj/layout.nib" && keyed "$S/bad.nib" && cmp -s "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$S/scene.nib" \
+  && pass "convert_no_strict: what can be encoded is written, an object's unresolved chain leaves its nib byte-unchanged, exit 1" \
   || fail "convert_no_strict: exit $(rc loose), $(err loose)"
-grep -q '{"path":"Contents/Resources/values.nib","format":"nibarchive","sha256_in":"[0-9a-f]*","sha256_out":null,"written":false}' "$T/loose.json" \
+grep -q '{"path":"Contents/Resources/scene.nib","format":"nibarchive","sha256_in":"[0-9a-f]*","sha256_out":null,"written":false}' "$T/loose.json" \
   && grep -q '"strict":false' "$T/loose.json" \
   && pass "convert_no_strict: the report marks the unresolved nib unwritten, with nothing built" \
   || fail "convert_no_strict: report: $(grep -e '"path"' -e strict "$T/loose.json" | head -4)"
+keyed "$S/values.nib" && grep -q '^Contents/Resources/values.nib: finding: unresolved-chain DDFixtureView (' "$T/loose" \
+  && pass "convert_swapper_target: --no-strict writes a nib whose only unresolved class is an NSClassSwapper's target, reporting it" \
+  || fail "convert_swapper_target: loose: $(grep values.nib "$T/loose" | head -2)"
+W=$(bundle swapper)
+cp "$FIX/nib/values.nib" "$W/values.nib"
+convert swap "$T/swapper.app"
+[ "$(rc swap)" = 1 ] && cmp -s "$FIX/nib/values.nib" "$W/values.nib" \
+  && grep -q '^Contents/Resources/values.nib: finding: unresolved-chain DDFixtureView (' "$T/swap" \
+  && pass "convert_swapper_target: strict, the swapper target's unresolved chain is a finding, so nothing is written, exit 1" \
+  || fail "convert_swapper_target: strict: exit $(rc swap), $(grep values.nib "$T/swap" | head -2) $(err swap)"
+printf '*/values.nib\t%s\t%s\t%s\n' unresolved-chain DDFixtureView 'its class is in a plug-in' \
+  unknown-key NSChildControllerCreationSelectorName 'not in this test' > "$T/swap.ex"
+convert swapok --exceptions "$T/swap.ex" "$T/swapper.app"
+[ "$(rc swapok)" = 0 ] && keyed "$W/values.nib" \
+  && grep -q 'unresolved-chain DDFixtureView (.*) accepted as unresolved-chain:DDFixtureView$' "$T/swapok" \
+  && pass "convert_swapper_target: an exception accepts the swapper target's unresolved chain, and the strict convert writes the nib" \
+  || fail "convert_swapper_target: accepted: exit $(rc swapok), $(grep values.nib "$T/swapok" | head -2) $(err swapok)"
 "$R" dump "$S/bad.nib" | grep -q '^  DDNotAKey = ' \
   && pass "convert_no_strict: the unknown key is carried into the keyed nib" || fail "convert_no_strict: DDNotAKey was dropped"
 
@@ -198,7 +216,7 @@ convert unaccepted --report "$T/unaccepted.json" "$T/variant.app"
   && grep -q '{"path":"Contents/Resources/v.nib/keyedobjects-101300.nib","format":"nibarchive","sha256_in":"[0-9a-f]\{64\}","sha256_out":"[0-9a-f]\{64\}","written":false}' "$T/unaccepted.json" \
   && pass "walker_variant_only: a variant built but not written, the strict convert refusing, is named as itself" \
   || fail "walker_variant_only: unaccepted: exit $(rc unaccepted), $(grep '"path"' "$T/unaccepted.json")"
-cp "$FIX/nib/values.nib" "$V/v.nib/keyedobjects-101300.nib"
+cp "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$V/v.nib/keyedobjects-101300.nib"
 convert held --no-strict --report "$T/held.json" "$T/variant.app"
 [ "$(rc held)" = 1 ] && [ ! -e "$V/v.nib/keyedobjects.nib" ] && [ "$(ls "$V/v.nib")" = keyedobjects-101300.nib ] \
   && grep -q '^Contents/Resources/v.nib/keyedobjects-101300.nib: blocks-write: ' "$T/held" \
