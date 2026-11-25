@@ -32,6 +32,14 @@ exits cli_target 2 'drydock-resources: unsupported target: 10.6' convert --targe
 exits cli_target 2 'drydock-resources: unsupported target: 10.6' build --target 10.6 x.txt
 exits cli_target 0 '' dump --target 10.9 "$FIX/nib/values.nib"
 [ -s "$T/out" ] && pass "cli_target: --target 10.9 dumps" || fail "cli_target: --target 10.9 printed nothing"
+exits cli_usage 2 "$USAGE" build --references "$ROOT/reference/objc" x.txt -o y.nib
+REFS="--references $ROOT/reference/objc --resource-references $ROOT/reference/resources"
+mkdir -p "$T/empty/Contents/Resources" && cp "$FIX/MANIFEST.tsv" "$T/empty/Contents/Resources/"
+for verb in check convert; do
+  exits cli_no_nibs 1 "drydock-resources: $T/empty: no nibs found" $verb $REFS "$T/empty"
+  [ -s "$T/out" ] && fail "cli_no_nibs: $verb printed findings: $(head -2 "$T/out")" \
+    || pass "cli_no_nibs: $verb of a directory with no nibs prints no finding"
+done
 exits cli_dump 4 "drydock-resources: *: unsupported format" dump "$FIX/MANIFEST.tsv"
 [ -s "$T/out" ] && fail "cli_dump: an unsupported format printed a dump" || pass "cli_dump: an unsupported format prints nothing"
 exits cli_dump 4 "drydock-resources: *Info.plist: malformed-keyed: the archive holds the key *" dump "$FIX/nib/Main.storyboardc/Info.plist"

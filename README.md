@@ -143,7 +143,7 @@ A finding of `KIND` and `ITEM` in a nib whose bundle-relative path matches `NIB_
 ### Exit codes
 
 * 0: no finding, or only `will-adapt` and accepted ones.
-* 1: findings (`build`: a dump it cannot encode or adapt).
+* 1: findings, or a directory with no nibs, which is said on stderr (`build`: a dump it cannot encode or adapt).
 * 2: a usage error, an unknown rule, or a report file that already exists.
 * 4: a nib, dump, exceptions file or reference set that cannot be read or written, or out of memory.
 

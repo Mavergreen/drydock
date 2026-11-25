@@ -39,8 +39,9 @@
  *   --report NEW_FILE writes the JSON report there, never replacing a file.
  *
  * Every verb takes --target, and 10.9 is the only target. Exit 0 (check and convert: no finding but will-adapt, or
- * accepted ones); 1 findings (a dump build cannot encode or adapt); 2 usage, an unknown rule, or a report file that
- * exists; 4 a nib, dump, exceptions file or reference set that cannot be read or written, or out of memory.
+ * accepted ones); 1 findings, or a directory with no nibs (build: a dump it cannot encode or adapt); 2 usage, an
+ * unknown rule, or a report file that exists; 4 a nib, dump, exceptions file or reference set that cannot be read or
+ * written, or out of memory.
  */
 /* platform: realpath and readlink under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
 #define _XOPEN_SOURCE 700
@@ -484,7 +485,7 @@ static int bundle(const char *arg, const Opts *o) {
         items[i].read = 1;
         rr_sha256(buf, len, items[i].sha_in);
         if ((rc = parse(x->relpath, buf, len, s, !o->convert, &g))) { free(buf); worst = 4; continue; }
-        items[i].format = g.format == RF_KEYED ? "keyed" : len >= 10 && !memcmp(buf, "NIBArchive", 10) ? "nibarchive" : "dump";
+        items[i].format = len >= 8 && !memcmp(buf, "bplist00", 8) ? "keyed" : len >= 10 && !memcmp(buf, "NIBArchive", 10) ? "nibarchive" : "dump";
         rc = rf_check(r, &g, x->relpath, "10.9", a, &f) || (o->convert && build_one(x, buf, len, &g, a, &f, &items[i]));
         rg_free(&g);
         free(buf);
@@ -513,7 +514,8 @@ static int bundle(const char *arg, const Opts *o) {
     if (fflush(stdout)) worst = 4;
     for (i = 0; i < ex.n; i++)
         if (!ex.v[i].n_applied) fprintf(stderr, "drydock-resources: unused exception: %s\n", ex.v[i].line);
-    rc = worst ? worst : blocking ? 1 : 0;
+    if (!n) fprintf(stderr, "drydock-resources: %s: no nibs found\n", arg);
+    rc = worst ? worst : blocking || !n ? 1 : 0;
     if (o->report) {
         for (i = 0; ra_rule(i) && n_rules < sizeof rules / sizeof *rules; i++)
             if (ra_is_on(a, ra_rule(i))) rules[n_rules++] = ra_rule(i);
@@ -586,7 +588,7 @@ int main(int argc, char **argv) {
             out = argv[++i];
             continue;
         }
-        if (!strcmp(argv[i], "--target") || !strcmp(argv[i], "--references")
+        if (!strcmp(argv[i], "--target") || (strcmp(verb, "build") && !strcmp(argv[i], "--references"))
             || (strcmp(verb, "dump") && !strcmp(argv[i], "--resource-references"))) {
             if (i + 1 >= argc || !*argv[i + 1]) { rc = usage(); goto done; }
             if (!strcmp(argv[i], "--references")) refdir = argv[++i];

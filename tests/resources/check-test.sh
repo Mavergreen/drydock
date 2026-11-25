@@ -119,5 +119,13 @@ grep -q '^chain NSGridView : NSView : NSResponder : NSObject newer 10.12$' "$T/g
   && pass "check_keyed_newer: a keyed nib's dump marks the archive's own chain newer from --references" \
   || fail "check_keyed_newer: dump: $(grep '^chain NS[GV]' "$T/grid.dump") $(head -2 "$T/grid.err")"
 
+"$R" dump --references "$ROOT/reference/objc" "$FIX/nib/layout.nib" > "$T/na.rez"
+for f in grid na; do
+  run "$f-report" check --report "$T/$f.json" "$T/$f.rez"
+  grep -q "\"path\":\"$f.rez\",\"format\":\"dump\",\"sha256_in\":\"[0-9a-f]\{64\}\",\"sha256_out\":null,\"written\":false" "$T/$f.json" \
+    && pass "check_report_bytes: a dump's report entry has the format dump, whatever archive it holds ($f.rez)" \
+    || fail "check_report_bytes: dump format: $(grep '"path"' "$T/$f.json")"
+done
+
 [ -s "$T/failed" ] && { echo "$(wc -l < "$T/failed" | tr -d ' ') failed"; exit 1; }
 echo "all passed"

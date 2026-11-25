@@ -5,7 +5,8 @@
 
 #include "findings.h"
 
-/* One nib as the report lists it. format: "nibarchive" or "keyed"; sha256_out NULL when nothing was built. */
+/* One nib as the report lists it. format: "nibarchive", "keyed", or "dump" for a dump's text; sha256_out NULL when
+ * nothing was built. */
 typedef struct { const char *path, *format, *sha256_in, *sha256_out; int written; } RrNib;
 
 /* 0 when path names nothing yet and its directory exists; else 2 with the reason printed. */
