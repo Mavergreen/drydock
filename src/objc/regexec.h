@@ -14,9 +14,10 @@ typedef struct { char *cls; int meta; char *sel; } ObjcRegLookup;
 typedef struct { char *cls; int meta; char *sel, *imp, *types; uint64_t imp_va, site; int ok; } ObjcRegAdd;
 /* class_null: objc_getClass returned NULL on it; null_classes: for which literals (a NULL entry: one not named). trapped: it ended at int3 or ud2. unknown_forks: the branches,
  * setcc and cmov along it whose flags the executor did not know, each decided by forking (the path may be
- * infeasible when nonzero). */
+ * infeasible when nonzero). table_forks: those, apart, whose flags derive from an own-stores run's class table (regexec.c's
+ * "Start"), which a later call of the root may hold otherwise. */
 typedef struct { ObjcRegLookup *found; size_t n_found; ObjcRegAdd *adds; size_t n_adds;
-                 int class_null, trapped; size_t unknown_forks; char **null_classes; size_t n_null_classes; } ObjcRegPath;
+                 int class_null, trapped; size_t unknown_forks, table_forks; char **null_classes; size_t n_null_classes; } ObjcRegPath;
 typedef struct { size_t max_paths, max_depth, max_insns; } ObjcRegBudget;
 #define OBJC_REG_MAX_PATHS ((size_t)1 << 14)
 #define OBJC_REG_MAX_DEPTH ((size_t)16)

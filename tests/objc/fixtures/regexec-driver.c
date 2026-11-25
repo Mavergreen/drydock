@@ -5,7 +5,7 @@
  * exploration order:
  *   paths N
  *   null-paths K                                 (paths on which objc_getClass returned NULL)
- *   path I found F null 0|1 adds A uforks U trapped 0|1   (each path with adds, then its found lookups and adds:)
+ *   path I found F null 0|1 adds A uforks U tforks T trapped 0|1   (each path with adds, then its lookups and adds:)
  *     found CLS|META SEL
  *     add CLS|META SEL IMP TYPES OK
  *   sites 0xSITE ...
@@ -84,8 +84,8 @@ int main(int argc, char **argv) {
     for (i = 0; i < r.n_paths; i++) {
         const ObjcRegPath *p = &r.paths[i];
         if (!p->n_adds) continue;
-        printf("path %zu found %zu null %d adds %zu uforks %zu trapped %d\n", i, p->n_found, p->class_null, p->n_adds,
-               p->unknown_forks, p->trapped);
+        printf("path %zu found %zu null %d adds %zu uforks %zu tforks %zu trapped %d\n", i, p->n_found, p->class_null, p->n_adds,
+               p->unknown_forks, p->table_forks, p->trapped);
         for (j = 0; j < p->n_found; j++)
             printf("  found %s|%d %s\n", s(p->found[j].cls), p->found[j].meta, s(p->found[j].sel));
         for (j = 0; j < p->n_adds; j++)

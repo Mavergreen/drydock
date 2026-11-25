@@ -15,7 +15,8 @@
  *     send entry points); the other three are the brief's. A lookup on a NULL class answers not found;
  *   - class_addMethod: success or failure, each recorded as an add (class, selector, IMP symbol, types, site);
  *   - a conditional branch, cmov or setcc whose flags are not known: both ways, each path counting it
- *     (unknown_forks: such a path may be infeasible). A path ending at int3 or ud2 is complete and trapped.
+ *     (unknown_forks: such a path may be infeasible; table_forks instead when the flags derive from the class table
+ *     of "Start"). A path ending at int3 or ud2 is complete and trapped.
  * object_getClass(Class(n)) is Meta(n); sel_registerName(literal) is Sel(literal). Any other import -- the
  * mutators class_replaceMethod, method_setImplementation, method_exchangeImplementations, class_addProtocol,
  * objc_allocateClassPair, objc_registerClassPair, class_addIvar among them, and objc_msgSend, dispatch_once and
@@ -29,7 +30,10 @@
  * as objc_getClass's result, so a test of it for NULL is known. Each tracked address (a member IMP's) is followed as
  * writable data is below, and its escapes are recorded with itself as va -- except as class_addMethod's IMP argument
  * at an add. An own-stores run allows a store into image data only of 8 bytes, at a known address within
- * [table_lo, table_hi), of Class(arg0_class); any other refuses image-store.
+ * [table_lo, table_hi), of Class(arg0_class); any other refuses image-store. Its root runs once per class, each call
+ * seeing the stores of the calls before it, so a load overlapping that table is unknown -- never an initial value, nor
+ * a path's own store -- carrying table_lo; a fork on flags derived from the table counts in table_forks, not
+ * unknown_forks, and a table address is never recorded as escaped.
  *
  * Provenance: every value carries the set of writable image addresses (any section outside __TEXT), and of tracked
  * addresses, it derives from. A lea yielding such an address, or a load of a rebased pointer to one (or of part of
@@ -112,6 +116,7 @@ typedef struct {
     int class_null, trapped;
     const char **nulls; size_t nnull, capnull;   /* the classes objc_getClass returned NULL for (NULL: unnamed) */
     size_t uforks;                            /* decisions forked on unknown flags */
+    size_t tforks;                            /* decisions forked on flags derived from the class table, not uforks */
     uint64_t tailret;                         /* a tail jump's site whose return this path, forked in its import, owes */
 } St;
 #define TS_CAP 8
@@ -366,6 +371,17 @@ static uint32_t ts_union(Ex *e, uint32_t x, uint32_t y) {
     return ts_intern(e, &s);
 }
 static void taint(St *t, Val v) { if (v.ts) t->tin = ts_union(t->ex, t->tin, v.ts); }
+/* In an own-stores run, whether [a, a+w) overlaps the class table, which every call of the root rewrites. */
+static int in_table(const Ex *e, uint64_t a, uint64_t w) {
+    return e->start->own_stores && a < e->start->table_hi && a + w > e->start->table_lo;
+}
+/* Whether provenance set ts holds a class-table address (in_table). */
+static int table_set(const Ex *e, uint32_t ts) {
+    size_t i;
+    if (!ts || ts == TS_ALL) return 0;
+    for (i = 0; i < e->ts[ts].n; i++) if (in_table(e, e->ts[ts].b[i], 1)) return 1;
+    return 0;
+}
 /* v escapes at site on t's path: each base of its provenance and of the path's, and v itself when it points into
  * writable image data or is tracked; an_imp: no tracked base escapes (class_addMethod's IMP argument). */
 static int escapes(Ex *e, St *t, Val v, uint64_t site, int how, int an_imp) {
@@ -375,7 +391,7 @@ static int escapes(Ex *e, St *t, Val v, uint64_t site, int how, int an_imp) {
     s = &e->ts[ts];
     for (k = 0; k < (ts == TS_ALL ? 1 : s->n); k++) {
         uint64_t va = ts == TS_ALL ? ~0ULL : s->b[k];
-        if (an_imp && ts != TS_ALL && tracked(e, va)) continue;
+        if (ts != TS_ALL && ((an_imp && tracked(e, va)) || in_table(e, va, 1))) continue;
         for (i = 0; i < o->n_escaped; i++) if (o->escaped[i].va == va && o->escaped[i].site == site && o->escaped[i].how == how) break;
         if (i < o->n_escaped) continue;
         if (grow((void **)&o->escaped, &e->capescaped, o->n_escaped + 1, sizeof *o->escaped)) return oom(e);
@@ -389,6 +405,7 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
     Cell *c; uint64_t sa, ss, v = 0; uint32_t fl; const char *sn; const uint8_t *p; int rel, ty;
     *out = U();
     if (!known) return 0;
+    if (in_table(e, a, (uint64_t)w)) { out->ts = ts_one(e, e->start->table_lo); taint(t, *out); return 0; }
     if ((c = cell_over(t, a, w))) {
         uint32_t ts = c->v.ts; size_t i;
         if (c->a == a && c->w == w) { *out = c->v; if (out->k == VS && w != 8) *out = U(); }
@@ -466,7 +483,7 @@ static const char *literal(Ex *e, St *t, Val v, uint64_t site, char *buf, size_t
     max = sa + ss - v.v < n ? (size_t)(sa + ss - v.v) : n;
     if (!(p = objc_image_bytes(e->im, v.v, max))) return NULL;
     for (i = 0; i < max && p[i]; i++) {}
-    if (i == max || cell_over(t, v.v, (int)(i + 1)) || relocated(e, v.v, (int)(i + 1))) return NULL;
+    if (i == max || cell_over(t, v.v, (int)(i + 1)) || relocated(e, v.v, (int)(i + 1)) || in_table(e, v.v, i + 1)) return NULL;
     memcpy(buf, p, i + 1);
     return note_read(e, v.v, i + 1, site, 1) ? NULL : buf;
 }
@@ -586,7 +603,7 @@ static int complete(Ex *e, St *t) {
     ObjcRegResult *o = e->out; ObjcRegPath *p; size_t i;
     if (grow((void **)&o->paths, &e->cappaths, o->n_paths + 1, sizeof *o->paths)) return oom(e);
     p = &o->paths[o->n_paths++]; memset(p, 0, sizeof *p);
-    p->class_null = t->class_null; p->trapped = t->trapped; p->unknown_forks = t->uforks;
+    p->class_null = t->class_null; p->trapped = t->trapped; p->unknown_forks = t->uforks; p->table_forks = t->tforks;
     if ((t->nfound && !(p->found = calloc(t->nfound, sizeof *p->found))) || (t->nadds && !(p->adds = calloc(t->nadds, sizeof *p->adds))) ||
         (t->nnull && !(p->null_classes = calloc(t->nnull, sizeof *p->null_classes)))) return oom(e);
     for (i = 0; i < t->nnull; i++) p->null_classes[i] = dup0(t->nulls[i]);
@@ -855,13 +872,15 @@ static int unsupported(Ex *e, uint64_t ip, const ObjcIns *x, const uint8_t *p, c
     return refuse(e, "unsupported-instruction", "%s at 0x%llx (map %d opcode 0x%02x, bytes %s)", what,
                   (unsigned long long)ip, x->map, x->op & 0xff, hex);
 }
+/* A fork on t's unknown flags: a guess, unless they derive from the class table, whose contents differ per call. */
+static void guessed(const Ex *e, St *t) { if (table_set(e, t->fts)) t->tforks++; else t->uforks++; }
 /* A conditional transfer whose flags do not decide it: the other way on a forked path. */
 static int branch(Ex *e, St *t, int c, uint64_t taken) {
     St *u;
     if (c >= 0) { if (c) t->rip = taken; return 0; }
     t->pts = ts_union(e, t->pts, t->fts);
     if (!(u = fork_st(e, t))) return -1;
-    u->rip = taken; u->uforks++; t->uforks++;
+    u->rip = taken; guessed(e, u); guessed(e, t);
     return 0;
 }
 
@@ -1035,7 +1054,7 @@ static int step(Ex *e, St *t) {
             if (c >= 0) return rm_set(e, t, &x, C((uint64_t)c), 1, ip);
             t->pts = ts_union(e, t->pts, t->fts);
             if (!(u = fork_st(e, t))) return -1;
-            u->uforks++; t->uforks++;
+            guessed(e, u); guessed(e, t);
             if (rm_set(e, u, &x, C(1), 1, ip)) return -1;
             return rm_set(e, t, &x, C(0), 1, ip);
         }
@@ -1048,7 +1067,7 @@ static int step(Ex *e, St *t) {
                 St *u;
                 t->pts = ts_union(e, t->pts, t->fts);
                 if (!(u = fork_st(e, t))) return -1;
-                u->uforks++; t->uforks++;
+                guessed(e, u); guessed(e, t);
                 u->tin = ts_union(e, v.ts, t->fts); reg_set(u, x.reg, v, w);
                 t->tin = ts_union(e, l.ts, t->fts); reg_set(t, x.reg, l, w); return 0;
             }

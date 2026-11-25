@@ -249,7 +249,7 @@ pass 'a mutator two direct calls down is followed'
 
 # spec: src/objc/regexec.c header, "Start" -- a root run with its class argument bound, its stores held to its class
 #       table, and member IMP addresses followed. tests/objc/fixtures/bridge-provider.m is the root.
-for v in plain TABLE_OTHER TABLE_ELSEWHERE IMP_ELSEWHERE; do
+for v in plain TABLE_OTHER TABLE_ELSEWHERE IMP_ELSEWHERE UNBOUNDED_SCAN TABLE_DEPENDENT_IMP TABLE_LITERAL; do
   d=; [ "$v" = plain ] || d="-D$v"
   UNIT=bridge-provider.m build "bridge-$v" -Os $d
 done
@@ -271,11 +271,41 @@ grep '^  add ?|0 accessibilityAttributeNames _FixtureBridge_attributeNames ' "$T
 pass 'rdi unbound: the adds name no class'
 tbl=$("$NM" "$T/bridge-plain" | awk '$3 == "_FixtureBridgeClasses" {print "0x" $1}' | sed 's/0x0*/0x/')
 [ -n "$tbl" ] || fail 'bridge: no _FixtureBridgeClasses'
+in_tbl() {  # in_tbl LIST: the 0xVA+LEN@0xSITE entries of LIST whose VA lies in the 8-slot class table
+  tr ' ' '\n' | sed 's/+.*//' | while read -r va; do [ -n "$va" ] && [ $((va)) -ge $((tbl)) ] && [ $((va)) -lt $((tbl + 64)) ] && echo "$va"; done
+}
+runb plain _FixtureBridge FixtureBridgedView; explored 'the root without its table'
+[ -n "$(sed -n 's/^reads //p' "$T/out" | in_tbl)" ] || fail "the root without its table: no read of the table at $tbl: $(grep '^reads' "$T/out")"
 runb plain _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; explored "the root's class into its table"
-[ "$(sed -n 's/^stores //p' "$T/out" | tr ' ' '\n' | sed 's/@.*//' | sort -u)" = "$tbl+8" ] ||
-  fail "the root's class into its table: $(grep '^stores' "$T/out"), want one 8-byte store at $tbl"
+slots=$(for k in 0 1 2 3 4 5 6 7; do printf '0x%x+8\n' $((tbl + 8 * k)); done | sort -u)
+[ "$(sed -n 's/^stores //p' "$T/out" | tr ' ' '\n' | sed 's/@.*//' | sort -u)" = "$slots" ] ||
+  fail "the root's class into its table: $(grep '^stores' "$T/out"), want an 8-byte store at each of its 8 slots from $tbl"
 all_miss | grep -c '^  add ' | grep -x 3 >/dev/null || fail "the root's class into its table: the three adds are gone"
-pass "the root's class stored into its class table is allowed, and recorded"
+[ "$(all_miss | head -1)" = 9 ] || fail "the root's class into its table: $(all_miss | head -1) all-succeed paths, want 9 (each free slot, and a full table)"
+awk '/^path /{ if ($10 != 0 || $12 < 1) exit 1 }' "$T/out" || fail "the root's class into its table: a path guesses, or forks on no table slot: $(grep '^path' "$T/out")"
+[ -z "$(sed -n 's/^reads //p' "$T/out" | in_tbl)" ] || fail "the root's class into its table: the table is read as initial values: $(grep '^reads' "$T/out")"
+pass "the root's class stored into its class table is allowed, and recorded; the table reads as unknown, its forks no guesses"
+runb UNBOUNDED_SCAN _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses
+tblu=$("$NM" "$T/bridge-UNBOUNDED_SCAN" | awk '$3 == "_FixtureBridgeClasses" {print "0x" $1}')
+[ -n "$tblu" ] && [ "$rc" = 1 ] && grep -E "^refused (image|unknown)-store: a store to $(printf '0x%x' $((tblu + 64)))," "$T/out" >/dev/null ||
+  fail "UNBOUNDED_SCAN: driver exit $rc, want a refused store just past the table: $(head -3 "$T/out")"
+runb UNBOUNDED_SCAN _FixtureBridge FixtureBridgedView; explored 'UNBOUNDED_SCAN without --table'
+pass 'a slot search the table size does not bound stores past it, refused; without --table, read as zeros, it is explored'
+runb TABLE_DEPENDENT_IMP _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; explored TABLE_DEPENDENT_IMP
+grep '^  add FixtureBridgedView|0 accessibilityAttributeNames _FixtureBridge_isIgnored ' "$T/out" >/dev/null ||
+  fail "TABLE_DEPENDENT_IMP: no path adds the IMP the table's slot 0 chooses"
+runb TABLE_DEPENDENT_IMP _FixtureBridge FixtureBridgedView; explored 'TABLE_DEPENDENT_IMP without --table'
+! grep '^  add FixtureBridgedView|0 accessibilityAttributeNames _FixtureBridge_isIgnored ' "$T/out" >/dev/null ||
+  fail "TABLE_DEPENDENT_IMP without --table: slot 1 read as zero still adds isIgnored"
+pass 'an add the table decides is explored both ways'
+tbll=$("$NM" "$T/bridge-TABLE_LITERAL" | awk '$3 == "_FixtureBridgeClasses" {print "0x" $1}')
+runb TABLE_LITERAL _FixtureBridge FixtureBridgedView; explored 'TABLE_LITERAL without --table'
+tbl=$tbll; [ -n "$(sed -n 's/^reads //p' "$T/out" | in_tbl)" ] && grep '^selreg .*:1' "$T/out" >/dev/null ||
+  fail "TABLE_LITERAL without --table: the table's bytes are no literal read: $(grep -E '^(reads|selreg)' "$T/out")"
+runb TABLE_LITERAL _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; explored TABLE_LITERAL
+[ -z "$(sed -n 's/^reads //p' "$T/out" | in_tbl)" ] || fail "TABLE_LITERAL: the table's bytes are read as a literal: $(grep '^reads' "$T/out")"
+grep '^selreg .*:0' "$T/out" >/dev/null || fail "TABLE_LITERAL: every selector registered is a literal: $(grep '^selreg' "$T/out")"
+pass "the table's bytes are no C string literal"
 for v in TABLE_OTHER TABLE_ELSEWHERE; do
   runb "$v" _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; refused "$v" image-store
   grep "not the root's class into its class table" "$T/out" >/dev/null || fail "$v: $(cat "$T/out")"

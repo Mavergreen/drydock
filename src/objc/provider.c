@@ -94,8 +94,9 @@
  * and image stores held to C into the atom of the group's class_table symbol (none declared: no store; declared but
  * not placed: provider-mapping-mismatch); its refusal is provider-unmeasurable. Each run is judged as a group's is,
  * C its class, and moreover no path finds a lookup (provider-guard-violation) and no implementation's address escapes
- * (provider-foreign-entry). Coverage is a group's, but a call site of (1) may branch to the root, and verified
- * provider code no path explored may load or take the address of the class table. An own-absent group credits
+ * (provider-foreign-entry). Each run reads the class table as unknown (regexec.c's "Start"), as a later call of the
+ * root may find it otherwise, so a fork on it is no guess. Coverage is a group's, but a call site of (1) may branch to
+ * the root. An own-absent group credits
  * nothing as `provided`. (5) A member's implementation is its function, from its address to the next function start.
  * Its argument 0 is typed, for classify.c, as an instance of one of the group's classes or a subclass when, over the
  * whole image, every reference into an implementation is a load or address a run executed in a function it explored,
@@ -861,11 +862,6 @@ static int bridge_entry(const Bridge *b, uint64_t site, uint64_t target, int kin
     for (i = 0; i < b->n_sites; i++) if (b->sites[i] == site) return 1;
     return 0;
 }
-/* A load or address of the class table from verified provider code no path explored: the member IMPs read it. */
-static int imp_reads_table(const ObjcProvider *p, const ObjcRegResult *r, const Bridge *b, uint64_t site, uint64_t target, int kind) {
-    return b && (kind == OBJC_REF_LOAD || kind == OBJC_REF_ADDR) && target >= b->tlo && target < b->thi &&
-           in_pairs(p->ranges, p->n_ranges, site) && !in_pairs(r->explored, r->n_explored, site);
-}
 static int executed(const ObjcRegResult *r, uint64_t ip) {
     size_t lo = 0, hi = r->n_executed;
     while (lo < hi) { size_t mid = (lo + hi) / 2; if (r->executed[mid] < ip) lo = mid + 1; else hi = mid; }
@@ -897,7 +893,7 @@ static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
                                      "%s: 0x%llx (in %s) %s 0x%llx (in %s), code the executor explored, from code or data it did not",
                                      w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
                                      (unsigned long long)target, where(w->im, target, tb, sizeof tb));
-    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !ran && !imp_reads_table(w->p, r, w->b, site, target, kind) &&
+    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !ran &&
         !(kind == OBJC_REF_POINTER && sn && !strncmp(sn, "__TEXT,", 7) && !(fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))))
         return w->status = objc_fail(w->a, "provider-mutable-constant", NULL, site,
                                      "%s: 0x%llx (in %s) %s 0x%llx (in %s), which the executor read as its initial value",
