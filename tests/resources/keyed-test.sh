@@ -59,14 +59,23 @@ done
 [ "$n" = 7 ] && pass "keyed_fixed_point_apple: Apple's 7 keyed nibs: dump of build of dump is their dump" \
   || fail "keyed_fixed_point_apple: only $n of 7"
 
-cp "$FIX/nib/collections.nib" "$T/conv.nib"
-"$R" convert --no-adapt "$T/conv.nib" > /dev/null 2>"$T/err"; rc=$?
-if [ "$rc" = 2 ] && grep -q 'convert is not implemented yet' "$T/err"; then
-  echo "NOTE: keyed_matches_convert: asserted once convert exists"
-else
-  dump "$FIX/nib/collections.nib" > "$T/c.rez" && "$R" build --no-adapt "$T/c.rez" -o "$T/built.nib" && cmp -s "$T/built.nib" "$T/conv.nib" \
-    && pass "keyed_matches_convert: build of dump is convert, byte for byte" || fail "keyed_matches_convert: exit $rc, $(err)"
-fi
+# spec: --no-strict, since collections.nib carries keys 10.9 is not known to read.
+n=0
+for f in "$FIX"/nib/*.nib; do
+  b=${f#"$FIX"/}
+  cp "$f" "$T/conv.nib"
+  "$R" convert --no-strict --no-adapt --references "$REF" --resource-references "$ROOT/reference/resources" "$T/conv.nib" \
+    > /dev/null 2>"$T/err"
+  dump "$f" > "$T/c.rez" && "$R" build --no-adapt "$T/c.rez" -o "$T/built.nib" 2>/dev/null; built=$?
+  if [ "$built" = 0 ]; then
+    head -c 8 "$T/conv.nib" | grep -q bplist00 && cmp -s "$T/built.nib" "$T/conv.nib" && n=$((n + 1)) \
+      || fail "keyed_matches_convert: $b: convert --no-adapt differs from build --no-adapt of its dump: $(err)"
+  else
+    cmp -s "$f" "$T/conv.nib" || fail "keyed_matches_convert: $b: convert wrote a nib build cannot"
+  fi
+done
+[ "$n" -ge 6 ] && pass "keyed_matches_convert: for $n NIBArchive fixtures, convert --no-adapt is build --no-adapt of the dump, byte for byte" \
+  || fail "keyed_matches_convert: only $n fixtures"
 
 dump "$FIX/nib/collections.nib" > "$T/c.rez"
 "$R" build --no-adapt "$T/c.rez" -o "$T/c.nib" 2>"$T/err" || fail "keyed_rules: build collections: $(err)"

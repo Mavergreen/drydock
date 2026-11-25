@@ -64,33 +64,31 @@ int wa_is_input(const char *in, const char *out) {
     return 0;
 }
 
-int wa_write_new(const char *in, const char *out, const uint8_t *buf, size_t size) {
-    if (wa_is_input(in, out)) {
-        fprintf(stderr, "%s: the output is the input; refusing to write it\n", out);
-        return WA_IS_INPUT;
-    }
-    /* An existing `out` that is a symlink is followed, so the link keeps
-     * pointing where it did and its target gets the new content. */
-    char real[PATH_MAX];
-    const char *target = (realpath(out, real) != NULL) ? real : out;
-
+/* A temp file beside `target` holding buf, with `meta`'s mode, owner and
+ * extended attributes when `meta` exists (else, with umask_mode, the umask's mode), fsynced and
+ * closed: its malloc'd path, or NULL with the reason on stderr and nothing
+ * left behind. */
+static char *wa_temp(const char *target, const char *meta, int umask_mode, const uint8_t *buf, size_t size) {
     struct stat ist;
-    int have_in = (stat(in, &ist) == 0);
-
+    int have_meta = (stat(meta, &ist) == 0);
     size_t tlen = strlen(target) + 8;
     char *tmpl = (char *)malloc(tlen);
-    if (!tmpl) { fprintf(stderr, "out of memory\n"); return WA_FAILED; }
+    if (!tmpl) { fprintf(stderr, "out of memory\n"); return NULL; }
     snprintf(tmpl, tlen, "%s.XXXXXX", target);
     int tfd = mkstemp(tmpl);
-    if (tfd < 0) { perror("mkstemp"); free(tmpl); return WA_FAILED; }
+    if (tfd < 0) { perror("mkstemp"); free(tmpl); return NULL; }
 
-    if (have_in) {
+    if (have_meta) {
         fchmod(tfd, ist.st_mode & 07777);
         fchown(tfd, ist.st_uid, ist.st_gid);   /* best-effort: needs privilege */
+        if (wa_copy_xattrs(meta, tfd) != 0)
+            fprintf(stderr, "warning: %s: could not copy all extended attributes "
+                            "(e.g. com.apple.quarantine) from %s\n", target, meta);
+    } else if (umask_mode) {
+        mode_t mask = umask(0);
+        umask(mask);
+        fchmod(tfd, 0666 & ~mask);
     }
-    if (wa_copy_xattrs(in, tfd) != 0)
-        fprintf(stderr, "warning: %s: could not copy all extended attributes "
-                        "(e.g. com.apple.quarantine) from %s\n", target, in);
 
     size_t off = 0;
     int failed = 0;
@@ -100,13 +98,66 @@ int wa_write_new(const char *in, const char *out, const uint8_t *buf, size_t siz
         off += (size_t)n;
     }
     if (!failed && fsync(tfd) != 0) { perror("fsync"); failed = 1; }
-    close(tfd);
-    if (failed || rename(tmpl, target) != 0) {
-        if (!failed) perror("rename");
-        unlink(tmpl);
-        free(tmpl);
+    if (close(tfd) != 0 && !failed) { perror("close"); failed = 1; }
+    if (failed) { unlink(tmpl); free(tmpl); return NULL; }
+    return tmpl;
+}
+
+int wa_write_new(const char *in, const char *out, const uint8_t *buf, size_t size) {
+    if (wa_is_input(in, out)) {
+        fprintf(stderr, "%s: the output is the input; refusing to write it\n", out);
+        return WA_IS_INPUT;
+    }
+    /* An existing `out` that is a symlink is followed, so the link keeps
+     * pointing where it did and its target gets the new content. */
+    char real[PATH_MAX];
+    const char *target = (realpath(out, real) != NULL) ? real : out;
+    char *tmp = wa_temp(target, in, 0, buf, size);
+    if (!tmp) return WA_FAILED;
+    if (rename(tmp, target) != 0) {
+        perror("rename");
+        unlink(tmp);
+        free(tmp);
         return WA_FAILED;
     }
-    free(tmpl);
+    free(tmp);
     return 0;
+}
+
+int wa_stage(const char *path, const uint8_t *buf, size_t size, struct wa_staged *out) {
+    char real[PATH_MAX];
+    const char *target = (realpath(path, real) != NULL) ? real : path;
+    out->tmp = out->target = NULL;
+    if (!(out->target = (char *)malloc(strlen(target) + 1))) { fprintf(stderr, "out of memory\n"); return WA_FAILED; }
+    strcpy(out->target, target);
+    if (!(out->tmp = wa_temp(target, target, 1, buf, size))) {
+        free(out->target);
+        out->target = NULL;
+        return WA_FAILED;
+    }
+    return 0;
+}
+
+int wa_commit(struct wa_staged *s) {
+    int rc = 0;
+    if (rename(s->tmp, s->target) != 0) {
+        fprintf(stderr, "%s: cannot replace it: %s\n", s->target, strerror(errno));
+        unlink(s->tmp);
+        rc = WA_FAILED;
+    }
+    free(s->tmp); free(s->target);
+    s->tmp = s->target = NULL;
+    return rc;
+}
+
+void wa_abort(struct wa_staged *s) {
+    if (s->tmp) unlink(s->tmp);
+    free(s->tmp); free(s->target);
+    s->tmp = s->target = NULL;
+}
+
+int wa_replace(const char *path, const uint8_t *buf, size_t size) {
+    struct wa_staged s;
+    if (wa_stage(path, buf, size, &s)) return WA_FAILED;
+    return wa_commit(&s);
 }

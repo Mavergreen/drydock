@@ -18,6 +18,8 @@
 RAdaptSet *ra_default(const char *refdir_resources, const char *target);
 void ra_free(RAdaptSet *s);
 int  ra_known(const char *rule);                        /* 1 when rule names a rule */
+const char *ra_rule(size_t i);                          /* the i'th rule's name, or NULL past the last */
+int  ra_is_on(const RAdaptSet *s, const char *rule);    /* 1 when the target needs the rule and it is on */
 int  ra_disable(RAdaptSet *s, const char *rule);        /* 0, or 2 unknown rule; NULL turns every rule off */
 /* Rewrites g by every rule that applies and is on, logging each rewrite as kind "adapted" (item the rule, detail
  * "@N KEY"), and each object a rule cannot judge (an unreadable frame or cell flags) as an RF_FINDING of the rule's

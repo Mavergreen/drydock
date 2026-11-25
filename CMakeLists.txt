@@ -354,6 +354,7 @@ add_executable(drydock-resources cli/drydock-resources.c $<TARGET_OBJECTS:drydoc
 target_include_directories(drydock-resources PRIVATE src/resources)
 set_target_properties(drydock-resources PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
 target_compile_options(drydock-resources PRIVATE -O2 -Wall -Wextra -Werror)
+target_compile_definitions(drydock-resources PRIVATE DRYDOCK_RESOURCES_VERSION="${MAVERICKS_VERSION}")
 target_link_libraries(drydock-resources PRIVATE drydockcore drydock_jansson ${CMAKE_DL_LIBS})
 if(APPLE)
   mavericks_assert_binary_compatible(drydock-resources)
@@ -604,6 +605,11 @@ drydock_add_test(NAME resources_findings COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/
 set_tests_properties(resources_findings PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
 drydock_add_test(NAME resources_adapt COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/adapt-test.sh)
 set_tests_properties(resources_adapt PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
+drydock_add_test(NAME resources_convert COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/convert-test.sh)
+set_tests_properties(resources_convert PROPERTIES ENVIRONMENT
+  "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+drydock_add_test(NAME resources_check COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/check-test.sh)
+set_tests_properties(resources_check PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).

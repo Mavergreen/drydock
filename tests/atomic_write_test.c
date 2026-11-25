@@ -1,7 +1,8 @@
 /*
  * tests/atomic_write_test.c -- hermetic tests for wa_write_new: it never
  * writes its input, it writes its output whole or not at all, and the output
- * carries the input's metadata. Files live in a fresh directory under
+ * carries the input's metadata; and for wa_replace and its staging, which
+ * keep a replaced file's own metadata and change nothing until committed. Files live in a fresh directory under
  * $TMPDIR; nothing here needs a Mach-O.
  */
 #include "atomic_write.h"
@@ -127,6 +128,66 @@ static void test_a_failed_write_leaves_the_output_as_it_was(void) {
     unlink(in); unlink(out);
 }
 
+static void test_replace_keeps_the_files_mode(void) {
+    char f[600];
+    path_in(f, sizeof f, "nib");
+    put(f, "NIBArchive", 0640);
+    CHECK(setxattr(f, TEST_XATTR, "keep", 4, 0, 0) == 0, "setup: xattr");
+    int before = entries();
+    const uint8_t nb[] = "bplist00";
+    CHECK(wa_replace(f, nb, 8) == 0, "wa_replace replaces a file");
+    struct stat st;
+    CHECK(is(f, "bplist00"), "the file has the new content");
+    CHECK(stat(f, &st) == 0 && (st.st_mode & 07777) == 0640, "the file keeps its mode (got %o)", (unsigned)(st.st_mode & 07777));
+    char v[8] = {0};
+    CHECK(getxattr(f, TEST_XATTR, v, sizeof v, 0, 0) == 4 && memcmp(v, "keep", 4) == 0, "the file keeps its extended attribute");
+    CHECK(entries() == before, "no temp file remains (%d entries, was %d)", entries(), before);
+    unlink(f);
+}
+
+static void test_staged_files_change_nothing_until_committed(void) {
+    char a[600], b[600];
+    struct wa_staged sa, sb;
+    path_in(a, sizeof a, "a"); path_in(b, sizeof b, "b");
+    put(a, "OLD-A", 0644);
+    put(b, "OLD-B", 0600);
+    int before = entries();
+    CHECK(wa_stage(a, (const uint8_t *)"NEW-A", 5, &sa) == 0 && wa_stage(b, (const uint8_t *)"NEW-B", 5, &sb) == 0, "both stage");
+    CHECK(is(a, "OLD-A") && is(b, "OLD-B") && entries() == before + 2, "staging leaves both as they were, beside two temps");
+    wa_abort(&sb);
+    CHECK(is(b, "OLD-B") && entries() == before + 1, "an aborted staging leaves its file as it was and removes its temp");
+    CHECK(wa_commit(&sa) == 0 && is(a, "NEW-A") && entries() == before, "a commit puts the new content in place");
+    char n[600];
+    struct stat st;
+    path_in(n, sizeof n, "new");
+    mode_t mask = umask(022);
+    CHECK(wa_replace(n, (const uint8_t *)"FRESH", 5) == 0 && is(n, "FRESH") && stat(n, &st) == 0 && (st.st_mode & 07777) == 0644,
+          "a file that did not exist is created with the umask's mode (got %o)", (unsigned)(st.st_mode & 07777));
+    umask(mask);
+    unlink(a); unlink(b); unlink(n);
+}
+
+static void test_staging_in_a_read_only_dir_fails_cleanly(void) {
+    char d[600], f[600];
+    struct wa_staged s;
+    if (geteuid() == 0) { printf("SKIP: staging in a read-only dir: running as root\n"); return; }
+    path_in(d, sizeof d, "ro");
+    mkdir(d, 0755);
+    snprintf(f, sizeof f, "%s/nib", d);
+    put(f, "OLD", 0644);
+    chmod(d, 0555);
+    CHECK(wa_stage(f, (const uint8_t *)"NEW", 3, &s) == WA_FAILED, "staging in a read-only directory fails");
+    CHECK(wa_replace(f, (const uint8_t *)"NEW", 3) == WA_FAILED && is(f, "OLD"), "and wa_replace leaves the file as it was");
+    chmod(d, 0755);
+    DIR *dd = opendir(d);
+    struct dirent *e;
+    int n = 0;
+    while (dd && (e = readdir(dd))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) n++;
+    if (dd) closedir(dd);
+    CHECK(n == 1, "no temp file is left (%d entries)", n);
+    unlink(f); rmdir(d);
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof g_dir, "%s/atomic_write_test.%d", tmp ? tmp : "/tmp", (int)getpid());
@@ -135,6 +196,9 @@ int main(void) {
     test_new_output_carries_the_inputs_metadata();
     test_existing_output_is_replaced();
     test_a_failed_write_leaves_the_output_as_it_was();
+    test_replace_keeps_the_files_mode();
+    test_staged_files_change_nothing_until_committed();
+    test_staging_in_a_read_only_dir_fails_cleanly();
     rmdir(g_dir);
     printf("atomic_write_test: %d failure(s)\n", fails);
     return fails ? 1 : 0;

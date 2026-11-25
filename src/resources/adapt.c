@@ -39,6 +39,13 @@ static int rule_index(const char *rule) {
 
 int ra_known(const char *rule) { return rule && rule_index(rule) >= 0; }
 
+const char *ra_rule(size_t i) { return i < N_RULES ? rule_name[i] : NULL; }
+
+int ra_is_on(const RAdaptSet *s, const char *rule) {
+    int r = rule ? rule_index(rule) : -1;
+    return s && r >= 0 && s->applies[r] && s->on[r];
+}
+
 /* adapt.tsv: "#" lines, then RULE<TAB>APPLIES_BELOW<TAB>NOTE, each rule exactly once. */
 RAdaptSet *ra_default(const char *refdir_resources, const char *target) {
     char path[4096], line[4096], *f[3], *p;

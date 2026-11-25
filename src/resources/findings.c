@@ -2,6 +2,7 @@
 #include "adapt.h"
 #include "keyed.h"
 
+#include <fnmatch.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,12 +81,11 @@ const char *rf_class_of(const RGraph *g, uint32_t obj, char buf[RF_CLASS_MAX]) {
     return buf;
 }
 
-static char *slurp(const char *dir, const char *name) {
-    char path[4096];
+static char *slurp_path(const char *path) {
     FILE *f;
     char *buf = NULL, *more;
     size_t n = 0, cap = 1 << 20;
-    if (snprintf(path, sizeof path, "%s/%s", dir, name) >= (int)sizeof path || !(f = fopen(path, "rb"))) return NULL;
+    if (!(f = fopen(path, "rb"))) return NULL;
     for (;;) {
         if (!(more = realloc(buf, cap + 1))) { free(buf); fclose(f); return NULL; }
         buf = more;
@@ -98,6 +98,12 @@ static char *slurp(const char *dir, const char *name) {
     fclose(f);
     buf[n] = 0;
     return buf;
+}
+
+static char *slurp(const char *dir, const char *name) {
+    char path[4096];
+    if (snprintf(path, sizeof path, "%s/%s", dir, name) >= (int)sizeof path) return NULL;
+    return slurp_path(path);
 }
 
 /* Splits line at tabs into at most max fields; returns the count, or max + 1 when more remain. */
@@ -274,7 +280,9 @@ static int keys_and_colors(const RfRefs *r, const RGraph *g, const char *nib, RF
             continue;
         p.a = name;
         p.b = "";
-        if (r->n_floor && bsearch(&p, r->floor_colors, r->n_floor, sizeof *r->floor_colors, name_cmp)) continue;
+        if ((r->n_floor && bsearch(&p, r->floor_colors, r->n_floor, sizeof *r->floor_colors, name_cmp))
+            || known_key(r, "NSColor(System)", name))
+            continue;
         hit = r->n_newer ? bsearch(&p, r->newer_colors, r->n_newer, sizeof *r->newer_colors, name_cmp) : NULL;
         if (cand(&colors, name, "", hit ? hit->b : "?", (uint32_t)i)) goto done;
     }
@@ -330,4 +338,139 @@ int rf_storyboard(const RfRefs *r, const char *relpath, const char *target, RFin
     if (r->floor_storyboard) return 0;
     return rf_add(out, "storyboard", relpath, "NSStoryboard", RF_FINDING, "%s",
                   r->storyboard_version ? r->storyboard_version : "?") ? 4 : 0;
+}
+
+static int finding_cmp(const void *x, const void *y) {
+    const RFinding *a = x, *b = y;
+    int c = strcmp(a->nib ? a->nib : "", b->nib ? b->nib : "");
+    if (!c) c = strcmp(a->kind, b->kind);
+    if (!c) c = strcmp(a->item, b->item);
+    return c ? c : strcmp(a->detail, b->detail);
+}
+
+void rf_sort(RFindings *f) {
+    if (f->n) qsort(f->v, f->n, sizeof *f->v, finding_cmp);
+}
+
+int rf_blocks(const RFinding *x) { return (x->sev == RF_FINDING || x->sev == RF_BLOCK_WRITE) && !x->deviation; }
+
+static const char *const kinds[] = { "nibarchive-format", "class-missing", "unresolved-chain", "unknown-key",
+                                     "named-color-missing", "storyboard", "unencodable", "translate-autoresizing",
+                                     "wrapping-width", "no-floor-nib" };
+
+void rf_exceptions_free(RfExceptions *ex) {
+    size_t i, j;
+    for (i = 0; i < ex->n; i++) {
+        free(ex->v[i].line);
+        free(ex->v[i].glob);   /* the other fields share its buffer */
+        for (j = 0; j < ex->v[i].n_applied; j++) free(ex->v[i].applied[j]);
+        free(ex->v[i].applied);
+    }
+    free(ex->v);
+    ex->v = NULL;
+    ex->n = 0;
+}
+
+int rf_exceptions_read(const char *path, RfExceptions *out, char *why, size_t whysz) {
+    char *buf, *line, *next, *f[5], *fields;
+    size_t k, no = 0;
+    out->v = NULL;
+    out->n = 0;
+    if (!(buf = slurp_path(path))) { snprintf(why, whysz, "%s: cannot read the exceptions", path); return 4; }
+    for (line = buf; *line; line = next) {
+        RfException *e;
+        int wild = 1;
+        const char *p;
+        if ((next = strchr(line, '\n'))) *next++ = 0;
+        else next = line + strlen(line);
+        no++;
+        if (!*line) continue;
+        if (!(out->n & (out->n - 1))) {
+            if (out->n > SIZE_MAX / 2 / sizeof *e || !(e = realloc(out->v, (out->n ? 2 * out->n : 1) * sizeof *e))) goto oom;
+            out->v = e;
+        }
+        e = &out->v[out->n];
+        memset(e, 0, sizeof *e);
+        out->n++;
+        if (!(e->line = dup_s(line)) || !(fields = dup_s(line))) goto oom;
+        if (split(fields, f, 4) != 4 || !*f[0] || !*f[1] || !*f[2] || !*f[3]) {
+            free(fields);
+            snprintf(why, whysz, "%s: line %lu is not NIB_GLOB<TAB>KIND<TAB>ITEM<TAB>REASON", path, (unsigned long)no);
+            goto bad;
+        }
+        e->glob = f[0]; e->kind = f[1]; e->item = f[2]; e->reason = f[3];
+        for (p = e->glob; *p; p++)
+            if (!strchr("*?/", *p)) wild = 0;
+        if (wild) {
+            snprintf(why, whysz, "%s: line %lu: the nib glob %s is wildcards alone", path, (unsigned long)no, e->glob);
+            goto bad;
+        }
+        for (k = 0; k < sizeof kinds / sizeof *kinds && strcmp(kinds[k], e->kind); k++) ;
+        if (k == sizeof kinds / sizeof *kinds) {
+            snprintf(why, whysz, "%s: line %lu: %s is no finding kind", path, (unsigned long)no, e->kind);
+            goto bad;
+        }
+    }
+    free(buf);
+    return 0;
+oom:
+    snprintf(why, whysz, "out of memory");
+bad:
+    free(buf);
+    rf_exceptions_free(out);
+    return 4;
+}
+
+static int applied(RfException *e, const RFinding *x) {
+    char **v;
+    int n = snprintf(NULL, 0, "%s: %s %s", x->nib ? x->nib : "", x->kind, x->item);
+    if (n < 0) return -1;
+    if (!(e->n_applied & (e->n_applied - 1))) {
+        if (e->n_applied > SIZE_MAX / 2 / sizeof *v || !(v = realloc(e->applied, (e->n_applied ? 2 * e->n_applied : 1) * sizeof *v)))
+            return -1;
+        e->applied = v;
+    }
+    if (!(e->applied[e->n_applied] = malloc((size_t)n + 1))) return -1;
+    snprintf(e->applied[e->n_applied++], (size_t)n + 1, "%s: %s %s", x->nib ? x->nib : "", x->kind, x->item);
+    return 0;
+}
+
+static char *deviation(const RfException *e) {
+    char *d = malloc(strlen(e->kind) + strlen(e->item) + 2);
+    if (d) sprintf(d, "%s:%s", e->kind, e->item);
+    return d;
+}
+
+int rf_except(RfExceptions *ex, RFindings *f) {
+    size_t i, j, k, *by;
+    if (!f->n) return 0;
+    if (!(by = malloc(f->n * sizeof *by))) return 4;
+    for (i = 0; i < f->n; i++) {
+        RFinding *x = &f->v[i];
+        by[i] = ex->n;
+        if (!rf_blocks(x)) continue;
+        for (k = 0; k < ex->n; k++) {
+            RfException *e = &ex->v[k];
+            if (strcmp(e->kind, x->kind) || strcmp(e->item, x->item) || fnmatch(e->glob, x->nib ? x->nib : "", 0)) continue;
+            if (!(x->deviation = deviation(e)) || applied(e, x)) goto oom;
+            by[i] = k;
+            break;
+        }
+    }
+    for (i = 0; i < f->n; i++) {
+        const RFinding *s = &f->v[i];
+        size_t len;
+        if (by[i] == ex->n || strcmp(s->kind, "storyboard") || !s->nib) continue;
+        len = strlen(s->nib);
+        for (j = 0; j < f->n; j++) {
+            RFinding *x = &f->v[j];
+            if (!rf_blocks(x) || !x->nib || strncmp(x->nib, s->nib, len) || x->nib[len] != '/') continue;
+            if (!(x->deviation = deviation(&ex->v[by[i]])) || applied(&ex->v[by[i]], x)) goto oom;
+        }
+    }
+    free(by);
+    return 0;
+oom:
+    free(by);
+    return 4;
 }

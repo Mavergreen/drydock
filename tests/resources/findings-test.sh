@@ -63,9 +63,9 @@ in_obj 17 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutor
   NSDoNotTranslateAutoresizingMask = false/' > "$T/untranslated.rez"
 [ "$(grep -c '^  NSDoNotTranslateAutoresizingMask = false$' "$T/untranslated.rez")" = 6 ] || fail "findings_layout: the edit did not apply"
 check off --no-adapt "$T/untranslated.rez"
-grep ': translate-autoresizing ' "$T/off" | sed 's/.*: \(finding\): translate-autoresizing \([^ ]*\) (\(@[0-9]*\) NSDoNotTranslateAutoresizingMask \([a-z]*\))$/\1 \2 \3 \4/' > "$T/off.ta"
+grep ': translate-autoresizing ' "$T/off" | sed 's/.*: \(finding\): translate-autoresizing \([^ ]*\) (\(@[0-9]*\) NSDoNotTranslateAutoresizingMask \([a-z]*\))$/\1 \2 \3 \4/' | sort > "$T/off.ta"
 printf '%s\n' 'finding NSBox @17 false' 'finding NSTextField @21 false' 'finding NSButton @37 false' \
-  'finding NSButton @45 false' > "$T/want.ta"
+  'finding NSButton @45 false' | sort > "$T/want.ta"
 cmp -s "$T/off.ta" "$T/want.ta" \
   && pass "findings_layout: --no-adapt reports every constrained view whose key is false, not one without the key, and no content view" \
   || fail "findings_layout: translate-autoresizing: $(diff "$T/want.ta" "$T/off.ta" | tr '\n' '|') $(cat "$T/off.err")"
@@ -85,23 +85,32 @@ check scene "$FIX/nib/Main.storyboardc"
   && pass "findings_layout: a storyboard scene's root view, with no key, is no translate-autoresizing finding" \
   || fail "findings_layout: scene: $(grep translate "$T/scene")"
 
-dump "$FIX/nib/values.nib" | in_obj 14 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false/' > "$T/swapper.rez"
+dump "$FIX/nib/values.nib" | in_obj 14 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false\
+  DDNotAKey = i8 1/' | in_obj 12 's/^  NSvFlags = i16 256$/&\
+  DDNotAKey = i8 1/' > "$T/swapper.rez"
+[ "$(grep -c '^  DDNotAKey = i8 1$' "$T/swapper.rez")" = 2 ] || fail "findings_unknown_key: the swapper edit did not apply"
 check swapper "$T/swapper.rez"
 [ "$(lines swapper ': will-adapt: translate-autoresizing NSView (@14 NSDoNotTranslateAutoresizingMask false)$')" = 1 ] \
   && pass "findings_layout: a custom view (an NSClassSwapper for NSView) is judged as its original class" \
   || fail "findings_layout: swapper: $(grep translate "$T/swapper") $(cat "$T/swapper.err")"
-[ "$(lines swapper ': unknown-key NSNibTouchBar (NSView ')" = 1 ] && [ "$(lines swapper ': unknown-key NSNibTouchBar (NSView @12)$')" = 1 ] \
+[ "$(lines swapper ': unknown-key DDNotAKey ')" = 1 ] && [ "$(lines swapper ': unknown-key DDNotAKey (NSView @12)$')" = 1 ] \
   && pass "findings_unknown_key: a key is reported once per class, at its first object, the swapper's under its original class" \
-  || fail "findings_unknown_key: per class: $(grep NSNibTouchBar "$T/swapper")"
+  || fail "findings_unknown_key: per class: $(grep DDNotAKey "$T/swapper")"
 
 check color "$FIX/nib/layout.nib"
-[ "$(lines color ': finding: named-color-missing labelColor (10.10)$')" = 1 ] \
-  && pass "findings_color: layout.nib's System labelColor is missing on 10.9, since 10.10" \
+[ "$(lines color 'named-color-missing')" = 0 ] \
+  && pass "findings_color: layout.nib's System labelColor is no finding: keys-10.9.tsv records that 10.9 draws it black" \
   || fail "findings_color: layout.nib: $(grep color "$T/color")"
-in_obj 30 's/^  NS.bytes = data "textBackgroundColor"$/  NS.bytes = data "labelColor"/' "$T/layout.rez" \
+mkdir -p "$T/nolabel" && cp "$ROOT/reference/resources/adapt.tsv" "$T/nolabel/"
+grep -v '^NSColor(System)	labelColor	ignored	' "$ROOT/reference/resources/keys-10.9.tsv" > "$T/nolabel/keys-10.9.tsv"
+"$R" check --references "$ROOT/reference/objc" --resource-references "$T/nolabel" "$FIX/nib/layout.nib" > "$T/nolabel.out" 2>&1
+[ "$(grep -c ': finding: named-color-missing labelColor (10.10)$' "$T/nolabel.out")" = 1 ] \
+  && pass "findings_color: without its NSColor(System) row, layout.nib's labelColor is missing on 10.9, since 10.10" \
+  || fail "findings_color: no labelColor row: $(cat "$T/nolabel.out")"
+in_obj 30 's/^  NS.bytes = data "textBackgroundColor"$/  NS.bytes = data "secondaryLabelColor"/' "$T/layout.rez" \
   | in_obj 35 's/^  NS.bytes = data "labelColor"$/  NS.bytes = data "controlTextColor"/' > "$T/swapped.rez"
 check swapped "$T/swapped.rez"
-[ "$(lines swapped 'named-color-missing')" = 1 ] && [ "$(lines swapped ': finding: named-color-missing labelColor (10.10)$')" = 1 ] \
+[ "$(lines swapped 'named-color-missing')" = 1 ] && [ "$(lines swapped ': finding: named-color-missing secondaryLabelColor (10.10)$')" = 1 ] \
   && pass "findings_color: a colour 10.9 has (controlTextColor) is no finding, the one it lacks is" \
   || fail "findings_color: swapped: $(grep color "$T/swapped")"
 in_obj 35 's/^  NS.bytes = data "labelColor"$/  NS.bytes = data "DDNotAColor"/' "$T/layout.rez" > "$T/invented.rez"
@@ -109,18 +118,19 @@ check invented "$T/invented.rez"
 [ "$(lines invented ': finding: named-color-missing DDNotAColor (?)$')" = 1 ] \
   && pass "findings_color: a colour name no SDK declares is missing, version unknown" \
   || fail "findings_color: invented: $(grep color "$T/invented")"
-in_obj 34 's/^  NSCatalogName = ref @29$/  NSCatalogName = ref @35/' "$T/layout.rez" > "$T/catalog.rez"
+in_obj 34 's/^  NSCatalogName = ref @29$/  NSCatalogName = ref @35/' "$T/layout.rez" \
+  | in_obj 35 's/"labelColor"/"secondaryLabelColor"/' > "$T/catalog.rez"
 check catalog "$T/catalog.rez"
 [ "$(lines catalog 'named-color-missing')" = 0 ] \
   && pass "findings_color: a colour outside the System catalog is no named-color finding" \
   || fail "findings_color: catalog: $(grep color "$T/catalog")"
 dump "$FIX/nib-10.9/layout.nib" > "$T/keyed.rez"
 num=$(sed -n 's/^  NSColorName = ref @\([0-9]*\)$/\1/p' "$T/keyed.rez" | head -1)
-sed "s/^  NSColorName = ref @$num\$/  NSColorName = string \"labelColor\"/" "$T/keyed.rez" > "$T/direct.rez"
-grep -q '^  NSColorName = string "labelColor"$' "$T/direct.rez" || fail "findings_color: the direct string edit did not apply"
+sed "s/^  NSColorName = ref @$num\$/  NSColorName = string \"secondaryLabelColor\"/" "$T/keyed.rez" > "$T/direct.rez"
+grep -q '^  NSColorName = string "secondaryLabelColor"$' "$T/direct.rez" || fail "findings_color: the direct string edit did not apply"
 check direct "$T/direct.rez"
-[ "$(lines direct ': finding: named-color-missing labelColor (10.10)$')" = 1 ] \
-  && pass "findings_color: NSColorName = string \"labelColor\" with NSCatalogName \"System\" is missing since 10.10" \
+[ "$(lines direct ': finding: named-color-missing secondaryLabelColor (10.10)$')" = 1 ] \
+  && pass "findings_color: NSColorName = string \"secondaryLabelColor\" with NSCatalogName \"System\" is missing since 10.10" \
   || fail "findings_color: direct string: exit $(rc direct), $(grep color "$T/direct") $(cat "$T/direct.err")"
 
 in_obj 21 's/^  NSEnabled = true$/  NSEnabled = true\
@@ -133,9 +143,13 @@ check unknown "$T/unknown.rez"
   && [ "$(lines unknown 'unknown-key NSControlUsesSingleLineMode ')" = 0 ] && [ "$(lines unknown 'unknown-key NSFrame ')" = 0 ] \
   && pass "findings_unknown_key: ignored keys (IBNSClipsToBounds, UINibEncoderEmptyKey, NSControlUsesSingleLineMode) and read keys report nothing" \
   || fail "findings_unknown_key: $(grep -e IBNS -e UINib -e SingleLine -e NSFrame "$T/unknown" | head -3)"
-[ "$(lines unknown ': finding: unknown-key NSAllowsWritingTools (NSTextField @21)$')" = 1 ] \
-  && pass "findings_unknown_key: a key from after 10.9 (NSAllowsWritingTools) is a finding" \
+[ "$(lines unknown 'unknown-key NSAllowsWritingTools ')" = 0 ] && grep -q '^  NSAllowsWritingTools = ' "$T/unknown.rez" \
+  && pass "findings_unknown_key: a key from after 10.9 that a 10.9 load check cleared (NSAllowsWritingTools) reports nothing" \
   || fail "findings_unknown_key: NSAllowsWritingTools: $(grep WritingTools "$T/unknown")"
+check newer "$FIX/nib/collections-alt.nib"
+[ "$(lines newer ': finding: unknown-key NSImageAnimation (NSImageCell @76)$')" = 1 ] \
+  && pass "findings_unknown_key: a key from after 10.9 that no load check cleared (NSImageAnimation) is a finding" \
+  || fail "findings_unknown_key: NSImageAnimation: $(grep NSImageAnimation "$T/newer")"
 add_chain "$T/unknown.rez" 'chain NSSecureTextField : NSTextField : NSControl : NSView : NSResponder : NSObject' \
   | sed 's/^@21 NSTextField$/@21 NSSecureTextField/' > "$T/sub.rez"
 check sub "$T/sub.rez"
@@ -165,7 +179,7 @@ check odd "$T/odd.rez"
   || fail "findings_unencodable: exit $(rc odd), $(grep unencodable "$T/odd") $(cat "$T/odd.err")"
 
 in_obj 21 's/^  NSDoNotTranslateAutoresizingMask = true$/  NSDoNotTranslateAutoresizingMask = false\
-  DDNotAKey = i8 1/' "$T/layout.rez" > "$T/all.rez"
+  DDNotAKey = i8 1/' "$T/layout.rez" | in_obj 35 's/"labelColor"/"secondaryLabelColor"/' > "$T/all.rez"
 check all --no-adapt "$T/all.rez"
 n=0
 for k in translate-autoresizing wrapping-width named-color-missing unknown-key; do
@@ -175,12 +189,9 @@ done
   && pass "findings_exhaustive: one nib with four problems reports all four" \
   || fail "findings_exhaustive: $n of 4 kinds, exit $(rc all): $(cut -d: -f3 "$T/all" | sort -u | tr '\n' '|')"
 
-check clean --no-adapt "$FIX/nib/int64.nib"
-want=0; grep -q -e ': finding: ' -e ': blocks-write: ' "$T/clean" && want=1
-[ "$(rc clean)" = "$want" ] && [ "$want" = 1 ] \
-  && pass "findings_exit: exit 1 when there is a finding" || fail "findings_exit: int64.nib: exit $(rc clean), wanted $want"
-sed -n 's/.*: finding: unknown-key \([^ ]*\) .*/  \1 = /p' "$T/color" | sort -u > "$T/unknown.keys"
-grep -v -F -f "$T/unknown.keys" "$T/layout.rez" | in_obj 35 's/"labelColor"/"controlTextColor"/' > "$T/willonly.rez"
+[ "$(rc unknown)" = 1 ] && [ "$(grep -c -v -e ': will-adapt: ' -e ': finding: unknown-key DDNotAKey ' "$T/unknown")" = 0 ] \
+  && pass "findings_exit: exit 1 when there is a finding" || fail "findings_exit: DDNotAKey: exit $(rc unknown)"
+cp "$T/layout.rez" "$T/willonly.rez"
 check willonly "$T/willonly.rez"
 [ "$(rc willonly)" = 0 ] && [ "$(lines willonly ': will-adapt: ')" -ge 2 ] && [ "$(lines willonly ': finding: ')" = 0 ] \
   && pass "findings_exit: only will-adapt findings exit 0" \
