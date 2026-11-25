@@ -355,15 +355,16 @@ TAB_GROUP='{ "provider_id" : "fixture.nswindow.tabbing.v1", "class" : "NSWindow"
         { "kind" : "+", "selector" : "allowsAutomaticWindowTabbing", "encoding" : "c16@0:8", "implementation_symbol" : "FixtureTab_allowsAutomaticWindowTabbing" },
         { "kind" : "+", "selector" : "setAllowsAutomaticWindowTabbing:", "encoding" : "v20@0:8c16", "implementation_symbol" : "FixtureTab_setAllowsAutomaticWindowTabbing" } ] }'
 TAB_SELS='tabbingIdentifier setTabbingIdentifier: tabbingMode setTabbingMode: allowsAutomaticWindowTabbing setAllowsAutomaticWindowTabbing:'
-# spec: src/objc/provider.c header, "Groups" -- group_prefix NAME [CC-FLAGS...]: table-provider.m built as Recaulk builds its
-#       tabbing units (ARC, -Os), archived at $T/g-NAME and declared in schema 2 with GROUP (default TAB_GROUP) its one group.
+# spec: src/objc/provider.c header, "Groups" -- group_prefix NAME [CC-FLAGS...]: UNIT (default table-provider.m) built as
+#       Recaulk builds its tabbing units (ARC, -Os), archived at $T/g-NAME and declared in schema 2 with GROUP (default
+#       TAB_GROUP) its one group.
 group_prefix() {
-  P="$T/g-$1"; shift
+  P="$T/g-$1" u=${UNIT:-table-provider.m}; shift
   rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
-  fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/table-provider.m" -o "$P.objects/table-provider.o" ||
-    fail "compiling table-provider.m $*"
-  static_lib "$P/lib/libfixture-objc.a" "$P.objects/table-provider.o"
-  printf '%s  table-provider.m\n' "$(sha "$FX/table-provider.m")" >"$P.inputs"
+  fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/$u" -o "$P.objects/${u%.m}.o" ||
+    fail "compiling $u $*"
+  static_lib "$P/lib/libfixture-objc.a" "$P.objects/${u%.m}.o"
+  printf '%s  %s\n' "$(sha "$FX/$u")" "$u" >"$P.inputs"
   declare_prefix "$P" "$P.inputs"
   awk -v g="$(printf '%s' "${GROUP:-$TAB_GROUP}" | tr '\n' ' ')" '
     /"schema" : 1,/ { sub(/1,/, "2,") }
@@ -387,6 +388,23 @@ tab_all() {  # tab_all VERDICT WHY: the consumer's send of each of the six membe
 says() { grep -F -- "$1" "$T/report" >/dev/null || fail "$2: the report does not say '$1': $(grep -F '"code"' "$T/report" | head -3)"; }
 group_refused() {  # group_refused WHY CODE TEXT: cannot-measure with CODE saying TEXT, and no member provided
   exit_is 4 "$1"; error_is "$2" "$1"; says "$3" "$1"; tab_all unsupported "$1"
+}
+# spec: src/objc/provider.c header, "Groups" (own-absent) -- bridge NAME VARIANT [CONSUMER-FLAGS...]: bridge-provider.m built
+#       with -DVARIANT (none for "-") and declared with GROUP (default OWN_GROUP), and table-consumer.m -DBRIDGE with
+#       CONSUMER-FLAGS linked with it and analyzed as `group` does.
+bridge() {
+  b_n=$1 b_v=$2; shift 2
+  GROUP=${GROUP:-$OWN_GROUP}; UNIT=bridge-provider.m; group_prefix "b-$b_n" $([ "$b_v" = - ] || echo "-D$b_v"); unset GROUP UNIT
+  group "b-$b_n" "b-$b_n" -DBRIDGE "$@"
+}
+only_imps_block() {  # only_imps_block WHY: some send blocks, and every one that does is in a bridge IMP
+  grep -E '"verdict": "(unresolved|unsupported)"' "$T/report" >/dev/null || fail "$1: no send blocks"
+  ! grep -E '"verdict": "(unresolved|unsupported)"' "$T/report" | grep -v '"function": "_FixtureBridge_' >/dev/null ||
+    fail "$1: a send outside the bridge IMPs blocks"
+}
+no_provided() { ! grep '"verdict": "provided"' "$T/report" >/dev/null || fail "$1: a send is provided"; }
+bridge_refused() {  # bridge_refused WHY CODE TEXT: cannot-measure with CODE saying TEXT, and nothing provided
+  exit_is 4 "$1"; error_is "$2" "$1"; says "$3" "$1"; no_provided "$1"
 }
 
 group_prefix tab; group tab tab
@@ -586,6 +604,55 @@ group_prefix boundadd -DBOUND_ADD; group boundadd boundadd
 group_refused 'coverage: BOUND_ADD (class_addMethod through a bound pointer)' provider-unexplored-mutation 'class_addMethod at 0x'
 group_prefix twoinit -DTWO_INIT; group twoinit twoinit
 group_refused 'entry: TWO_INIT (the constructor twice in the initializer table)' provider-foreign-entry '__DATA,__mod_init_func'
+# spec: src/objc/provider.c header, "Groups" (own-absent) -- an own-absent group is verified for each literal class its
+#       root's call sites name: one run from the root per class with the class bound, each class's members absent from
+#       the class and its app ancestors, present on its floor ancestor's 10.9 chain with that ancestor's encoding; no
+#       lookup, no store but the class into its table, no entry but the call sites; nothing is provided.
+bridge plain -
+exit_is 1 "bridge: two classes, four sites (its IMPs' own sends block)"
+only_imps_block 'bridge: two classes, four sites'
+grep '"status": "active"' "$T/report" >/dev/null || fail 'bridge: two classes, four sites: the group is not reported active'
+says 'bridges 2 classes from 4 call sites' 'bridge: two classes, four sites'
+no_provided 'bridge: two classes, four sites'
+bridge computed - -DBRIDGE_COMPUTED
+bridge_refused 'bridge: a class sent from a computed receiver' computed-class-producer 'FixtureBridge argument is not a recognised literal class'
+bridge unknown - -DBRIDGE_UNKNOWN
+bridge_refused 'bridge: a class the reader cannot name' computed-class-producer 'FixtureBridge argument is not a recognised literal class'
+bridge notown - -DBRIDGE_NOT_OWN
+bridge_refused 'bridge: a class the artifact does not define' bridge-class-not-own 'NSButton is not a class the artifact defines'
+bridge ownmember - -DBRIDGE_OWN_MEMBER
+bridge_refused 'bridge: a class that has a member' provider-guard-violation \
+  "-[FixtureBridgedView accessibilityIsIgnored] is already the app's own (on FixtureBridgedView)"
+bridge ancestor - -DBRIDGE_ANCESTOR_MEMBER
+bridge_refused 'bridge: an app ancestor that has a member' provider-guard-violation \
+  "-[FixtureBridgedSub accessibilityAttributeNames] is already the app's own (on FixtureBridgedBase)"
+bridge rootless - -DBRIDGE_ROOTLESS
+bridge_refused 'bridge: a class with no floor ancestor' provider-absent-from-floor 'FixtureBridgedRoot: no floor ancestor: the chain leaves at FixtureBridgedRoot'
+GROUP=$(own_sed 's/} ],$/}, { "kind" : "-", "selector" : "accessibilityRole", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureBridge_role" } ],/')
+bridge extra EXTRA_MEMBER
+bridge_refused "bridge: a member absent from the floor ancestor's chain" provider-absent-from-floor '-[NSActionCell accessibilityRole] is absent from 10.9'
+GROUP=$(own_sed 's/"c16@0:8"/"i16@0:8"/')
+bridge abi -
+bridge_refused "bridge: an encoding other than the floor ancestor's" provider-abi-mismatch 'declared -NSActionCell accessibilityIsIgnored as i16@0:8; the newer SDK declares c16@0:8'
+bridge lookup LOOKUP
+bridge_refused 'bridge: a root that looks a method up' provider-guard-violation 'an own-absent root looks up nothing'
+bridge replace REPLACE
+exit_is 4 'bridge: a root that replaces a method'; error_is runtime-method-swizzle 'bridge: a root that replaces a method'
+no_provided 'bridge: a root that replaces a method'
+bridge pointer - -DBRIDGE_POINTER
+bridge_refused 'bridge: a call through a function pointer' provider-foreign-entry 'code the executor explored, from code or data it did not'
+bridge tableother TABLE_OTHER
+bridge_refused 'bridge: another class into the class table' provider-unmeasurable 'fixture.bridge.accessibility.v1: image-store: '
+bridge tableelse TABLE_ELSEWHERE
+bridge_refused 'bridge: the class stored outside the class table' provider-unmeasurable 'fixture.bridge.accessibility.v1: image-store: '
+bridge unused - -DBRIDGE_UNUSED -Wl,-u,_FixtureBridge
+exit_is 1 "bridge: a root linked but never called (its IMPs' own sends block)"; only_imps_block 'bridge: a root linked but never called'
+grep '"status": "inactive"' "$T/report" >/dev/null || fail 'bridge: a root linked but never called: the group is not reported inactive'
+says 'no call site names a class' 'bridge: a root linked but never called'
+! grep '"code": "provider-unexplored-mutation"' "$T/report" >/dev/null || fail 'bridge: a root linked but never called: its class_addMethod is unexplored'
+bridge unusedptr - -DBRIDGE_UNUSED -DBRIDGE_POINTER
+bridge_refused 'bridge: a root no call site names, its address taken' provider-foreign-entry 'a root no call site names a class for'
+
 # spec: src/objc/provider.c drain -- a zerofill atom is accepted only inside a zerofill final section.
 cp "$T/root/bin/g-tab" "$T/root/bin/g-bss"
 perl -e 'open my $f, "+<", $ARGV[0] or die; binmode $f; read $f, my $h, 8192;

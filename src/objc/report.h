@@ -496,6 +496,13 @@ int objc_classify_findings(ObjcAnalysis *a);
 /* Whether classify.c measures a respondsToSelector: guard of send `si`'s own selector. */
 int objc_send_guarded(ObjcAnalysis *a, size_t si);
 const char *objc_verdict_name(ObjcVerdict v);
+/* The artifact's class record for name (OBJC_EV_CLASS_DEF), or NULL. */
+const ObjcEvidence *objc_app_class(const ObjcAnalysis *a, const char *name);
+/* The artifact implements kind/sel on cls itself (class body or one of its categories): that record, or NULL. */
+const ObjcEvidence *objc_app_method(const ObjcAnalysis *a, const char *cls, const char *kind, const char *sel);
+/* The first class on cls's superclass chain, through the artifact's classes, that the floor capture knows and
+ * measured; NULL with *lacks the class where the chain left the artifact or the capture. */
+const char *objc_floor_ancestor(const ObjcAnalysis *a, const char *cls, const char **lacks);
 /* The floor capture's role for a dependency path (required, loaded, override...), or NULL when the
  * capture did not load it. */
 const char *objc_floor_role(const ObjcAnalysis *a, const char *path);

@@ -78,6 +78,26 @@
  * and kind ("+" being a send to the class object) on a receiver whose floor chain includes its
  * class into `provided`.
  *
+ * An own-absent group (guard "own-absent") names no class: the app calls its activation root, which has no
+ * constructor, once per class, and the root only adds the members to that class. 1, 2 and 4 hold, the root and every
+ * member's implementation verified; nothing is checked against the initializer table. (1) Each call or jump to the
+ * root's final address (OBJC_EV_BRIDGE_CALL) names its class by a class literal or reference, or by the result of
+ * sending `class` to one (else computed-class-producer), and the artifact defines that class and the floor capture
+ * does not (else bridge-class-not-own). (2) With no such call, nothing else may refer to the root (else
+ * provider-foreign-entry); the group is inactive, and a class_addMethod call in its code is explained. (3) For each
+ * distinct class C, its floor ancestor F is the first class on its superclass chain, through the artifact's own
+ * classes, that the floor capture knows and measured (none: provider-absent-from-floor). Each member is present on
+ * F's 10.9 chain (else provider-absent-from-floor), declared with the newer SDK's encoding for F -- on F or a newer
+ * superclass, else in a protocol they adopt -- (else provider-abi-mismatch), and absent from C and from every class of
+ * the artifact between C and F, where the add would shadow the app's own (provider-guard-violation). F's home is
+ * strongly loaded, as in 4. (4) regexec runs from the root with rdi the class C, the members' implementations tracked,
+ * and image stores held to C into the atom of the group's class_table symbol (none declared: no store; declared but
+ * not placed: provider-mapping-mismatch); its refusal is provider-unmeasurable. Each run is judged as a group's is,
+ * C its class, and moreover no path finds a lookup (provider-guard-violation) and no implementation's address escapes
+ * (provider-foreign-entry). Coverage is a group's, but a call site of (1) may branch to the root, and verified
+ * provider code no path explored may load or take the address of the class table. An own-absent group credits
+ * nothing as `provided`.
+ *
  * Every class_addMethod call the reader saw (OBJC_EV_METHOD_REGISTRATION) must lie in provider
  * code verified here, or the artifact is cannot-measure (unattested-method-registration): a
  * root symbol, a provider name or a link-argument list alone attests nothing. With a group
@@ -630,8 +650,9 @@ static int push_protocol(const char ***v, size_t *n, const char *p) {
     *v = g; g[(*n)++] = p;
     return 0;
 }
-static int adopted_encoding(ObjcAnalysis *a, const ObjcProvider *p, const ObjcProviderMethod *m, const char **enc, const char **proto) {
-    const char **ps = NULL, *c = p->cls, *e;
+static int adopted_encoding(ObjcAnalysis *a, const ObjcProvider *p, const char *cls, const ObjcProviderMethod *m, const char **enc,
+                            const char **proto) {
+    const char **ps = NULL, *c = cls, *e;
     char sup[256], key[1024];
     size_t np = 0, i, j;
     int depth, rc = OBJC_OK;
@@ -652,7 +673,7 @@ static int adopted_encoding(ObjcAnalysis *a, const ObjcProvider *p, const ObjcPr
         if (!(e = objc_map_get(a->nw_proto_encoding, key))) continue;
         if (*enc && strcmp(*enc, e))
             rc = objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: %s%s %s: the newer SDK declares it as %s in protocol %s and as %s in protocol %s",
-                           p->provider_id, m->kind, p->cls, m->selector, *enc, *proto, e, ps[j]);
+                           p->provider_id, m->kind, cls, m->selector, *enc, *proto, e, ps[j]);
         else if (!*enc) { *enc = e; *proto = ps[j]; }
     }
     free(ps);
@@ -672,7 +693,7 @@ static int group_declared(ObjcAnalysis *a, const ObjcProvider *p) {
         int unmeasured, rc;
         snprintf(key, sizeof key, "%s\t%s\t%s", p->cls, m->kind, m->selector);
         enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL;
-        if ((rc = adopted_encoding(a, p, m, &penc, &proto))) return rc;
+        if ((rc = adopted_encoding(a, p, p->cls, m, &penc, &proto))) return rc;
         if (enc && penc && strcmp(enc, penc))
             return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: %s%s %s: the newer SDK declares it as %s on the class and as %s in protocol %s",
                              p->provider_id, m->kind, p->cls, m->selector, enc, penc, proto);
@@ -697,20 +718,20 @@ static void say(char *buf, size_t n, const char *fmt, ...) {
     va_start(ap, fmt); vsnprintf(buf + l, n - l, fmt, ap); va_end(ap);
 }
 static const char *nz(const char *s) { return s ? s : "?"; }
-static int add_names(const ObjcRegAdd *d, const ObjcProvider *p, const ObjcProviderMethod *m) {
-    return d->cls && d->sel && !strcmp(d->cls, p->cls) && d->meta == (m->kind[0] == '+') && !strcmp(d->sel, m->selector);
+static int add_names(const ObjcRegAdd *d, const char *cls, const ObjcProviderMethod *m) {
+    return d->cls && d->sel && !strcmp(d->cls, cls) && d->meta == (m->kind[0] == '+') && !strcmp(d->sel, m->selector);
 }
 /* Whether add d registers member m exactly (impva: the final address of m's implementation). */
-static int add_is(const ObjcRegAdd *d, const ObjcProvider *p, const ObjcProviderMethod *m, uint64_t impva) {
-    return add_names(d, p, m) && d->imp_va == impva && d->types && !strcmp(d->types, m->encoding);
+static int add_is(const ObjcRegAdd *d, const char *cls, const ObjcProviderMethod *m, uint64_t impva) {
+    return add_names(d, cls, m) && d->imp_va == impva && d->types && !strcmp(d->types, m->encoding);
 }
-/* A found lookup that may be a member's: one of p's class, kind and a member's selector, or one whose class or
+/* A found lookup that may be a member's: one of class cls, kind and a member's selector, or one whose class or
  * selector the executor could not name. */
-static int lookup_declared(const ObjcRegLookup *l, const ObjcProvider *p) {
+static int lookup_declared(const ObjcRegLookup *l, const ObjcProvider *p, const char *cls) {
     size_t i;
     if (!l->cls || !l->sel) return 1;
     for (i = 0; i < p->n_methods; i++)
-        if (!strcmp(l->cls, p->cls) && l->meta == (p->methods[i].kind[0] == '+') && !strcmp(l->sel, p->methods[i].selector)) return 1;
+        if (!strcmp(l->cls, cls) && l->meta == (p->methods[i].kind[0] == '+') && !strcmp(l->sel, p->methods[i].selector)) return 1;
     return 0;
 }
 static const char *imp_text(const ObjcRegAdd *d, char *buf, size_t n) {
@@ -724,18 +745,18 @@ static const char *imp_text(const ObjcRegAdd *d, char *buf, size_t n) {
  * group's class returned NULL, a member's (or an unnamed) lookup was found, or an add failed; (c) no succeeding add
  * anywhere outside them; (d) some path of (b) has no guess. impva[i]: member i's implementation's final address.
  * *clean: the paths of (d). */
-static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegResult *r, uint64_t root, const uint64_t *impva,
-                         size_t *clean) {
+static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const char *cls, const ObjcRegResult *r, uint64_t root,
+                         const uint64_t *impva, size_t *clean) {
     size_t i, j, k, l;
     char buf[2048], ib[32];
     *clean = 0;
     for (i = 0; i < r->n_called && r->called[i] != root; i++) ;
-    if (i == r->n_called)
+    if (!p->own_absent && i == r->n_called)
         return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: the constructor never reaches %s", p->provider_id, p->root_symbol);
     for (i = 0; i < r->n_paths; i++) {
         const ObjcRegPath *q = &r->paths[i];
         int guarded = 0;
-        for (j = 0; j < q->n_found; j++) guarded |= lookup_declared(&q->found[j], p);
+        for (j = 0; j < q->n_found; j++) guarded |= lookup_declared(&q->found[j], p, cls);
         if (!guarded || !q->n_adds) continue;
         buf[0] = 0;
         for (j = 0; j < q->n_found; j++) say(buf, sizeof buf, "%s[%s %s]", q->found[j].meta ? "+" : "-", nz(q->found[j].cls), nz(q->found[j].sel));
@@ -745,25 +766,25 @@ static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegRe
     for (i = 0; i < r->n_paths; i++) {
         const ObjcRegPath *q = &r->paths[i];
         int exempt = 0;
-        for (j = 0; j < q->n_null_classes && !exempt; j++) exempt = q->null_classes[j] && !strcmp(q->null_classes[j], p->cls);
-        for (j = 0; j < q->n_found && !exempt; j++) exempt = lookup_declared(&q->found[j], p);
+        for (j = 0; j < q->n_null_classes && !exempt; j++) exempt = q->null_classes[j] && !strcmp(q->null_classes[j], cls);
+        for (j = 0; j < q->n_found && !exempt; j++) exempt = lookup_declared(&q->found[j], p, cls);
         for (j = 0; j < q->n_adds && !exempt; j++) exempt = !q->adds[j].ok;
         if (exempt) continue;
         buf[0] = 0;
         for (k = 0; k < p->n_methods; k++) {
             const ObjcProviderMethod *m = &p->methods[k];
             const ObjcRegAdd *h = NULL;
-            for (j = 0; j < q->n_adds && !h; j++) if (add_names(&q->adds[j], p, m)) h = &q->adds[j];
-            if (!h) { say(buf, sizeof buf, "missing %s[%s %s]", m->kind, p->cls, m->selector); continue; }
+            for (j = 0; j < q->n_adds && !h; j++) if (add_names(&q->adds[j], cls, m)) h = &q->adds[j];
+            if (!h) { say(buf, sizeof buf, "missing %s[%s %s]", m->kind, cls, m->selector); continue; }
             if (h->imp_va != impva[k])
-                say(buf, sizeof buf, "%s[%s %s] implemented by %s, declared _%s", m->kind, p->cls, m->selector, imp_text(h, ib, sizeof ib), m->impl_symbol);
+                say(buf, sizeof buf, "%s[%s %s] implemented by %s, declared _%s", m->kind, cls, m->selector, imp_text(h, ib, sizeof ib), m->impl_symbol);
             if (!h->types || strcmp(h->types, m->encoding))
-                say(buf, sizeof buf, "%s[%s %s] typed %s, declared %s", m->kind, p->cls, m->selector, nz(h->types), m->encoding);
+                say(buf, sizeof buf, "%s[%s %s] typed %s, declared %s", m->kind, cls, m->selector, nz(h->types), m->encoding);
         }
         for (j = 0; j < q->n_adds; j++) {
             const ObjcRegAdd *d = &q->adds[j];
-            for (k = 0; k < p->n_methods && !add_names(d, p, &p->methods[k]); k++) ;
-            for (l = 0; l < j && k < p->n_methods && !add_names(&q->adds[l], p, &p->methods[k]); l++) ;
+            for (k = 0; k < p->n_methods && !add_names(d, cls, &p->methods[k]); k++) ;
+            for (l = 0; l < j && k < p->n_methods && !add_names(&q->adds[l], cls, &p->methods[k]); l++) ;
             if (k == p->n_methods || l < j) say(buf, sizeof buf, "extra %s[%s %s]", d->meta ? "+" : "-", nz(d->cls), nz(d->sel));
         }
         if (buf[0])
@@ -774,7 +795,7 @@ static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegRe
         for (j = 0; j < r->paths[i].n_adds; j++) {
             const ObjcRegAdd *d = &r->paths[i].adds[j];
             if (!d->ok) continue;   /* nothing added; its succeeding fork is a path of its own */
-            for (k = 0; k < p->n_methods && !add_is(d, p, &p->methods[k], impva[k]); k++) ;
+            for (k = 0; k < p->n_methods && !add_is(d, cls, &p->methods[k], impva[k]); k++) ;
             if (k == p->n_methods)
                 return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: path %zu adds %s[%s %s] (%s, %s), which the group does not declare",
                                  p->provider_id, i, d->meta ? "+" : "-", nz(d->cls), nz(d->sel), imp_text(d, ib, sizeof ib), nz(d->types));
@@ -785,11 +806,15 @@ static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const ObjcRegRe
 
 /* ---- a group's coverage: what the executor did not explore must not change what it derived ---------------------- */
 
+/* An own-absent group's run: its root, the call sites that may branch to it, its class table and member IMPs. */
+typedef struct { uint64_t root, tlo, thi; const uint64_t *sites; size_t n_sites; const uint64_t *impva; size_t n_imp; } Bridge;
+
 typedef struct {
     ObjcAnalysis *a;
     const ObjcProvider *p;
     const ObjcImage *im;
     const ObjcRegResult *r;
+    const Bridge *b;           /* NULL but for an own-absent group */
     uint64_t *c; size_t nc;    /* [lo, hi): image data outside __TEXT the executor read as initial values, merged */
     uint64_t *m; size_t nm;    /* [lo, lo+1): each stub, pointer slot or bound data slot of a mutator import */
     int inits;                 /* initializer slots holding the constructor */
@@ -821,6 +846,17 @@ static const char *where(const ObjcImage *im, uint64_t va, char *buf, size_t n) 
     snprintf(buf, n, "%s", name ? name : s ? s : "no section");
     return buf;
 }
+static int bridge_entry(const Bridge *b, uint64_t site, uint64_t target, int kind) {
+    size_t i;
+    if (!b || kind != OBJC_REF_BRANCH || target != b->root) return 0;
+    for (i = 0; i < b->n_sites; i++) if (b->sites[i] == site) return 1;
+    return 0;
+}
+/* A load or address of the class table from verified provider code no path explored: the member IMPs read it. */
+static int imp_reads_table(const ObjcProvider *p, const ObjcRegResult *r, const Bridge *b, uint64_t site, uint64_t target, int kind) {
+    return b && (kind == OBJC_REF_LOAD || kind == OBJC_REF_ADDR) && target >= b->tlo && target < b->thi &&
+           in_pairs(p->ranges, p->n_ranges, site) && !in_pairs(r->explored, r->n_explored, site);
+}
 static int executed(const ObjcRegResult *r, uint64_t ip) {
     size_t lo = 0, hi = r->n_executed;
     while (lo < hi) { size_t mid = (lo + hi) / 2; if (r->executed[mid] < ip) lo = mid + 1; else hi = mid; }
@@ -846,13 +882,13 @@ static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
                                          w->p->provider_id, imp ? imp + (imp[0] == '_') : "a mutator", (unsigned long long)site,
                                          where(w->im, site, wb, sizeof wb));
     }
-    if (in_pairs(r->explored, r->n_explored, target) && !(in_e && kind == OBJC_REF_BRANCH) &&
+    if (in_pairs(r->explored, r->n_explored, target) && !(in_e && kind == OBJC_REF_BRANCH) && !bridge_entry(w->b, site, target, kind) &&
         !(kind == OBJC_REF_POINTER && (fl & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS && target == w->p->constructor && w->inits == 1))
         return w->status = objc_fail(w->a, "provider-foreign-entry", NULL, site,
                                      "%s: 0x%llx (in %s) %s 0x%llx (in %s), code the executor explored, from code or data it did not",
                                      w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
                                      (unsigned long long)target, where(w->im, target, tb, sizeof tb));
-    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !ran &&
+    if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !ran && !imp_reads_table(w->p, r, w->b, site, target, kind) &&
         !(kind == OBJC_REF_POINTER && sn && !strncmp(sn, "__TEXT,", 7) && !(fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))))
         return w->status = objc_fail(w->a, "provider-mutable-constant", NULL, site,
                                      "%s: 0x%llx (in %s) %s 0x%llx (in %s), which the executor read as its initial value",
@@ -865,7 +901,7 @@ static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
  * on one; and, over the whole image, no reference into an explored function from outside the explored functions but
  * the constructor's initializer entry, and none to data read as a constant but a load, one from an explored function,
  * or a pointer in such data or in __TEXT. */
-static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage *im, const ObjcRegResult *r) {
+static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage *im, const ObjcRegResult *r, const Bridge *b) {
     Sweep w;
     uint64_t *all = NULL;
     size_t i, j, k, nall = 0, ns = objc_image_nsections(im);
@@ -880,7 +916,7 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
                              p->provider_id, (unsigned long long)r->mutator_sites[i], where(im, r->mutator_sites[i], wb, sizeof wb));
     }
     memset(&w, 0, sizeof w);
-    w.a = a; w.p = p; w.im = im; w.r = r;
+    w.a = a; w.p = p; w.im = im; w.r = r; w.b = b;
     for (i = 0; i < r->n_reads; i++) {
         const char *sn = objc_image_section_of(im, r->const_reads[i].va, NULL, NULL, NULL);
         if (sn && strncmp(sn, "__TEXT,", 7) && push_pair(&w.c, &w.nc, r->const_reads[i].va, r->const_reads[i].va + r->const_reads[i].len)) goto oom;
@@ -986,8 +1022,8 @@ static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const 
     }
     if (objc_derive_registration(im, p->constructor, p->ranges, p->n_ranges, NULL, &r))
         rc = objc_fail(a, "provider-unmeasurable", NULL, 0, "%s: %s: %s", p->provider_id, r.code, r.why);
-    else rc = group_verdict(a, p, &r, root, impva, &clean);
-    if (!rc) rc = group_covered(a, p, im, &r);
+    else rc = group_verdict(a, p, p->cls, &r, root, impva, &clean);
+    if (!rc) rc = group_covered(a, p, im, &r, NULL);
     if (!rc && r.n_selreg && (!(p->literal_sel_sites = calloc(r.n_selreg, sizeof *p->literal_sel_sites)) ||
                               !(p->sel_sites = calloc(r.n_selreg, sizeof *p->sel_sites))))
         rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
@@ -1006,6 +1042,226 @@ static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const 
     return rc;
 }
 
+/* The literal class a bridge call names: a class literal or reference, or the result of sending `class` to one. */
+static const char *bridge_class(const ObjcAnalysis *a, const ObjcEvidence *e) {
+    const ObjcValue *v = &e->receiver;
+    const ObjcEvidence *hit = NULL;
+    size_t i;
+    if (v->form == OBJC_VAL_CLASS_LITERAL || v->form == OBJC_VAL_CLASSREF) return v->text;
+    if (v->form != OBJC_VAL_RESULT) return NULL;
+    for (i = 0; i < a->n_evidence; i++) {
+        const ObjcEvidence *d = &a->evidence[i];
+        if (d->kind != OBJC_EV_DISPATCH_CALL || d->address != v->ref || strcmp(d->slice, e->slice)) continue;
+        if (hit || d->incoming) return NULL;
+        hit = d;
+    }
+    if (!hit || (hit->name && strstr(hit->name, "Super")) || !hit->sel.text || strcmp(hit->sel.text, "class")) return NULL;
+    v = &hit->receiver;
+    return v->form == OBJC_VAL_CLASS_LITERAL || v->form == OBJC_VAL_CLASSREF ? v->text : NULL;
+}
+
+typedef struct { uint64_t lo, hi, site, target; int kind, hit; } RootRefs;
+static int root_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
+    RootRefs *w = ctx;
+    if (kind == OBJC_REF_BRANCH && site >= w->lo && site < w->hi) return 0;   /* the root's own loops */
+    w->site = site; w->target = target; w->kind = kind; w->hit = 1;
+    return 1;
+}
+
+/* An own-absent group's classes, each checked against its floor ancestor (the header's "Groups", own-absent). */
+static int bridge_classes(ObjcAnalysis *a, ObjcProvider *p) {
+    size_t i, k;
+    for (i = 0; i < p->n_bridged; i++) {
+        const char *c = p->bridged[i], *f, *lacks = NULL;
+        if (!(f = objc_floor_ancestor(a, c, &lacks)))
+            return objc_fail(a, "provider-absent-from-floor", NULL, 0, "%s: %s: no floor ancestor: the chain leaves at %s", p->provider_id, c, nz(lacks));
+        if (!(p->bridged_floor[i] = strdup(f))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+        for (k = 0; k < p->n_methods; k++) {
+            const ObjcProviderMethod *m = &p->methods[k];
+            const char *x, *on = NULL, *enc = NULL, *proto = NULL, *stop = NULL;
+            char key[1024], sup[256];
+            int depth, rc;
+            for (x = f, depth = 0; x && depth < 64 && !on; depth++) {
+                const char *ix = objc_map_get(a->rt_class, x), *role;
+                const ObjcRtClass *fc;
+                if (!ix) { stop = x; break; }
+                fc = &a->rt_classes[strtoul(ix, NULL, 10)];
+                role = objc_map_get(a->rt_image_role, fc->image);
+                if (!role || (strcmp(role, "required") && strcmp(role, "fixture"))) { stop = x; break; }
+                snprintf(key, sizeof key, "%s\t%s\t%s", x, m->kind, m->selector);
+                if (objc_map_get(a->rt_method, key)) on = x;
+                x = fc->super;
+            }
+            if (!on && stop)
+                return objc_fail(a, "provider-absent-from-floor", NULL, 0, "%s: %s[%s %s] is absent from 10.9 up to %s, which the floor capture does not measure",
+                                 p->provider_id, m->kind, f, m->selector, stop);
+            if (!on) return objc_fail(a, "provider-absent-from-floor", NULL, 0, "%s: %s[%s %s] is absent from 10.9", p->provider_id, m->kind, f, m->selector);
+            for (x = f, depth = 0; x && depth < 64 && !enc; depth++) {
+                const char *v = objc_map_get(a->nw_class, x), *t;
+                snprintf(key, sizeof key, "%s\t%s\t%s", x, m->kind, m->selector);
+                if ((enc = a->nw_encoding ? objc_map_get(a->nw_encoding, key) : NULL)) break;
+                if (!v || !(t = strchr(v, '\t')) || (size_t)(t - v) >= sizeof sup) break;
+                snprintf(sup, sizeof sup, "%.*s", (int)(t - v), v);
+                x = strcmp(sup, "-") ? sup : NULL;
+            }
+            if (!enc && (rc = adopted_encoding(a, p, f, m, &enc, &proto))) return rc;
+            if (!enc || strcmp(enc, m->encoding))
+                return objc_fail(a, "provider-abi-mismatch", NULL, 0, "%s: declared %s%s %s as %s; the newer SDK %s%s%s%s", p->provider_id, m->kind,
+                                 f, m->selector, m->encoding, enc ? "declares " : "does not declare it", enc ? enc : "",
+                                 proto ? " in protocol " : "", proto ? proto : "");
+            for (x = c, depth = 0; x && strcmp(x, f) && depth < 64; depth++) {
+                const ObjcEvidence *e = objc_app_class(a, x);
+                if (objc_app_method(a, x, m->kind, m->selector))
+                    return objc_fail(a, "provider-guard-violation", NULL, 0, "%s: %s[%s %s] is already the app's own (on %s): the add would shadow it",
+                                     p->provider_id, m->kind, c, m->selector, x);
+                x = e ? e->owner : NULL;
+            }
+        }
+    }
+    return OBJC_OK;
+}
+
+static int push_site(uint64_t **v, size_t *n, uint64_t site) {
+    size_t i;
+    uint64_t *g;
+    for (i = 0; i < *n; i++) if ((*v)[i] == site) return 0;
+    if (!(g = realloc(*v, (*n + 1) * sizeof *g))) return -1;
+    *v = g; g[(*n)++] = site;
+    return 0;
+}
+
+/* An own-absent group: its call sites, each class's floor ancestor, and one registration per class derived from the
+ * root with that class bound; what it found, for the reason. p->dormant when nothing calls the root. */
+static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const OArchive *ar, const char *rootm, char *what, size_t n) {
+    const ObjcProviderAtom *e;
+    Bridge b;
+    uint64_t *impva = NULL, *sites = NULL, *sel = NULL;
+    int *lit = NULL;
+    size_t i, j, k, mi, nsites = 0, nsel = 0, paths = 0, clean = 0, rootsz;
+    uint32_t si;
+    char sym[300], via[600] = "";
+    int rc = OBJC_OK;
+    memset(&b, 0, sizeof b);
+    snprintf(sym, sizeof sym, "_%s", p->root_symbol);
+    if (!(e = evidence_atom(p, rootm, sym))) return objc_fail(a, "provider-mapping-mismatch", NULL, 0, "%s: the evidence places no %s", p->provider_id, sym);
+    b.root = e->address; rootsz = e->size;
+    if (p->class_table) {
+        snprintf(sym, sizeof sym, "_%s", p->class_table);
+        for (i = 0; i < p->n_atoms && strcmp(p->atoms[i].symbol, sym); i++) ;
+        if (i == p->n_atoms) return objc_fail(a, "provider-mapping-mismatch", NULL, 0, "%s: the evidence places no %s", p->provider_id, sym);
+        b.tlo = p->atoms[i].address; b.thi = b.tlo + p->atoms[i].size;
+    }
+    if (!(impva = calloc(p->n_methods, sizeof *impva))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    for (i = 0; i < p->n_methods; i++) {
+        snprintf(sym, sizeof sym, "_%s", p->methods[i].impl_symbol);
+        if (archive_defines(ar, sym, &mi, &si) || !(e = evidence_atom(p, ar->m[mi].name, sym))) {
+            rc = objc_fail(a, "provider-mapping-mismatch", NULL, 0, "%s: the evidence places no %s", p->provider_id, sym);
+            goto out;
+        }
+        impva[i] = e->address;
+    }
+    b.impva = impva; b.n_imp = p->n_methods;
+    /* 1. Call sites, each naming a class the artifact defines. */
+    for (i = 0; i < a->n_evidence; i++) {
+        const ObjcEvidence *c = &a->evidence[i];
+        const char *cls;
+        char **g;
+        if (c->kind != OBJC_EV_BRIDGE_CALL || c->target != b.root) continue;
+        if (!(cls = bridge_class(a, c))) {
+            rc = objc_fail(a, "computed-class-producer", c->slice, c->address, "%s argument is not a recognised literal class", p->root_symbol);
+            goto out;
+        }
+        if (!objc_app_class(a, cls) || objc_map_get(a->rt_class, cls)) {
+            rc = objc_fail(a, "bridge-class-not-own", c->slice, c->address, "%s: %s(%s) at 0x%llx (in %s): %s is not a class the artifact defines",
+                           p->provider_id, p->root_symbol, cls, (unsigned long long)c->address, c->function ? c->function : "an unnamed function", cls);
+            goto out;
+        }
+        if (push_site(&sites, &nsites, c->address)) goto oom;
+        for (j = 0; j < p->n_bridged && strcmp(p->bridged[j], cls) < 0; j++) ;
+        if (j < p->n_bridged && !strcmp(p->bridged[j], cls)) continue;
+        if (!(g = realloc(p->bridged_floor, (p->n_bridged + 1) * sizeof *g))) goto oom;   /* the two grow together */
+        p->bridged_floor = g;
+        if (!(g = realloc(p->bridged, (p->n_bridged + 1) * sizeof *g))) goto oom;
+        p->bridged = g;
+        memmove(&g[j + 1], &g[j], (p->n_bridged - j) * sizeof *g);
+        if (!(g[j] = strdup(cls))) { memmove(&g[j], &g[j + 1], (p->n_bridged - j) * sizeof *g); goto oom; }
+        p->bridged_floor[p->n_bridged++] = NULL;
+    }
+    b.sites = sites; b.n_sites = nsites;
+    /* 2. No call site: nothing else may refer to the root either. */
+    if (!nsites) {
+        RootRefs w;
+        memset(&w, 0, sizeof w);
+        w.lo = b.root; w.hi = b.root + rootsz;
+        if (objc_image_refs(im, &w.lo, 1, root_ref, &w) < 0)
+            rc = objc_fail(a, "unsupported-provider", NULL, 0, "%s: the image is not position-independent: references by absolute address are not swept", p->provider_id);
+        else if (w.hit) {
+            char wb[300], tb[300];
+            rc = objc_fail(a, "provider-foreign-entry", NULL, w.site, "%s: 0x%llx (in %s) %s 0x%llx (in %s), a root no call site names a class for",
+                           p->provider_id, (unsigned long long)w.site, where(im, w.site, wb, sizeof wb), REF_KIND[w.kind],
+                           (unsigned long long)w.target, where(im, w.target, tb, sizeof tb));
+        } else p->dormant = 1;
+        goto out;
+    }
+    /* 3. Each class against its floor ancestor. */
+    if ((rc = bridge_classes(a, p))) goto out;
+    /* 4. One registration per class, from the root with the class bound. */
+    for (i = 0; i < p->n_bridged && !rc; i++) {
+        ObjcRegResult r;
+        ObjcRegStart st;
+        size_t c = 0;
+        memset(&st, 0, sizeof st);
+        st.entry = b.root; st.arg0_class = p->bridged[i]; st.tracked = impva; st.n_tracked = p->n_methods;
+        st.own_stores = 1; st.table_lo = b.tlo; st.table_hi = b.thi;
+        if (objc_derive_registration_from(im, &st, p->ranges, p->n_ranges, NULL, &r))
+            rc = objc_fail(a, "provider-unmeasurable", NULL, 0, "%s: %s: %s", p->provider_id, r.code, r.why);
+        for (j = 0; !rc && j < r.n_paths; j++)
+            if (r.paths[j].n_found)
+                rc = objc_fail(a, "provider-guard-violation", NULL, 0, "%s: path %zu from %s(%s) finds a method: an own-absent root looks up nothing",
+                               p->provider_id, j, p->root_symbol, p->bridged[i]);
+        if (!rc) rc = group_verdict(a, p, p->bridged[i], &r, b.root, impva, &c);
+        for (j = 0; !rc && j < r.n_escaped; j++) {
+            for (k = 0; k < p->n_methods && r.escaped[j].va != impva[k]; k++) ;
+            if (k < p->n_methods || r.escaped[j].va == ~0ULL) {
+                char wb[300];
+                rc = objc_fail(a, "provider-foreign-entry", NULL, r.escaped[j].site, "%s: the address of %s%s escapes at 0x%llx (in %s), from %s(%s)",
+                               p->provider_id, k < p->n_methods ? "_" : "a member IMP", k < p->n_methods ? p->methods[k].impl_symbol : "",
+                               (unsigned long long)r.escaped[j].site, where(im, r.escaped[j].site, wb, sizeof wb), p->root_symbol, p->bridged[i]);
+            }
+        }
+        if (!rc) rc = group_covered(a, p, im, &r, &b);
+        for (j = 0; !rc && j < r.n_sites; j++)
+            if (push_site(&p->mutator_sites, &p->n_mutator_sites, r.mutator_sites[j])) rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+        for (j = 0; !rc && j < r.n_selreg; j++) {
+            for (k = 0; k < nsel && sel[k] != r.selreg[j].site; k++) ;
+            if (k == nsel) {
+                uint64_t *g = realloc(sel, (nsel + 1) * sizeof *g);
+                int *h = g ? realloc(lit, (nsel + 1) * sizeof *h) : NULL;
+                if (g) sel = g;
+                if (!h) { rc = objc_fail(a, "out-of-memory", NULL, 0, "provider"); break; }
+                lit = h; sel[nsel] = r.selreg[j].site; lit[nsel++] = 1;
+            }
+            lit[k] &= r.selreg[j].all_literal;
+        }
+        paths += r.n_paths; clean += c;
+        if (!rc) snprintf(via + strlen(via), sizeof via - strlen(via), "%s%s via %s", i ? ", " : "", p->bridged[i], p->bridged_floor[i]);
+        objc_reg_free(&r);
+    }
+    if (!rc && nsel && (!(p->literal_sel_sites = calloc(nsel, sizeof *p->literal_sel_sites)) || !(p->sel_sites = calloc(nsel, sizeof *p->sel_sites))))
+        rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    for (i = 0; !rc && i < nsel; i++) {
+        p->sel_sites[p->n_sel_sites++] = sel[i];
+        if (lit[i]) p->literal_sel_sites[p->n_literal_sel_sites++] = sel[i];
+    }
+    snprintf(what, n, "bridges %zu classes from %zu call sites (%s); %zu paths, %zu registering without a guess", p->n_bridged, nsites, via, paths, clean);
+out:
+    free(impva); free(sites); free(sel); free(lit);
+    return rc;
+oom:
+    rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    goto out;
+}
+
 static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     OArchive ar;
     V v;
@@ -1013,16 +1269,16 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     uint32_t rs, k;
     const OMember *m;
     const OSect *init = NULL;
-    char root[300], impl[300], key[1024], fws[2048] = "", rootm[256], needwhy[1400] = "", derived[256] = "";
+    char root[300], impl[300], key[1024], fws[2048] = "", rootm[256], needwhy[1400] = "", derived[768] = "";
     const char *enc;
     int rc;
-    if (p->own_absent) return objc_fail(a, "unsupported-provider", NULL, 0, "%s: own-absent groups are not verified yet", p->provider_id);
     if (!p->have_evidence) return set_reason(a, p, 0, "no build evidence names this provider");
     if (strcmp(p->ev_declaration_sha256, p->declaration_sha256))
         return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: the declaration is %s, the build evidence recorded %s", p->provider_id, p->declaration_sha256, p->ev_declaration_sha256);
     if (strcmp(p->ev_archive_sha256, p->archive_sha256))
         return objc_fail(a, "stale-provider-evidence", NULL, 0, "%s: the archive is %s, the build evidence recorded %s", p->provider_id, p->archive_sha256, p->ev_archive_sha256);
-    if (!p->legacy) { if ((rc = group_declared(a, p))) return rc; }
+    if (p->own_absent) ;   /* its classes, and so its declarations, come from the call sites */
+    else if (!p->legacy) { if ((rc = group_declared(a, p))) return rc; }
     else {
         if (strcmp(p->method_kind, "-"))
             return objc_fail(a, "unsupported-provider", NULL, 0, "%s: only instance-method providers registered on objc_getClass's class are supported", p->provider_id);
@@ -1053,12 +1309,13 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     for (i = 0; i < p->n_members && strcmp(p->members[i].name, m->name); i++) ;
     if (i == p->n_members) { objc_archive_free(&ar); return set_reason(a, p, 0, "the activation root's member %s is not in the link", rootm); }
     for (k = 0; k < m->nsects; k++) if ((m->sects[k].flags & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS) init = &m->sects[k];
-    if (!init || !init->nreloc) { objc_archive_free(&ar); return objc_fail(a, "unsupported-provider", NULL, 0, "%s: member %s has no constructor", p->provider_id, rootm); }
+    if (p->own_absent) init = NULL;   /* activated by its call sites, not a constructor */
+    else if (!init || !init->nreloc) { objc_archive_free(&ar); return objc_fail(a, "unsupported-provider", NULL, 0, "%s: member %s has no constructor", p->provider_id, rootm); }
 
     memset(&v, 0, sizeof v);
     v.a = a; v.p = p; v.ar = &ar; v.im = im; v.collecting = 1;
     /* The constructor's closure first: only what it reaches counts as the registration path. */
-    for (k = 0; k < init->nreloc && !v.status; k++) {
+    for (k = 0; init && k < init->nreloc && !v.status; k++) {
         struct relocation_info r;
         long s;
         memcpy(&r, m->buf + init->reloff + (size_t)k * 8, 8);
@@ -1086,7 +1343,8 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
         if (!archive_defines(&ar, impl, &mi, &k) && !enqueue(&v, mi, k)) drain(&v);
     }
     rc = v.status;
-    if (!rc && !p->legacy) rc = group_derived(a, p, im, &ar, rootm, derived, sizeof derived);
+    if (!rc && p->own_absent) rc = bridge_derived(a, p, im, &ar, rootm, derived, sizeof derived);
+    else if (!rc && !p->legacy) rc = group_derived(a, p, im, &ar, rootm, derived, sizeof derived);
     else if (!rc) {
         static const char *NEED[] = { "_class_addMethod", "_sel_registerName", "_objc_getClass" };
         const char *strs[3];
@@ -1102,15 +1360,34 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     }
     if (!rc && a->src_sha256) rc = member_lines(a, p, &ar);
     /* 4. What it needs loaded: every library its verified imports bind to, and its class's home. */
-    if (!rc) {
+    if (!rc && p->own_absent) {   /* each floor ancestor's home, once per home */
+        for (i = 0; i < p->n_bridged && !needwhy[0]; i++) {
+            const char *idx = objc_map_get(a->rt_class, p->bridged_floor[i]), *how, *home;
+            size_t j;
+            if (!idx) { snprintf(needwhy, sizeof needwhy, "%s is not a class of the floor capture", p->bridged_floor[i]); break; }
+            home = a->rt_classes[strtoul(idx, NULL, 10)].image;
+            for (j = 0; j < i && strcmp(a->rt_classes[strtoul(objc_map_get(a->rt_class, p->bridged_floor[j]), NULL, 10)].image, home); j++) ;
+            if (j < i) continue;
+            if (!library_load(a, home, &how)) { snprintf(needwhy, sizeof needwhy, "%s (home of %s) is %s", home, p->bridged_floor[i], load_kind(how)); break; }
+            snprintf(fws + strlen(fws), sizeof fws - strlen(fws), "%s%s (home of %s", fws[0] ? "), " : "", home, p->bridged_floor[i]);
+            for (j = i + 1; j < p->n_bridged; j++) {
+                const char *jx = objc_map_get(a->rt_class, p->bridged_floor[j]);
+                if (jx && !strcmp(a->rt_classes[strtoul(jx, NULL, 10)].image, home) && strcmp(p->bridged_floor[j], p->bridged_floor[i]))
+                    snprintf(fws + strlen(fws), sizeof fws - strlen(fws), ", %s", p->bridged_floor[j]);
+            }
+        }
+        if (fws[0]) snprintf(fws + strlen(fws), sizeof fws - strlen(fws), ")");
+    } else if (!rc) {
         const char *idx = objc_map_get(a->rt_class, p->cls), *how, *home;
         if (!idx) snprintf(needwhy, sizeof needwhy, "%s is not a class of the floor capture", p->cls);
         else if (!library_load(a, (home = a->rt_classes[strtoul(idx, NULL, 10)].image), &how))
             snprintf(needwhy, sizeof needwhy, "%s (home of %s) is %s", home, p->cls, load_kind(how));
         else snprintf(fws, sizeof fws, "%s (home of %s)", home, p->cls);
+    }
+    if (!rc) {
         for (i = 0; i < v.nbinds && !needwhy[0]; i++) {
             char *tab = strchr(v.binds[i], '\t');
-            const char *lib = tab + 1;
+            const char *lib = tab + 1, *how;
             *tab = 0;
             if (!library_load(a, lib, &how))
                 snprintf(needwhy, sizeof needwhy, "%s binds to %s, which is %s", v.binds[i], lib,
@@ -1124,6 +1401,11 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     for (i = 0; i < v.nbinds; i++) free(v.binds[i]);
     free(v.facts); free(v.binds); free(v.work); objc_archive_free(&ar);
     if (rc) return OBJC_CANNOT_MEASURE;
+    if (p->dormant) return set_reason(a, p, 0, "linked, but no call site names a class");
+    if (p->own_absent && needwhy[0]) return set_reason(a, p, 0, "linked and called, but %s", needwhy);
+    if (p->own_absent)
+        return set_reason(a, p, 1, "archive sha256 %.12s..., member %s: root %s %s; %zu atoms byte-verified; %s strongly loaded", p->archive_sha256,
+                          rootm, p->root_symbol, derived, p->verified, fws);
 
     /* The constructor's final address must be an initializer. */
     {
@@ -1216,7 +1498,7 @@ int objc_verify_providers(ObjcAnalysis *a) {
                 int inside = 0;
                 for (k = 0; k < p->n_ranges && !inside; k++) inside = e->address >= p->ranges[2 * k] && e->address < p->ranges[2 * k + 1];
                 if (!inside) continue;
-                if (p->legacy) { ok = 1; continue; }
+                if (p->legacy || p->dormant) { ok = 1; continue; }
                 for (k = 0; k < p->n_mutator_sites && !ok; k++) ok = p->mutator_sites[k] == e->address;
                 if (!ok) g = p;
             }

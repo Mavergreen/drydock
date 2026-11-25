@@ -85,7 +85,7 @@ static int rt_measured(const ObjcAnalysis *a, const ObjcRtClass *c) {
     return role && (!strcmp(role, "required") || !strcmp(role, "fixture"));
 }
 
-static const ObjcEvidence *app_class(const ObjcAnalysis *a, const char *name) {
+const ObjcEvidence *objc_app_class(const ObjcAnalysis *a, const char *name) {
     size_t i;
     for (i = 0; i < a->n_evidence; i++)
         if (a->evidence[i].kind == OBJC_EV_CLASS_DEF && a->evidence[i].name && !strcmp(a->evidence[i].name, name))
@@ -93,8 +93,7 @@ static const ObjcEvidence *app_class(const ObjcAnalysis *a, const char *name) {
     return NULL;
 }
 
-/* The artifact implements kind/sel on cls itself (class body or one of its categories). */
-static const ObjcEvidence *app_method(const ObjcAnalysis *a, const char *cls, const char *kind, const char *sel) {
+const ObjcEvidence *objc_app_method(const ObjcAnalysis *a, const char *cls, const char *kind, const char *sel) {
     size_t i;
     for (i = 0; i < a->n_evidence; i++) {
         const ObjcEvidence *e = &a->evidence[i];
@@ -102,6 +101,19 @@ static const ObjcEvidence *app_method(const ObjcAnalysis *a, const char *cls, co
             !strcmp(e->method_kind, kind) && !strcmp(e->selector, sel))
             return e;
     }
+    return NULL;
+}
+
+const char *objc_floor_ancestor(const ObjcAnalysis *a, const char *cls, const char **lacks) {
+    int depth;
+    for (depth = 0; depth < CHAIN_MAX; depth++) {
+        const ObjcRtClass *f = rt_class(a, cls);
+        const ObjcEvidence *c;
+        if (f) { if (rt_measured(a, f)) return f->name; break; }
+        if (!(c = objc_app_class(a, cls)) || !c->owner) break;
+        cls = c->owner;
+    }
+    *lacks = cls;
     return NULL;
 }
 
@@ -203,7 +215,7 @@ static int floor_resolves(const ObjcAnalysis *a, const char *cls, const char *ki
     for (depth = 0; c && depth < CHAIN_MAX; depth++) {
         const char *img;
         const ObjcEvidence *m;
-        if ((m = app_method(a, c->name, kind, sel))) { snprintf(owner, ownersz, "%s", c->name); *image = NULL; *artifact = 1 + (int)m->image; return 1; }
+        if ((m = objc_app_method(a, c->name, kind, sel))) { snprintf(owner, ownersz, "%s", c->name); *image = NULL; *artifact = 1 + (int)m->image; return 1; }
         if (!rt_measured(a, c)) { snprintf(owner, ownersz, "%s", c->name); *image = c->image; return -1; }
         if ((img = rt_get3(a->rt_method, c->name, kind, sel))) { snprintf(owner, ownersz, "%s%s", kind, c->name); *image = img; return 1; }
         if (!c->super && !strcmp(kind, "+") && (img = rt_get3(a->rt_method, c->name, "-", sel))) {
@@ -324,7 +336,7 @@ static int measure_class_roots(ObjcAnalysis *a) {
                 if (note(a, &a->roots_blocking, &a->n_roots_blocking, "%s: the superclass of %s cannot be read", e->name, c->name, NULL)) return OBJC_CANNOT_MEASURE;
                 break;
             }
-            if ((next = app_class(a, c->owner)) && next != c) { c = next; continue; }
+            if ((next = objc_app_class(a, c->owner)) && next != c) { c = next; continue; }
             if (!(f = rt_class(a, c->owner))) {
                 if (note(a, &a->roots_blocking, &a->n_roots_blocking, "%s: superclass %s is outside the reference (no floor runtime class)", e->name, c->owner, NULL)) return OBJC_CANNOT_MEASURE;
                 break;
@@ -474,15 +486,15 @@ static void verdict_of(ObjcAnalysis *a, size_t si, Verdict *o) {
         return;
     }
     /* An application-defined class: its own methods, then its chain into the floor (R1 a). */
-    if (!rt_class(a, s->receiver) && app_class(a, s->receiver)) {
+    if (!rt_class(a, s->receiver) && objc_app_class(a, s->receiver)) {
         const char *cls = s->receiver;
         const ObjcEvidence *m;
         int depth;
         for (depth = 0; cls && depth < CHAIN_MAX; depth++) {
-            const ObjcEvidence *c = app_class(a, cls);
+            const ObjcEvidence *c = objc_app_class(a, cls);
             if (rt_class(a, cls)) break;
             if (!c) { set(o, OBJC_UNRESOLVED, NULL, "%s's superclass chain leaves the artifact at %s, which the floor reference does not know", s->receiver, cls, NULL); return; }
-            if ((m = app_method(a, cls, s->method_kind, s->selector))) {
+            if ((m = objc_app_method(a, cls, s->method_kind, s->selector))) {
                 if (m->image) set(o, OBJC_FLOOR_SUPPORTED, a->image_paths[m->image], "implemented by shipped image %s's own %s%s",
                                   a->image_paths[m->image], s->method_kind, cls);
                 else set(o, OBJC_FLOOR_SUPPORTED, NULL, "implemented by the artifact's own %s%s", s->method_kind, cls, NULL);

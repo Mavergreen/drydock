@@ -6,12 +6,13 @@
  * (NSAccessibility protocol) to an NSButton, an NSControl. BRIDGE calls tests/objc/fixtures/bridge-provider.m's
  * FixtureBridge(cls) with FixtureBridgedView, an NSView, and FixtureBridgedCell, an NSActionCell, each implementing
  * -accessibilityRole: an objc_getClass literal and a +class result each, one of the four a tail jump from
- * bridgeCell. With BRIDGE, BRIDGE_COMPUTED adds FixtureBridge([c class]), c a send's result; BRIDGE_NOT_OWN adds NSButton;
- * BRIDGE_OWN_MEMBER has FixtureBridgedView implement -accessibilityIsIgnored too; BRIDGE_ANCESTOR_MEMBER adds
- * FixtureBridgedSub, under a FixtureBridgedBase : NSView implementing -accessibilityAttributeNames; BRIDGE_ROOTLESS
- * adds FixtureBridgedRoot, a root class; BRIDGE_POINTER adds a call through a function pointer; BRIDGE_UNUSED makes
- * no call at all; BRIDGE_CELL_LACKS leaves -accessibilityRole off FixtureBridgedCell. Built for x86_64 against the
- * pinned 10.9 SDK (MRC); read as bytes, never executed. */
+ * bridgeCell; it sends no tabbing message. With BRIDGE, BRIDGE_COMPUTED adds FixtureBridge([c class]), c a send's
+ * result; BRIDGE_UNKNOWN adds FixtureBridge(object_getClass(c)); BRIDGE_NOT_OWN adds NSButton; BRIDGE_OWN_MEMBER has
+ * FixtureBridgedView implement -accessibilityIsIgnored too; BRIDGE_ANCESTOR_MEMBER adds FixtureBridgedSub, under a
+ * FixtureBridgedBase : NSView implementing -accessibilityAttributeNames; BRIDGE_ROOTLESS adds FixtureBridgedRoot, a
+ * root class; BRIDGE_POINTER adds a call through a function pointer; BRIDGE_UNUSED makes no direct call at all (with
+ * BRIDGE_POINTER, only that one); BRIDGE_CELL_LACKS leaves -accessibilityRole off FixtureBridgedCell. Built for
+ * x86_64 against the pinned 10.9 SDK (MRC); read as bytes, never executed. */
 #import <AppKit/AppKit.h>
 #include <objc/runtime.h>
 
@@ -94,6 +95,9 @@ int main(int argc, char **argv) {
 #ifdef BRIDGE_COMPUTED
         FixtureBridge([[NSApplication sharedApplication] class]);
 #endif
+#ifdef BRIDGE_UNKNOWN
+        FixtureBridge(object_getClass([NSApplication sharedApplication]));
+#endif
 #ifdef BRIDGE_NOT_OWN
         FixtureBridge(objc_getClass("NSButton"));
 #endif
@@ -103,12 +107,12 @@ int main(int argc, char **argv) {
 #ifdef BRIDGE_ROOTLESS
         FixtureBridge(objc_getClass("FixtureBridgedRoot"));
 #endif
-#ifdef BRIDGE_POINTER
+#endif
+#if defined(BRIDGE) && defined(BRIDGE_POINTER)
         {
             void (*volatile bridge)(Class) = FixtureBridge;
             bridge(objc_getClass("FixtureBridgedView"));
         }
-#endif
 #endif
 #ifdef CALL_REGISTER
         const char *detail;
@@ -122,6 +126,8 @@ int main(int argc, char **argv) {
         NSButton *c = [w standardWindowButton:NSWindowCloseButton];
         [c setAccessibilityLabel:@"fixture"];
         return [c accessibilityLabel] != nil;
+#elif defined(BRIDGE)
+        return w != nil;
 #elif defined(KIND_CROSS)
         return (int)[NSWindow tabbingMode] + [w allowsAutomaticWindowTabbing];
 #else
