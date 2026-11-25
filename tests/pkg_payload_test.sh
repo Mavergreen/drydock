@@ -1,16 +1,16 @@
 #!/bin/sh
-# platform: macOS-only -- reads the .pkg's payload with pkgutil
-# tests/pkg_payload_test.sh -- what the .pkg installs, read from its payload with pkgutil
+# platform: host-agnostic -- reads the .pkg with shipyard's pkg_read.sh and its Mach-O with clang22's llvm tools
+# tests/pkg_payload_test.sh -- what the .pkg installs, read from its payload with pkg_read.sh
 #   usage: pkg_payload_test.sh DRYDOCK.pkg CMAKE BUILD-X86_64 BUILD-ARM64
+#          DRYDOCK.pkg may also be a directory `pkg_read.sh expand` made.
 #          The package installs exactly what the two builds' install rules install, merged into
 #          one universal tree -- the files installed_layout_test ran through a farm -- plus the
 #          docs, and the two updaters merged where the family puts them. Its Distribution names
 #          both host arches. Every Mach-O it ships carries both slices, and, where codesign knows
-#          arm64 (not on 10.9), the arm64 slice of drydock-macho-rewrite and of the updater keeps a
-#          valid signature. A fat file may differ from the expected one in how lipo laid out the
-#          container, never in its arches or any slice. Uses only tools Mac OS X 10.9 ships
-#          (pkgutil, gzip, cpio, lipo, od, cmp) and
-#          shipyard's lipo-merge-tree.sh.
+#          arm64 (macOS 11 and later), the arm64 slice of drydock-macho-rewrite and of the updater
+#          keeps a valid signature. A fat file may differ from the expected one in how lipo laid out
+#          the container, never in its arches or any slice. Uses shipyard's pkg_read.sh and
+#          lipo-merge-tree.sh, clang22's llvm-lipo and llvm-otool, and gzip, cpio, od and cmp.
 set -eu
 usage='usage: pkg_payload_test.sh DRYDOCK.pkg CMAKE BUILD-X86_64 BUILD-ARM64'
 [ $# -eq 4 ] || { echo "$usage" >&2; exit 2; }
@@ -71,17 +71,19 @@ same_fat "$t/fc/fat.1000" "$t/fc/fat.mut" >/dev/null && { echo "FAIL: self-check
 same_fat "$t/fc/x" "$t/fc/x" >/dev/null && { echo "FAIL: self-check: a thin file was taken for a fat one"; exit 1; }
 rm -rf "$t/fc"
 
-pkgutil --expand "$pkg" "$t/x"
-grep -q 'hostArchitectures="x86_64,arm64"' "$t/x/Distribution" \
-  || { echo "FAIL: the Distribution does not name both host arches, so Installer on Apple Silicon offers Rosetta: $(grep '<options' "$t/x/Distribution")"; exit 1; }
+PR=$SHIPYARD/pkg_read.sh
+if [ -d "$pkg" ]; then x=$pkg; else sh "$PR" expand "$pkg" "$t/x"; x=$t/x; fi
+sh "$PR" facts "$x" > "$t/facts"
+grep -qx 'distribution host-architectures x86_64,arm64' "$t/facts" \
+  || { echo "FAIL: the Distribution does not name both host arches, so Installer on Apple Silicon offers Rosetta: $(grep host-architectures "$t/facts")"; exit 1; }
 found=0; n=0
-for pl in "$t"/x/*/Payload "$t"/x/Payload; do
-  [ -f "$pl" ] || continue
+for c in $(sed -n 's/^component \([^ ]*\) version .*/\1/p' "$t/facts"); do
   n=$((n + 1))
-  mkdir "$t/p$n"
-  gzip -dc "$pl" > "$t/p$n.cpio"
-  (cd "$t/p$n" && cpio -id --quiet < "$t/p$n.cpio")
-  if [ -d "$t/p$n/$tree" ]; then found=$((found + 1)); got="$t/p$n"; fi
+  sh "$PR" list "$x" "$c" > "$t/list.$c"
+  grep -q "^\./$tree/" "$t/list.$c" || continue
+  found=$((found + 1))
+  sh "$PR" payload "$x" "$c" "$t/p"
+  got=$t/p
 done
 [ "$found" -eq 1 ] || { echo "FAIL: $found of $n payloads in $pkg carry $tree (want exactly 1)"; exit 1; }
 
@@ -132,14 +134,15 @@ while IFS= read -r f; do
 done < "$t/files"
 [ "$machos" -ge 3 ] || { echo "FAIL: only $machos Mach-O files in the payload; drydock-macho-rewrite, the updater and Sparkle at least"; exit 1; }
 
-case "$(sw_vers -productVersion)" in
-  10.*) echo "INFO: this codesign predates arm64; the arm64 slices' signatures are checked on 11 and later" ;;
-  *)
+case "$(uname -s) $(sw_vers -productVersion 2>/dev/null || :)" in
+  Darwin\ 10.*) echo "INFO: this codesign predates arm64; the arm64 slices' signatures are checked on 11 and later" ;;
+  Darwin\ *)
     for f in "$got/$tree/bin/drydock-macho-rewrite" "$upd/Contents/MacOS/drydock-updater"; do
       "$LIPO" "$f" -thin arm64 -output "$t/arm64-slice"
       codesign -v "$t/arm64-slice" \
         || { echo "FAIL: the arm64 slice of ${f#"$got"/} has no valid signature"; exit 1; }
       rm -f "$t/arm64-slice"
     done ;;
+  *) echo "INFO: no codesign off macOS; the arm64 slices' signatures are checked on macOS 11 and later" ;;
 esac
 echo "PASS: pkg_payload_test (the package installs the two builds merged, $machos Mach-O files with both slices, the docs, and the updater)"
