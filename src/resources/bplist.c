@@ -392,11 +392,13 @@ int bp_read(const uint8_t *buf, size_t n, BpNode **root, char *why, size_t whysz
     r.n_objs = be(t + 8, 8);
     top = be(t + 16, 8);
     table = be(t + 24, 8);
-    if (r.osz < 1 || r.osz > 8 || r.rsz < 1 || r.rsz > 8 || r.n_objs < 1 || top >= r.n_objs) {
+    if (r.osz < 1 || r.osz > 8 || r.rsz < 1 || r.rsz > 8 || r.n_objs < 1 || top >= r.n_objs ||
+        (r.rsz < 8 && r.n_objs >> (8 * r.rsz))) {
         bad(&r, "trailer", n - 32);
         return 4;
     }
-    if (table < 9 || table > n - 32 || r.n_objs > (n - 32 - table) / r.osz || (r.osz < 8 && table >> (8 * r.osz))) {
+    if (table < 9 || table > n - 32 || (n - 32 - table) % r.osz || r.n_objs != (n - 32 - table) / r.osz ||
+        (r.osz < 8 && table >> (8 * r.osz))) {
         bad(&r, "offset table", n - 32);
         return 4;
     }
@@ -620,7 +622,7 @@ int bp_write(const BpNode *root, uint8_t **out, size_t *nout) {
         if (c == i) { rep[nobj] = i; num[i] = nobj++; }
         else num[i] = num[c];
     }
-    rsz = width(nobj - 1);
+    rsz = width(nobj);
     if (!(offs = malloc(nobj * sizeof *offs))) goto done;
     put(&b, "bplist00", 8);
     for (i = 0; i < nobj; i++) {

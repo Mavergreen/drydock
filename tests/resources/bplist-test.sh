@@ -80,7 +80,7 @@ got=$(trailer "$T/small.bplist")
 [ "$(hx "$T/small.bplist")" = 62706c6973743030d2010302045161100151625178080d0f11130000000000000101000000000000000500000000000000000000000000000015 ] \
   && pass "bplist_minimal_sizes: {a: 1, b: x} is numbered depth-first, a key then its value" \
   || fail "bplist_minimal_sizes: {a: 1, b: x} is $(hx "$T/small.bplist")"
-for w in 255:1:2 256:2:2; do
+for w in 254:1:2 255:2:2 256:2:2; do
   n=${w%%:*} r=${w#*:}; o=${r#*:}; r=${r%%:*}
   run build --wide "$n" "$T/wide.bplist" 2>"$T/err" || fail "bplist_minimal_sizes: build --wide $n exit $?"
   got=$(trailer "$T/wide.bplist")
@@ -88,6 +88,8 @@ for w in 255:1:2 256:2:2; do
   [ "$2" = "$o" ] && [ "$3" = "$r" ] && [ "$4" = $((n + 1)) ] \
     && pass "bplist_minimal_sizes: $((n + 1)) objects take $r-byte refs, $(size "$T/wide.bplist") bytes $o-byte offsets" \
     || fail "bplist_minimal_sizes: $((n + 1)) objects: trailer '$got', wanted $o-byte offsets, $r-byte refs"
+  run dump "$T/wide.bplist" > /dev/null 2>"$T/err" && pass "bplist_minimal_sizes: $((n + 1)) objects read back" \
+    || fail "bplist_minimal_sizes: $((n + 1)) objects: dump exit $?: $(cat "$T/err")"
 done
 run build --xml-safe --only "long data" "$T/long.bplist" 2>"$T/err" || fail "bplist_minimal_sizes: build --only exit $?"
 set -- $(trailer "$T/long.bplist")
@@ -146,6 +148,21 @@ printf '%s\n' "$GOOD" | sed 's/00000000000000030000000000000000000000000000000f$
   | refused offsettable 'offset table'
 printf '%s\n' "$GOOD" | sed 's/000000000000000f$/0000000000000004/' | refused tablelow 'offset table'
 printf 'a101\n4f110100%0512d\n' 0 | mk 1 1 | refused offsetsnarrow 'offset table'
+printf 'a101\n4f10f3%0486d\n' 0 | mk 1 1 | refused offsets256 'offset table'
+printf 'a101\n4f10f2%0484d\n' 0 | mk 1 1 | accepted offsets255 "array 1
+  data bytes242:$(printf '%0484d' 0)"
+for t in 255:1 256:2; do
+  printf 'a101\n4f10%x%0*d\n' $((${t%:*} - 13)) $((2 * (${t%:*} - 13))) 0 | mk 1 2 | unhex > "$T/in.bplist"
+  run rewrite "$T/in.bplist" "$T/out.bplist" 2>"$T/err"; set -- $(trailer "$T/out.bplist")
+  [ "$6" = "${t%:*}" ] && [ "$2" = "${t#*:}" ] \
+    && pass "bplist_minimal_sizes: an offset table at ${t%:*} takes ${t#*:}-byte offsets" \
+    || fail "bplist_minimal_sizes: an offset table at ${t%:*}: trailer '$*' $(cat "$T/err")"
+done
+refs() { awk -v n="$1" -v w="$2" 'BEGIN { printf "af1%d%0*x", (n > 255), (n > 255) ? 4 : 2, n
+  for (i = 1; i <= n; i++) printf "%0*x", 2 * w, i; print ""; for (i = 1; i <= n; i++) print "1001" }'; }
+refs 255 1 | mk 1 2 | refused refsnarrow trailer
+printf '%s\n' "$GOOD" | sed 's/080b0d\(000000000000\)/080b0d00\1/' | refused slack 'offset table'
+printf 'a101\n4f10f3%0486d\n' 0 | mk 1 2 | sed 's/\(.\{64\}\)$/00\1/' | refused slackodd 'offset table'
 printf 'a20105\n1001\n5161\n' | mk 1 1 | refused ref ref
 printf '%s\n' "$GOOD" | sed 's/080b0d\(000000000000\)/080b0f\1/' | refused offset offset
 printf '%s\n' "$GOOD" | sed 's/080b0d\(000000000000\)/080b07\1/' | refused offsetlow offset

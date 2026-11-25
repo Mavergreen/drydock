@@ -13,9 +13,10 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; echo "$1" >> "$T/failed"; }
 
 "$D" build "$T/full.bplist" && "$D" build --xml-safe "$T/safe.bplist" && "$D" build --wide 300 "$T/wide.bplist" \
-  || fail "bplist_plutil: build exit $?"
+  && "$D" build --wide 255 "$T/wide256.bplist" || fail "bplist_plutil: build exit $?"
 "$D" rewrite "$FIX/nib-10.9/values.nib/keyedobjects.nib" "$T/values.bplist" || fail "bplist_plutil: rewrite exit $?"
-for f in full safe wide values; do
+"$D" rewrite "$FIX/nib/Main.storyboardc/Info.plist" "$T/info.bplist" || fail "bplist_plutil: rewrite exit $?"
+for f in full safe wide wide256 values info; do
   out=$(plutil -lint "$T/$f.bplist" 2>&1)
   case $out in
     *": OK") pass "bplist_plutil: plutil -lint accepts the $f tree" ;;
@@ -31,7 +32,7 @@ roundtrip() {
     fail "bplist_plutil: $2: plutil or dump failed"
   fi
 }
-for f in "$T/safe.bplist" "$T/wide.bplist" "$T/values.bplist" "$FIX"/nib-10.9/*.nib/keyedobjects.nib; do
+for f in "$T/safe.bplist" "$T/wide.bplist" "$T/values.bplist" "$T/info.bplist" "$FIX"/nib-10.9/*.nib/keyedobjects.nib; do
   name=${f#"$FIX"/}; name=${name#"$T"/}
   roundtrip "$f" "$name"
 done
@@ -39,6 +40,7 @@ done
 sed -n 's/^  "\(.*\)" = .*/\1/p' "$T/safe.txt" > "$T/keys"
 [ "$(wc -l < "$T/keys" | tr -d ' ')" = "$(sed -n '1s/^dict //p' "$T/safe.txt")" ] \
   || fail "bplist_plutil: not every root key of the safe tree reads back as plain text"
+[ -z "$(sort "$T/keys" | uniq -d)" ] || fail "bplist_plutil: the safe tree repeats a root key: $(sort "$T/keys" | uniq -d)"
 i=0
 while IFS= read -r k; do
   i=$((i + 1))
@@ -48,6 +50,7 @@ while IFS= read -r k; do
     fail "bplist_plutil: safe tree entry \"$k\": build --only exit $?"
   fi
 done < "$T/keys"
+[ "$i" = "$(wc -l < "$T/keys" | tr -d ' ')" ] || fail "bplist_plutil: probed $i of the safe tree's root entries"
 
 [ -s "$T/failed" ] && { echo "$(wc -l < "$T/failed" | tr -d ' ') failed"; exit 1; }
 echo "all passed"
