@@ -95,7 +95,9 @@ views "$T/notrans.out" > "$T/got.notrans"
 build bogus "$T/untranslated.rez" --resource-references "$RES" --no-adapt=bogus
 [ "$(rc bogus)" = 2 ] && [ ! -e "$T/bogus.nib" ] && grep -q 'unknown adaptation rule: bogus' "$T/bogus.err" \
   && pass "adapt_layout: --no-adapt=bogus exits 2 and writes nothing" || fail "adapt_layout: --no-adapt=bogus: exit $(rc bogus), $(err bogus)"
+mkdir -p "$T/bare" && cp "$R" "$T/bare/drydock-resources" && installed=$R && R=$T/bare/drydock-resources
 build norefs "$T/untranslated.rez"
+R=$installed
 [ "$(rc norefs)" = 4 ] && [ ! -e "$T/norefs.nib" ] && grep -q 'resource references' "$T/norefs.err" \
   && pass "adapt_layout: with no resource references to judge by, an adapting build exits 4 and writes nothing" \
   || fail "adapt_layout: no references: exit $(rc norefs), $(err norefs)"
