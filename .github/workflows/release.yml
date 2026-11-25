@@ -536,7 +536,7 @@ jobs:
           path: out/macos-x86_64
 
   # The arm64 slice's acceptance (INGREDIENTS.md's arm64: deviation), on Apple Silicon: it installs the
-  # .pkg build made on Linux and runs every tool it ships, runs the standalone archive's tools, builds the
+  # .pkg built on Linux and runs every tool it ships, runs the standalone archive's tools, builds the
   # cross-arm64 preset with clang22 for the suite's fixtures and helpers and runs the suite on the installed
   # tools (DRYDOCK_TOOL_DIR) with DRYDOCK_REQUIRE_EXEC=arm64, so a row that would skip arm64 fails. A test
   # that does not run fails the job unless the allow-list below names it and its last SKIP line gives the
@@ -640,8 +640,7 @@ jobs:
           echo "$(tr -d '[:space:]' < components/macfuse-debug/sha256)  $tbz" | shasum -a 256 -c
           echo "MACFUSE_DEBUG_TBZ=$tbz" >> "$GITHUB_ENV"
 
-      # The tools under test are the installed ones; this build makes the suite's fixtures and helpers, with
-      # clang22 named as the guest names it, so nothing here is built by a compiler the shipped tools are not.
+      # platform: builds only the suite's fixtures and helpers, with clang22 as the guest names it; the tools are the installed ones.
       - name: Configure + build cross-arm64 with clang22, handing the suite the installed tools
         run: |
           set -eu
@@ -709,7 +708,6 @@ jobs:
           cat "$log"
           [ "$status" -eq 0 ] || { echo "::error::the arm64 suite failed (ctest exited $status)"; exit 1; }
           sed -n '/did not run:/,$s/^[[:space:]]*[0-9]* - \([^ ]*\) (.*/\1/p' "$log" > "$RUNNER_TEMP/skipped"
-          # The positive control: only 10.9 runs raise_runs_test, so a parse that misses it has missed them all.
           grep -qx raise_runs_test "$RUNNER_TEMP/skipped" \
             || { echo "::error::the did-not-run list does not name raise_runs_test: has ctest's output changed?"; exit 1; }
           while read -r t; do
@@ -722,7 +720,6 @@ jobs:
           awk 'NR == FNR { skipped[$0] = 1; next } /^[0-9]+\/[0-9]+ Test: / { t = ($3 in skipped) ? "" : $3; next }
             /^<end of output>$/ { t = "" } t != "" && /^(SKIP|N\/A) / { print t ": " $0 }' \
             "$RUNNER_TEMP/skipped" "$ARM64/Testing/Temporary/LastTest.log" | sort -u > "$RUNNER_TEMP/rows"
-          # The positive control: no arm64 Mac runs x86_64, so a parse that misses this row has missed them all.
           grep -qxF 'symbol_rename_test: SKIP forwarding: links and prints 43: cannot execute x86_64 on this host (Apple Silicon, no Rosetta by policy)' "$RUNNER_TEMP/rows" \
             || { echo "::error::the rows do not include symbol_rename_test's x86_64 forwarding row: has LastTest.log changed?"; exit 1; }
           while IFS= read -r r; do
