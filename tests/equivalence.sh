@@ -131,7 +131,7 @@ produce() {
   work=$(mktemp -d "${TMPDIR:-/tmp}/equivalence.XXXXXX")
   trap 'rm -rf "$work"' EXIT
   cp "$in"/* "$work/"
-  sha "$bin/drydock-macho-rewrite" > "$out/drydock.sha256"
+  printf '%s %s\n' "$(sha "$bin/drydock-macho-rewrite")" "$(uname -m)" > "$out/drydock.sha256"
   cases=0
 
   pipeline pipeline-installsh -strip-lc uuid -strip-lc codesig \
@@ -174,7 +174,7 @@ compare() {
   [ "$a" != "$b" ] || fail "$a is compared with itself"
   [ -s "$a/drydock.sha256" ] && [ -s "$b/drydock.sha256" ] || fail "an output directory does not say which drydock-macho-rewrite made it"
   [ "$(cat "$a/drydock.sha256")" != "$(cat "$b/drydock.sha256")" ] \
-    || fail "$a and $b were made by the same drydock-macho-rewrite binary"
+    || fail "$a and $b were made by the same drydock-macho-rewrite binary, running the same arch"
   la=$(cd "$a" && ls | LC_ALL=C sort) lb=$(cd "$b" && ls | LC_ALL=C sort)
   [ "$la" = "$lb" ] || fail "the two directories hold different outputs: [$(echo $la)] and [$(echo $lb)]"
   n=0 bad=0

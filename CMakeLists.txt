@@ -1183,6 +1183,8 @@ drydock_macos_test(legacysupport_rename_test "MacPorts' libMacportsLegacySupport
 set_tests_properties(legacysupport_rename_test PROPERTIES SKIP_RETURN_CODE 77)
 drydock_add_test(NAME macfuse_golden_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/macfuse_golden_test.sh" "${DRYDOCK_BIN}")
+drydock_add_test(NAME equivalence_compare_test
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/equivalence_compare_test.sh")
 drydock_add_test(NAME installed_bin_test
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/installed_bin_test.sh" "${DRYDOCK_BIN}")
 
