@@ -249,7 +249,7 @@ pass 'a mutator two direct calls down is followed'
 
 # spec: src/objc/regexec.c header, "Start" -- a root run with its class argument bound, its stores held to its class
 #       table, and member IMP addresses followed. tests/objc/fixtures/bridge-provider.m is the root.
-for v in plain TABLE_OTHER TABLE_ELSEWHERE IMP_ELSEWHERE UNBOUNDED_SCAN TABLE_DEPENDENT_IMP TABLE_LITERAL; do
+for v in plain TABLE_OTHER TABLE_ELSEWHERE IMP_ELSEWHERE UNBOUNDED_SCAN TABLE_DEPENDENT_IMP TABLE_LITERAL TABLE_ESCAPE; do
   d=; [ "$v" = plain ] || d="-D$v"
   UNIT=bridge-provider.m build "bridge-$v" -Os $d
 done
@@ -293,7 +293,7 @@ runb UNBOUNDED_SCAN _FixtureBridge FixtureBridgedView; explored 'UNBOUNDED_SCAN 
 pass 'a slot search the table size does not bound stores past it, refused; without --table, read as zeros, it is explored'
 runb TABLE_DEPENDENT_IMP _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; explored TABLE_DEPENDENT_IMP
 grep '^  add FixtureBridgedView|0 accessibilityAttributeNames _FixtureBridge_isIgnored ' "$T/out" >/dev/null ||
-  fail "TABLE_DEPENDENT_IMP: no path adds the IMP the table's slot 0 chooses"
+  fail "TABLE_DEPENDENT_IMP: no path adds the IMP the table's slot 1 chooses"
 runb TABLE_DEPENDENT_IMP _FixtureBridge FixtureBridgedView; explored 'TABLE_DEPENDENT_IMP without --table'
 ! grep '^  add FixtureBridgedView|0 accessibilityAttributeNames _FixtureBridge_isIgnored ' "$T/out" >/dev/null ||
   fail "TABLE_DEPENDENT_IMP without --table: slot 1 read as zero still adds isIgnored"
@@ -323,5 +323,12 @@ done
 runb plain _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses --track _FixtureBridge_isIgnored; explored 'plain root, tracked'
 [ "$(grep '^escaped' "$T/out")" = escaped ] || fail "the root: $(grep '^escaped' "$T/out"), want nothing escaped (an IMP is class_addMethod's argument)"
 pass 'a tracked IMP returned, as itself or through a lea or a data pointer masked, escapes; handed to class_addMethod it does not'
+tble=$("$NM" "$T/bridge-TABLE_ESCAPE" | awk '$3 == "_FixtureBridgeClasses" {print "0x" $1}' | sed 's/0x0*/0x/')
+runb TABLE_ESCAPE _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses --track _FixtureBridge_isIgnored; explored TABLE_ESCAPE
+[ -n "$tble" ] && grep "^escaped .*$tble@" "$T/out" >/dev/null ||
+  fail "TABLE_ESCAPE: the table ($tble) passed to memset is not escaped: $(grep '^escaped' "$T/out")"
+[ "$(grep '^escaped' "$T/out" | tr ' ' '\n' | grep -c '@')" = 1 ] ||
+  fail "TABLE_ESCAPE: $(grep '^escaped' "$T/out"), want the table's address alone: its contents are no address"
+pass "the class table's address escapes as any writable address does; values loaded from it do not"
 
 echo 'objc-regexec: table providers at every opt level, their mutants and every refusal pass'

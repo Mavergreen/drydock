@@ -32,8 +32,9 @@
  * at an add. An own-stores run allows a store into image data only of 8 bytes, at a known address within
  * [table_lo, table_hi), of Class(arg0_class); any other refuses image-store. Its root runs once per class, each call
  * seeing the stores of the calls before it, so a load overlapping that table is unknown -- never an initial value, nor
- * a path's own store -- carrying table_lo; a fork on flags derived from the table counts in table_forks, not
- * unknown_forks, and a table address is never recorded as escaped.
+ * a path's own store -- carrying the table's contents, a base apart from its address; a fork on flags derived from
+ * those contents counts in table_forks, not unknown_forks. The contents are never recorded as escaped; the table's
+ * address is, as any writable address is.
  *
  * Provenance: every value carries the set of writable image addresses (any section outside __TEXT), and of tracked
  * addresses, it derives from. A lea yielding such an address, or a load of a rebased pointer to one (or of part of
@@ -121,6 +122,7 @@ typedef struct {
 } St;
 #define TS_CAP 8
 #define TS_ALL 1u                             /* more than TS_CAP bases: any writable address */
+#define TABLE_BYTES (~1ULL)                   /* the base of a value loaded from the class table: no address */
 typedef struct { uint8_t n; uint64_t b[TS_CAP]; } Tset;   /* ascending, distinct */
 typedef struct Ex {
     const ObjcImage *im; ObjcRegBudget b; ObjcRegResult *out;
@@ -375,11 +377,11 @@ static void taint(St *t, Val v) { if (v.ts) t->tin = ts_union(t->ex, t->tin, v.t
 static int in_table(const Ex *e, uint64_t a, uint64_t w) {
     return e->start->own_stores && a < e->start->table_hi && a + w > e->start->table_lo;
 }
-/* Whether provenance set ts holds a class-table address (in_table). */
+/* Whether provenance set ts holds the class table's contents (TABLE_BYTES). */
 static int table_set(const Ex *e, uint32_t ts) {
     size_t i;
     if (!ts || ts == TS_ALL) return 0;
-    for (i = 0; i < e->ts[ts].n; i++) if (in_table(e, e->ts[ts].b[i], 1)) return 1;
+    for (i = 0; i < e->ts[ts].n; i++) if (e->ts[ts].b[i] == TABLE_BYTES) return 1;
     return 0;
 }
 /* v escapes at site on t's path: each base of its provenance and of the path's, and v itself when it points into
@@ -391,7 +393,7 @@ static int escapes(Ex *e, St *t, Val v, uint64_t site, int how, int an_imp) {
     s = &e->ts[ts];
     for (k = 0; k < (ts == TS_ALL ? 1 : s->n); k++) {
         uint64_t va = ts == TS_ALL ? ~0ULL : s->b[k];
-        if (ts != TS_ALL && ((an_imp && tracked(e, va)) || in_table(e, va, 1))) continue;
+        if (ts != TS_ALL && ((an_imp && tracked(e, va)) || va == TABLE_BYTES)) continue;
         for (i = 0; i < o->n_escaped; i++) if (o->escaped[i].va == va && o->escaped[i].site == site && o->escaped[i].how == how) break;
         if (i < o->n_escaped) continue;
         if (grow((void **)&o->escaped, &e->capescaped, o->n_escaped + 1, sizeof *o->escaped)) return oom(e);
@@ -405,7 +407,7 @@ static int load(Ex *e, St *t, uint64_t site, int known, uint64_t a, int w, Val *
     Cell *c; uint64_t sa, ss, v = 0; uint32_t fl; const char *sn; const uint8_t *p; int rel, ty;
     *out = U();
     if (!known) return 0;
-    if (in_table(e, a, (uint64_t)w)) { out->ts = ts_one(e, e->start->table_lo); taint(t, *out); return 0; }
+    if (in_table(e, a, (uint64_t)w)) { out->ts = ts_one(e, TABLE_BYTES); taint(t, *out); return 0; }
     if ((c = cell_over(t, a, w))) {
         uint32_t ts = c->v.ts; size_t i;
         if (c->a == a && c->w == w) { *out = c->v; if (out->k == VS && w != 8) *out = U(); }

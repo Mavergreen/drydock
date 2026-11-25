@@ -107,7 +107,7 @@ The bridge must keep this contract, or the group is refused:
 
 * One exported root, `void ROOT(Class)`, whose archive member has no initializer (else `unsupported-provider`).
 * It changes the runtime only by `class_addMethod`, with literal selectors and literal type encodings, and looks nothing up. A NULL class adds nothing.
-* Its only store into the image is the class into `class_table`.
+* Its only store into the image is the class into `class_table`. The table's address is not passed to code the analyzer does not follow, stored outside the frame, or returned, since what that code stores is not measured (else `provider-unmeasurable`).
 * It registers each member with a direct `class_addMethod` call, in the root's own function.
 * It reads `class_table` as unknown, since each call sees what the calls before it stored. A search for a free slot must stop at the table's end, and what the root registers must not depend on the table. Every way through the root adds exactly the members, a full table included.
 * Each IMP makes its getter sends and its super send itself. A helper it calls, unless inlined, leaves argument 0 untyped.

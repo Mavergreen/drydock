@@ -12,13 +12,14 @@
 // TABLE_DEPENDENT_IMP (the first add's IMP chosen by whether the table's slot 1 is taken), TABLE_LITERAL (the table, in
 // __DATA,__data, its bytes registered as a selector name), SELF_CALL (_attributeNames calls itself with another object),
 // SUPER_STRET (_attributeValue's super send through objc_msgSendSuper_stret), HELPER_ADD (the third add in
-// FixtureBridgeAdd, which the root calls), CONSTRUCTOR (the root's member has an initializer) and ROOT_LEAK (the root
-// passes a member IMP's address to printf). A full table adds all the
-// same: every path from the root must add exactly the members.
+// FixtureBridgeAdd, which the root calls), CONSTRUCTOR (the root's member has an initializer), ROOT_LEAK (the root
+// passes a member IMP's address to printf) and TABLE_ESCAPE (the root passes the table's address to memset). A full
+// table adds all the same: every path from the root must add exactly the members.
 #import <Foundation/Foundation.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdio.h>
+#include <string.h>
 
 @protocol FixtureBridgeRole
 - (id)accessibilityRole;
@@ -136,6 +137,9 @@ void FixtureBridge(Class cls) {
 #endif
 #ifdef TABLE_ELSEWHERE
   FixtureBridgeLast = cls;
+#endif
+#ifdef TABLE_ESCAPE
+  memset((void *)FixtureBridgeClasses, 0, (size_t)i * sizeof *FixtureBridgeClasses);
 #endif
 #ifdef ROOT_LEAK
   printf("%p\n", (void *)FixtureBridge_isIgnored);

@@ -720,6 +720,11 @@ grep -E 'fixture\.bridge\.accessibility\.v1: (image|unknown)-store: a store to '
 bridge tabledep TABLE_DEPENDENT_IMP
 bridge_refused 'bridge: an add whose IMP the class table decides' provider-registration-mismatch \
   'accessibilityAttributeNames] implemented by _FixtureBridge_isIgnored, declared _FixtureBridge_attributeNames'
+# spec: src/objc/regexec.c header, "Start" -- the table's address escapes as any writable address does, and code the
+#       executor does not follow may store through it.
+bridge tableescape TABLE_ESCAPE
+bridge_refused 'bridge: the class table passed to memset' provider-unmeasurable \
+  'fixture.bridge.accessibility.v1: image-store: the address of FixtureBridgeClasses+0 is passed to code it does not follow at 0x'
 # spec: src/objc/provider.c header, "Groups" (own-absent) (1) -- a class that may be a metaclass, or a [X class] that X
 #       or an app ancestor answers itself, is no literal class.
 bridge meta - -DBRIDGE_META

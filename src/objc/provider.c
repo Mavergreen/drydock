@@ -96,9 +96,10 @@
  * (provider-guard-violation). F's home is strongly loaded, as in 4, as is each image that puts a member on F's chain. (4) regexec runs from the root with rdi the class C, the members' implementations tracked,
  * and image stores held to C into the atom of the group's class_table symbol (none declared: no store; declared but
  * not placed: provider-mapping-mismatch); its refusal is provider-unmeasurable. Each run is judged as a group's is,
- * C its class, and moreover no path finds a lookup (provider-guard-violation) and no implementation's address escapes
- * (provider-foreign-entry). Each run reads the class table as unknown (regexec.c's "Start"), as a later call of the
- * root may find it otherwise, so a fork on it is no guess. Coverage is a group's, but a call site of (1) may branch to
+ * C its class, and moreover no path finds a lookup (provider-guard-violation), no implementation's address escapes
+ * (provider-foreign-entry) and no address in the class table escapes (provider-unmeasurable, image-store: code the run
+ * does not follow may store there). Each run reads the class table as unknown (regexec.c's "Start"), as a later
+ * call of the root may find it otherwise, so a fork on it is no guess. Coverage is a group's, but a call site of (1) may branch to
  * the root. An own-absent group credits
  * nothing as `provided`. (5) A member's implementation is its function, from its address to the next function start.
  * Its argument 0 is typed, for classify.c, as an instance of one of the group's classes or a subclass when, over the
@@ -1353,6 +1354,16 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
                                (unsigned long long)r.escaped[j].site, where(im, r.escaped[j].site, wb, sizeof wb), p->root_symbol, p->bridged[i]);
             }
         }
+        for (j = 0; !rc && j < r.n_escaped; j++)
+            if (r.escaped[j].va >= b.tlo && r.escaped[j].va < b.thi) {
+                static const char *const HOW[] = { "is passed to code it does not follow", "is stored outside the frame", "is returned from the root" };
+                char wb[300];
+                rc = objc_fail(a, "provider-unmeasurable", NULL, r.escaped[j].site,
+                               "%s: image-store: the address of %s+%llu %s at 0x%llx (in %s), from %s(%s): what it stores there is not measured",
+                               p->provider_id, p->class_table, (unsigned long long)(r.escaped[j].va - b.tlo),
+                               r.escaped[j].how >= 0 && r.escaped[j].how < 3 ? HOW[r.escaped[j].how] : "escapes",
+                               (unsigned long long)r.escaped[j].site, where(im, r.escaped[j].site, wb, sizeof wb), p->root_symbol, p->bridged[i]);
+            }
         if (!rc) rc = group_covered(a, p, im, &r, &b);
         if (!rc) {
             int known = imp_known(p, im, &r, 0, 0);
