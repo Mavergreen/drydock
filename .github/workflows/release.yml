@@ -580,6 +580,9 @@ jobs:
           name: drydock-equivalence
           path: eq
 
+      - name: Record the source tree, downloads included
+        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
+
       - name: Install the pkg, and run its arm64 tools
         run: |
           set -eu
@@ -764,6 +767,9 @@ jobs:
 
       - name: Equivalence's macos-arm64 outputs, from the installed tools
         run: sh tests/equivalence.sh produce /usr/local/mavergreen/drydock/bin eq/inputs "$RUNNER_TEMP/macos-arm64"
+
+      - name: The tests must not have written into the source tree
+        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
 
       - uses: actions/upload-artifact@v7
         with:

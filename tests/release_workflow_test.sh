@@ -230,6 +230,16 @@ lacks "modern-smoke runs nothing x86_64" "$ms" "x86_64"
 has "modern-smoke runs the downloaded archive's tools from anywhere" "$(step modern-smoke standalone_archive_test.sh)" \
   'sh tests/standalone_archive_test.sh "dist/drydock-$V-macos-universal.tar.gz" "dist/drydock-$V.pkg"'
 
+at() { job modern-smoke | grep -n -F -- "$1" | head -1 | cut -d: -f1; }
+rec=$(at 'assert-tree-clean.sh" --record') prod=$(at 'equivalence.sh produce') upl=$(at 'name: drydock-equivalence-arm64')
+dl=$(job modern-smoke | grep -n -x '          name: drydock-equivalence' | head -1 | cut -d: -f1)
+chk=$(job modern-smoke | grep -n -x '        run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"' | head -1 | cut -d: -f1)
+[ -n "$rec" ] && [ -n "$dl" ] && [ "$rec" -gt "$dl" ] && ok "modern-smoke records the source tree after its downloads" \
+  || bad "modern-smoke records the source tree at line '${rec:-none}', its last download is at '${dl:-none}'"
+[ -n "$chk" ] && [ -n "$prod" ] && [ -n "$upl" ] && [ "$chk" -gt "$prod" ] && [ "$chk" -lt "$upl" ] \
+  && ok "modern-smoke checks the source tree after its last test and before its upload" \
+  || bad "modern-smoke's tree check is at line '${chk:-none}', not between produce ($prod) and upload ($upl)"
+
 cfg=$(step modern-smoke 'shipyard-cmake --preset cross-arm64')
 has "modern-smoke builds the suite's helpers with shipyard's clang22, as the guest does" "$cfg" \
   '-DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang"'
