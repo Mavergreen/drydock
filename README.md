@@ -114,11 +114,11 @@ Building Drydock now fetches the pinned clang22 at configure time, for its `clan
 * `drydock-resources check BUNDLE|NIB|TEXT` prints every finding for every nib of a bundle, or for one nib, nib directory, `.storyboardc` or dump, one per line, sorted: `NIB: SEVERITY: KIND ITEM (DETAIL)`.
 * `drydock-resources convert BUNDLE|NIB` checks as `check` does, then rewrites each NIBArchive nib in place as a keyed archive, adapted. A keyed nib is left byte for byte unless a rule adapts it.
 
-Every subcommand takes `--target 10.9`, the only target. `check` and `convert` take `--report NEW_FILE` for a JSON report, which never replaces a file. The tool finds Drydock's reference data beside its real binary, under `share/drydock/objc/reference` and `share/drydock/resources/reference`; `--references DIR` and `--resource-references DIR` name others.
+Every subcommand takes `--target 10.9`, the only target. `check` and `convert` take `--report NEW_FILE` for a JSON report, which never replaces a file. The tool finds Drydock's reference data beside its real binary, under `share/drydock/objc/reference` and `share/drydock/resources/reference`. `--references DIR` names another of the first, for `dump`, `check` and `convert`; `--resource-references DIR` another of the second, for `build`, `check` and `convert`.
 
 ### Strict by default
 
-`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose objects' classes it cannot resolve, and still exits 1. A NIBArchive nib held back this way, by a `blocks-write` finding, stays NIBArchive, and its `nibarchive-format` line becomes a `finding` that says so, even when the `blocks-write` finding is accepted. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was.
+`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose objects' classes it cannot resolve, and still exits 1. A NIBArchive nib held back this way, by a `blocks-write` finding, stays NIBArchive, and its `nibarchive-format` line becomes a `finding` that says so, even when the `blocks-write` finding is accepted. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was. The renames themselves are one at a time: if one fails partway through a bundle, the nibs before it are new and the rest old, and the report names those written.
 
 ### Adaptation rules
 
@@ -173,7 +173,7 @@ and from the keyed archive `convert` writes of it, where the label has gained it
   NSPreferredMaxLayoutWidth = f64 0x1.108p+9  # 545
 ```
 
-The types are `i8`, `i16`, `i32` and `i64`; `true` and `false`; `f32` and `f64`, written exactly in hexadecimal with the decimal after `#`; `data`, quoted with escapes, or as hexadecimal `x"..."` pieces for bytes that are not text; `nil`; and `ref @N`. A chain of `?` is a class neither the reference set nor the bundle's own binaries define. A nib with an object of that class cannot be built; a class only an `NSClassSwapper` names is a `finding`, since the keyed archive never stores its chain.
+The types are `i8`, `i16`, `i32` and `i64`; `true` and `false`; `f32` and `f64`, written exactly in hexadecimal with the decimal after `#`; `data` and `string`, quoted with escapes, or as hexadecimal `x"..."` pieces for bytes that are not text; `nil`; `ref @N`; and `uids @N @M ...`, a keyed archive's list of references. A keyed dump has two more forms: `@N CLASS bare` for a plain string, number or data in the archive's object table, and `hints A B ...` at the end of a chain line for the class's `$classhints`. A chain of `?` is a class neither the reference set nor the bundle's own binaries define. A nib with an object of that class cannot be built; a class only an `NSClassSwapper` names is a `finding`, since the keyed archive never stores its chain.
 
 A NIBArchive dump and a keyed-archive dump differ as their formats do:
 
@@ -182,7 +182,7 @@ A NIBArchive dump and a keyed-archive dump differ as their formats do:
 * The values: a NIBArchive stores each integer at its own width, every string as `data`, and each collection as `NSInlinedValue = true` followed by one `UINibEncoderEmptyKey = ref @N` line per element. A keyed archive stores integers as `i64`, strings as `string`, a collection as one `NS.objects = uids @N @M ...` line, and a plain string, number or data in its object table as a `bare` object.
 * The order: a NIBArchive's values are dumped in the archive's order, and a keyed archive's in its dictionaries' order.
 
-`build` writes a keyed archive from either. `convert --no-adapt` of a nib gives the same bytes as `build --no-adapt` of its dump.
+`build` writes a keyed archive from either. For a NIBArchive nib, `convert --no-adapt` gives the same bytes as `build --no-adapt` of its dump. A keyed nib `convert` leaves as it is, while `build` re-encodes its dump with the class entries at the end of the object table, so those bytes differ.
 
 ## Other related tools
 

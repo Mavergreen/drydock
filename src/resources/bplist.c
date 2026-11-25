@@ -7,7 +7,7 @@
 
 struct BpNode {
     BpType type;
-    size_t refs;      /* parents holding it: more than one only for a leaf bp_read shared */
+    size_t refs;      /* parents holding it: more than one after bp_retain, or for a node bp_read shared */
     int64_t index;
     union {
         int64_t i;

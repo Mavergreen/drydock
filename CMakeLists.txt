@@ -418,8 +418,8 @@ install(PROGRAMS "compat/drydock-macho-rewrite-compat.sh" DESTINATION bin)
 install(PROGRAMS "compat/translate.sh" DESTINATION bin RENAME drydock-macho-rewrite-translate.sh)
 install(FILES "man/drydock-macho-rewrite.1" DESTINATION share/man/man1)
 
-# drydock-objc finds its reference set at realpath(binary)/../../share/drydock/objc/reference, and
-# drydock-resources finds that and its own at realpath(binary)/../../share/drydock/resources/reference.
+# spec: drydock-objc finds its reference set at realpath(binary)/../../share/drydock/objc/reference, and
+#       drydock-resources finds that and its own at realpath(binary)/../../share/drydock/resources/reference.
 install(TARGETS drydock-objc RUNTIME DESTINATION bin)
 install(TARGETS drydock-resources RUNTIME DESTINATION bin)
 install(DIRECTORY "reference/objc/" DESTINATION share/drydock/objc/reference)
