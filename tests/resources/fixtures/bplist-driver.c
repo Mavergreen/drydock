@@ -11,7 +11,9 @@
  *   resources-bplist-driver summary IN                               bp_read and bp_write in memory, then
  *                                                                    "written N maxrss_kb N"
  * The full tree holds every type, nested; building it first checks that the constructors refuse invalid UTF-8 and
- * a 33-bit UID. --xml-safe leaves out what XML plists can't carry (null, a 4-byte real, NaN, -0.0). Exit 0, 4 malformed (why on stderr), 2 usage, unreadable or out of memory. */
+ * a 33-bit UID. --xml-safe leaves out what XML plists can't carry: null, a 4-byte real, NaN, -0.0, and a string
+ * holding U+0000, which 10.9's plutil writes as XML but a modern one refuses. Exit 0, 4 malformed (why on stderr),
+ * 2 usage, unreadable or out of memory. */
 #include "bplist.h"
 #include <sys/resource.h>
 #include <stdio.h>
@@ -86,7 +88,6 @@ static BpNode *build(int xml_safe) {
     set(root, "repeated string", str("repeated string"));
     set(root, "latin", str("caf\xc3\xa9"));
     set(root, "astral", str("smile \xf0\x9f\x98\x80 \xe2\x82\xac"));
-    set(root, "nul", chk(bp_string("a\0b", 3)));
     set(root, "long ascii string over fifteen", str("long ascii value over fifteen bytes"));
     set(root, "empty data", chk(bp_data(NULL, 0)));
     set(root, "data", chk(bp_data(bytes, 3)));
@@ -109,6 +110,7 @@ static BpNode *build(int xml_safe) {
         uint64_t bits = 0x7ff4000000000123ULL;
         memcpy(&nan_payload, &bits, 8);
         set(root, "null", chk(bp_null()));
+        set(root, "nul", chk(bp_string("a\0b", 3)));
         set(root, "f32", chk(bp_real32(0x3fc00000u)));
         set(root, "f32 signalling nan", chk(bp_real32(0x7f800001u)));
         set(root, "nan", chk(bp_real(nan_payload)));
