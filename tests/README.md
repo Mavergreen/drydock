@@ -49,7 +49,7 @@ The suites are the `add_test` entries in `../CMakeLists.txt`, all run by `ctest`
 These read the packaged artifacts, so they run after packaging in `release.yml`:
 
 - **`pkg_payload_test.sh`** — the `.pkg` installs exactly the two builds merged, both slices in every Mach-O, the docs and the updater. Every payload entry is owned by 0:0, every tool and the updater's executable is mode 755, the updater's executable is exactly x86_64 and arm64, and every arm64 slice carries `LC_CODE_SIGNATURE`. Reads the `.pkg` with shipyard's `pkg_read.sh`, so it runs on Linux.
-- **`standalone_archive_test.sh`** — `drydock-<v>-macos-universal.tar.gz` is the `.pkg`'s tree without its manifest, every Mach-O universal and loading nothing from outside the system or itself, and the tool and every wrapper, run from a path with a space with a decoy `drydock-macho-rewrite` first on `PATH`, give the `.pkg`'s results. A wrapper through a symlink asks for `DRYDOCK_MACHO_REWRITE_COMPAT_DIR`. On a host that runs no Mach-O (Linux) it checks the archive and runs none of it.
+- **`standalone_archive_test.sh`** — `drydock-<v>-macos-universal.tar.gz` is the `.pkg`'s tree without its manifest, every Mach-O universal and loading nothing from outside the system or itself, and the tool and every wrapper, run from a path with a space with a decoy `drydock-macho-rewrite` first on `PATH`, give the `.pkg`'s results. A wrapper through a symlink asks for `DRYDOCK_MACHO_REWRITE_COMPAT_DIR`. On a host that runs no Mach-O (Linux, where `release.yml` builds the archive) it checks the archive and runs none of it; the `modern-smoke` job runs it again on Apple Silicon, where it runs them.
 
 ## Not run by `ctest`: the by-hand sweeps
 
