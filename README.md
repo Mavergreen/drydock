@@ -99,6 +99,28 @@ A row names its code by `path`; `symbol` or `symbols` (the copies of one generic
 
 `drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE` reads schema-2 reviewed evidence and writes it again with every guard's, R2 row's and R3 row's `symbol` or `symbols`, and every crate's `disambiguator`, read from the artifact. Everything else, `artifact` and `source` included, is copied unchanged: the product's build stamps those. The output is the whole document with its keys sorted by Unicode code point (byte order of their UTF-8, so a non-ASCII key sorts after every ASCII one) and a 2-space indent. It exits 0 when it wrote the output; 2 for a usage error, or when `NEW_FILE` already exists (it never overwrites); 4 having written nothing, with each error on stderr: `stale-build-evidence` for a path no function of the artifact has or a crate no symbol names, `resolve-ambiguous` as above, `malformed-build-evidence` for evidence that is not schema 2.
 
+### Bridges: own-absent groups
+
+A provider group with `"guard": "own-absent"` verifies a runtime bridge: code the app itself names, that adds methods at run time to the app's own classes, where the floor SDK lacks them. The group names no `class`. Its members are all `"-"` instance methods, each with the implementation symbol of its IMP. It may also name `class_table`, a data symbol, and `super_fallbacks`, a list of `{implementation_symbol, selector}` records.
+
+The bridge must keep this contract, or the group is refused:
+
+* One exported root, `void ROOT(Class)`, with no constructor.
+* It calls only `class_addMethod`, with literal selectors and literal type encodings. A NULL class adds nothing.
+* Its only store into the image is the class into `class_table`.
+* It registers each member with a direct `class_addMethod` call.
+
+The app calls the root once per class, with a literal class: `objc_getClass("X")`, a classref, or `[X class]`. A class from any other source is `computed-class-producer`. `link-args` does not root an own-absent group; the app's call does.
+
+For each class the app passes, `analyze` checks that the class and its app ancestors lack each member, that the nearest ancestor the floor knows has it with the newer SDK's encoding, and that its framework is strongly loaded. The findings are `bridge-class-not-own` (the class is not one the artifact defines), `provider-absent-from-floor` (no floor ancestor, or a member the floor lacks), `provider-abi-mismatch` (the encoding differs) and `provider-guard-violation` (the app already has the member). `bridge-class-not-own` and `computed-class-producer` are reported at the call to the root.
+
+A bridge credits nothing as `provided`. It credits two things:
+
+* A member IMP's sends are judged with argument 0 typed as an instance of the bridged classes. The IMP must be reached only by the root's registration. A member IMP whose address is also stored in data (a registration table) or taken anywhere else leaves argument 0 untyped, so its sends are judged as any open receiver's.
+* One super send per IMP: every IMP that super-sends needs its own `super_fallbacks` record, and a record excuses only a super send of that IMP's own member selector, given as a literal or as the IMP's `_cmd`. A record that excuses no send is listed in the report's `unused_super_fallbacks`.
+
+A root no call site names is inactive. Nothing is verified, its IMPs' sends are unreachable, the exit is 0, and its records are listed under `unused_super_fallbacks`. If something takes the root's address other than a bridge call, that is `provider-foreign-entry`. An instruction the analyzer does not model in the root, such as a vectorized loop, makes it cannot-measure; build such loops with vectorization disabled.
+
 ### Undecoded bytes in code
 
 Bytes in code that no instruction covers can hold a value that happens to land on a selector reference or lazy pointer, and `analyze` refuses such a window as `undecodable-objc-reference`. Constant tables in assembly (aws-lc's, for one) do this by chance. `drydock-objc evidence --link-map FILE` binds the link's map as `link_map.sha256`, with or without `--provider-prefix`. `analyze --link-map FILE`, which needs `--build-evidence` naming that map, clears a window only when the map places it in an object file whose bytes there match the image and carry no relocation, so the assembler fixed them and they can reach only that object's own section, and the address they would name lies outside it. The object comes from the map's path, or by its basename from exactly one `--object-dir DIR` (repeatable), for a build whose objects have moved. Both options are optional; a window that cannot be cleared still refuses, and its detail ends `(not attested: REASON)`. Given `--link-map`, the report adds `undecoded_code_bytes_attested`: of `undecoded_code_bytes`, the whole undecoded runs that passed the sweep only because some window in them was cleared this way. A run with one cleared window counts in full, its other bytes included.

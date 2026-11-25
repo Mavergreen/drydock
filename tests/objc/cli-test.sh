@@ -95,4 +95,7 @@ if [ -n "${DRYDOCK_BUILD_DIR:-}" ]; then
 else
   echo 'N/A macos_only_honest: no DRYDOCK_BUILD_DIR (ctest passes it)'
 fi
-echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override, default_id and macos_only_honest pass'
+grep -F 'own-absent' "$ROOT/cli/drydock-objc.c" >/dev/null && grep -F 'bridge-class-not-own' "$ROOT/README.md" >/dev/null &&
+  grep -F 'unused_super_fallbacks' "$ROOT/README.md" >/dev/null || fail 'header_documents_own_absent: own-absent, bridge-class-not-own or unused_super_fallbacks is undocumented'
+echo 'PASS: header_documents_own_absent'
+echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override, default_id, header_documents_own_absent and macos_only_honest pass'

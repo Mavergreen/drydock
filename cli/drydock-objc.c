@@ -28,6 +28,9 @@
  *   drydock-objc link-args ARGS...   shipyard's scripts/objc-provider-link-args.sh:
  *                                    --prefix PREFIX --link-map FILE [--provider ID]...
  *                                    only the named providers' roots and frameworks; none names every one
+ *                                    roots no own-absent group: the app's call to its root does
+ *   (analyze)                       verifies each own-absent group per class its app names;
+ *                                    the report's unused_super_fallbacks lists records excusing no send
  *   drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE
  *                                    schema-2 reviewed evidence with each record's
  *                                    path resolved to FILE's function symbols and
