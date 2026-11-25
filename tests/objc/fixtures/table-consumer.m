@@ -11,7 +11,11 @@
  * FixtureBridgedView implement -accessibilityIsIgnored too; BRIDGE_ANCESTOR_MEMBER adds FixtureBridgedSub, under a
  * FixtureBridgedBase : NSView implementing -accessibilityAttributeNames; BRIDGE_ROOTLESS adds FixtureBridgedRoot, a
  * root class; BRIDGE_POINTER adds a call through a function pointer; BRIDGE_UNUSED makes no direct call at all (with
- * BRIDGE_POINTER, only that one); BRIDGE_CELL_LACKS leaves -accessibilityRole off FixtureBridgedCell. Built for
+ * BRIDGE_POINTER, only that one); BRIDGE_CELL_LACKS leaves -accessibilityRole off FixtureBridgedCell; BRIDGE_META adds
+ * FixtureBridge(objc_getMetaClass("FixtureBridgedMeta")), BRIDGE_META_CLASS [that class], FixtureBridgedMeta an NSView
+ * named nowhere else; BRIDGE_SUPERREF adds a tail jump with FixtureBridgedView's metaclass from a superref slot;
+ * BRIDGE_NESTED adds FixtureBridgedNested, a subclass of FixtureBridgedView; BRIDGE_HELPER calls FixtureBridgeAdd
+ * directly; BRIDGE_CLASS_OVERRIDE adds [FixtureBridgedOdd class], FixtureBridgedOdd an NSView implementing +class. Built for
  * x86_64 against the pinned 10.9 SDK (MRC); read as bytes, never executed. */
 #import <AppKit/AppKit.h>
 #include <objc/runtime.h>
@@ -73,6 +77,35 @@ __attribute__((objc_root_class))
 - (id)accessibilityRole { return nil; }
 @end
 #endif
+#if defined(BRIDGE_META) || defined(BRIDGE_META_CLASS)
+@interface FixtureBridgedMeta : NSView
+@end
+@implementation FixtureBridgedMeta
+- (id)accessibilityRole { return nil; }
+@end
+#endif
+#ifdef BRIDGE_NESTED
+@interface FixtureBridgedNested : FixtureBridgedView
+@end
+@implementation FixtureBridgedNested
+@end
+#endif
+#ifdef BRIDGE_CLASS_OVERRIDE
+@interface FixtureBridgedOdd : NSView
+@end
+@implementation FixtureBridgedOdd
++ (Class)class { return [NSView class]; }
+- (id)accessibilityRole { return nil; }
+@end
+#endif
+#ifdef BRIDGE_HELPER
+extern void FixtureBridgeAdd(Class cls);
+#endif
+#ifdef BRIDGE_SUPERREF
+__asm__(".section __DATA,__objc_superrefs,regular,no_dead_strip\n.p2align 3\nLfixture_bridge_metaref:\n"
+        ".quad _OBJC_METACLASS_$_FixtureBridgedView\n.text\n.globl _fixtureBridgeMeta\n_fixtureBridgeMeta:\n"
+        "movq Lfixture_bridge_metaref(%rip), %rdi\njmp _FixtureBridge\n");
+#endif
 #ifndef BRIDGE_UNUSED
 __attribute__((noinline)) static void bridgeCell(void) { FixtureBridge(objc_getClass("FixtureBridgedCell")); }
 #endif
@@ -107,6 +140,21 @@ int main(int argc, char **argv) {
 #ifdef BRIDGE_ROOTLESS
         FixtureBridge(objc_getClass("FixtureBridgedRoot"));
 #endif
+#ifdef BRIDGE_META
+        FixtureBridge(objc_getMetaClass("FixtureBridgedMeta"));
+#endif
+#ifdef BRIDGE_META_CLASS
+        FixtureBridge([objc_getMetaClass("FixtureBridgedMeta") class]);
+#endif
+#ifdef BRIDGE_NESTED
+        FixtureBridge(objc_getClass("FixtureBridgedNested"));
+#endif
+#ifdef BRIDGE_CLASS_OVERRIDE
+        FixtureBridge([FixtureBridgedOdd class]);
+#endif
+#endif
+#ifdef BRIDGE_HELPER
+        FixtureBridgeAdd(objc_getClass("FixtureBridgedView"));
 #endif
 #if defined(BRIDGE) && defined(BRIDGE_POINTER)
         {

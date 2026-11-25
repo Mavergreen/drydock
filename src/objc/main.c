@@ -629,7 +629,7 @@ static int exact_keys(const json_t *d, const char *const *keys, size_t n) { retu
 /* PREFIX/share/recaulk/objc-providers.json, schema 1 as Recaulk's build/objc-provider-manifest.m
  * writes it, or schema 2: `providers` are groups (one activation root, a non-empty list of methods,
  * and a guard: absent-only, naming one class, or own-absent, naming none, its classes the literal
- * classes the app calls the root with, its members instance methods, with an optional class_table
+ * classes the app calls the root with, its members instance methods returning no struct or union, with an optional class_table
  * data symbol and optional super_fallbacks) and an optional `legacy_providers` carries
  * schema-1-shaped entries, each verified by schema 1's rules; no (class, kind, selector) is claimed
  * twice in a schema-2 file, an own-absent member's class being "(own-absent)". One ObjcProvider per entry or group, so build evidence records a group once.
@@ -759,6 +759,9 @@ static int load_group(ObjcAnalysis *a, const LoadCtx *c, const json_t *q) {
             !charset(S(m, "selector"), 400, c_first, sel_rest) || !charset(S(m, "encoding"), 200, enc_char, enc_char) ||
             !charset(S(m, "implementation_symbol"), 200, c_first, c_rest))
             return objc_fail(a, "malformed-provider", NULL, 0, "%s: a method of group %s is not a valid declaration", c->decl, S(q, "provider_id"));
+        if (own && (S(m, "encoding")[strspn(S(m, "encoding"), "rnNoORV")] == '{' || S(m, "encoding")[strspn(S(m, "encoding"), "rnNoORV")] == '('))
+            return objc_fail(a, "malformed-provider", NULL, 0, "%s: own-absent member %s of group %s returns a struct or union, so its argument 0 "
+                             "may be a return buffer, not self", c->decl, S(m, "selector"), S(q, "provider_id"));
         if ((rc = claim(a, c, own ? "(own-absent)" : S(q, "class"), kind, S(m, "selector")))) return rc;
     }
     if (objc_add_provider(a, &p)) return OBJC_CANNOT_MEASURE;

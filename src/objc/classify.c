@@ -500,8 +500,7 @@ static int super_fallback(ObjcAnalysis *a, const ObjcSend *s, Verdict *o) {
     if (!p || p->dormant || !p->active || !e->name || !strstr(e->name, "Super")) return 0;
     sel = p->methods[k].selector; imp = p->methods[k].impl_symbol;
     if (!(s->selector ? !strcmp(s->selector, sel) :
-          e->sel.form == OBJC_VAL_ARGUMENT && e->sel.ref == 1 && !strstr(e->name, "stret") &&
-          e->function && e->function[0] == '_' && !strcmp(e->function + 1, imp)))
+          e->sel.form == OBJC_VAL_ARGUMENT && e->sel.ref == 1 && !strstr(e->name, "stret")))
         return 0;
     for (i = 0; i < p->n_fallbacks; i++) if (!strcmp(p->fallbacks[i].impl_symbol, imp)) f = &a->providers[p - a->providers].fallbacks[i];
     if (!f) return 0;

@@ -78,19 +78,22 @@
  * and kind ("+" being a send to the class object) on a receiver whose floor chain includes its
  * class into `provided`.
  *
- * An own-absent group (guard "own-absent") names no class: the app calls its activation root, which has no
- * constructor, once per class, and the root only adds the members to that class. 1, 2 and 4 hold, the root and every
- * member's implementation verified; nothing is checked against the initializer table. (1) Each call or jump to the
- * root's final address (OBJC_EV_BRIDGE_CALL) names its class by a class literal or reference, or by the result of
- * sending `class` to one (else computed-class-producer), and the artifact defines that class and the floor capture
+ * An own-absent group (guard "own-absent") names no class: the app calls its activation root, whose member has no
+ * initializer (else unsupported-provider), once per class, and the root only adds the members to that class. 1, 2 and
+ * 4 hold, the root and every member's implementation verified; nothing is checked against the initializer table.
+ * (1) Each call or jump to the root's final address (OBJC_EV_BRIDGE_CALL) names its class by a class literal or
+ * reference, or by the result of sending `class` to one that neither it nor an app ancestor implements +class for, and
+ * that class is no metaclass -- no objc_getMetaClass call in the slice is given the literal, and a reference is a
+ * __objc_classrefs slot -- (else computed-class-producer), and the artifact defines that class and the floor capture
  * does not (else bridge-class-not-own). (2) With no such call, nothing else may refer to the root (else
- * provider-foreign-entry); the group is inactive, and a class_addMethod call in its code is explained. (3) For each
+ * provider-foreign-entry); the group is inactive, and a class_addMethod call in the root's own function is explained
+ * (one elsewhere in its code is provider-unexplored-mutation). (3) For each
  * distinct class C, its floor ancestor F is the first class on its superclass chain, through the artifact's own
  * classes, that the floor capture knows and measured (none: provider-absent-from-floor). Each member is present on
  * F's 10.9 chain (else provider-absent-from-floor), declared with the newer SDK's encoding for F -- on F or a newer
  * superclass, else in a protocol they adopt -- (else provider-abi-mismatch), and absent from C and from every class of
- * the artifact between C and F, where the add would shadow the app's own (provider-guard-violation). F's home is
- * strongly loaded, as in 4. (4) regexec runs from the root with rdi the class C, the members' implementations tracked,
+ * the artifact between C and F, none of which is bridged too, where the add would shadow the app's own
+ * (provider-guard-violation). F's home is strongly loaded, as in 4, as is each image that puts a member on F's chain. (4) regexec runs from the root with rdi the class C, the members' implementations tracked,
  * and image stores held to C into the atom of the group's class_table symbol (none declared: no store; declared but
  * not placed: provider-mapping-mismatch); its refusal is provider-unmeasurable. Each run is judged as a group's is,
  * C its class, and moreover no path finds a lookup (provider-guard-violation) and no implementation's address escapes
@@ -746,7 +749,8 @@ static int lookup_declared(const ObjcRegLookup *l, const ObjcProvider *p, const 
 }
 static const char *imp_text(const ObjcRegAdd *d, char *buf, size_t n) {
     if (d->imp) return d->imp;
-    snprintf(buf, n, d->imp_va ? "0x%llx" : "?", (unsigned long long)d->imp_va);
+    if (!d->imp_va) snprintf(buf, n, "?");
+    else snprintf(buf, n, "0x%llx", (unsigned long long)d->imp_va);
     return buf;
 }
 
@@ -1047,12 +1051,31 @@ static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const 
     return rc;
 }
 
-/* The literal class a bridge call names: a class literal or reference, or the result of sending `class` to one. */
-static const char *bridge_class(const ObjcAnalysis *a, const ObjcEvidence *e) {
-    const ObjcValue *v = &e->receiver;
-    const ObjcEvidence *hit = NULL;
+/* Whether class value v, in slice, may be a metaclass: a literal some objc_getMetaClass call in the slice is given, or a
+ * reference slot outside __objc_classrefs (a superref binds a metaclass). */
+static int bridge_meta(const ObjcAnalysis *a, const ObjcImage *im, const char *slice, const ObjcValue *v) {
+    const char *sn;
     size_t i;
-    if (v->form == OBJC_VAL_CLASS_LITERAL || v->form == OBJC_VAL_CLASSREF) return v->text;
+    if (v->form == OBJC_VAL_CLASSREF) return !(sn = objc_image_section_of(im, v->ref, NULL, NULL, NULL)) || !strchr(sn, ',') ||
+                                              strcmp(strchr(sn, ',') + 1, "__objc_classrefs");
+    for (i = 0; i < a->n_evidence; i++) {
+        const ObjcEvidence *d = &a->evidence[i];
+        if (d->kind == OBJC_EV_CLASS_LOOKUP && d->target == v->ref && d->name && !strcmp(d->name, "objc_getMetaClass") &&
+            !strcmp(d->slice, slice)) return 1;
+    }
+    return 0;
+}
+/* The literal class a bridge call names: a class literal or reference, or the result of sending `class` to one. *meta:
+ * that class may be a metaclass (bridge_meta); *odd: for a `class` send, the class on its app chain that implements
+ * +class, which may answer another class; else NULL. */
+static const char *bridge_class(const ObjcAnalysis *a, const ObjcImage *im, const ObjcEvidence *e, int *meta, const char **odd) {
+    const ObjcValue *v = &e->receiver;
+    const ObjcEvidence *hit = NULL, *c;
+    const char *x;
+    size_t i;
+    int depth;
+    *meta = 0; *odd = NULL;
+    if (v->form == OBJC_VAL_CLASS_LITERAL || v->form == OBJC_VAL_CLASSREF) { *meta = bridge_meta(a, im, e->slice, v); return v->text; }
     if (v->form != OBJC_VAL_RESULT) return NULL;
     for (i = 0; i < a->n_evidence; i++) {
         const ObjcEvidence *d = &a->evidence[i];
@@ -1062,7 +1085,11 @@ static const char *bridge_class(const ObjcAnalysis *a, const ObjcEvidence *e) {
     }
     if (!hit || (hit->name && strstr(hit->name, "Super")) || !hit->sel.text || strcmp(hit->sel.text, "class")) return NULL;
     v = &hit->receiver;
-    return v->form == OBJC_VAL_CLASS_LITERAL || v->form == OBJC_VAL_CLASSREF ? v->text : NULL;
+    if (v->form != OBJC_VAL_CLASS_LITERAL && v->form != OBJC_VAL_CLASSREF) return NULL;
+    *meta = bridge_meta(a, im, e->slice, v);
+    for (x = v->text, depth = 0; x && depth < 64 && !*odd; depth++, x = (c = objc_app_class(a, x)) ? c->owner : NULL)
+        if (objc_app_method(a, x, "+", "class")) *odd = x;
+    return v->text;
 }
 
 typedef struct { uint64_t lo, hi, site, target; int kind, hit; } RootRefs;
@@ -1071,6 +1098,32 @@ static int root_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
     if (kind == OBJC_REF_BRANCH && site >= w->lo && site < w->hi) return 0;   /* the root's own loops */
     w->site = site; w->target = target; w->kind = kind; w->hit = 1;
     return 1;
+}
+
+/* The class on f's 10.9 chain with member m, *image the image that provides it there; or NULL, *stop the first class on
+ * the chain the floor capture does not measure (NULL when the chain ends first). */
+static const char *floor_member(const ObjcAnalysis *a, const char *f, const ObjcProviderMethod *m, const char **image, const char **stop) {
+    const char *x;
+    char key[1024];
+    int depth;
+    *image = *stop = NULL;
+    for (x = f, depth = 0; x && depth < 64; depth++) {
+        const char *ix = objc_map_get(a->rt_class, x), *role;
+        const ObjcRtClass *fc;
+        if (!ix) { *stop = x; return NULL; }
+        fc = &a->rt_classes[strtoul(ix, NULL, 10)];
+        role = objc_map_get(a->rt_image_role, fc->image);
+        if (!role || (strcmp(role, "required") && strcmp(role, "fixture"))) { *stop = x; return NULL; }
+        snprintf(key, sizeof key, "%s\t%s\t%s", x, m->kind, m->selector);
+        if ((*image = objc_map_get(a->rt_method, key))) return x;
+        x = fc->super;
+    }
+    return NULL;
+}
+static int is_bridged(const ObjcProvider *p, const char *cls) {
+    size_t i;
+    for (i = 0; i < p->n_bridged; i++) if (!strcmp(p->bridged[i], cls)) return 1;
+    return 0;
 }
 
 /* An own-absent group's classes, each checked against its floor ancestor (the header's "Groups", own-absent). */
@@ -1083,20 +1136,10 @@ static int bridge_classes(ObjcAnalysis *a, ObjcProvider *p) {
         if (!(p->bridged_floor[i] = strdup(f))) return objc_fail(a, "out-of-memory", NULL, 0, "provider");
         for (k = 0; k < p->n_methods; k++) {
             const ObjcProviderMethod *m = &p->methods[k];
-            const char *x, *on = NULL, *enc = NULL, *proto = NULL, *stop = NULL;
+            const char *x, *on, *enc = NULL, *proto = NULL, *stop, *image;
             char key[1024], sup[256];
             int depth, rc;
-            for (x = f, depth = 0; x && depth < 64 && !on; depth++) {
-                const char *ix = objc_map_get(a->rt_class, x), *role;
-                const ObjcRtClass *fc;
-                if (!ix) { stop = x; break; }
-                fc = &a->rt_classes[strtoul(ix, NULL, 10)];
-                role = objc_map_get(a->rt_image_role, fc->image);
-                if (!role || (strcmp(role, "required") && strcmp(role, "fixture"))) { stop = x; break; }
-                snprintf(key, sizeof key, "%s\t%s\t%s", x, m->kind, m->selector);
-                if (objc_map_get(a->rt_method, key)) on = x;
-                x = fc->super;
-            }
+            on = floor_member(a, f, m, &image, &stop);
             if (!on && stop)
                 return objc_fail(a, "provider-absent-from-floor", NULL, 0, "%s: %s[%s %s] is absent from 10.9 up to %s, which the floor capture does not measure",
                                  p->provider_id, m->kind, f, m->selector, stop);
@@ -1116,6 +1159,9 @@ static int bridge_classes(ObjcAnalysis *a, ObjcProvider *p) {
                                  proto ? " in protocol " : "", proto ? proto : "");
             for (x = c, depth = 0; x && strcmp(x, f) && depth < 64; depth++) {
                 const ObjcEvidence *e = objc_app_class(a, x);
+                if (strcmp(x, c) && is_bridged(p, x))
+                    return objc_fail(a, "provider-guard-violation", NULL, 0, "%s: %s[%s %s] is bridged on %s as well: the add would shadow it",
+                                     p->provider_id, m->kind, c, m->selector, x);
                 if (objc_app_method(a, x, m->kind, m->selector))
                     return objc_fail(a, "provider-guard-violation", NULL, 0, "%s: %s[%s %s] is already the app's own (on %s): the add would shadow it",
                                      p->provider_id, m->kind, c, m->selector, x);
@@ -1227,9 +1273,21 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
         const ObjcEvidence *c = &a->evidence[i];
         const char *cls;
         char **g;
+        const char *odd;
+        int meta;
         if (c->kind != OBJC_EV_BRIDGE_CALL || c->target != b.root) continue;
-        if (!(cls = bridge_class(a, c))) {
+        if (!(cls = bridge_class(a, im, c, &meta, &odd))) {
             rc = objc_fail(a, "computed-class-producer", c->slice, c->address, "%s argument is not a recognised literal class", p->root_symbol);
+            goto out;
+        }
+        if (meta) {
+            rc = objc_fail(a, "computed-class-producer", c->slice, c->address, "%s argument may be the metaclass of %s, whose members would be class methods",
+                           p->root_symbol, cls);
+            goto out;
+        }
+        if (odd) {
+            rc = objc_fail(a, "computed-class-producer", c->slice, c->address, "%s argument is [%s class], and %s implements +class",
+                           p->root_symbol, cls, odd);
             goto out;
         }
         if (!objc_app_class(a, cls) || objc_map_get(a->rt_class, cls)) {
@@ -1264,7 +1322,7 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
         } else {
             int known = imp_known(p, im, NULL, w.lo, w.hi);
             if (known == -2) goto oom;
-            p->dormant = 1; p->receiver_known = known == 1;
+            p->dormant = 1; p->receiver_known = known == 1; p->root_lo = w.lo; p->root_hi = w.hi;
         }
         goto out;
     }
@@ -1380,7 +1438,11 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
     for (i = 0; i < p->n_members && strcmp(p->members[i].name, m->name); i++) ;
     if (i == p->n_members) { objc_archive_free(&ar); return set_reason(a, p, 0, "the activation root's member %s is not in the link", rootm); }
     for (k = 0; k < m->nsects; k++) if ((m->sects[k].flags & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS) init = &m->sects[k];
-    if (p->own_absent) init = NULL;   /* activated by its call sites, not a constructor */
+    if (p->own_absent && init && init->size) {
+        objc_archive_free(&ar);
+        return objc_fail(a, "unsupported-provider", NULL, 0, "%s: member %s has an initializer: an own-absent root is activated by its call sites alone", p->provider_id, rootm);
+    }
+    if (p->own_absent) init = NULL;
     else if (!init || !init->nreloc) { objc_archive_free(&ar); return objc_fail(a, "unsupported-provider", NULL, 0, "%s: member %s has no constructor", p->provider_id, rootm); }
 
     memset(&v, 0, sizeof v);
@@ -1435,11 +1497,19 @@ static int verify_one(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im) {
         for (i = 0; i < p->n_bridged && !needwhy[0]; i++) {
             const char *idx = objc_map_get(a->rt_class, p->bridged_floor[i]), *how, *home;
             size_t j;
+            int first;
             if (!idx) { snprintf(needwhy, sizeof needwhy, "%s is not a class of the floor capture", p->bridged_floor[i]); break; }
             home = a->rt_classes[strtoul(idx, NULL, 10)].image;
             for (j = 0; j < i && strcmp(a->rt_classes[strtoul(objc_map_get(a->rt_class, p->bridged_floor[j]), NULL, 10)].image, home); j++) ;
-            if (j < i) continue;
-            if (!library_load(a, home, &how)) { snprintf(needwhy, sizeof needwhy, "%s (home of %s) is %s", home, p->bridged_floor[i], load_kind(how)); break; }
+            first = j == i;
+            if (first && !library_load(a, home, &how)) { snprintf(needwhy, sizeof needwhy, "%s (home of %s) is %s", home, p->bridged_floor[i], load_kind(how)); break; }
+            for (j = 0; j < p->n_methods && !needwhy[0]; j++) {   /* each image that puts a member on its chain */
+                const char *img, *stop, *on = floor_member(a, p->bridged_floor[i], &p->methods[j], &img, &stop);
+                if (on && strcmp(img, home) && !library_load(a, img, &how))
+                    snprintf(needwhy, sizeof needwhy, "%s (providing %s[%s %s] to %s) is %s", img, p->methods[j].kind, on,
+                             p->methods[j].selector, p->bridged_floor[i], load_kind(how));
+            }
+            if (needwhy[0] || !first) continue;
             snprintf(fws + strlen(fws), sizeof fws - strlen(fws), "%s%s (home of %s", fws[0] ? "), " : "", home, p->bridged_floor[i]);
             for (j = i + 1; j < p->n_bridged; j++) {
                 const char *jx = objc_map_get(a->rt_class, p->bridged_floor[j]);
@@ -1569,7 +1639,7 @@ int objc_verify_providers(ObjcAnalysis *a) {
                 int inside = 0;
                 for (k = 0; k < p->n_ranges && !inside; k++) inside = e->address >= p->ranges[2 * k] && e->address < p->ranges[2 * k + 1];
                 if (!inside) continue;
-                if (p->legacy || p->dormant) { ok = 1; continue; }
+                if (p->legacy || (p->dormant && e->address >= p->root_lo && e->address < p->root_hi)) { ok = 1; continue; }
                 for (k = 0; k < p->n_mutator_sites && !ok; k++) ok = p->mutator_sites[k] == e->address;
                 if (!ok) g = p;
             }

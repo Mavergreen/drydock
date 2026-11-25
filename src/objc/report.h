@@ -581,8 +581,9 @@ typedef struct ObjcProvider {
     ObjcSuperFallback *fallbacks; size_t n_fallbacks;
     char **bridged, **bridged_floor; size_t n_bridged;
     /* Own-absent: member k's function [imp_lo[k], imp_hi[k]); receiver_known 1 when every reference into one is the
-     * root registering it (provider.c header, own-absent (5)); dormant 1 when nothing calls or refers to the root. */
-    uint64_t *imp_lo, *imp_hi;
+     * root registering it (provider.c header, own-absent (5)); dormant 1 when nothing calls or refers to the root, whose
+     * function is then [root_lo, root_hi). */
+    uint64_t *imp_lo, *imp_hi, root_lo, root_hi;
     int receiver_known, dormant;
     char *provider_id, *cls, *method_kind, *selector, *encoding, *impl_symbol, *root_symbol;
     char **frameworks; size_t nframeworks;

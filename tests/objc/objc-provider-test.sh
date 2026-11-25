@@ -321,6 +321,8 @@ schema2 absent-noclass "$(own_sed 's/"own-absent"/"absent-only"/; /"super_fallba
 s2_refused 'absent-only: a group that names no class' absent-noclass 'provider group is not a valid'
 schema2 own-classmethod "$(own_sed 's/"kind" : "-", "selector" : "accessibilityIsIgnored"/"kind" : "+", "selector" : "accessibilityIsIgnored"/')"
 s2_refused 'own-absent: a class-method member' own-classmethod 'a method of group'
+schema2 own-struct "$(own_sed 's/"@16@0:8", "implementation_symbol" : "FixtureBridge_attributeNames"/"r{_NSRange=QQ}16@0:8", "implementation_symbol" : "FixtureBridge_attributeNames"/')"
+s2_refused 'own-absent: a member returning a struct' own-struct 'returns a struct or union'
 A11Y_ABSENT='{ "provider_id" : "fixture.nsview.a11y.v1", "class" : "NSView", "guard" : "absent-only",
       "activation_root" : "__fixture_objc_activate_table", "required_frameworks" : [ "AppKit" ],
       "framework_policy" : "strong-linked-before-root", "methods" : [
@@ -708,6 +710,69 @@ exit_is 1 'bridge: a root never called, an IMP whose address another function ta
 imp_sends accessibilityRole unresolved 'receiver is incoming argument 0' 'bridge: a root never called, an IMP whose address another function takes'
 bridge unusedptr - -DBRIDGE_UNUSED -DBRIDGE_POINTER
 bridge_refused 'bridge: a root no call site names, its address taken' provider-foreign-entry 'a root no call site names a class for'
+# spec: src/objc/regexec.c header, "Start" -- each call of a root sees the stores of the calls before it, so a run reads
+#       its class table as unknown: a slot search the table's size does not bound stores past it, and an add the table
+#       decides is explored both ways.
+bridge unbounded UNBOUNDED_SCAN
+bridge_refused 'bridge: a slot search the table size does not bound' provider-unmeasurable 'fixture.bridge.accessibility.v1: '
+grep -E 'fixture\.bridge\.accessibility\.v1: (image|unknown)-store: a store to ' "$T/report" >/dev/null ||
+  fail "bridge: a slot search the table size does not bound: $(grep -F '"code"' "$T/report" | head -3)"
+bridge tabledep TABLE_DEPENDENT_IMP
+bridge_refused 'bridge: an add whose IMP the class table decides' provider-registration-mismatch \
+  'accessibilityAttributeNames] implemented by _FixtureBridge_isIgnored, declared _FixtureBridge_attributeNames'
+# spec: src/objc/provider.c header, "Groups" (own-absent) (1) -- a class that may be a metaclass, or a [X class] that X
+#       or an app ancestor answers itself, is no literal class.
+bridge meta - -DBRIDGE_META
+bridge_refused 'bridge: objc_getMetaClass' computed-class-producer 'FixtureBridge argument may be the metaclass of FixtureBridgedMeta'
+bridge metaclass - -DBRIDGE_META_CLASS
+bridge_refused 'bridge: [objc_getMetaClass(...) class]' computed-class-producer 'FixtureBridge argument may be the metaclass of FixtureBridgedMeta'
+bridge superref - -DBRIDGE_SUPERREF
+bridge_refused 'bridge: a superref slot' computed-class-producer 'FixtureBridge argument may be the metaclass of FixtureBridgedView'
+bridge classoverride - -DBRIDGE_CLASS_OVERRIDE
+bridge_refused 'bridge: a class implementing +class' computed-class-producer 'FixtureBridge argument is [FixtureBridgedOdd class], and FixtureBridgedOdd implements +class'
+# spec: src/objc/provider.c header, "Groups" (own-absent) (2) -- a dormant group explains only its root's own adds.
+bridge helper HELPER_ADD -DBRIDGE_UNUSED -DBRIDGE_HELPER -Wl,-u,_FixtureBridge
+exit_is 4 'bridge: a dormant root, its helper called directly'
+error_is provider-unexplored-mutation 'bridge: a dormant root, its helper called directly'
+says 'class_addMethod at 0x' 'bridge: a dormant root, its helper called directly'
+# spec: src/objc/provider.c header, "Groups" (own-absent) (3) -- a class with a bridged app ancestor would shadow it.
+bridge nested - -DBRIDGE_NESTED
+bridge_refused 'bridge: a class and its app subclass' provider-guard-violation \
+  '-[FixtureBridgedNested accessibilityAttributeNames] is bridged on FixtureBridgedView as well'
+# spec: src/objc/provider.c header, "Groups" (own-absent) (4), (5) -- a member IMP's address escaping a run is a foreign
+#       entry, as is a branch inside an IMP to its own entry: argument 0 is then open.
+bridge rootleak ROOT_LEAK
+bridge_refused 'bridge: the root passes a member IMP to printf' provider-foreign-entry 'the address of _FixtureBridge_isIgnored escapes at'
+bridge selfcall SELF_CALL
+grep '"status": "active"' "$T/report" >/dev/null || fail 'bridge: an IMP that calls itself: the group is not reported active'
+imp_sends accessibilityRole unresolved 'receiver is incoming argument 0' 'bridge: an IMP that calls itself with another object'
+# spec: src/objc/provider.c header, "Groups" (own-absent) (6) -- a super send of _cmd through a _stret entry is not excused.
+bridge superstret SUPER_STRET
+exit_is 1 'bridge: a _stret super send of _cmd'
+[ "$(super_send FixtureBridge_attributeValue)" = 'unresolved ' ] || fail "bridge: a _stret super send of _cmd: $(super_send FixtureBridge_attributeValue)"
+# spec: src/objc/provider.c header, "Groups" (own-absent) -- the root's member has no initializer.
+bridge constructor CONSTRUCTOR
+bridge_refused 'bridge: an initializer in the root member' unsupported-provider 'has an initializer: an own-absent root is activated by its call sites alone'
+# spec: src/objc/reference.c load_runtime -- ref_floor_with NAME AWK: $T/ref-NAME, the reference with floor-runtime.tsv
+#       rewritten by AWK (as ref_with does newer-sdk.tsv) and its manifest digest recomputed.
+ref_floor_with() {
+  rm -rf "$T/ref-$1"; mkdir -p "$T/ref-$1"; cp "$REF"/* "$T/ref-$1"/
+  awk -F '\t' "BEGIN { OFS = \"\\t\" } $2" "$REF/floor-runtime.tsv" >"$T/ref-$1/floor-runtime.tsv" || fail "ref_floor_with $1: rewriting floor-runtime.tsv"
+  sed "s|\(\"name\": \"floor-runtime.tsv\", \"sha256\": \"\)[0-9a-f]*|\1$(sha "$T/ref-$1/floor-runtime.tsv")|" "$REF/manifest.json" >"$T/ref-$1/manifest.json"
+  ! cmp -s "$REF/manifest.json" "$T/ref-$1/manifest.json" || fail "ref_floor_with $1: the manifest was not re-hashed"
+}
+# spec: src/objc/provider.c header, "Groups" (own-absent) (3) -- a member found past a class the capture does not measure
+#       is not found; a member's providing image is strongly loaded, as its floor ancestor's home is.
+ref_floor_with unmeasured '$1 == "method" && $2 == "NSView" && $4 == "accessibilityIsIgnored" { $4 = "fixtureMoved"; n++ }
+  $1 == "class" && $2 == "NSResponder" { $6 = "CoreText"; n++ } { print } END { if (n != 2) exit 1 }'
+REF_SAVE=$REF; REF="$T/ref-unmeasured"; bridge unmeasured -; REF=$REF_SAVE
+bridge_refused 'bridge: a member past an unmeasured class' provider-absent-from-floor \
+  '-[NSView accessibilityIsIgnored] is absent from 10.9 up to NSResponder, which the floor capture does not measure'
+ref_floor_with category '$1 == "method" && $2 == "NSView" && $4 == "accessibilityIsIgnored" { $6 = "CoreText"; n++ } { print } END { if (n != 1) exit 1 }'
+REF_SAVE=$REF; REF="$T/ref-category"; bridge category -; REF=$REF_SAVE
+grep '"status": "inactive"' "$T/report" >/dev/null || fail 'bridge: a member from an image the artifact does not load: the group is not reported inactive'
+says 'CoreText (providing -[NSView accessibilityIsIgnored] to NSView) is not linked' 'bridge: a member from an image the artifact does not load'
+no_provided 'bridge: a member from an image the artifact does not load'
 
 # spec: src/objc/provider.c drain -- a zerofill atom is accepted only inside a zerofill final section.
 cp "$T/root/bin/g-tab" "$T/root/bin/g-bss"
