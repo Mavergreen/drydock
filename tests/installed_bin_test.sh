@@ -45,7 +45,7 @@ mkdir "$T/stubs"
 printf 'echo "SKIP: stubbed"\nexit 77\n' >"$T/stubs/skips.sh"
 (unset DRYDOCK_REQUIRE_EXEC; runs skips.sh "$T/stubs") >"$T/pin.out" 2>&1 && ! grep -q '^FAIL' "$T/pin.out" \
   && ok "an inner 77 is reported, not failed, without DRYDOCK_REQUIRE_EXEC" || bad "an inner 77 failed without DRYDOCK_REQUIRE_EXEC: $(cat "$T/pin.out")"
-(DRYDOCK_REQUIRE_EXEC=arm64; export DRYDOCK_REQUIRE_EXEC; runs skips.sh "$T/stubs") >"$T/pin.out" 2>&1
+(DRYDOCK_REQUIRE_EXEC=arm64; export DRYDOCK_REQUIRE_EXEC; runs skips.sh "$T/stubs") >"$T/pin.out" 2>&1 || :
 grep -q '^FAIL skips.sh was not exercised' "$T/pin.out" && ok "an inner 77 fails, naming the script, with DRYDOCK_REQUIRE_EXEC=arm64" \
   || bad "an inner 77 did not fail with DRYDOCK_REQUIRE_EXEC=arm64: $(cat "$T/pin.out")"
 runs macfuse_golden_test.sh
