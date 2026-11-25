@@ -4,7 +4,7 @@
 # macFUSE 5.5.0's debug kext, thinned to x86_64, comes out byte-identical to
 # what mavergreen-fuse's spike made and loaded on 10.9.
 #
-#   sh tests/macfuse_golden_test.sh <bindir>
+#   sh tests/macfuse_golden_test.sh <bindir>   a build dir, or an installed bin/
 #
 # Takes the tarball from $MACFUSE_DEBUG_TBZ, else
 # ~/Library/Caches/mavergreen-drydock/macfuse-<version>-debug.tbz. Exits 77

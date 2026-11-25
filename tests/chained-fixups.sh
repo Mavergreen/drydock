@@ -8,6 +8,8 @@
 # This builds a binary that DOES use them -- ld64.lld emits them for a 12.0
 # deployment target given -fixup_chains, whatever the host -- and runs the
 # conversion over it. A link that leaves none is a failed precondition.
+#
+#   sh tests/chained-fixups.sh <bindir>   a build dir, or an installed bin/
 set -eu
 BIN="${1:?usage: chained-fixups.sh <bindir>}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

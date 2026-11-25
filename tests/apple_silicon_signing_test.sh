@@ -5,7 +5,7 @@
 # process: the rows behind the per-arch re-signing rule in
 # drydock-macho-rewrite(1) and docs/apple-silicon-signing.md.
 #
-#   sh tests/apple_silicon_signing_test.sh <bindir>
+#   sh tests/apple_silicon_signing_test.sh <bindir>   a build dir, or an installed bin/
 #
 # A dylib, a program linked against it and a program alone are built here for
 # arm64 with a 16 KB header pad, and each case edits a fresh copy with
