@@ -31,17 +31,29 @@ for s in chained-fixups.sh macfuse_golden_test.sh apple_silicon_signing_test.sh;
     && ok "$s's usage names an installed bin/" || bad "$s's usage does not name an installed bin/"
 done
 
-runs() {  # SCRIPT: run it on the farm, from a directory with no build in it; 0 and 77 pass
-  rc=0; (cd "$T/cwd" && sh "$ROOT/tests/$1" "$T/bin") >"$T/out" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] || [ "$rc" -eq 77 ]; then ok "$1 runs on an installed bin/ and exits $rc"
-  else bad "$1 on an installed bin/ exited $rc: $(tail -3 "$T/out")"; fi
+runs() {  # SCRIPT [DIR]: run it on the farm from a directory with no build in it; 0 ran, 77 not exercised, else fail
+  rc=0; (cd "$T/cwd" && sh "${2:-$ROOT/tests}/$1" "$T/bin") >"$T/out" 2>&1 || rc=$?
+  case $rc in
+    0) ok "$1 ran on an installed bin/ and exited 0" ;;
+    77) why=$(grep -m1 '^SKIP' "$T/out" | cut -c1-120)
+        if [ "${DRYDOCK_REQUIRE_EXEC:-}" = arm64 ]; then bad "$1 was not exercised (77) with DRYDOCK_REQUIRE_EXEC=arm64: $why"
+        else echo "INFO $1 not exercised here (77: ${why:-no reason given})"; fi ;;
+    *) bad "$1 on an installed bin/ exited $rc: $(tail -3 "$T/out")" ;;
+  esac
 }
+mkdir "$T/stubs"
+printf 'echo "SKIP: stubbed"\nexit 77\n' >"$T/stubs/skips.sh"
+(unset DRYDOCK_REQUIRE_EXEC; runs skips.sh "$T/stubs") >"$T/pin.out" 2>&1 && ! grep -q '^FAIL' "$T/pin.out" \
+  && ok "an inner 77 is reported, not failed, without DRYDOCK_REQUIRE_EXEC" || bad "an inner 77 failed without DRYDOCK_REQUIRE_EXEC: $(cat "$T/pin.out")"
+(DRYDOCK_REQUIRE_EXEC=arm64; export DRYDOCK_REQUIRE_EXEC; runs skips.sh "$T/stubs") >"$T/pin.out" 2>&1
+grep -q '^FAIL skips.sh was not exercised' "$T/pin.out" && ok "an inner 77 fails, naming the script, with DRYDOCK_REQUIRE_EXEC=arm64" \
+  || bad "an inner 77 did not fail with DRYDOCK_REQUIRE_EXEC=arm64: $(cat "$T/pin.out")"
 runs macfuse_golden_test.sh
 if [ "$(uname -s)" = Darwin ]; then
   runs chained-fixups.sh
   runs apple_silicon_signing_test.sh
 else
-  echo "N/A chained-fixups.sh and apple_silicon_signing_test.sh: not macOS"
+  echo "INFO chained-fixups.sh and apple_silicon_signing_test.sh: not macOS"
 fi
 
 echo "installed_bin_test: $fail failed"
