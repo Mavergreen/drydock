@@ -34,6 +34,12 @@ diff -r "$here/../reference/resources" "$t/tree/share/drydock/resources/referenc
 mkdir "$t/farm"
 for f in "$t/tree/bin/"*; do ln -s "$f" "$t/farm/${f##*/}"; done
 
+# spec: reached through the farm, drydock-resources finds both reference sets beside its real binary, unasked.
+"$t/farm/drydock-resources" check "$here/resources/fixtures/nib/int64.nib" >"$t/out" 2>"$t/err" \
+  || { cat "$t/out" "$t/err"; echo "FAIL: drydock-resources through the farm does not check int64.nib with its own references"; exit 1; }
+"$t/farm/drydock-resources" >/dev/null 2>&1 && rc=0 || rc=$?
+[ "$rc" -eq 2 ] || { echo "FAIL: drydock-resources without arguments exited $rc, not 2"; exit 1; }
+
 sh "$here/characterize.sh" "$t/farm" check >"$t/out" 2>"$t/err" \
   || { cat "$t/out" "$t/err"; echo "FAIL: the pipeline run through the farm does not give tests/EXPECTED"; exit 1; }
 

@@ -624,6 +624,20 @@ else()
   drydock_macos_test(resources_instantiate "AppKit on 10.9")
 endif()
 set_property(TEST resources_instantiate APPEND PROPERTY LABELS not-in-guest)
+# platform: a maintainer test -- macFUSE's compiled pane nib is never committed; DRYDOCK_RESOURCES_MACFUSE_NIB names it,
+# from this cache entry or else the environment ctest runs in. Unset, the test skips (77). Kept out of the guest.
+set(DRYDOCK_RESOURCES_MACFUSE_NIB "" CACHE FILEPATH "macFUSE's NIBArchive preference pane nib, for resources_macfuse_pane")
+if(APPLE)
+  set(drydock_macfuse_env "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
+  if(NOT DRYDOCK_RESOURCES_MACFUSE_NIB STREQUAL "")
+    string(APPEND drydock_macfuse_env ";DRYDOCK_RESOURCES_MACFUSE_NIB=${DRYDOCK_RESOURCES_MACFUSE_NIB}")
+  endif()
+  drydock_add_test(NAME resources_macfuse_pane COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/macfuse-pane-test.sh)
+  set_tests_properties(resources_macfuse_pane PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "${drydock_macfuse_env}")
+else()
+  drydock_macos_test(resources_macfuse_pane "a maintainer test: macFUSE's pane nib on a maintainer's Mac")
+endif()
+set_property(TEST resources_macfuse_pane APPEND PROPERTY LABELS not-in-guest)
 if(NOT APPLE)
   # platform: non-Apple only -- the built ELF executables against the Linux archive's glibc floor. Not registered
   # on macOS, so the 10.9 guest's did-not-run allowlist never meets it; on an old-glibc host it SKIPs (77).

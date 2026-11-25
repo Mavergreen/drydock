@@ -1,10 +1,34 @@
-// instantiate NIB: hosts the first top-level window's content view in a 668-wide window, lays it out, prints
-//   conflicts=, label_height= and line_height= for the wrapping label.
-// instantiate --tree NIB: prints each top-level object, and for a window every view, frame, text and cell.
+// instantiate [--owner CLASS] NIB: hosts the first top-level window's content view in a 668-wide window, lays it out,
+//   prints conflicts=, label_height= and line_height= for the wrapping label.
+// instantiate [--owner CLASS] --tree NIB: prints each top-level object, and for a window every view, frame, text and cell.
+// --owner CLASS: the nib's owner is a stub CLASS made at run time, taking any outlet or binding and any one-argument
+//   action, rather than a plain NSObject.
 #import <Cocoa/Cocoa.h>
+#include <objc/runtime.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+static Class ownerClass;
+
+static Class stubOwner(const char *name) {
+  Class cls = objc_allocateClassPair([NSObject class], name, 0);
+  if (cls == Nil) return Nil;
+  class_addMethod(cls, @selector(valueForUndefinedKey:), imp_implementationWithBlock(^id(id self, NSString *key) {
+    (void)self, (void)key;
+    return nil;
+  }), "@@:@");
+  class_addMethod(cls, @selector(setValue:forUndefinedKey:), imp_implementationWithBlock(^(id self, id value, NSString *key) {
+    (void)self, (void)value, (void)key;
+  }), "v@:@@");
+  IMP action = imp_implementationWithBlock(^(id self, id sender) { (void)self, (void)sender; });
+  class_addMethod(object_getClass(cls), @selector(resolveInstanceMethod:), imp_implementationWithBlock(^BOOL(Class self, SEL sel) {
+    const char *selName = sel_getName(sel), *colon = strchr(selName, ':');
+    return colon != NULL && colon[1] == '\0' && class_addMethod(self, sel, action, "v@:@");
+  }), "c@::");
+  objc_registerClassPair(cls);
+  return cls;
+}
 
 static NSArray *load(const char *path) {
   NSString *file = [NSString stringWithUTF8String:path];
@@ -14,7 +38,8 @@ static NSArray *load(const char *path) {
   NSData *data = [NSData dataWithContentsOfFile:file];
   NSNib *nib = data == nil ? nil : [[NSNib alloc] initWithNibData:data bundle:nil];
   NSArray *top = nil;
-  if (nib == nil || ![nib instantiateWithOwner:[NSObject new] topLevelObjects:&top]) return nil;
+  id owner = ownerClass != Nil ? [ownerClass new] : [NSObject new];
+  if (nib == nil || ![nib instantiateWithOwner:owner topLevelObjects:&top]) return nil;
   return top;
 }
 
@@ -35,7 +60,8 @@ static NSTextField *wrappingLabel(NSView *v) {
 
 static void describeCell(NSMutableString *out, NSCell *c) {
   if (c == nil) return;
-  [out appendFormat:@" cell=%@ title=\"%@\" state=%ld wraps=%d", NSStringFromClass([c class]), [c title], (long)[c state],
+  NSString *title = [c isKindOfClass:[NSImageCell class]] ? [[c image] name] : [c title];
+  [out appendFormat:@" cell=%@ title=\"%@\" state=%ld wraps=%d", NSStringFromClass([c class]), title, (long)[c state],
                     [c wraps]];
   if ([c isKindOfClass:[NSButtonCell class]]) [out appendFormat:@" bezel=%ld", (long)[(NSButtonCell *)c bezelStyle]];
 }
@@ -45,6 +71,12 @@ static void describeView(NSMutableString *out, NSView *v, int depth) {
                     (unsigned long)[v autoresizingMask]];
   if ([v isKindOfClass:[NSControl class]]) describeCell(out, [(NSControl *)v cell]);
   if ([v isKindOfClass:[NSBox class]]) [out appendFormat:@" title=\"%@\"", [(NSBox *)v title]];
+  if ([v isKindOfClass:[NSProgressIndicator class]]) {
+    NSProgressIndicator *p = (NSProgressIndicator *)v;
+    [out appendFormat:@" value=%g min=%g max=%g indeterminate=%d style=%ld", [p doubleValue], [p minValue], [p maxValue],
+                      [p isIndeterminate], (long)[p style]];
+  }
+  if ([v isKindOfClass:[NSImageView class]]) [out appendFormat:@" animates=%d", [(NSImageView *)v animates]];
   [out appendString:@"\n"];
   for (NSView *s in [v subviews]) describeView(out, s, depth + 1);
 }
@@ -127,9 +159,16 @@ static int layout(const char *path) {
 int main(int argc, char **argv) {
   @autoreleasepool {
     [NSApplication sharedApplication];
+    if (argc >= 3 && strcmp(argv[1], "--owner") == 0) {
+      if ((ownerClass = stubOwner(argv[2])) == Nil) {
+        fprintf(stderr, "instantiate: cannot make an owner class named %s\n", argv[2]);
+        return 2;
+      }
+      argc -= 2, argv += 2;
+    }
     if (argc == 3 && strcmp(argv[1], "--tree") == 0) return tree(argv[2]);
     if (argc == 2) return layout(argv[1]);
-    fprintf(stderr, "usage: instantiate [--tree] NIB\n");
+    fprintf(stderr, "usage: instantiate [--owner CLASS] [--tree] NIB\n");
     return 2;
   }
 }

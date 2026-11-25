@@ -1,0 +1,5 @@
+*MFPreferencePane.nib	named-color-missing	labelColor	10.9 lacks labelColor and draws the text opaque black, where 10.10 draws it black at 85%
+*MFPreferencePane.nib	unknown-key	NSChildControllerCreationSelectorName	10.9's AppKit never reads it, and every connection here stores nil
+*MFPreferencePane.nib	unknown-key	NSImageAnimation	10.9's AppKit never reads it; NSAnimates, which it reads, is false, so the image does not animate
+*MFPreferencePane.nib	unknown-key	NSImageViewPlaceholderPrecedence	10.9's AppKit never reads it, and the pane stores the default, 0
+*MFPreferencePane.nib	unknown-key	NSProgressIndicatorDoubleValue	10.9's AppKit never reads it; it starts the spinner at NSMinValue, 16, the value stored

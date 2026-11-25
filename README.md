@@ -107,14 +107,82 @@ Building Drydock now fetches the pinned clang22 at configure time, for its `clan
 
 ## drydock-resources
 
-An early preview: it works on this repository's own fixtures, and it has not yet been run end to end on macFUSE's preference pane, so check what it writes before shipping it. Given a nib or a bundle of them built for a newer Mac OS X, it adapts them to load on Mavericks. It has four subcommands:
+`drydock-resources` makes the nibs of an app built for a newer macOS load on Mavericks. Modern Xcode compiles nibs as NIBArchive files, which 10.9's AppKit cannot read; `drydock-resources` rewrites them as the keyed archives 10.9 reads, adapts what 10.9 would lay out differently, and reports what it cannot fix. It runs on macOS and Linux. It has four subcommands:
 
-* `drydock-resources dump`: write a nib as text a person can edit and diff.
-* `drydock-resources build`: build a keyed-archive nib from that text.
-* `drydock-resources check`: report what in a bundle, nib or text file 10.9 would not accept, and which adaptation rules apply.
-* `drydock-resources convert`: write a converted copy of a bundle or nib. It is strict by default, refusing a bundle with findings left, and `--exceptions FILE` accepts the gaps you name.
+* `drydock-resources dump NIB` prints a nib (a NIBArchive file, or a nib directory's `keyedobjects.nib`) as text a person can read, diff and edit.
+* `drydock-resources build TEXT -o NIB` builds a keyed-archive nib from that text, replacing `NIB` whole or leaving it as it was.
+* `drydock-resources check BUNDLE|NIB|TEXT` prints every finding for every nib of a bundle, or for one nib, nib directory, `.storyboardc` or dump, one per line, sorted: `NIB: SEVERITY: KIND ITEM (DETAIL)`.
+* `drydock-resources convert BUNDLE|NIB` checks as `check` does, then rewrites each NIBArchive nib in place as a keyed archive, adapted. A keyed nib is left byte for byte unless a rule adapts it.
 
-Two Auto Layout adaptation rules are on by default; `--no-adapt` or `--no-adapt=RULE` turns them off. Run `drydock-resources` with no arguments for the usage.
+Every subcommand takes `--target 10.9`, the only target. `check` and `convert` take `--report NEW_FILE` for a JSON report, which never replaces a file. The tool finds Drydock's reference data beside its real binary, under `share/drydock/objc/reference` and `share/drydock/resources/reference`; `--references DIR` and `--resource-references DIR` name others.
+
+### Strict by default
+
+`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose classes it cannot resolve, and still exits 1. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was.
+
+### Adaptation rules
+
+Two rules rewrite what 10.9 takes literally in a modern nib. They are on by default, `--no-adapt` turns both off, and `--no-adapt=RULE` turns off one:
+
+* `translate-autoresizing` sets `NSDoNotTranslateAutoresizingMask` to true where the nib stores it false on a view a constraint names, other than a window's or a box's content view. Without it, 10.9 turns the view's autoresizing mask into constraints that conflict with the nib's own.
+* `wrapping-width` gives a wrapping text field with no `NSPreferredMaxLayoutWidth` its frame width less 4. Before 10.11, a label with no preferred width is measured as one line.
+
+`check` reports what a rule will fix as `will-adapt`, which strict mode allows; with `--no-adapt` the same problem is an ordinary `finding`. `convert` and `build` print each rewrite as `NIB: adapted: RULE (@N KEY)`.
+
+### Accepting gaps
+
+`--exceptions FILE` accepts findings you have judged harmless, one per line, four fields separated by tabs:
+
+```
+NIB_GLOB<TAB>KIND<TAB>ITEM<TAB>REASON
+*MFPreferencePane.nib	named-color-missing	labelColor	10.9 draws it opaque black, where 10.10 draws it black at 85%
+```
+
+A finding of `KIND` and `ITEM` in a nib whose bundle-relative path matches `NIB_GLOB` (fnmatch, where `*` also matches `/`) is printed with `accepted as KIND:ITEM` and no longer counts. An accepted `storyboard` finding covers every finding in that storyboard's nibs. A line that accepts nothing is named on stderr. A malformed line is exit 4, before any work.
+
+### Exit codes
+
+* 0: no finding, or only `will-adapt` and accepted ones.
+* 1: findings (`build`: a dump it cannot encode or adapt).
+* 2: a usage error, an unknown rule, or a report file that already exists.
+* 4: a nib, dump, exceptions file or reference set that cannot be read or written, or out of memory.
+
+### The dump
+
+A dump starts with its version, the archive's format, and the superclass chain of every class it names. Then come the objects, `@N CLASS`, each with one `KEY = TYPE VALUE` line per value. Some lines from macFUSE's pane:
+
+```
+drydock-resources dump 1
+format nibarchive 1 10
+chain NSTextField : NSControl : NSView : NSResponder : NSObject
+
+@37 NSTextField
+  NSNibTouchBar = nil
+  NSvFlags = i16 268
+  NSFrame = ref @38
+  NSDoNotTranslateAutoresizingMask = true
+
+@38 NSString
+  NS.bytes = data "{{18, 20}, {549, 16}}"
+```
+
+and from the keyed archive `convert` writes of it, where the label has gained its preferred width:
+
+```
+@37 NSTextField
+  NSPreferredMaxLayoutWidth = f64 0x1.108p+9  # 545
+```
+
+The types are `i8`, `i16`, `i32` and `i64`; `true` and `false`; `f32` and `f64`, written exactly in hexadecimal with the decimal after `#`; `data`, quoted with escapes, or as hexadecimal `x"..."` pieces for bytes that are not text; `nil`; and `ref @N`. A chain of `?` is a class neither the reference set nor the bundle's own binaries define, and a nib holding one cannot be built.
+
+A NIBArchive dump and a keyed-archive dump differ as their formats do:
+
+* The format line: `format nibarchive A B` carries the NIBArchive header's two numbers; `format keyed` has none.
+* The chains: a NIBArchive nib names only its classes, so `dump` finds their superclasses in the reference set and in the bundle's binaries. A keyed archive stores each class's chain, which `dump` prints as stored, adding `hints` for its `$classhints`.
+* The values: a NIBArchive stores each integer at its own width, every string as `data`, and each collection as `NSInlinedValue = true` followed by one `UINibEncoderEmptyKey = ref @N` line per element. A keyed archive stores integers as `i64`, strings as `string`, a collection as one `NS.objects = uids @N @M ...` line, and a plain string, number or data in its object table as a `bare` object.
+* The order: a NIBArchive's values are dumped in the archive's order, and a keyed archive's in its dictionaries' order.
+
+`build` writes a keyed archive from either. `convert --no-adapt` of a nib gives the same bytes as `build --no-adapt` of its dump.
 
 ## Other related tools
 
