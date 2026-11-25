@@ -598,6 +598,15 @@ jobs:
             echo "ran $f ($rc, its usage)"
           done
           /usr/local/mavergreen/drydock/bin/drydock-macho-rewrite --capabilities > /dev/null
+          [ -f "/Library/Application Support/Mavergreen/drydock-updater.app/Contents/MacOS/drydock-updater" ] || { echo "::error::the pkg installed no drydock-updater"; exit 1; }
+          n=0
+          for f in /usr/local/mavergreen/drydock/bin/* "/Library/Application Support/Mavergreen/drydock-updater.app/Contents/MacOS/drydock-updater"; do
+            lipo -info "$f" > /dev/null 2>&1 || continue
+            lipo "$f" -thin arm64 -output "$RUNNER_TEMP/arm64-slice"
+            codesign -v "$RUNNER_TEMP/arm64-slice" || { echo "::error::the arm64 slice of $f has no valid signature"; exit 1; }
+            rm -f "$RUNNER_TEMP/arm64-slice"; n=$((n + 1))
+          done
+          echo "$n installed Mach-O files have a valid arm64 signature, the updater's among them"
           OBJC=/usr/local/mavergreen/drydock/bin/drydock-objc
           archs="$(lipo -info "$OBJC" | sed -n 's/.*: //p')"
           case " $archs " in *" arm64 "*) ;; *) echo "::error::$OBJC carries $archs, no arm64"; exit 1 ;; esac

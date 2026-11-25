@@ -230,6 +230,11 @@ lacks "modern-smoke runs nothing x86_64" "$ms" "x86_64"
 has "modern-smoke runs the downloaded archive's tools from anywhere" "$(step modern-smoke standalone_archive_test.sh)" \
   'sh tests/standalone_archive_test.sh "dist/drydock-$V-macos-universal.tar.gz" "dist/drydock-$V.pkg"'
 
+has "modern-smoke checks the installed updater's arm64 signature" "$ms" \
+  'for f in /usr/local/mavergreen/drydock/bin/* "/Library/Application Support/Mavergreen/drydock-updater.app/Contents/MacOS/drydock-updater"; do'
+has "modern-smoke requires the installed updater be there to check" "$ms" \
+  '[ -f "/Library/Application Support/Mavergreen/drydock-updater.app/Contents/MacOS/drydock-updater" ] ||'
+has "modern-smoke codesign-verifies each installed Mach-O's arm64 slice" "$ms" 'codesign -v "$RUNNER_TEMP/arm64-slice" ||'
 at() { job modern-smoke | grep -n -F -- "$1" | head -1 | cut -d: -f1; }
 rec=$(at 'assert-tree-clean.sh" --record') prod=$(at 'equivalence.sh produce') upl=$(at 'name: drydock-equivalence-arm64')
 dl=$(job modern-smoke | grep -n -x '          name: drydock-equivalence' | head -1 | cut -d: -f1)
