@@ -709,6 +709,7 @@ jobs:
           DRYDOCK_REQUIRE_EXEC=arm64 sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross-arm64 > "$log" 2>&1 || status=$?
           cat "$log"
           [ "$status" -eq 0 ] || { echo "::error::the arm64 suite failed (ctest exited $status)"; exit 1; }
+          export LC_ALL=C
           sed -n '/did not run:/,$s/^[[:space:]]*[0-9]* - \([^ ]*\) (.*/\1/p' "$log" > "$RUNNER_TEMP/skipped"
           grep -qx raise_runs_test "$RUNNER_TEMP/skipped" \
             || { echo "::error::the did-not-run list does not name raise_runs_test: has ctest's output changed?"; exit 1; }

@@ -187,6 +187,8 @@ has "modern-smoke runs on Apple Silicon (macos-26)" "$m" "runs-on: macos-26"
 for j in publish required equivalence; do
   needs "$j" | grep -qx modern-smoke && ok "$j needs modern-smoke" || bad "$j does not need modern-smoke"
 done
+has "modern-smoke parses ctest's logs as bytes, which hold non-UTF-8 output" \
+  "$(step modern-smoke 'run-repo-tests.sh" cross-arm64')" "export LC_ALL=C"
 has "modern-smoke runs only on a publishing run, the family's publish-only smoke" "$m" "
     if: needs.build.outputs.publish == 'yes'"
 for j in equivalence assemble; do
