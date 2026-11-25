@@ -3,7 +3,7 @@
  * (tools/objc-compat/source-evidence.c) reads the receipt and never loads libclang.
  *
  *   objc-source-inventory --resource-dir DIR --sdk SDKROOT --tool-id HEX --inputs FILE --root DIR [--root DIR ...]
- *                         --unit LABEL [--unit LABEL ...] [--include LABELDIR ...] --output NEW_FILE
+ *                         --unit LABEL [--unit LABEL ...] [--include LABELDIR ...] [--unit-flags LABEL] --output NEW_FILE
  *
  * Inputs are bounded and verified before anything is parsed. FILE lists the prepared source as
  * `SHA256  LABEL` lines (shasum's format; Recaulk's build writes exactly this receipt and its
@@ -47,6 +47,19 @@
  *   TYPE      libclang's spelling of the receiver's static type
  *   OWNER     the referenced method's container -- CLASS, CLASS(CATEGORY), <PROTOCOL> -- or "-";
  *             recorded apart from RECEIVER, never used for it
+ *
+ * --unit-flags LABEL names an input (so hashed and staged like the rest) giving each unit its own
+ * compile flags: one `UNIT<TAB>FLAG<TAB>...` line per --unit, every line ending in a newline, no
+ * empty line or field, no carriage return or NUL, at most 1 MiB. A FLAG is one of -fobjc-arc -fno-objc-arc -fno-modules
+ * -fno-autolink -w -Wall -Wextra -Werror -Wno-deprecated-declarations, or -include LABEL (an input)
+ * or -I LABELDIR (a directory some input lies under), the value being the next field. Anything
+ * else, a unit without a line or with two, a line for no unit, or a unit with no flags refuses
+ * before anything is parsed. A unit then parses with the profile, its last ARC flag in place of
+ * -fno-objc-arc, the --include directories, and its other flags in file order, value paths staged.
+ * The receipt is then schema 2: `# objc-source-receipt 2`, the same profile, args (still the
+ * common arguments), libclang, sdk, tool and input rows, and each unit row
+ *   unit     LABEL FLAGS            (its own flags, space-separated, paths written <stage>/LABEL)
+ * followed by the send rows as above.
  * Exit 0 written, 2 usage, 4 an unverifiable input, a parse error or an unwritable output. */
 /* platform: realpath, mkdtemp and lstat under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
 #define _XOPEN_SOURCE 700
@@ -94,7 +107,7 @@ static char *format(const char *fmt, ...) {
 }
 static int usage(void) {
     fprintf(stderr, "usage: objc-source-inventory --resource-dir DIR --sdk SDKROOT --tool-id HEX --inputs FILE --root DIR "
-                    "[--root DIR ...] --unit LABEL [--unit LABEL ...] [--include LABELDIR ...] --output NEW_FILE\n");
+                    "[--root DIR ...] --unit LABEL [--unit LABEL ...] [--include LABELDIR ...] [--unit-flags LABEL] --output NEW_FILE\n");
     return 2;
 }
 
@@ -490,8 +503,86 @@ static void remove_stage(void) {
     rmdir(stage);
 }
 
+/* ---- per-unit flags ------------------------------------------------------------------------- */
+
+static const char *const UNIT_FLAGS[] = {"-fobjc-arc", "-fno-objc-arc", "-fno-modules", "-fno-autolink", "-w", "-Wall",
+                                         "-Wextra", "-Werror", "-Wno-deprecated-declarations", NULL};
+typedef struct { const char **argv; size_t n; char *text; const char *arc; } UnitFlags;
+
+static const Input *input_named(const char *label) {
+    size_t i;
+    for (i = 0; i < ninputs; i++) if (!strcmp(inputs[i].label, label)) return &inputs[i];
+    return NULL;
+}
+static int input_under(const char *dir) {
+    size_t i, n = strlen(dir);
+    for (i = 0; i < ninputs; i++) if (!strncmp(inputs[i].label, dir, n) && inputs[i].label[n] == '/') return 1;
+    return 0;
+}
+static void unit_flag(UnitFlags *f, const char *arg, const char *shown) {
+    char *t;
+    if (arg) {
+        const char **g = realloc(f->argv, (f->n + 1) * sizeof *g);
+        if (!g) cannot("out of memory");
+        f->argv = g;
+        f->argv[f->n++] = arg;
+    }
+    t = format("%s%s%s", f->text, *f->text ? " " : "", shown);
+    free(f->text);
+    f->text = t;
+}
+/* The whole flags file, from its staged copy, checked before anything is parsed: flags[i] is units[i]'s. */
+static void read_unit_flags(const char *label, const char *const *units, size_t nunits, UnitFlags *flags) {
+    const Input *in = input_named(label);
+    char *buf, *line, *end;
+    size_t size, u, k;
+    if (!in) cannot("unit flags: %s is not an input", label);
+    if (read_bounded(in->staged, 1u << 20, &buf, &size)) cannot("unit flags: %s is over 1 MiB or unreadable", label);
+    if (memchr(buf, 0, size)) cannot("unit flags: a NUL byte in %s", label);
+    if (memchr(buf, '\r', size)) cannot("unit flags: a carriage return in %s", label);
+    if (!size || buf[size - 1] != '\n') cannot("unit flags: %s does not end in a newline", label);
+    for (line = buf; line < buf + size; line = end + 1) {
+        UnitFlags f;
+        char *field, *next;
+        int found = 0;
+        end = strchr(line, '\n');
+        *end = 0;
+        if (!*line) cannot("unit flags: an empty line in %s", label);
+        if ((next = strchr(line, '\t'))) *next++ = 0;
+        for (u = 0; u < nunits; u++) if (!strcmp(units[u], line) && flags[u].text) cannot("unit flags: %s listed twice", line);
+        for (u = 0; u < nunits; u++) if (!strcmp(units[u], line)) found = 1;
+        if (!found) cannot("unit flags: %s is not a --unit", line);
+        if (!next) cannot("unit flags: %s has no flags", line);
+        memset(&f, 0, sizeof f);
+        f.text = copy("");
+        while ((field = next)) {
+            if ((next = strchr(field, '\t'))) *next++ = 0;
+            if (!strcmp(field, "-include") || !strcmp(field, "-I")) {
+                const char *flag = !strcmp(field, "-I") ? "-I" : "-include", *v = next;
+                char *shown;
+                if (!v) cannot("unit flags: %s: %s takes a value", line, flag);
+                if ((next = strchr(next, '\t'))) *next++ = 0;
+                if (flag[1] == 'i' && !input_named(v)) cannot("unit flags: %s: -include %s is not an input", line, v);
+                if (flag[1] == 'I' && !input_under(v)) cannot("unit flags: %s: -I %s is no staged input directory", line, v);
+                unit_flag(&f, flag, flag);
+                shown = format("<stage>/%s", v);
+                unit_flag(&f, format("%s/%s", stage, v), shown);
+                free(shown);
+            } else {
+                for (k = 0; UNIT_FLAGS[k] && strcmp(UNIT_FLAGS[k], field); k++) ;
+                if (!UNIT_FLAGS[k]) cannot("unit flags: %s: %s is not an allowed flag", line, field);
+                if (k < 2) f.arc = UNIT_FLAGS[k];
+                unit_flag(&f, k < 2 ? NULL : UNIT_FLAGS[k], UNIT_FLAGS[k]);
+            }
+        }
+        for (u = 0; u < nunits; u++) if (!strcmp(units[u], line)) flags[u] = f;
+    }
+    for (u = 0; u < nunits; u++) if (!flags[u].text) cannot("unit flags: no line for unit %s", units[u]);
+    free(buf);
+}
+
 int main(int argc, char **argv) {
-    const char *resource = NULL, *sdk_arg = NULL, *tool = NULL, *inputs_path = NULL, *output = NULL;
+    const char *resource = NULL, *sdk_arg = NULL, *tool = NULL, *inputs_path = NULL, *output = NULL, *unit_flags = NULL;
     const char *roots[16], *units[INPUTS_MAX], *includes[16];
     size_t nroots = 0, nunits = 0, nincludes = 0, i, j;
     char *sdk, *resource_dir, *buf, *line, *save = NULL, sdk_sha[65], *temporary;
@@ -512,6 +603,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "--root") && nroots < 16) roots[nroots++] = v;
         else if (!strcmp(o, "--unit") && nunits < INPUTS_MAX) units[nunits++] = v;
         else if (!strcmp(o, "--include") && nincludes < 16) includes[nincludes++] = v;
+        else if (!strcmp(o, "--unit-flags") && !unit_flags) unit_flags = v;
         else return usage();
     }
     if (!resource || !sdk_arg || !tool || !inputs_path || !output || !nroots || !nunits) return usage();
@@ -582,6 +674,11 @@ int main(int argc, char **argv) {
         if (!label_ok(includes[i]) || stat(d, &st) || !S_ISDIR(st.st_mode)) cannot("include %s is not a staged input directory", includes[i]);
         free(d);
     }
+    UnitFlags *flags = NULL;
+    if (unit_flags) {
+        flags = allocate(nunits * sizeof *flags);
+        read_unit_flags(unit_flags, units, nunits, flags);
+    }
 
     /* The profile. */
     {
@@ -618,7 +715,17 @@ int main(int argc, char **argv) {
         Walk w;
         unsigned d;
         int failed = 0;
-        enum CXErrorCode e = clang_parseTranslationUnit2(index, path, args, (int)nargs, NULL, 0, CXTranslationUnit_None, &tu);
+        const char **uargs = args;
+        size_t nuargs = nargs;
+        enum CXErrorCode e;
+        if (flags) {
+            nuargs = nargs + flags[i].n;
+            uargs = allocate(nuargs * sizeof *uargs);
+            for (j = 0; j < nargs; j++) uargs[j] = j < nfixed && flags[i].arc && !strcmp(args[j], "-fno-objc-arc") ? flags[i].arc : args[j];
+            for (j = 0; j < flags[i].n; j++) uargs[nargs + j] = flags[i].argv[j];
+        }
+        e = clang_parseTranslationUnit2(index, path, uargs, (int)nuargs, NULL, 0, CXTranslationUnit_None, &tu);
+        if (uargs != args) free(uargs);
         if (e != CXError_Success || !tu) cannot("libclang could not parse %s (%d)", units[i], e);
         for (d = 0; d < clang_getNumDiagnostics(tu); d++) {
             CXDiagnostic g = clang_getDiagnostic(tu, d);
@@ -643,14 +750,14 @@ int main(int argc, char **argv) {
 
     /* The receipt. */
     for (i = 0; i < ninputs; i++) add_row(format("input\t%s\t%s", inputs[i].label, inputs[i].sha));
-    for (i = 0; i < nunits; i++) add_row(format("unit\t%s", units[i]));
+    for (i = 0; i < nunits; i++) add_row(flags ? format("unit\t%s\t%s", units[i], flags[i].text) : format("unit\t%s", units[i]));
     if (nrows > 1) qsort(rows, nrows, sizeof *rows, compare);
     temporary = format("%s.XXXXXX", output);
     if ((fd = mkstemp(temporary)) < 0 || !(out = fdopen(fd, "w"))) cannot("cannot create a temporary beside %s", output);
     {
         CXString v = clang_getClangVersion();
-        fprintf(out, "# objc-source-receipt 1\nprofile\trecaulk-objc-x86_64-10.9\nargs\t%s\nlibclang\t%s\nsdk\t%s\ntool\t%s\n",
-                argtext, clang_getCString(v), sdk_sha, tool);
+        fprintf(out, "# objc-source-receipt %d\nprofile\trecaulk-objc-x86_64-10.9\nargs\t%s\nlibclang\t%s\nsdk\t%s\ntool\t%s\n",
+                flags ? 2 : 1, argtext, clang_getCString(v), sdk_sha, tool);
         clang_disposeString(v);
     }
     {   /* input, unit, send: in that order, each sorted and unique */

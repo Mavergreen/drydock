@@ -111,4 +111,57 @@ else
   echo "SKIP: receipt_missing_symbol: needs a Mac to build the stub dylib ($(uname -s))"
 fi
 
+# spec: tools/objc-source-inventory.c header (--unit-flags) -- each unit parses with its own flags from a hashed file, schema 2.
+UF="$T/uf"
+mkdir -p "$UF"
+cp "$FX/unit-flags/arc-unit.m" "$FX/unit-flags/mrc-unit.m" "$FX/unit-flags/prefix.h" "$UF/"
+mkdir "$UF/sub"; : >"$UF/sub/empty.h"
+ok_mrc='mrc-unit.m\t-fno-objc-arc\t-w\n'
+uf_run() {
+  printf '%b' "$2" >"$UF/unit.flags"
+  : >"$T/uf-inputs"
+  for f in arc-unit.m mrc-unit.m prefix.h sub/empty.h unit.flags; do
+    [ "$f" = unit.flags ] && [ "${3:-}" = unlisted ] && continue
+    printf '%s  %s\n' "$(sha "$UF/$f")" "$f" >>"$T/uf-inputs"
+  done
+  "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/uf-inputs" --root "$UF" \
+    --unit arc-unit.m --unit mrc-unit.m --unit-flags unit.flags --output "$T/$1.receipt" 2>"$T/err"
+}
+rc=0; uf_run schema2 "$(cat "$FX/unit-flags/unit.flags")\n" || rc=$?
+if [ "$rc" = 0 ] && [ "$(head -1 "$T/schema2.receipt")" = '# objc-source-receipt 2' ] &&
+   grep -Fxq "$(printf 'unit\tarc-unit.m\t-fobjc-arc -include <stage>/prefix.h -Werror')" "$T/schema2.receipt" &&
+   grep -Fxq "$(printf 'unit\tmrc-unit.m\t-fno-objc-arc -w')" "$T/schema2.receipt" &&
+   awk -F'\t' '$1 == "send" && $2 == "arc-unit.m" && $7 == "plain" && $8 == "FixtureRenamed" { f = 1 } END { exit !f }' "$T/schema2.receipt" &&
+   grep -q "^input	unit.flags	$(sha "$UF/unit.flags")\$" "$T/schema2.receipt"; then
+  pass 'unit-flags: schema 2 -- each unit row carries its flags, the prefix renames the receiver, the flags file is an input'
+else
+  fail "unit-flags: schema 2: exit $rc"; [ ! -f "$T/schema2.receipt" ] || cat "$T/schema2.receipt"
+fi
+rc=0; uf_run include-dir "arc-unit.m\t-fobjc-arc\t-I\tsub\t-include\tprefix.h\n$ok_mrc" || rc=$?
+[ "$rc" = 0 ] && grep -Fxq "$(printf 'unit\tarc-unit.m\t-fobjc-arc -I <stage>/sub -include <stage>/prefix.h')" "$T/include-dir.receipt" &&
+  pass 'unit-flags: -I of a directory an input lies under is taken, as <stage>/LABELDIR' || fail "unit-flags: -I of a staged directory: exit $rc"
+uf_refused() {
+  rc=0; uf_run "$1" "$3" "${4:-}" || rc=$?
+  if [ "$rc" = 4 ] && grep -Fq -- "$2" "$T/err" && [ ! -e "$T/$1.receipt" ]; then pass "unit-flags: $1 exits 4 before any parse"
+  else fail "unit-flags: $1: exit $rc"; fi
+}
+uf_refused 'a flag outside the set' 'unit flags: arc-unit.m: -fplugin=x is not an allowed flag' "arc-unit.m\t-fobjc-arc\t-fplugin=x\n$ok_mrc"
+uf_refused '-include of a non-input' 'unit flags: arc-unit.m: -include absent.h is not an input' "arc-unit.m\t-fobjc-arc\t-include\tabsent.h\n$ok_mrc"
+uf_refused '-include without a value' 'unit flags: arc-unit.m: -include takes a value' "arc-unit.m\t-fobjc-arc\t-include\n$ok_mrc"
+uf_refused '-I outside the stage (/tmp)' 'unit flags: arc-unit.m: -I /tmp is no staged input directory' "arc-unit.m\t-fobjc-arc\t-I\t/tmp\n$ok_mrc"
+uf_refused '-I outside the stage (../x)' 'unit flags: arc-unit.m: -I ../x is no staged input directory' "arc-unit.m\t-fobjc-arc\t-I\t../x\n$ok_mrc"
+uf_refused '-I of a directory no input lies under' 'unit flags: arc-unit.m: -I nodir is no staged input directory' "arc-unit.m\t-fobjc-arc\t-I\tnodir\n$ok_mrc"
+uf_refused '-I of a label prefix, not a directory' 'unit flags: arc-unit.m: -I arc is no staged input directory' "arc-unit.m\t-fobjc-arc\t-I\tarc\n$ok_mrc"
+uf_refused 'a --unit with no line' 'unit flags: no line for unit mrc-unit.m' "arc-unit.m\t-fobjc-arc\n"
+uf_refused 'a line for a non-unit' 'unit flags: prefix.h is not a --unit' "arc-unit.m\t-fobjc-arc\n${ok_mrc}prefix.h\t-w\n"
+uf_refused 'a unit listed twice' 'unit flags: arc-unit.m listed twice' "arc-unit.m\t-fobjc-arc\n${ok_mrc}arc-unit.m\t-fobjc-arc\n"
+uf_refused 'a line with no flags' 'unit flags: arc-unit.m has no flags' "arc-unit.m\n$ok_mrc"
+uf_refused 'an empty line' 'unit flags: an empty line in unit.flags' "arc-unit.m\t-fobjc-arc\n\n$ok_mrc"
+uf_refused 'no final newline' 'unit flags: unit.flags does not end in a newline' "arc-unit.m\t-fobjc-arc\nmrc-unit.m\t-w"
+uf_refused 'the flags file not among the inputs' 'unit flags: unit.flags is not an input' "arc-unit.m\t-fobjc-arc\n$ok_mrc" unlisted
+uf_refused 'CRLF' 'unit flags: a carriage return in unit.flags' "arc-unit.m\t-fobjc-arc\r\n$ok_mrc"
+uf_refused 'a NUL byte' 'unit flags: a NUL byte in unit.flags' "arc-unit.m\t-fobjc-arc\0\n$ok_mrc"
+big=$(awk 'BEGIN { for (i = 0; i < 80000; i++) printf "arc-unit.m\\t-w\\n" }')
+uf_refused 'over 1 MiB' 'unit flags: unit.flags is over 1 MiB or unreadable' "$big"
+
 [ "$fails" = 0 ] && echo 'objc-source-inventory-host-test: all passed' || { echo "objc-source-inventory-host-test: $fails failed"; exit 1; }

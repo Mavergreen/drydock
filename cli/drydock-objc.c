@@ -253,7 +253,7 @@ static int resource_dir(const char *prefix, char *out, size_t outlen, char *why,
 
 /* receipt ARGS: see the header. */
 static int receipt(int argc, char **argv) {
-    static const char *const names[] = {"--clang-prefix", "--sdk", "--inputs", "--root", "--unit", "--include", "--output", NULL};
+    static const char *const names[] = {"--clang-prefix", "--sdk", "--inputs", "--root", "--unit", "--unit-flags", "--include", "--output", NULL};
     static const char *const scrub[] = {"CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "SDKROOT",
                                         "CCC_OVERRIDE_OPTIONS", NULL};
     const char *prefix = NULL, *sdk = NULL, *output = NULL;

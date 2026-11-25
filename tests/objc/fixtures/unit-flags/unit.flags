@@ -1,0 +1,2 @@
+arc-unit.m	-fobjc-arc	-include	prefix.h	-Werror
+mrc-unit.m	-fno-objc-arc	-w
