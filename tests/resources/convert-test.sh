@@ -185,7 +185,8 @@ printf '*/Main.storyboardc\tstoryboard\tNSStoryboard\tno storyboard loads on 10.
 convert boardok --exceptions "$T/sb.ex" --report "$T/boardok.json" "$T/board.app"
 [ "$(rc boardok)" = 0 ] && keyed "$SB/Svc-aa-001-view-Svw-aa-003.nib" \
   && cmp -s "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$SB/DDFixtureScene.nib" \
-  && pass "convert_storyboard: with storyboard accepted, its encodable inner nib is converted, the unencodable one left, exit 0" \
+  && grep -q '^Contents/Resources/Base.lproj/Main.storyboardc/DDFixtureScene.nib: finding: nibarchive-format NIBArchive (stays NIBArchive: .*) accepted as storyboard:NSStoryboard$' "$T/boardok" \
+  && pass "convert_storyboard: with storyboard accepted, its encodable inner nib is converted, the unencodable one left, saying so, exit 0" \
   || fail "convert_storyboard: accepted: exit $(rc boardok), $(err boardok)"
 [ "$(grep -c '"deviation":"storyboard:NSStoryboard"' "$T/boardok.json")" -ge 3 ] \
   && grep -q '"kind":"unresolved-chain","nib":"Contents/Resources/Base.lproj/Main.storyboardc/DDFixtureScene.nib",.*"deviation":"storyboard:NSStoryboard"' "$T/boardok.json" \
@@ -223,6 +224,28 @@ convert held --no-strict --report "$T/held.json" "$T/variant.app"
   && grep -q '"path":"Contents/Resources/v.nib/keyedobjects-101300.nib","format":"nibarchive","sha256_in":"[0-9a-f]\{64\}","sha256_out":null,"written":false' "$T/held.json" \
   && pass "convert_no_strict: a nib with a blocks-write finding is never built or written, even with --no-strict" \
   || fail "convert_no_strict: held: exit $(rc held), $(ls "$V/v.nib" | tr '\n' ' ') $(grep blocks-write "$T/held")"
+
+A=$(bundle accepted)
+cp "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$A/scene.nib"
+for k in NSChildControllerCreationSelectorName NSExternalObjectPlaceholderIdentifier NSExternalObjectsTableForViewLoading \
+         NSStoryboardIdentifier connectionsRequireClassSwapperForStoryboardCompilation showSeguePresentationStyle \
+         uniqueIdentifierForStoryboardCompilation; do
+  printf '*/scene.nib\tunknown-key\t%s\tnot in this test\n' "$k"
+done > "$T/scene.ex"
+printf '*/scene.nib\tunresolved-chain\tNSNibExternalObjectPlaceholder\treviewed\n' >> "$T/scene.ex"
+convert sceneex --exceptions "$T/scene.ex" --report "$T/sceneex.json" "$T/accepted.app"
+[ "$(rc sceneex)" = 1 ] && cmp -s "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$A/scene.nib" \
+  && grep -q '^Contents/Resources/scene.nib: finding: nibarchive-format NIBArchive (stays NIBArchive: a blocks-write finding holds it back)$' "$T/sceneex" \
+  && ! grep -q 'converts to a keyed archive' "$T/sceneex" \
+  && grep -q '"kind":"nibarchive-format","nib":"Contents/Resources/scene.nib","item":"NIBArchive","detail":"stays NIBArchive: a blocks-write finding holds it back","severity":"finding","deviation":null' "$T/sceneex.json" \
+  && pass "convert_accepted_block: an accepted blocks-write finding leaves the nib NIBArchive, which stdout and the report say, exit 1" \
+  || fail "convert_accepted_block: exit $(rc sceneex), $(grep nibarchive-format "$T/sceneex") $(err sceneex)"
+printf '*/scene.nib\tnibarchive-format\tNIBArchive\t10.9 never loads this nib\n' >> "$T/scene.ex"
+convert sceneok --exceptions "$T/scene.ex" "$T/accepted.app"
+[ "$(rc sceneok)" = 0 ] && cmp -s "$FIX/nib/Main.storyboardc/DDFixtureScene.nib" "$A/scene.nib" \
+  && grep -q '^Contents/Resources/scene.nib: finding: nibarchive-format NIBArchive (stays NIBArchive: .*) accepted as nibarchive-format:NIBArchive$' "$T/sceneok" \
+  && pass "convert_accepted_block: accepting that the nib stays NIBArchive too lets the strict convert exit 0" \
+  || fail "convert_accepted_block: accepted: exit $(rc sceneok), $(grep nibarchive-format "$T/sceneok") $(err sceneok)"
 
 N=$(bundle nonib)
 mkdir -p "$N/old.nib"

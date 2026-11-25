@@ -118,7 +118,7 @@ Every subcommand takes `--target 10.9`, the only target. `check` and `convert` t
 
 ### Strict by default
 
-`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose objects' classes it cannot resolve, and still exits 1. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was.
+`convert` is strict: any finding no exception accepts means it writes nothing at all. `--no-strict` writes every nib but those it cannot encode or whose objects' classes it cannot resolve, and still exits 1. A NIBArchive nib held back this way, by a `blocks-write` finding, stays NIBArchive, and its `nibarchive-format` line becomes a `finding` that says so, even when the `blocks-write` finding is accepted. Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every nib as it was.
 
 ### Adaptation rules
 

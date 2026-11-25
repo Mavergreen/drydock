@@ -28,8 +28,10 @@
  *     checks as check does, then rewrites each NIBArchive nib in place as a keyed archive, adapted; a keyed nib is
  *     left byte-identical unless a rule adapts it, and a nib directory without keyedobjects.nib gets one. Strict, the
  *     default: any finding no exception accepts writes nothing at all. --no-strict writes every nib but those a
- *     blocks-write finding holds back, and still exits 1 on a finding. Every nib is staged beside itself before any
- *     is renamed into place, so a nib that cannot be staged leaves every nib as it was.
+ *     blocks-write finding holds back, and still exits 1 on a finding. A NIBArchive nib held back, even by an
+ *     accepted blocks-write finding, stays NIBArchive, and its nibarchive-format finding becomes an ordinary one.
+ *     Every nib is staged beside itself before any is renamed into place, so a nib that cannot be staged leaves every
+ *     nib as it was.
  *
  *   --exceptions FILE accepts gaps, one per line as NIB_GLOB<TAB>KIND<TAB>ITEM<TAB>REASON: a finding of KIND and ITEM
  *   in a nib whose bundle-relative path NIB_GLOB matches (fnmatch) is printed "accepted as KIND:ITEM" and no longer
@@ -393,6 +395,26 @@ static int put_in_place(const RNib *nibs, Item *items, size_t n) {
     return rc;
 }
 
+/* Turns the nibarchive-format finding of each NIBArchive nib convert built nothing for, a blocks-write finding
+ * holding it back, into an ordinary finding saying it stays NIBArchive. 0, or 4 out of memory. */
+static int held_back(const RNib *nibs, const Item *items, size_t n, RFindings *f) {
+    static const char stays[] = "stays NIBArchive: a blocks-write finding holds it back";
+    size_t i, j;
+    char *d;
+    for (i = 0; i < f->n; i++) {
+        RFinding *x = &f->v[i];
+        if (strcmp(x->kind, "nibarchive-format") || x->sev != RF_WILL_ADAPT || !x->nib) continue;
+        for (j = 0; j < n && strcmp(nibs[j].relpath, x->nib); j++) ;
+        if (j == n || items[j].out) continue;
+        if (!(d = malloc(sizeof stays))) return 4;
+        memcpy(d, stays, sizeof stays);
+        free(x->detail);
+        x->detail = d;
+        x->sev = RF_FINDING;
+    }
+    return 0;
+}
+
 /* check and convert of the bundle, nib directory or nib at arg. */
 static int bundle(const char *arg, const Opts *o) {
     char refs[PATH_MAX], why[512], sbbuf[PATH_MAX], last_sb[PATH_MAX] = "", **bins = NULL;
@@ -468,6 +490,7 @@ static int bundle(const char *arg, const Opts *o) {
         free(buf);
         if (rc) { fprintf(stderr, "drydock-resources: out of memory\n"); worst = 4; break; }
     }
+    if (o->convert && !worst && held_back(nibs, items, n, &f)) { fprintf(stderr, "drydock-resources: out of memory\n"); worst = 4; }
     rf_sort(&f);
     if (rf_except(&ex, &f)) { fprintf(stderr, "drydock-resources: out of memory\n"); worst = 4; }
     for (i = 0; i < f.n; i++) blocking |= rf_blocks(&f.v[i]);
