@@ -612,8 +612,9 @@ set_tests_properties(resources_walkup PROPERTIES ENVIRONMENT
   "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
 drydock_add_test(NAME resources_check COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/check-test.sh)
 set_tests_properties(resources_check PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
-# platform: 10.9 only -- converted nibs instantiated by AppKit on the floor; elsewhere a skip, exit 77. Not in the
-# guest: its ctest has no window server session, and its did-not-run allowlist would refuse the skip.
+# platform: 10.9 only -- converted nibs instantiated by AppKit on the floor; elsewhere a skip, exit 77. The guest has
+# clang22 and the SDK, so there it would run, not skip; it is kept out because AppKit there may have no window server
+# session to instantiate in (unverified), and a failure for that reason would fail the release.
 if(APPLE)
   drydock_add_test(NAME resources_instantiate COMMAND sh -c "if [ \"$(uname -r | cut -d. -f1)\" = 13 ]; then exec sh \"$0\"; fi; echo \"SKIP $1: AppKit on 10.9\"; exit 77"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/instantiate-test.sh" resources_instantiate)

@@ -469,7 +469,8 @@ jobs:
   # and 10.9's git is a Command Line Tools stub (the runner and Linux run those); and mantle_raise_test, whose
   # subject is an app in one maintainer's ~/Downloads, so it runs on that Mac alone; and objc_attest_codex,
   # whose input is codex's kept repro in that maintainer's ~/Library/Caches; and resources_instantiate, which
-  # instantiates converted nibs with AppKit and needs a window server session the guest's ctest lacks (run on 10.9 by hand).
+  # instantiates converted nibs with AppKit and may need a window server session the guest's ctest lacks (unverified;
+  # run on 10.9 by hand).
   on-target:
     needs: [build]
     runs-on: ubuntu-latest

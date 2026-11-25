@@ -1,5 +1,6 @@
 #!/bin/sh
-# platform: 10.9 only -- AppKit on the floor itself, compiled at test time with clang22 against the pinned 10.9 SDK
+# platform: macOS-only -- 10.9 only: AppKit on the floor itself, compiled at test time with clang22 against the pinned
+#   10.9 SDK; elsewhere it SKIPs (77)
 set -u
 : "${DRYDOCK_RESOURCES:?names the built drydock-resources (CTest sets it)}"
 R=$DRYDOCK_RESOURCES
