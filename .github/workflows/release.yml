@@ -702,6 +702,7 @@ jobs:
               *": SKIP "*": cannot execute x86_64 on this host (Apple Silicon, no Rosetta by policy)") ;;
               "grown_binary_runs_test: SKIP system: /usr/bin/printf: does not qualify here: "*) ;;
               "wrapper_test: SKIP rename_segment: LC_LAZY_LOAD_DYLIB classification: "*) ;;
+              "exec_arch_test: SKIP this-host: not 10.9") ;;
               *) return 1 ;;
             esac
           }
@@ -725,10 +726,12 @@ jobs:
             "$RUNNER_TEMP/skipped" "$ARM64/Testing/Temporary/LastTest.log" | sort -u > "$RUNNER_TEMP/rows"
           grep -qxF 'symbol_rename_test: SKIP forwarding: links and prints 43: cannot execute x86_64 on this host (Apple Silicon, no Rosetta by policy)' "$RUNNER_TEMP/rows" \
             || { echo "::error::the rows do not include symbol_rename_test's x86_64 forwarding row: has LastTest.log changed?"; exit 1; }
+          badrows=0
           while IFS= read -r r; do
-            row_allowed "$r" || { echo "::error::$r: a row did not run, and the runner does not allow that"; exit 1; }
+            row_allowed "$r" || { echo "::error::$r: a row did not run, and the runner does not allow that"; badrows=$((badrows + 1)); continue; }
             echo "row did not run, as allowed: $r"
           done < "$RUNNER_TEMP/rows"
+          [ "$badrows" -eq 0 ] || { echo "::error::$badrows row(s) did not run, and the runner does not allow them"; exit 1; }
 
       # Run separately as well as under ctest. ctest hides a skipped test's output, so a SKIP here would be
       # indistinguishable from a pass -- exactly the silent no-op this test exists to avoid. On a modern runner

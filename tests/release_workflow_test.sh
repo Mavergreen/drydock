@@ -299,7 +299,11 @@ for t in apple_silicon_signing_test macfuse_golden_test installed_bin_test tool_
   lacks "$t must run on the runner" "$su" "$t)"
 done
 has "a row that says SKIP or N/A in a test that ran fails the job unless allowed" "$su" \
-  'row_allowed "$r" || { echo "::error::$r: a row did not run, and the runner does not allow that"; exit 1; }'
+  'row_allowed "$r" || { echo "::error::$r: a row did not run, and the runner does not allow that"; badrows=$((badrows + 1)); continue; }'
+has "the runner names every disallowed row before it fails, not only the first" "$su" \
+  '[ "$badrows" -eq 0 ] || { echo "::error::$badrows row(s) did not run, and the runner does not allow them"; exit 1; }'
+has "exec_arch_test's 10.9-only row may skip: on-target runs it" "$su" \
+  '"exec_arch_test: SKIP this-host: not 10.9") ;;'
 has "the row parse reads each test's whole SKIP and N/A lines from LastTest.log" "$su" \
   't != "" && /^(SKIP|N\/A) / { print t ": " $0 }'
 has "the row parse leaves out the tests that did not run, whose own SKIP lines the first list judged" "$su" \
