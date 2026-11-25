@@ -484,6 +484,22 @@ static int add_dispatch(Slice *s, uint64_t addr, uint64_t target, const char *ca
     return 0;
 }
 
+static int is_bridge_root(const Slice *s, uint64_t target) {
+    size_t i;
+    for (i = 0; i < s->a->n_bridge_roots; i++) if (s->a->bridge_roots[i] == target) return 1;
+    return 0;
+}
+
+static int add_bridge_call(Slice *s, uint64_t addr, uint64_t target, const ObjcValue *recv) {
+    ObjcEvidence e;
+    memset(&e, 0, sizeof e);
+    e.kind = OBJC_EV_BRIDGE_CALL; e.slice = s->slice; e.address = addr; e.target = target;
+    e.function = (char *)s->cur_fn;
+    e.receiver = *recv; e.sel.form = e.arg.form = OBJC_VAL_NONE;
+    if (objc_add_evidence(s->a, &e)) { s->status = OBJC_CANNOT_MEASURE; return -1; }
+    return 0;
+}
+
 /* ---- load commands, symbols, pointers --------------------------------------------------- */
 
 typedef struct {
@@ -2983,6 +2999,16 @@ static int scan_function(Slice *s, const Sect *x, uint64_t lo, uint64_t hi,
                     continue;
                 }
                 if ((cdef && note_fetch_arg(s, cdef)) || record_fetch(s, c, site, lit)) { flow_free(&flow); return s->status; }
+                continue;
+            }
+            if (is_bridge_root(s, target)) {
+                uint64_t va, def;
+                char text[MAX_LITERAL];
+                ObjcValue recv;
+                int kd = REG_VAL(REG_RDI, &va, &def);
+                if (kd < 0) { flow_free(&flow); return fail(s, "out-of-memory", site, "%s", "flow"); }
+                operand_of(s, kd, va, def, &recv, text, sizeof text);
+                if (add_bridge_call(s, site, target, &recv)) { flow_free(&flow); return s->status; }
                 continue;
             }
             if (!f && call_kind(s, target) == 1 && !p) {   /* Sel::register_unchecked(name) */

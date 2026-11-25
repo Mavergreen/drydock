@@ -656,6 +656,27 @@ row_is "$(at _open_urls_with_ops 0x778)" 2 \
 row_is "$(at _open_urls_with_ops 0xa36)" 1 "* selref:*:setAttributeDescriptor:forKeyword: -"
 [ "$(unknown_in _open_urls_with_ops)" = 0 ] || fail "open_urls_with_ops: $(unknown_in _open_urls_with_ops) sends without their selector, want 0"
 
+# spec: src/objc/report.h OBJC_EV_BRIDGE_CALL -- reader: calls to a bridge root. tests/objc/fixtures/table-consumer.m -DBRIDGE
+#       calls bridge-provider.m's FixtureBridge four times: two objc_getClass literals (one a tail jump), two +class results.
+art="$T/bridge"
+fxcc -Os -fobjc-arc -c "$FX/bridge-provider.m" -o "$T/bridge-provider.o"
+fxcc -DBRIDGE "$FX/table-consumer.m" "$T/bridge-provider.o" -o "$art" -framework AppKit -framework Foundation -lobjc
+root=$(at _FixtureBridge 0)
+read_artifact "$art"
+measured 'bridge: no root named'
+[ "$(count bridge-call)" = 0 ] || fail "bridge: $(count bridge-call) bridge-call rows with no --bridge-root, want 0"
+rc=0; "$DRYDOCK_OBJC_READER_DRIVER" --artifact "$art" --bridge-root "$root" >"$T/out" 2>"$T/err" || rc=$?
+measured 'bridge: root named'
+jumps=0
+for site in $(awk -F '\t' '$2 == "bridge-call" { print $4 }' "$T/out"); do
+  "$OTOOL" -arch x86_64 -tv "$art" | awk -v a="$(printf '%016x' "$site")" '$1 == a && $2 == "jmp"' | grep . >/dev/null && jumps=$((jumps + 1))
+done
+[ "$jumps" = 1 ] || fail "bridge: $jumps bridge-call rows at a jmp, want the one tail call"
+bridged=$(awk -F '\t' '$2 == "bridge-call" { split($12, r, ":"); print r[1] ":" r[3] }' "$T/out" | sort | tr '\n' ' ')
+[ "$bridged" = 'class-literal:FixtureBridgedCell class-literal:FixtureBridgedView result:- result:- ' ] ||
+  fail "bridge: the bridge-call receivers are '$bridged'"
+awk -F '\t' -v r="$root" '$2 == "bridge-call" && $5 != r' "$T/out" | grep . >/dev/null && fail 'bridge: a bridge-call not to the root'
+
 # spec: src/objc/macho-reader.c header -- The real defective artifact, when the caller supplies it (never fetched, modified or run).
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   sum=$(shasum -a 256 "$MAVERGREEN_OBJC_CODEX_ARTIFACT" | cut -d' ' -f1)

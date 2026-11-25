@@ -39,7 +39,9 @@ typedef enum {
     OBJC_EV_METHOD_REGISTRATION,
     /* A sel_registerName call at address whose argument is not a literal; name=callee. Recorded, instead of
      * refused, only under defer_computed_selectors; provider.c refuses it unless a verified group explains it. */
-    OBJC_EV_SEL_COMPUTED
+    OBJC_EV_SEL_COMPUTED,
+    /* A call or jump at address to target, one of bridge_roots; receiver is rdi's operand. */
+    OBJC_EV_BRIDGE_CALL
 } ObjcEvidenceKind;
 
 /* Where a register value at a dispatch site came from, as the reader's per-function value
@@ -272,6 +274,7 @@ typedef struct {
     int findings_mode;            /* open sends become unresolved findings, not errors */
     int metadata_only;            /* read only load commands and Objective-C metadata, no code */
     int defer_computed_selectors; /* a computed sel_registerName is OBJC_EV_SEL_COMPUTED, not refused (analyze, with a group) */
+    uint64_t *bridge_roots; size_t n_bridge_roots; /* own-absent roots' final addresses: calls to them are OBJC_EV_BRIDGE_CALL */
     char **rpaths; size_t n_rpaths;               /* the measured slice's LC_RPATHs */
     ObjcShipped *shipped; size_t n_shipped;       /* the shipped closure beyond the artifact (main.m) */
     char **image_paths; size_t n_image_paths;     /* 0 the artifact's path relative to the root, k shipped[k - 1]'s */
@@ -602,6 +605,8 @@ int objc_add_provider(ObjcAnalysis *a, ObjcProvider **out);
 /* Verify every provider against the artifact and refuse unattested method registrations; with a
  * source receipt, also map each linked member's line table to final addresses. 0 or 4. */
 int objc_verify_providers(ObjcAnalysis *a);
+/* Before the artifact is read: bridge_roots, each own-absent group's evidenced _ROOT address (none unplaced). 0 or 4. */
+int objc_bridge_roots(ObjcAnalysis *a);
 /* After classification: turn the unsupported sends an active provider answers into `provided`. */
 int objc_provide_findings(ObjcAnalysis *a);
 /* The build-evidence side: map each provider's archive members through a link map, cross-checked

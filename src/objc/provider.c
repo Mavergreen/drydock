@@ -1163,6 +1163,22 @@ static int chain_includes(const ObjcAnalysis *a, const char *cls, const char *ow
     return 0;
 }
 
+int objc_bridge_roots(ObjcAnalysis *a) {
+    size_t i, k;
+    for (i = 0; i < a->n_providers; i++) {
+        const ObjcProvider *p = &a->providers[i];
+        char sym[300];
+        uint64_t *g;
+        if (!p->own_absent || !p->have_evidence) continue;
+        snprintf(sym, sizeof sym, "_%s", p->root_symbol);
+        for (k = 0; k < p->n_atoms && strcmp(p->atoms[k].symbol, sym); k++) ;
+        if (k == p->n_atoms) continue;
+        if (!(g = realloc(a->bridge_roots, (a->n_bridge_roots + 1) * sizeof *g))) return objc_fail(a, "out-of-memory", NULL, 0, "bridge roots");
+        a->bridge_roots = g; g[a->n_bridge_roots++] = p->atoms[k].address;
+    }
+    return OBJC_OK;
+}
+
 int objc_verify_providers(ObjcAnalysis *a) {
     ObjcImage *im = NULL;
     size_t i, j, k;

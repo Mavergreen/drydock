@@ -2277,6 +2277,7 @@ int main(int argc, char **argv) {
     if (!rc) rc = objc_load_references(a);
     if (!rc) rc = objc_load_reference_set(a);
     for (k = 0; k < a->n_providers; k++) if (!a->providers[k].legacy) a->defer_computed_selectors = 1;   /* objc_verify_providers decides them */
+    if (!rc) rc = objc_bridge_roots(a);
     if (!rc) rc = objc_collect_artifacts(a);
     if (!rc) rc = shipped_closure(a, rroot, rel, volume);
     if (!rc) {

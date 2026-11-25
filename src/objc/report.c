@@ -145,6 +145,7 @@ void objc_analysis_destroy(ObjcAnalysis *a) {
     size_t i;
     if (!a) return;
     for (i = 0; i < a->n_evidence; i++) free_evidence(&a->evidence[i]);
+    free(a->bridge_roots);
     for (i = 0; i < a->n_bindings; i++) {
         ObjcBinding *b = &a->bindings[i];
         free(b->form); free(b->crate); free(b->rust_owner); free(b->rust_fn); free(b->demangled);

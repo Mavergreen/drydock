@@ -7,6 +7,7 @@
  * set would, so the reader bounds a call's argument registers by them. --shipped FILE then reads FILE's
  * metadata alone and adds its method definitions, as src/objc/main.c add_shipped does for a shipped
  * image after the artifact's code has been read.
+ * --bridge-root VA (repeatable) names an own-absent provider's root, so calls to it are bridge-call rows.
  * --link-map prints objc_linkmap_read's parse instead (link_map below).
  * --functions FILE prints objc_image_function's answers, one per line.
  * --rebased FILE VA prints 1 or 0: whether objc_image_rebased says a rebase entry covers the slot at VA.
@@ -21,7 +22,7 @@
 static const char *KIND[] = {
     "class", "category", "method", "selref", "classref", "metadata-use", "sel-cache",
     "class-cache", "cache-fetch", "cache-use", "sel-register", "class-lookup", "dispatch-call",
-    "method-registration",
+    "method-registration", "sel-computed", "bridge-call",
 };
 static const char *FORM[] = {
     "none", "unknown", "argument", "sel-cache", "class-cache", "selref", "classref", "sel-literal",
@@ -30,9 +31,9 @@ static const char *FORM[] = {
 
 static const char *s(const char *v) { return v ? v : "-"; }
 
-/* An operand as "form:0xref:text" ("-" text when unnamed); "-" for a non-dispatch row. */
+/* An operand as "form:0xref:text" ("-" text when unnamed); "-" for a non-dispatch row but a bridge call's receiver. */
 static void value(const ObjcEvidence *e, const ObjcValue *v) {
-    if (e->kind != OBJC_EV_DISPATCH_CALL) { printf("\t-"); return; }
+    if (e->kind != OBJC_EV_DISPATCH_CALL && !(e->kind == OBJC_EV_BRIDGE_CALL && v == &e->receiver)) { printf("\t-"); return; }
     printf("\t%s:0x%llx:%s", FORM[v->form], (unsigned long long)v->ref, s(v->text));
 }
 
@@ -128,7 +129,7 @@ static int functions(const char *file) {
 
 static int usage(void) {
     fprintf(stderr, "usage: reader-driver --artifact FILE [--references DIR] [--shipped FILE] [--binding-receipt FILE] "
-                    "[--close --signatures FILE [--sdk-facts FILE]]\n");
+                    "[--bridge-root VA]... [--close --signatures FILE [--sdk-facts FILE]]\n");
     return 2;
 }
 
@@ -136,6 +137,8 @@ int main(int argc, char **argv) {
     ObjcAnalysis *a;
     int i, rc, close = 0;
     size_t k;
+    uint64_t *roots = NULL;
+    size_t nroots = 0;
     const char *artifact = NULL, *receipt = NULL, *sigs = NULL, *facts = NULL, *refs = NULL, *shipped = NULL;
     if (argc == 2 && !strcmp(argv[1], "--demangle")) return demangle();
     if (argc == 3 && !strcmp(argv[1], "--functions")) return functions(argv[2]);
@@ -150,12 +153,18 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--signatures") && i + 1 < argc) sigs = argv[++i];
         else if (!strcmp(argv[i], "--sdk-facts") && i + 1 < argc) facts = argv[++i];
         else if (!strcmp(argv[i], "--close")) close = 1;
+        else if (!strcmp(argv[i], "--bridge-root") && i + 1 < argc) {
+            uint64_t *g = realloc(roots, (nroots + 1) * sizeof *g);
+            if (!g) { fprintf(stderr, "out of memory\n"); return 4; }
+            roots = g; roots[nroots++] = strtoull(argv[++i], NULL, 16);
+        }
         else return usage();
     }
     if (!artifact || ((sigs || facts) && !close)) return usage();
     if (!(a = objc_analysis_create()) || objc_set_string(&a->artifact_path, artifact) ||
         objc_set_string(&a->binding_receipt_path, receipt) || objc_set_string(&a->signatures_path, sigs) ||
         objc_set_string(&a->facts_path, facts) || objc_set_string(&a->references_dir, refs)) { fprintf(stderr, "out of memory\n"); return 4; }
+    a->bridge_roots = roots; a->n_bridge_roots = nroots;
     rc = refs ? objc_load_gprs_catalogs(a) : 0;
     if (rc == 0) rc = objc_load_references(a);
     if (rc == 0) rc = objc_collect_artifacts(a);
