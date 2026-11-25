@@ -275,6 +275,25 @@ static int walk(const RChainSrc *s, RChain *c, int ib_ok) {
     return 0;
 }
 
+int rc_mark_newer(RChainSrc *s, RGraph *g) {
+    size_t i, j;
+    if (!s->sorted) { qsort(s->e, s->n, sizeof *s->e, entry_cmp); s->sorted = 1; }
+    for (i = 0; i < g->n_chains; i++) {
+        RChain *c = &g->chains[i];
+        const char *newer = NULL;
+        if (!c->resolved || c->newer) continue;
+        for (j = 0; j < c->n_chain; j++) {
+            const Entry *e = lookup(s, c->chain[j]);
+            const char *v;
+            if (!e || e->src != SRC_NEWER) continue;
+            v = strcmp(e->version, "-") ? e->version : "?";
+            if (version_cmp(v, s->target) > 0 && (!newer || version_cmp(v, newer) > 0)) newer = v;
+        }
+        if (newer && !(c->newer = dup_n(newer, strlen(newer)))) return -1;
+    }
+    return 0;
+}
+
 int rc_resolve(RChainSrc *s, RGraph *g) {
     Name *names = NULL, *nn;
     size_t n = 0, i, k, u;

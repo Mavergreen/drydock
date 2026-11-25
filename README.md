@@ -178,7 +178,7 @@ The types are `i8`, `i16`, `i32` and `i64`; `true` and `false`; `f32` and `f64`,
 A NIBArchive dump and a keyed-archive dump differ as their formats do:
 
 * The format line: `format nibarchive A B` carries the NIBArchive header's two numbers; `format keyed` has none.
-* The chains: a NIBArchive nib names only its classes, so `dump` finds their superclasses in the reference set and in the bundle's binaries. A keyed archive stores each class's chain, which `dump` prints as stored, adding `hints` for its `$classhints`.
+* The chains: a NIBArchive nib names only its classes, so `dump` finds their superclasses in the reference set and in the bundle's binaries. A keyed archive stores each class's chain, which `dump` prints as stored, adding `hints` for its `$classhints` and, from the reference set, `newer` for a class newer than the target.
 * The values: a NIBArchive stores each integer at its own width, every string as `data`, and each collection as `NSInlinedValue = true` followed by one `UINibEncoderEmptyKey = ref @N` line per element. A keyed archive stores integers as `i64`, strings as `string`, a collection as one `NS.objects = uids @N @M ...` line, and a plain string, number or data in its object table as a `bare` object.
 * The order: a NIBArchive's values are dumped in the archive's order, and a keyed archive's in its dictionaries' order.
 

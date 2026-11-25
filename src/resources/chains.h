@@ -18,6 +18,9 @@ int  rc_add_binary(RChainSrc *s, const char *macho_path, char *why, size_t whysz
  * NSClassName and NSOriginalClassName. Classes come first from the binaries, then floor-runtime.tsv, then
  * newer-sdk.tsv, which sets the chain's newer to the newest version it needed. 0, or -1 out of memory. */
 int  rc_resolve(RChainSrc *s, RGraph *g);
+/* Sets newer on each resolved chain of g that has none, as rc_resolve would, from the classes the chain already
+ * names; the chains themselves are kept, as a keyed archive stores them. 0, or -1 out of memory. */
+int  rc_mark_newer(RChainSrc *s, RGraph *g);
 void rc_close(RChainSrc *s);
 
 #endif

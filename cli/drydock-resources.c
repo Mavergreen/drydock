@@ -6,7 +6,7 @@
  *     diff and edit. Superclass chains come from the reference set: --references DIR, else
  *     <realpath(this binary)>/../../share/drydock/objc/reference when it exists, and from the Mach-O files of the
  *     bundle NIB lies in; with neither, the chains are marked unresolved. A keyed-archive nib dumps with the chains
- *     its archive holds.
+ *     its archive holds, each marked newer from the reference set.
  *
  *   drydock-resources build [--target 10.9] [--resource-references DIR] [--no-adapt[=RULE]]... TEXT -o NIB
  *     writes the dump TEXT as a keyed-archive nib, replacing NIB whole or leaving it as it was. The adaptation rules
@@ -158,7 +158,7 @@ static RChainSrc *chain_src(const char *refdir, char **bins, size_t nb) {
 }
 
 /* buf, the n bytes of the file at path, as a graph in *g: 0, or 4 with the reason printed. A NIBArchive's chains are
- * resolved from s; a keyed archive keeps its own. With text set, a dump is read too. */
+ * resolved from s; a keyed archive keeps its own, each marked newer from s. With text set, a dump is read too. */
 static int parse(const char *path, const uint8_t *buf, size_t n, RChainSrc *s, int text, RGraph *g) {
     char why[512];
     int rc;
@@ -170,8 +170,8 @@ static int parse(const char *path, const uint8_t *buf, size_t n, RChainSrc *s, i
         return 4;
     }
     if (rc) { fprintf(stderr, "drydock-resources: %s: %s\n", path, why); return rc; }
-    if (g->format != RF_NIBARCHIVE || g->n_chains) return 0;
-    if (rc_resolve(s, g)) {
+    if (g->format == RF_NIBARCHIVE && g->n_chains) return 0;
+    if (g->format == RF_KEYED ? rc_mark_newer(s, g) : rc_resolve(s, g)) {
         fprintf(stderr, "drydock-resources: out of memory\n");
         rg_free(g);
         return 4;

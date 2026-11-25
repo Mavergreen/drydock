@@ -101,5 +101,23 @@ run idem check --exceptions "$T/lc" --report "$T/idem.json" "$T/app.app/Contents
 grep -q '"path":"Contents/Resources/Base.lproj/layout.nib","format":"keyed"' "$T/idem.json" \
   && pass "check: a lone nib inside a bundle is named relative to the bundle" || fail "check: relpath: $(grep '"path"' "$T/idem.json")"
 
+"$R" dump "$FIX/nib-10.9/int64.nib/keyedobjects.nib" > "$T/int64.rez" 2>"$T/int64.err"
+sed -e 's/^@16 NSView$/@16 NSGridView/' -e 's/^chain NSIBObjectData : NSObject$/chain NSGridView : NSView : NSResponder : NSObject\
+&/' "$T/int64.rez" > "$T/grid.rez"
+[ "$(grep -c -e '^@16 NSGridView$' -e '^chain NSGridView : ' "$T/grid.rez")" = 2 ] || fail "check_keyed_newer: setup: $(head -3 "$T/int64.err")"
+"$R" build --no-adapt "$T/grid.rez" -o "$T/grid.nib" 2>"$T/grid.err" || fail "check_keyed_newer: setup: build: $(head -3 "$T/grid.err")"
+for f in grid.rez grid.nib; do
+  run "c-$f" check "$T/$f"
+  [ "$(rc "c-$f")" = 1 ] && grep -q "^$f: finding: class-missing NSGridView (10.12)\$" "$T/c-$f" \
+    && ! grep -q 'class-missing NS[A-FH-Z]' "$T/c-$f" \
+    && pass "check_keyed_newer: a keyed $f using a class 10.9 lacks is class-missing, with the version that added it" \
+    || fail "check_keyed_newer: $f: exit $(rc "c-$f"), $(grep class-missing "$T/c-$f") $(err "c-$f")"
+done
+"$R" dump --references "$ROOT/reference/objc" "$T/grid.nib" > "$T/grid.dump" 2>"$T/grid.err"
+grep -q '^chain NSGridView : NSView : NSResponder : NSObject newer 10.12$' "$T/grid.dump" \
+  && grep -q '^chain NSButton : NSControl : NSView : NSResponder : NSObject$' "$T/grid.dump" \
+  && pass "check_keyed_newer: a keyed nib's dump marks the archive's own chain newer from --references" \
+  || fail "check_keyed_newer: dump: $(grep '^chain NS[GV]' "$T/grid.dump") $(head -2 "$T/grid.err")"
+
 [ -s "$T/failed" ] && { echo "$(wc -l < "$T/failed" | tr -d ' ') failed"; exit 1; }
 echo "all passed"
