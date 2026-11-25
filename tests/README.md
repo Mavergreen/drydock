@@ -49,7 +49,7 @@ The suites are the `add_test` entries in `../CMakeLists.txt`, all run by `ctest`
 These read the packaged artifacts, so they run after packaging in `release.yml`:
 
 - **`pkg_payload_test.sh`** — the `.pkg` installs exactly the two builds merged, both slices in every Mach-O, the docs and the updater.
-- **`standalone_archive_test.sh`** — `drydock-<v>-macos-universal.tar.gz` is the `.pkg`'s tree without its manifest, every Mach-O universal and loading nothing from outside the system or itself, and the tool and every wrapper, run from a path with a space with a decoy `drydock-macho-rewrite` first on `PATH`, give the `.pkg`'s results. A wrapper through a symlink asks for `DRYDOCK_MACHO_REWRITE_COMPAT_DIR`.
+- **`standalone_archive_test.sh`** — `drydock-<v>-macos-universal.tar.gz` is the `.pkg`'s tree without its manifest, every Mach-O universal and loading nothing from outside the system or itself, and the tool and every wrapper, run from a path with a space with a decoy `drydock-macho-rewrite` first on `PATH`, give the `.pkg`'s results. A wrapper through a symlink asks for `DRYDOCK_MACHO_REWRITE_COMPAT_DIR`. On a host that runs no Mach-O (Linux) it checks the archive and runs none of it.
 
 ## Not run by `ctest`: the by-hand sweeps
 

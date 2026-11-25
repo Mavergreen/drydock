@@ -1,5 +1,5 @@
 #!/bin/sh
-# platform: macOS-only -- compares the archive with the .pkg's payload, read with pkgutil
+# platform: host-agnostic -- reads the .pkg with shipyard's pkg_read.sh; runs the archive's tools only where Mach-O executes
 # tests/standalone_archive_test.sh -- the standalone archive is the .pkg's tree, and runs from anywhere
 #   usage: standalone_archive_test.sh ARCHIVE DRYDOCK.pkg
 #          ARCHIVE is drydock-<v>-macos-universal.tar.gz: one top directory, drydock-<v>/, holding
@@ -10,8 +10,10 @@
 #          drydock-macho-rewrite first on PATH, the tool and every wrapper give the same results as
 #          the .pkg's own copies. A wrapper reached through a symlink asks for
 #          DRYDOCK_MACHO_REWRITE_COMPAT_DIR, and works once given it. Without a cc to build the bake
-#          shim it skips that one case, except under GitHub Actions. Uses tools Mac OS X 10.9
-#          ships (tar, pkgutil, gzip, cpio, shasum, stat), and clang22's llvm-lipo and llvm-otool.
+#          shim it skips that one case, except under GitHub Actions. On a host that executes no
+#          Mach-O (Linux) it checks the archive and runs none of it, and says so. Uses tar, gzip,
+#          cpio, shasum and stat (BSD's or GNU's), shipyard's pkg_read.sh, and clang22's llvm-lipo
+#          and llvm-otool.
 set -eu
 usage='usage: standalone_archive_test.sh ARCHIVE DRYDOCK.pkg'
 [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
@@ -19,6 +21,8 @@ archive=$1 pkg=$2
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 ROOT=$REPO
 . "$ROOT/tests/lib/toolchain.sh"
+. "$ROOT/tests/lib/exec-arch.sh"
+. "$REPO/build/msc.sh"
 fixture=$REPO/tests/fixture.macho
 tree=usr/local/mavergreen/drydock
 fail() { echo "FAIL: $*"; exit 1; }
@@ -42,7 +46,8 @@ while IFS= read -r e; do
   case "$n" in mavergreen.plist) fail "$b holds the package manager's manifest: $e" ;; esac
   case "$e" in *.app|*.app/*) fail "$b holds a bundle: $e" ;; esac
 done < "$t/list"
-tar -tvzf "$archive" | awk '$3 != "root" || $4 != "wheel" { print; exit 1 }' > "$t/owner" \
+tar -tvzf "$archive" | awk '{ u = $3; g = $4 } $2 ~ /\// { split($2, o, "/"); u = o[1]; g = o[2] }
+  u != "root" || g != "wheel" { print; exit 1 }' > "$t/owner" \
   || fail "$b records an owner other than root:wheel: $(cat "$t/owner")"
 gzip -dc "$archive" | grep -a -q -E 'LIBARCHIVE\.xattr\.|SCHILY\.xattr\.' \
   && fail "$b stores extended attributes in its pax headers"
@@ -53,20 +58,18 @@ tar -xzf "$archive" -C "$u" || fail "tar cannot unpack $b"
 A="$u/$top"
 [ -x "$A/bin/drydock-macho-rewrite" ] || fail "$top/bin/drydock-macho-rewrite is missing or not executable"
 
-pkgutil --expand "$pkg" "$t/x"
+sh "$SHIPYARD/pkg_read.sh" expand "$pkg" "$t/x"
 found=0
-for pl in "$t"/x/*/Payload "$t"/x/Payload; do
-  [ -f "$pl" ] || continue
-  d="$t/p$found"
-  mkdir "$d"
-  gzip -dc "$pl" > "$d.cpio"
-  (cd "$d" && cpio -id --quiet < "$d.cpio")
+for c in $(sh "$SHIPYARD/pkg_read.sh" facts "$t/x" | sed -n 's/^component \([^ ]*\) version .*/\1/p'); do
+  d="$t/p.$c"
+  sh "$SHIPYARD/pkg_read.sh" payload "$t/x" "$c" "$d"
   if [ -d "$d/$tree" ]; then P="$d/$tree"; found=$((found + 1)); fi
 done
 [ "$found" -eq 1 ] || fail "$found payloads in $pkg carry $tree (want exactly 1)"
 diff -r -x mavergreen.plist "$P" "$A" > "$t/diff" \
   || fail "$top/ is not the package's $tree without its manifest: $(head -5 "$t/diff")"
-modes() { (cd "$1" && find . ! -name mavergreen.plist -exec stat -f '%Lp %N' {} + | sort); }
+if stat -c %a . >/dev/null 2>&1; then mode_of() { stat -c '%a %n' "$1"; }; else mode_of() { stat -f '%Lp %N' "$1"; }; fi
+modes() { (cd "$1" && find . ! -name mavergreen.plist | sort | while IFS= read -r f; do mode_of "$f"; done); }
 modes "$P" > "$t/modes-pkg"
 modes "$A" > "$t/modes-archive"
 diff "$t/modes-pkg" "$t/modes-archive" > "$t/diff" \
@@ -92,6 +95,12 @@ while IFS= read -r f; do
   done < "$t/rpaths"
 done < "$t/files"
 [ "$machos" -ge 1 ] || fail "no Mach-O in $top/"
+
+if [ "$(hardware_arch)" = none ]; then
+  echo "INFO: this host executes no Mach-O, so none of $top/'s tools ran from it"
+  echo "PASS: standalone_archive_test ($b is the package's tree without its manifest, $machos Mach-O files with both slices and no outside loads; not run here)"
+  exit 0
+fi
 
 mkdir "$t/decoy"
 printf '#!/bin/sh\necho DECOY\nexit 99\n' > "$t/decoy/drydock-macho-rewrite"
