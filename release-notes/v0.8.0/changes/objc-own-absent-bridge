@@ -1,0 +1,1 @@
+drydock-objc verifies a provider root an app calls once per class to add old-API methods, such as Recaulk's accessibility bridge, under strict mode.
