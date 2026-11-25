@@ -543,8 +543,10 @@ jobs:
   # reason the list states; any other row that says SKIP or N/A fails it unless a second allow-list allows
   # it. Then the arm64 checks run on the installed tools, each failing the job on a 77, and it makes
   # equivalence's macos-arm64 outputs. Nothing here packages; the Rosetta snapshot and check bracket it all.
+  # It runs only on a publishing run, the family's publish-only smoke, so a push takes no macOS runner.
   modern-smoke:
     needs: [build]
+    if: needs.build.outputs.publish == 'yes'
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -804,6 +806,7 @@ jobs:
   equivalence:
     name: equivalence (linux-x86_64 against macOS)
     needs: [build, linux, on-target, modern-smoke]
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -816,6 +819,7 @@ jobs:
           path: ${{ runner.temp }}/equivalence
 
       - uses: actions/download-artifact@v8
+        if: needs.modern-smoke.result == 'success'
         with:
           name: drydock-equivalence-arm64
           path: ${{ runner.temp }}/equivalence/macos-arm64
@@ -835,7 +839,7 @@ jobs:
           name: drydock
           path: ${{ runner.temp }}/macos
 
-      - name: The Linux drydock-macho-rewrite and both macOS slices make the same files, byte for byte
+      - name: The Linux drydock-macho-rewrite and the macOS x86_64 slice make the same files, byte for byte
         run: |
           set -eu
           V='${{ needs.build.outputs.version }}'
@@ -843,8 +847,14 @@ jobs:
           mkdir "$RUNNER_TEMP/unpacked"
           tar -xzf "$RUNNER_TEMP/linux/drydock-$V-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/unpacked"
           sh tests/equivalence.sh produce "$RUNNER_TEMP/unpacked/drydock-$V/bin" "$EQ/inputs" "$EQ/linux-x86_64"
-          sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/macos-arm64"
           sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/linux-x86_64"
+
+      - name: On a publishing run, the arm64 slice makes the same files too
+        if: needs.modern-smoke.result == 'success'
+        run: |
+          set -eu
+          EQ="$RUNNER_TEMP/equivalence"
+          sh tests/equivalence.sh compare "$EQ/macos-x86_64" "$EQ/macos-arm64"
           sh tests/equivalence.sh compare "$EQ/macos-arm64" "$EQ/linux-x86_64"
 
       - name: The Linux archive holds the macOS archive's tree
@@ -855,6 +865,7 @@ jobs:
 
   assemble:
     needs: [build, linux, equivalence]
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

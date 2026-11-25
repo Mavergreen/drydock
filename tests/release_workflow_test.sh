@@ -187,8 +187,18 @@ has "modern-smoke runs on Apple Silicon (macos-26)" "$m" "runs-on: macos-26"
 for j in publish required equivalence; do
   needs "$j" | grep -qx modern-smoke && ok "$j needs modern-smoke" || bad "$j does not need modern-smoke"
 done
-lacks "modern-smoke runs on every push, not only a publishing run" "$m" "
-    if:"
+has "modern-smoke runs only on a publishing run, the family's publish-only smoke" "$m" "
+    if: needs.build.outputs.publish == 'yes'"
+for j in equivalence assemble; do
+  has "$j runs when modern-smoke is skipped, on a push that publishes nothing" "$(job $j)" "
+    if: \${{ !failure() && !cancelled() }}"
+done
+for t in "name: drydock-equivalence-arm64" 'compare "$EQ/macos-x86_64" "$EQ/macos-arm64"'; do
+  has "equivalence reads the arm64 outputs only when modern-smoke ran: $t" "$(step equivalence "$t")" \
+    "if: needs.modern-smoke.result == 'success'"
+done
+lacks "the Linux-against-x86_64 compare does not wait on modern-smoke" \
+  "$(step equivalence 'compare "$EQ/macos-x86_64" "$EQ/linux-x86_64"')" "needs.modern-smoke"
 for x in build-pkg.sh build-standalone.sh sign_and_appcast.sh release-notes.sh; do
   lacks "modern-smoke packages nothing: no $x" "$m" "$x"
 done
