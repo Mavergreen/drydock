@@ -41,7 +41,7 @@ _tc_wrap() {
   } >"$_tc_w/$1.$$" && chmod +x "$_tc_w/$1.$$" && mv "$_tc_w/$1.$$" "$_tc_w/$1"
 }
 # _tc_bare NAME ARCH MIN: clang22 with no cfg, for ARCH at MIN
-_tc_bare() { _tc_wrap "$1" "$2" "$_tc_cc" " --no-default-config$_tc_ld -arch $2 -mmacosx-version-min=$3"; }
+_tc_bare() { _tc_wrap "$1" "$2" "$_tc_cc" " --no-default-config --target=$2-apple-macos$_tc_ld -arch $2 -mmacosx-version-min=$3"; }
 _tc_bare cc-arm64 arm64 11.0 || exit 1
 . "$ROOT/tests/lib/exec-arch.sh"
 case $(hardware_arch) in
