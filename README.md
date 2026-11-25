@@ -101,25 +101,27 @@ A row names its code by `path`; `symbol` or `symbols` (the copies of one generic
 
 ### Bridges: own-absent groups
 
-A provider group with `"guard": "own-absent"` verifies a runtime bridge: code the app itself names, that adds methods at run time to the app's own classes, where the floor SDK lacks them. The group names no `class`. Its members are all `"-"` instance methods, each with the implementation symbol of its IMP. It may also name `class_table`, a data symbol, and `super_fallbacks`, a list of `{implementation_symbol, selector}` records.
+A provider group with `"guard": "own-absent"` verifies a runtime bridge: code the app itself names, that adds methods at run time to the app's own classes, where the floor SDK lacks them. The group names no `class`. Its members are all `"-"` instance methods that return no struct or union, each with the implementation symbol of its IMP. It may also name `class_table`, a data symbol, and `super_fallbacks`, a list of `{implementation_symbol, selector}` records.
 
 The bridge must keep this contract, or the group is refused:
 
-* One exported root, `void ROOT(Class)`, with no constructor.
-* It calls only `class_addMethod`, with literal selectors and literal type encodings. A NULL class adds nothing.
+* One exported root, `void ROOT(Class)`, whose archive member has no initializer (else `unsupported-provider`).
+* It changes the runtime only by `class_addMethod`, with literal selectors and literal type encodings, and looks nothing up. A NULL class adds nothing.
 * Its only store into the image is the class into `class_table`.
-* It registers each member with a direct `class_addMethod` call.
+* It registers each member with a direct `class_addMethod` call, in the root's own function.
+* It reads `class_table` as unknown, since each call sees what the calls before it stored. A search for a free slot must stop at the table's end, and what the root registers must not depend on the table. Every way through the root adds exactly the members, a full table included.
+* Each IMP makes its getter sends and its super send itself. A helper it calls, unless inlined, leaves argument 0 untyped.
 
-The app calls the root once per class, with a literal class: `objc_getClass("X")`, a classref, or `[X class]`. A class from any other source is `computed-class-producer`. `link-args` does not root an own-absent group; the app's call does.
+The app calls the root once per class, with a literal class: `objc_getClass("X")`, a classref, or `[X class]`. A class from any other source is `computed-class-producer`, as is one that may be a metaclass (a literal some `objc_getMetaClass` call is given, or a slot outside `__objc_classrefs`) and `[X class]` where X or an app ancestor implements `+class`. `link-args` does not root an own-absent group; the app's call does.
 
-For each class the app passes, `analyze` checks that the class and its app ancestors lack each member, that the nearest ancestor the floor knows has it with the newer SDK's encoding, and that its framework is strongly loaded. The findings are `bridge-class-not-own` (the class is not one the artifact defines), `provider-absent-from-floor` (no floor ancestor, or a member the floor lacks), `provider-abi-mismatch` (the encoding differs) and `provider-guard-violation` (the app already has the member). `bridge-class-not-own` and `computed-class-producer` are reported at the call to the root.
+For each class the app passes, `analyze` checks that the class and its app ancestors lack each member and are not bridged themselves, that the nearest ancestor the floor knows has it with the newer SDK's encoding, and that its framework, and any image that puts a member on that ancestor's chain, is strongly loaded. The findings are `bridge-class-not-own` (the class is not one the artifact defines), `provider-absent-from-floor` (no floor ancestor, or a member the floor lacks), `provider-abi-mismatch` (the encoding differs) and `provider-guard-violation` (the app already has the member, or an app ancestor is bridged too, whose IMPs' super sends would reach each other). `bridge-class-not-own` and `computed-class-producer` are reported at the call to the root.
 
 A bridge credits nothing as `provided`. It credits two things:
 
 * A member IMP's sends are judged with argument 0 typed as an instance of the bridged classes. The IMP must be reached only by the root's registration. A member IMP whose address is also stored in data (a registration table) or taken anywhere else leaves argument 0 untyped, so its sends are judged as any open receiver's.
 * One super send per IMP: every IMP that super-sends needs its own `super_fallbacks` record, and a record excuses only a super send of that IMP's own member selector, given as a literal or as the IMP's `_cmd`. A record that excuses no send is listed in the report's `unused_super_fallbacks`.
 
-A root no call site names is inactive. Nothing is verified, its IMPs' sends are unreachable, the exit is 0, and its records are listed under `unused_super_fallbacks`. If something takes the root's address other than a bridge call, that is `provider-foreign-entry`. An instruction the analyzer does not model in the root, such as a vectorized loop, makes it cannot-measure; build such loops with vectorization disabled.
+A root no call site names is inactive. No class is verified, its IMPs' sends are unreachable, the exit is 0, and its records are listed under `unused_super_fallbacks`. If something takes the root's address other than a bridge call, that is `provider-foreign-entry`, and a `class_addMethod` call outside the root's own function is `provider-unexplored-mutation`. An instruction the analyzer does not model in the root, such as a vectorized loop, makes it cannot-measure; build such loops with vectorization disabled.
 
 ### Undecoded bytes in code
 
