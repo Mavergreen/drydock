@@ -6,11 +6,14 @@
 #          The package installs exactly what the two builds' install rules install, merged into
 #          one universal tree -- the files installed_layout_test ran through a farm -- plus the
 #          docs, and the two updaters merged where the family puts them. Its Distribution names
-#          both host arches. Every Mach-O it ships carries both slices, and, where codesign knows
-#          arm64 (macOS 11 and later), the arm64 slice of drydock-macho-rewrite and of the updater
-#          keeps a valid signature. A fat file may differ from the expected one in how lipo laid out
-#          the container, never in its arches or any slice. Uses shipyard's pkg_read.sh and
-#          lipo-merge-tree.sh, clang22's llvm-lipo and llvm-otool, and gzip, cpio, od and cmp.
+#          both host arches. Every payload entry is owned by uid 0 gid 0; every file under bin/ and
+#          the updater's Contents/MacOS/ is mode 755; the updater's executable carries exactly
+#          x86_64 and arm64. Every Mach-O it ships carries both slices, and every arm64 slice
+#          carries LC_CODE_SIGNATURE, without which Apple Silicon kills it at exec. Where codesign
+#          knows arm64 (macOS 11 and later), the arm64 slice of drydock-macho-rewrite and of the
+#          updater keeps a valid signature. A fat file may differ from the expected one in how lipo
+#          laid out the container, never in its arches or any slice. Uses shipyard's pkg_read.sh
+#          and lipo-merge-tree.sh, clang22's llvm-lipo and llvm-otool, and gzip, cpio, od and cmp.
 set -eu
 usage='usage: pkg_payload_test.sh DRYDOCK.pkg CMAKE BUILD-X86_64 BUILD-ARM64'
 [ $# -eq 4 ] || { echo "$usage" >&2; exit 2; }
@@ -80,12 +83,36 @@ found=0; n=0
 for c in $(sed -n 's/^component \([^ ]*\) version .*/\1/p' "$t/facts"); do
   n=$((n + 1))
   sh "$PR" list "$x" "$c" > "$t/list.$c"
+  awk -F '\t' -v c="$c" '$3 != 0 || $4 != 0 { print "FAIL: " c "'"'"'s payload has " $1 " owned by uid " $3 " gid " $4 ", not 0 0"; bad = 1 } END { exit bad }' \
+    "$t/list.$c" || exit 1
   grep -q "^\./$tree/" "$t/list.$c" || continue
   found=$((found + 1))
   sh "$PR" payload "$x" "$c" "$t/p"
-  got=$t/p
+  got=$t/p list=$t/list.$c
 done
 [ "$found" -eq 1 ] || { echo "FAIL: $found of $n payloads in $pkg carry $tree (want exactly 1)"; exit 1; }
+upd="$got/Library/Application Support/Mavergreen/drydock-updater.app"
+for d in "./$tree/bin" "./${upd#"$got"/}/Contents/MacOS"; do
+  awk -F '\t' -v d="$d/" 'index($1, d) == 1 { n++; if ($2 != 100755) { print "FAIL: " $1 " is mode " $2 ", not a mode-755 file"; bad = 1 } }
+    END { if (!n) { print "FAIL: the payload has nothing under " d; bad = 1 } exit bad }' "$list" || exit 1
+done
+[ -f "$upd/Contents/MacOS/drydock-updater" ] || { echo "FAIL: the package has no drydock-updater executable"; exit 1; }
+ua=$("$LIPO" -archs "$upd/Contents/MacOS/drydock-updater" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')
+[ "$ua" = "arm64 x86_64 " ] || { echo "FAIL: drydock-updater carries ${ua% }, not exactly x86_64 and arm64"; exit 1; }
+
+machos=0
+find "$got" -type f > "$t/files"
+while IFS= read -r f; do
+  "$LIPO" -info "$f" >/dev/null 2>&1 || continue
+  machos=$((machos + 1))
+  "$LIPO" "$f" -verify_arch x86_64 arm64 \
+    || { echo "FAIL: ${f#"$got"/} lacks a slice: $("$LIPO" -info "$f" 2>&1 | sed 's/.*: //')"; exit 1; }
+  "$LIPO" "$f" -thin arm64 -output "$t/arm64-slice"
+  "$OTOOL" -l "$t/arm64-slice" | grep -q '^ *cmd LC_CODE_SIGNATURE$' \
+    || { echo "FAIL: the arm64 slice of ${f#"$got"/} has no LC_CODE_SIGNATURE, so Apple Silicon kills it at exec"; exit 1; }
+  rm -f "$t/arm64-slice"
+done < "$t/files"
+[ "$machos" -ge 3 ] || { echo "FAIL: only $machos Mach-O files in the payload; drydock-macho-rewrite, the updater and Sparkle at least"; exit 1; }
 
 "$CMAKE" --install "$BX" --prefix "$t/x86_64" >"$t/install.x86_64.log" 2>&1
 "$CMAKE" --install "$BA" --prefix "$t/arm64" >"$t/install.arm64.log" 2>&1
@@ -117,22 +144,11 @@ for f in LICENSE README.md PROVENANCE.md; do
   [ -f "$got/$tree/share/doc/drydock/$f" ] || { echo "FAIL: the package has no share/doc/drydock/$f"; exit 1; }
 done
 [ -f "$got/$tree/mavergreen.plist" ] || { echo "FAIL: the package has no manifest"; exit 1; }
-upd="$got/Library/Application Support/Mavergreen/drydock-updater.app"
 [ -d "$upd" ] || { echo "FAIL: the package has no drydock-updater.app"; exit 1; }
 env -u LIPO sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b "$BA/drydock-updater.app" \
   --out "$t/drydock-updater.app"
 same_tree "$t/drydock-updater.app" "$upd" \
   || { echo "FAIL: the package's drydock-updater.app is not the two builds' updaters merged"; exit 1; }
-
-machos=0
-find "$got" -type f > "$t/files"
-while IFS= read -r f; do
-  "$LIPO" -info "$f" >/dev/null 2>&1 || continue
-  machos=$((machos + 1))
-  "$LIPO" "$f" -verify_arch x86_64 arm64 \
-    || { echo "FAIL: ${f#"$got"/} lacks a slice: $("$LIPO" -info "$f" 2>&1 | sed 's/.*: //')"; exit 1; }
-done < "$t/files"
-[ "$machos" -ge 3 ] || { echo "FAIL: only $machos Mach-O files in the payload; drydock-macho-rewrite, the updater and Sparkle at least"; exit 1; }
 
 case "$(uname -s) $(sw_vers -productVersion 2>/dev/null || :)" in
   Darwin\ 10.*) echo "INFO: this codesign predates arm64; the arm64 slices' signatures are checked on 11 and later" ;;
@@ -145,4 +161,4 @@ case "$(uname -s) $(sw_vers -productVersion 2>/dev/null || :)" in
     done ;;
   *) echo "INFO: no codesign off macOS; the arm64 slices' signatures are checked on macOS 11 and later" ;;
 esac
-echo "PASS: pkg_payload_test (the package installs the two builds merged, $machos Mach-O files with both slices, the docs, and the updater)"
+echo "PASS: pkg_payload_test (the package installs the two builds merged, $machos Mach-O files with both slices and signed arm64 slices, root-owned with executable tools, the docs, and the updater)"
