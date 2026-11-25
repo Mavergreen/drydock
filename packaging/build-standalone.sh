@@ -1,11 +1,11 @@
 #!/bin/sh
-# platform: macOS-only -- tars merge-tree.sh's universal tree, which lipo makes
+# platform: host-agnostic -- bsdtar 3 or GNU tar records root:wheel; 10.9's bsdtar 2.8 cannot, and says so
 # packaging/build-standalone.sh -- the standalone archive: merge-tree.sh's universal tree, tarred
 #   usage: build-standalone.sh BUILD-X86_64 BUILD-ARM64 VERSION OUT.tar.gz
 #          OUT is drydock-VERSION-macos-universal.tar.gz, one top directory drydock-VERSION/
 #          holding bin/ and share/ exactly as the .pkg installs them, without its updater, manifest
 #          or scripts: unpacked anywhere, it needs nothing else from Mavergreen. Entries are
-#          root:wheel with no Mac metadata where this tar can say so (bsdtar 3; not 10.9's 2.8).
+#          root:wheel with no Mac metadata where this tar can say so (bsdtar 3, GNU tar; not 10.9's 2.8).
 set -eu
 usage='usage: build-standalone.sh BUILD-X86_64 BUILD-ARM64 VERSION OUT.tar.gz'
 [ $# -eq 4 ] || { echo "$usage" >&2; exit 2; }
@@ -18,6 +18,7 @@ trap 'rm -rf "$work"' EXIT
 sh "$REPO/packaging/merge-tree.sh" "$BX" "$BA" "$work/drydock-$V"
 mkdir -p "$(dirname "$OUT")"
 flags="--uid 0 --gid 0 --uname root --gname wheel --no-mac-metadata"
+tar --version 2>/dev/null | grep -q 'GNU tar' && flags="--owner=root:0 --group=wheel:0"
 if ! COPYFILE_DISABLE=1 tar $flags -cf /dev/null -C "$work" "drydock-$V" 2>/dev/null; then
   echo "build-standalone: this tar ($(tar --version | head -1)) cannot record root:wheel or omit Mac metadata; the archive keeps this machine's owner" >&2
   flags=""
