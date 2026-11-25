@@ -7,7 +7,9 @@
 #          docs, and the two updaters merged where the family puts them. Its Distribution names
 #          both host arches. Every Mach-O it ships carries both slices, and, where codesign knows
 #          arm64 (not on 10.9), the arm64 slice of drydock-macho-rewrite and of the updater keeps a
-#          valid signature. Uses only tools Mac OS X 10.9 ships (pkgutil, gzip, cpio, lipo) and
+#          valid signature. A fat file may differ from the expected one in how lipo laid out the
+#          container, never in its arches or any slice. Uses only tools Mac OS X 10.9 ships
+#          (pkgutil, gzip, cpio, lipo, od, cmp) and
 #          shipyard's lipo-merge-tree.sh.
 set -eu
 usage='usage: pkg_payload_test.sh DRYDOCK.pkg CMAKE BUILD-X86_64 BUILD-ARM64'
@@ -20,6 +22,54 @@ ROOT=$REPO
 tree=usr/local/mavergreen/drydock
 t=$(mktemp -d "${TMPDIR:-/tmp}/pkg-payload.XXXXXX")
 trap 'rm -rf "$t"' EXIT
+
+fat_archs() { "$LIPO" -info "$1" 2>/dev/null | sed -n 's/^Architectures in the fat file: .* are: //p'; }
+fat_layout() {   # fat_layout FILE: each slice's offset and alignment, read from the fat header
+  set -- "$1" $(fat_archs "$1")
+  f=$1; shift; i=0
+  hx=$(od -An -v -tx1 -N$((8 + 20 * $#)) "$f" | tr -d ' \n')
+  for a in "$@"; do
+    b=$((16 + 40 * i)); i=$((i + 1))
+    e=$((0x$(echo "$hx" | cut -c$((b + 33))-$((b + 40)))))
+    printf '%s at %s align 2^%s; ' "$a" "$(printf '%#x' $((0x$(echo "$hx" | cut -c$((b + 17))-$((b + 24))))))" "$e"
+  done
+}
+same_fat() {   # same_fat WANT GOT: both fat, the same arches, each arch's slice byte for byte alike
+  wa=$(fat_archs "$1"); ga=$(fat_archs "$2")
+  [ -n "$wa" ] && [ "$wa" = "$ga" ] || return 1
+  for a in $wa; do
+    "$LIPO" "$1" -thin "$a" -output "$t/sw.$a" && "$LIPO" "$2" -thin "$a" -output "$t/sg.$a" \
+      && cmp -s "$t/sw.$a" "$t/sg.$a" || { rm -f "$t"/sw.* "$t"/sg.*; return 1; }
+  done
+  rm -f "$t"/sw.* "$t"/sg.*
+  echo "INFO: ${3:-$1} differs only in its fat container (slices byte-identical): want $(fat_layout "$1")got $(fat_layout "$2")"
+}
+same_tree() {   # same_tree WANT GOT: diff -r, except that a fat file may differ in container layout alone
+  diff -rq "$1" "$2" >"$t/dd" 2>&1 && return 0
+  rc=0
+  while IFS= read -r l; do
+    case $l in
+      Files\ *\ differ) ;;
+      *) cat "$t/dd"; return 1 ;;
+    esac
+    dw=${l#Files }; dw=${dw%% and *}; dg=${l#* and }; dg=${dg% differ}
+    same_fat "$dw" "$dg" "${dg#"$2"/}" || { echo "$l"; rc=1; }
+  done <"$t/dd"
+  return $rc
+}
+
+mkdir "$t/fc"
+cp "$REPO/tests/fixture.macho" "$t/fc/x"; cp "$t/fc/x" "$t/fc/a"
+printf '\014\000\000\001\000\000\000\000' | dd of="$t/fc/a" bs=1 seek=4 conv=notrunc 2>/dev/null
+"$LIPO" -create -arch x86_64 "$t/fc/x" -arch arm64 "$t/fc/a" -segalign x86_64 1000 -segalign arm64 1000 -output "$t/fc/fat.1000"
+"$LIPO" -create -arch x86_64 "$t/fc/x" -arch arm64 "$t/fc/a" -segalign x86_64 4000 -segalign arm64 4000 -output "$t/fc/fat.4000"
+cmp -s "$t/fc/fat.1000" "$t/fc/fat.4000" && { echo "FAIL: self-check: -segalign did not change the container"; exit 1; }
+same_fat "$t/fc/fat.1000" "$t/fc/fat.4000" >/dev/null || { echo "FAIL: self-check: two layouts of the same slices were refused"; exit 1; }
+printf '\377' | dd of="$t/fc/a" bs=1 seek=4000 conv=notrunc 2>/dev/null
+"$LIPO" -create -arch x86_64 "$t/fc/x" -arch arm64 "$t/fc/a" -segalign x86_64 4000 -segalign arm64 4000 -output "$t/fc/fat.mut"
+same_fat "$t/fc/fat.1000" "$t/fc/fat.mut" >/dev/null && { echo "FAIL: self-check: a one-byte difference in one slice was accepted"; exit 1; }
+same_fat "$t/fc/x" "$t/fc/x" >/dev/null && { echo "FAIL: self-check: a thin file was taken for a fat one"; exit 1; }
+rm -rf "$t/fc"
 
 pkgutil --expand "$pkg" "$t/x"
 grep -q 'hostArchitectures="x86_64,arm64"' "$t/x/Distribution" \
@@ -54,7 +104,7 @@ explain() {   # explain WANT GOT
   for a in x86_64 arm64; do echo "  $a install of it:"; grep -F "$(basename "$1")" "$t/install.$a.log"; done
 }
 for d in bin share/man; do
-  if ! diff -r "$t/want/$d" "$got/$tree/$d"; then
+  if ! same_tree "$t/want/$d" "$got/$tree/$d"; then
     for w in "$t/want/$d"/*; do
       [ -f "$w" ] && ! cmp -s "$w" "$got/$tree/$d/$(basename "$w")" && { echo "how $(basename "$w") differs:"; explain "$w" "$got/$tree/$d/$(basename "$w")"; }
     done
@@ -69,7 +119,7 @@ upd="$got/Library/Application Support/Mavergreen/drydock-updater.app"
 [ -d "$upd" ] || { echo "FAIL: the package has no drydock-updater.app"; exit 1; }
 env -u LIPO sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b "$BA/drydock-updater.app" \
   --out "$t/drydock-updater.app"
-diff -r "$t/drydock-updater.app" "$upd" \
+same_tree "$t/drydock-updater.app" "$upd" \
   || { echo "FAIL: the package's drydock-updater.app is not the two builds' updaters merged"; exit 1; }
 
 machos=0
