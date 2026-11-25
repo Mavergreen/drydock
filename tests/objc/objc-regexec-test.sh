@@ -22,11 +22,11 @@ fxcc() { env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -isysroot "$SDK" -mmacosx-
 printf 'int main(void) { return 0; }\n' >"$T/main.c"
 fxcc -O1 -c "$T/main.c" -o "$T/main.o"
 ENTRY=_fixture_tabbing_start
-# build NAME OPT [-DVARIANT...]: the table provider, ARC as Recaulk's tabbing units, linked with a trivial main.
+# build NAME OPT [-DVARIANT...]: the table provider (UNIT another), ARC as Recaulk's tabbing units, linked with a trivial main.
 build() {
-  n=$1 o=$2; shift 2
-  fxcc "$o" -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall -Wextra -Werror "$@" -c "$FX/table-provider.m" -o "$T/$n.o" ||
-    fail "$n: compiling table-provider.m $o $*"
+  n=$1 o=$2 u=${UNIT:-table-provider.m}; shift 2
+  fxcc "$o" -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall -Wextra -Werror "$@" -c "$FX/$u" -o "$T/$n.o" ||
+    fail "$n: compiling $u $o $*"
   fxcc "$T/main.o" "$T/$n.o" -lobjc -o "$T/$n" || fail "$n: linking"
 }
 run() { rc=0; "$DRYDOCK_OBJC_REGEXEC_DRIVER" "$T/$1" "${2:-$ENTRY}" >"$T/out" 2>"$T/err" || rc=$?; }
@@ -246,5 +246,52 @@ pass 'a summarised callee clobbers the caller-saved registers'
 run probe _p_chain; explored p_chain
 [ "$(sites)" = 1 ] && grep '^  add ' "$T/out" >/dev/null || fail 'p_chain: a mutator two direct calls down is not followed'
 pass 'a mutator two direct calls down is followed'
+
+# spec: src/objc/regexec.c header, "Start" -- a root run with its class argument bound, its stores held to its class
+#       table, and member IMP addresses followed. tests/objc/fixtures/bridge-provider.m is the root.
+for v in plain TABLE_OTHER TABLE_ELSEWHERE IMP_ELSEWHERE; do
+  d=; [ "$v" = plain ] || d="-D$v"
+  UNIT=bridge-provider.m build "bridge-$v" -Os $d
+done
+runb() { rc=0; i=$1; shift; "$DRYDOCK_OBJC_REGEXEC_DRIVER" "$T/bridge-$i" "$@" >"$T/out" 2>"$T/err" || rc=$?; }
+BRIDGE='  add FixtureBridgedView|0 accessibilityAttributeNames _FixtureBridge_attributeNames @16@0:8 1
+  add FixtureBridgedView|0 accessibilityAttributeValue: _FixtureBridge_attributeValue @24@0:8@16 1
+  add FixtureBridgedView|0 accessibilityIsIgnored _FixtureBridge_isIgnored c16@0:8 1'
+runb plain _FixtureBridge FixtureBridgedView; explored 'rdi bound'
+got=$(all_miss)
+[ "$got" = "1
+$BRIDGE" ] || fail "rdi bound: want one all-succeed path with the three adds, got:
+$got"
+awk '/^path /{ if ($6 != 0) exit 1 }' "$T/out" || fail 'rdi bound: a path tests the bound class NULL'
+[ "$(sed -n 's/^null-paths //p' "$T/out")" = 0 ] || fail "rdi bound: $(sed -n 2p "$T/out"), want null-paths 0"
+pass 'rdi bound: one all-succeed path adds the three members to the bound class, and none tests it NULL'
+runb plain _FixtureBridge; explored 'rdi unbound'
+grep '^  add ?|0 accessibilityAttributeNames _FixtureBridge_attributeNames ' "$T/out" >/dev/null &&
+  ! grep '^  add FixtureBridgedView' "$T/out" >/dev/null || fail 'rdi unbound: the adds name a class'
+pass 'rdi unbound: the adds name no class'
+tbl=$("$NM" "$T/bridge-plain" | awk '$3 == "_FixtureBridgeClasses" {print "0x" $1}' | sed 's/0x0*/0x/')
+[ -n "$tbl" ] || fail 'bridge: no _FixtureBridgeClasses'
+runb plain _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; explored "the root's class into its table"
+[ "$(sed -n 's/^stores //p' "$T/out" | tr ' ' '\n' | sed 's/@.*//' | sort -u)" = "$tbl+8" ] ||
+  fail "the root's class into its table: $(grep '^stores' "$T/out"), want one 8-byte store at $tbl"
+all_miss | grep -c '^  add ' | grep -x 3 >/dev/null || fail "the root's class into its table: the three adds are gone"
+pass "the root's class stored into its class table is allowed, and recorded"
+for v in TABLE_OTHER TABLE_ELSEWHERE; do
+  runb "$v" _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses; refused "$v" image-store
+  grep "not the root's class into its class table" "$T/out" >/dev/null || fail "$v: $(cat "$T/out")"
+  runb "$v" _FixtureBridge FixtureBridgedView; explored "$v without --table"
+done
+pass 'anything else into the table, and the class anywhere else, refuse image-store; without a table both explore'
+imp=$("$NM" "$T/bridge-IMP_ELSEWHERE" | awk '$3 == "_FixtureBridge_isIgnored" {print "0x" $1}' | sed 's/0x0*/0x/')
+[ -n "$imp" ] || fail 'IMP_ELSEWHERE: no _FixtureBridge_isIgnored'
+runb IMP_ELSEWHERE _FixtureBridgeLeak --track _FixtureBridge_isIgnored; explored 'IMP_ELSEWHERE'
+grep "^escaped .*$imp@" "$T/out" >/dev/null || fail "IMP_ELSEWHERE: the IMP ($imp) returned from FixtureBridgeLeak is not escaped: $(grep '^escaped' "$T/out")"
+for f in _FixtureBridgeLeakMasked _FixtureBridgeLeakSlot; do
+  runb IMP_ELSEWHERE $f --track _FixtureBridge_isIgnored; explored "IMP_ELSEWHERE $f"
+  grep "^escaped .*$imp@" "$T/out" >/dev/null || fail "IMP_ELSEWHERE: the IMP ($imp), masked, returned from $f is not escaped: $(grep '^escaped' "$T/out")"
+done
+runb plain _FixtureBridge FixtureBridgedView --table _FixtureBridgeClasses --track _FixtureBridge_isIgnored; explored 'plain root, tracked'
+[ "$(grep '^escaped' "$T/out")" = escaped ] || fail "the root: $(grep '^escaped' "$T/out"), want nothing escaped (an IMP is class_addMethod's argument)"
+pass 'a tracked IMP returned, as itself or through a lea or a data pointer masked, escapes; handed to class_addMethod it does not'
 
 echo 'objc-regexec: table providers at every opt level, their mutants and every refusal pass'

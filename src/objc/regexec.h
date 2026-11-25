@@ -33,8 +33,8 @@ typedef struct {
      * holding it) where some explored path executed an instruction. A summarised callee is in none. */
     uint64_t *explored; size_t n_explored;
     uint64_t *executed; size_t n_executed;        /* every instruction an explored path executed; ascending, distinct */
-    /* Escapes of a value derived from writable image data (regexec.c's provenance): va, the address it was derived
-     * from; site, the instruction; how: OBJC_ESC_CALL (at a call not followed), OBJC_ESC_STORE (stored outside the
+    /* Escapes of a value derived from writable image data or a tracked address (regexec.c's provenance): va, the
+     * address it was derived from; site, the instruction; how: OBJC_ESC_CALL (at a call not followed), OBJC_ESC_STORE (stored outside the
      * frame), OBJC_ESC_RETURN (returned from the entry or a function it called). Sorted, distinct. */
     struct { uint64_t va, site; int how; } *escaped; size_t n_escaped;
     /* Image data read as initial values: [va, va+len) by the instruction at site (a load), or by the call at site
@@ -50,6 +50,13 @@ typedef struct {
  * of provider code. 0 explored, 1 refused (out->refused, code, why); out is always filled for objc_reg_free. */
 int objc_derive_registration(const ObjcImage *im, uint64_t entry, const uint64_t *ranges, size_t n_ranges,
                              const ObjcRegBudget *b, ObjcRegResult *out);
+/* Where and how a run starts (regexec.c's "Start"): entry; arg0_class, when not NULL, the class rdi holds; tracked,
+ * n_tracked addresses followed as writable data is; own_stores, image stores held to the class into
+ * [table_lo, table_hi). objc_derive_registration is this with only entry set. */
+typedef struct { uint64_t entry; const char *arg0_class; const uint64_t *tracked; size_t n_tracked;
+                 int own_stores; uint64_t table_lo, table_hi; } ObjcRegStart;
+int objc_derive_registration_from(const ObjcImage *im, const ObjcRegStart *start, const uint64_t *ranges,
+                                  size_t n_ranges, const ObjcRegBudget *b, ObjcRegResult *out);
 void objc_reg_free(ObjcRegResult *r);
 /* 1 when import (with or without its leading underscore) is one of the spec's mutators, which mutator_sites lists. */
 enum { OBJC_ESC_CALL, OBJC_ESC_STORE, OBJC_ESC_RETURN };
