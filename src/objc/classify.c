@@ -439,6 +439,54 @@ static void absent_verdict(ObjcAnalysis *a, size_t ev, const ObjcSend *s, const 
     }
 }
 
+/* A send inside a member IMP of an own-absent group (provider.c header, own-absent (5)): in a dormant group's, any send;
+ * in an active group's, one to argument 0 not through super, which is an instance of a bridged class or a subclass. 1
+ * with *o set, or 0 when neither. */
+static int bridge_verdict(ObjcAnalysis *a, const ObjcSend *s, Verdict *o) {
+    const ObjcEvidence *e = &a->evidence[s->evidence];
+    size_t k, i, at, lat = 0;
+    const ObjcProvider *p = objc_bridge_imp_at(a, e->address, &k);
+    const ObjcEvidence *g;
+    char buf[2048], lacks[1024], owner[256], where[512];
+    if (!p) return 0;
+    snprintf(where, sizeof where, "%s bridge IMP %s of %s", p->dormant ? "dormant" : "verified", p->methods[k].impl_symbol, p->provider_id);
+    if (p->dormant) { set(o, OBJC_FLOOR_SUPPORTED, NULL, "inside %s: nothing reaches it", where, NULL, NULL); return 1; }
+    if (!s->selector || e->receiver.form != OBJC_VAL_ARGUMENT || e->receiver.ref || (e->name && strstr(e->name, "Super"))) return 0;
+    at = (size_t)snprintf(buf, sizeof buf, "inside %s: every bridged class answers -%s (", where, s->selector);
+    lacks[0] = 0;
+    for (i = 0; i < p->n_bridged; i++) {
+        const char *x = p->bridged[i], *f = p->bridged_floor[i], *image = NULL;
+        const ObjcEvidence *c;
+        int depth, r = 0, artifact;
+        for (depth = 0; x && strcmp(x, f) && depth < CHAIN_MAX && !objc_app_method(a, x, "-", s->selector); depth++)
+            x = (c = objc_app_class(a, x)) ? c->owner : NULL;
+        if (x && strcmp(x, f) && depth < CHAIN_MAX)
+            snprintf(owner, sizeof owner, "the artifact's own -%s", x);
+        else if ((r = floor_resolves(a, f, "-", s->selector, owner + 6, sizeof owner - 6, &image, &artifact)) > 0)
+            memcpy(owner, "floor ", 6);
+        else if (r < 0) {
+            set(o, OBJC_UNRESOLVED, NULL, "inside %s: the floor capture did not record the methods of %s (image %s)", where, owner + 6, image);
+            return 1;
+        } else {
+            lat += (size_t)snprintf(lacks + lat, lat < sizeof lacks ? sizeof lacks - lat : 0, "%s%s", lat ? ", " : "", p->bridged[i]);
+            if (lat >= sizeof lacks) lat = sizeof lacks - 1;
+            continue;
+        }
+        if (at < sizeof buf) at += (size_t)snprintf(buf + at, sizeof buf - at, "%s%s: %s", i ? ", " : "", p->bridged[i], owner);
+    }
+    if (!lacks[0]) {
+        if (at < sizeof buf) snprintf(buf + at, sizeof buf - at, ")");
+        set(o, OBJC_FLOOR_SUPPORTED, NULL, "%s", buf, NULL, NULL);
+    } else if ((g = measured_guard(a, s->evidence, s->selector))) {
+        snprintf(owner, sizeof owner, "0x%llx", (unsigned long long)g->address);
+        set(o, OBJC_GUARDED, NULL, "inside %s: respondsToSelector: at %s guards it; %s lacks it", where, owner, lacks);
+    } else {
+        snprintf(buf, sizeof buf, "inside %s: bridged class %s lacks -%s and nothing guards it", where, lacks, s->selector);
+        set(o, OBJC_UNSUPPORTED, NULL, "%s", buf, NULL, NULL);
+    }
+    return 1;
+}
+
 static void verdict_of(ObjcAnalysis *a, size_t si, Verdict *o) {
     ObjcSend *s = &a->sends[si];
     const ObjcEvidence *e = &a->evidence[s->evidence];
@@ -446,6 +494,7 @@ static void verdict_of(ObjcAnalysis *a, size_t si, Verdict *o) {
     const char *image = NULL;
     int r, artifact;
     memset(o, 0, sizeof *o);
+    if (bridge_verdict(a, s, o)) return;
     if (!s->selector) { set(o, OBJC_UNRESOLVED, NULL, "selector not recovered: %s", s->reason, NULL, NULL); return; }
     if (!s->receiver) {
         /* R1 (b): a receiver of unknown class, not a super send. */

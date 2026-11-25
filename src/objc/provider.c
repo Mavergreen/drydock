@@ -96,7 +96,12 @@
  * C its class, and moreover no path finds a lookup (provider-guard-violation) and no implementation's address escapes
  * (provider-foreign-entry). Coverage is a group's, but a call site of (1) may branch to the root, and verified
  * provider code no path explored may load or take the address of the class table. An own-absent group credits
- * nothing as `provided`.
+ * nothing as `provided`. (5) A member's implementation is its function, from its address to the next function start.
+ * Its argument 0 is typed, for classify.c, as an instance of one of the group's classes or a subclass when, over the
+ * whole image, every reference into an implementation is a load or address a run executed in a function it explored,
+ * or a branch inside that implementation to anywhere but its entry. A pointer in data is no such reference, even one
+ * a run read. For a dormant group the same holds with the root itself in place of the runs: nothing reaches its
+ * implementations, and every send in them is floor-supported. Otherwise their sends keep their verdicts.
  *
  * Every class_addMethod call the reader saw (OBJC_EV_METHOD_REGISTRATION) must lie in provider
  * code verified here, or the artifact is cannot-measure (unattested-method-registration): a
@@ -1121,6 +1126,61 @@ static int bridge_classes(ObjcAnalysis *a, ObjcProvider *p) {
     return OBJC_OK;
 }
 
+/* Each member's function, [imp_lo, imp_hi): its address to the next function start, or to its section's end. */
+static int imp_ranges(ObjcAnalysis *a, ObjcProvider *p, const ObjcImage *im, const uint64_t *impva) {
+    size_t k, nf = objc_image_nfunctions(im);
+    if (!(p->imp_lo = calloc(p->n_methods, sizeof *p->imp_lo)) || !(p->imp_hi = calloc(p->n_methods, sizeof *p->imp_hi)))
+        return objc_fail(a, "out-of-memory", NULL, 0, "provider");
+    for (k = 0; k < p->n_methods; k++) {
+        size_t lo = 0, hi = nf;
+        uint64_t sa = 0, ss = 0, end;
+        while (lo < hi) { size_t mid = (lo + hi) / 2; if (objc_image_function(im, mid) <= impva[k]) lo = mid + 1; else hi = mid; }
+        end = objc_image_section_of(im, impva[k], &sa, &ss, NULL) ? sa + ss : impva[k] + 1;
+        p->imp_lo[k] = impva[k];
+        p->imp_hi[k] = lo < nf && objc_image_function(im, lo) < end ? objc_image_function(im, lo) : end;
+    }
+    return OBJC_OK;
+}
+
+/* The header's own-absent (5): whether every reference into a member IMP is the root registering it. With a run r, a
+ * load or address the run executed in a function it explored; with none (a dormant group), one from the root itself,
+ * [rlo, rhi). Either way, a branch inside an IMP to anywhere but its entry. */
+typedef struct { const ObjcProvider *p; const ObjcRegResult *r; uint64_t rlo, rhi; } ImpRefs;
+static int imp_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
+    const ImpRefs *w = ctx;
+    size_t k;
+    for (k = 0; k < w->p->n_methods && !(target >= w->p->imp_lo[k] && target < w->p->imp_hi[k]); k++) ;
+    if (k < w->p->n_methods && kind == OBJC_REF_BRANCH && site >= w->p->imp_lo[k] && site < w->p->imp_hi[k] && target != w->p->imp_lo[k])
+        return 0;
+    if (kind != OBJC_REF_LOAD && kind != OBJC_REF_ADDR) return 1;
+    if (w->r) return !(in_pairs(w->r->explored, w->r->n_explored, site) && executed(w->r, site));
+    return !(site >= w->rlo && site < w->rhi);
+}
+/* 1 when imp_ref holds for every reference; 0 when one does not; -1 when the image is not position-independent. */
+static int imp_known(const ObjcProvider *p, const ObjcImage *im, const ObjcRegResult *r, uint64_t rlo, uint64_t rhi) {
+    ImpRefs w;
+    uint64_t *rs;
+    size_t k;
+    int rc;
+    if (!(rs = malloc(2 * p->n_methods * sizeof *rs))) return -2;
+    for (k = 0; k < p->n_methods; k++) { rs[2 * k] = p->imp_lo[k]; rs[2 * k + 1] = p->imp_hi[k]; }
+    w.p = p; w.r = r; w.rlo = rlo; w.rhi = rhi;
+    rc = objc_image_refs(im, rs, p->n_methods, imp_ref, &w);
+    free(rs);
+    return rc < 0 ? -1 : !rc;
+}
+
+const ObjcProvider *objc_bridge_imp_at(const ObjcAnalysis *a, uint64_t va, size_t *member) {
+    size_t i, k;
+    for (i = 0; i < a->n_providers; i++) {
+        const ObjcProvider *p = &a->providers[i];
+        if (!p->own_absent || !p->receiver_known || !(p->active || p->dormant) || !p->imp_lo) continue;
+        for (k = 0; k < p->n_methods; k++)
+            if (va >= p->imp_lo[k] && va < p->imp_hi[k]) { if (member) *member = k; return p; }
+    }
+    return NULL;
+}
+
 static int push_site(uint64_t **v, size_t *n, uint64_t site) {
     size_t i;
     uint64_t *g;
@@ -1161,6 +1221,7 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
         impva[i] = e->address;
     }
     b.impva = impva; b.n_imp = p->n_methods;
+    if ((rc = imp_ranges(a, p, im, impva))) goto out;
     /* 1. Call sites, each naming a class the artifact defines. */
     for (i = 0; i < a->n_evidence; i++) {
         const ObjcEvidence *c = &a->evidence[i];
@@ -1200,12 +1261,17 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
             rc = objc_fail(a, "provider-foreign-entry", NULL, w.site, "%s: 0x%llx (in %s) %s 0x%llx (in %s), a root no call site names a class for",
                            p->provider_id, (unsigned long long)w.site, where(im, w.site, wb, sizeof wb), REF_KIND[w.kind],
                            (unsigned long long)w.target, where(im, w.target, tb, sizeof tb));
-        } else p->dormant = 1;
+        } else {
+            int known = imp_known(p, im, NULL, w.lo, w.hi);
+            if (known == -2) goto oom;
+            p->dormant = 1; p->receiver_known = known == 1;
+        }
         goto out;
     }
     /* 3. Each class against its floor ancestor. */
     if ((rc = bridge_classes(a, p))) goto out;
     /* 4. One registration per class, from the root with the class bound. */
+    p->receiver_known = 1;
     for (i = 0; i < p->n_bridged && !rc; i++) {
         ObjcRegResult r;
         ObjcRegStart st;
@@ -1230,6 +1296,11 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
             }
         }
         if (!rc) rc = group_covered(a, p, im, &r, &b);
+        if (!rc) {
+            int known = imp_known(p, im, &r, 0, 0);
+            if (known == -2) rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
+            if (known != 1) p->receiver_known = 0;
+        }
         for (j = 0; !rc && j < r.n_sites; j++)
             if (push_site(&p->mutator_sites, &p->n_mutator_sites, r.mutator_sites[j])) rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
         for (j = 0; !rc && j < r.n_selreg; j++) {

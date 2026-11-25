@@ -403,6 +403,13 @@ only_imps_block() {  # only_imps_block WHY: some send blocks, and every one that
     fail "$1: a send outside the bridge IMPs blocks"
 }
 no_provided() { ! grep '"verdict": "provided"' "$T/report" >/dev/null || fail "$1: a send is provided"; }
+imp_sends() {  # imp_sends SEL VERDICT TEXT WHY: the three bridge IMPs' sends of SEL are each VERDICT, the proof saying TEXT
+  got=$(grep '"function": "_FixtureBridge_' "$T/report" | grep -F "\"selector\": \"$1\"" | sed -n 's/.*"verdict": "\([^"]*\)".*/\1/p' |
+        sort | uniq -c | sed 's/^ *//' | tr '\n' ' ')
+  [ "$got" = "3 $2 " ] || fail "$4: the IMPs' $1 sends are '${got:-none}', want 3 $2"
+  ! grep '"function": "_FixtureBridge_' "$T/report" | grep -F "\"selector\": \"$1\"" | grep -vF -- "$3" >/dev/null ||
+    fail "$4: an IMP's $1 send's proof does not say '$3'"
+}
 bridge_refused() {  # bridge_refused WHY CODE TEXT: cannot-measure with CODE saying TEXT, and nothing provided
   exit_is 4 "$1"; error_is "$2" "$1"; says "$3" "$1"; no_provided "$1"
 }
@@ -614,6 +621,24 @@ only_imps_block 'bridge: two classes, four sites'
 grep '"status": "active"' "$T/report" >/dev/null || fail 'bridge: two classes, four sites: the group is not reported active'
 says 'bridges 2 classes from 4 call sites' 'bridge: two classes, four sites'
 no_provided 'bridge: two classes, four sites'
+# spec: src/objc/provider.c header, "Groups" (own-absent) (5) -- inside a verified IMP, argument 0 is an instance of a
+#       bridged class: a send to it answers when every bridged class does, else a respondsToSelector: guard closes it.
+imp_sends accessibilityRole floor-supported 'every bridged class answers -accessibilityRole (' 'bridge: a getter every bridged class implements'
+imp_sends respondsToSelector: floor-supported 'FixtureBridgedCell: floor -NSObject' 'bridge: a getter every bridged class implements'
+! grep '"function": "_FixtureBridge_' "$T/report" | grep '"verdict": "unresolved"' | grep 'incoming argument 0' >/dev/null ||
+  fail 'bridge: a getter every bridged class implements: an argument-0 send is unresolved'
+bridge lacks - -DBRIDGE_CELL_LACKS
+exit_is 1 'bridge: a getter one class lacks, guarded'; only_imps_block 'bridge: a getter one class lacks, guarded'
+imp_sends accessibilityRole guarded 'guards it; FixtureBridgedCell lacks it' 'bridge: a getter one class lacks, guarded'
+bridge unguarded UNGUARDED -DBRIDGE_CELL_LACKS
+exit_is 1 'bridge: a getter one class lacks, unguarded'
+imp_sends accessibilityRole unsupported 'bridged class FixtureBridgedCell lacks -accessibilityRole and nothing guards it' \
+  'bridge: a getter one class lacks, unguarded'
+bridge elsewhere IMP_ELSEWHERE
+grep '"status": "active"' "$T/report" >/dev/null || fail 'bridge: an IMP whose address is taken elsewhere: the group is not reported active'
+imp_sends accessibilityRole unresolved 'receiver is incoming argument 0' 'bridge: an IMP whose address is taken elsewhere'
+bridge lea IMP_LEA
+imp_sends accessibilityRole unresolved 'receiver is incoming argument 0' 'bridge: an IMP whose address a function no run explores takes'
 bridge computed - -DBRIDGE_COMPUTED
 bridge_refused 'bridge: a class sent from a computed receiver' computed-class-producer 'FixtureBridge argument is not a recognised literal class'
 bridge unknown - -DBRIDGE_UNKNOWN
@@ -646,10 +671,20 @@ bridge_refused 'bridge: another class into the class table' provider-unmeasurabl
 bridge tableelse TABLE_ELSEWHERE
 bridge_refused 'bridge: the class stored outside the class table' provider-unmeasurable 'fixture.bridge.accessibility.v1: image-store: '
 bridge unused - -DBRIDGE_UNUSED -Wl,-u,_FixtureBridge
-exit_is 1 "bridge: a root linked but never called (its IMPs' own sends block)"; only_imps_block 'bridge: a root linked but never called'
+exit_is 0 'bridge: a root linked but never called'
+imp_sends accessibilityRole floor-supported 'inside dormant bridge IMP FixtureBridge_' 'bridge: a root linked but never called'
+! grep '"function": "_FixtureBridge_' "$T/report" | grep -vF ': nothing reaches it"' >/dev/null ||
+  fail 'bridge: a root linked but never called: an IMP send is not closed as unreachable'
 grep '"status": "inactive"' "$T/report" >/dev/null || fail 'bridge: a root linked but never called: the group is not reported inactive'
 says 'no call site names a class' 'bridge: a root linked but never called'
 ! grep '"code": "provider-unexplored-mutation"' "$T/report" >/dev/null || fail 'bridge: a root linked but never called: its class_addMethod is unexplored'
+bridge unusedelse IMP_ELSEWHERE -DBRIDGE_UNUSED -Wl,-u,_FixtureBridge
+exit_is 1 'bridge: a root never called, an IMP whose address is taken elsewhere'
+grep '"status": "inactive"' "$T/report" >/dev/null || fail 'bridge: a root never called, an IMP taken elsewhere: the group is not reported inactive'
+imp_sends accessibilityRole unresolved 'receiver is incoming argument 0' 'bridge: a root never called, an IMP whose address is taken elsewhere'
+bridge unusedlea IMP_LEA -DBRIDGE_UNUSED -Wl,-u,_FixtureBridge
+exit_is 1 'bridge: a root never called, an IMP whose address another function takes'
+imp_sends accessibilityRole unresolved 'receiver is incoming argument 0' 'bridge: a root never called, an IMP whose address another function takes'
 bridge unusedptr - -DBRIDGE_UNUSED -DBRIDGE_POINTER
 bridge_refused 'bridge: a root no call site names, its address taken' provider-foreign-entry 'a root no call site names a class for'
 

@@ -580,6 +580,8 @@ typedef struct ObjcProvider {
     char *class_table;
     ObjcSuperFallback *fallbacks; size_t n_fallbacks;
     char **bridged, **bridged_floor; size_t n_bridged;
+    /* Own-absent: member k's function [imp_lo[k], imp_hi[k]); receiver_known 1 when every reference into one is the
+     * root registering it (provider.c header, own-absent (5)); dormant 1 when nothing calls or refers to the root. */
     uint64_t *imp_lo, *imp_hi;
     int receiver_known, dormant;
     char *provider_id, *cls, *method_kind, *selector, *encoding, *impl_symbol, *root_symbol;
@@ -614,6 +616,9 @@ int objc_add_provider(ObjcAnalysis *a, ObjcProvider **out);
 int objc_verify_providers(ObjcAnalysis *a);
 /* Before the artifact is read: bridge_roots, each own-absent group's evidenced _ROOT address (none unplaced). 0 or 4. */
 int objc_bridge_roots(ObjcAnalysis *a);
+/* The own-absent group, active or dormant and receiver_known, one of whose member IMPs holds va (*member its index), or
+ * NULL. */
+const ObjcProvider *objc_bridge_imp_at(const ObjcAnalysis *a, uint64_t va, size_t *member);
 /* After classification: turn the unsupported sends an active provider answers into `provided`. */
 int objc_provide_findings(ObjcAnalysis *a);
 /* The build-evidence side: map each provider's archive members through a link map, cross-checked

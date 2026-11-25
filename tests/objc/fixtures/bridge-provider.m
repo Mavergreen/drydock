@@ -6,7 +6,7 @@
 // TABLE_ELSEWHERE (cls also into FixtureBridgeLast), LOOKUP (class_getInstanceMethod before the adds), REPLACE
 // (class_replaceMethod for one member), UNGUARDED (the getter sent without its respondsToSelector:), IMP_ELSEWHERE
 // (FixtureBridgeLeak returns a member IMP's address, FixtureBridgeLeakMasked and FixtureBridgeLeakSlot it, from a lea and
-// from a pointer in data, xor an argument), NO_FALLBACK (no super send in _attributeValue) and
+// from a pointer in data, xor an argument), IMP_LEA (FixtureBridgeLeak alone), NO_FALLBACK (no super send in _attributeValue) and
 // EXTRA_MEMBER (a fourth add, accessibilityRole).
 #import <Foundation/Foundation.h>
 #include <objc/message.h>
@@ -72,8 +72,10 @@ BOOL FixtureBridge_isIgnored(id self, SEL _cmd) {
 id FixtureBridge_role(id self, SEL _cmd) { (void)self; (void)_cmd; return nil; }
 #endif
 
-#ifdef IMP_ELSEWHERE
+#if defined(IMP_ELSEWHERE) || defined(IMP_LEA)
 void *FixtureBridgeLeak(void) { return (void *)FixtureBridge_isIgnored; }
+#endif
+#ifdef IMP_ELSEWHERE
 uintptr_t FixtureBridgeLeakMasked(uintptr_t key) { return (uintptr_t)(void *)FixtureBridge_isIgnored ^ key; }
 void *FixtureBridgeImpSlot = (void *)FixtureBridge_isIgnored;
 uintptr_t FixtureBridgeLeakSlot(uintptr_t key) { return (uintptr_t)FixtureBridgeImpSlot ^ key; }
