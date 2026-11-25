@@ -91,10 +91,12 @@ grep -q '"path":"a\\"b\\\\c.nib"' "$T/q.json" && grep -q '"nib":"a\\"b\\\\c.nib"
   && pass "check_report_bytes: a quote and a backslash in a nib's name are escaped in the report" \
   || fail "check_report_bytes: escapes: exit $(rc q), $(err q), $(head -c 300 "$T/q.json")"
 
-run convert convert "$T/app.app/Contents/Resources/Base.lproj/layout.nib"
-run idem check --report "$T/idem.json" "$T/app.app/Contents/Resources/Base.lproj/layout.nib"
-[ "$(rc convert)" = 0 ] && [ "$(rc idem)" = 0 ] && ! grep -q nibarchive-format "$T/idem" "$T/idem.json" && [ ! -s "$T/idem" ] \
-  && pass "check_idempotent: check of convert's output exits 0, with no nibarchive-format and nothing else" \
+printf '*.nib\tnamed-color-missing\tlabelColor\t10.9 draws it opaque black\n' > "$T/lc"
+run convert convert --exceptions "$T/lc" "$T/app.app/Contents/Resources/Base.lproj/layout.nib"
+run idem check --exceptions "$T/lc" --report "$T/idem.json" "$T/app.app/Contents/Resources/Base.lproj/layout.nib"
+[ "$(rc convert)" = 0 ] && [ "$(rc idem)" = 0 ] && ! grep -q nibarchive-format "$T/idem" "$T/idem.json" \
+  && [ "$(wc -l < "$T/idem" | tr -d ' ')" = 1 ] && grep -q ': finding: named-color-missing labelColor (10.10) accepted as named-color-missing:labelColor$' "$T/idem" \
+  && pass "check_idempotent: check of convert's output exits 0, with no nibarchive-format and nothing but the accepted labelColor" \
   || fail "check_idempotent: convert $(rc convert), check $(rc idem): $(head -3 "$T/idem") $(err idem)"
 grep -q '"path":"Contents/Resources/Base.lproj/layout.nib","format":"keyed"' "$T/idem.json" \
   && pass "check: a lone nib inside a bundle is named relative to the bundle" || fail "check: relpath: $(grep '"path"' "$T/idem.json")"

@@ -7,12 +7,13 @@
 
 /* relpath: bundle-relative, as reports name it. abspath: the file to read. in_storyboard: inside a .storyboardc.
  * is_variant: abspath is a nib directory's keyedobjects-NNN.nib, the highest-numbered, standing in for a missing
- * keyedobjects.nib. */
-typedef struct { char *relpath; char *abspath; int in_storyboard; int is_variant; } RNib;
+ * keyedobjects.nib. no_nib: abspath is a nib directory with neither, so there is nothing to read. */
+typedef struct { char *relpath; char *abspath; int in_storyboard; int is_variant; int no_nib; } RNib;
 
 /* The nibs at arg and the bundle's binaries, both sorted bytewise; symbolic links inside arg are never followed.
  *   - A file is one nib.
- *   - A nib directory is its keyedobjects.nib, or without one its highest-numbered keyedobjects-NNN.nib.
+ *   - A nib directory is its keyedobjects.nib, or without one its highest-numbered keyedobjects-NNN.nib, or
+ *     without either the directory itself, marked no_nib.
  *   - A .storyboardc is the nibs inside it.
  *   - Any other directory is walked for those three.
  * The bundle is arg when it holds Contents/, else the nearest directory above arg that does; relpath is relative

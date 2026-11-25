@@ -1,4 +1,4 @@
-/* report.h -- the JSON report of a check or convert, written by hand, the same bytes on every host. */
+/* json-report.h -- the JSON report of a check or convert, written by hand, the same bytes on every host. */
 
 #ifndef DRYDOCK_RESOURCES_REPORT_H
 #define DRYDOCK_RESOURCES_REPORT_H

@@ -1,7 +1,7 @@
 /* platform: mkstemp, fsync and link under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE
-#include "report.h"
+#include "json-report.h"
 
 #include <errno.h>
 #include <limits.h>

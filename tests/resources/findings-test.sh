@@ -98,15 +98,9 @@ check swapper "$T/swapper.rez"
   || fail "findings_unknown_key: per class: $(grep DDNotAKey "$T/swapper")"
 
 check color "$FIX/nib/layout.nib"
-[ "$(lines color 'named-color-missing')" = 0 ] \
-  && pass "findings_color: layout.nib's System labelColor is no finding: keys-10.9.tsv records that 10.9 draws it black" \
+[ "$(lines color ': finding: named-color-missing labelColor (10.10)$')" = 1 ] \
+  && pass "findings_color: layout.nib's System labelColor is missing on 10.9, since 10.10" \
   || fail "findings_color: layout.nib: $(grep color "$T/color")"
-mkdir -p "$T/nolabel" && cp "$ROOT/reference/resources/adapt.tsv" "$T/nolabel/"
-grep -v '^NSColor(System)	labelColor	ignored	' "$ROOT/reference/resources/keys-10.9.tsv" > "$T/nolabel/keys-10.9.tsv"
-"$R" check --references "$ROOT/reference/objc" --resource-references "$T/nolabel" "$FIX/nib/layout.nib" > "$T/nolabel.out" 2>&1
-[ "$(grep -c ': finding: named-color-missing labelColor (10.10)$' "$T/nolabel.out")" = 1 ] \
-  && pass "findings_color: without its NSColor(System) row, layout.nib's labelColor is missing on 10.9, since 10.10" \
-  || fail "findings_color: no labelColor row: $(cat "$T/nolabel.out")"
 in_obj 30 's/^  NS.bytes = data "textBackgroundColor"$/  NS.bytes = data "secondaryLabelColor"/' "$T/layout.rez" \
   | in_obj 35 's/^  NS.bytes = data "labelColor"$/  NS.bytes = data "controlTextColor"/' > "$T/swapped.rez"
 check swapped "$T/swapped.rez"
@@ -189,9 +183,9 @@ done
   && pass "findings_exhaustive: one nib with four problems reports all four" \
   || fail "findings_exhaustive: $n of 4 kinds, exit $(rc all): $(cut -d: -f3 "$T/all" | sort -u | tr '\n' '|')"
 
-[ "$(rc unknown)" = 1 ] && [ "$(grep -c -v -e ': will-adapt: ' -e ': finding: unknown-key DDNotAKey ' "$T/unknown")" = 0 ] \
+[ "$(rc unknown)" = 1 ] && [ "$(grep -c -v -e ': will-adapt: ' -e ': finding: unknown-key DDNotAKey ' -e ': finding: named-color-missing labelColor ' "$T/unknown")" = 0 ] \
   && pass "findings_exit: exit 1 when there is a finding" || fail "findings_exit: DDNotAKey: exit $(rc unknown)"
-cp "$T/layout.rez" "$T/willonly.rez"
+in_obj 35 's/"labelColor"/"controlTextColor"/' "$T/layout.rez" > "$T/willonly.rez"
 check willonly "$T/willonly.rez"
 [ "$(rc willonly)" = 0 ] && [ "$(lines willonly ': will-adapt: ')" -ge 2 ] && [ "$(lines willonly ': finding: ')" = 0 ] \
   && pass "findings_exit: only will-adapt findings exit 0" \

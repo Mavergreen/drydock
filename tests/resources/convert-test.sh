@@ -1,7 +1,6 @@
 #!/bin/sh
-# platform: host-agnostic -- converts scratch bundles of committed nibs, one nib byte-patched to carry an unknown key,
-#   and builds its one Mach-O fixture with the pinned clang22 against the pinned 10.9 SDK (tests/lib/toolchain.sh),
-#   which links but never runs it; the read-only directory case is skipped when running as root
+# platform: host-agnostic -- converts scratch bundles of committed nibs, one nib byte-patched to carry an unknown key;
+#   the read-only directory case is skipped when running as root
 set -u
 : "${DRYDOCK_RESOURCES:?names the built drydock-resources (CTest sets it)}"
 R=$DRYDOCK_RESOURCES
@@ -35,6 +34,9 @@ patch() {  # FILE OLD NEW
   printf '%s' "$3" | dd of="$1" bs=1 seek="$at" conv=notrunc 2>/dev/null
 }
 
+LC="*.nib${TAB}named-color-missing${TAB}labelColor${TAB}10.9 draws it opaque black"
+printf '%s\n' "$LC" > "$T/lc"
+
 cp "$FIX/nib/layout.nib" "$T/bad.nib"
 patch "$T/bad.nib" NSBoxType DDNotAKey && "$R" check $(refs) "$T/bad.nib" > "$T/bad.check" 2>&1
 [ "$(grep -c ': finding: unknown-key DDNotAKey (NSBox @17)$' "$T/bad.check")" = 1 ] \
@@ -44,7 +46,7 @@ L=$(bundle layout)
 cp "$FIX/nib/layout.nib" "$L/Base.lproj/layout.nib"
 cp -R "$FIX/nib-10.9/int64.nib" "$FIX/nib-10.9/layout.nib" "$L/"
 mv "$L/layout.nib" "$L/apple.nib"
-convert layout --report "$T/layout.json" "$T/layout.app"
+convert layout --exceptions "$T/lc" --report "$T/layout.json" "$T/layout.app"
 keyed "$L/Base.lproj/layout.nib" && [ "$(rc layout)" = 0 ] \
   && pass "convert_layout: a bundle's NIBArchive nib is now a keyed archive, and the strict convert exits 0" \
   || fail "convert_layout: exit $(rc layout), $(err layout)"
@@ -52,9 +54,12 @@ grep -q '"adapt":\["translate-autoresizing","wrapping-width"\]' "$T/layout.json"
   && [ "$(grep -c '"kind":"adapted","nib":"Contents/Resources/Base.lproj/layout.nib","item":"wrapping-width","detail":"@21 NSPreferredMaxLayoutWidth","severity":"adapted"' "$T/layout.json")" = 1 ] \
   && pass "convert_layout: the report lists both rules on and the wrapping label adapted" \
   || fail "convert_layout: adapt: $(grep -e '"adapt"' -e adapted "$T/layout.json" | head -3)"
-grep -q -e '"severity":"finding"' -e '"severity":"blocks-write"' "$T/layout.json" \
+grep -q -e '"severity":"finding","deviation":null' -e '"severity":"blocks-write"' "$T/layout.json" \
   && fail "convert_layout: the report has findings: $(grep -e '"severity":"finding"' -e blocks-write "$T/layout.json" | head -2)" \
-  || pass "convert_layout: the report has no findings"
+  || pass "convert_layout: the report has no finding but the accepted labelColor"
+grep -q '"kind":"named-color-missing","nib":"Contents/Resources/Base.lproj/layout.nib","item":"labelColor","detail":"10.10","severity":"finding","deviation":"named-color-missing:labelColor"' "$T/layout.json" \
+  && pass "convert_layout: labelColor is a finding, accepted by the exceptions file" \
+  || fail "convert_layout: labelColor: $(grep labelColor "$T/layout.json" | head -2)"
 sha() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 grep -q "{\"path\":\"Contents/Resources/Base.lproj/layout.nib\",\"format\":\"nibarchive\",\"sha256_in\":\"$(sha "$FIX/nib/layout.nib")\",\"sha256_out\":\"$(sha "$L/Base.lproj/layout.nib")\",\"written\":true}" "$T/layout.json" \
   && pass "convert_layout: the report names the nib bundle-relative, with both digests, as written" \
@@ -74,7 +79,7 @@ sort -c -t "$TAB" -k1,1 -k2,2 -k3,3 -k4,4 "$T/order" 2>/dev/null && grep -q "${T
   && pass "convert_layout: the report's findings, adapted ones too, are sorted by nib, kind, item and detail" \
   || fail "convert_layout: unsorted: $(sort -c -t "$TAB" -k1,1 -k2,2 -k3,3 -k4,4 "$T/order" 2>&1)"
 cp "$T/layout.app/Contents/Resources/Base.lproj/layout.nib" "$T/layout.keyed"
-convert again "$T/layout.app"
+convert again --exceptions "$T/lc" "$T/layout.app"
 [ "$(rc again)" = 0 ] && cmp -s "$T/layout.keyed" "$L/Base.lproj/layout.nib" \
   && pass "convert_layout: a keyed nib needing no adaptation is left byte-identical" \
   || fail "convert_layout: again: exit $(rc again), $(err again)"
@@ -82,7 +87,7 @@ convert again "$T/layout.app"
 S=$(bundle strict)
 cp "$FIX/nib/layout.nib" "$S/Base.lproj/layout.nib"
 cp "$T/bad.nib" "$S/bad.nib"
-convert strict --report "$T/strict.json" "$T/strict.app"
+convert strict --exceptions "$T/lc" --report "$T/strict.json" "$T/strict.app"
 [ "$(rc strict)" = 1 ] && cmp -s "$FIX/nib/layout.nib" "$S/Base.lproj/layout.nib" && cmp -s "$T/bad.nib" "$S/bad.nib" \
   && pass "convert_strict_blocks: an unknown key in one nib leaves both nibs byte-unchanged, exit 1" \
   || fail "convert_strict_blocks: exit $(rc strict), $(err strict)"
@@ -106,7 +111,7 @@ grep -q '{"path":"Contents/Resources/values.nib","format":"nibarchive","sha256_i
 E=$(bundle except)
 cp "$FIX/nib/layout.nib" "$E/Base.lproj/layout.nib"
 cp "$T/bad.nib" "$E/bad.nib"
-printf '*/bad.nib\tunknown-key\tDDNotAKey\treviewed\n' > "$T/ex"
+{ printf '*/bad.nib\tunknown-key\tDDNotAKey\treviewed\n'; cat "$T/lc"; } > "$T/ex"
 convert except --exceptions "$T/ex" --report "$T/except.json" "$T/except.app"
 [ "$(rc except)" = 0 ] && keyed "$E/bad.nib" && keyed "$E/Base.lproj/layout.nib" \
   && pass "convert_exceptions: an accepted unknown key no longer blocks the strict convert" \
@@ -118,7 +123,7 @@ grep -q '"kind":"unknown-key","nib":"Contents/Resources/bad.nib","item":"DDNotAK
   || fail "convert_exceptions: report: $(grep -e DDNotAKey "$T/except.json" | head -3)"
 cp "$FIX/nib/layout.nib" "$E/Base.lproj/layout.nib"
 cp "$T/bad.nib" "$E/bad.nib"
-printf '*/bad.nib\tunknown-key\tDDNotAKey\treviewed\n*/gone.nib\tunknown-key\tDDNotAKey\tstale\n' > "$T/ex2"
+{ printf '*/bad.nib\tunknown-key\tDDNotAKey\treviewed\n*/gone.nib\tunknown-key\tDDNotAKey\tstale\n'; cat "$T/lc"; } > "$T/ex2"
 convert unused --exceptions "$T/ex2" --report "$T/unused.json" "$T/except.app"
 [ "$(rc unused)" = 0 ] && grep -q "^drydock-resources: unused exception: \*/gone.nib${TAB}unknown-key${TAB}DDNotAKey${TAB}stale$" "$T/unused.err" \
   && grep -q '{"line":"\*/gone.nib\\tunknown-key\\tDDNotAKey\\tstale","applied":\[\]}' "$T/unused.json" \
@@ -126,7 +131,7 @@ convert unused --exceptions "$T/ex2" --report "$T/unused.json" "$T/except.app"
   || fail "convert_exceptions: unused: exit $(rc unused), $(err unused)"
 for line in "*/layout.nib${TAB}unknown-key${TAB}DDNotAKey${TAB}another nib" "*/bad.nib${TAB}unknown-key${TAB}DDNotAKeyX${TAB}another key" \
             "*/bad.nib${TAB}class-missing${TAB}DDNotAKey${TAB}another kind"; do
-  printf '%s\n' "$line" > "$T/miss.ex"
+  printf '%s\n' "$line" "$LC" > "$T/miss.ex"
   cp "$FIX/nib/layout.nib" "$E/Base.lproj/layout.nib"
   cp "$T/bad.nib" "$E/bad.nib"
   convert miss --exceptions "$T/miss.ex" "$T/except.app"
@@ -173,7 +178,7 @@ V=$(bundle variant)
 mkdir -p "$V/v.nib"
 cp "$FIX/nib-10.9/layout.nib/keyedobjects-101300.nib" "$V/v.nib/"
 cp "$FIX/nib-10.9/layout.nib/keyedobjects-101300.nib" "$V/v.nib/keyedobjects-100900.nib"
-convert variant --report "$T/variant.json" "$T/variant.app"
+convert variant --exceptions "$T/lc" --report "$T/variant.json" "$T/variant.app"
 [ "$(rc variant)" = 0 ] && keyed "$V/v.nib/keyedobjects.nib" \
   && cmp -s "$FIX/nib-10.9/layout.nib/keyedobjects-101300.nib" "$V/v.nib/keyedobjects-101300.nib" \
   && grep -q '^Contents/Resources/v.nib/keyedobjects-101300.nib: will-adapt: no-floor-nib keyedobjects.nib (keyedobjects-101300.nib stands in for it)$' "$T/variant" \
@@ -182,6 +187,36 @@ convert variant --report "$T/variant.json" "$T/variant.app"
 "$R" dump "$V/v.nib/keyedobjects.nib" > "$T/v.rez" 2>&1 && grep -q "^  NSPreferredMaxLayoutWidth = f64 [^ ]*  # 1426$" "$T/v.rez" \
   && pass "walker_variant_only: the written keyedobjects.nib is the variant converted and adapted" \
   || fail "walker_variant_only: $(head -3 "$T/v.rez")"
+grep -q "{\"path\":\"Contents/Resources/v.nib/keyedobjects.nib\",\"format\":\"nibarchive\",\"sha256_in\":\"$(sha "$V/v.nib/keyedobjects-101300.nib")\",\"sha256_out\":\"$(sha "$V/v.nib/keyedobjects.nib")\",\"written\":true}" "$T/variant.json" \
+  && ! grep -q '"path":"Contents/Resources/v.nib/keyedobjects-101300.nib"' "$T/variant.json" \
+  && grep -q '"kind":"adapted","nib":"Contents/Resources/v.nib/keyedobjects.nib","item":"wrapping-width"' "$T/variant.json" \
+  && pass "walker_variant_only: the report names the keyedobjects.nib written, digesting the variant it came from" \
+  || fail "walker_variant_only: report: $(grep -e '"path"' -e adapted "$T/variant.json" | head -3)"
+rm "$V/v.nib/keyedobjects.nib" "$V/v.nib/keyedobjects-100900.nib"
+convert unaccepted --report "$T/unaccepted.json" "$T/variant.app"
+[ "$(rc unaccepted)" = 1 ] && [ ! -e "$V/v.nib/keyedobjects.nib" ] \
+  && grep -q '{"path":"Contents/Resources/v.nib/keyedobjects-101300.nib","format":"nibarchive","sha256_in":"[0-9a-f]\{64\}","sha256_out":"[0-9a-f]\{64\}","written":false}' "$T/unaccepted.json" \
+  && pass "walker_variant_only: a variant built but not written, the strict convert refusing, is named as itself" \
+  || fail "walker_variant_only: unaccepted: exit $(rc unaccepted), $(grep '"path"' "$T/unaccepted.json")"
+cp "$FIX/nib/values.nib" "$V/v.nib/keyedobjects-101300.nib"
+convert held --no-strict --report "$T/held.json" "$T/variant.app"
+[ "$(rc held)" = 1 ] && [ ! -e "$V/v.nib/keyedobjects.nib" ] && [ "$(ls "$V/v.nib")" = keyedobjects-101300.nib ] \
+  && grep -q '^Contents/Resources/v.nib/keyedobjects-101300.nib: blocks-write: ' "$T/held" \
+  && grep -q '"path":"Contents/Resources/v.nib/keyedobjects-101300.nib","format":"nibarchive","sha256_in":"[0-9a-f]\{64\}","sha256_out":null,"written":false' "$T/held.json" \
+  && pass "convert_no_strict: a nib with a blocks-write finding is never built or written, even with --no-strict" \
+  || fail "convert_no_strict: held: exit $(rc held), $(ls "$V/v.nib" | tr '\n' ' ') $(grep blocks-write "$T/held")"
+
+N=$(bundle nonib)
+mkdir -p "$N/old.nib"
+cp "$FIX/nib/layout.nib" "$N/old.nib/designable.nib"
+cp "$FIX/nib/layout.nib" "$N/Base.lproj/layout.nib"
+convert nonib --exceptions "$T/lc" --report "$T/nonib.json" "$T/nonib.app"
+[ "$(rc nonib)" = 1 ] && cmp -s "$FIX/nib/layout.nib" "$N/Base.lproj/layout.nib" \
+  && [ "$(ls "$N/old.nib")" = designable.nib ] \
+  && grep -q '^Contents/Resources/old.nib: finding: no-nib keyedobjects.nib (no keyedobjects.nib or keyedobjects-NNN.nib)$' "$T/nonib" \
+  && grep -q '{"path":"Contents/Resources/old.nib","format":null,"sha256_in":null,"sha256_out":null,"written":false}' "$T/nonib.json" \
+  && pass "walker_no_nib: a nib directory with no keyedobjects nib is a finding with a report entry, so nothing is written, exit 1" \
+  || fail "walker_no_nib: exit $(rc nonib), $(grep old.nib "$T/nonib" "$T/nonib.json" | head -2) $(err nonib)"
 
 P=$(bundle partial)
 for d in a b c; do mkdir -p "$P/$d" && cp "$FIX/nib/layout.nib" "$P/$d/$d.nib"; done
@@ -189,7 +224,7 @@ if [ "$(id -u)" = 0 ]; then
   echo "SKIP: convert_partial_io: running as root, a read-only directory stops nothing"
 else
   chmod a-w "$P/b"
-  convert partial --report "$T/partial.json" "$T/partial.app"
+  convert partial --exceptions "$T/lc" --report "$T/partial.json" "$T/partial.app"
   chmod u+w "$P/b"
   same=0; for d in a b c; do cmp -s "$FIX/nib/layout.nib" "$P/$d/$d.nib" && same=$((same + 1)); done
   left=0; for d in a b c; do left=$((left + $(ls -A "$P/$d" | wc -l))); done
@@ -200,36 +235,8 @@ else
     && pass "convert_partial_io: the report marks none as written" || fail "convert_partial_io: report: $(grep '"path"' "$T/partial.json")"
 fi
 
-W=$(bundle walkup)
-cp "$FIX/nib/values.nib" "$W/values.nib"
-printf 'int dd_classless(void) { return 0; }\n' > "$T/classless.c"
-if ( . "$ROOT/tests/lib/toolchain.sh" &&
-     mkdir -p "$T/walkup.app/Contents/Frameworks/DD.framework/Versions/A" "$T/walkup.app/Contents/MacOS" &&
-     env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -mmacosx-version-min=10.9 -O1 -dynamiclib -fno-objc-arc \
-       "$FIX/objc/DDFixtureView.m" -framework AppKit -o "$T/walkup.app/Contents/Frameworks/DD.framework/Versions/A/DD" &&
-     env -i PATH=/usr/bin:/bin "$CC" -arch x86_64 -mmacosx-version-min=10.9 -O1 -dynamiclib "$T/classless.c" \
-       -o "$T/walkup.app/Contents/MacOS/walkup" ) > "$T/build" 2>&1; then
-  ln -s Versions/A/DD "$T/walkup.app/Contents/Frameworks/DD.framework/DD"
-  "$R" dump --references "$ROOT/reference/objc" "$W/values.nib" > "$T/walkup.rez" 2>"$T/walkup.err"
-  grep -q '^chain DDFixtureView : NSView : NSResponder : NSObject$' "$T/walkup.rez" \
-    && pass "walker_walk_up: dump finds a custom class's chain in the enclosing bundle's frameworks" \
-    || fail "walker_walk_up: dump: $(grep DDFixtureView "$T/walkup.rez" | head -2) $(head -2 "$T/walkup.err")"
-  convert walkup --no-strict "$T/walkup.app"
-  keyed "$W/values.nib" && ! grep -q 'unresolved-chain' "$T/walkup" \
-    && pass "walker_walk_up: convert of the bundle resolves it too, so the nib is written" \
-    || fail "walker_walk_up: convert: exit $(rc walkup), $(grep -e unresolved -e unencodable "$T/walkup") $(err walkup)"
-  printf 'garbage' > "$T/walkup.app/Contents/MacOS/notes"
-  cp "$FIX/nib/values.nib" "$W/values.nib"
-  convert walkup2 --no-strict "$W/values.nib"
-  keyed "$W/values.nib" && ! grep -q 'its classes are not used' "$T/walkup2.err" \
-    && pass "walker_walk_up: convert of a lone nib walks up to its bundle, reading only Mach-O files" \
-    || fail "walker_walk_up: lone nib: exit $(rc walkup2), $(err walkup2)"
-else
-  fail "walker_walk_up: cannot build the fixtures: $(tail -3 "$T/build")"
-fi
-
 cp "$FIX/nib/layout.nib" "$T/lone.nib"
-convert lone --report "$T/lone.json" "$T/lone.nib"
+convert lone --exceptions "$T/lc" --report "$T/lone.json" "$T/lone.nib"
 [ "$(rc lone)" = 0 ] && keyed "$T/lone.nib" && grep -q '"path":"lone.nib"' "$T/lone.json" \
   && pass "convert: a lone nib converts in place, named by its file name" || fail "convert: lone nib: exit $(rc lone), $(err lone)"
 : > "$T/taken.json"

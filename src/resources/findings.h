@@ -8,7 +8,7 @@
 /* RF_ADAPTED: a rewrite an adaptation rule made, logged as kind "adapted". */
 typedef enum { RF_BLOCK_WRITE, RF_FINDING, RF_WILL_ADAPT, RF_ADAPTED } RfSeverity;
 /* kind: nibarchive-format, class-missing, unresolved-chain, unknown-key, named-color-missing, storyboard, unencodable,
- * translate-autoresizing, wrapping-width, no-floor-nib or adapted. item: the class, key, colour name or rule. nib: as the caller
+ * translate-autoresizing, wrapping-width, no-floor-nib, no-nib or adapted. item: the class, key, colour name or rule. nib: as the caller
  * named it (NULL from ra_apply, which has none). deviation: the accepted gap that covers it, or NULL. */
 typedef struct { char *kind, *nib, *item, *detail; RfSeverity sev; char *deviation; } RFinding;
 typedef struct { RFinding *v; size_t n; } RFindings;
@@ -16,8 +16,7 @@ typedef struct RAdaptSet RAdaptSet;
 typedef struct RfRefs RfRefs;
 
 /* The reference data findings are judged against: refdir_resources' keys-10.9.tsv, and refdir_objc's
- * floor-runtime.tsv and newer-sdk.tsv for named colours and NSStoryboard. A keys-10.9.tsv row for the class
- * "NSColor(System)" names a System colour 10.9 lacks that is no finding. NULL if a table is unreadable or a row
+ * floor-runtime.tsv and newer-sdk.tsv for named colours and NSStoryboard. NULL if a table is unreadable or a row
  * malformed, or out of memory. */
 RfRefs *rf_open(const char *refdir_resources, const char *refdir_objc);
 void rf_close(RfRefs *r);

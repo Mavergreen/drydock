@@ -55,7 +55,7 @@ static void *grown(void *v, size_t n, size_t size) {
     return realloc(v, (n ? 2 * n : 1) * size);
 }
 
-static int add_nib(Walk *w, const char *abspath, int in_storyboard, int is_variant) {
+static int add_nib(Walk *w, const char *abspath, int in_storyboard, int is_variant, int no_nib) {
     RNib *x;
     const char *rel = abspath;
     if (w->baselen && !strncmp(abspath, w->base, w->baselen) && abspath[w->baselen] == '/') rel = abspath + w->baselen + 1;
@@ -65,6 +65,7 @@ static int add_nib(Walk *w, const char *abspath, int in_storyboard, int is_varia
     if (!(x->relpath = dup_s(rel)) || !(x->abspath = dup_s(abspath))) { free(x->relpath); return oom(w); }
     x->in_storyboard = in_storyboard;
     x->is_variant = is_variant;
+    x->no_nib = no_nib;
     w->n++;
     return 0;
 }
@@ -121,8 +122,9 @@ static int nib_dir(Walk *w, const char *dir, int in_storyboard) {
         if (!strcmp(v[i], "keyedobjects.nib")) floor = 1;
         else if ((k = variant(v[i])) > high || (k >= 0 && k == high && strcmp(v[i], v[best]) > 0)) { high = k; best = i; }
     }
-    if (floor) rc = (join(w, path, dir, "keyedobjects.nib") || add_nib(w, path, in_storyboard, 0)) ? 4 : 0;
-    else if (high >= 0) rc = (join(w, path, dir, v[best]) || add_nib(w, path, in_storyboard, 1)) ? 4 : 0;
+    if (floor) rc = (join(w, path, dir, "keyedobjects.nib") || add_nib(w, path, in_storyboard, 0, 0)) ? 4 : 0;
+    else if (high >= 0) rc = (join(w, path, dir, v[best]) || add_nib(w, path, in_storyboard, 1, 0)) ? 4 : 0;
+    else rc = add_nib(w, dir, in_storyboard, 0, 1);
     free_names(v, n);
     return rc;
 }
@@ -137,7 +139,7 @@ static int storyboard(Walk *w, const char *dir) {
         if (!ends(v[i], ".nib") || (rc = join(w, path, dir, v[i]))) continue;
         if (lstat(path, &st)) rc = fail(w, "%s: cannot read: %s", path);
         else if (S_ISDIR(st.st_mode)) rc = nib_dir(w, path, 1);
-        else if (S_ISREG(st.st_mode)) rc = add_nib(w, path, 1, 0);
+        else if (S_ISREG(st.st_mode)) rc = add_nib(w, path, 1, 0, 0);
     }
     free_names(v, n);
     return rc;
@@ -155,7 +157,7 @@ static int tree(Walk *w, const char *dir) {
         else if (S_ISDIR(st.st_mode))
             rc = ends(v[i], ".nib") ? nib_dir(w, path, 0) : ends(v[i], ".storyboardc") ? storyboard(w, path) : tree(w, path);
         else if (S_ISREG(st.st_mode) && ends(v[i], ".nib"))
-            rc = add_nib(w, path, 0, 0);
+            rc = add_nib(w, path, 0, 0, 0);
     }
     free_names(v, n);
     return rc;
@@ -235,7 +237,7 @@ int rw_walk(const char *arg, RNib **nibs, size_t *n, char ***bins, size_t *nb, c
     w.baselen = strcmp(w.base, "/") ? strlen(w.base) : 0;
     if (dir) rc = tree(&w, real);
     else if (S_ISDIR(st.st_mode)) rc = ends(real, ".nib") ? nib_dir(&w, real, 0) : storyboard(&w, real);
-    else rc = add_nib(&w, real, 0, 0);
+    else rc = add_nib(&w, real, 0, 0, 0);
     if (!rc && found) rc = (join(&w, path, bundle, "Contents/MacOS") || binaries(&w, path)) ? 4 : 0;
     if (!rc && found) rc = (join(&w, path, bundle, "Contents/Frameworks") || binaries(&w, path)) ? 4 : 0;
     if (rc) { rw_free(w.nibs, w.n, w.bins, w.nb); return rc; }

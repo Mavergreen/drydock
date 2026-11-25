@@ -606,7 +606,9 @@ set_tests_properties(resources_findings PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCE
 drydock_add_test(NAME resources_adapt COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/adapt-test.sh)
 set_tests_properties(resources_adapt PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
 drydock_add_test(NAME resources_convert COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/convert-test.sh)
-set_tests_properties(resources_convert PROPERTIES ENVIRONMENT
+set_tests_properties(resources_convert PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")
+drydock_add_test(NAME resources_walkup COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/walkup-test.sh)
+set_tests_properties(resources_walkup PROPERTIES ENVIRONMENT
   "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE};SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}")
 drydock_add_test(NAME resources_check COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/resources/check-test.sh)
 set_tests_properties(resources_check PROPERTIES ENVIRONMENT "DRYDOCK_RESOURCES=${DRYDOCK_RESOURCES_EXE}")

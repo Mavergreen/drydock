@@ -21,7 +21,8 @@
  *     each .storyboardc), or of one nib, nib directory, .storyboardc or dump TEXT, sorted, one per line as
  *     "NIB: SEVERITY: KIND ITEM (DETAIL)", NIB relative to the bundle. A problem an adaptation rule fixes is
  *     "will-adapt", or with --no-adapt an ordinary "finding". Both reference sets are needed, found as for dump and
- *     build. A nib directory without keyedobjects.nib is checked as its highest-numbered keyedobjects-NNN.nib.
+ *     build. A nib directory without keyedobjects.nib is checked as its highest-numbered keyedobjects-NNN.nib, and
+ *     one with neither is a no-nib finding.
  *
  *   drydock-resources convert [check's options] [--no-strict] BUNDLE|NIB
  *     checks as check does, then rewrites each NIBArchive nib in place as a keyed archive, adapted; a keyed nib is
@@ -54,7 +55,7 @@
 #include "findings.h"
 #include "keyed.h"
 #include "nibarchive.h"
-#include "report.h"
+#include "json-report.h"
 #include "rez.h"
 #include "walk.h"
 
@@ -305,7 +306,7 @@ typedef struct {
     char sha_in[65], sha_out[65];
     uint8_t *out;
     size_t outn;
-    char *target;
+    char *target, *target_rel;
     RFindings log;
     struct wa_staged st;
     int staged, written, read;
@@ -321,13 +322,26 @@ static const char *storyboard_of(const char *relpath, char *buf, size_t bufsz) {
     return buf;
 }
 
+/* path with its last component replaced by "keyedobjects.nib", or NULL out of memory. */
+static char *floor_nib(const char *path) {
+    const char *slash = strrchr(path, '/');
+    size_t len = slash ? (size_t)(slash - path) + 1 : 0;
+    char *p = malloc(len + sizeof "keyedobjects.nib");
+    if (!p) return NULL;
+    memcpy(p, path, len);
+    strcpy(p + len, "keyedobjects.nib");
+    return p;
+}
+
 /* Builds the keyed archive convert would write for g, read from x as buf: into it->out, or nothing when a keyed nib
- * needs no adaptation, or when g can't be encoded (rf_check reported why). 0, or 4 out of memory. */
+ * needs no adaptation, or when x has a blocks-write finding. 0, or 4 out of memory. */
 static int build_one(const RNib *x, const uint8_t *buf, size_t n, RGraph *g, const RAdaptSet *a, RFindings *f, Item *it) {
     char why[512];
     BpNode *archive;
     size_t i, adapted = 0;
     int rc;
+    for (i = 0; i < f->n; i++)
+        if (f->v[i].sev == RF_BLOCK_WRITE && f->v[i].nib && !strcmp(f->v[i].nib, x->relpath)) return 0;
     if (ra_apply(a, g, &it->log)) return 4;
     for (i = 0; i < it->log.n; i++) adapted += it->log.v[i].sev == RF_ADAPTED;
     if (g->format == RF_KEYED && !adapted && !x->is_variant) return 0;
@@ -337,25 +351,15 @@ static int build_one(const RNib *x, const uint8_t *buf, size_t n, RGraph *g, con
         it->outn = n;
     } else {
         if ((rc = ka_from_graph(g, &archive, why, sizeof why)) == 4) return 4;
-        if (rc) {
-            for (i = 0; i < f->n; i++)
-                if (f->v[i].sev == RF_BLOCK_WRITE && f->v[i].nib && !strcmp(f->v[i].nib, x->relpath)) return 0;
+        if (rc)
             return rf_add(f, "unencodable", x->relpath, "keyed-archive", RF_BLOCK_WRITE, "%s",
                           strncmp(why, "unencodable: ", 13) ? why : why + 13) ? 4 : 0;
-        }
         rc = bp_write(archive, &it->out, &it->outn);
         bp_free(archive);
         if (rc) return 4;
     }
     rr_sha256(it->out, it->outn, it->sha_out);
-    if (!x->is_variant) it->target = NULL;
-    else {
-        const char *slash = strrchr(x->abspath, '/');
-        size_t len = slash ? (size_t)(slash - x->abspath) + 1 : 0;
-        if (!(it->target = malloc(len + sizeof "keyedobjects.nib"))) return 4;
-        memcpy(it->target, x->abspath, len);
-        strcpy(it->target + len, "keyedobjects.nib");
-    }
+    if (x->is_variant && (!(it->target = floor_nib(x->abspath)) || !(it->target_rel = floor_nib(x->relpath)))) return 4;
     return 0;
 }
 
@@ -446,6 +450,14 @@ static int bundle(const char *arg, const Opts *o) {
             worst = 4;
             break;
         }
+        if (x->no_nib) {
+            if (rf_add(&f, "no-nib", x->relpath, "keyedobjects.nib", RF_FINDING, "no keyedobjects.nib or keyedobjects-NNN.nib")) {
+                fprintf(stderr, "drydock-resources: out of memory\n");
+                worst = 4;
+                break;
+            }
+            continue;
+        }
         if (!(buf = read_nib(x->abspath, &len))) { worst = 4; continue; }
         items[i].read = 1;
         rr_sha256(buf, len, items[i].sha_in);
@@ -463,7 +475,9 @@ static int bundle(const char *arg, const Opts *o) {
     for (i = 0; i < n; i++)
         for (j = 0; items[i].written && j < items[i].log.n; j++) {
             const RFinding *x = &items[i].log.v[j];
-            if (x->sev == RF_ADAPTED && rf_add(&f, x->kind, nibs[i].relpath, x->item, RF_ADAPTED, "%s", x->detail)) worst = 4;
+            if (x->sev == RF_ADAPTED && rf_add(&f, x->kind, items[i].target_rel ? items[i].target_rel : nibs[i].relpath,
+                                               x->item, RF_ADAPTED, "%s", x->detail))
+                worst = 4;
         }
     rf_sort(&f);
     for (i = 0; i < f.n; i++) {
@@ -481,7 +495,7 @@ static int bundle(const char *arg, const Opts *o) {
         for (i = 0; ra_rule(i) && n_rules < sizeof rules / sizeof *rules; i++)
             if (ra_is_on(a, ra_rule(i))) rules[n_rules++] = ra_rule(i);
         for (i = 0; i < n; i++) {
-            rn[i].path = nibs[i].relpath;
+            rn[i].path = items[i].written && items[i].target_rel ? items[i].target_rel : nibs[i].relpath;
             rn[i].format = items[i].format;
             rn[i].sha256_in = items[i].read ? items[i].sha_in : NULL;
             rn[i].sha256_out = items[i].out ? items[i].sha_out : NULL;
@@ -497,6 +511,7 @@ done:
         if (items[i].staged) wa_abort(&items[i].st);
         free(items[i].out);
         free(items[i].target);
+        free(items[i].target_rel);
         rf_free(&items[i].log);
     }
     free(items);

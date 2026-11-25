@@ -280,8 +280,7 @@ static int keys_and_colors(const RfRefs *r, const RGraph *g, const char *nib, RF
             continue;
         p.a = name;
         p.b = "";
-        if ((r->n_floor && bsearch(&p, r->floor_colors, r->n_floor, sizeof *r->floor_colors, name_cmp))
-            || known_key(r, "NSColor(System)", name))
+        if (r->n_floor && bsearch(&p, r->floor_colors, r->n_floor, sizeof *r->floor_colors, name_cmp))
             continue;
         hit = r->n_newer ? bsearch(&p, r->newer_colors, r->n_newer, sizeof *r->newer_colors, name_cmp) : NULL;
         if (cand(&colors, name, "", hit ? hit->b : "?", (uint32_t)i)) goto done;
@@ -356,7 +355,7 @@ int rf_blocks(const RFinding *x) { return (x->sev == RF_FINDING || x->sev == RF_
 
 static const char *const kinds[] = { "nibarchive-format", "class-missing", "unresolved-chain", "unknown-key",
                                      "named-color-missing", "storyboard", "unencodable", "translate-autoresizing",
-                                     "wrapping-width", "no-floor-nib" };
+                                     "wrapping-width", "no-floor-nib", "no-nib" };
 
 void rf_exceptions_free(RfExceptions *ex) {
     size_t i, j;
