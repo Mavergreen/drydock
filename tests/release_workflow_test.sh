@@ -245,6 +245,7 @@ has "an allowed test must have skipped for its stated reason, its last SKIP line
   'f && /^SKIP/ { s = $0 } END { print s }'"' \"\$ARM64/Testing/Temporary/LastTest.log\""
 allowed=$(printf '%s\n' "$su" | sed -n 's/^ *\([a-z0-9_]*\)) echo "\(SKIP[^"]*\)" ;;$/\1: \2/p')
 want_allowed="resources_instantiate: SKIP resources_instantiate: AppKit on 10.9
+resources_macfuse_pane: SKIP: resources_macfuse_pane: set DRYDOCK_RESOURCES_MACFUSE_NIB *
 objc_attest_codex: SKIP objc_attest_codex: */Library/Caches/mm-build/codex-native-sweep-repro is absent
 objc_reference_set: SKIP objc_reference_set: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1
 objc_iterm2_acceptance: SKIP objc_iterm2_acceptance: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1
@@ -262,7 +263,7 @@ has "x86len_oracle_test may not run, for want of cctools' otool" "$two" "is not 
 has "... or of 10.9's corpus" "$two" "is absent; the corpus is 10.9's own images"
 has "rebase_oracle_test may not run, for want of dyldinfo" "$two" "SKIP: no dyldinfo here"
 has "... or of 10.9's corpus" "$two" "SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own"
-for t in resources_instantiate objc_attest_codex objc_reference_set objc_iterm2_acceptance codesign_order_test \
+for t in resources_instantiate resources_macfuse_pane objc_attest_codex objc_reference_set objc_iterm2_acceptance codesign_order_test \
          raise_corpus_test raise_oracle_counts_test hdrref_table_rule_test raise_runs_test mantle_raise_test \
          legacysupport_rename_test x86len_oracle_test rebase_oracle_test; do
   has "the runner says why $t may not run" "$su" "#   $t: "
@@ -278,6 +279,7 @@ has "the row parse leaves out the tests that did not run, whose own SKIP lines t
   'NR == FNR { skipped[$0] = 1; next } /^[0-9]+\/[0-9]+ Test: / { t = ($3 in skipped) ? "" : $3; next }'
 has "the row parse has a positive control: an x86_64 row of symbol_rename_test, which no arm64 Mac runs" "$su" \
   "grep -qxF 'symbol_rename_test: SKIP forwarding: links and prints 43: cannot execute x86_64 on this host (Apple Silicon, no Rosetta by policy)' \"\$RUNNER_TEMP/rows\""
+lacks "libgmalloc rows must run: macos-26 has /usr/lib/libgmalloc.dylib (the resources_*_gmalloc tests pass there)" "$su" libgmalloc
 has "x86_64 rows may skip: on-target runs them" "$su" \
   '*": SKIP "*": cannot execute x86_64 on this host (Apple Silicon, no Rosetta by policy)") ;;'
 has "the suite runs with the fetched macFUSE tarball" "$(step modern-smoke 'for macfuse_golden_test')" 'MACFUSE_DEBUG_TBZ='

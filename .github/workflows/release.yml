@@ -646,6 +646,7 @@ jobs:
           ARM64="${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross-arm64"
           # Allowed not to run here, each only for the reason its last SKIP line must give (a glob):
           #   resources_instantiate: it instantiates nibs with 10.9's AppKit; on-target's maintainer runs it
+          #   resources_macfuse_pane: a maintainer test; macFUSE's pane nib is never committed, and nothing here names one
           #   objc_attest_codex: its input is codex's kept repro in one maintainer's ~/Library/Caches
           #   objc_reference_set: a maintainer test; this runner refuses its arm64 dylib in an arm64e process
           #   objc_iterm2_acceptance: a maintainer test, on a cached upstream iTerm2
@@ -661,6 +662,7 @@ jobs:
           why() {
             case "$1" in
               resources_instantiate) echo "SKIP resources_instantiate: AppKit on 10.9" ;;
+              resources_macfuse_pane) echo "SKIP: resources_macfuse_pane: set DRYDOCK_RESOURCES_MACFUSE_NIB *" ;;
               objc_attest_codex) echo "SKIP objc_attest_codex: */Library/Caches/mm-build/codex-native-sweep-repro is absent" ;;
               objc_reference_set) echo "SKIP objc_reference_set: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1" ;;
               objc_iterm2_acceptance) echo "SKIP objc_iterm2_acceptance: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1" ;;
@@ -680,14 +682,11 @@ jobs:
           }
           # Rows of tests that ran, allowed to say SKIP here, by their whole line, for the reason given:
           #   any x86_64 row: no Rosetta by policy; on-target runs them all
-          #   a (libgmalloc) row, and cli_test's under libgmalloc: macOS 26 may keep no libgmalloc.dylib on disk; 10.9 runs them
           #   grown_binary_runs_test's system: /usr/bin/printf is fat with chained fixups here; 10.9's qualifies
           #   wrapper_test's rename_segment LC_LAZY_LOAD_DYLIB: ld64.lld writes none, so no host runs it
           row_allowed() {
             case "$1" in
               *": SKIP "*": cannot execute x86_64 on this host (Apple Silicon, no Rosetta by policy)") ;;
-              *": SKIP "*" (libgmalloc): no /usr/lib/libgmalloc.dylib on this host") ;;
-              "cli_test: SKIP order: short load commands under libgmalloc: libgmalloc does not load here") ;;
               "grown_binary_runs_test: SKIP system: /usr/bin/printf: does not qualify here: "*) ;;
               "wrapper_test: SKIP rename_segment: LC_LAZY_LOAD_DYLIB classification: "*) ;;
               *) return 1 ;;
