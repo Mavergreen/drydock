@@ -1,7 +1,8 @@
 #!/bin/sh
 # platform: macOS-only -- a maintainer test: macFUSE's compiled preference pane nib, which is not committed, is read from
 #   DRYDOCK_RESOURCES_MACFUSE_NIB; it SKIPs (77) when that is unset or names no file. On 10.9 it also instantiates the converted
-#   nib with AppKit, compiled at test time with clang22 against the pinned 10.9 SDK.
+#   nib with AppKit, compiled at test time with clang22 against the pinned 10.9 SDK, and SKIPs (77) there, its earlier
+#   checks passing, when clang22 cannot build against AppKit.
 set -u
 : "${DRYDOCK_RESOURCES:?names the built drydock-resources (CTest sets it)}"
 R=$DRYDOCK_RESOURCES
@@ -80,7 +81,15 @@ if [ "$on_floor" = 0 ]; then
   echo "all passed (AppKit's half needs 10.9, and this is $host)"; exit 0
 fi
 
+skip_floor() {
+  [ -s "$T/failed" ] && { echo "$(wc -l < "$T/failed" | tr -d ' ') failed"; exit 1; }
+  echo "SKIP: resources_macfuse_pane: AppKit's half: $1"; exit 77
+}
+( . "$ROOT/tests/lib/toolchain.sh" ) > "$T/toolchain" 2>&1 || skip_floor "no clang22: $(tail -1 "$T/toolchain")"
 . "$ROOT/tests/lib/toolchain.sh"
+printf '#import <AppKit/AppKit.h>\nint main(void) { return [NSApplication sharedApplication] == nil; }\n' > "$T/probe.m"
+"$HOST_CC" -framework AppKit -o "$T/probe" "$T/probe.m" > "$T/probe.err" 2>&1 \
+  || skip_floor "$HOST_CC cannot build against AppKit: $(head -1 "$T/probe.err")"
 "$HOST_CC" -fobjc-arc -Wall -Wextra -Werror -framework AppKit -o "$T/instantiate" "$ROOT/tests/resources/fixtures/instantiate.m" \
   || exit 1
 measure() {  # NAME NIB: conflicts, label_height and line_height with a stub MFPreferencePane owner, as $T/NAME.*

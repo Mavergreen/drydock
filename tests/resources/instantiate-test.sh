@@ -1,6 +1,6 @@
 #!/bin/sh
 # platform: macOS-only -- 10.9 only: AppKit on the floor itself, compiled at test time with clang22 against the pinned
-#   10.9 SDK; elsewhere it SKIPs (77)
+#   10.9 SDK; elsewhere, or on 10.9 without clang22 or a clang22 that cannot build against AppKit, it SKIPs (77)
 set -u
 : "${DRYDOCK_RESOURCES:?names the built drydock-resources (CTest sets it)}"
 R=$DRYDOCK_RESOURCES
@@ -11,8 +11,10 @@ case "$(uname -s) $(uname -r)" in
   "Darwin 13."*) ;;
   *) echo "SKIP: resources_instantiate: AppKit on OS X 10.9, and this is $(uname -s) $(uname -r)"; exit 77 ;;
 esac
-. "$ROOT/tests/lib/toolchain.sh"
 T=$(mktemp -d "${TMPDIR:-/tmp}/instantiate-test.XXXXXX") || exit 1
+( . "$ROOT/tests/lib/toolchain.sh" ) > "$T/toolchain" 2>&1 \
+  || { echo "SKIP: resources_instantiate: no clang22: $(tail -1 "$T/toolchain")"; rm -rf "$T"; exit 77; }
+. "$ROOT/tests/lib/toolchain.sh"
 trap 'rm -rf "$T"' EXIT
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; echo "$1" >> "$T/failed"; }
