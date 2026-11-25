@@ -20,8 +20,7 @@
  *     different objc2 revision is cannot-measure (crate-revision-mismatch). An unparsable
  *     symbol, a type the map does not name, or a mapped type whose crate is not pinned is
  *     cannot-measure. A stripped artifact has no function symbol to match: its sends stay open.
- *   - R3, positional type evidence (design ../../.superpowers/specs/2026-11-07-objc-r3-positional-evidence-design.md
- *     in the shipyard source tree's history). A row names a function by its exact v0 symbol (an LLVM
+ *   - R3, positional type evidence. A row names a function by its exact v0 symbol (an LLVM
  *     ".suffix" ignored), its selectors and kind, a floor class, and where the receiver comes from:
  *     `result` (a send of a named selector in this function returned it), `downcast` (a checked
  *     downcast to a Rust type the type map maps to that class) or `field` (an object field of a

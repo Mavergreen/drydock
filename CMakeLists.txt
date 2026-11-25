@@ -1089,6 +1089,12 @@ drydock_add_test(NAME linux_pin_test COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tes
 set_property(TEST linux_pin_test APPEND PROPERTY LABELS not-in-guest)
 set_tests_properties(linux_pin_test PROPERTIES ENVIRONMENT "SHIPYARD_SCRIPTS=${MavericksShipyard_SCRIPTS}" SKIP_RETURN_CODE 77)
 
+# platform: needs git and a checkout, so not in the guest, whose git is a Command Line Tools stub; SKIPs (77) elsewhere
+#           without them.
+drydock_add_test(NAME no_superpowers_citations_test COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/no_superpowers_citations_test.sh")
+set_property(TEST no_superpowers_citations_test APPEND PROPERTY LABELS not-in-guest)
+set_tests_properties(no_superpowers_citations_test PROPERTIES SKIP_RETURN_CODE 77)
+
 # The same bot's Jansson step, against a file:// codeload tree and a scratch git upstream.
 drydock_add_test(NAME jansson_pin_test COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/jansson_pin_test.sh")
 set_property(TEST jansson_pin_test APPEND PROPERTY LABELS not-in-guest)

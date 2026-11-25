@@ -1,5 +1,5 @@
 /* Fixture: the shape Apple clang 21 emits at -Os for Recaulk's provider (arm64-built x86_64
- * archive, codex-cli .superpowers/handoffs/objc-task4/modern-results/step2-archive-disasm.txt):
+ * archive, from codex-cli's disassembly):
  * objc_msgSend's GOT slot loaded once into a callee-saved register, then `callq *%r12` again and
  * again, across other calls, after a join of two such loads, and in a loop. Hand-assembled so the
  * shape does not depend on which compiler builds it. Never executed.
