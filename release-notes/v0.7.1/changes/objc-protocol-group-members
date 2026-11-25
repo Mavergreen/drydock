@@ -1,0 +1,1 @@
+drydock-objc analyze lets a schema-2 provider group back-fill a method the newer SDK declares in a protocol its class adopts, such as NSView's 10.10 accessibility methods.

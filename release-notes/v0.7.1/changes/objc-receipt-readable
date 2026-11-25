@@ -1,0 +1,1 @@
+drydock-objc receipt now writes a receipt readable under the caller's umask, so a receipt installed as root can be read by a consumer's analyzer.

@@ -105,6 +105,17 @@ Bytes in code that no instruction covers can hold a value that happens to land o
 
 Building Drydock now fetches the pinned clang22 at configure time, for its `clang-c` headers only (nothing of it ships), so a build needs network access or a warm cache.
 
+## drydock-resources
+
+An early preview: it works on this repository's own fixtures, and it has not yet been run end to end on macFUSE's preference pane, so check what it writes before shipping it. Given a nib or a bundle of them built for a newer Mac OS X, it adapts them to load on Mavericks. It has four subcommands:
+
+* `drydock-resources dump`: write a nib as text a person can edit and diff.
+* `drydock-resources build`: build a keyed-archive nib from that text.
+* `drydock-resources check`: report what in a bundle, nib or text file 10.9 would not accept, and which adaptation rules apply.
+* `drydock-resources convert`: write a converted copy of a bundle or nib. It is strict by default, refusing a bundle with findings left, and `--exceptions FILE` accepts the gaps you name.
+
+Two Auto Layout adaptation rules are on by default; `--no-adapt` or `--no-adapt=RULE` turns them off. Run `drydock-resources` with no arguments for the usage.
+
 ## Other related tools
 
 - `install_name_tool` from the Mavericks Command Line Tools
