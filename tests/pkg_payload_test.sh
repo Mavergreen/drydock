@@ -150,11 +150,13 @@ env -u LIPO sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b 
 same_tree "$t/drydock-updater.app" "$upd" \
   || { echo "FAIL: the package's drydock-updater.app is not the two builds' updaters merged"; exit 1; }
 
-case "$(uname -s) $(sw_vers -productVersion 2>/dev/null || :)" in
+# platform: guarded macOS-only call -- sw_vers runs only when uname -s says Darwin
+case "$(uname -s) $([ "$(uname -s)" != Darwin ] || sw_vers -productVersion)" in
   Darwin\ 10.*) echo "INFO: this codesign predates arm64; the arm64 slices' signatures are checked on 11 and later" ;;
   Darwin\ *)
     for f in "$got/$tree/bin/drydock-macho-rewrite" "$upd/Contents/MacOS/drydock-updater"; do
       "$LIPO" "$f" -thin arm64 -output "$t/arm64-slice"
+      # platform: guarded macOS-only call -- this branch is Darwin 11 and later
       codesign -v "$t/arm64-slice" \
         || { echo "FAIL: the arm64 slice of ${f#"$got"/} has no valid signature"; exit 1; }
       rm -f "$t/arm64-slice"
