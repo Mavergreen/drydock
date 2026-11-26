@@ -1,0 +1,1 @@
+drydock-objc receipt records an explicit objc_msgSend or objc_msgSendSuper call of a literal selector as a send, so a C-function IMP's super send maps to source.

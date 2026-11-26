@@ -32,14 +32,18 @@
  *   input    LABEL SHA256           (every input, sorted)
  *   unit     LABEL                  (sorted)
  *   send     LABEL SPAN ANCHORS FORM KIND SELECTOR RECEIVER TYPE OWNER   (sorted, unique)
- * One send row per message the compiler emits for source in a staged input:
+ * One send row per message the compiler emits for source in a staged input, and per explicit call of
+ * the SDK's objc_msgSend or objc_msgSendSuper (or a _stret, _fpret, _fp2ret or Super2 variant) whose
+ * selector argument is an @selector literal:
  *   SPAN      SL:SC-EL:EC, the expression's extent (for-in: the whole statement)
  *   ANCHORS   L:C,... the starts of the statements and full expressions enclosing it, innermost
  *             last; a compiler that attributes code to a statement's first line lands on one
  *   FORM      message, super, property-get, property-set, for-in, dictionary-literal,
  *             array-literal, or unmodelled (a boxed expression, @(x) @1 @YES: its selector is "-",
- *             so no binary send maps to it). Subscripts and any other send the compiler makes that
- *             this walk does not model get no row, so the analyzer refuses their sends (unmapped)
+ *             so no binary send maps to it). An explicit runtime call is super for a Super variant,
+ *             else message with the first argument as its receiver. Subscripts and any other send
+ *             the compiler makes that this walk does not model get no row, nor does a runtime call
+ *             of a selector variable or sel_registerName, so the analyzer refuses their sends (unmapped)
  *   KIND      + or -, from the referenced declaration, else the receiver (a class or Class is +)
  *   RECEIVER  the class of the receiver's static type -- an interface pointer (protocol
  *             qualifiers and typedefs looked through) or a class name -- or "-" for id, Class,
@@ -342,6 +346,93 @@ static void lead_tokens(CXTranslationUnit tu, CXCursor c, char *t0, char *t1, si
     if (toks) clang_disposeTokens(tu, toks, nt);
 }
 
+/* An expression with parentheses, implicit casts and (if casts) explicit casts looked through, each
+ * of them having exactly one expression child. */
+static enum CXChildVisitResult only_expr(CXCursor c, CXCursor parent, CXClientData data) {
+    CXCursor *e = data;
+    (void)parent;
+    if (!clang_isExpression(clang_getCursorKind(c))) return CXChildVisit_Continue;
+    if (!clang_Cursor_isNull(e[0])) { e[1] = c; return CXChildVisit_Break; }
+    e[0] = c;
+    return CXChildVisit_Continue;
+}
+static CXCursor bare(CXCursor c, int casts) {
+    for (;;) {
+        enum CXCursorKind k = clang_getCursorKind(c);
+        CXCursor e[2];
+        if (k != CXCursor_ParenExpr && k != CXCursor_UnexposedExpr && !(casts && k == CXCursor_CStyleCastExpr)) return c;
+        e[0] = e[1] = clang_getNullCursor();
+        clang_visitChildren(c, only_expr, e);
+        if (clang_Cursor_isNull(e[0]) || !clang_Cursor_isNull(e[1])) return c;
+        c = e[0];
+    }
+}
+
+static const char *const RUNTIME_SENDS[] = {"objc_msgSend", "objc_msgSend_stret", "objc_msgSend_fpret", "objc_msgSend_fp2ret",
+                                            "objc_msgSendSuper", "objc_msgSendSuper_stret", "objc_msgSendSuper2",
+                                            "objc_msgSendSuper2_stret"};
+
+/* The selector an @selector(...) expression spells, from its tokens (libclang does not spell it), or NULL
+ * when its extent is not those tokens, as in a macro's expansion. */
+static char *selector_literal(CXTranslationUnit tu, CXCursor c) {
+    CXToken *toks = NULL;
+    unsigned nt = 0, i;
+    char *sel = NULL;
+    size_t len = 0;
+    int ok;
+    clang_tokenize(tu, clang_getCursorExtent(c), &toks, &nt);
+    ok = nt > 4;
+    for (i = 0; ok && i < nt; i++) {
+        CXString t = clang_getTokenSpelling(tu, toks[i]);
+        const char *ts = clang_getCString(t);
+        if (!ts) ok = 0;
+        else if (i == 0) ok = !strcmp(ts, "@");
+        else if (i == 1) ok = !strcmp(ts, "selector");
+        else if (i == 2) ok = !strcmp(ts, "(");
+        else if (i == nt - 1) ok = !strcmp(ts, ")");
+        else {
+            char *g = realloc(sel, len + strlen(ts) + 1);
+            if (!g) cannot("out of memory");
+            sel = g;
+            strcpy(sel + len, ts);
+            len += strlen(ts);
+        }
+        clang_disposeString(t);
+    }
+    if (toks) clang_disposeTokens(tu, toks, nt);
+    if (!ok) { free(sel); return NULL; }
+    return sel;
+}
+
+/* A call of a runtime send function a system header declares, with an @selector literal. */
+static void explicit_send(CXTranslationUnit tu, const Input *in, CXCursor c, const Anchors *an) {
+    CXCursor callee = clang_getNullCursor(), fn, sel;
+    CXString name;
+    const char *n, *form = NULL;
+    char *s;
+    size_t i;
+    if (clang_Cursor_getNumArguments(c) < 2) return;
+    clang_visitChildren(c, first_child, &callee);
+    fn = bare(callee, 1);
+    if (clang_getCursorKind(fn) != CXCursor_DeclRefExpr) return;
+    fn = clang_getCursorReferenced(fn);
+    if (clang_getCursorKind(fn) != CXCursor_FunctionDecl || !clang_Location_isInSystemHeader(clang_getCursorLocation(fn))) return;
+    sel = bare(clang_Cursor_getArgument(c, 1), 1);
+    if (clang_getCursorKind(sel) != CXCursor_ObjCSelectorExpr) return;
+    name = clang_getCursorSpelling(fn);
+    n = clang_getCString(name);
+    for (i = 0; n && i < sizeof RUNTIME_SENDS / sizeof *RUNTIME_SENDS; i++)
+        if (!strcmp(n, RUNTIME_SENDS[i])) form = strstr(n, "Super") ? "super" : "message";
+    clang_disposeString(name);
+    if (!form) return;
+    if (!(s = selector_literal(tu, sel))) return;
+    if (!strcmp(form, "super"))
+        emit(in, c, an, form, "-", s, clang_getCursorType(c), 0, NULL, clang_getNullCursor());
+    else
+        emit(in, c, an, form, NULL, s, clang_getCursorType(bare(clang_Cursor_getArgument(c, 0), 0)), 1, NULL, clang_getNullCursor());
+    free(s);
+}
+
 typedef struct { CXCursor k[3]; int n; } Kids;
 static enum CXChildVisitResult collect_kids(CXCursor c, CXCursor parent, CXClientData data) {
     Kids *kd = data;
@@ -432,6 +523,8 @@ static enum CXChildVisitResult walk(CXCursor c, CXCursor parent, CXClientData da
             else
                 emit(in, c, &sub.an, "message", kind, clang_getCString(s), clang_Cursor_getReceiverType(c), 1, NULL, m);
             clang_disposeString(s);
+        } else if (k == CXCursor_CallExpr) {
+            explicit_send(w->tu, in, c, &sub.an);
         } else if (k == CXCursor_MemberRefExpr) {
             CXCursor ref = clang_getCursorReferenced(c);
             enum CXCursorKind rk = clang_getCursorKind(ref);

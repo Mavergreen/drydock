@@ -111,6 +111,24 @@ else
   echo "SKIP: receipt_missing_symbol: needs a Mac to build the stub dylib ($(uname -s))"
 fi
 
+# spec: tools/objc-source-inventory.c header (FORM) -- an explicit objc_msgSend or objc_msgSendSuper call of an @selector literal
+#       is a send row; a selector from a variable or sel_registerName, or a function that is not the runtime's, is none.
+XS="$T/xs"
+mkdir -p "$XS"
+cp "$FX/explicit-sends.m" "$XS/"
+printf '%s  explicit-sends.m\n' "$(sha "$XS/explicit-sends.m")" >"$T/xs-inputs"
+rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$CLANG" --sdk "$SDK" --inputs "$T/xs-inputs" --root "$XS" --unit explicit-sends.m \
+  --output "$T/xs.receipt" 2>"$T/err" || rc=$?
+xs_row() { awk -F'\t' -v l="$1" -v f="$2" -v k="$3" -v s="$4" -v c="$5" -v t="$6" '$1 == "send" && $2 == "explicit-sends.m" &&
+  index($3, l "-") == 1 && $5 == f && $6 == k && $7 == s && $8 == c && $9 == t && $10 == "-" { n++ } END { exit n != 1 }' "$T/xs.receipt"; }
+if [ "$rc" = 0 ] && [ "$(grep -c '^send	' "$T/xs.receipt")" = 4 ] &&
+   xs_row 12:5 super - description - - && xs_row 13:5 super - isEqual: - - && xs_row 14:5 message - copy NSString 'NSString *' &&
+   xs_row 17:5 message - performSelector:withObject: NSString 'NSString *'; then
+  pass 'explicit sends: objc_msgSendSuper of an @selector literal is a super row, objc_msgSend of one a message row, and nothing else is'
+else
+  fail "explicit sends: exit $rc"; [ ! -f "$T/xs.receipt" ] || grep '^send' "$T/xs.receipt"
+fi
+
 # spec: tools/objc-source-inventory.c header (--unit-flags) -- each unit parses with its own flags from a hashed file, schema 2.
 UF="$T/uf"
 mkdir -p "$UF"

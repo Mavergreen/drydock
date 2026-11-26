@@ -16,10 +16,13 @@
 /* X(RETURN, NAME, PARAMETERS, ARGUMENTS) for a function with a result, V(...) for a void one. */
 #define DRYDOCK_LIBCLANG_FUNCTIONS(X, V) \
     X(CXString, clang_Cursor_getObjCPropertyGetterName, (CXCursor c), (c)) \
+    X(CXCursor, clang_Cursor_getArgument, (CXCursor c, unsigned i), (c, i)) \
+    X(int, clang_Cursor_getNumArguments, (CXCursor c), (c)) \
     X(CXString, clang_Cursor_getObjCPropertySetterName, (CXCursor c), (c)) \
     X(CXType, clang_Cursor_getReceiverType, (CXCursor c), (c)) \
     X(int, clang_Cursor_isNull, (CXCursor c), (c)) \
     X(CXType, clang_Type_getObjCObjectBaseType, (CXType t), (t)) \
+    X(int, clang_Location_isInSystemHeader, (CXSourceLocation l), (l)) \
     X(CXIndex, clang_createIndex, (int exclude, int display), (exclude, display)) \
     X(unsigned, clang_defaultDiagnosticDisplayOptions, (void), ()) \
     V(clang_disposeDiagnostic, (CXDiagnostic d), (d)) \
