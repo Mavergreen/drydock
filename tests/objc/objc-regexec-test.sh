@@ -170,6 +170,50 @@ for o in -Os -Oz; do
     fail "sibcall$o: the add after a helper reached by a tail call changed a local through a forwarded stack argument is decided: $(grep '^path ' "$T/out")"
 done
 pass 'a frame address forwarded as a stack argument by a tail call to a helper not followed escapes (-Os -Oz)'
+# spec: src/objc/regexec.c header -- class_addMethod's failure is a path only where the result is read.
+lazy() {   # lazy NAME OPT VARIANT: regexec-lazyadd.c's VARIANT at OPT, run from lazy_start with rdi bound to NSView
+  fxcc "$2" "-D$3" -c "$FX/regexec-lazyadd.c" -o "$T/$1.o" || fail "compiling regexec-lazyadd.c $2 -D$3"
+  fxcc "$T/main.o" "$T/$1.o" -lobjc -o "$T/$1" || fail "linking $1"
+  rc=0; "$DRYDOCK_OBJC_REGEXEC_DRIVER" "$T/$1" _lazy_start NSView >"$T/out" 2>"$T/err" || rc=$?
+  explored "$1"
+}
+added() { grep "^  add $1 .* $2\$" "$T/out" >/dev/null; }   # added CLS|META\ SEL OK: some path adds SEL with OK
+npaths() { sed -n 's/^paths //p' "$T/out"; }
+for o in -O0 -Os; do
+  lazy "ten$o" "$o" TEN
+  [ "$(npaths)" = 2 ] && [ "$(grep -c '^  add NSView|0 a[0-9] .* 1$' "$T/out")" = 20 ] && ! added '.*' 0 ||
+    fail "ten$o: want two paths of ten succeeded adds: $(grep -E '^(paths|path|  add)' "$T/out")"
+  lazy "checked$o" "$o" CHECKED
+  awk '/^path /{ if (z && f) ok = 1; z = f = 0 } /^  add NSView\|0 c0 .* 0$/{ z = 1 } /^  add NSView\|0 c1 /{ f = 1 }
+       END { exit !(ok || (z && f)) }' "$T/out" || fail "checked$o: no path with the add failed and its fallback added: $(cat "$T/out")"
+  lazy "copied$o" "$o" COPIED
+  added 'NSView|0 p0' 0 || fail "copied$o: the add whose result a local held has no failed path: $(cat "$T/out")"
+  lazy "partial$o" "$o" PARTIAL
+  added 'NSView|0 b0' 0 && added 'NSView|0 b0' 1 || fail "partial$o: the add tested in al is not both ways: $(cat "$T/out")"
+  lazy "helper$o" "$o" HELPER
+  added 'NSView|0 h0' 0 && added 'NSView|0 h0' 1 || fail "helper$o: the add a helper returns is not both ways: $(cat "$T/out")"
+  lazy "tail$o" "$o" TAIL
+  added 'NSView|0 t0' 0 && added 'NSView|0 t0' 1 || fail "tail$o: the add the entry returns is not both ways: $(cat "$T/out")"
+  lazy "null$o" "$o" NULLCLS
+  [ "$(npaths)" = 2 ] && added '?|0 n0' 0 && added 'NSView|0 n0' 1 ||
+    fail "null$o: want the NULL class's failed add and one succeeded add: $(grep -E '^(paths|path|  add)' "$T/out")"
+done
+"$(dirname "$NM")/llvm-objdump" -d --no-show-raw-insn --disassemble-symbols=_lazy_start "$T/tail-Os" | grep -E '^ *[0-9a-f]+:[[:space:]]+jmp' >/dev/null ||
+  fail "tail-Os: lazy_start does not end in a tail jump: $("$(dirname "$NM")/llvm-objdump" -d --disassemble-symbols=_lazy_start "$T/tail-Os")"
+pass 'a failed class_addMethod is a path where its result is read, tested, copied, returned or tail-jumped to, and only there (-O0 -Os)'
+fxcc -c "$FX/regexec-lazyadd.S" -o "$T/lazys.o" || fail 'assembling regexec-lazyadd.S'
+fxcc "$T/main.o" "$T/lazys.o" -lobjc -o "$T/lazys" || fail 'linking lazys'
+runl() { rc=0; "$DRYDOCK_OBJC_REGEXEC_DRIVER" "$T/lazys" "$@" >"$T/out" 2>"$T/err" || rc=$?; }
+runl _u_write NSView --max-paths 1; explored u_write
+[ "$(npaths)" = 1 ] || fail "u_write: $(head -1 "$T/out"), want one path: rax was written before any read"
+for q in cmc ret; do
+  here=$("$NM" "$T/lazys" | awk -v s="_u_${q}_here" '$3 == s {print $1}' | sed 's/^0*//')
+  runl "_u_$q" NSView --max-paths 1; refused "u_$q" path-budget
+  grep "forking at 0x$here\$" "$T/out" >/dev/null || fail "u_$q: the failed add does not fork at 0x$here: $(cat "$T/out")"
+done
+runl _u_ret NSView; explored u_ret
+added 'NSView|0 ?' 0 && added 'NSView|0 ?' 1 || fail "u_ret: the returned add is not both ways: $(cat "$T/out")"
+pass 'the failure forks at an instruction the read set does not classify and at a return, not before a write of rax'
 fxcc -c "$FX/regexec-launder.S" -o "$T/launder.o" || fail 'assembling regexec-launder.S'
 fxcc "$T/main.o" "$T/launder.o" -lobjc -o "$T/launder" || fail 'linking launder'
 ls_va=$("$NM" "$T/launder" | awk '$3 == "_ls" {print "0x" $1}' | sed 's/0x0*/0x/')

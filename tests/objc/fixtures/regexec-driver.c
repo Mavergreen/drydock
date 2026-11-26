@@ -1,7 +1,8 @@
-/* Test-only harness: objc-regexec-driver IMAGE ENTRY_SYMBOL [ARG0_CLASS] [--table SYMBOL] [--track SYMBOL]... runs the
- * registration executor (src/objc/regexec.c) from ENTRY_SYMBOL's address, rdi bound to Class(ARG0_CLASS) when given,
- * stores held to SYMBOL's extent (its address to the next symbol in its section) with --table, each --track SYMBOL's
- * address tracked, every function of IMAGE's __TEXT,__text as provider code, default budgets, and prints, in
+/* Test-only harness: objc-regexec-driver IMAGE ENTRY_SYMBOL [ARG0_CLASS] [--table SYMBOL] [--track SYMBOL]...
+ * [--max-paths N] runs the registration executor (src/objc/regexec.c) from ENTRY_SYMBOL's address, rdi bound to
+ * Class(ARG0_CLASS) when given, stores held to SYMBOL's extent (its address to the next symbol in its section) with
+ * --table, each --track SYMBOL's address tracked, every function of IMAGE's __TEXT,__text as provider code, the
+ * default budgets but N paths with --max-paths, and prints, in
  * exploration order:
  *   paths N
  *   null-paths K                                 (paths on which objc_getClass returned NULL)
@@ -42,15 +43,16 @@ static uint64_t sym_end(const ObjcImage *im, uint64_t a) {
 }
 
 int main(int argc, char **argv) {
-    ObjcAnalysis *a; ObjcImage *im; ObjcRegResult r; ObjcRegStart st; uint64_t tracked[16];
+    ObjcAnalysis *a; ObjcImage *im; ObjcRegResult r; ObjcRegStart st; ObjcRegBudget b; uint64_t tracked[16];
     uint64_t lo = 0, hi = 0, *ranges; size_t i, j, n = 0, nf; int k;
-    const char *usage = "usage: objc-regexec-driver IMAGE ENTRY_SYMBOL [ARG0_CLASS] [--table SYMBOL] [--track SYMBOL]...\n";
+    const char *usage = "usage: objc-regexec-driver IMAGE ENTRY_SYMBOL [ARG0_CLASS] [--table SYMBOL] [--track SYMBOL]... [--max-paths N]\n";
     if (argc < 3) { fputs(usage, stderr); return 2; }
     if (!(a = objc_analysis_create()) || objc_image_open(a, argv[1], &im)) { fprintf(stderr, "cannot open %s\n", argv[1]); return 4; }
-    memset(&st, 0, sizeof st); st.tracked = tracked;
+    memset(&st, 0, sizeof st); st.tracked = tracked; memset(&b, 0, sizeof b);
     st.entry = sym_addr(im, argv[2]);
     for (k = 3; k < argc; k++) {
-        if ((!strcmp(argv[k], "--table") || !strcmp(argv[k], "--track")) && k + 1 < argc) {
+        if (!strcmp(argv[k], "--max-paths") && k + 1 < argc) b.max_paths = strtoul(argv[++k], NULL, 10);
+        else if ((!strcmp(argv[k], "--table") || !strcmp(argv[k], "--track")) && k + 1 < argc) {
             uint64_t at = sym_addr(im, argv[k + 1]);
             if (!at) { fprintf(stderr, "no %s in %s\n", argv[k + 1], argv[1]); return 4; }
             if (!strcmp(argv[k], "--table")) { st.own_stores = 1; st.table_lo = at; st.table_hi = sym_end(im, at); }
@@ -73,7 +75,7 @@ int main(int argc, char **argv) {
         if (f < lo || f >= hi) continue;
         ranges[2 * n] = f; ranges[2 * n + 1] = e < hi ? e : hi; n++;
     }
-    if (objc_derive_registration_from(im, &st, ranges, n, NULL, &r)) {
+    if (objc_derive_registration_from(im, &st, ranges, n, &b, &r)) {
         printf("refused %s: %s\n", r.code, r.why);
         objc_reg_free(&r);
         return 1;

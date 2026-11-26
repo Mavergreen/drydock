@@ -1,0 +1,1 @@
+drydock-objc explores a failed class_addMethod only where the code reads its result, so a provider adding many methods no longer exhausts the path budget.

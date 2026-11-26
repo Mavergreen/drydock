@@ -10,7 +10,9 @@
 typedef struct { char *cls; int meta; char *sel; } ObjcRegLookup;
 /* One class_addMethod call. NULL fields are values the executor could not name. imp_va: the IMP's address, 0 when
  * not a known address (imp is the image's symbol there, NULL in a stripped image). ok: the fork this path took
- * (1 the add succeeded, 0 it failed); site: the call instruction. */
+ * (1 the add succeeded, 0 it failed): a failure fork exists only where the path read the result; an add whose result
+ * no instruction read has no failed twin (it would be identical, and provider.c exempts it). site: the call
+ * instruction. */
 typedef struct { char *cls; int meta; char *sel, *imp, *types; uint64_t imp_va, site; int ok; } ObjcRegAdd;
 /* class_null: objc_getClass returned NULL on it; null_classes: for which literals (a NULL entry: one not named). trapped: it ended at int3 or ud2. unknown_forks: the branches,
  * setcc and cmov along it whose flags the executor did not know, each decided by forking (the path may be

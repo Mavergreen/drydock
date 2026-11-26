@@ -13,7 +13,11 @@
  *     the first (llvm-nm -u of their archive: class_addMethod, class_getInstanceMethod, class_getName,
  *     object_getClass, objc_getClass, sel_getName, sel_registerName, and ARC, exception, associated-object and
  *     send entry points); the other three are the brief's. A lookup on a NULL class answers not found;
- *   - class_addMethod: success or failure, each recorded as an add (class, selector, IMP symbol, types, site);
+ *   - class_addMethod: success or failure, each recorded as an add (class, selector, IMP symbol, types, site); a
+ *     failure fork exists only where the path read the result; an add whose result no instruction read has no failed
+ *     twin. The failure forks before the first instruction that may read rax (x86.h's read set; a form it does not
+ *     classify reads it) and at a return; a call, a tail jump, or a write of rax reading none of it drops it, but a
+ *     tail jump to class_addMethod returns both ways;
  *   - a conditional branch, cmov or setcc whose flags are not known: both ways, each path counting it
  *     (unknown_forks: such a path may be infeasible; table_forks instead when the flags derive from the class table
  *     of "Start"). A path ending at int3 or ud2 is complete and trapped.
@@ -119,6 +123,7 @@ typedef struct {
     size_t uforks;                            /* decisions forked on unknown flags */
     size_t tforks;                            /* decisions forked on flags derived from the class table, not uforks */
     uint64_t tailret;                         /* a tail jump's site whose return this path, forked in its import, owes */
+    size_t addfork;                           /* 1 + the index in adds of the add whose failed twin rax owes; 0 none */
 } St;
 #define TS_CAP 8
 #define TS_ALL 1u                             /* more than TS_CAP bases: any writable address */
@@ -136,6 +141,7 @@ typedef struct Ex {
     uint64_t *exec; size_t capexec, nexec;    /* open-addressed set of executed instructions (0: empty) */
     struct { int kind; char *name; } *sym; size_t nsym, capsym;
     St **work; size_t nwork, capwork;
+    uint32_t unread;                          /* the symbol standing in rax while an instruction not reading it runs */
 } Ex;
 
 #define STACK_TOP 0x7ff000100000ULL
@@ -600,6 +606,15 @@ static St *fork_st(Ex *e, St *t) {
     e->work[e->nwork++] = u;
     return u;
 }
+/* The failed twin of the add rax still holds: forked now, as the add's result is about to be read. */
+static int owe_fork(Ex *e, St *t) {
+    size_t k = t->addfork; St *u;
+    t->addfork = 0;
+    if (!k) return 0;
+    if (!(u = fork_st(e, t))) return -1;
+    u->adds[k - 1].ok = 0; u->r[0] = Cp(0, 1);
+    return 0;
+}
 static char *dup0(const char *s) { return s ? strdup(s) : NULL; }
 static int complete(Ex *e, St *t) {
     ObjcRegResult *o = e->out; ObjcRegPath *p; size_t i;
@@ -761,9 +776,7 @@ static int call_import(Ex *e, St *t, const char *n, uint64_t site) {
         if (grow((void **)&t->adds, &t->capa, t->nadds + 1, sizeof *t->adds)) return oom(e);
         t->adds[t->nadds++] = a;
         clobber(t); t->r[0] = Cp(a.ok, 1);
-        if (!a.ok) return 0;
-        if (!(u = fork_st(e, t))) return -1;
-        u->adds[u->nadds - 1].ok = 0; u->r[0] = Cp(0, 1);
+        t->addfork = a.ok ? t->nadds : 0;
         return 0;
     }
     unknown_call(t);
@@ -784,7 +797,7 @@ static int do_ret(Ex *e, St *t, uint64_t site) {
 /* An import reached by a tail jump at site: its model, then a return, on every path it forks. */
 static int tail_import(Ex *e, St *t, const char *n, uint64_t site) {
     size_t w = e->nwork, i;
-    if (call_import(e, t, n, site)) return -1;
+    if (call_import(e, t, n, site) || owe_fork(e, t)) return -1;
     for (i = w; i < e->nwork; i++) e->work[i]->tailret = site;
     return do_ret(e, t, site);
 }
@@ -886,7 +899,12 @@ static int branch(Ex *e, St *t, int c, uint64_t taken) {
     return 0;
 }
 
-static int step(Ex *e, St *t) {
+/* 1 when a jump at ip to tg leaves its function: a tail call. */
+static int tail_target(const Ex *e, uint64_t ip, uint64_t tg) {
+    size_t here = fn_at(e, ip);
+    return import_name(e, tg) || !in_ranges(e, tg) || (is_fn_start(e, tg) && (here == e->nfn || objc_image_function(e->im, here) != tg));
+}
+static int execute(Ex *e, St *t) {
     uint64_t ip = t->rip, a = 0; size_t av; const uint8_t *p; ObjcIns x0, x; int w, op, i, r;
     Val v, l, z;
     if (!in_ranges(e, ip)) return refuse(e, "foreign-call", "execution reached 0x%llx, outside the provider's code", (unsigned long long)ip);
@@ -1021,9 +1039,7 @@ static int step(Ex *e, St *t) {
         if (op == 0xE8) return do_call(e, t, ip, (uint64_t)objc_x86_rel_target(p, &x, ip), 0, x.next);
         if (op == 0xE9 || op == 0xEB) {
             uint64_t tg = (uint64_t)objc_x86_rel_target(p, &x, ip);
-            size_t here = fn_at(e, ip);
-            if (import_name(e, tg) || !in_ranges(e, tg) || (is_fn_start(e, tg) && (here == e->nfn || objc_image_function(e->im, here) != tg)))
-                return do_call(e, t, ip, tg, 1, 0);
+            if (tail_target(e, ip, tg)) return do_call(e, t, ip, tg, 1, 0);
             t->rip = tg;
             return 0;
         }
@@ -1087,6 +1103,31 @@ static int step(Ex *e, St *t) {
     r = unsupported(e, ip, &x, p, "an instruction the executor does not model");
     return r;
 }
+/* After an instruction that did not read rax while a stand-in held it: the add's result back where rax was not
+ * written, else no twin is owed. */
+static void unread_back(const Ex *e, St *u, size_t k, Val held) {
+    if (u->addfork != k) return;
+    if (u->r[0].k == VS && u->r[0].sym == e->unread && !u->r[0].ts && !u->r[0].pw) u->r[0] = held;
+    else u->addfork = 0;
+}
+/* One instruction; and an add's failed twin, which rax owes until an instruction may read it (or returns), is then
+ * forked; a call or tail jump, or a write of rax that reads nothing of it, drops it. */
+static int step(Ex *e, St *t) {
+    size_t av, w = e->nwork, i, k = t->addfork; const uint8_t *p; ObjcIns x; Val held; int rc;
+    if (!k || !(p = code_at(e, t->rip, &av)) || objc_x86_decode(p, av, t->rip, &x)) return execute(e, t);
+    if ((objc_x86_gpr_reads(&x, 1) & 1) || (x.map == 0 && x.op == 0xC3)) return owe_fork(e, t) ? -1 : execute(e, t);
+    if (objc_x86_is_call_rel(&x) || objc_x86_is_ff(&x, 2) || objc_x86_is_ff(&x, 4) ||
+        (objc_x86_is_jmp_rel(&x) && tail_target(e, t->rip, (uint64_t)objc_x86_rel_target(p, &x, t->rip)))) {
+        t->addfork = 0;
+        return execute(e, t);
+    }
+    if (e->unread == UINT32_MAX && (e->unread = opaque(e)) == UINT32_MAX) return -1;
+    held = t->r[0]; t->r[0] = S(e->unread);
+    rc = execute(e, t);
+    unread_back(e, t, k, held);
+    for (i = w; i < e->nwork; i++) unread_back(e, e->work[i], k, held);
+    return rc;
+}
 
 static int cmp_esc(const void *a, const void *b) {
     const uint64_t *x = a, *y = b;
@@ -1107,7 +1148,7 @@ int objc_derive_registration_from(const ObjcImage *im, const ObjcRegStart *start
                                   size_t n_ranges, const ObjcRegBudget *b, ObjcRegResult *out) {
     Ex e; St *t; size_t i, j; uint64_t entry = start->entry;
     memset(out, 0, sizeof *out); memset(&e, 0, sizeof e);
-    e.im = im; e.out = out; e.start = start;
+    e.im = im; e.out = out; e.start = start; e.unread = UINT32_MAX;
     e.b.max_paths = b && b->max_paths ? b->max_paths : OBJC_REG_MAX_PATHS;
     e.b.max_depth = b && b->max_depth ? b->max_depth : OBJC_REG_MAX_DEPTH;
     e.b.max_insns = b && b->max_insns ? b->max_insns : OBJC_REG_MAX_INSNS;
