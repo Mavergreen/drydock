@@ -10,7 +10,7 @@ ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
 . "$ROOT/build/msc.sh"
 : "${DRYDOCK_OBJC:?names the built drydock-objc (CTest sets it)}"
 V=2.105.0-mavericks.5
-GH_REPORT=a1e6e9b9422cdebd9de6e86c66939de0060d57064c8c7391ce8cea313e08b4e2
+GH_REPORT=44990998b752c5ca5ff885fdf2319adae099ada6d712341d5cf873615d5d902d
 T=$(mktemp -d "${TMPDIR:-/tmp}/objc-gh-acceptance-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
