@@ -72,7 +72,9 @@
  *     the archive was built against; otherwise cannot-measure (source-receipt-stale). Its `tool`
  *     line must be the SHA-256 of this analyzer's own tools/objc-source-inventory.c, which
  *     scripts/objc-compat-build.sh compiles in: a receipt from an edited or other copy of the tool
- *     is cannot-measure (source-receipt-tool-mismatch). Each send
+ *     is cannot-measure (source-receipt-tool-mismatch). Schema 1 and schema 2 are read; a schema-2
+ *     unit row's flags must be ones that tool can have written, its paths <stage>/ and an input,
+ *     else malformed-source-receipt. Each send
  *     in verified provider code needs a line row and at least one candidate, or the artifact is
  *     cannot-measure (no-line-table, unmapped-source-send): an unknown compiler pattern or changed
  *     source never silently leaves the inventory. Two sends the receipt cannot speak for stay open
@@ -937,11 +939,40 @@ static int pos_pair(const char *s, uint32_t *l, uint32_t *c) {
     return (int)(e - s) + 0;
 }
 
+/* tools/objc-source-inventory.c's UNIT_FLAGS, the same list (objc-provider-test.sh compares the two). */
+static const char *const UNIT_FLAGS[] = {"-fobjc-arc", "-fno-objc-arc", "-fno-modules", "-fno-autolink", "-w", "-Wall",
+                                         "-Wextra", "-Werror", "-Wno-deprecated-declarations", NULL};
+static int src_input(const ObjcAnalysis *a, const char *label, int dir) {
+    size_t i, n = strlen(label);
+    for (i = 0; i < a->n_src_inputs; i++)
+        if (dir ? !strncmp(a->src_inputs[i].label, label, n) && a->src_inputs[i].label[n] == '/' : !strcmp(a->src_inputs[i].label, label)) return 1;
+    return 0;
+}
+/* A schema-2 unit row's flags: space-separated, each in UNIT_FLAGS, or -include <stage>/INPUT, or -I <stage>/DIR
+ * with an input under DIR. Input rows precede unit rows; one that does not is refused. */
+static int unit_flags_ok(const ObjcAnalysis *a, char *s) {
+    char *t, *v;
+    size_t k;
+    for (t = s; t; t = v) {
+        if ((v = strchr(t, ' '))) *v++ = 0;
+        if (!strcmp(t, "-include") || !strcmp(t, "-I")) {
+            int dir = t[1] == 'I';
+            if (!(t = v) || strncmp(t, "<stage>/", 8)) return 0;
+            if ((v = strchr(t, ' '))) *v++ = 0;
+            if (!src_input(a, t + 8, dir)) return 0;
+            continue;
+        }
+        for (k = 0; UNIT_FLAGS[k] && strcmp(UNIT_FLAGS[k], t); k++) ;
+        if (!UNIT_FLAGS[k]) return 0;
+    }
+    return 1;
+}
+
 int objc_load_source_receipt(ObjcAnalysis *a, const char *path) {
     FILE *f = fopen(path, "rb");
     char *buf, *line, *save = NULL, h[65];
     size_t size, nl = 0;
-    int header = 0, rc = OBJC_OK;
+    int header = 0, schema = 0, rc = OBJC_OK;
     unsigned char d[CC_SHA256_DIGEST_LENGTH];
     int i;
     if (!f) return objc_fail(a, "unreadable-input", NULL, 0, "source receipt %s", path);
@@ -963,13 +994,14 @@ int objc_load_source_receipt(ObjcAnalysis *a, const char *path) {
         if (p) { rc = objc_fail(a, "malformed-source-receipt", NULL, 0, "%s:%zu: too many fields", path, nl); break; }
         /* The header, in order. */
         if (header < 6) {
-            static const char *KEY[] = { "# objc-source-receipt 1", "profile", "args", "libclang", "sdk", "tool" };
-            int ok = header == 0 ? n == 1 && !strcmp(col[0], KEY[0]) : n == 2 && !strcmp(col[0], KEY[header]);
+            static const char *KEY[] = { "# objc-source-receipt ", "profile", "args", "libclang", "sdk", "tool" };
+            int ok = header == 0 ? n == 1 && !strncmp(col[0], KEY[0], 22) && (schema = col[0][22] == '1' ? 1 : col[0][22] == '2' ? 2 : 0) && !col[0][23]
+                                 : n == 2 && !strcmp(col[0], KEY[header]);
             if (ok && header == 1) ok = !strcmp(col[1], RECEIPT_PROFILE);
             if (ok && (header == 4 || header == 5)) ok = hex64s(col[1]);
             if (ok && header == 3) ok = objc_set_string(&a->src_libclang, col[1]) == 0;
             if (ok && header == 4) ok = objc_set_string(&a->src_sdk, col[1]) == 0;
-            if (!ok) { rc = objc_fail(a, "malformed-source-receipt", NULL, 0, "%s:%zu: not the schema-1 %s profile header", path, nl, RECEIPT_PROFILE); break; }
+            if (!ok) { rc = objc_fail(a, "malformed-source-receipt", NULL, 0, "%s:%zu: not the schema-1 or schema-2 %s profile header", path, nl, RECEIPT_PROFILE); break; }
             if (header == 5 && strcmp(col[1], OBJC_SOURCE_INVENTORY_SHA256)) {
                 rc = objc_fail(a, "source-receipt-tool-mismatch", NULL, 0, "the source receipt was written by inventory tool source %.16s..., not this analyzer's tools/objc-source-inventory.c (%.16s...)",
                                col[1], OBJC_SOURCE_INVENTORY_SHA256);
@@ -983,8 +1015,10 @@ int objc_load_source_receipt(ObjcAnalysis *a, const char *path) {
             if (!g) { rc = objc_fail(a, "out-of-memory", NULL, 0, "receipt"); break; }
             a->src_inputs = g; g = &g[a->n_src_inputs++]; memset(g, 0, sizeof *g);
             if (objc_set_string(&g->label, col[1]) || objc_set_string(&g->sha256, col[2])) rc = OBJC_CANNOT_MEASURE;
-        } else if (!strcmp(col[0], "unit") && n == 2) {
-            continue;
+        } else if (!strcmp(col[0], "unit") && n == schema + 1) {
+            if (!src_input(a, col[1], 0) || (schema == 2 && !unit_flags_ok(a, col[2]))) {
+                rc = objc_fail(a, "malformed-source-receipt", NULL, 0, "%s:%zu: a unit row whose label or flags the receipt tool cannot have written", path, nl); break;
+            }
         } else if (!strcmp(col[0], "send") && n == 10) {
             ObjcSourceRow *g = realloc(a->src_rows, (a->n_src_rows + 1) * sizeof *g), *r;
             char *q, *anc;
