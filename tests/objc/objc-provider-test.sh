@@ -372,7 +372,7 @@ group_prefix() {
       fail "compiling $us $*"
     grep -F "  $us" "$P.inputs" >/dev/null || printf '%s  %s\n' "$(sha "${UNIT_ROOT:-$FX}/$us")" "$us" >>"$P.inputs"
   done
-  for f in ${UNIT_INPUTS:-}; do printf '%s  %s\n' "$(sha "$UNIT_ROOT/$f")" "$f" >>"$P.inputs"; done
+  for f in ${UNIT_INPUTS:-}; do printf '%s  %s\n' "$(sha "${UNIT_ROOT:-$FX}/$f")" "$f" >>"$P.inputs"; done
   static_lib "$P/lib/libfixture-objc.a" "$P.objects"/*.o
   declare_prefix "$P" "$P.inputs"
   awk -v g="$(printf '%s' "${GROUP:-$TAB_GROUP}" | tr '\n' ' ')" '
