@@ -23,7 +23,10 @@
 // for a helper), WALK_END (the register function walks the table by comparing a row pointer to its end) and PUSH_ARG
 // (the row count, a local, trimmed by a helper that takes its address as a pushed eighth argument). VIEW_A11Y registers
 // instead two rows of the newer SDK's NSAccessibility protocol, setAccessibilityLabel: and accessibilityLabel, on
-// A11Y_CLASS (default NSView).
+// A11Y_CLASS (default NSView). SECOND has -tabbingIdentifier's implementation reach tests/objc/fixtures/table-second.m,
+// which then links. ROOT_ALT gives the root an argument the constructor passes as 0, which otherwise chooses (1) a table
+// with another tabbingMode implementation, (2) a copy of the table, (3) a call of a function nothing else calls, (4) a
+// selector registered from it, (5) the state's address handed to a helper, or (6) a detail recorded.
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -36,7 +39,12 @@ typedef struct { const char *selector; const char *types; BOOL classMethod; IMP 
 #define ROW(s, t, c, i) { s, t, c, (IMP)(void *)(i) }
 #endif
 
+#ifdef SECOND
+extern int fixtureSecondInstalled;
+void *FixtureTab_tabbingIdentifier(void *self, SEL _cmd) { (void)self; (void)_cmd; return &fixtureSecondInstalled; }
+#else
 void *FixtureTab_tabbingIdentifier(void *self, SEL _cmd) { (void)self; (void)_cmd; return 0; }
+#endif
 void FixtureTab_setTabbingIdentifier(void *self, SEL _cmd, void *ident) { (void)self; (void)_cmd; (void)ident; }
 long FixtureTab_tabbingMode(void *self, SEL _cmd) { (void)self; (void)_cmd; return 0; }
 void FixtureTab_setTabbingMode(void *self, SEL _cmd, long mode) { (void)self; (void)_cmd; (void)mode; }
@@ -96,6 +104,21 @@ const FixtureTabMethod FixtureTabMethods[] = {
 #define M(n) ROW("fixtureMany" #n, "v16@0:8", NO, FixtureTab_setTabbingMode)
   M(0), M(1), M(2), M(3), M(4), M(5), M(6), M(7), M(8), M(9), M(10), M(11), M(12), M(13), M(14), M(15), M(16), M(17),
 #endif
+};
+#endif
+
+#if ROOT_ALT == 1 || ROOT_ALT == 2
+const FixtureTabMethod FixtureTabMethodsAlt[] = {
+  ROW("tabbingIdentifier", "@16@0:8", NO, FixtureTab_tabbingIdentifier),
+  ROW("setTabbingIdentifier:", "v24@0:8@16", NO, FixtureTab_setTabbingIdentifier),
+#if ROOT_ALT == 1
+  ROW("tabbingMode", "q16@0:8", NO, FixtureTab_tabbedWindows),
+#else
+  ROW("tabbingMode", "q16@0:8", NO, FixtureTab_tabbingMode),
+#endif
+  ROW("setTabbingMode:", "v24@0:8q16", NO, FixtureTab_setTabbingMode),
+  ROW("allowsAutomaticWindowTabbing", "c16@0:8", YES, FixtureTab_allowsAutomaticWindowTabbing),
+  ROW("setAllowsAutomaticWindowTabbing:", "v20@0:8c16", YES, FixtureTab_setAllowsAutomaticWindowTabbing)
 };
 #endif
 
@@ -251,8 +274,36 @@ FixtureState (*volatile FixtureTabRegister)(Class, const FixtureTabMethod *, siz
 #define REGISTER FixtureTabRegisterTable
 #endif
 
+#if ROOT_ALT == 3
+__attribute__((noinline, used)) void fixture_alt_extra(void) { (void)objc_getClass("NSObject"); }
+#elif ROOT_ALT == 5
+__attribute__((noinline, used)) void fixture_alt_note(const void *p) { __asm__ volatile("" : : "r"(p)); }
+#endif
+#ifdef ROOT_ALT
+__attribute__((noinline)) void __fixture_objc_activate_table(int alt) {
+#if ROOT_ALT == 1 || ROOT_ALT == 2
+#define TABLE (alt ? FixtureTabMethodsAlt : FixtureTabMethods)
+#else
+#define TABLE FixtureTabMethods
+#endif
+#else
 void __fixture_objc_activate_table(void) {
+#define TABLE FixtureTabMethods
+#endif
   if (state != FixtureNotRun) return;
+#if ROOT_ALT == 3
+  if (alt) fixture_alt_extra();
+#elif ROOT_ALT == 4
+  (void)sel_registerName(alt ? (const char *)(intptr_t)alt : "fixtureAltLiteral");
+#elif ROOT_ALT == 5
+  {
+    FixtureState *sp = &state;
+    __asm__ volatile("" : "+r"(sp));   // the address taken on every path; only handed on when alt is set
+    if (alt) fixture_alt_note(sp);
+  }
+#elif ROOT_ALT == 6
+  if (alt) stateDetail = "alt";
+#endif
   Class window = objc_getClass(TABLE_CLASS);
 #ifndef NULL_CLASS
   if (!window) { state = FixtureAddFailed; stateDetail = TABLE_CLASS; return; }
@@ -390,12 +441,12 @@ void __fixture_objc_activate_table(void) {
 #endif
 #ifdef TRY
   @try {
-    state = REGISTER(window, FixtureTabMethods, ROWS, &stateDetail);
+    state = REGISTER(window, TABLE, ROWS, &stateDetail);
   } @catch (id e) {
     state = FixtureAddFailed;
   }
 #else
-  state = REGISTER(window, FixtureTabMethods, ROWS, &stateDetail);
+  state = REGISTER(window, TABLE, ROWS, &stateDetail);
 #endif
 #ifdef TRAPPED
   __builtin_trap();
@@ -421,7 +472,11 @@ FixtureState fixture_tabbing_activation_state(const char **detail) {
   return state;
 }
 
+#ifdef ROOT_ALT
+__attribute__((constructor)) static void fixture_tabbing_start(void) { __fixture_objc_activate_table(0); }
+#else
 __attribute__((constructor)) static void fixture_tabbing_start(void) { __fixture_objc_activate_table(); }
+#endif
 #ifdef TWO_INIT
 __attribute__((used, section("__DATA,__mod_init_func,mod_init_funcs"))) static void (*const fixtureSecondInit)(void) =
     fixture_tabbing_start;

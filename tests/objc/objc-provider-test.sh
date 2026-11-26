@@ -615,6 +615,7 @@ error_is computed-selector-producer 'coverage: a computed sel_registerName in gr
 says 'on no path the executor explored' 'coverage: a computed sel_registerName in group code no path explored'
 group callreg tab -DCALL_REGISTER
 group_refused 'entry: a consumer calling the register function with its own table' provider-foreign-entry 'in _main'
+says 'from its own entry, unknown-store: ' 'entry: a consumer calling the register function with its own table'
 # spec: src/objc/provider.c header, "Groups" -- an address the executor read as a constant must not escape to code it
 #       does not follow, nor be pointed to from writable data; a reference counts as explored only where a path
 #       executed it; every class_addMethod site the reader sees in group code, through a register or a bound pointer
@@ -665,6 +666,39 @@ group_prefix boundadd -DBOUND_ADD; group boundadd boundadd
 group_refused 'coverage: BOUND_ADD (class_addMethod through a bound pointer)' provider-unexplored-mutation 'class_addMethod at 0x'
 group_prefix twoinit -DTWO_INIT; group twoinit twoinit
 group_refused 'entry: TWO_INIT (the constructor twice in the initializer table)' provider-foreign-entry '__DATA,__mod_init_func'
+# spec: src/objc/provider.c "Coverage" -- a branch from code the executor did not explore to an explored function's
+#       entry is accepted when that function, run from its own entry with nothing bound, verifies as the group's root
+#       and reaches nothing new; tests/objc/fixtures/table-second.m is the second unit, its initializer the caller.
+second() {  # second NAME [CC-FLAGS...]: table-provider.m and table-second.m built with -DSECOND and CC-FLAGS, and analyzed
+  sn=$1; shift; UNIT='table-provider.m table-second.m'; group_prefix "$sn" -DSECOND "$@"; unset UNIT; group "$sn" "$sn"
+}
+second second
+exit_is 0 'entry: a second initializer calling the root first'; tab_all provided 'entry: a second initializer calling the root first'
+grep '"status": "active"' "$T/report" >/dev/null || fail 'entry: a second initializer calling the root first: the group is not active'
+! grep -F '"code"' "$T/report" >/dev/null || fail 'entry: a second initializer calling the root first: the report has an error'
+second pastentry -DPAST_ENTRY
+group_refused 'entry: a call into the root past its entry' provider-foreign-entry 'branches to 0x'
+! grep -F 'from its own entry' "$T/report" >/dev/null || fail 'entry: a call into the root past its entry: it was run as an entry'
+second rootptr -DROOT_POINTER
+group_refused 'entry: a pointer to the root in data' provider-foreign-entry 'points to 0x'
+second rootalt -DROOT_ALT=1
+group_refused 'entry: a root whose own run adds another implementation' provider-foreign-entry \
+  "from its own entry, the constructor's run and its own differ in adding -[NSWindow tabbingMode] (_FixtureTab_tabbedWindows)"
+second altread -DROOT_ALT=2
+group_refused 'entry: a root whose own run reads another table' provider-foreign-entry \
+  "from its own entry, it reads 0x"
+second altfn -DROOT_ALT=3
+group_refused 'entry: a root whose own run explores another function' provider-foreign-entry \
+  "from its own entry, it explores _fixture_alt_extra, which the constructor's run does not"
+second altsel -DROOT_ALT=4
+group_refused 'entry: a root whose own run registers a computed selector' provider-foreign-entry \
+  "not read from the image's initial bytes"
+second altesc -DROOT_ALT=5
+group_refused 'entry: a root whose own run lets the state escape' provider-foreign-entry \
+  "data read as initial values, escapes at 0x"
+second altguess -DROOT_ALT=6
+group_refused 'entry: a root whose own run registers only after a guess' provider-foreign-entry \
+  'from its own entry, fixture.nswindow.tabbing.v1: no path registers the group without a guess'
 # spec: src/objc/provider.c header, "Groups" (own-absent) -- an own-absent group is verified for each literal class its
 #       root's call sites name: one run from the root per class with the class bound, each class's members absent from
 #       the class and its app ancestors, present on its floor ancestor's 10.9 chain with that ancestor's encoding; no

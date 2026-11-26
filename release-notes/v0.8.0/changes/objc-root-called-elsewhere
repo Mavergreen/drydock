@@ -1,0 +1,1 @@
+drydock-objc accepts an absent-only provider root that a second initializer also calls, when the root verifies from its own entry and reaches nothing new.

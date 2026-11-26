@@ -74,7 +74,11 @@
  * the executor does not follow, is stored outside the frame, or is returned from the constructor or the root
  * (regexec's escaped, by the address each was derived from), and nothing read as an initial value lies in
  * class metadata the runtime writes (__objc_data, __objc_const, __objc_ivar; selector, class and super
- * references it rewrites only to equal values) (provider-mutable-constant). An explored function
+ * references it rewrites only to equal values) (provider-mutable-constant). In an absent-only group, a branch from
+ * elsewhere to an explored function's entry is no foreign entry when that function, run from its own entry with nothing
+ * bound, explores no function, reads as initial values nothing, registers no selector where or less literally, and adds
+ * no (class, selector, IMP) the constructor's run does not, lets no such value escape, and passes the group's verdict
+ * (entry_why). An explored function
  * with an LSDA is provider-unmeasurable (exceptional control flow). A summarised callee is not explored.
  * A group is credited
  * whole or not at all: an active group turns the unsupported findings of each member's selector
@@ -794,14 +798,14 @@ static const char *imp_text(const ObjcRegAdd *d, char *buf, size_t n) {
  * where a member's lookup was found; (b) every path adds exactly the members, except one where objc_getClass of the
  * group's class returned NULL, a member's (or an unnamed) lookup was found, or an add failed; (c) no succeeding add
  * anywhere outside them; (d) some path of (b) has no guess. impva[i]: member i's implementation's final address.
- * *clean: the paths of (d). */
-static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const char *cls, const ObjcRegResult *r, uint64_t root,
+ * *clean: the paths of (d). A run from the root itself (entry) need not reach it. */
+static int group_verdict(ObjcAnalysis *a, const ObjcProvider *p, const char *cls, const ObjcRegResult *r, uint64_t entry, uint64_t root,
                          const uint64_t *impva, size_t *clean) {
     size_t i, j, k, l;
     char buf[2048], ib[32];
     *clean = 0;
     for (i = 0; i < r->n_called && r->called[i] != root; i++) ;
-    if (!p->own_absent && i == r->n_called)
+    if (!p->own_absent && entry != root && i == r->n_called)
         return objc_fail(a, "provider-registration-mismatch", NULL, 0, "%s: the constructor never reaches %s", p->provider_id, p->root_symbol);
     for (i = 0; i < r->n_paths; i++) {
         const ObjcRegPath *q = &r->paths[i];
@@ -865,6 +869,9 @@ typedef struct {
     const ObjcImage *im;
     const ObjcRegResult *r;
     const Bridge *b;           /* NULL but for an own-absent group */
+    uint64_t root;
+    const uint64_t *impva;
+    uint64_t *fva; char **fwhy; size_t nf;   /* each function entered from outside, and why its own run fails (NULL: none) */
     uint64_t *c; size_t nc;    /* [lo, hi): image data outside __TEXT the executor read as initial values, merged */
     uint64_t *m; size_t nm;    /* [lo, lo+1): each stub, pointer slot or bound data slot of a mutator import */
     int inits;                 /* initializer slots holding the constructor */
@@ -907,6 +914,104 @@ static int executed(const ObjcRegResult *r, uint64_t ip) {
     while (lo < hi) { size_t mid = (lo + hi) / 2; if (r->executed[mid] < ip) lo = mid + 1; else hi = mid; }
     return lo < r->n_executed && r->executed[lo] == ip;
 }
+/* Whether a value derived from address b, escaping, may carry data read as initial values ([lo, hi) pairs c): b in a
+ * range, or in an atom overlapping one, or derived from more addresses than regexec tracks. */
+static int escape_hits(const uint64_t *c, size_t nc, const ObjcProvider *p, uint64_t b) {
+    size_t j, k;
+    int hit = b == ~0ULL && nc;
+    for (j = 0; j < nc && !hit; j++) {
+        hit = b >= c[2 * j] && b < c[2 * j + 1];
+        for (k = 0; k < p->n_atoms && !hit; k++) {
+            uint64_t lo = p->atoms[k].address, hi = lo + p->atoms[k].size;
+            hit = lo < c[2 * j + 1] && c[2 * j] < hi && b >= lo && b < hi;
+        }
+    }
+    return hit;
+}
+static int fn_start(const ObjcImage *im, uint64_t va) {
+    size_t lo = 0, hi = objc_image_nfunctions(im);
+    while (lo < hi) { size_t mid = (lo + hi) / 2; if (objc_image_function(im, mid) < va) lo = mid + 1; else hi = mid; }
+    return lo < objc_image_nfunctions(im) && objc_image_function(im, lo) == va;
+}
+static int adds_within(const ObjcRegResult *x, const ObjcRegResult *y, const ObjcRegAdd **odd) {
+    size_t i, j, k, l;
+    for (i = 0; i < x->n_paths; i++)
+        for (j = 0; j < x->paths[i].n_adds; j++) {
+            const ObjcRegAdd *d = &x->paths[i].adds[j];
+            int same = 0;
+            for (k = 0; k < y->n_paths && !same; k++)
+                for (l = 0; l < y->paths[k].n_adds && !same; l++) {
+                    const ObjcRegAdd *e = &y->paths[k].adds[l];
+                    same = d->cls && e->cls && d->sel && e->sel && !strcmp(d->cls, e->cls) && d->meta == e->meta &&
+                           !strcmp(d->sel, e->sel) && d->imp_va && d->imp_va == e->imp_va;
+                }
+            if (!same) { *odd = d; return 0; }
+        }
+    return 1;
+}
+/* Why function f, entered from code the constructor's run did not explore, fails as a root in its own right (the header's
+ * "Coverage"): its run from its own entry, nothing bound, explores no function the constructor's did not, adds the same
+ * (class, selector, IMP) set, reads as initial values only what the constructor's run read, registers selectors only
+ * where that run did and as literally, lets no such value escape, and passes the group's verdict. NULL: it does not fail. */
+static int entry_why(Sweep *w, uint64_t f, const char **why) {
+    const ObjcRegResult *r = w->r;
+    const ObjcProvider *p = w->p;
+    const ObjcRegAdd *odd = NULL;
+    ObjcRegResult q;
+    ObjcRegStart st;
+    ObjcAnalysis *s;
+    char buf[1024] = "", wb[300], ib[32];
+    size_t i, j, clean;
+    for (i = 0; i < w->nf; i++) if (w->fva[i] == f) { *why = w->fwhy[i]; return 0; }
+    if (!(s = objc_analysis_create())) return -1;
+    memset(&st, 0, sizeof st);
+    st.entry = f;
+    if (objc_derive_registration_from(w->im, &st, p->ranges, p->n_ranges, NULL, &q))
+        snprintf(buf, sizeof buf, "%s: %s", q.code, q.why);
+    for (i = 0; !buf[0] && i < q.n_explored; i++) {
+        for (j = 0; j < r->n_explored && !(r->explored[2 * j] <= q.explored[2 * i] && q.explored[2 * i + 1] <= r->explored[2 * j + 1]); j++) ;
+        if (j == r->n_explored)
+            snprintf(buf, sizeof buf, "it explores %s, which the constructor's run does not", where(w->im, q.explored[2 * i], wb, sizeof wb));
+    }
+    if (!buf[0] && (!adds_within(&q, r, &odd) || !adds_within(r, &q, &odd)))
+        snprintf(buf, sizeof buf, "the constructor's run and its own differ in adding %s[%s %s] (%s)", odd->meta ? "+" : "-", nz(odd->cls),
+                 nz(odd->sel), imp_text(odd, ib, sizeof ib));
+    for (i = 0; !buf[0] && i < q.n_reads; i++) {
+        const char *sn = objc_image_section_of(w->im, q.const_reads[i].va, NULL, NULL, NULL);
+        if (sn && !strncmp(sn, "__TEXT,", 7)) continue;
+        for (j = 0; j < r->n_reads && !(r->const_reads[j].va <= q.const_reads[i].va &&
+                                         q.const_reads[i].va + q.const_reads[i].len <= r->const_reads[j].va + r->const_reads[j].len); j++) ;
+        if (j == r->n_reads)
+            snprintf(buf, sizeof buf, "it reads 0x%llx (in %s) as its initial value, which the constructor's run does not",
+                     (unsigned long long)q.const_reads[i].va, where(w->im, q.const_reads[i].va, wb, sizeof wb));
+    }
+    for (i = 0; !buf[0] && i < q.n_selreg; i++) {
+        for (j = 0; j < r->n_selreg && r->selreg[j].site != q.selreg[i].site; j++) ;
+        if (j == r->n_selreg || (r->selreg[j].all_literal && !q.selreg[i].all_literal))
+            snprintf(buf, sizeof buf, "it registers a selector at 0x%llx %s", (unsigned long long)q.selreg[i].site,
+                     j == r->n_selreg ? "where the constructor's run does not" : "not read from the image's initial bytes");
+    }
+    for (i = 0; !buf[0] && i < q.n_escaped; i++)
+        if (escape_hits(w->c, w->nc, p, q.escaped[i].va))
+            snprintf(buf, sizeof buf, "a value derived from 0x%llx, data read as initial values, escapes at 0x%llx",
+                     (unsigned long long)q.escaped[i].va, (unsigned long long)q.escaped[i].site);
+    if (!buf[0] && group_verdict(s, p, p->cls, &q, f, w->root, w->impva, &clean))
+        snprintf(buf, sizeof buf, "%s", s->n_errors && s->errors[0].detail ? s->errors[0].detail : "the group's verdict fails");
+    objc_reg_free(&q);
+    objc_analysis_destroy(s);
+    {
+        uint64_t *g = realloc(w->fva, (w->nf + 1) * sizeof *g);
+        char **h = g ? realloc(w->fwhy, (w->nf + 1) * sizeof *h) : NULL;
+        if (g) w->fva = g;
+        if (!h) return -1;
+        w->fwhy = h;
+        if (buf[0] && !(h[w->nf] = strdup(buf))) return -1;
+        if (!buf[0]) h[w->nf] = NULL;
+        g[w->nf++] = f;
+        *why = h[w->nf - 1];
+    }
+    return 0;
+}
 static const char *const REF_KIND[] = { "branches to", "reads", "takes the address of", "writes or uses", "points to", "may encode" };
 
 static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
@@ -928,11 +1033,18 @@ static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
                                          where(w->im, site, wb, sizeof wb));
     }
     if (in_pairs(r->explored, r->n_explored, target) && !(in_e && kind == OBJC_REF_BRANCH) && !bridge_entry(w->b, site, target, kind) &&
-        !(kind == OBJC_REF_POINTER && (fl & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS && target == w->p->constructor && w->inits == 1))
-        return w->status = objc_fail(w->a, "provider-foreign-entry", NULL, site,
-                                     "%s: 0x%llx (in %s) %s 0x%llx (in %s), code the executor explored, from code or data it did not",
-                                     w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
-                                     (unsigned long long)target, where(w->im, target, tb, sizeof tb));
+        !(kind == OBJC_REF_POINTER && (fl & SECTION_TYPE) == S_MOD_INIT_FUNC_POINTERS && target == w->p->constructor && w->inits == 1)) {
+        const char *why = "";
+        if (!w->b && kind == OBJC_REF_BRANCH && fn_start(w->im, target)) {
+            for (i = 0; i < r->n_explored && r->explored[2 * i] != target; i++) ;
+            if (i < r->n_explored && entry_why(w, target, &why)) return w->status = objc_fail(w->a, "out-of-memory", NULL, 0, "provider sweep");
+        }
+        if (why)
+            return w->status = objc_fail(w->a, "provider-foreign-entry", NULL, site,
+                                         "%s: 0x%llx (in %s) %s 0x%llx (in %s), code the executor explored, from code or data it did not%s%s",
+                                         w->p->provider_id, (unsigned long long)site, where(w->im, site, wb, sizeof wb), REF_KIND[kind],
+                                         (unsigned long long)target, where(w->im, target, tb, sizeof tb), why[0] ? "; from its own entry, " : "", why);
+    }
     if (in_pairs(w->c, w->nc, target) && kind != OBJC_REF_LOAD && !ran &&
         !(kind == OBJC_REF_POINTER && sn && !strncmp(sn, "__TEXT,", 7) && !(fl & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS))))
         return w->status = objc_fail(w->a, "provider-mutable-constant", NULL, site,
@@ -946,7 +1058,8 @@ static int sweep_ref(void *ctx, uint64_t site, uint64_t target, int kind) {
  * on one; and, over the whole image, no reference into an explored function from outside the explored functions but
  * the constructor's initializer entry, and none to data read as a constant but a load, one from an explored function,
  * or a pointer in such data or in __TEXT. */
-static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage *im, const ObjcRegResult *r, const Bridge *b) {
+static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage *im, const ObjcRegResult *r, const Bridge *b,
+                         uint64_t root, const uint64_t *impva) {
     Sweep w;
     uint64_t *all = NULL;
     size_t i, j, k, nall = 0, ns = objc_image_nsections(im);
@@ -961,7 +1074,7 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
                              p->provider_id, (unsigned long long)r->mutator_sites[i], where(im, r->mutator_sites[i], wb, sizeof wb));
     }
     memset(&w, 0, sizeof w);
-    w.a = a; w.p = p; w.im = im; w.r = r; w.b = b;
+    w.a = a; w.p = p; w.im = im; w.r = r; w.b = b; w.root = root; w.impva = impva;
     for (i = 0; i < r->n_reads; i++) {
         const char *sn = objc_image_section_of(im, r->const_reads[i].va, NULL, NULL, NULL);
         if (sn && strncmp(sn, "__TEXT,", 7) && push_pair(&w.c, &w.nc, r->const_reads[i].va, r->const_reads[i].va + r->const_reads[i].len)) goto oom;
@@ -995,15 +1108,7 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
     for (i = 0; i < r->n_escaped; i++) {
         static const char *const HOW[] = { "is passed to code it does not follow", "is stored outside the frame", "is returned from the root" };
         uint64_t b = r->escaped[i].va;
-        int hit = b == ~0ULL && w.nc;   /* derived from more addresses than regexec tracks */
-        for (j = 0; j < w.nc && !hit; j++) {
-            hit = b >= w.c[2 * j] && b < w.c[2 * j + 1];
-            for (k = 0; k < p->n_atoms && !hit; k++) {
-                uint64_t lo = p->atoms[k].address, hi = lo + p->atoms[k].size;
-                hit = lo < w.c[2 * j + 1] && w.c[2 * j] < hi && b >= lo && b < hi;
-            }
-        }
-        if (hit) {
+        if (escape_hits(w.c, w.nc, p, b)) {
             char tb[300];
             rc = objc_fail(a, "provider-mutable-constant", NULL, r->escaped[i].site,
                            "%s: a value derived from 0x%llx (in %s), data the executor read as initial values, %s at 0x%llx (in %s)",
@@ -1037,11 +1142,12 @@ static int group_covered(ObjcAnalysis *a, const ObjcProvider *p, const ObjcImage
     rc = objc_image_refs(im, all, nall, sweep_ref, &w);
     if (rc < 0) rc = objc_fail(a, "unsupported-provider", NULL, 0, "%s: the image is not position-independent: references by absolute address are not swept", p->provider_id);
 out:
-    free(all); free(w.c); free(w.m);
+    for (i = 0; i < w.nf; i++) free(w.fwhy[i]);
+    free(all); free(w.c); free(w.m); free(w.fva); free(w.fwhy);
     return rc ? OBJC_CANNOT_MEASURE : OBJC_OK;
 oom:
-    free(all); free(w.c); free(w.m);
-    return objc_fail(a, "out-of-memory", NULL, 0, "provider sweep");
+    rc = objc_fail(a, "out-of-memory", NULL, 0, "provider sweep");
+    goto out;
 }
 
 /* A group's registration, derived from its constructor over its verified code; what it found, for the reason. */
@@ -1067,8 +1173,8 @@ static int group_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const 
     }
     if (objc_derive_registration(im, p->constructor, p->ranges, p->n_ranges, NULL, &r))
         rc = objc_fail(a, "provider-unmeasurable", NULL, 0, "%s: %s: %s", p->provider_id, r.code, r.why);
-    else rc = group_verdict(a, p, p->cls, &r, root, impva, &clean);
-    if (!rc) rc = group_covered(a, p, im, &r, NULL);
+    else rc = group_verdict(a, p, p->cls, &r, p->constructor, root, impva, &clean);
+    if (!rc) rc = group_covered(a, p, im, &r, NULL, root, impva);
     if (!rc && r.n_selreg && (!(p->literal_sel_sites = calloc(r.n_selreg, sizeof *p->literal_sel_sites)) ||
                               !(p->sel_sites = calloc(r.n_selreg, sizeof *p->sel_sites))))
         rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
@@ -1379,7 +1485,7 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
             if (r.paths[j].n_found)
                 rc = objc_fail(a, "provider-guard-violation", NULL, 0, "%s: path %zu from %s(%s) finds a method: an own-absent root looks up nothing",
                                p->provider_id, j, p->root_symbol, p->bridged[i]);
-        if (!rc) rc = group_verdict(a, p, p->bridged[i], &r, b.root, impva, &c);
+        if (!rc) rc = group_verdict(a, p, p->bridged[i], &r, b.root, b.root, impva, &c);
         for (j = 0; !rc && j < r.n_escaped; j++) {
             for (k = 0; k < p->n_methods && r.escaped[j].va != impva[k]; k++) ;
             if (k < p->n_methods || r.escaped[j].va == ~0ULL) {
@@ -1399,7 +1505,7 @@ static int bridge_derived(ObjcAnalysis *a, ObjcProvider *p, ObjcImage *im, const
                                r.escaped[j].how >= 0 && r.escaped[j].how < 3 ? HOW[r.escaped[j].how] : "escapes",
                                (unsigned long long)r.escaped[j].site, where(im, r.escaped[j].site, wb, sizeof wb), p->root_symbol, p->bridged[i]);
             }
-        if (!rc) rc = group_covered(a, p, im, &r, &b);
+        if (!rc) rc = group_covered(a, p, im, &r, &b, b.root, impva);
         if (!rc) {
             int known = imp_known(p, im, &r, 0, 0);
             if (known == -2) rc = objc_fail(a, "out-of-memory", NULL, 0, "provider");
