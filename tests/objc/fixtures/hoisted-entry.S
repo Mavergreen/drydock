@@ -23,6 +23,9 @@
  *           assembly in Codex has: decoded, so the function is read past it, five sends
  *   FORM 11 as FORM 1, but an EVEX store, vmovdqu32 %zmm0, -64(%rbp), overwrites the slot: its
  *           disp8 is -1, scaled by 64, so read unscaled it would seem to miss the slot
+ *   FORM 12 as FORM 0, with pushes of immediates and of the flags before a call through the register
+ *           (clang -Os ends a long varargs send with `pushq $0`, Recaulk's bridge): they write no
+ *           register, five sends
  * FORMS 2..9 and 11 are cannot-measure: the entry point escapes, or a call through it may not be one.
  */
 	.section __TEXT,__objc_methname,cstring_literals
@@ -91,6 +94,12 @@ _main:
 	.byte 0x62, 0xf1, 0x6d, 0x48, 0xfe, 0xd9   /* vpaddd %zmm1, %zmm2, %zmm3 */
 #elif FORM == 11
 	.byte 0x62, 0xf1, 0x7e, 0x48, 0x7f, 0x45, 0xff   /* vmovdqu32 %zmm0, -64(%rbp) */
+#elif FORM == 12
+	pushq $0
+	pushq $0x12345678
+	pushfq
+	popfq
+	addq $16, %rsp
 #endif
 	movq L_classref_NSObject(%rip), %rdi
 #if FORM == 2 || FORM == 9

@@ -225,12 +225,12 @@ read_artifact "$T/loadweak"
 grep '^error	' "$T/out" >/dev/null && fail 'loadweak: refused'
 
 # spec: src/objc/macho-reader.c header -- A GOT-loaded entry point held in a register and only ever called through
-#       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), copied to a register only jumped through, past a
+#       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), past pushes of immediates or the flags, copied to a register only jumped through, past a
 #       call that never returns, or spilled to a frame slot no escaped frame address reaches and reloaded only to be called
 #       through (clang -O0), is followed, each call its own send. A copy passed as an argument, a path where it holds
 #       something else, a slot whose address escapes, that another path overwrites or that is read some other way, or a
 #       store to a global or through another register is cannot-measure.
-for n in 0 1 10; do
+for n in 0 1 10 12; do
   fxcc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"
   measured "hoisted entry point form $n"

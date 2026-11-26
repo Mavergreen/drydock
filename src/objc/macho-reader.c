@@ -962,6 +962,7 @@ static int may_write(const Ins *x0, int r) {
         case 0x90: return x->rex & 1 ? r == 8 || r == REG_RAX : 0;
         case 0x98: return r == REG_RAX;
         case 0x99: return r == REG_RDX;
+        case 0x68: case 0x6A: case 0x9C: case 0x9D: return 0;   /* push imm, pushf, popf */
         }
         if (op >= 0x50 && op <= 0x57) return 0;
         if (op >= 0x58 && op <= 0x5F) return opreg == r;

@@ -1,0 +1,1 @@
+drydock-objc follows an objc_msgSend held in a register past a push of an immediate or the flags, which ends a long varargs send, instead of losing later sends.
