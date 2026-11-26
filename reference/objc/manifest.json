@@ -23,7 +23,7 @@
   "extractor": {
     "producer_sha256": "b02f90ca5da5362752daaaaa8fa496160361acd9ace3016ae435a2e6b366dc7b",
     "wrapper_sha256": "19c8c42bc7c55a65e490ecdb30ef8a77784c35ee3b3e33a02dd5d6925f034f12",
-    "clang_package": "22.1.8-mavericks.30",
+    "clang_package": "22.1.8-mavericks.27",
     "clang_version": "clang version 22.1.8",
     "consumed_resource_headers": ["include/__float_float.h", "include/__float_header_macro.h", "include/__float_infinity_nan.h", "include/__stdarg___gnuc_va_list.h", "include/__stdarg___va_copy.h", "include/__stdarg_header_macro.h", "include/__stdarg_va_arg.h", "include/__stdarg_va_copy.h", "include/__stdarg_va_list.h", "include/__stddef_header_macro.h", "include/__stddef_max_align_t.h", "include/__stddef_null.h", "include/__stddef_offsetof.h", "include/__stddef_ptrdiff_t.h", "include/__stddef_rsize_t.h", "include/__stddef_size_t.h", "include/__stddef_wchar_t.h", "include/emmintrin.h", "include/float.h", "include/inttypes.h", "include/limits.h", "include/mm_malloc.h", "include/mmintrin.h", "include/ptrauth.h", "include/stdarg.h", "include/stdbool.h", "include/stddef.h", "include/stdint.h", "include/xmmintrin.h"],
     "consumed_resource_headers_sha256": "f8a16d9add1a50907b2543c2eb274ed4501684de0014d0b629d1dd3607b04bbd"
