@@ -35,5 +35,8 @@ int objc_x86_is_ff(const ObjcIns *x, int r);
  * loads movups/movss/movsd, movaps, movdqa/movdqu/movq and ucomis/comis); 0 for every other form, writes among
  * them -- conservatively, including forms that only read but are not listed. */
 int objc_x86_reads_only(const ObjcIns *x);
+/* Bit r set when x may read general-purpose register r (excluding the register a call/jmp *reg transfers through);
+ * mem 0 leaves out the memory operand's base and index. 0xFFFF for any form not classified. */
+uint16_t objc_x86_gpr_reads(const ObjcIns *x, int mem);
 
 #endif

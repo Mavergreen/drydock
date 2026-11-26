@@ -1492,81 +1492,7 @@ static void transfer(const Slice *s, const Flow *f, RS *r, const Ins *x, uint64_
     r->me = me; r->mf = mf; r->ms = ms;
 }
 
-/* The general-purpose registers instruction x reads as data or to form an address, excluding the
- * register a `call/jmp *reg` transfers through (entry_escapes checks that one). An opcode this
- * table does not know reads every register: an entry point held across it is refused, not missed. */
-static uint16_t gpr_reads_ex(const Ins *x0, int mem) {   /* mem 0: not the memory operand's base and index */
-    Ins y = objc_x86_byte_regs(x0);   /* ah..bh read the register they are part of */
-    const Ins *x = &y;
-    uint16_t m = 0;
-    int op = x->op, low3 = op & 7, rm = x->modrm && x->mod == 3, opreg = (op & 7) | (x->rex & 1 ? 8 : 0);
-#define R(n) (m |= (uint16_t)(1u << ((n) & 15)))
-    int nomem = x->map == 1 && (op == 0x1F || op == 0x18 || op == 0x0D);   /* nop/prefetch operands are not read */
-    if (mem && x->modrm && x->mod != 3 && !x->riprel && !nomem) {
-        if (!x->sib) R(x->rm);
-        else { if (x->sibbase >= 0) R(x->sibbase); if (x->sibindex >= 0) R(x->sibindex); }
-    }
-    if (x->map == 0) {
-        if (op <= 0x3F && low3 <= 5 && op != 0x0F && op != 0x26 && op != 0x2E && op != 0x36 && op != 0x3E) {
-            if (low3 >= 4) { R(0); return m; }
-            /* xor/sub of a register with itself only zeroes it */
-            if (rm && x->reg == x->rm && (op == 0x31 || op == 0x33 || op == 0x29 || op == 0x2B)) return m;
-            R(x->reg); if (rm) R(x->rm);
-            return m;
-        }
-        switch (op) {
-        case 0x84: case 0x85: case 0x86: case 0x87: R(x->reg); if (rm) R(x->rm); return m;
-        case 0xA8: case 0xA9: case 0x98: case 0x99: case 0xA0: case 0xA1: case 0xA2: case 0xA3: R(0); return m;
-        case 0x88: case 0x89: R(x->reg); return m;
-        case 0x8A: case 0x8B: case 0x8D: case 0x63: case 0x69: case 0x6B: if (rm) R(x->rm); return m;
-        case 0x80: case 0x81: case 0x83: case 0xC0: case 0xC1: case 0xD0: case 0xD1: if (rm) R(x->rm); return m;
-        case 0xD2: case 0xD3: R(1); if (rm) R(x->rm); return m;
-        case 0xC6: case 0xC7: case 0x8F: return m;
-        case 0xF6: case 0xF7: R(0); R(2); if (rm) R(x->rm); return m;
-        case 0xFE: if (rm) R(x->rm); return m;
-        case 0xFF: if (rm && (x->reg & 7) != 2 && (x->reg & 7) != 4) R(x->rm); return m;
-        case 0xA4: case 0xA5: case 0xAA: case 0xAB: R(0); R(1); R(6); R(7); return m;
-        case 0xC2: case 0xC3: case 0xC9: case 0xCC: case 0xE8: case 0xE9: case 0xEB: case 0xF4:
-        case 0x68: case 0x6A: case 0x9C: case 0x9D: return m;
-        case 0xE3: R(1); return m;
-        }
-        if (op >= 0x50 && op <= 0x57) { R(opreg); return m; }
-        if (op >= 0x90 && op <= 0x97) { if (op != 0x90 || (x->rex & 1)) { R(opreg); R(0); } return m; }
-        if ((op >= 0x58 && op <= 0x5F) || (op >= 0xB0 && op <= 0xBF) || (op >= 0x70 && op <= 0x7F)) return m;
-        return 0xFFFF;
-    }
-    if (x->map == 1) {
-        if ((op >= 0x40 && op <= 0x4F) || op == 0xAF || op == 0xA3 || op == 0xAB || op == 0xB3 || op == 0xBB ||
-            op == 0xA4 || op == 0xAC || op == 0xC0 || op == 0xC1) { R(x->reg); if (rm) R(x->rm); return m; }
-        if (op == 0xA5 || op == 0xAD) { R(1); R(x->reg); if (rm) R(x->rm); return m; }
-        if (op == 0xB0 || op == 0xB1) { R(0); R(x->reg); if (rm) R(x->rm); return m; }
-        if (op == 0xB6 || op == 0xB7 || op == 0xBE || op == 0xBF || op == 0xBC || op == 0xBD || op == 0xB8 ||
-            op == 0xBA || op == 0x6E || op == 0x2A || op == 0xC4) { if (rm) R(x->rm); return m; }
-        if (op >= 0xC8 && op <= 0xCF) { R(opreg); return m; }
-        if (op == 0xA2) { R(0); R(1); return m; }
-        if ((op >= 0x80 && op <= 0x9F) || op == 0x1F || op == 0x18 || op == 0x0D || op == 0x0B || op == 0x7E ||
-            (op >= 0x10 && op <= 0x17) || (op >= 0x28 && op <= 0x2F) || (op >= 0x50 && op <= 0x7F) ||
-            (op >= 0xD0 && op <= 0xFE) || op == 0xC2 || op == 0xC6 || op == 0xAE)
-            return m;   /* vector registers in reg/rm */
-        return 0xFFFF;
-    }
-    if (x->map == 2) { if ((op == 0xF0 || op == 0xF1) && rm) R(x->rm); return m; }
-    if (x->map == 3 || (x->map == 4 && x->vexmap == 3 && op != 0xF0)) { if ((op == 0x20 || op == 0x22) && rm) R(x->rm); return m; }
-    if (x->map == 4 && (x->vexmap == 1 || (x->vexmap == 2 && op < 0xF0))) return m;
-    /* EVEX reads a general-purpose register only as an address, or as the r/m source of these:
-     * movd/movq/movw to a vector, the int-to-float conversions, pinsr*, and broadcasts from a GPR. */
-    if (x->map == 5) {
-        int src = (x->vexmap == 1 && (op == 0x6E || op == 0x2A || op == 0x7B || op == 0xC4)) ||
-                  (x->vexmap == 2 && op >= 0x7A && op <= 0x7C) ||
-                  (x->vexmap == 3 && (op == 0x20 || op == 0x22)) ||
-                  (x->vexmap == 5 && (op == 0x6E || op == 0x2A || op == 0x7B));
-        if (src && rm) R(x->rm);
-        return m;
-    }
-    return 0xFFFF;
-#undef R
-}
-static uint16_t gpr_reads(const Ins *x) { return gpr_reads_ex(x, 1); }
+static uint16_t gpr_reads(const Ins *x) { return objc_x86_gpr_reads(x, 1); }
 
 static int ends_flow(const Ins *x) {   /* no fallthrough successor */
     return objc_x86_is_jmp_rel(x) || objc_x86_is_ff(x, 4) || objc_x86_is_ff(x, 5) ||
@@ -1756,7 +1682,7 @@ static int frame_scan(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
             int wild = 0, mem = x->modrm && x->mod != 3 && !x->riprel;
             int32_t call_lo = LO_NONE;   /* the lowest offset this instruction's escape may reach */
             int mbase = mem ? (x->sib ? x->sibbase : x->rm) : -1, midx = mem && x->sib ? x->sibindex : -1;
-            if (i >= 2 && (gpr_reads_ex(x, 0) & ((1u << REG_RSP) | (1u << REG_RBP))) &&
+            if (i >= 2 && (objc_x86_gpr_reads(x, 0) & ((1u << REG_RSP) | (1u << REG_RBP))) &&
                 !(x->map == 0 && (x->op == 0x81 || x->op == 0x83) && x->modrm && x->mod == 3 && x->rm == REG_RSP))
                 wild = 1;   /* rsp or rbp as data (a frame address made some other way) */
             if (x->map == 0 && x->op == 0x8D && mem && !frame_operand(f, x) &&
@@ -1765,7 +1691,7 @@ static int frame_scan(const Slice *s, Flow *f, const uint8_t *base, uint64_t sec
             if (mem && midx >= 0 && (live & (1u << midx))) wild = 1;
             if (mem && mbase >= 0 && (live & (1u << mbase)) && (st.k[mbase] != RS_FRAME || (x->map == 0 && x->op == 0x8D)))
                 wild = 1;   /* a base some path left otherwise, or an address derived from a frame address */
-            data = (uint16_t)(gpr_reads_ex(x, 0) & live);
+            data = (uint16_t)(objc_x86_gpr_reads(x, 0) & live);
             if (x->map == 0 && (x->op == 0x89 || x->op == 0x8B) && x->modrm && x->mod == 3 && (x->rex & 8)) {
                 int src = x->op == 0x89 ? x->reg : x->rm;
                 if (st.k[src] == RS_FRAME) data &= (uint16_t)~(1u << src);   /* a copy: its uses are checked in turn */
