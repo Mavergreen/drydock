@@ -76,9 +76,10 @@
  * class metadata the runtime writes (__objc_data, __objc_const, __objc_ivar; selector, class and super
  * references it rewrites only to equal values) (provider-mutable-constant). In an absent-only group, a branch from
  * elsewhere to an explored function's entry is no foreign entry when that function, run from its own entry with nothing
- * bound, explores no function, reads as initial values nothing, registers no selector where or less literally, and adds
- * no (class, selector, IMP) the constructor's run does not, lets no such value escape, and passes the group's verdict
- * (entry_why). An explored function
+ * bound, does only what the constructor's run does: it explores, reads as initial values and adds (class, selector, IMP)
+ * nothing that run does not, registers a selector only at a site that run does and as literally, lets no such value
+ * escape, and passes the group's verdict; and when neither run stores into image data, so each later call starts from
+ * the initial values the first did (entry_why). An explored function
  * with an LSDA is provider-unmeasurable (exceptional control flow). A summarised callee is not explored.
  * A group is credited
  * whole or not at all: an active group turns the unsupported findings of each member's selector
@@ -952,7 +953,8 @@ static int adds_within(const ObjcRegResult *x, const ObjcRegResult *y, const Obj
 /* Why function f, entered from code the constructor's run did not explore, fails as a root in its own right (the header's
  * "Coverage"): its run from its own entry, nothing bound, explores no function the constructor's did not, adds the same
  * (class, selector, IMP) set, reads as initial values only what the constructor's run read, registers selectors only
- * where that run did and as literally, lets no such value escape, and passes the group's verdict. NULL: it does not fail. */
+ * where that run did and as literally, lets no such value escape, and passes the group's verdict; and neither run stores
+ * into image data. NULL: it does not fail. */
 static int entry_why(Sweep *w, uint64_t f, const char **why) {
     const ObjcRegResult *r = w->r;
     const ObjcProvider *p = w->p;
@@ -960,7 +962,7 @@ static int entry_why(Sweep *w, uint64_t f, const char **why) {
     ObjcRegResult q;
     ObjcRegStart st;
     ObjcAnalysis *s;
-    char buf[1024] = "", wb[300], ib[32];
+    char buf[1024] = "", wb[300], sb[300], ib[32];
     size_t i, j, clean;
     for (i = 0; i < w->nf; i++) if (w->fva[i] == f) { *why = w->fwhy[i]; return 0; }
     if (!(s = objc_analysis_create())) return -1;
@@ -997,6 +999,14 @@ static int entry_why(Sweep *w, uint64_t f, const char **why) {
                      (unsigned long long)q.escaped[i].va, (unsigned long long)q.escaped[i].site);
     if (!buf[0] && group_verdict(s, p, p->cls, &q, f, w->root, w->impva, &clean))
         snprintf(buf, sizeof buf, "%s", s->n_errors && s->errors[0].detail ? s->errors[0].detail : "the group's verdict fails");
+    for (i = 0; !buf[0] && i < 2; i++) {
+        const ObjcRegResult *x = i ? &q : r;
+        if (x->n_stores)
+            snprintf(buf, sizeof buf, "%s stores to 0x%llx (in %s) at 0x%llx (in %s), so a later call does not start from initial values",
+                     i ? "it" : "the constructor's run", (unsigned long long)x->image_stores[0].va,
+                     where(w->im, x->image_stores[0].va, wb, sizeof wb), (unsigned long long)x->image_stores[0].site,
+                     where(w->im, x->image_stores[0].site, sb, sizeof sb));
+    }
     objc_reg_free(&q);
     objc_analysis_destroy(s);
     {

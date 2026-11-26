@@ -668,18 +668,39 @@ group_prefix twoinit -DTWO_INIT; group twoinit twoinit
 group_refused 'entry: TWO_INIT (the constructor twice in the initializer table)' provider-foreign-entry '__DATA,__mod_init_func'
 # spec: src/objc/provider.c "Coverage" -- a branch from code the executor did not explore to an explored function's
 #       entry is accepted when that function, run from its own entry with nothing bound, verifies as the group's root
-#       and reaches nothing new; tests/objc/fixtures/table-second.m is the second unit, its initializer the caller.
+#       and reaches nothing new, and neither run stores into image data; tests/objc/fixtures/table-second.m is the
+#       second unit, its initializer the caller.
 second() {  # second NAME [CC-FLAGS...]: table-provider.m and table-second.m built with -DSECOND and CC-FLAGS, and analyzed
   sn=$1; shift; UNIT='table-provider.m table-second.m'; group_prefix "$sn" -DSECOND "$@"; unset UNIT; group "$sn" "$sn"
 }
+second_active() {  # second_active WHY: exit 0, the group active, every member provided, no error
+  exit_is 0 "$1"; tab_all provided "$1"
+  grep '"status": "active"' "$T/report" >/dev/null || fail "$1: the group is not active"
+  ! grep -F '"code"' "$T/report" >/dev/null || fail "$1: the report has an error"
+}
+second stateless -DSTATELESS
+second_active 'entry: a second initializer calling a root that stores nothing'
+second enterctor -DSTATELESS -DENTER_CTOR
+second_active 'entry: a second initializer calling the constructor'
+second enterhelper -DSTATELESS -DENTER_HELPER
+group_refused 'entry: a second initializer calling a helper the root calls' provider-foreign-entry \
+  "branches to 0x"
+says "(in _fixture_tab_class), code the executor explored, from code or data it did not; from its own entry, the constructor's run and its own differ in adding" \
+  'entry: a second initializer calling a helper the root calls'
 second second
-exit_is 0 'entry: a second initializer calling the root first'; tab_all provided 'entry: a second initializer calling the root first'
-grep '"status": "active"' "$T/report" >/dev/null || fail 'entry: a second initializer calling the root first: the group is not active'
-! grep -F '"code"' "$T/report" >/dev/null || fail 'entry: a second initializer calling the root first: the report has an error'
-second pastentry -DPAST_ENTRY
+group_refused 'entry: a second initializer calling a root that records its state' provider-foreign-entry \
+  "from its own entry, the constructor's run stores to 0x"
+says ', so a later call does not start from initial values' 'entry: a second initializer calling a root that records its state'
+second rerun -DRERUN
+group_refused 'entry: a root that registers another row once its state says registered' provider-foreign-entry \
+  "from its own entry, the constructor's run stores to 0x"
+second altstore -DSTATELESS -DROOT_ALT=7
+group_refused 'entry: a root whose own run stores into the image' provider-foreign-entry \
+  "from its own entry, it stores to 0x"
+second pastentry -DSTATELESS -DPAST_ENTRY
 group_refused 'entry: a call into the root past its entry' provider-foreign-entry 'branches to 0x'
 ! grep -F 'from its own entry' "$T/report" >/dev/null || fail 'entry: a call into the root past its entry: it was run as an entry'
-second rootptr -DROOT_POINTER
+second rootptr -DSTATELESS -DROOT_POINTER
 group_refused 'entry: a pointer to the root in data' provider-foreign-entry 'points to 0x'
 second rootalt -DROOT_ALT=1
 group_refused 'entry: a root whose own run adds another implementation' provider-foreign-entry \

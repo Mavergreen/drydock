@@ -26,7 +26,11 @@
 // A11Y_CLASS (default NSView). SECOND has -tabbingIdentifier's implementation reach tests/objc/fixtures/table-second.m,
 // which then links. ROOT_ALT gives the root an argument the constructor passes as 0, which otherwise chooses (1) a table
 // with another tabbingMode implementation, (2) a copy of the table, (3) a call of a function nothing else calls, (4) a
-// selector registered from it, (5) the state's address handed to a helper, or (6) a detail recorded.
+// selector registered from it, (5) the state's address handed to a helper, or (6) a detail recorded. RERUN registers
+// another row when the state says the table is registered: what a second call of the root would do. STATELESS has a root
+// that keeps no state and stores nothing into the image, only registering the table; with it, ENTER_HELPER moves its
+// objc_getClass into a function of its own, ROOT_ALT=7 records a mark when the class is missing and the argument is set,
+// and ENTER_CTOR makes the constructor external.
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
 #include <stdlib.h>
@@ -279,6 +283,35 @@ __attribute__((noinline, used)) void fixture_alt_extra(void) { (void)objc_getCla
 #elif ROOT_ALT == 5
 __attribute__((noinline, used)) void fixture_alt_note(const void *p) { __asm__ volatile("" : : "r"(p)); }
 #endif
+#ifdef STATELESS
+#ifdef ENTER_HELPER
+__attribute__((noinline, used)) Class fixture_tab_class(void) { return objc_getClass(TABLE_CLASS); }
+#else
+#define fixture_tab_class() objc_getClass(TABLE_CLASS)
+#endif
+#if ROOT_ALT == 7
+int fixtureMark;
+#endif
+#ifdef ROOT_ALT
+__attribute__((noinline)) void __fixture_objc_activate_table(int alt) {
+  (void)alt;
+#else
+void __fixture_objc_activate_table(void) {
+#endif
+  const char *d;
+  Class window = fixture_tab_class();
+  if (!window) {
+#if ROOT_ALT == 7
+    if (alt) fixtureMark = 1;
+#endif
+    return;
+  }
+  (void)REGISTER(window, FixtureTabMethods, sizeof FixtureTabMethods / sizeof *FixtureTabMethods, &d);
+}
+#else
+#ifdef RERUN
+const FixtureTabMethod FixtureTabMethodsRerun[] = { ROW("fixtureRerunExtra", "@16@0:8", NO, FixtureTab_tabbedWindows) };
+#endif
 #ifdef ROOT_ALT
 __attribute__((noinline)) void __fixture_objc_activate_table(int alt) {
 #if ROOT_ALT == 1 || ROOT_ALT == 2
@@ -289,6 +322,13 @@ __attribute__((noinline)) void __fixture_objc_activate_table(int alt) {
 #else
 void __fixture_objc_activate_table(void) {
 #define TABLE FixtureTabMethods
+#endif
+#ifdef RERUN
+  if (state == FixtureRegistered) {
+    const char *d;
+    REGISTER(objc_getClass("NSWindow"), FixtureTabMethodsRerun, 1, &d);
+    return;
+  }
 #endif
   if (state != FixtureNotRun) return;
 #if ROOT_ALT == 3
@@ -466,6 +506,7 @@ void __fixture_objc_activate_table(void) {
                              (IMP)(void *)FixtureTab_tabbedWindows);
 #endif
 }
+#endif
 
 FixtureState fixture_tabbing_activation_state(const char **detail) {
   if (detail) *detail = stateDetail;
@@ -474,6 +515,8 @@ FixtureState fixture_tabbing_activation_state(const char **detail) {
 
 #ifdef ROOT_ALT
 __attribute__((constructor)) static void fixture_tabbing_start(void) { __fixture_objc_activate_table(0); }
+#elif defined(ENTER_CTOR)
+__attribute__((constructor)) void fixture_tabbing_start(void) { __fixture_objc_activate_table(); }
 #else
 __attribute__((constructor)) static void fixture_tabbing_start(void) { __fixture_objc_activate_table(); }
 #endif
