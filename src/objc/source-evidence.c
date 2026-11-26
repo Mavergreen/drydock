@@ -73,7 +73,7 @@
  *     line must be the SHA-256 of this analyzer's own tools/objc-source-inventory.c, which
  *     scripts/objc-compat-build.sh compiles in: a receipt from an edited or other copy of the tool
  *     is cannot-measure (source-receipt-tool-mismatch). Schema 1 and schema 2 are read; a schema-2
- *     unit row's flags must be ones that tool can have written, its paths <stage>/ and an input,
+ *     unit row's flags (- for none) must be ones that tool can have written, its paths <stage>/ and an input,
  *     else malformed-source-receipt. Each send
  *     in verified provider code needs a line row and at least one candidate, or the artifact is
  *     cannot-measure (no-line-table, unmapped-source-send): an unknown compiler pattern or changed
@@ -962,11 +962,12 @@ static int stage_label_ok(const char *s) {
     }
     return s[strlen(s) - 1] != '/';
 }
-/* A schema-2 unit row's flags: space-separated, each in UNIT_FLAGS, or -include <stage>/INPUT, or -I <stage>/DIR
- * with an input under DIR. Input rows precede unit rows; one that does not is refused. */
+/* A schema-2 unit row's flags: - alone for none, else space-separated, each in UNIT_FLAGS, or -include <stage>/INPUT,
+ * or -I <stage>/DIR with an input under DIR. Input rows precede unit rows; one that does not is refused. */
 static int unit_flags_ok(const ObjcAnalysis *a, char *s) {
     char *t, *v;
     size_t k;
+    if (!strcmp(s, "-")) return 1;
     for (t = s; t; t = v) {
         if ((v = strchr(t, ' '))) *v++ = 0;
         if (!strcmp(t, "-include") || !strcmp(t, "-I")) {

@@ -74,11 +74,11 @@
  * the pinned clang22, lib/clang/22: the directory its clang -print-resource-dir
  * names).
  * --unit-flags LABEL (once; LABEL is an input) names a file the build writes, one
- * line per --unit, UNIT<TAB>FLAG[<TAB>FLAG]..., each line ending in a newline, at most
- * 1 MiB. A unit's flags are then its own: -fobjc-arc, -fno-objc-arc, -fno-modules,
+ * line per --unit, UNIT<TAB>FLAG[<TAB>FLAG]... or UNIT alone for none, each line
+ * ending in a newline, at most 1 MiB. A unit's flags are then its own: -fobjc-arc, -fno-objc-arc, -fno-modules,
  * -fno-autolink, -w, -Wall, -Wextra, -Werror, -Wno-deprecated-declarations,
  * -include LABEL (an input) and -I LABELDIR (a directory some input lies in). Any other
- * flag, a line with no flag, an empty or repeated line, or a unit without a line is
+ * flag, an empty field, an empty or repeated line, or a unit without a line is
  * exit 4 before anything is parsed. The receipt is then schema 2
  * ("# objc-source-receipt 2"), its unit rows carrying each unit's flags; without the
  * option it is schema 1, as before. analyze reads schema 1 and 2, and takes a receipt

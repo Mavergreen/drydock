@@ -140,6 +140,18 @@ fi
 rc=0; uf_run include-dir "arc-unit.m\t-fobjc-arc\t-I\tsub\t-include\tprefix.h\n$ok_mrc" || rc=$?
 [ "$rc" = 0 ] && grep -Fxq "$(printf 'unit\tarc-unit.m\t-fobjc-arc -I <stage>/sub -include <stage>/prefix.h')" "$T/include-dir.receipt" &&
   pass 'unit-flags: -I of a directory an input lies under is taken, as <stage>/LABELDIR' || fail "unit-flags: -I of a staged directory: exit $rc"
+rc=0; uf_run label-only "arc-unit.m\t-fobjc-arc\t-include\tprefix.h\nmrc-unit.m\n" || rc=$?
+if [ "$rc" = 0 ] && grep -Fxq "$(printf 'unit\tmrc-unit.m\t-')" "$T/label-only.receipt" &&
+   grep -Fxq "$(printf 'unit\tarc-unit.m\t-fobjc-arc -include <stage>/prefix.h')" "$T/label-only.receipt" &&
+   awk -F'\t' '$1 == "send" && $2 == "mrc-unit.m" && $7 == "retain" { f = 1 } END { exit !f }' "$T/label-only.receipt"; then
+  pass 'unit-flags: a line of the label alone is the profile only, its unit row -'
+else
+  fail "unit-flags: a label-only line: exit $rc"; [ ! -f "$T/label-only.receipt" ] || cat "$T/label-only.receipt"
+fi
+rc=0; uf_run label-only-arc "arc-unit.m\n$ok_mrc" || rc=$?
+[ "$rc" = 4 ] && grep -Fq 'cannot synthesize weak property' "$T/err" && [ ! -e "$T/label-only-arc.receipt" ] &&
+  pass 'unit-flags: an ARC unit on a label-only line parses manual reference counting, as the profile does' ||
+  fail "unit-flags: an ARC unit on a label-only line: exit $rc"
 uf_refused() {
   rc=0; uf_run "$1" "$3" "${4:-}" || rc=$?
   if [ "$rc" = 4 ] && grep -Fq -- "$2" "$T/err" && [ ! -e "$T/$1.receipt" ]; then pass "unit-flags: $1 exits 4 before any parse"
@@ -155,7 +167,8 @@ uf_refused '-I of a label prefix, not a directory' 'unit flags: arc-unit.m: -I a
 uf_refused 'a --unit with no line' 'unit flags: no line for unit mrc-unit.m' "arc-unit.m\t-fobjc-arc\n"
 uf_refused 'a line for a non-unit' 'unit flags: prefix.h is not a --unit' "arc-unit.m\t-fobjc-arc\n${ok_mrc}prefix.h\t-w\n"
 uf_refused 'a unit listed twice' 'unit flags: arc-unit.m listed twice' "arc-unit.m\t-fobjc-arc\n${ok_mrc}arc-unit.m\t-fobjc-arc\n"
-uf_refused 'a line with no flags' 'unit flags: arc-unit.m has no flags' "arc-unit.m\n$ok_mrc"
+uf_refused 'a label and a trailing tab' 'unit flags: arc-unit.m: an empty field' "arc-unit.m\t\n$ok_mrc"
+uf_refused 'two tabs between flags' 'unit flags: arc-unit.m: an empty field' "arc-unit.m\t-fobjc-arc\t\t-w\n$ok_mrc"
 uf_refused 'an empty line' 'unit flags: an empty line in unit.flags' "arc-unit.m\t-fobjc-arc\n\n$ok_mrc"
 uf_refused 'no final newline' 'unit flags: unit.flags does not end in a newline' "arc-unit.m\t-fobjc-arc\nmrc-unit.m\t-w"
 uf_refused 'the flags file not among the inputs' 'unit flags: unit.flags is not an input' "arc-unit.m\t-fobjc-arc\n$ok_mrc" unlisted

@@ -49,16 +49,16 @@
  *             recorded apart from RECEIVER, never used for it
  *
  * --unit-flags LABEL names an input (so hashed and staged like the rest) giving each unit its own
- * compile flags: one `UNIT<TAB>FLAG<TAB>...` line per --unit, every line ending in a newline, no
- * empty line or field, no carriage return or NUL, at most 1 MiB. A FLAG is one of -fobjc-arc -fno-objc-arc -fno-modules
+ * compile flags: one `UNIT<TAB>FLAG<TAB>...` line per --unit, or the UNIT alone for the profile only,
+ * every line ending in a newline, no empty line or field, no carriage return or NUL, at most 1 MiB. A FLAG is one of -fobjc-arc -fno-objc-arc -fno-modules
  * -fno-autolink -w -Wall -Wextra -Werror -Wno-deprecated-declarations, or -include LABEL (an input)
  * or -I LABELDIR (a directory some input lies under), the value being the next field. Anything
- * else, a unit without a line or with two, a line for no unit, or a unit with no flags refuses
+ * else, a unit without a line or with two, or a line for no unit refuses
  * before anything is parsed. A unit then parses with the profile, its last ARC flag in place of
  * -fno-objc-arc, the --include directories, and its other flags in file order, value paths staged.
  * The receipt is then schema 2: `# objc-source-receipt 2`, the same profile, args (still the
  * common arguments), libclang, sdk, tool and input rows, and each unit row
- *   unit     LABEL FLAGS            (its own flags, space-separated, paths written <stage>/LABEL)
+ *   unit     LABEL FLAGS            (its own flags, space-separated, paths written <stage>/LABEL; - for none)
  * followed by the send rows as above.
  * Exit 0 written, 2 usage, 4 an unverifiable input, a parse error or an unwritable output. */
 /* platform: realpath, mkdtemp and lstat under -std=c99: _XOPEN_SOURCE on glibc, _DARWIN_C_SOURCE keeps the rest visible on a Mac */
@@ -552,11 +552,11 @@ static void read_unit_flags(const char *label, const char *const *units, size_t 
         for (u = 0; u < nunits; u++) if (!strcmp(units[u], line) && flags[u].text) cannot("unit flags: %s listed twice", line);
         for (u = 0; u < nunits; u++) if (!strcmp(units[u], line)) found = 1;
         if (!found) cannot("unit flags: %s is not a --unit", line);
-        if (!next) cannot("unit flags: %s has no flags", line);
         memset(&f, 0, sizeof f);
-        f.text = copy("");
+        f.text = copy(next ? "" : "-");
         while ((field = next)) {
             if ((next = strchr(field, '\t'))) *next++ = 0;
+            if (!*field) cannot("unit flags: %s: an empty field", line);
             if (!strcmp(field, "-include") || !strcmp(field, "-I")) {
                 const char *flag = !strcmp(field, "-I") ? "-I" : "-include", *v = next;
                 char *shown;

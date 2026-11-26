@@ -3,7 +3,7 @@ profile	recaulk-objc-x86_64-10.9
 args	-x objective-c -target x86_64-apple-macos10.9 -isysroot <sdk> -resource-dir <resource> -nostdinc -isystem <resource>/include -isystem <sdk>/usr/include -iframework <sdk>/System/Library/Frameworks -fno-objc-arc -fblocks -Os -fPIC -Wall -Wno-deprecated-declarations
 libclang	clang version 22.1.8
 sdk	018e9f329ba04ee9dd50b870aa1d048af79c8614f52efa6aa26d16a5df511f9b
-tool	6bd3848f0fb7434a524f8e5376b2582de3f0d1af204265d67f0f59b6aa2c57ea
+tool	433672d4e960f4296ad2342add533dc9848cbdcd06ebdc14a71e4704c8c0ca3e
 input	provider-body.m	dceb76c90f5c34afb8ece15f5954e661d099def2449c8003cf1686204624e373
 input	provider-register.c	1c0e59569f36867d6a798c955f73166be99ba10fb75fb0e5715786471fc62974
 unit	provider-body.m

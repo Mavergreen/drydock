@@ -1346,14 +1346,14 @@ rc=0; "$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inp
 exit_is 2 'inventory onto an existing receipt'
 
 # spec: src/objc/source-evidence.c header -- a schema-2 receipt (receipt --unit-flags) is read as schema 1 is: a body
-#       built ARC with a prefix header closes its sends; a unit row with a flag or path the tool cannot have written is
-#       malformed-source-receipt. The analyzer's allowed flags are the tool's, compared here as text.
+#       built ARC with a prefix header closes its sends, a unit with no flags having the row -; a unit row with a flag
+#       or path the tool cannot have written is malformed-source-receipt. The analyzer's allowed flags are the tool's, compared here as text.
 flag_set() { awk '/UNIT_FLAGS\[\] = \{/ {f=1} f {print} f && /\};/ {exit}' "$1" | grep -o '"[^"]*"' | tr '\n' ' '; }
 tool_flags=$(flag_set "$ROOT/tools/objc-source-inventory.c"); analyzer_flags=$(flag_set "$ROOT/src/objc/source-evidence.c")
 case "$tool_flags" in '"-fobjc-arc" '*'"-Wno-deprecated-declarations" ') ;; *) fail "the tool's UNIT_FLAGS did not extract: '$tool_flags'" ;; esac
 [ "$analyzer_flags" = "$tool_flags" ] || fail "receipt flags: the analyzer allows '$analyzer_flags', the tool '$tool_flags'"
 body_source "$T/body-arc"; mkdir -p "$T/body-arc/inc"; printf '#import <Foundation/Foundation.h>\n' >"$T/body-arc/inc/prefix.h"
-printf 'provider-body.m\t-fobjc-arc\t-Wall\t-include\tinc/prefix.h\t-I\tinc\nprovider-register.c\t-w\n' >"$T/body-arc/unit.flags"
+printf 'provider-body.m\t-fobjc-arc\t-Wall\t-include\tinc/prefix.h\t-I\tinc\nprovider-register.c\n' >"$T/body-arc/unit.flags"
 P="$T/pfx-arc"; rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
 fxcc -Os -fPIC -Wall -g -fobjc-arc -include "$T/body-arc/inc/prefix.h" -I "$T/body-arc/inc" -c "$T/body-arc/provider-body.m" -o "$P.objects/provider-body.o" ||
   fail 'compiling the ARC body'
@@ -1364,6 +1364,7 @@ declare_prefix "$P" "$P.inputs"
 "$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inputs "$P.inputs" --root "$T/body-arc" \
   --unit provider-body.m --unit provider-register.c --unit-flags unit.flags --output "$P.receipt" 2>"$T/err" || fail 'source inventory with unit flags'
 [ "$(head -1 "$P.receipt")" = '# objc-source-receipt 2' ] || fail 'the receipt with unit flags is not schema 2'
+grep -Fxq "$(printf 'unit\tprovider-register.c\t-')" "$P.receipt" || fail 'a unit line of the label alone is not the unit row -'
 body arc-body "$P" "$P.receipt"
 exit_is 0 'receipt: schema 2 closes sends'; want_verdict provided 'receipt: schema 2 closes sends'
 for s in isFileURL count objectForKey:; do finding_is "$s" floor-supported '"source"' 'receipt: schema 2 closes sends'; done
@@ -1381,7 +1382,8 @@ bad_unit 'a unit row -I with no value' '/^unit	provider-body.m	/s/$/ -I/'
 bad_unit 'a unit row -I of the empty directory above an input not relative' \
   '/^input	inc\/prefix.h	/{p;s,inc/prefix.h,/abs/prefix.h,;}
 s,-I <stage>/inc,-I <stage>/,'
-bad_unit 'a schema-2 unit row with no flags' 's/^unit	provider-register.c	.*/unit	provider-register.c	/'
+bad_unit 'a schema-2 unit row with an empty flags field' 's/^unit	provider-register.c	.*/unit	provider-register.c	/'
+bad_unit 'a unit row - among flags' '/^unit	provider-body.m	/s/$/ -/'
 bad_unit 'a unit row for no input' 's/^unit	provider-register.c	/unit	other.c	/'
 bad_unit 'a schema-1 header over unit rows with flags' '1s/2$/1/'
 
