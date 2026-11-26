@@ -487,6 +487,19 @@ weak_refused 'weak: a non-weak symbol the evidence lacks' \
   'the evidence places no atom weak-b.o(__OBJC_CLASS_RO_$_FixtureWeakB)'
 group weak-app weak -DWEAK -DWEAK_APP
 weak_refused 'weak: kept from the app' 'is a weak definition the evidence places from 0 members'
+# spec: src/objc/provider.c header, 2 -- weak_table NAME LONGS OTHER READ: weak-b.m reads long READ of weak-a.m's kept
+#       LONGS-long FixtureWeakTable through the archive's first copy, weak-table.m's unloaded OTHER-long weak-0.o.
+weak_table() {
+  GROUP=$WEAK_GROUP UNIT='weak-a.m weak-b.m weak-table.m:weak-0'; group_prefix "$1" -DWEAK_TABLE="$2" -DWEAK_OTHER="$3" -DWEAK_READ="$4"
+  unset GROUP UNIT; group "$1" "$1" -DWEAK
+}
+weak_table weak-table 4 4 3
+exit_is 0 'weak: a reference through a discarded copy attests'; weak_sends provided 'weak: a reference through a discarded copy attests'
+weak_table weak-size 2 4 1
+weak_refused 'weak: a discarded copy of another size' 'weak-0.o(_FixtureWeakTable) is 32 bytes, its kept copy weak-a.o(_FixtureWeakTable) 16'
+weak_table weak-past 2 2 2
+weak_refused 'weak: a reference past the kept copy' \
+  'reference to weak-0.o(_FixtureWeakTable)+16 lies past its kept copy weak-a.o(_FixtureWeakTable), 16 bytes'
 # spec: src/objc/provider.c header, "Groups" -- a member the newer SDK declares as a required method of a protocol its class
 #       adopts there (itself or by a superclass, directly or through an inherited protocol) is declared with that
 #       protocol's encoding: NSView and NSCell adopt NSAccessibility, whose 10.10 methods Recaulk back-fills. A protocol
@@ -1310,6 +1323,9 @@ bad_unit 'a unit row -I outside <stage>' 's,-I <stage>/inc,-I /tmp,'
 bad_unit 'a unit row -I of a label prefix, not a directory' 's,-I <stage>/inc,-I <stage>/in,'
 bad_unit 'a unit row -include of no input' 's,-include <stage>/inc/prefix.h,-include <stage>/inc/absent.h,'
 bad_unit 'a unit row -I with no value' '/^unit	provider-body.m	/s/$/ -I/'
+bad_unit 'a unit row -I of the empty directory above an input not relative' \
+  '/^input	inc\/prefix.h	/{p;s,inc/prefix.h,/abs/prefix.h,;}
+s,-I <stage>/inc,-I <stage>/,'
 bad_unit 'a schema-2 unit row with no flags' 's/^unit	provider-register.c	.*/unit	provider-register.c	/'
 bad_unit 'a unit row for no input' 's/^unit	provider-register.c	/unit	other.c	/'
 bad_unit 'a schema-1 header over unit rows with flags' '1s/2$/1/'

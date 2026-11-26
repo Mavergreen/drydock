@@ -948,6 +948,20 @@ static int src_input(const ObjcAnalysis *a, const char *label, int dir) {
         if (dir ? !strncmp(a->src_inputs[i].label, label, n) && a->src_inputs[i].label[n] == '/' : !strcmp(a->src_inputs[i].label, label)) return 1;
     return 0;
 }
+/* tools/objc-source-inventory.c's label_ok: a relative path of [A-Za-z0-9._+-] components, none empty, "." or "..". */
+static int stage_label_ok(const char *s) {
+    const char *c = s;
+    if (!*s || *s == '/' || strlen(s) > 400) return 0;
+    while (*c) {
+        size_t n = strcspn(c, "/"), i;
+        if (!n || (n == 1 && c[0] == '.') || (n == 2 && c[0] == '.' && c[1] == '.')) return 0;
+        for (i = 0; i < n; i++)
+            if (!((c[i] >= 'a' && c[i] <= 'z') || (c[i] >= 'A' && c[i] <= 'Z') || (c[i] >= '0' && c[i] <= '9') || strchr("._-+", c[i])))
+                return 0;
+        c += n; if (*c == '/') c++; else break;
+    }
+    return s[strlen(s) - 1] != '/';
+}
 /* A schema-2 unit row's flags: space-separated, each in UNIT_FLAGS, or -include <stage>/INPUT, or -I <stage>/DIR
  * with an input under DIR. Input rows precede unit rows; one that does not is refused. */
 static int unit_flags_ok(const ObjcAnalysis *a, char *s) {
@@ -959,7 +973,7 @@ static int unit_flags_ok(const ObjcAnalysis *a, char *s) {
             int dir = t[1] == 'I';
             if (!(t = v) || strncmp(t, "<stage>/", 8)) return 0;
             if ((v = strchr(t, ' '))) *v++ = 0;
-            if (!src_input(a, t + 8, dir)) return 0;
+            if (!stage_label_ok(t + 8) || !src_input(a, t + 8, dir)) return 0;
             continue;
         }
         for (k = 0; UNIT_FLAGS[k] && strcmp(UNIT_FLAGS[k], t); k++) ;

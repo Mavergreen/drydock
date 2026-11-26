@@ -39,4 +39,9 @@ void __fixture_objc_activate_weak(void) {
   state = FixtureWeakRegister(window, FixtureWeakMethods, sizeof FixtureWeakMethods / sizeof *FixtureWeakMethods);
 }
 
+#ifdef WEAK_TABLE
+// The kept copy of a weak table tests/objc/fixtures/weak-table.m also defines, WEAK_TABLE longs; weak-b.m reads it.
+__attribute__((weak, visibility("hidden"), section("__DATA,__fxweak"))) long FixtureWeakTable[WEAK_TABLE] = { 1 };
+#endif
+
 __attribute__((constructor)) static void fixture_weak_start(void) { __fixture_objc_activate_weak(); }

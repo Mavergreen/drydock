@@ -20,8 +20,8 @@
  *      constant CFString must reach the same content. Any other relocation type, a scattered
  *      relocation, an addend on an import or a different section name is cannot-measure. A reference
  *      into a weak definition whose copy the evidence does not place (the linker keeps one of several
- *      members' copies) must land on the one other member's copy it places, verified as any atom;
- *      none or several placed is a mapping mismatch.
+ *      members' copies) must land within the one other member's copy it places, as large as the discarded one,
+ *      verified as any atom; none or several placed, or another size, is a mapping mismatch.
  *   3. Activation: the root member's own constructor (its __mod_init_func entry) is verified the
  *      same way and its final address is a pointer in the final image's initializer table. The
  *      constructor's closure -- not the root's alone -- must call class_addMethod,
@@ -332,8 +332,17 @@ static int internal_target(V *v, size_t mi, uint32_t si, uint64_t off, uint64_t 
     const char *name = objc_obj_sym_name(m, si);
     const ObjcProviderAtom *e = evidence_atom(v->p, m->name, name);
     if (!e && (m->nl[si].n_desc & N_WEAK_DEF)) {
+        const OMember *d = m;
+        uint64_t lo, hi;
+        atom_extent(d, si, &lo, &hi);
         if (kept_copy(v, name, &mi, &si, &e, at)) return -1;
         m = &v->ar->m[mi];
+        if (hi - lo != e->size)
+            return vfail(v, "provider-mapping-mismatch", at, "%s(%s) is %llu bytes, its kept copy %s(%s) %llu", d->name, name,
+                         (unsigned long long)(hi - lo), m->name, name, (unsigned long long)e->size);
+        if (off >= e->size)
+            return vfail(v, "provider-mapping-mismatch", at, "reference to %s(%s)+%llu lies past its kept copy %s(%s), %llu bytes",
+                         d->name, name, (unsigned long long)off, m->name, name, (unsigned long long)e->size);
     }
     if (!e) return vfail(v, "provider-mapping-mismatch", at, "the evidence places no atom %s(%s)", m->name, name);
     if (T != e->address + off)
