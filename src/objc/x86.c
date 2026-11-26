@@ -119,11 +119,10 @@ ObjcIns objc_x86_byte_regs(const ObjcIns *x) {
     return y;
 }
 
-
 /* The general-purpose registers instruction x reads as data or to form an address, excluding the
  * register a `call/jmp *reg` transfers through (entry_escapes checks that one). An opcode this
  * table does not know reads every register: an entry point held across it is refused, not missed. */
-uint16_t objc_x86_gpr_reads(const ObjcIns *x0, int mem) {   /* mem 0: not the memory operand's base and index */
+uint16_t objc_x86_gpr_reads(const ObjcIns *x0, int mem) {
     ObjcIns y = objc_x86_byte_regs(x0);   /* ah..bh read the register they are part of */
     const ObjcIns *x = &y;
     uint16_t m = 0;

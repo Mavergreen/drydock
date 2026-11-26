@@ -1110,10 +1110,17 @@ static void unread_back(const Ex *e, St *u, size_t k, Val held) {
     if (u->r[0].k == VS && u->r[0].sym == e->unread && !u->r[0].ts && !u->r[0].pw) u->r[0] = held;
     else u->addfork = 0;
 }
+static int leaked(const Ex *e, const St *u) {
+    size_t j;
+    for (j = 1; j < 16; j++) if (u->r[j].k == VS && u->r[j].sym == e->unread) return 1;
+    for (j = 0; j < u->nm; j++) if (u->m[j].v.k == VS && u->m[j].v.sym == e->unread) return 1;
+    return 0;
+}
 /* One instruction; and an add's failed twin, which rax owes until an instruction may read it (or returns), is then
  * forked; a call or tail jump, or a write of rax that reads nothing of it, drops it. */
 static int step(Ex *e, St *t) {
-    size_t av, w = e->nwork, i, k = t->addfork; const uint8_t *p; ObjcIns x; Val held; int rc;
+    size_t av, w = e->nwork, i, k = t->addfork; const uint8_t *p; ObjcIns x; Val held; int rc, bad; uint64_t ip = t->rip;
+    char what[160];
     if (!k || !(p = code_at(e, t->rip, &av)) || objc_x86_decode(p, av, t->rip, &x)) return execute(e, t);
     if ((objc_x86_gpr_reads(&x, 1) & 1) || (x.map == 0 && x.op == 0xC3)) return owe_fork(e, t) ? -1 : execute(e, t);
     if (objc_x86_is_call_rel(&x) || objc_x86_is_ff(&x, 2) || objc_x86_is_ff(&x, 4) ||
@@ -1123,7 +1130,14 @@ static int step(Ex *e, St *t) {
     }
     if (e->unread == UINT32_MAX && (e->unread = opaque(e)) == UINT32_MAX) return -1;
     held = t->r[0]; t->r[0] = S(e->unread);
-    rc = execute(e, t);
+    if ((rc = execute(e, t)) < 0) return rc;
+    bad = leaked(e, t);
+    for (i = w; i < e->nwork; i++) bad |= leaked(e, e->work[i]);
+    if (bad) {
+        snprintf(what, sizeof what, "the result of class_addMethod at 0x%llx reached a register or memory through a form "
+                 "the read set does not mark", (unsigned long long)t->adds[k - 1].site);
+        return unsupported(e, ip, &x, p, what);
+    }
     unread_back(e, t, k, held);
     for (i = w; i < e->nwork; i++) unread_back(e, e->work[i], k, held);
     return rc;

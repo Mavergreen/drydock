@@ -171,13 +171,13 @@ for o in -Os -Oz; do
 done
 pass 'a frame address forwarded as a stack argument by a tail call to a helper not followed escapes (-Os -Oz)'
 # spec: src/objc/regexec.c header -- class_addMethod's failure is a path only where the result is read.
-lazy() {   # lazy NAME OPT VARIANT: regexec-lazyadd.c's VARIANT at OPT, run from lazy_start with rdi bound to NSView
+lazy() {
   fxcc "$2" "-D$3" -c "$FX/regexec-lazyadd.c" -o "$T/$1.o" || fail "compiling regexec-lazyadd.c $2 -D$3"
   fxcc "$T/main.o" "$T/$1.o" -lobjc -o "$T/$1" || fail "linking $1"
   rc=0; "$DRYDOCK_OBJC_REGEXEC_DRIVER" "$T/$1" _lazy_start NSView >"$T/out" 2>"$T/err" || rc=$?
   explored "$1"
 }
-added() { grep "^  add $1 .* $2\$" "$T/out" >/dev/null; }   # added CLS|META\ SEL OK: some path adds SEL with OK
+added() { grep "^  add $1 .* $2\$" "$T/out" >/dev/null; }
 npaths() { sed -n 's/^paths //p' "$T/out"; }
 for o in -O0 -Os; do
   lazy "ten$o" "$o" TEN
@@ -198,8 +198,11 @@ for o in -O0 -Os; do
   [ "$(npaths)" = 2 ] && added '?|0 n0' 0 && added 'NSView|0 n0' 1 ||
     fail "null$o: want the NULL class's failed add and one succeeded add: $(grep -E '^(paths|path|  add)' "$T/out")"
 done
-"$(dirname "$NM")/llvm-objdump" -d --no-show-raw-insn --disassemble-symbols=_lazy_start "$T/tail-Os" | grep -E '^ *[0-9a-f]+:[[:space:]]+jmp' >/dev/null ||
-  fail "tail-Os: lazy_start does not end in a tail jump: $("$(dirname "$NM")/llvm-objdump" -d --disassemble-symbols=_lazy_start "$T/tail-Os")"
+OD="$(dirname "$NM")/llvm-objdump"
+stub=$("$OD" --macho --indirect-symbols "$T/tail-Os" | awk '/^Indirect/ {s = /__stubs/; next} s && $3 == "_class_addMethod" {print $1}' | sed 's/^0x0*//')
+"$OD" -d --no-show-raw-insn --disassemble-symbols=_lazy_start "$T/tail-Os" | awk '/^ *[0-9a-f]+:/ {l = $0} END {print l}' |
+  grep -E "^ *[0-9a-f]+:[[:space:]]+jmp[[:space:]]+0x0*$stub( |\$)" >/dev/null && [ -n "$stub" ] ||
+  fail "tail-Os: lazy_start does not end in a tail jump to class_addMethod's stub (0x$stub): $("$OD" -d --disassemble-symbols=_lazy_start "$T/tail-Os")"
 pass 'a failed class_addMethod is a path where its result is read, tested, copied, returned or tail-jumped to, and only there (-O0 -Os)'
 fxcc -c "$FX/regexec-lazyadd.S" -o "$T/lazys.o" || fail 'assembling regexec-lazyadd.S'
 fxcc "$T/main.o" "$T/lazys.o" -lobjc -o "$T/lazys" || fail 'linking lazys'
