@@ -103,7 +103,7 @@ A row names its code by `path`; `symbol` or `symbols` (the copies of one generic
 
 ### Absent-only groups entered twice
 
-`analyze` proves an absent-only group's root from its constructor, with the image's data at its initial values. Other code may still call or jump to the entry of a function that run explored, such as a second initializer calling the root, when neither that function's own run nor the constructor's stores into image data, and its own run verifies as the root alone and reaches, reads and adds nothing the constructor's does not. A root that records its state in a global is refused. Anything else that refers into that run's code is `provider-foreign-entry`.
+`analyze` proves an absent-only group's root from its constructor, with the image's data at its initial values. Other code may still call or jump to the entry of a function that run explored, such as a second initializer calling the root, when neither that function's own run nor the constructor's stores into image data, and its own run verifies as the root alone and reaches, reads and adds nothing the constructor's does not. So a root that records its state in a global, or a constructor that stores anywhere in the image, is refused. Anything else that refers into that run's code is `provider-foreign-entry`.
 
 ### Bridges: own-absent groups
 
