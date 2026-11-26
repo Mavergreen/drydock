@@ -69,6 +69,16 @@
       ]
     },
     {
+      "description": "A move of components/objc-reference-clang/version changes reference/objc/manifest.json, which only scripts/objc-reference-set.sh on a Mac regenerates, and push CI runs on Linux; so a human merges it. Revisit when Linux CI regenerates the reference set.",
+      "matchFileNames": [
+        "components/objc-reference-clang/version"
+      ],
+      "automerge": false,
+      "prBodyNotes": [
+        "Before merging, regenerate the reference set on a Mac (scripts/objc-reference-set.sh) and commit reference/objc/manifest.json with the new clang_package."
+      ]
+    },
+    {
       "description": "Renovate moves REF and DIGEST in components/jansson/version but cannot write SHA256, the digest of GitHub's tarball of that commit; .github/workflows/pins-bot.yml writes SHA256 on the bump's branch, after checking that the tarball holds exactly the commit's tree.",
       "matchPackageNames": [
         "https://github.com/akheron/jansson"
