@@ -41,7 +41,7 @@
  *                                    clang and the floor SDK named: --clang-prefix PREFIX
  *                                    --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR...]
  *                                    --unit LABEL [--unit LABEL...] [--include LABELDIR...]
- *                                    --output NEW_FILE
+ *                                    [--unit-flags LABEL] --output NEW_FILE
  *
  * DELEGATION: analyze, evidence, link-args and resolve call objc_compat_main -- src/objc/main.c, the
  * C front end on every host, compiled with -Dmain=objc_compat_main -- with the arguments the shell
@@ -73,7 +73,17 @@
  * which must be named for the major version clang_getClangVersion() reports (for
  * the pinned clang22, lib/clang/22: the directory its clang -print-resource-dir
  * names).
- * Option names are the seven above, each followed by its value; any other name,
+ * --unit-flags LABEL (once; LABEL is an input) names a file the build writes, one
+ * line per --unit, UNIT<TAB>FLAG[<TAB>FLAG]..., each line ending in a newline, at most
+ * 1 MiB. A unit's flags are then its own: -fobjc-arc, -fno-objc-arc, -fno-modules,
+ * -fno-autolink, -w, -Wall, -Wextra, -Werror, -Wno-deprecated-declarations,
+ * -include LABEL (an input) and -I LABELDIR (a directory some input lies in). Any other
+ * flag, a line with no flag, an empty or repeated line, or a unit without a line is
+ * exit 4 before anything is parsed. The receipt is then schema 2
+ * ("# objc-source-receipt 2"), its unit rows carrying each unit's flags; without the
+ * option it is schema 1, as before. analyze reads schema 1 and 2, and takes a receipt
+ * only from the drydock whose receipt tool wrote it.
+ * Option names are the eight above, each followed by its value; any other name,
  * a repeated --clang-prefix or --sdk, or either one missing is usage (exit 2).
  * A libclang that does not load or lacks a function, or no single resource
  * directory with an include/ in it and libclang's major version for a name, is
@@ -117,7 +127,7 @@ static void usage(void) {
             "       drydock-objc link-args --prefix PREFIX --link-map FILE [--provider ID]...\n"
             "       drydock-objc resolve --artifact FILE --reviewed FILE --output NEW_FILE\n"
             "       drydock-objc receipt --clang-prefix PREFIX --sdk FLOOR_SDK --inputs FILE --root DIR [--root DIR]..."
-            " --unit LABEL [--unit LABEL]... [--include LABELDIR]... --output NEW_FILE\n");
+            " --unit LABEL [--unit LABEL]... [--include LABELDIR]... [--unit-flags LABEL] --output NEW_FILE\n");
 }
 
 #ifdef __APPLE__

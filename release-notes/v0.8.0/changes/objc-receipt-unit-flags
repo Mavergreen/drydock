@@ -1,0 +1,1 @@
+drydock-objc receipt takes each unit's compile flags (ARC, a prefix header, include directories) from a file the build writes, and a coalesced weak definition attests.

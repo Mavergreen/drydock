@@ -98,4 +98,7 @@ fi
 grep -F 'own-absent' "$ROOT/cli/drydock-objc.c" >/dev/null && grep -F 'bridge-class-not-own' "$ROOT/README.md" >/dev/null &&
   grep -F 'unused_super_fallbacks' "$ROOT/README.md" >/dev/null || fail 'header_documents_own_absent: own-absent, bridge-class-not-own or unused_super_fallbacks is undocumented'
 echo 'PASS: header_documents_own_absent'
-echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override, default_id, header_documents_own_absent and macos_only_honest pass'
+grep -F -- '[--unit-flags LABEL]' "$ROOT/cli/drydock-objc.c" >/dev/null && grep -F 'objc-source-receipt 2' "$ROOT/README.md" >/dev/null ||
+  fail 'header_documents_unit_flags: the usage lacks [--unit-flags LABEL] or the README lacks objc-source-receipt 2'
+echo 'PASS: header_documents_unit_flags'
+echo 'objc-cli: usage, references_from_symlink, no_shipped_references, analyzer_id_override, default_id, header_documents_own_absent, header_documents_unit_flags and macos_only_honest pass'
