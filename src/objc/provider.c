@@ -1769,7 +1769,7 @@ int objc_verify_providers(ObjcAnalysis *a) {
     size_t i, j, k;
     int rc = OBJC_OK;
     if (a->n_providers && (rc = objc_image_open(a, a->artifact_path, &im))) return rc;
-    for (i = 0; i < a->n_providers && !rc; i++) rc = verify_one(a, &a->providers[i], im);
+    for (i = 0; i < a->n_providers && !rc; i++) if ((rc = verify_one(a, &a->providers[i], im))) a->providers[i].verify_failed = 1;
     objc_image_close(im);
     for (i = 0; i < a->n_evidence; i++) {   /* after a refusal, only the deferred selector producers: the reader's own */
         const ObjcEvidence *e = &a->evidence[i];

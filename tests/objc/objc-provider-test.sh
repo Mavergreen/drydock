@@ -1314,6 +1314,10 @@ finding_is isFileURL floor-supported '"source"' 'a send at line 0 in the body'
 
 body mutated-stale "$T/pfx-mut" "$T/pfx-body.receipt"
 exit_is 4 'the receipt of the unchanged source'; error_is source-receipt-stale 'the receipt of the unchanged source'
+body_prefix "$T/pfx-failed" "$T/body" -g -DFIXTURE_REGISTERED_CLASS='"NSFileManager"'
+body failed-provider "$T/pfx-failed" "$T/pfx-failed.receipt"
+exit_is 4 'a provider that failed its check, with a receipt'; error_is provider-registration-mismatch 'a provider that failed its check, with a receipt'
+! grep -F no-line-table "$T/report" >/dev/null || fail 'a provider that failed its check is also reported as having no line table'
 RECEIPT=0 body_prefix "$T/pfx-nog" "$T/body"
 body no-lines "$T/pfx-nog" "$T/pfx-body.receipt"
 exit_is 4 'an archive without line tables'; error_is no-line-table 'an archive without line tables'

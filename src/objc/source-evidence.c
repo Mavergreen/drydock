@@ -1146,6 +1146,7 @@ int objc_apply_source_receipt(ObjcAnalysis *a) {
             for (k = 0; k < a->providers[j].n_ranges; k++)
                 if (e->address >= a->providers[j].ranges[2 * k] && e->address < a->providers[j].ranges[2 * k + 1]) { p = &a->providers[j]; break; }
         if (!p) continue;
+        if (p->verify_failed) continue;
         if (!p->n_lines) { status = objc_fail(a, "no-line-table", e->slice, e->address, "%s: the linked archive members carry no line table to map this send to its source", p->provider_id); continue; }
         if (!(ln = objc_line_at(p->lines, p->n_lines, e->address))) {
             status = objc_fail(a, "unmapped-source-send", e->slice, e->address, "%s: the line table has no row for this send", p->provider_id);

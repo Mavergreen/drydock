@@ -609,6 +609,7 @@ typedef struct ObjcProvider {
     uint64_t *sel_sites; size_t n_sel_sites;   /* every sel_registerName site the executor reached, literal or not */
     uint64_t *mutator_sites; size_t n_mutator_sites;   /* a verified group's: the executor's mutator call sites */
     ObjcLine *lines; size_t n_lines;     /* line rows of the linked members, by final address (with a receipt) */
+    int verify_failed;                   /* its verification returned nonzero: its own error stands, so no line table is owed */
 } ObjcProvider;
 
 int objc_add_provider(ObjcAnalysis *a, ObjcProvider **out);

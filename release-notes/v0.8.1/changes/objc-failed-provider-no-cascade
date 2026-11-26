@@ -1,0 +1,1 @@
+drydock-objc no longer adds a no-line-table error for each send in a provider that already failed its check; the provider's own error stands alone.
