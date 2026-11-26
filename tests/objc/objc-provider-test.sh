@@ -360,17 +360,19 @@ TAB_GROUP='{ "provider_id" : "fixture.nswindow.tabbing.v1", "class" : "NSWindow"
         { "kind" : "+", "selector" : "setAllowsAutomaticWindowTabbing:", "encoding" : "v20@0:8c16", "implementation_symbol" : "FixtureTab_setAllowsAutomaticWindowTabbing" } ] }'
 TAB_SELS='tabbingIdentifier setTabbingIdentifier: tabbingMode setTabbingMode: allowsAutomaticWindowTabbing setAllowsAutomaticWindowTabbing:'
 # spec: src/objc/provider.c header, "Groups" -- group_prefix NAME [CC-FLAGS...]: UNIT (default table-provider.m; a list,
-#       each SOURCE.m or SOURCE.m:MEMBER, MEMBER.o its object) built as Recaulk builds its tabbing units (ARC, -Os),
-#       archived at $T/g-NAME and declared in schema 2 with GROUP (default TAB_GROUP) its one group.
+#       each SOURCE.m or SOURCE.m:MEMBER, MEMBER.o its object, in UNIT_ROOT, default FX) built as Recaulk builds its tabbing
+#       units (ARC, -Os), archived at $T/g-NAME and declared in schema 2 with GROUP (default TAB_GROUP) its one group, its
+#       prepared source the units and UNIT_INPUTS (more labels in UNIT_ROOT).
 group_prefix() {
   P="$T/g-$1"; shift
   rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"; : >"$P.inputs"
   for u in ${UNIT:-table-provider.m}; do
     us=${u%%:*} uo=${u#*:}; [ "$uo" != "$u" ] || uo=${us%.m}
-    fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/$us" -o "$P.objects/$uo.o" ||
+    fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "${UNIT_ROOT:-$FX}/$us" -o "$P.objects/$uo.o" ||
       fail "compiling $us $*"
-    grep -F "  $us" "$P.inputs" >/dev/null || printf '%s  %s\n' "$(sha "$FX/$us")" "$us" >>"$P.inputs"
+    grep -F "  $us" "$P.inputs" >/dev/null || printf '%s  %s\n' "$(sha "${UNIT_ROOT:-$FX}/$us")" "$us" >>"$P.inputs"
   done
+  for f in ${UNIT_INPUTS:-}; do printf '%s  %s\n' "$(sha "$UNIT_ROOT/$f")" "$f" >>"$P.inputs"; done
   static_lib "$P/lib/libfixture-objc.a" "$P.objects"/*.o
   declare_prefix "$P" "$P.inputs"
   awk -v g="$(printf '%s' "${GROUP:-$TAB_GROUP}" | tr '\n' ' ')" '
@@ -1390,6 +1392,26 @@ bad_unit 'a schema-2 unit row with an empty flags field' 's/^unit	provider-regis
 bad_unit 'a unit row - among flags' '/^unit	provider-body.m	/s/$/ -/'
 bad_unit 'a unit row for no input' 's/^unit	provider-register.c	/unit	other.c	/'
 bad_unit 'a schema-1 header over unit rows with flags' '1s/2$/1/'
+# spec: src/objc/source-evidence.c header -- the own-absent bridge whose super sends each name their IMP's own selector as
+#       an @selector literal (tests/objc/fixtures/bridge-provider.m, SUPER_LITERAL), analyzed with its source receipt:
+#       each super send maps to the receipt's super row and is excused by its super_fallbacks record.
+D="$T/bridge-lit"; mkdir -p "$D"
+{ printf '#define SUPER_LITERAL 1\n'; cat "$FX/bridge-provider.m"; } >"$D/bridge-provider.m"
+printf 'bridge-provider.m\t-fobjc-arc\t-fno-modules\t-fno-autolink\t-Wall\n' >"$D/unit.flags"
+GROUP=$OWN_GROUP UNIT=bridge-provider.m UNIT_ROOT=$D UNIT_INPUTS=unit.flags; group_prefix b-lit -g; unset GROUP UNIT UNIT_ROOT UNIT_INPUTS
+P="$T/g-b-lit"
+"$DRYDOCK_OBJC" receipt --clang-prefix "$RECEIPT_CLANG" --sdk "$SDK" --inputs "$P.inputs" --root "$D" \
+  --unit bridge-provider.m --unit-flags unit.flags --output "$P.receipt" 2>"$T/err" || fail 'source inventory of the bridge'
+[ "$(awk -F'\t' '$1 == "send" && $5 == "super" { print $7 }' "$P.receipt" | sort | tr '\n' ' ')" = \
+  'accessibilityAttributeNames accessibilityAttributeValue: accessibilityIsIgnored ' ] || fail "the bridge's receipt lacks its three super rows"
+group b-lit b-lit -DBRIDGE
+analyze "$T/root/bin/g-b-lit" --build-evidence "$T/ev/g-b-lit.json" --provider-prefix "$P" --source-receipt "$P.receipt"
+exit_is 0 'bridge with its source receipt'
+! grep -F unmapped-source-send "$T/report" >/dev/null || fail 'bridge with its source receipt: a send is unmapped'
+says '"unused_super_fallbacks": []' 'bridge with its source receipt'
+awk -F'\t' '!($1 == "send" && $5 == "super")' "$P.receipt" >"$T/nosuper.receipt"
+analyze "$T/root/bin/g-b-lit" --build-evidence "$T/ev/g-b-lit.json" --provider-prefix "$P" --source-receipt "$T/nosuper.receipt"
+exit_is 4 'bridge with a receipt without its super rows'; error_is unmapped-source-send 'bridge with a receipt without its super rows'
 
 if [ -n "${MAVERGREEN_OBJC_CODEX_ARTIFACT:-}" ]; then
   mkdir -p "$T/root/codex"

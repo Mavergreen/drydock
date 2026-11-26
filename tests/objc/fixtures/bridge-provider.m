@@ -7,7 +7,8 @@
 // (class_replaceMethod for one member), UNGUARDED (the getter sent without its respondsToSelector:), IMP_ELSEWHERE
 // (FixtureBridgeLeak returns a member IMP's address, FixtureBridgeLeakMasked and FixtureBridgeLeakSlot it, from a lea and
 // from a pointer in data, xor an argument), IMP_LEA (FixtureBridgeLeak alone), NO_FALLBACK (no super send in _attributeValue), SUPER_OTHER
-// (_attributeValue super-sends accessibilityAttributeNames, not its own selector) and
+// (_attributeValue super-sends accessibilityAttributeNames, not its own selector), SUPER_LITERAL (every super send
+// names its own selector as an @selector literal, not _cmd) and
 // EXTRA_MEMBER (a fourth add, accessibilityRole), UNBOUNDED_SCAN (the slot search not bounded by the table's size) and
 // TABLE_DEPENDENT_IMP (the first add's IMP chosen by whether the table's slot 1 is taken), TABLE_LITERAL (the table, in
 // __DATA,__data, its bytes registered as a selector name), SELF_CALL (_attributeNames calls itself with another object),
@@ -61,7 +62,16 @@ id FixtureBridge_attributeNames(id self, SEL _cmd) {
   if (self != (id)[NSProcessInfo processInfo]) return [FixtureBridge_attributeNames([NSProcessInfo processInfo], _cmd) description];
 #endif
   if (RESPONDS(self)) return [(id<FixtureBridgeRole>)self accessibilityRole];
+#ifdef SUPER_LITERAL
+  {
+    struct objc_super sup;
+    sup.receiver = self;
+    sup.super_class = FixtureBridge_superOf(self);
+    return sup.super_class ? ((id (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, @selector(accessibilityAttributeNames)) : nil;
+  }
+#else
   return FixtureBridge_super(self, _cmd);
+#endif
 }
 
 id FixtureBridge_attributeValue(id self, SEL _cmd, id attribute) {
@@ -82,6 +92,8 @@ id FixtureBridge_attributeValue(id self, SEL _cmd, id attribute) {
       NSRect r = sup.super_class ? ((NSRect (*)(struct objc_super *, SEL, id))objc_msgSendSuper_stret)(&sup, _cmd, attribute) : NSZeroRect;
       return r.size.width > 0 ? attribute : nil;
     }
+#elif defined(SUPER_LITERAL)
+    return sup.super_class ? ((id (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, @selector(accessibilityAttributeValue:), attribute) : nil;
 #else
     return sup.super_class ? ((id (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, _cmd, attribute) : nil;
 #endif
@@ -91,7 +103,16 @@ id FixtureBridge_attributeValue(id self, SEL _cmd, id attribute) {
 
 BOOL FixtureBridge_isIgnored(id self, SEL _cmd) {
   if (RESPONDS(self)) return [(id<FixtureBridgeRole>)self accessibilityRole] == nil;
+#ifdef SUPER_LITERAL
+  {
+    struct objc_super sup;
+    sup.receiver = self;
+    sup.super_class = FixtureBridge_superOf(self);
+    return (sup.super_class ? ((id (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, @selector(accessibilityIsIgnored)) : nil) != nil;
+  }
+#else
   return FixtureBridge_super(self, _cmd) != nil;
+#endif
 }
 
 #ifdef EXTRA_MEMBER
