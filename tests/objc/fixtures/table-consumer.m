@@ -111,6 +111,13 @@ __attribute__((noinline)) static void bridgeCell(void) { FixtureBridge(objc_getC
 #endif
 #endif
 
+#ifdef WEAK_APP
+@interface FixtureWeakApp : NSObject <NSObject>
+@end
+@implementation FixtureWeakApp
+@end
+#endif
+
 #ifdef CALL_REGISTER
 typedef struct { const char *selector; const char *types; BOOL classMethod; IMP imp; } ConsumerTabMethod;
 extern int FixtureTabRegisterTable(Class cls, const ConsumerTabMethod *table, size_t count, const char **detail);
@@ -176,6 +183,8 @@ int main(int argc, char **argv) {
         return [c accessibilityLabel] != nil;
 #elif defined(BRIDGE)
         return w != nil;
+#elif defined(WEAK)
+        return [w tabbingIdentifier] != nil && [w tabbingMode] == 0;
 #elif defined(KIND_CROSS)
         return (int)[NSWindow tabbingMode] + [w allowsAutomaticWindowTabbing];
 #else

@@ -18,7 +18,10 @@
  *      atom must land at that atom's evidenced address plus the same offset (and that atom is
  *      then verified too); a reference to a C string, literal, selector or class reference or
  *      constant CFString must reach the same content. Any other relocation type, a scattered
- *      relocation, an addend on an import or a different section name is cannot-measure.
+ *      relocation, an addend on an import or a different section name is cannot-measure. A reference
+ *      into a weak definition whose copy the evidence does not place (the linker keeps one of several
+ *      members' copies) must land on the one other member's copy it places, verified as any atom;
+ *      none or several placed is a mapping mismatch.
  *   3. Activation: the root member's own constructor (its __mod_init_func entry) is verified the
  *      same way and its final address is a pointer in the final image's initializer table. The
  *      constructor's closure -- not the root's alone -- must call class_addMethod,
@@ -303,12 +306,35 @@ static int final_section_is(const V *v, uint64_t va, uint8_t type, const char *n
 
 static int compare_region(V *v, size_t mi, const OSect *x, uint64_t lo, uint64_t hi, uint64_t fin, int depth);
 
+/* The one member whose copy of weak `name` the evidence places, the linker having discarded the others. */
+static int kept_copy(V *v, const char *name, size_t *mi, uint32_t *si, const ObjcProviderAtom **e, uint64_t at) {
+    size_t i, n = 0, from = *mi;
+    uint32_t k;
+    for (i = 0; i < v->ar->n; i++)
+        for (k = 0; k < v->ar->m[i].nsyms; k++) {
+            const ObjcProviderAtom *x;
+            if (!objc_obj_defined(&v->ar->m[i].nl[k]) || !(v->ar->m[i].nl[k].n_type & N_EXT) ||
+                strcmp(objc_obj_sym_name(&v->ar->m[i], k), name))
+                continue;
+            if ((x = evidence_atom(v->p, v->ar->m[i].name, name)) && !n++) { *mi = i; *si = k; *e = x; }
+            break;
+        }
+    if (n != 1)
+        return vfail(v, "provider-mapping-mismatch", at, "%s(%s) is a weak definition the evidence places from %zu members",
+                     v->ar->m[from].name, name, n);
+    return 0;
+}
+
 /* A provider atom referenced at final address T (offset into it `off`): its evidenced address must
  * match, and it joins the work list. */
 static int internal_target(V *v, size_t mi, uint32_t si, uint64_t off, uint64_t T, uint64_t at) {
     const OMember *m = &v->ar->m[mi];
     const char *name = objc_obj_sym_name(m, si);
     const ObjcProviderAtom *e = evidence_atom(v->p, m->name, name);
+    if (!e && (m->nl[si].n_desc & N_WEAK_DEF)) {
+        if (kept_copy(v, name, &mi, &si, &e, at)) return -1;
+        m = &v->ar->m[mi];
+    }
     if (!e) return vfail(v, "provider-mapping-mismatch", at, "the evidence places no atom %s(%s)", m->name, name);
     if (T != e->address + off)
         return vfail(v, "provider-mapping-mismatch", at, "reference to %s(%s)+%llu reaches 0x%llx, not 0x%llx", m->name, name,

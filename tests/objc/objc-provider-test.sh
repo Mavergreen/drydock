@@ -359,16 +359,19 @@ TAB_GROUP='{ "provider_id" : "fixture.nswindow.tabbing.v1", "class" : "NSWindow"
         { "kind" : "+", "selector" : "allowsAutomaticWindowTabbing", "encoding" : "c16@0:8", "implementation_symbol" : "FixtureTab_allowsAutomaticWindowTabbing" },
         { "kind" : "+", "selector" : "setAllowsAutomaticWindowTabbing:", "encoding" : "v20@0:8c16", "implementation_symbol" : "FixtureTab_setAllowsAutomaticWindowTabbing" } ] }'
 TAB_SELS='tabbingIdentifier setTabbingIdentifier: tabbingMode setTabbingMode: allowsAutomaticWindowTabbing setAllowsAutomaticWindowTabbing:'
-# spec: src/objc/provider.c header, "Groups" -- group_prefix NAME [CC-FLAGS...]: UNIT (default table-provider.m) built as
-#       Recaulk builds its tabbing units (ARC, -Os), archived at $T/g-NAME and declared in schema 2 with GROUP (default
-#       TAB_GROUP) its one group.
+# spec: src/objc/provider.c header, "Groups" -- group_prefix NAME [CC-FLAGS...]: UNIT (default table-provider.m; a list,
+#       each SOURCE.m or SOURCE.m:MEMBER, MEMBER.o its object) built as Recaulk builds its tabbing units (ARC, -Os),
+#       archived at $T/g-NAME and declared in schema 2 with GROUP (default TAB_GROUP) its one group.
 group_prefix() {
-  P="$T/g-$1" u=${UNIT:-table-provider.m}; shift
-  rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"
-  fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/$u" -o "$P.objects/${u%.m}.o" ||
-    fail "compiling $u $*"
-  static_lib "$P/lib/libfixture-objc.a" "$P.objects/${u%.m}.o"
-  printf '%s  %s\n' "$(sha "$FX/$u")" "$u" >"$P.inputs"
+  P="$T/g-$1"; shift
+  rm -rf "$P" "$P.objects"; mkdir -p "$P/lib" "$P/share/recaulk" "$P.objects"; : >"$P.inputs"
+  for u in ${UNIT:-table-provider.m}; do
+    us=${u%%:*} uo=${u#*:}; [ "$uo" != "$u" ] || uo=${us%.m}
+    fxcc -Os -fobjc-arc -fno-modules -fno-autolink -fPIC -Wall "$@" -c "$FX/$us" -o "$P.objects/$uo.o" ||
+      fail "compiling $us $*"
+    grep -F "  $us" "$P.inputs" >/dev/null || printf '%s  %s\n' "$(sha "$FX/$us")" "$us" >>"$P.inputs"
+  done
+  static_lib "$P/lib/libfixture-objc.a" "$P.objects"/*.o
   declare_prefix "$P" "$P.inputs"
   awk -v g="$(printf '%s' "${GROUP:-$TAB_GROUP}" | tr '\n' ' ')" '
     /"schema" : 1,/ { sub(/1,/, "2,") }
@@ -451,6 +454,39 @@ group_refused 'group: a member present on 10.9' provider-present-on-floor '-[NSW
 GROUP=$(printf '%s' "$TAB_GROUP" | sed 's/"q16@0:8"/"i16@0:8"/')
 group_prefix abi; unset GROUP; group abi abi
 group_refused 'group: a member declared with another encoding than the newer SDK' provider-abi-mismatch 'declared -NSWindow tabbingMode as i16@0:8'
+# spec: src/objc/provider.c header, 2 -- a weak definition several members carry (each class adopting <NSObject> emits
+#       __OBJC_PROTOCOL_$_NSObject) is linked from one copy: a reference to a copy the evidence does not place is
+#       attested from the one other member's copy it places, and refused when it places none (the app's copy kept) or
+#       two. tests/objc/fixtures/weak-a.m and weak-b.m are the provider; weak-c, weak-b.m again, is never linked.
+WEAK_GROUP='{ "provider_id" : "fixture.nswindow.weak.v1", "class" : "NSWindow", "guard" : "absent-only",
+      "activation_root" : "__fixture_objc_activate_weak", "required_frameworks" : [ "AppKit" ],
+      "framework_policy" : "strong-linked-before-root", "methods" : [
+        { "kind" : "-", "selector" : "tabbingIdentifier", "encoding" : "@16@0:8", "implementation_symbol" : "FixtureWeak_tabbingIdentifier" },
+        { "kind" : "-", "selector" : "tabbingMode", "encoding" : "q16@0:8", "implementation_symbol" : "FixtureWeak_tabbingMode" } ] }'
+WEAK_PROTO='"symbol": "__OBJC_PROTOCOL_$_NSObject"'
+weak_sends() {  # weak_sends VERDICT WHY: the consumer's sends of both members are VERDICT
+  for s in tabbingIdentifier tabbingMode; do got=$(tab_verdict "$s"); [ "$got" = "$1 " ] || fail "$2: $s is '${got:-no finding}', want $1 (exit $rc)"; done
+}
+weak_refused() {  # weak_refused WHY TEXT: cannot-measure, the mapping refused saying TEXT, and neither member provided
+  exit_is 4 "$1"; error_is provider-mapping-mismatch "$1"; says "$2" "$1"; weak_sends unsupported "$1"
+}
+GROUP=$WEAK_GROUP UNIT='weak-a.m weak-b.m weak-b.m:weak-c'; group_prefix weak; unset GROUP UNIT
+group weak weak -DWEAK
+exit_is 0 'weak: the kept copy attests'; weak_sends provided 'weak: the kept copy attests'
+grep '"status": "active"' "$T/report" >/dev/null || fail 'weak: the kept copy attests: the group is not reported active'
+[ "$(grep -F "$WEAK_PROTO" "$T/ev/g-weak.json" | sed -n 's/.*"member": "\([^"]*\)".*/\1/p' | sort -u)" = weak-a.o ] ||
+  fail 'weak: the evidence does not place __OBJC_PROTOCOL_$_NSObject from weak-a.o alone'
+sed "/\"member\": \"weak-a.o\", $WEAK_PROTO/{h;s/weak-a\.o/weak-c.o/;s/,*\$/,/;p;g;}" "$T/ev/g-weak.json" >"$T/ev/g-weak-twice.json"
+analyze "$T/root/bin/g-weak" --build-evidence "$T/ev/g-weak-twice.json" --provider-prefix "$T/g-weak"
+weak_refused 'weak: placed twice' \
+  'weak-b.o(__OBJC_PROTOCOL_$_NSObject) is a weak definition the evidence places from 2 members'
+sed 's/"symbol": "__OBJC_CLASS_RO_\$_FixtureWeakB"/"symbol": "__OBJC_CLASS_RO_$_FixtureWeakX"/' "$T/ev/g-weak.json" >"$T/ev/g-weak-lacks.json"
+cmp -s "$T/ev/g-weak.json" "$T/ev/g-weak-lacks.json" && fail 'weak: the evidence does not place __OBJC_CLASS_RO_$_FixtureWeakB'
+analyze "$T/root/bin/g-weak" --build-evidence "$T/ev/g-weak-lacks.json" --provider-prefix "$T/g-weak"
+weak_refused 'weak: a non-weak symbol the evidence lacks' \
+  'the evidence places no atom weak-b.o(__OBJC_CLASS_RO_$_FixtureWeakB)'
+group weak-app weak -DWEAK -DWEAK_APP
+weak_refused 'weak: kept from the app' 'is a weak definition the evidence places from 0 members'
 # spec: src/objc/provider.c header, "Groups" -- a member the newer SDK declares as a required method of a protocol its class
 #       adopts there (itself or by a superclass, directly or through an inherited protocol) is declared with that
 #       protocol's encoding: NSView and NSCell adopt NSAccessibility, whose 10.10 methods Recaulk back-fills. A protocol
