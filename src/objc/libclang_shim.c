@@ -35,6 +35,7 @@
     X(const char *, clang_getCString, (CXString s), (s)) \
     X(CXType, clang_getCanonicalType, (CXType t), (t)) \
     X(CXString, clang_getClangVersion, (void), ()) \
+    X(CXCursor, clang_getCursor, (CXTranslationUnit tu, CXSourceLocation l), (tu, l)) \
     X(enum CXBinaryOperatorKind, clang_getCursorBinaryOperatorKind, (CXCursor c), (c)) \
     X(CXSourceRange, clang_getCursorExtent, (CXCursor c), (c)) \
     X(enum CXCursorKind, clang_getCursorKind, (CXCursor c), (c)) \
@@ -55,6 +56,7 @@
     X(CXType, clang_getPointeeType, (CXType t), (t)) \
     X(CXSourceLocation, clang_getRangeEnd, (CXSourceRange r), (r)) \
     X(CXSourceLocation, clang_getRangeStart, (CXSourceRange r), (r)) \
+    X(CXSourceLocation, clang_getTokenLocation, (CXTranslationUnit tu, CXToken t), (tu, t)) \
     X(CXString, clang_getTokenSpelling, (CXTranslationUnit tu, CXToken t), (tu, t)) \
     X(CXCursor, clang_getTranslationUnitCursor, (CXTranslationUnit tu), (tu)) \
     X(CXCursor, clang_getTypeDeclaration, (CXType t), (t)) \

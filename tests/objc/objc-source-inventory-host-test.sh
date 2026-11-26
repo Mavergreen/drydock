@@ -112,7 +112,8 @@ else
 fi
 
 # spec: tools/objc-source-inventory.c header (FORM) -- an explicit objc_msgSend or objc_msgSendSuper call of an @selector literal
-#       is a send row; a selector from a variable or sel_registerName, or a function that is not the runtime's, is none.
+#       is a send row; one that names a macro, a selector from a variable or sel_registerName, or a function that is not
+#       the system header's (a redeclaration of the runtime's included), is none.
 XS="$T/xs"
 mkdir -p "$XS"
 cp "$FX/explicit-sends.m" "$XS/"
@@ -123,7 +124,8 @@ xs_row() { awk -F'\t' -v l="$1" -v f="$2" -v k="$3" -v s="$4" -v c="$5" -v t="$6
   index($3, l "-") == 1 && $5 == f && $6 == k && $7 == s && $8 == c && $9 == t && $10 == "-" { n++ } END { exit n != 1 }' "$T/xs.receipt"; }
 if [ "$rc" = 0 ] && [ "$(grep -c '^send	' "$T/xs.receipt")" = 4 ] &&
    xs_row 12:5 super - description - - && xs_row 13:5 super - isEqual: - - && xs_row 14:5 message - copy NSString 'NSString *' &&
-   xs_row 17:5 message - performSelector:withObject: NSString 'NSString *'; then
+   xs_row 17:5 message - performSelector:withObject: NSString 'NSString *' &&
+   ! awk -F'\t' '$1 == "send" && ($7 == "mutableCopy" || $3 ~ /^24:/)' "$T/xs.receipt" | grep . >/dev/null; then
   pass 'explicit sends: objc_msgSendSuper of an @selector literal is a super row, objc_msgSend of one a message row, and nothing else is'
 else
   fail "explicit sends: exit $rc"; [ ! -f "$T/xs.receipt" ] || grep '^send' "$T/xs.receipt"

@@ -34,7 +34,7 @@
  *   send     LABEL SPAN ANCHORS FORM KIND SELECTOR RECEIVER TYPE OWNER   (sorted, unique)
  * One send row per message the compiler emits for source in a staged input, and per explicit call of
  * the SDK's objc_msgSend or objc_msgSendSuper (or a _stret, _fpret, _fp2ret or Super2 variant) whose
- * selector argument is an @selector literal:
+ * selector argument is an @selector literal naming no macro:
  *   SPAN      SL:SC-EL:EC, the expression's extent (for-in: the whole statement)
  *   ANCHORS   L:C,... the starts of the statements and full expressions enclosing it, innermost
  *             last; a compiler that attributes code to a statement's first line lands on one
@@ -373,7 +373,7 @@ static const char *const RUNTIME_SENDS[] = {"objc_msgSend", "objc_msgSend_stret"
                                             "objc_msgSendSuper2_stret"};
 
 /* The selector an @selector(...) expression spells, from its tokens (libclang does not spell it), or NULL
- * when its extent is not those tokens, as in a macro's expansion. */
+ * when its extent is not those tokens or one of them is a macro's, as the selector is then the expansion's. */
 static char *selector_literal(CXTranslationUnit tu, CXCursor c) {
     CXToken *toks = NULL;
     unsigned nt = 0, i;
@@ -390,6 +390,7 @@ static char *selector_literal(CXTranslationUnit tu, CXCursor c) {
         else if (i == 1) ok = !strcmp(ts, "selector");
         else if (i == 2) ok = !strcmp(ts, "(");
         else if (i == nt - 1) ok = !strcmp(ts, ")");
+        else if (clang_getCursorKind(clang_getCursor(tu, clang_getTokenLocation(tu, toks[i]))) == CXCursor_MacroExpansion) ok = 0;
         else {
             char *g = realloc(sel, len + strlen(ts) + 1);
             if (!g) cannot("out of memory");
@@ -817,7 +818,7 @@ int main(int argc, char **argv) {
             for (j = 0; j < nargs; j++) uargs[j] = j < nfixed && flags[i].arc && !strcmp(args[j], "-fno-objc-arc") ? flags[i].arc : args[j];
             for (j = 0; j < flags[i].n; j++) uargs[nargs + j] = flags[i].argv[j];
         }
-        e = clang_parseTranslationUnit2(index, path, uargs, (int)nuargs, NULL, 0, CXTranslationUnit_None, &tu);
+        e = clang_parseTranslationUnit2(index, path, uargs, (int)nuargs, NULL, 0, CXTranslationUnit_DetailedPreprocessingRecord, &tu);
         if (uargs != args) free(uargs);
         if (e != CXError_Success || !tu) cannot("libclang could not parse %s (%d)", units[i], e);
         for (d = 0; d < clang_getNumDiagnostics(tu); d++) {
