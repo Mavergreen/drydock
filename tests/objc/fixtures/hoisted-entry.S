@@ -32,7 +32,16 @@
  *           counts down rcx) before a call through rcx
  *   FORM 16 as FORM 0, with the entry point also loaded into r13 and called through, then
  *           xchg rax, r13 (which reads r13 into rax) before a second call through r13
- * FORMS 2..9, 11, 14 and 16 are cannot-measure: the entry point escapes, or a call through it may not be one.
+ *   FORM 17 as FORM 0, with the entry point also loaded into rax, then pop %rax through 8F, then a
+ *           call through rax
+ *   FORM 18 likewise in rax, with movabs moffs, %rax
+ *   FORM 19 likewise in rax, with movabs moffs, %al
+ *   FORM 20 likewise in rsi, with movsq
+ *   FORM 21 likewise in rdi, with movsq
+ *   FORM 22 likewise in rdi, with stosq
+ *   FORM 23 likewise in rbp, with leave
+ *   FORM 24 likewise in rax, with xchg %eax, %ecx
+ * FORMS 2..9, 11, 14, 16 and 18..24 are cannot-measure: the entry point escapes, or a call through it may not be one.
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -56,6 +65,16 @@ L_classref_NSObject:
 	.section __DATA,__objc_imageinfo,regular,no_dead_strip
 	.long 0
 	.long 0
+
+#if FORM == 17 || FORM == 18 || FORM == 19 || FORM == 24
+#define WREG %rax
+#elif FORM == 20
+#define WREG %rsi
+#elif FORM == 21 || FORM == 22
+#define WREG %rdi
+#elif FORM == 23
+#define WREG %rbp
+#endif
 
 	.text
 	.globl _main
@@ -117,11 +136,14 @@ _main:
 	.quad 0                           /* movabsb 0, %al */
 	.byte 0xa2
 	.quad 0                           /* movabsb %al, 0 */
+	.byte 0xa4                        /* movsb */
 	.byte 0x48, 0xa5                  /* movsq */
+	.byte 0xaa                        /* stosb */
 	.byte 0x48, 0xab                  /* stosq */
 	.byte 0xf3, 0x48, 0xab            /* rep stosq */
 	.byte 0xe3, 0x00                  /* jrcxz to the next instruction */
 	.byte 0x91                        /* xchgl %eax, %ecx */
+	.byte 0x97                        /* xchgl %eax, %edi */
 #elif FORM == 14
 	movq _objc_msgSend@GOTPCREL(%rip), %rcx
 	movq L_classref_NSObject(%rip), %rdi
@@ -137,6 +159,28 @@ _main:
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_hash(%rip), %rsi
 	callq *%r13
+#elif FORM >= 17
+	movq L_classref_NSObject(%rip), %rdi
+	movq L_selref_hash(%rip), %rsi
+	movq _objc_msgSend@GOTPCREL(%rip), WREG
+#if FORM == 17
+	.byte 0x8f, 0xc0                  /* popq %rax */
+#elif FORM == 18
+	.byte 0x48, 0xa1
+	.quad 0                           /* movabsq 0, %rax */
+#elif FORM == 19
+	.byte 0xa0
+	.quad 0                           /* movabsb 0, %al */
+#elif FORM == 20 || FORM == 21
+	.byte 0x48, 0xa5                  /* movsq */
+#elif FORM == 22
+	.byte 0x48, 0xab                  /* stosq */
+#elif FORM == 23
+	.byte 0xc9                        /* leave */
+#elif FORM == 24
+	.byte 0x91                        /* xchgl %eax, %ecx */
+#endif
+	callq *WREG
 #endif
 	movq L_classref_NSObject(%rip), %rdi
 #if FORM == 2 || FORM == 9
