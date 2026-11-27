@@ -26,7 +26,13 @@
  *   FORM 12 as FORM 0, with pushes of immediates and of the flags before a call through the register
  *           (clang -Os ends a long varargs send with `pushq $0`, Recaulk's bridge): they write no
  *           register, five sends
- * FORMS 2..9 and 11 are cannot-measure: the entry point escapes, or a call through it may not be one.
+ *   FORM 13 as FORM 0, with pop through 8F, moves between rax and an absolute address, movs, stos and
+ *           rep stos, jrcxz, xchg eax, ecx and leave: none writes r12, five sends
+ *   FORM 14 as FORM 0, with the entry point also loaded into rcx, then rep stos (which reads and
+ *           counts down rcx) before a call through rcx
+ *   FORM 16 as FORM 0, with the entry point also loaded into r13 and called through, then
+ *           xchg rax, r13 (which reads r13 into rax) before a second call through r13
+ * FORMS 2..9, 11, 14 and 16 are cannot-measure: the entry point escapes, or a call through it may not be one.
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -100,6 +106,37 @@ _main:
 	pushfq
 	popfq
 	addq $16, %rsp
+#elif FORM == 13
+	pushq %rax
+	.byte 0x8f, 0xc0                  /* popq %rax */
+	.byte 0x48, 0xa1
+	.quad 0                           /* movabsq 0, %rax */
+	.byte 0x48, 0xa3
+	.quad 0                           /* movabsq %rax, 0 */
+	.byte 0xa0
+	.quad 0                           /* movabsb 0, %al */
+	.byte 0xa2
+	.quad 0                           /* movabsb %al, 0 */
+	.byte 0x48, 0xa5                  /* movsq */
+	.byte 0x48, 0xab                  /* stosq */
+	.byte 0xf3, 0x48, 0xab            /* rep stosq */
+	.byte 0xe3, 0x00                  /* jrcxz to the next instruction */
+	.byte 0x91                        /* xchgl %eax, %ecx */
+#elif FORM == 14
+	movq _objc_msgSend@GOTPCREL(%rip), %rcx
+	movq L_classref_NSObject(%rip), %rdi
+	movq L_selref_hash(%rip), %rsi
+	.byte 0xf3, 0x48, 0xab            /* rep stosq */
+	callq *%rcx
+#elif FORM == 16
+	movq _objc_msgSend@GOTPCREL(%rip), %r13
+	movq L_classref_NSObject(%rip), %rdi
+	movq L_selref_hash(%rip), %rsi
+	callq *%r13
+	.byte 0x49, 0x95                  /* xchgq %rax, %r13 */
+	movq L_classref_NSObject(%rip), %rdi
+	movq L_selref_hash(%rip), %rsi
+	callq *%r13
 #endif
 	movq L_classref_NSObject(%rip), %rdi
 #if FORM == 2 || FORM == 9
@@ -134,7 +171,11 @@ _main:
 	addq $16, %rsp
 	popq %rbx
 	popq %r12
+#if FORM == 13
+	.byte 0xc9                        /* leave */
+#else
 	popq %rbp
+#endif
 	jmpq *%rax
 /* A failed check clobbers r12 and never returns; the block after it is reached only from the loop. */
 3:

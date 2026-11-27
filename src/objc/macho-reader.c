@@ -963,7 +963,14 @@ static int may_write(const Ins *x0, int r) {
         case 0x98: return r == REG_RAX;
         case 0x99: return r == REG_RDX;
         case 0x68: case 0x6A: case 0x9C: case 0x9D: return 0;   /* push imm, pushf, popf */
+        case 0x8F: return (x->reg & 7) ? 1 : dst_rm;            /* pop r/m */
+        case 0xA0: case 0xA1: return r == REG_RAX;              /* mov rax, moffs */
+        case 0xA2: case 0xA3: case 0xE3: return 0;              /* mov moffs, rax; jrcxz */
+        case 0xA4: case 0xA5: return r == REG_RSI || r == REG_RDI || ((x->f3 || x->f2) && r == REG_RCX);
+        case 0xAA: case 0xAB: return r == REG_RDI || ((x->f3 || x->f2) && r == REG_RCX);
+        case 0xC9: return r == REG_RBP || r == REG_RSP;         /* leave */
         }
+        if (op >= 0x91 && op <= 0x97) return r == REG_RAX || r == opreg;   /* xchg rax, r */
         if (op >= 0x50 && op <= 0x57) return 0;
         if (op >= 0x58 && op <= 0x5F) return opreg == r;
         if (op >= 0xB0 && op <= 0xBF) return opreg == r;

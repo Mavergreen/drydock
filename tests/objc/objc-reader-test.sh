@@ -225,12 +225,14 @@ read_artifact "$T/loadweak"
 grep '^error	' "$T/out" >/dev/null && fail 'loadweak: refused'
 
 # spec: src/objc/macho-reader.c header -- A GOT-loaded entry point held in a register and only ever called through
-#       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), past pushes of immediates or the flags, copied to a register only jumped through, past a
+#       (modern -Os codegen: tests/objc/fixtures/hoisted-entry.S), past pushes of immediates or the flags and instructions
+#       that write other registers, copied to a register only jumped through, past a
 #       call that never returns, or spilled to a frame slot no escaped frame address reaches and reloaded only to be called
 #       through (clang -O0), is followed, each call its own send. A copy passed as an argument, a path where it holds
 #       something else, a slot whose address escapes, that another path overwrites or that is read some other way, or a
-#       store to a global or through another register is cannot-measure.
-for n in 0 1 10 12; do
+#       store to a global or through another register, or an instruction that reads it to write it (rep stos, xchg),
+#       is cannot-measure.
+for n in 0 1 10 12 13; do
   fxcc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"
   measured "hoisted entry point form $n"
@@ -239,9 +241,19 @@ for n in 0 1 10 12; do
   send _main classref:NSObject selref:hash
   [ "$(awk -F '\t' '$2 == "dispatch-call" {print $4}' "$T/out" | sort -u | wc -l | tr -d ' ')" = 5 ] || fail "hoisted entry point form $n: sends share a site"
 done
-for n in 2 3 4 5 6 7 8 9 11; do
+for n in 2 3 4 5 6 7 8 9 11 14 16; do
   fxcc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
+done
+# spec: src/objc/macho-reader.c may_write -- rep stos writes rcx and xchg rax, r13 writes r13: the call through each
+#       after it is no send (FORM 0's five, and FORM 16's call before the xchg).
+for form in 14:rcx:5 16:r13:6; do
+  n=${form%%:*}; reg=${form#*:}; want=${reg#*:}; reg=${reg%%:*}
+  read_artifact "$T/hoisted$n"
+  [ "$(count dispatch-call)" = "$want" ] || fail "hoisted entry point form $n: $(count dispatch-call) sends, want $want"
+  [ "$(grep -c '^error	' "$T/out")" = 1 ] || fail "hoisted entry point form $n: want exactly one refusal"
+  grep "^error	indirect-objc-entry	.*	objc entry point in $reg is read other than to call through it (a spill, a copy or an escape)\$" "$T/out" >/dev/null ||
+    fail "hoisted entry point form $n: the read of $reg is not named"
 done
 # spec: src/objc/macho-reader.c entry_escapes -- a store to a global names the address it is stored to.
 read_artifact "$T/hoisted7"
