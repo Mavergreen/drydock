@@ -40,24 +40,11 @@ project(Drydock VERSION ${MAVERICKS_VERSION_NUMERIC} LANGUAGES C)
 find_package(MavericksShipyard REQUIRED)
 if(APPLE)
   include(Mavericks)             # AppleClang gate + build conventions
-  include(MavericksMode)         # native-on-10.9 vs cross-on-modern
+  include(MavericksMode)         # mavericks on a 10.9.x host, modern elsewhere
   include(MavericksCompatGuard)  # assert every shipped binary is 10.9-safe
 
   mavericks_build_mode(MAVERICKS_MODE)
-  mavericks_require_expected_mode("${MAVERICKS_MODE}")
   message(STATUS "Drydock ${MAVERICKS_VERSION}: build mode ${MAVERICKS_MODE}")
-
-  # Cross builds compile against the PINNED SDK for their arch (10.9's for
-  # x86_64), not the host's. Building with a modern SDK and only
-  # -mmacosx-version-min=10.9 is weaker: the compiler would happily accept
-  # declarations 10.9's headers never had, and the first symptom would be a link
-  # or load failure on the target. Native builds already have the right headers,
-  # so they need nothing.
-  if(MAVERICKS_MODE STREQUAL "cross")
-    mavericks_fetch_sdk(MAVERICKS_SDK ARCH ${CMAKE_OSX_ARCHITECTURES})
-    set(CMAKE_OSX_SYSROOT "${MAVERICKS_SDK}" CACHE PATH "pinned SDK for ${CMAKE_OSX_ARCHITECTURES}" FORCE)
-    message(STATUS "Drydock: cross build against ${MAVERICKS_SDK}")
-  endif()
 else()
   include(MavericksFetch)
   mavericks_fetch_sdk(DRYDOCK_MACH_SDK ARCH x86_64)

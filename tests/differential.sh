@@ -17,11 +17,11 @@
 # a rewrite is reached and want to show the rewrite itself did not move:
 #
 #   git stash                                  # or: git worktree add of the ref
-#   shipyard-cmake -S . -B /tmp/ref -DMAVERICKS_EXPECTED_MODE=native
-#   shipyard-cmake --build /tmp/ref
+#   MAVERICKS_BUILD_ROOT=/tmp/ref shipyard-cmake --preset x86_64
+#   MAVERICKS_BUILD_ROOT=/tmp/ref shipyard-cmake --build --preset x86_64
 #   git stash pop
-#   shipyard-cmake --preset native-local && shipyard-cmake --build --preset native-local
-#   sh tests/differential.sh /tmp/ref <native-local bindir>
+#   shipyard-cmake --preset x86_64 && shipyard-cmake --build --preset x86_64
+#   sh tests/differential.sh /tmp/ref/<checkout>-x86_64 <x86_64 bindir>
 #
 # WHAT IT SWEEPS. There are ~86,000 regular files under the default roots on a
 # stock 10.9 install and identifying a Mach-O costs a process each, so this

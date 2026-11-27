@@ -3,12 +3,13 @@ arch -arm64 /usr/bin/true
 # arch -x86_64 /usr/bin/true
 softwareupdate --install-rosetta --agree-to-license
 - rosetta:tests/planted.sh: a planted INGREDIENTS deviation
-sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross
-sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross-arm64
-shipyard-ctest --preset cross --output-on-failure
-shipyard-ctest --preset cross-arm64 --output-on-failure
-sh x/equivalence.sh produce "$CROSS_BUILD_DIR"
-sh tests/chained-fixups.sh "$CROSS_BUILD_DIR"
+sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" x86_64
+sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" arm64
+shipyard-ctest --preset x86_64 --output-on-failure
+shipyard-ctest --preset arm64 --output-on-failure
+sh x/equivalence.sh produce "$X86_64_BUILD_DIR"
+sh tests/chained-fixups.sh "$X86_64_BUILD_DIR"
 check_c_source_runs("int main(void) { return 0; }" PLANTED_RUNS)
 check_cxx_source_runs("int main() { return 0; }" PLANTED_CXX_RUNS)
 try_run(PLANTED_RUN PLANTED_COMPILE "${CMAKE_BINARY_DIR}" planted.c)
+shipyard-ctest --preset x86_64 -LE not-in-guest --output-on-failure

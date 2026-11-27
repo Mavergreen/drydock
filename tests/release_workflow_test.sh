@@ -76,12 +76,12 @@ has "the guest makes a skip (77) fail" "$vm" 'must() { status=0; "$@" || status=
 has "the guest installs this run's pkg" "$vm" 'sudo installer -pkg "dist/drydock-$V.pkg" -target /'
 has "the guest asserts the installed manifest's version" "$vm" "Print :version"
 has "the guest's suite runs with x86_64 skips fatal, the not-in-guest tests excluded" "$vm" \
-  'env DRYDOCK_REQUIRE_EXEC=x86_64 "$@" shipyard-ctest --preset native -LE not-in-guest --output-on-failure > "$log" 2>&1 || status=$?'
+  'env DRYDOCK_REQUIRE_EXEC=x86_64 "$@" shipyard-ctest --preset x86_64 -LE not-in-guest --output-on-failure > "$log" 2>&1 || status=$?'
 has "the guest's suite fails the job when ctest fails" "$vm" '[ "$status" -eq 0 ] || {'
 has "the guest runs the suite on its native build" "$vm" "must suite native
 "
 has "the guest configures the native build to hand the suites the installed tools" "$vm" \
-  'shipyard-cmake --preset native -DDRYDOCK_TOOL_DIR="$INSTALLED"'
+  'shipyard-cmake --preset x86_64 -DDRYDOCK_TOOL_DIR="$INSTALLED"'
 has "the guest runs the suite again on the installed tools, telling tool_dir_test" "$vm" \
   'must suite installed DRYDOCK_TOOL_DIR="$INSTALLED"'
 has "a test that did not run in the guest fails the job unless allowed" "$vm" "/did not run:/"
@@ -158,19 +158,19 @@ has "equivalence compares macos-x86_64 with linux-x86_64" "$e" 'compare "$EQ/mac
 
 b=$(job build)
 has "build runs on Linux" "$b" "runs-on: ubuntu-latest"
-for gone in 'run-repo-tests.sh" cross
-' 'chained-fixups.sh "$CROSS_BUILD_DIR"' 'apple_silicon_signing_test.sh "$CROSS_BUILD_DIR"' \
-            'characterize.sh "$CROSS_BUILD_DIR"' 'equivalence.sh produce "$CROSS_BUILD_DIR"' 'macos-x86_64'; do
+for gone in 'run-repo-tests.sh" x86_64
+' 'chained-fixups.sh "$X86_64_BUILD_DIR"' 'apple_silicon_signing_test.sh "$X86_64_BUILD_DIR"' \
+            'characterize.sh "$X86_64_BUILD_DIR"' 'equivalence.sh produce "$X86_64_BUILD_DIR"' 'macos-x86_64'; do
   lacks "the build runs no x86_64: no $(printf %s "$gone" | tr '\n' ' ')" "$b" "$gone"
 done
 for gone in run-repo-tests.sh chained-fixups.sh apple_silicon_signing_test.sh macfuse_golden_test.sh characterize.sh \
             'equivalence.sh produce' /var/db/oah; do
   lacks "build, on Linux, runs no Mach-O tool: no $gone" "$b" "$gone"
 done
-has "build cross-builds x86_64" "$b" "shipyard-cmake --preset cross -DDRYDOCK_BUILD_UPDATER=ON"
-has "build runs the x86_64 compat guard" "$b" "shipyard-cmake --build --preset cross
+has "build cross-builds x86_64" "$b" "shipyard-cmake --preset x86_64 -DDRYDOCK_BUILD_UPDATER=ON"
+has "build runs the x86_64 compat guard" "$b" "shipyard-cmake --build --preset x86_64
 "
-has "build cross-builds arm64" "$b" "shipyard-cmake --preset cross-arm64 -DDRYDOCK_BUILD_UPDATER=ON"
+has "build cross-builds arm64" "$b" "shipyard-cmake --preset arm64 -DDRYDOCK_BUILD_UPDATER=ON"
 has "build makes the equivalence inputs with shipyard's clang22" "$(step build 'equivalence.sh inputs')" \
   'CLANG22="$CL" sh tests/equivalence.sh inputs "$RUNNER_TEMP/equivalence/inputs"'
 for x in build-pkg.sh build-standalone.sh pkg_payload_test.sh standalone_archive_test.sh release-notes.sh \
@@ -188,7 +188,7 @@ for j in publish required equivalence; do
   needs "$j" | grep -qx modern-smoke && ok "$j needs modern-smoke" || bad "$j does not need modern-smoke"
 done
 has "modern-smoke parses ctest's logs as bytes, which hold non-UTF-8 output" \
-  "$(step modern-smoke 'run-repo-tests.sh" cross-arm64')" "export LC_ALL=C"
+  "$(step modern-smoke 'run-repo-tests.sh" arm64')" "export LC_ALL=C"
 has "modern-smoke runs only on a publishing run, the family's publish-only smoke" "$m" "
     if: needs.build.outputs.publish == 'yes'"
 for j in equivalence assemble; do
@@ -257,14 +257,14 @@ chk=$(job modern-smoke | grep -n -x '        run: sh "$SHIPYARD_SCRIPTS/assert-t
   && ok "modern-smoke checks the source tree after its last test and before its upload" \
   || bad "modern-smoke's tree check is at line '${chk:-none}', not between produce ($prod) and upload ($upl)"
 
-cfg=$(step modern-smoke 'shipyard-cmake --preset cross-arm64')
+cfg=$(step modern-smoke 'shipyard-cmake --preset arm64')
 has "modern-smoke builds the suite's helpers with shipyard's clang22, as the guest does" "$cfg" \
   '-DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang"'
 has "modern-smoke hands the suite the installed tools" "$cfg" '-DDRYDOCK_TOOL_DIR=/usr/local/mavergreen/drydock/bin'
 lacks "modern-smoke builds no updater" "$cfg" "DRYDOCK_BUILD_UPDATER"
-su=$(step modern-smoke 'run-repo-tests.sh" cross-arm64')
+su=$(step modern-smoke 'run-repo-tests.sh" arm64')
 has "modern-smoke runs the arm64 suite, arm64 skips fatal" "$su" \
-  'DRYDOCK_REQUIRE_EXEC=arm64 sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross-arm64 > "$log" 2>&1 || status=$?'
+  'DRYDOCK_REQUIRE_EXEC=arm64 sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" arm64 > "$log" 2>&1 || status=$?'
 has "a test that did not run on the runner fails the job unless allowed" "$su" "/did not run:/"
 has "the did-not-run parse has a positive control: raise_runs_test, which runs only on 10.9" "$su" \
   'grep -qx raise_runs_test "$RUNNER_TEMP/skipped"'

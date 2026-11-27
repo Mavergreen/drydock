@@ -12,7 +12,7 @@ launches='arch[[:space:]]+-(x86_64|arm64)'
 installs='install-rosetta'
 rosetta_bullet='^- rosetta:'
 hw='hw\.optional\.arm64'
-cross_runs='run-repo-tests\.sh"?[[:space:]]+cross([[:space:]]|$)|ctest[[:space:]].*--preset[[:space:]]+cross([[:space:]"]|$)|(chained-fixups|apple_silicon_signing_test|characterize)\.sh"?[[:space:]]+"?\$\{?CROSS_BUILD_DIR|equivalence\.sh"?[[:space:]]+produce[[:space:]]+"?\$\{?CROSS_BUILD_DIR'
+cross_runs='run-repo-tests\.sh"?[[:space:]]+x86_64([[:space:]]|$)|ctest[[:space:]].*--preset[[:space:]]+x86_64([[:space:]]+--output-on-failure|"|$)|(chained-fixups|apple_silicon_signing_test|characterize)\.sh"?[[:space:]]+"?\$\{?X86_64_BUILD_DIR|equivalence\.sh"?[[:space:]]+produce[[:space:]]+"?\$\{?X86_64_BUILD_DIR'
 configure_runs='check_(c|cxx|objc|objcxx)_source_runs|check_source_runs|try_run[[:space:]]*\('
 GATED=build/drydock-check-runs.cmake
 
@@ -63,7 +63,7 @@ expect 2 "the launch scan sees both launches and not the commented one" "$launch
 expect 1 "the install scan sees the install" "$installs" "$PROBES"
 expect 1 "the INGREDIENTS scan sees a planted deviation" "$rosetta_bullet" "$PROBES"
 expect 3 "the configure-run scan sees check_c_source_runs, check_cxx_source_runs and try_run" "$configure_runs" "$PROBES"
-expect 4 "the cross scan sees run-repo-tests cross, ctest --preset cross, equivalence and chained-fixups, not cross-arm64" "$cross_runs" "$PROBES"
+expect 4 "the x86_64 scan sees run-repo-tests x86_64, ctest --preset x86_64, equivalence and chained-fixups, not arm64 and not the guest's -LE ctest" "$cross_runs" "$PROBES"
 
 # Controls: the pathspecs match what they are for, and exclude what they exclude.
 listed() { git -C "$ROOT" ls-files -- "$@" ":!$SELF"; }
@@ -75,8 +75,8 @@ listed $CODE_SPEC | grep -qx tests/lib/exec-arch.sh || say "control: the code pa
 listed $OUTSIDE_EXEC_ARCH | grep -qx tests/lib/exec-arch.sh && say "control: the exec-arch exclusion excludes nothing"
 listed $OUTSIDE_TESTS | grep -q '^tests/' && say "control: the tests/ exclusion excludes nothing"
 expect 1 "git grep reads hw.optional.arm64 in tests/lib/exec-arch.sh" "$hw" tests/lib/exec-arch.sh
-n=$(git -C "$ROOT" grep -c -E 'CROSS_BUILD_DIR' -- $YML | cut -d: -f2)
-[ "${n:-0}" -gt 0 ] || say "control: git grep finds no CROSS_BUILD_DIR in release.yml, so its scan reads nothing"
+n=$(git -C "$ROOT" grep -c -E 'X86_64_BUILD_DIR' -- $YML | cut -d: -f2)
+[ "${n:-0}" -gt 0 ] || say "control: git grep finds no X86_64_BUILD_DIR in release.yml, so its scan reads nothing"
 n=$(git -C "$ROOT" grep -c -E '^- ' -- INGREDIENTS.md | cut -d: -f2)
 [ "${n:-0}" -gt 0 ] || say "control: git grep reads no bullet of INGREDIENTS.md"
 }

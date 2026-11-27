@@ -33,7 +33,7 @@
 # families of binaries built, it takes minutes, and the wrapper conversion removed
 # half of what it drives. Run it by hand, on real 10.9, when the translation changes:
 #
-#   shipyard-cmake --preset native-local && shipyard-cmake --build --preset native-local
+#   shipyard-cmake --preset x86_64 && shipyard-cmake --build --preset x86_64
 #   MACHO_SWEEP_NEW_BIN=/private/tmp/mm-build/schmonz/macho-tools/native \
 #       sh tests/compat-sweep.sh /path/to/a/build-of-the-last-commit-with-the-C-tools
 #

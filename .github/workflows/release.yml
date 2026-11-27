@@ -70,16 +70,13 @@ jobs:
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
 
       - name: Locate the out-of-tree build the preset will use
-        # platform: shipyard's mavericks-* hidden presets pin their own
-        # environment.MAVERICKS_BUILD_ROOT to $penv{TMPDIR}/mm-build, and CMake applies a
-        # preset's own environment table after anything exported here -- so an export
-        # cannot redirect a --preset build. Derive the path instead of setting it. A child
-        # preset CAN re-declare the variable from $penv to win, but then an unset variable
-        # breaks a fresh clone (binaryDir expands to "/macho-tools-native", which CMake
-        # refuses as unwritable), so we do not.
+        # platform: shipyard's mavericks-* hidden presets put each build directory under
+        # $MAVERICKS_BUILD_ROOT, which the launcher defaults to $TMPDIR/mm-build and an
+        # exported value overrides, so derive the path the same way.
         run: |
-          echo "CROSS_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross" >> "$GITHUB_ENV"
-          echo "ARM64_BUILD_DIR=${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross-arm64" >> "$GITHUB_ENV"
+          root="${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}"
+          echo "X86_64_BUILD_DIR=$root/$(basename "$PWD")-x86_64" >> "$GITHUB_ENV"
+          echo "ARM64_BUILD_DIR=$root/$(basename "$PWD")-arm64" >> "$GITHUB_ENV"
 
       # Nothing external to derive from -- this repo is its own upstream -- so the version
       # IS UPSTREAM_VERSION, hand-bumped, and the tag is v plus that, so the two cannot
@@ -113,24 +110,24 @@ jobs:
           { echo "full=$full"; echo "tag=$tag"; echo "release=$rel"; } >> "$GITHUB_OUTPUT"
           echo "version=$full tag=$tag release=$rel"
 
-      # The cross preset asserts it is NOT on 10.9 and pins CMAKE_OSX_SYSROOT to
-      # the fetched 10.9 SDK, so no declaration 10.9 never had is accepted.
-      - name: Configure (cross, against the pinned 10.9 SDK, with the updater)
-        run: shipyard-cmake --preset cross -DDRYDOCK_BUILD_UPDATER=ON
+      # The preset's toolchain pins CMAKE_OSX_SYSROOT to the fetched 10.9 SDK, so no
+      # declaration 10.9 never had is accepted.
+      - name: Configure (x86_64, against the pinned 10.9 SDK, with the updater)
+        run: shipyard-cmake --preset x86_64 -DDRYDOCK_BUILD_UPDATER=ON
 
       # Every tool is gated POST_BUILD by shipyard's compat guard: fails if a
       # binary declares a floor above 10.9 or imports a symbol 10.9 lacks.
       - name: Build + compat guard
-        run: shipyard-cmake --build --preset cross
+        run: shipyard-cmake --build --preset x86_64
 
       # The arm64 slice: a second configure, because a deployment floor is per-configure and
       # arm64 has no 10.9. shipyard's toolchain pins the 11.3 SDK and an 11.0 floor, and the
       # compat guard holds each binary to that.
-      - name: Configure + build + compat guard (cross-arm64, against the pinned 11.3 SDK, with the updater)
+      - name: Configure + build + compat guard (arm64, against the pinned 11.3 SDK, with the updater)
         run: |
           set -eu
-          shipyard-cmake --preset cross-arm64 -DDRYDOCK_BUILD_UPDATER=ON
-          shipyard-cmake --build --preset cross-arm64
+          shipyard-cmake --preset arm64 -DDRYDOCK_BUILD_UPDATER=ON
+          shipyard-cmake --build --preset arm64
 
       - name: The build must not have written into the source tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh"
@@ -142,25 +139,25 @@ jobs:
       - name: Package the .pkg
         run: |
           set -eu
-          sh packaging/build-pkg.sh "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
-            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
+          sh packaging/build-pkg.sh "$X86_64_BUILD_DIR" "$ARM64_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
+            "$X86_64_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
 
       - name: The package installs exactly what was tested
         run: |
-          sh tests/pkg_payload_test.sh "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg" \
-            "$(command -v shipyard-cmake)" "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR"
+          sh tests/pkg_payload_test.sh "$X86_64_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg" \
+            "$(command -v shipyard-cmake)" "$X86_64_BUILD_DIR" "$ARM64_BUILD_DIR"
 
       - name: Package the standalone archive
         run: |
-          sh packaging/build-standalone.sh "$CROSS_BUILD_DIR" "$ARM64_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
-            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz"
+          sh packaging/build-standalone.sh "$X86_64_BUILD_DIR" "$ARM64_BUILD_DIR" '${{ steps.ver.outputs.full }}' \
+            "$X86_64_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz"
 
       # platform: Linux runs no Mach-O, so here it checks the archive's tree; modern-smoke runs its tools.
       - name: The standalone archive is the package's tree
         run: |
           sh tests/standalone_archive_test.sh \
-            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz" \
-            "$CROSS_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
+            "$X86_64_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}-macos-universal.tar.gz" \
+            "$X86_64_BUILD_DIR/dist/drydock-${{ steps.ver.outputs.full }}.pkg"
 
       # The inputs need a clang22 that builds arm64, which the 10.9 guest lacks: on-target and modern-smoke
       # make their outputs from these same inputs, and the equivalence job compares the three.
@@ -184,12 +181,12 @@ jobs:
           set -eu
           sh "$SHIPYARD_SCRIPTS/release-notes.sh" \
             --tag '${{ steps.ver.outputs.tag }}' --version '${{ steps.ver.outputs.full }}' \
-            --product Drydock --min-os 10.9.5 --out "$CROSS_BUILD_DIR/dist/RELEASE_NOTES.md"
-          echo "=== RELEASE_NOTES.md ==="; cat "$CROSS_BUILD_DIR/dist/RELEASE_NOTES.md"
+            --product Drydock --min-os 10.9.5 --out "$X86_64_BUILD_DIR/dist/RELEASE_NOTES.md"
+          echo "=== RELEASE_NOTES.md ==="; cat "$X86_64_BUILD_DIR/dist/RELEASE_NOTES.md"
 
       - name: Unsigned stand-in feeds (never published)
         if: steps.ver.outputs.release != 'yes'
-        run: sh "$SHIPYARD_SCRIPTS/stand-in-feeds.sh" "$CROSS_BUILD_DIR/dist" '${{ steps.ver.outputs.full }}'
+        run: sh "$SHIPYARD_SCRIPTS/stand-in-feeds.sh" "$X86_64_BUILD_DIR/dist" '${{ steps.ver.outputs.full }}'
 
       - name: EdDSA-sign the .pkg + write drydock.xml
         if: steps.ver.outputs.release == 'yes'
@@ -201,12 +198,12 @@ jobs:
           printenv SPARKLE_PRIVATE_KEY | grep -q . || { echo "::error::SPARKLE_PRIVATE_KEY secret not set"; exit 1; }
           VER='${{ steps.ver.outputs.full }}'
           TAG='${{ steps.ver.outputs.tag }}'
-          PKG="$CROSS_BUILD_DIR/dist/drydock-$VER.pkg"
+          PKG="$X86_64_BUILD_DIR/dist/drydock-$VER.pkg"
           sh "$SHIPYARD_SCRIPTS/sign_and_appcast.sh" \
-            --product drydock --feed-dir "$CROSS_BUILD_DIR/dist" \
+            --product drydock --feed-dir "$X86_64_BUILD_DIR/dist" \
             --channel-title Drydock --version "$VER" \
             --pkg-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$(basename "$PKG")" \
-            --notes-file "$CROSS_BUILD_DIR/dist/RELEASE_NOTES.md" --pkg "$PKG" --min-os 10.9.5
+            --notes-file "$X86_64_BUILD_DIR/dist/RELEASE_NOTES.md" --pkg "$PKG" --min-os 10.9.5
 
       # Every run, against the stand-in feed when not releasing, so a pull request finds
       # what a release would. The vX.Y.Z scheme is a DECLARED deviation (INGREDIENTS.md) --
@@ -214,19 +211,19 @@ jobs:
       # exemption -- which is what this step reads that declaration for.
       - name: Artifact conformance
         run: |
-          sh "$SHIPYARD_SCRIPTS/artifact-facts.sh" "$CROSS_BUILD_DIR/dist" "${{ steps.ver.outputs.full }}" \
+          sh "$SHIPYARD_SCRIPTS/artifact-facts.sh" "$X86_64_BUILD_DIR/dist" "${{ steps.ver.outputs.full }}" \
             | sh "$SHIPYARD_SCRIPTS/check-artifact-conformance.sh"
 
       - name: The feed is an upgrade on its line
         if: steps.ver.outputs.release == 'yes'
         run: |
-          sh "$SHIPYARD_SCRIPTS/assert_appcast_upgradeable.sh" --appcast "$CROSS_BUILD_DIR/dist/drydock.xml" \
+          sh "$SHIPYARD_SCRIPTS/assert_appcast_upgradeable.sh" --appcast "$X86_64_BUILD_DIR/dist/drydock.xml" \
             --version '${{ steps.ver.outputs.tag }}' --tag-glob 'v*.*.*'
 
       - uses: actions/upload-artifact@v7
         with:
           name: drydock
-          path: ${{ env.CROSS_BUILD_DIR }}/dist/*
+          path: ${{ env.X86_64_BUILD_DIR }}/dist/*
 
   linux:
     name: build (linux-x86_64)
@@ -355,7 +352,7 @@ jobs:
   # SDK are fetched and verified here and reach the guest with the workspace; only `longboat sdk
   # install 10.9` fetches in the guest.
   #
-  # The suite is run-repo-tests.sh native with a label filter, which run-repo-tests.sh does not take.
+  # The suite is run-repo-tests.sh x86_64 with a label filter, which run-repo-tests.sh does not take.
   # -LE not-in-guest leaves out objc_reference_set and objc_iterm2_acceptance, maintainer tests that
   # fetch SDKs and an iTerm2 zip and insert into system processes for up to an hour, run by hand on
   # ultimate-hat; family_conventions, which checks repo policy, not x86_64 behaviour, and needs
@@ -456,11 +453,11 @@ jobs:
             export LEGACYSUPPORT_A="$mls/usr/local/mavergreen/legacysupport/lib/libMacportsLegacySupport.a"
             [ -f "$LEGACYSUPPORT_A" ] || { echo "$pkg holds no usr/local/mavergreen/legacysupport/lib/libMacportsLegacySupport.a"; exit 1; }
 
-            shipyard-cmake --preset native -DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang" \
+            shipyard-cmake --preset x86_64 -DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang" \
               -DCMAKE_AR="$CLANG22/bin/llvm-ar" -DCMAKE_RANLIB="$CLANG22/bin/llvm-ranlib" \
               -DCMAKE_INSTALL_NAME_TOOL="$CLANG22/bin/llvm-install-name-tool" -DDRYDOCK_CLANG22="$CLANG22"
-            shipyard-cmake --build --preset native
-            NATIVE="$TMPDIR/mm-build/$(basename "$PWD")-native"
+            shipyard-cmake --build --preset x86_64
+            NATIVE="${MAVERICKS_BUILD_ROOT:-$TMPDIR/mm-build}/$(basename "$PWD")-x86_64"
             # Allowed not to run here, each only for the reason its last SKIP line must give:
             #   x86len_oracle_test: its oracle is cctools' otool, which needs the Command Line Tools
             #   rebase_oracle_test: its oracle is the Command Line Tools' dyldinfo
@@ -497,7 +494,7 @@ jobs:
             suite() {  # NAME [VAR=VALUE...]: the suite, in the environment given
               name=$1; shift
               log="$TMPDIR/ctest-$name.log" status=0
-              env DRYDOCK_REQUIRE_EXEC=x86_64 "$@" shipyard-ctest --preset native -LE not-in-guest --output-on-failure > "$log" 2>&1 || status=$?
+              env DRYDOCK_REQUIRE_EXEC=x86_64 "$@" shipyard-ctest --preset x86_64 -LE not-in-guest --output-on-failure > "$log" 2>&1 || status=$?
               cat "$log"
               [ "$status" -eq 0 ] || { echo "the guest's $name suite failed (ctest exited $status)"; return 1; }
               sed -n '/did not run:/,$s/^[[:space:]]*[0-9]* - \([^ ]*\) (.*/\1/p' "$log" > "$TMPDIR/skipped"
@@ -523,8 +520,8 @@ jobs:
             }
             must suite native
             # The installed tools: the suites are handed them, with this build's fixture helpers (tool_dir_test).
-            shipyard-cmake --preset native -DDRYDOCK_TOOL_DIR="$INSTALLED"
-            shipyard-cmake --build --preset native
+            shipyard-cmake --preset x86_64 -DDRYDOCK_TOOL_DIR="$INSTALLED"
+            shipyard-cmake --build --preset x86_64
             must suite installed DRYDOCK_TOOL_DIR="$INSTALLED"
             must sh tests/characterize.sh "$NATIVE" check
             must sh tests/characterize.sh "$INSTALLED" check
@@ -537,7 +534,7 @@ jobs:
 
   # The arm64 slice's acceptance (INGREDIENTS.md's arm64: deviation), on Apple Silicon: it installs the
   # .pkg built on Linux and runs every tool it ships, runs the standalone archive's tools, builds the
-  # cross-arm64 preset with clang22 for the suite's fixtures and helpers and runs the suite on the installed
+  # arm64 preset with clang22 for the suite's fixtures and helpers and runs the suite on the installed
   # tools (DRYDOCK_TOOL_DIR) with DRYDOCK_REQUIRE_EXEC=arm64, so a row that would skip arm64 fails. A test
   # that does not run fails the job unless the allow-list below names it and its last SKIP line gives the
   # reason the list states; any other row that says SKIP or N/A fails it unless a second allow-list allows
@@ -643,20 +640,20 @@ jobs:
           echo "MACFUSE_DEBUG_TBZ=$tbz" >> "$GITHUB_ENV"
 
       # platform: builds only the suite's fixtures and helpers, with clang22 as the guest names it; the tools are the installed ones.
-      - name: Configure + build cross-arm64 with clang22, handing the suite the installed tools
+      - name: Configure + build arm64 with clang22, handing the suite the installed tools
         run: |
           set -eu
           CLANG22="$(sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$SHIPYARD_SCRIPTS/../components/clang22")"
-          shipyard-cmake --preset cross-arm64 -DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang" \
+          shipyard-cmake --preset arm64 -DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang" \
             -DCMAKE_AR="$CLANG22/bin/llvm-ar" -DCMAKE_RANLIB="$CLANG22/bin/llvm-ranlib" \
             -DCMAKE_INSTALL_NAME_TOOL="$CLANG22/bin/llvm-install-name-tool" -DDRYDOCK_CLANG22="$CLANG22" \
             -DDRYDOCK_TOOL_DIR=/usr/local/mavergreen/drydock/bin
-          shipyard-cmake --build --preset cross-arm64
+          shipyard-cmake --build --preset arm64
 
       - name: Run the repo's tests (arm64) on the installed tools
         run: |
           set -eu
-          ARM64="${TMPDIR:-/tmp}/mm-build/$(basename "$PWD")-cross-arm64"
+          ARM64="${MAVERICKS_BUILD_ROOT:-${TMPDIR:-/tmp}/mm-build}/$(basename "$PWD")-arm64"
           # Allowed not to run here, each only for the reason its last SKIP line must give (a glob):
           #   resources_instantiate: it instantiates nibs with 10.9's AppKit; on-target's maintainer runs it
           #   resources_macfuse_pane: a maintainer test; macFUSE's pane nib is never committed, and nothing here names one
@@ -707,7 +704,7 @@ jobs:
             esac
           }
           log="$RUNNER_TEMP/ctest.log" status=0
-          DRYDOCK_REQUIRE_EXEC=arm64 sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" cross-arm64 > "$log" 2>&1 || status=$?
+          DRYDOCK_REQUIRE_EXEC=arm64 sh "$SHIPYARD_SCRIPTS/run-repo-tests.sh" arm64 > "$log" 2>&1 || status=$?
           cat "$log"
           [ "$status" -eq 0 ] || { echo "::error::the arm64 suite failed (ctest exited $status)"; exit 1; }
           export LC_ALL=C
