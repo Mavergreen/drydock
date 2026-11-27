@@ -1,0 +1,3 @@
+class	-	NSOld	-	-	-	10.0	-	0	usr/include/old.h:5	-
+class	AppKit	NSBox	-	-	-	10.0	-	0	AppKit/NSBox.h:9	-
+method	AppKit	NSBox	-	setTitle:	v24@0:8@16	10.10	-	0	AppKit/NSBox.h:20	interface

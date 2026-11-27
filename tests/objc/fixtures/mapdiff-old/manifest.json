@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "recipe": {"name": "fixture", "sha256": "1111"},
+  "floor_sdk": {
+    "archive": "MacOSX10.9.sdk.tar.xz",
+    "reached_headers": [
+      "a.h",
+      "b.h"
+    ]
+  },
+  "newer_sdk": {
+    "archive": "MacOSX11.2.sdk.tar.xz",
+    "archive_sha256": "aaaa",
+    "reached_headers": [
+      "a.h"
+    ]
+  },
+  "files": [
+    {"name": "floor-sdk.tsv", "sha256": "x", "rows": 2}
+  ]
+}

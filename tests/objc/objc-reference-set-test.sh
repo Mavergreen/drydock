@@ -785,6 +785,28 @@ if [ -f "$REF/floor-runtime.tsv" ]; then
   grep -F "$(printf 'floor-runtime\tresolves\t+__NSCFURLSession\tCFNetwork')" "$T/out" >/dev/null ||
     fail "the floor runtime does not answer +[NSURLSession sessionWithConfiguration:delegate:delegateQueue:]: $(tr '\t' '|' <"$T/out")"
 fi
+# spec: scripts/objc-reference-set.sh header, diff -- one line per change (ADDED, REMOVED or CHANGED, FILE, KEY, DETAIL),
+#       sorted, then a summary per changed file; reordering alone reports nothing; a changed pin is one line.
+printf '%s\n' \
+  "CHANGED${TAB}floor-runtime.tsv${TAB}image AE${TAB}col5 AAAA -> BBBB" \
+  "CHANGED${TAB}manifest.json${TAB}newer_sdk.archive${TAB}\"MacOSX11.2.sdk.tar.xz\" -> \"MacOSX11.3.sdk.tar.xz\"" \
+  "CHANGED${TAB}manifest.json${TAB}newer_sdk.archive_sha256${TAB}\"aaaa\" -> \"bbbb\"" \
+  "CHANGED${TAB}manifest.json${TAB}newer_sdk.reached_headers${TAB}+2 -0 headers" \
+  "REMOVED${TAB}newer-sdk.tsv${TAB}class - NSOld - - -${TAB}- 10.0 - 0 usr/include/old.h:5" \
+  "CHANGED${TAB}newer-sdk.tsv${TAB}method AppKit NSBox - setTitle: interface${TAB}introduced 10.10 -> 10.11" \
+  "ADDED${TAB}newer-sdk.tsv${TAB}method AppKit NSBox - title interface${TAB}@16@0:8 - - 0 AppKit/NSBox.h:21" \
+  "floor-runtime.tsv${TAB}+0${TAB}-0${TAB}~1" \
+  "manifest.json${TAB}+0${TAB}-0${TAB}~3" \
+  "newer-sdk.tsv${TAB}+1${TAB}-1${TAB}~1" >"$T/diff.want"
+sh "$REFSET" diff "$FX/mapdiff-old" "$FX/mapdiff-new" >"$T/diff.out" 2>"$T/err" || fail 'diff of the fixture maps failed'
+cmp -s "$T/diff.want" "$T/diff.out" || fail "diff of the fixture maps differs from the expected report: $(diff "$T/diff.want" "$T/diff.out" | tr '\t' '|' | head -8)"
+sh "$REFSET" diff "$FX/mapdiff-new" "$FX/mapdiff-new" >"$T/diff.out" 2>"$T/err" || fail 'diff of a map with itself failed'
+[ ! -s "$T/diff.out" ] || fail 'diff of a map with itself reported something'
+sh "$REFSET" diff "$FX/mapdiff-new" >/dev/null 2>"$T/err" && fail 'diff with one directory was accepted'
+sh "$REFSET" diff "$FX/mapdiff-new" "$T/no-such-set" >/dev/null 2>"$T/err" && fail 'diff against a missing set was accepted'
+# spec: the committed reference set is its own baseline: a map differs from nothing in it.
+sh "$REFSET" diff "$REF" "$REF" >"$T/diff.out" 2>"$T/err" || fail 'diff of the committed reference with itself failed'
+[ ! -s "$T/diff.out" ] || fail 'diff of the committed reference with itself reported something'
 echo "objc-reference-set: capture fixtures and refusals, builder identities/refusals, lookup and committed reference pass"
 # platform: a path this host cannot exercise is reported, never counted as passed (exit 77 is SKIP).
 if [ -n "$UNEXERCISED" ]; then

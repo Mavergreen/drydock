@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "probes": [
+    {"id": "p1", "class": "NSString"}
+  ]
+}

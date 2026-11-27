@@ -9,6 +9,7 @@
 #          objc-reference-set.sh verify [--recipe FILE] REF_DIR
 #          objc-reference-set.sh lookup REF_DIR CLASS KIND SELECTOR
 #          objc-reference-set.sh coverage REF_DIR SDK_ROOT floor|newer
+#          objc-reference-set.sh diff OLD_DIR NEW_DIR
 #          The versioned Objective-C reference set: SDK declaration facts from the pinned floor (10.9)
 #          and newer (11.3) SDKs, and a runtime capture from a real clean floor host, bound together by
 #          manifest.json. Apple bytes never enter it, only derived facts and the identities of what
@@ -80,6 +81,20 @@
 #          reached, and the first in byte order it did not (or -), TAB-separated and sorted by UNIT. A
 #          unit is the innermost NAME.framework holding the file, else the file's directory. A reached
 #          header missing from that tree is refused: the tree is not the one parsed.
+#          diff reports what changed between two reference sets (OLD_DIR, NEW_DIR), each file read as a
+#          set, so a reordering alone reports nothing. One line per change, TAB-separated:
+#          ADDED|REMOVED|CHANGED, FILE, KEY, DETAIL, sorted by FILE then KEY (LC_ALL=C). KEY is the
+#          row's identity, its fields joined by spaces: for floor-sdk.tsv and newer-sdk.tsv, kind, unit,
+#          class, method kind, selector and container; for the signature files the same five and the
+#          container; for the function files, the name; for floor-runtime.tsv, class and kind and
+#          selector (and image) per row kind (class, method, witness, check, behavior, image,
+#          override, identity). A row's other columns are its DETAIL: CHANGED shows each differing
+#          one as NAME old -> new (an availability change among them), ADDED and REMOVED show them all.
+#          A key a file repeats takes #2, #3 and so on in row order. A file one set lacks reads as empty.
+#          The JSON files compare by top-level key (a block's entries named by name or id): manifest.json
+#          reports each changed identity (recipe, SDK pins, clang, runtime) as KEY old -> new, a block
+#          such as reached_headers as one line of counts. A summary line per changed FILE follows, FILE,
+#          +ADDED, -REMOVED, ~CHANGED. Exit 0 whatever it found: a diff is a report, not a failure.
 #          Exit 0 done, 2 usage, 4 cannot measure (nothing is left at NEW_DIR).
 set -eu
 unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH SDKROOT CCC_OVERRIDE_OPTIONS
@@ -90,7 +105,7 @@ ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 RECIPE="$ROOT/reference/objc-recipes/mavericks-10.9.recipe"
 TOOL_SRC="$ROOT/tools/objc-runtime-inventory.m"
 
-usage() { echo "usage: objc-reference-set.sh capture|capture-tool|dyld-check|build|verify|lookup|coverage ... (see the header)" >&2; exit 2; }
+usage() { echo "usage: objc-reference-set.sh capture|capture-tool|dyld-check|build|verify|lookup|coverage|diff ... (see the header)" >&2; exit 2; }
 fail() { echo "objc-reference-set: $*" >&2; exit 4; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 # spec: scripts/objc-reference-set.sh header -- a manifest value must be plain: no quote,
@@ -692,6 +707,125 @@ coverage() {
   rm -rf "$cv"; trap - EXIT
 }
 
+diff_sets() {
+  [ "$#" = 2 ] || usage
+  [ -d "$1" ] || fail "no reference set at $1"
+  [ -d "$2" ] || fail "no reference set at $2"
+  dw=$(mktemp -d "${TMPDIR:-/tmp}/objc-reference-diff.XXXXXX") || fail 'cannot create a temporary'
+  trap 'rm -rf "$dw"' EXIT
+  : >"$dw/changes"; : >"$dw/summary"
+  for f in cluster-witnesses.json floor-functions-builtin.tsv floor-functions.tsv floor-runtime.tsv floor-sdk.tsv floor-signatures.tsv manifest.json newer-sdk.tsv newer-signatures.tsv; do
+    [ -f "$1/$f" ] || [ -f "$2/$f" ] || continue
+    case "$f" in
+      *.tsv)
+        for side in 1 2; do : >"$dw/s$side"; done
+        [ ! -f "$1/$f" ] || LC_ALL=C sort -u "$1/$f" >"$dw/s1"
+        [ ! -f "$2/$f" ] || LC_ALL=C sort -u "$2/$f" >"$dw/s2"
+        LC_ALL=C awk -F '\t' -v OFS='\t' -v file="$f" -v changes="$dw/changes" -v summary="$dw/summary" '
+          function spec(kind) {
+            if (file ~ /-sdk\.tsv$/) return "1 2 3 4 5 11"
+            if (file ~ /-signatures\.tsv$/) return "1 2 3 4 5 8"
+            if (file ~ /^floor-functions/) return "1"
+            if (kind == "method") return "1 2 3 4 6"
+            if (kind == "behavior") return "1 2 3 4 7"
+            if (kind == "class" || kind == "image" || kind == "override" || kind == "identity") return "1 2"
+            return "1 2 3 4"
+          }
+          function iskey(sp, i) { return index(" " sp " ", " " i " ") > 0 }
+          function colname(i) {
+            if (file ~ /-sdk\.tsv$/) { split("kind unit class method-kind name encoding introduced deprecated unavailable source container", nm, " "); return nm[i] }
+            return "col" i
+          }
+          function keyof(row,   f, nf, sp, nk, c, i, k) {
+            if (row ~ /^#/) return "#header"
+            nf = split(row, f, "\t"); sp = spec(f[1]); nk = split(sp, c, " ")
+            k = f[c[1]]
+            for (i = 2; i <= nk; i++) k = k " " f[c[i]]
+            return k
+          }
+          function values(row,   f, nf, sp, i, v) {
+            if (row ~ /^#/) return row
+            nf = split(row, f, "\t"); sp = spec(f[1]); v = ""
+            for (i = 1; i <= nf; i++) if (!iskey(sp, i)) v = v (v == "" ? "" : " ") f[i]
+            return v
+          }
+          function detail(a, b,   fa, fb, na, nb, n, i, sp, d) {
+            if (a ~ /^#/) return a " -> " b
+            na = split(a, fa, "\t"); nb = split(b, fb, "\t"); n = na > nb ? na : nb; sp = spec(fa[1]); d = ""
+            for (i = 1; i <= n; i++) if (!iskey(sp, i) && fa[i] != fb[i])
+              d = d (d == "" ? "" : "; ") colname(i) " " fa[i] " -> " fb[i]
+            return d
+          }
+          { side = (FILENAME == ARGV[1]) ? 1 : 2 }
+          {
+            k = keyof($0); n = ++seen[side, k]
+            if (n > 1) k = k " #" n
+            row[side, k] = $0; keys[k] = 1
+          }
+          END {
+            for (k in keys) {
+              if (!((1, k) in row)) { print "ADDED", file, k, values(row[2, k]) >> changes; add++ }
+              else if (!((2, k) in row)) { print "REMOVED", file, k, values(row[1, k]) >> changes; rem++ }
+              else if (row[1, k] != row[2, k]) { print "CHANGED", file, k, detail(row[1, k], row[2, k]) >> changes; chg++ }
+            }
+            if (add + rem + chg > 0) print file, "+" add + 0, "-" rem + 0, "~" chg + 0 >> summary
+          }' "$dw/s1" "$dw/s2"
+        ;;
+      *.json)
+        for side in 1 2; do : >"$dw/s$side"; done
+        [ ! -f "$1/$f" ] || json_flatten <"$1/$f" >"$dw/s1"
+        [ ! -f "$2/$f" ] || json_flatten <"$2/$f" >"$dw/s2"
+        LC_ALL=C awk -F '\t' -v OFS='\t' -v file="$f" -v changes="$dw/changes" -v summary="$dw/summary" '
+          { side = (FILENAME == ARGV[1]) ? 1 : 2 }
+          $1 == "K" { v[side, $2] = $3; keys[$2] = 1; next }
+          $1 == "B" { b[side, $2, $3] = 1; bl[$2 SUBSEP $3] = 1; has[side, $2] = 1; paths[$2] = 1 }
+          END {
+            for (k in keys) {
+              if (!((1, k) in v)) { print "ADDED", file, k, v[2, k] >> changes; add++ }
+              else if (!((2, k) in v)) { print "REMOVED", file, k, v[1, k] >> changes; rem++ }
+              else if (v[1, k] != v[2, k]) { print "CHANGED", file, k, v[1, k] " -> " v[2, k] >> changes; chg++ }
+            }
+            for (k in bl) { split(k, p, SUBSEP); if (!((1, p[1], p[2]) in b)) added[p[1]]++; if (!((2, p[1], p[2]) in b)) removed[p[1]]++ }
+            for (q in paths) {
+              a = added[q] + 0; r = removed[q] + 0
+              unit = q ~ /reached_headers$/ ? "headers" : "lines"
+              if (!((1, q) in has)) { print "ADDED", file, q, "+" a " " unit >> changes; add++ }
+              else if (!((2, q) in has)) { print "REMOVED", file, q, "-" r " " unit >> changes; rem++ }
+              else if (a + r > 0) { print "CHANGED", file, q, "+" a " -" r " " unit >> changes; chg++ }
+            }
+            if (add + rem + chg > 0) print file, "+" add + 0, "-" rem + 0, "~" chg + 0 >> summary
+          }' "$dw/s1" "$dw/s2"
+        ;;
+    esac
+  done
+  LC_ALL=C sort -t "$(printf '\t')" -k2,2 -k3,3 -k1,1 "$dw/changes"
+  LC_ALL=C sort "$dw/summary"
+  rm -rf "$dw"; trap - EXIT
+}
+
+json_flatten() {
+  awk '
+    function strip(s) { sub(/^ +/, "", s); sub(/,$/, "", s); return s }
+    function keyname(line, indent,   k) { k = line; sub("^" indent "\"", "", k); sub(/".*/, "", k); return k }
+    function valueof(line, indent,   r) { r = line; sub("^" indent "\"[^\"]*\": ", "", r); return r }
+    /^  "[^"]*": / {
+      top = keyname($0, "  "); r = valueof($0, "  "); cur = ""
+      if (r ~ /[\[{]$/) cur = top; else print "K\t" top "\t" strip(r)
+      next
+    }
+    /^    "[^"]*": / && top != "" {
+      path = top "." keyname($0, "    "); r = valueof($0, "    "); cur = ""
+      if (r ~ /[\[{]$/) cur = path; else print "K\t" path "\t" strip(r)
+      next
+    }
+    /^ *[\]}],?$/ { next }
+    cur == top && cur != "" && /^ *\{"(name|id)": "/ {
+      e = $0; sub(/^ *\{"(name|id)": "/, "", e); sub(/".*/, "", e)
+      print "K\t" top " " e "\t" strip($0); next
+    }
+    cur != "" { print "B\t" cur "\t" strip($0) }'
+}
+
 [ "$#" -ge 1 ] || usage
 cmd=$1; shift
 case "$cmd" in
@@ -704,5 +838,6 @@ case "$cmd" in
     recipe_load; verify "$@" ;;
   lookup) lookup "$@" ;;
   coverage) coverage "$@" ;;
+  diff) diff_sets "$@" ;;
   *) usage ;;
 esac

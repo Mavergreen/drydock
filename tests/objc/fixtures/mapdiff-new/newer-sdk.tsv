@@ -1,0 +1,3 @@
+class	AppKit	NSBox	-	-	-	10.0	-	0	AppKit/NSBox.h:9	-
+method	AppKit	NSBox	-	setTitle:	v24@0:8@16	10.11	-	0	AppKit/NSBox.h:20	interface
+method	AppKit	NSBox	-	title	@16@0:8	-	-	0	AppKit/NSBox.h:21	interface

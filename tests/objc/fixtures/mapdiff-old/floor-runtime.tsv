@@ -1,0 +1,3 @@
+# objc-runtime 1
+image	AE	-	/System/AE	AAAA	loaded	anchor-apple
+method	NSObject	-	init	@16@0:8	libobjc.A.dylib	active

@@ -1,0 +1,1 @@
+drydock-objc reference sets now build from a reviewed recipe, record which headers each parse reached, and can be compared against a previous set with a diff command.
