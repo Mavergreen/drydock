@@ -712,9 +712,10 @@ endif()
 # platform: the reference-set test DYLD-inserts fixture dylibs into a system process, which CI's macOS 26 runner
 # refuses (an arm64 dylib into an arm64e process); in shipyard it was a maintainer test, run by hand on the 10.9
 # box and the modern Mac. It runs on Darwin 13 (10.9), or anywhere DRYDOCK_OBJC_MAINTAINER=1 asks; elsewhere it
-# is a skip, exit 77. The iTerm2 acceptance test is gated alike: it measures upstream iTerm2 3.0.15 from the
-# cached zip and takes minutes, a maintainer's check. On Linux they are macos-only.
-foreach(t reference-set iterm2-acceptance)
+# is a skip, exit 77. The rebuild test, which regenerates reference/objc from its recipe over the pinned SDKs,
+# and the iTerm2 acceptance test, which measures upstream iTerm2 3.0.15 from the cached zip, are gated alike:
+# each takes minutes, a maintainer's check. On Linux they are macos-only.
+foreach(t reference-set reference-rebuild iterm2-acceptance)
   string(REPLACE "-" "_" n "${t}")
   set(f objc-${t}-test.sh)
   if(APPLE)

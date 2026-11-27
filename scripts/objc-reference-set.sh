@@ -1,44 +1,58 @@
 #!/bin/sh
 # platform: macOS-only -- native Apple compiler, the pinned SDKs and libclang for generation
-#   usage: objc-reference-set.sh capture --output NEW_DIR [--diagnostic]
+#   usage: objc-reference-set.sh capture --output NEW_DIR [--recipe FILE] [--diagnostic]
 #                                        [--floor-framework-override NAME=BINARY --override-reason TEXT]
 #          objc-reference-set.sh capture-tool --output FILE
 #          objc-reference-set.sh dyld-check   (environment lines on stdin)
-#          objc-reference-set.sh build --clang-prefix PREFIX --output NEW_DIR [--runtime CAPTURE_DIR]
+#          objc-reference-set.sh build --clang-prefix PREFIX --output NEW_DIR [--recipe FILE] [--runtime CAPTURE_DIR]
 #                                      [--floor-header FILE]... [--newer-header FILE]...
-#          objc-reference-set.sh verify REF_DIR
+#          objc-reference-set.sh verify [--recipe FILE] REF_DIR
 #          objc-reference-set.sh lookup REF_DIR CLASS KIND SELECTOR
 #          The versioned Objective-C reference set: SDK declaration facts from the pinned floor (10.9)
 #          and newer (11.3) SDKs, and a runtime capture from a real clean floor host, bound together by
 #          manifest.json. Apple bytes never enter it, only derived facts and the identities of what
 #          they were derived from.
-#          capture runs tools/objc-runtime-inventory.m on the floor host (FLOOR_* below) with the
-#          reviewed image closure, root selectors, behavior classes and selectors and absent targets, and writes
+#          Every reviewed input comes from a recipe, --recipe FILE, by default the committed
+#          reference/objc-recipes/mavericks-10.9.recipe. A recipe is data, read and never sourced: one
+#          KEY VALUE per line (a single space between them, the value to the end of the line), a key
+#          repeated for a list, a line starting with # a comment. The keys: name; floor-os, floor-build
+#          and floor-arch, the floor host's identity; floor-image, each image of the reviewed closure;
+#          floor-sdk-arch and newer-sdk-arch, the arch whose pinned SDK each side parses; floor-header and
+#          newer-header, each header parsed, relative to its SDK (or absolute, for fixtures);
+#          initialize-change, root-selector, root-exception, behavior-class and behavior-selector, each a
+#          member of that reviewed list; root-subset, one line per selector (SELECTOR KINDS CLASS...);
+#          absent-target (CLASS KIND SELECTOR); and floor-framework-override (NAME=BINARY), as the
+#          option. All but initialize-change, root-subset and floor-framework-override are required, and
+#          name, the floor identity, the SDK arches and absent-target are given once. Each value has one
+#          form (a selector, a class, an absolute image path, a path without .. and so on); a recipe with
+#          an unknown key, a missing or repeated one, or a value outside its key's form is refused whole.
+#          capture runs tools/objc-runtime-inventory.m on the recipe's floor host with its image
+#          closure, root selectors, behavior classes and selectors and absent target, and writes
 #          NEW_DIR/{floor-runtime.tsv,cluster-witnesses.json}. It refuses a DYLD_* environment before
 #          building anything; the tool refuses everything else it documents. --diagnostic keeps an
+#          unclean host's capture for inspection; build never accepts one.
 #          --floor-framework-override is the one sanctioned exception, for a floor host whose system
 #          framework NAME was replaced (on the reference host AquaTransport replaced Security): BINARY
 #          (there, the preserved Security.original) goes into a private copy of the system
 #          framework in the work directory, must verify there as Apple-signed code, and is loaded
 #          through DYLD_FRAMEWORK_PATH set by this wrapper alone; the tool then proves it loaded
 #          from that copy with the recorded SHA-256 and that no system copy or injected image did.
-#          The override, its source, hash, signature and the reason go into the manifest.
-#          unclean host's capture for inspection; build never accepts one. capture-tool only builds the
+#          The override, its source, hash, signature and the reason go into the manifest. The
+#          recipe's overrides join the option's; either needs --override-reason. capture-tool only builds the
 #          tool (the tests drive it with fixtures). dyld-check applies capture's DYLD_* refusal
 #          to NAME=VALUE lines on stdin: a SIP host strips DYLD_* from any protected exec, /bin/sh
 #          included, so the tests show it an environment that way.
 #          build writes NEW_DIR/{floor-sdk.tsv,floor-signatures.tsv,floor-functions.tsv,newer-sdk.tsv,
 #          newer-signatures.tsv,manifest.json}, plus floor-runtime.tsv and cluster-witnesses.json when
-#          --runtime names a capture that is production, clean, from the floor identity and from the current tool source, whose
-#          classes changed by +initialize are exactly the reviewed INITIALIZE_CHANGES, and whose
-#          R1 witness exceptions are exactly the reviewed ROOT_EXCEPTIONS for every root selector and kind,
-#          but for the selectors and kinds of ROOT_SUBSETS, each held exactly to its own recorded set
+#          --runtime names a capture that is production, clean, from the recipe's floor identity and from the
+#          current tool source, whose classes changed by +initialize are exactly the recipe's initialize-change,
+#          and whose R1 witness exceptions are exactly its root-exception for every root selector and kind,
+#          but for the selectors and kinds of a root-subset, each held exactly to its own recorded set
 #          (the manifest records them as root_exceptions and root_subset_exceptions).
 #          Without --runtime the manifest says runtime "not-captured": the runtime facts, the R1 root
 #          witness among them, are then absent, and absent evidence cannot close anything. The headers
-#          default to each SDK's AppKit.h (AppKit, Foundation and the libSystem headers they include),
-#          with libobjc's C API headers (FLOOR_OBJC_HEADERS) added on the floor side; the --*-header
-#          options replace that list (fixtures). The signature companions are schema 2; the floor
+#          are the recipe's floor-header and newer-header lists; the --*-header options replace a
+#          side's list (fixtures). The signature companions are schema 2; the floor
 #          side alone also writes the C prototype catalog (floor-functions.tsv, "# objc-functions 1"):
 #          every function its parse declares, outside the compiler's own resource headers. Beside it goes
 #          floor-functions-builtin.tsv, the same five columns, copied verbatim from the committed
@@ -62,59 +76,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 . "$HERE/sdk-pins.sh"
 
-# spec: tools/objc-runtime-inventory.m header -- the floor host and the capture's reviewed inputs.
-FLOOR_OS=10.9.5
-FLOOR_BUILD=13F1911
-FLOOR_ARCH=x86_64
-FLOOR_IMAGES='/usr/lib/libobjc.A.dylib
-/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
-/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
-/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit
-/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon
-/System/Library/Frameworks/CoreData.framework/Versions/A/CoreData
-/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore
-/System/Library/Frameworks/QuartzCore.framework/Versions/A/Frameworks/CoreImage.framework/Versions/A/CoreImage
-/System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork'
-# platform: Carbon is in the closure because a Recaulk provider links it (AppKit, Carbon strongly loaded),
-#           so its consumers depend on it; capturing it puts every class it brings into the witness.
-#           CFNetwork is in it because Foundation's NSURLSession classes dispatch to CFNetwork's
-#           __NSCFURLSession family once initialized (INITIALIZE_CHANGES); its methods are measured.
-# platform: the classes whose +initialize changes their superclass or method lists on 10.9.5 13F1911,
-#           in byte order. Foundation's six NSURLSession classes each move under CFNetwork's
-#           __NSCF-prefixed class of the same name; CFNetwork's three in-memory stores move under
-#           NSHTTPCookieStorage, NSURLCache and NSURLCredentialStorage. The capture measures them
-#           initialized (tools/objc-runtime-inventory.m header); a capture whose set differs is
-#           refused, never auto-accepted.
-INITIALIZE_CHANGES='NSURLSession NSURLSessionConfiguration NSURLSessionDataTask NSURLSessionDownloadTask NSURLSessionTask NSURLSessionUploadTask __NSCFMemoryHTTPCookieStorage __NSCFMemoryURLCache __NSCFMemoryURLCredentialStorage'
-# platform: the R1 root-method witness's reviewed selector list (design revision R1 in the plan, its
-#           "R1 selector set"), in byte order. The capture measures both kinds of each. A selector is on
-#           it only when the witness measured, for each kind, exactly the reviewed ROOT_EXCEPTIONS as the
-#           floor classes that do not resolve it, or the selector is in ROOT_SUBSETS. copy and mutableCopy
-#           are off it: NSObject has them, but they answer only through a copyWithZone: the witness does
-#           not measure.
-ROOT_SELECTORS='autorelease class conformsToProtocol: description hash isEqual: isKindOfClass: isMemberOfClass: performSelector: release respondsToSelector: retain self'
-# platform: root selectors whose measured exception sets are strict subsets of ROOT_EXCEPTIONS, one line
-#           each: SELECTOR, the reviewed kinds, then the set in byte order, measured on 10.9.5 13F1911.
-#           Each listed kind is held to exactly that set; the manifest records it per selector. Object
-#           resolves +class but not -class, so only +class is listed: a kind not listed here (-class)
-#           is held to ROOT_EXCEPTIONS like every other root selector, and -class measures exactly them.
-ROOT_SUBSETS='autorelease +- _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder
-class + NSLeafProxy _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder
-release +- _NSZombie_ __NSAtom __NSMessageBuilder
-retain +- _NSZombie_ __NSAtom __NSMessageBuilder'
-# platform: the R1 amendment's accepted residual risk: the floor classes the witness measured as not
-#           resolving the root selectors (Object, NSLeafProxy and CoreFoundation's other roots), in
-#           byte order. The witness measures existence, so NSProxy-rooted classes are not on it. A
-#           capture whose exception set differs from this list is refused, never auto-accepted.
-ROOT_EXCEPTIONS='NSLeafProxy Object _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder'
-BEHAVIOR_CLASSES='NSProxy'
-# platform: what the behavior rows send each BEHAVIOR_CLASSES instance: root selectors that are safe to
-#           send a bare instance (tools/objc-runtime-inventory.m header). The facts are kept; R1 rests on
-#           existence alone.
-BEHAVIOR_SELECTORS='description isKindOfClass: respondsToSelector:'
-# platform: methods the floor must not answer before a provider is linked; one that already resolves
-#           on the capture host means a backfill is loaded, and the capture is refused.
-ABSENT_TARGETS='NSWorkspace - openURLs:withApplicationAtURL:options:configuration:error:'
+RECIPE="$ROOT/reference/objc-recipes/mavericks-10.9.recipe"
 TOOL_SRC="$ROOT/tools/objc-runtime-inventory.m"
 
 usage() { echo "usage: objc-reference-set.sh capture|capture-tool|dyld-check|build|verify|lookup ... (see the header)" >&2; exit 2; }
@@ -123,6 +85,70 @@ sha() { shasum -a 256 "$1" | cut -c1-64; }
 # spec: scripts/objc-reference-set.sh header -- a manifest value must be plain: no quote,
 #       backslash or control byte to escape.
 plain() { printf '%s' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9 ._:;/()+,=-]*$' || fail "unexpected byte in manifest value: $1"; }
+
+# spec: scripts/objc-reference-set.sh header -- a recipe is data: every key has one form, and a line
+#       outside it, an unknown key, a missing key or a repeated single key refuses the whole recipe.
+recipe_check() {
+  [ -f "$RECIPE" ] && [ -r "$RECIPE" ] || fail "unreadable recipe $RECIPE"
+  LC_ALL=C awk -v file="$RECIPE" '
+    function bad(m) { print "objc-reference-set: " file ": " m > "/dev/stderr"; failed = 1 }
+    BEGIN {
+      id = "[A-Za-z_][A-Za-z0-9_]*"; sel = "[A-Za-z_][A-Za-z0-9_:]*"; path = "[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*"
+      form["name"] = "[A-Za-z0-9._-]+"
+      form["floor-os"] = "[0-9]+(\\.[0-9]+)*"
+      form["floor-build"] = "[A-Za-z0-9]+"
+      form["floor-arch"] = form["floor-sdk-arch"] = form["newer-sdk-arch"] = "[a-z0-9_]+"
+      form["floor-image"] = "/" path
+      form["floor-header"] = form["newer-header"] = "/?" path
+      form["initialize-change"] = form["root-exception"] = form["behavior-class"] = id
+      form["root-selector"] = form["behavior-selector"] = sel
+      form["root-subset"] = sel " (\\+-|\\+|-)( " id ")+"
+      form["absent-target"] = id " [+-] " sel
+      form["floor-framework-override"] = "[A-Za-z0-9]+=/" path
+      n = split("name floor-os floor-build floor-arch floor-sdk-arch newer-sdk-arch absent-target", s, " ")
+      for (i = 1; i <= n; i++) single[s[i]] = 1
+      n = split("floor-image floor-header newer-header root-selector root-exception behavior-class behavior-selector", s, " ")
+      for (i = 1; i <= n; i++) listed[s[i]] = 1
+    }
+    /^#/ || /^$/ { next }
+    {
+      k = $0; sub(/ .*/, "", k); v = substr($0, length(k) + 2)
+      if (!(k in form)) { bad("unknown key " k); next }
+      if (v !~ ("^(" form[k] ")$") || (k ~ /(image|header|override)$/ && ("/" v "/") ~ /\/\.\.?\//)) { bad("unexpected value: " $0); next }
+      seen[k]++
+    }
+    END {
+      for (k in single) if (seen[k] > 1) bad("repeated " k)
+      for (k in single) if (!seen[k]) bad("missing " k)
+      for (k in listed) if (!seen[k]) bad("missing " k)
+      exit failed
+    }' "$RECIPE" || fail "refusing recipe $RECIPE"
+}
+recipe_list() {  # $1 key: each value, one per line, possibly none
+  awk -v k="$1" '/^#/ || /^$/ { next } substr($0, 1, length(k) + 1) == k " " { print substr($0, length(k) + 2) }' "$RECIPE"
+}
+recipe_get() {  # $1 key: its one value
+  rg_v=$(recipe_list "$1")
+  [ -n "$rg_v" ] && [ "$(printf '%s\n' "$rg_v" | wc -l | tr -d ' ')" = 1 ] || fail "$RECIPE: $1 must be given once"
+  printf '%s\n' "$rg_v"
+}
+recipe_words() { recipe_list "$1" | tr '\n' ' ' | sed 's/ $//'; }
+recipe_load() {
+  recipe_check
+  FLOOR_OS=$(recipe_get floor-os)
+  FLOOR_BUILD=$(recipe_get floor-build)
+  FLOOR_ARCH=$(recipe_get floor-arch)
+  FLOOR_IMAGES=$(recipe_list floor-image)
+  FLOOR_SDK_ARCH=$(recipe_get floor-sdk-arch)
+  NEWER_SDK_ARCH=$(recipe_get newer-sdk-arch)
+  INITIALIZE_CHANGES=$(recipe_words initialize-change)
+  ROOT_SELECTORS=$(recipe_words root-selector)
+  ROOT_SUBSETS=$(recipe_list root-subset)
+  ROOT_EXCEPTIONS=$(recipe_words root-exception)
+  BEHAVIOR_CLASSES=$(recipe_words behavior-class)
+  BEHAVIOR_SELECTORS=$(recipe_words behavior-selector)
+  ABSENT_TARGETS=$(recipe_get absent-target)
+}
 
 host_build() {  # $1 output; builds the capture tool for this host's arch against its pinned SDK
   case "$(uname -m)" in
@@ -153,10 +179,11 @@ dyld_check() {
 }
 
 capture() {
-  out= diagnostic= overrides= reason=
+  out= diagnostic= overrides= reason= recipe_opt=
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --output) [ "$#" -ge 2 ] && [ -z "$out" ] || usage; out=$2; shift 2 ;;
+      --recipe) [ "$#" -ge 2 ] && [ -z "$recipe_opt" ] || usage; recipe_opt=1 RECIPE=$2; shift 2 ;;
       --diagnostic) diagnostic=--diagnostic; shift ;;
       --floor-framework-override)
         [ "$#" -ge 2 ] || usage
@@ -173,6 +200,17 @@ capture() {
     esac
   done
   [ -n "$out" ] || usage
+  recipe_load
+  recipe_overrides=$(recipe_list floor-framework-override)
+  if [ -n "$recipe_overrides" ]; then
+    while IFS= read -r ov; do
+      ! printf '%s\n' "$overrides" | grep -q "^${ov%%=*}=" || fail "$RECIPE: ${ov%%=*} is overridden twice"
+      overrides="${overrides:+$overrides
+}$ov"
+    done <<EOF_RECIPE_OVERRIDES
+$recipe_overrides
+EOF_RECIPE_OVERRIDES
+  fi
   [ -z "$overrides" ] && [ -z "$reason" ] || { [ -n "$overrides" ] && [ -n "$reason" ]; } || usage
   [ -z "$reason" ] || plain "$reason"
   env | dyld_check || exit 4
@@ -321,7 +359,7 @@ check_runtime() {  # $1 capture dir
   #           set is another one, smaller or larger, is not the reviewed residual risk for that selector.
   #           A ROOT_SUBSETS selector's listed kinds are held to its recorded set instead; a kind it does
   #           not list is held to the six.
-  printf '%s\n' "$ROOT_SUBSETS" | awk -v six="$ROOT_EXCEPTIONS" -v roots="$ROOT_SELECTORS" '
+  [ -z "$ROOT_SUBSETS" ] || printf '%s\n' "$ROOT_SUBSETS" | awk -v six="$ROOT_EXCEPTIONS" -v roots="$ROOT_SELECTORS" '
     BEGIN { n = split(six, x, " "); for (i = 1; i <= n; i++) reviewed[x[i]] = 1
             m = split(roots, r, " "); for (i = 1; i <= m; i++) root[r[i]] = 1 }
     { if (!root[$1] || ($2 != "+-" && $2 != "+" && $2 != "-") || NF - 2 >= n || seen[$1]++) bad = 1
@@ -341,15 +379,7 @@ check_runtime() {  # $1 capture dir
   done; done
 }
 
-# spec: tools/objc-sdk-inventory.c header -- AppKit.h does not include objc/runtime.h or objc/message.h,
-#       which declare objc_msgSend and the rest of libobjc's C API; adding them changes no fact or
-#       signature row, only the function catalog.
-FLOOR_OBJC_HEADERS='usr/include/objc/runtime.h
-usr/include/objc/message.h
-usr/include/objc/objc-exception.h
-usr/include/objc/objc-sync.h'
-
-sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: AppKit.h, plus FLOOR_OBJC_HEADERS on the floor)
+sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: the recipe's SIDE-header list)
   sf_arch=$1 sf_side=$2 sf_work=$3 sf_list=$4
   sf_pin=$(shipyard_sdk_pin "$sf_arch") || fail "no SDK pin for $sf_arch"
   sf_sha=$(printf '%s\n' "$sf_pin" | cut -d' ' -f2)
@@ -360,8 +390,9 @@ sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: A
   [ "$(sha "$sf_archive")" = "$sf_sha" ] || fail "$sf_archive does not match its pin"
   if [ -s "$sf_list" ]; then cp "$sf_list" "$sf_work/$sf_side.args"
   else
-    printf '%s\n' "$sf_sdk/System/Library/Frameworks/AppKit.framework/Headers/AppKit.h" >"$sf_work/$sf_side.args"
-    [ "$sf_side" != floor ] || printf '%s\n' "$FLOOR_OBJC_HEADERS" | sed "s|^|$sf_sdk/|" >>"$sf_work/$sf_side.args"
+    recipe_list "$sf_side-header" | while IFS= read -r sf_h; do
+      case "$sf_h" in /*) printf '%s\n' "$sf_h" ;; *) printf '%s/%s\n' "$sf_sdk" "$sf_h" ;; esac
+    done >"$sf_work/$sf_side.args"
   fi
   : >"$sf_work/$sf_side.headers"
   sf_n=0
@@ -396,7 +427,7 @@ json_list() {  # lines on stdin -> "a", "b"
 rows() { if [ "$(head -c 1 "$1")" = '#' ]; then echo $(($(wc -l <"$1") - 1)); else wc -l <"$1" | tr -d ' '; fi; }
 
 build() {
-  prefix= out= runtime=
+  prefix= out= runtime= recipe_opt=
   floor_list= newer_list=
   tmpl=$(mktemp -d "${TMPDIR:-/tmp}/objc-reference-args.XXXXXX") || fail 'cannot create a temporary'
   trap 'rm -rf "$tmpl"' EXIT
@@ -407,6 +438,7 @@ build() {
       --clang-prefix) [ -z "$prefix" ] || usage; prefix=$2 ;;
       --output) [ -z "$out" ] || usage; out=$2 ;;
       --runtime) [ -z "$runtime" ] || usage; runtime=$2 ;;
+      --recipe) [ -z "$recipe_opt" ] || usage; recipe_opt=1 RECIPE=$2 ;;
       --floor-header) printf '%s\n' "$2" >>"$tmpl/floor" ;;
       --newer-header) printf '%s\n' "$2" >>"$tmpl/newer" ;;
       *) usage ;;
@@ -414,12 +446,13 @@ build() {
     shift 2
   done
   [ -n "$prefix" ] && [ -n "$out" ] || usage
+  recipe_load
   [ -n "${DRYDOCK_OBJC:-}" ] && [ -x "$DRYDOCK_OBJC" ] || fail 'build needs DRYDOCK_OBJC, the built drydock-objc, to digest each SDK header tree'
   [ -z "$runtime" ] || check_runtime "$runtime"
   work=$(new_dir "$out")
   trap 'rm -rf "$tmpl" "$work"' EXIT
-  sdk_facts x86_64 floor "$work" "$tmpl/floor"
-  sdk_facts arm64 newer "$work" "$tmpl/newer"
+  sdk_facts "$FLOOR_SDK_ARCH" floor "$work" "$tmpl/floor"
+  sdk_facts "$NEWER_SDK_ARCH" newer "$work" "$tmpl/newer"
   # spec: the compiled-reader design's "Argument registers at a C call" -- no SDK header declares the
   #       runtime calls the compiler itself emits (__stack_chk_fail), so they are reviewed by hand in
   #       floor-functions-builtin.tsv and copied, never generated.
@@ -463,7 +496,7 @@ build() {
       done
       printf '    "root_selectors": [%s],\n' "$(printf '%s\n' $ROOT_SELECTORS | json_list)"
       printf '    "root_exceptions": [%s],\n' "$(printf '%s\n' $ROOT_EXCEPTIONS | json_list)"
-      subjson=$(printf '%s\n' "$ROOT_SUBSETS" | while read -r s k e; do
+      subjson=$([ -z "$ROOT_SUBSETS" ] || printf '%s\n' "$ROOT_SUBSETS" | while read -r s k e; do
         printf '{"selector": "%s", "kinds": [%s], "exceptions": [%s]}\n' "$s" \
           "$(printf '%s\n' "$k" | fold -w1 | json_list)" "$(printf '%s\n' $e | json_list)"
       done | awk '{printf "%s%s", (NR > 1 ? ", " : ""), $0}')
@@ -611,7 +644,9 @@ case "$cmd" in
   dyld-check) [ "$#" = 0 ] || usage; dyld_check ;;
   capture-tool) [ "$#" = 2 ] && [ "$1" = --output ] || usage; host_build "$2" ;;
   build) build "$@" ;;
-  verify) verify "$@" ;;
+  verify)
+    if [ "${1:-}" = --recipe ]; then [ "$#" -ge 2 ] || usage; RECIPE=$2; shift 2; fi
+    recipe_load; verify "$@" ;;
   lookup) lookup "$@" ;;
   *) usage ;;
 esac

@@ -78,16 +78,16 @@ grep -F "\"analyzer\": \"$DRYDOCK_OBJC_ANALYZER_ID\"" "$T/out/default" >/dev/nul
   fail "default_id: the report names $(grep -o '"analyzer": "[^"]*"' "$T/out/default")"
 echo 'PASS: default_id'
 # spec: tests/README.md (objc_*) -- off macOS, `ctest -L macos-only` names only the halves of split tests (objc_*_macos) and the
-#       maintainer-gated three; any other objc_ test listed there is a test that could run on Linux and does not.
+#       maintainer-gated four; any other objc_ test listed there is a test that could run on Linux and does not.
 if [ -n "${DRYDOCK_BUILD_DIR:-}" ]; then
   "${DRYDOCK_CTEST:-ctest}" --test-dir "$DRYDOCK_BUILD_DIR" -N -L macos-only >"$T/macos-only" 2>&1 || fail 'ctest -N -L macos-only failed'
   sed -n 's/^ *Test *#[0-9]*: //p' "$T/macos-only" | grep '^objc_' >"$T/macos-objc" || :
-  stray=$(grep -Ev '^objc_.*_macos$|^objc_(reference_set|iterm2_acceptance|attest_codex)$' "$T/macos-objc" || :)
+  stray=$(grep -Ev '^objc_.*_macos$|^objc_(reference_set|reference_rebuild|iterm2_acceptance|attest_codex)$' "$T/macos-objc" || :)
   [ -z "$stray" ] || fail "macos_only_honest: these objc_ tests are labelled macos-only but are not a _macos half or a maintainer test: $(echo $stray)"
   if [ "$(uname -s)" = Darwin ]; then
     [ ! -s "$T/macos-objc" ] || fail "macos_only_honest: a Mac lists macos-only objc_ tests: $(echo $(cat "$T/macos-objc"))"
   else
-    for want in objc_reference_set objc_iterm2_acceptance objc_attest_codex objc_sdk_inventory_macos objc_sdk_signatures_macos; do
+    for want in objc_reference_set objc_reference_rebuild objc_iterm2_acceptance objc_attest_codex objc_sdk_inventory_macos objc_sdk_signatures_macos; do
       grep -x "$want" "$T/macos-objc" >/dev/null || fail "macos_only_honest: positive control: $want is not listed as macos-only, so the listing is not being read"
     done
   fi

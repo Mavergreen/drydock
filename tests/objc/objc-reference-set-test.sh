@@ -355,6 +355,50 @@ for f in manifest.json floor-sdk.tsv floor-signatures.tsv floor-functions.tsv fl
 done
 [ "$(ls -A "$T/ref" | wc -l | tr -d ' ')" = 9 ] || fail 'reference has unexpected files'
 sh "$REFSET" verify "$T/ref" >"$T/out" 2>"$T/err" || fail 'a fresh reference does not verify'
+# spec: scripts/objc-reference-set.sh header -- a recipe is data: the committed one with the fixture headers in
+#       place of its own builds exactly what the --*-header options build over its defaults.
+RECIPE="$ROOT/reference/objc-recipes/mavericks-10.9.recipe"
+recipe() {  # $1 output, $2 a sed expression over the committed recipe's lines but its headers; the fixture headers follow
+  grep -Ev '^(floor|newer)-header ' "$RECIPE" | sed -e "${2:-}" >"$1"
+  printf 'floor-header %s\nnewer-header %s\n' "$FX/reference-floor.h" "$FX/reference-newer.h" >>"$1"
+}
+recipe "$T/fx.recipe"
+build --output "$T/refr" --runtime "$T/runtime" --recipe "$T/fx.recipe"
+[ "$rc" = 0 ] || fail "a build from a fixture recipe exits $rc"
+for f in "$T/ref/"* "$T/refr/"*; do
+  cmp -s "$T/ref/$(basename "$f")" "$T/refr/$(basename "$f")" || fail "the recipe build's $(basename "$f") differs from the --*-header build's"
+done
+sh "$REFSET" verify --recipe "$T/fx.recipe" "$T/refr" >"$T/out" 2>"$T/err" || fail 'verify --recipe refused a good recipe'
+# spec: scripts/objc-reference-set.sh header -- an unknown, missing or repeated key, or a value outside its key's
+#       form, is refused by name before anything is measured; a value is never evaluated.
+badrecipe() {  # $1 what, $2 sed expression, $3 the fixed string the refusal must contain
+  recipe "$T/bad.recipe" "$2"
+  cmp -s "$T/bad.recipe" "$T/fx.recipe" && fail "recipe mutation '$1' changed nothing"
+  rm -rf "$T/inj"; mkdir "$T/inj"; : >"$T/inj/x"
+  rc=0; (cd "$T/inj" && sh "$REFSET" build --clang-prefix "$PREFIX" --output "$T/refb" --recipe "$T/bad.recipe") >"$T/out" 2>"$T/err" || rc=$?
+  [ "$rc" = 4 ] && [ ! -e "$T/refb" ] || fail "build accepted a recipe with $1 ($rc)"
+  grep -F -- "$3" "$T/err" >/dev/null || fail "a recipe with $1 was refused, but not for: $3"
+  [ -e "$T/inj/x" ] || fail "a recipe with $1 ran its value"
+  for c in capture verify; do
+    rc=0
+    if [ "$c" = verify ]; then sh "$REFSET" verify --recipe "$T/bad.recipe" "$T/ref" >"$T/out" 2>"$T/err" || rc=$?
+    else sh "$REFSET" capture --recipe "$T/bad.recipe" --output "$T/refb" >"$T/out" 2>"$T/err" || rc=$?; fi
+    [ "$rc" = 4 ] && [ ! -e "$T/refb" ] && grep -F -- "$3" "$T/err" >/dev/null || fail "$c accepted a recipe with $1 ($rc)"
+  done
+}
+badrecipe 'an unknown key' 's/^floor-os /floor-osx /' 'unknown key floor-osx'
+badrecipe 'no floor build' '/^floor-build /d' 'missing floor-build'
+badrecipe 'a repeated floor build' 's/^floor-build \(.*\)/floor-build \1\
+floor-build \1/' 'repeated floor-build'
+badrecipe 'a command in a value' 's/^floor-os .*/floor-os 10.9.5; rm -rf x/' 'floor-os 10.9.5; rm -rf x'
+badrecipe 'a relative image' 's|^floor-image /usr/lib/|floor-image usr/lib/|' 'floor-image usr/lib/libobjc.A.dylib'
+badrecipe 'an escaping header' 's|^name .*|name x\
+floor-header ../etc/passwd|' 'floor-header ../etc/passwd'
+# spec: scripts/objc-reference-set.sh header -- build holds a capture to the recipe's floor identity, not to a constant.
+recipe "$T/other.recipe" 's/^floor-build .*/floor-build 13F34/'
+build --output "$T/refb" --runtime "$T/runtime" --recipe "$T/other.recipe"
+[ "$rc" = 4 ] && [ ! -e "$T/refb" ] && grep -F 'floor is 10.9.5 13F34 x86_64' "$T/err" >/dev/null ||
+  fail "build accepted a 13F1911 capture for a 13F34 recipe ($rc)"
 # spec: tools/objc-sdk-inventory.c header -- the signature companions are schema 2 (parameter GPRs and
 #       variadic); the floor side alone carries the C prototype catalog, schema 1.
 for s in floor newer; do
@@ -505,7 +549,7 @@ check${TAB}recaulk${TAB}/"
 mutant 'a present target' 'absent target not checked absent' "s/${OPEN}${TAB}absent/${OPEN}${TAB}present/"
 mutant 'no behavior' 'behavior of NSProxy not captured' "/^behavior/d"
 mutant 'no witness' 'no root witness' "/^witness/d"
-# spec: scripts/objc-reference-set.sh header -- the classes +initialize changed are exactly the reviewed INITIALIZE_CHANGES.
+# spec: scripts/objc-reference-set.sh header -- the classes +initialize changed are exactly the recipe's initialize-change.
 mutant 'an unreviewed +initialize change' 'classes changed by +initialize NSURLSession NSURLSessionConfiguration NSURLSessionDataTask NSURLSessionDownloadTask NSURLSessionTask NSURLSessionUploadTask RefOld __NSCFMemoryHTTPCookieStorage __NSCFMemoryURLCache __NSCFMemoryURLCredentialStorage are not the reviewed' \
   "s/^check${TAB}recaulk${TAB}/check${TAB}initialize${TAB}-${TAB}RefOld${TAB}changes${TAB}-${TAB}-\\
 check${TAB}recaulk${TAB}/"

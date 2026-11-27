@@ -1,0 +1,105 @@
+# The inputs of reference/objc: scripts/objc-reference-set.sh (capture, build, verify) reads this as
+# data, never as shell. One KEY VALUE per line, a key repeated for a list, # starting a comment line.
+name mavericks-10.9
+
+# The floor host the capture must run on (tools/objc-runtime-inventory.m header).
+floor-os 10.9.5
+floor-build 13F1911
+floor-arch x86_64
+
+# The reviewed image closure. Carbon is in it because a Recaulk provider links it (AppKit, Carbon
+# strongly loaded), so its consumers depend on it; capturing it puts every class it brings into the
+# witness. CFNetwork is in it because Foundation's NSURLSession classes dispatch to CFNetwork's
+# __NSCFURLSession family once initialized (initialize-change); its methods are measured.
+floor-image /usr/lib/libobjc.A.dylib
+floor-image /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+floor-image /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+floor-image /System/Library/Frameworks/AppKit.framework/Versions/C/AppKit
+floor-image /System/Library/Frameworks/Carbon.framework/Versions/A/Carbon
+floor-image /System/Library/Frameworks/CoreData.framework/Versions/A/CoreData
+floor-image /System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore
+floor-image /System/Library/Frameworks/QuartzCore.framework/Versions/A/Frameworks/CoreImage.framework/Versions/A/CoreImage
+floor-image /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork
+
+# The pinned SDKs (scripts/sdk-pins.sh) each side is parsed from, and the headers parsed, relative to
+# that SDK: AppKit.h (AppKit, Foundation and the libSystem headers they include) on both. AppKit.h
+# does not include objc/runtime.h or objc/message.h, which declare objc_msgSend and the rest of
+# libobjc's C API; adding them on the floor changes no fact or signature row, only the function
+# catalog (tools/objc-sdk-inventory.c header).
+floor-sdk-arch x86_64
+newer-sdk-arch arm64
+floor-header System/Library/Frameworks/AppKit.framework/Headers/AppKit.h
+floor-header usr/include/objc/runtime.h
+floor-header usr/include/objc/message.h
+floor-header usr/include/objc/objc-exception.h
+floor-header usr/include/objc/objc-sync.h
+newer-header System/Library/Frameworks/AppKit.framework/Headers/AppKit.h
+
+# The classes whose +initialize changes their superclass or method lists on 10.9.5 13F1911, in byte
+# order. Foundation's six NSURLSession classes each move under CFNetwork's __NSCF-prefixed class of
+# the same name; CFNetwork's three in-memory stores move under NSHTTPCookieStorage, NSURLCache and
+# NSURLCredentialStorage. The capture measures them initialized (tools/objc-runtime-inventory.m
+# header); a capture whose set differs is refused, never auto-accepted.
+initialize-change NSURLSession
+initialize-change NSURLSessionConfiguration
+initialize-change NSURLSessionDataTask
+initialize-change NSURLSessionDownloadTask
+initialize-change NSURLSessionTask
+initialize-change NSURLSessionUploadTask
+initialize-change __NSCFMemoryHTTPCookieStorage
+initialize-change __NSCFMemoryURLCache
+initialize-change __NSCFMemoryURLCredentialStorage
+
+# The R1 root-method witness's reviewed selector list, in byte order. The capture measures both kinds
+# of each. A selector is on it only when the witness measured, for each kind, exactly the reviewed
+# root-exception classes as the floor classes that do not resolve it, or the selector has a
+# root-subset. copy and mutableCopy are off it: NSObject has them, but they answer only through a
+# copyWithZone: the witness does not measure.
+root-selector autorelease
+root-selector class
+root-selector conformsToProtocol:
+root-selector description
+root-selector hash
+root-selector isEqual:
+root-selector isKindOfClass:
+root-selector isMemberOfClass:
+root-selector performSelector:
+root-selector release
+root-selector respondsToSelector:
+root-selector retain
+root-selector self
+
+# Root selectors whose measured exception sets are strict subsets of root-exception: SELECTOR, the
+# reviewed kinds, then the set in byte order, measured on 10.9.5 13F1911. Each listed kind is held
+# to exactly that set; the manifest records it per selector. Object resolves +class but not -class,
+# so only +class is listed: a kind not listed here (-class) is held to root-exception like every
+# other root selector, and -class measures exactly them.
+root-subset autorelease +- _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder
+root-subset class + NSLeafProxy _NSZombie_ __NSAtom __NSGenericDeallocHandler __NSMessageBuilder
+root-subset release +- _NSZombie_ __NSAtom __NSMessageBuilder
+root-subset retain +- _NSZombie_ __NSAtom __NSMessageBuilder
+
+# The R1 amendment's accepted residual risk: the floor classes the witness measured as not resolving
+# the root selectors (Object, NSLeafProxy and CoreFoundation's other roots), in byte order. The
+# witness measures existence, so NSProxy-rooted classes are not on it. A capture whose exception set
+# differs from this list is refused, never auto-accepted.
+root-exception NSLeafProxy
+root-exception Object
+root-exception _NSZombie_
+root-exception __NSAtom
+root-exception __NSGenericDeallocHandler
+root-exception __NSMessageBuilder
+
+# What the behavior rows send each behavior-class instance: root selectors that are safe to send a
+# bare instance (tools/objc-runtime-inventory.m header). The facts are kept; R1 rests on existence
+# alone.
+behavior-class NSProxy
+behavior-selector description
+behavior-selector isKindOfClass:
+behavior-selector respondsToSelector:
+
+# A method the floor must not answer before a provider is linked (CLASS KIND SELECTOR); one that
+# already resolves on the capture host means a backfill is loaded, and the capture is refused.
+absent-target NSWorkspace - openURLs:withApplicationAtURL:options:configuration:error:
+
+# floor-framework-override NAME=BINARY, as capture's option of that name: none for this floor.

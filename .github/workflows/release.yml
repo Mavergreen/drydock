@@ -353,7 +353,7 @@ jobs:
   # install 10.9` fetches in the guest.
   #
   # The suite is run-repo-tests.sh x86_64 with a label filter, which run-repo-tests.sh does not take.
-  # -LE not-in-guest leaves out objc_reference_set and objc_iterm2_acceptance, maintainer tests that
+  # -LE not-in-guest leaves out objc_reference_set, objc_reference_rebuild and objc_iterm2_acceptance, maintainer tests that
   # fetch SDKs and an iTerm2 zip and insert into system processes for up to an hour, run by hand on
   # ultimate-hat; family_conventions, which checks repo policy, not x86_64 behaviour, and needs
   # python3 and PyYAML, which 10.9 lacks; exec_arch_sweep_test, jansson_pin_test, linux_pin_test,
@@ -659,6 +659,7 @@ jobs:
           #   resources_macfuse_pane: a maintainer test; macFUSE's pane nib is never committed, and nothing here names one
           #   objc_attest_codex: its input is codex's kept repro in one maintainer's ~/Library/Caches
           #   objc_reference_set: a maintainer test; this runner refuses its arm64 dylib in an arm64e process
+          #   objc_reference_rebuild: a maintainer test; it regenerates reference/objc over the pinned SDKs
           #   objc_iterm2_acceptance: a maintainer test, on a cached upstream iTerm2
           #   codesign_order_test: its oracle is cctools-862's codesign_allocate, which Xcode 26 does not ship
           #   raise_corpus_test: its corpus is 10.9's /usr/lib, which macOS 26 keeps in the shared cache
@@ -675,6 +676,7 @@ jobs:
               resources_macfuse_pane) echo "SKIP: resources_macfuse_pane: set DRYDOCK_RESOURCES_MACFUSE_NIB *" ;;
               objc_attest_codex) echo "SKIP objc_attest_codex: */Library/Caches/mm-build/codex-native-sweep-repro is absent" ;;
               objc_reference_set) echo "SKIP objc_reference_set: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1" ;;
+              objc_reference_rebuild) echo "SKIP objc_reference_rebuild: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1" ;;
               objc_iterm2_acceptance) echo "SKIP objc_iterm2_acceptance: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1" ;;
               codesign_order_test) echo "SKIP: * is not cctools-862's, whose verdicts this test pins" ;;
               raise_corpus_test) echo "SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own" ;;

@@ -59,7 +59,7 @@ done
 
 above() { awk -v job="$1" '/^  #/ { c = c $0 "\n"; next } $1 == job ":" && /^  [^ ]/ { printf "%s", c; exit } { c = "" }' "$W"; }
 gc=$(above on-target)
-NOT_IN_GUEST="exec_arch_sweep_test family_conventions jansson_pin_test linux_pin_test mantle_raise_test no_superpowers_citations_test objc_attest_codex objc_iterm2_acceptance objc_reference_set resources_instantiate resources_macfuse_pane rosetta_free_test"
+NOT_IN_GUEST="exec_arch_sweep_test family_conventions jansson_pin_test linux_pin_test mantle_raise_test no_superpowers_citations_test objc_attest_codex objc_iterm2_acceptance objc_reference_rebuild objc_reference_set resources_instantiate resources_macfuse_pane rosetta_free_test"
 for t in $NOT_IN_GUEST; do
   has "on-target's comment says why $t is not-in-guest" "$gc" "$t"
 done
@@ -275,6 +275,7 @@ want_allowed="resources_instantiate: SKIP resources_instantiate: AppKit on 10.9
 resources_macfuse_pane: SKIP: resources_macfuse_pane: set DRYDOCK_RESOURCES_MACFUSE_NIB *
 objc_attest_codex: SKIP objc_attest_codex: */Library/Caches/mm-build/codex-native-sweep-repro is absent
 objc_reference_set: SKIP objc_reference_set: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1
+objc_reference_rebuild: SKIP objc_reference_rebuild: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1
 objc_iterm2_acceptance: SKIP objc_iterm2_acceptance: a maintainer test -- it runs on 10.9, or here with DRYDOCK_OBJC_MAINTAINER=1
 codesign_order_test: SKIP: * is not cctools-862's, whose verdicts this test pins
 raise_corpus_test: SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own
@@ -290,7 +291,7 @@ has "x86len_oracle_test may not run, for want of cctools' otool" "$two" "is not 
 has "... or of 10.9's corpus" "$two" "is absent; the corpus is 10.9's own images"
 has "rebase_oracle_test may not run, for want of dyldinfo" "$two" "SKIP: no dyldinfo here"
 has "... or of 10.9's corpus" "$two" "SKIP: /usr/lib holds no dylibs here; the corpus is 10.9's own"
-for t in resources_instantiate resources_macfuse_pane objc_attest_codex objc_reference_set objc_iterm2_acceptance codesign_order_test \
+for t in resources_instantiate resources_macfuse_pane objc_attest_codex objc_reference_set objc_reference_rebuild objc_iterm2_acceptance codesign_order_test \
          raise_corpus_test raise_oracle_counts_test hdrref_table_rule_test raise_runs_test mantle_raise_test \
          legacysupport_rename_test x86len_oracle_test rebase_oracle_test; do
   has "the runner says why $t may not run" "$su" "#   $t: "
