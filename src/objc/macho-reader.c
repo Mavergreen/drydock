@@ -53,10 +53,10 @@
  * inside a fixed frame, whose only reads are 64-bit reloads into registers the same rule then
  * governs; a store anywhere else, a read of the slot of any other kind, a frame-address escape
  * reaching it, or another value in it at a reload that is called through is cannot-measure.
- * An instruction may_write does not classify, or says only may write any register, leaves such a
- * register unknown, not cleared: a call
- * through it after is cannot-measure, not a lost send. Values spilled to frame slots carry a
- * further stated limit, given with the value kinds below.
+ * An instruction may_write cannot classify, or only guesses may write any register, leaves such a
+ * register's value unknown but still tracked, so a later call through it is cannot-measure, not a
+ * lost send. Values spilled to frame slots carry a further stated limit, given with the value
+ * kinds below.
  *
  * Argument registers. An entry point live in an argument register at a call or tail jump is "passed as
  * an argument", cannot-measure, unless the call provably does not read that register (call_arg_regs).

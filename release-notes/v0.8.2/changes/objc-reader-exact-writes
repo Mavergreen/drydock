@@ -1,0 +1,1 @@
+drydock-objc now follows an objc_msgSend held in a register past pop, absolute-address moves, string moves and stores, leave, jrcxz, xchg and pinsrw, instead of losing the sends after them.
