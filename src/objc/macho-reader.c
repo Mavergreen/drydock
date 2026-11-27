@@ -53,7 +53,8 @@
  * inside a fixed frame, whose only reads are 64-bit reloads into registers the same rule then
  * governs; a store anywhere else, a read of the slot of any other kind, a frame-address escape
  * reaching it, or another value in it at a reload that is called through is cannot-measure.
- * An instruction may_write does not classify leaves such a register unknown, not cleared: a call
+ * An instruction may_write does not classify, or says only may write any register, leaves such a
+ * register unknown, not cleared: a call
  * through it after is cannot-measure, not a lost send. Values spilled to frame slots carry a
  * further stated limit, given with the value kinds below.
  *
@@ -932,8 +933,9 @@ static int metadata(Slice *s) {
 typedef ObjcIns Ins;
 
 /* 0 only when this instruction provably does not write register r. *known is 0 when the answer
- * is the default for an instruction this does not classify. */
+ * is a guess: the default for an instruction this does not classify, or "may write any register". */
 static int write_rule(const Ins *x0, int r, int *known) {
+#define COARSE(c) ((c) ? (*known = 0, 1) : 0)   /* "may write any register" is not a classification */
     Ins y = objc_x86_byte_regs(x0);
     const Ins *x = &y;
     int op = x->op, low3 = op & 7, dst_rm = x->modrm && x->mod == 3 && x->rm == r;
@@ -950,7 +952,7 @@ static int write_rule(const Ins *x0, int r, int *known) {
         case 0x88: case 0x89: return dst_rm;
         case 0x86: case 0x87: return dst_reg || dst_rm;   /* xchg */
         case 0x8A: case 0x8B: case 0x8D: case 0x63: case 0x69: case 0x6B: return dst_reg;
-        case 0xC6: case 0xC7: return (x->reg & 7) ? 1 : dst_rm;
+        case 0xC6: case 0xC7: return (x->reg & 7) ? COARSE(1) : dst_rm;
         case 0x80: case 0x81: case 0x83: return (x->reg & 7) == 7 ? 0 : dst_rm;
         case 0x84: case 0x85: case 0xA8: case 0xA9: return 0;
         case 0xC0: case 0xC1: case 0xD0: case 0xD1: case 0xD2: case 0xD3: return dst_rm;
@@ -961,12 +963,12 @@ static int write_rule(const Ins *x0, int r, int *known) {
         case 0xFE: case 0xFF:
             if ((x->reg & 7) <= 1) return dst_rm;
             if ((x->reg & 7) == 6) return 0;
-            return 1;
+            return COARSE(1);
         case 0x90: return x->rex & 1 ? r == 8 || r == REG_RAX : 0;
         case 0x98: return r == REG_RAX;
         case 0x99: return r == REG_RDX;
         case 0x68: case 0x6A: case 0x9C: case 0x9D: return 0;   /* push imm, pushf, popf */
-        case 0x8F: return (x->reg & 7) ? 1 : dst_rm;            /* pop r/m */
+        case 0x8F: return (x->reg & 7) ? COARSE(1) : dst_rm;    /* pop r/m; XOP */
         case 0xA0: case 0xA1: return r == REG_RAX;              /* mov rax, moffs */
         case 0xA2: case 0xA3: case 0xE3: return 0;              /* mov moffs, rax; jrcxz */
         case 0xA4: case 0xA5: return r == REG_RSI || r == REG_RDI || ((x->f3 || x->f2) && r == REG_RCX);
@@ -1004,30 +1006,31 @@ static int write_rule(const Ins *x0, int r, int *known) {
     /* 0F 38 / 0F 3A and VEX: only these write a general-purpose register (movbe, crc32, pextr*,
      * extractps, the BMI group, movmsk, movd/movq to r/m, pextrw, cvt*2si); treat them as
      * writing any register. Everything else in these maps writes vector registers or memory. */
-    if (x->map == 2) return op == 0xF0 || op == 0xF1;
-    if (x->map == 3) return op >= 0x14 && op <= 0x17;
+    if (x->map == 2) return COARSE(op == 0xF0 || op == 0xF1);
+    if (x->map == 3) return COARSE(op >= 0x14 && op <= 0x17);
     if (x->map == 4) {
-        if (x->vexmap == 1) return op == 0x50 || op == 0xD7 || op == 0x7E || op == 0xC5 || op == 0x2C || op == 0x2D;
-        if (x->vexmap == 2) return op >= 0xF0;
-        if (x->vexmap == 3) return (op >= 0x14 && op <= 0x17) || op == 0xF0;
+        if (x->vexmap == 1) return COARSE(op == 0x50 || op == 0xD7 || op == 0x7E || op == 0xC5 || op == 0x2C || op == 0x2D);
+        if (x->vexmap == 2) return COARSE(op >= 0xF0);
+        if (x->vexmap == 3) return COARSE((op >= 0x14 && op <= 0x17) || op == 0xF0);
         *known = 0;
         return 1;
     }
     /* EVEX: only these write a general-purpose register (movd/movq/movw to r/m, pextrw, pextr*,
      * extractps, and the float-to-int conversions). EVEX has no other GPR destination. */
     if (x->map == 5) {
-        if (x->vexmap == 1) return op == 0x7E || op == 0xC5 || op == 0x2C || op == 0x2D || op == 0x78 || op == 0x79;
-        if (x->vexmap == 3) return op >= 0x14 && op <= 0x17;
-        if (x->vexmap == 5) return op == 0x7E || op == 0x2C || op == 0x2D || op == 0x78 || op == 0x79;
+        if (x->vexmap == 1) return COARSE(op == 0x7E || op == 0xC5 || op == 0x2C || op == 0x2D || op == 0x78 || op == 0x79);
+        if (x->vexmap == 3) return COARSE(op >= 0x14 && op <= 0x17);
+        if (x->vexmap == 5) return COARSE(op == 0x7E || op == 0x2C || op == 0x2D || op == 0x78 || op == 0x79);
         if (x->vexmap == 2 || x->vexmap == 6) return 0;
     }
     *known = 0;
     return 1;
+#undef COARSE
 }
 
 static int may_write(const Ins *x, int r) { int known = 1; return write_rule(x, r, &known); }
 
-/* 0 when may_write's answer for x is only its default (its "writes" is not a classification). */
+/* 0 when may_write's answer for x is a guess (its "writes" is not a classification). */
 static int may_write_known(const Ins *x) { int known = 1; write_rule(x, 0, &known); return known; }
 
 

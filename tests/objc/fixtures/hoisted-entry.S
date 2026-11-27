@@ -45,7 +45,9 @@
  *   FORM 24 likewise in rax, with xchg %eax, %ecx
  *   FORM 25 as FORM 0, with pinsrw from ecx (iTerm2 3.0.15 packs bytes into xmm0 between sends): it
  *           writes only a vector register, five sends
- * FORMS 2..9, 11, 14..16 and 18..24 are cannot-measure: the entry point escapes, or a call through it may not be one.
+ *   FORM 26 as FORM 15, with crc32l %eax, %ecx: the reader says only that it may write any register
+ *   FORM 27 likewise, with vpmovmskb %xmm0, %eax
+ * FORMS 2..9, 11, 14..16, 18..24, 26 and 27 are cannot-measure: the entry point escapes, or a call through it may not be one.
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -158,6 +160,10 @@ _main:
 	cpuid
 #elif FORM == 25
 	pinsrw $4, %ecx, %xmm0
+#elif FORM == 26
+	crc32l %eax, %ecx
+#elif FORM == 27
+	vpmovmskb %xmm0, %eax
 #elif FORM == 16
 	movq _objc_msgSend@GOTPCREL(%rip), %r13
 	movq L_classref_NSObject(%rip), %rdi

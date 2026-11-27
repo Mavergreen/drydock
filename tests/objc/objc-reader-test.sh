@@ -241,7 +241,7 @@ for n in 0 1 10 12 13 17 23 25; do
   send _main classref:NSObject selref:hash
   [ "$(awk -F '\t' '$2 == "dispatch-call" {print $4}' "$T/out" | sort -u | wc -l | tr -d ' ')" = 5 ] || fail "hoisted entry point form $n: sends share a site"
 done
-for n in 2 3 4 5 6 7 8 9 11 14 15 16 18 19 20 21 22 24; do
+for n in 2 3 4 5 6 7 8 9 11 14 15 16 18 19 20 21 22 24 26 27; do
   fxcc -DFORM="$n" "$FX/hoisted-entry.S" -o "$T/hoisted$n" -lobjc
   read_artifact "$T/hoisted$n"; refused "hoisted entry point form $n" indirect-objc-entry
 done
@@ -256,11 +256,15 @@ for form in 14:rcx:5 16:r13:6 18:rax:5 19:rax:5 20:rsi:5 21:rdi:5 22:rdi:5 24:ra
   grep "^error	indirect-objc-entry	.*	objc entry point in $reg is read other than to call through it (a spill, a copy or an escape)\$" "$T/out" >/dev/null ||
     fail "hoisted entry point form $n: the read of $reg is not named"
 done
-# spec: src/objc/macho-reader.c transfer -- an instruction may_write does not classify (cpuid) leaves what the register
-#       holds unknown, not cleared: the next call through it is refused, not lost.
-read_artifact "$T/hoisted15"
-grep '^error	indirect-objc-entry	.*	objc entry point in r12 is called through ' "$T/out" >/dev/null ||
-  fail 'hoisted entry point form 15: the call through r12 after cpuid is not named'
+# spec: src/objc/macho-reader.c transfer -- an instruction may_write does not classify (cpuid), or says only may write
+#       any register (crc32, vpmovmskb), leaves what the register holds unknown, not cleared: the next call through
+#       it is refused, not lost.
+for form in 15:cpuid 26:crc32 27:vpmovmskb; do
+  n=${form%%:*}
+  read_artifact "$T/hoisted$n"
+  grep '^error	indirect-objc-entry	.*	objc entry point in r12 is called through ' "$T/out" >/dev/null ||
+    fail "hoisted entry point form $n: the call through r12 after ${form#*:} is not named"
+done
 # spec: src/objc/macho-reader.c entry_escapes -- a store to a global names the address it is stored to.
 read_artifact "$T/hoisted7"
 g=$(printf '0x%x' "$((0x$("$NM" "$T/hoisted7" | awk '$3 == "_hoisted_global" {print $1}')))")
