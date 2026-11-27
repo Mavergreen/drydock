@@ -42,7 +42,9 @@
  * atomic, as the signature companion is.
  *
  * After a successful parse, stderr carries one "objc-sdk-inventory: resource-header PATH" line per
- * file included from below the compiler resource directory, PATH relative to it, sorted. */
+ * file included from below the compiler resource directory, PATH relative to it, sorted; then one
+ * "objc-sdk-inventory: sdk-header PATH" line per file the parse entered below the SDK (the explicit
+ * headers among them), PATH the resolved file relative to the resolved SDK, sorted. */
 #define _DARWIN_C_SOURCE
 #include <clang-c/Index.h>
 #include <stdio.h>
@@ -521,24 +523,36 @@ static enum CXChildVisitResult visit(CXCursor c, CXCursor parent, CXClientData d
     return CXChildVisit_Continue;
 }
 static int compare(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
-/* Each file the parse included from below the compiler resource directory, relative to it. */
+/* Each file the parse included from below one root (the compiler resource directory, the SDK),
+ * relative to it. */
 struct inclusions { const char *root; size_t length; char **paths; size_t n, capacity; };
+static int keep(struct inclusions *in, const char *resolved) {
+    if (strncmp(resolved, in->root, in->length) || resolved[in->length] != '/') return 0;
+    if (strpbrk(resolved, "\r\n")) cannot("newline in an included header path");
+    if (in->n == in->capacity) {
+        in->capacity = in->capacity ? 2 * in->capacity : 64;
+        if (!(in->paths = realloc(in->paths, in->capacity * sizeof *in->paths))) cannot("out of memory");
+    }
+    in->paths[in->n++] = copy(resolved + in->length + 1);
+    return 1;
+}
 static void included(CXFile file, CXSourceLocation *stack, unsigned depth, CXClientData data) {
     struct inclusions *in = data;
     CXString name = clang_getFileName(file);
     const char *s = clang_getCString(name);
     char *resolved = s ? realpath(s, NULL) : NULL;
     (void)stack; (void)depth;
-    if (resolved && !strncmp(resolved, in->root, in->length) && resolved[in->length] == '/') {
-        if (strpbrk(resolved, "\r\n")) cannot("newline in a resource header path");
-        if (in->n == in->capacity) {
-            in->capacity = in->capacity ? 2 * in->capacity : 64;
-            if (!(in->paths = realloc(in->paths, in->capacity * sizeof *in->paths))) cannot("out of memory");
-        }
-        in->paths[in->n++] = copy(resolved + in->length + 1);
-    }
+    if (resolved && !keep(&in[0], resolved)) keep(&in[1], resolved);
     free(resolved);
     clang_disposeString(name);
+}
+static void report(struct inclusions *in, const char *label) {
+    if (in->n > 1) qsort(in->paths, in->n, sizeof *in->paths, compare);
+    for (size_t i = 0; i < in->n; ++i) {
+        if (!i || strcmp(in->paths[i], in->paths[i - 1])) fprintf(stderr, "objc-sdk-inventory: %s %s\n", label, in->paths[i]);
+        free(in->paths[i]);
+    }
+    free(in->paths);
 }
 /* Temporaries not yet linked into place; a failure exit removes them. */
 static char *pending[2];
@@ -680,14 +694,10 @@ int main(int argc, char **argv) {
             clang_getCString(clang_version), inventory.sdk);
     clang_disposeString(clang_version);
     {
-        struct inclusions in = {resource_dir, strlen(resource_dir), NULL, 0, 0};
-        clang_getInclusions(tu, included, &in);
-        if (in.n > 1) qsort(in.paths, in.n, sizeof *in.paths, compare);
-        for (size_t i = 0; i < in.n; ++i) {
-            if (!i || strcmp(in.paths[i], in.paths[i - 1])) fprintf(stderr, "objc-sdk-inventory: resource-header %s\n", in.paths[i]);
-            free(in.paths[i]);
-        }
-        free(in.paths);
+        struct inclusions in[2] = {{resource_dir, strlen(resource_dir), NULL, 0, 0}, {inventory.sdk, strlen(inventory.sdk), NULL, 0, 0}};
+        clang_getInclusions(tu, included, in);
+        report(&in[0], "resource-header");
+        report(&in[1], "sdk-header");
     }
     if (inventory.nfns > 1) qsort(inventory.fns, inventory.nfns, sizeof(*inventory.fns), compare);
     merge_functions(&inventory);

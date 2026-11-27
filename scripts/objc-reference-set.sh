@@ -8,6 +8,7 @@
 #                                      [--floor-header FILE]... [--newer-header FILE]...
 #          objc-reference-set.sh verify [--recipe FILE] REF_DIR
 #          objc-reference-set.sh lookup REF_DIR CLASS KIND SELECTOR
+#          objc-reference-set.sh coverage REF_DIR SDK_ROOT floor|newer
 #          The versioned Objective-C reference set: SDK declaration facts from the pinned floor (10.9)
 #          and newer (11.3) SDKs, and a runtime capture from a real clean floor host, bound together by
 #          manifest.json. Apple bytes never enter it, only derived facts and the identities of what
@@ -48,7 +49,11 @@
 #          current tool source, whose classes changed by +initialize are exactly the recipe's initialize-change,
 #          and whose R1 witness exceptions are exactly its root-exception for every root selector and kind,
 #          but for the selectors and kinds of a root-subset, each held exactly to its own recorded set
-#          (the manifest records them as root_exceptions and root_subset_exceptions).
+#          (the manifest records them as root_exceptions and root_subset_exceptions), and whose framework
+#          overrides (NAME=SOURCE) are exactly the recipe's floor-framework-override list.
+#          The manifest names the recipe as recipe {name, sha256}, and each SDK side lists as
+#          reached_headers every header below its SDK the parse entered (the producer reports them),
+#          resolved and SDK-relative, sorted: what the facts can speak for.
 #          Without --runtime the manifest says runtime "not-captured": the runtime facts, the R1 root
 #          witness among them, are then absent, and absent evidence cannot close anything. The headers
 #          are the recipe's floor-header and newer-header lists; the --*-header options replace a
@@ -65,10 +70,16 @@
 #          The extractor identity names, and digests, only the compiler resource headers the parse
 #          consumed (the producer reports them): host packages that ship different extra headers
 #          (clang22-cross adds arm_*.h) are the same input, and an edit to a consumed one is not.
-#          verify recomputes every hash and row count the manifest lists and refuses an unlisted file.
+#          verify recomputes every hash and row count the manifest lists and refuses an unlisted file;
+#          given --recipe, it also refuses a manifest that names another recipe's SHA-256.
 #          lookup prints what the reference says about CLASS KIND SELECTOR: one floor-sdk, one
 #          floor-runtime and one newer-sdk line. It is a reading aid for reviewers and tests, not the
 #          classifier: it walks declared superclasses only and treats protocol members as declarations.
+#          coverage prints, for the side's SDK tree under SDK_ROOT (the directory its archive name
+#          names, without .tar.xz), one row per unit: UNIT, its .h files, how many of them the side
+#          reached, and the first in byte order it did not (or -), TAB-separated and sorted by UNIT. A
+#          unit is the innermost NAME.framework holding the file, else the file's directory. A reached
+#          header missing from that tree is refused: the tree is not the one parsed.
 #          Exit 0 done, 2 usage, 4 cannot measure (nothing is left at NEW_DIR).
 set -eu
 unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH SDKROOT CCC_OVERRIDE_OPTIONS
@@ -79,7 +90,7 @@ ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 RECIPE="$ROOT/reference/objc-recipes/mavericks-10.9.recipe"
 TOOL_SRC="$ROOT/tools/objc-runtime-inventory.m"
 
-usage() { echo "usage: objc-reference-set.sh capture|capture-tool|dyld-check|build|verify|lookup ... (see the header)" >&2; exit 2; }
+usage() { echo "usage: objc-reference-set.sh capture|capture-tool|dyld-check|build|verify|lookup|coverage ... (see the header)" >&2; exit 2; }
 fail() { echo "objc-reference-set: $*" >&2; exit 4; }
 sha() { shasum -a 256 "$1" | cut -c1-64; }
 # spec: scripts/objc-reference-set.sh header -- a manifest value must be plain: no quote,
@@ -349,6 +360,10 @@ check_runtime() {  # $1 capture dir
       if (!witnesses) bad("capture has no root witness")
       exit failed
     }' "$rt" || fail "refusing runtime capture $1"
+  got_ov=$(awk -F '\t' '$1 == "override" {print $2 "=" $4}' "$rt" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+  want_ov=$(recipe_list floor-framework-override | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+  [ "$got_ov" = "$want_ov" ] ||
+    fail "refusing runtime capture $1: its framework overrides ${got_ov:-none} are not the recipe's ${want_ov:-none}"
   changes=$(awk -F '\t' '$1 == "check" && $2 == "initialize" {print $4}' "$rt" | LC_ALL=C sort -u | tr '\n' ' ' | sed 's/ $//')
   [ "$changes" = "$INITIALIZE_CHANGES" ] ||
     fail "refusing runtime capture $1: its classes changed by +initialize $changes are not the reviewed $INITIALIZE_CHANGES"
@@ -410,6 +425,7 @@ sdk_facts() {  # $1 arch  $2 floor|newer  $3 work  $4 header list file (empty: t
   sh "$HERE/objc-sdk-inventory.sh" "$@" >"$sf_work/$sf_side-sdk.tsv" 2>"$sf_work/$sf_side.log" ||
     { tail -5 "$sf_work/$sf_side.log" >&2; fail "the $sf_side SDK producer failed"; }
   sed -n 's/^objc-sdk-inventory: resource-header //p' "$sf_work/$sf_side.log" >"$sf_work/$sf_side.resources"
+  sed -n 's/^objc-sdk-inventory: sdk-header //p' "$sf_work/$sf_side.log" >"$sf_work/$sf_side.reached"
   sf_tree=$("$DRYDOCK_OBJC" evidence --sdk-digest-only --sdk-root "$sf_sdk") || fail "cannot digest the $sf_side SDK's header tree"
   printf '%s %s %s\n' "$sf_tarball" "$sf_sha" "$sf_tree" >"$sf_work/$sf_side.identity"
 }
@@ -466,6 +482,7 @@ build() {
   m="$work/manifest.json.new"
   {
     printf '{\n  "schema": 1,\n'
+    printf '  "recipe": {"name": "%s", "sha256": "%s"},\n' "$(recipe_get name)" "$(sha "$RECIPE")"
     for side in floor newer; do
       read -r archive archive_sha tree <"$work/$side.identity"
       # spec: tools/README.objc-sdk-inventory.md -- the parsed target is x86_64-apple-macos10.9 for both SDKs.
@@ -474,6 +491,13 @@ build() {
       printf '  "%s_sdk": {\n' "$side"
       printf '    "archive": "%s",\n    "archive_sha256": "%s",\n    "header_tree_sha256": "%s",\n' "$archive" "$archive_sha" "$tree"
       printf '    "headers": [%s],\n' "$(json_list <"$work/$side.headers")"
+      if [ -s "$work/$side.reached" ]; then
+        printf '    "reached_headers": [\n'
+        while IFS= read -r v; do plain "$v"; done <"$work/$side.reached"
+        sed 's/.*/      "&"/;$!s/$/,/' "$work/$side.reached"
+        printf '    ],\n'
+      else printf '    "reached_headers": [],\n'
+      fi
       printf '    "parsed_target": "%s",\n    "facts": "%s-sdk.tsv",\n    "signatures": "%s-signatures.tsv"' "$target" "$side" "$side"
       [ "$side" != floor ] || printf ',\n    "functions": "floor-functions.tsv",\n    "builtin_functions": "floor-functions-builtin.tsv"'
       printf '\n  },\n'
@@ -546,7 +570,7 @@ build() {
     done
     printf '\n  ]\n}\n'
   } >"$m"
-  rm -f "$work"/*.identity "$work"/*.args "$work"/*.headers "$work"/*.log "$work"/*.resources
+  rm -f "$work"/*.identity "$work"/*.args "$work"/*.headers "$work"/*.log "$work"/*.resources "$work"/*.reached
   mv "$m" "$work/manifest.json"
   verify "$work" >/dev/null
   mv "$work" "$out" || fail "cannot move the reference set into $out"
@@ -595,6 +619,11 @@ verify() {
     not-captured) ! printf '%s\n' "$listed" | grep -q '^floor-runtime.tsv ' || fail 'runtime listed but not captured' ;;
     *) fail "$d/manifest.json has no runtime_status" ;;
   esac
+  if [ -n "${verify_recipe:-}" ]; then
+    named=$(sed -n 's/^  "recipe": {"name": "\([^"]*\)", "sha256": "\([0-9a-f]\{64\}\)"},$/\1 \2/p' "$d/manifest.json")
+    [ -n "$named" ] || fail "$d/manifest.json names no recipe"
+    [ "${named#* }" = "$(sha "$RECIPE")" ] || fail "$d/manifest.json was built from recipe $named, not $RECIPE ($(sha "$RECIPE"))"
+  fi
   echo "objc-reference-set: $d verified"
 }
 
@@ -637,6 +666,32 @@ lookup() {
   done
 }
 
+coverage() {
+  [ "$#" = 3 ] || usage
+  d=$1 root=$2 side=$3
+  case "$side" in floor|newer) ;; *) usage ;; esac
+  verify "$d" >/dev/null || exit 4
+  block() { awk -v side="$side" '$0 == "  \"" side "_sdk\": {" {b = 1; next} b && $0 ~ /^  }/ {exit} b' "$d/manifest.json"; }
+  archive=$(block | sed -n 's/^    "archive": "\(.*\)\.tar\.xz",$/\1/p')
+  [ -n "$archive" ] || fail "$d/manifest.json names no $side SDK archive"
+  tree="$root/$archive"
+  [ -d "$tree" ] || fail "no $side SDK tree at $tree"
+  cv=$(mktemp -d "${TMPDIR:-/tmp}/objc-reference-coverage.XXXXXX") || fail 'cannot create a temporary'
+  trap 'rm -rf "$cv"' EXIT
+  block | awk '/^    \]/ {exit} r {gsub(/^ *"|",?$/, ""); print} $0 == "    \"reached_headers\": [" {r = 1}' | LC_ALL=C sort >"$cv/reached"
+  block | grep -q '^    "reached_headers": ' || fail "$d/manifest.json lists no $side reached_headers"
+  (cd "$tree" && find . -type f -name '*.h') | sed 's|^\./||' | LC_ALL=C sort >"$cv/all"
+  stray=$(LC_ALL=C comm -13 "$cv/all" "$cv/reached" | head -1)
+  [ -z "$stray" ] || fail "reached header $stray is not in $tree"
+  LC_ALL=C awk -F '\t' -v reached="$cv/reached" '
+    function unit(p) { if (match(p, /.*\.framework\//)) return substr(p, 1, RLENGTH - 1); if (sub(/\/[^\/]*$/, "", p)) return p; return "." }
+    BEGIN { while ((getline line < reached) > 0) r[line] = 1 }
+    { u = unit($0); if (!(u in total)) miss[u] = "-"; total[u]++
+      if ($0 in r) got[u]++; else if (miss[u] == "-") miss[u] = $0 }
+    END { for (u in total) print u "\t" total[u] "\t" (got[u] + 0) "\t" miss[u] }' "$cv/all" | LC_ALL=C sort
+  rm -rf "$cv"; trap - EXIT
+}
+
 [ "$#" -ge 1 ] || usage
 cmd=$1; shift
 case "$cmd" in
@@ -645,8 +700,9 @@ case "$cmd" in
   capture-tool) [ "$#" = 2 ] && [ "$1" = --output ] || usage; host_build "$2" ;;
   build) build "$@" ;;
   verify)
-    if [ "${1:-}" = --recipe ]; then [ "$#" -ge 2 ] || usage; RECIPE=$2; shift 2; fi
+    if [ "${1:-}" = --recipe ]; then [ "$#" -ge 2 ] || usage; RECIPE=$2 verify_recipe=1; shift 2; fi
     recipe_load; verify "$@" ;;
   lookup) lookup "$@" ;;
+  coverage) coverage "$@" ;;
   *) usage ;;
 esac

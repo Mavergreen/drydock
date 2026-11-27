@@ -28,7 +28,9 @@ producer do not ship or become catalog-consumer runtime dependencies.
 Success: exit 0, bytewise sorted, exact-duplicate-deduplicated TSV on stdout; no header row.
 Version, SDK path and diagnostics go to stderr. So does one `objc-sdk-inventory: resource-header PATH` line per
 compiler resource header the parse included (PATH relative to the resource directory), which
-`scripts/objc-reference-set.sh` digests as the extractor identity. Usage errors exit 2. Cannot-measure exits 4,
+`scripts/objc-reference-set.sh` digests as the extractor identity, and one `objc-sdk-inventory: sdk-header PATH`
+line per file the parse entered below the SDK (PATH the resolved file relative to the resolved SDK), which it
+records as the side's `reached_headers`. Usage errors exit 2. Cannot-measure exits 4,
 including unreadable inputs, incomplete SDK/resource directories, parser errors and failures to
 resolve category ownership or method encodings. All declarations are accumulated and validated
 before any facts are emitted. A valid non-Objective-C header emits an empty successful result;

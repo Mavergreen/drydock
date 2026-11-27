@@ -21,6 +21,12 @@ if [ -z "$PREFIX" ]; then
 fi
 fail() { echo "FAIL: $*" >&2; [ ! -f "$T/err" ] || tail -15 "$T/err" >&2; exit 1; }
 OPEN='openURLs:withApplicationAtURL:options:configuration:error:'
+# spec: scripts/objc-reference-set.sh header -- the committed recipe declares the floor host's Security
+#       override; PLAIN is it without one, for captures and builds that are not that host's.
+RECIPE="$ROOT/reference/objc-recipes/mavericks-10.9.recipe"
+PLAIN="$T/plain.recipe"
+grep -v '^floor-framework-override ' "$RECIPE" >"$PLAIN"
+cmp -s "$PLAIN" "$RECIPE" && fail 'the committed recipe declares no floor-framework-override'
 
 # spec: tools/objc-runtime-inventory.m header -- the capture tool, over fixture classes loaded into it.
 sh "$REFSET" capture-tool --output "$T/capture" 2>"$T/err" || fail 'capture tool did not build'
@@ -241,22 +247,24 @@ rc=0; sh "$REFSET" dyld-check <"$T/env" >"$T/out" 2>"$T/err" || rc=$?
 printf 'PATH=/bin\nNOT_DYLD_X=1\nX=DYLD_Y=1\n' | sh "$REFSET" dyld-check >"$T/out" 2>"$T/err" || fail 'dyld-check refused an environment without dyld variables'
 # spec: scripts/objc-reference-set.sh header -- --floor-framework-override: the source must verify as
 #       Apple-signed code in its private bundle copy, a reason is required, and nothing is left behind.
-rc=0; sh "$REFSET" capture --floor-framework-override "Security=$T/roots.dylib" --override-reason 'fixture reason' --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
+rc=0; sh "$REFSET" capture --recipe "$PLAIN" --floor-framework-override "Security=$T/roots.dylib" --override-reason 'fixture reason' --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
 [ "$rc" = 4 ] && [ ! -e "$T/ov1" ] && grep -F 'is not Apple-signed code' "$T/err" >/dev/null || fail "an unsigned override source was not refused ($rc)"
 [ -z "$(ls -A "$T" | grep '^\.objc-reference')" ] || fail 'a refused override left its work directory'
-rc=0; sh "$REFSET" capture --floor-framework-override "Security=$T/roots.dylib" --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
+rc=0; sh "$REFSET" capture --recipe "$PLAIN" --floor-framework-override "Security=$T/roots.dylib" --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
 [ "$rc" = 2 ] || fail "an override without a reason exits $rc, want 2"
-rc=0; sh "$REFSET" capture --floor-framework-override "../Security=$T/roots.dylib" --override-reason x --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
+rc=0; sh "$REFSET" capture --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
+[ "$rc" = 2 ] && [ ! -e "$T/ov1" ] || fail "the committed recipe's override without a reason exits $rc, want 2"
+rc=0; sh "$REFSET" capture --recipe "$PLAIN" --floor-framework-override "../Security=$T/roots.dylib" --override-reason x --output "$T/ov1" >"$T/out" 2>"$T/err" || rc=$?
 [ "$rc" = 2 ] || fail "a malformed override name exits $rc, want 2"
 UNEXERCISED=
 if DYLD_FALLBACK_LIBRARY_PATH=/usr/lib sh -c env | grep '^DYLD_FALLBACK_LIBRARY_PATH=' >/dev/null; then
   DYLD_FALLBACK_LIBRARY_PATH=/usr/lib; export DYLD_FALLBACK_LIBRARY_PATH
-  rc=0; sh "$REFSET" capture --output "$T/cap" 2>"$T/err" || rc=$?
+  rc=0; sh "$REFSET" capture --recipe "$PLAIN" --output "$T/cap" 2>"$T/err" || rc=$?
   unset DYLD_FALLBACK_LIBRARY_PATH
   [ "$rc" = 4 ] && [ ! -e "$T/cap" ] && grep -F 'dyld variables set: DYLD_FALLBACK_LIBRARY_PATH' "$T/err" >/dev/null ||
     fail "capture wrapper did not refuse a dyld environment ($rc)"
   DYLD_FALLBACK_LIBRARY_PATH=/usr/lib; export DYLD_FALLBACK_LIBRARY_PATH
-  rc=0; sh "$REFSET" capture --floor-framework-override "Security=$T/roots.dylib" --override-reason x --output "$T/cap" 2>"$T/err" || rc=$?
+  rc=0; sh "$REFSET" capture --recipe "$PLAIN" --floor-framework-override "Security=$T/roots.dylib" --override-reason x --output "$T/cap" 2>"$T/err" || rc=$?
   unset DYLD_FALLBACK_LIBRARY_PATH
   [ "$rc" = 4 ] && [ ! -e "$T/cap" ] && grep -F 'dyld variables set: DYLD_FALLBACK_LIBRARY_PATH' "$T/err" >/dev/null ||
     fail "capture wrapper did not refuse a dyld environment beside an override ($rc)"
@@ -266,7 +274,7 @@ fi
 # spec: scripts/objc-reference-set.sh header -- capture --diagnostic runs the reviewed floor closure on
 #       any host, keeps whatever it refused as rows and records the wrapper's identities; build
 #       refuses the result.
-rc=0; sh "$REFSET" capture --diagnostic --output "$T/diag" >"$T/out" 2>"$T/err" || rc=$?
+rc=0; sh "$REFSET" capture --recipe "$PLAIN" --diagnostic --output "$T/diag" >"$T/out" 2>"$T/err" || rc=$?
 [ "$rc" = 0 ] && [ -f "$T/diag/floor-runtime.tsv" ] && [ -f "$T/diag/cluster-witnesses.json" ] ||
   fail "a diagnostic capture through the wrapper exits $rc"
 awk -F '\t' -v tool="$(shasum -a 256 "$ROOT/tools/objc-runtime-inventory.m" | cut -c1-64)" '
@@ -345,7 +353,10 @@ synthetic() {  # $1 dir
   printf '{\n  "schema": 1,\n  "argument": "fixture",\n  "probes": [\n    {"id": "fixture"}\n  ]\n}\n' >"$1/cluster-witnesses.json"
 }
 synthetic "$T/runtime"
-build() { rc=0; sh "$REFSET" build --clang-prefix "$PREFIX" "$@" >"$T/out" 2>"$T/err" || rc=$?; }
+build() {  # PLAIN unless a --recipe is given
+  case " $* " in *" --recipe "*) ;; *) set -- --recipe "$PLAIN" "$@" ;; esac
+  rc=0; sh "$REFSET" build --clang-prefix "$PREFIX" "$@" >"$T/out" 2>"$T/err" || rc=$?
+}
 FIXTURES="--floor-header $FX/reference-floor.h --newer-header $FX/reference-newer.h"
 # shellcheck disable=SC2086  # option list
 build --output "$T/ref" --runtime "$T/runtime" $FIXTURES
@@ -355,20 +366,68 @@ for f in manifest.json floor-sdk.tsv floor-signatures.tsv floor-functions.tsv fl
 done
 [ "$(ls -A "$T/ref" | wc -l | tr -d ' ')" = 9 ] || fail 'reference has unexpected files'
 sh "$REFSET" verify "$T/ref" >"$T/out" 2>"$T/err" || fail 'a fresh reference does not verify'
-# spec: scripts/objc-reference-set.sh header -- a recipe is data: the committed one with the fixture headers in
-#       place of its own builds exactly what the --*-header options build over its defaults.
-RECIPE="$ROOT/reference/objc-recipes/mavericks-10.9.recipe"
-recipe() {  # $1 output, $2 a sed expression over the committed recipe's lines but its headers; the fixture headers follow
-  grep -Ev '^(floor|newer)-header ' "$RECIPE" | sed -e "${2:-}" >"$1"
+# spec: scripts/objc-reference-set.sh header -- a recipe is data: PLAIN with the fixture headers in place of its
+#       own builds exactly what the --*-header options build over PLAIN, but for the recipe the manifest names.
+recipe() {  # $1 output, $2 a sed expression over PLAIN's lines but its headers; the fixture headers follow
+  grep -Ev '^(floor|newer)-header ' "$PLAIN" | sed -e "${2:-}" >"$1"
   printf 'floor-header %s\nnewer-header %s\n' "$FX/reference-floor.h" "$FX/reference-newer.h" >>"$1"
 }
 recipe "$T/fx.recipe"
 build --output "$T/refr" --runtime "$T/runtime" --recipe "$T/fx.recipe"
 [ "$rc" = 0 ] || fail "a build from a fixture recipe exits $rc"
 for f in "$T/ref/"* "$T/refr/"*; do
+  [ "$(basename "$f")" = manifest.json ] && continue
   cmp -s "$T/ref/$(basename "$f")" "$T/refr/$(basename "$f")" || fail "the recipe build's $(basename "$f") differs from the --*-header build's"
 done
+grep -v '^  "recipe": ' "$T/ref/manifest.json" >"$T/m1"; grep -v '^  "recipe": ' "$T/refr/manifest.json" >"$T/m2"
+cmp -s "$T/m1" "$T/m2" || fail "the recipe build's manifest differs from the --*-header build's beyond its recipe"
+# spec: scripts/objc-reference-set.sh header -- the manifest names the recipe it was built from, by name and SHA-256.
+grep -Fx "  \"recipe\": {\"name\": \"mavericks-10.9\", \"sha256\": \"$(shasum -a 256 "$T/fx.recipe" | cut -c1-64)\"}," "$T/refr/manifest.json" >/dev/null ||
+  fail 'the fixture build does not name its recipe'
+grep -Fx "  \"recipe\": {\"name\": \"mavericks-10.9\", \"sha256\": \"$(shasum -a 256 "$PLAIN" | cut -c1-64)\"}," "$T/ref/manifest.json" >/dev/null ||
+  fail 'the --*-header build does not name the recipe it ran under'
 sh "$REFSET" verify --recipe "$T/fx.recipe" "$T/refr" >"$T/out" 2>"$T/err" || fail 'verify --recipe refused a good recipe'
+# spec: scripts/objc-reference-set.sh header -- verify --recipe refuses a map built from another recipe.
+rc=0; sh "$REFSET" verify --recipe "$PLAIN" "$T/refr" >"$T/out" 2>"$T/err" || rc=$?
+[ "$rc" = 4 ] && grep -F "was built from recipe mavericks-10.9 $(shasum -a 256 "$T/fx.recipe" | cut -c1-64), not $PLAIN ($(shasum -a 256 "$PLAIN" | cut -c1-64))" "$T/err" >/dev/null ||
+  fail "verify --recipe accepted a map built from another recipe ($rc)"
+# spec: scripts/objc-reference-set.sh header -- reached_headers: every SDK header each side's parse entered,
+#       SDK-relative and sorted. Availability.h includes only AvailabilityInternal.h in 10.9, and
+#       AvailabilityVersions.h too in 11.3; fixtures outside the SDK and compiler headers are not listed.
+recipe "$T/reach.recipe"
+printf 'floor-header usr/include/Availability.h\nnewer-header usr/include/Availability.h\n' >>"$T/reach.recipe"
+build --output "$T/reach" --recipe "$T/reach.recipe"
+[ "$rc" = 0 ] || fail "a build reaching SDK headers exits $rc"
+reached() {  # $1 manifest $2 side: its reached_headers, one per line
+  awk -v side="$2" '$0 == "  \"" side "_sdk\": {" {b = 1} b && (/^    \]/ || $0 == "  },") {exit} b && r {gsub(/[ ",]/, ""); print} b && $0 == "    \"reached_headers\": [" {r = 1}' "$1"
+}
+[ "$(reached "$T/reach/manifest.json" floor)" = "$(printf 'usr/include/Availability.h\nusr/include/AvailabilityInternal.h')" ] ||
+  fail "the floor side's reached headers are $(reached "$T/reach/manifest.json" floor | tr '\n' ' ')"
+[ "$(reached "$T/reach/manifest.json" newer)" = "$(printf 'usr/include/Availability.h\nusr/include/AvailabilityInternal.h\nusr/include/AvailabilityVersions.h')" ] ||
+  fail "the newer side's reached headers are $(reached "$T/reach/manifest.json" newer | tr '\n' ' ')"
+grep -Fx '    "reached_headers": [],' "$T/ref/manifest.json" >/dev/null || fail 'a fixture-only build reaches SDK headers'
+# spec: scripts/objc-reference-set.sh header -- coverage: per framework or usr/include directory, the SDK
+#       tree's headers, how many the side's parse reached and the first it did not.
+mkdir -p "$T/sdks/MacOSX10.9.sdk/System/Library/Frameworks/Full.framework/Versions/A/Headers" \
+  "$T/sdks/MacOSX10.9.sdk/System/Library/Frameworks/Half.framework/Versions/A/Headers"
+for h in Full/a Full/b Half/c Half/d; do : >"$T/sdks/MacOSX10.9.sdk/System/Library/Frameworks/${h%/*}.framework/Versions/A/Headers/${h#*/}.h"; done
+ln -s Versions/A/Headers "$T/sdks/MacOSX10.9.sdk/System/Library/Frameworks/Full.framework/Headers"
+cp -R "$T/reach" "$T/cov"
+awk 'f && /^    \]/ {f = 0; s = 1} f {next} {print}
+  !s && $0 == "    \"reached_headers\": [" {f = 1
+    print "      \"System/Library/Frameworks/Full.framework/Versions/A/Headers/a.h\","
+    print "      \"System/Library/Frameworks/Full.framework/Versions/A/Headers/b.h\","
+    print "      \"System/Library/Frameworks/Half.framework/Versions/A/Headers/c.h\""}' "$T/reach/manifest.json" >"$T/cov/manifest.json"
+[ "$(reached "$T/cov/manifest.json" floor | wc -l | tr -d ' ')" = 3 ] || fail 'the coverage fixture manifest was not rewritten'
+rc=0; sh "$REFSET" coverage "$T/cov" "$T/sdks" floor >"$T/out" 2>"$T/err" || rc=$?
+[ "$rc" = 0 ] || fail "coverage exits $rc"
+printf 'System/Library/Frameworks/Full.framework\t2\t2\t-\nSystem/Library/Frameworks/Half.framework\t2\t1\tSystem/Library/Frameworks/Half.framework/Versions/A/Headers/d.h\n' >"$T/want"
+cmp -s "$T/out" "$T/want" || fail "coverage printed: $(cat "$T/out")"
+rc=0; sh "$REFSET" coverage "$T/ref" "$T/sdks" floor >"$T/out" 2>"$T/err" || rc=$?
+printf 'System/Library/Frameworks/Full.framework\t2\t0\tSystem/Library/Frameworks/Full.framework/Versions/A/Headers/a.h\nSystem/Library/Frameworks/Half.framework\t2\t0\tSystem/Library/Frameworks/Half.framework/Versions/A/Headers/c.h\n' >"$T/want"
+[ "$rc" = 0 ] && cmp -s "$T/out" "$T/want" || fail "coverage of a side that reached nothing exits $rc and printed: $(cat "$T/out")"
+rc=0; sh "$REFSET" coverage "$T/reach" "$T/sdks" floor >"$T/out" 2>"$T/err" || rc=$?
+[ "$rc" = 4 ] && grep -F 'usr/include/Availability.h is not in' "$T/err" >/dev/null || fail "coverage over the wrong SDK tree exits $rc"
 # spec: scripts/objc-reference-set.sh header -- an unknown, missing or repeated key, or a value outside its key's
 #       form, is refused by name before anything is measured; a value is never evaluated.
 badrecipe() {  # $1 what, $2 sed expression, $3 the fixed string the refusal must contain
@@ -515,7 +574,7 @@ look RefOld - laterMethod
 says 'floor-runtime|absent'
 
 # spec: scripts/objc-reference-set.sh header -- build refuses every capture that is not production, clean, floor and current.
-MUTBASE="$T/runtime"
+MUTBASE="$T/runtime" MUTRECIPE=$PLAIN
 mutant() {  # $1 what $2 expected reason $3 sed over the rows (kept sorted unless $4 is raw)
   rm -rf "$T/mut" "$T/ref3"
   cp -R "$MUTBASE" "$T/mut"
@@ -524,7 +583,7 @@ mutant() {  # $1 what $2 expected reason $3 sed over the rows (kept sorted unles
   fi
   cmp -s "$T/mut/floor-runtime.tsv" "$MUTBASE/floor-runtime.tsv" && fail "mutation '$1' changed nothing"
   # shellcheck disable=SC2086  # option list
-  build --output "$T/ref3" --runtime "$T/mut" $FIXTURES
+  build --output "$T/ref3" --runtime "$T/mut" --recipe "$MUTRECIPE" $FIXTURES
   [ "$rc" = 4 ] && [ ! -e "$T/ref3" ] || fail "build accepted a capture with $1 ($rc)"
   grep -F "$2" "$T/err" >/dev/null || fail "a capture with $1 was refused, but not for: $2"
 }
@@ -584,7 +643,7 @@ build --output "$T/ref3" --runtime "$T/diag" $FIXTURES
 SECSRC=/System/Library/Frameworks/Security.framework/Versions/A/Security.original
 [ -f "$SECSRC" ] || SECSRC=/System/Library/Frameworks/Security.framework/Versions/A/Security
 if [ "$(sw_vers -productVersion)" = 10.9.5 ] && [ "$(sw_vers -buildVersion)" = 13F1911 ] && [ -f "$SECSRC" ]; then
-  rc=0; sh "$REFSET" capture --floor-framework-override "Security=$SECSRC" --override-reason 'fixture reason; test' --output "$T/ovcap" >"$T/out" 2>"$T/err" || rc=$?
+  rc=0; sh "$REFSET" capture --recipe "$PLAIN" --floor-framework-override "Security=$SECSRC" --override-reason 'fixture reason; test' --output "$T/ovcap" >"$T/out" 2>"$T/err" || rc=$?
   [ "$rc" = 0 ] || fail "the floor capture with a Security override exits $rc"
   [ "$(ls "$T/ovcap")" = "$(printf 'cluster-witnesses.json\nfloor-runtime.tsv')" ] || fail 'the override capture kept more than its two files'
   OR="$T/ovcap/floor-runtime.tsv"
@@ -597,8 +656,9 @@ if [ "$(sw_vers -productVersion)" = 10.9.5 ] && [ "$(sw_vers -buildVersion)" = 1
     $1 == "check" && $2 == "dyld-environment" && $5 == "framework-override" {d = 1}
     $1 == "check" && $2 == "mode" && $5 == "production" {m = 1}
     END {exit !(o && i && !sys && !stray && r && d && m)}' "$OR" || fail 'the override capture does not prove where Security came from'
+  { cat "$PLAIN"; printf 'floor-framework-override Security=%s\n' "$SECSRC"; } >"$T/ov.recipe"
   # shellcheck disable=SC2086  # option list
-  build --output "$T/refov" --runtime "$T/ovcap" $FIXTURES
+  build --output "$T/refov" --runtime "$T/ovcap" --recipe "$T/ov.recipe" $FIXTURES
   [ "$rc" = 0 ] || fail "build refused a verified override capture ($rc)"
   grep -F "{\"framework\": \"Security\", \"source\": \"$SECSRC\", \"sha256\": \"$(shasum -a 256 "$SECSRC" | cut -c1-64)\", \"signature\": \"anchor-apple\", \"reason\": \"fixture reason; test\"}" "$T/refov/manifest.json" >/dev/null ||
     fail 'the manifest does not record the override'
@@ -613,12 +673,19 @@ mkdir "$T/runtime-ov"; cp "$T/runtime/cluster-witnesses.json" "$T/runtime-ov/"
     printf 'override\tSecurity\t-\t/System/Library/Frameworks/Security.framework/Versions/A/Security.original\t%s\tSecurity\tanchor-apple\n' "$OVSHA"
     printf 'check\toverride-reason\t-\tSecurity\tsystem Security replaced by AquaTransport; original binary used\t-\t-\n'
   } | LC_ALL=C sort -u; } >"$T/runtime-ov/floor-runtime.tsv"
-build --output "$T/refov2" --runtime "$T/runtime-ov" $FIXTURES
+build --output "$T/refov2" --runtime "$T/runtime-ov" --recipe "$RECIPE" $FIXTURES
 [ "$rc" = 0 ] || fail "build refused a recorded override ($rc)"
+# spec: scripts/objc-reference-set.sh header -- a capture's framework overrides are exactly the recipe's.
+build --output "$T/ref3" --runtime "$T/runtime-ov" $FIXTURES
+[ "$rc" = 4 ] && [ ! -e "$T/ref3" ] && grep -F "its framework overrides Security=/System/Library/Frameworks/Security.framework/Versions/A/Security.original are not the recipe's none" "$T/err" >/dev/null ||
+  fail "build accepted an override the recipe does not declare ($rc)"
+build --output "$T/ref3" --runtime "$T/runtime" --recipe "$RECIPE" $FIXTURES
+[ "$rc" = 4 ] && [ ! -e "$T/ref3" ] && grep -F "its framework overrides none are not the recipe's Security=/System/Library/Frameworks/Security.framework/Versions/A/Security.original" "$T/err" >/dev/null ||
+  fail "build accepted a capture without the recipe's override ($rc)"
 grep -F "\"framework_overrides\": [{\"framework\": \"Security\", \"source\": \"/System/Library/Frameworks/Security.framework/Versions/A/Security.original\", \"sha256\": \"$OVSHA\", \"signature\": \"anchor-apple\", \"reason\": \"system Security replaced by AquaTransport; original binary used\"}]," "$T/refov2/manifest.json" >/dev/null ||
   fail 'the manifest does not record the synthetic override'
 grep -F '"framework_overrides": [],' "$T/ref/manifest.json" >/dev/null || fail 'a capture without overrides does not say so'
-MUTBASE="$T/runtime-ov"
+MUTBASE="$T/runtime-ov" MUTRECIPE=$RECIPE
 mutant 'an unsigned override' 'override Security is invalid, not anchor-apple' "s/^\(override${TAB}.*${TAB}\)anchor-apple\$/\1invalid/"
 mutant 'an override without a reason' 'override Security has no reason' "/^check${TAB}override-reason/d"
 mutant 'an unrecorded override image' 'image Security is an unrecorded override' "/^override${TAB}/d"
@@ -626,7 +693,7 @@ mutant 'an override with a malformed hash' 'override Security has no SHA-256' "s
 mutant 'an override that never loaded' 'override Security did not load' "/^image${TAB}Security${TAB}/d"
 mutant 'a system Security beside the override' 'Security is also loaded from the system' "s|^image${TAB}Security${TAB}-${TAB}-${TAB}|image${TAB}Security${TAB}-${TAB}/System/Library/Frameworks/Security.framework/Versions/A/Security${TAB}|;s|${TAB}override${TAB}anchor-apple\$|${TAB}loaded${TAB}anchor-apple|"
 mutant 'a framework-override environment without an override' 'framework-override environment without a recorded override' "/^override${TAB}/d;/^check${TAB}override-reason/d;/^image${TAB}Security${TAB}/d"
-MUTBASE="$T/runtime"
+MUTBASE="$T/runtime" MUTRECIPE=$PLAIN
 mutant 'a framework-override environment in a plain capture' 'framework-override environment without a recorded override' "s/^check${TAB}dyld-environment${TAB}-${TAB}-${TAB}none/check${TAB}dyld-environment${TAB}-${TAB}-${TAB}framework-override/"
 rm -rf "$T/ref3"
 build --output "$T/ref3" --runtime "$T/missing" $FIXTURES
@@ -686,11 +753,11 @@ rc=0; sh "$REFSET" verify "$T/missing" >"$T/out" 2>"$T/err" || rc=$?
 
 # spec: scripts/objc-reference-set.sh header -- reference/objc is exactly what build regenerates from the pinned inputs.
 REF="$ROOT/reference/objc"
-sh "$REFSET" verify "$REF" >"$T/out" 2>"$T/err" || fail 'the committed reference set does not verify'
+sh "$REFSET" verify --recipe "$RECIPE" "$REF" >"$T/out" 2>"$T/err" || fail 'the committed reference set does not verify against the committed recipe'
 runtime_args=
 [ ! -f "$REF/floor-runtime.tsv" ] || { mkdir "$T/committed-runtime"; cp "$REF/floor-runtime.tsv" "$REF/cluster-witnesses.json" "$T/committed-runtime/"; runtime_args="--runtime $T/committed-runtime"; }
 # shellcheck disable=SC2086  # option list
-build --output "$T/regen" $runtime_args
+build --output "$T/regen" --recipe "$RECIPE" $runtime_args
 [ "$rc" = 0 ] || fail "regenerating the committed reference exits $rc"
 for f in "$REF/"* "$T/regen/"*; do
   cmp -s "$REF/$(basename "$f")" "$T/regen/$(basename "$f")" || fail "regenerated $(basename "$f") differs from the committed one"

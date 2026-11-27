@@ -102,4 +102,7 @@ behavior-selector respondsToSelector:
 # already resolves on the capture host means a backfill is loaded, and the capture is refused.
 absent-target NSWorkspace - openURLs:withApplicationAtURL:options:configuration:error:
 
-# floor-framework-override NAME=BINARY, as capture's option of that name: none for this floor.
+# floor-framework-override NAME=BINARY, as capture's option of that name. On the floor host
+# AquaTransport replaced the system Security; its preserved original is what the capture loads, and
+# build accepts only a capture whose overrides are exactly these.
+floor-framework-override Security=/System/Library/Frameworks/Security.framework/Versions/A/Security.original
