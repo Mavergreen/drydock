@@ -85,12 +85,12 @@
 #          set, so a reordering alone reports nothing. One line per change, TAB-separated:
 #          ADDED|REMOVED|CHANGED, FILE, KEY, DETAIL, sorted by FILE then KEY (LC_ALL=C). KEY is the
 #          row's identity, its fields joined by spaces: for floor-sdk.tsv and newer-sdk.tsv, kind, unit,
-#          class, method kind, selector and container; for the signature files the same five and the
-#          container; for the function files, the name; for floor-runtime.tsv, class and kind and
+#          class, method kind, selector and container; for the signature files kind, unit, class, method kind, selector and the
+#          container (its result kind is a column, so a change shows as CHANGED); for the function files, the name; for floor-runtime.tsv, class and kind and
 #          selector (and image) per row kind (class, method, witness, check, behavior, image,
 #          override, identity). A row's other columns are its DETAIL: CHANGED shows each differing
 #          one as NAME old -> new (an availability change among them), ADDED and REMOVED show them all.
-#          A key a file repeats takes #2, #3 and so on in row order. A file one set lacks reads as empty.
+#          Rows sharing a KEY compare as a group: equal groups print nothing, otherwise one CHANGED line lists the old rows -> the new, joined by ' | ', never saying which one changed. A file one set lacks reads as empty.
 #          The JSON files compare by top-level key (a block's entries named by name or id): manifest.json
 #          reports each changed identity (recipe, SDK pins, clang, runtime) as KEY old -> new, a block
 #          such as reached_headers as one line of counts. A summary line per changed FILE follows, FILE,
@@ -724,7 +724,7 @@ diff_sets() {
         LC_ALL=C awk -F '\t' -v OFS='\t' -v file="$f" -v changes="$dw/changes" -v summary="$dw/summary" '
           function spec(kind) {
             if (file ~ /-sdk\.tsv$/) return "1 2 3 4 5 11"
-            if (file ~ /-signatures\.tsv$/) return "1 2 3 4 5 8"
+            if (file ~ /-signatures\.tsv$/) return "1 2 3 4 8"
             if (file ~ /^floor-functions/) return "1"
             if (kind == "method") return "1 2 3 4 6"
             if (kind == "behavior") return "1 2 3 4 7"
@@ -756,17 +756,23 @@ diff_sets() {
               d = d (d == "" ? "" : "; ") colname(i) " " fa[i] " -> " fb[i]
             return d
           }
+          function groupvalues(g,   r, n, i, v) {
+            n = split(g, r, "\n"); v = ""
+            for (i = 1; i <= n; i++) v = v (v == "" ? "" : " | ") values(r[i])
+            return v
+          }
+          function groupdetail(a, b) { return groupvalues(a) " -> " groupvalues(b) }
           { side = (FILENAME == ARGV[1]) ? 1 : 2 }
           {
-            k = keyof($0); n = ++seen[side, k]
-            if (n > 1) k = k " #" n
-            row[side, k] = $0; keys[k] = 1
+            k = keyof($0)
+            row[side, k] = ((side, k) in row) ? row[side, k] "\n" $0 : $0
+            cnt[side, k]++; keys[k] = 1
           }
           END {
             for (k in keys) {
-              if (!((1, k) in row)) { print "ADDED", file, k, values(row[2, k]) >> changes; add++ }
-              else if (!((2, k) in row)) { print "REMOVED", file, k, values(row[1, k]) >> changes; rem++ }
-              else if (row[1, k] != row[2, k]) { print "CHANGED", file, k, detail(row[1, k], row[2, k]) >> changes; chg++ }
+              if (!((1, k) in row)) { print "ADDED", file, k, groupvalues(row[2, k]) >> changes; add++ }
+              else if (!((2, k) in row)) { print "REMOVED", file, k, groupvalues(row[1, k]) >> changes; rem++ }
+              else if (row[1, k] != row[2, k]) { print "CHANGED", file, k, (cnt[1, k] > 1 || cnt[2, k] > 1) ? groupdetail(row[1, k], row[2, k]) : detail(row[1, k], row[2, k]) >> changes; chg++ }
             }
             if (add + rem + chg > 0) print file, "+" add + 0, "-" rem + 0, "~" chg + 0 >> summary
           }' "$dw/s1" "$dw/s2"

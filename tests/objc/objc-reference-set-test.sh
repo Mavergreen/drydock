@@ -789,15 +789,19 @@ fi
 #       sorted, then a summary per changed file; reordering alone reports nothing; a changed pin is one line.
 printf '%s\n' \
   "CHANGED${TAB}floor-runtime.tsv${TAB}image AE${TAB}col5 AAAA -> BBBB" \
+  "CHANGED${TAB}floor-sdk.tsv${TAB}method AppKit NSFormCell - setWidth: interface${TAB}v24@0:8d16 - - 0 AppKit/NSFormCell.h:35 | v24@0:8d16 10.8 - 0 AppKit/NSFormCell.h:52 -> v24@0:8d16 10.8 - 0 AppKit/NSFormCell.h:52 | v24@0:8d16 10.9 - 0 AppKit/NSFormCell.h:35" \
   "CHANGED${TAB}manifest.json${TAB}newer_sdk.archive${TAB}\"MacOSX11.2.sdk.tar.xz\" -> \"MacOSX11.3.sdk.tar.xz\"" \
   "CHANGED${TAB}manifest.json${TAB}newer_sdk.archive_sha256${TAB}\"aaaa\" -> \"bbbb\"" \
   "CHANGED${TAB}manifest.json${TAB}newer_sdk.reached_headers${TAB}+2 -0 headers" \
   "REMOVED${TAB}newer-sdk.tsv${TAB}class - NSOld - - -${TAB}- 10.0 - 0 usr/include/old.h:5" \
   "CHANGED${TAB}newer-sdk.tsv${TAB}method AppKit NSBox - setTitle: interface${TAB}introduced 10.10 -> 10.11" \
   "ADDED${TAB}newer-sdk.tsv${TAB}method AppKit NSBox - title interface${TAB}@16@0:8 - - 0 AppKit/NSBox.h:21" \
+  "CHANGED${TAB}newer-signatures.tsv${TAB}method CALayer + layer interface${TAB}col5 id -> instancetype" \
   "floor-runtime.tsv${TAB}+0${TAB}-0${TAB}~1" \
+  "floor-sdk.tsv${TAB}+0${TAB}-0${TAB}~1" \
   "manifest.json${TAB}+0${TAB}-0${TAB}~3" \
-  "newer-sdk.tsv${TAB}+1${TAB}-1${TAB}~1" >"$T/diff.want"
+  "newer-sdk.tsv${TAB}+1${TAB}-1${TAB}~1" \
+  "newer-signatures.tsv${TAB}+0${TAB}-0${TAB}~1" >"$T/diff.want"
 sh "$REFSET" diff "$FX/mapdiff-old" "$FX/mapdiff-new" >"$T/diff.out" 2>"$T/err" || fail 'diff of the fixture maps failed'
 cmp -s "$T/diff.want" "$T/diff.out" || fail "diff of the fixture maps differs from the expected report: $(diff "$T/diff.want" "$T/diff.out" | tr '\t' '|' | head -8)"
 sh "$REFSET" diff "$FX/mapdiff-new" "$FX/mapdiff-new" >"$T/diff.out" 2>"$T/err" || fail 'diff of a map with itself failed'
