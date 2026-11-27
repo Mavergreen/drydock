@@ -144,6 +144,8 @@ for f in LICENSE README.md PROVENANCE.md; do
   [ -f "$got/$tree/share/doc/drydock/$f" ] || { echo "FAIL: the package has no share/doc/drydock/$f"; exit 1; }
 done
 [ -f "$got/$tree/mavergreen.plist" ] || { echo "FAIL: the package has no manifest"; exit 1; }
+tr -d '\n\t ' < "$got/$tree/mavergreen.plist" | grep -q '<key>slim-host</key><array><string>bin/\*</string></array>' \
+  || { echo "FAIL: the manifest does not declare slim-host bin/*, so its universal tools would never be slimmed"; exit 1; }
 env -u LIPO sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b "$BA/drydock-updater.app" \
   --out "$t/drydock-updater.app"
 same_tree "$t/drydock-updater.app" "$upd" \

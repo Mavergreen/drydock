@@ -28,7 +28,7 @@ sh "$SHIPYARD/lipo-merge-tree.sh" --a "$BX/drydock-updater.app" --b "$BA/drydock
   --out "$work/updater/drydock-updater.app" --require-archs "x86_64 arm64"
 find "$ROOT" -name '._*' -delete
 sh "$SHIPYARD/stage_product.sh" --stage "$ROOT" --product drydock --name Drydock --version "$V" \
-  --scripts-out "$work/scripts" --updater-app "$work/updater/drydock-updater.app"
+  --scripts-out "$work/scripts" --updater-app "$work/updater/drydock-updater.app" --slim-host 'bin/*'
 sh "$SHIPYARD/build_component_pkg.sh" --root "$ROOT" --identifier dev.mavergreen.drydock \
   --version "$V" --install-location / --scripts "$work/scripts" --out "$work/drydock-component.pkg" >&2
 mkdir -p "$(dirname "$OUT")"
