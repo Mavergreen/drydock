@@ -30,6 +30,8 @@
  *           rep stos, jrcxz, xchg eax, ecx and leave: none writes r12, five sends
  *   FORM 14 as FORM 0, with the entry point also loaded into rcx, then rep stos (which reads and
  *           counts down rcx) before a call through rcx
+ *   FORM 15 as FORM 0, with cpuid, whose register writes the reader does not classify, before a
+ *           call through the register: what r12 holds there is unknown, so that call is refused, not lost
  *   FORM 16 as FORM 0, with the entry point also loaded into r13 and called through, then
  *           xchg rax, r13 (which reads r13 into rax) before a second call through r13
  *   FORM 17 as FORM 0, with the entry point also loaded into rax, then pop %rax through 8F, then a
@@ -41,7 +43,9 @@
  *   FORM 22 likewise in rdi, with stosq
  *   FORM 23 likewise in rbp, with leave
  *   FORM 24 likewise in rax, with xchg %eax, %ecx
- * FORMS 2..9, 11, 14, 16 and 18..24 are cannot-measure: the entry point escapes, or a call through it may not be one.
+ *   FORM 25 as FORM 0, with pinsrw from ecx (iTerm2 3.0.15 packs bytes into xmm0 between sends): it
+ *           writes only a vector register, five sends
+ * FORMS 2..9, 11, 14..16 and 18..24 are cannot-measure: the entry point escapes, or a call through it may not be one.
  */
 	.section __TEXT,__objc_methname,cstring_literals
 L_sel_description:
@@ -150,6 +154,10 @@ _main:
 	movq L_selref_hash(%rip), %rsi
 	.byte 0xf3, 0x48, 0xab            /* rep stosq */
 	callq *%rcx
+#elif FORM == 15
+	cpuid
+#elif FORM == 25
+	pinsrw $4, %ecx, %xmm0
 #elif FORM == 16
 	movq _objc_msgSend@GOTPCREL(%rip), %r13
 	movq L_classref_NSObject(%rip), %rdi
@@ -159,7 +167,7 @@ _main:
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_hash(%rip), %rsi
 	callq *%r13
-#elif FORM >= 17
+#elif FORM >= 17 && FORM <= 24
 	movq L_classref_NSObject(%rip), %rdi
 	movq L_selref_hash(%rip), %rsi
 	movq _objc_msgSend@GOTPCREL(%rip), WREG

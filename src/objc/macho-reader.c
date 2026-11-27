@@ -53,7 +53,9 @@
  * inside a fixed frame, whose only reads are 64-bit reloads into registers the same rule then
  * governs; a store anywhere else, a read of the slot of any other kind, a frame-address escape
  * reaching it, or another value in it at a reload that is called through is cannot-measure.
- * Values spilled to frame slots carry a further stated limit, given with the value kinds below.
+ * An instruction may_write does not classify leaves such a register unknown, not cleared: a call
+ * through it after is cannot-measure, not a lost send. Values spilled to frame slots carry a
+ * further stated limit, given with the value kinds below.
  *
  * Argument registers. An entry point live in an argument register at a call or tail jump is "passed as
  * an argument", cannot-measure, unless the call provably does not read that register (call_arg_regs).
@@ -929,8 +931,9 @@ static int metadata(Slice *s) {
 
 typedef ObjcIns Ins;
 
-/* 0 only when this instruction provably does not write register r. */
-static int may_write(const Ins *x0, int r) {
+/* 0 only when this instruction provably does not write register r. *known is 0 when the answer
+ * is the default for an instruction this does not classify. */
+static int write_rule(const Ins *x0, int r, int *known) {
     Ins y = objc_x86_byte_regs(x0);
     const Ins *x = &y;
     int op = x->op, low3 = op & 7, dst_rm = x->modrm && x->mod == 3 && x->rm == r;
@@ -975,6 +978,7 @@ static int may_write(const Ins *x0, int r) {
         if (op >= 0x58 && op <= 0x5F) return opreg == r;
         if (op >= 0xB0 && op <= 0xBF) return opreg == r;
         if ((op >= 0x70 && op <= 0x7F) || op == 0xEB || op == 0xE9) return 0;
+        *known = 0;
         return 1;
     }
     if (x->map == 1) {
@@ -986,7 +990,7 @@ static int may_write(const Ins *x0, int r) {
             op == 0xBD || op == 0xB8 || op == 0x50 || op == 0xD7 || op == 0xC5 || op == 0x2C || op == 0x2D)
             return dst_reg;
         if (op == 0x7E) return x->f3 ? 0 : dst_rm;
-        if (op == 0xA3) return 0;
+        if (op == 0xA3 || op == 0xC4) return 0;                   /* bt; pinsrw writes a vector register */
         if (op == 0xBA) return (x->reg & 7) == 4 ? 0 : dst_rm;   /* bt imm8 tests a bit; bts/btr/btc write it */
         if (op == 0xAB || op == 0xB3 || op == 0xBB || op == 0xA4 || op == 0xA5 || op == 0xAC || op == 0xAD) return dst_rm;
         if (op >= 0xC8 && op <= 0xCF) return opreg == r;
@@ -994,6 +998,7 @@ static int may_write(const Ins *x0, int r) {
             (op >= 0x51 && op <= 0x7F && op != 0x77 && op != 0x7E) || (op >= 0xD0 && op <= 0xFE && op != 0xD7) ||
             op == 0xC2 || op == 0xC6 || op == 0xAE)
             return 0;
+        *known = 0;
         return 1;
     }
     /* 0F 38 / 0F 3A and VEX: only these write a general-purpose register (movbe, crc32, pextr*,
@@ -1005,6 +1010,7 @@ static int may_write(const Ins *x0, int r) {
         if (x->vexmap == 1) return op == 0x50 || op == 0xD7 || op == 0x7E || op == 0xC5 || op == 0x2C || op == 0x2D;
         if (x->vexmap == 2) return op >= 0xF0;
         if (x->vexmap == 3) return (op >= 0x14 && op <= 0x17) || op == 0xF0;
+        *known = 0;
         return 1;
     }
     /* EVEX: only these write a general-purpose register (movd/movq/movw to r/m, pextrw, pextr*,
@@ -1013,10 +1019,16 @@ static int may_write(const Ins *x0, int r) {
         if (x->vexmap == 1) return op == 0x7E || op == 0xC5 || op == 0x2C || op == 0x2D || op == 0x78 || op == 0x79;
         if (x->vexmap == 3) return op >= 0x14 && op <= 0x17;
         if (x->vexmap == 5) return op == 0x7E || op == 0x2C || op == 0x2D || op == 0x78 || op == 0x79;
-        return x->vexmap != 2 && x->vexmap != 6;
+        if (x->vexmap == 2 || x->vexmap == 6) return 0;
     }
+    *known = 0;
     return 1;
 }
+
+static int may_write(const Ins *x, int r) { int known = 1; return write_rule(x, r, &known); }
+
+/* 0 when may_write's answer for x is only its default (its "writes" is not a classification). */
+static int may_write_known(const Ins *x) { int known = 1; write_rule(x, 0, &known); return known; }
 
 
 /* Per-function value propagation over the CFG that direct branches describe. A block nothing
@@ -1470,7 +1482,8 @@ static int is_call_any(const Ins *x) { return objc_x86_is_call_rel(x) || objc_x8
 
 /* The values above, plus `me`: the registers that may hold a GOT-loaded objc entry point on SOME
  * path (rs_meet unions it), where k[] says what they hold on every path. A call keeps the
- * callee-saved registers; any other write the instruction may make clears the bit. */
+ * callee-saved registers; any other write may_write classifies clears the bit, and an instruction
+ * it does not classify keeps it, so a call through that register is refused, not lost. */
 /* rax, rcx, rdx, rsi, rdi, r8-r11: what a call clobbers (transfer's `clobber`). */
 #define CALLER_SAVED ((uint16_t)0x0FC7)
 static void transfer(const Slice *s, const Flow *f, RS *r, const Ins *x, uint64_t ip, const uint8_t *at) {
@@ -1491,7 +1504,7 @@ static void transfer(const Slice *s, const Flow *f, RS *r, const Ins *x, uint64_
     }
     transfer_values(s, f, r, x, ip, at);
     if (is_call_any(x)) for (i = 0; i < 9; i++) { me &= (uint16_t)~(1u << clobber[i]); mf &= (uint16_t)~(1u << clobber[i]); }
-    else for (i = 0; i < 16; i++) if (may_write(x, i)) { me &= (uint16_t)~(1u << i); mf &= (uint16_t)~(1u << i); }
+    else if (may_write_known(x)) for (i = 0; i < 16; i++) if (may_write(x, i)) { me &= (uint16_t)~(1u << i); mf &= (uint16_t)~(1u << i); }
     if (reload >= 0) me |= (uint16_t)(1u << reload);
     for (i = 0; i < 16; i++) if (r->k[i] == RS_ENTRY) me |= (uint16_t)(1u << i);
     for (i = 0; i < 16; i++) if (r->k[i] == RS_FRAME) mf |= (uint16_t)(1u << i);

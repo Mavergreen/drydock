@@ -49,6 +49,7 @@ indirect-objc-entry	objc entry point in rbx is called through where another path
 indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e2174
 indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e2180
 indirect-objc-entry	objc entry point in rbx is called through where another path left a different value: in code reached only through an indirect jump this reader does not follow	0x1001e218c
+indirect-objc-entry	objc entry point in rbx is read other than to call through it (a spill, a copy or an escape)	0x1001e3181
 indirect-objc-entry	objc entry point in rbx is read other than to call through it (a spill, a copy or an escape): in code reached only through an indirect jump this reader does not follow	0x1001e3180
 indirect-objc-entry	objc entry point in rcx is passed as an argument: a declaration of stringWithFormat: is variadic	0x100089a2c
 indirect-objc-entry	objc entry point in rcx is passed as an argument: a declaration of stringWithFormat: is variadic	0x100089df2

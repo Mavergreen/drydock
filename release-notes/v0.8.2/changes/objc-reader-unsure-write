@@ -1,0 +1,1 @@
+drydock-objc refuses a send through a register holding objc_msgSend when an instruction it cannot classify comes between, instead of silently losing that send.
