@@ -793,13 +793,14 @@ printf '%s\n' \
   "CHANGED${TAB}manifest.json${TAB}newer_sdk.archive${TAB}\"MacOSX11.2.sdk.tar.xz\" -> \"MacOSX11.3.sdk.tar.xz\"" \
   "CHANGED${TAB}manifest.json${TAB}newer_sdk.archive_sha256${TAB}\"aaaa\" -> \"bbbb\"" \
   "CHANGED${TAB}manifest.json${TAB}newer_sdk.reached_headers${TAB}+2 -0 headers" \
+  "CHANGED${TAB}manifest.json${TAB}recipe${TAB}{\"name\": \"fixture\", \"sha256\": \"1111\"} -> {\"name\": \"fixture\", \"sha256\": \"2222\"}" \
   "REMOVED${TAB}newer-sdk.tsv${TAB}class - NSOld - - -${TAB}- 10.0 - 0 usr/include/old.h:5" \
   "CHANGED${TAB}newer-sdk.tsv${TAB}method AppKit NSBox - setTitle: interface${TAB}introduced 10.10 -> 10.11" \
   "ADDED${TAB}newer-sdk.tsv${TAB}method AppKit NSBox - title interface${TAB}@16@0:8 - - 0 AppKit/NSBox.h:21" \
   "CHANGED${TAB}newer-signatures.tsv${TAB}method CALayer + layer interface${TAB}col5 id -> instancetype" \
   "floor-runtime.tsv${TAB}+0${TAB}-0${TAB}~1" \
   "floor-sdk.tsv${TAB}+0${TAB}-0${TAB}~1" \
-  "manifest.json${TAB}+0${TAB}-0${TAB}~3" \
+  "manifest.json${TAB}+0${TAB}-0${TAB}~4" \
   "newer-sdk.tsv${TAB}+1${TAB}-1${TAB}~1" \
   "newer-signatures.tsv${TAB}+0${TAB}-0${TAB}~1" >"$T/diff.want"
 sh "$REFSET" diff "$FX/mapdiff-old" "$FX/mapdiff-new" >"$T/diff.out" 2>"$T/err" || fail 'diff of the fixture maps failed'

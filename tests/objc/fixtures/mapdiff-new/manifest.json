@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "recipe": {"name": "fixture", "sha256": "1111"},
+  "recipe": {"name": "fixture", "sha256": "2222"},
   "floor_sdk": {
     "archive": "MacOSX10.9.sdk.tar.xz",
     "reached_headers": [

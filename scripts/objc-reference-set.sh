@@ -84,13 +84,17 @@
 #          diff reports what changed between two reference sets (OLD_DIR, NEW_DIR), each file read as a
 #          set, so a reordering alone reports nothing. One line per change, TAB-separated:
 #          ADDED|REMOVED|CHANGED, FILE, KEY, DETAIL, sorted by FILE then KEY (LC_ALL=C). KEY is the
-#          row's identity, its fields joined by spaces: for floor-sdk.tsv and newer-sdk.tsv, kind, unit,
-#          class, method kind, selector and container; for the signature files kind, unit, class, method kind, selector and the
-#          container (its result kind is a column, so a change shows as CHANGED); for the function files, the name; for floor-runtime.tsv, class and kind and
-#          selector (and image) per row kind (class, method, witness, check, behavior, image,
-#          override, identity). A row's other columns are its DETAIL: CHANGED shows each differing
-#          one as NAME old -> new (an availability change among them), ADDED and REMOVED show them all.
-#          Rows sharing a KEY compare as a group: equal groups print nothing, otherwise one CHANGED line lists the old rows -> the new, joined by ' | ', never saying which one changed. A file one set lacks reads as empty.
+#          row's identity, its key columns joined by spaces. floor-sdk.tsv and newer-sdk.tsv: kind, unit,
+#          class, method kind, selector and container. The signature files: record, owner, method kind,
+#          selector and container (its result kind is a column, so a change shows as CHANGED). The
+#          function files: the name. floor-runtime.tsv by row kind: class, image, override and identity
+#          rows, the kind and the name; method rows, the first four columns and the image; behavior rows,
+#          the first four and column 7; check and witness rows, the first four.
+#          A row's other columns are its DETAIL: CHANGED shows each differing one as NAME old -> new (an
+#          availability change among them), ADDED and REMOVED show them all.
+#          Rows sharing a KEY compare as a group: equal groups print nothing, otherwise one CHANGED
+#          line lists the old rows -> the new, joined by ' | ', never saying which one changed. A file
+#          one set lacks reads as empty.
 #          The JSON files compare by top-level key (a block's entries named by name or id): manifest.json
 #          reports each changed identity (recipe, SDK pins, clang, runtime) as KEY old -> new, a block
 #          such as reached_headers as one line of counts. A summary line per changed FILE follows, FILE,
