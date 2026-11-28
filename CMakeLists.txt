@@ -17,19 +17,24 @@ endif()
 # release. This repo has no someone-else -- the thing it exists to port is
 # itself -- so there is no external upstream to repackage and no -mavericks.N
 # axis to carry. The right analogue is mavericks-porthole: a self-upstream repo
-# drops the -mavericks suffix and versions itself directly. UPSTREAM_VERSION
-# stays as the family's usual file, holding this repo's own version, bumped by
-# hand; no Renovate customManager watches it, because nothing external releases
-# and bumps it.
+# drops the -mavericks suffix and versions itself directly.
 #
 # Semver (X.Y.Z), not a date: this product's user-visible surface is a CLI
 # grammar that consumers probe -- `--capabilities` exists precisely so a wrapper
 # and the tool need not move in lockstep -- and that grammar is about to change
 # materially. A date says when; semver says whether your script still runs.
 #
-# Read from the file rather than duplicated here: the conventions gate requires a
-# computable version, and two declarations would be one too many.
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/UPSTREAM_VERSION" MAVERICKS_VERSION LIMIT_COUNT 1)
+# A release's version is derived, never chosen: release.yml writes the one
+# shipyard's release-version.sh derives to VERSION (gitignored) before it
+# configures. A build without one reports UPSTREAM_VERSION, which no release
+# reads or bumps.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+  set(DRYDOCK_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+else()
+  set(DRYDOCK_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/UPSTREAM_VERSION")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${DRYDOCK_VERSION_FILE}")
+file(STRINGS "${DRYDOCK_VERSION_FILE}" MAVERICKS_VERSION LIMIT_COUNT 1)
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" MAVERICKS_VERSION_NUMERIC "${MAVERICKS_VERSION}")
 
 project(Drydock VERSION ${MAVERICKS_VERSION_NUMERIC} LANGUAGES C)

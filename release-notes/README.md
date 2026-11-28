@@ -10,11 +10,10 @@ verbatim. What the publish job does refuse is an artifact whose
 `RELEASE_NOTES.md` is missing or empty, and `release.yml` generates that on
 every run, so the build fails first if it ever could not.
 
-## Why there is no `build/version.sh`
+## How a release is numbered
 
-This repo is its own upstream (no external thing to repackage), so — like `mavericks-porthole`,
-the family's precedent for this shape — it computes its version in `release.yml` directly from
-`UPSTREAM_VERSION`, rather than through a `build/version.sh` wrapper. Shipyard's shared
-`scripts/version.sh` only ever produces the `<upstream>-mavericks.N` shape ports use; there is no
-mode that emits this repo's own bare `X.Y.Z`, so a wrapper around it here would print the exact
-suffix this repo's versioning deliberately does not use.
+This repo declares `semver` (INGREDIENTS.md, `## Versioning`). Shipyard's `release-version.sh`
+derives the next tag from the newest `vX.Y.Z` tag and the one word in `<tag>/kind`: `major`,
+`minor` or `patch`. Write `next/kind`, run `sh "$SHIPYARD_SCRIPTS/release-version.sh" --product
+drydock`, rename `next/` to the tag it prints, then add `changes/`. A publishing run refuses a
+release with no `kind` or no `changes/`.

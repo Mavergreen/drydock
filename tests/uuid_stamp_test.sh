@@ -6,8 +6,7 @@
 # Every fixture is x86_64 and 10.9, the slice Drydock exists to rewrite, but
 # nothing here executes one: what a stamp changes is sixteen bytes of LC_UUID,
 # so every fact comes from `drydock-macho-rewrite info`, and the test needs no
-# Rosetta on an Apple Silicon host. The expected version comes from
-# UPSTREAM_VERSION, never a literal, so a release bump cannot redden it.
+# Rosetta on an Apple Silicon host.
 set -eu
 BIN="${1:?usage: uuid_stamp_test.sh <bindir>}"
 DMR="$BIN/drydock-macho-rewrite"
@@ -28,8 +27,9 @@ trap 'rc=$?; rm -rf "$T"; if [ "$reached_end" -eq 0 ]; then
     echo "uuid_stamp_test: FATAL -- aborted early (exit $rc); everything after the last PASS/FAIL line never ran" >&2
 fi' EXIT
 
-VER=$(sed -n '1s/^\([0-9]*\)\.\([0-9]*\).*/\1.\2/p' "$HERE/../UPSTREAM_VERSION")
-[ -n "$VER" ] || { echo "uuid_stamp_test: cannot read MAJOR.MINOR from UPSTREAM_VERSION" >&2; exit 1; }
+VF="$ROOT/VERSION"; [ -f "$VF" ] || VF="$ROOT/UPSTREAM_VERSION"
+VER=$(sed -n '1s/^\([0-9]*\)\.\([0-9]*\).*/\1.\2/p' "$VF")
+[ -n "$VER" ] || { echo "uuid_stamp_test: cannot read MAJOR.MINOR from $VF" >&2; exit 1; }
 PREFIX=$(printf 'DD0C%02X%02X' "${VER%%.*}" "${VER#*.}")
 
 # uuid_line FILE [SLICE] -- the `uuid:` line info prints, for SLICE of a fat file.

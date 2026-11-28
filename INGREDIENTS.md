@@ -10,7 +10,7 @@ not a port of somebody else's project — they were written for this problem, an
 
 | Ingredient | Pinned in | Renovate | On a bump |
 |---|---|---|---|
-| the six tools' C sources (own upstream) | `UPSTREAM_VERSION`, bumped by hand | **untrackable** — nothing external releases them; they are this repo | a hand bump, then a dispatch of `release.yml` with `release=true`, cuts the release as tag `v0.3.0` |
+| the six tools' C sources (own upstream) | this repo; the version is derived (`## Versioning`) | **untrackable** — nothing external releases them; they are this repo | committed notes and `kind` under `release-notes/<tag>/`, then a dispatch of `release.yml` with `release=true`, cuts the release as that tag |
 | MacOSX10.9 SDK (x86_64) and MacOSX11.3 SDK (arm64), CMake helpers, compat guard, test runner; on Linux, the 10.9 SDK's `mach-o/` and `mach/` headers the Linux build compiles against | `Mavergreen/shipyard@v1` | ✅ github-actions manager tracks the tag | `@v1` is a *moving* tag: content changes without the pin changing, so nothing auto-repackages |
 | Sparkle 1.27.3, in the updater | shipyard's `fetch_sparkle_framework.sh`, pinned by hash there | **untrackable** here: shipyard owns that pin | follows shipyard |
 | Linux build image: ubuntu 26.04's gcc, glibc and CMake (build the Linux archive) | `release.yml`'s `linux` job `container:`, `ubuntu:26.04` pinned by digest; `build-info-linux-x86_64.txt` records `build-image`, `build-cc`, `build-libc` and `build-cmake` | ✅ Renovate's github-actions manager tracks the image and its digest | a new image rebuilds and retests the archive; it ships with the next dispatched release. The executable must ask for no x86 ISA level above `x86-64-baseline` (the job builds with `-march=x86-64` and fails on anything higher, as the GitHub runner image's own toolchain gave: `x86-64-v3`, which needs AVX2), and needs a glibc at least as new as the newest `GLIBC_` symbol version it references (2.34 as of 0.3.0); build-info records both as `isa-needed` and `glibc-needed` |
@@ -29,12 +29,16 @@ Apple headers the SDK's `mach-o/` and `mach/` headers include and for the three
 Apple APIs `src/` calls (`CC_SHA256`, `OSSwapInt32`, and the extended-attribute
 calls' Apple argument lists).
 
+## Versioning
+
+- semver
+
 ## Conformance deviations
 
 `check-artifact-conformance.sh`'s `scheme` check is repo-wide, not per-artifact, so it is declared
 unscoped (`- scheme: <reason>`), the same way `mavericks-shipyard`'s own self-upstream deviation is:
 
-- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as semver vX.Y.Z per the self-upstream rule (tag `v0.1.0` for `UPSTREAM_VERSION` `0.1.0`), and there is no -mavericks.N axis to carry. The reason for semver over a date: users write scripts in Drydock's language; a major version says when those may break, which a date cannot.
+- scheme: this repo is its own upstream (no external thing to repackage), so it versions itself directly as semver vX.Y.Z per the self-upstream rule (tag `v0.8.2` for version `0.8.2`), and there is no -mavericks.N axis to carry. The reason for semver over a date: users write scripts in Drydock's language; a major version says when those may break, which a date cannot.
 - arm64:*/bin/drydock-objc: shipyard's compat guard runs `drydock-objc` in product CI on Apple Silicon (macos-26) runners, and developers on Apple Silicon Macs run it to investigate Mavericks artifacts; both need a native arm64 slice. The slice is built on Linux by `release.yml`'s `build` job, and exercised and accepted by its `modern-smoke` job (family check 37), which installs the run's pkg on Apple Silicon and runs the suite, the `objc_` ctest entries among them, natively against the installed arm64 tools.
 - arm64:*/bin/drydock-macho-rewrite: product builds and developers on Apple Silicon Macs run `drydock-macho-rewrite` and its wrappers to edit Mavericks binaries, so it needs a native arm64 slice. `modern-smoke` runs the suite, `apple_silicon_signing_test`, `chained-fixups.sh`, `characterize.sh` and equivalence's macos-arm64 outputs natively against the installed arm64 tool.
 - arm64:*/bin/drydock-resources: products convert their nibs and storyboards for 10.9 with `drydock-resources`, on developers' Apple Silicon Macs as well as in CI, so it needs a native arm64 slice. `modern-smoke` runs the suite, the `resources_` ctest entries among them, natively against the installed arm64 tool.
@@ -52,8 +56,12 @@ human decides it has, which is the honest arrangement rather than a missing one.
 
 That is also why a release is published by **workflow_dispatch** rather than
 auto-cut-on-main: with no upstream bump to trigger it, a release is always a
-deliberate act. The tag is derived (`v` plus `UPSTREAM_VERSION`) and created by
-the publish, so a tag can never disagree with the version the binaries report.
+deliberate act. The tag is derived by shipyard's `release-version.sh`, the step
+`release-notes/<tag>/kind` names from the newest `vX.Y.Z` tag, and created by the
+publish; every job builds at that version, so a tag can never disagree with the
+version the binaries report. `UPSTREAM_VERSION` stays because the family gate
+requires a committed version file, and a build outside a release run reports it;
+no release reads or bumps it.
 
 ## Why `tests/EXPECTED` is an ingredient
 

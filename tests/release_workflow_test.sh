@@ -156,6 +156,47 @@ e=$(step equivalence "equivalence.sh compare")
 has "equivalence compares macos-x86_64 with macos-arm64" "$e" 'compare "$EQ/macos-x86_64" "$EQ/macos-arm64"'
 has "equivalence compares macos-x86_64 with linux-x86_64" "$e" 'compare "$EQ/macos-x86_64" "$EQ/linux-x86_64"'
 
+v=$(job version-check)
+has "version-check runs on Linux" "$v" "runs-on: ubuntu-latest"
+has "version-check reads the tags it derives from" "$v" "fetch-depth: 0"
+has "version-check derives the version once, in the run's release mode" "$v" \
+  't="$(sh "$SHIPYARD_SCRIPTS/release-version.sh" --product drydock --mode "$m")"'
+has "version-check takes the mode from release-mode.sh" "$v" 'm="$(sh "$SHIPYARD_SCRIPTS/release-mode.sh")"'
+has "version-check checks the derived version, and the notes when publishing" "$v" \
+  'sh "$SHIPYARD_SCRIPTS/check-release-version.sh" --product drydock --version "$t" --sha "$GITHUB_SHA" \'
+has "version-check passes its publish decision to the check" "$v" '--mode "$m" --publishing "$p"'
+has "only a dispatch with release=true on main publishes" "$v" \
+  "WANT_RELEASE: \${{ github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main' }}"
+lacks "release.yml never reads UPSTREAM_VERSION for a version" "$(cat "$W")" "UPSTREAM_VERSION"
+lacks "release.yml calls no other version deriver" "$(grep -v '^ *#' "$W")" "resolve-version.sh"
+lacks "release.yml does not ask GitHub whether a release exists, which the derivation answers" "$(cat "$W")" "gh release view"
+for j in build linux; do
+  needs "$j" | grep -qx version-check && ok "$j needs version-check" || bad "$j does not need version-check"
+done
+for j in publish required; do
+  needs "$j" | grep -qx version-check && ok "$j needs version-check" || bad "$j does not need version-check"
+done
+has "build writes the derived version to VERSION before it configures" "$(step build 'id: ver')" \
+  'FULL: ${{ needs.version-check.outputs.version }}'
+has "linux builds at the derived version" "$(step linux 'Out of tree')" 'FULL: ${{ needs.version-check.outputs.version }}'
+for j in build linux; do
+  has "$j writes VERSION, which CMake reads" "$(job "$j")" "printf '%s\\n' \"\$FULL\" > VERSION"
+done
+has "on-target hands the guest VERSION" "$(step on-target fetch-release-pkg.sh)" \
+  "printf '%s\\n' '\${{ needs.build.outputs.version }}' > VERSION"
+has "modern-smoke configures at the derived version" "$(step modern-smoke 'shipyard-cmake --preset arm64')" \
+  "printf '%s\\n' '\${{ needs.build.outputs.version }}' > VERSION"
+p=$(job publish)
+has "publish publishes the derived tag" "$p" 'version: ${{ needs.version-check.outputs.tag }}'
+has "publish names the product its version is declared for" "$p" "product: drydock"
+has "publish passes the release mode the version was derived in" "$p" 'release-mode: ${{ needs.version-check.outputs.mode }}'
+has "publish runs only when version-check decided to publish, which build passes on, as modern-smoke reads it" "$p" \
+  "if: needs.build.outputs.publish == 'yes'"
+has "build passes on version-check's publish decision" "$(step build 'id: ver')" 'PUBLISH: ${{ needs.version-check.outputs.publish }}'
+grep -qx -- '- semver' "$HERE/../INGREDIENTS.md" && ok "INGREDIENTS.md declares semver" || bad "INGREDIENTS.md declares no semver"
+grep -q 'if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")' "$HERE/../CMakeLists.txt" \
+  && ok "CMake reads the VERSION release.yml writes" || bad "CMake does not read VERSION"
+
 b=$(job build)
 has "build runs on Linux" "$b" "runs-on: ubuntu-latest"
 for gone in 'run-repo-tests.sh" x86_64

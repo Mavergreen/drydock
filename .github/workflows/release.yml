@@ -11,6 +11,9 @@ name: release
 #     its feed as a GitHub Release through shipyard's publish-release.yml. Dispatch-only, because
 #     this repo is its own upstream -- there is no external bump to auto-cut on, so a
 #     release is deliberate
+# The version is never chosen here: version-check derives it with shipyard's release-version.sh
+# from the newest vX.Y.Z tag and the step release-notes/<tag>/kind names, and every job takes it
+# from there, writing it to VERSION, which CMake reads.
 
 on:
   push:
@@ -20,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: Publish v<UPSTREAM_VERSION> as a GitHub Release (main only)
+        description: Publish the version release-version.sh derives as a GitHub Release (main only)
         type: boolean
         default: false
 
@@ -46,8 +49,44 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The one place the version is decided, and whether this run publishes: only a dispatch with
+  # release=true on main does. check-release-version.sh refuses a version that is not the derived
+  # one and, when publishing, a release with no committed notes or no kind.
+  version-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      publish: ${{ steps.tag.outputs.publish }}
+      mode: ${{ steps.tag.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the version comes from the tags merged into this commit
+          persist-credentials: false
+
+      - name: Install mavericks-shipyard
+        uses: Mavergreen/shipyard/.github/actions/install@v1
+
+      - name: Derive and check the version, and decide whether this run publishes
+        id: tag
+        env:
+          WANT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main' }}
+        run: |
+          set -eu
+          if [ "$WANT_RELEASE" = true ]; then p=yes; else p=no; fi
+          m="$(sh "$SHIPYARD_SCRIPTS/release-mode.sh")"
+          t="$(sh "$SHIPYARD_SCRIPTS/release-version.sh" --product drydock --mode "$m")"
+          sh "$SHIPYARD_SCRIPTS/check-release-version.sh" --product drydock --version "$t" --sha "$GITHUB_SHA" \
+            --mode "$m" --publishing "$p"
+          { echo "tag=$t"; echo "version=${t#v}"; echo "publish=$p"; echo "mode=$m"; } >> "$GITHUB_OUTPUT"
+
   build:
     name: build
+    needs: [version-check]
     runs-on: ubuntu-latest   # cross-builds both slices with clang22 and packages them; modern-smoke and on-target run them
     outputs:
       version: ${{ steps.ver.outputs.full }}
@@ -78,37 +117,18 @@ jobs:
           echo "X86_64_BUILD_DIR=$root/$(basename "$PWD")-x86_64" >> "$GITHUB_ENV"
           echo "ARM64_BUILD_DIR=$root/$(basename "$PWD")-arm64" >> "$GITHUB_ENV"
 
-      # Nothing external to derive from -- this repo is its own upstream -- so the version
-      # IS UPSTREAM_VERSION, hand-bumped, and the tag is v plus that, so the two cannot
-      # disagree. Computed here rather than through shipyard's version.sh or
-      # resolve-version.sh: both only ever emit the <upstream>-mavericks.N shape a PORT
-      # needs, which is exactly the suffix this repo does not carry. mavericks-porthole,
-      # the family's other self-upstream repo, computes inline for the same reason.
-      - name: Version (vX.Y.Z) + publish decision
+      # CMake reads VERSION, so the binaries, the updater and the .pkg all carry the derived version.
+      - name: Version (vX.Y.Z) + publish decision, from version-check
         id: ver
         env:
-          GH_TOKEN: ${{ github.token }}
-          WANT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main' }}
+          TAG: ${{ needs.version-check.outputs.tag }}
+          FULL: ${{ needs.version-check.outputs.version }}
+          PUBLISH: ${{ needs.version-check.outputs.publish }}
         run: |
           set -eu
-          full="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
-          tag="v$full"
-          rel=no
-          if [ "$WANT_RELEASE" = true ]; then
-            err="$(mktemp)"
-            if gh release view "$tag" > /dev/null 2> "$err"; then
-              echo "::error::release $tag already exists -- bump UPSTREAM_VERSION to publish a new one"
-              exit 1
-            fi
-            grep -q 'release not found' "$err" || {
-              echo "::error::could not tell whether release $tag exists: $(cat "$err")"
-              exit 1
-            }
-            rel=yes
-          fi
-          printf '%s\n' "$full" > VERSION
-          { echo "full=$full"; echo "tag=$tag"; echo "release=$rel"; } >> "$GITHUB_OUTPUT"
-          echo "version=$full tag=$tag release=$rel"
+          printf '%s\n' "$FULL" > VERSION
+          { echo "full=$FULL"; echo "tag=$TAG"; echo "release=$PUBLISH"; } >> "$GITHUB_OUTPUT"
+          echo "version=$FULL tag=$TAG release=$PUBLISH"
 
       # The preset's toolchain pins CMAKE_OSX_SYSROOT to the fetched 10.9 SDK, so no
       # declaration 10.9 never had is accepted.
@@ -227,6 +247,7 @@ jobs:
 
   linux:
     name: build (linux-x86_64)
+    needs: [version-check]
     runs-on: ubuntu-latest
     container: ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
     steps:
@@ -246,11 +267,14 @@ jobs:
       - name: Install mavericks-shipyard
         uses: Mavergreen/shipyard/.github/actions/install@v1
 
-      - name: Out of tree
+      - name: Out of tree, at the derived version
+        env:
+          FULL: ${{ needs.version-check.outputs.version }}
         run: |
           echo "LINUX_BUILD_DIR=$RUNNER_TEMP/mm-build/drydock-linux" >> "$GITHUB_ENV"
           echo "LINUX_DIST=$RUNNER_TEMP/dist-linux" >> "$GITHUB_ENV"
-          echo "VERSION_FULL=$(tr -d '[:space:]' < UPSTREAM_VERSION)" >> "$GITHUB_ENV"
+          echo "VERSION_FULL=$FULL" >> "$GITHUB_ENV"
+          printf '%s\n' "$FULL" > VERSION
 
       - name: Record the pre-build tree
         run: sh "$SHIPYARD_SCRIPTS/assert-tree-clean.sh" --record
@@ -391,9 +415,11 @@ jobs:
 
       # On Linux, install@v1 installs nothing and leaves SHIPYARD_SCRIPTS in its own checkout, whose
       # components/cmake/version is the cmake its shipyard pkg requires.
-      - name: Stage shipyard's scripts, Longboat, make, cmake, shipyard, clang22, libcxx22, legacy-support and the 10.9 SDK
+      # VERSION reaches the guest with the workspace, so its native build carries the derived version too.
+      - name: Stage VERSION, shipyard's scripts, Longboat, make, cmake, shipyard, clang22, libcxx22, legacy-support and the 10.9 SDK
         run: |
           set -eu
+          printf '%s\n' '${{ needs.build.outputs.version }}' > VERSION
           cp -R "$SHIPYARD_SCRIPTS" .shipyard-scripts
           fetch() { sh "$SHIPYARD_SCRIPTS/fetch-release-pkg.sh" "$@" deps; }
           lb="$(tr -d '[:space:]' < components/longboat/version)"
@@ -643,6 +669,7 @@ jobs:
       - name: Configure + build arm64 with clang22, handing the suite the installed tools
         run: |
           set -eu
+          printf '%s\n' '${{ needs.build.outputs.version }}' > VERSION
           CLANG22="$(sh "$SHIPYARD_SCRIPTS/fetch_clang22.sh" "$SHIPYARD_SCRIPTS/../components/clang22")"
           shipyard-cmake --preset arm64 -DMAVERICKS_REQUIRE_APPLECLANG=OFF -DCMAKE_C_COMPILER="$CLANG22/bin/clang" \
             -DCMAKE_AR="$CLANG22/bin/llvm-ar" -DCMAKE_RANLIB="$CLANG22/bin/llvm-ranlib" \
@@ -914,19 +941,21 @@ jobs:
   # The shared workflow regenerates SHA256SUMS, uses RELEASE_NOTES.md from the artifact as the
   # Release body, and fails if those notes are missing or empty.
   publish:
-    needs: [build, linux, on-target, modern-smoke, equivalence, assemble, scan]
+    needs: [version-check, build, linux, on-target, modern-smoke, equivalence, assemble, scan]
     if: needs.build.outputs.publish == 'yes'
     permissions:
       contents: write
     uses: Mavergreen/shipyard/.github/workflows/publish-release.yml@v1
     with:
-      version: ${{ needs.build.outputs.tag }}
+      version: ${{ needs.version-check.outputs.tag }}
+      product: drydock
+      release-mode: ${{ needs.version-check.outputs.mode }}
       artifact: drydock-release
 
   required:
     name: required (release)
     if: always()
-    needs: [build, linux, on-target, modern-smoke, equivalence, assemble, scan, publish]
+    needs: [version-check, build, linux, on-target, modern-smoke, equivalence, assemble, scan, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: Mavergreen/shipyard/.github/actions/required-gate@v1
